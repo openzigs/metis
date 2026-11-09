@@ -30,6 +30,8 @@ const {
   templateGoverningQuestion,
 } = await import("./applicability-questions.js");
 const { FALLBACK_FINDING_QUESTION } = await import("./findings.js");
+const { ANSWER_NOTE } = await import("./applicability.js");
+const { applySettlements } = await import("./applicability-store.js");
 type QuestionRule = import("./applicability-questions.js").QuestionRule;
 type OpenGoverningPair = import("./applicability-questions.js").OpenGoverningPair;
 
@@ -738,6 +740,8 @@ describe("rejudgeAnswered — the answer is judged back onto the rules it settle
     const settlements = await rejudgeAnswered([answered], STORED, rules, { provider });
     expect(sent).toHaveLength(1);
     expect(sent[0]!.user).toContain("Their answer: Yes, the whole number is stored");
+    // #2067 — the settle judge is told that a safeguard in place still applies.
+    expect(sent[0]!.system).toContain(ANSWER_NOTE);
     expect(sent[0]!.user).toContain("R1 [EN-03]");
     expect(settlements).toEqual([
       expect.objectContaining({ ruleId: CARD.id, verdict: "applies", questionId: "q1" }),
@@ -775,6 +779,63 @@ describe("rejudgeAnswered — the answer is judged back onto the rules it settle
     ).toEqual([]);
     expect(unreadable.sent.map((x) => x.kind)).toEqual(["judge", "judge"]);
     expect(unreadable.sent[1]!.system).toContain("Your previous answer");
+    expect(unreadable.sent[1]!.system).toContain(ANSWER_NOTE);
+  });
+
+  it("#2067 — a recorded settle of 'the safeguard is in place' settles the pair applies", async () => {
+    const SUPPLIER = {
+      id: "rule_supplier",
+      revisionId: "rev_1",
+      controlId: "VM-01",
+      summary: "A supplier passes the security review and signs the data agreement first.",
+      clauseExcerpt:
+        "Before any supplier receives personal information, it passes the supplier security review and signs the data protection agreement.",
+      source: "Policy v1 §9",
+    };
+    const requirement = {
+      requirementId: "GR-06",
+      text: "Send the list of last quarter's buyers to SurveyCo so they can email each buyer a short satisfaction questionnaire.",
+      decisions: [
+        {
+          ruleId: SUPPLIER.id,
+          controlId: SUPPLIER.controlId,
+          verdict: "uncertain" as const,
+          reason: "Depends on the supplier review.",
+          businessFact:
+            "Has SurveyCo passed the supplier security review and signed the data protection agreement?",
+          foundBy: ["screen" as const],
+        },
+      ],
+    };
+    const stored = { decidedAt: "2026-11-09T00:00:00.000Z", requirements: [requirement] };
+    // deepseek-flash's reply to this settle on governing-01, with ANSWER_NOTE, recorded for #2067.
+    const RECORDED =
+      '{"decisions":[{"rule":"R1","verdict":"applies","reason":"The requirement sends buyers\' personal information to SurveyCo, an outside company, so the supplier security review and data protection agreement rule is engaged even though the review and agreement are already in place.","businessFact":""}]}';
+    const { provider, sent } = stubModel({ judge: () => RECORDED });
+    const question = {
+      id: "q-supplier",
+      requirementId: governingQuestionRequirementId("GR-06"),
+      ambiguityField: GOVERNING_QUESTION_FIELD,
+      question: requirement.decisions[0].businessFact,
+      context: "",
+      answer: "Yes, it has.",
+      governing: { kind: "governing" as const, ruleIds: [SUPPLIER.id], requirementId: "GR-06" },
+    };
+    const settlements = await rejudgeAnswered(
+      [question],
+      stored,
+      new Map([[SUPPLIER.id, SUPPLIER]]),
+      { provider },
+    );
+    expect(sent[0]!.system).toContain(ANSWER_NOTE);
+    expect(settlements).toEqual([
+      expect.objectContaining({ ruleId: SUPPLIER.id, verdict: "applies", answer: "Yes, it has." }),
+    ]);
+    const { next } = applySettlements(stored, settlements);
+    expect(next.requirements[0]!.decisions[0]).toMatchObject({
+      verdict: "applies",
+      settled: { questionId: "q-supplier", answer: "Yes, it has.", previousVerdict: "uncertain" },
+    });
   });
 
   it("#2009 — an unreadable first reply is re-asked, and the readable second one settles", async () => {

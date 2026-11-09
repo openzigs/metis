@@ -261,6 +261,49 @@ No Sonnet reading of `governing-02` was taken. The pass bars are read on the fin
 before any answer, which question wording cannot change, so the change cannot move
 #1878's decision.
 
+### #2067: the settle judge is told that a safeguard in place still applies
+
+The re-judging of an answered question now carries `ANSWER_NOTE`. An answer that a rule's
+safeguard is in place means the rule applies, and the findings call decides compliance. Only
+an answer that the rule's subject is absent means `does-not-apply`. The first judging is
+unchanged. The defect was seen on `governing-02` (KV-02 → TP-01, #2065). Per #2033 the
+prompt was not tuned there, and no wording from that set was used.
+
+**A probe of the settle call alone, on this set's rules**, run 2026-11-09. Each line is one
+requirement, one linked rule, the question and the answer, judged with and without the note.
+It covers the three short-answer pairs answered "yes" (with their own `businessFact`) and
+three harder wordings that frame the safeguard as already covering the requirement:
+
+| Case | Model | Without the note | With it |
+|---|---|---|---|
+| GR-06 → VM-01, GR-09 → EN-01, GR-21 → CM-03, own question, "yes" | `deepseek-flash` | 12 of 12 `applies` | 12 of 12 `applies` |
+| the same | `claude-sonnet-5-5` | 9 of 9 `applies` | 9 of 9 `applies` |
+| the three "already covered" wordings, "Yes, we do." / "Yes, they handle that." | `claude-sonnet-5-5` | 9 of 9 `applies` | 9 of 9 `applies` |
+| a synthetic receipt requirement, VM-01, "No, the receipt is generated and shown by our own checkout." | both | 6 of 6 `does-not-apply` | 6 of 6 `does-not-apply` |
+| GR-06 → VM-01, "No, we send the questionnaire ourselves; nothing leaves our systems." | `deepseek-flash` / `claude-sonnet-5-5` | 1 of 4 / 0 of 3 `does-not-apply` | 4 of 4 / 3 of 3 `does-not-apply` |
+
+So on this set the defect does not reproduce. Neither model rules out a rule on a "safeguard
+in place" answer without the note, and the note costs no `applies`. The one change is the
+last row, where the answer contradicts the requirement (GR-06 does send the list to
+SurveyCo). With the note, the judge follows the answer. Production settles only `uncertain`
+pairs, where the requirement leaves the fact open, so a contradiction like this should be
+rare. It is the case to watch.
+
+**A5 on `anthropic/deepseek-flash`**: one `--runs 1` invocation at `--concurrency 14` at
+`afaa7a768`, clean tree, $0.47.
+
+| Reading | Short-answer accuracy | Settled by the judge | Recorded on a rule that applies | Main verdict accuracy | Hard errors | Precision | Recall | Non-resembling recall | Failures |
+|---|---|---|---|---|---|---|---|---|---|
+| #2067 | 4/7 | 0 | 1 | 0.56 | 0 | 0.66 | 0.97 | 0.93 | 0 |
+
+The changed call did not run in this reading. The one answer given (GR-06 → VM-01, "Yes, it
+has.") went to a finding on a rule that applies, was recorded without a judging call, and
+the finding became `compliant`. That is why the row reads 4/7 against #2059's 3/7. In
+#2059's runs, DeepSeek's findings call read that pair `gap` before any answer, so it was
+never asked. No `uncertain` pair with a recorded answer was asked, so the settle judge was
+never called. The main row is the first judging, which this change does not touch, and it
+is within run-to-run noise.
+
 ## The non-resembling subset
 
 A pair labelled `nonResembling` is one where the rule applies although the requirement
