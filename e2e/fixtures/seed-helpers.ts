@@ -367,3 +367,59 @@ export function seedGeneratedDocViaCli(opts: {
   }
   return parsed;
 }
+
+const GOVERNING_SCRIPT = path.resolve(REPO_ROOT, "server", "scripts", "e2e-seed-governing.ts");
+
+/**
+ * #2060 — seed a governing document with extracted rules into the project's
+ * workspace, and a completed analysis with governing findings (Compliant, Gap,
+ * Needs BA input) and the open clarifying question its uncertain rule waits
+ * on. No model is called. The values are `fixtures/governing-fixture.ts`'s.
+ * The project must belong to a workspace: seed it in one of its own, so the
+ * rules reach no other spec's analyses.
+ */
+export function seedGoverningAnalysisViaCli(opts: {
+  projectId: string;
+  startedById: string;
+  databaseUrl: string;
+}): { analysisId: string; documentId: string; workspaceId: string } {
+  const result = spawnSync(
+    "pnpm",
+    [
+      "--filter",
+      "@metis/server",
+      "exec",
+      "tsx",
+      GOVERNING_SCRIPT,
+      opts.projectId,
+      opts.startedById,
+    ],
+    {
+      cwd: REPO_ROOT,
+      env: {
+        ...process.env,
+        DATABASE_URL: opts.databaseUrl,
+        DATABASE_PROVIDER: "sqlite",
+      },
+      encoding: "utf8",
+    },
+  );
+  if (result.status !== 0) {
+    throw new Error(
+      `e2e-seed-governing.ts failed (status=${result.status}):\n${result.stderr}\n${result.stdout}`,
+    );
+  }
+  const parsed = JSON.parse(result.stdout) as {
+    analysisId?: string;
+    documentId?: string;
+    workspaceId?: string;
+  };
+  if (!parsed.analysisId || !parsed.documentId || !parsed.workspaceId) {
+    throw new Error(`e2e-seed-governing.ts returned malformed payload: ${result.stdout}`);
+  }
+  return {
+    analysisId: parsed.analysisId,
+    documentId: parsed.documentId,
+    workspaceId: parsed.workspaceId,
+  };
+}
