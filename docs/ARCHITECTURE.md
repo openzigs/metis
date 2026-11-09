@@ -2833,6 +2833,10 @@ asked it, so the BA's answer never reached that finding. On the held-out set thi
 2 or 3 of 7 per run, where A4's replay, which hands every answer to the findings call, scored 6 or
 7 of 7 on the tuning set (#2050). #2059 asks those findings' questions too. A pair whose rule
 `applies` and whose first finding is `gap` or `compliant` is still never asked, as in production.
+On the held-out set the answer then reached the findings call in 10 of 21 pair-runs, against 3
+of 21 before, and the row read 0.48 against 0.38
+(`eval-data/readings/governing-02-clinic-records/baseline-A5-sonnet-2059.md`; what it does not
+show is in that set's `ANNOTATION.md`).
 
 #### Governing rules in the requirements BRD (#1877)
 

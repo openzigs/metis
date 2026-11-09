@@ -210,6 +210,35 @@ the right way round, 20 of 20. That includes GR-20's "No." → `gap`, newly reac
 GR-11's "No." → `compliant`. No short answer was misread, so #2038's polarity line was
 not re-tried.
 
+### #2059: the shipped path asks a Needs BA input finding on a rule that applies
+
+Read on 2026-11-09 with arm **A5** (the shipped path) on `anthropic/deepseek-flash`. There
+were three `--runs 1` invocations at `--concurrency 14` at `150488f1a`, which has #2059's
+routing. There was also one baseline invocation at `main`'s `054dc036e`, without it. The
+first reading, before any answer, runs the same code in both, so only the dialog can differ.
+
+| Reading | Short-answer accuracy | Answer reached the findings call | Questions asked | From a finding on a rule that applies | Main verdict accuracy | Hard errors | Precision | Recall | Failures | Spend |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Baseline (`main`) | 3/7 | 0 of 7 | 2 | (not asked) | 0.41 | 0 | 0.63 | 0.95 | 0 | $0.50 |
+| #2059 | 3/7, 3/7, 3/7 | 0 of 21 | 3 / 3 / 3 | 2 / 2 / 2 | 0.54 / 0.49 / 0.51 | 0/0/0 | 0.62 / 0.60 / 0.62 | 0.97 / 0.95 / 0.92 | 0/0/1 | $1.48 |
+
+**The route works here, but this set cannot score it.** In every run, both questions about
+GR-09's VM-01 and VM-05 came from Needs BA input findings on rules that apply. Neither
+pair has a recorded answer, so both went unanswered. The short-answer row did not move,
+and could not on this model. Before any answer, DeepSeek's findings call read all seven
+short-answer pairs `gap`, in 20 of 20 verdicts (GR-06 failed once in applicability). The
+label before the answer is `needs-ba-input`, so no question was owed and no answer
+reached the findings call. That is the findings call's `gap`-for-`needs-ba-input` habit
+recorded under #2050. Routing does not reach it.
+
+The one failure, GR-06 in the third run, is #2050's: "the judging reply could not be read
+twice running for 32 candidate rule(s)". The main-row differences are within run-to-run
+noise; the first reading is the same code in both conditions.
+
+So whether #2059 moves the short-answer row could only be read where the findings call
+gives `needs-ba-input` on these pairs. That is `claude-sonnet-5-5` on `governing-02`, where
+the gap was measured. That reading is recorded in that set's `ANNOTATION.md`.
+
 ## The non-resembling subset
 
 A pair labelled `nonResembling` is one where the rule applies although the requirement

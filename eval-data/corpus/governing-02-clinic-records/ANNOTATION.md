@@ -240,6 +240,7 @@ the report file. A reading is for a decision, never for tuning a prompt.
 | Date | Issue | Arms | Model | Report |
 |---|---|---|---|---|
 | 2026-11-09 | #1878 | A5 (the shipped path), 3 runs as three `--runs 1` invocations, combined; commit `e613df1ef` | `anthropic/claude-sonnet-5-5` | [`eval-data/readings/governing-02-clinic-records/baseline-A5-sonnet.md`](../../readings/governing-02-clinic-records/baseline-A5-sonnet.md) |
+| 2026-11-09 | #2059 | A5 (the shipped path), 3 runs as three `--runs 1` invocations, combined; commit `206adfd5a` | `anthropic/claude-sonnet-5-5` | [`eval-data/readings/governing-02-clinic-records/baseline-A5-sonnet-2059.md`](../../readings/governing-02-clinic-records/baseline-A5-sonnet-2059.md) |
 
 ### The #1878 reading
 
@@ -264,3 +265,59 @@ how it reads an answer. Production asks the BA only about a rule that applicabil
 findings call then gave `needs-ba-input`. A finding at that point has a business question, but
 the clarification dialog never asks it, so the BA's answer never reaches it. A4's replay passes
 every answer straight to the findings call, so it did not show this. Follow-up: #2059.
+
+### The #2059 reading
+
+The second reading of this set, taken to decide whether #2059 closes the routing gap the #1878
+reading found. #2059 also asks the question of a Needs BA input finding on a rule that
+applies. The tuning set could not answer that. DeepSeek's findings call reads every
+short-answer pair there `gap` before any answer (`governing-01`'s `ANNOTATION.md`, #2059), so
+no such question is owed. No prompt was changed after this reading. It cost $2.51 in all
+($0.88, $0.82 and $0.81 per run).
+
+| Bar | Required | Mean over 3 runs | Per run | Pass |
+|---|---|---|---|---|
+| Overall recall | ≥ 0.90 | 0.94 | 0.96 / 0.94 / 0.91 | yes |
+| Non-resembling recall | ≥ 0.85 | 0.92 | 0.92 / 0.92 / 0.92 | yes |
+| Precision | ≥ 0.60 | 0.61 | 0.63 / 0.62 / 0.57 | yes; run 3 alone is under |
+| Citation accuracy | ≥ 0.95 | 1.00 | 1.00 / 1.00 / 1.00 | yes |
+| No-evidence → compliant errors | 0 per run | 0 | 0 / 0 / 0 | yes |
+
+Verdict accuracy was 0.75 (0.74 at #1878). Every negative item was clean in every run, and
+the short-answer row had no `compliant` against its label.
+
+**The answer now reaches the finding.** The review of #2061 asked for a count: pair-runs
+whose `answered.questions[].ruleIds` include the pair's rule. That count is **10 of 21**,
+against 3 of 21 at #1878. Eight of them came through #2059's route: KV-05 ×3, KV-28 ×2,
+KV-14 ×2 and KV-26 ×1. The other two are KV-02 through the `uncertain` route. The
+short-answer row reads 4/7, 3/7 and 3/7 (0.48), against 2/7, 3/7 and 3/7 (0.38) before.
+
+| Pair | #1878 | #2059 |
+|---|---|---|
+| KV-02 → TP-01 ("Yes, we do.", compliant) | compliant ×3 | missed ×3 |
+| KV-05 → MS-04 ("No.", gap) | needs-ba-input ×3 | gap ×3 |
+| KV-14 → CM-01 ("Yes, they are.", compliant) | gap ×3 | compliant, gap, needs-ba-input |
+| KV-26 → TP-03 ("Yes, we do.", compliant) | gap ×3 | gap, needs-ba-input, gap |
+| KV-28 → TP-05 ("No.", gap) | needs-ba-input, gap, gap | gap ×3 |
+| KV-31 → IR-04, KV-33 → CM-04 | gap ×3 each | gap ×3 each |
+
+**Decision: #2059 ships; the flag stays on.** It does what #2059 set out to do, and every
+bar still passes. Three things this reading shows are not #2059's to fix:
+
+- **KV-02 lost its answer.** #2059 now also asks CS-01's finding question, so KV-02 has two
+  facts, and its questions go through the merge call (`mergeFacts`). That call rewords a
+  question it leaves unmerged, although its prompt says "leave the others as they are". In
+  runs 1 and 2 the reworded TP-01 question was answered "Yes, we do.". The settle then judged
+  TP-01 `does-not-apply`, so it had no finding after the answer. At #1878 the original
+  wording settled `applies`, then `compliant`, in 3 of 3 runs. In run 3 applicability never
+  found TP-01. Two follow-ups: keep an unmerged question's own words, and stop the settle
+  judge from reading "the safeguard is in place" as "the rule does not apply".
+- **The BA's answer can be a non-answer.** A5 gives production's question the answer the
+  corpus wrote for its own `businessFact`. A finding's question is often a choice ("block
+  the suggestion, warn, or require a new weight?"), and "No." does not answer it. KV-05's
+  and KV-28's `gap` after "No." match the label, but the answer did not say anything. So the
+  row's rise shows that answers now reach the findings. It overstates how well an answer is
+  read.
+- **The rest of the row is the findings call.** KV-31, KV-33, and KV-26 and KV-14 in most
+  runs, read `gap` before any answer, so no question was owed.
+
