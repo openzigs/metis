@@ -28,6 +28,8 @@ vi.mock("@/lib/impact-analysis-hooks", () => ({
   // Issue #965 — re-run + drift; benign no-op mutate + no drift data for this test.
   useRerunImpactAnalysis: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isSuccess: false })),
   useImpactDrift: vi.fn(() => ({ data: undefined, isLoading: false, isError: false })),
+  // #2115 — the run's reach through product API edges; none by default.
+  useApiEdgeImpact: vi.fn(() => ({ data: undefined, isLoading: false, isError: false })),
 }));
 
 vi.mock("@/lib/projects-api", () => ({
@@ -59,6 +61,7 @@ vi.mock("@/lib/plugins-api", () => ({
 }));
 
 import {
+  useApiEdgeImpact,
   useImpactAnalysis,
   useImpactDrift,
   useRerunImpactAnalysis,
@@ -136,6 +139,9 @@ const detail: ImpactAnalysisDetail = {
 beforeEach(() => {
   vi.clearAllMocks();
   listRepoConnectors.mockResolvedValue([]);
+  vi.mocked(useApiEdgeImpact).mockReturnValue({ data: undefined } as unknown as ReturnType<
+    typeof useApiEdgeImpact
+  >);
 });
 
 describe("ImpactAnalysisDetailPage", () => {
@@ -439,6 +445,63 @@ describe("ImpactAnalysisDetailPage", () => {
       render(<ImpactAnalysisDetailPage />, { wrapper: makeWrapper() });
       expect(screen.queryByTestId("impact-project-outcomes")).toBeNull();
     });
+  });
+
+  // #2115 — the run's API-edge reach reaches the project sections: the
+  // provider lists its consumer, the consumer's item is flagged low confidence.
+  it("passes the run's API-edge impact to the project sections (#2115)", () => {
+    const client: ImpactAnalysisDetail["items"][number] = {
+      ...detail.items[0],
+      id: "item-client",
+      projectId: "project-002",
+    };
+    mockUse.mockReturnValue(
+      state({
+        data: {
+          ...detail,
+          projectIds: ["project-001", "project-002"],
+          items: [...detail.items, client],
+        },
+      }),
+    );
+    vi.mocked(useApiEdgeImpact).mockReturnValue({
+      data: {
+        impactAnalysisId: detail.id,
+        consumers: [
+          {
+            edgeId: "e1",
+            edgeOrigin: "declared",
+            edgeStrength: "contract",
+            providerProjectId: "project-001",
+            providerProjectName: "Alpha",
+            providerItemId: "item-1",
+            changeTitle: "Add login",
+            consumerProjectId: "project-003",
+            consumerProjectName: "Client",
+            apiSurfaceFiles: ["src/api/login.ts"],
+            citingMethods: [],
+          },
+        ],
+        untouched: [
+          {
+            consumerItemId: "item-client",
+            consumerProjectId: "project-002",
+            providerProjectId: "project-001",
+            providerProjectName: "Alpha",
+            edgeId: "e2",
+          },
+        ],
+      },
+    } as unknown as ReturnType<typeof useApiEdgeImpact>);
+    render(<ImpactAnalysisDetailPage />, { wrapper: makeWrapper() });
+    expect(vi.mocked(useApiEdgeImpact)).toHaveBeenCalledWith(detail.id, true);
+    const sections = screen.getAllByTestId("project-impact-section");
+    const provider = sections.find((s) => s.dataset.projectId === "project-001")!;
+    const consumer = sections.find((s) => s.dataset.projectId === "project-002")!;
+    expect(provider.querySelector('[data-testid="api-consumer-row"]')).not.toBeNull();
+    expect(provider.querySelector('[data-testid="api-surface-untouched-banner"]')).toBeNull();
+    expect(consumer.querySelector('[data-testid="api-surface-untouched-banner"]')).not.toBeNull();
+    expect(consumer.querySelector('[data-testid="api-consumer-row"]')).toBeNull();
   });
 
   it("shows empty state when completed with no items", () => {

@@ -132,6 +132,8 @@ import {
   crossProjectImpact,
   whichProjectsUseObject,
 } from "../lib/cross-project/cross-project-impact.js";
+import { apiEdgeImpact } from "../lib/cross-project/api-edge-impact.js";
+import { buildProductAccessWhere } from "../lib/products/product-access.js";
 import { USAGE_OBJECT_KINDS, type UsageObjectKind } from "@metis/shared";
 
 const log = createChildLogger("impact-analysis-route");
@@ -1192,6 +1194,26 @@ export function impactAnalysisRouter(deps: UsageClassificationRouterDeps = {}): 
 
       const base = await loadAccessibleImpactDetail(actor, head.rerunOfId);
       res.json(ok(diffImpactRuns(base, head)));
+    } catch (err) {
+      next(asAppError(err));
+    }
+  });
+
+  // GET /:id/api-edge-impact — #2115. The projects run `:id`'s changes reach
+  // through product edges of kind `api` (a change on the provider's API
+  // surface names its consumer, with the consumer's citing methods), and the
+  // consumer items a change left untouched (low confidence). Authorized as
+  // GET /:id; edges only on readable products, consumers only when readable.
+  r.get("/:id/api-edge-impact", requirePermission("analysis.read"), async (req, res, next) => {
+    try {
+      const actor = actorOf(req);
+      const detail = await loadAccessibleImpactDetail(actor, String(req.params.id));
+      const productWhere = await buildProductAccessWhere(req.user!);
+      const result = await apiEdgeImpact(detail, {
+        readableProjectIds: (ids) => listMemberAccessibleProjectIds(actor, ids),
+        productWhere,
+      });
+      res.json(ok(result));
     } catch (err) {
       next(asAppError(err));
     }

@@ -22,6 +22,7 @@ import {
   impactFileKey,
   impactRepoCount,
   impactSymbolRole,
+  type ApiSurfaceUntouched,
   type ImpactItemView,
   type ImpactSymbolRepoRef,
   type ImpactTableFeedbackVerdict,
@@ -71,6 +72,12 @@ export interface ChangedRequirementGroupProps {
   onDeleteFeedback?: (itemId: string, feedbackId: string) => void;
   /** #1762 — the item's project, named when METIS could not find the code. */
   projectName?: string | null;
+  /**
+   * #2115 — set when this project reaches the run's change only through a
+   * provider's API and the change touched none of that API: these matches are
+   * word overlap, not impact, and the card says so.
+   */
+  apiSurfaceUntouched?: ApiSurfaceUntouched | null;
 }
 
 interface FileGroup {
@@ -100,6 +107,7 @@ export function ChangedRequirementGroup({
   onMarkFeedback,
   onDeleteFeedback,
   projectName,
+  apiSurfaceUntouched,
 }: ChangedRequirementGroupProps) {
   // #992 — the item's project repo (from the page's provider) for symbol links.
   const repo = useImpactSymbolRepo(item.projectId);
@@ -189,6 +197,20 @@ export function ChangedRequirementGroup({
           {item.matchQualityReason === "scattered"
             ? "Low-confidence match — the requirement matched code across several unrelated areas; results may be incomplete."
             : "Low-confidence match — the requirement didn't clearly name an entity/screen; results may be incomplete. Consider naming the feature, table, or module."}
+        </p>
+      ) : null}
+
+      {/* #2115 — the project is an API consumer of a provider whose change in
+          this run touched none of its API surface. */}
+      {apiSurfaceUntouched ? (
+        <p
+          className="rounded border border-warning/40 bg-warning-muted px-3 py-2 text-sm text-warning"
+          data-testid="api-surface-untouched-banner"
+          role="status"
+        >
+          Low-confidence match — this project uses {apiSurfaceUntouched.providerProjectName} through
+          its API, and this change touches none of that API. These matches likely share words with
+          the change, not its effect.
         </p>
       ) : null}
 

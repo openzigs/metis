@@ -4,6 +4,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import express from "express";
 import request from "supertest";
+import { PRODUCT_REPO_ROLES } from "@metis/shared";
 
 // Mock product service
 const mockCreateProduct = vi.fn();
@@ -260,6 +261,41 @@ describe("products-multi routes", () => {
       expect(res.status).toBe(201);
       expect(res.body.data.role).toBe("frontend");
     });
+
+    // #2114 — the Add repository form offers exactly PRODUCT_REPO_ROLES; each must
+    // get through the route's validator, and the retired UI-only roles must not.
+    it.each(PRODUCT_REPO_ROLES)("accepts the role %s", async (role) => {
+      mockAddProductRepo.mockResolvedValue({ id: "pr1", productId: "p1", role });
+      const res = await request(app)
+        .post("/products/p1/repos")
+        .send({ repoConnectionId: "r1111111111", role });
+      expect(res.status).toBe(201);
+      expect(mockAddProductRepo).toHaveBeenCalledWith("p1", {
+        repoConnectionId: "r1111111111",
+        role,
+      });
+    });
+
+    it.each(["shared-library", "infrastructure", "worker", "other"])(
+      "rejects the role %s with 400",
+      async (role) => {
+        // The production error handler, so this is the 400 a browser sees.
+        const { errorHandler } = await import("../middleware/error-handler.js");
+        const realApp = express();
+        realApp.use(express.json());
+        realApp.use("/products", productsRouter());
+        realApp.use(errorHandler);
+        const res = await request(realApp)
+          .post("/products/p1/repos")
+          .send({ repoConnectionId: "r1111111111", role });
+        expect(res.status).toBe(400);
+        expect(res.body.error).toMatchObject({
+          code: "VALIDATION_ERROR",
+          message: "role is invalid",
+        });
+        expect(mockAddProductRepo).not.toHaveBeenCalled();
+      },
+    );
 
     it("returns 409 for duplicate association", async () => {
       mockAddProductRepo.mockRejectedValue(

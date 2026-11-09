@@ -20,6 +20,8 @@
 "use client";
 
 import type {
+  ApiCitingMethod,
+  ApiConsumerImpact,
   CrossProjectAffectedObject,
   CrossProjectImpactResult,
   CrossProjectObjectUsage,
@@ -152,18 +154,95 @@ function AffectedObjectRow({ object }: { object: CrossProjectAffectedObject }) {
   );
 }
 
+/** `file:start-end`, `file:line` or `file`. */
+function location(m: ApiCitingMethod): string {
+  if (m.startLine === null) return m.filePath;
+  if (m.endLine === null || m.endLine === m.startLine) return `${m.filePath}:${m.startLine}`;
+  return `${m.filePath}:${m.startLine}-${m.endLine}`;
+}
+
+/**
+ * #2115 — one project downstream of this project's change through an API edge:
+ * which edge, which of this project's API files the change touched, and the
+ * consumer's methods that call that API.
+ */
+function ApiConsumerRow({ consumer }: { consumer: ApiConsumerImpact }) {
+  const edge = [consumer.edgeOrigin, consumer.edgeStrength].filter(Boolean).join(", ");
+  return (
+    <li
+      className="space-y-1 rounded border px-3 py-2"
+      data-testid="api-consumer-row"
+      data-project-id={consumer.consumerProjectId}
+    >
+      <p className="text-xs">
+        <span className="font-medium">{consumer.consumerProjectName}</span> calls this
+        project&apos;s API <span className="text-muted-foreground">({edge} API edge)</span>
+        {consumer.changeTitle ? (
+          <span className="text-muted-foreground"> · {consumer.changeTitle}</span>
+        ) : null}
+      </p>
+      <p className="text-[11px] text-muted-foreground" data-testid="api-surface-files">
+        The change touches its API in{" "}
+        {consumer.apiSurfaceFiles.map((f, i) => (
+          <span key={f}>
+            {i > 0 ? ", " : null}
+            <code className="font-mono">{f}</code>
+          </span>
+        ))}
+      </p>
+      {consumer.citingMethods.length === 0 ? (
+        <p className="text-[11px] text-muted-foreground" data-testid="api-citing-none">
+          The method that calls it is not known. Add {consumer.consumerProjectName} to the run to
+          find it.
+        </p>
+      ) : (
+        <ul className="space-y-0.5 border-l pl-3" aria-label="Citing methods">
+          {consumer.citingMethods.map((m) => (
+            <li
+              key={`${m.filePath}|${m.qualifiedName ?? ""}|${m.startLine ?? ""}`}
+              className="text-[11px]"
+              data-testid="api-citing-method"
+            >
+              {m.qualifiedName ? (
+                <span className="font-mono font-medium">{m.qualifiedName} </span>
+              ) : null}
+              <span className="font-mono text-muted-foreground">{location(m)}</span>
+              {m.confidence !== null ? (
+                <span className="text-muted-foreground"> · {Math.round(m.confidence * 100)}%</span>
+              ) : (
+                <span className="text-muted-foreground"> · from the edge&apos;s evidence</span>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </li>
+  );
+}
+
 export interface CrossProjectImpactSectionProps {
-  result: CrossProjectImpactResult;
+  /** Null when only API consumers are known (no shared-object result). */
+  result: CrossProjectImpactResult | null;
+  /**
+   * #2115 — the projects this project's change reaches through product edges of
+   * kind `api`. Listed with the shared objects; either alone fills the section.
+   */
+  apiConsumers?: ApiConsumerImpact[];
 }
 
 /**
  * Aggregated cross-project impact for a source project: each affected canonical
- * object and the sibling projects in the same workspace that also use it. Read
+ * object and the sibling projects in the same workspace that also use it, and
+ * (#2115) the projects that call its API where the change touched it. Read
  * only — no drop/alter affordance; nothing is executed.
  */
-export function CrossProjectImpactSection({ result }: CrossProjectImpactSectionProps) {
-  // No workspace, or no shared objects → nothing to show.
-  if (!result.workspaceId || result.affectedObjects.length === 0) {
+export function CrossProjectImpactSection({
+  result,
+  apiConsumers = [],
+}: CrossProjectImpactSectionProps) {
+  const affectedObjects = result?.workspaceId ? result.affectedObjects : [];
+  // No shared objects and no API consumer → nothing to show.
+  if (affectedObjects.length === 0 && apiConsumers.length === 0) {
     return (
       <section
         aria-label="Cross-project impact"
@@ -185,15 +264,27 @@ export function CrossProjectImpactSection({ result }: CrossProjectImpactSectionP
       className="space-y-2"
     >
       <p className="text-xs font-medium text-muted-foreground">Cross-project impact</p>
-      <p className="text-[11px] text-muted-foreground">
-        These objects are also used by other projects in this workspace. Review is informational —
-        METIS does not recommend any schema change; uncertain usage must be investigated manually.
-      </p>
-      <ul className="space-y-2">
-        {result.affectedObjects.map((obj) => (
-          <AffectedObjectRow key={canonicalName(obj.schemaName, obj.objectName)} object={obj} />
-        ))}
-      </ul>
+      {apiConsumers.length > 0 ? (
+        <ul className="space-y-2" aria-label="Projects that call this API">
+          {apiConsumers.map((c) => (
+            <ApiConsumerRow key={`${c.providerItemId}|${c.consumerProjectId}`} consumer={c} />
+          ))}
+        </ul>
+      ) : null}
+      {affectedObjects.length > 0 ? (
+        <>
+          <p className="text-[11px] text-muted-foreground">
+            These objects are also used by other projects in this workspace. Review is informational
+            — METIS does not recommend any schema change; uncertain usage must be investigated
+            manually.
+          </p>
+          <ul className="space-y-2">
+            {affectedObjects.map((obj) => (
+              <AffectedObjectRow key={canonicalName(obj.schemaName, obj.objectName)} object={obj} />
+            ))}
+          </ul>
+        </>
+      ) : null}
     </section>
   );
 }

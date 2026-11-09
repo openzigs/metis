@@ -43,7 +43,8 @@ describe("product page repository role (#1965)", () => {
       repos: [withRole!, { ...withoutRole!, role: null }],
     });
     await renderPage();
-    expect(screen.getByText("Role: backend-api")).toBeInTheDocument();
+    // #2114 — the stored role is shown by its label.
+    expect(screen.getByText("Role: Backend API")).toBeInTheDocument();
     expect(screen.getAllByText(/^Role:/)).toHaveLength(1);
   });
 });

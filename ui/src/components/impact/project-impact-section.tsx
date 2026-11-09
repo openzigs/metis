@@ -7,6 +7,9 @@
 "use client";
 
 import type {
+  ApiConsumerImpact,
+  ApiEdgeImpactResult,
+  ApiSurfaceUntouched,
   CrossProjectImpactResult,
   ImpactItemView,
   ImpactTableFeedbackVerdict,
@@ -44,6 +47,12 @@ export interface ProjectImpactSectionProps {
    */
   crossProjectLoading?: boolean;
   crossProjectError?: boolean;
+  /**
+   * #2115 — the run's impact through product edges of kind `api`, for every
+   * project of the run. This section takes the consumers of THIS project's
+   * change, and the items of THIS project a provider's change left untouched.
+   */
+  apiEdgeImpact?: ApiEdgeImpactResult | null;
   /** Issue #966 — the signed-in caller's user id, forwarded to each requirement group. */
   currentUserId?: string | null;
   /** Issue #966 — mark (or re-mark) a table relevant/not-relevant on the given item. */
@@ -63,6 +72,7 @@ export function ProjectImpactSection({
   crossProjectImpact,
   crossProjectLoading = false,
   crossProjectError = false,
+  apiEdgeImpact,
   currentUserId,
   onMarkFeedback,
   onDeleteFeedback,
@@ -70,6 +80,14 @@ export function ProjectImpactSection({
   const totalSymbols = items.reduce((sum, item) => sum + item.affectedSymbolCount, 0);
   const crossProjectUsage: Record<string, ProjectObjectUsage[]> =
     crossProjectUsageByObject(crossProjectImpact);
+  const apiConsumers = (apiEdgeImpact?.consumers ?? []).filter(
+    (c) => c.providerProjectId === projectId,
+  );
+  // Keyed by item id, which is unique across the run: only this section's
+  // items are looked up.
+  const untouchedByItem = new Map<string, ApiSurfaceUntouched>(
+    (apiEdgeImpact?.untouched ?? []).map((u) => [u.consumerItemId, u]),
+  );
 
   return (
     <section className="space-y-3" data-testid="project-impact-section" data-project-id={projectId}>
@@ -88,6 +106,7 @@ export function ProjectImpactSection({
         result={crossProjectImpact}
         loading={crossProjectLoading}
         error={crossProjectError}
+        apiConsumers={apiConsumers}
       />
 
       {items.length === 0 ? (
@@ -105,6 +124,7 @@ export function ProjectImpactSection({
               onMarkFeedback={onMarkFeedback}
               onDeleteFeedback={onDeleteFeedback}
               projectName={projectName ?? projectId}
+              apiSurfaceUntouched={untouchedByItem.get(item.id) ?? null}
             />
           ))}
         </div>
@@ -124,10 +144,12 @@ function CrossProjectImpactBlock({
   result,
   loading,
   error,
+  apiConsumers,
 }: {
   result: CrossProjectImpactResult | null | undefined;
   loading: boolean;
   error: boolean;
+  apiConsumers: ApiConsumerImpact[];
 }) {
   if (loading) {
     return (
@@ -137,14 +159,22 @@ function CrossProjectImpactBlock({
     );
   }
   if (error) {
-    return (
+    const unavailable = (
       <p className="text-[11px] text-muted-foreground" data-testid="cross-project-impact-error">
         Cross-project impact is unavailable right now.
       </p>
     );
+    if (apiConsumers.length === 0) return unavailable;
+    // #2115 — the API consumers come from the run, not the failed read.
+    return (
+      <>
+        <CrossProjectImpactSection result={null} apiConsumers={apiConsumers} />
+        {unavailable}
+      </>
+    );
   }
-  if (!result) return null;
-  return <CrossProjectImpactSection result={result} />;
+  if (!result && apiConsumers.length === 0) return null;
+  return <CrossProjectImpactSection result={result ?? null} apiConsumers={apiConsumers} />;
 }
 
 /**

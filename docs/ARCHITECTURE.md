@@ -5704,6 +5704,16 @@ routes on `/api/impact-analyses`):
 - **Cross-project impact** (`GET /projects/:projectId/cross-project-impact`) — a
   change in project A surfaces the affected canonical objects AND the OTHER projects
   in the SAME workspace that also use them, aggregated per project.
+- **API-edge impact** (#2115, `GET /:id/api-edge-impact`,
+  `server/src/lib/cross-project/api-edge-impact.ts`) — per impact run, the
+  product edges with `integrationKind = "api"` around the run's projects. A
+  provider whose direct matches include an API file (`isApiSurfaceFile`: a file
+  the edge records on its side, a spec, or a file under an API directory) names
+  each consumer (`consumers`, with citing methods from the consumer's run items
+  or the edge evidence). A provider matched off its API leaves the consumer's
+  items for that request `untouched`, rendered as a low-confidence banner. Read
+  path only over persisted items: authorized as `GET /:id`, edges limited by
+  `buildProductAccessWhere`, consumers outside the run by the project-access rule.
 
 Both use relational adjacency (a cycle-safe, depth-bounded recursive CTE valid on
 SQLite + Postgres — `buildLineageCteSql` / the pure `traverseLineage` core); the
