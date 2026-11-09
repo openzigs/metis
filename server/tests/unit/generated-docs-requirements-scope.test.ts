@@ -4,7 +4,7 @@
  * one that selects nothing in the project, and the run publishes a document
  * built from those requirements and their code links.
  */
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import request from "supertest";
 import express from "express";
 
@@ -160,7 +160,10 @@ const approved = {
   implementations: [],
 };
 
+// #1878 — the governing section has its own tests (docs-gen/governing-section.test.ts,
+// governing-brd-section-1877); with the feature on by default, keep it out of these.
 beforeEach(() => {
+  vi.stubEnv("GOVERNING_DOCS_ENABLED", "0");
   updateSpy.mockClear();
   versionCreateSpy.mockClear();
   docCreateSpy.mockClear();
@@ -168,6 +171,9 @@ beforeEach(() => {
   reqState.findMany.mockReset().mockResolvedValue([approved]);
   claimState.codeGraphHash = null;
   authState.user = adminUser;
+});
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 describe("#991 — POST /generate with a requirements scope", () => {

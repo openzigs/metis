@@ -312,7 +312,7 @@ beforeEach(() => {
   state.requirements = null;
   decided.ids = [];
   progress.governingDone = 0;
-  delete process.env.GOVERNING_DOCS_ENABLED;
+  process.env.GOVERNING_DOCS_ENABLED = "0";
   process.env.ANALYSIS_FUSED_CODE_RETRIEVAL = "false";
   __resetConfigSingleton();
 });

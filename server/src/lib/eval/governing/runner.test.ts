@@ -16,7 +16,10 @@ import {
   estimateCallUsd,
   setStatement,
   TokenLedgerMeter,
+  combineGoverningReports,
   compareWithA0,
+  provenanceStatement,
+  readingPaths,
   runGoverningEval,
   toJsonReport,
   toMarkdownReport,
@@ -827,5 +830,184 @@ describe("the short-answer pairs' own row (#2033)", () => {
     );
     // Nothing was replayed, so the cost carries no replay.
     expect(toMarkdownReport(none)).not.toContain("include the replay");
+  });
+});
+
+describe("the code a reading ran (#1878)", () => {
+  const AT = { commit: "0123456789abcdef0123456789abcdef01234567", dirty: false } as const;
+
+  it("records the commit, the tree state and each arm's code path, in the JSON and the markdown", async () => {
+    const arm = { ...fakeArm("A5", resemblingOnly), codePath: ["step one", "step two"] };
+    const report = await runGoverningEval(corpus, {
+      arms: [arm, fakeArm("A0", resemblingOnly)],
+      runs: 1,
+      budget: new EvalBudget(100),
+      provider: fakeProvider(),
+      provenance: AT,
+    });
+    expect(report.provenance).toEqual({ ...AT, combinedFrom: [] });
+    expect(report.arms.map((a) => a.codePath)).toEqual([["step one", "step two"], []]);
+    const parsed = JSON.parse(toJsonReport(report)) as typeof report;
+    expect(parsed.provenance.commit).toBe(AT.commit);
+    expect(parsed.arms[0]!.codePath).toEqual(["step one", "step two"]);
+    const md = toMarkdownReport(report);
+    expect(md).toContain(`Code: commit \`${AT.commit}\`, clean tree.`);
+    expect(md).toContain("Code path:\n\n1. step one\n2. step two");
+  });
+
+  it("says when the commit or the tree state is unknown, or the tree was dirty", async () => {
+    const report = await runGoverningEval(corpus, {
+      arms: [fakeArm("A0", resemblingOnly)],
+      runs: 1,
+      budget: new EvalBudget(100),
+      provider: fakeProvider(),
+    });
+    expect(report.provenance).toEqual({ commit: null, dirty: null, combinedFrom: [] });
+    expect(provenanceStatement(report.provenance)).toBe("**commit unknown**, tree state unknown.");
+    expect(provenanceStatement({ commit: "abc", dirty: true, combinedFrom: [] })).toBe(
+      "commit `abc`, **uncommitted changes**, so the commit does not name the code.",
+    );
+  });
+
+  describe("combineGoverningReports", () => {
+    /** Run 1 answers as the oracle, run 2 finds only the resembling pairs. */
+    const byRun = (items: number) => {
+      let calls = 0;
+      return (item: GoverningItem) =>
+        calls++ < items ? oracle(() => corpus)(item) : resemblingOnly(item);
+    };
+    const oneRun = async (
+      answer: (item: GoverningItem) => GoverningArmOutput,
+      provenance: { commit: string | null; dirty: boolean | null } = AT,
+      over: Partial<GoverningArm> = {},
+    ) =>
+      JSON.parse(
+        toJsonReport(
+          await runGoverningEval(corpus, {
+            arms: [{ ...fakeArm("A5", answer), codePath: ["p"], ...over }],
+            runs: 1,
+            budget: new EvalBudget(100),
+            provider: fakeProvider(),
+            provenance,
+          }),
+        ),
+      ) as unknown;
+
+    it("scores two one-run invocations exactly as one two-run invocation", async () => {
+      const items = corpus.manifest.items.length;
+      const direct = await runGoverningEval(corpus, {
+        arms: [{ ...fakeArm("A5", byRun(items)), codePath: ["p"] }],
+        runs: 2,
+        budget: new EvalBudget(100),
+        provider: fakeProvider(),
+        provenance: AT,
+      });
+      const combined = combineGoverningReports(corpus, [
+        { source: "one.json", report: await oneRun(oracle(() => corpus)) },
+        { source: "two.json", report: await oneRun(resemblingOnly) },
+      ]);
+      const [d, c] = [direct.arms[0]!, combined.arms[0]!];
+      expect(c.completedRuns).toBe(2);
+      expect(c.summary).toEqual(d.summary);
+      expect(c.thresholds).toEqual(d.thresholds);
+      expect(c.records.map((r) => r.run)).toEqual(d.records.map((r) => r.run));
+      expect(c.records.map((r) => r.pairs)).toEqual(d.records.map((r) => r.pairs));
+      expect(c.codePath).toEqual(["p"]);
+      expect(combined.runsRequested).toBe(2);
+      expect(combined.spentUsd).toBeCloseTo(direct.spentUsd, 10);
+      expect(combined.provenance).toEqual({
+        ...AT,
+        combinedFrom: ["one.json", "two.json"],
+      });
+      expect(toMarkdownReport(combined)).toContain(
+        "combined from 2 invocations (`one.json`, `two.json`)",
+      );
+    });
+
+    it("re-scores the short-answer pairs of an arm that replays answers", async () => {
+      const replay = (item: GoverningItem): GoverningArmOutput => ({
+        judgements: [],
+        ...(shortAnswerPairs(item).length > 0
+          ? {
+              answered: {
+                judgements: shortAnswerPairs(item).map((p) => ({
+                  ruleId: p.ruleId,
+                  verdict: p.answeredVerdict,
+                })),
+              },
+            }
+          : {}),
+      });
+      const saved = await oneRun(replay, AT, { replaysAnswers: true });
+      const combined = combineGoverningReports(corpus, [{ source: "a.json", report: saved }]);
+      expect(combined.arms[0]!.shortAnswers).toMatchObject({ runs: 1, pairs: 7 });
+      expect(combined.arms[0]!.shortAnswers!.verdictAccuracy.perRun).toEqual([1]);
+      const gr11 = combined.arms[0]!.records.find((r) => r.itemId === "GR-11")!;
+      expect(gr11.answeredPairs).toEqual([expect.objectContaining({ verdict: "compliant" })]);
+      // An arm on production's code path says whose questions its BA answered.
+      expect(toMarkdownReport(combined)).toContain(
+        "A5: production asks its own questions, and only about a rule applicability left `uncertain`.",
+      );
+    });
+
+    it("refuses invocations that do not make one reading", async () => {
+      const good = await oneRun(resemblingOnly);
+      const combine = (other: unknown) =>
+        combineGoverningReports(corpus, [
+          { source: "good.json", report: good },
+          { source: "bad.json", report: other },
+        ]);
+      expect(() => combineGoverningReports(corpus, [])).toThrow(/nothing to combine/);
+      const otherCommit = await oneRun(resemblingOnly, { ...AT, commit: "f".repeat(40) });
+      expect(() => combine(otherCommit)).toThrow(
+        /cannot combine bad\.json: it ran at f{40}, not 0123/,
+      );
+      const dirty = await oneRun(resemblingOnly, { ...AT, dirty: true });
+      expect(() => combine(dirty)).toThrow(/uncommitted changes/);
+      const unknownTree = await oneRun(resemblingOnly, { ...AT, dirty: null });
+      expect(() => combine(unknownTree)).toThrow(/uncommitted changes/);
+      const noCommit = await oneRun(resemblingOnly, { commit: null, dirty: false });
+      expect(() => combine(noCommit)).toThrow(/records no commit/);
+      const otherPath = await oneRun(resemblingOnly, AT, { codePath: ["q"] });
+      expect(() => combine(otherPath)).toThrow(/other arms, or the same arms configured otherwise/);
+      const stopped = JSON.parse(
+        toJsonReport(
+          await runGoverningEval(corpus, {
+            arms: [{ ...fakeArm("A5", resemblingOnly), codePath: ["p"] }],
+            runs: 1,
+            budget: new EvalBudget(0),
+            provider: fakeProvider(),
+            provenance: AT,
+          }),
+        ),
+      ) as unknown;
+      expect(() => combine(stopped)).toThrow(/stopped early/);
+      const heldOut = await loadGoverningCorpus("governing-02-clinic-records");
+      expect(() => combineGoverningReports(heldOut, [{ source: "g.json", report: good }])).toThrow(
+        /it read governing-01-sample-policy, not governing-02-clinic-records/,
+      );
+      const rehashed = structuredClone(good) as { corpus: { contentHash: string } };
+      rehashed.corpus.contentHash = "x";
+      expect(() => combine(rehashed)).toThrow(/another content hash/);
+    });
+  });
+
+  it("writes a reading beside the corpora, named baseline-<arm>-<model>, and refuses any other name", () => {
+    expect(readingPaths("/repo", "governing-02-clinic-records", "baseline-A5-sonnet")).toEqual({
+      json: "/repo/eval-data/readings/governing-02-clinic-records/baseline-A5-sonnet.json",
+      md: "/repo/eval-data/readings/governing-02-clinic-records/baseline-A5-sonnet.md",
+    });
+    for (const bad of [
+      "../x",
+      "baseline-A5",
+      "A5-sonnet",
+      "baseline-A5-../../x",
+      "baseline-A5-Sonnet",
+    ]) {
+      expect(() => readingPaths("/repo", "governing-02-clinic-records", bad)).toThrow(
+        /baseline-<arm>-<model>/,
+      );
+    }
+    expect(() => readingPaths("/repo", "../etc", "baseline-A5-sonnet")).toThrow(/not a corpus/);
   });
 });

@@ -494,6 +494,7 @@ describe("governingQuestionSourceFor — the flag gate", () => {
   });
 
   it("flag off: no source, and nothing is read", () => {
+    process.env.GOVERNING_DOCS_ENABLED = "0";
     const { provider } = stubModel({});
     expect(
       governingQuestionSourceFor({ analysisId: "a", projectId: "p", provider }),

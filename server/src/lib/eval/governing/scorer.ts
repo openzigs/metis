@@ -64,6 +64,19 @@ export interface AnsweredOutput {
    * asking: the finding left behind is the reading before the answer.
    */
   settleFailures?: string[];
+  /**
+   * #1878 — the questions the arm put to the BA, in production's own words,
+   * and the answer each was given (null: left unanswered). Reported, never
+   * scored: it shows what a short answer was an answer to.
+   */
+  questions?: AnsweredQuestion[];
+}
+
+/** #1878 — one question a dialog asked, the rules it links, and the BA's answer. */
+export interface AnsweredQuestion {
+  ruleIds: string[];
+  question: string;
+  answer: string | null;
 }
 
 /** What an arm returns for one requirement. */

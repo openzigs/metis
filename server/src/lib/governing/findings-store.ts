@@ -82,8 +82,11 @@ export interface ProduceGoverningFindingsInput {
  * longer citable (soft-deleted, or their document deleted). No finding is
  * produced for those, and their earlier rows are left as they were: "a deleted
  * rule leaves its findings", BA decision included.
+ *
+ * #1878 — exported so the eval's shipped arm (`eval/governing/arms.ts`, A5)
+ * builds a requirement's pairs and answers with this code, not a copy of it.
  */
-function pairsOf(
+export function findingPairsOf(
   requirement: GoverningAnalysisApplicability["requirements"][number],
   rules: ReadonlyMap<string, FindingRule>,
 ): { pairs: FindingPair[]; answers: FindingAnswer[]; ruleGone: Set<string> } {
@@ -267,7 +270,7 @@ async function produceNow(input: ProduceGoverningFindingsInput): Promise<Governi
     for (;;) {
       const r = requirements[cursor++];
       if (!r) return;
-      const { pairs, answers, ruleGone } = pairsOf(r, byId);
+      const { pairs, answers, ruleGone } = findingPairsOf(r, byId);
       try {
         const report = await evaluateRequirementFindings({
           requirement: { id: r.requirementId, text: r.text },

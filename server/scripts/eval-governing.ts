@@ -11,6 +11,15 @@
  *   pnpm --filter server eval:governing --arms A1,A2 --top-k 12
  *   pnpm --filter server eval:governing --arm A0 --concurrency 6   # requirements in parallel
  *   pnpm --filter server eval:governing --arms A0,A2 --corpus governing-02-clinic-records   # the held-out set
+ *   pnpm --filter server eval:governing --arm A5 --runs 1 --corpus governing-02-clinic-records   # the shipped path (#1878)
+ *   pnpm --filter server eval:governing --corpus governing-02-clinic-records \
+ *     --combine a.json,b.json,c.json --reading baseline-A5-sonnet   # three invocations, one reading
+ *
+ * #1878 — every report records the commit it ran at and whether the tree was
+ * clean, and each arm's production code path. `--combine` builds one reading
+ * from several `--runs 1` invocations (no model is called); `--reading <name>`
+ * also writes it to `eval-data/readings/<corpus>/<name>.{json,md}`, and is
+ * refused for a run that stopped early or ran with uncommitted changes.
  *
  * The default corpus is `governing-01`, the TUNING set (#2024): iterate prompts
  * there. `governing-02` is held out: read it only for a decision, and record
@@ -28,7 +37,8 @@
  * is measured, and every report names each arm's configuration and model.
  */
 /* eslint-disable no-console -- a CLI whose output is its report */
-import { mkdir, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -51,13 +61,70 @@ import {
 import {
   DEFAULT_GOVERNING_BUDGET_USD,
   DEFAULT_GOVERNING_RUNS,
+  combineGoverningReports,
+  readingPaths,
   runGoverningEval,
+  type GoverningProvenance,
+  type GoverningReport,
   toJsonReport,
   toMarkdownReport,
 } from "../src/lib/eval/governing/runner.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..", "..");
+
+/** The HEAD commit and whether the tree is clean; null where git cannot say. */
+function gitProvenance(): Pick<GoverningProvenance, "commit" | "dirty"> {
+  const git = (args: string[]): string | null => {
+    try {
+      return execFileSync("git", args, { cwd: REPO_ROOT, encoding: "utf8" }).trim();
+    } catch {
+      return null;
+    }
+  };
+  const commit = git(["rev-parse", "HEAD"]);
+  const status = git(["status", "--porcelain"]);
+  return { commit, dirty: status === null ? null : status.length > 0 };
+}
+
+/** Write `report` to eval-results, and to the corpus's readings when `reading` names one. */
+async function writeReports(
+  report: GoverningReport,
+  name: string,
+  stem: string,
+  reading: string | undefined,
+): Promise<string> {
+  const resultsDir = path.join(REPO_ROOT, "eval-results");
+  await mkdir(resultsDir, { recursive: true });
+  const json = toJsonReport(report, { generatedAt: new Date().toISOString() });
+  const md = toMarkdownReport(report);
+  const base = path.join(resultsDir, `governing-${name}-${stem}`);
+  await writeFile(`${base}.json`, json, "utf8");
+  await writeFile(`${base}.md`, md, "utf8");
+  if (reading) {
+    const files = readingPaths(REPO_ROOT, name, reading);
+    await mkdir(path.dirname(files.json), { recursive: true });
+    await writeFile(files.json, json, "utf8");
+    await writeFile(files.md, md, "utf8");
+    console.log(`reading → ${files.json} (+ .md)`);
+  }
+  return base;
+}
+
+/** One line per arm: the metrics the thresholds read, failures and cost. */
+function printSummary(report: GoverningReport): void {
+  const f = (v: number | null) => (v === null ? "n/a" : v.toFixed(2));
+  for (const a of report.arms) {
+    const m = a.summary.metrics;
+    console.log(
+      `${a.id} [${report.corpus.purpose}]: recall=${f(m.recall.mean)} nonResembling=${f(m.nonResemblingRecall.mean)} ` +
+        `precision=${f(m.precision.mean)} citation=${f(m.citationAccuracy.mean)} ` +
+        `verdict=${f(m.verdictAccuracy.mean)} hardErrors=${a.summary.hardErrors} ` +
+        `ask=${f(m.askRate.mean)} runs=${a.completedRuns} failures=${a.failures} ` +
+        `$/req=${a.cost.usdPerRequirement === null ? "unpriced" : a.cost.usdPerRequirement.toFixed(4)}`,
+    );
+  }
+}
 
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
@@ -83,6 +150,28 @@ async function main(): Promise<void> {
     throw new Error(`unknown corpus ${name}; known: ${GOVERNING_CORPORA.join(", ")}`);
   }
   const corpus = await loadGoverningCorpus(name as GoverningCorpusName);
+  const reading = flagValue(argv, "reading");
+  // Refuse a bad name before any model is called.
+  if (reading) readingPaths(REPO_ROOT, name, reading);
+  const combine = flagValue(argv, "combine");
+  if (combine) {
+    const sources = combine
+      .split(",")
+      .map((f) => f.trim())
+      .filter(Boolean);
+    const saved = await Promise.all(
+      sources.map(async (f) => ({
+        source: path.basename(f),
+        report: JSON.parse(await readFile(path.resolve(f), "utf8")) as unknown,
+      })),
+    );
+    const report = combineGoverningReports(corpus, saved);
+    const base = await writeReports(report, name, `combined-${Date.now()}`, reading);
+    if (argv.includes("--md")) console.log(toMarkdownReport(report));
+    printSummary(report);
+    console.log(`combined ${report.runsRequested} run(s) → ${base}.{json,md}`);
+    return;
+  }
   // #2024 — refuse before any model is called: a baseline written into a held-out set breaks it.
   if (writeBaseline) assertBaselineAllowed(corpus.manifest.purpose, name);
   // #2024 — say which set this reading comes from before any model is called.
@@ -103,41 +192,35 @@ async function main(): Promise<void> {
   console.log(`arms call ${live.key}/${live.model}`);
   const arms = buildGoverningArms(armIds, { model: `${live.key}/${live.model}`, topK });
 
+  const provenance = gitProvenance();
+  console.log(
+    `at ${provenance.commit ?? "an unknown commit"}${provenance.dirty ? " (uncommitted changes)" : ""}`,
+  );
+  if (reading && provenance.dirty !== false) {
+    throw new Error("--reading needs a clean tree, so the commit names the code that ran");
+  }
   const report = await runGoverningEval(corpus, {
     arms,
     runs,
     budget: new EvalBudget(budgetUsd),
     provider: live,
     concurrency,
+    provenance,
     log: (line) => console.log(line),
   });
 
   const runId = new Date().toISOString().replace(/[:.]/g, "-");
-  const resultsDir = path.join(REPO_ROOT, "eval-results");
-  await mkdir(resultsDir, { recursive: true });
-  const json = toJsonReport(report, { generatedAt: new Date().toISOString() });
-  const md = toMarkdownReport(report);
-  const base = path.join(resultsDir, `governing-${name}-${runId}`);
-  await writeFile(`${base}.json`, json, "utf8");
-  await writeFile(`${base}.md`, md, "utf8");
+  if (reading && report.stopped) throw new Error("the run stopped early; not writing a reading");
+  const base = await writeReports(report, name, runId, reading);
   if (writeBaseline) {
     if (report.stopped) throw new Error("the run stopped early; not writing a baseline");
+    const json = toJsonReport(report, { generatedAt: new Date().toISOString() });
     await writeFile(path.join(corpus.dir, "baseline-A0.json"), json, "utf8");
-    await writeFile(path.join(corpus.dir, "baseline-A0.md"), md, "utf8");
+    await writeFile(path.join(corpus.dir, "baseline-A0.md"), toMarkdownReport(report), "utf8");
     console.log(`baseline → ${path.join(corpus.dir, "baseline-A0.{json,md}")}`);
   }
-  if (argv.includes("--md")) console.log(md);
-  for (const a of report.arms) {
-    const m = a.summary.metrics;
-    const f = (v: number | null) => (v === null ? "n/a" : v.toFixed(2));
-    console.log(
-      `${a.id} [${report.corpus.purpose}]: recall=${f(m.recall.mean)} nonResembling=${f(m.nonResemblingRecall.mean)} ` +
-        `precision=${f(m.precision.mean)} citation=${f(m.citationAccuracy.mean)} ` +
-        `verdict=${f(m.verdictAccuracy.mean)} hardErrors=${a.summary.hardErrors} ` +
-        `ask=${f(m.askRate.mean)} runs=${a.completedRuns} failures=${a.failures} ` +
-        `$/req=${a.cost.usdPerRequirement === null ? "unpriced" : a.cost.usdPerRequirement.toFixed(4)}`,
-    );
-  }
+  if (argv.includes("--md")) console.log(toMarkdownReport(report));
+  printSummary(report);
   console.log(
     `→ ${base}.{json,md}${report.stopped ? ` (STOPPED: ${report.stopped.reason})` : ""} · ` +
       `spent $${report.spentUsd.toFixed(4)} of $${budgetUsd}`,

@@ -19,6 +19,8 @@ import {
   projectNameOf,
   readWebFindings,
   replayAnswers,
+  SHIPPED_CODE_PATH,
+  shippedApplicabilityRules,
   topKRules,
 } from "./arms.js";
 import { resolveFinalAnswerMaxOutputTokens } from "../../analysis/agent-runner.js";
@@ -79,12 +81,12 @@ describe("parseGoverningArmIds", () => {
   it("defaults to A0, upper-cases, deduplicates and orders", () => {
     expect(parseGoverningArmIds(undefined)).toEqual(["A0"]);
     expect(parseGoverningArmIds("a2, a0,A2")).toEqual(["A0", "A2"]);
-    expect(GOVERNING_ARM_IDS).toEqual(["A0", "A1", "A2", "A3", "A4"]);
+    expect(GOVERNING_ARM_IDS).toEqual(["A0", "A1", "A2", "A3", "A4", "A5"]);
   });
 
   it("refuses an unknown or empty arm list", () => {
     expect(() => parseGoverningArmIds("A0,A9")).toThrow(
-      /unknown arm\(s\) A9; known: A0, A1, A2, A3, A4/,
+      /unknown arm\(s\) A9; known: A0, A1, A2, A3, A4, A5/,
     );
     expect(() => parseGoverningArmIds(" , ")).toThrow(/needs an arm id/);
   });
@@ -847,5 +849,211 @@ describe("A4 — production findings (#1874)", () => {
         ],
       }).judgements,
     ).toEqual([{ ruleId: rule.id, verdict: "needs-ba-input", businessFact: "q?" }]);
+  });
+});
+
+describe("A5 — the shipped path (#1878)", () => {
+  const handle = (id: string) => `R${corpus.rules.findIndex((r) => r.id === id) + 1}`;
+  const item = () => itemById("GR-11");
+  const CORPUS_QUESTION =
+    "Will the January purge ever delete an email that is part of a dispute or lawsuit the legal team has asked us to preserve?";
+  const JUDGE_QUESTION = "Is any of it under a legal hold?";
+  const excerpt = () => corpus.ruleById.get("DR-06")!.clause.split(/\s+/).slice(0, 8).join(" ");
+  /** The top-k candidates of GR-11 other than `except`, each judged does-not-apply. */
+  const othersOut = (...except: string[]) => {
+    const i = item();
+    return topKRules(corpus, `${i.title}\n\n${i.text}`, 2)
+      .map((r) => r.id)
+      .filter((id) => !except.includes(id))
+      .map((id) => ({ rule: handle(id), verdict: "does-not-apply", reason: "No." }));
+  };
+  /** The screen flags DR-06; the judge decides it `verdict`. */
+  const applicability = (verdict: "uncertain" | "applies") => [
+    JSON.stringify({ rules: [handle("DR-06")] }),
+    JSON.stringify({
+      decisions: [
+        ...othersOut("DR-06"),
+        {
+          rule: handle("DR-06"),
+          verdict,
+          reason: "Depends on a hold.",
+          ...(verdict === "uncertain" ? { businessFact: JUDGE_QUESTION } : {}),
+        },
+      ],
+    }),
+  ];
+  const settledApplies = JSON.stringify({
+    decisions: [{ rule: "R1", verdict: "applies", reason: "Purges records." }],
+  });
+  const compliantReply = (satisfiedBy: string) =>
+    JSON.stringify({
+      findings: [
+        {
+          rule: "R1",
+          status: "compliant",
+          reasoning: "None is held.",
+          excerpt: excerpt(),
+          satisfiedBy,
+        },
+      ],
+    });
+  const build = () => buildGoverningArms(["A5"], { model: "m", topK: 2 })[0]!;
+
+  it("records its code path and replays answers; the judge sees each rule's source as production builds it", async () => {
+    const a5 = build();
+    expect(a5.codePath).toEqual(SHIPPED_CODE_PATH);
+    expect(a5.replaysAnswers).toBe(true);
+    expect(a5.configuration.questions).toMatch(/buildGoverningQuestions/);
+    const rules = shippedApplicabilityRules(corpus);
+    expect(rules[0]!.source).toBe(`${corpus.manifest.policy.title} v1 ${rules[0]!.id}`);
+    const gr01 = itemById("GR-01");
+    const top = topKRules(corpus, `${gr01.title}\n\n${gr01.text}`, 2).map((r) => r.id);
+    const clause = corpus.ruleById.get(top[0]!)!.clause.split(/\s+/).slice(0, 8).join(" ");
+    const { provider, calls } = stubProvider([
+      JSON.stringify({ rules: [] }),
+      JSON.stringify({
+        decisions: [
+          { rule: handle(top[0]!), verdict: "applies", reason: "Reads it." },
+          { rule: handle(top[1]!), verdict: "does-not-apply", reason: "No." },
+        ],
+      }),
+      JSON.stringify({
+        findings: [{ rule: "R1", status: "gap", reasoning: "Missing.", excerpt: clause }],
+      }),
+    ]);
+    const out = await a5.assess(gr01, corpus, { provider });
+    // Screen, judge, findings: GR-01 has no short answer, so no dialog runs.
+    expect(calls).toHaveLength(3);
+    expect(String(calls[1]!.messages[0]!.content)).toContain(
+      `[${top[0]}] (${corpus.manifest.policy.title} v1 ${top[0]})`,
+    );
+    expect(out.judgements).toEqual([expect.objectContaining({ ruleId: top[0], verdict: "gap" })]);
+    expect(out.answered).toBeUndefined();
+    expect(out.diagnostics).toMatchObject({ applicable: 1 });
+  });
+
+  it("asks production's question, settles the BA's answer, and produces the findings again", async () => {
+    const { provider, calls } = stubProvider([
+      ...applicability("uncertain"),
+      settledApplies,
+      compliantReply("any of it under a legal hold? No."),
+    ]);
+    const out = await build().assess(item(), corpus, { provider });
+    // Screen, judge, settle, refresh: no findings call before the answer (DR-06 is
+    // uncertain), and no question call (one fact, naming no rule).
+    expect(calls).toHaveLength(4);
+    const settle = String(calls[2]!.messages[0]!.content);
+    expect(settle).toContain(`A business analyst was asked: ${JUDGE_QUESTION}\nTheir answer: No.`);
+    expect(settle).not.toContain(CORPUS_QUESTION);
+    expect(String(calls[3]!.messages[0]!.content)).toContain(
+      `A business analyst was asked: ${JUDGE_QUESTION}\nTheir answer: No.`,
+    );
+    expect(out.judgements).toEqual([
+      expect.objectContaining({ ruleId: "DR-06", verdict: "needs-ba-input" }),
+    ]);
+    expect(out.answered).toEqual({
+      judgements: [expect.objectContaining({ ruleId: "DR-06", verdict: "compliant" })],
+      questions: [{ ruleIds: ["DR-06"], question: JUDGE_QUESTION, answer: "No." }],
+    });
+    expect(out.diagnostics).toMatchObject({
+      questionsAsked: 1,
+      questionsAnswered: 1,
+      answersSettled: 1,
+      answersSettleFailed: 0,
+      findingsRefreshed: 1,
+      answeredNoEvidenceDemoted: 0,
+    });
+  });
+
+  it("lets the evidence rule demote a refreshed compliant that quotes only the question", async () => {
+    const { provider } = stubProvider([
+      ...applicability("uncertain"),
+      settledApplies,
+      compliantReply("any of it under a legal hold"),
+    ]);
+    const out = await build().assess(item(), corpus, { provider });
+    expect(out.answered!.judgements.map((j) => j.verdict)).toEqual(["gap"]);
+    expect(out.diagnostics).toMatchObject({ answeredNoEvidenceDemoted: 1 });
+  });
+
+  it("never asks about a rule that already applied: its finding after the answer is the first reading's", async () => {
+    const { provider, calls } = stubProvider([
+      ...applicability("applies"),
+      JSON.stringify({
+        findings: [{ rule: "R1", status: "gap", reasoning: "No hold check.", excerpt: excerpt() }],
+      }),
+    ]);
+    const out = await build().assess(item(), corpus, { provider });
+    expect(calls).toHaveLength(3);
+    expect(out.answered).toEqual({
+      judgements: [expect.objectContaining({ ruleId: "DR-06", verdict: "gap" })],
+      questions: [],
+    });
+    expect(out.diagnostics).toMatchObject({ questionsAsked: 0, findingsRefreshed: 0 });
+  });
+
+  it("leaves a question about a rule with no recorded answer unanswered, and settles nothing", async () => {
+    const { provider, calls } = stubProvider([
+      JSON.stringify({ rules: [handle("DR-06"), handle("DR-01")] }),
+      JSON.stringify({
+        decisions: [
+          ...othersOut("DR-06", "DR-01"),
+          {
+            rule: handle("DR-01"),
+            verdict: "uncertain",
+            reason: "r",
+            businessFact: "Kept how long?",
+          },
+          { rule: handle("DR-06"), verdict: "does-not-apply", reason: "No." },
+        ],
+      }),
+    ]);
+    const out = await build().assess(item(), corpus, { provider });
+    expect(calls).toHaveLength(2);
+    expect(out.answered).toEqual({
+      judgements: [expect.objectContaining({ ruleId: "DR-01", verdict: "needs-ba-input" })],
+      questions: [{ ruleIds: ["DR-01"], question: "Kept how long?", answer: null }],
+    });
+    expect(out.diagnostics).toMatchObject({ questionsAsked: 1, questionsAnswered: 0 });
+  });
+
+  it("counts an answered rule the settle returned nothing for as a settle failure (#2041)", async () => {
+    const { provider, calls } = stubProvider([
+      ...applicability("uncertain"),
+      "not json",
+      "still not json",
+    ]);
+    const out = await build().assess(item(), corpus, { provider });
+    // Screen, judge, settle, its re-ask; no refresh, as nothing settled.
+    expect(calls).toHaveLength(4);
+    expect(out.answered).toEqual({
+      judgements: [expect.objectContaining({ ruleId: "DR-06", verdict: "needs-ba-input" })],
+      questions: [{ ruleIds: ["DR-06"], question: JUDGE_QUESTION, answer: "No." }],
+      settleFailures: ["DR-06"],
+    });
+    expect(out.diagnostics).toMatchObject({ answersSettleFailed: 1, findingsRefreshed: 0 });
+  });
+
+  it("keeps the reading before the answer when the refresh throws, and says why", async () => {
+    const replies = [...applicability("uncertain"), settledApplies];
+    let n = 0;
+    const provider = {
+      key: "anthropic",
+      model: "stub-model",
+      offline: false,
+      async chat(): Promise<ChatResponse> {
+        n++;
+        if (n === 4) throw new Error("provider down\n  at the refresh");
+        return {
+          content: replies[n - 1]!,
+          model: "stub-model",
+          provider: "anthropic",
+          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        };
+      },
+    } as unknown as AIProvider;
+    const out = await build().assess(item(), corpus, { provider });
+    expect(out.judgements.map((j) => j.ruleId)).toEqual(["DR-06"]);
+    expect(out.answered).toEqual({ judgements: [], error: "provider down at the refresh" });
   });
 });

@@ -2417,9 +2417,10 @@ When a document is uploaded to a project:
 
 A company's own policies and control frameworks are uploaded **once per workspace**, not per
 project, and later checked against requirements. #1868 adds the store, #1869 the upload
-routes and the workspace index (below), no LLM yet — behind `GOVERNING_DOCS_ENABLED` (`1`, `true`, `yes` or `on`, case-insensitive, enables — the spellings `ConfigService.getBool` accepts, #1962, through the one shared `isTruthyConfigValue` in `server/src/lib/config/truthy.ts`, #1977; default off; read at call time by
+routes and the workspace index (below), no LLM yet — behind `GOVERNING_DOCS_ENABLED` (`1`, `true`, `yes` or `on`, case-insensitive, enables — the spellings `ConfigService.getBool` accepts, #1962, through the one shared `isTruthyConfigValue` in `server/src/lib/config/truthy.ts`, #1977; **on by default since #1878**: it reads exactly as `ConfigService.getBool(key, true)` reads a boolean, so unset or empty is on, and `0`, `false`, `no`, `off`, whitespace only or any other spelling turns it off; read at call time by
 `isGoverningDocsEnabled()` in `server/src/lib/governing/flag.ts`, which every later issue
-gates on).
+gates on). The default flipped because #1878's held-out reading of the shipped path (eval
+arm A5, below) passed every threshold #1867 fixed before any arm ran.
 
 | Table (Prisma model) | Holds | Scope / delete |
 |---|---|---|
@@ -2631,7 +2632,8 @@ before (`governing-applicability-pipeline-1872.test.ts`, a snapshot) and stores 
 index), reading `applies` as `gap` and `uncertain` as `needs-ba-input`. #1997's reading of
 the tuned judging prompt, two runs each: Sonnet (`claude-sonnet-5-5`) recall 0.92,
 non-resembling recall 0.93, precision 0.57 (0.30 on #1995's prompt); DeepSeek precision 0.57.
-Precision is still short of #1867's 0.60 bar, so the flag stays off (#1878).
+That reading was on the set the prompt had been tuned on. #1878's decision reading is on the
+held-out set, through the whole shipped path (arm A5, below), and passed every bar.
 
 #### Business questions for uncertain rules (#1873)
 
@@ -2791,6 +2793,34 @@ as "still asking". The settle fails when its call throws or its reply cannot be 
 every applying rule and passes only the answers that a settle stored. The replay passes
 every short answer and judges only the answered rules. A4's cost and time now include the
 replay, and the report says so.
+
+Eval arm **A5** (#1878, `pnpm eval:governing --arm A5`) is **the shipped path**. It calls
+production's own functions in the order an analysis and its dialog call them, and names them
+in the report (`SHIPPED_CODE_PATH`, printed as "Code path"):
+
+1. `decideApplicability`, with the judge shown each rule's `source` line as
+   `governingApplicabilityForProject` builds it.
+2. `toStoredApplicability`.
+3. Production's findings pass: `findingPairsOf`, exported from `findings-store.ts` for this, then
+   `evaluateRequirementFindings`.
+4. On a requirement with short-answer pairs, one round of the dialog:
+   - `openGoverningPairs` and `buildGoverningQuestions` produce production's own questions;
+   - the BA answers each question that links a rule with a `baAnswer`, and the rest go
+     unanswered;
+   - `rejudgeAnswered` and `applySettlements` settle the answers;
+   - when a settlement applied, the findings are produced again from the settled answers.
+
+Only the top-k search stands in: lexical, as in A1 to A4, for the workspace's vector index.
+Nothing is written to a database. Each record keeps the questions asked and the answer each got
+(`answered.questions`).
+
+The difference from A4 shows in the short-answer row. Production asks the BA only about a rule
+that applicability left `uncertain`. A pair that applicability decided `applies`, and whose finding
+is `needs-ba-input`, has a business question on the finding (the analysis view prints it), but the
+dialog never asks it. The link then falls back to the Questions tab, and the BA's answer never
+reaches that finding. On the held-out set this left the row at 2 or 3 of 7 per run. A4's
+replay, which hands every answer to the findings call, scored 6 or 7 of 7 on the tuning set (#2050).
+The gap is tracked in #2059.
 
 #### Governing rules in the requirements BRD (#1877)
 
@@ -4580,6 +4610,32 @@ outside the hash, so recording a reading there does not change it. `eval:governi
 the Markdown, and the CLI's first line). **Never iterate a prompt against `governing-02`.**
 Read it only for a decision, and record each reading in its `ANNOTATION.md`
 (`CONTRIBUTING.md` > "What a pull request needs").
+
+**Readings and their code (#1878).** Every report records `provenance`: the commit it ran at
+(`git rev-parse HEAD`), whether the tree was clean, and each arm's `codePath`. Three runs do not
+finish inside one ten-minute command (#2038). So a decision reading is three `--runs 1`
+invocations, joined by `--combine a.json,b.json,c.json`, which calls no model.
+`combineGoverningReports` renumbers the runs and scores them again against the corpus. It refuses
+invocations that differ in set, content hash, commit, arms or configuration, any that stopped
+early, and any run with uncommitted changes. `--reading baseline-<arm>-<model>` writes the result
+to `eval-data/readings/<corpus>/`. That is beside the corpora, never inside a held-out set, which
+holds ground truth only.
+
+**#1878's decision reading** is `eval-data/readings/governing-02-clinic-records/baseline-A5-sonnet.md`:
+A5 on `claude-sonnet-5-5`, three runs at commit `e613df1ef`, $2.40 in all.
+
+| Bar | Required | Mean | Per run |
+|---|---|---|---|
+| Recall | ≥ 0.90 | 0.94 | 0.96 / 0.94 / 0.91 |
+| Non-resembling recall | ≥ 0.85 | 0.92 | 0.92 / 0.92 / 0.92 |
+| Precision | ≥ 0.60 | 0.60 (0.603) | 0.62 / 0.58 / 0.61 |
+| Citation accuracy | ≥ 0.95 | 1.00 | 1.00 ×3 |
+| No-evidence → compliant errors | 0 per run | 0 | 0 ×3 |
+
+Every bar passed, and no `compliant` contradicted a label in the short-answer row either, so the
+flag is now on by default. Precision passed by 0.003 on the mean, one run was under the bar,
+and the 95% interval is [0.50, 0.73]. The short-answer row is 2/7, 3/7 and 3/7, for the routing
+reason given under arm A5. The labels are AI-written and no person has reviewed them.
 
 #### Online eval — scoring sampled live production runs (#1321, epic #1316)
 

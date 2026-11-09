@@ -29,9 +29,9 @@ import type { VaultService } from "../vault/vault-service.js";
 /** A registered `bool` key, read from the env when no tunable row is cached. */
 const BOOL_KEY = "SCHEDULER_ENABLED";
 
-function getBool(raw: string): boolean {
+function getBool(raw: string, defaultValue = false): boolean {
   const svc = new ConfigService({ vault: {} as VaultService, env: { [BOOL_KEY]: raw } });
-  return svc.getBool(BOOL_KEY);
+  return svc.getBool(BOOL_KEY, defaultValue);
 }
 
 function flag(raw: string): boolean {
@@ -80,9 +80,12 @@ describe("isTruthyConfigValue (#1977)", () => {
     },
   );
 
-  it.each(SPELLINGS)("getBool and the governing flag agree on %j", (raw) => {
-    expect(flag(raw)).toBe(getBool(raw));
-    expect(flag(raw)).toBe(isTruthyConfigValue(raw));
+  // #1878 — the flag defaults on, so its reference is `getBool(key, true)`, which
+  // reads an empty value as unset (the default) and every other value through
+  // the shared test.
+  it.each(SPELLINGS)("getBool(key, true) and the governing flag agree on %j", (raw) => {
+    expect(flag(raw)).toBe(getBool(raw, true));
+    expect(flag(raw)).toBe(raw === "" ? true : isTruthyConfigValue(raw));
   });
 
   it("both readers follow a change to the shared test, so neither keeps its own copy", () => {

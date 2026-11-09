@@ -190,7 +190,7 @@ describe("reindexGoverningRevisions", () => {
     });
     expect(index.activeEmbeddingIdentity).not.toHaveBeenCalled();
 
-    delete process.env.GOVERNING_DOCS_ENABLED;
+    process.env.GOVERNING_DOCS_ENABLED = "0";
     listReindexTargets.mockClear();
     expect(await reindexGoverningRevisions({ index: asIndex })).toMatchObject({ skipped: true });
     expect(listReindexTargets).not.toHaveBeenCalled();
@@ -239,7 +239,7 @@ describe("governingCoverage (#1947)", () => {
       workspaces: [],
     });
     expect(index.activeEmbeddingIdentity).not.toHaveBeenCalled();
-    delete process.env.GOVERNING_DOCS_ENABLED;
+    process.env.GOVERNING_DOCS_ENABLED = "0";
     listReindexTargets.mockClear();
     expect(await governingCoverage({ index: asIndex })).toMatchObject({ skipped: true });
     expect(listReindexTargets).not.toHaveBeenCalled();

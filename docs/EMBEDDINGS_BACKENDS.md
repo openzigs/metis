@@ -929,7 +929,7 @@ snapshot nor the shadow, so after the swap the sweep reads the workspace's revis
 again and embeds any with no row on the active model. A revision that fails to embed
 is left `pending` and listed on stderr (with the project failures), and the command
 exits 1; re-run it. The same pass embeds any revision whose upload-time embed failed.
-It runs only with `GOVERNING_DOCS_ENABLED=1`, and `--project <id>` skips it.
+It runs unless `GOVERNING_DOCS_ENABLED` turns the feature off (it is on by default, #1878), and `--project <id>` skips it.
 
 `status` counts the governing tables too (#1947): a `Governing documents:` line gives
 the live revisions searchable on the active model and lists each workspace with a

@@ -630,7 +630,7 @@ describe("the BRD without governing findings is unchanged — #1877", () => {
     });
 
   it("with the flag off reads no finding and renders the document as before", async () => {
-    delete process.env.GOVERNING_DOCS_ENABLED;
+    process.env.GOVERNING_DOCS_ENABLED = "0";
     withFindings(THREE);
     const out = await synthesizeRequirementsDocument("p1", { analysisId: "run-1" }, "BRD");
     expect(db.findingFindMany).not.toHaveBeenCalled();

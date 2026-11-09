@@ -391,6 +391,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     });
 
     it("with the flag off the BRD has no governing section", async () => {
+      process.env.GOVERNING_DOCS_ENABLED = "0";
       const markdown = await generateBrd();
       expect(markdown).toContain("### R1. Save a card");
       expect(markdown).not.toContain(GOVERNING_SECTION_HEADING);

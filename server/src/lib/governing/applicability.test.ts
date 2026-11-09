@@ -859,6 +859,7 @@ describe("governingApplicabilityForProject — the analysis hook", () => {
   });
 
   it("flag off: null, and nothing is read", async () => {
+    process.env.GOVERNING_DOCS_ENABLED = "0";
     const { provider } = stubModel({});
     expect(await governingApplicabilityForProject({ projectId: "p", provider })).toBeNull();
     expect(db.project.findFirst).not.toHaveBeenCalled();
@@ -917,6 +918,7 @@ describe("#1997 — governingApplicabilityHookFor: rules unavailable is not no r
   });
 
   it("flag off: null, as before, with nothing read", async () => {
+    process.env.GOVERNING_DOCS_ENABLED = "0";
     const { provider } = stubModel({});
     expect(await governingApplicabilityHookFor({ projectId: "p", provider })).toBeNull();
     expect(db.project.findFirst).not.toHaveBeenCalled();

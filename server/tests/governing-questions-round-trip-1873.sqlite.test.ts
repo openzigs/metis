@@ -379,7 +379,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
 
     it("flag off: the route is 404 and the round asks no governing question", async () => {
       const id = await seedAnalysis();
-      delete process.env.GOVERNING_DOCS_ENABLED;
+      process.env.GOVERNING_DOCS_ENABLED = "0";
       const get = await request(app())
         .get(`${base(PROJECT, id)}/governing-applicability`)
         .set("Authorization", `Bearer ${token(MEMBER, WS)}`);

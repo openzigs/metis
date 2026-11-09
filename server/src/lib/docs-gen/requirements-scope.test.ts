@@ -2,7 +2,7 @@
  * #991 — the requirements docs-generation scope: which requirements a filter
  * selects (always within the project), and the document built from them.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { findMany, count, analysisFindFirst, reviewFindFirst, itemFindMany, versionFindMany } =
   vi.hoisted(() => ({
@@ -55,13 +55,19 @@ function req(overrides: Partial<ScopedRequirement> = {}): ScopedRequirement {
   };
 }
 
+// #1878 — the governing section has its own tests (docs-gen/governing-section.test.ts,
+// governing-brd-section-1877); with the feature on by default, keep it out of these.
 beforeEach(() => {
+  vi.stubEnv("GOVERNING_DOCS_ENABLED", "0");
   findMany.mockReset();
   count.mockReset();
   analysisFindFirst.mockReset().mockResolvedValue(null);
   reviewFindFirst.mockReset().mockResolvedValue(null);
   itemFindMany.mockReset().mockResolvedValue([]);
   versionFindMany.mockReset().mockResolvedValue([]);
+});
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 describe("requirementsScopeFilterSchema", () => {

@@ -897,7 +897,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     });
 
     it("#1918 — the sweep touches nothing with the flag off", async () => {
-      delete process.env.GOVERNING_DOCS_ENABLED;
+      process.env.GOVERNING_DOCS_ENABLED = "0";
       const index = freshIndex();
       const probe = vi.spyOn(index, "activeEmbeddingIdentity");
       const swept = await reindexGoverningRevisions({ index });
@@ -935,7 +935,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     });
 
     it("with the flag off every route is 404 and search returns nothing", async () => {
-      delete process.env.GOVERNING_DOCS_ENABLED;
+      process.env.GOVERNING_DOCS_ENABLED = "0";
       const calls = [
         request(app()).get(base(ID.wsB)).set("x-test-user", "adminB"),
         request(app())
