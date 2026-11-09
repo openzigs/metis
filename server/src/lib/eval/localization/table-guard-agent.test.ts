@@ -14,14 +14,21 @@ import {
   recordedVectorsFile,
   resolveCorpusDir,
 } from "../impact-recall/fixture.js";
-import { runImpactRecallEval, runImpactRecallEvalRepeated } from "../impact-recall/runner.js";
+import type { AffectedTableInput } from "../../impact-analysis/schema-impact.js";
+import {
+  observeChange,
+  requirementToChange,
+  runImpactRecallEval,
+  runImpactRecallEvalRepeated,
+} from "../impact-recall/runner.js";
 import { normalizeTable, scoreSet } from "../impact-recall/scorer.js";
 import { loadRecordedVectors } from "../recorded-vectors.js";
 import { EmbedCache, buildCorpusSearch } from "./search.js";
 import { pairedTInterval } from "./stats.js";
 import { TABLE_PRECISION_TOLERANCE, tableGuardGate } from "./runner.js";
-import { MAPPER_SEEDING, fixtureSearchRows } from "./table-guard.js";
+import { MAPPER_SEEDING, fixtureFileSymbols, fixtureSearchRows } from "./table-guard.js";
 import {
+  citationTraceReport,
   createAgentSeedGuard,
   fileGuardStore,
   guardFingerprint,
@@ -38,7 +45,12 @@ import {
   type GuardStaleness,
   type GuardStore,
 } from "./table-guard-agent.js";
-import { TABLE_GUARD_CORPUS, TABLE_GUARD_REPO } from "./table-guard-source.js";
+import {
+  TABLE_GUARD_CORPUS,
+  TABLE_GUARD_REPO,
+  emptyTranslation,
+  translateCitations,
+} from "./table-guard-source.js";
 import type { StalenessOp } from "./staleness.js";
 
 const dir = resolveCorpusDir(TABLE_GUARD_CORPUS);
@@ -492,6 +504,37 @@ describe("the guard's record file (#1823)", () => {
     ],
   ])("#1848 — refuses per-requirement tables that are %s", (_, pieces) => {
     expect(() => parseGuardRecord(a7Line(pieces))).toThrow(/malformed pieces/);
+  });
+
+  const trace = {
+    filePath: "src/main/java/org/mybatis/jpetstore/mapper/AccountMapper.java",
+    cited: "symbol",
+    symbol: "x::AccountMapper::updateSignon",
+    outcome: "file",
+    seeds: "persistence/AccountMapper.java",
+    confidence: 0.9,
+  };
+  const withCitations = (citations: unknown) => ({
+    "REQ-01": [{ requirementId: "p", title: "t", tables: [], citations }],
+  });
+
+  it("#1909 — reads a change's citation traces", () => {
+    const pieces = withCitations([trace, { ...trace, cited: "file", symbol: null, seeds: null }]);
+    expect(parseGuardRecord(a7Line(pieces))).toMatchObject({ pieces });
+  });
+
+  it.each([
+    ["not a list", "x"],
+    ["a null trace", [null]],
+    ["one with no file", [{ ...trace, filePath: undefined }]],
+    ["one with an unknown citation shape", [{ ...trace, cited: "line" }]],
+    ["one with a non-string symbol", [{ ...trace, symbol: 3 }]],
+    ["one with an unknown outcome", [{ ...trace, outcome: "widened" }]],
+    ["one with no outcome", [{ ...trace, outcome: undefined }]],
+    ["one with a non-string seed", [{ ...trace, seeds: 3 }]],
+    ["one with no numeric confidence", [{ ...trace, confidence: "high" }]],
+  ])("#1909 — refuses citation traces: %s", (_, citations) => {
+    expect(() => parseGuardRecord(a7Line(withCitations(citations)))).toThrow(/malformed pieces/);
   });
 
   it("#1890 — refuses per-requirement tables that miss a requirement the run scored", () => {
@@ -1470,5 +1513,255 @@ describe("A7's staleness readings on the table guard (#1834)", () => {
     );
     expect(out).toContain("A7S − A7");
     expect(out).toContain("A7SD − A7S");
+  });
+});
+
+describe("#1909 — A7's citations, traced", () => {
+  it("records each change's citations on A7's pieces, not A7O's, and logs where A7 loses", async () => {
+    const store = memoryStore();
+    const lines: string[] = [];
+    const { deps } = fakes();
+    const a7 = await createAgentSeedGuard({ ...deps, store, log: (l) => lines.push(l) }).A7();
+    if (!a7.measured) throw new Error("A7 should be measured");
+    const runOf = (reading: string) => {
+      const r = store.records.find((x) => x.kind === "run" && x.reading === reading && x.run === 1);
+      if (r?.kind !== "run") throw new Error(`no ${reading} run`);
+      return r;
+    };
+    expect(runOf("A7").pieces![CITED.id]![0]!.citations).toEqual([
+      {
+        filePath: "src/main/resources/org/mybatis/jpetstore/mapper/OrderMapper.xml",
+        cited: "symbol",
+        symbol: "org.mybatis.jpetstore.mapper.OrderMapper.insertOrder",
+        outcome: "symbol",
+        seeds: "org.jpetstore.persistence.OrderMapper.insertOrder.statement",
+        confidence: 0.95,
+      },
+    ]);
+    const other = fixture.requirements.find((r) => r.id !== CITED.id)!;
+    expect(runOf("A7").pieces![other.id]![0]!.citations).toEqual([]);
+    expect(
+      Object.values(runOf("A7O").pieces!)
+        .flat()
+        .some((p) => "citations" in p),
+    ).toBe(false);
+    expect(a7.configuration).toContain(
+      "0 as their file (0 of them a cited symbol the fixture does not model)",
+    );
+    const head = lines.findIndex((l) => l.startsWith(`table guard: ${CITED.id} `));
+    expect(lines[head]).toMatch(
+      /: A7 0\.\d{3} against A7O \d\.\d{3} on the first persisted requirement$/,
+    );
+    expect(lines[head + 1]).toMatch(/^ {2}run 1 adds .*orders.*: /);
+    expect(lines[head + 1]).toContain(
+      "org.jpetstore.persistence.OrderMapper.insertOrder.statement → the symbol",
+    );
+    // Only the requirement the citation hurts is reported.
+    expect(lines.filter((l) => /^table guard: REQ-\d+ "/.test(l))).toHaveLength(1);
+  });
+
+  it("counts the cited symbols the fixture does not model among those read as their file", async () => {
+    const { deps } = fakes();
+    const profile = "r-update-profile";
+    const a7 = await createAgentSeedGuard({
+      ...deps,
+      store: memoryStore(),
+      loadCitations: async (id) => [
+        ...(await deps.loadCitations(id)),
+        {
+          codeSymbolId: profile,
+          filePath: "src/main/java/org/mybatis/jpetstore/mapper/AccountMapper.java",
+          startLine: 10,
+          endLine: 12,
+          confidence: 0.5,
+          source: "analysis-grounding",
+        },
+        {
+          codeSymbolId: null,
+          filePath: "src/main/java/org/mybatis/jpetstore/domain/Account.java",
+          startLine: null,
+          endLine: null,
+          confidence: 0.5,
+          source: "analysis-grounding",
+        },
+      ],
+      qualifiedNames: async (ids) =>
+        new Map([
+          ...(await deps.qualifiedNames(ids)),
+          ...ids
+            .filter((id) => id === profile)
+            .map(
+              (id) =>
+                [
+                  id,
+                  "src/main/java/org/mybatis/jpetstore/mapper/AccountMapper.java::AccountMapper::updateProfile",
+                ] as const,
+            ),
+        ]),
+    }).A7();
+    if (!a7.measured) throw new Error("A7 should be measured");
+    // 11 requirements × 2 runs, each with one widened symbol and one file citation.
+    expect(a7.configuration).toContain(
+      "2 by symbol, 0 by name, 44 as their file (22 of them a cited symbol the fixture does not model)",
+    );
+  });
+
+  describe("citationTraceReport", () => {
+    const q = fixture.requirements.find((r) => r.text === "Add a status flag to account")!;
+    const run = (
+      reading: "A7" | "A7O",
+      n: number,
+      tables: string[],
+      citations?: unknown[],
+    ): GuardRunRecord => ({
+      kind: "run",
+      reading,
+      run: n,
+      model: MODEL,
+      fingerprint: FINGERPRINT,
+      tablePrecision: 0,
+      tables: Object.fromEntries(fixture.requirements.map((r) => [r.id, []])),
+      label: "l",
+      seeding: "s",
+      changes: 1,
+      untracked: 0,
+      pieces: Object.fromEntries(
+        fixture.requirements.map((r) => [
+          r.id,
+          [
+            {
+              requirementId: `pr-${r.id}`,
+              title: r.text,
+              tables: r.id === q.id ? tables : [...r.expectedTables],
+              ...(citations === undefined ? {} : { citations }),
+            },
+          ],
+        ]),
+      ) as GuardRunRecord["pieces"],
+    });
+    const widened = {
+      filePath: "src/main/java/org/mybatis/jpetstore/mapper/AccountMapper.java",
+      cited: "symbol",
+      symbol:
+        "src/main/java/org/mybatis/jpetstore/mapper/AccountMapper.java::AccountMapper::updateSignon",
+      outcome: "file",
+      seeds: "persistence/AccountMapper.java",
+      confidence: 0.9,
+    };
+    const fileCited = {
+      ...widened,
+      filePath: "src/main/java/org/mybatis/jpetstore/domain/Account.java",
+      cited: "file",
+      symbol: null,
+      seeds: "domain/Account.java",
+    };
+
+    it("names each loss's extra tables and the citations behind it", () => {
+      const out = citationTraceReport(
+        [
+          run("A7", 1, ["account", "profile", "signon"], [widened, fileCited]),
+          run("A7", 2, ["account"], []),
+        ],
+        [run("A7O", 1, ["account", "signon"]), run("A7O", 2, ["account"])],
+        fixture,
+      );
+      expect(out).toEqual([
+        `table guard: ${q.id} "Add a status flag to account": A7 0.667 against A7O 0.750 on the first persisted requirement`,
+        "  run 1 adds profile: persistence/AccountMapper.java::AccountMapper::updateSignon → its whole file " +
+          "persistence/AccountMapper.java (the fixture does not model it); domain/Account.java (the file) → the file",
+        "  run 2: no citations",
+      ]);
+    });
+
+    it("says when a run was recorded before #1909, and reads nothing recorded before #1848", () => {
+      const a7 = [run("A7", 1, ["account", "profile"])];
+      const a7o = [run("A7O", 1, ["account"])];
+      expect(citationTraceReport(a7, a7o, fixture)[1]).toBe(
+        "  run 1 adds profile: no citation trace (recorded before #1909)",
+      );
+      const { pieces: _p, ...unpieced } = a7o[0]!;
+      expect(citationTraceReport(a7, [unpieced], fixture)).toEqual([]);
+    });
+
+    it("reports nothing where A7 holds or gains", () => {
+      expect(
+        citationTraceReport(
+          [run("A7", 1, ["account"], [widened])],
+          [run("A7O", 1, ["account", "profile"])],
+          fixture,
+        ),
+      ).toEqual([]);
+      expect(
+        citationTraceReport([run("A7", 1, ["account"], [])], [run("A7O", 1, ["account"])], fixture),
+      ).toEqual([]);
+    });
+  });
+
+  /**
+   * What a citation's shape does to the tables the #936 filter is asked
+   * about, through production's impact path on the fixture: a citation read
+   * as its file seeds every statement of the mapper, so the sibling
+   * statements' tables cross DIRECTLY; a symbol citation leaves them to the
+   * #922 DAO-sibling expansion, flagged and at a lower confidence.
+   */
+  describe("the citation's shape decides how a mapper's sibling tables cross", () => {
+    const J = "src/main/java/org/mybatis/jpetstore/mapper/AccountMapper.java";
+    const candidatesFor = async (codeSymbolId: string | null, qualifiedName?: string) => {
+      const req = fixture.requirements.find(
+        (r) => r.text === "Update product details in the catalog",
+      )!;
+      const names = new Map(qualifiedName ? [[codeSymbolId!, qualifiedName]] : []);
+      const link: StoredLinkRow = {
+        codeSymbolId,
+        filePath: J,
+        startLine: null,
+        endLine: null,
+        confidence: 0.9,
+        source: "analysis-grounding",
+      };
+      let seen: AffectedTableInput[] = [];
+      await observeChange(
+        fixture,
+        { ...requirementToChange(req), requirementId: "pr-1" },
+        fixture.searcher,
+        {
+          tableRelevanceFilter: async (_text, tables) => {
+            seen = tables;
+            return { primary: tables, secondary: [], decisions: [], applied: true };
+          },
+          splitSeeding: {
+            searcher: search.searcher,
+            loadSymbols: search.loadSymbols,
+            agentSeeds: {
+              loadCitations: async () =>
+                translateCitations([link], names, fixture, emptyTranslation()),
+              loadFileSymbols: fixtureFileSymbols(fixture),
+            },
+          },
+        },
+      );
+      const of = (t: string) => seen.find((x) => x.tableName === t);
+      return { profile: of("profile"), signon: of("signon"), account: of("account") };
+    };
+
+    it("crosses profile and signon directly for the file, and for a symbol the fixture does not model", async () => {
+      const file = await candidatesFor(null);
+      const widenedSymbol = await candidatesFor("r-1", `${J}::AccountMapper::updateSignon`);
+      for (const t of [file.profile, file.signon]) {
+        expect(t).toBeDefined();
+        expect(t!.siblingDerived).toBeFalsy();
+      }
+      expect(widenedSymbol).toEqual(file);
+    });
+
+    it("leaves them sibling-derived, at a lower confidence, for a symbol citation of updateAccount", async () => {
+      const file = await candidatesFor(null);
+      const symbol = await candidatesFor("r-1", `${J}::AccountMapper::updateAccount`);
+      for (const t of ["profile", "signon"] as const) {
+        expect(symbol[t]).toMatchObject({ siblingDerived: true });
+        expect(symbol[t]!.confidence).toBeLessThan(file[t]!.confidence);
+      }
+      expect(symbol.account!.siblingDerived).toBeFalsy();
+    });
   });
 });
