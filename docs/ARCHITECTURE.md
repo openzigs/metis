@@ -2680,7 +2680,20 @@ the pre-#1873 code).
   answered: true })`). The note says that an answer saying the rule's safeguard is in place still
   means the rule applies, and that the findings call then decides compliance. Only an answer
   saying the rule's subject is absent means `does-not-apply`. The first judging's prompt is
-  unchanged.
+  unchanged. **#2078 decision: when the answer contradicts the requirement's own text, the text
+  wins.** The note says that an answer denying what the requirement plainly says (GR-06 sends
+  the buyer list to SurveyCo; the answer says nothing leaves our systems) means `applies`, with a
+  reason that names the contradiction, and that `does-not-apply` needs the subject absent from
+  the text as well as the answer. The answer is not trusted over the text because the two
+  errors cost differently. A wrong `applies` leaves a finding in the panel: the findings call
+  reads the BA's answer with it, and the BA can reject it with a note. A wrong
+  `does-not-apply` removes the finding without a trace, the vanishing finding #2067 set out to
+  prevent. The contradiction is recorded in the settled decision's `reason`, which the
+  applicability API returns. The note sits before the reply-format line, which stays last
+  (`SETTLE_SYSTEM`). Probe on governing-01's VM-01 (recorded in its `ANNOTATION.md`): the
+  contradiction went from `does-not-apply` in 3 of 3 (Sonnet) and 4 of 4 (DeepSeek) to
+  `applies` in all 7. An answer that the subject is absent stayed `does-not-apply` (7 of 7), and
+  a safeguard in place stayed `applies` (7 of 7).
 - **Findings that ask (#2059).** A pair that `applies` is never `uncertain`, but its finding can
   be `needs-ba-input` with a `businessQuestion`. While the stored applicability has an `applies`
   pair, `open` also reads the analysis's `needs-ba-input` rows of

@@ -256,7 +256,7 @@ export function buildApplicabilityScreenPrompt(
 // when those rules apply. Without them the judge ruled out encryption in transit
 // for a new courier connection, and testing and undo for a release-process
 // requirement, in every run, while applying change rules to a button recolour.
-const JUDGE_SYSTEM = [
+const JUDGE_LINES = [
   "You decide which of a company's governing rules (internal policy obligations and controls) apply to one business requirement.",
   "The rules listed were gathered broadly so that none is missed: expect most of them not to apply.",
   "A rule applies only when an independent reader would agree that what the requirement asks for falls under it. A stretch reading is not enough: a rule that could be attached to almost any new feature (least privilege on any new screen, say) does not apply unless the requirement is itself about that subject.",
@@ -271,7 +271,8 @@ const JUDGE_SYSTEM = [
   "Give a one-sentence reason for each decision.",
   FENCE_NOTE,
   'Respond ONLY with one JSON object: {"decisions":[{"rule":"R1","verdict":"applies|does-not-apply|uncertain","reason":"<one sentence>","businessFact":"<the question, for uncertain only>"}]}, naming each rule by the handle at the start of its entry.',
-].join("\n");
+];
+const JUDGE_SYSTEM = JUDGE_LINES.join("\n");
 
 const REASK_NOTE =
   "Your previous answer left these rules without a decision, or marked them uncertain without the business question. Decide each one again; an uncertain decision must carry its question.";
@@ -281,12 +282,21 @@ const REASK_NOTE =
 // Compliant. Whether a rule applies and whether it is met are two questions; a
 // BA's answer decides the first only by saying what the requirement involves.
 // Sent only when re-judging an answered question, so the first judging is unchanged.
+// #2078 — and an answer that denies what the requirement's own text says (GR-06
+// sends the buyer list to SurveyCo; the answer says nothing leaves our systems)
+// does not rule the rule out: the text wins, the rule applies, and the reason
+// names the contradiction. A wrong `applies` leaves a finding the BA can see and
+// reject with a note; a wrong `does-not-apply` removes it without a trace.
 export const ANSWER_NOTE = [
   "The requirement ends with a business analyst's answer to a question about it. Read the answer as a fact about what the requirement involves, and still decide only whether each rule applies:",
   "- if the answer says the requirement involves what the rule governs, the rule applies, also when the answer says the rule's safeguard is already in place (the supplier passed its review, the change can be rolled back, the connection is encrypted). Whether the safeguard is enough is checked in a later step, not here;",
-  "- decide does-not-apply only when the answer says what the rule governs is absent from the requirement (no card numbers are kept, no outside company receives the data).",
+  "- decide does-not-apply only when the answer says what the rule governs is absent from the requirement (no card numbers are kept, no outside company receives the data) and the requirement's own text does not say it is there;",
+  "- when the answer denies what the requirement's own text plainly says (the requirement sends the data to a named outside company, and the answer says nothing leaves our systems), the requirement's text wins: decide applies, and say in the reason that the answer contradicts the requirement.",
   "A safeguard being in place is never a reason to decide does-not-apply.",
 ].join("\n");
+
+/** #2078 — the settle judge's system prompt: {@link ANSWER_NOTE} before the reply format, which stays last. */
+const SETTLE_SYSTEM = [...JUDGE_LINES.slice(0, -1), ANSWER_NOTE, JUDGE_LINES.at(-1)!].join("\n");
 
 /**
  * The judging prompt: one requirement against the summaries and clauses of
@@ -298,7 +308,7 @@ export function buildApplicabilityJudgePrompt(
   entries: readonly Pick<ApplicabilityEntry, "handle" | "rule">[],
   opts: { reask?: boolean; answered?: boolean } = {},
 ): Prompt {
-  const system = opts.answered ? `${JUDGE_SYSTEM}\n${ANSWER_NOTE}` : JUDGE_SYSTEM;
+  const system = opts.answered ? SETTLE_SYSTEM : JUDGE_SYSTEM;
   return {
     systemMessage: opts.reask ? `${system}\n${REASK_NOTE}` : system,
     userMessage: [
