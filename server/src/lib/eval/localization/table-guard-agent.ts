@@ -76,8 +76,11 @@ import { pairedTInterval, type PairedTInterval } from "./stats.js";
 import { MAPPER_SEEDING, fixtureFileSymbols } from "./table-guard.js";
 import {
   emptyTranslation,
+  isWidenedCitation,
   toFixturePath,
+  toFixtureQualifiedName,
   translateCitations,
+  type CitationTrace,
   type CitationTranslation,
 } from "./table-guard-source.js";
 import { emptyTally, searchWithoutFiles, tallyFreshness, type StalenessOp } from "./staleness.js";
@@ -179,6 +182,11 @@ export interface GuardPiece {
   requirementId: string;
   title: string;
   tables: string[];
+  /**
+   * #1909 — A7: the change's stored citations and how each reached the
+   * fixture, in stored order. Absent on A7O and on records written before #1909.
+   */
+  citations?: CitationTrace[];
 }
 
 export type GuardRecord = GuardAnalysisRecord | GuardRunRecord;
@@ -204,8 +212,26 @@ function validPieces(v: unknown): boolean {
           typeof p.requirementId === "string" &&
           typeof p.title === "string" &&
           Array.isArray(p.tables) &&
-          p.tables.every((t) => typeof t === "string"),
+          p.tables.every((t) => typeof t === "string") &&
+          (p.citations === undefined ||
+            (Array.isArray(p.citations) && p.citations.every(validTrace))),
       ),
+  );
+}
+
+const OUTCOMES: ReadonlySet<string> = new Set(["symbol", "member", "file", "dropped"]);
+
+/** #1909 — one recorded {@link CitationTrace}. */
+function validTrace(t: Partial<CitationTrace> | null): boolean {
+  return (
+    !!t &&
+    typeof t.filePath === "string" &&
+    (t.cited === "symbol" || t.cited === "file") &&
+    (t.symbol === null || typeof t.symbol === "string") &&
+    typeof t.outcome === "string" &&
+    OUTCOMES.has(t.outcome) &&
+    (t.seeds === null || typeof t.seeds === "string") &&
+    typeof t.confidence === "number"
   );
 }
 
@@ -479,6 +505,76 @@ export function guardPairedDifferences(
   return out;
 }
 
+/** #1909 — one citation trace in words, on the fixture's names where it has them. */
+function traceWords(t: CitationTrace): string {
+  const cited =
+    t.cited === "file"
+      ? `${toFixturePath(t.filePath) ?? t.filePath} (the file)`
+      : t.symbol === null
+        ? `${toFixturePath(t.filePath) ?? t.filePath} (a symbol the graph cannot name)`
+        : (toFixtureQualifiedName(t.symbol) ?? t.symbol);
+  const read =
+    t.outcome === "dropped"
+      ? "dropped"
+      : isWidenedCitation(t)
+        ? `its whole file ${t.seeds} (the fixture does not model it)`
+        : t.outcome === "member"
+          ? `${t.seeds} (by name)`
+          : t.outcome === "file"
+            ? "the file"
+            : "the symbol";
+  return `${cited} → ${read}`;
+}
+
+/**
+ * #1909 — where A7's first persisted requirement loses table precision to
+ * A7O's: for each fixture requirement whose mean over the runs is lower on
+ * A7, each run's extra tables (those A7O's same run did not surface, outside
+ * the label) and the citations behind that requirement, each with how it
+ * reached the fixture. Empty when a run cannot be read on its first
+ * requirement (recorded before #1848); a run recorded before #1909 says so.
+ */
+export function citationTraceReport(
+  a7: readonly GuardRunRecord[],
+  a7o: readonly GuardRunRecord[],
+  fixture: Pick<ImpactRecallFixture, "requirements">,
+): string[] {
+  if (guardScoringOf([...a7, ...a7o]) !== "headline") return [];
+  const out: string[] = [];
+  const first = (r: GuardRunRecord, id: string) => guardRunTables(r, id, "headline") ?? [];
+  for (const q of fixture.requirements) {
+    const precisionOn = (records: readonly GuardRunRecord[]) =>
+      mean(
+        records.map((r) => scoreSet(first(r, q.id), q.expectedTables, normalizeTable).precision),
+      );
+    const own = precisionOn(a7);
+    const control = precisionOn(a7o);
+    if (!(own < control)) continue;
+    out.push(
+      `table guard: ${q.id} ${JSON.stringify(q.text)}: A7 ${own.toFixed(3)} against A7O ${control.toFixed(3)} on the first persisted requirement`,
+    );
+    const labelled = new Set(q.expectedTables.map(normalizeTable));
+    for (const r of a7) {
+      const same = a7o.find((x) => x.run === r.run);
+      const seen = new Set((same ? first(same, q.id) : []).map(normalizeTable));
+      const extra = first(r, q.id).filter(
+        (t) => !labelled.has(normalizeTable(t)) && !seen.has(normalizeTable(t)),
+      );
+      const piece = r.pieces?.[q.id]?.[0];
+      const traces = piece?.citations;
+      out.push(
+        `  run ${r.run}${extra.length > 0 ? ` adds ${extra.join(", ")}` : ""}: ` +
+          (traces === undefined
+            ? "no citation trace (recorded before #1909)"
+            : traces.length === 0
+              ? "no citations"
+              : traces.map(traceWords).join("; ")),
+      );
+    }
+  }
+  return out;
+}
+
 /** A difference in words: `+0.020 [−0.018, +0.059]`. */
 function signed(x: number): string {
   const v = x.toFixed(3);
@@ -691,6 +787,8 @@ export function createAgentSeedGuard(deps: AgentSeedGuardDeps): AgentSeedGuard {
     trackedBy: ReadonlyMap<string, ChangedRequirement[]>,
   ): Promise<GuardRunRecord> {
     const counts = emptyTranslation();
+    // #1909 — each persisted requirement's citations, as the stage read them.
+    const traced = new Map<string, CitationTrace[]>();
     // #1848 — the agent-citation stage keeps the search's seeds when a lookup
     // throws, so a failed read (an eval database missing a later migration)
     // would quietly make A7 read as A7O. Remembered here, and the run refused.
@@ -706,7 +804,9 @@ export function createAgentSeedGuard(deps: AgentSeedGuardDeps): AgentSeedGuard {
                   const links = await deps.loadCitations(requirementId);
                   const ids = links.flatMap((l) => (l.codeSymbolId ? [l.codeSymbolId] : []));
                   const names = await deps.qualifiedNames(ids);
-                  return translateCitations(links, names, fixture, counts);
+                  const traces: CitationTrace[] = [];
+                  traced.set(requirementId, traces);
+                  return translateCitations(links, names, fixture, counts, traces);
                 } catch (err) {
                   lookupFailed ??= err;
                   throw err;
@@ -727,7 +827,10 @@ export function createAgentSeedGuard(deps: AgentSeedGuardDeps): AgentSeedGuard {
       if (tracked.length === 0) untracked++;
       changes += tracked.length;
       const { score, pieces: own } = await scoreAgainstFixture(requirement, tracked, options);
-      pieces[requirement.id] = own;
+      pieces[requirement.id] =
+        reading === "A7"
+          ? own.map((p) => ({ ...p, citations: traced.get(p.requirementId) ?? [] }))
+          : own;
       if (lookupFailed !== null) {
         const why = lookupFailed instanceof Error ? lookupFailed.message : String(lookupFailed);
         throw new Error(
@@ -988,9 +1091,18 @@ export function createAgentSeedGuard(deps: AgentSeedGuardDeps): AgentSeedGuard {
       const cited = own[0]!.citations
         ? (() => {
             const c = (k: keyof CitationTranslation) => sum((r) => r.citations?.[k] ?? 0);
-            return `; citations: ${c("symbol")} by symbol, ${c("member")} by name, ${c("file")} as their file, ${c("dropped")} dropped (not in the fixture)`;
+            // #1909 — of those read as their file, the cited symbols the fixture does not model.
+            const traces = own.flatMap((r) =>
+              Object.values(r.pieces ?? {}).flatMap((ps) => ps.flatMap((p) => p.citations ?? [])),
+            );
+            const widened =
+              traces.length > 0
+                ? ` (${traces.filter(isWidenedCitation).length} of them a cited symbol the fixture does not model)`
+                : "";
+            return `; citations: ${c("symbol")} by symbol, ${c("member")} by name, ${c("file")} as their file${widened}, ${c("dropped")} dropped (not in the fixture)`;
           })()
         : "";
+      if (control) for (const line of citationTraceReport(own, control, fixture)) deps.log?.(line);
       // #1848 — A7 and its control are read the same way: the headline only
       // when both recorded their per-requirement tables.
       const scoring = guardScoringOf(control ? [...own, ...control] : own);

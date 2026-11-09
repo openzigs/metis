@@ -10,11 +10,13 @@ import {
   TABLE_GUARD_CORPUS,
   TABLE_GUARD_REPO,
   emptyTranslation,
+  isWidenedCitation,
   requiredRepoFiles,
   toFixturePath,
   toFixtureQualifiedName,
   toRepoPath,
   translateCitations,
+  type CitationTrace,
 } from "./table-guard-source.js";
 
 const fixture = await loadImpactRecallFixture(resolveCorpusDir(TABLE_GUARD_CORPUS));
@@ -235,6 +237,76 @@ describe("translateCitations (#1823)", () => {
       filePath: "persistence/AccountMapper.java",
       codeSymbolId: null,
     });
+  });
+
+  it("#1909 — traces each citation: what it named, how it was read and what it seeds", () => {
+    const traces: CitationTrace[] = [];
+    translateCitations(
+      [
+        link(`${JAVA}/mapper/AccountMapper.java`, "r-update", 0.95),
+        link(`${JAVA}/mapper/LineItemMapper.java`, "r-lineitem"),
+        link(`${JAVA}/mapper/AccountMapper.java`, "r-profile", 0.5),
+        link(`${JAVA}/domain/Order.java`, null),
+        link(`${JAVA}/mapper/AccountMapper.java`, "unknown-id"),
+        link("src/main/webapp/WEB-INF/jsp/cart/Cart.jsp", null),
+      ],
+      names,
+      fixture,
+      emptyTranslation(),
+      traces,
+    );
+    expect(traces).toEqual([
+      {
+        filePath: `${JAVA}/mapper/AccountMapper.java`,
+        cited: "symbol",
+        symbol: `${JAVA}/mapper/AccountMapper.java::AccountMapper::updateAccount`,
+        outcome: "symbol",
+        seeds: "persistence/AccountMapper.java::AccountMapper::updateAccount",
+        confidence: 0.95,
+      },
+      {
+        filePath: `${JAVA}/mapper/LineItemMapper.java`,
+        cited: "symbol",
+        symbol: `${JAVA}/mapper/LineItemMapper.java::LineItemMapper::insertLineItem`,
+        outcome: "member",
+        seeds: "persistence/OrderMapper.java::OrderMapper::insertLineItem",
+        confidence: 0.9,
+      },
+      // The repository's updateProfile, which the fixture does not model: widened to its file.
+      {
+        filePath: `${JAVA}/mapper/AccountMapper.java`,
+        cited: "symbol",
+        symbol: `${JAVA}/mapper/AccountMapper.java::AccountMapper::updateProfile`,
+        outcome: "file",
+        seeds: "persistence/AccountMapper.java",
+        confidence: 0.5,
+      },
+      {
+        filePath: `${JAVA}/domain/Order.java`,
+        cited: "file",
+        symbol: null,
+        outcome: "file",
+        seeds: "domain/Order.java",
+        confidence: 0.9,
+      },
+      {
+        filePath: `${JAVA}/mapper/AccountMapper.java`,
+        cited: "symbol",
+        symbol: null,
+        outcome: "file",
+        seeds: "persistence/AccountMapper.java",
+        confidence: 0.9,
+      },
+      {
+        filePath: "src/main/webapp/WEB-INF/jsp/cart/Cart.jsp",
+        cited: "file",
+        symbol: null,
+        outcome: "dropped",
+        seeds: null,
+        confidence: 0.9,
+      },
+    ]);
+    expect(traces.map(isWidenedCitation)).toEqual([false, false, true, false, true, false]);
   });
 
   it("adds to the counts it is given", () => {
