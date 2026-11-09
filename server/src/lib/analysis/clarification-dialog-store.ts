@@ -22,17 +22,7 @@ const log = createChildLogger("clarification-dialog-store");
  * been checkpointed (or the stored blob is unparseable).
  */
 export async function readDialogState(analysisId: string): Promise<ClarificationState | undefined> {
-  const row = await prisma.clarificationDialogState.findUnique({
-    where: { analysisId },
-    select: { state: true },
-  });
-  if (!row) return undefined;
-  try {
-    return JSON.parse(row.state) as ClarificationState;
-  } catch {
-    log.warn("Corrupt clarification dialog state — ignoring", { analysisId });
-    return undefined;
-  }
+  return (await readDialogStateRevision(analysisId))?.state;
 }
 
 /**
@@ -49,6 +39,55 @@ export async function writeDialogState(
     create: { analysisId, state: serialized },
     update: { state: serialized },
   });
+}
+
+/**
+ * #2101 — the stored state as read, with the exact serialized row it came
+ * from: the revision a later {@link replaceDialogState} compares against.
+ */
+export interface DialogStateRevision {
+  state: ClarificationState;
+  revision: string;
+}
+
+/**
+ * #2101 — read the state together with its revision, for a caller that will
+ * write it back with {@link replaceDialogState}. `undefined` as
+ * {@link readDialogState} is.
+ */
+export async function readDialogStateRevision(
+  analysisId: string,
+): Promise<DialogStateRevision | undefined> {
+  const row = await prisma.clarificationDialogState.findUnique({
+    where: { analysisId },
+    select: { state: true },
+  });
+  if (!row) return undefined;
+  try {
+    return { state: JSON.parse(row.state) as ClarificationState, revision: row.state };
+  } catch {
+    log.warn("Corrupt clarification dialog state — ignoring", { analysisId });
+    return undefined;
+  }
+}
+
+/**
+ * #2101 — compare-and-set: write `state` only while the row still holds
+ * `revision`, in one conditional UPDATE, so two writers that read the same
+ * revision cannot both succeed. Returns the new revision, or `null` when the
+ * row changed (or is gone) since it was read, and nothing was written.
+ */
+export async function replaceDialogState(
+  analysisId: string,
+  revision: string,
+  state: ClarificationState,
+): Promise<string | null> {
+  const serialized = JSON.stringify(state);
+  const { count } = await prisma.clarificationDialogState.updateMany({
+    where: { analysisId, state: revision },
+    data: { state: serialized },
+  });
+  return count === 1 ? serialized : null;
 }
 
 /** Delete the durable dialog state for an analysis (no-op when absent). */

@@ -589,6 +589,44 @@ describe("#2085 — no submit while the next round generates; a failed round sta
       /has not been prepared yet/,
     );
   });
+
+  // #2101 — another tab answered round 1 and round 2 was generated meanwhile.
+  it("a submit refused because its round closed moves the panel to the current round", async () => {
+    const { ApiError } = await import("@/lib/api-client");
+    getClarification
+      .mockResolvedValueOnce({ state: dialogState() })
+      .mockResolvedValue({ state: withRound2 });
+    submitClarifyAnswers.mockRejectedValue(
+      new ApiError(409, "round no longer open", "CLARIFY_ROUND_NOT_OPEN"),
+    );
+
+    renderResults(metadata(1));
+    fireEvent.change(await screen.findByPlaceholderText("Your answer..."), {
+      target: { value: "Only for EU users." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Submit Answers" }));
+
+    expect(await screen.findByText("Which EU countries are in scope?")).toBeInTheDocument();
+    expect(getClarification).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole("button", { name: "Submit Answers" })).toBeInTheDocument();
+    expect(clarify).not.toHaveBeenCalled();
+  });
+
+  it("any other refused submit leaves the round on screen, unread again", async () => {
+    getClarification.mockResolvedValue({ state: dialogState() });
+    submitClarifyAnswers.mockRejectedValue(new Error("network down"));
+
+    renderResults(metadata(1));
+    fireEvent.change(await screen.findByPlaceholderText("Your answer..."), {
+      target: { value: "Only for EU users." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Submit Answers" }));
+
+    await waitFor(() => expect(submitClarifyAnswers).toHaveBeenCalledTimes(1));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(getClarification).toHaveBeenCalledTimes(1);
+    expect(screen.getByPlaceholderText("Your answer...")).toHaveValue("Only for EU users.");
+  });
 });
 
 describe("#1135 — the impact note refreshes without a reload", () => {
