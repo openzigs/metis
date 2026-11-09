@@ -18,7 +18,12 @@ dest="${RUNNER_TEMP:?RUNNER_TEMP must be set}/trivy"
 tarball="trivy_${TRIVY_VERSION}_Linux-${TRIVY_ARCH:-64bit}.tar.gz"
 
 mkdir -p "${dest}"
-curl -fsSL --retry 3 -o "${dest}/${tarball}" \
+# #2082 — GitHub's release download answers 504 in bursts. `--retry 3` with curl's
+# default backoff gave up after ~7 s and failed `api` after 20 minutes of image
+# builds; seven attempts 10 s apart ride out a burst of about a minute. A failure
+# that outlasts them still fails the step, and the checksum below still gates
+# whatever was downloaded.
+curl -fsSL --retry 6 --retry-delay 10 --retry-all-errors -o "${dest}/${tarball}" \
   "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/${tarball}"
 echo "${TRIVY_SHA256}  ${dest}/${tarball}" | sha256sum -c -
 tar -xzf "${dest}/${tarball}" -C "${dest}" trivy
