@@ -288,6 +288,54 @@ describe("ProjectImpactSection — the run's API-edge impact", () => {
     expect(screen.getByTestId("cross-project-impact-error")).toBeInTheDocument();
   });
 
+  it("says the API-edge part is unavailable instead of claiming no project is affected (#2120)", () => {
+    render(
+      <ProjectImpactSection
+        projectId={V2}
+        items={[item("i-v2", V2)]}
+        crossProjectImpact={noShared}
+        apiEdgeImpactError
+      />,
+    );
+    expect(screen.queryByTestId("cross-project-impact-empty")).toBeNull();
+    expect(screen.getByTestId("api-edge-impact-error")).toHaveTextContent(
+      "Impact on projects that call this project's API is unavailable right now.",
+    );
+    expect(screen.queryByTestId("cross-project-impact-section")).toBeNull();
+  });
+
+  it("keeps the shared objects it has when only the API-edge read failed (#2120)", () => {
+    const shared: CrossProjectImpactResult = {
+      ...noShared,
+      affectedObjects: [
+        {
+          objectType: "table",
+          schemaName: null,
+          objectName: "entries",
+          alsoUsedByProjects: [
+            {
+              projectId: CLIENT,
+              projectName: "miniflux/python-client",
+              usageClass: "used",
+              evidenceCount: 2,
+            },
+          ],
+        },
+      ],
+    };
+    render(
+      <ProjectImpactSection
+        projectId={V2}
+        items={[]}
+        crossProjectImpact={shared}
+        apiEdgeImpactError
+      />,
+    );
+    expect(screen.getByTestId("cross-project-affected-object")).toBeInTheDocument();
+    expect(screen.getByTestId("api-edge-impact-error")).toBeInTheDocument();
+    expect(screen.queryByTestId("cross-project-impact-empty")).toBeNull();
+  });
+
   it("renders nothing for the block with no result and no consumer", () => {
     render(<ProjectImpactSection projectId={CLIENT} items={[]} apiEdgeImpact={null} />);
     expect(screen.queryByTestId("cross-project-impact-section")).toBeNull();

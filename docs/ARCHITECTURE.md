@@ -5696,7 +5696,16 @@ routes on `/api/impact-analyses`):
   the edge records on its side, a spec, or a file under an API directory) names
   each consumer (`consumers`, with citing methods from the consumer's run items
   or the edge evidence). A provider matched off its API leaves the consumer's
-  items for that request `untouched`, rendered as a low-confidence banner. Read
+  items for that request `untouched`, rendered as a low-confidence banner.
+  `untouched` needs evidence (#2120): a provider item with no direct match
+  flags nothing (unknown, not untouched), and an edge with no direction or one
+  read both ways (`reads` / `writes`) names consumers but flags nothing, since
+  either side may be the provider. API directories match per word of a segment
+  (`RestControllers`, `public_api`) and include `routes`, `controllers` and
+  `handlers`: a miscounted API file names a dismissable consumer, a missed one a
+  false "untouched". The text-extracted items of a run share one request key
+  (`source-text`), so one aspect touching the API suppresses untouched flags for
+  all of them; a deliberate trade-off toward naming impact. Read
   path only over persisted items: authorized as `GET /:id`, edges limited by
   `buildProductAccessWhere`, consumers outside the run by the project-access rule.
 

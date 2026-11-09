@@ -504,6 +504,17 @@ describe("ImpactAnalysisDetailPage", () => {
     expect(consumer.querySelector('[data-testid="api-consumer-row"]')).toBeNull();
   });
 
+  // #2120 — a failed API-edge read is said, never read as "no other project".
+  it("passes a failed API-edge read to the project sections (#2120)", () => {
+    mockUse.mockReturnValue(state({ data: detail }));
+    vi.mocked(useApiEdgeImpact).mockReturnValue({
+      data: undefined,
+      isError: true,
+    } as unknown as ReturnType<typeof useApiEdgeImpact>);
+    render(<ImpactAnalysisDetailPage />, { wrapper: makeWrapper() });
+    expect(screen.getByTestId("api-edge-impact-error")).toBeInTheDocument();
+  });
+
   it("shows empty state when completed with no items", () => {
     mockUse.mockReturnValue(state({ data: { ...detail, items: [], totalImpactedSymbols: 0 } }));
     render(<ImpactAnalysisDetailPage />, { wrapper: makeWrapper() });
