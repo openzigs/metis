@@ -6,11 +6,13 @@
  * passed every threshold #1867's manifest fixed before any arm ran, with no
  * no-evidence → compliant error. Unset, the feature is on.
  *
- * Set, `GOVERNING_DOCS_ENABLED` reads as `ConfigService.getBool(key, true)`
- * reads a boolean setting — the same function, `isTruthyConfigValue`
- * (`lib/config/truthy.ts`, #1977): `1`, `true`, `yes` or `on`,
- * case-insensitive, surrounding whitespace ignored, keep it on; anything else
- * — `0`, `false`, `no`, `off`, an empty value — turns it off. It once took only
+ * `GOVERNING_DOCS_ENABLED` reads exactly as `ConfigService.getBool(key, true)`
+ * reads a boolean setting: unset or empty (`GOVERNING_DOCS_ENABLED=`) is the
+ * default, on, as `ConfigService.get` maps `""` to unset. Any other value goes
+ * through the same function, `isTruthyConfigValue` (`lib/config/truthy.ts`,
+ * #1977): `1`, `true`, `yes` or `on`, case-insensitive, surrounding whitespace
+ * ignored, keep it on; anything else (`0`, `false`, `no`, `off`, whitespace
+ * only, an unrecognised word) turns it off, so a mistyped value fails closed. It once took only
  * `"1"`, and `true` — the natural first guess — silently 404'd every governing
  * route (#1962).
  *
@@ -28,5 +30,7 @@ export const GOVERNING_DOCS_ENABLED_DEFAULT = true;
 
 export function isGoverningDocsEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   const raw = env[GOVERNING_DOCS_ENABLED_ENV];
-  return raw === undefined ? GOVERNING_DOCS_ENABLED_DEFAULT : isTruthyConfigValue(raw);
+  return raw === undefined || raw === ""
+    ? GOVERNING_DOCS_ENABLED_DEFAULT
+    : isTruthyConfigValue(raw);
 }

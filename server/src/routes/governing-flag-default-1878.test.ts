@@ -137,7 +137,7 @@ describe('#1878 — GOVERNING_DOCS_ENABLED is on by default; "0" still turns eve
     }
   });
 
-  it.each(["0", "false", "off", ""])(
+  it.each(["0", "false", "off", "  "])(
     "set to %j, every route is a 404 before authentication runs",
     async (value) => {
       vi.stubEnv("GOVERNING_DOCS_ENABLED", value);

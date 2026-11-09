@@ -36,7 +36,11 @@ describe("isGoverningDocsEnabled (#1868, #1962, #1878)", () => {
     },
   );
 
-  it.each(["0", " 0 ", "false", "no", "off", "", "  ", "enabled", "2", "truee", "1 0"])(
+  it("is on when the variable is set but empty, as ConfigService.getBool(key, true) reads it", () => {
+    expect(isGoverningDocsEnabled({ GOVERNING_DOCS_ENABLED: "" })).toBe(true);
+  });
+
+  it.each(["0", " 0 ", "false", "no", "off", "  ", "enabled", "2", "truee", "1 0"])(
     "is off for %j",
     (value) => {
       expect(isGoverningDocsEnabled({ GOVERNING_DOCS_ENABLED: value })).toBe(false);

@@ -2417,7 +2417,7 @@ When a document is uploaded to a project:
 
 A company's own policies and control frameworks are uploaded **once per workspace**, not per
 project, and later checked against requirements. #1868 adds the store, #1869 the upload
-routes and the workspace index (below), no LLM yet — behind `GOVERNING_DOCS_ENABLED` (`1`, `true`, `yes` or `on`, case-insensitive, enables — the spellings `ConfigService.getBool` accepts, #1962, through the one shared `isTruthyConfigValue` in `server/src/lib/config/truthy.ts`, #1977; **on by default since #1878**: unset is on, and set it reads as `ConfigService.getBool(key, true)` reads a boolean, so `0`, `false`, `no`, `off`, an empty value or any other spelling turns it off; read at call time by
+routes and the workspace index (below), no LLM yet — behind `GOVERNING_DOCS_ENABLED` (`1`, `true`, `yes` or `on`, case-insensitive, enables — the spellings `ConfigService.getBool` accepts, #1962, through the one shared `isTruthyConfigValue` in `server/src/lib/config/truthy.ts`, #1977; **on by default since #1878**: it reads exactly as `ConfigService.getBool(key, true)` reads a boolean, so unset or empty is on, and `0`, `false`, `no`, `off`, whitespace only or any other spelling turns it off; read at call time by
 `isGoverningDocsEnabled()` in `server/src/lib/governing/flag.ts`, which every later issue
 gates on). The default flipped because #1878's held-out reading of the shipped path (eval
 arm A5, below) passed every threshold #1867 fixed before any arm ran.
