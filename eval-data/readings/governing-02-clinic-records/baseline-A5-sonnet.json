@@ -1,0 +1,4587 @@
+{
+  "corpus": {
+    "id": "governing-02-clinic-records",
+    "purpose": "held-out",
+    "contentHash": "9fc02e66cfa37e312b27aa06a1292183ebabea8847c92146055069ac80afe1c9",
+    "items": 36,
+    "rules": 40,
+    "policy": "policy-v1.md",
+    "revision": "v1",
+    "reviewedBy": null
+  },
+  "thresholds": {
+    "status": "proposed",
+    "proposedIn": "#1867",
+    "proposedAt": "2026-11-06",
+    "recordedBeforeAnyArmRan": true,
+    "overallRecall": 0.9,
+    "nonResemblingRecall": 0.85,
+    "precision": 0.6,
+    "citationAccuracy": 0.95,
+    "maxNoEvidenceCompliantErrors": 0,
+    "changes": []
+  },
+  "provenance": {
+    "commit": "e613df1efe894d743c8a77a91dafaef4eb4a0095",
+    "dirty": false,
+    "combinedFrom": [
+      "governing-governing-02-clinic-records-2026-11-09T00-08-45-365Z.json",
+      "governing-governing-02-clinic-records-2026-11-09T00-09-33-941Z.json",
+      "governing-governing-02-clinic-records-2026-11-09T00-10-23-436Z.json"
+    ]
+  },
+  "runsRequested": 3,
+  "budgetUsd": 16,
+  "spentUsd": 2.3982088,
+  "unpricedCalls": 0,
+  "stopped": null,
+  "arms": [
+    {
+      "id": "A5",
+      "label": "A5 — the shipped path: applicability, findings, the BA's questions and the refresh",
+      "configuration": {
+        "searcher": "production BM25 options (createInMemoryBM25) over rule id + summary, standing in for governingIndexRetriever",
+        "topK": 8,
+        "applicability": "decideApplicability, rules with production's source line",
+        "findings": "findingPairsOf + evaluateRequirementFindings, as produceGoverningFindingsForAnalysis",
+        "questions": "openGoverningPairs + buildGoverningQuestions: production's question text",
+        "answers": "a question linking a rule with a baAnswer is given that answer; rejudgeAnswered + applySettlements; findings produced again when a settlement applied",
+        "reading": "readFindings: status as verdict, the verified clause as citation",
+        "model": "anthropic/claude-sonnet-5-5"
+      },
+      "byConstruction": {},
+      "codePath": [
+        "governing/applicability.ts decideApplicability (#1872)",
+        "governing/applicability-store.ts toStoredApplicability",
+        "governing/findings-store.ts findingPairsOf + governing/findings.ts evaluateRequirementFindings (#1874)",
+        "governing/applicability-questions.ts openGoverningPairs + buildGoverningQuestions (#1873)",
+        "governing/applicability-questions.ts rejudgeAnswered + governing/applicability-store.ts applySettlements (#1873)",
+        "governing/findings-store.ts findingPairsOf + governing/findings.ts evaluateRequirementFindings (the refresh after an answer)"
+      ],
+      "replaysAnswers": true,
+      "records": [
+        {
+          "itemId": "KV-01",
+          "run": 1,
+          "judgements": [
+            {
+              "ruleId": "RA-04",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "RA-04",
+                "excerpt": "The charts of employees who are also patients, and of anyone the privacy officer marks as a public figure, are restricted, and each opening of a restricted chart is reported to the privacy officer on the same day."
+              },
+              "businessFact": "Will the full registered-patient list available to covering doctors include the charts of employees who are also patients and of people marked as public figures?"
+            },
+            {
+              "ruleId": "RA-01",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "RA-01",
+                "excerpt": "A clinician opens a patient's chart only while they are taking part in that patient's care"
+              }
+            },
+            {
+              "ruleId": "RA-02",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "RA-02",
+                "excerpt": "requires a reason typed before the chart opens, and every such opening is reviewed by the privacy officer within five working days"
+              }
+            },
+            {
+              "ruleId": "IR-04",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "IR-04",
+                "excerpt": "is assessed by the clinical safety officer before release, and the assessment is filed in the hazard log"
+              },
+              "businessFact": "Will the clinical safety officer assess this change and file the assessment in the hazard log before it is released?"
+            }
+          ],
+          "diagnostics": {
+            "candidates": 13,
+            "applicable": 4,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.029011,
+          "inputTokens": 5916,
+          "completionTokens": 1630,
+          "seconds": 12.888
+        },
+        {
+          "itemId": "KV-02",
+          "run": 1,
+          "judgements": [
+            {
+              "ruleId": "TP-01",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "TP-01",
+                "excerpt": "A company that will handle patient information for the network signs a data processing agreement before it receives any."
+              },
+              "businessFact": "Does the existing data processing agreement with the hosting supplier cover handling patient information in the overseas region?"
+            },
+            {
+              "ruleId": "CS-01",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "CS-01",
+                "excerpt": "Information about a patient leaves the network only with the patient's recorded consent"
+              },
+              "businessFact": "Does the appointment system hold information about patients (names, appointment details, clinical reasons), and if so, is the patient's recorded consent obtained before that information is hosted in the overseas region?"
+            },
+            {
+              "ruleId": "TP-02",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "TP-02",
+                "excerpt": "Patient information is stored only in data centres located inside the country."
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 17,
+            "applicable": 3,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0,
+            "questionsAsked": 1,
+            "questionsAnswered": 1,
+            "answersSettled": 1,
+            "answersSettleFailed": 0,
+            "findingsRefreshed": 1,
+            "answeredNoEvidenceDemoted": 0
+          },
+          "costUsd": 0.040778999999999996,
+          "inputTokens": 8430,
+          "completionTokens": 2304,
+          "seconds": 20.877,
+          "answered": {
+            "judgements": [
+              {
+                "ruleId": "CS-01",
+                "verdict": "needs-ba-input",
+                "citation": {
+                  "ruleId": "CS-01",
+                  "excerpt": "Information about a patient leaves the network only with the patient's recorded consent"
+                },
+                "businessFact": "Do patients have recorded consent for their information to be held and processed overseas by the hosting supplier, or does a law compel this disclosure?"
+              },
+              {
+                "ruleId": "TP-01",
+                "verdict": "compliant",
+                "citation": {
+                  "ruleId": "TP-01",
+                  "excerpt": "A company that will handle patient information for the network signs a data processing agreement before it receives any."
+                }
+              },
+              {
+                "ruleId": "TP-02",
+                "verdict": "gap",
+                "citation": {
+                  "ruleId": "TP-02",
+                  "excerpt": "Patient information is stored only in data centres located inside the country."
+                }
+              }
+            ],
+            "questions": [
+              {
+                "ruleIds": ["TP-01"],
+                "question": "Does the existing data processing agreement with the hosting supplier cover handling patient information in the overseas region?",
+                "answer": "Yes, we do."
+              }
+            ]
+          }
+        },
+        {
+          "itemId": "KV-03",
+          "run": 1,
+          "judgements": [],
+          "diagnostics": {
+            "candidates": 4,
+            "applicable": 0,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.013857,
+          "inputTokens": 3514,
+          "completionTokens": 595,
+          "seconds": 6.143
+        },
+        {
+          "itemId": "KV-04",
+          "run": 1,
+          "judgements": [
+            {
+              "ruleId": "ID-01",
+              "verdict": "compliant",
+              "citation": {
+                "ruleId": "ID-01",
+                "excerpt": "Before a chart is opened for a patient who is present, staff confirm two identifiers with the patient"
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 12,
+            "applicable": 1,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.023823000000000004,
+          "inputTokens": 5537,
+          "completionTokens": 1187,
+          "seconds": 9.546
+        },
+        {
+          "itemId": "KV-05",
+          "run": 1,
+          "judgements": [
+            {
+              "ruleId": "MS-04",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "MS-04",
+                "excerpt": "Doses for children are worked out from a weight measured within the previous thirty days."
+              },
+              "businessFact": "If the latest growth chart weight was measured more than thirty days ago, will the screen refuse to suggest a dose, or warn and require a new weight, or use the older weight anyway?"
+            },
+            {
+              "ruleId": "IR-04",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "IR-04",
+                "excerpt": "is assessed by the clinical safety officer before release, and the assessment is filed in the hazard log."
+              },
+              "businessFact": "Will the clinical safety officer assess this change and file the assessment in the hazard log before release?"
+            }
+          ],
+          "diagnostics": {
+            "candidates": 12,
+            "applicable": 2,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0,
+            "questionsAsked": 0,
+            "questionsAnswered": 0,
+            "answersSettled": 0,
+            "answersSettleFailed": 0,
+            "findingsRefreshed": 0,
+            "answeredNoEvidenceDemoted": 0
+          },
+          "costUsd": 0.029495000000000004,
+          "inputTokens": 5588,
+          "completionTokens": 1744,
+          "seconds": 14.918,
+          "answered": {
+            "judgements": [
+              {
+                "ruleId": "MS-04",
+                "verdict": "needs-ba-input",
+                "citation": {
+                  "ruleId": "MS-04",
+                  "excerpt": "Doses for children are worked out from a weight measured within the previous thirty days."
+                },
+                "businessFact": "If the latest growth chart weight was measured more than thirty days ago, will the screen refuse to suggest a dose, or warn and require a new weight, or use the older weight anyway?"
+              },
+              {
+                "ruleId": "IR-04",
+                "verdict": "needs-ba-input",
+                "citation": {
+                  "ruleId": "IR-04",
+                  "excerpt": "is assessed by the clinical safety officer before release, and the assessment is filed in the hazard log."
+                },
+                "businessFact": "Will the clinical safety officer assess this change and file the assessment in the hazard log before release?"
+              }
+            ],
+            "questions": []
+          }
+        },
+        {
+          "itemId": "KV-06",
+          "run": 1,
+          "judgements": [
+            {
+              "ruleId": "CM-01",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "CM-01",
+                "excerpt": "A test result is released to the patient portal only once the clinician who ordered it has reviewed it"
+              }
+            },
+            {
+              "ruleId": "IR-04",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "IR-04",
+                "excerpt": "is assessed by the clinical safety officer before release, and the assessment is filed in the hazard log"
+              },
+              "businessFact": "Will this change alter any clinician-facing screen or the order of steps in a clinical task (for example, the clinician's review and sign-off of results), and will the clinical safety officer assess it and file the assessment in the hazard log before release?"
+            }
+          ],
+          "diagnostics": {
+            "candidates": 18,
+            "applicable": 2,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.032299,
+          "inputTokens": 6240,
+          "completionTokens": 1894,
+          "seconds": 13.958
+        },
+        {
+          "itemId": "KV-07",
+          "run": 1,
+          "judgements": [
+            {
+              "ruleId": "RK-03",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "RK-03",
+                "excerpt": "A clinical entry is never deleted or overwritten; a correction is added as a new entry showing the original text, who corrected it and why."
+              },
+              "businessFact": "Does folding two registrations into one remove or overwrite any clinical entries held on either registration (as opposed to carrying them all across to the merged entry)?"
+            },
+            {
+              "ruleId": "ID-02",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "ID-02",
+                "excerpt": "Two charts are combined into one only after two members of staff have each confirmed that they belong to the same person"
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 16,
+            "applicable": 2,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.026448999999999997,
+          "inputTokens": 5995,
+          "completionTokens": 1358,
+          "seconds": 10.586
+        },
+        {
+          "itemId": "KV-08",
+          "run": 1,
+          "judgements": [
+            {
+              "ruleId": "TP-01",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "TP-01",
+                "excerpt": "A company that will handle patient information for the network signs a data processing agreement before it receives any."
+              },
+              "businessFact": "Will the university's respiratory team handle the patient information as a processor on the network's behalf (requiring a data processing agreement), or as an independent research body under its own arrangements?"
+            },
+            {
+              "ruleId": "TP-02",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "TP-02",
+                "excerpt": "Patient information is stored only in data centres located inside the country."
+              },
+              "businessFact": "Will the university team store the spreadsheet in a data centre or cloud service located outside the country?"
+            },
+            {
+              "ruleId": "TP-05",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "TP-05",
+                "excerpt": "Patient information is not carried on USB drives or other removable media, except encrypted drives issued by the IT service desk."
+              },
+              "businessFact": "Will the spreadsheet be delivered to the university on a USB drive or other removable media?"
+            },
+            {
+              "ruleId": "CS-01",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "CS-01",
+                "excerpt": "Information about a patient leaves the network only with the patient's recorded consent"
+              },
+              "businessFact": "Has each asthma patient in the extract given recorded consent to share their information with the university's respiratory team, or does a law compel this disclosure?"
+            },
+            {
+              "ruleId": "CS-05",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "CS-05",
+                "excerpt": "names, addresses and health numbers are removed before the data leaves the clinical system"
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 19,
+            "applicable": 5,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.033492999999999995,
+          "inputTokens": 6387,
+          "completionTokens": 1984,
+          "seconds": 17.844
+        },
+        {
+          "itemId": "KV-09",
+          "run": 1,
+          "judgements": [
+            {
+              "ruleId": "RA-05",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "RA-05",
+                "excerpt": "Computers in consulting rooms lock their screen after five minutes without keyboard or mouse input."
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 11,
+            "applicable": 1,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.022349,
+          "inputTokens": 5370,
+          "completionTokens": 1073,
+          "seconds": 9.008
+        },
+        {
+          "itemId": "KV-10",
+          "run": 1,
+          "judgements": [],
+          "diagnostics": {
+            "candidates": 8,
+            "applicable": 0,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.014379,
+          "inputTokens": 3990,
+          "completionTokens": 552,
+          "seconds": 5.511
+        },
+        {
+          "itemId": "KV-11",
+          "run": 1,
+          "judgements": [
+            {
+              "ruleId": "CS-01",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "CS-01",
+                "excerpt": "Information about a patient leaves the network only with the patient's recorded consent, unless a law compels the disclosure."
+              },
+              "businessFact": "Will the video consultation run on a platform operated by an outside company, so that patient information leaves the network?"
+            },
+            {
+              "ruleId": "IR-04",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "IR-04",
+                "excerpt": "Any change to a clinical system that alters what clinicians see on screen, or the order of steps in a clinical task, is assessed by the clinical safety officer before release, and the assessment is filed in the hazard log."
+              },
+              "businessFact": "Will clinicians' screens or the sequence of their clinical workflow change in order to run or join video appointments?"
+            },
+            {
+              "ruleId": "TP-01",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "TP-01",
+                "excerpt": "A company that will handle patient information for the network signs a data processing agreement before it receives any."
+              },
+              "businessFact": "Will a third-party supplier provide the video platform and handle patient information?"
+            },
+            {
+              "ruleId": "TP-02",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "TP-02",
+                "excerpt": "Patient information is stored only in data centres located inside the country."
+              },
+              "businessFact": "Will the video service store any patient information, such as recordings or session data, and where will it be hosted?"
+            },
+            {
+              "ruleId": "ID-03",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "ID-03",
+                "excerpt": "the clinician confirms who they are speaking to with a one-time code sent to the mobile number held on the chart"
+              }
+            },
+            {
+              "ruleId": "CS-03",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "CS-03",
+                "excerpt": "Agreement to be contacted by text message or email is recorded on its own, apart from agreement to treatment."
+              },
+              "businessFact": "Will the booking confirmation be sent by text or email, and if so, is the patient's agreement to that contact recorded separately from their consent to treatment?"
+            },
+            {
+              "ruleId": "CM-02",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "CM-02",
+                "excerpt": "says nothing clinical beyond the time and place of an appointment, unless the patient has chosen to receive detailed messages"
+              },
+              "businessFact": "What will the booking confirmation message contain beyond the time and the join link, and could it include any clinical detail such as the reason for the visit or the clinician's specialty?"
+            },
+            {
+              "ruleId": "CM-04",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "CM-04",
+                "excerpt": "A copy of every letter and message sent to a patient is kept on their chart."
+              },
+              "businessFact": "Will a copy of each booking confirmation sent to the patient be saved on their chart?"
+            }
+          ],
+          "diagnostics": {
+            "candidates": 18,
+            "applicable": 8,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.043417000000000004,
+          "inputTokens": 6464,
+          "completionTokens": 2961,
+          "seconds": 19.767
+        },
+        {
+          "itemId": "KV-12",
+          "run": 1,
+          "judgements": [
+            {
+              "ruleId": "MS-05",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "MS-05",
+                "excerpt": "it can never be switched off for later prescriptions"
+              }
+            },
+            {
+              "ruleId": "IR-04",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "IR-04",
+                "excerpt": "is assessed by the clinical safety officer before release"
+              },
+              "businessFact": "Will the clinical safety officer assess this change before release and file the assessment in the hazard log?"
+            }
+          ],
+          "diagnostics": {
+            "candidates": 15,
+            "applicable": 2,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.027303,
+          "inputTokens": 6012,
+          "completionTokens": 1440,
+          "seconds": 10.928
+        },
+        {
+          "itemId": "KV-13",
+          "run": 1,
+          "judgements": [
+            {
+              "ruleId": "CM-05",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "CM-05",
+                "excerpt": "Any conversation that seeks consent from a patient who prefers a language other than English uses a qualified interpreter, never a relative or friend."
+              },
+              "businessFact": "Will registration consent (the tick box) ever be obtained through a conversation, such as staff registering patients in person or by phone, with patients who prefer a language other than English?"
+            },
+            {
+              "ruleId": "CS-03",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "CS-03",
+                "excerpt": "Agreement to be contacted by text message or email is recorded on its own, apart from agreement to treatment."
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 16,
+            "applicable": 2,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.0229198,
+          "inputTokens": 5830,
+          "completionTokens": 1460,
+          "seconds": 12.092
+        },
+        {
+          "itemId": "KV-14",
+          "run": 1,
+          "judgements": [
+            {
+              "ruleId": "CS-01",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "CS-01",
+                "excerpt": "Information about a patient leaves the network only with the patient's recorded consent"
+              },
+              "businessFact": "Is a recorded consent captured from the patient (or from a legal representative where the child cannot consent) before a child is linked to a parent's family account and their information is shown there?"
+            },
+            {
+              "ruleId": "CS-04",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "CS-04",
+                "excerpt": "Nothing about a patient aged sixteen or seventeen is disclosed to a parent or guardian without the young person's agreement"
+              }
+            },
+            {
+              "ruleId": "CM-01",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "CM-01",
+                "excerpt": "A test result is released to the patient portal only once the clinician who ordered it has reviewed it"
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 20,
+            "applicable": 3,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0,
+            "questionsAsked": 0,
+            "questionsAnswered": 0,
+            "answersSettled": 0,
+            "answersSettleFailed": 0,
+            "findingsRefreshed": 0,
+            "answeredNoEvidenceDemoted": 0
+          },
+          "costUsd": 0.0340198,
+          "inputTokens": 6650,
+          "completionTokens": 2406,
+          "seconds": 17.58,
+          "answered": {
+            "judgements": [
+              {
+                "ruleId": "CS-01",
+                "verdict": "needs-ba-input",
+                "citation": {
+                  "ruleId": "CS-01",
+                  "excerpt": "Information about a patient leaves the network only with the patient's recorded consent"
+                },
+                "businessFact": "Is a recorded consent captured from the patient (or from a legal representative where the child cannot consent) before a child is linked to a parent's family account and their information is shown there?"
+              },
+              {
+                "ruleId": "CS-04",
+                "verdict": "gap",
+                "citation": {
+                  "ruleId": "CS-04",
+                  "excerpt": "Nothing about a patient aged sixteen or seventeen is disclosed to a parent or guardian without the young person's agreement"
+                }
+              },
+              {
+                "ruleId": "CM-01",
+                "verdict": "gap",
+                "citation": {
+                  "ruleId": "CM-01",
+                  "excerpt": "A test result is released to the patient portal only once the clinician who ordered it has reviewed it"
+                }
+              }
+            ],
+            "questions": []
+          }
+        },
+        {
+          "itemId": "KV-15",
+          "run": 1,
+          "judgements": [
+            {
+              "ruleId": "MS-01",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "MS-01",
+                "excerpt": "Every prescription is checked against the allergies recorded on the chart before it is issued"
+              }
+            },
+            {
+              "ruleId": "MS-05",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "MS-05",
+                "excerpt": "can be acknowledged for the prescription in hand only; it can never be switched off for later prescriptions"
+              }
+            },
+            {
+              "ruleId": "IR-04",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "IR-04",
+                "excerpt": "is assessed by the clinical safety officer before release, and the assessment is filed in the hazard log"
+              },
+              "businessFact": "Will the clinical safety officer assess this change and file the assessment in the hazard log before it is released?"
+            }
+          ],
+          "diagnostics": {
+            "candidates": 7,
+            "applicable": 3,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.020483800000000003,
+          "inputTokens": 5152,
+          "completionTokens": 1352,
+          "seconds": 9.843
+        },
+        {
+          "itemId": "KV-16",
+          "run": 1,
+          "judgements": [
+            {
+              "ruleId": "RK-05",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "RK-05",
+                "excerpt": "Paper documents scanned onto a chart are checked for legibility, and the paper is kept for three months before it is shredded."
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 15,
+            "applicable": 1,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.0212278,
+          "inputTokens": 5674,
+          "completionTokens": 1322,
+          "seconds": 10.057
+        },
+        {
+          "itemId": "KV-17",
+          "run": 1,
+          "judgements": [],
+          "diagnostics": {
+            "candidates": 8,
+            "applicable": 0,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.0105678,
+          "inputTokens": 3944,
+          "completionTokens": 602,
+          "seconds": 6.46
+        },
+        {
+          "itemId": "KV-18",
+          "run": 1,
+          "judgements": [
+            {
+              "ruleId": "RA-01",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "RA-01",
+                "excerpt": "A clinician opens a patient's chart only while they are taking part in that patient's care"
+              },
+              "businessFact": "Is this access path restricted to genuine emergencies, or can a clinician use it for any reason to open a chart of a patient they are not treating?"
+            },
+            {
+              "ruleId": "RA-02",
+              "verdict": "compliant",
+              "citation": {
+                "ruleId": "RA-02",
+                "excerpt": "requires a reason typed before the chart opens, and every such opening is reviewed by the privacy officer within five working days"
+              }
+            },
+            {
+              "ruleId": "IR-04",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "IR-04",
+                "excerpt": "is assessed by the clinical safety officer before release, and the assessment is filed in the hazard log"
+              },
+              "businessFact": "Will the clinical safety officer assess this change and file the assessment in the hazard log before release?"
+            }
+          ],
+          "diagnostics": {
+            "candidates": 14,
+            "applicable": 3,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.0264398,
+          "inputTokens": 6065,
+          "completionTokens": 1765,
+          "seconds": 12.504
+        },
+        {
+          "itemId": "KV-19",
+          "run": 1,
+          "judgements": [
+            {
+              "ruleId": "CM-02",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "CM-02",
+                "excerpt": "says nothing clinical beyond the time and place of an appointment, unless the patient has chosen to receive detailed messages"
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 16,
+            "applicable": 1,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.023119800000000003,
+          "inputTokens": 5910,
+          "completionTokens": 1464,
+          "seconds": 11.095
+        },
+        {
+          "itemId": "KV-20",
+          "run": 1,
+          "judgements": [
+            {
+              "ruleId": "IR-04",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "IR-04",
+                "excerpt": "Any change to a clinical system that alters what clinicians see on screen, or the order of steps in a clinical task, is assessed by the clinical safety officer before release, and the assessment is filed in the hazard log."
+              },
+              "businessFact": "Will this change alter what clinicians see on screen or the order of steps in the prescribing or repeat-authorisation task (for example, a new duration option or removal of the annual review step)?"
+            },
+            {
+              "ruleId": "MS-03",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "MS-03",
+                "excerpt": "A repeat prescription runs for at most twelve months before a clinician must review it."
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 12,
+            "applicable": 2,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.018989800000000005,
+          "inputTokens": 5425,
+          "completionTokens": 1148,
+          "seconds": 9.577
+        },
+        {
+          "itemId": "KV-21",
+          "run": 1,
+          "judgements": [
+            {
+              "ruleId": "ID-04",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "ID-04",
+                "excerpt": "their legal name remains on the chart and is the name printed on prescriptions and referral letters"
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 11,
+            "applicable": 1,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.020165799999999998,
+          "inputTokens": 5303,
+          "completionTokens": 1290,
+          "seconds": 10.158
+        },
+        {
+          "itemId": "KV-22",
+          "run": 1,
+          "judgements": [
+            {
+              "ruleId": "IR-05",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "IR-05",
+                "excerpt": "A suspected loss or disclosure of patient information is reported to the privacy officer within four hours."
+              }
+            },
+            {
+              "ruleId": "TP-04",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "TP-04",
+                "excerpt": "Laptops, tablets and phones used for clinical work encrypt their storage and can be wiped remotely."
+              },
+              "businessFact": "Are the work phones issued to clinicians configured with encrypted storage and the ability to be wiped remotely, for example through device management?"
+            }
+          ],
+          "diagnostics": {
+            "candidates": 11,
+            "applicable": 2,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.0206818,
+          "inputTokens": 5416,
+          "completionTokens": 1319,
+          "seconds": 10.044
+        },
+        {
+          "itemId": "KV-23",
+          "run": 1,
+          "judgements": [
+            {
+              "ruleId": "CM-05",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "CM-05",
+                "excerpt": "uses a qualified interpreter, never a relative or friend"
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 10,
+            "applicable": 1,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.0174098,
+          "inputTokens": 5105,
+          "completionTokens": 1054,
+          "seconds": 11.744
+        },
+        {
+          "itemId": "KV-24",
+          "run": 1,
+          "judgements": [],
+          "diagnostics": {
+            "candidates": 8,
+            "applicable": 0,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.0127658,
+          "inputTokens": 3963,
+          "completionTokens": 818,
+          "seconds": 6.649
+        },
+        {
+          "itemId": "KV-25",
+          "run": 1,
+          "judgements": [
+            {
+              "ruleId": "IR-04",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "IR-04",
+                "excerpt": "Any change to a clinical system that alters what clinicians see on screen, or the order of steps in a clinical task, is assessed by the clinical safety officer before release, and the assessment is filed in the hazard log."
+              },
+              "businessFact": "Will the correction flow change the screens clinicians see or add a mandatory step (such as the reason prompt or a history view) to the existing note-editing workflow?"
+            },
+            {
+              "ruleId": "RK-03",
+              "verdict": "compliant",
+              "citation": {
+                "ruleId": "RK-03",
+                "excerpt": "a correction is added as a new entry showing the original text, who corrected it and why"
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 11,
+            "applicable": 2,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.0184898,
+          "inputTokens": 5305,
+          "completionTokens": 1122,
+          "seconds": 13.019
+        },
+        {
+          "itemId": "KV-26",
+          "run": 1,
+          "judgements": [
+            {
+              "ruleId": "RK-03",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "RK-03",
+                "excerpt": "A clinical entry is never deleted or overwritten; a correction is added as a new entry showing the original text, who corrected it and why."
+              },
+              "businessFact": "Will the ECG traces be filed to the chart as clinical entries that clinicians can later correct or amend?"
+            },
+            {
+              "ruleId": "IR-04",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "IR-04",
+                "excerpt": "is assessed by the clinical safety officer before release, and the assessment is filed in the hazard log"
+              },
+              "businessFact": "Will the clinical safety officer assess this change, which puts ECG traces directly onto the chart, and file the assessment in the hazard log before it goes live?"
+            },
+            {
+              "ruleId": "TP-03",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "TP-03",
+                "excerpt": "A medical device is entered in the device inventory, with its owner and software version, before it is connected to the network."
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 19,
+            "applicable": 3,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0,
+            "questionsAsked": 1,
+            "questionsAnswered": 0,
+            "answersSettled": 0,
+            "answersSettleFailed": 0,
+            "findingsRefreshed": 0,
+            "answeredNoEvidenceDemoted": 0
+          },
+          "costUsd": 0.0283358,
+          "inputTokens": 6278,
+          "completionTokens": 1912,
+          "seconds": 17.33,
+          "answered": {
+            "judgements": [
+              {
+                "ruleId": "RK-03",
+                "verdict": "needs-ba-input",
+                "citation": {
+                  "ruleId": "RK-03",
+                  "excerpt": "A clinical entry is never deleted or overwritten; a correction is added as a new entry showing the original text, who corrected it and why."
+                },
+                "businessFact": "Will the ECG traces be filed to the chart as clinical entries that clinicians can later correct or amend?"
+              },
+              {
+                "ruleId": "IR-04",
+                "verdict": "needs-ba-input",
+                "citation": {
+                  "ruleId": "IR-04",
+                  "excerpt": "is assessed by the clinical safety officer before release, and the assessment is filed in the hazard log"
+                },
+                "businessFact": "Will the clinical safety officer assess this change, which puts ECG traces directly onto the chart, and file the assessment in the hazard log before it goes live?"
+              },
+              {
+                "ruleId": "TP-03",
+                "verdict": "gap",
+                "citation": {
+                  "ruleId": "TP-03",
+                  "excerpt": "A medical device is entered in the device inventory, with its owner and software version, before it is connected to the network."
+                }
+              }
+            ],
+            "questions": [
+              {
+                "ruleIds": ["RK-03"],
+                "question": "Will the ECG traces be filed to the chart as clinical entries that clinicians can later correct or amend?",
+                "answer": null
+              }
+            ]
+          }
+        },
+        {
+          "itemId": "KV-27",
+          "run": 1,
+          "judgements": [
+            {
+              "ruleId": "RK-01",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "RK-01",
+                "excerpt": "An adult's chart is kept for eight years after the last contact with the network."
+              }
+            },
+            {
+              "ruleId": "RK-03",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "RK-03",
+                "excerpt": "A clinical entry is never deleted or overwritten; a correction is added as a new entry showing the original text, who corrected it and why."
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 15,
+            "applicable": 2,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.0212778,
+          "inputTokens": 5829,
+          "completionTokens": 1296,
+          "seconds": 11.727
+        },
+        {
+          "itemId": "KV-28",
+          "run": 1,
+          "judgements": [
+            {
+              "ruleId": "TP-04",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "TP-04",
+                "excerpt": "Laptops, tablets and phones used for clinical work encrypt their storage and can be wiped remotely."
+              },
+              "businessFact": "Is the van laptop a managed clinical device with encrypted storage and remote wipe already in place?"
+            },
+            {
+              "ruleId": "TP-05",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "TP-05",
+                "excerpt": "Patient information is not carried on USB drives or other removable media, except encrypted drives issued by the IT service desk."
+              },
+              "businessFact": "Will the memory sticks used for the visit list be encrypted drives issued by the IT service desk, or could nurses use any other USB stick?"
+            }
+          ],
+          "diagnostics": {
+            "candidates": 15,
+            "applicable": 2,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0,
+            "questionsAsked": 1,
+            "questionsAnswered": 0,
+            "answersSettled": 0,
+            "answersSettleFailed": 0,
+            "findingsRefreshed": 0,
+            "answeredNoEvidenceDemoted": 0
+          },
+          "costUsd": 0.0234018,
+          "inputTokens": 5796,
+          "completionTokens": 1515,
+          "seconds": 14.342,
+          "answered": {
+            "judgements": [
+              {
+                "ruleId": "TP-04",
+                "verdict": "needs-ba-input",
+                "citation": {
+                  "ruleId": "TP-04",
+                  "excerpt": "Laptops, tablets and phones used for clinical work encrypt their storage and can be wiped remotely."
+                },
+                "businessFact": "Is the van laptop a managed clinical device with encrypted storage and remote wipe already in place?"
+              },
+              {
+                "ruleId": "TP-05",
+                "verdict": "needs-ba-input",
+                "citation": {
+                  "ruleId": "TP-05",
+                  "excerpt": "Patient information is not carried on USB drives or other removable media, except encrypted drives issued by the IT service desk."
+                },
+                "businessFact": "Will the memory sticks used for the visit list be encrypted drives issued by the IT service desk, or could nurses use any other USB stick?"
+              }
+            ],
+            "questions": [
+              {
+                "ruleIds": ["TP-04"],
+                "question": "Is the van laptop a managed clinical device with encrypted storage and remote wipe already in place?",
+                "answer": null
+              }
+            ]
+          }
+        },
+        {
+          "itemId": "KV-29",
+          "run": 1,
+          "judgements": [
+            {
+              "ruleId": "RA-03",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "RA-03",
+                "excerpt": "they never see clinical notes, results or diagnoses"
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 15,
+            "applicable": 1,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.0213298,
+          "inputTokens": 5840,
+          "completionTokens": 1299,
+          "seconds": 10.816
+        },
+        {
+          "itemId": "KV-30",
+          "run": 1,
+          "judgements": [],
+          "diagnostics": {
+            "candidates": 2,
+            "applicable": 0,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.0056618,
+          "inputTokens": 3221,
+          "completionTokens": 256,
+          "seconds": 2.484
+        },
+        {
+          "itemId": "KV-31",
+          "run": 1,
+          "judgements": [
+            {
+              "ruleId": "IR-04",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "IR-04",
+                "excerpt": "is assessed by the clinical safety officer before release, and the assessment is filed in the hazard log"
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 10,
+            "applicable": 1,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0,
+            "questionsAsked": 0,
+            "questionsAnswered": 0,
+            "answersSettled": 0,
+            "answersSettleFailed": 0,
+            "findingsRefreshed": 0,
+            "answeredNoEvidenceDemoted": 0
+          },
+          "costUsd": 0.0162918,
+          "inputTokens": 5211,
+          "completionTokens": 921,
+          "seconds": 9.615,
+          "answered": {
+            "judgements": [
+              {
+                "ruleId": "IR-04",
+                "verdict": "gap",
+                "citation": {
+                  "ruleId": "IR-04",
+                  "excerpt": "is assessed by the clinical safety officer before release, and the assessment is filed in the hazard log"
+                }
+              }
+            ],
+            "questions": []
+          }
+        },
+        {
+          "itemId": "KV-32",
+          "run": 1,
+          "judgements": [
+            {
+              "ruleId": "CM-04",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "CM-04",
+                "excerpt": "A copy of every letter and message sent to a patient is kept on their chart."
+              },
+              "businessFact": "Will a copy of the printed notes sent to the patient, and of any related acknowledgement or covering letter, be filed on the patient's chart?"
+            },
+            {
+              "ruleId": "RK-04",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "RK-04",
+                "excerpt": "A patient's request for a copy of their own chart is answered within thirty calendar days."
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 17,
+            "applicable": 2,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.0299878,
+          "inputTokens": 6034,
+          "completionTokens": 2126,
+          "seconds": 18.193
+        },
+        {
+          "itemId": "KV-33",
+          "run": 1,
+          "judgements": [
+            {
+              "ruleId": "CS-04",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "CS-04",
+                "excerpt": "Nothing about a patient aged sixteen or seventeen is disclosed to a parent or guardian without the young person's agreement, unless the treating clinician records a safeguarding reason."
+              },
+              "businessFact": "Could the email address used for a patient aged 16 or 17 belong to a parent or guardian rather than the young person?"
+            },
+            {
+              "ruleId": "TP-01",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "TP-01",
+                "excerpt": "A company that will handle patient information for the network signs a data processing agreement before it receives any."
+              },
+              "businessFact": "Does the template tool send the emails through an external company or email service that does not already have a signed data processing agreement?"
+            },
+            {
+              "ruleId": "ID-04",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "ID-04",
+                "excerpt": "their legal name remains on the chart and is the name printed on prescriptions and referral letters"
+              },
+              "businessFact": "Does the new referral template print the patient's legal name on the letter, even when the patient has a preferred name recorded?"
+            },
+            {
+              "ruleId": "CS-01",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "CS-01",
+                "excerpt": "Information about a patient leaves the network only with the patient's recorded consent"
+              }
+            },
+            {
+              "ruleId": "CS-03",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "CS-03",
+                "excerpt": "Agreement to be contacted by text message or email is recorded on its own, apart from agreement to treatment."
+              }
+            },
+            {
+              "ruleId": "CM-02",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "CM-02",
+                "excerpt": "says nothing clinical beyond the time and place of an appointment, unless the patient has chosen to receive detailed messages"
+              }
+            },
+            {
+              "ruleId": "CM-04",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "CM-04",
+                "excerpt": "A copy of every letter and message sent to a patient is kept on their chart."
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 14,
+            "applicable": 7,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0,
+            "questionsAsked": 2,
+            "questionsAnswered": 0,
+            "answersSettled": 0,
+            "answersSettleFailed": 0,
+            "findingsRefreshed": 0,
+            "answeredNoEvidenceDemoted": 0
+          },
+          "costUsd": 0.031653799999999996,
+          "inputTokens": 6617,
+          "completionTokens": 2176,
+          "seconds": 16.677,
+          "answered": {
+            "judgements": [
+              {
+                "ruleId": "CS-04",
+                "verdict": "needs-ba-input",
+                "citation": {
+                  "ruleId": "CS-04",
+                  "excerpt": "Nothing about a patient aged sixteen or seventeen is disclosed to a parent or guardian without the young person's agreement, unless the treating clinician records a safeguarding reason."
+                },
+                "businessFact": "Could the email address used for a patient aged 16 or 17 belong to a parent or guardian rather than the young person?"
+              },
+              {
+                "ruleId": "TP-01",
+                "verdict": "needs-ba-input",
+                "citation": {
+                  "ruleId": "TP-01",
+                  "excerpt": "A company that will handle patient information for the network signs a data processing agreement before it receives any."
+                },
+                "businessFact": "Does the template tool send the emails through an external company or email service that does not already have a signed data processing agreement?"
+              },
+              {
+                "ruleId": "ID-04",
+                "verdict": "needs-ba-input",
+                "citation": {
+                  "ruleId": "ID-04",
+                  "excerpt": "their legal name remains on the chart and is the name printed on prescriptions and referral letters"
+                },
+                "businessFact": "Does the new referral template print the patient's legal name on the letter, even when the patient has a preferred name recorded?"
+              },
+              {
+                "ruleId": "CS-01",
+                "verdict": "gap",
+                "citation": {
+                  "ruleId": "CS-01",
+                  "excerpt": "Information about a patient leaves the network only with the patient's recorded consent"
+                }
+              },
+              {
+                "ruleId": "CS-03",
+                "verdict": "gap",
+                "citation": {
+                  "ruleId": "CS-03",
+                  "excerpt": "Agreement to be contacted by text message or email is recorded on its own, apart from agreement to treatment."
+                }
+              },
+              {
+                "ruleId": "CM-02",
+                "verdict": "gap",
+                "citation": {
+                  "ruleId": "CM-02",
+                  "excerpt": "says nothing clinical beyond the time and place of an appointment, unless the patient has chosen to receive detailed messages"
+                }
+              },
+              {
+                "ruleId": "CM-04",
+                "verdict": "gap",
+                "citation": {
+                  "ruleId": "CM-04",
+                  "excerpt": "A copy of every letter and message sent to a patient is kept on their chart."
+                }
+              }
+            ],
+            "questions": [
+              {
+                "ruleIds": ["CS-04"],
+                "question": "For patients aged 16 or 17, could the email address we use belong to a parent or guardian rather than the young person?",
+                "answer": null
+              },
+              {
+                "ruleIds": ["TP-01"],
+                "question": "Does the template tool send these emails through an external company or email service that does not already have a signed data processing agreement with us?",
+                "answer": null
+              }
+            ]
+          }
+        },
+        {
+          "itemId": "KV-34",
+          "run": 1,
+          "judgements": [
+            {
+              "ruleId": "TP-02",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "TP-02",
+                "excerpt": "Patient information is stored only in data centres located inside the country."
+              },
+              "businessFact": "Will the saved near-miss draft contain patient information (such as the patient's name, health number or prescription details)?"
+            },
+            {
+              "ruleId": "IR-01",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "IR-01",
+                "excerpt": "is reported in the incident system within twenty-four hours of someone noticing it"
+              }
+            },
+            {
+              "ruleId": "IR-04",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "IR-04",
+                "excerpt": "is assessed by the clinical safety officer before release, and the assessment is filed in the hazard log"
+              },
+              "businessFact": "Will the clinical safety officer assess this prescribing screen change before release and file the assessment in the hazard log?"
+            }
+          ],
+          "diagnostics": {
+            "candidates": 16,
+            "applicable": 3,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.0314378,
+          "inputTokens": 6079,
+          "completionTokens": 2262,
+          "seconds": 18.206
+        },
+        {
+          "itemId": "KV-35",
+          "run": 1,
+          "judgements": [
+            {
+              "ruleId": "TP-04",
+              "verdict": "compliant",
+              "citation": {
+                "ruleId": "TP-04",
+                "excerpt": "Laptops, tablets and phones used for clinical work encrypt their storage and can be wiped remotely."
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 15,
+            "applicable": 1,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.022301799999999997,
+          "inputTokens": 5741,
+          "completionTokens": 1416,
+          "seconds": 10.537
+        },
+        {
+          "itemId": "KV-36",
+          "run": 1,
+          "judgements": [],
+          "diagnostics": {
+            "candidates": 8,
+            "applicable": 0,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.0096238,
+          "inputTokens": 3952,
+          "completionTokens": 506,
+          "seconds": 4.07
+        },
+        {
+          "itemId": "KV-01",
+          "run": 2,
+          "judgements": [
+            {
+              "ruleId": "RA-04",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "RA-04",
+                "excerpt": "The charts of employees who are also patients, and of anyone the privacy officer marks as a public figure, are restricted, and each opening of a restricted chart is reported to the privacy officer on the same day."
+              },
+              "businessFact": "Will the full list of registered patients that covering doctors can open include charts of employees who are also patients or of patients marked as public figures?"
+            },
+            {
+              "ruleId": "RA-01",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "RA-01",
+                "excerpt": "A clinician opens a patient's chart only while they are taking part in that patient's care"
+              }
+            },
+            {
+              "ruleId": "RA-02",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "RA-02",
+                "excerpt": "requires a reason typed before the chart opens, and every such opening is reviewed by the privacy officer within five working days"
+              }
+            },
+            {
+              "ruleId": "IR-04",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "IR-04",
+                "excerpt": "is assessed by the clinical safety officer before release, and the assessment is filed in the hazard log"
+              },
+              "businessFact": "Will the clinical safety officer assess this change and file the assessment in the hazard log before it is released?"
+            }
+          ],
+          "diagnostics": {
+            "candidates": 17,
+            "applicable": 4,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.0287238,
+          "inputTokens": 6407,
+          "completionTokens": 1925,
+          "seconds": 14.683
+        },
+        {
+          "itemId": "KV-02",
+          "run": 2,
+          "judgements": [
+            {
+              "ruleId": "TP-01",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "TP-01",
+                "excerpt": "A company that will handle patient information for the network signs a data processing agreement before it receives any."
+              },
+              "businessFact": "Does the existing data processing agreement with the hosting supplier cover handling patient information in the overseas region?"
+            },
+            {
+              "ruleId": "CS-01",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "CS-01",
+                "excerpt": "Information about a patient leaves the network only with the patient's recorded consent"
+              },
+              "businessFact": "Does the appointment system hold information about identifiable patients, and if it moves overseas, will each patient's recorded consent or a legal requirement cover that transfer?"
+            },
+            {
+              "ruleId": "TP-02",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "TP-02",
+                "excerpt": "Patient information is stored only in data centres located inside the country."
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 17,
+            "applicable": 3,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0,
+            "questionsAsked": 1,
+            "questionsAnswered": 1,
+            "answersSettled": 1,
+            "answersSettleFailed": 0,
+            "findingsRefreshed": 1,
+            "answeredNoEvidenceDemoted": 0
+          },
+          "costUsd": 0.0358898,
+          "inputTokens": 8430,
+          "completionTokens": 2237,
+          "seconds": 16.913,
+          "answered": {
+            "judgements": [
+              {
+                "ruleId": "CS-01",
+                "verdict": "needs-ba-input",
+                "citation": {
+                  "ruleId": "CS-01",
+                  "excerpt": "Information about a patient leaves the network only with the patient's recorded consent"
+                },
+                "businessFact": "Do patients have recorded consent for their information to be hosted overseas by the supplier, or does a law compel that disclosure?"
+              },
+              {
+                "ruleId": "TP-01",
+                "verdict": "compliant",
+                "citation": {
+                  "ruleId": "TP-01",
+                  "excerpt": "signs a data processing agreement before it receives any"
+                }
+              },
+              {
+                "ruleId": "TP-02",
+                "verdict": "gap",
+                "citation": {
+                  "ruleId": "TP-02",
+                  "excerpt": "Patient information is stored only in data centres located inside the country."
+                }
+              }
+            ],
+            "questions": [
+              {
+                "ruleIds": ["TP-01"],
+                "question": "Does the existing data processing agreement with the hosting supplier cover handling patient information in the overseas region?",
+                "answer": "Yes, we do."
+              }
+            ]
+          }
+        },
+        {
+          "itemId": "KV-03",
+          "run": 2,
+          "judgements": [],
+          "diagnostics": {
+            "candidates": 4,
+            "applicable": 0,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.0080678,
+          "inputTokens": 3514,
+          "completionTokens": 438,
+          "seconds": 4.445
+        },
+        {
+          "itemId": "KV-04",
+          "run": 2,
+          "judgements": [
+            {
+              "ruleId": "ID-01",
+              "verdict": "compliant",
+              "citation": {
+                "ruleId": "ID-01",
+                "excerpt": "Before a chart is opened for a patient who is present, staff confirm two identifiers with the patient: full name and date of birth."
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 10,
+            "applicable": 1,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.0170358,
+          "inputTokens": 5238,
+          "completionTokens": 990,
+          "seconds": 8.89
+        },
+        {
+          "itemId": "KV-05",
+          "run": 2,
+          "judgements": [
+            {
+              "ruleId": "MS-04",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "MS-04",
+                "excerpt": "Doses for children are worked out from a weight measured within the previous thirty days."
+              },
+              "businessFact": "Does the calculator only use a growth chart weight measured within the previous thirty days, and what happens if the latest weight is older than that?"
+            },
+            {
+              "ruleId": "IR-04",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "IR-04",
+                "excerpt": "is assessed by the clinical safety officer before release, and the assessment is filed in the hazard log."
+              },
+              "businessFact": "Will the clinical safety officer assess this change before release and file the assessment in the hazard log?"
+            }
+          ],
+          "diagnostics": {
+            "candidates": 16,
+            "applicable": 2,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0,
+            "questionsAsked": 0,
+            "questionsAnswered": 0,
+            "answersSettled": 0,
+            "answersSettleFailed": 0,
+            "findingsRefreshed": 0,
+            "answeredNoEvidenceDemoted": 0
+          },
+          "costUsd": 0.0261838,
+          "inputTokens": 6067,
+          "completionTokens": 1739,
+          "seconds": 13.457,
+          "answered": {
+            "judgements": [
+              {
+                "ruleId": "MS-04",
+                "verdict": "needs-ba-input",
+                "citation": {
+                  "ruleId": "MS-04",
+                  "excerpt": "Doses for children are worked out from a weight measured within the previous thirty days."
+                },
+                "businessFact": "Does the calculator only use a growth chart weight measured within the previous thirty days, and what happens if the latest weight is older than that?"
+              },
+              {
+                "ruleId": "IR-04",
+                "verdict": "needs-ba-input",
+                "citation": {
+                  "ruleId": "IR-04",
+                  "excerpt": "is assessed by the clinical safety officer before release, and the assessment is filed in the hazard log."
+                },
+                "businessFact": "Will the clinical safety officer assess this change before release and file the assessment in the hazard log?"
+              }
+            ],
+            "questions": []
+          }
+        },
+        {
+          "itemId": "KV-06",
+          "run": 2,
+          "judgements": [
+            {
+              "ruleId": "CS-04",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "CS-04",
+                "excerpt": "Nothing about a patient aged sixteen or seventeen is disclosed to a parent or guardian without the young person's agreement, unless the treating clinician records a safeguarding reason."
+              },
+              "businessFact": "Can parents or guardians of 16- and 17-year-old patients view those patients' lab results through the patient app (proxy access)?"
+            },
+            {
+              "ruleId": "CM-01",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "CM-01",
+                "excerpt": "A test result is released to the patient portal only once the clinician who ordered it has reviewed it"
+              }
+            },
+            {
+              "ruleId": "IR-04",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "IR-04",
+                "excerpt": "is assessed by the clinical safety officer before release, and the assessment is filed in the hazard log"
+              },
+              "businessFact": "Will releasing results straight to the patient app change any screen clinicians see or the order of steps in their result-handling workflow, such as removing a review step?"
+            }
+          ],
+          "diagnostics": {
+            "candidates": 19,
+            "applicable": 3,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.029217799999999995,
+          "inputTokens": 6379,
+          "completionTokens": 1980,
+          "seconds": 14.357
+        },
+        {
+          "itemId": "KV-07",
+          "run": 2,
+          "judgements": [
+            {
+              "ruleId": "RA-03",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "RA-03",
+                "excerpt": "Reception and billing roles see contact, appointment and payment details only; they never see clinical notes, results or diagnoses."
+              },
+              "businessFact": "Will the merge function show the front-desk user any clinical content (notes, results, diagnoses) from the registrations being combined?"
+            },
+            {
+              "ruleId": "ID-02",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "ID-02",
+                "excerpt": "Two charts are combined into one only after two members of staff have each confirmed that they belong to the same person"
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 14,
+            "applicable": 2,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.021905800000000003,
+          "inputTokens": 5748,
+          "completionTokens": 1375,
+          "seconds": 10.726
+        },
+        {
+          "itemId": "KV-08",
+          "run": 2,
+          "judgements": [
+            {
+              "ruleId": "CS-02",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "CS-02",
+                "excerpt": "A patient may withdraw consent at any time, and the withdrawal applies to every disclosure made from one working day after it is received."
+              },
+              "businessFact": "Will the disclosure to the university rely on patients' recorded consent (so withdrawals must be honoured), rather than on ethics approval or a legal requirement alone?"
+            },
+            {
+              "ruleId": "TP-01",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "TP-01",
+                "excerpt": "A company that will handle patient information for the network signs a data processing agreement before it receives any."
+              },
+              "businessFact": "Will the university's respiratory team handle the patient information as a processor on the network's behalf (rather than as an independent research body)?"
+            },
+            {
+              "ruleId": "TP-05",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "TP-05",
+                "excerpt": "Patient information is not carried on USB drives or other removable media, except encrypted drives issued by the IT service desk."
+              },
+              "businessFact": "Will the spreadsheet be delivered to the university on a USB drive or other removable media?"
+            },
+            {
+              "ruleId": "CS-01",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "CS-01",
+                "excerpt": "Information about a patient leaves the network only with the patient's recorded consent"
+              },
+              "businessFact": "Has each asthma patient in the extract given recorded consent to share their information with the university research team, or does a law compel this disclosure?"
+            },
+            {
+              "ruleId": "CS-05",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "CS-05",
+                "excerpt": "names, addresses and health numbers are removed before the data leaves the clinical system"
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 20,
+            "applicable": 5,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.0293018,
+          "inputTokens": 6506,
+          "completionTokens": 1963,
+          "seconds": 15.98
+        },
+        {
+          "itemId": "KV-09",
+          "run": 2,
+          "judgements": [
+            {
+              "ruleId": "RA-05",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "RA-05",
+                "excerpt": "Computers in consulting rooms lock their screen after five minutes without keyboard or mouse input."
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 13,
+            "applicable": 1,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.0190718,
+          "inputTokens": 5606,
+          "completionTokens": 1120,
+          "seconds": 9.32
+        },
+        {
+          "itemId": "KV-10",
+          "run": 2,
+          "judgements": [],
+          "diagnostics": {
+            "candidates": 8,
+            "applicable": 0,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.0107898,
+          "inputTokens": 3990,
+          "completionTokens": 615,
+          "seconds": 6.528
+        },
+        {
+          "itemId": "KV-11",
+          "run": 2,
+          "judgements": [
+            {
+              "ruleId": "CS-01",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "CS-01",
+                "excerpt": "Information about a patient leaves the network only with the patient's recorded consent, unless a law compels the disclosure."
+              },
+              "businessFact": "Will the video consultation be hosted or carried by a service outside the Kestrel Vale network, such that patient information or the consultation passes outside it?"
+            },
+            {
+              "ruleId": "IR-04",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "IR-04",
+                "excerpt": "Any change to a clinical system that alters what clinicians see on screen, or the order of steps in a clinical task, is assessed by the clinical safety officer before release, and the assessment is filed in the hazard log."
+              },
+              "businessFact": "Will this change alter what clinicians see in the clinical system or the order of steps in their clinical tasks (for example, a new video consultation screen or step)?"
+            },
+            {
+              "ruleId": "TP-01",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "TP-01",
+                "excerpt": "A company that will handle patient information for the network signs a data processing agreement before it receives any."
+              },
+              "businessFact": "Will the video appointments use an external supplier's service that handles patient information?"
+            },
+            {
+              "ruleId": "TP-02",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "TP-02",
+                "excerpt": "Patient information is stored only in data centres located inside the country."
+              },
+              "businessFact": "Will the video service store any patient information (such as bookings, recordings or call logs) in a new place, and where would it be hosted?"
+            },
+            {
+              "ruleId": "ID-03",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "ID-03",
+                "excerpt": "the clinician confirms who they are speaking to with a one-time code sent to the mobile number held on the chart"
+              }
+            },
+            {
+              "ruleId": "CS-03",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "CS-03",
+                "excerpt": "Agreement to be contacted by text message or email is recorded on its own, apart from agreement to treatment."
+              },
+              "businessFact": "Is patients' agreement to be contacted by text or email recorded separately from their consent to treatment before booking confirmations are sent?"
+            },
+            {
+              "ruleId": "CM-02",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "CM-02",
+                "excerpt": "says nothing clinical beyond the time and place of an appointment"
+              },
+              "businessFact": "What content will the booking confirmation contain, and could it include clinical detail (such as the reason for the visit) for patients who have not opted into detailed messages?"
+            },
+            {
+              "ruleId": "CM-04",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "CM-04",
+                "excerpt": "A copy of every letter and message sent to a patient is kept on their chart."
+              },
+              "businessFact": "Will a copy of each booking confirmation sent to the patient be saved to their chart?"
+            }
+          ],
+          "diagnostics": {
+            "candidates": 18,
+            "applicable": 8,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.0316058,
+          "inputTokens": 6453,
+          "completionTokens": 2204,
+          "seconds": 16.585
+        },
+        {
+          "itemId": "KV-12",
+          "run": 2,
+          "judgements": [
+            {
+              "ruleId": "MS-05",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "MS-05",
+                "excerpt": "it can never be switched off for later prescriptions"
+              }
+            },
+            {
+              "ruleId": "IR-04",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "IR-04",
+                "excerpt": "is assessed by the clinical safety officer before release"
+              },
+              "businessFact": "Will the clinical safety officer assess this change and file the assessment in the hazard log before it is released?"
+            }
+          ],
+          "diagnostics": {
+            "candidates": 14,
+            "applicable": 2,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.022535799999999998,
+          "inputTokens": 5878,
+          "completionTokens": 1412,
+          "seconds": 10.75
+        },
+        {
+          "itemId": "KV-13",
+          "run": 2,
+          "judgements": [
+            {
+              "ruleId": "CM-05",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "CM-05",
+                "excerpt": "Any conversation that seeks consent from a patient who prefers a language other than English uses a qualified interpreter, never a relative or friend."
+              },
+              "businessFact": "Will the registration consent be sought through a conversation (e.g. staff-assisted registration) with patients who prefer a language other than English?"
+            },
+            {
+              "ruleId": "CS-03",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "CS-03",
+                "excerpt": "Agreement to be contacted by text message or email is recorded on its own, apart from agreement to treatment."
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 15,
+            "applicable": 2,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.0230198,
+          "inputTokens": 5730,
+          "completionTokens": 1490,
+          "seconds": 11.475
+        },
+        {
+          "itemId": "KV-14",
+          "run": 2,
+          "judgements": [
+            {
+              "ruleId": "CS-01",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "CS-01",
+                "excerpt": "Information about a patient leaves the network only with the patient's recorded consent"
+              },
+              "businessFact": "Is the patient's (or, for young children, the legally authorised representative's) consent recorded before a child's booking and test information is shown in the family account, and is the family account hosted inside the network?"
+            },
+            {
+              "ruleId": "CS-04",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "CS-04",
+                "excerpt": "Nothing about a patient aged sixteen or seventeen is disclosed to a parent or guardian without the young person's agreement"
+              }
+            },
+            {
+              "ruleId": "CM-01",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "CM-01",
+                "excerpt": "A test result is released to the patient portal only once the clinician who ordered it has reviewed it"
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 18,
+            "applicable": 3,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0,
+            "questionsAsked": 0,
+            "questionsAnswered": 0,
+            "answersSettled": 0,
+            "answersSettleFailed": 0,
+            "findingsRefreshed": 0,
+            "answeredNoEvidenceDemoted": 0
+          },
+          "costUsd": 0.0284838,
+          "inputTokens": 6377,
+          "completionTokens": 1907,
+          "seconds": 14.305,
+          "answered": {
+            "judgements": [
+              {
+                "ruleId": "CS-01",
+                "verdict": "needs-ba-input",
+                "citation": {
+                  "ruleId": "CS-01",
+                  "excerpt": "Information about a patient leaves the network only with the patient's recorded consent"
+                },
+                "businessFact": "Is the patient's (or, for young children, the legally authorised representative's) consent recorded before a child's booking and test information is shown in the family account, and is the family account hosted inside the network?"
+              },
+              {
+                "ruleId": "CS-04",
+                "verdict": "gap",
+                "citation": {
+                  "ruleId": "CS-04",
+                  "excerpt": "Nothing about a patient aged sixteen or seventeen is disclosed to a parent or guardian without the young person's agreement"
+                }
+              },
+              {
+                "ruleId": "CM-01",
+                "verdict": "gap",
+                "citation": {
+                  "ruleId": "CM-01",
+                  "excerpt": "A test result is released to the patient portal only once the clinician who ordered it has reviewed it"
+                }
+              }
+            ],
+            "questions": []
+          }
+        },
+        {
+          "itemId": "KV-15",
+          "run": 2,
+          "judgements": [
+            {
+              "ruleId": "MS-01",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "MS-01",
+                "excerpt": "Every prescription is checked against the allergies recorded on the chart before it is issued"
+              }
+            },
+            {
+              "ruleId": "MS-05",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "MS-05",
+                "excerpt": "can be acknowledged for the prescription in hand only; it can never be switched off for later prescriptions"
+              },
+              "businessFact": "Does the one-click skip apply only to the single prescription in hand, or does it stay active for later prescriptions, for example for the duration of a long queue?"
+            },
+            {
+              "ruleId": "IR-04",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "IR-04",
+                "excerpt": "is assessed by the clinical safety officer before release, and the assessment is filed in the hazard log"
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 8,
+            "applicable": 3,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.020579799999999995,
+          "inputTokens": 5250,
+          "completionTokens": 1342,
+          "seconds": 10.305
+        },
+        {
+          "itemId": "KV-16",
+          "run": 2,
+          "judgements": [
+            {
+              "ruleId": "RK-05",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "RK-05",
+                "excerpt": "Paper documents scanned onto a chart are checked for legibility, and the paper is kept for three months before it is shredded."
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 13,
+            "applicable": 1,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.019839800000000005,
+          "inputTokens": 5435,
+          "completionTokens": 1231,
+          "seconds": 9.73
+        },
+        {
+          "itemId": "KV-17",
+          "run": 2,
+          "judgements": [],
+          "diagnostics": {
+            "candidates": 8,
+            "applicable": 0,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.0101778,
+          "inputTokens": 3944,
+          "completionTokens": 563,
+          "seconds": 5.212
+        },
+        {
+          "itemId": "KV-18",
+          "run": 2,
+          "judgements": [
+            {
+              "ruleId": "RA-01",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "RA-01",
+                "excerpt": "apart from the recorded emergency access that RA-02 allows"
+              },
+              "businessFact": "Is the typed-reason access restricted to genuine emergencies, with the typed reason recorded as the emergency access record, or can a clinician use it for any non-care access?"
+            },
+            {
+              "ruleId": "RA-02",
+              "verdict": "compliant",
+              "citation": {
+                "ruleId": "RA-02",
+                "excerpt": "requires a reason typed before the chart opens, and every such opening is reviewed by the privacy officer within five working days"
+              }
+            },
+            {
+              "ruleId": "IR-04",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "IR-04",
+                "excerpt": "is assessed by the clinical safety officer before release, and the assessment is filed in the hazard log"
+              },
+              "businessFact": "Will the clinical safety officer assess this change and file the assessment in the hazard log before it is released?"
+            }
+          ],
+          "diagnostics": {
+            "candidates": 12,
+            "applicable": 3,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.0245878,
+          "inputTokens": 5809,
+          "completionTokens": 1631,
+          "seconds": 11.727
+        },
+        {
+          "itemId": "KV-19",
+          "run": 2,
+          "judgements": [
+            {
+              "ruleId": "CS-01",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "CS-01",
+                "excerpt": "Information about a patient leaves the network only with the patient's recorded consent, unless a law compels the disclosure."
+              },
+              "businessFact": "Does the business treat an SMS sent to the patient's own mobile number as patient information leaving the network that needs recorded consent?"
+            },
+            {
+              "ruleId": "CM-02",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "CM-02",
+                "excerpt": "says nothing clinical beyond the time and place of an appointment, unless the patient has chosen to receive detailed messages"
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 17,
+            "applicable": 2,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.025077800000000004,
+          "inputTokens": 6029,
+          "completionTokens": 1636,
+          "seconds": 11.705
+        },
+        {
+          "itemId": "KV-20",
+          "run": 2,
+          "judgements": [
+            {
+              "ruleId": "MS-03",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "MS-03",
+                "excerpt": "A repeat prescription runs for at most twelve months before a clinician must review it."
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 13,
+            "applicable": 1,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.0205398,
+          "inputTokens": 5525,
+          "completionTokens": 1283,
+          "seconds": 10.018
+        },
+        {
+          "itemId": "KV-21",
+          "run": 2,
+          "judgements": [
+            {
+              "ruleId": "ID-04",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "ID-04",
+                "excerpt": "their legal name remains on the chart and is the name printed on prescriptions and referral letters"
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 13,
+            "applicable": 1,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.0192718,
+          "inputTokens": 5561,
+          "completionTokens": 1149,
+          "seconds": 9.287
+        },
+        {
+          "itemId": "KV-22",
+          "run": 2,
+          "judgements": [
+            {
+              "ruleId": "IR-05",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "IR-05",
+                "excerpt": "A suspected loss or disclosure of patient information is reported to the privacy officer within four hours."
+              },
+              "businessFact": "Do clinicians' work phones store or give access to patient information, so that losing one is a suspected loss of patient information?"
+            }
+          ],
+          "diagnostics": {
+            "candidates": 11,
+            "applicable": 1,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.020519800000000005,
+          "inputTokens": 4345,
+          "completionTokens": 1517,
+          "seconds": 11.616
+        },
+        {
+          "itemId": "KV-23",
+          "run": 2,
+          "judgements": [
+            {
+              "ruleId": "CM-05",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "CM-05",
+                "excerpt": "uses a qualified interpreter, never a relative or friend"
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 10,
+            "applicable": 1,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.017029799999999998,
+          "inputTokens": 5105,
+          "completionTokens": 1016,
+          "seconds": 8.506
+        },
+        {
+          "itemId": "KV-24",
+          "run": 2,
+          "judgements": [],
+          "diagnostics": {
+            "candidates": 8,
+            "applicable": 0,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.0118758,
+          "inputTokens": 3963,
+          "completionTokens": 729,
+          "seconds": 5.884
+        },
+        {
+          "itemId": "KV-25",
+          "run": 2,
+          "judgements": [
+            {
+              "ruleId": "IR-04",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "IR-04",
+                "excerpt": "Any change to a clinical system that alters what clinicians see on screen, or the order of steps in a clinical task, is assessed by the clinical safety officer before release, and the assessment is filed in the hazard log."
+              },
+              "businessFact": "Will the correction flow change what clinicians see on screen (e.g. showing version history or a new reason prompt) or the steps they follow when editing a note in the clinical system?"
+            },
+            {
+              "ruleId": "RK-03",
+              "verdict": "compliant",
+              "citation": {
+                "ruleId": "RK-03",
+                "excerpt": "a correction is added as a new entry showing the original text, who corrected it and why"
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 11,
+            "applicable": 2,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.019609799999999997,
+          "inputTokens": 5305,
+          "completionTokens": 1234,
+          "seconds": 10.427
+        },
+        {
+          "itemId": "KV-26",
+          "run": 2,
+          "judgements": [
+            {
+              "ruleId": "IR-04",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "IR-04",
+                "excerpt": "Any change to a clinical system that alters what clinicians see on screen, or the order of steps in a clinical task, is assessed by the clinical safety officer before release, and the assessment is filed in the hazard log."
+              },
+              "businessFact": "Will connecting the ECG machine change what clinicians see on screen in the chart or change the order of steps in a clinical task (e.g. a new trace view or a new step to review or accept traces)?"
+            },
+            {
+              "ruleId": "TP-03",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "TP-03",
+                "excerpt": "A medical device is entered in the device inventory, with its owner and software version, before it is connected to the network."
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 20,
+            "applicable": 2,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0,
+            "questionsAsked": 1,
+            "questionsAnswered": 0,
+            "answersSettled": 0,
+            "answersSettleFailed": 0,
+            "findingsRefreshed": 0,
+            "answeredNoEvidenceDemoted": 0
+          },
+          "costUsd": 0.0282298,
+          "inputTokens": 6650,
+          "completionTokens": 1827,
+          "seconds": 15.469,
+          "answered": {
+            "judgements": [
+              {
+                "ruleId": "IR-04",
+                "verdict": "needs-ba-input",
+                "citation": {
+                  "ruleId": "IR-04",
+                  "excerpt": "Any change to a clinical system that alters what clinicians see on screen, or the order of steps in a clinical task, is assessed by the clinical safety officer before release, and the assessment is filed in the hazard log."
+                },
+                "businessFact": "Will connecting the ECG machine change what clinicians see on screen in the chart or change the order of steps in a clinical task (e.g. a new trace view or a new step to review or accept traces)?"
+              },
+              {
+                "ruleId": "TP-03",
+                "verdict": "gap",
+                "citation": {
+                  "ruleId": "TP-03",
+                  "excerpt": "A medical device is entered in the device inventory, with its owner and software version, before it is connected to the network."
+                }
+              }
+            ],
+            "questions": [
+              {
+                "ruleIds": ["IR-04"],
+                "question": "When the new ECG machine is connected so traces go straight onto the chart, will clinicians see anything different on screen in the chart, such as a new trace view, or have any new or changed steps in their work, such as reviewing or accepting a trace before it is filed?",
+                "answer": null
+              }
+            ]
+          }
+        },
+        {
+          "itemId": "KV-27",
+          "run": 2,
+          "judgements": [
+            {
+              "ruleId": "RK-01",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "RK-01",
+                "excerpt": "An adult's chart is kept for eight years after the last contact with the network."
+              }
+            },
+            {
+              "ruleId": "RK-03",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "RK-03",
+                "excerpt": "A clinical entry is never deleted or overwritten; a correction is added as a new entry"
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 14,
+            "applicable": 2,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.0215978,
+          "inputTokens": 5724,
+          "completionTokens": 1349,
+          "seconds": 11.112
+        },
+        {
+          "itemId": "KV-28",
+          "run": 2,
+          "judgements": [
+            {
+              "ruleId": "TP-04",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "TP-04",
+                "excerpt": "Laptops, tablets and phones used for clinical work encrypt their storage and can be wiped remotely."
+              },
+              "businessFact": "Is the van's laptop encrypted on its storage and enrolled so that it can be wiped remotely?"
+            },
+            {
+              "ruleId": "TP-05",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "TP-05",
+                "excerpt": "Patient information is not carried on USB drives or other removable media, except encrypted drives issued by the IT service desk."
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 15,
+            "applicable": 2,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0,
+            "questionsAsked": 0,
+            "questionsAnswered": 0,
+            "answersSettled": 0,
+            "answersSettleFailed": 0,
+            "findingsRefreshed": 0,
+            "answeredNoEvidenceDemoted": 0
+          },
+          "costUsd": 0.025389800000000004,
+          "inputTokens": 5915,
+          "completionTokens": 1690,
+          "seconds": 12.88,
+          "answered": {
+            "judgements": [
+              {
+                "ruleId": "TP-04",
+                "verdict": "needs-ba-input",
+                "citation": {
+                  "ruleId": "TP-04",
+                  "excerpt": "Laptops, tablets and phones used for clinical work encrypt their storage and can be wiped remotely."
+                },
+                "businessFact": "Is the van's laptop encrypted on its storage and enrolled so that it can be wiped remotely?"
+              },
+              {
+                "ruleId": "TP-05",
+                "verdict": "gap",
+                "citation": {
+                  "ruleId": "TP-05",
+                  "excerpt": "Patient information is not carried on USB drives or other removable media, except encrypted drives issued by the IT service desk."
+                }
+              }
+            ],
+            "questions": []
+          }
+        },
+        {
+          "itemId": "KV-29",
+          "run": 2,
+          "judgements": [
+            {
+              "ruleId": "RA-03",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "RA-03",
+                "excerpt": "they never see clinical notes, results or diagnoses"
+              }
+            },
+            {
+              "ruleId": "IR-04",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "IR-04",
+                "excerpt": "is assessed by the clinical safety officer before release"
+              },
+              "businessFact": "Is the check-in screen part of a clinical system, or does the change alter what clinicians see or the order of steps in a clinical task? If so, will the clinical safety officer assess it and file the assessment in the hazard log before release?"
+            }
+          ],
+          "diagnostics": {
+            "candidates": 13,
+            "applicable": 2,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.022937799999999998,
+          "inputTokens": 5739,
+          "completionTokens": 1480,
+          "seconds": 11.392
+        },
+        {
+          "itemId": "KV-30",
+          "run": 2,
+          "judgements": [],
+          "diagnostics": {
+            "candidates": 2,
+            "applicable": 0,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.0055018,
+          "inputTokens": 3221,
+          "completionTokens": 240,
+          "seconds": 2.501
+        },
+        {
+          "itemId": "KV-31",
+          "run": 2,
+          "judgements": [
+            {
+              "ruleId": "IR-04",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "IR-04",
+                "excerpt": "is assessed by the clinical safety officer before release, and the assessment is filed in the hazard log"
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 11,
+            "applicable": 1,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0,
+            "questionsAsked": 0,
+            "questionsAnswered": 0,
+            "answersSettled": 0,
+            "answersSettleFailed": 0,
+            "findingsRefreshed": 0,
+            "answeredNoEvidenceDemoted": 0
+          },
+          "costUsd": 0.0176678,
+          "inputTokens": 5309,
+          "completionTokens": 1039,
+          "seconds": 8.325,
+          "answered": {
+            "judgements": [
+              {
+                "ruleId": "IR-04",
+                "verdict": "gap",
+                "citation": {
+                  "ruleId": "IR-04",
+                  "excerpt": "is assessed by the clinical safety officer before release, and the assessment is filed in the hazard log"
+                }
+              }
+            ],
+            "questions": []
+          }
+        },
+        {
+          "itemId": "KV-32",
+          "run": 2,
+          "judgements": [
+            {
+              "ruleId": "CS-04",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "CS-04",
+                "excerpt": "Nothing about a patient aged sixteen or seventeen is disclosed to a parent or guardian without the young person's agreement, unless the treating clinician records a safeguarding reason."
+              },
+              "businessFact": "Can a parent or guardian submit the request for, or receive the printed notes of, a patient aged 16 or 17?"
+            },
+            {
+              "ruleId": "TP-01",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "TP-01",
+                "excerpt": "A company that will handle patient information for the network signs a data processing agreement before it receives any."
+              },
+              "businessFact": "Will an external supplier (e.g. a print/mailing house or hosted web form provider) handle patient information for this process?"
+            },
+            {
+              "ruleId": "TP-02",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "TP-02",
+                "excerpt": "Patient information is stored only in data centres located inside the country."
+              },
+              "businessFact": "Will the website request data be stored in a new data store, and if so, could it be hosted in a data centre outside the country?"
+            },
+            {
+              "ruleId": "CM-04",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "CM-04",
+                "excerpt": "A copy of every letter and message sent to a patient is kept on their chart."
+              },
+              "businessFact": "Will a copy of each printed record set and any covering letter or confirmation message sent to the patient be saved to their chart?"
+            },
+            {
+              "ruleId": "RK-04",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "RK-04",
+                "excerpt": "is answered within thirty calendar days."
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 15,
+            "applicable": 5,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.0273258,
+          "inputTokens": 5793,
+          "completionTokens": 1908,
+          "seconds": 15.464
+        },
+        {
+          "itemId": "KV-33",
+          "run": 2,
+          "judgements": [
+            {
+              "ruleId": "ID-04",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "ID-04",
+                "excerpt": "A patient may be known by a preferred name, but their legal name remains on the chart and is the name printed on prescriptions and referral letters."
+              },
+              "businessFact": "Does the new referral template print a name taken from a field that could hold the patient's preferred name rather than the legal name?"
+            },
+            {
+              "ruleId": "CS-04",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "CS-04",
+                "excerpt": "Nothing about a patient aged sixteen or seventeen is disclosed to a parent or guardian without the young person's agreement, unless the treating clinician records a safeguarding reason."
+              },
+              "businessFact": "Can the email address used for a patient aged 16 or 17 be a parent's or guardian's address?"
+            },
+            {
+              "ruleId": "TP-01",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "TP-01",
+                "excerpt": "A company that will handle patient information for the network signs a data processing agreement before it receives any."
+              },
+              "businessFact": "Will the emails be sent through an outside email service provider that does not yet have a signed data processing agreement with the network?"
+            },
+            {
+              "ruleId": "CS-01",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "CS-01",
+                "excerpt": "Information about a patient leaves the network only with the patient's recorded consent"
+              }
+            },
+            {
+              "ruleId": "CS-03",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "CS-03",
+                "excerpt": "Agreement to be contacted by text message or email is recorded on its own"
+              }
+            },
+            {
+              "ruleId": "CM-02",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "CM-02",
+                "excerpt": "says nothing clinical beyond the time and place of an appointment"
+              }
+            },
+            {
+              "ruleId": "CM-04",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "CM-04",
+                "excerpt": "A copy of every letter and message sent to a patient is kept on their chart."
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 17,
+            "applicable": 7,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0,
+            "questionsAsked": 3,
+            "questionsAnswered": 0,
+            "answersSettled": 0,
+            "answersSettleFailed": 0,
+            "findingsRefreshed": 0,
+            "answeredNoEvidenceDemoted": 0
+          },
+          "costUsd": 0.0332518,
+          "inputTokens": 6886,
+          "completionTokens": 2282,
+          "seconds": 17.913,
+          "answered": {
+            "judgements": [
+              {
+                "ruleId": "ID-04",
+                "verdict": "needs-ba-input",
+                "citation": {
+                  "ruleId": "ID-04",
+                  "excerpt": "A patient may be known by a preferred name, but their legal name remains on the chart and is the name printed on prescriptions and referral letters."
+                },
+                "businessFact": "Does the new referral template print a name taken from a field that could hold the patient's preferred name rather than the legal name?"
+              },
+              {
+                "ruleId": "CS-04",
+                "verdict": "needs-ba-input",
+                "citation": {
+                  "ruleId": "CS-04",
+                  "excerpt": "Nothing about a patient aged sixteen or seventeen is disclosed to a parent or guardian without the young person's agreement, unless the treating clinician records a safeguarding reason."
+                },
+                "businessFact": "Can the email address used for a patient aged 16 or 17 be a parent's or guardian's address?"
+              },
+              {
+                "ruleId": "TP-01",
+                "verdict": "needs-ba-input",
+                "citation": {
+                  "ruleId": "TP-01",
+                  "excerpt": "A company that will handle patient information for the network signs a data processing agreement before it receives any."
+                },
+                "businessFact": "Will the emails be sent through an outside email service provider that does not yet have a signed data processing agreement with the network?"
+              },
+              {
+                "ruleId": "CS-01",
+                "verdict": "gap",
+                "citation": {
+                  "ruleId": "CS-01",
+                  "excerpt": "Information about a patient leaves the network only with the patient's recorded consent"
+                }
+              },
+              {
+                "ruleId": "CS-03",
+                "verdict": "gap",
+                "citation": {
+                  "ruleId": "CS-03",
+                  "excerpt": "Agreement to be contacted by text message or email is recorded on its own"
+                }
+              },
+              {
+                "ruleId": "CM-02",
+                "verdict": "gap",
+                "citation": {
+                  "ruleId": "CM-02",
+                  "excerpt": "says nothing clinical beyond the time and place of an appointment"
+                }
+              },
+              {
+                "ruleId": "CM-04",
+                "verdict": "gap",
+                "citation": {
+                  "ruleId": "CM-04",
+                  "excerpt": "A copy of every letter and message sent to a patient is kept on their chart."
+                }
+              }
+            ],
+            "questions": [
+              {
+                "ruleIds": ["ID-04"],
+                "question": "Does the new referral template print a name taken from a field that could hold the patient's preferred name rather than the legal name?",
+                "answer": null
+              },
+              {
+                "ruleIds": ["CS-04"],
+                "question": "Can the email address used for a patient aged 16 or 17 be a parent's or guardian's address?",
+                "answer": null
+              },
+              {
+                "ruleIds": ["TP-01"],
+                "question": "Will the emails be sent through an outside email service provider that does not yet have a signed data processing agreement with the network?",
+                "answer": null
+              }
+            ]
+          }
+        },
+        {
+          "itemId": "KV-34",
+          "run": 2,
+          "judgements": [
+            {
+              "ruleId": "TP-02",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "TP-02",
+                "excerpt": "Patient information is stored only in data centres located inside the country."
+              },
+              "businessFact": "Will the saved near-miss drafts contain patient information and be stored somewhere other than the existing in-country clinical system data centres?"
+            },
+            {
+              "ruleId": "IR-01",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "IR-01",
+                "excerpt": "is reported in the incident system within twenty-four hours of someone noticing it"
+              }
+            },
+            {
+              "ruleId": "IR-04",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "IR-04",
+                "excerpt": "is assessed by the clinical safety officer before release, and the assessment is filed in the hazard log"
+              },
+              "businessFact": "Will the clinical safety officer assess the new near-miss button on the prescribing screen and file the assessment in the hazard log before release?"
+            }
+          ],
+          "diagnostics": {
+            "candidates": 13,
+            "applicable": 3,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.0258298,
+          "inputTokens": 5730,
+          "completionTokens": 1771,
+          "seconds": 13.819
+        },
+        {
+          "itemId": "KV-35",
+          "run": 2,
+          "judgements": [
+            {
+              "ruleId": "TP-04",
+              "verdict": "compliant",
+              "citation": {
+                "ruleId": "TP-04",
+                "excerpt": "Laptops, tablets and phones used for clinical work encrypt their storage and can be wiped remotely."
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 15,
+            "applicable": 1,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.0225518,
+          "inputTokens": 5741,
+          "completionTokens": 1441,
+          "seconds": 13.781
+        },
+        {
+          "itemId": "KV-36",
+          "run": 2,
+          "judgements": [],
+          "diagnostics": {
+            "candidates": 8,
+            "applicable": 0,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.0103138,
+          "inputTokens": 3952,
+          "completionTokens": 575,
+          "seconds": 4.68
+        },
+        {
+          "itemId": "KV-01",
+          "run": 3,
+          "judgements": [
+            {
+              "ruleId": "RA-04",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "RA-04",
+                "excerpt": "The charts of employees who are also patients, and of anyone the privacy officer marks as a public figure, are restricted, and each opening of a restricted chart is reported to the privacy officer on the same day."
+              },
+              "businessFact": "Will the full list of registered patients available to covering doctors include charts of employees who are patients or patients marked as public figures?"
+            },
+            {
+              "ruleId": "RA-01",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "RA-01",
+                "excerpt": "A clinician opens a patient's chart only while they are taking part in that patient's care"
+              }
+            },
+            {
+              "ruleId": "RA-02",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "RA-02",
+                "excerpt": "requires a reason typed before the chart opens, and every such opening is reviewed by the privacy officer within five working days"
+              }
+            },
+            {
+              "ruleId": "IR-04",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "IR-04",
+                "excerpt": "is assessed by the clinical safety officer before release, and the assessment is filed in the hazard log"
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 13,
+            "applicable": 4,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.024051799999999998,
+          "inputTokens": 5916,
+          "completionTokens": 1556,
+          "seconds": 12.437
+        },
+        {
+          "itemId": "KV-02",
+          "run": 3,
+          "judgements": [
+            {
+              "ruleId": "TP-01",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "TP-01",
+                "excerpt": "A company that will handle patient information for the network signs a data processing agreement before it receives any."
+              },
+              "businessFact": "Does the existing data processing agreement with the hosting supplier cover storing and handling patient information in the overseas region?"
+            },
+            {
+              "ruleId": "CS-01",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "CS-01",
+                "excerpt": "Information about a patient leaves the network only with the patient's recorded consent"
+              },
+              "businessFact": "Does the appointment system hold information about patients (for example names, appointment details or clinical reasons for visits), and if so, is recorded patient consent held for it to be transferred outside the network?"
+            },
+            {
+              "ruleId": "TP-02",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "TP-02",
+                "excerpt": "Patient information is stored only in data centres located inside the country."
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 14,
+            "applicable": 3,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0,
+            "questionsAsked": 1,
+            "questionsAnswered": 1,
+            "answersSettled": 1,
+            "answersSettleFailed": 0,
+            "findingsRefreshed": 1,
+            "answeredNoEvidenceDemoted": 0
+          },
+          "costUsd": 0.0353698,
+          "inputTokens": 8115,
+          "completionTokens": 2248,
+          "seconds": 21.254,
+          "answered": {
+            "judgements": [
+              {
+                "ruleId": "CS-01",
+                "verdict": "needs-ba-input",
+                "citation": {
+                  "ruleId": "CS-01",
+                  "excerpt": "Information about a patient leaves the network only with the patient's recorded consent"
+                },
+                "businessFact": "Have patients given recorded consent for their information to be stored and handled by the hosting supplier in the overseas region, or does a law compel that disclosure?"
+              },
+              {
+                "ruleId": "TP-01",
+                "verdict": "compliant",
+                "citation": {
+                  "ruleId": "TP-01",
+                  "excerpt": "signs a data processing agreement before it receives any"
+                }
+              },
+              {
+                "ruleId": "TP-02",
+                "verdict": "gap",
+                "citation": {
+                  "ruleId": "TP-02",
+                  "excerpt": "Patient information is stored only in data centres located inside the country."
+                }
+              }
+            ],
+            "questions": [
+              {
+                "ruleIds": ["TP-01"],
+                "question": "Does the existing data processing agreement with the hosting supplier cover storing and handling patient information in the overseas region?",
+                "answer": "Yes, we do."
+              }
+            ]
+          }
+        },
+        {
+          "itemId": "KV-03",
+          "run": 3,
+          "judgements": [],
+          "diagnostics": {
+            "candidates": 4,
+            "applicable": 0,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.008167800000000001,
+          "inputTokens": 3514,
+          "completionTokens": 448,
+          "seconds": 4.477
+        },
+        {
+          "itemId": "KV-04",
+          "run": 3,
+          "judgements": [
+            {
+              "ruleId": "ID-01",
+              "verdict": "compliant",
+              "citation": {
+                "ruleId": "ID-01",
+                "excerpt": "Before a chart is opened for a patient who is present, staff confirm two identifiers with the patient"
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 11,
+            "applicable": 1,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.0187858,
+          "inputTokens": 5393,
+          "completionTokens": 1134,
+          "seconds": 10.154
+        },
+        {
+          "itemId": "KV-05",
+          "run": 3,
+          "judgements": [
+            {
+              "ruleId": "MS-04",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "MS-04",
+                "excerpt": "Doses for children are worked out from a weight measured within the previous thirty days."
+              },
+              "businessFact": "If the latest weight on the growth chart was measured more than thirty days ago, what should the screen do: refuse to suggest a dose, warn the GP, or use it anyway?"
+            },
+            {
+              "ruleId": "IR-04",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "IR-04",
+                "excerpt": "is assessed by the clinical safety officer before release, and the assessment is filed in the hazard log"
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 16,
+            "applicable": 2,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0,
+            "questionsAsked": 0,
+            "questionsAnswered": 0,
+            "answersSettled": 0,
+            "answersSettleFailed": 0,
+            "findingsRefreshed": 0,
+            "answeredNoEvidenceDemoted": 0
+          },
+          "costUsd": 0.0251438,
+          "inputTokens": 6067,
+          "completionTokens": 1635,
+          "seconds": 11.943,
+          "answered": {
+            "judgements": [
+              {
+                "ruleId": "MS-04",
+                "verdict": "needs-ba-input",
+                "citation": {
+                  "ruleId": "MS-04",
+                  "excerpt": "Doses for children are worked out from a weight measured within the previous thirty days."
+                },
+                "businessFact": "If the latest weight on the growth chart was measured more than thirty days ago, what should the screen do: refuse to suggest a dose, warn the GP, or use it anyway?"
+              },
+              {
+                "ruleId": "IR-04",
+                "verdict": "gap",
+                "citation": {
+                  "ruleId": "IR-04",
+                  "excerpt": "is assessed by the clinical safety officer before release, and the assessment is filed in the hazard log"
+                }
+              }
+            ],
+            "questions": []
+          }
+        },
+        {
+          "itemId": "KV-06",
+          "run": 3,
+          "judgements": [
+            {
+              "ruleId": "CM-01",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "CM-01",
+                "excerpt": "A test result is released to the patient portal only once the clinician who ordered it has reviewed it"
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 18,
+            "applicable": 1,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.0260038,
+          "inputTokens": 6062,
+          "completionTokens": 1722,
+          "seconds": 14.156
+        },
+        {
+          "itemId": "KV-07",
+          "run": 3,
+          "judgements": [
+            {
+              "ruleId": "RK-03",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "RK-03",
+                "excerpt": "A clinical entry is never deleted or overwritten; a correction is added as a new entry showing the original text, who corrected it and why."
+              },
+              "businessFact": "Does folding two registrations into one entry remove or overwrite any clinical entries held on either record, or does it keep all of them intact?"
+            },
+            {
+              "ruleId": "ID-02",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "ID-02",
+                "excerpt": "Two charts are combined into one only after two members of staff have each confirmed that they belong to the same person"
+              }
+            },
+            {
+              "ruleId": "IR-04",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "IR-04",
+                "excerpt": "is assessed by the clinical safety officer before release, and the assessment is filed in the hazard log"
+              },
+              "businessFact": "Will the clinical safety officer assess this merge change before release and file the assessment in the hazard log?"
+            }
+          ],
+          "diagnostics": {
+            "candidates": 14,
+            "applicable": 3,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.023661800000000004,
+          "inputTokens": 5921,
+          "completionTokens": 1516,
+          "seconds": 11.392
+        },
+        {
+          "itemId": "KV-08",
+          "run": 3,
+          "judgements": [
+            {
+              "ruleId": "TP-01",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "TP-01",
+                "excerpt": "A company that will handle patient information for the network signs a data processing agreement before it receives any."
+              },
+              "businessFact": "Will the university's respiratory team handle the patient information as a processor on the network's behalf under a contract, rather than as an independent research body?"
+            },
+            {
+              "ruleId": "TP-02",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "TP-02",
+                "excerpt": "Patient information is stored only in data centres located inside the country."
+              },
+              "businessFact": "Will the spreadsheet be stored or hosted by the university or any service outside the country's data centres?"
+            },
+            {
+              "ruleId": "TP-05",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "TP-05",
+                "excerpt": "Patient information is not carried on USB drives or other removable media, except encrypted drives issued by the IT service desk."
+              },
+              "businessFact": "Will the spreadsheet be delivered to the university team on a USB drive or other removable media?"
+            },
+            {
+              "ruleId": "CS-01",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "CS-01",
+                "excerpt": "Information about a patient leaves the network only with the patient's recorded consent, unless a law compels the disclosure."
+              },
+              "businessFact": "Has each asthma patient in the extract given recorded consent to share their information with the university study, or does a law compel this disclosure?"
+            },
+            {
+              "ruleId": "CS-05",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "CS-05",
+                "excerpt": "names, addresses and health numbers are removed before the data leaves the clinical system"
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 19,
+            "applicable": 5,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.0277738,
+          "inputTokens": 6387,
+          "completionTokens": 1834,
+          "seconds": 15.658
+        },
+        {
+          "itemId": "KV-09",
+          "run": 3,
+          "judgements": [
+            {
+              "ruleId": "RA-05",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "RA-05",
+                "excerpt": "Computers in consulting rooms lock their screen after five minutes without keyboard or mouse input."
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 11,
+            "applicable": 1,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.017589800000000003,
+          "inputTokens": 5370,
+          "completionTokens": 1019,
+          "seconds": 8.697
+        },
+        {
+          "itemId": "KV-10",
+          "run": 3,
+          "judgements": [],
+          "diagnostics": {
+            "candidates": 8,
+            "applicable": 0,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.0108798,
+          "inputTokens": 3990,
+          "completionTokens": 624,
+          "seconds": 6.08
+        },
+        {
+          "itemId": "KV-11",
+          "run": 3,
+          "judgements": [
+            {
+              "ruleId": "CS-01",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "CS-01",
+                "excerpt": "Information about a patient leaves the network only with the patient's recorded consent, unless a law compels the disclosure."
+              },
+              "businessFact": "Will the video consultation be delivered through a platform run by an outside company, so that patient information leaves the network?"
+            },
+            {
+              "ruleId": "IR-04",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "IR-04",
+                "excerpt": "Any change to a clinical system that alters what clinicians see on screen, or the order of steps in a clinical task, is assessed by the clinical safety officer before release, and the assessment is filed in the hazard log."
+              },
+              "businessFact": "Will this change alter what clinicians see in the clinical system or the order of steps in a clinical task, for example by adding a video join step to their appointment screen?"
+            },
+            {
+              "ruleId": "TP-01",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "TP-01",
+                "excerpt": "A company that will handle patient information for the network signs a data processing agreement before it receives any."
+              },
+              "businessFact": "Will a new outside supplier provide the video service and handle patient information?"
+            },
+            {
+              "ruleId": "TP-02",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "TP-02",
+                "excerpt": "Patient information is stored only in data centres located inside the country."
+              },
+              "businessFact": "Will the video service store any patient information, such as recordings, session logs or booking data, and where would it be hosted?"
+            },
+            {
+              "ruleId": "ID-03",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "ID-03",
+                "excerpt": "the clinician confirms who they are speaking to with a one-time code sent to the mobile number held on the chart"
+              }
+            },
+            {
+              "ruleId": "CS-03",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "CS-03",
+                "excerpt": "Agreement to be contacted by text message or email is recorded on its own, apart from agreement to treatment."
+              },
+              "businessFact": "Is the patient's agreement to be contacted by text or email recorded separately from consent to treatment before booking confirmations are sent?"
+            },
+            {
+              "ruleId": "CM-02",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "CM-02",
+                "excerpt": "says nothing clinical beyond the time and place of an appointment, unless the patient has chosen to receive detailed messages"
+              },
+              "businessFact": "What content will the booking confirmation containing the video link include, and does it contain anything clinical beyond the appointment time and the link?"
+            },
+            {
+              "ruleId": "CM-04",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "CM-04",
+                "excerpt": "A copy of every letter and message sent to a patient is kept on their chart."
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 16,
+            "applicable": 8,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.0311458,
+          "inputTokens": 6213,
+          "completionTokens": 2206,
+          "seconds": 17.215
+        },
+        {
+          "itemId": "KV-12",
+          "run": 3,
+          "judgements": [
+            {
+              "ruleId": "MS-05",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "MS-05",
+                "excerpt": "it can never be switched off for later prescriptions"
+              }
+            },
+            {
+              "ruleId": "IR-04",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "IR-04",
+                "excerpt": "is assessed by the clinical safety officer before release"
+              },
+              "businessFact": "Will the clinical safety officer assess this change before release, and will the assessment be filed in the hazard log?"
+            }
+          ],
+          "diagnostics": {
+            "candidates": 14,
+            "applicable": 2,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.0220458,
+          "inputTokens": 5878,
+          "completionTokens": 1363,
+          "seconds": 10.068
+        },
+        {
+          "itemId": "KV-13",
+          "run": 3,
+          "judgements": [
+            {
+              "ruleId": "CS-03",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "CS-03",
+                "excerpt": "Agreement to be contacted by text message or email is recorded on its own, apart from agreement to treatment."
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 16,
+            "applicable": 1,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.022659799999999997,
+          "inputTokens": 5830,
+          "completionTokens": 1434,
+          "seconds": 10.745
+        },
+        {
+          "itemId": "KV-14",
+          "run": 3,
+          "judgements": [
+            {
+              "ruleId": "CS-01",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "CS-01",
+                "excerpt": "Information about a patient leaves the network only with the patient's recorded consent, unless a law compels the disclosure."
+              },
+              "businessFact": "Is the family account app delivered outside the network, so that information about a child shown to a parent counts as leaving the network (and is not already covered by recorded consent)?"
+            },
+            {
+              "ruleId": "CS-04",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "CS-04",
+                "excerpt": "Nothing about a patient aged sixteen or seventeen is disclosed to a parent or guardian without the young person's agreement"
+              }
+            },
+            {
+              "ruleId": "CM-01",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "CM-01",
+                "excerpt": "A test result is released to the patient portal only once the clinician who ordered it has reviewed it"
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 17,
+            "applicable": 3,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0,
+            "questionsAsked": 1,
+            "questionsAnswered": 0,
+            "answersSettled": 0,
+            "answersSettleFailed": 0,
+            "findingsRefreshed": 0,
+            "answeredNoEvidenceDemoted": 0
+          },
+          "costUsd": 0.026477800000000006,
+          "inputTokens": 6154,
+          "completionTokens": 1751,
+          "seconds": 16.5,
+          "answered": {
+            "judgements": [
+              {
+                "ruleId": "CS-01",
+                "verdict": "needs-ba-input",
+                "citation": {
+                  "ruleId": "CS-01",
+                  "excerpt": "Information about a patient leaves the network only with the patient's recorded consent, unless a law compels the disclosure."
+                },
+                "businessFact": "Is the family account app delivered outside the network, so that information about a child shown to a parent counts as leaving the network (and is not already covered by recorded consent)?"
+              },
+              {
+                "ruleId": "CS-04",
+                "verdict": "gap",
+                "citation": {
+                  "ruleId": "CS-04",
+                  "excerpt": "Nothing about a patient aged sixteen or seventeen is disclosed to a parent or guardian without the young person's agreement"
+                }
+              },
+              {
+                "ruleId": "CM-01",
+                "verdict": "gap",
+                "citation": {
+                  "ruleId": "CM-01",
+                  "excerpt": "A test result is released to the patient portal only once the clinician who ordered it has reviewed it"
+                }
+              }
+            ],
+            "questions": [
+              {
+                "ruleIds": ["CS-01"],
+                "question": "Is the family account app delivered outside the network, so that information about a child shown to a parent counts as leaving the network (and is not already covered by recorded consent)?",
+                "answer": null
+              }
+            ]
+          }
+        },
+        {
+          "itemId": "KV-15",
+          "run": 3,
+          "judgements": [
+            {
+              "ruleId": "MS-01",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "MS-01",
+                "excerpt": "Every prescription is checked against the allergies recorded on the chart before it is issued"
+              }
+            },
+            {
+              "ruleId": "MS-05",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "MS-05",
+                "excerpt": "can be acknowledged for the prescription in hand only; it can never be switched off for later prescriptions"
+              }
+            },
+            {
+              "ruleId": "IR-04",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "IR-04",
+                "excerpt": "is assessed by the clinical safety officer before release, and the assessment is filed in the hazard log"
+              },
+              "businessFact": "Will the clinical safety officer assess this change and file the assessment in the hazard log before it is released?"
+            }
+          ],
+          "diagnostics": {
+            "candidates": 8,
+            "applicable": 3,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.0208598,
+          "inputTokens": 5250,
+          "completionTokens": 1370,
+          "seconds": 9.873
+        },
+        {
+          "itemId": "KV-16",
+          "run": 3,
+          "judgements": [
+            {
+              "ruleId": "RK-05",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "RK-05",
+                "excerpt": "Paper documents scanned onto a chart are checked for legibility, and the paper is kept for three months before it is shredded."
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 14,
+            "applicable": 1,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.0201078,
+          "inputTokens": 5569,
+          "completionTokens": 1231,
+          "seconds": 10.697
+        },
+        {
+          "itemId": "KV-17",
+          "run": 3,
+          "judgements": [],
+          "diagnostics": {
+            "candidates": 8,
+            "applicable": 0,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.0098478,
+          "inputTokens": 3944,
+          "completionTokens": 530,
+          "seconds": 5.027
+        },
+        {
+          "itemId": "KV-18",
+          "run": 3,
+          "judgements": [
+            {
+              "ruleId": "RA-01",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "RA-01",
+                "excerpt": "A clinician opens a patient's chart only while they are taking part in that patient's care"
+              },
+              "businessFact": "Is the typed-reason access restricted to genuine emergencies, or can a clinician use it for any non-treated patient whenever they choose?"
+            },
+            {
+              "ruleId": "RA-02",
+              "verdict": "compliant",
+              "citation": {
+                "ruleId": "RA-02",
+                "excerpt": "requires a reason typed before the chart opens, and every such opening is reviewed by the privacy officer within five working days"
+              }
+            },
+            {
+              "ruleId": "IR-04",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "IR-04",
+                "excerpt": "is assessed by the clinical safety officer before release, and the assessment is filed in the hazard log"
+              },
+              "businessFact": "Will the clinical safety officer assess this change and file the assessment in the hazard log before it is released?"
+            }
+          ],
+          "diagnostics": {
+            "candidates": 11,
+            "applicable": 3,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.025041800000000003,
+          "inputTokens": 5691,
+          "completionTokens": 1700,
+          "seconds": 12.852
+        },
+        {
+          "itemId": "KV-19",
+          "run": 3,
+          "judgements": [
+            {
+              "ruleId": "CM-02",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "CM-02",
+                "excerpt": "says nothing clinical beyond the time and place of an appointment, unless the patient has chosen to receive detailed messages"
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 16,
+            "applicable": 1,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.0238698,
+          "inputTokens": 5910,
+          "completionTokens": 1539,
+          "seconds": 11.505
+        },
+        {
+          "itemId": "KV-20",
+          "run": 3,
+          "judgements": [
+            {
+              "ruleId": "MS-03",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "MS-03",
+                "excerpt": "A repeat prescription runs for at most twelve months before a clinician must review it."
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 14,
+            "applicable": 1,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.021219799999999997,
+          "inputTokens": 5685,
+          "completionTokens": 1319,
+          "seconds": 10.065
+        },
+        {
+          "itemId": "KV-21",
+          "run": 3,
+          "judgements": [
+            {
+              "ruleId": "IR-04",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "IR-04",
+                "excerpt": "Any change to a clinical system that alters what clinicians see on screen, or the order of steps in a clinical task, is assessed by the clinical safety officer before release, and the assessment is filed in the hazard log."
+              },
+              "businessFact": "Will this change alter what clinicians see on screen in the clinical system, such as showing the preferred name in place of or beside the legal name?"
+            },
+            {
+              "ruleId": "ID-04",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "ID-04",
+                "excerpt": "their legal name remains on the chart and is the name printed on prescriptions and referral letters"
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 15,
+            "applicable": 2,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.022381799999999997,
+          "inputTokens": 5796,
+          "completionTokens": 1413,
+          "seconds": 14.309
+        },
+        {
+          "itemId": "KV-22",
+          "run": 3,
+          "judgements": [
+            {
+              "ruleId": "IR-05",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "IR-05",
+                "excerpt": "A suspected loss or disclosure of patient information is reported to the privacy officer within four hours."
+              },
+              "businessFact": "Can a clinician's work phone hold or give access to patient information (for example clinical apps, messages or cached records)?"
+            }
+          ],
+          "diagnostics": {
+            "candidates": 11,
+            "applicable": 1,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.0206278,
+          "inputTokens": 4334,
+          "completionTokens": 1530,
+          "seconds": 11.672
+        },
+        {
+          "itemId": "KV-23",
+          "run": 3,
+          "judgements": [
+            {
+              "ruleId": "CM-05",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "CM-05",
+                "excerpt": "uses a qualified interpreter, never a relative or friend"
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 10,
+            "applicable": 1,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.0169898,
+          "inputTokens": 5105,
+          "completionTokens": 1012,
+          "seconds": 7.965
+        },
+        {
+          "itemId": "KV-24",
+          "run": 3,
+          "judgements": [],
+          "diagnostics": {
+            "candidates": 8,
+            "applicable": 0,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.0122658,
+          "inputTokens": 3963,
+          "completionTokens": 768,
+          "seconds": 5.848
+        },
+        {
+          "itemId": "KV-25",
+          "run": 3,
+          "judgements": [
+            {
+              "ruleId": "RK-03",
+              "verdict": "compliant",
+              "citation": {
+                "ruleId": "RK-03",
+                "excerpt": "a correction is added as a new entry showing the original text, who corrected it and why"
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 11,
+            "applicable": 1,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.0186198,
+          "inputTokens": 5305,
+          "completionTokens": 1135,
+          "seconds": 9.906
+        },
+        {
+          "itemId": "KV-26",
+          "run": 3,
+          "judgements": [
+            {
+              "ruleId": "CM-01",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "CM-01",
+                "excerpt": "A test result is released to the patient portal only once the clinician who ordered it has reviewed it, except results the laboratory marks as routine and normal."
+              },
+              "businessFact": "Will ECG traces filed to the chart be released or visible to patients through the patient portal?"
+            },
+            {
+              "ruleId": "IR-04",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "IR-04",
+                "excerpt": "is assessed by the clinical safety officer before release"
+              },
+              "businessFact": "Will putting ECG traces directly onto the chart change what clinicians see on screen or the order of steps in the ECG task, for example by removing a manual upload or review step?"
+            },
+            {
+              "ruleId": "TP-03",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "TP-03",
+                "excerpt": "A medical device is entered in the device inventory, with its owner and software version, before it is connected to the network."
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 20,
+            "applicable": 3,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0,
+            "questionsAsked": 1,
+            "questionsAnswered": 0,
+            "answersSettled": 0,
+            "answersSettleFailed": 0,
+            "findingsRefreshed": 0,
+            "answeredNoEvidenceDemoted": 0
+          },
+          "costUsd": 0.028545800000000003,
+          "inputTokens": 6413,
+          "completionTokens": 1906,
+          "seconds": 14.769,
+          "answered": {
+            "judgements": [
+              {
+                "ruleId": "CM-01",
+                "verdict": "needs-ba-input",
+                "citation": {
+                  "ruleId": "CM-01",
+                  "excerpt": "A test result is released to the patient portal only once the clinician who ordered it has reviewed it, except results the laboratory marks as routine and normal."
+                },
+                "businessFact": "Will ECG traces filed to the chart be released or visible to patients through the patient portal?"
+              },
+              {
+                "ruleId": "IR-04",
+                "verdict": "needs-ba-input",
+                "citation": {
+                  "ruleId": "IR-04",
+                  "excerpt": "is assessed by the clinical safety officer before release"
+                },
+                "businessFact": "Will putting ECG traces directly onto the chart change what clinicians see on screen or the order of steps in the ECG task, for example by removing a manual upload or review step?"
+              },
+              {
+                "ruleId": "TP-03",
+                "verdict": "gap",
+                "citation": {
+                  "ruleId": "TP-03",
+                  "excerpt": "A medical device is entered in the device inventory, with its owner and software version, before it is connected to the network."
+                }
+              }
+            ],
+            "questions": [
+              {
+                "ruleIds": ["CM-01"],
+                "question": "Will ECG traces filed to the chart be released or visible to patients through the patient portal?",
+                "answer": null
+              }
+            ]
+          }
+        },
+        {
+          "itemId": "KV-27",
+          "run": 3,
+          "judgements": [
+            {
+              "ruleId": "RK-01",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "RK-01",
+                "excerpt": "An adult's chart is kept for eight years after the last contact with the network."
+              }
+            },
+            {
+              "ruleId": "RK-03",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "RK-03",
+                "excerpt": "A clinical entry is never deleted or overwritten; a correction is added as a new entry"
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 14,
+            "applicable": 2,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.023007800000000002,
+          "inputTokens": 5724,
+          "completionTokens": 1490,
+          "seconds": 11.254
+        },
+        {
+          "itemId": "KV-28",
+          "run": 3,
+          "judgements": [
+            {
+              "ruleId": "TP-04",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "TP-04",
+                "excerpt": "Laptops, tablets and phones used for clinical work encrypt their storage and can be wiped remotely."
+              },
+              "businessFact": "Is the outreach van's laptop encrypted on its storage and enrolled so that it can be wiped remotely?"
+            },
+            {
+              "ruleId": "TP-05",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "TP-05",
+                "excerpt": "Patient information is not carried on USB drives or other removable media, except encrypted drives issued by the IT service desk."
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 15,
+            "applicable": 2,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0,
+            "questionsAsked": 0,
+            "questionsAnswered": 0,
+            "answersSettled": 0,
+            "answersSettleFailed": 0,
+            "findingsRefreshed": 0,
+            "answeredNoEvidenceDemoted": 0
+          },
+          "costUsd": 0.0248698,
+          "inputTokens": 5915,
+          "completionTokens": 1638,
+          "seconds": 11.978,
+          "answered": {
+            "judgements": [
+              {
+                "ruleId": "TP-04",
+                "verdict": "needs-ba-input",
+                "citation": {
+                  "ruleId": "TP-04",
+                  "excerpt": "Laptops, tablets and phones used for clinical work encrypt their storage and can be wiped remotely."
+                },
+                "businessFact": "Is the outreach van's laptop encrypted on its storage and enrolled so that it can be wiped remotely?"
+              },
+              {
+                "ruleId": "TP-05",
+                "verdict": "gap",
+                "citation": {
+                  "ruleId": "TP-05",
+                  "excerpt": "Patient information is not carried on USB drives or other removable media, except encrypted drives issued by the IT service desk."
+                }
+              }
+            ],
+            "questions": []
+          }
+        },
+        {
+          "itemId": "KV-29",
+          "run": 3,
+          "judgements": [
+            {
+              "ruleId": "RA-03",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "RA-03",
+                "excerpt": "they never see clinical notes, results or diagnoses"
+              }
+            },
+            {
+              "ruleId": "IR-04",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "IR-04",
+                "excerpt": "is assessed by the clinical safety officer before release"
+              },
+              "businessFact": "Is the check-in screen part of a clinical system, and does this change alter what clinicians see or the order of steps in a clinical task, so that it needs clinical safety officer assessment and a hazard log entry before release?"
+            }
+          ],
+          "diagnostics": {
+            "candidates": 14,
+            "applicable": 2,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.024367800000000002,
+          "inputTokens": 5889,
+          "completionTokens": 1593,
+          "seconds": 13.91
+        },
+        {
+          "itemId": "KV-30",
+          "run": 3,
+          "judgements": [],
+          "diagnostics": {
+            "candidates": 2,
+            "applicable": 0,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.0055918,
+          "inputTokens": 3221,
+          "completionTokens": 249,
+          "seconds": 2.498
+        },
+        {
+          "itemId": "KV-31",
+          "run": 3,
+          "judgements": [
+            {
+              "ruleId": "IR-04",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "IR-04",
+                "excerpt": "is assessed by the clinical safety officer before release, and the assessment is filed in the hazard log"
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 10,
+            "applicable": 1,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0,
+            "questionsAsked": 0,
+            "questionsAnswered": 0,
+            "answersSettled": 0,
+            "answersSettleFailed": 0,
+            "findingsRefreshed": 0,
+            "answeredNoEvidenceDemoted": 0
+          },
+          "costUsd": 0.016451800000000003,
+          "inputTokens": 5211,
+          "completionTokens": 937,
+          "seconds": 8.182,
+          "answered": {
+            "judgements": [
+              {
+                "ruleId": "IR-04",
+                "verdict": "gap",
+                "citation": {
+                  "ruleId": "IR-04",
+                  "excerpt": "is assessed by the clinical safety officer before release, and the assessment is filed in the hazard log"
+                }
+              }
+            ],
+            "questions": []
+          }
+        },
+        {
+          "itemId": "KV-32",
+          "run": 3,
+          "judgements": [
+            {
+              "ruleId": "RK-04",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "RK-04",
+                "excerpt": "A patient's request for a copy of their own chart is answered within thirty calendar days."
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 16,
+            "applicable": 1,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.027991799999999997,
+          "inputTokens": 5821,
+          "completionTokens": 1969,
+          "seconds": 16.194
+        },
+        {
+          "itemId": "KV-33",
+          "run": 3,
+          "judgements": [
+            {
+              "ruleId": "TP-01",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "TP-01",
+                "excerpt": "A company that will handle patient information for the network signs a data processing agreement before it receives any."
+              },
+              "businessFact": "Will the emails be sent through an external email service provider that is not yet covered by a data processing agreement?"
+            },
+            {
+              "ruleId": "ID-04",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "ID-04",
+                "excerpt": "their legal name remains on the chart and is the name printed on prescriptions and referral letters"
+              },
+              "businessFact": "Does the new referral template print the patient's legal name on the letter, even when the patient has a preferred name recorded?"
+            },
+            {
+              "ruleId": "CS-01",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "CS-01",
+                "excerpt": "Information about a patient leaves the network only with the patient's recorded consent"
+              }
+            },
+            {
+              "ruleId": "CS-03",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "CS-03",
+                "excerpt": "Agreement to be contacted by text message or email is recorded on its own, apart from agreement to treatment."
+              }
+            },
+            {
+              "ruleId": "CM-02",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "CM-02",
+                "excerpt": "says nothing clinical beyond the time and place of an appointment, unless the patient has chosen to receive detailed messages"
+              }
+            },
+            {
+              "ruleId": "CM-04",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "CM-04",
+                "excerpt": "A copy of every letter and message sent to a patient is kept on their chart."
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 18,
+            "applicable": 6,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0,
+            "questionsAsked": 1,
+            "questionsAnswered": 0,
+            "answersSettled": 0,
+            "answersSettleFailed": 0,
+            "findingsRefreshed": 0,
+            "answeredNoEvidenceDemoted": 0
+          },
+          "costUsd": 0.0321338,
+          "inputTokens": 6567,
+          "completionTokens": 2234,
+          "seconds": 19.534,
+          "answered": {
+            "judgements": [
+              {
+                "ruleId": "TP-01",
+                "verdict": "needs-ba-input",
+                "citation": {
+                  "ruleId": "TP-01",
+                  "excerpt": "A company that will handle patient information for the network signs a data processing agreement before it receives any."
+                },
+                "businessFact": "Will the emails be sent through an external email service provider that is not yet covered by a data processing agreement?"
+              },
+              {
+                "ruleId": "ID-04",
+                "verdict": "needs-ba-input",
+                "citation": {
+                  "ruleId": "ID-04",
+                  "excerpt": "their legal name remains on the chart and is the name printed on prescriptions and referral letters"
+                },
+                "businessFact": "Does the new referral template print the patient's legal name on the letter, even when the patient has a preferred name recorded?"
+              },
+              {
+                "ruleId": "CS-01",
+                "verdict": "gap",
+                "citation": {
+                  "ruleId": "CS-01",
+                  "excerpt": "Information about a patient leaves the network only with the patient's recorded consent"
+                }
+              },
+              {
+                "ruleId": "CS-03",
+                "verdict": "gap",
+                "citation": {
+                  "ruleId": "CS-03",
+                  "excerpt": "Agreement to be contacted by text message or email is recorded on its own, apart from agreement to treatment."
+                }
+              },
+              {
+                "ruleId": "CM-02",
+                "verdict": "gap",
+                "citation": {
+                  "ruleId": "CM-02",
+                  "excerpt": "says nothing clinical beyond the time and place of an appointment, unless the patient has chosen to receive detailed messages"
+                }
+              },
+              {
+                "ruleId": "CM-04",
+                "verdict": "gap",
+                "citation": {
+                  "ruleId": "CM-04",
+                  "excerpt": "A copy of every letter and message sent to a patient is kept on their chart."
+                }
+              }
+            ],
+            "questions": [
+              {
+                "ruleIds": ["TP-01"],
+                "question": "Will the emails be sent through an external email service provider that is not yet covered by a data processing agreement?",
+                "answer": null
+              }
+            ]
+          }
+        },
+        {
+          "itemId": "KV-34",
+          "run": 3,
+          "judgements": [
+            {
+              "ruleId": "RK-03",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "RK-03",
+                "excerpt": "A clinical entry is never deleted or overwritten; a correction is added as a new entry showing the original text, who corrected it and why."
+              },
+              "businessFact": "Are the saved near-miss drafts stored as part of the patient's clinical record (clinical entries), rather than as working drafts in the incident process?"
+            },
+            {
+              "ruleId": "TP-02",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "TP-02",
+                "excerpt": "Patient information is stored only in data centres located inside the country."
+              },
+              "businessFact": "Will the saved near-miss drafts contain patient information and be stored somewhere outside the existing in-country clinical system data centres?"
+            },
+            {
+              "ruleId": "IR-01",
+              "verdict": "gap",
+              "citation": {
+                "ruleId": "IR-01",
+                "excerpt": "is reported in the incident system within twenty-four hours of someone noticing it"
+              }
+            },
+            {
+              "ruleId": "IR-04",
+              "verdict": "needs-ba-input",
+              "citation": {
+                "ruleId": "IR-04",
+                "excerpt": "is assessed by the clinical safety officer before release, and the assessment is filed in the hazard log"
+              },
+              "businessFact": "Will the clinical safety officer assess the new near-miss button on the prescribing screen and file that assessment in the hazard log before it is released?"
+            }
+          ],
+          "diagnostics": {
+            "candidates": 12,
+            "applicable": 4,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.0246538,
+          "inputTokens": 5622,
+          "completionTokens": 1675,
+          "seconds": 13.838
+        },
+        {
+          "itemId": "KV-35",
+          "run": 3,
+          "judgements": [
+            {
+              "ruleId": "TP-04",
+              "verdict": "compliant",
+              "citation": {
+                "ruleId": "TP-04",
+                "excerpt": "Laptops, tablets and phones used for clinical work encrypt their storage and can be wiped remotely."
+              }
+            }
+          ],
+          "diagnostics": {
+            "candidates": 15,
+            "applicable": 1,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.0222718,
+          "inputTokens": 5741,
+          "completionTokens": 1413,
+          "seconds": 14.25
+        },
+        {
+          "itemId": "KV-36",
+          "run": 3,
+          "judgements": [],
+          "diagnostics": {
+            "candidates": 8,
+            "applicable": 0,
+            "unverifiedCitations": 0,
+            "noEvidenceDemoted": 0
+          },
+          "costUsd": 0.0099538,
+          "inputTokens": 3952,
+          "completionTokens": 539,
+          "seconds": 4.226
+        }
+      ],
+      "completedRuns": 3,
+      "summary": {
+        "runs": 3,
+        "metrics": {
+          "recall": {
+            "mean": 0.9361702127659575,
+            "ci": [0.846141975308642, 1],
+            "perRun": [0.9574468085106383, 0.9361702127659575, 0.9148936170212766]
+          },
+          "nonResemblingRecall": {
+            "mean": 0.9166666666666666,
+            "ci": [0.7692307692307693, 1],
+            "perRun": [0.9166666666666666, 0.9166666666666666, 0.9166666666666666]
+          },
+          "precision": {
+            "mean": 0.6032238129570502,
+            "ci": [0.5, 0.7305389221556886],
+            "perRun": [0.6164383561643836, 0.5789473684210527, 0.6142857142857143]
+          },
+          "citationAccuracy": {
+            "mean": 1,
+            "ci": [1, 1],
+            "perRun": [1, 1, 1]
+          },
+          "citationCoverage": {
+            "mean": 1,
+            "ci": [1, 1],
+            "perRun": [1, 1, 1]
+          },
+          "verdictAccuracy": {
+            "mean": 0.7375886524822696,
+            "ci": [0.6159420289855072, 0.8558609746109745],
+            "perRun": [0.8085106382978723, 0.723404255319149, 0.6808510638297872]
+          },
+          "askRate": {
+            "mean": 0.505721495519621,
+            "ci": [0.3987320390010264, 0.6033833051391236],
+            "perRun": [0.5205479452054794, 0.5394736842105263, 0.45714285714285713]
+          }
+        },
+        "hardErrors": 0,
+        "hardErrorsPerRun": [0, 0, 0],
+        "cleanNegatives": [6, 6, 6],
+        "negatives": 6
+      },
+      "thresholds": [
+        {
+          "bar": "overallRecall",
+          "required": "≥ 0.90",
+          "measured": "0.94",
+          "pass": true
+        },
+        {
+          "bar": "nonResemblingRecall",
+          "required": "≥ 0.85",
+          "measured": "0.92",
+          "pass": true
+        },
+        {
+          "bar": "precision",
+          "required": "≥ 0.60",
+          "measured": "0.60",
+          "pass": true
+        },
+        {
+          "bar": "citationAccuracy",
+          "required": "≥ 0.95",
+          "measured": "1.00",
+          "pass": true
+        },
+        {
+          "bar": "maxNoEvidenceCompliantErrors",
+          "required": "≤ 0 per run",
+          "measured": "0 (worst run)",
+          "pass": true
+        }
+      ],
+      "cost": {
+        "totalUsd": 2.3982087999999995,
+        "usdPerRequirement": 0.022205637037037033,
+        "inputTokensPerRequirement": 5522.916666666667,
+        "completionTokensPerRequirement": 1403.1203703703704,
+        "secondsPerRequirement": 11.463777777777782
+      },
+      "failures": 0,
+      "shortAnswers": {
+        "runs": 3,
+        "pairs": 7,
+        "verdictAccuracy": {
+          "mean": 0.38095238095238093,
+          "ci": [0.09523809523809523, 0.7142857142857143],
+          "perRun": [0.2857142857142857, 0.42857142857142855, 0.42857142857142855]
+        },
+        "foundPerRun": [7, 7, 7],
+        "hardErrors": 0,
+        "hardErrorsPerRun": [0, 0, 0],
+        "askedPerRun": [2, 1, 1],
+        "failures": 0,
+        "settleFailures": 0
+      }
+    }
+  ],
+  "comparisons": [],
+  "detectableGap": "At 30 items and a hit rate near 0.5 the standard error is about 9.1 points per arm, so a gap needs roughly 18 to 25 points to be significant. A smaller difference is reported as \"no measurable difference\", not as a win.",
+  "screenPromptSizes": [
+    {
+      "rules": 40,
+      "chars": 4573,
+      "estimatedTokens": 1144
+    },
+    {
+      "rules": 200,
+      "chars": 19190,
+      "estimatedTokens": 4798
+    },
+    {
+      "rules": 500,
+      "chars": 46650,
+      "estimatedTokens": 11663
+    }
+  ],
+  "generatedAt": "2026-11-09T00:22:12.031Z"
+}

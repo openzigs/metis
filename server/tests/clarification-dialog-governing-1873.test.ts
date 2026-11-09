@@ -621,7 +621,7 @@ describe("#1873 — flag off: question generation is unchanged", () => {
   };
 
   it("no source, no read, and the round and its model calls match the pre-#1873 snapshot", async () => {
-    delete process.env.GOVERNING_DOCS_ENABLED;
+    process.env.GOVERNING_DOCS_ENABLED = "0";
     const chat = vi.fn(async () => ({
       content: JSON.stringify({
         questions: [

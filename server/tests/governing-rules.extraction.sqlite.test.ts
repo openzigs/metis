@@ -452,7 +452,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(unknown.status).toBe(404);
       expect((await getRules(ID.wsA, "nope")).status).toBe(404);
 
-      delete process.env.GOVERNING_DOCS_ENABLED;
+      process.env.GOVERNING_DOCS_ENABLED = "0";
       const off = await request(app())
         .patch(`${rules(ID.wsA)}/${ruleId}`)
         .set("x-test-user", "adminA")

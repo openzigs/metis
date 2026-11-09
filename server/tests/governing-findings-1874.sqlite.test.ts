@@ -528,7 +528,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     });
 
     it("flag off: both routes are 404", async () => {
-      delete process.env.GOVERNING_DOCS_ENABLED;
+      process.env.GOVERNING_DOCS_ENABLED = "0";
       expect((await getFindings(PA, ANA)).status).toBe(404);
       expect((await decide(PA, ANA, "any", { decision: "accepted" })).status).toBe(404);
     });

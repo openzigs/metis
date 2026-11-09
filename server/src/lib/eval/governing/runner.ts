@@ -729,6 +729,20 @@ export function shortAnswerSection(report: Pick<GoverningReport, "arms">): strin
     "Each pair's `businessFact` is asked and its `baAnswer` given; the finding after the answer " +
       "is scored against the pair's `answeredVerdict`. The results above read the findings before any answer.",
     "",
+  );
+  // #1878 — an arm that asks production's own questions says so: its BA
+  // answers what production asked, and only where production asked.
+  const ownQuestions = arms.filter((a) => a.codePath.length > 0).map((a) => a.id);
+  if (ownQuestions.length > 0) {
+    lines.push(
+      `${ownQuestions.join(", ")}: production asks its own questions, and only about a rule ` +
+        "applicability left `uncertain`. A question linking a rule with a `baAnswer` gets that answer, " +
+        "and every other question goes unanswered. A pair whose rule was never asked keeps the finding " +
+        "it had before (each record's `answered.questions` lists what was asked).",
+      "",
+    );
+  }
+  lines.push(
     "| Arm | Runs | Pairs | Verdict accuracy after the answer | Given a verdict | Compliant against the label | Still asking | Settle failures | Requirements failed |",
     "|---|---|---|---|---|---|---|---|---|",
   );

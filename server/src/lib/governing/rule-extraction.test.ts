@@ -697,7 +697,7 @@ describe("runRuleExtraction — the job's states", () => {
       provider,
     });
     expect(provider.chat).not.toHaveBeenCalled();
-    delete process.env.GOVERNING_DOCS_ENABLED;
+    process.env.GOVERNING_DOCS_ENABLED = "0";
     beginRuleExtraction.mockClear();
     await runRuleExtraction({
       workspaceId: "ws1",

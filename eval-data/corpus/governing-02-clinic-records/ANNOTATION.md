@@ -239,4 +239,28 @@ the report file. A reading is for a decision, never for tuning a prompt.
 
 | Date | Issue | Arms | Model | Report |
 |---|---|---|---|---|
-| (none yet) | | | | |
+| 2026-11-09 | #1878 | A5 (the shipped path), 3 runs as three `--runs 1` invocations, combined; commit `e613df1ef` | `anthropic/claude-sonnet-5-5` | [`eval-data/readings/governing-02-clinic-records/baseline-A5-sonnet.md`](../../readings/governing-02-clinic-records/baseline-A5-sonnet.md) |
+
+### The #1878 reading
+
+This was the first and only reading of this set. It was read once for the flag decision. No
+prompt was changed after it, and no arm was run on this set before it. It cost $2.40 in all
+($0.85, $0.78 and $0.77 per run). Each bar is the one #1867 fixed before any arm ran:
+
+| Bar | Required | Mean over 3 runs | Per run | Pass |
+|---|---|---|---|---|
+| Overall recall | ≥ 0.90 | 0.94 | 0.96 / 0.94 / 0.91 | yes |
+| Non-resembling recall | ≥ 0.85 | 0.92 | 0.92 / 0.92 / 0.92 | yes |
+| Precision | ≥ 0.60 | 0.60 (0.603) | 0.62 / 0.58 / 0.61 | yes, by 0.003; run 2 alone is under |
+| Citation accuracy | ≥ 0.95 | 1.00 | 1.00 / 1.00 / 1.00 | yes |
+| No-evidence → compliant errors | 0 per run | 0 | 0 / 0 / 0 | yes |
+
+The short-answer row had no `compliant` against its label either (0 in each run). Verdict
+accuracy was 0.74, and every negative item was clean in every run.
+
+The short-answer row reads 2/7, 3/7 and 3/7. The cause is how production routes questions, not
+how it reads an answer. Production asks the BA only about a rule that applicability left
+`uncertain`. On most short-answer pairs, applicability decided the rule `applies`, and the
+findings call then gave `needs-ba-input`. A finding at that point has a business question, but
+the clarification dialog never asks it, so the BA's answer never reaches it. A4's replay passes
+every answer straight to the findings call, so it did not show this. See #1878's follow-ups.

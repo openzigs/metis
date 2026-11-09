@@ -38,6 +38,7 @@
     - 11.2 [Adding Documents and New Requirements Before a Run](#112-adding-documents-and-new-requirements-before-a-run)
     - 11.3 [Understanding Analysis Results](#113-understanding-analysis-results)
     - 11.4 [Viewing Analysis History](#114-viewing-analysis-history)
+    - 11.5 [Checking Requirements Against Your Company's Policies](#115-checking-requirements-against-your-companys-policies)
 12. [Working with Requirements](#12-working-with-requirements)
     - 12.1 [What Is a Requirement?](#121-what-is-a-requirement)
     - 12.2 [Requirement Properties](#122-requirement-properties)
@@ -1565,6 +1566,115 @@ Navigate to the **Analysis** page to see all analysis runs across all projects. 
 - Number of requirements found
 - Confidence percentage (color-coded: ≥90% green, <90% yellow)
 - How long it took
+
+### 11.5 Checking Requirements Against Your Company's Policies
+
+METIS can check each requirement against your company's own rules: its policies, standards
+and control frameworks. These are called **governing documents**.
+
+#### What a governing document is
+
+A governing document is a policy your company has written, such as an information handling
+policy or a patient records standard. It belongs to a **workspace**, not to one project. It is
+uploaded once, and every analysis of a project in that workspace is checked against it.
+
+When a document is uploaded, METIS reads it and lists its **rules**. Each rule is one
+obligation, with:
+
+- its control id;
+- a one-line summary;
+- the clause it comes from, copied word for word.
+
+A rule whose clause METIS cannot find word for word in the document is left out, and the page
+says how many were left out. Rules are used as soon as they are listed. No one has to approve
+them first.
+
+#### Who can upload
+
+Open your workspace and choose the **Governing documents** tab.
+
+- **Workspace admins and owners** can upload a document (**Upload document**), add a new
+  revision of it (**New revision**), edit a rule's summary or control id, remove a rule, and
+  delete a document. Each upload takes a title, a revision label and an effective date. A new
+  revision becomes the current one. The earlier revision is kept, and the findings that
+  quoted it keep quoting it.
+- **Other workspace members** see the same documents and rules, with no controls to change them.
+
+#### How METIS decides which rules apply
+
+For each requirement in an analysis, METIS looks for rules in two ways:
+
+- it searches the documents for the rules closest to the requirement's wording;
+- it reads every rule's one-line summary, so it can find a rule that applies even when the
+  rule shares no words with the requirement. For example, an export of customer records can
+  bring in an audit-logging rule.
+
+Each rule it finds is then decided one of three ways:
+
+- **applies**;
+- **does not apply**;
+- **unsure**: the rule would apply if one fact about the business were true, and the
+  requirement does not say whether it is.
+
+For an "unsure" rule you get a plain business question in the analysis's clarifying
+questions, such as "Will the saved card keep the customer's whole card number?". The question
+never names the rule or quotes the policy. When you answer it, METIS decides that rule again
+with your answer, and updates the findings.
+
+#### What the three statuses mean
+
+Each rule that applies, or may apply, gets a finding in the **Governing rules** panel at the
+foot of the analysis's **Findings** tab. The panel groups the findings by requirement.
+
+| Status | Means |
+|---|---|
+| **Compliant** | The requirement, or an answer you gave, says in so many words that it does what the rule asks. METIS quotes those words. It never gives this status because a requirement is silent on a rule. |
+| **Gap** | Building the requirement as written would go against the rule, or would leave out what the rule asks. |
+| **Needs BA input** | The rule applies, but the requirement does not say enough to tell. The finding shows the question that would settle it. |
+
+Every finding quotes the rule's clause, and METIS checks the quote word for word against the
+policy revision it names. If a quote cannot be found there, METIS drops it. The finding then
+says so, and becomes **Needs BA input**.
+
+A **Needs BA input** finding links to its clarifying question. Only rules METIS was unsure
+about are asked there. For a rule that clearly applies, the finding's question is not one of
+the clarifying questions, so the link opens the Questions tab. Settle it another way: add the
+missing fact to the requirement and run the analysis again, or **Reject** the finding with a
+note that says what you found out.
+
+You can **Accept** or **Reject** each finding with a note. The panel shows the decision, who
+made it and when, and each decision is recorded in the audit log. If a later run changes a
+finding, its decision is cleared, and the clearing is recorded too.
+
+A requirements BRD has a **Governing rules** section with the same findings, rejected ones
+included and marked **Rejected**.
+
+#### Not an audit opinion
+
+These findings help you see where a requirement may fall short of your own rules. They are
+**not an audit opinion**. They do not certify the system, and they do not say it complies with
+any law, standard or framework. Each summary line in the panel and in the BRD ends with
+"Not an audit opinion." METIS also rewrites any wording in a finding that would claim
+compliance or certification.
+
+The checks are made by an AI model, and it can miss a rule or apply one wrongly. Before this
+feature was turned on by default, it was measured on a set of requirements it had never been
+tuned on, with the model METIS uses in production (#1878):
+
+- it found 94% of the rules that applied, and 92% of those that shared no words with their
+  requirement;
+- 60% of the rules it applied did apply;
+- every clause it quoted was word for word;
+- it never called a rule **Compliant** where the requirement gave no evidence for it.
+
+So expect some findings for rules that do not really apply. Review each finding before you
+rely on it.
+
+#### Turning it off
+
+Governing documents are on by default. A deployment administrator can turn the feature off by
+setting `GOVERNING_DOCS_ENABLED=0` (or `false`, `no` or `off`) and restarting the server. The
+workspace tab, the panel and the BRD section then disappear, and analyses check no rules.
 
 ---
 

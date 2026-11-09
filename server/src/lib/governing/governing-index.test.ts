@@ -95,7 +95,7 @@ describe("GoverningIndex", () => {
     expect(await index.search("ws1", "   ", 5, actor)).toEqual([]);
     searchableRevisions.mockResolvedValue(new Map());
     expect(await index.search("ws1", "laptops", 5, actor)).toEqual([]);
-    delete process.env.GOVERNING_DOCS_ENABLED;
+    process.env.GOVERNING_DOCS_ENABLED = "0";
     canReadWorkspace.mockClear();
     expect(await index.search("ws1", "laptops", 5, actor)).toEqual([]);
     expect(canReadWorkspace).not.toHaveBeenCalled();

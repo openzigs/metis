@@ -944,6 +944,10 @@ describe("the code a reading ran (#1878)", () => {
       expect(combined.arms[0]!.shortAnswers!.verdictAccuracy.perRun).toEqual([1]);
       const gr11 = combined.arms[0]!.records.find((r) => r.itemId === "GR-11")!;
       expect(gr11.answeredPairs).toEqual([expect.objectContaining({ verdict: "compliant" })]);
+      // An arm on production's code path says whose questions its BA answered.
+      expect(toMarkdownReport(combined)).toContain(
+        "A5: production asks its own questions, and only about a rule applicability left `uncertain`.",
+      );
     });
 
     it("refuses invocations that do not make one reading", async () => {
