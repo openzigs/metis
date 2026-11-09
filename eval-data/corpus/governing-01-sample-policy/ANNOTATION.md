@@ -212,7 +212,11 @@ not re-tried.
 
 ### #2053: a judging reply cut off at the output cap
 
-The GR-06 and GR-30 failures above were judging replies stopped at `max_tokens`. A judging
+The GR-06 and GR-30 failures above are taken to be judging replies stopped at `max_tokens`.
+That is not confirmed: `finishReason` was not logged for a judging reply before this change,
+and the only evidence is the one probe reply above, not the failed pairs themselves. The
+DeepSeek reading owed below (#2100) settles it, now that every unreadable reply logs its
+`finishReason`. A judging
 batch whose reply is cut off at the output cap is now judged again in halves, down to one rule,
 instead of being re-asked whole into the same cap. A reply that ends normally is handled as
 before, so nothing else in this set's readings can move.
