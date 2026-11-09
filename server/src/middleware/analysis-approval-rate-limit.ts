@@ -58,6 +58,36 @@ export const analysisApprovalReopenRateLimiter: RequestHandler = rateLimit({
 }) as unknown as RequestHandler;
 
 /**
+ * Rate limiter for `PATCH /api/projects/:projectId/analyses/:id/approvals/:approvalId/requirement`
+ * (#1580). Editing a requirement in the checkpoint rewrites the analysis
+ * metadata, so it is bounded like reopen, under its own key and cap: 120 /
+ * 15 min is far above a reviewer retitling requirements by hand.
+ */
+export const ANALYSIS_APPROVAL_EDIT_DEFAULT_MAX = 120;
+
+// `as unknown as RequestHandler` bridges the Express 4↔5 type split.
+export const analysisApprovalEditRateLimiter: RequestHandler = rateLimit({
+  store: clusterRateLimitStore("analysis-approval-edit"),
+  windowMs: envMs("ANALYSIS_APPROVAL_EDIT_RATE_LIMIT_WINDOW_MS", FIFTEEN_MIN_MS, { min: 1 }),
+  limit: () =>
+    intFromEnv("ANALYSIS_APPROVAL_EDIT_RATE_LIMIT_MAX", ANALYSIS_APPROVAL_EDIT_DEFAULT_MAX),
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req, res) => {
+    const userId = req.user?.userId;
+    if (userId) return `user:${userId}`;
+    return `ip:${ipKeyGenerator(req.ip ?? "", res.req?.socket?.remoteFamily === "IPv6" ? 64 : 32)}`;
+  },
+  message: {
+    success: false,
+    error: {
+      code: "RATE_LIMITED",
+      message: "Too many requirement edit requests — please try again later",
+    },
+  } satisfies ApiResponse,
+}) as unknown as RequestHandler;
+
+/**
  * Rate limiter for `POST /api/projects/:projectId/analyses/:id/approvals/promote`
  * (#723). Promotion writes the requirement set, so it is bounded like the
  * reopen route above (CodeQL `js/missing-rate-limiting`), under its own key

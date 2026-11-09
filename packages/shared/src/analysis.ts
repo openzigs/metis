@@ -1381,6 +1381,24 @@ export const updateRequirementSchema = z
   });
 export type UpdateRequirementInput = z.infer<typeof updateRequirementSchema>;
 
+/**
+ * Issue #1580 (`b-7-8`) — edit a requirement in the approval checkpoint,
+ * before it is approved. The checkpoint lists the reviewed (structured)
+ * requirements, which are not rows yet, so this writes the reviewed title and
+ * description that approving promotes. At least one field; the title is never
+ * blank, the description may be cleared (promotion then uses the title).
+ */
+export const editCheckpointRequirementSchema = z
+  .object({
+    title: z.string().trim().min(1).max(255).optional(),
+    description: z.string().trim().max(4096).optional(),
+  })
+  .strict()
+  .refine((p) => p.title !== undefined || p.description !== undefined, {
+    message: "Give a title or a description to change",
+  });
+export type EditCheckpointRequirementInput = z.infer<typeof editCheckpointRequirementSchema>;
+
 // ---- Finding deep-dive → issue draft (Epic #176 / #178) --------------------
 
 /**

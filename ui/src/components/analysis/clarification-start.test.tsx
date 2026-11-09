@@ -170,6 +170,8 @@ describe("#1135 — the dialog starts once the run completes, with no reload", (
 
     resolveStart(dialogState());
     expect(await screen.findByTestId("clarification-progress")).toBeInTheDocument();
+    // #1580 (b-7-7, b-7-38) — and the preview's "Preparing…" line is gone.
+    expect(screen.queryByText(/Preparing an interactive/)).not.toBeInTheDocument();
   });
 
   it("starts exactly one dialog even as the metadata keeps arriving", async () => {
@@ -836,5 +838,9 @@ describe("#937 — a remount while the start is in flight does not start a secon
     resolveStart(dialogState());
     expect(await screen.findByTestId("clarification-progress")).toBeInTheDocument();
     expect(clarify).toHaveBeenCalledTimes(1);
+    // #1580 (b-7-7, b-7-38) — the session replaces the preview: no stale
+    // "Preparing…" line stays above it.
+    expect(screen.queryByTestId("gaps-preview")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Preparing an interactive/)).not.toBeInTheDocument();
   });
 });
