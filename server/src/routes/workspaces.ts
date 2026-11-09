@@ -177,48 +177,58 @@ export function workspacesRouter(): Router {
   });
 
   // ── Delete workspace (owner only) ─────────────────────────────────────────
-  r.delete("/:id", requireAuth, requireWorkspaceRole("owner"), async (req: Req, res: Response) => {
-    const workspaceId = req.params.id;
+  r.delete(
+    "/:id",
+    requireAuth,
+    requireWorkspaceRole("owner"),
+    // #1745 — deleting a workspace revokes every member's workspace role.
+    requireMfa,
+    async (req: Req, res: Response) => {
+      const workspaceId = req.params.id;
 
-    // Don't allow deleting the default workspace
-    const workspace = await prisma.workspace.findUnique({
-      where: { id: workspaceId },
-    });
-    if (workspace?.slug === "default") {
-      throw new AppError(400, "BAD_REQUEST", "Cannot delete the default workspace");
-    }
-
-    // #601 — void the outstanding invites in the same transaction as the soft
-    // delete. The accept's guarded consume re-checks only the invite row it
-    // locks (on Postgres READ COMMITTED its `workspace.deletedAt` condition is
-    // read from the statement snapshot), so a delete committing mid-accept was
-    // invisible to it. Writing the invite rows makes the two conflict on the
-    // row the accept does re-check: an accept that has not consumed first
-    // waits for this commit and then finds the invite spent.
-    await prisma.$transaction(async (tx) => {
-      const now = new Date();
-      await tx.workspace.update({
-        where: { id: workspaceId },
-        data: { deletedAt: now },
+      const workspace = await prisma.workspace.findUnique({
+        where: { id: workspaceId, deletedAt: null },
       });
-      await tx.workspaceInvite.updateMany({
-        where: { workspaceId, consumedAt: null },
-        data: { consumedAt: now },
+      if (!workspace) {
+        throw new AppError(404, "NOT_FOUND", "Workspace not found");
+      }
+      // Don't allow deleting the default workspace
+      if (workspace.slug === "default") {
+        throw new AppError(400, "BAD_REQUEST", "Cannot delete the default workspace");
+      }
+
+      // #601 — void the outstanding invites in the same transaction as the soft
+      // delete. The accept's guarded consume re-checks only the invite row it
+      // locks (on Postgres READ COMMITTED its `workspace.deletedAt` condition is
+      // read from the statement snapshot), so a delete committing mid-accept was
+      // invisible to it. Writing the invite rows makes the two conflict on the
+      // row the accept does re-check: an accept that has not consumed first
+      // waits for this commit and then finds the invite spent.
+      await prisma.$transaction(async (tx) => {
+        const now = new Date();
+        await tx.workspace.update({
+          where: { id: workspaceId },
+          data: { deletedAt: now },
+        });
+        await tx.workspaceInvite.updateMany({
+          where: { workspaceId, consumedAt: null },
+          data: { consumedAt: now },
+        });
       });
-    });
-    // #588 — sockets already in its mcp:status room stop getting its events.
-    evictWorkspaceMcpStatusRoom(workspaceId);
-    // #1212 — and its projects' rooms, which admit any workspace member.
-    await evictWorkspaceProjectRooms(workspaceId);
+      // #588 — sockets already in its mcp:status room stop getting its events.
+      evictWorkspaceMcpStatusRoom(workspaceId);
+      // #1212 — and its projects' rooms, which admit any workspace member.
+      await evictWorkspaceProjectRooms(workspaceId);
 
-    audit({
-      actor: { id: actorId(req) },
-      action: "workspace.delete",
-      target: { type: "workspace", id: workspaceId },
-    });
+      audit({
+        actor: { id: actorId(req) },
+        action: "workspace.delete",
+        target: { type: "workspace", id: workspaceId },
+      });
 
-    res.json(ok({ deleted: true }));
-  });
+      res.json(ok({ deleted: true }));
+    },
+  );
 
   // ── Transfer ownership ────────────────────────────────────────────────────
   r.post(

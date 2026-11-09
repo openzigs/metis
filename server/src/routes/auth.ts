@@ -72,7 +72,7 @@ async function readWorkspaceIds(userId: string): Promise<string[]> {
 async function ensureUserRow(
   providerName: string,
   user: AuthenticatedUser,
-): Promise<{ id: string; username: string; role: RoleKey }> {
+): Promise<{ id: string; username: string; role: RoleKey; authMode: "mock" | "ldap" }> {
   if (providerName !== "mock" && providerName !== "ldap") {
     throw new AppError(500, "AUTH_PROVIDER_INVALID", "Unsupported password sign-in provider");
   }
@@ -88,7 +88,7 @@ async function ensureUserRow(
     // #1376 — the directory's account name and mail attribute.
     bootstrapIdentities: [user.username, user.email],
   });
-  return { id: row.id, username: row.username, role };
+  return { id: row.id, username: row.username, role, authMode: providerName };
 }
 
 export function authRouter(): Router {
@@ -129,7 +129,7 @@ export function authRouter(): Router {
       permissions,
       workspaces,
       // #1564 — a password sign-in (mock, LDAP: `ensureUserRow` refuses any other).
-      authMode: provider.name,
+      authMode: userRow.authMode,
     });
 
     res.cookie("accessToken", tokens.accessToken, {

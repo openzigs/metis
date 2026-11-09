@@ -14,7 +14,7 @@
  */
 import jwt, { type SignOptions } from "jsonwebtoken";
 import { ulid } from "ulid";
-import type { AuthPayload, PermissionKey, RoleKey } from "@metis/shared";
+import type { AuthMode, AuthPayload, PermissionKey, RoleKey } from "@metis/shared";
 import { createChildLogger } from "../logger.js";
 import { revocationStore, type RevocationStore } from "./revocation-store.js";
 import { readLiveWorkspaceIds } from "./live-workspace-ids.js";
@@ -202,6 +202,14 @@ export interface TokenPair {
   refreshToken: string;
 }
 
+/** #1745 — every {@link AuthMode}; {@link carriedMfaPassed} trusts no other value. */
+const AUTH_MODES: ReadonlySet<string> = new Set<AuthMode>(["mock", "ldap", "saml", "oidc"]);
+
+/** Whether `value` is an {@link AuthMode}, for reading one back from a token. */
+function isAuthMode(value: unknown): value is AuthMode {
+  return typeof value === "string" && AUTH_MODES.has(value);
+}
+
 export interface IssueTokensInput {
   userId: string;
   username: string;
@@ -226,7 +234,7 @@ export interface IssueTokensInput {
    * refresh carries it forward, so a token without `mfaPassed` is classified by
    * its own sign-in, never by the account's `users.authSource`.
    */
-  authMode?: string;
+  authMode?: AuthMode;
 }
 
 /**
@@ -251,7 +259,10 @@ export interface RefreshPayload {
   sid?: string;
   /** #1552 — see {@link IssueTokensInput.mfaPassed}. */
   mfaPassed?: boolean;
-  /** #1564 — see {@link IssueTokensInput.authMode}. */
+  /**
+   * #1564 — see {@link IssueTokensInput.authMode}. Typed as the token's claim
+   * reads, not as issued: only an {@link AuthMode} is trusted ({@link isAuthMode}).
+   */
   authMode?: string;
   tokenId: string;
   type: "refresh";
@@ -519,7 +530,7 @@ export async function refreshAccessToken(
     // session would lose the `false` that `requireMfa` refuses.
     ...(typeof mfaPassed === "boolean" ? { mfaPassed } : {}),
     // #1564 — and so does how it signed in.
-    ...(typeof decoded.authMode === "string" ? { authMode: decoded.authMode } : {}),
+    ...(isAuthMode(decoded.authMode) ? { authMode: decoded.authMode } : {}),
   });
 }
 
@@ -553,7 +564,8 @@ async function carriedMfaPassed(
   resolveAuthSource: (userId: string) => Promise<string | null>,
 ): Promise<boolean | undefined> {
   if (typeof decoded.mfaPassed === "boolean") return decoded.mfaPassed;
-  if (typeof decoded.authMode === "string") {
+  // #1745 — a mode outside the set is not trusted to mean "no MFA claim".
+  if (isAuthMode(decoded.authMode)) {
     return SSO_AUTH_SOURCES.has(decoded.authMode) ? false : undefined;
   }
   const source = await resolveAuthSource(decoded.userId);
