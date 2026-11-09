@@ -183,7 +183,7 @@ test.describe("Product Management (#547)", () => {
       await expect(page.getByText(`metis-e2e/product-repo-${stamp}`)).toBeVisible({
         timeout: 15_000,
       });
-      await expect(page.getByText("Role: frontend")).toBeVisible();
+      await expect(page.getByText("Role: Frontend")).toBeVisible();
     });
 
     await test.step("remove it again", async () => {
@@ -209,11 +209,13 @@ test.describe("Product Management (#547)", () => {
 
     // Verify the role dropdown contains expected options
     const options = detailPage.repoRoleSelect.locator("option");
-    await expect(options).toHaveCount(8); // 8 roles defined in the component
-    await expect(detailPage.repoRoleSelect).toContainText("frontend");
-    await expect(detailPage.repoRoleSelect).toContainText("backend-api");
-    await expect(detailPage.repoRoleSelect).toContainText("gateway");
-    await expect(detailPage.repoRoleSelect).toContainText("docs");
+    // #2114 — the options are the server's PRODUCT_REPO_ROLES, shown with labels.
+    await expect(options).toHaveCount(6);
+    await expect(detailPage.repoRoleSelect).toContainText("Frontend");
+    await expect(detailPage.repoRoleSelect).toContainText("Backend API");
+    await expect(detailPage.repoRoleSelect).toContainText("Shared library");
+    await expect(detailPage.repoRoleSelect).toContainText("Gateway");
+    await expect(detailPage.repoRoleSelect).toContainText("Docs");
   });
 
   // AC #10: Loading state handled gracefully

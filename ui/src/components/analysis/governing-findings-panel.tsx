@@ -7,9 +7,9 @@
  * and the policy revision it was checked against, and the BA's Accept / Reject
  * with a note.
  *
- * Renders only when the findings route returns findings: a 404 (the
- * `GOVERNING_DOCS_ENABLED` flag is off) or an empty list renders nothing, and
- * no request error. The header is `governingSummarySentence` (#1875), so the
+ * A 404 (the `GOVERNING_DOCS_ENABLED` flag is off) renders nothing, and no
+ * request error. #2113 — an empty list says whether the check ran (`checked`):
+ * "not checked" is never shown as "checked, nothing applied". The header is `governingSummarySentence` (#1875), so the
  * panel never claims compliance; model prose is passed through
  * `neutraliseComplianceClaims` as well, beside the server's own pass. The clause
  * excerpt is the policy's own text and the note is the BA's own words: both are
@@ -193,9 +193,12 @@ export function GoverningFindingsPanel({
   projectId,
   analysisId,
   canDecide,
+  analysisStatus,
 }: {
   projectId: string;
   analysisId: string;
+  /** The analysis's status; while it runs nothing is stored, so no empty state is said (#2113). */
+  analysisStatus?: string;
   /** The user holds `analysis.run`, which the decision route requires. */
   canDecide: boolean;
 }): React.ReactElement | null {
@@ -229,6 +232,16 @@ export function GoverningFindingsPanel({
     }
     wasRefreshing.current = refreshing;
   }, [refreshing, queryClient, analysisId]);
+  // #2113 — the governing keys sit outside the analysis detail's, so the job
+  // lifecycle never refreshes them: read again once the run leaves running.
+  const inFlight = analysisStatus === "pending" || analysisStatus === "running";
+  const wasInFlight = useRef(inFlight);
+  useEffect(() => {
+    if (wasInFlight.current && !inFlight) {
+      void queryClient.invalidateQueries({ queryKey: governingFindingsKeys.all(analysisId) });
+    }
+    wasInFlight.current = inFlight;
+  }, [inFlight, queryClient, analysisId]);
   // The Questions tab's own query (`EnhancementResults`): one cache entry.
   const clarification = useQuery({
     queryKey: ["analyses", analysisId, "clarify"],
@@ -245,7 +258,32 @@ export function GoverningFindingsPanel({
       </p>
     );
   }
-  if (!findingsQuery.data || !hasFindings) return null;
+  if (!findingsQuery.data) return null;
+  if (!hasFindings) {
+    // #2113 — "not checked" and "checked, nothing applied" read differently.
+    // While a findings run is in flight, the list is about to change: nothing yet.
+    if (findingsQuery.data.refreshing || inFlight) return null;
+    return (
+      <section
+        aria-labelledby="governing-findings-heading"
+        className="space-y-1"
+        data-testid="governing-findings-empty"
+      >
+        <h4
+          id="governing-findings-heading"
+          className="text-sm font-semibold uppercase tracking-wide text-muted-foreground"
+        >
+          Governing rules
+        </h4>
+        <GoverningPreviewNotice className="mt-1" />
+        <p className="text-sm text-muted-foreground">
+          {findingsQuery.data.checked
+            ? "Governing rules were checked against this analysis's requirements. None produced a finding."
+            : "Governing rules were not checked for this analysis: the workspace had no current governing rules, or the check did not run."}
+        </p>
+      </section>
+    );
+  }
 
   const sentences = governingSummarySentences(findings, findingsQuery.data.revisions ?? []);
   const groups = groupFindingsByRequirement(findings, applicabilityQuery.data ?? null);
