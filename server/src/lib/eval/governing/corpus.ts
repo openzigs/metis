@@ -619,7 +619,7 @@ function validateItems(
   }
 }
 
-const HTTPS_URL = /^https:\/\/[^\s/]+\.[^\s/]+(?:\/\S*)?$/;
+const HTTPS_URL = /^https:\/\/[^\s/.]+(?:\.[^\s/.]+)+(?:\/\S*)?$/;
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 /**
@@ -632,7 +632,15 @@ function validateSources(m: GoverningCorpusManifest, problems: string[]): void {
     problems.push("synthetic must be true or false");
     return;
   }
-  if (m.synthetic) return;
+  if (m.synthetic) {
+    if ((m.sources ?? []).length > 0) problems.push("a synthetic corpus must not carry sources");
+    for (const item of m.items) {
+      if (item.source !== undefined) {
+        problems.push(`item ${item.id}: a synthetic corpus must not carry a source`);
+      }
+    }
+    return;
+  }
   const sources = m.sources ?? [];
   if (sources.length === 0) {
     problems.push(

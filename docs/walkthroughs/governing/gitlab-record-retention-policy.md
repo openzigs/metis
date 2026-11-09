@@ -8,8 +8,6 @@
 > licence requires, whatever the licence of the repository around it.
 > It is a governing document for the Miniflux walkthrough (#2105); GitLab does not endorse it.
 
-This Records Retention Policy promotes and assists with the implementation of procedures, best practices, and tools to promote consistent life cycle management of GitLab records
-
 This Records Retention Policy promotes and assists with the implementation of procedures, best practices, and tools to promote consistent life cycle management of GitLab records. Because records contain important information, it is essential to take a systematic approach to the management of records.
 
 1. Records Management

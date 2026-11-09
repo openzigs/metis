@@ -342,6 +342,42 @@ describe("validateGoverningCorpus — the drift it must catch", () => {
     ]);
   });
 
+  it("FAILS on a synthetic set that carries sources or item sources, so the field means what its docstring says (#2105)", async () => {
+    const { manifest, files } = await committed();
+    const withSources = clone(manifest);
+    withSources.synthetic = true;
+    withSources.sources = [
+      { title: "A rule", url: "https://example.gov/rule", license: "PD", retrievedAt: "2026-11-09" },
+    ];
+    expect(validateGoverningCorpus(withSources, files)).toContain(
+      "a synthetic corpus must not carry sources",
+    );
+    const withItemSource = clone(manifest);
+    withItemSource.synthetic = true;
+    withItemSource.items[0]!.source = "https://example.org/x";
+    expect(validateGoverningCorpus(withItemSource, files)).toContain(
+      `item ${withItemSource.items[0]!.id}: a synthetic corpus must not carry a source`,
+    );
+  });
+
+  it("checks a long dotted URL in linear time (no quadratic backtracking in the https pattern) (#2105)", async () => {
+    const { manifest, files } = await committed();
+    const m = clone(manifest);
+    m.synthetic = false;
+    m.sources = [
+      {
+        title: "A rule",
+        url: `https://a${".".repeat(60000)} `,
+        license: "PD",
+        retrievedAt: "2026-11-09",
+      },
+    ];
+    const started = Date.now();
+    const problems = validateGoverningCorpus(m, files);
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(problems).toContain("source 1 (A rule): url must be an https URL");
+  });
+
   it("holds a synthetic set to the non-resembling minimum, and exempts a set of real requirements quoted as found (#2105)", async () => {
     const { manifest, files } = await committed();
     const few = clone(manifest);

@@ -78,6 +78,7 @@ We take a comprehensive approach to our immediate and future security compliance
 
 To address this, we developed a common controls framework called the GitLab Control Framework (GCF). This approach can be visualized as follows:
 
+```mermaid
 graph TD;
  SOC2_Requirement1-->Team1;
  SOC2_Requirement1-->Team2;
@@ -85,9 +86,11 @@ graph TD;
  SOC2_Requirement2-->Team2;
  PCI_Requirement1-->Team1;
  ISO_Requirement1-->Team2;
+```
 
 Given our efficiency value here at GitLab we created a set of security and AI controls that would address multiple underlying requirements with a single control allowing the Security Compliance team to make fewer requests to control owners and efficiently collect all evidence we would need for a variety of audits at once. This approach can be visualized as follows:
 
+```mermaid
 graph TD;
  SOC2_Requirement1-->Control1;
  PCI_Requirement1-->Control1;
@@ -97,6 +100,7 @@ graph TD;
  Control2-->GCF;
  GCF-->Team1;
  GCF-->Team2;
+```
 
 ### GCF Methodology
 
@@ -498,10 +502,12 @@ This approach allows us to efficiently prepare for and support multiple audit ty
 
 Visualized Hierarchy:
 
+```mermaid
 %%{init: { "fontFamily": "GitLab Sans" }}%%
 graph TD
  accTitle: Visualization of control hierarchy - Admin Access Example
  accDescr: Flowchart showing how a Level 1 admin access control cascades to Level 2 product and entity-level processes, then to Level 3 asset-specific implementations.
+```
 
  L1["Level 1: IAM-4<br/>Administrator access is granted based on<br/>job roles and responsibilities"];
  L2A["Level 2: IAM-4-GitLab.com<br/>Shared admin access process for systems supporting GitLab.com"];
