@@ -1203,12 +1203,171 @@ describe("#2122 — one answer settles the same fact on the analysis's other req
     ["the carried judge names no answer", { verdict: "applies" }],
     ["the carried judge names an answer that was not given", { verdict: "applies", answer: "A9" }],
   ])("%s: the pair stays open and is asked again", async (_label, carried) => {
-    const { provider } = carryModel(carried);
+    const { provider, sent } = carryModel(carried);
     const { dialog } = await answerTheFirst(provider);
+    // #2133 — read once the background carry has run, so its verdict is what is checked.
+    await governingCarriesSettled(ANALYSIS);
+    expect(sent.filter((s) => s.system.includes("each named A1"))).toHaveLength(1);
     const read = await readGoverningApplicability(ANALYSIS);
     expect(read!.requirements[1]!.decisions[0]!.settled).toBeUndefined();
     refresh.release();
     const next = await dialog.startOrContinue(ANALYSIS, REQS);
     expect(next.rounds[1]!.questions.map((x) => x.governing?.requirementId)).toEqual(["REQ-007"]);
+  });
+
+  describe("#2133 — the carry chain, the memo after the write, and open's signal", () => {
+    const THIRD_TEXT = "Staff sign in to the back office under the same password rules.";
+    beforeEach(() => {
+      const meta = JSON.parse(mem.metadata) as {
+        governingApplicability: GoverningAnalysisApplicability;
+      };
+      meta.governingApplicability.requirements.push({
+        requirementId: "REQ-009",
+        text: THIRD_TEXT,
+        decisions: [
+          {
+            ruleId: "rule_mfa",
+            controlId: "AU-02",
+            verdict: "uncertain",
+            reason: "Depends on how staff sign in.",
+            businessFact: "Do staff sign in to the back office with a password alone?",
+            foundBy: ["screen"],
+          },
+        ],
+      });
+      mem.metadata = JSON.stringify(meta);
+    });
+
+    const isCarry = (o: ChatOptions | undefined) =>
+      String(o?.systemMessage ?? "").includes("each named A1");
+    const sourceFor = (provider: AIProvider) =>
+      governingQuestionSourceFor({ analysisId: ANALYSIS, projectId: PROJECT, provider })!;
+
+    it("a second carry waits for the one before it, and the carries settle only after both", async () => {
+      const { provider } = carryModel({ verdict: "uncertain", businessFact: "Is it?" });
+      const chat = vi.mocked(provider.chat);
+      const real = chat.getMockImplementation()!;
+      let release = () => {};
+      const held = new Promise<void>((resolve) => (release = resolve));
+      /** Each carried call as it starts: which answer it carries. */
+      const order: string[] = [];
+      chat.mockImplementation(async (messages, o) => {
+        if (isCarry(o)) {
+          const user = messages.map((m) => String(m.content)).join("\n");
+          const first = user.includes("FIRST");
+          order.push(first ? "first" : "second");
+          if (first) await held;
+        }
+        return real(messages, o);
+      });
+      const source = sourceFor(provider);
+      const [q1, q2] = await source.open(undefined);
+      expect([q1, q2].map((q) => q?.governing?.requirementId)).toEqual(["REQ-001", "REQ-007"]);
+
+      // The first answer is carried to REQ-007 and REQ-009, and held there.
+      await source.settle([{ ...q1!, answer: "FIRST: the password is the only factor." }]);
+      await vi.waitFor(() => expect(order).toEqual(["first", "first"]));
+      // The second answer has REQ-009 left to carry to: queued behind the first carry.
+      await source.settle([{ ...q2!, answer: "SECOND: a reset password is used on its own." }]);
+      let settled = false;
+      void governingCarriesSettled(ANALYSIS).then(() => (settled = true));
+      await new Promise((r) => setTimeout(r, 30));
+      expect(order).toEqual(["first", "first"]);
+      expect(settled).toBe(false);
+
+      release();
+      await vi.waitFor(() => expect(settled).toBe(true));
+      expect(order).toEqual(["first", "first", "second"]);
+      refresh.release();
+    });
+
+    it("a carry whose write failed is judged again by the next carry of the same answer", async () => {
+      const { provider, sent } = carryModel({ verdict: "applies", answer: "A1" });
+      const chat = vi.mocked(provider.chat);
+      const real = chat.getMockImplementation()!;
+      // The question's own rejudge always fails, so each settle retries it and carries again.
+      let carryWriteFails = true;
+      let failNextWrite = false;
+      chat.mockImplementation(async (messages, o) => {
+        if (isCarry(o)) {
+          failNextWrite = carryWriteFails;
+        } else if (String(o?.systemMessage ?? "").includes("You decide which")) {
+          throw new Error("provider unavailable");
+        }
+        return real(messages, o);
+      });
+      const update = prisma.analysis.update as unknown as Mock<(args: unknown) => Promise<unknown>>;
+      const realUpdate = update.getMockImplementation()!;
+      // The first carry's write fails.
+      update.mockImplementation(async (args: unknown) => {
+        if (failNextWrite) {
+          failNextWrite = carryWriteFails = false;
+          throw new Error("database unavailable");
+        }
+        return realUpdate(args);
+      });
+      const carried = () => sent.filter((s) => s.system.includes("each named A1")).length;
+      const source = sourceFor(provider);
+      const [q1] = await source.open(undefined);
+      const answered = { ...q1!, answer: "Yes, the password is the only factor." };
+
+      await source.settle([answered]);
+      await governingCarriesSettled(ANALYSIS);
+      expect(carried()).toBe(2);
+      let read = await readGoverningApplicability(ANALYSIS);
+      expect(read!.requirements[1]!.decisions[0]!.settled).toBeUndefined();
+
+      await source.settle([answered]);
+      await governingCarriesSettled(ANALYSIS);
+      expect(carried()).toBe(4);
+      read = await readGoverningApplicability(ANALYSIS);
+      expect(read!.requirements[1]!.decisions[0]!.settled).toMatchObject({ questionId: q1!.id });
+      expect(read!.requirements[2]!.decisions[0]!.settled).toMatchObject({ questionId: q1!.id });
+      update.mockImplementation(realUpdate);
+      refresh.release();
+    });
+
+    it("open stops waiting for a carry once its signal aborts; the carry still lands", async () => {
+      const { provider } = carryModel({ verdict: "applies", answer: "A1" });
+      const chat = vi.mocked(provider.chat);
+      const real = chat.getMockImplementation()!;
+      let release = () => {};
+      const held = new Promise<void>((resolve) => (release = resolve));
+      let carryStarted = false;
+      chat.mockImplementation(async (messages, o) => {
+        if (isCarry(o)) {
+          carryStarted = true;
+          await held;
+        }
+        return real(messages, o);
+      });
+      const source = sourceFor(provider);
+      const [q1] = await source.open(undefined);
+      await source.settle([{ ...q1!, answer: "Yes, the password is the only factor." }]);
+      await vi.waitFor(() => expect(carryStarted).toBe(true));
+
+      const outcome = (p: Promise<unknown>) =>
+        Promise.race([
+          p.then(
+            () => "opened",
+            (e: unknown) => (e as Error).message,
+          ),
+          new Promise((resolve) => setTimeout(() => resolve("still waiting"), 200)),
+        ]);
+      const controller = new AbortController();
+      const opened = source.open(undefined, controller.signal);
+      controller.abort(new Error("client went away"));
+      expect(await outcome(opened)).toBe("client went away");
+      // Already aborted: refused at once.
+      expect(await outcome(source.open(undefined, controller.signal))).toBe("client went away");
+
+      release();
+      await governingCarriesSettled(ANALYSIS);
+      const read = await readGoverningApplicability(ANALYSIS);
+      expect(read!.requirements[1]!.decisions[0]!.settled).toMatchObject({ questionId: q1!.id });
+      // A signal that never aborts waits for nothing once the carries are done.
+      expect(await outcome(source.open(undefined, new AbortController().signal))).toBe("opened");
+      refresh.release();
+    });
   });
 });
