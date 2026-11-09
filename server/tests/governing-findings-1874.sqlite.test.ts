@@ -527,6 +527,24 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
     });
 
+    it("#2113 — `checked` tells a run whose governing check never ran from one where no rule applied", async () => {
+      // An analysis the check never ran on: nothing stored on it.
+      const unchecked = "ana-2113-unchecked";
+      await db.analysis.upsert({
+        where: { id: unchecked },
+        create: { id: unchecked, projectId: PA, startedById: MEMBER_A, status: "completed" },
+        update: {},
+      });
+      const none = await getFindings(PA, unchecked);
+      expect(none.status).toBe(200);
+      expect(none.body.data.findings).toEqual([]);
+      expect(none.body.data.checked).toBe(false);
+      // ANA has stored applicability: it was checked, before any finding exists too.
+      const checked = await getFindings(PA, ANA);
+      expect(checked.body.data.findings).toEqual([]);
+      expect(checked.body.data.checked).toBe(true);
+    });
+
     it("flag off: both routes are 404", async () => {
       process.env.GOVERNING_DOCS_ENABLED = "0";
       expect((await getFindings(PA, ANA)).status).toBe(404);

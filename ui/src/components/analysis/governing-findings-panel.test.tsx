@@ -149,6 +149,7 @@ class FakeServer {
     },
   ];
   refreshing = false;
+  checked = true;
   applicability: GoverningAnalysisApplicability = APPLICABILITY;
   clarification: ClarificationStatePayload | null = null;
   requests: { method: string; path: string; body: unknown }[] = [];
@@ -181,6 +182,7 @@ class FakeServer {
         summary: {},
         revisions: this.revisions,
         refreshing: this.refreshing,
+        checked: this.checked,
       });
     }
     if (rest.length === 3 && rest[2] === "decision" && method === "POST") {
@@ -550,15 +552,41 @@ describe("GoverningFindingsPanel (#1876)", () => {
     ]);
   });
 
-  it("renders nothing when the analysis has no governing findings", async () => {
+  it("#2113 — checked, no finding: says the rules were checked and none produced a finding", async () => {
     server.findings = [];
+    mount();
+    const empty = await screen.findByTestId("governing-findings-empty");
+    expect(within(empty).getByRole("heading", { name: "Governing rules" })).toBeInTheDocument();
+    expect(empty).toHaveTextContent(
+      "Governing rules were checked against this analysis's requirements. None produced a finding.",
+    );
+    expect(empty).not.toHaveTextContent("not checked");
+    expect(screen.queryByTestId("governing-findings")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+    // Nothing to name a requirement for: the applicability is not asked for.
+    expect(server.requests.some((r) => r.path.endsWith("/governing-applicability"))).toBe(false);
+  });
+
+  it("#2113 — not checked: says the check did not run, never that nothing applied", async () => {
+    server.findings = [];
+    server.checked = false;
+    mount();
+    const empty = await screen.findByTestId("governing-findings-empty");
+    expect(empty).toHaveTextContent("Governing rules were not checked for this analysis");
+    expect(empty).not.toHaveTextContent("None produced a finding");
+    expect(screen.queryByTestId("governing-findings")).toBeNull();
+  });
+
+  it("#2113 — no finding while a findings run is in flight: nothing yet", async () => {
+    server.findings = [];
+    server.refreshing = true;
     mount();
     await waitFor(() => expect(server.requests.length).toBeGreaterThan(0));
     await act(async () => {
       await new Promise((r) => setTimeout(r, 0));
     });
+    expect(screen.queryByTestId("governing-findings-empty")).toBeNull();
     expect(screen.queryByTestId("governing-findings")).toBeNull();
-    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("a failure other than the flag being off is said", async () => {

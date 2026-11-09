@@ -2633,6 +2633,12 @@ The join stores the sets on the analysis as `metadata.governingApplicability`
 (`governing/applicability-store.ts`, the shared `governingAnalysisApplicabilitySchema`, #1873),
 where the BA questions below read them. A flag-off analysis is byte-identical to
 before (`governing-applicability-pipeline-1872.test.ts`, a snapshot) and stores nothing.
+#2113 — the agentic code pass (a project with a code graph) starts the same work through
+`startGoverningApplicability`, once per run, on the same controller and with the same join. It
+retrieves no per-requirement evidence, so each requirement goes in with no chunks
+(applicability reads only the id and text), blank ones dropped and capped at
+`MAX_REQUIREMENTS_FOR_RETRIEVAL` as `retrievePerRequirement` would. Before #2113 no analysis of
+a project with ingested code was ever checked.
 
 `pnpm --filter server eval:governing --arms A0,A3` measures it: arm A3 runs
 `decideApplicability` over the #1867 corpus (lexical top-k standing in for the vector
@@ -2849,7 +2855,8 @@ decision on that row is audited the same way before the delete (#2017).
   counts, and `refreshing`: true while a findings run of the analysis is in flight or queued (the
   run's own production at its join as well as a refresh a BA answer started), so a client fetches
   again once it reads false (#2017). `revisions` lists each policy revision the findings cite with
-  its rule count (live rules, plus any cited rule deleted since), for the summary sentence (#1876).
+  its rule count (live rules, plus any cited rule deleted since), for the summary sentence (#1876). `checked`
+  is false when the analysis has no stored applicability, so the check never ran (#2113).
 - `POST …/governing-findings/:findingId/decision` takes `{ decision: accepted|rejected, note }`
   (`governingFindingDecisionInputSchema`, strict) and needs `analysis.run`.
 - The decider is the session user. A body that names one is a 400. Each finding carries
@@ -2861,7 +2868,9 @@ decision on that row is audited the same way before the delete (#2017).
 **Analysis view** (#1876): `GoverningFindingsPanel`
 (`ui/src/components/analysis/governing-findings-panel.tsx`), at the foot of the Findings tab,
 groups the findings by requirement and heads them with one `governingSummarySentence` (#1875) per
-cited revision. A 404 or an empty list renders nothing. Accept / Reject re-reads the findings
+cited revision. A 404 renders nothing. #2113 — an empty list says either that the rules were
+checked and none produced a finding, or (`checked` false) that the check did not run; nothing is
+shown while `refreshing`. Accept / Reject re-reads the findings
 rather than updating them optimistically. A `needs-ba-input` finding links to
 `#clarify-question-<id>`, the clarifying question whose `governing` link (#1873) names its
 requirement and rule, or to the Questions tab when there is none. #2087 — a finding whose rule

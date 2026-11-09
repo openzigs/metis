@@ -29,6 +29,13 @@ export interface GoverningFindingsPayload {
   revisions: GoverningFindingRevision[];
   /** True while a findings run a BA answer started is in flight (#2017): read again. */
   refreshing: boolean;
+  /**
+   * #2113 — whether the governing check ran on this analysis. False when no
+   * applicability is stored: the workspace had no current rules, or the run
+   * skipped the check. An empty `findings` then means "not checked", never
+   * "checked, no rule applied".
+   */
+  checked: boolean;
 }
 
 const base = (projectId: string, analysisId: string) =>

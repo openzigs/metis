@@ -968,7 +968,8 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
    * was checked against), with their BA decisions, and the counts. #2017 —
    * `refreshing` is true while a findings run of the analysis is in flight or
    * queued (#2022: the run's own production at its join, or a refresh a BA
-   * answer started): fetch again once it reads false. 404 while
+   * answer started): fetch again once it reads false. #2113 — `checked` is
+   * false when no applicability is stored: the check never ran. 404 while
    * `GOVERNING_DOCS_ENABLED` is off. Scoped with `ensureAnalysisVisible`; rows
    * are read by the analysis id alone, which that check binds to the project.
    */
@@ -989,6 +990,11 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
           // #1876 — each cited revision's rule count, for the analysis view's summary sentence.
           revisions: await governingFindingRevisions(findings),
           refreshing: governingFindingsRefreshing(analysisId),
+          // #2113 — whether the governing check ran on this analysis at all
+          // (its applicability is stored), so "not checked" (no rules in the
+          // workspace, or a run that skipped the check) reads differently
+          // from "checked, no rule applied".
+          checked: (await readGoverningApplicability(analysisId)) !== null,
         }),
       );
     },

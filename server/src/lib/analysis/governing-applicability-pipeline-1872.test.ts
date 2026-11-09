@@ -629,3 +629,115 @@ describe("#2022 — a cancel during the governing join", () => {
     expect(vi.mocked(findingsStore.produceGoverningFindingsForAnalysis)).not.toHaveBeenCalled();
   });
 });
+
+describe("#2113 — the agentic path (a project with ingested code)", () => {
+  type AgenticInput = { requirements: Array<{ id: string }> };
+  type ChatFn = (m: ChatMessage[], o?: ChatOptions) => Promise<unknown>;
+
+  /**
+   * The project has a code graph, so the code agent runs agentic. Its tool
+   * loop needs a real graph, so it is stubbed; the stub makes the code agent's
+   * model call, and a governing call waiting on it (`makeProvider`'s gate)
+   * shows the work ran beside the code agent rather than ahead of it.
+   */
+  async function runAgentic(made: ReturnType<typeof makeProvider> = makeProvider()) {
+    const seen: AgenticInput[] = [];
+    vi.mocked(prisma.codeGraph.findFirst).mockImplementation((async () => ({
+      id: "cg_2113",
+    })) as never);
+    const spy = vi
+      .spyOn(
+        AnalysisOrchestrator.prototype as unknown as {
+          runAgenticCodeAgent: (input: AgenticInput) => Promise<unknown>;
+        },
+        "runAgenticCodeAgent",
+      )
+      .mockImplementation(async (input) => {
+        seen.push(input);
+        await (made.provider as unknown as { chat: ChatFn }).chat(
+          [{ role: "user", content: "investigate" }],
+          { systemMessage: "Answer with a requirementId on every finding." },
+        );
+        return {
+          agentKey: "code",
+          output: { summary: "ok", findings: [], notes: [] },
+          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+          durationMs: 1,
+        };
+      });
+    try {
+      return { ...(await runPipeline(made)), seen };
+    } finally {
+      spy.mockRestore();
+      vi.mocked(prisma.codeGraph.findFirst).mockImplementation((async () => null) as never);
+    }
+  }
+
+  it("flag on, workspace with current rules: every requirement is checked beside the code agent, joined, stored and its findings produced", async () => {
+    process.env.GOVERNING_DOCS_ENABLED = "1";
+    state.workspaceId = "ws_1872";
+    state.rules = [AUDIT_RULE];
+    const run = await runAgentic();
+    // It did take the agentic path, with the document agent's requirements.
+    expect(run.seen.map((i) => i.requirements.map((r) => r.id))).toEqual([["REQ-001", "REQ-002"]]);
+    // Per requirement: one screen batch, one judging call.
+    expect(run.calls.filter(isGoverning)).toHaveLength(4);
+    expect([...decided.ids].sort()).toEqual(["REQ-001", "REQ-002"]);
+    // Beside the code agent, and joined before the run was recorded.
+    expect(run.timeline.waitedOut).toBe(false);
+    expect(state.governingDoneAtCompletion).toBe(4);
+    const store = vi.mocked(analysisService.updateGoverningApplicabilityMetadata);
+    expect(store).toHaveBeenCalledTimes(1);
+    expect(store.mock.calls[0]![0]).toBe(ANALYSIS_ID);
+    const stored = (store.mock.calls[0]![1] as (c: unknown) => unknown)(undefined) as {
+      requirements: Array<{ requirementId: string; decisions: Array<Record<string, unknown>> }>;
+    };
+    expect(stored.requirements.map((r) => r.requirementId)).toEqual(["REQ-001", "REQ-002"]);
+    expect(stored.requirements[0]!.decisions).toEqual([
+      expect.objectContaining({ ruleId: "rule_audit", controlId: "LG-03", verdict: "applies" }),
+    ]);
+    const produce = vi.mocked(findingsStore.produceGoverningFindingsForAnalysis);
+    expect(produce).toHaveBeenCalledTimes(1);
+    expect(produce.mock.calls[0]![0]).toMatchObject({
+      analysisId: ANALYSIS_ID,
+      projectId: PROJECT_ID,
+      applicability: stored,
+    });
+    expect(vi.mocked(analysisService.markAnalysisCompleted)).toHaveBeenCalledTimes(1);
+  });
+
+  it("flag off: the agentic path reads no workspace or rule, and stores nothing", async () => {
+    const run = await runAgentic();
+    expect(run.seen).toHaveLength(1);
+    expect(run.calls.some(isGoverning)).toBe(false);
+    expect(vi.mocked(prisma.project.findFirst)).not.toHaveBeenCalled();
+    expect(vi.mocked(prisma.governingRule.findMany)).not.toHaveBeenCalled();
+    expect(vi.mocked(analysisService.updateGoverningApplicabilityMetadata)).not.toHaveBeenCalled();
+    expect(vi.mocked(findingsStore.produceGoverningFindingsForAnalysis)).not.toHaveBeenCalled();
+    expect(vi.mocked(analysisService.markAnalysisCompleted)).toHaveBeenCalledTimes(1);
+  });
+
+  it("a run that fails before the join ends with the agentic path's unjoined work aborted", async () => {
+    process.env.GOVERNING_DOCS_ENABLED = "1";
+    state.workspaceId = "ws_1872";
+    state.rules = [AUDIT_RULE];
+    const signals: AbortSignal[] = [];
+    const made = makeProvider();
+    const chat = vi.mocked((made.provider as unknown as { chat: ChatFn }).chat);
+    const specialists = chat.getMockImplementation()!;
+    chat.mockImplementation(async (messages: ChatMessage[], o: ChatOptions = {}) => {
+      const user = messages.map((m) => String(m.content)).join("\n");
+      if (!user.includes("governing_rule")) return specialists(messages, o);
+      signals.push(o.signal!);
+      return untilAborted(o.signal!);
+    });
+    vi.mocked(analysisService.readFlattenedFindings).mockRejectedValueOnce(
+      new Error("database is locked"),
+    );
+    await runAgentic(made);
+    expect(vi.mocked(analysisService.markAnalysisFailed)).toHaveBeenCalledTimes(1);
+    expect(signals.length).toBeGreaterThan(0);
+    expect(signals.every((s) => s.aborted)).toBe(true);
+    expect(vi.mocked(analysisService.updateGoverningApplicabilityMetadata)).not.toHaveBeenCalled();
+  });
+});
