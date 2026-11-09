@@ -336,6 +336,73 @@ describe("ProjectImpactSection — the run's API-edge impact", () => {
     expect(screen.queryByTestId("cross-project-impact-empty")).toBeNull();
   });
 
+  it("keeps the API consumers it has when the API-edge read failed (#2127)", () => {
+    // Stale data after a failed refetch: consumers present, no shared objects.
+    render(
+      <ProjectImpactSection
+        projectId={V2}
+        items={[]}
+        crossProjectImpact={noShared}
+        apiEdgeImpact={apiEdgeImpact}
+        apiEdgeImpactError
+      />,
+    );
+    expect(screen.getByTestId("api-consumer-row")).toBeInTheDocument();
+    expect(screen.getByTestId("api-edge-impact-error")).toBeInTheDocument();
+    expect(screen.queryByTestId("cross-project-impact-empty")).toBeNull();
+  });
+
+  it("says once that cross-project impact is unavailable when both reads failed (#2127)", () => {
+    render(<ProjectImpactSection projectId={V2} items={[]} crossProjectError apiEdgeImpactError />);
+    expect(screen.getByTestId("cross-project-impact-error")).toHaveTextContent(
+      "Cross-project impact is unavailable right now.",
+    );
+    expect(screen.queryByTestId("api-edge-impact-error")).toBeNull();
+    expect(screen.queryByTestId("cross-project-impact-empty")).toBeNull();
+  });
+
+  it("says it is still checking, not that no project is affected, while the API-edge read is pending (#2127)", () => {
+    render(
+      <ProjectImpactSection
+        projectId={V2}
+        items={[item("i-v2", V2)]}
+        crossProjectImpact={noShared}
+        apiEdgeImpactLoading
+      />,
+    );
+    expect(screen.queryByTestId("cross-project-impact-empty")).toBeNull();
+    expect(screen.getByTestId("api-edge-impact-loading")).toHaveTextContent(
+      "Checking projects that call this project's API…",
+    );
+    expect(screen.queryByTestId("cross-project-impact-section")).toBeNull();
+  });
+
+  it("shows the shared objects it has while the API-edge read is pending (#2127)", () => {
+    const shared: CrossProjectImpactResult = {
+      ...noShared,
+      affectedObjects: [
+        {
+          objectType: "table",
+          schemaName: null,
+          objectName: "entries",
+          alsoUsedByProjects: [
+            { projectId: "p-x", projectName: "Other", usageClass: "used", evidenceCount: 1 },
+          ],
+        },
+      ],
+    };
+    render(
+      <ProjectImpactSection
+        projectId={V2}
+        items={[]}
+        crossProjectImpact={shared}
+        apiEdgeImpactLoading
+      />,
+    );
+    expect(screen.getByTestId("cross-project-affected-object")).toBeInTheDocument();
+    expect(screen.getByTestId("api-edge-impact-loading")).toBeInTheDocument();
+  });
+
   it("renders nothing for the block with no result and no consumer", () => {
     render(<ProjectImpactSection projectId={CLIENT} items={[]} apiEdgeImpact={null} />);
     expect(screen.queryByTestId("cross-project-impact-section")).toBeNull();
