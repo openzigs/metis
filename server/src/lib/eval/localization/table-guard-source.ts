@@ -132,6 +132,30 @@ export function emptyTranslation(): CitationTranslation {
 }
 
 /**
+ * #1909 — one stored citation and how it reached the fixture, which the
+ * counts cannot tell apart: a `file` outcome is either a citation that named
+ * only its file, or a cited symbol the fixture does not model
+ * ({@link isWidenedCitation}), which the translation widens to its whole file.
+ */
+export interface CitationTrace {
+  /** The cited file, as the repository names it. */
+  filePath: string;
+  /** Whether the stored citation named a symbol or only its file. */
+  cited: "symbol" | "file";
+  /** The cited symbol's qualified name on the materialized graph; null when it named none, or one the graph cannot name. */
+  symbol: string | null;
+  outcome: keyof CitationTranslation;
+  /** What it seeds on the fixture: the symbol's qualified name, the file (`file`), or null (`dropped`). */
+  seeds: string | null;
+  confidence: number;
+}
+
+/** #1909 — a cited symbol the translation read as its whole file. */
+export function isWidenedCitation(trace: Pick<CitationTrace, "cited" | "outcome">): boolean {
+  return trace.cited === "symbol" && trace.outcome === "file";
+}
+
+/**
  * A repository symbol's qualified name as the fixture writes it, or null.
  * Code symbols are `path::Type::member`, the path translated. A MyBatis
  * statement is `org.mybatis.jpetstore.mapper.<Mapper>.<id>` in the repository
@@ -179,13 +203,15 @@ function layerOf(fixturePath: string): string {
  *   4. dropped — else.
  *
  * The order and the confidences are kept, so the stage orders them as it
- * would the stored ones. `counts` is incremented in place.
+ * would the stored ones. `counts` is incremented in place, and #1909 each
+ * citation's {@link CitationTrace} is appended to `traces` when given.
  */
 export function translateCitations(
   links: readonly StoredLinkRow[],
   qualifiedNames: ReadonlyMap<string, string>,
   fixture: Pick<ImpactRecallFixture, "manifest">,
   counts: CitationTranslation,
+  traces?: CitationTrace[],
 ): StoredLinkRow[] {
   const symbols = fixture.manifest.codeSymbols;
   const byQualifiedName = new Map(symbols.map((s) => [s.qualifiedName, s]));
@@ -207,8 +233,19 @@ export function translateCitations(
       );
       if (same.length === 1) match = same[0];
     }
+    const record = (outcome: keyof CitationTranslation, seeds: string | null) => {
+      counts[outcome]++;
+      traces?.push({
+        filePath: link.filePath,
+        cited: link.codeSymbolId ? "symbol" : "file",
+        symbol: repoName ?? null,
+        outcome,
+        seeds,
+        confidence: link.confidence,
+      });
+    };
     if (match) {
-      counts[exact ? "symbol" : "member"]++;
+      record(exact ? "symbol" : "member", match.qualifiedName);
       out.push({
         ...link,
         codeSymbolId: match.id,
@@ -217,10 +254,10 @@ export function translateCitations(
         endLine: null,
       });
     } else if (filePath && files.has(filePath)) {
-      counts.file++;
+      record("file", filePath);
       out.push({ ...link, codeSymbolId: null, filePath, startLine: null, endLine: null });
     } else {
-      counts.dropped++;
+      record("dropped", null);
     }
   }
   return out;

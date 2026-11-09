@@ -293,11 +293,49 @@ total" 0.556 to 0.522, are offset by a +0.167 gain on "Track inventory"):
   (490 of 735). It is *lower* on the model with the larger
   gap, so file-level widening alone does not account for the difference between the
   models.
-- **Not yet localized to a code path.** Telling which files each model cites, and whether
-  a symbol-level citation would keep the sibling statements out, needs the stored
-  citations in the materialized eval database. That means a DeepSeek re-read of the
-  stored analyses, which has not been run. Whether to confirm on Sonnet depends on that
-  result: only if a DeepSeek fix changes the code path.
+- **Not yet localized to a code path.** Telling which files each model cites needs the
+  stored citations in the materialized eval database. That means a DeepSeek re-read of
+  the stored analyses, which has not been run (#2057). Whether to confirm on Sonnet
+  depends on that result: only if a DeepSeek fix changes the code path.
+
+**What a citation's shape does to the sibling tables, offline (#1909).** The second
+question, whether a symbol-level citation keeps the sibling statements out, needs no
+model. It runs through production's impact path on the fixture, with the #922 DAO-sibling
+expansion on as shipped, and a test pins it:
+
+- **A citation read as its file seeds the mapper's sibling statements.** A file seeds
+  up to 4 symbols (`MAX_SYMBOLS_PER_EDIT_FILE`). For `AccountMapper` those include
+  `getAccountByUsername` (reads `account`, `profile`, `signon`) and `insertAccount`
+  (writes all three). On "Update product details in the catalog", where the search alone
+  reaches neither table, `profile` and `signon` then reach the #936 filter as **direct**
+  crossings (confidence 0.48).
+- **A symbol citation leaves them to the sibling expansion.** A citation of
+  `updateAccount` surfaces `profile` and `signon` only as `siblingDerived=true`, at
+  confidence 0.36, and the filter's prompt shows that flag. A symbol-level citation keeps
+  the sibling statements out of the direct crossing, though not out of the candidates.
+- **The translation widens two kinds of citation the same way.** One kind names only its
+  file. The other names a symbol the fixture does not model: jpetstore-6.3.0's
+  `AccountMapper` declares 8 methods and the fixture models 4, so a citation of
+  `updateProfile`, `updateSignon`, `insertProfile`, `insertSignon` or
+  `getAccountByUsernameAndPassword` is read as the whole file. The committed counts put
+  both kinds under "as their file", so the 402 of 665 above do not say which happened. The
+  repository's `ProductMapper` has no `updateProduct`, the fixture's labelled symbol for
+  both product requirements. A product citation can name only `getProduct`,
+  `getProductListByCategory`, `searchProductList` or the file, and the last two reach
+  `category` directly.
+- **The account loss does not show on the fixture's own text.** There the search alone
+  already crosses `profile` and `signon` directly, and the live filter dropped both on all
+  3 A0 runs. A7's extra tables came from the analyses' restatements, whose candidate lists
+  the records do not hold.
+
+The guard now records each citation on A7's pieces (`GuardPiece.citations`): what it
+named, the repository symbol, how it reached the fixture and what it seeds. When A7 reads
+below A7O on a requirement, the A7 reading logs each run's extra tables and the citations
+behind them, and its summary counts the widened symbols among those read as their file.
+Runs recorded before #1909 are read as recorded, without a trace. The live re-read (#2057)
+needs a partials directory holding only the analysis records, or new analyses. The
+2026-11-06 eval database is not on the machine that did #1909, and no DeepSeek endpoint is
+configured there.
 
 **#1832's demotion of stale citations, measured (#1834).** The staleness slice reads the
 same analyses as A7 four ways. Each item's committed patch edits every function of one
