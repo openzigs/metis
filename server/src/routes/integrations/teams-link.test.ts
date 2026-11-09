@@ -26,15 +26,37 @@ vi.mock("../../middleware/auth.js", () => ({
 // and project.findFirst returns the thread's workspace for the link route.
 let wsRole = "admin";
 let projectWorkspaceId: string | null = "ws-1";
+// #2089 — the binding notice reads the workspace's owner row, its name and the
+// people it names, and writes one notification per recipient.
+let ownerId: string | null = "u-owner";
+const notificationCreate = vi.fn(async (_args: { data: Record<string, unknown> }) => ({
+  id: "n-1",
+}));
+const ownerLookup = vi.fn(async () => (ownerId ? { userId: ownerId } : null));
 vi.mock("../../lib/prisma.js", () => ({
   prisma: {
-    workspaceMember: { findUnique: vi.fn(async () => ({ role: wsRole })) },
+    workspaceMember: {
+      findUnique: vi.fn(async () => ({ role: wsRole })),
+      findFirst: (...a: unknown[]) => ownerLookup(...(a as [])),
+    },
     project: {
       findFirst: vi.fn(async () =>
         projectWorkspaceId === null ? null : { workspaceId: projectWorkspaceId },
       ),
     },
+    workspace: { findUnique: vi.fn(async () => ({ name: "Acme" })) },
+    user: {
+      findMany: vi.fn(async ({ where }: { where: { id: { in: string[] } } }) =>
+        where.id.in.map((id) => ({ id, displayName: `Name ${id}`, username: id })),
+      ),
+    },
+    notification: { create: (args: { data: Record<string, unknown> }) => notificationCreate(args) },
   },
+}));
+
+const auditMock = vi.fn();
+vi.mock("../../lib/audit/audit-service.js", () => ({
+  audit: (...a: unknown[]) => auditMock(...a),
 }));
 
 // canAccessThread is the member-only gate; drive it deterministically.
@@ -124,6 +146,10 @@ describe("Teams link + identity routes (#549)", () => {
     wsRole = "admin";
     projectWorkspaceId = "ws-1";
     threadAccess = { ok: true, projectId: "pr-1" };
+    ownerId = "u-owner";
+    notificationCreate.mockClear();
+    ownerLookup.mockClear();
+    auditMock.mockClear();
   });
 
   describe("POST /workspaces/:id/links (create)", () => {
@@ -309,6 +335,133 @@ describe("Teams link + identity routes (#549)", () => {
         .post("/api/integrations/teams/workspaces/ws-1/identities")
         .send({ tenantId: "tenant-a", aadObjectId: "aad-1", email: "alice@corp.com" });
       expect(res.status).toBe(403);
+      expect(auditMock).not.toHaveBeenCalled();
+      expect(notificationCreate).not.toHaveBeenCalled();
+    });
+  });
+
+  // #2089 — no MFA gate on binding (owner decision), but a binding is never
+  // silent: it is audited, and the owner and the bound member are told.
+  describe("POST /workspaces/:id/identities — audit and owner notice (#2089)", () => {
+    /** A resolver that binds whichever userId the caller names. */
+    function bindAsRequested(): TeamsAadIdentityResolver {
+      return stubResolver({
+        linkExplicit: vi.fn(async (p: { userId: string }): Promise<LinkOutcome> => ({
+          ok: true,
+          userId: p.userId,
+        })),
+      });
+    }
+
+    async function bind(userId: string) {
+      return request(createApp(stubLinkStore(), bindAsRequested()))
+        .post("/api/integrations/teams/workspaces/ws-1/identities")
+        .send({ tenantId: "tenant-a", aadObjectId: "aad-9", userId });
+    }
+
+    const notified = () => notificationCreate.mock.calls.map((c) => c[0].data.userId);
+
+    it("an admin binding a chat account to the owner succeeds, is audited and tells the owner", async () => {
+      currentUser = { userId: "u-admin", role: "developer" };
+      const res = await bind("u-owner");
+      expect(res.status).toBe(201);
+      expect(res.body.data.userId).toBe("u-owner");
+
+      expect(auditMock).toHaveBeenCalledTimes(1);
+      expect(auditMock).toHaveBeenCalledWith({
+        actor: "u-admin",
+        action: "chatops.identity.bind",
+        target: { type: "user", id: "u-owner" },
+        metadata: {
+          workspaceId: "ws-1",
+          provider: "teams",
+          boundUserId: "u-owner",
+          externalScope: "tenant-a",
+          externalId: "aad-9",
+        },
+      });
+
+      expect(notified()).toEqual(["u-owner"]);
+      const data = notificationCreate.mock.calls[0][0].data;
+      expect(data).toMatchObject({
+        type: "chat_identity_bound",
+        title: "A Microsoft Teams account can now act as you",
+        projectId: null,
+      });
+      expect(data.message).toBe(
+        'Name u-admin linked Microsoft Teams account aad-9 to you in the workspace "Acme". ' +
+          "Chat commands from that account now run with your permissions in this workspace.",
+      );
+    });
+
+    it("the owner binding their own chat account is notified once", async () => {
+      currentUser = { userId: "u-owner", role: "developer" };
+      const res = await bind("u-owner");
+      expect(res.status).toBe(201);
+      expect(notified()).toEqual(["u-owner"]);
+      expect(auditMock).toHaveBeenCalledWith(expect.objectContaining({ actor: "u-owner" }));
+    });
+
+    it("an admin binding another member tells both the owner and that member", async () => {
+      currentUser = { userId: "u-admin", role: "developer" };
+      await bind("u-alice");
+      expect(notified().sort()).toEqual(["u-alice", "u-owner"]);
+      const toOwner = notificationCreate.mock.calls.find((c) => c[0].data.userId === "u-owner");
+      expect(toOwner?.[0].data.title).toBe("A Microsoft Teams account can now act as Name u-alice");
+      expect(toOwner?.[0].data.message).toContain("to Name u-alice in the workspace");
+      expect(toOwner?.[0].data.message).toContain("run with their permissions");
+    });
+
+    it("an admin binding their own chat account tells the owner, not themselves", async () => {
+      currentUser = { userId: "u-admin", role: "developer" };
+      await bind("u-admin");
+      expect(notified()).toEqual(["u-owner"]);
+    });
+
+    it("a refused binding is neither audited nor announced", async () => {
+      const resolver = stubResolver({
+        linkExplicit: vi.fn(async (): Promise<LinkOutcome> => ({
+          ok: false,
+          reason: "no_matching_user",
+        })),
+      });
+      const res = await request(createApp(stubLinkStore(), resolver))
+        .post("/api/integrations/teams/workspaces/ws-1/identities")
+        .send({ tenantId: "tenant-a", aadObjectId: "aad-9", userId: "u-owner" });
+      expect(res.status).toBe(404);
+      expect(auditMock).not.toHaveBeenCalled();
+      expect(notificationCreate).not.toHaveBeenCalled();
+    });
+
+    it("a failed notice write is logged, never fails the bind, and the other recipient still gets theirs", async () => {
+      currentUser = { userId: "u-admin", role: "developer" };
+      notificationCreate.mockImplementationOnce(async () => {
+        throw new Error("db down");
+      });
+      const res = await bind("u-alice");
+      expect(res.status).toBe(201);
+      expect(notificationCreate).toHaveBeenCalledTimes(2);
+      expect(auditMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("a workspace with no owner row still audits and tells the bound member", async () => {
+      ownerId = null;
+      currentUser = { userId: "u-admin", role: "developer" };
+      const res = await bind("u-alice");
+      expect(res.status).toBe(201);
+      expect(notified()).toEqual(["u-alice"]);
+      expect(auditMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("a failed recipient lookup never fails the bind; the audit row is still queued", async () => {
+      ownerLookup.mockImplementationOnce(async () => {
+        throw new Error("db down");
+      });
+      currentUser = { userId: "u-admin", role: "developer" };
+      const res = await bind("u-owner");
+      expect(res.status).toBe(201);
+      expect(notificationCreate).not.toHaveBeenCalled();
+      expect(auditMock).toHaveBeenCalledTimes(1);
     });
   });
 });

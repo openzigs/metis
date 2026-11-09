@@ -27,7 +27,7 @@ const SERVER = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SRC = path.join(SERVER, "src");
 const MIGRATION = "20261028001447_issue1447_notification_project_id";
 
-/** Every type the server writes today, and the backfill branch for each. */
+/** Every project-scoped type the server writes, and the backfill branch for each. */
 const KNOWN_TYPES = [
   "discussion_mention",
   "mention",
@@ -37,6 +37,12 @@ const KNOWN_TYPES = [
   "review_requested",
   "sla_deadline",
 ];
+
+/**
+ * Types opted out of the project check, each a deliberate decision. Written
+ * after the #1447 backfill, so no backfill branch exists or is needed.
+ */
+const PROJECTLESS_TYPES = ["chat_identity_bound"]; // #2089
 
 function sourceFiles(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {
@@ -160,6 +166,7 @@ describe("#1447 — every notification writer records its project", () => {
         "lib/collaboration/sla-checker.ts",
         "lib/discussions/notify.ts",
         "lib/reviews/notify.ts",
+        "lib/workspaces/chatops-identity-binding-notice.ts",
       ]),
     );
   });
@@ -175,11 +182,11 @@ describe("#1447 — every notification writer records its project", () => {
 
   it("the writable types are exactly the known ones — a new type must be placed", () => {
     const types = [...new Set(writers.flatMap((w) => w.types))].sort();
-    expect(types).toEqual(KNOWN_TYPES);
+    expect(types).toEqual([...KNOWN_TYPES, ...PROJECTLESS_TYPES].sort());
   });
 
-  it("no type is opted out of the project check today", () => {
-    expect([...PROJECTLESS_NOTIFICATION_TYPES]).toEqual([]);
+  it("only the decided types are opted out of the project check", () => {
+    expect([...PROJECTLESS_NOTIFICATION_TYPES].sort()).toEqual(PROJECTLESS_TYPES);
   });
 
   it("both backfill migrations handle every known type", () => {

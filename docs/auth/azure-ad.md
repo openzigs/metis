@@ -159,10 +159,24 @@ used MFA and requires it for **security-sensitive actions only** (#1554):
 Read-only pages (including the admin pages and role inspection), analysis, chat,
 review and publishing are **not** gated, and neither are creating or deleting a
 vault secret (neither reveals a value). A workspace administrator's settings (the
-workspace's name and logo, its budget and cost rules, its chat integrations and
-governing documents) are not gated either (#1745): they change one workspace's
+workspace's name and logo, its budget and cost rules, and its governing
+documents) are not gated either (#1745): they change one workspace's
 configuration, grant or revoke no role, reveal no secret and are not system
-administration, so none of the three rules above applies to them. An SSO session whose sign-in did not use
+administration, so none of the three rules above applies to them.
+
+**Chat integrations and chat identity binding** are not gated either, but for a
+different reason (#2089). They are not harmless: an integration chooses where
+workspace events are sent, and binding a chat account (a Teams account today,
+`POST /api/integrations/teams/workspaces/:workspaceId/identities`) lets that
+account run commands **as** the bound member, who can be any member, the
+workspace owner included. The workspace owner decided to leave them without an
+MFA gate. In exchange, a binding is never silent: each one writes an audit
+entry (`chatops.identity.bind`: who made it, the workspace, the provider, the
+bound member and the external account id) and puts a notice in the in-app
+notifications of the workspace owner and of the bound member, unless the bound
+member made it. That notice ignores notification preferences.
+
+An SSO session whose sign-in did not use
 MFA gets `403 MFA_REQUIRED` on the actions above, and the UI says the action needs
 a sign-in with MFA and that the fix is for the identity provider administrator to
 require MFA for the METIS app. Signing out and in again with MFA clears it.
