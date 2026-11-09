@@ -39,6 +39,7 @@ const {
   screenBatchTokenBudget,
   GOVERNING_ANALYSIS_ACTOR,
   GOVERNING_RULES_UNAVAILABLE,
+  ANSWER_NOTE,
   buildApplicabilityJudgePrompt,
   governingApplicabilityHookFor,
   planScreenBatches,
@@ -701,6 +702,33 @@ describe("#1997 — the rule summaries lead the screen prompt and are cached acr
       retrieve: async () => [],
     });
     expect((chat.mock.calls[1]![1] as ChatOptions).promptCaching).toBeUndefined();
+  });
+});
+
+describe("#2067 — the settle judge tells applying from being met", () => {
+  it("only a judging of an answered question is told that a safeguard in place still means the rule applies", () => {
+    const first = buildApplicabilityJudgePrompt(REQUIREMENT.text, []).systemMessage;
+    const settle = buildApplicabilityJudgePrompt(REQUIREMENT.text, [], {
+      answered: true,
+    }).systemMessage;
+    // The first judging is byte-for-byte what it was.
+    expect(first).not.toContain("safeguard");
+    expect(settle).toBe(`${first}\n${ANSWER_NOTE}`);
+    expect(ANSWER_NOTE).toContain(
+      "also when the answer says the rule's safeguard is already in place",
+    );
+    expect(ANSWER_NOTE).toContain(
+      "decide does-not-apply only when the answer says what the rule governs is absent from the requirement",
+    );
+    expect(ANSWER_NOTE).toContain(
+      "A safeguard being in place is never a reason to decide does-not-apply.",
+    );
+    const reask = buildApplicabilityJudgePrompt(REQUIREMENT.text, [], {
+      answered: true,
+      reask: true,
+    }).systemMessage;
+    expect(reask.startsWith(`${settle}\n`)).toBe(true);
+    expect(reask).toContain("Your previous answer");
   });
 });
 

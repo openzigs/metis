@@ -276,14 +276,31 @@ const JUDGE_SYSTEM = [
 const REASK_NOTE =
   "Your previous answer left these rules without a decision, or marked them uncertain without the business question. Decide each one again; an uncertain decision must carry its question.";
 
-/** The judging prompt: one requirement against the summaries and clauses of `entries`. */
+// #2067 — the settle judge read "Yes, it has" (the supplier review is done) as
+// "the rule does not apply", so the finding vanished where it should have been
+// Compliant. Whether a rule applies and whether it is met are two questions; a
+// BA's answer decides the first only by saying what the requirement involves.
+// Sent only when re-judging an answered question, so the first judging is unchanged.
+export const ANSWER_NOTE = [
+  "The requirement ends with a business analyst's answer to a question about it. Read the answer as a fact about what the requirement involves, and still decide only whether each rule applies:",
+  "- if the answer says the requirement involves what the rule governs, the rule applies, also when the answer says the rule's safeguard is already in place (the supplier passed its review, the change can be rolled back, the connection is encrypted). Whether the safeguard is enough is checked in a later step, not here;",
+  "- decide does-not-apply only when the answer says what the rule governs is absent from the requirement (no card numbers are kept, no outside company receives the data).",
+  "A safeguard being in place is never a reason to decide does-not-apply.",
+].join("\n");
+
+/**
+ * The judging prompt: one requirement against the summaries and clauses of
+ * `entries`. `answered` (#2067) when the requirement carries a BA's answer:
+ * the settle judge's re-judging, which gets {@link ANSWER_NOTE}.
+ */
 export function buildApplicabilityJudgePrompt(
   requirementText: string,
   entries: readonly Pick<ApplicabilityEntry, "handle" | "rule">[],
-  opts: { reask?: boolean } = {},
+  opts: { reask?: boolean; answered?: boolean } = {},
 ): Prompt {
+  const system = opts.answered ? `${JUDGE_SYSTEM}\n${ANSWER_NOTE}` : JUDGE_SYSTEM;
   return {
-    systemMessage: opts.reask ? `${JUDGE_SYSTEM}\n${REASK_NOTE}` : JUDGE_SYSTEM,
+    systemMessage: opts.reask ? `${system}\n${REASK_NOTE}` : system,
     userMessage: [
       requirementBlock(requirementText),
       fenceToolResult(

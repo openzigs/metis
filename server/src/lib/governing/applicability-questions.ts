@@ -620,7 +620,8 @@ export async function rejudgeAnswered(
     const entries = applicabilityEntries(linked);
     const text = `${requirement.text}\n\nA business analyst was asked: ${q.question}\nTheir answer: ${answer}`;
     const judge = async (reask: boolean) => {
-      const prompt = buildApplicabilityJudgePrompt(text, entries, { reask });
+      // #2067 — told that a safeguard in place still means the rule applies.
+      const prompt = buildApplicabilityJudgePrompt(text, entries, { reask, answered: true });
       const reply = await deps.provider.chat([{ role: "user", content: prompt.userMessage }], {
         systemMessage: prompt.systemMessage,
         disableTools: true,
