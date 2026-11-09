@@ -1,0 +1,806 @@
+{
+  "adjudicator": "third pass: claude-opus-5-5 through `claude -p`, no tools, no MCP server, no settings sources, run from an empty directory; given policy-v1 and each disagreement with the two labels in a seeded random A/B order (seed 21053, adjudication-prompt.txt). It was not told which labeller wrote which label, and saw no arm and no prompt of the product.",
+  "costUsd": 0.125,
+  "agreement": {
+    "cells": 800,
+    "labeller1Pairs": 22,
+    "labeller2Pairs": 22,
+    "unionPairs": 25,
+    "bothListed": 19,
+    "sameVerdict": 16,
+    "applicability": {
+      "observed": 0.9925,
+      "chance": 0.9465,
+      "kappa": 0.86
+    },
+    "fourWay": {
+      "observed": 0.9888,
+      "chance": 0.9461,
+      "kappa": 0.791
+    },
+    "pairAgreementOnUnion": 0.64,
+    "negativeItemsAgreed": 8
+  },
+  "disagreements": [
+    {
+      "item": "OE-01",
+      "rule": "TS-01",
+      "labeller1": "needs-ba-input",
+      "labeller2": "does not apply",
+      "shownAs": {
+        "A": "labeller2",
+        "B": "labeller1"
+      },
+      "A": "does not apply",
+      "B": "needs-ba-input",
+      "decision": "does not apply",
+      "reason": "The report describes one user's own windows and tabs ('same UA is used for multiple windows/browser tabs') mixing patients they already work with. It does not describe a person without access rights reaching ePHI, so reading it as an access-control failure is a stretch."
+    },
+    {
+      "item": "OE-01",
+      "rule": "TS-07",
+      "labeller1": "does not apply",
+      "labeller2": "needs-ba-input",
+      "shownAs": {
+        "A": "labeller2",
+        "B": "labeller1"
+      },
+      "A": "needs-ba-input",
+      "B": "does not apply",
+      "decision": "needs-ba-input",
+      "reason": "'cross patient data' between tabs could mean entries get saved to the wrong patient's chart, which is improper alteration of ePHI. The report only describes what is displayed and does not say whether writes are affected.",
+      "businessFact": "When the cross-patient condition occurs, can a user save or edit data that lands in a different patient's record than the one they think they are editing?"
+    },
+    {
+      "item": "OE-09",
+      "rule": "TS-10",
+      "labeller1": "does not apply",
+      "labeller2": "needs-ba-input",
+      "shownAs": {
+        "A": "labeller2",
+        "B": "labeller1"
+      },
+      "A": "needs-ba-input",
+      "B": "does not apply",
+      "decision": "needs-ba-input",
+      "reason": "Login and OAuth2 authorization over HTTP is a transmission-security matter, so the rule applies. Production is explicitly HTTPS-only, but for development the text leaves open 'make it so the login screen will issue the session cookies when logging in via HTTP'.",
+      "businessFact": "Will development installations that allow HTTP login ever hold or serve real ePHI, or will the HTTP option be rejected outright?"
+    },
+    {
+      "item": "OE-12",
+      "rule": "PW-04",
+      "labeller1": "needs-ba-input",
+      "labeller2": "compliant",
+      "shownAs": {
+        "A": "labeller2",
+        "B": "labeller1"
+      },
+      "A": "compliant",
+      "B": "needs-ba-input",
+      "decision": "compliant",
+      "reason": "PW-04 requires verifiers to 'force a change if there is evidence that the authenticator has been compromised'. An admin-triggered 'force a password reset upon next login' supplies exactly that on-demand mechanism. It is a one-off action, not a periodic-change rule."
+    },
+    {
+      "item": "OE-15",
+      "rule": "AS-02",
+      "labeller1": "does not apply",
+      "labeller2": "gap",
+      "shownAs": {
+        "A": "labeller1",
+        "B": "labeller2"
+      },
+      "A": "does not apply",
+      "B": "gap",
+      "decision": "gap",
+      "reason": "The feature lets users who 'forget their password' change it from the 'main login screen' instead of waiting for an admin. That is an unauthenticated password-change procedure, which defeats the requirement to have procedures for safeguarding passwords."
+    },
+    {
+      "item": "OE-15",
+      "rule": "PW-07",
+      "labeller1": "needs-ba-input",
+      "labeller2": "does not apply",
+      "shownAs": {
+        "A": "labeller1",
+        "B": "labeller2"
+      },
+      "A": "needs-ba-input",
+      "B": "does not apply",
+      "decision": "needs-ba-input",
+      "reason": "The requirement establishes a password-change flow ('Update password in the backend database'), so PW-07's blocklist check applies, but the text says nothing about validating the new password.",
+      "businessFact": "Will the new login-screen change-password flow check the new password against a blocklist of common, expected and compromised passwords?"
+    },
+    {
+      "item": "OE-15",
+      "rule": "TS-09",
+      "labeller1": "needs-ba-input",
+      "labeller2": "gap",
+      "shownAs": {
+        "A": "labeller1",
+        "B": "labeller2"
+      },
+      "A": "needs-ba-input",
+      "B": "gap",
+      "decision": "gap",
+      "reason": "The flow targets users who have forgotten their password and replaces admin intervention with a 'simple change password functionality' on the login page. No step verifies the person is the account holder, so anyone could take over an account."
+    },
+    {
+      "item": "OE-19",
+      "rule": "TS-01",
+      "labeller1": "needs-ba-input",
+      "labeller2": "does not apply",
+      "shownAs": {
+        "A": "labeller1",
+        "B": "labeller2"
+      },
+      "A": "needs-ba-input",
+      "B": "does not apply",
+      "decision": "needs-ba-input",
+      "reason": "Sent faxes containing ePHI become persisted and shown 'in the UI alongside received faxes' with 'view, delete, forward' actions. The requirement does not say which users may see or act on them.",
+      "businessFact": "Which users or roles are allowed to view, delete or forward sent fax records: everyone with fax module access, or only the sender and specifically authorized roles?"
+    },
+    {
+      "item": "OE-22",
+      "rule": "AU-01",
+      "labeller1": "compliant",
+      "labeller2": "needs-ba-input",
+      "shownAs": {
+        "A": "labeller1",
+        "B": "labeller2"
+      },
+      "A": "compliant",
+      "B": "needs-ba-input",
+      "decision": "needs-ba-input",
+      "reason": "The feature makes MFA mandatory for practitioners only 'when enabled'. If the force_mfa global is off, unenrolled users still log in 'with just a password', so whether AU-01 is met depends on configuration.",
+      "businessFact": "Will force_mfa be enabled (by default or by policy) on every production deployment that must meet AAL2?"
+    }
+  ],
+  "consistencyPass": {
+    "why": "Adjudication saw only the cells the two labellers disagreed on, so a rule both labellers skipped on the same requirement was never checked. For five rules that cut across many requirements (TS-06 audit, TS-01 access, AS-02 password procedures, PW-07 blocklist on a new or changed password, TS-09 authentication), two tool-less claude-opus-5-5 sessions were each given the policy and all 25 requirements and asked about that one rule alone, on every requirement (consistency-prompt.txt in issue order for pass 1; the same text in a seeded order, seed 21054, for pass 2). They saw no label, no rule summary and no arm.",
+    "decisionRule": "A standing label changes only when both blind passes agree on the new label. A cell the passes split on keeps its standing label.",
+    "costUsd": 1.2565,
+    "rules": ["TS-06", "TS-01", "AS-02", "PW-07", "TS-09"],
+    "passesPerRule": {
+      "TS-06": 2,
+      "TS-01": 2,
+      "AS-02": 2,
+      "PW-07": 2,
+      "TS-09": 2
+    },
+    "blindLabels": {
+      "TS-06": [
+        {
+          "item": "OE-01",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-02",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-03",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-04",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-05",
+          "labels": ["compliant", "needs-ba-input"]
+        },
+        {
+          "item": "OE-06",
+          "labels": ["needs-ba-input", "does not apply"]
+        },
+        {
+          "item": "OE-07",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-08",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-09",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-10",
+          "labels": ["does not apply", null]
+        },
+        {
+          "item": "OE-11",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-12",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-13",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-14",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-15",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-16",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-17",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-18",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-19",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-20",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-21",
+          "labels": ["compliant", "compliant"]
+        },
+        {
+          "item": "OE-22",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-23",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-24",
+          "labels": ["compliant", "compliant"]
+        },
+        {
+          "item": "OE-25",
+          "labels": ["does not apply", "does not apply"]
+        }
+      ],
+      "TS-01": [
+        {
+          "item": "OE-01",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-02",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-03",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-04",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-05",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-06",
+          "labels": ["compliant", "compliant"]
+        },
+        {
+          "item": "OE-07",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-08",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-09",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-10",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-11",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-12",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-13",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-14",
+          "labels": ["does not apply", "needs-ba-input"]
+        },
+        {
+          "item": "OE-15",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-16",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-17",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-18",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-19",
+          "labels": ["needs-ba-input", "needs-ba-input"]
+        },
+        {
+          "item": "OE-20",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-21",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-22",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-23",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-24",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-25",
+          "labels": ["does not apply", "does not apply"]
+        }
+      ],
+      "AS-02": [
+        {
+          "item": "OE-01",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-02",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-03",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-04",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-05",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-06",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-07",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-08",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-09",
+          "labels": ["does not apply", "needs-ba-input"]
+        },
+        {
+          "item": "OE-10",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-11",
+          "labels": ["needs-ba-input", "needs-ba-input"]
+        },
+        {
+          "item": "OE-12",
+          "labels": ["compliant", "compliant"]
+        },
+        {
+          "item": "OE-13",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-14",
+          "labels": ["needs-ba-input", "needs-ba-input"]
+        },
+        {
+          "item": "OE-15",
+          "labels": ["needs-ba-input", "gap"]
+        },
+        {
+          "item": "OE-16",
+          "labels": ["compliant", "compliant"]
+        },
+        {
+          "item": "OE-17",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-18",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-19",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-20",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-21",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-22",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-23",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-24",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-25",
+          "labels": ["compliant", "compliant"]
+        }
+      ],
+      "PW-07": [
+        {
+          "item": "OE-01",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-02",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-03",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-04",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-05",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-06",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-07",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-08",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-09",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-10",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-11",
+          "labels": ["needs-ba-input", "needs-ba-input"]
+        },
+        {
+          "item": "OE-12",
+          "labels": ["needs-ba-input", "needs-ba-input"]
+        },
+        {
+          "item": "OE-13",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-14",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-15",
+          "labels": ["needs-ba-input", "needs-ba-input"]
+        },
+        {
+          "item": "OE-16",
+          "labels": ["needs-ba-input", "needs-ba-input"]
+        },
+        {
+          "item": "OE-17",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-18",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-19",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-20",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-21",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-22",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-23",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-24",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-25",
+          "labels": ["needs-ba-input", "does not apply"]
+        }
+      ],
+      "TS-09": [
+        {
+          "item": "OE-01",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-02",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-03",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-04",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-05",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-06",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-07",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-08",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-09",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-10",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-11",
+          "labels": ["does not apply", "needs-ba-input"]
+        },
+        {
+          "item": "OE-12",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-13",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-14",
+          "labels": ["needs-ba-input", "needs-ba-input"]
+        },
+        {
+          "item": "OE-15",
+          "labels": ["gap", "gap"]
+        },
+        {
+          "item": "OE-16",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-17",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-18",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-19",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-20",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-21",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-22",
+          "labels": ["compliant", "compliant"]
+        },
+        {
+          "item": "OE-23",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-24",
+          "labels": ["does not apply", "does not apply"]
+        },
+        {
+          "item": "OE-25",
+          "labels": ["does not apply", "does not apply"]
+        }
+      ]
+    },
+    "changes": [
+      {
+        "item": "OE-12",
+        "rule": "AS-02",
+        "from": "does not apply",
+        "to": "compliant",
+        "blindPasses": ["compliant", "compliant"],
+        "reason": "Explicitly provides an admin-driven procedure to force a password change at next login."
+      },
+      {
+        "item": "OE-14",
+        "rule": "AS-02",
+        "from": "does not apply",
+        "to": "needs-ba-input",
+        "blindPasses": ["needs-ba-input", "needs-ba-input"],
+        "reason": "Moves credentials to an external IdP and is silent on whether that provider supplies the password creation, change and safeguarding procedures."
+      },
+      {
+        "item": "OE-16",
+        "rule": "AS-02",
+        "from": "does not apply",
+        "to": "compliant",
+        "blindPasses": ["compliant", "compliant"],
+        "reason": "Explicitly defines a stronger password-creation rule, a minimum length of 12."
+      },
+      {
+        "item": "OE-25",
+        "rule": "AS-02",
+        "from": "does not apply",
+        "to": "compliant",
+        "blindPasses": ["compliant", "compliant"],
+        "reason": "Describes and improves an explicit portal procedure for setting and changing credentials on first login or forced reset."
+      },
+      {
+        "item": "OE-11",
+        "rule": "PW-07",
+        "from": "does not apply",
+        "to": "needs-ba-input",
+        "blindPasses": ["needs-ba-input", "needs-ba-input"],
+        "reason": "Establishes a new user's password but is silent on whether the generated secret is checked against a blocklist."
+      },
+      {
+        "item": "OE-12",
+        "rule": "PW-07",
+        "from": "does not apply",
+        "to": "needs-ba-input",
+        "blindPasses": ["needs-ba-input", "needs-ba-input"],
+        "reason": "Forced reset drives a password change but is silent on blocklist comparison."
+      },
+      {
+        "item": "OE-16",
+        "rule": "PW-07",
+        "from": "does not apply",
+        "to": "needs-ba-input",
+        "blindPasses": ["needs-ba-input", "needs-ba-input"],
+        "reason": "Changes validation of user-set passwords but is silent on blocklist screening."
+      },
+      {
+        "item": "OE-14",
+        "rule": "TS-09",
+        "from": "does not apply",
+        "to": "needs-ba-input",
+        "blindPasses": ["needs-ba-input", "needs-ba-input"],
+        "reason": "Delegating login to an external identity provider is silent on how that provider verifies users and how OpenEMR trusts its assertions."
+      },
+      {
+        "item": "OE-22",
+        "rule": "TS-09",
+        "from": "does not apply",
+        "to": "compliant",
+        "blindPasses": ["compliant", "compliant"],
+        "reason": "Explicitly blocks practitioner login until MFA is enrolled, strengthening verification of claimed identity."
+      }
+    ],
+    "keptAsStanding": [
+      {
+        "item": "OE-05",
+        "rule": "TS-06",
+        "standing": "compliant",
+        "blindPasses": ["compliant", "needs-ba-input"]
+      },
+      {
+        "item": "OE-06",
+        "rule": "TS-06",
+        "standing": "does not apply",
+        "blindPasses": ["needs-ba-input", "does not apply"]
+      },
+      {
+        "item": "OE-10",
+        "rule": "TS-06",
+        "standing": "does not apply",
+        "blindPasses": ["does not apply", null]
+      },
+      {
+        "item": "OE-14",
+        "rule": "TS-01",
+        "standing": "does not apply",
+        "blindPasses": ["does not apply", "needs-ba-input"]
+      },
+      {
+        "item": "OE-09",
+        "rule": "AS-02",
+        "standing": "does not apply",
+        "blindPasses": ["does not apply", "needs-ba-input"]
+      },
+      {
+        "item": "OE-15",
+        "rule": "AS-02",
+        "standing": "gap",
+        "blindPasses": ["needs-ba-input", "gap"]
+      },
+      {
+        "item": "OE-25",
+        "rule": "PW-07",
+        "standing": "does not apply",
+        "blindPasses": ["needs-ba-input", "does not apply"]
+      },
+      {
+        "item": "OE-11",
+        "rule": "TS-09",
+        "standing": "does not apply",
+        "blindPasses": ["does not apply", "needs-ba-input"]
+      }
+    ]
+  }
+}

@@ -291,14 +291,82 @@ describe("validateGoverningCorpus — the drift it must catch", () => {
     );
   });
 
-  it("FAILS on a corpus not marked synthetic, or a scored revision that does not exist", async () => {
+  it("FAILS on a corpus that does not say whether it is synthetic, or a scored revision that does not exist", async () => {
     const { manifest, files } = await committed();
     const m = clone(manifest);
-    (m as { synthetic: boolean }).synthetic = false;
+    delete (m as { synthetic?: boolean }).synthetic;
     m.policy.scored = "v9";
     const problems = validateGoverningCorpus(m, files);
-    expect(problems).toContain("the corpus must be marked synthetic");
+    expect(problems).toContain("synthetic must be true or false");
     expect(problems).toContain("the scored revision v9 is not one of the policy's revisions");
+  });
+
+  it("FAILS on a corpus of real text (#2105) that does not name its sources, or a requirement with no source", async () => {
+    const { manifest, files } = await committed();
+    const real = clone(manifest);
+    real.synthetic = false;
+    const problems = validateGoverningCorpus(real, files);
+    expect(problems).toContain(
+      "a corpus of real text (synthetic: false) must name its sources: title, https url, license, retrievedAt",
+    );
+    expect(problems).toContain(
+      `item ${real.items[0]!.id}: a requirement of a real corpus needs its source (an https URL)`,
+    );
+    const sourced = clone(real);
+    sourced.sources = [
+      {
+        title: "A rule",
+        url: "https://example.gov/rule",
+        license: "Public domain",
+        retrievedAt: "2026-11-09",
+      },
+    ];
+    for (const item of sourced.items) item.source = `https://example.org/issues/${item.id}`;
+    expect(validateGoverningCorpus(sourced, files)).toEqual([]);
+    const badSource = clone(sourced);
+    badSource.sources![0]!.url = "http://example.gov/rule";
+    badSource.sources![0]!.retrievedAt = "last week";
+    badSource.items[1]!.source = "javascript:alert(1)";
+    const bad = validateGoverningCorpus(badSource, files);
+    expect(bad).toContain("source 1 (A rule): url must be an https URL");
+    expect(bad).toContain("source 1 (A rule): retrievedAt must be a YYYY-MM-DD date");
+    expect(bad).toContain(
+      `item ${badSource.items[1]!.id}: a requirement of a real corpus needs its source (an https URL)`,
+    );
+    const unnamed = clone(sourced);
+    unnamed.sources![0]!.title = " ";
+    unnamed.sources![0]!.license = "";
+    expect(validateGoverningCorpus(unnamed, files)).toEqual([
+      "source 1 (untitled): no title",
+      "source 1 (untitled): no license",
+    ]);
+  });
+
+  it("holds a synthetic set to the non-resembling minimum, and exempts a set of real requirements quoted as found (#2105)", async () => {
+    const { manifest, files } = await committed();
+    const few = clone(manifest);
+    for (const item of few.items) for (const p of item.applies) delete p.nonResembling;
+    expect(validateGoverningCorpus(few, files)).toContain(
+      `0 non-resembling item(s); at least ${MIN_NON_RESEMBLING_ITEMS} are needed`,
+    );
+    const real = clone(few);
+    real.synthetic = false;
+    real.sources = [
+      {
+        title: "A rule",
+        url: "https://example.gov/rule",
+        license: "Public domain",
+        retrievedAt: "2026-11-09",
+      },
+    ];
+    for (const item of real.items) item.source = `https://example.org/issues/${item.id}`;
+    expect(validateGoverningCorpus(real, files)).toEqual([]);
+    // The negative minimum still holds: a real set must still test precision.
+    const noNegatives = clone(real);
+    noNegatives.items = noNegatives.items.filter((i) => i.applies.length > 0);
+    expect(validateGoverningCorpus(noNegatives, files)).toContain(
+      `0 negative item(s); at least ${MIN_NEGATIVE_ITEMS} are needed`,
+    );
   });
 });
 
@@ -360,6 +428,63 @@ function cohensKappa(pairs: ReadonlyArray<readonly [string, string]>): number {
   return (observed - chance) / (1 - chance);
 }
 
+/**
+ * #2024, #2105 — a held-out set's labels are the two blind labellers' where they
+ * agreed, the third pass's where they did not, then the consistency pass's where
+ * both of its blind passes moved a cell; and the agreement figures recorded beside
+ * them are the labels' own.
+ */
+async function expectAdjudicatedLabels(dir: string): Promise<void> {
+  const read = async <T>(rel: string): Promise<T> =>
+    JSON.parse(await fs.readFile(path.join(dir, rel), "utf8")) as T;
+  const manifest = await read<GoverningCorpusManifest>("manifest.json");
+  const first = labelGrid(await read<LabelFile>("labelling/labeller-1.json"));
+  const second = labelGrid(await read<LabelFile>("labelling/labeller-2.json"));
+  const adjudication = await read<AdjudicationFile>("labelling/adjudication.json");
+  const decided = new Map(adjudication.disagreements.map((d) => [`${d.item} ${d.rule}`, d]));
+  const consistent = new Map(
+    adjudication.consistencyPass.changes.map((c) => [`${c.item} ${c.rule}`, c]),
+  );
+  const none = "does not apply";
+  const cells: Array<readonly [string, string]> = [];
+  for (const item of manifest.items) {
+    const truth = new Map(item.applies.map((p) => [p.ruleId, p.verdict as string]));
+    for (const rule of manifest.rules) {
+      const a = first.get(item.id)?.get(rule.id) ?? none;
+      const b = second.get(item.id)?.get(rule.id) ?? none;
+      cells.push([a, b]);
+      const d = decided.get(`${item.id} ${rule.id}`);
+      const c = consistent.get(`${item.id} ${rule.id}`);
+      // The label the two labellers and the adjudicator settled on...
+      let standing: string;
+      if (a === b) {
+        expect(d, `${item.id} → ${rule.id}`).toBeUndefined();
+        standing = a;
+      } else {
+        expect(d?.reason.trim(), `${item.id} → ${rule.id} has a written decision`).toBeTruthy();
+        standing = d!.decision;
+      }
+      // ...then the cross-cutting consistency pass, which moves it only when both blind passes agree.
+      if (c) {
+        expect(c.from, `${item.id} → ${rule.id} changes from the standing label`).toBe(standing);
+        expect(c.blindPasses.length).toBeGreaterThanOrEqual(2);
+        expect(new Set(c.blindPasses), `${item.id} → ${rule.id}: passes agree`).toEqual(
+          new Set([c.to]),
+        );
+        expect(c.reason.trim()).toBeTruthy();
+        standing = c.to;
+      }
+      expect(truth.get(rule.id) ?? none, `${item.id} → ${rule.id}`).toBe(standing);
+    }
+  }
+  expect(decided.size).toBe(cells.filter(([a, b]) => a !== b).length);
+  expect(consistent.size).toBe(adjudication.consistencyPass.changes.length);
+  // The agreement figures recorded beside the decisions are the labels' own.
+  const applies = cells.map(([a, b]) => [String(a !== none), String(b !== none)] as const);
+  expect(cohensKappa(applies)).toBeCloseTo(adjudication.agreement.applicability.kappa, 3);
+  expect(cohensKappa(cells)).toBeCloseTo(adjudication.agreement.fourWay.kappa, 3);
+}
+
 describe("the held-out governing corpus (#2024)", () => {
   it("loads under the existing loader, every guard passing, with the shape the issue asks for", async () => {
     const corpus = await loadGoverningCorpus(HELD_OUT);
@@ -415,52 +540,7 @@ describe("the held-out governing corpus (#2024)", () => {
   });
 
   it("holds the adjudicated labels: both labellers where they agreed, the third pass where they did not", async () => {
-    const { manifest } = await heldOut();
-    const first = labelGrid(await readJson<LabelFile>("labelling/labeller-1.json"));
-    const second = labelGrid(await readJson<LabelFile>("labelling/labeller-2.json"));
-    const adjudication = await readJson<AdjudicationFile>("labelling/adjudication.json");
-    const decided = new Map(adjudication.disagreements.map((d) => [`${d.item} ${d.rule}`, d]));
-    const consistent = new Map(
-      adjudication.consistencyPass.changes.map((c) => [`${c.item} ${c.rule}`, c]),
-    );
-    const none = "does not apply";
-    const cells: Array<readonly [string, string]> = [];
-    for (const item of manifest.items) {
-      const truth = new Map(item.applies.map((p) => [p.ruleId, p.verdict as string]));
-      for (const rule of manifest.rules) {
-        const a = first.get(item.id)?.get(rule.id) ?? none;
-        const b = second.get(item.id)?.get(rule.id) ?? none;
-        cells.push([a, b]);
-        const d = decided.get(`${item.id} ${rule.id}`);
-        const c = consistent.get(`${item.id} ${rule.id}`);
-        // The label the two labellers and the adjudicator settled on...
-        let standing: string;
-        if (a === b) {
-          expect(d, `${item.id} → ${rule.id}`).toBeUndefined();
-          standing = a;
-        } else {
-          expect(d?.reason.trim(), `${item.id} → ${rule.id} has a written decision`).toBeTruthy();
-          standing = d!.decision;
-        }
-        // ...then the cross-cutting consistency pass, which moves it only when both blind passes agree.
-        if (c) {
-          expect(c.from, `${item.id} → ${rule.id} changes from the standing label`).toBe(standing);
-          expect(c.blindPasses.length).toBeGreaterThanOrEqual(2);
-          expect(new Set(c.blindPasses), `${item.id} → ${rule.id}: passes agree`).toEqual(
-            new Set([c.to]),
-          );
-          expect(c.reason.trim()).toBeTruthy();
-          standing = c.to;
-        }
-        expect(truth.get(rule.id) ?? none, `${item.id} → ${rule.id}`).toBe(standing);
-      }
-    }
-    expect(decided.size).toBe(cells.filter(([a, b]) => a !== b).length);
-    expect(consistent.size).toBe(adjudication.consistencyPass.changes.length);
-    // The agreement figures recorded beside the decisions are the labels' own.
-    const applies = cells.map(([a, b]) => [String(a !== none), String(b !== none)] as const);
-    expect(cohensKappa(applies)).toBeCloseTo(adjudication.agreement.applicability.kappa, 3);
-    expect(cohensKappa(cells)).toBeCloseTo(adjudication.agreement.fourWay.kappa, 3);
+    await expectAdjudicatedLabels(HELD_OUT_DIR);
   });
 
   it("applies each cross-cutting rule the same way to every requirement it fits (consistency pass)", async () => {
@@ -509,6 +589,129 @@ describe("the held-out governing corpus (#2024)", () => {
       expect(annotation).toContain(`| ${c.item} → ${c.rule} |`);
     }
     expect(annotation).toMatch(/No arm has run on this set/);
+    expect(annotation).toMatch(/never iterate a prompt against this set/i);
+    expect(annotation).toMatch(/## Readings/);
+  });
+});
+
+const REAL = "governing-03-openemr-hipaa";
+const REAL_DIR = resolveGoverningCorpusDir(REAL);
+
+describe("the held-out set of real text (#2105)", () => {
+  async function real(): Promise<{ manifest: GoverningCorpusManifest; files: CorpusFiles }> {
+    const manifest = JSON.parse(
+      await fs.readFile(path.join(REAL_DIR, "manifest.json"), "utf8"),
+    ) as GoverningCorpusManifest;
+    const policies = new Map<string, string>();
+    for (const rev of manifest.policy.revisions) {
+      policies.set(rev.revision, await fs.readFile(path.join(REAL_DIR, rev.file), "utf8"));
+    }
+    const annotation = await fs.readFile(path.join(REAL_DIR, "ANNOTATION.md"), "utf8");
+    return { manifest, files: { present: await listCorpusFiles(REAL_DIR), policies, annotation } };
+  }
+
+  it("loads under the loader as a held-out set of real text, every guard passing", async () => {
+    const corpus = await loadGoverningCorpus(REAL);
+    const { manifest, files } = await real();
+    expect(validateGoverningCorpus(manifest, files)).toEqual([]);
+    expect(manifest.synthetic).toBe(false);
+    expect(corpus.manifest.purpose).toBe("held-out");
+    expect(corpus.rules).toHaveLength(32);
+    expect(manifest.items).toHaveLength(25);
+    expect(manifest.items.filter((i) => i.applies.length === 0).length).toBeGreaterThanOrEqual(
+      MIN_NEGATIVE_ITEMS,
+    );
+    for (const text of files.policies.values()) {
+      expect(trustServicesCriteriaMarkers(text)).toEqual([]);
+      expect(evaluationLeaks(text)).toEqual([]);
+    }
+  });
+
+  it("quotes HIPAA and NIST under their citations, and attributes both in the policy itself", async () => {
+    const corpus = await loadGoverningCorpus(REAL);
+    // A clause is the published sentence, with its citation after it.
+    expect(corpus.ruleById.get("TS-04")!.clause).toBe(
+      "Automatic logoff (Addressable). Implement electronic procedures that terminate an electronic session after a predetermined time of inactivity. [45 CFR 164.312(a)(2)(iii)]",
+    );
+    expect(corpus.ruleById.get("TS-06")!.clause).toMatch(/\[45 CFR 164\.312\(b\)\]$/);
+    expect(corpus.ruleById.get("AS-01")!.clause).toMatch(
+      /\[45 CFR 164\.308\(a\)\(5\)\(ii\)\(C\)\]$/,
+    );
+    for (const r of corpus.rules.filter((x) => /^(?:PW|AU|SM)-/.test(x.id))) {
+      expect(r.clause, r.id).toMatch(/\[SP 800-63B-4, [^\]]+\]$/);
+      expect(r.clause, r.id).toMatch(/\bSHALL\b/);
+    }
+    for (const r of corpus.rules.filter((x) => /^(?:TS|AS)-/.test(x.id))) {
+      expect(r.clause, r.id).toMatch(/\[45 CFR 164\.3(?:08|12)\([^\]]+\]$/);
+    }
+    // The attribution travels with the text an arm reads.
+    expect(corpus.policyText).toContain(
+      "https://www.ecfr.gov/current/title-45/subtitle-A/subchapter-C/part-164/subpart-C/section-164.312",
+    );
+    expect(corpus.policyText).toContain("https://pages.nist.gov/800-63-4/sp800-63b.html");
+    expect(corpus.policyText).toMatch(/retrieved 2026-11-09/);
+    expect(corpus.policyText).toMatch(/public domain/);
+  });
+
+  it("names each source with its licence, and each requirement's own OpenEMR issue", async () => {
+    const { manifest } = await real();
+    const urls = (manifest.sources ?? []).map((s) => s.url);
+    expect(urls).toEqual(
+      expect.arrayContaining([
+        "https://www.ecfr.gov/current/title-45/subtitle-A/subchapter-C/part-164/subpart-C/section-164.312",
+        "https://www.ecfr.gov/current/title-45/subtitle-A/subchapter-C/part-164/subpart-C/section-164.308",
+        "https://pages.nist.gov/800-63-4/sp800-63b.html",
+      ]),
+    );
+    for (const s of manifest.sources ?? []) expect(s.license.trim(), s.title).toBeTruthy();
+    // Neither PCI DSS nor ISO 27001 may be redistributed (#2105).
+    expect(JSON.stringify(manifest.sources)).not.toMatch(/PCI|ISO 27001/i);
+    const issues = manifest.items.map((i) => i.source);
+    for (const s of issues)
+      expect(s).toMatch(/^https:\/\/github\.com\/openemr\/openemr\/issues\/\d+$/);
+    expect(new Set(issues).size).toBe(issues.length);
+  });
+
+  it("fixed governing-01's thresholds, unchanged, and its content hash, before any arm ran", async () => {
+    const { manifest, files } = await real();
+    expect(manifest.thresholds).toEqual((await committed()).manifest.thresholds);
+    expect(manifest.annotation.groundTruthFixedBeforeAnyArmRan).toBe(true);
+    expect(manifest.annotation.reviewedBy).toBeNull();
+    expect(manifest.contentHash).toEqual({
+      algorithm: "sha256",
+      covers: CONTENT_HASH_COVERS,
+      value: governingContentHash(manifest, files.policies),
+    });
+    expect(files.annotation).toContain(manifest.contentHash!.value);
+  });
+
+  it("holds the adjudicated labels: both blind labellers where they agreed, the third pass where they did not", async () => {
+    await expectAdjudicatedLabels(REAL_DIR);
+  });
+
+  it("marks a pair non-resembling exactly when it shares no vocabulary with its rule", async () => {
+    const corpus = await loadGoverningCorpus(REAL);
+    for (const item of corpus.manifest.items) {
+      for (const p of item.applies) {
+        const rule = corpus.ruleById.get(p.ruleId)!;
+        const shared = sharedVocabulary(
+          `${item.title}\n${item.text}`,
+          `${rule.clause}\n${rule.summary}`,
+        );
+        expect(p.nonResembling === true, `${item.id} → ${p.ruleId}`).toBe(shared.length === 0);
+      }
+    }
+  });
+
+  it("records that the policy and the requirements have independent real authors, and the tuning rule", async () => {
+    const { files } = await real();
+    const annotation = files.annotation!;
+    expect(annotation).toMatch(/independent real authors/);
+    expect(annotation).toMatch(
+      /removes `governing-01`'s limit that one annotator wrote both sides/,
+    );
+    expect(annotation).toMatch(/Neither is the agent that chose the requirements/);
+    expect(annotation).toMatch(/wrote no label/);
     expect(annotation).toMatch(/never iterate a prompt against this set/i);
     expect(annotation).toMatch(/## Readings/);
   });

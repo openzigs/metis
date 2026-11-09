@@ -1,9 +1,11 @@
 /**
- * #1867 — the governing-rules corpora: a synthetic policy of atomic
- * obligations, analyst-worded requirements, and the ground truth of which rules
- * truly apply to each, with a per-rule verdict. Since #2024 each corpus states
- * its purpose: `governing-01` is the tuning set prompts are iterated on, and
- * `governing-02` is the held-out set a decision is read on.
+ * #1867 — the governing-rules corpora: a policy of atomic obligations,
+ * requirements, and the ground truth of which rules truly apply to each, with a
+ * per-rule verdict. Since #2024 each corpus states its purpose: `governing-01`
+ * is the tuning set prompts are iterated on, and `governing-02` is the held-out
+ * set a decision is read on. Both are synthetic. #2105 adds `governing-03`, a
+ * held-out set of real text: published HIPAA and NIST obligations, quoted, and
+ * requirements quoted from real OpenEMR issues ({@link GoverningSource}).
  *
  * Every model-facing issue of epic #1866 is judged on this set, so its shape is
  * checked here before anything is measured ({@link validateGoverningCorpus}):
@@ -11,6 +13,9 @@
  *   - every file of the corpus directory is listed in the manifest, and the
  *     policy carries no AICPA Trust Services Criteria marker (#1867: the TSC
  *     text is copyrighted; the policy is written for the fixture);
+ *   - a set of real text (`synthetic: false`, #2105) names each source it
+ *     quotes, with its licence and retrieval date, and each requirement's own
+ *     source URL ({@link validateSources});
  *   - no text an arm's prompt carries (the policy, its title, the rule
  *     summaries, the requirements) has a word telling a model it is reading
  *     an evaluation ({@link evaluationLeaks}, #1900);
@@ -20,7 +25,9 @@
  *     {@link CLAUSE_PHRASE_WORDS} words copied from any clause;
  *   - a pair labelled `nonResembling` really shares no vocabulary with its
  *     rule ({@link sharedVocabulary}), so the subset measures what it says: a
- *     rule that applies without resembling the requirement;
+ *     rule that applies without resembling the requirement. A synthetic set
+ *     must hold {@link MIN_NON_RESEMBLING_ITEMS} such items; a set of real
+ *     requirements, quoted as they were filed, holds what it holds (#2105);
  *   - the pass thresholds were recorded before any arm ran, and any later
  *     change to them carries the issue and the reason
  *     ({@link expectedThresholds});
@@ -42,6 +49,7 @@ import { fileURLToPath } from "node:url";
 export const GOVERNING_CORPORA = [
   "governing-01-sample-policy",
   "governing-02-clinic-records",
+  "governing-03-openemr-hipaa",
 ] as const;
 export type GoverningCorpusName = (typeof GOVERNING_CORPORA)[number];
 
@@ -135,12 +143,31 @@ export function shortAnswerPairs(item: Pick<GoverningItem, "applies">): ShortAns
   );
 }
 
-/** One analyst-worded requirement. An empty `applies` is a negative item. */
+/** One requirement. An empty `applies` is a negative item. */
 export interface GoverningItem {
   id: string;
   title: string;
   text: string;
+  /**
+   * #2105 — where a real requirement was quoted from (an https URL). Required
+   * on a set of real text, absent on a synthetic one. No arm reads it.
+   */
+  source?: string;
   applies: TruthPair[];
+}
+
+/**
+ * #2105 — a published document a set of real text quotes, as its manifest
+ * records it: what it is, where it was read, under what licence, and when.
+ */
+export interface GoverningSource {
+  title: string;
+  url: string;
+  license: string;
+  /** The day the text was read, `YYYY-MM-DD`. */
+  retrievedAt: string;
+  /** Which part of the set the source supplies. */
+  usedFor?: string;
 }
 
 export interface PolicyRevision {
@@ -192,7 +219,13 @@ export interface GoverningCorpusManifest {
   /** Required on a held-out set, and checked against the committed files. */
   contentHash?: GoverningContentHash;
   license: string;
-  synthetic: true;
+  /**
+   * True for a set written for the purpose (#1867); false for one that quotes
+   * real text (#2105), which must then name its {@link sources}.
+   */
+  synthetic: boolean;
+  /** Required when `synthetic` is false. */
+  sources?: GoverningSource[];
   /** Every file of the corpus directory except `manifest.json`. */
   files: string[];
   policy: { title: string; scored: string; revisions: PolicyRevision[] };
@@ -574,13 +607,53 @@ function validateItems(
     }
     if (hasNonResembling) nonResemblingItems++;
   }
-  if (nonResemblingItems < MIN_NON_RESEMBLING_ITEMS) {
+  // A synthetic set's requirements are written to carry a non-resembling subset;
+  // real ones are quoted as filed, so their count is measured, not demanded (#2105).
+  if (m.synthetic === true && nonResemblingItems < MIN_NON_RESEMBLING_ITEMS) {
     problems.push(
       `${nonResemblingItems} non-resembling item(s); at least ${MIN_NON_RESEMBLING_ITEMS} are needed`,
     );
   }
   if (negativeItems < MIN_NEGATIVE_ITEMS) {
     problems.push(`${negativeItems} negative item(s); at least ${MIN_NEGATIVE_ITEMS} are needed`);
+  }
+}
+
+const HTTPS_URL = /^https:\/\/[^\s/]+\.[^\s/]+(?:\/\S*)?$/;
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * #2105 — whether a set is synthetic, and for a set of real text, where each
+ * part of it came from: every source it quotes (title, https URL, licence,
+ * retrieval date) and each requirement's own URL. A synthetic set needs none.
+ */
+function validateSources(m: GoverningCorpusManifest, problems: string[]): void {
+  if (typeof m.synthetic !== "boolean") {
+    problems.push("synthetic must be true or false");
+    return;
+  }
+  if (m.synthetic) return;
+  const sources = m.sources ?? [];
+  if (sources.length === 0) {
+    problems.push(
+      "a corpus of real text (synthetic: false) must name its sources: title, https url, license, retrievedAt",
+    );
+  }
+  sources.forEach((s, i) => {
+    const where = `source ${i + 1} (${s.title?.trim() || "untitled"})`;
+    if (!s.title?.trim()) problems.push(`${where}: no title`);
+    if (!HTTPS_URL.test(s.url ?? "")) problems.push(`${where}: url must be an https URL`);
+    if (!s.license?.trim()) problems.push(`${where}: no license`);
+    if (!ISO_DATE.test(s.retrievedAt ?? "")) {
+      problems.push(`${where}: retrievedAt must be a YYYY-MM-DD date`);
+    }
+  });
+  for (const item of m.items) {
+    if (!HTTPS_URL.test(item.source ?? "")) {
+      problems.push(
+        `item ${item.id}: a requirement of a real corpus needs its source (an https URL)`,
+      );
+    }
   }
 }
 
@@ -695,7 +768,7 @@ export function validateGoverningCorpus(
   files: CorpusFiles,
 ): string[] {
   const problems: string[] = [];
-  if (manifest.synthetic !== true) problems.push("the corpus must be marked synthetic");
+  validateSources(manifest, problems);
   validatePurpose(manifest, files, problems);
   validateFiles(manifest, files, problems);
   validatePolicy(manifest, files, problems);
