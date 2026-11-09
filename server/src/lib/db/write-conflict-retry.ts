@@ -26,6 +26,12 @@ export interface WriteConflictRetryOptions {
   exhausted?: (lastConflict: unknown) => Error;
   /** The backoff between attempts (tests); defaults to a timer. */
   sleep?: (ms: number) => Promise<void>;
+  /**
+   * Another error this transaction may run again after, besides a write
+   * conflict. Only for a transaction whose re-read judges what the other writer
+   * left (#1971: a concurrent grant of the same role is a unique violation).
+   */
+  alsoRetry?: (error: unknown) => boolean;
 }
 
 export async function retryOnWriteConflict<T>(
@@ -38,7 +44,7 @@ export async function retryOnWriteConflict<T>(
     try {
       return await run();
     } catch (error) {
-      if (!isSerializationFailure(error)) throw error;
+      if (!isSerializationFailure(error) && !options.alsoRetry?.(error)) throw error;
       if (attempt >= attempts) throw options.exhausted ? options.exhausted(error) : error;
       // Jittered, so transactions that just collided do not retry in step.
       await sleep(WRITE_CONFLICT_BACKOFF_MS * (attempt + Math.random()));

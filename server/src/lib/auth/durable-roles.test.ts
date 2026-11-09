@@ -244,11 +244,39 @@ describe("durable auth provenance", () => {
     expect(reconnect).not.toHaveBeenCalled();
   });
 
-  it("does not overwrite a concurrent explicit assignment on unique conflict", async () => {
+  // #1971 — the grant's unique violation was a 500 at sign-in. The retry re-reads
+  // the concurrent row and judges it: an explicit one is kept, never converted.
+  it("re-reads after a unique conflict and keeps a concurrent explicit assignment", async () => {
+    db.userRole.create.mockRejectedValueOnce(
+      Object.assign(new Error("unique conflict"), { code: "P2002" }),
+    );
+    db.userRole.findMany.mockResolvedValueOnce([]).mockResolvedValueOnce([row("admin", "local")]);
+    await expect(reconcileTrustedLoginRole(login)).resolves.toBe("admin");
+    expect(db.$transaction).toHaveBeenCalledTimes(2);
+    expect(db.userRole.create).toHaveBeenCalledOnce();
+    expect(db.userRole.deleteMany).toHaveBeenCalledOnce();
+    expect(reconnect).not.toHaveBeenCalled();
+  });
+
+  it("re-reads after a unique conflict and lands on the concurrent provider grant", async () => {
+    db.userRole.create.mockRejectedValueOnce(
+      Object.assign(new Error("unique conflict"), { code: "P2002" }),
+    );
+    db.userRole.findMany.mockResolvedValueOnce([]).mockResolvedValueOnce([row("admin")]);
+    await expect(reconcileTrustedLoginRole(login)).resolves.toBe("admin");
+    expect(db.userRole.create).toHaveBeenCalledTimes(2);
+    expect(reconnect).not.toHaveBeenCalled();
+  });
+
+  it("fails the login closed with a transient 503 when every attempt hits a unique conflict", async () => {
     db.userRole.create.mockRejectedValue(
       Object.assign(new Error("unique conflict"), { code: "P2002" }),
     );
-    await expect(reconcileTrustedLoginRole(login)).rejects.toMatchObject({ code: "P2002" });
+    await expect(reconcileTrustedLoginRole(login)).rejects.toMatchObject({
+      statusCode: 503,
+      code: "SIGN_IN_CONFLICT",
+    });
+    expect(db.userRole.create).toHaveBeenCalledTimes(3);
     expect(db.user.update).not.toHaveBeenCalled();
   });
 
