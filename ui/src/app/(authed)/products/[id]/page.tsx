@@ -32,18 +32,9 @@ import { PageHeader } from "@/components/ui/page-header";
 import { PortfolioCheckLink } from "@/components/portfolio/portfolio-check-link";
 import { HiddenReposNotice, PartialDocNotice } from "@/components/products/product-access-notices";
 import { ProductEdgesPanel } from "@/components/products/product-edges-panel";
+import { RepoRoleSelect, repoRoleLabel } from "@/components/products/repo-role-select";
 import { useAuth } from "@/lib/auth-context";
-
-const REPO_ROLES = [
-  "frontend",
-  "backend-api",
-  "shared-library",
-  "infrastructure",
-  "docs",
-  "gateway",
-  "worker",
-  "other",
-];
+import type { ProductRepoRole } from "@metis/shared";
 
 type DocTab = "unified-architecture" | "per-service" | "api-contract";
 
@@ -72,7 +63,7 @@ export default function ProductDetailPage({ params }: { params: Promise<{ id: st
 
   const [addRepoOpen, setAddRepoOpen] = useState(false);
   const [repoConnectionId, setRepoConnectionId] = useState("");
-  const [repoRole, setRepoRole] = useState("backend-api");
+  const [repoRole, setRepoRole] = useState<ProductRepoRole>("backend-api");
   const [repoError, setRepoError] = useState<string | null>(null);
   const [repoSearch, setRepoSearch] = useState("");
   const [docTab, setDocTab] = useState<DocTab>("unified-architecture");
@@ -260,18 +251,7 @@ export default function ProductDetailPage({ params }: { params: Promise<{ id: st
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="repo-role">Role</Label>
-                  <select
-                    id="repo-role"
-                    value={repoRole}
-                    onChange={(e) => setRepoRole(e.target.value)}
-                    className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                  >
-                    {REPO_ROLES.map((role) => (
-                      <option key={role} value={role}>
-                        {role}
-                      </option>
-                    ))}
-                  </select>
+                  <RepoRoleSelect id="repo-role" value={repoRole} onChange={setRepoRole} />
                 </div>
                 {repoError && <p className="text-sm text-destructive">{repoError}</p>}
                 <Button
@@ -308,7 +288,9 @@ export default function ProductDetailPage({ params }: { params: Promise<{ id: st
                   </p>
                   {/* #1965 — a repo attached without a role shows no empty label. */}
                   {repo.role ? (
-                    <p className="text-sm text-muted-foreground">Role: {repo.role}</p>
+                    <p className="text-sm text-muted-foreground">
+                      Role: {repoRoleLabel(repo.role)}
+                    </p>
                   ) : null}
                 </div>
                 <Button
