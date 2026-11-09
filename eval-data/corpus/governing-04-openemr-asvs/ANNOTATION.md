@@ -1,0 +1,129 @@
+# How the real-text tuning set was built and labelled (#2108)
+
+## Why this set exists
+
+The first reading of `governing-03-openemr-hipaa` (#2105) failed three of its five bars on
+real policy text and real OpenEMR issues. #2108 asks for a fix made **on `governing-01` or a
+new tuning split**, with `governing-03` kept held out and read once more afterwards.
+
+`governing-01` cannot show the defects that reading found. Its requirements are business
+requests written for the set, and its policy is a retailer's. It has no defect report, no
+password-composition rule and no sign-in flow. So this set is a **new tuning split of real
+text**:
+
+- the **policy** quotes 30 requirements of the OWASP Application Security Verification
+  Standard 5.0.0: authentication, sessions, authorization, data protection and logging. It
+  is not `governing-03`'s HIPAA and NIST text, so a prompt tuned here is not tuned on
+  `governing-03`'s rules;
+- the **requirements** are quoted from 25 real `openemr/openemr` issues, **none of them one
+  of `governing-03`'s 25**.
+
+This set is a **tuning** set (`purpose: "tuning"`): iterate prompts on it, and on
+`governing-01`. `governing-03` stays held out: it is read only for a decision.
+
+## Sources and licences
+
+| Part | Source | Licence | Retrieved |
+|---|---|---|---|
+| Policy: PA-01 to LG-05 | OWASP ASVS 5.0.0, chapters V6, V7, V8, V14 and V16. https://github.com/OWASP/ASVS/tree/v5.0.0_release/5.0/en | CC BY-SA 4.0, OWASP Foundation. `policy-v1.md` stays under CC BY-SA 4.0 | 2026-11-09 |
+| Requirements OS-01 to OS-25 | `openemr/openemr` GitHub issues; each item's `source` is its issue URL | Short excerpts quoted with their source; OpenEMR is GPL-3.0 | 2026-11-09 |
+
+The policy file carries the attribution and the licence notice in its own header, so they
+travel with the text an arm reads. `NOTICE` lists the file.
+
+## Who did what, and in order
+
+Everything here was done in one session on 2026-11-09.
+
+1. **Compiling the policy.** The compiler was the coding agent dispatched on #2108
+   (`claude-opus-5-5`). It fetched the ASVS 5.0.0 chapters from the OWASP repository at the
+   `v5.0.0_release` tag and copied 30 requirements word for word into `policy-v1.md`. The
+   bold reference (`PA-05` and so on) is added so a question can name the requirement, and
+   the ASVS number follows in square brackets. Three requirements lose a sentence, marked
+   "…": PA-10 and LG-03 drop the sentence that sets a stricter level, and SE-03 drops the
+   sentence on self-contained tokens. Each rule's one-line `summary` is the compiler's.
+2. **Choosing the requirements.** The same agent searched OpenEMR's issues on password,
+   logout, session, audit, ACL, MFA, lockout, encryption, token and CSRF, and on topics no
+   rule covers (the calendar, a report, the DICOM viewer, a login-page layout). It left out
+   every issue `governing-03` uses. It chose 25 issues, from 2019 to 2026, and it
+   **wrote no label**, then or later. Items are numbered OS-01 to OS-25 in issue-number order.
+3. **Quoting rules.** The same as `governing-03`'s: the title is the issue's title, word
+   for word; the text is a quotation from the body, with Markdown markup, images, code blocks
+   and template headings removed, a cut marked "…", and a reference to another issue or pull
+   request cut. That cut reaches one title: OS-24's "(PR … followup)". Two edits add
+   punctuation only: the list items of OS-16 and OS-18 are joined with full stops, and OS-12,
+   OS-15, OS-22 and OS-23 keep their "Expected behavior" or "Expected Result" heading as a
+   label. The loader's checks pass: no item names a rule id or copies five words from a clause.
+4. **Labeller 1 and labeller 2 labelled blind** (`labelling/labeller-1.json`,
+   `labelling/labeller-2.json`). Neither is the agent that chose the requirements. Each was a
+   separate `claude-opus-5-5` session run through `claude -p` with every tool switched off
+   (`--tools ""`), no MCP server (`--strict-mcp-config` with an empty config), no settings
+   sources and no session persistence, from an empty directory. Each prompt
+   (`labelling/labeller-<n>-prompt.txt`) held `policy-v1.md`, the 25 requirements in a seeded
+   order (seeds 21081 and 21082), the three verdicts and the labelling rules, which are
+   `governing-03`'s, word for word. It held no label, no rule summary, no source URL and no
+   word about any arm or prompt. Cost: $0.18 and $0.21.
+5. **A third pass settled every disagreement** (`labelling/adjudication.json`, prompt in
+   `labelling/adjudication-prompt.txt`): another tool-less `claude-opus-5-5` session, given
+   the policy and each disputed pair with the two labels as A and B in a seeded order (seed
+   21083), not told who wrote which, told to favour neither and to answer "unsettled" rather
+   than guess. It settled all 11 pairs, each with a written reason. Cost: $0.12.
+6. **No consistency pass was run.** `governing-03` ran one for five cross-cutting rules
+   because it is held out. This set is for tuning, so a cell both labellers skipped was not
+   re-checked.
+7. **Business facts.** Each `needs-ba-input` pair's `businessFact` is labeller 1's question
+   where both labellers gave the verdict, and the adjudicator's where it decided.
+8. **`nonResembling` was computed**, as in `governing-03`: one pair, OS-24 → AZ-01, shares no
+   stem with its rule.
+9. **The thresholds are `governing-01`'s, unchanged.** No arm had run on this set when the
+   labels were fixed.
+
+## Agreement between the two labellers
+
+Over every (requirement, rule) cell: 25 × 30 = 750 cells.
+
+| Measure | Value |
+|---|---|
+| Pairs listed by labeller 1 / labeller 2 | 25 / 25 |
+| Pairs either listed (the union) | 28 |
+| Listed by both | 22, of which 17 had the same verdict |
+| Applies / does not apply, Cohen's κ | **0.88** |
+| Four-way label, Cohen's κ | **0.77** |
+| Same label on the union of listed pairs | 17 of 28 (0.61) |
+| Negative items both left empty | 5; the adjudication emptied 3 more |
+
+One disagreement is the question this set was built to tune: OS-16 reports that the CSRF
+token travels in the URL. Labeller 1 read the report as the fix it asks for (compliant), and
+labeller 2 read it as what is built (gap). The adjudicator decided compliant: "Resolving it
+means removing the token" from the URL.
+
+## What the set holds
+
+- **30 rules**: 15 on authentication, 6 on sessions, 3 on authorization, 1 on data
+  protection and 5 on logging. 16 apply to at least one requirement; the other 14 test precision.
+- **25 requirements**: 17 positive and **8 negative**. OS-01 and OS-03 (where the user
+  lands after a session has ended) are near misses that the adjudicator left empty.
+- **24 truth pairs**: 2 `gap`, 15 `needs-ba-input` and 7 `compliant`.
+- **1 non-resembling pair** (OS-24 → AZ-01) and **no short-answer pairs**.
+
+## Limits to state plainly
+
+- **AI labellers, not people**, as in `governing-03`; `annotation.reviewedBy` is `null`.
+- **25 items is small**, and the readings below are one or two runs each.
+- **The set was built after `governing-03`'s defects were known.** Its requirements were
+  chosen to hold the same kinds of text (defect reports, requests that are a safeguard,
+  sign-in and password flows), so that a fix for those kinds can be tuned somewhere other
+  than the held-out set. No `governing-03` item, label or rule is in it.
+
+## Readings
+
+A reading of this set is a tuning reading: its numbers are not held-out evidence.
+
+| Date | Issue | Arms | Model | Prompts | Runs | Recall | Precision | Verdict accuracy | Hard errors |
+|---|---|---|---|---|---|---|---|---|---|
+| 2026-11-09 | #2108 | A5 | `anthropic/claude-sonnet-5-5` | before #2108 | 2 (two `--runs 1` invocations) | 0.96 / 0.88 | 0.57 / 0.55 | 0.54 / 0.42 | 1 / 0 |
+| 2026-11-09 | #2108 | A5 | `anthropic/claude-sonnet-5-5` | first draft of the three lines | 1 | 0.96 | 0.74 | 0.67 | 1 |
+| 2026-11-09 | #2108 | A5 | `anthropic/claude-sonnet-5-5` | the three lines as committed | 2 | 0.94 | 0.68 | 0.79 | 0 |
+
+These tuning runs ran on an uncommitted tree, so they are recorded here and not as
+readings. The committed reading at the PR's commit is below.

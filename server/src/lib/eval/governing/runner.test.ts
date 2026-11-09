@@ -481,6 +481,48 @@ describe("toJsonReport", () => {
     expect(json.endsWith("}\n")).toBe(true);
   });
 
+  it("keeps an arm's stages on its record, through the JSON, and says where each error arose (#2108)", async () => {
+    // Every rule the arm applies is judged compliant: right on a compliant pair, wrong elsewhere.
+    const staged = (item: GoverningItem): GoverningArmOutput => ({
+      judgements: item.applies.map((p) => ({ ruleId: p.ruleId, verdict: "compliant" })),
+      stages: item.applies.map((p) => ({
+        ruleId: p.ruleId,
+        foundBy: ["top-k"],
+        applicability: "applies",
+        finding: "compliant",
+      })),
+    });
+    const report = await runGoverningEval(corpus, {
+      arms: [fakeArm("A5", staged)],
+      runs: 1,
+      budget: new EvalBudget(100),
+      provider: fakeProvider(),
+    });
+    const first = corpus.manifest.items.find((i) => i.applies.length > 0)!;
+    const record = report.arms[0]!.records.find((r) => r.itemId === first.id)!;
+    expect(record.stages).toEqual(staged(first).stages);
+    expect(JSON.parse(toJsonReport(report)).arms[0].records[0].stages).toEqual(
+      report.arms[0]!.records[0]!.stages,
+    );
+    const md = toMarkdownReport(report);
+    expect(md).toContain("## Where each error arose (#2108)");
+    const wrong = corpus.manifest.items
+      .flatMap((i) => i.applies)
+      .filter((p) => p.verdict !== "compliant").length;
+    expect(md).toContain(`| wrong-verdict | 0 | 0 | 0 | 0 | ${wrong} |`);
+  });
+
+  it("prints no stage section for arms that record no stages", async () => {
+    const report = await runGoverningEval(corpus, {
+      arms: [fakeArm("A0", resemblingOnly)],
+      runs: 1,
+      budget: new EvalBudget(100),
+      provider: fakeProvider(),
+    });
+    expect(report.arms[0]!.records[0]).not.toHaveProperty("stages");
+    expect(toMarkdownReport(report)).not.toContain("Where each error arose");
+  });
+
   it("writes an arm with no records as an empty list", async () => {
     const report = await runGoverningEval(corpus, {
       arms: [fakeArm("A0", resemblingOnly)],

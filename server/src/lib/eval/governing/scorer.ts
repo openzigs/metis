@@ -34,6 +34,7 @@ import {
   type GoverningItem,
   type GoverningVerdict,
 } from "./corpus.js";
+import type { RuleStage } from "./stages.js";
 
 /** A citation: a clause excerpt and the rule it claims to come from. */
 export interface GoverningCitation {
@@ -84,6 +85,12 @@ export interface GoverningArmOutput {
   judgements: GoverningJudgement[];
   /** What the arm did on the way (chunks retrieved, rules screened…); reported, never scored. */
   diagnostics?: Record<string, number>;
+  /**
+   * #2108 — set by an arm that runs the shipped path: each candidate rule with
+   * the pass that found it, its applicability and its finding, so a reading
+   * says which stage each error arose in (`stages.ts`). Never scored.
+   */
+  stages?: RuleStage[];
   /**
    * #2033 — set by an arm that replays BA answers, on a requirement with
    * short-answer pairs. Scored apart ({@link scoreAnswered}): `judgements`

@@ -1,0 +1,158 @@
+Two analysts labelled software requirements against the security requirements document below, independently. The requirements are feature requests and bug reports filed by the users and developers of an open-source electronic health record system, quoted in their own words. For each (requirement, rule) pair the analysts disagree on, decide the correct label yourself, from the document and the requirement's wording alone.
+
+The labels are:
+- "does not apply": an independent reader would not attach this rule to the requirement (a stretch reading does not count).
+- "compliant": the requirement, as written, explicitly provides what the rule asks.
+- "gap": the requirement, built as written, would breach the rule.
+- "needs-ba-input": the rule applies, but the requirement is silent or ambiguous on it, and one business fact would settle it.
+Silence is never "compliant".
+
+Neither analyst is more senior; do not favour A or B. If the pair genuinely cannot be settled from the text, say "unsettled" rather than guessing. When your label is "needs-ba-input", also write the business fact a business analyst would have to supply, as one question ("businessFact").
+
+Reply with ONE JSON object and nothing else:
+{"decisions": [{"n": 1, "item": "OS-00", "rule": "XX-00", "label": "gap", "reason": "one or two sentences citing the wording that decides it", "businessFact": "needs-ba-input only"}]}
+
+=== POLICY ===
+# Web Application Security Requirements: OWASP ASVS 5.0.0 (excerpts)
+
+Revision: v1 · Compiled: 2026-11-09 · Applies to: the electronic health record system, its patient portal and its interfaces
+
+## Sources and attribution
+
+Every requirement below is quoted from the OWASP Application Security Verification Standard
+5.0.0, by the OWASP Foundation: https://github.com/OWASP/ASVS/tree/v5.0.0_release/5.0/en,
+retrieved 2026-11-09. The ASVS is released under the Creative Commons Attribution-ShareAlike
+4.0 International License (https://creativecommons.org/licenses/by-sa/4.0/), and this file,
+which quotes it, stays under that licence whatever the licence of the repository around it.
+
+The reference in bold at the start of each paragraph is added here so that a question can
+name the requirement, and the ASVS's own requirement number follows each one in square
+brackets. Text left out of a quotation is marked "…": in PA-10, SE-03 and LG-03 a sentence
+that sets a stricter level, or covers self-contained tokens, is cut. Nothing else in a
+quotation has been changed.
+
+## Part A — Authentication (ASVS chapter V6)
+
+**PA-01** Verify that user set passwords are at least 8 characters in length although a minimum of 15 characters is strongly recommended. [ASVS 5.0.0, 6.2.1]
+
+**PA-02** Verify that users can change their password. [ASVS 5.0.0, 6.2.2]
+
+**PA-03** Verify that password change functionality requires the user's current and new password. [ASVS 5.0.0, 6.2.3]
+
+**PA-04** Verify that passwords submitted during account registration or password change are checked against an available set of, at least, the top 3000 passwords which match the application's password policy, e.g. minimum length. [ASVS 5.0.0, 6.2.4]
+
+**PA-05** Verify that passwords of any composition can be used, without rules limiting the type of characters permitted. There must be no requirement for a minimum number of upper or lower case characters, numbers, or special characters. [ASVS 5.0.0, 6.2.5]
+
+**PA-06** Verify that password input fields use type=password to mask the entry. Applications may allow the user to temporarily view the entire masked password, or the last typed character of the password. [ASVS 5.0.0, 6.2.6]
+
+**PA-07** Verify that "paste" functionality, browser password helpers, and external password managers are permitted. [ASVS 5.0.0, 6.2.7]
+
+**PA-08** Verify that a user's password stays valid until it is discovered to be compromised or the user rotates it. The application must not require periodic credential rotation. [ASVS 5.0.0, 6.2.10]
+
+**PA-09** Verify that controls to prevent attacks such as credential stuffing and password brute force are implemented according to the application's security documentation. [ASVS 5.0.0, 6.3.1]
+
+**PA-10** Verify that either a multi-factor authentication mechanism or a combination of single-factor authentication mechanisms, must be used in order to access the application. … [ASVS 5.0.0, 6.3.3]
+
+**PA-11** Verify that users are notified after updates to authentication details, such as credential resets or modification of the username or email address. [ASVS 5.0.0, 6.3.7]
+
+**PA-12** Verify that system generated initial passwords or activation codes are securely randomly generated, follow the existing password policy, and expire after a short period of time or after they are initially used. These initial secrets must not be permitted to become the long term password. [ASVS 5.0.0, 6.4.1]
+
+**PA-13** Verify that a secure process for resetting a forgotten password is implemented, that does not bypass any enabled multi-factor authentication mechanisms. [ASVS 5.0.0, 6.4.3]
+
+**PA-14** Verify that administrative users can initiate the password reset process for the user, but that this does not allow them to change or choose the user's password. This prevents a situation where they know the user's password. [ASVS 5.0.0, 6.4.6]
+
+**PA-15** Verify that, if an application uses a separate Identity Provider (IdP) and expects specific authentication strength, methods, or recentness for specific functions, the application verifies this using the information returned by the IdP. [ASVS 5.0.0, 6.8.4]
+
+## Part B — Session management (ASVS chapter V7)
+
+**SE-01** Verify that the application generates a new session token on user authentication, including re-authentication, and terminates the current session token. [ASVS 5.0.0, 7.2.4]
+
+**SE-02** Verify that there is an inactivity timeout such that re-authentication is enforced according to risk analysis and documented security decisions. [ASVS 5.0.0, 7.3.1]
+
+**SE-03** Verify that when session termination is triggered (such as logout or expiration), the application disallows any further use of the session. For reference tokens or stateful sessions, this means invalidating the session data at the application backend. … [ASVS 5.0.0, 7.4.1]
+
+**SE-04** Verify that the application gives the option to terminate all other active sessions after a successful change or removal of any authentication factor (including password change via reset or recovery and, if present, an MFA settings update). [ASVS 5.0.0, 7.4.3]
+
+**SE-05** Verify that all pages that require authentication have easy and visible access to logout functionality. [ASVS 5.0.0, 7.4.4]
+
+**SE-06** Verify that session lifetime and termination between Relying Parties (RPs) and Identity Providers (IdPs) behave as documented, requiring re-authentication as necessary such as when the maximum time between IdP authentication events is reached. [ASVS 5.0.0, 7.6.1]
+
+## Part C — Authorization (ASVS chapter V8)
+
+**AZ-01** Verify that the application ensures that function-level access is restricted to consumers with explicit permissions. [ASVS 5.0.0, 8.2.1]
+
+**AZ-02** Verify that the application ensures that data-specific access is restricted to consumers with explicit permissions to specific data items to mitigate insecure direct object reference (IDOR) and broken object level authorization (BOLA). [ASVS 5.0.0, 8.2.2]
+
+**AZ-03** Verify that the application enforces authorization rules at a trusted service layer and doesn't rely on controls that an untrusted consumer could manipulate, such as client-side JavaScript. [ASVS 5.0.0, 8.3.1]
+
+## Part D — Data protection (ASVS chapter V14)
+
+**DP-01** Verify that sensitive data is only sent to the server in the HTTP message body or header fields, and that the URL and query string do not contain sensitive information, such as an API key or session token. [ASVS 5.0.0, 14.2.1]
+
+## Part E — Security logging (ASVS chapter V16)
+
+**LG-01** Verify that each log entry includes necessary metadata (such as when, where, who, what) that would allow for a detailed investigation of the timeline when an event happens. [ASVS 5.0.0, 16.2.1]
+
+**LG-02** Verify that all authentication operations are logged, including successful and unsuccessful attempts. Additional metadata, such as the type of authentication or factors used, should also be collected. [ASVS 5.0.0, 16.3.1]
+
+**LG-03** Verify that failed authorization attempts are logged. … [ASVS 5.0.0, 16.3.2]
+
+**LG-04** Verify that all logging components appropriately encode data to prevent log injection. [ASVS 5.0.0, 16.4.1]
+
+**LG-05** Verify that logs are protected from unauthorized access and cannot be modified. [ASVS 5.0.0, 16.4.2]
+
+=== DISPUTED PAIRS ===
+1. OS-01 — logout doesn't return to login screen after session times out: so user has to have a bookmark of login screen or have a home page set to login page … not sure if the logic flow makes it to this code
+   Rule SE-03.
+   A: needs-ba-input (question: After a timeout, is the session invalidated on the server so the old session cannot be reused?) — The issue covers what the user sees after a timeout but does not say whether the expired session is invalidated on the server.
+   B: does not apply
+
+2. OS-03 — Logout from expired session: … To reproduce, let session expire or get closed. Then try to use 'Logout' dropdown option from menu. Noticed that logout.php does get called but user gets no response possibly because changes to auth library resulting in login.php never getting called. This was a decent compromise to users having to enter emr link in address bar.
+   Rule SE-03.
+   A: needs-ba-input (question: When a session expires, is the session data invalidated on the server so the old session cannot be reused?) — The issue covers logout after session expiry but does not say whether the expired session is invalidated on the server.
+   B: does not apply
+
+3. OS-04 — Single sign on: For a big part of the user of the system used, we need to add the SSO on Openemr to recognize and authenticate the user when the user logged on to the account or laptop the user used. … Is it possible to support any kind of SSO like SAML2 to Openemr?!
+   Rule PA-10.
+   A: does not apply
+   B: needs-ba-input (question: Will the SSO identity provider enforce multi-factor authentication for OpenEMR users?) — Workstation-login SSO may be single-factor, and it does not say whether the IdP enforces MFA.
+
+4. OS-06 — login_fail_counter not reset when an admin resets a password: When you reset a user's password in Admin-> Users … There is nothing that will reset the login_fail_counter in users_secure. Right now, you have to manually go into the table and reset the field to 0 for a user to log in again if you have max reties enabled and admin reset a password.
+   Rule PA-09.
+   A: needs-ba-input (question: Does the security documentation require the failed-login counter to be cleared when an administrator resets a user's password?) — It changes lockout-counter behaviour, and it does not say whether the security documentation calls for clearing the counter on admin reset.
+   B: does not apply
+
+5. OS-08 — Remove Password Composition Requirements: Currently, passwords are required to have a number, lowercase letter, uppercase letter, and special character. However, many security standards, such as NIST (section 5.1.1.1) and ASVS (standard 2.1.9) recommend against password composition requirements because they do not significantly increase the strength of passwords. … Do not require passwords to contain numbers, special characters, etc.
+   Rule PA-01.
+   A: does not apply
+   B: needs-ba-input (question: What minimum password length (at least 8, ideally 15) will the policy keep once composition rules are removed?) — The password policy is changed without stating the minimum length that remains.
+
+6. OS-11 — feat: Notify users for password issues: Users may not know that their password have expired or failed for login attempts. … Add a notification email to system email queue so user can fix any upcoming issues.
+   Rule PA-08.
+   A: gap — It builds notifications around password expiry, which keeps periodic credential rotation in place.
+   B: needs-ba-input (question: Do passwords expire on a fixed schedule, or only when a password is found to be compromised?) — The request mentions passwords having expired, which suggests periodic expiry, but does not say why passwords expire.
+
+7. OS-16 — CSRF token exposed in URL in interface/patient_file/letter.php back-link: The CSRF token is embedded directly in the URL query string (csrf_token_form=...). Because the app enforces CSRF validation on GET requests via CsrfUtils::checkCsrfInput(INPUT_GET, ...), this pattern is encouraged across the codebase. CWE-598. Tokens in URLs leak via: Referer headers when the page loads external resources or the user follows outbound links. Browser history, bookmarks, screenshots. Reverse proxies, web-server access logs, APM/analytics tooling.
+   Rule DP-01.
+   A: gap — A CSRF token is carried in the URL query string, and no remediation moving it to the body or headers is specified.
+   B: compliant — The issue asks for the CSRF token to be taken out of the URL query string because of how URLs leak.
+
+8. OS-17 — Upgrade entry points (acl_upgrade.php, sql_upgrade.php) allow unauthenticated HTTP access: acl_upgrade.php and sql_upgrade.php both declare $ignoreAuth = true before loading interface/globals.php, which skips auth.inc.php. Anyone who can reach these scripts over HTTP can invoke them, potentially triggering ACL/schema mutations without any authenticated session. … These scripts are reachable from the admin UI (admin.php) mid-upgrade, and historically had to run before any user account exists.
+   Rule AZ-01.
+   A: needs-ba-input (question: Must acl_upgrade.php and sql_upgrade.php still run before any user account exists, or can they be limited to authenticated administrators (or a one-time setup token)?) — The upgrade scripts can be run without authentication, and the issue says they have historically had to run before any user account exists, but it does not state the access rule that should replace this.
+   B: gap — The upgrade scripts that change ACLs and schema run with authentication skipped, and no access restriction is specified.
+
+9. OS-19 — feat(portal): add multi-factor authentication to patient portal: The OpenEMR patient portal has no multi-factor authentication. Patient login is username/password with optional reCAPTCHA only. There is no TOTP, U2F, WebAuthn, magic-link, SMS, or email-OTP option for patients, and no admin toggle to require any second factor. … This proposes adding MFA to the portal from scratch: TOTP at minimum, with a portal_force_mfa global mirroring the practitioner-side enforcement work, plus a self-enrollment page under portal/account/.
+   Rule PA-10.
+   A: needs-ba-input (question: Will portal_force_mfa be enabled so that every patient must use a second factor to access the portal?) — TOTP is added, but whether it is required depends on a portal_force_mfa toggle.
+   B: compliant — The request adds TOTP-based MFA to the patient portal and a portal_force_mfa setting to require it.
+
+10. OS-20 — Add Prescription History to Patient Report: Add Prescription History as an option to the Patient Report, as this information can be important to have available and share. … Add option for "Prescription History" to the patient report. If there are no prescriptions, then the report would display "No prescriptions on file". If there are prescriptions on the patient chart and the options is checked, then the report would display all the prescription entries and be available to print/download as PDF.
+   Rule AZ-02.
+   A: needs-ba-input (question: Which users may include and download prescription history in a patient report, and only for patients they are permitted to access?) — The new report section exposes and exports a patient's prescription history, but the request does not say who may generate or download it for which patients.
+   B: does not apply
+
+11. OS-21 — reactor(audit): Improve immutability and tamper-resistance: Today, the event logging system uses encryption as a means of trying to address certification requirements around immutability and tamper-resistance. The logic is well-intentioned, but somewhat faulty. … Proposal stages: Remove encryption from the audit logs (on all columns that use it). … Update table permissions: log (and log_comment_encrypt) should have permissions set at a MySQL level to allow INSERT and SELECT, but not UPDATE, DELETE, TRUNCATE, etc. Ideally, the "default" openemr DB user has no access to the table(s) at all; a new user with minimum permissions should exist for dedicated access. Have some sort of checksum chaining, similar to how git commit hashes work. Tamper detection could examine the chain, re-checksum, and ensure there are no mismatches
+   Rule LG-05.
+   A: needs-ba-input (question: Will the default openemr database user be denied all access to the log tables, leaving only a dedicated least-privilege account?) — INSERT/SELECT-only grants and checksum chaining prevent modification, but removing the default DB user's read access is only 'ideally', and encryption is being removed.
+   B: compliant — The proposal restricts the log tables to INSERT and SELECT, uses a dedicated minimum-permission database user, and adds checksum chaining to detect tampering.
