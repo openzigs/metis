@@ -215,30 +215,35 @@ describe("#1135 — the dialog starts once the run completes, with no reload", (
 });
 
 describe("#1104 finding C — a completed dialog stays reachable at 0 ambiguities", () => {
-  it("renders the persisted dialog when totalAmbiguities has dropped back to 0", async () => {
-    getClarification.mockResolvedValue({
-      state: dialogState({
-        completed: true,
-        resolvedAmbiguities: ["r1:dsa"],
-        answeredAmbiguities: ["r1:dsa"],
-        rounds: [
-          {
-            round: 1,
-            questions: [
-              {
-                id: "q_dsa",
-                requirementId: "r1",
-                ambiguityField: "dsa",
-                question: "Does the DSA apply?",
-                context: "",
-                answer: "No, it does not apply.",
-              },
-            ],
-            answers: [],
-          },
-        ],
-      }),
+  const completed = (over: Partial<ClarificationStatePayload> = {}) =>
+    dialogState({
+      completed: true,
+      currentRound: 2,
+      resolvedAmbiguities: ["r1:dsa"],
+      answeredAmbiguities: ["r1:dsa"],
+      rounds: [
+        {
+          round: 1,
+          questions: [
+            {
+              id: "q_dsa",
+              requirementId: "r1",
+              ambiguityField: "dsa",
+              question: "Does the DSA apply?",
+              context: "",
+              answer: "No, it does not apply.",
+            },
+          ],
+          answers: [],
+        },
+      ],
+      ...over,
     });
+
+  it("renders the persisted dialog when totalAmbiguities has dropped back to 0", async () => {
+    getClarification.mockResolvedValue({ state: completed() });
+    // #2068 — the server has no governing question to re-open it for.
+    clarify.mockResolvedValue(completed());
 
     renderResults(metadata(0));
 
@@ -248,8 +253,50 @@ describe("#1104 finding C — a completed dialog stays reachable at 0 ambiguitie
       /1 ambiguity addressed/,
     );
     expect(await screen.findByText("No, it does not apply.")).toBeInTheDocument();
-    // Reading is free; starting a new round is not — no POST for a dialog that
-    // already exists.
+    // #2068 — one start per mount, which re-opens only for a governing question.
+    await waitFor(() => expect(clarify).toHaveBeenCalledTimes(1));
+    expect(screen.getByTestId("clarification-complete")).toBeInTheDocument();
+  });
+
+  it("#2068 — a completed dialog the server re-opens shows the governing question to answer", async () => {
+    getClarification.mockResolvedValue({ state: completed() });
+    clarify.mockResolvedValue(
+      completed({
+        completed: false,
+        rounds: [
+          ...completed().rounds,
+          {
+            round: 2,
+            questions: [
+              {
+                id: "q_gov",
+                requirementId: "governing:REQ-001",
+                ambiguityField: "governing-applicability",
+                question: "Who can see the stored card details once they are saved?",
+                context: "",
+              },
+            ],
+            answers: [],
+          },
+        ],
+      }),
+    );
+
+    renderResults(metadata(0));
+
+    expect(
+      await screen.findByText("Who can see the stored card details once they are saved?"),
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId("clarification-complete")).not.toBeInTheDocument();
+    expect(clarify).toHaveBeenCalledTimes(1);
+  });
+
+  it("#2068 — a completed dialog with no round left is not started again", async () => {
+    getClarification.mockResolvedValue({ state: completed({ currentRound: 4 }) });
+
+    renderResults(metadata(0));
+
+    expect(await screen.findByTestId("clarification-complete")).toBeInTheDocument();
     expect(clarify).not.toHaveBeenCalled();
   });
 

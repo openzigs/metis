@@ -30,12 +30,18 @@
  *     ({@link openFindingPairs}), through the same guard and the same link,
  *     and its answer is recorded on the pair without a judging call
  *     ({@link answersForApplyingPairs}), so the findings refresh reads it.
+ *     #2068 — a finding no answer can settle is not asked, and one still
+ *     Needs BA input after the refresh is asked its new question.
  *
  * Governing text (summaries, clauses) and the requirement reach the model
  * fenced as untrusted data, as #1872 sends them.
  */
 import { randomUUID } from "node:crypto";
-import type { GoverningAnalysisApplicability, GoverningFinding } from "@metis/shared";
+import type {
+  GoverningAnalysisApplicability,
+  GoverningApplicabilityDecision,
+  GoverningFinding,
+} from "@metis/shared";
 import { fenceToolResult } from "../ai/tool-runtime/fence.js";
 import type { AIProvider } from "../ai/types.js";
 import { extractJsonObject, resolveFinalAnswerMaxOutputTokens } from "../analysis/agent-runner.js";
@@ -50,9 +56,11 @@ import {
 } from "./applicability.js";
 import {
   readGoverningApplicability,
+  recordedQuestionIds,
   settleGoverningPairs,
   type GoverningSettlementInput,
 } from "./applicability-store.js";
+import { FALLBACK_FINDING_QUESTION } from "./findings.js";
 import { produceGoverningFindingsForAnalysis } from "./findings-store.js";
 import { isGoverningDocsEnabled } from "./flag.js";
 import { workspaceRulesByIds } from "./governing-store.js";
@@ -236,45 +244,108 @@ export function openGoverningPairs(
 export type FindingQuestionInput = Pick<
   GoverningFinding,
   "requirementId" | "ruleId" | "status" | "businessQuestion"
->;
+> & {
+  /** #2068 — a dropped citation, or a BA decision, means the finding is not asked. */
+  citationDropped?: boolean;
+  decision?: string | null;
+  /** When the row was last produced: a re-ask waits for a refresh after the latest answer. */
+  updatedAt?: Date | string;
+};
 
-/** True when `stored` has a pair that `applies` with no answer recorded on it yet. */
-export function hasUnansweredApplyingPair(stored: GoverningAnalysisApplicability): boolean {
-  return stored.requirements.some((r) =>
-    r.decisions.some((d) => d.verdict === "applies" && !d.settled),
+/** #2068 — true when `stored` has a pair that `applies`, answered or not. */
+export function hasApplyingPair(stored: GoverningAnalysisApplicability): boolean {
+  return stored.requirements.some((r) => r.decisions.some((d) => d.verdict === "applies"));
+}
+
+/** The governing questions answered in `state`, per (requirement, rule) pair they link. */
+function answeredQuestionsByPair(
+  state: Pick<ClarificationState, "rounds"> | undefined,
+): Map<string, ClarifyingQuestion[]> {
+  const out = new Map<string, ClarifyingQuestion[]>();
+  for (const round of state?.rounds ?? []) {
+    for (const q of round.questions) {
+      if (!q.governing || !q.answer?.trim()) continue;
+      for (const ruleId of q.governing.ruleIds) {
+        const key = pairKey(q.governing.requirementId, ruleId);
+        out.set(key, [...(out.get(key) ?? []), q]);
+      }
+    }
+  }
+  return out;
+}
+
+function timeOf(at: Date | string | undefined): number {
+  return at === undefined ? Number.NaN : new Date(at).getTime();
+}
+
+/**
+ * #2068 — whether a Needs BA input finding asking `question` on the `applies`
+ * pair `d` is still waiting for the BA, given the questions answered on it in
+ * the dialog (`asked`). Never answered: yes. Answered: only once every answer
+ * is recorded on the pair, the finding was produced again after the latest of
+ * them (so the refresh read it and still needs input), and `question` is not
+ * one an answer was already given to; else the BA would answer the same
+ * question twice.
+ */
+function stillWaiting(
+  f: FindingQuestionInput,
+  d: GoverningApplicabilityDecision,
+  asked: readonly ClarifyingQuestion[],
+  question: string,
+): boolean {
+  const recorded = d.settled ? [...(d.settled.earlier ?? []), d.settled] : [];
+  if (asked.length === 0 && recorded.length === 0) return true;
+  const ids = recordedQuestionIds(d);
+  if (asked.some((q) => !ids.has(q.id))) return false;
+  const latest = Math.max(...recorded.map((r) => timeOf(r.at)));
+  if (!(timeOf(f.updatedAt) > latest)) return false;
+  const answered = new Set(
+    [...asked.map((q) => q.question), ...recorded.map((r) => r.question ?? "")]
+      .map(factKey)
+      .filter(Boolean),
   );
+  return !answered.has(factKey(question));
 }
 
 /**
  * #2059 — every Needs BA input finding still waiting for the BA on a pair that
- * applicability decided `applies`: the pair has no answer recorded on it
- * (`settled`) and no question answered in `state` links it. Its question is
- * the finding's `businessQuestion`, which {@link buildGoverningQuestions}
- * guards and links as it does an `uncertain` pair's business fact. A finding
- * on an `uncertain` pair is left to {@link openGoverningPairs}, which asks the
- * fact applicability asked; one on a pair `stored` does not hold is not asked.
+ * applicability decided `applies`. Its question is the finding's
+ * `businessQuestion`, which {@link buildGoverningQuestions} guards and links
+ * as it does an `uncertain` pair's business fact. A finding on an `uncertain`
+ * pair is left to {@link openGoverningPairs}, which asks the fact
+ * applicability asked; one on a pair `stored` does not hold is not asked.
+ *
+ * #2068 — nor is a finding whose answer could not settle it: one with no
+ * question of its own (none, or {@link FALLBACK_FINDING_QUESTION}, which the
+ * findings call gives a rule it could not evaluate), one whose citation was
+ * dropped (Needs BA input whatever the answer says), or one a BA already
+ * accepted or rejected. A pair already answered is asked again only with a
+ * new question, after the findings read the answer ({@link stillWaiting}).
  */
 export function openFindingPairs(
   stored: GoverningAnalysisApplicability,
   findings: readonly FindingQuestionInput[],
   state: Pick<ClarificationState, "rounds"> | undefined,
 ): OpenGoverningPair[] {
-  const answered = answeredPairKeys(state);
+  const asked = answeredQuestionsByPair(state);
   const out: OpenGoverningPair[] = [];
   const seen = new Set<string>();
   for (const f of findings) {
-    if (f.status !== "needs-ba-input") continue;
+    if (f.status !== "needs-ba-input" || f.decision || f.citationDropped) continue;
+    const question = f.businessQuestion?.trim() ?? "";
+    if (!question || question === FALLBACK_FINDING_QUESTION) continue;
     const key = pairKey(f.requirementId, f.ruleId);
-    if (seen.has(key) || answered.has(key)) continue;
+    if (seen.has(key)) continue;
     const requirement = stored.requirements.find((r) => r.requirementId === f.requirementId);
     const d = requirement?.decisions.find((x) => x.ruleId === f.ruleId);
-    if (!requirement || !d || d.verdict !== "applies" || d.settled) continue;
+    if (!requirement || !d || d.verdict !== "applies") continue;
+    if (!stillWaiting(f, d, asked.get(key) ?? [], question)) continue;
     seen.add(key);
     out.push({
       requirementId: requirement.requirementId,
       requirementText: requirement.text,
       ruleId: f.ruleId,
-      businessFact: f.businessQuestion?.trim() ?? "",
+      businessFact: question,
     });
   }
   return out;
@@ -592,7 +663,7 @@ export async function rejudgeAnswered(
 
 /**
  * #2059 — the answers of `answered` to pairs that `applies` and have no answer
- * recorded yet, as settlements that keep the verdict and its reason. No model
+ * of that question recorded yet (#2068: a pair asked again takes each), as settlements that keep the verdict and its reason. No model
  * is called: applicability already decided the rule applies, and the answer is
  * for the findings call, which reads it once it is stored (`findingPairsOf`).
  */
@@ -607,7 +678,14 @@ export function answersForApplyingPairs(
     if (!link || !answer) continue;
     const requirement = stored.requirements.find((r) => r.requirementId === link.requirementId);
     for (const d of requirement?.decisions ?? []) {
-      if (d.verdict !== "applies" || d.settled || !link.ruleIds.includes(d.ruleId)) continue;
+      // #2068 — a pair already answered takes a later question's answer too.
+      if (
+        d.verdict !== "applies" ||
+        recordedQuestionIds(d).has(q.id) ||
+        !link.ruleIds.includes(d.ruleId)
+      ) {
+        continue;
+      }
       if (out.some((s) => s.requirementId === link.requirementId && s.ruleId === d.ruleId)) {
         continue;
       }
@@ -645,7 +723,8 @@ export interface GoverningQuestionSource {
 
 /**
  * True when a rule `q` links is unsettled for its requirement: still
- * `uncertain`, or (#2059) `applies` with no answer recorded on it.
+ * `uncertain`, or (#2059) `applies` with no answer recorded on it — (#2068)
+ * no answer to `q`, since a pair asked again records each question's.
  */
 function hasOpenLinkedPair(stored: GoverningAnalysisApplicability, q: ClarifyingQuestion): boolean {
   const link = q.governing;
@@ -654,9 +733,9 @@ function hasOpenLinkedPair(stored: GoverningAnalysisApplicability, q: Clarifying
   return (
     requirement?.decisions.some(
       (d) =>
-        (d.verdict === "uncertain" || d.verdict === "applies") &&
-        !d.settled &&
-        link.ruleIds.includes(d.ruleId),
+        link.ruleIds.includes(d.ruleId) &&
+        ((d.verdict === "uncertain" && !d.settled) ||
+          (d.verdict === "applies" && !recordedQuestionIds(d).has(q.id))),
     ) ?? false
   );
 }
@@ -668,7 +747,15 @@ function hasOpenLinkedPair(stored: GoverningAnalysisApplicability, q: Clarifying
 async function needsInputFindings(analysisId: string): Promise<FindingQuestionInput[]> {
   const rows = await prisma.governingFinding.findMany({
     where: { analysisId, status: "needs-ba-input" },
-    select: { requirementId: true, ruleId: true, businessQuestion: true },
+    select: {
+      requirementId: true,
+      ruleId: true,
+      businessQuestion: true,
+      // #2068 — what decides whether the finding is asked (again).
+      citationDropped: true,
+      decision: true,
+      updatedAt: true,
+    },
     orderBy: [{ requirementId: "asc" }, { controlId: "asc" }, { id: "asc" }],
   });
   return rows.map((r) => ({ ...r, status: "needs-ba-input" as const }));
@@ -706,10 +793,9 @@ export function governingQuestionSourceFor(input: {
       if (input.provider.offline) return [];
       const stored = await readGoverningApplicability(input.analysisId);
       if (!stored) return [];
-      // #2059 — and the questions of Needs BA input findings on rules that apply.
-      const findings = hasUnansweredApplyingPair(stored)
-        ? await needsInputFindings(input.analysisId)
-        : [];
+      // #2059 — and the questions of Needs BA input findings on rules that apply;
+      // #2068 — answered ones too, whose refresh may ask a new question.
+      const findings = hasApplyingPair(stored) ? await needsInputFindings(input.analysisId) : [];
       const pairs = [
         ...openGoverningPairs(stored, state),
         ...openFindingPairs(stored, findings, state),

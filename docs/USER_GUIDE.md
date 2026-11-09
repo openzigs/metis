@@ -1644,6 +1644,26 @@ question is not asked again. A finding asked about in an earlier round, while a 
 open, links to the Questions tab instead. You can also add the missing fact to the requirement
 and run the analysis again, or **Reject** the finding with a note that says what you found out.
 
+Some **Needs BA input** findings are not asked as clarifying questions (#2068):
+
+- **METIS could not evaluate the rule**, or the model gave no question. The finding then shows a
+  general question about what information the requirement handles, who uses it and which outside
+  companies are involved. No single answer to that settles the rule, so it is not asked. Add the
+  facts to the requirement and run the analysis again.
+- **The finding's quote was dropped.** A finding whose quote could not be found in the policy
+  stays **Needs BA input** whatever you answer, so it is not asked. Run the analysis again, or
+  **Reject** it with a note.
+- **You already accepted or rejected the finding.** Your decision stands, so it is not asked.
+
+If a finding is still **Needs BA input** after it is checked again with your answer, and it now
+asks a different question, that new question is asked too. When the clarifying questions were
+already complete, they reopen with just that question the next time you open the Questions tab,
+as long as rounds are left (there are three). Your earlier answers are kept, and the finding is
+checked against all of them. If it asks the question you just answered again, it is not asked a
+second time. This also applies to analyses whose clarifying questions were completed before
+#2059: the next time you open their Questions tab, they reopen with the questions of their
+**Needs BA input** findings, as long as rounds are left. Otherwise, run the analysis again.
+
 You can **Accept** or **Reject** each finding with a note. The panel shows the decision, who
 made it and when, and each decision is recorded in the audit log. If a later run changes a
 finding, its decision is cleared, and the clearing is recorded too.

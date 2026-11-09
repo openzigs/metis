@@ -22,13 +22,14 @@ const {
   buildGoverningQuestions,
   governingQuestionRequirementId,
   governingQuestionSourceFor,
-  hasUnansweredApplyingPair,
+  hasApplyingPair,
   openFindingPairs,
   openGoverningPairs,
   questionLeaksRule,
   rejudgeAnswered,
   templateGoverningQuestion,
 } = await import("./applicability-questions.js");
+const { FALLBACK_FINDING_QUESTION } = await import("./findings.js");
 type QuestionRule = import("./applicability-questions.js").QuestionRule;
 type OpenGoverningPair = import("./applicability-questions.js").OpenGoverningPair;
 
@@ -446,9 +447,28 @@ describe("#2059 — a Needs BA input finding on a rule that applies is asked", (
       ),
     ).toEqual([]);
     expect(openFindingPairs(STORED, [finding(), finding()], undefined)).toHaveLength(1);
-    expect(openFindingPairs(STORED, [finding({ businessQuestion: null })], undefined)).toEqual([
-      expect.objectContaining({ ruleId: AUDIT.id, businessFact: "" }),
-    ]);
+  });
+
+  it("#2068 — a finding with no question of its own, a dropped citation or a BA decision is not asked", () => {
+    expect(
+      openFindingPairs(
+        STORED,
+        [
+          finding({ businessQuestion: null }),
+          finding({ businessQuestion: "  " }),
+          finding({ businessQuestion: FALLBACK_FINDING_QUESTION }),
+          finding({ businessQuestion: ` ${FALLBACK_FINDING_QUESTION} ` }),
+          finding({ citationDropped: true }),
+          finding({ decision: "accepted" }),
+          finding({ decision: "rejected" }),
+        ],
+        undefined,
+      ),
+    ).toEqual([]);
+    // Each filter alone: the same finding without it is asked.
+    expect(
+      openFindingPairs(STORED, [finding({ citationDropped: false, decision: null })], undefined),
+    ).toHaveLength(1);
   });
 
   it("openFindingPairs: not again once answered in the dialog, or once an answer is recorded", () => {
@@ -465,8 +485,133 @@ describe("#2059 — a Needs BA input finding on a rule that applies is asked", (
       at: "2026-11-08T00:00:00.000Z",
     };
     expect(openFindingPairs(recorded, [finding()], undefined)).toEqual([]);
-    expect(hasUnansweredApplyingPair(STORED)).toBe(true);
-    expect(hasUnansweredApplyingPair(recorded)).toBe(false);
+    expect(hasApplyingPair(STORED)).toBe(true);
+    expect(hasApplyingPair(recorded)).toBe(true);
+    const none = structuredClone(STORED);
+    none.requirements[0]!.decisions = none.requirements[0]!.decisions.slice(0, 2);
+    expect(hasApplyingPair(none)).toBe(false);
+  });
+
+  describe("#2068 — after an answer, a finding still Needs BA input asks its new question", () => {
+    type Settlement = NonNullable<
+      GoverningAnalysisApplicability["requirements"][number]["decisions"][number]["settled"]
+    >;
+    const NEW_QUESTION = "Who reviews the export log, and how often?";
+    const ANSWERED_AT = "2026-11-08T00:00:00.000Z";
+    const BEFORE = new Date("2026-11-07T23:59:59.000Z");
+    const AFTER = new Date("2026-11-08T00:00:05.000Z");
+    const answeredState = {
+      rounds: [{ round: 1, questions: [question([AUDIT.id], "Yes, we do.")], answers: [] }],
+    };
+    const recordedWith = (settled: Partial<Settlement> = {}) => {
+      const r = structuredClone(STORED);
+      r.requirements[0]!.decisions[2]!.settled = {
+        questionId: "q-audit",
+        question: AUDIT_QUESTION,
+        answer: "Yes, we do.",
+        previousVerdict: "applies",
+        at: ANSWERED_AT,
+        ...settled,
+      };
+      return r;
+    };
+
+    it("asked once the findings were produced again after the answer, with a question the pair was not asked", () => {
+      expect(
+        openFindingPairs(
+          recordedWith(),
+          [finding({ businessQuestion: NEW_QUESTION, updatedAt: AFTER })],
+          answeredState,
+        ),
+      ).toEqual([
+        {
+          requirementId: REQ.id,
+          requirementText: REQ.text,
+          ruleId: AUDIT.id,
+          businessFact: NEW_QUESTION,
+        },
+      ]);
+      // A timestamp read off the wire is a string; it counts the same.
+      expect(
+        openFindingPairs(
+          recordedWith(),
+          [finding({ businessQuestion: NEW_QUESTION, updatedAt: AFTER.toISOString() })],
+          undefined,
+        ),
+      ).toHaveLength(1);
+    });
+
+    it("not before the refresh has read the answer, nor without a time to tell", () => {
+      for (const updatedAt of [BEFORE, new Date(ANSWERED_AT), undefined]) {
+        expect(
+          openFindingPairs(
+            recordedWith(),
+            [finding({ businessQuestion: NEW_QUESTION, updatedAt })],
+            answeredState,
+          ),
+        ).toEqual([]);
+      }
+    });
+
+    it("not the question already answered, in any case or punctuation, nor an earlier one", () => {
+      for (const businessQuestion of [
+        AUDIT_QUESTION,
+        "will every export of customer records be logged",
+      ]) {
+        expect(
+          openFindingPairs(
+            recordedWith({ question: undefined }),
+            [finding({ businessQuestion, updatedAt: AFTER })],
+            answeredState,
+          ),
+        ).toEqual([]);
+        // The settlement's copy of the question is read where the dialog is gone.
+        expect(
+          openFindingPairs(
+            recordedWith(),
+            [finding({ businessQuestion, updatedAt: AFTER })],
+            undefined,
+          ),
+        ).toEqual([]);
+      }
+      const twice = recordedWith({
+        questionId: "q-2",
+        question: NEW_QUESTION,
+        earlier: [
+          {
+            questionId: "q-audit",
+            question: AUDIT_QUESTION,
+            answer: "Yes.",
+            at: "2026-11-07T00:00:00.000Z",
+          },
+        ],
+      });
+      expect(openFindingPairs(twice, [finding({ updatedAt: AFTER })], undefined)).toEqual([]);
+    });
+
+    it("not while an answer in the dialog is not yet recorded on the pair", () => {
+      const pending = {
+        rounds: [
+          ...answeredState.rounds,
+          { round: 2, questions: [{ ...question([AUDIT.id], "Weekly."), id: "q-2" }], answers: [] },
+        ],
+      };
+      expect(
+        openFindingPairs(
+          recordedWith(),
+          [finding({ businessQuestion: "A third question?", updatedAt: AFTER })],
+          pending,
+        ),
+      ).toEqual([]);
+      // Answered in the dialog, nothing recorded yet (the settle failed): wait.
+      expect(
+        openFindingPairs(
+          STORED,
+          [finding({ businessQuestion: NEW_QUESTION, updatedAt: AFTER })],
+          answeredState,
+        ),
+      ).toEqual([]);
+    });
   });
 
   it("buildGoverningQuestions guards a finding's question and links it to its rule", async () => {
@@ -514,12 +659,22 @@ describe("#2059 — a Needs BA input finding on a rule that applies is asked", (
     ).toEqual([]);
     const recorded = structuredClone(STORED);
     recorded.requirements[0]!.decisions[2]!.settled = {
-      questionId: "q0",
-      answer: "No.",
+      questionId: "q-audit",
+      answer: "Yes, we do.",
       previousVerdict: "applies",
       at: "2026-11-08T00:00:00.000Z",
     };
     expect(answersForApplyingPairs([answered], recorded)).toEqual([]);
+    // #2068 — a later question's answer on the same pair is recorded too.
+    const earlier = structuredClone(recorded);
+    earlier.requirements[0]!.decisions[2]!.settled!.questionId = "q0";
+    expect(answersForApplyingPairs([answered], earlier)).toEqual([
+      expect.objectContaining({ ruleId: AUDIT.id, questionId: "q-audit" }),
+    ]);
+    earlier.requirements[0]!.decisions[2]!.settled!.earlier = [
+      { questionId: "q-audit", answer: "Yes.", at: "2026-11-07T00:00:00.000Z" },
+    ];
+    expect(answersForApplyingPairs([answered], earlier)).toEqual([]);
     // Two questions answering the same pair: the first answer is the one recorded.
     expect(
       answersForApplyingPairs([answered, { ...answered, id: "q-2", answer: "No." }], STORED),
@@ -698,7 +853,7 @@ describe("governingQuestionSourceFor — the flag gate", () => {
     expect(chat).not.toHaveBeenCalled();
   });
 
-  it("#2059 — open reads the analysis's Needs BA input findings only while an applies pair is unanswered", async () => {
+  it("#2059 — open reads the analysis's Needs BA input findings only while a rule applies (#2068: answered or not)", async () => {
     process.env.GOVERNING_DOCS_ENABLED = "1";
     const { provider } = stubModel({});
     const source = governingQuestionSourceFor({ analysisId: "an_1", projectId: "p", provider })!;
@@ -734,9 +889,17 @@ describe("governingQuestionSourceFor — the flag gate", () => {
       }),
     ]);
 
-    // Once an answer is recorded on the pair, no finding is read and nothing is asked.
+    // #2068 — what a re-ask reads of each row.
+    expect(db.governingFinding.findMany.mock.calls[0]![0].select).toMatchObject({
+      citationDropped: true,
+      decision: true,
+      updatedAt: true,
+    });
+
+    // Once an answer is recorded on the pair, its question is not asked again...
     onlyApplies.requirements[0]!.decisions[0]!.settled = {
       questionId: "q1",
+      question: "Will every export of customer records be logged?",
       answer: "Yes.",
       previousVerdict: "applies",
       at: "2026-11-08T00:00:00.000Z",
@@ -744,8 +907,30 @@ describe("governingQuestionSourceFor — the flag gate", () => {
     db.analysis.findFirst.mockResolvedValue({
       metadata: JSON.stringify({ governingApplicability: onlyApplies }),
     });
-    db.governingFinding.findMany.mockClear();
     expect(await source.open(undefined)).toEqual([]);
+    // ...but the new question of a refresh that read the answer is (#2068).
+    db.governingFinding.findMany.mockResolvedValue([
+      {
+        requirementId: REQ.id,
+        ruleId: AUDIT.id,
+        businessQuestion: "Who reviews the export log?",
+        citationDropped: false,
+        decision: null,
+        updatedAt: new Date("2026-11-08T00:01:00.000Z"),
+      },
+    ]);
+    expect(await source.open(undefined)).toEqual([
+      expect.objectContaining({ question: "Who reviews the export log?" }),
+    ]);
+    // With no rule that applies, no finding is read at all.
+    const noneApply = structuredClone(STORED);
+    noneApply.requirements[0]!.decisions = noneApply.requirements[0]!.decisions.slice(0, 2);
+    db.analysis.findFirst.mockResolvedValue({
+      metadata: JSON.stringify({ governingApplicability: noneApply }),
+    });
+    db.governingFinding.findMany.mockClear();
+    db.governingRule.findMany.mockResolvedValue([]);
+    await source.open(undefined);
     expect(db.governingFinding.findMany).not.toHaveBeenCalled();
   });
 

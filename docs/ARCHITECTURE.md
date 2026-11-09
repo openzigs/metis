@@ -2673,7 +2673,7 @@ the pre-#1873 code).
   the analysis row lock (`settleGoverningPairs`). Only an unsettled `uncertain` pair can move.
 - **Findings that ask (#2059).** A pair that `applies` is never `uncertain`, but its finding can
   be `needs-ba-input` with a `businessQuestion`. While the stored applicability has an `applies`
-  pair with no `settled`, `open` also reads the analysis's `needs-ba-input` rows of
+  pair, `open` also reads the analysis's `needs-ba-input` rows of
   `governing_findings` (on the source's own analysis id) and asks each one's `businessQuestion`
   (`openFindingPairs`), through the same `buildGoverningQuestions`: the same guard, merge and
   `governing` link. Its answer needs no judging call: `answersForApplyingPairs` records it on the
@@ -2681,6 +2681,21 @@ the pre-#1873 code).
   (`applySettlements` accepts that only for an `applies` settlement on an unsettled `applies`
   pair). `findingPairsOf` passes every `settled` answer with its question, so the refresh's
   findings call and `evidenceIsPresent` read it. A recorded pair is not asked again.
+- **Asked again, and not asked (#2068).** `openFindingPairs` skips a row no answer can settle:
+  no `businessQuestion`, or `FALLBACK_FINDING_QUESTION` (a rule the findings call could not
+  evaluate), `citationDropped` (forced `needs-ba-input` by `enforceFinding`), or a BA `decision`.
+  An answered `applies` pair is asked again when three things hold. Every answer linking it in
+  the dialog is recorded on it. The row's `updatedAt` is later than the latest recorded answer,
+  so the refresh read it. Its `businessQuestion` differs by `factKey` from every question
+  answered on the pair. `applySettlements` records a later question's answer on such a pair and
+  keeps the earlier ones in `settled.earlier`, oldest first; `findingPairsOf` passes them all.
+  `hasOpenLinkedPair` and `answersForApplyingPairs` key on the question id
+  (`recordedQuestionIds`), so the same question is never recorded twice. `open` reads the
+  findings whenever a pair `applies`, answered or not. A start on a **completed** dialog with
+  rounds left asks `open` for governing questions only. If there are any, the dialog re-opens
+  with a governing-only round. The UI posts that start once per mount of a completed dialog
+  (`EnhancementResults`). This covers a refresh that lands after the submit completed the
+  dialog, and dialogs completed before #2059.
   A judging reply that cannot be read is re-asked once, and then settles nothing (#2009).
   An answered pair is never asked again, so a pair whose settle failed (an unreadable reply, a
   provider error or outage, an aborted request) would otherwise be orphaned. Instead, every
