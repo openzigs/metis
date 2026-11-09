@@ -263,4 +263,4 @@ how it reads an answer. Production asks the BA only about a rule that applicabil
 `uncertain`. On most short-answer pairs, applicability decided the rule `applies`, and the
 findings call then gave `needs-ba-input`. A finding at that point has a business question, but
 the clarification dialog never asks it, so the BA's answer never reaches it. A4's replay passes
-every answer straight to the findings call, so it did not show this. See #1878's follow-ups.
+every answer straight to the findings call, so it did not show this. Follow-up: #2059.

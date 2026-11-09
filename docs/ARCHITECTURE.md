@@ -2820,6 +2820,7 @@ is `needs-ba-input`, has a business question on the finding (the analysis view p
 dialog never asks it. The link then falls back to the Questions tab, and the BA's answer never
 reaches that finding. On the held-out set this left the row at 2 or 3 of 7 per run. A4's
 replay, which hands every answer to the findings call, scored 6 or 7 of 7 on the tuning set (#2050).
+The gap is tracked in #2059.
 
 #### Governing rules in the requirements BRD (#1877)
 
