@@ -318,6 +318,25 @@ describe("every citation is verified against the cited revision's stored text", 
     );
   });
 
+  it("#2132 — an abbreviation before a capital ends no sentence: the quote keeps its subject", () => {
+    const clause =
+      "Records are kept for seven years. The U.S. Government agencies must approve every export. See Art. 32 for the rest.";
+    const text = `§6 Exports\n${clause}`;
+    const rule = ruleIn(text, { id: "rule_exp", controlId: "EX-01" }, clause);
+    // "U.S. Government": neither period ends the sentence, so it starts at "The".
+    expect(verifyRuleCitation(text, rule, "Government agencies must approve")?.clauseExcerpt).toBe(
+      "The U.S. Government agencies must approve every export.",
+    );
+    // "Art. 32": the period of a reference word ends none either.
+    expect(verifyRuleCitation(text, rule, "32 for the rest")?.clauseExcerpt).toBe(
+      "See Art. 32 for the rest.",
+    );
+    // A real stop before a capital still ends one.
+    expect(verifyRuleCitation(text, rule, "are kept for seven")?.clauseExcerpt).toBe(
+      "Records are kept for seven years.",
+    );
+  });
+
   it("an excerpt of another rule's clause is verbatim policy text but does not cite this rule", () => {
     expect(
       verifyRuleCitation(V1, CARD, "Every bulk export of customer records is written"),

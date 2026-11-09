@@ -1019,6 +1019,28 @@ describe("#2122 — carried answers and rule handles", () => {
     expect(nameAnswerHandles("A0, A2, AA1 and A1x stay.", 1)).toBe("A0, A2, AA1 and A1x stay.");
     expect(nameAnswerHandles("", 3)).toBe("");
   });
+
+  it("#2132 — a control id is no answer handle: A1.2, Annex A1, Appendix A1", () => {
+    expect(nameAnswerHandles("SOC 2 A1.2 requires it, as A1 says.", 1)).toBe(
+      "SOC 2 A1.2 requires it, as the analyst's answer says.",
+    );
+    expect(nameAnswerHandles("Annex A1 and Appendix A1 are cited; A1 agrees.", 1)).toBe(
+      "Annex A1 and Appendix A1 are cited; the analyst's answer agrees.",
+    );
+    // A handle that ends a sentence is still one.
+    expect(nameAnswerHandles("As stated in A1.", 1)).toBe("As stated in the analyst's answer.");
+  });
+
+  it("#2132 — a run of shown handles reads as the analyst's answers", () => {
+    expect(nameAnswerHandles("The answers A1 and A2 agree.", 2)).toBe(
+      "The analyst's answers agree.",
+    );
+    expect(nameAnswerHandles("Per A1, A2 and [A3], yes.", 3)).toBe(
+      "Per the analyst's answers, yes.",
+    );
+    // A run with a handle the prompt did not show: only the shown one is named.
+    expect(nameAnswerHandles("A1 and A9 agree.", 1)).toBe("The analyst's answer and A9 agree.");
+  });
 });
 
 describe("planBatches and the budget", () => {

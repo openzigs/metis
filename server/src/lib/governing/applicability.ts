@@ -441,17 +441,35 @@ function startsSentence(text: string, offset: number): boolean {
  * "answer" with it. Only `A1`…`A{count}`, the handles the prompt showed, are
  * replaced. A carried settlement's reason was stored as written and shown to
  * the BA as "and A1 states that the password is the only sign-in factor".
+ * #2132 — a run of shown handles ("the answers A1 and A2") reads "the
+ * analyst's answers", and a control id is left as written: `A1.2` (SOC 2),
+ * "Annex A1", "Appendix A1".
  */
 export function nameAnswerHandles(text: string, count: number): string {
-  return text.replace(
-    /(?:\b(?:the|an?)\s+)?(?:\banswer\s+)?\[?\bA(\d+)\b\]?/gi,
-    (match, n: string, offset: number) => {
-      const i = Number(n);
-      if (i < 1 || i > count) return match;
-      return startsSentence(text, offset) ? "The analyst's answer" : "the analyst's answer";
-    },
-  );
+  const shown = (n: string) => Number(n) >= 1 && Number(n) <= count;
+  const words = (offset: number, plural: boolean) =>
+    `${startsSentence(text, offset) ? "The" : "the"} analyst's answer${plural ? "s" : ""}`;
+  return text.replace(ANSWER_HANDLE_RUN, (run: string, offset: number) => {
+    const handles = [...run.matchAll(/\bA(\d+)\b/gi)].map((m) => m[1]!);
+    if (handles.every(shown)) return words(offset, handles.length > 1);
+    // A run with a handle the prompt did not show: each shown one on its own.
+    return run.replace(ONE_ANSWER_HANDLE, (one: string, n: string, at: number) =>
+      shown(n) ? words(offset + at, false) : one,
+    );
+  });
 }
+
+/**
+ * #2132 — a run of answer handles ("A1", "A1 and A2", "A1, A2 and A3"), with
+ * a leading "the"/"a"/"an" and "answer"/"answers". A handle followed by
+ * `.<digit>` is a control id (SOC 2 `A1.2`), and one after "Annex" or
+ * "Appendix" names a part of a document: neither is an answer. No capture
+ * group, so the replacer is given the run and its offset.
+ */
+const ANSWER_HANDLE_RUN =
+  /(?<!\b(?:annex|appendix)\s+)(?:\b(?:the|an?)\s+)?(?:\banswers?\s+)?\[?\bA\d+\b(?!\.\d)\]?(?:(?:\s*,\s*(?:and\s+)?|\s+(?:and|or)\s+)\[?\bA\d+\b(?!\.\d)\]?)*/gi;
+/** One answer handle of a run, with its "the"/"answer" words. */
+const ONE_ANSWER_HANDLE = /(?:\b(?:the|an?)\s+)?(?:\banswers?\s+)?\[?\bA(\d+)\b(?!\.\d)\]?/gi;
 
 /**
  * Resolve a rule a reply names to the entry it was shown as: its handle, or a
