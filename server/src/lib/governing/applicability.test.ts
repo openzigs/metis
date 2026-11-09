@@ -32,6 +32,7 @@ const {
   fallbackBusinessQuestion,
   governingApplicabilityForProject,
   governingIndexRetriever,
+  governingRuleSource,
   parseApplicabilityJudgeReply,
   parseApplicabilityScreenReply,
   planBatches,
@@ -905,6 +906,20 @@ describe("governingApplicabilityForProject — the analysis hook", () => {
     });
     expect(sent[1]!.user).toContain("R1 [LG-03] (Info Policy v2 §3)");
     expect(chat.mock.calls[0]![1]).toMatchObject({ model: "pinned-model", disableTools: true });
+  });
+});
+
+describe("governingRuleSource — the source line the judge is shown (#2063)", () => {
+  it("is the document title, the revision label and the clause reference", () => {
+    expect(
+      governingRuleSource({ documentTitle: "Info Policy", revisionLabel: "v2", clauseRef: "§3" }),
+    ).toBe("Info Policy v2 §3");
+  });
+
+  it("leaves no trailing space when the clause has no reference", () => {
+    expect(
+      governingRuleSource({ documentTitle: "Info Policy", revisionLabel: "v2", clauseRef: "" }),
+    ).toBe("Info Policy v2");
   });
 });
 

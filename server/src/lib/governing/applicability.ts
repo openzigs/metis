@@ -43,7 +43,11 @@ import { createChildLogger } from "../logger.js";
 import { prisma } from "../prisma.js";
 import { isGoverningDocsEnabled } from "./flag.js";
 import { getGoverningIndex, type GoverningIndex } from "./governing-index.js";
-import { currentWorkspaceRules, type GoverningActor } from "./governing-store.js";
+import {
+  currentWorkspaceRules,
+  type CurrentGoverningRule,
+  type GoverningActor,
+} from "./governing-store.js";
 
 const log = createChildLogger("governing-applicability");
 
@@ -760,6 +764,17 @@ export interface GoverningApplicabilityForProjectInput {
 }
 
 /**
+ * The source line the judge is shown for a stored rule: document title,
+ * revision label, clause reference. #2063 — exported so eval arm A5 builds its
+ * rules' sources with this function, not a copy of it.
+ */
+export function governingRuleSource(
+  rule: Pick<CurrentGoverningRule, "documentTitle" | "revisionLabel" | "clauseRef">,
+): string {
+  return `${rule.documentTitle} ${rule.revisionLabel} ${rule.clauseRef}`.trim();
+}
+
+/**
  * The applicability hook for one analysis of `projectId`, or `null` — with no
  * database read when the flag is off — when it does not run: the flag is off,
  * the project has no workspace (`workspaceId = null`), or the workspace has no
@@ -783,7 +798,7 @@ export async function governingApplicabilityForProject(
     controlId: r.controlId,
     summary: r.summary,
     clauseExcerpt: r.clauseExcerpt,
-    source: `${r.documentTitle} ${r.revisionLabel} ${r.clauseRef}`.trim(),
+    source: governingRuleSource(r),
   }));
   const retrieve =
     input.retrieve ??

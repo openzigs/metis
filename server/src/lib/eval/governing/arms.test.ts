@@ -24,6 +24,7 @@ import {
   topKRules,
 } from "./arms.js";
 import { resolveFinalAnswerMaxOutputTokens } from "../../analysis/agent-runner.js";
+import { governingRuleSource } from "../../governing/applicability.js";
 import { loadGoverningCorpus, type GoverningCorpus, type GoverningItem } from "./corpus.js";
 
 let corpus: GoverningCorpus;
@@ -905,6 +906,14 @@ describe("A5 — the shipped path (#1878)", () => {
     expect(a5.replaysAnswers).toBe(true);
     expect(a5.configuration.questions).toMatch(/buildGoverningQuestions/);
     const rules = shippedApplicabilityRules(corpus);
+    // #2063 — production's own builder, the one the analysis hook calls.
+    expect(rules[0]!.source).toBe(
+      governingRuleSource({
+        documentTitle: corpus.manifest.policy.title,
+        revisionLabel: corpus.manifest.policy.scored,
+        clauseRef: rules[0]!.id,
+      }),
+    );
     expect(rules[0]!.source).toBe(`${corpus.manifest.policy.title} v1 ${rules[0]!.id}`);
     const gr01 = itemById("GR-01");
     const top = topKRules(corpus, `${gr01.title}\n\n${gr01.text}`, 2).map((r) => r.id);
