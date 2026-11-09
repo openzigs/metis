@@ -131,6 +131,20 @@ vi.mock("../src/lib/prisma.js", async () => {
           return { analysisId: where.analysisId, state: dialogStateStore.get(where.analysisId) };
         },
       ),
+      // #2101 — the submit's compare-and-set: written only over the state it read.
+      updateMany: vi.fn(
+        async ({
+          where,
+          data,
+        }: {
+          where: { analysisId: string; state: string };
+          data: { state: string };
+        }) => {
+          if (dialogStateStore.get(where.analysisId) !== where.state) return { count: 0 };
+          dialogStateStore.set(where.analysisId, data.state);
+          return { count: 1 };
+        },
+      ),
       deleteMany: vi.fn(async ({ where }: { where: { analysisId: string } }) => {
         const existed = dialogStateStore.delete(where.analysisId);
         return { count: existed ? 1 : 0 };
@@ -1647,7 +1661,17 @@ describe("Clarify CSV export/import", () => {
         .set("Authorization", `Bearer ${adminToken}`)
         .attach("file", Buffer.from(csv), "answers.csv");
       expect(res.status).toBe(200);
-      expect(res.body.data).toEqual({ applied: 2, skipped: 0, unmatched: [] });
+      // #2101 — with the dialog state the import wrote: the round, answered.
+      expect(res.body.data).toEqual({
+        applied: 2,
+        skipped: 0,
+        unmatched: [],
+        state: JSON.parse(dialogStateStore.get(aId)!),
+      });
+      expect(res.body.data.state.rounds[0].answers).toEqual([
+        { questionId: "q-1", answer: "7 years" },
+        { questionId: "q-2", answer: "JSON lines" },
+      ]);
       // Refined requirements were persisted back to metadata (loop closed).
       const meta = JSON.parse(analyses.get(aId)!.metadata as string) as {
         structuredRequirements?: unknown;
@@ -1677,7 +1701,7 @@ describe("Clarify CSV export/import", () => {
         .set("Authorization", `Bearer ${adminToken}`)
         .attach("file", Buffer.from(csv), "answers.csv");
       expect(res.status).toBe(200);
-      expect(res.body.data).toEqual({ applied: 1, skipped: 1, unmatched: ["q-bogus"] });
+      expect(res.body.data).toMatchObject({ applied: 1, skipped: 1, unmatched: ["q-bogus"] });
     });
 
     it("returns { applied: 0 } without calling submit when nothing matches with an answer", async () => {

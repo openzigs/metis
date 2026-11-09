@@ -47,6 +47,7 @@ const {
   governingApplicabilityHookFor,
   planScreenBatches,
   SCREEN_ROOM_MAX_SHRINK,
+  SAME_SUBJECT_LINE,
   screenRoom,
 } = await import("./applicability.js");
 type ApplicabilityRule = import("./applicability.js").ApplicabilityRule;
@@ -873,6 +874,20 @@ describe("#1997 — the judging prompt's precision guidance", () => {
     expect(systemMessage).toContain("Expect one to three rules to apply");
     // #1995's example read change management as a stretch and cost CM-02/CM-03 recall.
     expect(systemMessage).not.toMatch(/releasing every change/);
+  });
+
+  // #2108 — tuned on governing-04: a sign-in or logging requirement drew most of the
+  // policy's rules on that subject, and a rule the requirement's text says the flow
+  // breaks today could be ruled out as "the system it runs on".
+  it("keeps, of the rules sharing a subject, those whose matter the requirement sets, changes or says how it is done today", () => {
+    const { systemMessage } = buildApplicabilityJudgePrompt(REQUIREMENT.text, []);
+    expect(systemMessage.split("\n")).toContain(SAME_SUBJECT_LINE);
+    expect(SAME_SUBJECT_LINE).toContain("says how the flow it changes does that thing today");
+    expect(SAME_SUBJECT_LINE).toContain("The other rules on that subject do not apply.");
+    // The settle and carry judges share the same lines.
+    expect(
+      buildApplicabilityJudgePrompt(REQUIREMENT.text, [], { answered: true }).systemMessage,
+    ).toContain(SAME_SUBJECT_LINE);
   });
 
   // #2050 — on governing-01 the screen found EN-01 (GR-09), CM-02 (GR-20) and CM-03 (GR-21) in

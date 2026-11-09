@@ -51,11 +51,13 @@ METIS depends on third-party packages resolved by pnpm. They are not redistribut
 this repository — `pnpm-lock.yaml` names them exactly and each carries its own licence
 in its own package. `pnpm licenses list --prod` reproduces the full list.
 
-The one third-party content set that IS redistributed is docs/walkthroughs/governing/:
+Two third-party content sets ARE redistributed. docs/walkthroughs/governing/ holds
 NIST SP 800-63B-4 excerpts (public domain) and two GitLab Handbook pages (Record
-Retention Policy, Security Compliance Controls) under CC BY-SA 4.0. Each file carries
-its source, author and licence in its header and stays under CC BY-SA 4.0 whatever the
-licence of the repository around it.
+Retention Policy, Security Compliance Controls) under CC BY-SA 4.0.
+eval-data/corpus/governing-04-openemr-asvs/policy-v1.md quotes 30 requirements of the
+OWASP Application Security Verification Standard 5.0.0 (OWASP Foundation), under
+CC BY-SA 4.0. Each file carries its source, author and licence in its header and stays
+under CC BY-SA 4.0 whatever the licence of the repository around it.
 
 Three entries need a recorded decision rather than a line in a list. (A fourth,
 the proprietary `@github/copilot` CLI, left the tree when GitHub Copilot support was

@@ -22,6 +22,8 @@ import { noUsableItem } from "./unread-reply.js";
 import {
   deleteDialogState,
   readDialogState,
+  readDialogStateRevision,
+  replaceDialogState,
   writeDialogState,
 } from "./clarification-dialog-store.js";
 import type { GoverningQuestionSource } from "../governing/applicability-questions.js";
@@ -465,10 +467,17 @@ export class ClarificationDialog {
    * Submit answers for the current round and process them.
    * Returns updated requirements and dialog state.
    *
-   * #1668 — `beforeCommit` runs on the result before the round is written to
-   * the dialog state. When it throws, nothing is written, so the round stays
-   * open and can be answered again: the caller persists the requirements there,
-   * and refuses (409 REQUIREMENTS_REPLACED) without consuming the round.
+   * #1668 — `beforeCommit` runs on the result as part of committing the round.
+   * When it throws, the round is left open and can be answered again: the
+   * caller persists the requirements there, and refuses (409
+   * REQUIREMENTS_REPLACED) without consuming the round.
+   *
+   * #2101 — the round is committed by compare-and-set on the state this
+   * submit read, so of two submits of one open round (two tabs, or a tab and a
+   * CSV import) exactly one is written: the other is refused with 409
+   * CLARIFY_ROUND_NOT_OPEN before `beforeCommit` runs, so neither its answers
+   * nor its refined requirements land. Committed first, then `beforeCommit`;
+   * when that throws, the round is put back as it was read.
    */
   async submitAnswers(
     analysisId: string,
@@ -481,10 +490,11 @@ export class ClarificationDialog {
     }) => Promise<void>,
   ): Promise<{ state: ClarificationState; updatedRequirements: StructuredRequirements }> {
     requirements = withAmbiguityDefaults(requirements);
-    const state = await readDialogState(analysisId);
-    if (!state) {
+    const read = await readDialogStateRevision(analysisId);
+    if (!read) {
       throw new Error(`No clarification dialog found for analysis ${analysisId}`);
     }
+    const { state, revision } = read;
 
     const currentRound = state.rounds[state.rounds.length - 1];
     if (!currentRound) {
@@ -568,8 +578,30 @@ export class ClarificationDialog {
       state.completed = true;
     }
 
-    await beforeCommit?.({ state, updatedRequirements });
-    await writeDialogState(analysisId, state);
+    // #2101 — only if no other write landed since this submit read the state.
+    const committed = await replaceDialogState(analysisId, revision, state);
+    if (committed === null) {
+      throw new AppError(
+        409,
+        "CLARIFY_ROUND_NOT_OPEN",
+        "These answers were not saved: this clarification round was answered somewhere " +
+          "else at the same time. Reload the questions and answer the current round.",
+      );
+    }
+    try {
+      await beforeCommit?.({ state, updatedRequirements });
+    } catch (err) {
+      // #1668 — a refused commit leaves the round open to answer again.
+      const restored = await replaceDialogState(
+        analysisId,
+        committed,
+        JSON.parse(revision) as ClarificationState,
+      ).catch(() => null);
+      if (restored === null) {
+        log.warn("A refused clarification submit could not re-open its round", { analysisId });
+      }
+      throw err;
+    }
 
     // #1873 — judge the answered governing questions back onto the rules they
     // settle, after the round is committed so a refused submit settles nothing.

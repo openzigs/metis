@@ -9,6 +9,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mockTable = {
   findUnique: vi.fn(),
   upsert: vi.fn(),
+  updateMany: vi.fn(),
   deleteMany: vi.fn(),
 };
 
@@ -18,8 +19,13 @@ const mockPrisma = {
 
 vi.mock("../src/lib/prisma.js", () => ({ prisma: mockPrisma }));
 
-const { readDialogState, writeDialogState, deleteDialogState } =
-  await import("../src/lib/analysis/clarification-dialog-store.js");
+const {
+  readDialogState,
+  readDialogStateRevision,
+  replaceDialogState,
+  writeDialogState,
+  deleteDialogState,
+} = await import("../src/lib/analysis/clarification-dialog-store.js");
 
 import type { ClarificationState } from "../src/lib/analysis/types/requirements.js";
 
@@ -81,6 +87,40 @@ describe("clarification-dialog-store", () => {
       await writeDialogState(evil, makeState());
       const call = mockTable.upsert.mock.calls[0]![0] as { where: { analysisId: string } };
       expect(call.where.analysisId).toBe(evil);
+    });
+  });
+
+  // #2101 — the submit's compare-and-set.
+  describe("readDialogStateRevision / replaceDialogState", () => {
+    it("reads the state with the exact stored row as its revision", async () => {
+      const state = makeState();
+      // Not JSON.stringify's own spacing: the revision is the row, not a re-serialization.
+      const row = JSON.stringify(state, null, 2);
+      mockTable.findUnique.mockResolvedValue({ state: row });
+      expect(await readDialogStateRevision("a-1")).toEqual({ state, revision: row });
+    });
+
+    it("reads no revision for a missing or corrupt row", async () => {
+      mockTable.findUnique.mockResolvedValueOnce(null);
+      expect(await readDialogStateRevision("a-1")).toBeUndefined();
+      mockTable.findUnique.mockResolvedValueOnce({ state: "{not-json" });
+      expect(await readDialogStateRevision("a-1")).toBeUndefined();
+    });
+
+    it("writes only over the revision it was given, and returns the new one", async () => {
+      const state = makeState();
+      mockTable.updateMany.mockResolvedValue({ count: 1 });
+      expect(await replaceDialogState("a-1", "rev-0", state)).toBe(JSON.stringify(state));
+      expect(mockTable.updateMany).toHaveBeenCalledWith({
+        where: { analysisId: "a-1", state: "rev-0" },
+        data: { state: JSON.stringify(state) },
+      });
+      expect(mockTable.upsert).not.toHaveBeenCalled();
+    });
+
+    it("returns null when the row changed since it was read", async () => {
+      mockTable.updateMany.mockResolvedValue({ count: 0 });
+      expect(await replaceDialogState("a-1", "rev-0", makeState())).toBeNull();
     });
   });
 
