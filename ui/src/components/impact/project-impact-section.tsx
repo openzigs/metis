@@ -58,6 +58,11 @@ export interface ProjectImpactSectionProps {
    * unavailable instead of claiming that no other project is affected.
    */
   apiEdgeImpactError?: boolean;
+  /**
+   * #2127 — the API-edge read is still pending. The block then says it is
+   * checking instead of claiming that no other project is affected.
+   */
+  apiEdgeImpactLoading?: boolean;
   /** Issue #966 — the signed-in caller's user id, forwarded to each requirement group. */
   currentUserId?: string | null;
   /** Issue #966 — mark (or re-mark) a table relevant/not-relevant on the given item. */
@@ -79,6 +84,7 @@ export function ProjectImpactSection({
   crossProjectError = false,
   apiEdgeImpact,
   apiEdgeImpactError = false,
+  apiEdgeImpactLoading = false,
   currentUserId,
   onMarkFeedback,
   onDeleteFeedback,
@@ -114,6 +120,7 @@ export function ProjectImpactSection({
         error={crossProjectError}
         apiConsumers={apiConsumers}
         apiEdgeError={apiEdgeImpactError}
+        apiEdgeLoading={apiEdgeImpactLoading}
       />
 
       {items.length === 0 ? (
@@ -153,12 +160,14 @@ function CrossProjectImpactBlock({
   error,
   apiConsumers,
   apiEdgeError,
+  apiEdgeLoading,
 }: {
   result: CrossProjectImpactResult | null | undefined;
   loading: boolean;
   error: boolean;
   apiConsumers: ApiConsumerImpact[];
   apiEdgeError: boolean;
+  apiEdgeLoading: boolean;
 }) {
   if (loading) {
     return (
@@ -182,20 +191,25 @@ function CrossProjectImpactBlock({
       </>
     );
   }
-  if (apiEdgeError) {
-    // #2120 — the API-edge read failed, so "no other project is affected" is
-    // not known: show the shared objects that are, and say the rest is missing.
-    const apiUnavailable = (
+  if (apiEdgeError || apiEdgeLoading) {
+    // #2120 / #2127 — the API-edge read failed or has not answered, so "no
+    // other project is affected" is not known: show the shared objects that
+    // are, and say the rest is missing or still being checked.
+    const apiNote = apiEdgeError ? (
       <p className="text-[11px] text-muted-foreground" data-testid="api-edge-impact-error">
         Impact on projects that call this project&apos;s API is unavailable right now.
       </p>
+    ) : (
+      <p className="text-[11px] text-muted-foreground" data-testid="api-edge-impact-loading">
+        Checking projects that call this project&apos;s API…
+      </p>
     );
     const hasShared = Boolean(result?.workspaceId && result.affectedObjects.length > 0);
-    if (!hasShared && apiConsumers.length === 0) return apiUnavailable;
+    if (!hasShared && apiConsumers.length === 0) return apiNote;
     return (
       <>
         <CrossProjectImpactSection result={result ?? null} apiConsumers={apiConsumers} />
-        {apiUnavailable}
+        {apiNote}
       </>
     );
   }

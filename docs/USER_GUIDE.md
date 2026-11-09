@@ -1651,7 +1651,11 @@ every other requirement of the analysis that is still unsure whether a rule appl
 the answer there only when the fact holds for that requirement too, such as how the whole
 system lets people sign in, never for a fact about one requirement's own data or screen. A
 finding settled this way records your answer and the question it answered, and its question is
-not asked again. If METIS cannot tell, the question is asked as before.
+not asked again. If METIS cannot tell, the question is asked as before. An answer carried this
+way can only show that a rule applies to the other requirement, never that it does not: if it
+would rule the rule out, that requirement asks its own question (#2126). The check runs after
+you submit, so submitting does not wait for it; the next round of questions waits until it is
+done.
 
 The panel's summary line gives the number of rules that apply first, then the gaps, in
 separate sentences, for example "5 of 26 rules in NIST SP 800-63B-4 apply. 4 gaps found; 3

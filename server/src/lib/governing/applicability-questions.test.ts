@@ -17,6 +17,7 @@ const db = vi.hoisted(() => ({
 vi.mock("../prisma.js", () => ({ prisma: db, resolveDatabaseProvider: () => "sqlite" }));
 
 const {
+  CARRY_CONCURRENCY,
   GOVERNING_QUESTION_FIELD,
   answersForApplyingPairs,
   buildGoverningQuestions,
@@ -1162,7 +1163,7 @@ describe("#2122 — carryAnswersOver: an answer is judged onto the other require
     const { provider, sent } = stubModel({
       judge: (user) =>
         user.includes(OTHER.text)
-          ? { decisions: [{ rule: "R1", verdict: "does-not-apply", reason: "No.", answer: "A2" }] }
+          ? { decisions: [{ rule: "R1", verdict: "applies", reason: "Whole.", answer: "A2" }] }
           : { decisions: [{ rule: "R1", verdict: "applies", reason: "Kept.", answer: "a1" }] },
     });
     const answered = [q("q1", [CARD.id], "Whole numbers are kept."), q("q2", [CARD.id], "No.")];
@@ -1187,7 +1188,7 @@ describe("#2122 — carryAnswersOver: an answer is judged onto the other require
       expect.objectContaining({
         requirementId: OTHER.id,
         ruleId: CARD.id,
-        verdict: "does-not-apply",
+        verdict: "applies",
         questionId: "q2",
         answer: "No.",
       }),
@@ -1214,6 +1215,88 @@ describe("#2122 — carryAnswersOver: an answer is judged onto the other require
       "The analyst's answer states that whole numbers are kept, and the analyst's answer agrees; so the analyst's answer settles it. A3 and A10 stay.",
       "The analyst's answer states that whole numbers are kept, and the analyst's answer agrees; so the analyst's answer settles it. A3 and A10 stay.",
     ]);
+  });
+
+  it("#2126 — a carried does-not-apply settles nothing, even when it names an answer", async () => {
+    const { provider, sent } = stubModel({
+      judge: () => ({
+        decisions: [{ rule: "R1", verdict: "does-not-apply", reason: "No.", answer: "A1" }],
+      }),
+    });
+    const answered = [q("q1", [CARD.id], "No card numbers are kept.")];
+    expect(await carryAnswersOver(answered, stored, rules, { provider })).toEqual([]);
+    // Both candidates were judged: the verdict, not a missing call, kept them open.
+    expect(sent).toHaveLength(2);
+  });
+
+  it("#2126 — with a memo, the same answers are not judged twice; a failed call is tried again", async () => {
+    const answered = [q("q1", [CARD.id], "Yes.")];
+    const judged = new Set<string>();
+    const failing = stubModel({
+      judge: () => ({ decisions: [{ rule: "R1", verdict: "uncertain", reason: "?" }] }),
+    });
+    vi.mocked(failing.chat).mockRejectedValueOnce(new Error("rate limited"));
+    await carryAnswersOver(answered, stored, rules, failing, judged);
+    // The first candidate's call failed, so only the second is remembered.
+    expect(judged.size).toBe(1);
+    const again = stubModel({
+      judge: () => ({ decisions: [{ rule: "R1", verdict: "applies", reason: "y", answer: "A1" }] }),
+    });
+    const got = await carryAnswersOver(answered, stored, rules, again, judged);
+    expect(again.sent).toHaveLength(1);
+    expect(again.sent[0]!.user).toContain(REQ.text);
+    expect(got.map((s) => s.requirementId)).toEqual([REQ.id]);
+    expect(judged.size).toBe(2);
+    // Nothing left unjudged against these answers: no call at all.
+    const third = stubModel({
+      judge: () => ({ decisions: [{ rule: "R1", verdict: "uncertain", reason: "?" }] }),
+    });
+    expect(await carryAnswersOver(answered, stored, rules, third, judged)).toEqual([]);
+    expect(third.chat).not.toHaveBeenCalled();
+    // A changed answer is a new judging.
+    await carryAnswersOver([q("q1", [CARD.id], "No.")], stored, rules, third, judged);
+    expect(third.chat).toHaveBeenCalledTimes(2);
+  });
+
+  it("#2126 — at most CARRY_CONCURRENCY calls are in flight, and the results keep the candidates' order", async () => {
+    const many: GoverningAnalysisApplicability = {
+      ...stored,
+      requirements: Array.from({ length: CARRY_CONCURRENCY * 2 + 1 }, (_, i) => ({
+        requirementId: `REQ-${100 + i}`,
+        text: `Requirement number ${i}.`,
+        decisions: [
+          {
+            ruleId: CARD.id,
+            controlId: CARD.controlId,
+            verdict: "uncertain" as const,
+            reason: "x",
+            foundBy: ["screen" as const],
+          },
+        ],
+      })),
+    };
+    // Asked about REQ-001, which `many` does not hold: every requirement is a candidate.
+    const answer = q("q1", [CARD.id], "Yes.");
+    let inFlight = 0;
+    let peak = 0;
+    const { provider, chat } = stubModel({});
+    vi.mocked(chat).mockImplementation(async () => {
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      await new Promise((r) => setTimeout(r, 5));
+      inFlight--;
+      return {
+        content: JSON.stringify({
+          decisions: [{ rule: "R1", verdict: "applies", reason: "y", answer: "A1" }],
+        }),
+        model: "m",
+        provider: "anthropic" as const,
+      };
+    });
+    const got = await carryAnswersOver([answer], many, rules, { provider });
+    expect(chat).toHaveBeenCalledTimes(CARRY_CONCURRENCY * 2 + 1);
+    expect(peak).toBe(CARRY_CONCURRENCY);
+    expect(got.map((s) => s.requirementId)).toEqual(many.requirements.map((r) => r.requirementId));
   });
 
   it("uncertain, no answer named, a failed call or an unreadable reply settle nothing", async () => {

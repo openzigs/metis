@@ -515,6 +515,19 @@ describe("ImpactAnalysisDetailPage", () => {
     expect(screen.getByTestId("api-edge-impact-error")).toBeInTheDocument();
   });
 
+  // #2127 — a pending API-edge read is said, never read as "no other project".
+  it("passes a pending API-edge read to the project sections (#2127)", () => {
+    mockUse.mockReturnValue(state({ data: detail }));
+    vi.mocked(useApiEdgeImpact).mockReturnValue({
+      data: undefined,
+      isError: false,
+      isLoading: true,
+    } as unknown as ReturnType<typeof useApiEdgeImpact>);
+    render(<ImpactAnalysisDetailPage />, { wrapper: makeWrapper() });
+    expect(screen.getByTestId("api-edge-impact-loading")).toBeInTheDocument();
+    expect(screen.queryByTestId("cross-project-impact-empty")).toBeNull();
+  });
+
   it("shows empty state when completed with no items", () => {
     mockUse.mockReturnValue(state({ data: { ...detail, items: [], totalImpactedSymbols: 0 } }));
     render(<ImpactAnalysisDetailPage />, { wrapper: makeWrapper() });

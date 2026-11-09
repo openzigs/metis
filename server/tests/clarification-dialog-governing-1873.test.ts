@@ -14,7 +14,7 @@
  *   - with the flag off, question generation is byte-identical to the dialog
  *     before #1873 (a snapshot taken from that code).
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import type { GoverningAnalysisApplicability } from "@metis/shared";
 import type { AIProvider, ChatMessage, ChatOptions } from "../src/lib/ai/types.js";
 
@@ -71,7 +71,7 @@ vi.mock("../src/lib/governing/findings-store.js", () => ({
 const { ClarificationDialog, ORPHAN_RETRY_BASE_MS, ORPHAN_RETRY_MAX_ENTRIES } =
   await import("../src/lib/analysis/clarification-dialog.js");
 const findingsStore = await import("../src/lib/governing/findings-store.js");
-const { governingQuestionSourceFor } =
+const { governingCarriesSettled, governingQuestionSourceFor, resetGoverningCarryMemoForTests } =
   await import("../src/lib/governing/applicability-questions.js");
 const { readGoverningApplicability } = await import("../src/lib/governing/applicability-store.js");
 const { createInMemoryBM25 } = await import("../src/lib/rag/bm25-index.js");
@@ -232,6 +232,7 @@ beforeEach(() => {
   mem.findings = [];
   process.env.GOVERNING_DOCS_ENABLED = "1";
   vi.clearAllMocks();
+  resetGoverningCarryMemoForTests();
 });
 afterEach(() => {
   delete process.env.GOVERNING_DOCS_ENABLED;
@@ -1018,6 +1019,7 @@ describe("#2122 — one answer settles the same fact on the analysis's other req
   it("the other requirement's pair is settled by the answer, read back fresh, and is not asked again", async () => {
     const { provider, sent } = carryModel({ verdict: "applies", answer: "A1" });
     const { dialog, q } = await answerTheFirst(provider);
+    await governingCarriesSettled(ANALYSIS);
 
     const carriedCall = sent.find((s) => s.system.includes("each named A1"))!;
     expect(carriedCall.user).toContain(OTHER_TEXT);
@@ -1036,8 +1038,10 @@ describe("#2122 — one answer settles the same fact on the analysis's other req
         previousVerdict: "uncertain",
       },
     });
+    // #2126 — the question's own refresh, then the carry's.
     const produce = vi.mocked(findingsStore.produceGoverningFindingsForAnalysis);
-    expect(produce.mock.calls[0]![0].requirementIds).toEqual(["REQ-001", "REQ-007"]);
+    expect(produce.mock.calls.map((c) => c[0].requirementIds)).toEqual([["REQ-001"], ["REQ-007"]]);
+    expect(produce.mock.calls[1]![0]).not.toHaveProperty("signal");
     refresh.release();
 
     const next = await dialog.startOrContinue(ANALYSIS, REQS);
@@ -1065,11 +1069,13 @@ describe("#2122 — one answer settles the same fact on the analysis's other req
       // The submit: the question's own rejudge and the carry both fail.
       failOwn(true);
       const { dialog } = await answerTheFirst(provider);
+      await governingCarriesSettled(ANALYSIS);
       const afterSubmit = judgingCalls();
       expect(afterSubmit).toBeGreaterThan(0);
       // The retry: its own rejudge fails again, but the carry lands on the other requirement.
       failOwn(false);
       await dialog.startOrContinue(ANALYSIS, REQS);
+      await governingCarriesSettled(ANALYSIS);
       const afterRetry = judgingCalls();
       expect(afterRetry).toBeGreaterThan(afterSubmit);
       const read = await readGoverningApplicability(ANALYSIS);
@@ -1080,6 +1086,112 @@ describe("#2122 — one answer settles the same fact on the analysis's other req
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("#2126 — the submit does not wait for the carry; the next round waits for it and does not ask what it settled", async () => {
+    const { provider } = carryModel({ verdict: "applies", answer: "A1" });
+    const chat = vi.mocked(provider.chat);
+    const real = chat.getMockImplementation()!;
+    let releaseCarry = () => {};
+    const carryHeld = new Promise<void>((resolve) => (releaseCarry = resolve));
+    let carryStarted = false;
+    chat.mockImplementation(async (messages, o) => {
+      if (String(o?.systemMessage ?? "").includes("each named A1")) {
+        carryStarted = true;
+        await carryHeld;
+      }
+      return real(messages, o);
+    });
+    const dialog = dialogWith(provider);
+    const first = await dialog.startOrContinue(ANALYSIS, REQS);
+    const q = first.rounds[0]!.questions[0]!;
+    // The carry's call never finishes unless released: a submit that awaited it would hang.
+    const submitted = await Promise.race([
+      dialog
+        .submitAnswers(
+          ANALYSIS,
+          [{ questionId: q.id, answer: "Yes, the password is the only factor." }],
+          REQS,
+        )
+        .then(() => "returned"),
+      new Promise((resolve) => setTimeout(() => resolve("waited for the carry"), 1_000)),
+    ]);
+    expect(submitted).toBe("returned");
+    await vi.waitFor(() => expect(carryStarted).toBe(true));
+    const before = await readGoverningApplicability(ANALYSIS);
+    expect(before!.requirements[1]!.decisions[0]!.settled).toBeUndefined();
+    let nextDone = false;
+    const next = dialog.startOrContinue(ANALYSIS, REQS).then((s) => {
+      nextDone = true;
+      return s;
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(nextDone).toBe(false);
+    releaseCarry();
+    const state = await next;
+    expect(state.rounds.slice(1).flatMap((r) => r.questions)).toEqual([]);
+    const after = await readGoverningApplicability(ANALYSIS);
+    expect(after!.requirements[1]!.decisions[0]!.settled).toBeDefined();
+    refresh.release();
+  });
+
+  it("#2126 — a carry whose write fails is logged: the next round still opens and asks the pair", async () => {
+    const { provider } = carryModel({ verdict: "applies", answer: "A1" });
+    // The in-memory DB's `analysis.update`, typed loosely: Prisma's generic signature is not the mock's.
+    const update = prisma.analysis.update as unknown as Mock<(args: unknown) => Promise<unknown>>;
+    const real = update.getMockImplementation()!;
+    let writes = 0;
+    // The question's own settlement is written; the carry's write fails.
+    update.mockImplementation(async (args: unknown) => {
+      if (++writes === 2) throw new Error("database unavailable");
+      return real(args);
+    });
+    const { dialog } = await answerTheFirst(provider);
+    await expect(governingCarriesSettled(ANALYSIS)).resolves.toBeUndefined();
+    expect(writes).toBe(2);
+    const read = await readGoverningApplicability(ANALYSIS);
+    expect(read!.requirements[0]!.decisions[0]!.settled).toBeDefined();
+    expect(read!.requirements[1]!.decisions[0]!.settled).toBeUndefined();
+    update.mockImplementation(real);
+    refresh.release();
+    const next = await dialog.startOrContinue(ANALYSIS, REQS);
+    expect(next.rounds[1]!.questions.map((x) => x.governing?.requirementId)).toEqual(["REQ-007"]);
+  });
+
+  it("#2126 — a carried does-not-apply keeps the pair open, and it is asked again", async () => {
+    const { provider } = carryModel({ verdict: "does-not-apply", answer: "A1" });
+    const { dialog } = await answerTheFirst(provider);
+    await governingCarriesSettled(ANALYSIS);
+    const read = await readGoverningApplicability(ANALYSIS);
+    expect(read!.requirements[1]!.decisions[0]).toMatchObject({ verdict: "uncertain" });
+    expect(read!.requirements[1]!.decisions[0]!.settled).toBeUndefined();
+    refresh.release();
+    const next = await dialog.startOrContinue(ANALYSIS, REQS);
+    expect(next.rounds[1]!.questions.map((x) => x.governing?.requirementId)).toEqual(["REQ-007"]);
+  });
+
+  it("#2126 — an orphan retry with the same answer does not judge the carry again", async () => {
+    const { provider, sent } = carryModel({ verdict: "uncertain", businessFact: "Is it?" });
+    const chat = vi.mocked(provider.chat);
+    const real = chat.getMockImplementation()!;
+    // The question's own rejudge always fails, so every start retries it.
+    chat.mockImplementation(async (messages, o) => {
+      const system = String(o?.systemMessage ?? "");
+      if (system.includes("You decide which") && !system.includes("each named A1")) {
+        throw new Error("provider unavailable");
+      }
+      return real(messages, o);
+    });
+    const carried = () => sent.filter((x) => x.system.includes("each named A1")).length;
+    const { dialog } = await answerTheFirst(provider);
+    await governingCarriesSettled(ANALYSIS);
+    expect(carried()).toBe(1);
+    // The submit cleared the backoff, so this start retries the question's own rejudge.
+    const ownBefore = chat.mock.calls.length;
+    await dialog.startOrContinue(ANALYSIS, REQS);
+    await governingCarriesSettled(ANALYSIS);
+    expect(chat.mock.calls.length).toBeGreaterThan(ownBefore);
+    expect(carried()).toBe(1);
   });
 
   it.each([

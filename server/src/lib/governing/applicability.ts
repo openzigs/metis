@@ -286,11 +286,15 @@ const REASK_NOTE =
 // does not rule the rule out: the text wins, the rule applies, and the reason
 // names the contradiction. A wrong `applies` leaves a finding the BA can see and
 // reject with a note; a wrong `does-not-apply` removes it without a trace.
+const ANSWER_APPLIES_RULE =
+  "- if the answer says the requirement involves what the rule governs, the rule applies, also when the answer says the rule's safeguard is already in place (the supplier passed its review, the change can be rolled back, the connection is encrypted). Whether the safeguard is enough is checked in a later step, not here;";
+const ANSWER_SAFEGUARD_LINE =
+  "A safeguard being in place is never a reason to decide does-not-apply.";
 const ANSWER_RULES = [
-  "- if the answer says the requirement involves what the rule governs, the rule applies, also when the answer says the rule's safeguard is already in place (the supplier passed its review, the change can be rolled back, the connection is encrypted). Whether the safeguard is enough is checked in a later step, not here;",
+  ANSWER_APPLIES_RULE,
   "- decide does-not-apply only when the answer says what the rule governs is absent from the requirement (no card numbers are kept, no outside company receives the data) and the requirement's own text does not say it is there;",
   "- when the answer denies what the requirement's own text plainly says (the requirement sends the data to a named outside company, and the answer says nothing leaves our systems), the requirement's text wins: decide applies, and say in the reason that the answer contradicts the requirement.",
-  "A safeguard being in place is never a reason to decide does-not-apply.",
+  ANSWER_SAFEGUARD_LINE,
 ];
 
 export const ANSWER_NOTE = [
@@ -304,10 +308,17 @@ export const ANSWER_NOTE = [
 // `uncertain` pairs through this judge. The answer was asked about another
 // requirement, so the judge uses it only for a fact that holds for this one
 // too, and names the answer it used: a decision that names none is not taken.
+// #2126 — and a carried answer can only bring a rule in. ANSWER_NOTE's
+// does-not-apply line is the risky direction (a wrong does-not-apply removes
+// the finding without a trace), and the pair's own question would still have
+// asked the BA; so the note asks for uncertain there, and `carryAnswersOver`
+// takes nothing but `applies`.
 export const CARRIED_ANSWER_NOTE = [
   "The requirement ends with answers a business analyst gave, each named A1, A2, …, to questions asked about requirements of the same system; the requirement each was asked about is quoted with it, and may be a different one. Use an answer only where it states a fact that holds for this requirement too, such as how the whole system lets people sign in. Never carry a fact about one requirement's own data, screen or feature to another. Where no answer settles the fact a rule turns on for this requirement, decide uncertain with the question that would settle it. Read a fact that holds as what the requirement involves, and still decide only whether each rule applies:",
-  ...ANSWER_RULES,
-  'For each rule you decide applies or does-not-apply on the strength of an answer, add "answer":"A1" to its decision, naming that answer.',
+  ANSWER_APPLIES_RULE,
+  "- an answer can bring a rule in, never rule one out: where an answer would mean a rule does not apply to this requirement, decide uncertain with the question that would settle it, so the business analyst is asked about this requirement itself.",
+  ANSWER_SAFEGUARD_LINE,
+  'For each rule you decide applies on the strength of an answer, add "answer":"A1" to its decision, naming that answer.',
 ].join("\n");
 
 /**
