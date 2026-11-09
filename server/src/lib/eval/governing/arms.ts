@@ -61,9 +61,12 @@ import {
   type RuleApplicability,
 } from "../../governing/applicability.js";
 import {
+  answersForApplyingPairs,
   buildGoverningQuestions,
+  openFindingPairs,
   openGoverningPairs,
   rejudgeAnswered,
+  type FindingQuestionInput,
   type QuestionRule,
 } from "../../governing/applicability-questions.js";
 import { applySettlements, toStoredApplicability } from "../../governing/applicability-store.js";
@@ -739,10 +742,10 @@ export interface ReplayAnswersInput {
  * applies or may apply to, and passes only the answers a settle stored on a
  * decision (`settled`):
  *   - the replay passes every short answer, including one on a rule that
- *     already applied before the answer (production never settles that rule,
- *     so its answer would not reach the findings call) and one whose settle
- *     failed (production stores nothing, so the answer would be lost until a
- *     later settle);
+ *     already applied before the answer (production asks that rule only when
+ *     its finding is Needs BA input, #2059, and then with the finding's own
+ *     question) and one whose settle failed (production stores nothing, so the
+ *     answer would be lost until a later settle);
  *   - it judges only the answered rules, not the requirement's other pairs,
  *     whose findings the reading before the answers already holds.
  * So it measures how the findings call reads a short answer with its question,
@@ -929,8 +932,8 @@ export const SHIPPED_CODE_PATH: readonly string[] = Object.freeze([
   "governing/applicability.ts decideApplicability (#1872)",
   "governing/applicability-store.ts toStoredApplicability",
   "governing/findings-store.ts findingPairsOf + governing/findings.ts evaluateRequirementFindings (#1874)",
-  "governing/applicability-questions.ts openGoverningPairs + buildGoverningQuestions (#1873)",
-  "governing/applicability-questions.ts rejudgeAnswered + governing/applicability-store.ts applySettlements (#1873)",
+  "governing/applicability-questions.ts openGoverningPairs + openFindingPairs (#2059) + buildGoverningQuestions (#1873)",
+  "governing/applicability-questions.ts rejudgeAnswered + answersForApplyingPairs (#2059) + governing/applicability-store.ts applySettlements (#1873)",
   "governing/findings-store.ts findingPairsOf + governing/findings.ts evaluateRequirementFindings (the refresh after an answer)",
 ]);
 
@@ -961,18 +964,21 @@ async function shippedFindings(
  *   2. findings over every pair that applies or may apply (`findingPairsOf`,
  *      `evaluateRequirementFindings`) — the reading before any answer;
  *   3. on a requirement with short-answer pairs, the dialog: production asks
- *      the questions it would ask (`openGoverningPairs`, `buildGoverningQuestions`),
- *      the BA answers each question that links a rule with a recorded
- *      `baAnswer` (the others go unanswered), the answers are settled
- *      (`rejudgeAnswered`, `applySettlements`), and, when a settlement
- *      applied, the requirement's findings are produced again with the
- *      settled answers — production's refresh after an answer.
+ *      the questions it would ask (`openGoverningPairs`, and #2059
+ *      `openFindingPairs` for a Needs BA input finding on a rule that applies;
+ *      `buildGoverningQuestions`), the BA answers each question that links a
+ *      rule with a recorded `baAnswer` (the others go unanswered), the answers
+ *      are settled (`rejudgeAnswered`, `answersForApplyingPairs`,
+ *      `applySettlements`), and, when a settlement applied, the requirement's
+ *      findings are produced again with the settled answers — production's
+ *      refresh after an answer.
  *
  * Unlike A4's replay, the question the BA answers is production's, not the
  * corpus's `businessFact`, and an answer reaches the findings call only
  * through a settlement, as in production. So a short-answer pair whose rule
- * already applied before the answer is never asked, and its finding after the
- * "answer" is the refresh's (or the first reading's).
+ * already applied before the answer is asked only when its first finding was
+ * Needs BA input (#2059); otherwise its finding after the "answer" is the
+ * first reading's.
  *
  * Top-k is the lexical search A1 to A4 use, standing in for the workspace's
  * vector index (`governingIndexRetriever`); nothing is written to a database.
@@ -991,9 +997,10 @@ export function createA5Arm(deps: GoverningArmDeps): GoverningArm {
       applicability: "decideApplicability, rules with production's source line",
       findings:
         "findingPairsOf + evaluateRequirementFindings, as produceGoverningFindingsForAnalysis",
-      questions: "openGoverningPairs + buildGoverningQuestions: production's question text",
+      questions:
+        "openGoverningPairs + openFindingPairs + buildGoverningQuestions: production's question text",
       answers:
-        "a question linking a rule with a baAnswer is given that answer; rejudgeAnswered + applySettlements; findings produced again when a settlement applied",
+        "a question linking a rule with a baAnswer is given that answer; rejudgeAnswered + answersForApplyingPairs + applySettlements; findings produced again when a settlement applied",
       reading: "readFindings: status as verdict, the verified clause as citation",
       model: deps.model,
     },
@@ -1028,6 +1035,12 @@ export function createA5Arm(deps: GoverningArmDeps): GoverningArm {
       if (short.length === 0) return out;
       const dialog = await shippedDialog({
         stored,
+        findings: report.findings.map((f) => ({
+          requirementId: f.requirementId,
+          ruleId: f.rule.id,
+          status: f.status,
+          businessQuestion: f.businessQuestion,
+        })),
         short,
         rules,
         corpus,
@@ -1046,6 +1059,8 @@ export function createA5Arm(deps: GoverningArmDeps): GoverningArm {
 
 interface ShippedDialogInput {
   stored: GoverningAnalysisApplicability;
+  /** #2059 — the findings before any answer, as the dialog reads the stored ones. */
+  findings: readonly FindingQuestionInput[];
   short: readonly ShortAnswerPair[];
   rules: readonly ApplicabilityRule[];
   corpus: GoverningCorpus;
@@ -1073,12 +1088,17 @@ export async function shippedDialog(
     questionsAsked: 0,
     questionsAnswered: 0,
     answersSettled: 0,
+    /** #2059 — answers recorded on a rule that applies, with no judging call. */
+    answersRecorded: 0,
     answersSettleFailed: 0,
     findingsRefreshed: 0,
     answeredNoEvidenceDemoted: 0,
   };
   try {
-    const open = openGoverningPairs(stored, undefined);
+    const open = [
+      ...openGoverningPairs(stored, undefined),
+      ...openFindingPairs(stored, input.findings, undefined),
+    ];
     const byId = new Map(input.rules.map((r) => [r.id, r]));
     const questionRules = new Map<string, QuestionRule>();
     for (const p of open) {
@@ -1097,10 +1117,15 @@ export async function shippedDialog(
       if (answer !== undefined) answered.push({ ...q, answer });
     }
     diagnostics.questionsAnswered = answered.length;
-    const settlements =
+    const judged =
       answered.length === 0 ? [] : await rejudgeAnswered(answered, stored, byId, { provider });
+    const recorded = answersForApplyingPairs(answered, stored);
+    const settlements = [...judged, ...recorded];
     const { next, applied } = applySettlements(stored, settlements);
-    diagnostics.answersSettled = applied.filter((s) => s.verdict !== "uncertain").length;
+    diagnostics.answersSettled = applied.filter(
+      (s) => judged.includes(s) && s.verdict !== "uncertain",
+    ).length;
+    diagnostics.answersRecorded = applied.filter((s) => recorded.includes(s)).length;
     // An answered pair asked about but given no settlement: its settle failed.
     const answeredRules = new Set(answered.flatMap((q) => q.governing?.ruleIds ?? []));
     const settledBack = new Set(settlements.map((s) => s.ruleId));

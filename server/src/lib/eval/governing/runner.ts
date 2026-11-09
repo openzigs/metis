@@ -737,8 +737,9 @@ export function shortAnswerSection(report: Pick<GoverningReport, "arms">): strin
   const ownQuestions = arms.filter((a) => a.codePath.length > 0).map((a) => a.id);
   if (ownQuestions.length > 0) {
     lines.push(
-      `${ownQuestions.join(", ")}: production asks its own questions, and only about a rule ` +
-        "applicability left `uncertain`. A question linking a rule with a `baAnswer` gets that answer, " +
+      `${ownQuestions.join(", ")}: production asks its own questions, about a rule ` +
+        "applicability left `uncertain` and (#2059) a rule that applies whose finding is Needs BA input. " +
+        "A question linking a rule with a `baAnswer` gets that answer, " +
         "and every other question goes unanswered. A pair whose rule was never asked keeps the finding " +
         "it had before (each record's `answered.questions` lists what was asked).",
       "",
