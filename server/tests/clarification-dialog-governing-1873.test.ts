@@ -329,8 +329,10 @@ describe("#1873 — governing questions in the clarification dialog", () => {
   it("an unanswered governing question keeps the dialog open and is asked again next round", async () => {
     const { provider } = model();
     const dialog = dialogWith(provider);
-    await dialog.startOrContinue(ANALYSIS, REQS);
-    const after = await dialog.submitAnswers(ANALYSIS, [{ questionId: "x", answer: "n/a" }], REQS);
+    const started = await dialog.startOrContinue(ANALYSIS, REQS);
+    // #2085 — a submit names its round's own questions; this one leaves the answer blank.
+    const q = started.rounds[0]!.questions[0]!;
+    const after = await dialog.submitAnswers(ANALYSIS, [{ questionId: q.id, answer: " " }], REQS);
     expect(after.state.completed).toBe(false);
     const next = await dialog.startOrContinue(ANALYSIS, REQS);
     expect(next.rounds).toHaveLength(2);
@@ -439,6 +441,9 @@ describe("#1873 — governing questions in the clarification dialog", () => {
       expect(judging()).toBe(4);
 
       // A submit settles itself and resets the backoff: the next start retries at once.
+      // #2085 — a submit goes only to an open round, so round 1 is open again
+      // (as a re-open for the governing question would leave it).
+      await dialogStore.writeDialogState(ANALYSIS, state);
       await dialog.submitAnswers(
         ANALYSIS,
         [{ questionId: q.id, answer: "Yes, the whole number." }],

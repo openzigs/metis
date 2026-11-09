@@ -472,6 +472,9 @@ function ClarificationSection({
   // #2077 — no start the server is bound to refuse: a viewer without
   // `analysis.run` gets a 403, and a run with no structured requirements a 400
   // ("requirements field is required"). Both were silent, once per mount.
+  // The `structured` gate also skips a run whose extraction failed (#1058):
+  // `structured` is then undefined even though the server still holds an
+  // earlier run's list, and a start would ask about that stale list.
   const mayStart = canRun && structured !== undefined;
 
   // Epic #201 (#213) — rehydrate or start a REAL server-side dialog. Starting the
@@ -598,8 +601,28 @@ function ClarificationSection({
           projectId={projectId}
           analysisId={analysisId}
           state={dialog.data}
-          onComplete={() => {
-            void dialog.refetch();
+          // #2085 — while the next round is due, the answered round must not
+          // stay answerable: a second submit there was a lost update and a
+          // skipped round. The panel shows this status in its place.
+          nextRound={
+            nextRound
+              ? {
+                  preparing: startInFlight || startDialog.isPending,
+                  failed: mayStart && startDialog.isError,
+                  unreadable: isUnreadableReply(startDialog.error),
+                  canStart: mayStart,
+                  onRetry: () => startMutate(),
+                }
+              : undefined
+          }
+          onComplete={(state) => {
+            // #2085 — the submit's own state, at once: until it lands, the
+            // panel still held the answered round with Submit enabled.
+            if (state) {
+              queryClient.setQueryData(["analyses", analysisId, "clarify"], state);
+            } else {
+              void dialog.refetch();
+            }
             // Issue #1135 — `ClarificationImpactNote` and the refined requirement
             // text both live in the analysis `metadata` the server rewrites when
             // answers are applied. Without this the note only appeared after a

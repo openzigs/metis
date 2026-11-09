@@ -2744,6 +2744,16 @@ the pre-#1873 code).
   posted it, so rounds 2 and 3 were never generated. No start is posted for a viewer without
   `analysis.run` (the route's permission) or when the run has no structured requirements (the
   route's 400), so neither fails silently once per mount.
+  While that round is due, `ClarificationDialogPanel` takes a `nextRound` status and renders no
+  questions, Submit or CSV import in place of the answered round: preparing while the start is
+  in flight, an error with **Try again** when it failed (#2085). Before, a second submit in that
+  window wrote onto the answered round and bumped `currentRound`, and the in-flight start then
+  overwrote it: a lost update and a skipped round. The panel takes the submit's own returned
+  state into the query cache, so no refetch window shows the answered round as open.
+  `submitAnswers` refuses `409 CLARIFY_ROUND_NOT_OPEN`, before anything is written, a submit to
+  a completed dialog, to a round already answered (`rounds.at(-1).round !== currentRound`), or
+  naming a question id that is not in the latest generated round. The JSON submit and the CSV
+  import both pass through it.
   A judging reply that cannot be read is re-asked once, and then settles nothing (#2009).
   An answered pair is never asked again, so a pair whose settle failed (an unreadable reply, a
   provider error or outage, an aborted request) would otherwise be orphaned. Instead, every

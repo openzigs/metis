@@ -114,17 +114,75 @@ export function UnreadResolutionsNote({
   );
 }
 
+/**
+ * #2085 — the dialog's current round has not been generated yet: a submit
+ * left something open, and the start that generates the next round is in
+ * flight, failed, or cannot be sent by this viewer.
+ */
+export interface NextRoundStatus {
+  /** The start that generates the round is in flight. */
+  preparing: boolean;
+  /** It round-tripped and failed. */
+  failed: boolean;
+  /** #1081 — it failed because the model's questions could not be read. */
+  unreadable: boolean;
+  /** This viewer may send the start (holds `analysis.run`, has a requirement list). */
+  canStart: boolean;
+  onRetry: () => void;
+}
+
 interface ClarificationDialogProps {
   projectId: string;
   analysisId: string;
   state: ClarificationStatePayload;
-  onComplete: () => void;
+  /** #2085 — set while the current round is due and not yet generated. */
+  nextRound?: NextRoundStatus;
+  /** `state` is the dialog as the submit left it; absent after an import. */
+  onComplete: (state?: ClarificationStatePayload) => void;
+}
+
+/**
+ * #2085 — shown in place of the questions and Submit while the next round is
+ * due. The round on screen is already answered: the server refuses (409) a
+ * second submit to it, and before that refusal one was a lost update.
+ */
+function NextRoundNotice({
+  round,
+  status,
+}: {
+  round: number;
+  status: NextRoundStatus;
+}): React.ReactElement {
+  if (status.failed && !status.preparing) {
+    return (
+      <p role="alert" data-testid="clarify-round-error" className="text-sm text-destructive">
+        {status.unreadable
+          ? `METIS could not read the clarifying questions in the model’s answer, so round ${round} was not started. This does not mean there is nothing to clarify.`
+          : `Could not prepare round ${round} of the clarifying questions.`}{" "}
+        <button type="button" onClick={status.onRetry} className="underline hover:text-destructive">
+          Try again
+        </button>
+      </p>
+    );
+  }
+  return (
+    <p
+      role="status"
+      data-testid="clarify-round-preparing"
+      className="text-sm text-muted-foreground"
+    >
+      {status.preparing || status.canStart
+        ? `Preparing round ${round} of the clarifying questions from your answers…`
+        : `Round ${round} of the clarifying questions has not been prepared yet.`}
+    </p>
+  );
 }
 
 export function ClarificationDialogPanel({
   projectId,
   analysisId,
   state,
+  nextRound,
   onComplete,
 }: ClarificationDialogProps): React.ReactElement {
   const currentRound = state.rounds[state.rounds.length - 1];
@@ -214,8 +272,8 @@ export function ClarificationDialogPanel({
     // The re-seed effect above now takes the refetched state, so a new round
     // arrives with fresh (empty) inputs and a re-rendered current round keeps
     // the user's text on screen throughout.
-    onSuccess: () => {
-      onComplete();
+    onSuccess: (result) => {
+      onComplete(result.state);
     },
   });
 
@@ -321,15 +379,34 @@ export function ClarificationDialogPanel({
     );
   }
 
+  const roundBadge = (
+    <span className="rounded border border-border bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+      Round {state.currentRound} / {state.maxRounds}
+    </span>
+  );
+
+  // #2085 — no questions, no Submit and no CSV round-trip while the next round
+  // is due: every one of them would act on the round already answered.
+  if (nextRound) {
+    return (
+      <Card className="space-y-4 p-4" data-testid="clarification-next-round">
+        <div className="flex items-center justify-between gap-3">
+          <h3 className="text-lg font-semibold">Clarifying Questions</h3>
+          {roundBadge}
+        </div>
+        <NextRoundNotice round={state.currentRound} status={nextRound} />
+        <UnreadResolutionsNote state={state} />
+      </Card>
+    );
+  }
+
   return (
     <Card className="space-y-4 p-4">
       <div className="flex items-center justify-between gap-3">
         <h3 className="text-lg font-semibold">Clarifying Questions</h3>
         <div className="flex items-center gap-2">
           {csvActions}
-          <span className="rounded border border-border bg-muted px-2 py-0.5 text-xs text-muted-foreground">
-            Round {state.currentRound} / {state.maxRounds}
-          </span>
+          {roundBadge}
         </div>
       </div>
       <p className="text-sm text-muted-foreground">
