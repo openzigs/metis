@@ -728,12 +728,24 @@ describe("#2067 — the settle judge tells applying from being met", () => {
     expect(ANSWER_NOTE).toContain(
       "A safeguard being in place is never a reason to decide does-not-apply.",
     );
-    const reask = buildApplicabilityJudgePrompt(REQUIREMENT.text, [], {
-      answered: true,
-      reask: true,
-    }).systemMessage;
-    expect(reask.startsWith(`${settle}\n`)).toBe(true);
-    expect(reask).toContain("Your previous answer");
+  });
+
+  it("#2087 — on a re-ask too, the reply format stays the last line, after the re-ask note", () => {
+    for (const answered of [false, true]) {
+      const plain = buildApplicabilityJudgePrompt(REQUIREMENT.text, [], { answered }).systemMessage;
+      const reask = buildApplicabilityJudgePrompt(REQUIREMENT.text, [], {
+        answered,
+        reask: true,
+      }).systemMessage;
+      const lines = plain.split("\n");
+      const format = lines.at(-1)!;
+      expect(format).toMatch(/^Respond ONLY with one JSON object/);
+      const reaskLines = reask.split("\n");
+      expect(reaskLines.at(-1)).toBe(format);
+      expect(reaskLines.at(-2)).toMatch(/^Your previous answer/);
+      // Everything else is the plain prompt, unchanged and in order.
+      expect([...reaskLines.slice(0, -2), format]).toEqual(lines);
+    }
   });
 });
 

@@ -1648,8 +1648,9 @@ An answer rules a rule out only when it says the requirement does not involve wh
 covers, and the requirement's own text does not say otherwise. If your answer contradicts the
 requirement (it sends the buyer list to an outside company, and you answer that nothing leaves
 your systems), the requirement's text wins: the rule still applies and its finding stays
-(#2078). Correct the requirement and run the analysis again, or **Reject** the finding with a
-note.
+(#2078). The finding then shows a line that begins "After the answer …, this rule applies.",
+followed by the reason, which says the answer contradicts the requirement (#2087). Correct the
+requirement and run the analysis again, or **Reject** the finding with a note.
 
 Some **Needs BA input** findings are not asked as clarifying questions (#2068):
 

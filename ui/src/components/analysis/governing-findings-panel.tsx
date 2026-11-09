@@ -18,8 +18,8 @@
  * A decision is never shown optimistically: the POST invalidates the findings,
  * and what is shown is what the server read back, decider's name included.
  */
-import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useEffect, useRef, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   GOVERNING_FINDING_NOTE_MAX,
   governingSummarySentence,
@@ -124,6 +124,36 @@ export function groupFindingsByRequirement(
   return [...groups.values()];
 }
 
+/** The BA answer a finding's rule was re-judged on, and the reason judged on it (#2087). */
+export interface AnswerSettlement {
+  answer: string;
+  reason: string;
+}
+
+/**
+ * #2087 — why a BA's answer did not rule this finding's rule out: the stored
+ * pair was `uncertain`, an answer was judged onto it (#1873), and the rule
+ * applies. Its `reason` is that judgement's, and names a contradiction with
+ * the requirement's text when there was one (#2078). `null` for a rule no
+ * answer re-judged, and for an answer only recorded on a rule that already
+ * applied (#2059), whose reason is applicability's own. #2068 — answers
+ * recorded later keep the first one's reason, so the first answer is named.
+ */
+export function answerSettlementOf(
+  finding: Pick<GoverningFinding, "requirementId" | "ruleId">,
+  applicability: GoverningAnalysisApplicability | null,
+): AnswerSettlement | null {
+  const decision = applicability?.requirements
+    .find((r) => r.requirementId === finding.requirementId)
+    ?.decisions.find((d) => d.ruleId === finding.ruleId);
+  const settled = decision?.settled;
+  if (!decision || !settled || decision.verdict !== "applies") return null;
+  if (settled.previousVerdict !== "uncertain") return null;
+  const answer = (settled.earlier?.[0]?.answer ?? settled.answer).trim();
+  const reason = decision.reason.trim();
+  return answer && reason ? { answer, reason } : null;
+}
+
 /**
  * The anchor of the clarifying question a `needs-ba-input` finding waits on:
  * the question whose governing link (#1873) names this finding's requirement
@@ -184,6 +214,20 @@ export function GoverningFindingsPanel({
     enabled: hasFindings,
     retry: false,
   });
+  // #2087 — a BA answer's settle is stored before its findings re-check
+  // starts, so once the re-check is seen to finish the applicability is read
+  // again: the reason a settled finding shows is never the pre-answer one.
+  const queryClient = useQueryClient();
+  const refreshing = findingsQuery.data?.refreshing ?? false;
+  const wasRefreshing = useRef(refreshing);
+  useEffect(() => {
+    if (wasRefreshing.current && !refreshing) {
+      void queryClient.invalidateQueries({
+        queryKey: governingFindingsKeys.applicability(analysisId),
+      });
+    }
+    wasRefreshing.current = refreshing;
+  }, [refreshing, queryClient, analysisId]);
   // The Questions tab's own query (`EnhancementResults`): one cache entry.
   const clarification = useQuery({
     queryKey: ["analyses", analysisId, "clarify"],
@@ -252,6 +296,7 @@ export function GoverningFindingsPanel({
                   analysisId={analysisId}
                   finding={finding}
                   canDecide={canDecide}
+                  settlement={answerSettlementOf(finding, applicabilityQuery.data ?? null)}
                   questionHref={
                     finding.status === "needs-ba-input"
                       ? clarifyingQuestionHref(finding, clarification.data)
@@ -272,12 +317,14 @@ function GoverningFindingItem({
   analysisId,
   finding,
   canDecide,
+  settlement,
   questionHref,
 }: {
   projectId: string;
   analysisId: string;
   finding: GoverningFinding;
   canDecide: boolean;
+  settlement: AnswerSettlement | null;
   questionHref: string | null;
 }): React.ReactElement {
   const label = GOVERNING_STATUS_LABELS[finding.status];
@@ -345,6 +392,15 @@ function GoverningFindingItem({
       <p className="mt-2 text-sm text-foreground">
         {neutraliseComplianceClaims(finding.reasoning)}
       </p>
+
+      {settlement ? (
+        <p className="mt-2 text-xs text-muted-foreground" data-testid="governing-finding-answer">
+          <span className="font-medium text-foreground">
+            After the answer “{settlement.answer}”, this rule applies.
+          </span>{" "}
+          {neutraliseComplianceClaims(settlement.reason)}
+        </p>
+      ) : null}
 
       {questionHref ? (
         <p className="mt-2 text-sm">
