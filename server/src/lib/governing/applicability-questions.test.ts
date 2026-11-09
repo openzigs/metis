@@ -168,6 +168,26 @@ describe("questionLeaksRule — the rulebook guard", () => {
     expect(questionLeaksRule("Will the page keep customers' card numbers?", [CARD])).toBeNull();
   });
 
+  it("#2077 — catches a question that points at a rule or clause as such, which names no id", () => {
+    const retention = {
+      controlId: "DR-01",
+      clauseExcerpt: "Customer records are kept for seven years after the account is closed.",
+    };
+    // DeepSeek's question in #2066's reading of governing-01.
+    const deepseek = "Will the exported orders be kept under the seven-year retention rule?";
+    expect(questionLeaksRule(deepseek, [retention])).toBe("refers to a rule");
+    expect(questionLeaksRule("Which Clauses cover the export?", [retention])).toBe(
+      "refers to a clause",
+    );
+    // A control id is still reported as such.
+    expect(questionLeaksRule("Does rule DR-01 apply?", [retention])).toMatch(/names control/);
+    // Business words that only contain one, and a business policy, are not the rulebook.
+    expect(
+      questionLeaksRule("Will the ruler tool overrule a returns policy?", [retention]),
+    ).toBeNull();
+    expect(questionLeaksRule(FALLBACK_FINDING_QUESTION, [retention])).toBeNull();
+  });
+
   it("the template names no rule and quotes no clause, even when the requirement names a control", () => {
     expectNoRulebook(templateGoverningQuestion(REQ.text, [CARD]), [CARD]);
     const named = templateGoverningQuestion("Make checkout meet EN-03.", [CARD]);
@@ -264,9 +284,37 @@ describe("buildGoverningQuestions", () => {
       { provider },
     );
     expect(sent.map((s) => s.kind)).toEqual(["merge"]);
+    // #2077 — the model is asked for the merged groups only: a fact left alone
+    // keeps its own words (#2066), so writing it again is output thrown away.
+    expect(sent[0]!.system).toContain("leave them out of your reply");
+    expect(sent[0]!.system).toContain("listing only merged questions, each with two or more facts");
+    expect(sent[0]!.system).not.toContain("every fact in exactly one question");
     expect(sent[0]!.user).toContain("F1: Will the saved card be kept with the whole number?");
     expect(sent[0]!.user).not.toContain("EN-03");
     expect(questions.map((q) => q.governing?.ruleIds)).toEqual([[CARD.id, ENCRYPT.id], [AUDIT.id]]);
+  });
+
+  it("#2077 — a reply listing only the merged group asks every other fact in its own words", async () => {
+    const { provider } = stubModel({
+      merge: () => ({
+        questions: [
+          { question: "Will this feature store customers' payment data?", facts: ["F1", "F2"] },
+        ],
+      }),
+    });
+    const questions = await buildGoverningQuestions(
+      [
+        pair(CARD.id, "Will the saved card be kept with the whole number?"),
+        pair(ENCRYPT.id, "Is payment information stored by this feature?"),
+        pair(AUDIT.id, "Will anyone export the saved cards in bulk?"),
+      ],
+      RULES,
+      { provider },
+    );
+    expect(questions.map((q) => [q.question, q.governing?.ruleIds])).toEqual([
+      ["Will this feature store customers' payment data?", [CARD.id, ENCRYPT.id]],
+      ["Will anyone export the saved cards in bulk?", [AUDIT.id]],
+    ]);
   });
 
   it("#2066 — a group the merge leaves alone keeps its own question, verbatim, whatever the model wrote", async () => {

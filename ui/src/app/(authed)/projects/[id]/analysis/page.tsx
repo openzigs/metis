@@ -1683,6 +1683,7 @@ export default function AnalysisPage(): React.ReactElement {
                     projectId={projectId}
                     analysisId={detail.data.id}
                     metadata={detail.data.metadata}
+                    canRun={canRunAnalysis}
                   />
 
                   {!runHasQuestionsView(detail.data.metadata) ? (

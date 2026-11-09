@@ -107,18 +107,18 @@ const dialogState = (over: Partial<ClarificationStatePayload> = {}): Clarificati
     ...over,
   }) as ClarificationStatePayload;
 
-function renderResults(meta: Record<string, unknown>) {
+function renderResults(meta: Record<string, unknown>, canRun = true) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const invalidateSpy = vi.spyOn(qc, "invalidateQueries");
   const view = render(
     <QueryClientProvider client={qc}>
-      <EnhancementResults projectId="p1" analysisId={ANALYSIS_ID} metadata={meta} />
+      <EnhancementResults projectId="p1" analysisId={ANALYSIS_ID} metadata={meta} canRun={canRun} />
     </QueryClientProvider>,
   );
   const rerenderWith = (next: Record<string, unknown>) =>
     view.rerender(
       <QueryClientProvider client={qc}>
-        <EnhancementResults projectId="p1" analysisId={ANALYSIS_ID} metadata={next} />
+        <EnhancementResults projectId="p1" analysisId={ANALYSIS_ID} metadata={next} canRun />
       </QueryClientProvider>,
     );
   return { ...view, qc, invalidateSpy, rerenderWith };
@@ -309,6 +309,132 @@ describe("#1104 finding C — a completed dialog stays reachable at 0 ambiguitie
     rerenderWith(metadata(0));
 
     expect(screen.getByTestId("clarification-progress")).toBeInTheDocument();
+    expect(clarify).not.toHaveBeenCalled();
+  });
+});
+
+describe("#2077 — later rounds are generated, and no start the server must refuse", () => {
+  const answeredRound1 = {
+    round: 1,
+    questions: [
+      {
+        id: "q_dsa",
+        requirementId: "r1",
+        ambiguityField: "dsa",
+        question: "Does the DSA apply?",
+        context: "",
+        answer: "Only for EU users.",
+      },
+    ],
+    answers: [{ questionId: "q_dsa", answer: "Only for EU users." }],
+  };
+  /** After a submit that left something open: round 2 is due, not yet generated. */
+  const awaitingRound2 = dialogState({ currentRound: 2, rounds: [answeredRound1] });
+  const withRound2 = dialogState({
+    currentRound: 2,
+    rounds: [
+      answeredRound1,
+      {
+        round: 2,
+        questions: [
+          {
+            id: "q_scope",
+            requirementId: "r1",
+            ambiguityField: "scope",
+            question: "Which EU countries are in scope?",
+            context: "",
+          },
+        ],
+        answers: [],
+      },
+    ],
+  });
+
+  it("a submit that leaves the dialog open generates round 2 and shows its question", async () => {
+    getClarification
+      .mockResolvedValueOnce({ state: dialogState() })
+      .mockResolvedValue({ state: awaitingRound2 });
+    submitClarifyAnswers.mockResolvedValue({ state: awaitingRound2 });
+    clarify.mockResolvedValue(withRound2);
+
+    renderResults(metadata(1));
+    fireEvent.change(await screen.findByPlaceholderText("Your answer..."), {
+      target: { value: "Only for EU users." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Submit Answers" }));
+
+    expect(await screen.findByText("Which EU countries are in scope?")).toBeInTheDocument();
+    expect(clarify).toHaveBeenCalledTimes(1);
+    expect(clarify).toHaveBeenCalledWith("p1", ANALYSIS_ID, {});
+  });
+
+  it("a reloaded dialog waiting for its next round starts it once, even as the detail polls", async () => {
+    getClarification.mockResolvedValue({ state: awaitingRound2 });
+    clarify.mockResolvedValue(withRound2);
+
+    const { rerenderWith } = renderResults(metadata(0));
+    expect(await screen.findByText("Which EU countries are in scope?")).toBeInTheDocument();
+    rerenderWith(metadata(0, { promotionStatus: "allowed" }));
+    expect(clarify).toHaveBeenCalledTimes(1);
+  });
+
+  it("a round start the server rejects is not retried on its own", async () => {
+    getClarification.mockResolvedValue({ state: awaitingRound2 });
+    // Rejected after a round trip, as over the network: the start is seen in flight.
+    clarify.mockImplementation(
+      () => new Promise((_, reject) => setTimeout(() => reject(new Error("clarify failed")), 20)),
+    );
+
+    const { rerenderWith } = renderResults(metadata(0));
+    await waitFor(() => expect(clarify).toHaveBeenCalledTimes(1));
+    rerenderWith(metadata(0, { promotionStatus: "allowed" }));
+    await new Promise((r) => setTimeout(r, 150));
+    expect(clarify).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("clarification-progress")).toBeInTheDocument();
+  });
+
+  it("an open dialog with no round left is not started", async () => {
+    getClarification.mockResolvedValue({ state: { ...awaitingRound2, currentRound: 4 } });
+
+    renderResults(metadata(0));
+
+    expect(await screen.findByText("Does the DSA apply?")).toBeInTheDocument();
+    expect(clarify).not.toHaveBeenCalled();
+  });
+
+  it("a viewer without analysis.run is never sent a start: no dialog, a completed one, or a round due", async () => {
+    const completed = dialogState({ completed: true, currentRound: 2, rounds: [answeredRound1] });
+    for (const state of [null, completed, awaitingRound2]) {
+      getClarification.mockResolvedValue({ state });
+      const view = renderResults(metadata(1), false);
+      await waitFor(() => expect(getClarification).toHaveBeenCalled());
+      expect(
+        await screen.findByTestId(
+          state
+            ? state.completed
+              ? "clarification-complete"
+              : "clarification-progress"
+            : "gaps-preview",
+        ),
+      ).toBeInTheDocument();
+      view.unmount();
+    }
+    expect(clarify).not.toHaveBeenCalled();
+  });
+
+  it("a run with no structured requirements is never sent a start: a completed dialog, or a round due", async () => {
+    const completed = dialogState({ completed: true, currentRound: 2, rounds: [answeredRound1] });
+    const noStructured = { enhancement: { enableWebResearch: false, enableClarification: true } };
+    for (const state of [completed, awaitingRound2]) {
+      getClarification.mockResolvedValue({ state });
+      const view = renderResults(noStructured);
+      expect(
+        await screen.findByTestId(
+          state.completed ? "clarification-complete" : "clarification-progress",
+        ),
+      ).toBeInTheDocument();
+      view.unmount();
+    }
     expect(clarify).not.toHaveBeenCalled();
   });
 });
@@ -528,7 +654,7 @@ describe("#937 — a remount while the start is in flight does not start a secon
   function mountWith(qc: QueryClient) {
     return render(
       <QueryClientProvider client={qc}>
-        <EnhancementResults projectId="p1" analysisId={ANALYSIS_ID} metadata={metadata(1)} />
+        <EnhancementResults projectId="p1" analysisId={ANALYSIS_ID} metadata={metadata(1)} canRun />
       </QueryClientProvider>,
     );
   }

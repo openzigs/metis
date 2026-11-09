@@ -57,12 +57,19 @@ interface EnhancementResultsProps {
   projectId: string;
   analysisId: string;
   metadata: Record<string, unknown> | null;
+  /**
+   * #2077 — the viewer holds `analysis.run`, which starting (or continuing) the
+   * clarification dialog requires. Without it no start is POSTed: each one was
+   * a silent 403.
+   */
+  canRun: boolean;
 }
 
 export function EnhancementResults({
   projectId,
   analysisId,
   metadata,
+  canRun,
 }: EnhancementResultsProps): React.ReactElement | null {
   const enhancement = readEnhancementMetadata(metadata);
   const webResearchEnabled = enhancement.enhancement?.enableWebResearch ?? false;
@@ -101,6 +108,7 @@ export function EnhancementResults({
           projectId={projectId}
           analysisId={analysisId}
           structured={structured}
+          canRun={canRun}
         />
       )}
     </div>
@@ -452,13 +460,19 @@ function ClarificationSection({
   projectId,
   analysisId,
   structured,
+  canRun,
 }: {
   projectId: string;
   analysisId: string;
   structured: StructuredRequirementsPayload | undefined;
+  canRun: boolean;
 }): React.ReactElement | null {
   const queryClient = useQueryClient();
   const hasAmbiguities = (structured?.totalAmbiguities ?? 0) > 0;
+  // #2077 — no start the server is bound to refuse: a viewer without
+  // `analysis.run` gets a 403, and a run with no structured requirements a 400
+  // ("requirements field is required"). Both were silent, once per mount.
+  const mayStart = canRun && structured !== undefined;
 
   // Epic #201 (#213) — rehydrate or start a REAL server-side dialog. Starting the
   // real dialog is what makes answers submittable: the interactive panel posts
@@ -517,7 +531,7 @@ function ClarificationSection({
   const startedFor = useRef<string | null>(null);
   const startMutate = startDialog.mutate;
   useEffect(() => {
-    if (!hasAmbiguities) return;
+    if (!mayStart || !hasAmbiguities) return;
     // Wait for the read: only start when the server confirms there is no dialog.
     if (!dialog.isSuccess || dialog.data) return;
     if (startedFor.current === analysisId) return;
@@ -525,7 +539,15 @@ function ClarificationSection({
     if (startInFlight) return;
     startedFor.current = analysisId;
     startMutate();
-  }, [hasAmbiguities, dialog.isSuccess, dialog.data, analysisId, startInFlight, startMutate]);
+  }, [
+    mayStart,
+    hasAmbiguities,
+    dialog.isSuccess,
+    dialog.data,
+    analysisId,
+    startInFlight,
+    startMutate,
+  ]);
 
   // #2068 — a COMPLETED dialog with rounds left is started once per mount
   // too. The server re-opens it only for a governing question: a Needs BA
@@ -536,11 +558,31 @@ function ClarificationSection({
   const reopenable =
     dialog.data?.completed === true && dialog.data.currentRound <= dialog.data.maxRounds;
   useEffect(() => {
-    if (!reopenable || startInFlight) return;
+    if (!mayStart || !reopenable || startInFlight) return;
     if (reopenCheckedFor.current === analysisId) return;
     reopenCheckedFor.current = analysisId;
     startMutate();
-  }, [reopenable, analysisId, startInFlight, startMutate]);
+  }, [mayStart, reopenable, analysisId, startInFlight, startMutate]);
+
+  // #2077 — an OPEN dialog whose current round has not been generated yet: a
+  // submit that left ambiguities or a governing question open moved it to the
+  // next round, and only a start generates that round. Without this the panel
+  // sat on the answered round and rounds 2 and 3 were never asked. Once per
+  // round per mount; the server returns a round it already generated as is.
+  const nextRound =
+    dialog.data &&
+    !dialog.data.completed &&
+    dialog.data.currentRound <= dialog.data.maxRounds &&
+    dialog.data.rounds.at(-1)?.round !== dialog.data.currentRound
+      ? `${analysisId}:${dialog.data.currentRound}`
+      : null;
+  const roundStartedFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (!mayStart || !nextRound || startInFlight) return;
+    if (roundStartedFor.current === nextRound) return;
+    roundStartedFor.current = nextRound;
+    startMutate();
+  }, [mayStart, nextRound, startInFlight, startMutate]);
 
   if (!hasAmbiguities && !dialog.data) return null;
 

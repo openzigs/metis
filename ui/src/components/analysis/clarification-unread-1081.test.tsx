@@ -38,7 +38,7 @@ function renderResults(metadata: Record<string, unknown>) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
-      <EnhancementResults projectId="p1" analysisId="an_1081" metadata={metadata} />
+      <EnhancementResults projectId="p1" analysisId="an_1081" metadata={metadata} canRun />
     </QueryClientProvider>,
   );
 }
