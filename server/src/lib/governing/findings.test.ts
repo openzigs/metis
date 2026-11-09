@@ -193,11 +193,11 @@ describe("no evidence is never Compliant — enforced in code", () => {
       citationDropped: false,
       businessQuestion: null,
     });
+    // #2128 — the citation is the whole sentence the excerpt falls in: here, the clause.
     expect(report.findings[0]!.citation).toEqual({
-      clauseStart: V1.indexOf("never stores"),
-      clauseEnd:
-        V1.indexOf("never stores") + "never stores a full payment card number in any system".length,
-      clauseExcerpt: "never stores a full payment card number in any system",
+      clauseStart: CARD.clauseStart,
+      clauseEnd: CARD.clauseEnd,
+      clauseExcerpt: CARD.clauseExcerpt,
     });
     expect(report).toMatchObject({ unverifiedCitations: 0, noEvidenceDemoted: 0 });
   });
@@ -277,6 +277,45 @@ describe("every citation is verified against the cited revision's stored text", 
     expect(verifyRuleCitation(v2, CARD, excerpt)).toBeNull();
     expect(verifyRuleCitation(undefined, CARD, excerpt)).toBeNull();
     expect(verifyRuleCitation(V1, CARD, "")).toBeNull();
+  });
+
+  it("#2128 — a citation quotes the whole sentence its excerpt falls in, never past the rule's clause", () => {
+    const text = [
+      "§5.1.1.2 Memorized Secret Verifiers",
+      "Verifiers and CSPs SHALL require passwords to be a minimum of eight characters in length. They SHOULD permit at least 64 characters, e.g. for passphrases.",
+    ].join("\n");
+    const clause =
+      "Verifiers and CSPs SHALL require passwords to be a minimum of eight characters in length. They SHOULD permit at least 64 characters, e.g. for passphrases.";
+    const rule = ruleIn(text, { id: "rule_len", controlId: "METIS-002" }, clause);
+    // A re-check that quoted from the verb on, and dropped the final period:
+    // the subject and the period are put back, and the next sentence is not taken.
+    const first = verifyRuleCitation(
+      text,
+      rule,
+      "SHALL require passwords to be a minimum of eight",
+    );
+    expect(first?.clauseExcerpt).toBe(
+      "Verifiers and CSPs SHALL require passwords to be a minimum of eight characters in length.",
+    );
+    expect(first?.clauseExcerpt).toBe(text.slice(first!.clauseStart, first!.clauseEnd));
+    // "e.g. for" ends no sentence: a stop ends one only before a capital, a
+    // digit, a section sign or the clause's end.
+    expect(verifyRuleCitation(text, rule, "They SHOULD permit at least 64")?.clauseExcerpt).toBe(
+      "They SHOULD permit at least 64 characters, e.g. for passphrases.",
+    );
+    // A whole sentence is kept as it is.
+    const whole =
+      "Verifiers and CSPs SHALL require passwords to be a minimum of eight characters in length.";
+    expect(verifyRuleCitation(text, rule, whole)?.clauseExcerpt).toBe(whole);
+    // A rule whose clause starts and ends inside a sentence: widened to the clause, no further.
+    const half = ruleIn(
+      V1,
+      { id: "rule_half", controlId: "EN-04" },
+      "only the last four digits may be kept",
+    );
+    expect(verifyRuleCitation(V1, half, "the last four digits may")?.clauseExcerpt).toBe(
+      "only the last four digits may be kept",
+    );
   });
 
   it("an excerpt of another rule's clause is verbatim policy text but does not cite this rule", () => {

@@ -1194,6 +1194,28 @@ describe("#2122 — carryAnswersOver: an answer is judged onto the other require
     ]);
   });
 
+  it("#2128 — a carried settlement's reason names no answer handle the BA never saw", async () => {
+    const { provider } = stubModel({
+      judge: () => ({
+        decisions: [
+          {
+            rule: "R1",
+            verdict: "applies",
+            reason:
+              "A1 states that whole numbers are kept, and [A2] agrees; so the answer A1 settles it. A3 and A10 stay.",
+            answer: "A1",
+          },
+        ],
+      }),
+    });
+    const answered = [q("q1", [CARD.id], "Whole numbers are kept."), q("q2", [AUDIT.id], "Yes.")];
+    const got = await carryAnswersOver(answered, stored, rules, { provider });
+    expect(got.map((s) => s.reason)).toEqual([
+      "The analyst's answer states that whole numbers are kept, and the analyst's answer agrees; so the analyst's answer settles it. A3 and A10 stay.",
+      "The analyst's answer states that whole numbers are kept, and the analyst's answer agrees; so the analyst's answer settles it. A3 and A10 stay.",
+    ]);
+  });
+
   it("uncertain, no answer named, a failed call or an unreadable reply settle nothing", async () => {
     const answered = [q("q1", [CARD.id, ENCRYPT.id], "Yes.")];
     const uncertain = stubModel({

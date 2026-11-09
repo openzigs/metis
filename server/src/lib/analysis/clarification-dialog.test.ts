@@ -333,3 +333,57 @@ describe("ClarificationDialog askFirst — #1129", () => {
     expect(state.rounds[0]!.questions.map((q) => q.requirementId)).toEqual(["added-1", "ticked-1"]);
   });
 });
+
+describe("#2128 — a clarifying question never shows a requirement's internal id", () => {
+  const LENGTH_ID = "6280ae21-b83d-4cef-adcc-10dba3e4443f";
+  const OLD_ID = "a67493fc-1123-460b-a3e7-1024773280c6";
+  const req = (id: string, title: string) =>
+    ({
+      id,
+      title,
+      description: title,
+      type: "functional",
+      priority: "high",
+      ambiguities: [{ field: "references", description: "unclear" }],
+    }) as unknown as StructuredRequirements["requirements"][number];
+  const TWO_REQS = {
+    requirements: [req(LENGTH_ID, "Minimum password length"), req(OLD_ID, "Old 6-character rule")],
+    totalAmbiguities: 2,
+    totalEvidenceNeeds: 0,
+  } as unknown as StructuredRequirements;
+
+  it("drops an '(id: …)' aside and names a bare id by its requirement's title", async () => {
+    const provider = {
+      offline: true,
+      chat: vi.fn(async () => ({
+        content: JSON.stringify({
+          questions: [
+            {
+              requirementId: OLD_ID,
+              ambiguityField: "references",
+              question: `How does this rule relate to the new password length requirement (id: ${LENGTH_ID})?`,
+              context: `Requirement ${LENGTH_ID.toUpperCase()} supersedes it; see [ID: ${OLD_ID}].`,
+            },
+          ],
+        }),
+      })),
+    } as unknown as AIProvider;
+    const state = await new ClarificationDialog({ provider }).startOrContinue("ana-2128", TWO_REQS);
+    const q = state.rounds[0]!.questions[0]!;
+    // The id the question is stored against is untouched; only the words change.
+    expect(q.requirementId).toBe(OLD_ID);
+    expect(q.question).toBe("How does this rule relate to the new password length requirement?");
+    expect(q.context).toBe(
+      'Requirement "Minimum password length" supersedes it; see "Old 6-character rule".',
+    );
+  });
+
+  it("leaves a short, readable id and an id the prompt did not show as written", async () => {
+    const { nameRequirementIds } = await import("./clarification-dialog.js");
+    const reqs = [req("REQ-001", "Login"), req(LENGTH_ID, "Minimum password length")];
+    expect(nameRequirementIds("What does REQ-001 say?", reqs)).toBe("What does REQ-001 say?");
+    const other = "11111111-2222-4333-8444-555555555555";
+    expect(nameRequirementIds(`Is ${other} related?`, reqs)).toBe(`Is ${other} related?`);
+    expect(nameRequirementIds("", reqs)).toBe("");
+  });
+});

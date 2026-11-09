@@ -233,9 +233,18 @@ export function ClarificationDialogPanel({
   // read "1 resolved / 13 remaining", which told the user their work had not
   // taken when in fact all 14 answers had persisted.
   const answeredCount = Object.values(answers).filter((a) => a.trim().length > 0).length;
+  //
+  // #2128 — counted across the session, and a governing answer counts too:
+  // round 2 opened at "0 addressed" after round 1's only answer, a governing
+  // one, was accepted. Keyed by question id, so the same rule asked again in a
+  // later round is still remaining until that question is answered.
   const addressedFields = new Set([
     ...state.resolvedAmbiguities,
     ...(state.answeredAmbiguities ?? []),
+    ...state.rounds
+      .flatMap((r) => r.questions ?? [])
+      .filter((q) => q.governing && q.answer?.trim())
+      .map((q) => `question:${q.id}`),
   ]);
   const remainingFields = questions
     .map((q) => `${q.requirementId}:${q.ambiguityField}`)
@@ -355,7 +364,7 @@ export function ClarificationDialogPanel({
             after fourteen substantive answers, which reads as thirteen answers
             having been thrown away. */}
         <p className="text-sm text-muted-foreground">
-          {addressedCount} ambiguit{addressedCount === 1 ? "y" : "ies"} addressed across{" "}
+          {addressedCount} question{addressedCount === 1 ? "" : "s"} addressed across{" "}
           {state.rounds.length} round(s).
           {state.escalatedToSonnet && (
             <span className="ml-1 text-warning">(Escalated to Sonnet for complex resolution)</span>
@@ -544,7 +553,7 @@ export function ClarificationDialogPanel({
         {/* Issue #1117 (finding A) — count the user's own answers, not the
             resolution model's confirmations. */}
         <p className="text-xs text-muted-foreground">
-          {addressedCount} ambiguit{addressedCount === 1 ? "y" : "ies"} addressed so far
+          {addressedCount} question{addressedCount === 1 ? "" : "s"} addressed so far
         </p>
         <Button
           onClick={() => submitMutation.mutate()}

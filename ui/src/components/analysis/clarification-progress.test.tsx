@@ -139,9 +139,7 @@ describe("#1117 A — progress counts the user's answers, not the model's tally"
       }),
     );
 
-    expect(screen.getByTestId("clarification-complete")).toHaveTextContent(
-      /3 ambiguities addressed/,
-    );
+    expect(screen.getByTestId("clarification-complete")).toHaveTextContent(/3 questions addressed/);
     expect(screen.getByTestId("clarification-model-confirmed")).toHaveTextContent(
       /confirmed 1 of these as fully resolved/,
     );
@@ -161,6 +159,36 @@ describe("#1117 A — progress counts the user's answers, not the model's tally"
     );
 
     expect(screen.queryByTestId("clarification-model-confirmed")).not.toBeInTheDocument();
+  });
+
+  it("#2128 — a governing answer of an earlier round counts as addressed across the session", () => {
+    const governing = (id: string, answer?: string) => ({
+      id,
+      requirementId: "governing:NR-1",
+      ambiguityField: "governing-applicability",
+      question: "Is the password the only factor?",
+      context: "",
+      governing: { kind: "governing" as const, ruleIds: ["rule_1"], requirementId: "NR-1" },
+      ...(answer ? { answer } : {}),
+    });
+    renderPanel(
+      state({
+        currentRound: 2,
+        rounds: [
+          {
+            round: 1,
+            questions: [question("dsa"), governing("g1", "The password is the only factor.")],
+            answers: [{ questionId: "g1", answer: "The password is the only factor." }],
+          },
+          // The same rule asked again in round 2 is still open: it is not the answered one.
+          { round: 2, questions: [question("dsa"), governing("g2")], answers: [] },
+        ],
+      }),
+    );
+    const progress = screen.getByTestId("clarification-progress");
+    expect(progress).toHaveTextContent("1 addressed");
+    expect(progress).toHaveTextContent("2 remaining");
+    expect(screen.getByText(/1 question addressed so far/)).toBeInTheDocument();
   });
 });
 

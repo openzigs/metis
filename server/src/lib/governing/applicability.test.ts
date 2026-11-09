@@ -43,6 +43,7 @@ const {
   CARRIED_ANSWER_NOTE,
   buildApplicabilityJudgePrompt,
   nameHandles,
+  nameAnswerHandles,
   governingApplicabilityHookFor,
   planScreenBatches,
   SCREEN_ROOM_MAX_SHRINK,
@@ -996,6 +997,18 @@ describe("#2122 — carried answers and rule handles", () => {
       "Met. This rule holds: This rule again. R10 and AR1 stay.",
     );
     expect(nameHandles("", own, entries)).toBe("");
+  });
+
+  it("#2128 — nameAnswerHandles says the analyst's answer for a shown answer handle, and leaves any other", () => {
+    expect(nameAnswerHandles("A1 states the password is the only factor.", 1)).toBe(
+      "The analyst's answer states the password is the only factor.",
+    );
+    expect(nameAnswerHandles("Settled: the answer a2 and answer [A1] agree.", 2)).toBe(
+      "Settled: The analyst's answer and the analyst's answer agree.",
+    );
+    expect(nameAnswerHandles("Per An answer A1, yes.", 1)).toBe("Per the analyst's answer, yes.");
+    expect(nameAnswerHandles("A0, A2, AA1 and A1x stay.", 1)).toBe("A0, A2, AA1 and A1x stay.");
+    expect(nameAnswerHandles("", 3)).toBe("");
   });
 });
 

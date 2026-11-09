@@ -638,7 +638,7 @@ export class ClarificationDialog {
           "started. This does not mean there is nothing to clarify — try again.",
       );
     }
-    return toQuestions(outcome.verdict.questions);
+    return toQuestions(outcome.verdict.questions, requirements);
   }
 
   /**
@@ -871,16 +871,62 @@ const resolutionSchema = z.object({
 const RESOLUTION_SHAPE =
   '{ "resolvedFields": string[], "updatedDescription": string, "remainingUncertainty": number }';
 
-/** Read each question leniently; one without a question or requirement is dropped. */
-function toQuestions(raw: unknown[]): ClarifyingQuestion[] {
+/**
+ * #2128 — an id shorter than this reads as a label a person gave ("REQ-001"),
+ * and is left in a question as written; a longer one is a machine id (a UUID,
+ * a cuid) that means nothing to the analyst.
+ */
+const MIN_INTERNAL_ID_CHARS = 16;
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * #2128 — `text` with the machine ids of `requirements` taken out. The
+ * question prompt labels each requirement `(id: …)` so the reply can say which
+ * one a question is about, and the model copied that label into the question
+ * it wrote: "…the new password length requirement (id: 6280ae21-…)". An
+ * `(id: …)` aside is dropped, since the words before it already name the
+ * requirement; any other mention becomes the requirement's quoted title. Ids
+ * the prompt did not show, and short readable ones, are left as written.
+ */
+export function nameRequirementIds(
+  text: string,
+  requirements: readonly Pick<StructuredRequirement, "id" | "title">[],
+): string {
+  let out = text;
+  for (const r of requirements) {
+    if (r.id.length < MIN_INTERNAL_ID_CHARS || !out.toLowerCase().includes(r.id.toLowerCase())) {
+      continue;
+    }
+    const id = escapeRegExp(r.id);
+    out = out
+      .replace(new RegExp(`\\s*\\(\\s*(?:requirement\\s+)?id\\s*[:=]?\\s*${id}\\s*\\)`, "gi"), "")
+      // A function, so a `$` in the title is never read as a pattern.
+      .replace(new RegExp(`\\[?(?:\\bid\\s*[:=]\\s*)?${id}\\]?`, "gi"), () => `"${r.title}"`);
+  }
+  return out;
+}
+
+/**
+ * Read each question leniently; one without a question or requirement is
+ * dropped. #2128 — the question and its context name no machine id of
+ * `requirements`, the ones the prompt showed ({@link nameRequirementIds});
+ * the readability checks pass none.
+ */
+function toQuestions(
+  raw: unknown[],
+  requirements: readonly Pick<StructuredRequirement, "id" | "title">[] = [],
+): ClarifyingQuestion[] {
   return raw
     .filter((q): q is Record<string, unknown> => !!q && typeof q === "object")
     .map((q) => ({
       id: randomUUID(),
       requirementId: typeof q.requirementId === "string" ? q.requirementId : "",
       ambiguityField: typeof q.ambiguityField === "string" ? q.ambiguityField : "",
-      question: typeof q.question === "string" ? q.question : "",
-      context: typeof q.context === "string" ? q.context : "",
+      question: nameRequirementIds(typeof q.question === "string" ? q.question : "", requirements),
+      context: nameRequirementIds(typeof q.context === "string" ? q.context : "", requirements),
     }))
     .filter((q) => q.question && q.requirementId);
 }

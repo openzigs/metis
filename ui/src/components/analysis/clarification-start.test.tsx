@@ -255,7 +255,7 @@ describe("#1104 finding C — a completed dialog stays reachable at 0 ambiguitie
     // The user's answer must still be on screen — this is the regression #1104
     // finding C fixed, and #1135's fix must not undo it.
     expect(await screen.findByTestId("clarification-complete")).toHaveTextContent(
-      /1 ambiguity addressed/,
+      /1 question addressed/,
     );
     expect(await screen.findByText("No, it does not apply.")).toBeInTheDocument();
     // #2068 — one start per mount, which re-opens only for a governing question.
