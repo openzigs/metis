@@ -916,3 +916,145 @@ describe("#2068 — a finding still Needs BA input after its answer reaches the 
     expect(vi.mocked(prisma.governingFinding.findMany)).not.toHaveBeenCalled();
   });
 });
+
+describe("#2122 — one answer settles the same fact on the analysis's other requirements", () => {
+  const MFA_ROW = {
+    id: "rule_mfa",
+    revisionId: "rev_1",
+    controlId: "AU-02",
+    summary: "A password used on its own is at least 15 characters long.",
+    clauseRef: "§5.1",
+    clauseExcerpt:
+      "A password that is the only factor used to sign in is at least fifteen characters long.",
+    revision: { revisionLabel: "v1", document: { title: "Information Handling Policy" } },
+  };
+  const OTHER_TEXT = "Passwords set through the reset-password command follow the same rules.";
+  beforeEach(() => {
+    mem.rules = [RULE_ROW, MFA_ROW];
+    mem.metadata = JSON.stringify({
+      governingApplicability: {
+        decidedAt: "2026-11-08T00:00:00.000Z",
+        requirements: [
+          {
+            requirementId: "REQ-001",
+            text: REQUIREMENT_TEXT,
+            decisions: [
+              {
+                ruleId: "rule_mfa",
+                controlId: "AU-02",
+                verdict: "uncertain",
+                reason: "Depends on how people sign in.",
+                businessFact: "Is the password the only thing a customer uses to sign in?",
+                foundBy: ["screen"],
+              },
+            ],
+          },
+          {
+            requirementId: "REQ-007",
+            text: OTHER_TEXT,
+            decisions: [
+              {
+                ruleId: "rule_mfa",
+                controlId: "AU-02",
+                verdict: "uncertain",
+                reason: "Depends on how people sign in.",
+                businessFact:
+                  "Are passwords set through the reset command used on their own, not as part of multi-factor sign-in?",
+                foundBy: ["screen"],
+              },
+            ],
+          },
+        ],
+      },
+    });
+  });
+
+  /** The settle judge says applies; the carried-answer judge replies `carried` for its one rule. */
+  function carryModel(carried: Record<string, string>) {
+    const sent: Sent[] = [];
+    const chat = vi.fn(async (messages: ChatMessage[], o: ChatOptions = {}) => {
+      const system = String(o.systemMessage ?? "");
+      const user = messages.map((m) => String(m.content)).join("\n");
+      sent.push({ system, user });
+      const reply = (body: unknown) => ({
+        content: JSON.stringify(body),
+        model: "m",
+        provider: "anthropic" as const,
+      });
+      if (user.includes("Retrieved snippets")) return reply({ status: "open" });
+      if (system.includes("each named A1")) {
+        return reply({
+          decisions: [{ rule: "R1", reason: "The password is the only factor.", ...carried }],
+        });
+      }
+      if (system.includes("You decide which")) {
+        return reply({ decisions: [{ rule: "R1", verdict: "applies", reason: "Only factor." }] });
+      }
+      return reply({});
+    });
+    const provider = {
+      key: "anthropic",
+      model: "claude-sonnet-4-5",
+      offline: false,
+      chat,
+    } as unknown as AIProvider;
+    return { provider, sent };
+  }
+
+  async function answerTheFirst(provider: AIProvider) {
+    const dialog = dialogWith(provider);
+    const state = await dialog.startOrContinue(ANALYSIS, REQS);
+    const questions = state.rounds[0]!.questions;
+    expect(questions.map((q) => q.governing?.requirementId)).toEqual(["REQ-001", "REQ-007"]);
+    const q = questions[0]!;
+    await dialog.submitAnswers(
+      ANALYSIS,
+      [{ questionId: q.id, answer: "Yes, the password is the only factor." }],
+      REQS,
+    );
+    return { dialog, q };
+  }
+
+  it("the other requirement's pair is settled by the answer, read back fresh, and is not asked again", async () => {
+    const { provider, sent } = carryModel({ verdict: "applies", answer: "A1" });
+    const { dialog, q } = await answerTheFirst(provider);
+
+    const carriedCall = sent.find((s) => s.system.includes("each named A1"))!;
+    expect(carriedCall.user).toContain(OTHER_TEXT);
+    expect(carriedCall.user).toContain(`Question: ${q.question}`);
+    expect(carriedCall.user).toContain("Answer: Yes, the password is the only factor.");
+    expect(carriedCall.user).toContain(`asked about another requirement: "${REQUIREMENT_TEXT}"`);
+
+    const read = await readGoverningApplicability(ANALYSIS);
+    expect(read!.requirements[1]!.decisions[0]).toMatchObject({
+      ruleId: "rule_mfa",
+      verdict: "applies",
+      settled: {
+        questionId: q.id,
+        question: q.question,
+        answer: "Yes, the password is the only factor.",
+        previousVerdict: "uncertain",
+      },
+    });
+    const produce = vi.mocked(findingsStore.produceGoverningFindingsForAnalysis);
+    expect(produce.mock.calls[0]![0].requirementIds).toEqual(["REQ-001", "REQ-007"]);
+    refresh.release();
+
+    const next = await dialog.startOrContinue(ANALYSIS, REQS);
+    expect(next.rounds.slice(1).flatMap((r) => r.questions)).toEqual([]);
+  });
+
+  it.each([
+    ["the carried judge is still uncertain", { verdict: "uncertain", businessFact: "Is it?" }],
+    ["the carried judge names no answer", { verdict: "applies" }],
+    ["the carried judge names an answer that was not given", { verdict: "applies", answer: "A9" }],
+  ])("%s: the pair stays open and is asked again", async (_label, carried) => {
+    const { provider } = carryModel(carried);
+    const { dialog } = await answerTheFirst(provider);
+    const read = await readGoverningApplicability(ANALYSIS);
+    expect(read!.requirements[1]!.decisions[0]!.settled).toBeUndefined();
+    refresh.release();
+    const next = await dialog.startOrContinue(ANALYSIS, REQS);
+    expect(next.rounds[1]!.questions.map((x) => x.governing?.requirementId)).toEqual(["REQ-007"]);
+  });
+});

@@ -1644,6 +1644,20 @@ question is not asked again. A finding asked about in an earlier round, while a 
 open, links to the Questions tab instead. You can also add the missing fact to the requirement
 and run the analysis again, or **Reject** the finding with a note that says what you found out.
 
+One answer can settle the same fact on other requirements (#2122). Several requirements can
+wait on one business fact and ask about it in different words ("Is the password the only thing
+people sign in with?"). When you answer one of them, METIS also checks your answer against
+every other requirement of the analysis that is still unsure whether a rule applies. It uses
+the answer there only when the fact holds for that requirement too, such as how the whole
+system lets people sign in, never for a fact about one requirement's own data or screen. A
+finding settled this way records your answer and the question it answered, and its question is
+not asked again. If METIS cannot tell, the question is asked as before.
+
+The panel's summary line gives the number of rules that apply first, then the gaps, in
+separate sentences, for example "5 of 26 rules in NIST SP 800-63B-4 apply. 4 gaps found; 3
+rules need BA input." A gap is one requirement falling short of one rule, so one rule can have
+gaps on several requirements.
+
 An answer rules a rule out only when it says the requirement does not involve what the rule
 covers, and the requirement's own text does not say otherwise. If your answer contradicts the
 requirement (it sends the buyer list to an outside company, and you answer that nothing leaves
@@ -5763,6 +5777,15 @@ When clarification is enabled, METIS:
 4. Incorporates your answers to refine the requirements
 
 If more than 60% of ambiguities remain unresolved after a round, the system automatically escalates to a more powerful model (Claude Sonnet) for better question generation.
+
+**Suggested answers are offered, not filled in (#2122).** When METIS finds an answer to a
+question in your project's own documents or code, it shows that answer under the question, with
+its sources, and a **Use suggested answer** button. The answer box stays empty until you type in
+it or press the button, so a suggestion is not counted as answered and is never sent unless you
+use it. Before #2122 suggestions were typed into the boxes for you, counted as answered, and sent
+with **Submit Answers**, so answering one question meant clearing every other box first, and a
+wrong suggestion could be sent by accident. **Submit Answers** sends only the boxes that hold an
+answer.
 
 When you submit a round and questions are still open, the panel says it is preparing the next
 round until its questions are ready; the answered round cannot be submitted again meanwhile. If

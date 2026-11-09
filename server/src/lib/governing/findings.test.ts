@@ -368,6 +368,26 @@ describe("parsing and evidence", () => {
     expect(parseFindingsReply("nothing", entries).size).toBe(0);
   });
 
+  it("#2122 — a reason or question naming a rule by its handle reads in the BA's words", () => {
+    const got = parseFindingsReply(
+      JSON.stringify({
+        findings: [
+          {
+            rule: "R2",
+            status: "needs-ba-input",
+            reasoning: "Whether R2 is met depends on the CLI. R1 is separate.",
+            businessQuestion: "Does the CLI check R2's list?",
+          },
+        ],
+      }),
+      entries,
+    );
+    expect(got.get(1)?.reasoning).toBe(
+      `Whether this rule is met depends on the CLI. ${CARD.controlId} is separate.`,
+    );
+    expect(got.get(1)?.businessQuestion).toBe("Does the CLI check this rule's list?");
+  });
+
   it("evidence must be 3+ words found in the requirement or an answer, case and spacing aside", () => {
     expect(
       evidenceIsPresent('"Only The  last four digits"', "keep only the last four digits", []),

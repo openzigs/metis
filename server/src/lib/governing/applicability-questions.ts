@@ -32,6 +32,10 @@
  *     ({@link answersForApplyingPairs}), so the findings refresh reads it.
  *     #2068 — a finding no answer can settle is not asked, and one still
  *     Needs BA input after the refresh is asked its new question.
+ *   - **One answer, every requirement (#2122).** An answer is also judged
+ *     onto the analysis's other `uncertain` pairs ({@link carryAnswersOver}),
+ *     so a fact asked in different words on several requirements is answered
+ *     once.
  *
  * Governing text (summaries, clauses) and the requirement reach the model
  * fenced as untrusted data, as #1872 sends them.
@@ -865,6 +869,126 @@ export async function rejudgeAnswered(
 }
 
 /**
+ * #2122 — the analysis's `uncertain` pairs an answer of `answered` could settle
+ * though no answered question links them: every unsettled one, of any
+ * requirement, that none of `answered` links. A pair a question links is that
+ * question's to settle ({@link rejudgeAnswered}), whatever its judging said.
+ */
+export function carryCandidates(
+  answered: readonly ClarifyingQuestion[],
+  stored: GoverningAnalysisApplicability,
+): Array<{ requirementId: string; text: string; ruleIds: string[] }> {
+  const linked = new Set(
+    answered.flatMap((q) =>
+      q.governing && q.answer?.trim()
+        ? q.governing.ruleIds.map((id) => pairKey(q.governing!.requirementId, id))
+        : [],
+    ),
+  );
+  return stored.requirements.flatMap((r) => {
+    const ruleIds = r.decisions
+      .filter(
+        (d) =>
+          d.verdict === "uncertain" &&
+          !d.settled &&
+          !linked.has(pairKey(r.requirementId, d.ruleId)),
+      )
+      .map((d) => d.ruleId);
+    return ruleIds.length > 0 ? [{ requirementId: r.requirementId, text: r.text, ruleIds }] : [];
+  });
+}
+
+/**
+ * #2122 — carry the answers of `answered` to the analysis's other `uncertain`
+ * pairs ({@link carryCandidates}). "The password is the only factor", answered
+ * on one requirement, left two others asking the same fact in their own words,
+ * and the next round asked it twice more.
+ *
+ * One judging call per requirement with candidate pairs, the requirement
+ * followed by every answer (`A1`, …) and the requirement it was asked about,
+ * under {@link CARRIED_ANSWER_NOTE}: an answer is used only for a fact that
+ * holds for this requirement too. Only a decided verdict that names the answer
+ * it used is taken, recorded as that answer's settlement. Anything else (still
+ * `uncertain`, no answer named, a failed or unreadable call) settles nothing:
+ * the pair is asked as before, so a carry can save the BA a question but never
+ * cost one.
+ */
+export async function carryAnswersOver(
+  answered: readonly ClarifyingQuestion[],
+  stored: GoverningAnalysisApplicability,
+  rules: ReadonlyMap<string, ApplicabilityRule>,
+  deps: BuildGoverningQuestionsDeps,
+): Promise<GoverningSettlementInput[]> {
+  const given = answered.filter((q) => q.governing && q.answer?.trim());
+  if (given.length === 0) return [];
+  const textOf = new Map(stored.requirements.map((r) => [r.requirementId, r.text]));
+  const out: GoverningSettlementInput[] = [];
+  for (const candidate of carryCandidates(given, stored)) {
+    const linked = candidate.ruleIds
+      .map((id) => rules.get(id))
+      .filter((r): r is ApplicabilityRule => r !== undefined);
+    if (linked.length === 0) continue;
+    const entries = applicabilityEntries(linked);
+    const answers = given.map((q, i) => {
+      const about = q.governing!.requirementId;
+      const where =
+        about === candidate.requirementId
+          ? "this requirement"
+          : `another requirement: "${clip(textOf.get(about) ?? "", MAX_REQUIREMENT_QUOTE_CHARS)}"`;
+      return `A${i + 1} (asked about ${where})\nQuestion: ${q.question}\nAnswer: ${q.answer!.trim()}`;
+    });
+    const text = `${candidate.text}\n\nA business analyst's answers:\n\n${answers.join("\n\n")}`;
+    const judge = async (reask: boolean) => {
+      const prompt = buildApplicabilityJudgePrompt(text, entries, { reask, carried: true });
+      const reply = await deps.provider.chat([{ role: "user", content: prompt.userMessage }], {
+        systemMessage: prompt.systemMessage,
+        disableTools: true,
+        maxTokens: resolveFinalAnswerMaxOutputTokens(deps.provider.model, deps.provider.key),
+        ...(deps.model ? { model: deps.model } : {}),
+        ...(deps.signal ? { signal: deps.signal } : {}),
+      });
+      return parseApplicabilityJudgeReply(reply.content, entries);
+    };
+    let decided: ReturnType<typeof parseApplicabilityJudgeReply>["decisions"];
+    try {
+      let reply = await judge(false);
+      if (!reply.readable) reply = await judge(true);
+      if (!reply.readable) {
+        log.warn("carried answers' judging reply unreadable twice; the rules stay open", {
+          requirementId: candidate.requirementId,
+        });
+        continue;
+      }
+      decided = reply.decisions;
+    } catch (err) {
+      if (deps.signal?.aborted) throw err;
+      log.warn("governing answers could not be carried to a requirement; its rules stay open", {
+        requirementId: candidate.requirementId,
+        error: (err as Error).message,
+      });
+      continue;
+    }
+    for (const e of entries) {
+      const d = decided.get(e.index);
+      if (!d || d.verdict === "uncertain") continue;
+      const m = /^A(\d+)$/i.exec(d.answer?.trim() ?? "");
+      const q = m ? given[Number(m[1]) - 1] : undefined;
+      if (!q) continue;
+      out.push({
+        requirementId: candidate.requirementId,
+        ruleId: e.rule.id,
+        verdict: d.verdict,
+        reason: d.reason || "Settled by an answer given on another requirement.",
+        questionId: q.id,
+        question: q.question,
+        answer: q.answer!.trim(),
+      });
+    }
+  }
+  return out;
+}
+
+/**
  * #2059 — the answers of `answered` to pairs that `applies` and have no answer
  * of that question recorded yet (#2068: a pair asked again takes each), as settlements that keep the verdict and its reason. No model
  * is called: applicability already decided the rule applies, and the answer is
@@ -1025,10 +1149,12 @@ export function governingQuestionSourceFor(input: {
       // #2009 — only questions that still have a linked pair to settle.
       const answered = withAnswer.filter((q) => hasOpenLinkedPair(stored, q));
       if (answered.length === 0) return 0;
-      const rows = await projectRules(
-        input.projectId,
-        answered.flatMap((q) => q.governing!.ruleIds),
-      );
+      // #2122 — and the rules of the other open pairs the answers may settle.
+      const carried = carryCandidates(answered, stored);
+      const rows = await projectRules(input.projectId, [
+        ...answered.flatMap((q) => q.governing!.ruleIds),
+        ...carried.flatMap((c) => c.ruleIds),
+      ]);
       const rules = new Map<string, ApplicabilityRule>(
         rows.map((r) => [
           r.id,
@@ -1046,6 +1172,10 @@ export function governingQuestionSourceFor(input: {
         ...(await rejudgeAnswered(answered, stored, rules, deps(signal))),
         // #2059 — an answer to a rule that applies needs no judging call.
         ...answersForApplyingPairs(answered, stored),
+        // #2122 — last, so a pair's own question's settlement always wins.
+        ...(carried.length > 0
+          ? await carryAnswersOver(answered, stored, rules, deps(signal))
+          : []),
       ];
       const applied = await settleGoverningPairs(input.analysisId, settlements);
       log.info("governing answers settled", {

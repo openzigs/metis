@@ -384,7 +384,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       // Counted from the one listed finding; the revision holds 4 rules (the
       // fixture's PB finding cites a rule of its own on the same revision).
       expect(section).toContain(
-        "- 0 gaps found against 1 of 4 applicable rules in Information Handling Policy v1; 1 rule needs BA input.",
+        "- 1 of 4 rules in Information Handling Policy v1 applies. 0 gaps found; 1 rule needs BA input.",
       );
       expect(markdown).not.toContain("Mallory's finding.");
       expect(findForbiddenComplianceClaims(markdown)).toEqual([]);

@@ -473,8 +473,8 @@ export interface GoverningFindingRevision {
 
 /**
  * #1876 — every revision `findings` cite, in first-cited order, with its rule
- * count: the "M" of the analysis view's "N of M applicable rules in <title>
- * <label>" (`governingSummarySentence`). Counted on the cited revision, not
+ * count: the "M" of the analysis view's "N of M rules in <title> <label>
+ * apply" (`governingSummarySentence`). Counted on the cited revision, not
  * the document's current one, as the findings themselves are (#1874).
  */
 export async function governingFindingRevisions(

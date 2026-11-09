@@ -366,7 +366,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         unverifiedCitations: 0,
       });
       // #1876 — the revision the findings cite, with its rule count: the
-      // analysis view's "N of M applicable rules in <title> <label>".
+      // analysis view's "N of M rules in <title> <label> apply".
       expect(first.body.data.revisions).toEqual([
         {
           revisionId: v1Id,
