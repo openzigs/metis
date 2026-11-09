@@ -2649,7 +2649,9 @@ the pre-#1873 code).
   open and is asked again.
 - **One question per fact.** A requirement's facts that differ only in case or punctuation merge
   without a model. Several distinct facts go to the model once to merge those that ask the same
-  thing. A merge reply that cannot be read, or that drops a fact, never drops a question. A
+  thing. The model returns only the merged groups (#2077): a fact merged with no other is asked
+  in its own words (#2066), so its wording is not requested. A merge reply that cannot be read,
+  or that drops a fact, never drops a question. A
   question carries `governing: { kind: "governing", ruleIds, requirementId }`
   (`GoverningQuestionLink` in `@metis/shared`) and the `ambiguityField`
   `governing-applicability`, which names no real ambiguity. Its own `requirementId` is
@@ -2662,7 +2664,10 @@ the pre-#1873 code).
   settle rule applicability and never refine a requirement.
 - **The guard.** `questionLeaksRule` refuses a question that names a control id (whole words,
   with case, spacing and punctuation set aside, so `PCI DSS 3.4` names `PCI-DSS 3.4` and `CC 6.1`
-  names `CC6.1`: #2009) or repeats 8 or more consecutive words of a clause. It is re-asked once in
+  names `CC6.1`: #2009), refers to a rule or clause as such (`rule`, `rules`, `clause`,
+  `clauses` as whole words, #2077: "the seven-year retention rule" names no id), or repeats 8 or
+  more consecutive words of a clause. `policy` is not refused: the template asks to check a
+  requirement "against company policy", and a returns policy is a business fact. It is re-asked once in
   plain words, then replaced by `templateGoverningQuestion`.
 - **Self-resolve.** Governing questions go through the dialog's grounding pass, which searches
   only the project's knowledge index. #1869 keeps governing chunks out of it, so the rulebook can
@@ -2713,7 +2718,14 @@ the pre-#1873 code).
   rounds left asks `open` for governing questions only. If there are any, the dialog re-opens
   with a governing-only round. The UI posts that start once per mount of a completed dialog
   (`EnhancementResults`). This covers a refresh that lands after the submit completed the
-  dialog, and dialogs completed before #2059.
+  dialog, and dialogs completed before #2059. With nothing to ask, the dialog is returned
+  without a write (#2077), as is one already complete with every round used.
+  The UI also posts a start once per round per mount for an **open** dialog whose current round
+  has not been generated (`rounds.at(-1).round !== currentRound`, rounds left): the state a
+  submit leaves when ambiguities or a governing question are still open. Before #2077 nothing
+  posted it, so rounds 2 and 3 were never generated. No start is posted for a viewer without
+  `analysis.run` (the route's permission) or when the run has no structured requirements (the
+  route's 400), so neither fails silently once per mount.
   A judging reply that cannot be read is re-asked once, and then settles nothing (#2009).
   An answered pair is never asked again, so a pair whose settle failed (an unreadable reply, a
   provider error or outage, an aborted request) would otherwise be orphaned. Instead, every

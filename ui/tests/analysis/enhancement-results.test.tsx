@@ -26,7 +26,7 @@ function renderResults(metadata: Record<string, unknown> | null) {
   });
   return render(
     <QueryClientProvider client={qc}>
-      <EnhancementResults projectId="proj-1" analysisId="ana-1" metadata={metadata} />
+      <EnhancementResults projectId="proj-1" analysisId="ana-1" metadata={metadata} canRun />
     </QueryClientProvider>,
   );
 }

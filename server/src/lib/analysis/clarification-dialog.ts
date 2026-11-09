@@ -368,9 +368,13 @@ export class ClarificationDialog {
     // backed off per analysis, so a provider outage is not paid per start.
     await this.retryOrphanedGoverning(analysisId, state, signal);
 
+    // #2077 — a dialog already complete is returned as it is: viewing the
+    // Questions tab must not rewrite an unchanged row.
     if (state.currentRound > MAX_ROUNDS) {
-      state.completed = true;
-      await writeDialogState(analysisId, state);
+      if (!state.completed) {
+        state.completed = true;
+        await writeDialogState(analysisId, state);
+      }
       return state;
     }
 
@@ -380,10 +384,10 @@ export class ClarificationDialog {
     // the dialog), or one of a dialog completed before #2059 asked them.
     if (state.completed) {
       const reopen = await this.governingQuestionsFor(state, signal);
-      if (reopen.length === 0) {
-        await writeDialogState(analysisId, state);
-        return state;
-      }
+      // #2077 — nothing to ask leaves the dialog as it was: no write per view.
+      // (The orphan retry above records its settlements on the applicability,
+      // never on this state.)
+      if (reopen.length === 0) return state;
       state.completed = false;
       state.rounds.push({
         round: state.currentRound,
