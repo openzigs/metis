@@ -990,6 +990,21 @@ describe("the code a reading ran (#1878)", () => {
       rehashed.corpus.contentHash = "x";
       expect(() => combine(rehashed)).toThrow(/another content hash/);
     });
+
+    // #2063 — `Math.min()` over no arms is Infinity, and the run loop would never end.
+    it("refuses a report that ran no arms, alone or beside one that did", async () => {
+      const good = await oneRun(resemblingOnly);
+      const noArms = { ...(structuredClone(good) as object), arms: [] };
+      expect(() => combineGoverningReports(corpus, [{ source: "e.json", report: noArms }])).toThrow(
+        /cannot combine e\.json: it ran no arms/,
+      );
+      expect(() =>
+        combineGoverningReports(corpus, [
+          { source: "good.json", report: good },
+          { source: "e.json", report: noArms },
+        ]),
+      ).toThrow(/cannot combine e\.json: it ran no arms/);
+    });
   });
 
   it("writes a reading beside the corpora, named baseline-<arm>-<model>, and refuses any other name", () => {

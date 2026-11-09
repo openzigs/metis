@@ -37,7 +37,6 @@
  * is measured, and every report names each arm's configuration and model.
  */
 /* eslint-disable no-console -- a CLI whose output is its report */
-import { execFileSync } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -58,13 +57,13 @@ import {
   loadGoverningCorpus,
   type GoverningCorpusName,
 } from "../src/lib/eval/governing/corpus.js";
+import { gitProvenance } from "../src/lib/eval/governing/git-provenance.js";
 import {
   DEFAULT_GOVERNING_BUDGET_USD,
   DEFAULT_GOVERNING_RUNS,
   combineGoverningReports,
   readingPaths,
   runGoverningEval,
-  type GoverningProvenance,
   type GoverningReport,
   toJsonReport,
   toMarkdownReport,
@@ -72,20 +71,6 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..", "..");
-
-/** The HEAD commit and whether the tree is clean; null where git cannot say. */
-function gitProvenance(): Pick<GoverningProvenance, "commit" | "dirty"> {
-  const git = (args: string[]): string | null => {
-    try {
-      return execFileSync("git", args, { cwd: REPO_ROOT, encoding: "utf8" }).trim();
-    } catch {
-      return null;
-    }
-  };
-  const commit = git(["rev-parse", "HEAD"]);
-  const status = git(["status", "--porcelain"]);
-  return { commit, dirty: status === null ? null : status.length > 0 };
-}
 
 /** Write `report` to eval-results, and to the corpus's readings when `reading` names one. */
 async function writeReports(
@@ -192,7 +177,7 @@ async function main(): Promise<void> {
   console.log(`arms call ${live.key}/${live.model}`);
   const arms = buildGoverningArms(armIds, { model: `${live.key}/${live.model}`, topK });
 
-  const provenance = gitProvenance();
+  const provenance = gitProvenance(REPO_ROOT);
   console.log(
     `at ${provenance.commit ?? "an unknown commit"}${provenance.dirty ? " (uncommitted changes)" : ""}`,
   );
