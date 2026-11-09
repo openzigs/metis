@@ -230,6 +230,7 @@ the report file. A reading is for a decision, never for tuning a prompt.
 | Date | Issue | Arms | Model | Report |
 |---|---|---|---|---|
 | 2026-11-09 | #2105 | A5 (the shipped path), 3 runs as three `--runs 1` invocations, combined; commit `1a6766257` | `anthropic/claude-sonnet-5-5` | [`eval-data/readings/governing-03-openemr-hipaa/baseline-A5-sonnet.md`](../../readings/governing-03-openemr-hipaa/baseline-A5-sonnet.md) |
+| 2026-11-09 | #2108 | A5, 3 runs as three `--runs 1` invocations, combined; commit `b7f9f8657`, after the fix tuned on `governing-04` | `anthropic/claude-sonnet-5-5` | [`eval-data/readings/governing-03-openemr-hipaa/baseline-A5-sonnet-2108.md`](../../readings/governing-03-openemr-hipaa/baseline-A5-sonnet-2108.md) |
 
 ### The #2105 reading
 
@@ -282,3 +283,141 @@ on real policies and real issue text the shipped path finds fewer of the rules t
 and adds more that do not, than the synthetic held-out set showed. The labels are still AI
 labels; a person's review of the 33 pairs (`annotation.reviewedBy`) would say how much of the
 precision and verdict gap is the path and how much is the labels.
+
+### The #2108 diagnosis of the #2105 reading
+
+#2108 asked for each missed or wrong pair to be put down to its stage: applicability, the
+findings call, or the label. **No person reviewed the labels** (the owner's decision of
+2026-11-09), so a pair whose label looks doubtful is reported as **label doubtful**, with the
+reason, and kept apart from the defects. No label was changed, then or after the re-read, and
+the content hash stands.
+
+The #2105 records hold the final findings only. So the stage is read from them as follows:
+
+- a truth pair with no finding is **applicability**: its rule was not a candidate, or the
+  judge ruled it out. The BM25 top 8 is deterministic and is recomputed without a model. A
+  rule in it was a candidate, so the judge ruled it out. For a rule outside it, the record
+  cannot say whether the screen or the judge dropped it;
+- an extra rule is **applicability**: only a rule that applies, or may apply, gets a finding;
+- a wrong verdict is the **findings call**, unless the finding cites the rule's whole clause.
+  That is applicability's `uncertain`, which becomes Needs BA input without a findings call.
+
+Since #2108, A5 records each candidate's stage (`stages`: the pass that found it, its
+applicability, its finding), and every report prints "Where each error arose". The re-read
+below was read that way.
+
+**Misses** (a truth pair never found):
+
+| Pair | Label | Runs missed | Stage | Defect or label doubtful |
+|---|---|---|---|---|
+| OE-25 → PW-03 | gap | 3 of 3 | applicability (outside the top 8) | **Defect.** The text says new portal passwords "must mix upper/lower case and digits". That is the composition rule PW-03 forbids, on the page the requirement changes. The judge's "judge what the requirement itself changes, not the systems it runs on" reads it as background. |
+| OE-14 → AS-02, AU-01 | needs-ba-input | 3 of 3 | applicability (outside the top 8) | **Defect.** Moving sign-in to an outside identity provider moves password procedures and the second factor there. Whether the provider does both is the question to ask. |
+| OE-09 → TS-10 | needs-ba-input | 3 of 3 | applicability: the judge (in the top 8) | **Defect.** A development install that logs in over HTTP serves the application, and the health information, over HTTP. |
+| OE-01 → TS-07 | needs-ba-input | 3 of 3 | applicability (outside the top 8) | **Label doubtful.** Labeller 1 left it off. The adjudicator's reason is conditional ("could mean entries saved to the wrong chart"), and the report is about abrupt logouts with a suspected session mix-up. Attaching the integrity rule takes the stretch reading the judge is told to leave out. It is also one of the two non-resembling pairs, so it alone holds that bar at 0.50. |
+| OE-16 → PW-07 | needs-ba-input | 3 of 3 | applicability: the judge (in the top 8) | **Label doubtful.** The consistency pass added it ("silent on blocklist screening") to a requirement about the minimum length. By that reading, every change to password validation brings in every password rule, and the labels do not do that for PW-03 or PW-08 on the same item. |
+
+**Wrong verdicts** (wrong in at least two of three runs):
+
+| Pair | Label | Said | Stage | Defect or label doubtful |
+|---|---|---|---|---|
+| OE-24 → TS-06 | compliant | gap ×3 | findings call | **Defect.** The requirement is a defect report: the log records the wrong patient. The call judged the defect it describes, not the fix it asks for. |
+| OE-07 → AU-02 | gap | needs-ba-input ×3 | findings call | **Defect.** The text names the setting "0 for no maximum", which is a breach of "at most 100" as written. |
+| OE-21 → TS-06, OE-03 → TS-05, OE-05 → TS-06, OE-16 → AS-02 | compliant | needs-ba-input (2–3 of 3) | findings call | **Defect.** Each requirement asks for the rule's safeguard (an audit entry, encrypted backups, a stronger length rule). The call asked about a part of the rule the requirement does not touch (examining the log, decrypting the backup). |
+| OE-04 → TS-04, SM-02 | compliant | mixed | findings call | **Defect.** "Session timeout should force immediate logout" is the automatic logoff the rules ask for. |
+| OE-15 → AS-02 | gap | needs-ba-input ×3 | findings call | **Defect.** Changing a password from the login screen with no check of who is asking is a gap as written (the adjudicator's reading). |
+| OE-12 → AS-02, PW-04 | compliant | needs-ba-input ×3 | findings call | **Label doubtful.** The issue has a title and no body. PW-04 forbids periodic changes, and a title cannot say the forced reset is never periodic. The adjudicator chose compliant over labeller 1's needs-ba-input. AS-02 was added by the consistency pass. |
+| OE-25 → AS-02 | compliant | needs-ba-input ×3 | findings call | **Label doubtful.** The consistency pass added it. A password procedure that enforces a rule PW-03 forbids (labelled a gap on the same item) sits oddly as compliant. |
+| OE-11 → AS-02 | needs-ba-input | gap ×3 | findings call | **Label doubtful.** Emailing a new user's password is, on its face, a failure to safeguard it. |
+| OE-15 → PW-07, OE-11 → PW-07 | needs-ba-input | gap (2–3 of 3) | findings call | **Label doubtful.** The labelling rules let silence be either gap or needs-ba-input. A new flow that sets passwords and says nothing of a blocklist is read either way. |
+| OE-09 → PW-09 | needs-ba-input | gap (2 of 3) | findings call | **Label doubtful.** The requirement itself proposes letting the login screen work over HTTP in development, which asks for a password over an unencrypted channel. |
+
+**Extra rules** (73 pair-runs in all; every one is **applicability**): OE-15 drew 24, OE-19
+12, OE-11 7, OE-01 and OE-14 6 each. Some are **label doubtful**, because the labellers left
+off a rule that the same reasoning brings in:
+
+- OE-15 → PW-02, PW-03, PW-08 and PW-10: a new password-change flow, on the reasoning that
+  put PW-07 on it;
+- OE-01 → SM-02: abrupt logouts are session termination;
+- OE-09 → SM-03: a session falling back to HTTP is that rule's subject;
+- OE-23 → SM-02: as #2105 noted;
+- OE-22 → AU-03: forced enrolment binds new authenticators;
+- OE-14 → TS-02: unique user identification under an outside provider.
+
+The rest are **defects of the judge**. It brings in the subject's neighbours: on OE-19 sent-fax
+tracking, encryption, integrity and transmission; on OE-15, security questions, the
+emergency-access procedure and CSRF.
+
+**Defect classes.** Three account for most of the defects:
+
+1. the judge brings in most of the rules that share a requirement's subject, and rules out a
+   rule the requirement's text says the flow it changes breaks today;
+2. the findings call judges a defect report as the defect, not the fix;
+3. the findings call asks about a requested safeguard instead of finding it compliant.
+
+Retrieval is not among them. In the re-read's stage trace, no miss arose as `not-a-candidate`.
+
+### The #2108 fix and re-read
+
+**Where the fix was tuned.** `governing-01` cannot show these defects: it has no defect
+report, no password rule and no sign-in flow. So the fix was tuned on a **new tuning split of
+real text**, `governing-04-openemr-asvs`: OWASP ASVS 5.0.0 against 25 OpenEMR issues that this
+set does not use, labelled blind the same way (its `ANNOTATION.md`). Three prompt lines, each
+with an example taken from `governing-04`, none from this set:
+
+- `SAME_SUBJECT_LINE` in the applicability judge (class 1);
+- `DEFECT_REPORT_LINE` (class 2) and `SAFEGUARD_REQUESTED_LINE` (class 3) in the findings
+  call.
+
+On `governing-04` (Sonnet, tuning numbers): precision went from 0.57 / 0.55 to 0.68 and
+verdict accuracy from 0.54 / 0.42 to 0.79, with recall 0.96 / 0.88 before and 0.94 after. On
+`governing-01` (Sonnet, two runs each): precision went from 0.42 to 0.52 and verdict accuracy
+from 0.68 to 0.85, recall stayed at 1.00, and there were no hard errors before or after.
+
+**Not independent of this set.** This set was read once, at #2105, before the fix. The defect
+classes above were found here, and `governing-04`'s requirements were chosen to hold the same
+kinds of text. No item, label or rule of this set reached a prompt. But this re-read is less
+independent than the first for those kinds of pair, OE-25 above all.
+
+**The re-read**: one reading, three runs, at commit `b7f9f8657` on a clean tree, $2.03.
+
+| Bar | Required | #2105 | #2108: mean | Per run | Pass |
+|---|---|---|---|---|---|
+| Overall recall | ≥ 0.90 | 0.80 | 0.75 | 0.73 / 0.73 / 0.79 | **no** |
+| Non-resembling recall | ≥ 0.85 | 0.50 | 0.50 | 0.50 / 0.50 / 0.50 | **no** (2 pairs) |
+| Precision | ≥ 0.60 | 0.52 | **0.76** | 0.75 / 0.80 / 0.74 | yes |
+| Citation accuracy | ≥ 0.95 | 1.00 | 1.00 | 1.00 ×3 | yes |
+| No-evidence → compliant errors | 0 per run | 0 | 0 | 0 ×3 | yes |
+
+Verdict accuracy went from 0.31 to 0.49. **Two of the five bars still fail, against three
+before.** Pair by pair, over the three runs:
+
+| Label | #2105: what the path said | #2108: what the path said |
+|---|---|---|
+| compliant (39 pair-runs) | compliant 11, needs-ba-input 23, gap 5 | compliant 20, needs-ba-input 19, gap 0 |
+| gap (12) | gap 2, needs-ba-input 7, missed 3 | gap 9, needs-ba-input 3, missed 0 |
+| needs-ba-input (48) | needs-ba-input 18, gap 13, missed 17 | needs-ba-input 20, gap 3, missed 25 |
+| extra rules | 73 (24 on OE-15) | 23 (none on OE-15) |
+
+- **Fixed:** OE-25 → PW-03, the named miss, is found as `gap` in 3 of 3 runs, against 0. The
+  extra rules on OE-15 are gone. OE-24 → TS-06 is `compliant` in every run (the defect-report
+  line), and so are OE-21 → TS-06 and OE-07 → AU-02 (`gap`).
+- **Recall fell (0.80 → 0.75), all of it on `needs-ba-input` pairs.** Every miss of the
+  re-read is `judged-does-not-apply`. The same-subject line now rules out a rule that governs
+  every new or changed password, on a requirement that creates or forces one:
+  - OE-11 → PW-07 (3 of 3) and PW-02 (2 of 3);
+  - OE-12 → PW-07 (2 of 3);
+  - OE-19 → TS-01 (2 of 3).
+
+  PW-07 reads "When processing a request to establish or change a password", so OE-11 and
+  OE-12 do engage it. That is a defect of the new line, not a doubtful label. `governing-04`
+  holds no such pair, which is why the tuning did not show it.
+- **Still wrong:** the misses of the first reading other than OE-25 (OE-01 → TS-07, OE-09 →
+  TS-10, OE-14 → AS-02 and AU-01, OE-16 → PW-07), and OE-15 → AS-02, still asked about where
+  the label is `gap` (3 of 3). Also 19 compliant pair-runs that are still
+  asked about, most of them on the label-doubtful OE-12 and OE-25 → AS-02, and on OE-03 and
+  OE-04.
+
+**Decision.** The owner's decision of 2026-11-09 stands: governing checks stay on by default,
+marked **Preview**, until this set passes its bars. It still fails two of the five, so the
+Preview mark stays. The recall loss is a follow-up, to be tuned on a split that holds the
+pair it missed. It is never tuned on this set.

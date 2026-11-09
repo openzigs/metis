@@ -1743,6 +1743,18 @@ Every clause it quoted was still word for word, and it still never called a rule
 **Compliant** without evidence. Only 31% of its statuses matched the expected ones. That
 figure has no bar.
 
+After a fix (#2108), the same measurement was taken once more. It now passes three of the
+five bars: 76% of the rules it applies do apply, its quotes are still word for word, and it
+still calls nothing **Compliant** without evidence. Two more things changed:
+
+- a request that reports a defect is now checked as the fix it asks for;
+- a request that asks for a safeguard is found **Compliant** more often (49% of its statuses
+  now match).
+
+It still finds only 75% of the rules that apply, and 50% of those that share no words with
+their requirement. Expect it to miss some password rules on a request that creates or resets
+a password. So the Preview mark stays.
+
 So the **Governing documents** tab, the **Governing rules** panel and the BRD's **Governing
 rules** section each carry a **Preview** badge with this note: "Governing checks can miss
 rules or flag ones that don't apply. Review each finding before relying on it." The badge

@@ -4766,6 +4766,30 @@ citation accuracy 1.00 and no unsupported `compliant`
 (`eval-data/readings/governing-03-openemr-hipaa/baseline-A5-sonnet.md`). The same rule holds:
 never iterate a prompt against it.
 
+**A tuning set of real text, and the stage of each error (#2108).** `governing-01` holds no
+defect report, password rule or sign-in flow, so the defects `governing-03` showed could not
+be tuned there. **`governing-04-openemr-asvs`** (`purpose: "tuning"`, `synthetic: false`)
+quotes 30 OWASP ASVS 5.0.0 requirements (CC BY-SA 4.0, kept in the policy's header) against 25
+OpenEMR issues that `governing-03` does not use. It was labelled blind the same way, without
+the consistency pass. A5 now records each candidate rule's **stage**
+(`GoverningArmOutput.stages`, `eval/governing/stages.ts`): the pass that found it, its
+applicability and its finding. `stageSection` prints "Where each error arose": each miss,
+extra rule and wrong verdict counted as `not-a-candidate`, `judged-does-not-apply`,
+`applicability-applies`, `applicability-uncertain` or `findings-call`. Three prompt lines were
+tuned on `governing-04`:
+
+- `SAME_SUBJECT_LINE` in the applicability judge: of the rules sharing a subject, only those
+  whose matter the requirement sets, changes or says how it does today;
+- `DEFECT_REPORT_LINE` in the findings call: a defect report is judged as the fix it asks for;
+- `SAFEGUARD_REQUESTED_LINE` in the findings call: a requested safeguard is compliant unless
+  the requirement leaves it open.
+
+`governing-03`, re-read once, passes precision (0.52 → 0.76) and fails recall
+(0.80 → 0.75: the judge now rules out password rules on flows that set a password) and
+non-resembling recall (0.50)
+(`eval-data/readings/governing-03-openemr-hipaa/baseline-A5-sonnet-2108.md`; the diagnosis is
+in its `ANNOTATION.md`).
+
 **Readings and their code (#1878).** Every report records `provenance`: the commit it ran at
 (`git rev-parse HEAD`), whether the tree was clean, and each arm's `codePath`. Three runs do not
 finish inside one ten-minute command (#2038). So a decision reading is three `--runs 1`
