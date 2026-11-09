@@ -216,11 +216,18 @@ test.describe("Impact result: why each file to edit was chosen (#1762)", () => {
     await expect(pom.notFound).toContainText(
       `METIS could not find the code this change touches in ${projectName}.`,
     );
-    await expect(pom.headline).toContainText("0 files to edit");
+    // #1892 — the whole headline: the doubtful file and the blast-radius file are
+    // both "more to review".
+    await expect(pom.headline).toHaveText("0 files to edit · 2 more to review");
     // The doubtful file is still shown, labelled; the blast radius keeps its own heading.
     await expect(pom.doubtfulBadge(ORDERS)).toBeVisible();
     await expect(pom.editCandidates).not.toContainText("most likely has to touch");
     await expect(pom.blastRadius).toBeVisible();
+    // #1892 — the toggle counts the blast radius alone and carries no second
+    // "to review" number to disagree with the headline.
+    await expect(pom.blastRadius.getByTestId("blast-radius-toggle")).toHaveText(
+      "Blast radius — 1 symbol in 1 file (callers, data writers, related code)",
+    );
   });
 
   test("with every lever flag off the card renders as before", async ({ page }) => {

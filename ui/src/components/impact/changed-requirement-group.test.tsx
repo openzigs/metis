@@ -363,7 +363,7 @@ describe("ChangedRequirementGroup — files to edit vs blast radius (#1036)", ()
       "2 files to edit · 2 more to review",
     );
     expect(screen.getByTestId("blast-radius-toggle").textContent).toMatch(
-      /3 symbols across 3 files to\s+review/,
+      /3 symbols in 3 files, 1 of them also a file to edit \(/,
     );
   });
 
