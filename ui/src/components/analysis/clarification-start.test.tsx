@@ -118,7 +118,12 @@ function renderResults(meta: Record<string, unknown>, canRun = true) {
   const rerenderWith = (next: Record<string, unknown>) =>
     view.rerender(
       <QueryClientProvider client={qc}>
-        <EnhancementResults projectId="p1" analysisId={ANALYSIS_ID} metadata={next} canRun />
+        <EnhancementResults
+          projectId="p1"
+          analysisId={ANALYSIS_ID}
+          metadata={next}
+          canRun={canRun}
+        />
       </QueryClientProvider>,
     );
   return { ...view, qc, invalidateSpy, rerenderWith };
@@ -390,7 +395,8 @@ describe("#2077 — later rounds are generated, and no start the server must ref
     rerenderWith(metadata(0, { promotionStatus: "allowed" }));
     await new Promise((r) => setTimeout(r, 150));
     expect(clarify).toHaveBeenCalledTimes(1);
-    expect(screen.getByTestId("clarification-progress")).toBeInTheDocument();
+    // #2085 — and the failure is said, not left as the answered round.
+    expect(screen.getByTestId("clarify-round-error")).toBeInTheDocument();
   });
 
   it("an open dialog with no round left is not started", async () => {
@@ -413,10 +419,16 @@ describe("#2077 — later rounds are generated, and no start the server must ref
           state
             ? state.completed
               ? "clarification-complete"
-              : "clarification-progress"
+              : "clarification-next-round"
             : "gaps-preview",
         ),
       ).toBeInTheDocument();
+      if (state && !state.completed) {
+        // #2085 — a round this viewer cannot start is not shown as one coming.
+        expect(screen.getByTestId("clarify-round-preparing")).toHaveTextContent(
+          /has not been prepared yet/,
+        );
+      }
       view.unmount();
     }
     expect(clarify).not.toHaveBeenCalled();
@@ -430,12 +442,152 @@ describe("#2077 — later rounds are generated, and no start the server must ref
       const view = renderResults(noStructured);
       expect(
         await screen.findByTestId(
-          state.completed ? "clarification-complete" : "clarification-progress",
+          state.completed ? "clarification-complete" : "clarification-next-round",
         ),
       ).toBeInTheDocument();
       view.unmount();
     }
     expect(clarify).not.toHaveBeenCalled();
+  });
+});
+
+describe("#2085 — no submit while the next round generates; a failed round start is said", () => {
+  const answeredRound1 = {
+    round: 1,
+    questions: [
+      {
+        id: "q_dsa",
+        requirementId: "r1",
+        ambiguityField: "dsa",
+        question: "Does the DSA apply?",
+        context: "",
+        answer: "Only for EU users.",
+      },
+    ],
+    answers: [{ questionId: "q_dsa", answer: "Only for EU users." }],
+  };
+  const awaitingRound2 = dialogState({ currentRound: 2, rounds: [answeredRound1] });
+  const withRound2 = dialogState({
+    currentRound: 2,
+    rounds: [
+      answeredRound1,
+      {
+        round: 2,
+        questions: [
+          {
+            id: "q_scope",
+            requirementId: "r1",
+            ambiguityField: "scope",
+            question: "Which EU countries are in scope?",
+            context: "",
+          },
+        ],
+        answers: [],
+      },
+    ],
+  });
+
+  /** A start the test settles by hand, so its in-flight window can be observed. */
+  function heldStart() {
+    const held: {
+      resolve: (s: ClarificationStatePayload) => void;
+      reject: (e: Error) => void;
+    } = { resolve: () => {}, reject: () => {} };
+    clarify.mockImplementation(
+      () =>
+        new Promise<ClarificationStatePayload>((resolve, reject) => {
+          held.resolve = resolve;
+          held.reject = reject;
+        }),
+    );
+    return held;
+  }
+
+  it("after a submit, the answered round is replaced by a preparing state with no Submit", async () => {
+    // The read keeps answering with round 1 still open: only the submit's own
+    // state says the round moved on, so the panel must take it from there.
+    getClarification.mockResolvedValue({ state: dialogState() });
+    submitClarifyAnswers.mockResolvedValue({ state: awaitingRound2 });
+    const start = heldStart();
+
+    renderResults(metadata(1));
+    fireEvent.change(await screen.findByPlaceholderText("Your answer..."), {
+      target: { value: "Only for EU users." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Submit Answers" }));
+
+    expect(await screen.findByTestId("clarify-round-preparing")).toHaveTextContent(
+      /Preparing round 2/,
+    );
+    await waitFor(() => expect(clarify).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole("button", { name: /submit answers/i })).not.toBeInTheDocument();
+    expect(screen.queryByPlaceholderText("Your answer...")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /import answers/i })).not.toBeInTheDocument();
+    expect(submitClarifyAnswers).toHaveBeenCalledTimes(1);
+
+    start.resolve(withRound2);
+    expect(await screen.findByText("Which EU countries are in scope?")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Submit Answers" })).toBeInTheDocument();
+    expect(screen.queryByTestId("clarify-round-preparing")).not.toBeInTheDocument();
+  });
+
+  it("a reloaded dialog with a round due shows the preparing state while its start runs", async () => {
+    getClarification.mockResolvedValue({ state: awaitingRound2 });
+    heldStart();
+
+    renderResults(metadata(0));
+
+    expect(await screen.findByTestId("clarify-round-preparing")).toHaveTextContent(
+      /Preparing round 2/,
+    );
+    await waitFor(() => expect(clarify).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole("button", { name: /submit answers/i })).not.toBeInTheDocument();
+    expect(screen.queryByText("Does the DSA apply?")).not.toBeInTheDocument();
+  });
+
+  it("a failed later-round start says so and offers a retry that generates the round", async () => {
+    getClarification.mockResolvedValue({ state: awaitingRound2 });
+    clarify.mockRejectedValueOnce(new Error("clarify failed")).mockResolvedValue(withRound2);
+
+    renderResults(metadata(0));
+
+    const error = await screen.findByTestId("clarify-round-error");
+    expect(error).toHaveTextContent(/Could not prepare round 2/);
+    expect(screen.queryByRole("button", { name: /submit answers/i })).not.toBeInTheDocument();
+    expect(clarify).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("button", { name: /try again/i }));
+
+    expect(await screen.findByText("Which EU countries are in scope?")).toBeInTheDocument();
+    expect(clarify).toHaveBeenCalledTimes(2);
+    expect(screen.queryByTestId("clarify-round-error")).not.toBeInTheDocument();
+  });
+
+  it("a later-round start the model's answer could not be read for says that", async () => {
+    getClarification.mockResolvedValue({ state: awaitingRound2 });
+    clarify.mockRejectedValue(
+      Object.assign(new Error("unreadable"), { code: "MODEL_REPLY_UNREADABLE" }),
+    );
+
+    renderResults(metadata(0));
+
+    expect(await screen.findByTestId("clarify-round-error")).toHaveTextContent(
+      /could not read the clarifying questions in the model’s answer, so round 2 was not started/,
+    );
+  });
+
+  it("a viewer without analysis.run is not sent a start as the detail polls", async () => {
+    getClarification.mockResolvedValue({ state: awaitingRound2 });
+
+    const { rerenderWith } = renderResults(metadata(1), false);
+    expect(await screen.findByTestId("clarification-next-round")).toBeInTheDocument();
+    rerenderWith(metadata(1, { promotionStatus: "allowed" }));
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(clarify).not.toHaveBeenCalled();
+    expect(screen.getByTestId("clarify-round-preparing")).toHaveTextContent(
+      /has not been prepared yet/,
+    );
   });
 });
 
