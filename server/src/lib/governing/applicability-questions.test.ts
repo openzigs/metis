@@ -941,7 +941,10 @@ describe("rejudgeAnswered — the answer is judged back onto the rules it settle
         },
       ],
     };
-    // Each prompt gets the reply the model gave to it.
+    // Each prompt gets the reply the model gave to it. #2087 — the stub picks
+    // its reply by a phrase in the prompt, so this test proves the phrase is
+    // sent and the stored decision follows the reply. It does not prove the
+    // model's behaviour: the live probes recorded above (and on #2087) do.
     const { provider, sent } = stubModel({
       judge: () => (sent.at(-1)!.system.includes("the requirement's text wins") ? AFTER : BEFORE),
     });

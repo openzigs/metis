@@ -2689,11 +2689,16 @@ the pre-#1873 code).
   reads the BA's answer with it, and the BA can reject it with a note. A wrong
   `does-not-apply` removes the finding without a trace, the vanishing finding #2067 set out to
   prevent. The contradiction is recorded in the settled decision's `reason`, which the
-  applicability API returns. The note sits before the reply-format line, which stays last
-  (`SETTLE_SYSTEM`). Probe on governing-01's VM-01 (recorded in its `ANNOTATION.md`): the
+  applicability API returns and the Governing rules panel shows on the finding (#2087,
+  `answerSettlementOf`). The note sits before the reply-format line, which stays last
+  (`judgeSystem`). #2087: so does the re-ask note, which used to be appended after it.
+  Probe on governing-01's VM-01 (recorded in its `ANNOTATION.md`): the
   contradiction went from `does-not-apply` in 3 of 3 (Sonnet) and 4 of 4 (DeepSeek) to
   `applies` in all 7. An answer that the subject is absent stayed `does-not-apply` (7 of 7), and
-  a safeguard in place stayed `applies` (7 of 7).
+  a safeguard in place stayed `applies` (7 of 7). #2087 probe (Sonnet, 4 runs each): three
+  answers that legitimately narrow an ambiguous requirement were never read as a contradiction
+  (0 of 36 settled pairs), and after GR-06's contradicting answer the findings call gave Needs
+  BA input 12 of 12 and Compliant 0 of 12.
 - **Findings that ask (#2059).** A pair that `applies` is never `uncertain`, but its finding can
   be `needs-ba-input` with a `businessQuestion`. While the stored applicability has an `applies`
   pair, `open` also reads the analysis's `needs-ba-input` rows of
@@ -2830,7 +2835,11 @@ groups the findings by requirement and heads them with one `governingSummarySent
 cited revision. A 404 or an empty list renders nothing. Accept / Reject re-reads the findings
 rather than updating them optimistically. A `needs-ba-input` finding links to
 `#clarify-question-<id>`, the clarifying question whose `governing` link (#1873) names its
-requirement and rule, or to the Questions tab when there is none.
+requirement and rule, or to the Questions tab when there is none. #2087 — a finding whose rule
+was `uncertain` and still applies after a BA's answer was judged onto it shows that answer and
+the settle's `reason` (`answerSettlementOf`), so the BA reads why the answer did not rule it
+out. When the findings stop reporting `refreshing`, the panel reads the applicability again,
+because the settle is stored before that re-check starts.
 
 Eval arm **A4** (`pnpm eval:governing --arm A4`) runs A3's applicability and then these findings
 over the #1867 corpus. #2033 — on a requirement with short-answer pairs, A4 then replays the
