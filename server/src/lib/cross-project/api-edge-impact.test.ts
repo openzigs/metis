@@ -155,6 +155,31 @@ describe("isApiSurfaceFile", () => {
     ["server/webhooks/github.ts", true],
     ["internal/ui/handler.go", false],
     ["web/rapidly/capitalize.go", false],
+    // #2127 — a generic handler/route directory is not API surface on its own:
+    // Miniflux v2's feed-refresh handler and its URL-path helper are not its API.
+    ["internal/reader/handler/handler.go", false],
+    ["internal/http/route/route.go", false],
+    ["src/error-handlers/notFound.ts", false],
+    ["pkg/event_handlers/feed.go", false],
+    ["internal/router/mux.go", false],
+    ["lib/routing/table.go", false],
+    // …but it is under a parent that marks a server.
+    ["internal/http/handler/entry.go", true],
+    ["server/handlers/feeds.ts", true],
+    ["internal/api/handler/entry.go", true],
+    ["app/server/routers/users.py", true],
+    // #2127 — a client directory calls an API; it does not serve one.
+    ["src/rest-client/feeds.ts", false],
+    ["pkg/api_client/feeds.go", false],
+    ["src/GraphQLClient/query.ts", false],
+    ["rest/feeds.go", true],
+    ["internal/rest_v1/feeds.go", true],
+    // #2127 — camel compounds of graphql, openapi and grpc.
+    ["src/GraphQLSchema/feed.ts", true],
+    ["src/GraphQLTypes/feed.ts", true],
+    ["gen/OpenAPIModels/feed.go", true],
+    ["pkg/GRPCServices/feed.go", true],
+    ["src/graphql_schema/feed.ts", true],
   ])("%s → %s", (path, expected) => {
     expect(isApiSurfaceFile(path, none)).toBe(expected);
   });
@@ -305,6 +330,28 @@ describe("computeApiEdgeImpact — the Miniflux pair", () => {
     const result = run([php, apiChangeClient]);
     expect(result.untouched).toEqual([]);
     expect(result.consumers[0].apiSurfaceFiles).toEqual(["src/RestControllers/FeedController.php"]);
+  });
+
+  it("names no consumer for a feed-refresh change in internal/reader/handler (#2127)", () => {
+    const title = "Refresh a feed on schedule";
+    const refreshV2 = item(
+      "i-v2-refresh",
+      V2,
+      [
+        sym("handler.RefreshFeed", "internal/reader/handler/handler.go", 0.92),
+        sym("route.Path", "internal/http/route/route.go", 0.6),
+      ],
+      title,
+    );
+    const refreshClient = item(
+      "i-client-refresh",
+      CLIENT,
+      [sym("Client::refresh_feed", "miniflux.py", 0.9)],
+      title,
+    );
+    const result = run([refreshV2, refreshClient]);
+    expect(result.consumers).toEqual([]);
+    expect(result.untouched.map((u) => u.consumerItemId)).toEqual(["i-client-refresh"]);
   });
 
   it("does nothing when the provider has no item in the run", () => {

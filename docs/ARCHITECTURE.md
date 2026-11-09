@@ -5731,9 +5731,13 @@ routes on `/api/impact-analyses`):
   flags nothing (unknown, not untouched), and an edge with no direction or one
   read both ways (`reads` / `writes`) names consumers but flags nothing, since
   either side may be the provider. API directories match per word of a segment
-  (`RestControllers`, `public_api`) and include `routes`, `controllers` and
-  `handlers`: a miscounted API file names a dismissable consumer, a missed one a
-  false "untouched". The text-extracted items of a run share one request key
+  (`RestControllers`, `public_api`) and include `routes` and `controllers`; a
+  generic `handler`, `router` or `routing` directory counts only under `http/`
+  or `server/`, and a `client` directory never does (#2127), since Miniflux v2's
+  feed-refresh `internal/reader/handler/` is not its API. A miscounted API file
+  names a consumer and a missed one a false "untouched", both shown as fact.
+  While the API-edge read is pending the block says it is checking instead of
+  "no other project is affected". The text-extracted items of a run share one request key
   (`source-text`), so one aspect touching the API suppresses untouched flags for
   all of them; a deliberate trade-off toward naming impact. Read
   path only over persisted items: authorized as `GET /:id`, edges limited by
