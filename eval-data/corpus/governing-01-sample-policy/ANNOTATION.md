@@ -325,6 +325,25 @@ The note's example is this set's GR-06 case, so the first row is a reading on th
 wording was written for and is optimistic. The question in it is not one of the manifest's
 `businessFact`s. No A5 reading has been taken since the change.
 
+### #2087: narrowing answers, and the finding after a contradiction
+
+**A probe of the settle call and the findings call** (`rejudgeAnswered`, then `applySettlements`,
+`findingPairsOf` and `evaluateRequirementFindings`: the production path), run 2026-11-09 on
+`claude-sonnet-5-5` with this set's rules, 4 runs per case. No DeepSeek key was available for this
+probe. The three narrowing cases are not written from the settle note's example: each requirement
+is ambiguous, and the answer legitimately narrows it.
+
+| Case | Rules asked | Settled |
+|---|---|---|
+| "Send last quarter's buyer counts to SurveyCo." / "No, only totals per region go; no buyer details." | VM-01, VM-03, VM-05, EN-01, EN-05 | VM-03 `applies` 4 of 4 (an outside company still gets data; no reason says "contradicts"); the other four `does-not-apply` 16 of 16 |
+| "Give Northwind Logistics a weekly file of the orders it will deliver." / "No, only order numbers and parcel counts per depot." | VM-01, VM-05, EN-05 | `does-not-apply` 12 of 12 |
+| "Copy last month's orders into the training environment so new support staff can practise." / "No, the names and contact details are replaced with made-up ones before the copy." | DR-03 | `does-not-apply` 4 of 4 |
+| GR-06 / "No, we send the questionnaire ourselves; nothing leaves our systems." | VM-01, VM-03, VM-05 | `applies` 12 of 12, each reason naming the contradiction; **the findings call then gave Needs BA input 12 of 12, Compliant 0** |
+
+No narrowing answer was read as a contradiction (0 of 36 settled pairs), so governing questions do
+not become no-ops on this evidence. The last row confirms end to end that the finding stays after a
+contradicting answer, as the user guide says.
+
 ## The non-resembling subset
 
 A pair labelled `nonResembling` is one where the rule applies although the requirement
