@@ -19,7 +19,8 @@
  * to read before either writes): they share nothing but index pages, yet on
  * Postgres SSI can abort one of them (40001), and it must land on its retry.
  * Two first sign-ins of the SAME user are not a write conflict: the loser hits
- * the `(userId, roleId)` unique key, a P2002 (#1971).
+ * the `(userId, roleId)` unique key, a P2002, and since #1971 it runs again too,
+ * re-reading the winner's row; a concurrent EXPLICIT row it meets is kept.
  *
  * The calling file must `vi.mock` `lib/prisma.js` (so `prisma` returns
  * `state.db`), `lib/audit/audit-service.js` (handing its `audit` mock in as
@@ -106,18 +107,16 @@ function newBarrier(size: number): Barrier {
   return barrier;
 }
 
-/**
- * `db`, whose first transaction per racer holds after its first `userRole` read
- * until every racer has made one, so both read "no roles" before either writes.
- * A barrier that never fills opens after `fallbackMs`: SQLite runs one write
- * transaction at a time, so there the second racer cannot arrive.
- */
-function gatedOnRoleRead(db: PrismaClient, barrier: Barrier, fallbackMs: number): PrismaClient {
+/** What a transaction's `tx.userRole.findMany` answers, given the rows it read. */
+type RoleRead = (rows: unknown) => Promise<unknown>;
+
+/** `db`, whose every transaction passes its `userRole.findMany` reads through a fresh `perTransaction()`. */
+function onRoleRead(db: PrismaClient, perTransaction: () => RoleRead): PrismaClient {
   return new Proxy(db, {
     get(target, prop, receiver) {
       if (prop !== "$transaction") return Reflect.get(target, prop, receiver) as unknown;
       return (work: (tx: unknown) => Promise<unknown>, options?: unknown) => {
-        let held = barrier.arrivedAtOpen === null;
+        const answer = perTransaction();
         return target.$transaction(
           (tx) =>
             work(
@@ -135,15 +134,7 @@ function gatedOnRoleRead(db: PrismaClient, barrier: Barrier, fallbackMs: number)
                           dTarget,
                           args,
                         );
-                        if (held) {
-                          held = false;
-                          barrier.arrived += 1;
-                          if (barrier.arrived === barrier.size) barrier.release();
-                          const timer = setTimeout(barrier.release, fallbackMs);
-                          await barrier.open;
-                          clearTimeout(timer);
-                        }
-                        return rows;
+                        return answer(rows);
                       };
                     },
                   });
@@ -155,6 +146,48 @@ function gatedOnRoleRead(db: PrismaClient, barrier: Barrier, fallbackMs: number)
       };
     },
   });
+}
+
+/**
+ * `db`, whose first transaction per racer holds after its first `userRole` read
+ * until every racer has made one, so both read "no roles" before either writes.
+ * A barrier that never fills opens after `fallbackMs`: SQLite runs one write
+ * transaction at a time, so there the second racer cannot arrive.
+ */
+function gatedOnRoleRead(db: PrismaClient, barrier: Barrier, fallbackMs: number): PrismaClient {
+  return onRoleRead(db, () => {
+    let held = barrier.arrivedAtOpen === null;
+    return async (rows) => {
+      if (held) {
+        held = false;
+        barrier.arrived += 1;
+        if (barrier.arrived === barrier.size) barrier.release();
+        const timer = setTimeout(barrier.release, fallbackMs);
+        await barrier.open;
+        clearTimeout(timer);
+      }
+      return rows;
+    };
+  });
+}
+
+/**
+ * `db`, whose FIRST transaction reads "no roles" whatever is there: exactly what
+ * a sign-in sees when an explicit grant commits between its read and its write,
+ * made deterministic so it holds on SQLite too. Later transactions read for real.
+ */
+function staleFirstRoleRead(db: PrismaClient): Conflicting {
+  let opened = 0;
+  const client = onRoleRead(db, () => {
+    opened += 1;
+    let stale = opened === 1;
+    return async (rows) => {
+      if (!stale) return rows;
+      stale = false;
+      return [];
+    };
+  });
+  return { client, opened: () => opened };
 }
 
 export function describeWriteConflictRetry(opts: {
@@ -421,6 +454,61 @@ export function describeWriteConflictRetry(opts: {
         const roles = await db.userRole.findMany({ where: { userId: row.id } });
         expect(roles.map((r) => r.source)).toEqual(["provider"]);
       }
+    });
+
+    // #1971 — the loser of two first sign-ins of ONE user hit the `(userId, roleId)`
+    // key (P2002 `user_roles_pkey` on Postgres 16), which was rethrown: a 500.
+    it("two first sign-ins of the same user, forced to read before either writes, both land with one grant", async () => {
+      const row = await user();
+      const barrier = newBarrier(2);
+      state.db = gatedOnRoleRead(db, barrier, 1_000);
+      const signIn = () =>
+        reconcileTrustedLoginRole({
+          userId: row.id,
+          providerRole: "developer",
+          authRolesInitializedAt: null,
+        });
+      const results = await Promise.allSettled([signIn(), signIn()]);
+      if (opts.forced) expect(barrier.arrivedAtOpen).toBe(2);
+      expect(results).toEqual([
+        { status: "fulfilled", value: "developer" },
+        { status: "fulfilled", value: "developer" },
+      ]);
+      const roles = await db.userRole.findMany({
+        where: { userId: row.id },
+        include: { role: true },
+      });
+      expect(roles.map((r) => [r.role.key, r.source])).toEqual([["developer", "provider"]]);
+    });
+
+    // #1971 — the retry must judge the row it collided with, never convert it.
+    it("a first sign-in whose grant collides with a concurrent explicit row keeps that row", async () => {
+      const row = await user();
+      const developer = await db.role.upsert({
+        where: { key: "developer" },
+        update: {},
+        create: { key: "developer", name: "developer", isSystem: true },
+      });
+      await db.userRole.create({
+        data: { userId: row.id, roleId: developer.id, source: "local" },
+      });
+      const c = staleFirstRoleRead(db);
+      state.db = c.client;
+      await expect(
+        reconcileTrustedLoginRole({
+          userId: row.id,
+          providerRole: "developer",
+          authRolesInitializedAt: null,
+        }),
+      ).resolves.toBe("developer");
+      expect(c.opened()).toBe(2);
+      const roles = await db.userRole.findMany({
+        where: { userId: row.id },
+        include: { role: true },
+      });
+      expect(roles.map((r) => [r.role.key, r.source])).toEqual([["developer", "local"]]);
+      const after = await db.user.findUniqueOrThrow({ where: { id: row.id } });
+      expect(after.authRolesInitializedAt).not.toBeNull();
     });
   });
 }

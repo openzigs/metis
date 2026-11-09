@@ -76,6 +76,7 @@ const { governingQuestionSourceFor } =
 const { readGoverningApplicability } = await import("../src/lib/governing/applicability-store.js");
 const { createInMemoryBM25 } = await import("../src/lib/rag/bm25-index.js");
 const { prisma } = await import("../src/lib/prisma.js");
+const dialogStore = await import("../src/lib/analysis/clarification-dialog-store.js");
 
 const ANALYSIS = "an_1873";
 const PROJECT = "pr_1873";
@@ -863,6 +864,34 @@ describe("#2068 — a finding still Needs BA input after its answer reaches the 
     const state = await dialogWith(provider).startOrContinue(ANALYSIS, REQS);
     expect(state.completed).toBe(false);
     expect(state.rounds.at(-1)).toMatchObject({ round: 2, questions: [{ question: FIRST }] });
+  });
+
+  it("#2077 — a completed dialog with nothing to ask is returned without a write, each time it is viewed", async () => {
+    const completed = {
+      analysisId: ANALYSIS,
+      currentRound: 2,
+      maxRounds: 3,
+      rounds: [{ round: 1, questions: [], answers: [] }],
+      resolvedAmbiguities: [],
+      escalatedToSonnet: false,
+      completed: true,
+    };
+    // No finding needs input, and the only pair applies: nothing to re-open for.
+    mem.findings = [];
+    fakeStore.set(ANALYSIS, completed);
+    const { provider } = model();
+    const dialog = dialogWith(provider);
+    for (let view = 0; view < 2; view++) {
+      expect(await dialog.startOrContinue(ANALYSIS, REQS)).toEqual(completed);
+    }
+    // Every round used, and already recorded as complete: no write either.
+    fakeStore.set(ANALYSIS, { ...completed, currentRound: 4 });
+    expect((await dialog.startOrContinue(ANALYSIS, REQS)).completed).toBe(true);
+    expect(vi.mocked(dialogStore.writeDialogState)).not.toHaveBeenCalled();
+    // One that used every round and is not marked complete yet is written once.
+    fakeStore.set(ANALYSIS, { ...completed, currentRound: 4, completed: false });
+    expect((await dialog.startOrContinue(ANALYSIS, REQS)).completed).toBe(true);
+    expect(vi.mocked(dialogStore.writeDialogState)).toHaveBeenCalledTimes(1);
   });
 
   it("a dialog that used every round stays complete, and reads no finding", async () => {

@@ -2,6 +2,7 @@ import type { RoleKey } from "@metis/shared";
 import { prisma } from "../prisma.js";
 import { reconnectUserSockets } from "../socket/user-disconnect.js";
 import { audit } from "../audit/audit-service.js";
+import { isUniqueViolation } from "../db/prisma-errors.js";
 import { retryOnWriteConflict } from "../db/write-conflict-retry.js";
 import { isBootstrapAdminCandidate } from "./bootstrap-admins.js";
 import { signInConflict } from "./sign-in-errors.js";
@@ -100,6 +101,10 @@ export async function reconcileTrustedLoginRole(input: {
   // A serializable conflict rolls the whole decision back, so it is run again
   // (#1959) and never half-applied; one that every attempt loses fails the
   // login closed with 503 SIGN_IN_CONFLICT rather than overwrite grants.
+  // A unique violation is run again too (#1971): two first sign-ins of one user
+  // both read "no roles", and the loser's grant hits `(userId, roleId)`. The
+  // retry re-reads the winner's row and judges it like any other, so a
+  // concurrent explicit (`local`/`scim`) row is kept, never converted.
   let bootstrappedAdmin = false;
   const outcome = await retryOnWriteConflict(
     () =>
@@ -166,7 +171,8 @@ export async function reconcileTrustedLoginRole(input: {
               source: "provider",
             },
           });
-          // A unique conflict must abort, never convert a concurrent explicit row.
+          // A unique conflict aborts this attempt, never converts the row in
+          // place; the retry reads the concurrent row and judges it (#1971).
           await tx.userRole.create({
             data: {
               userId: input.userId,
@@ -186,7 +192,7 @@ export async function reconcileTrustedLoginRole(input: {
         },
         { isolationLevel: "Serializable" },
       ),
-    { exhausted: signInConflict },
+    { exhausted: signInConflict, alsoRetry: isUniqueViolation },
   );
   // #633 — the user's other open sockets still carry the previous provider
   // role; after the commit, make them re-handshake.

@@ -304,6 +304,27 @@ never asked. No `uncertain` pair with a recorded answer was asked, so the settle
 never called. The main row is the first judging, which this change does not touch, and it
 is within run-to-run noise.
 
+### #2078: an answer that contradicts the requirement's text
+
+The settle judge's note now says that the requirement's own text wins over an answer that
+denies it: the rule applies, and the reason names the contradiction. `does-not-apply` needs the
+rule's subject absent from the text as well as from the answer. The note also moved before the
+reply-format line, which stays last.
+
+**A probe of the settle call alone** (`rejudgeAnswered`, the production path) on this set's
+VM-01, run 2026-11-09. Each row is one requirement, the question and the answer, judged with
+the prompt before and after the change:
+
+| Case | Model | Before | After |
+|---|---|---|---|
+| GR-06, "Will SurveyCo receive any of the buyers' personal details?", "No, we send the questionnaire ourselves; nothing leaves our systems." | `claude-sonnet-5-5` / `deepseek-flash` | 3 of 3 / 4 of 4 `does-not-apply` | 3 of 3 / 4 of 4 `applies`, each reason naming the contradiction |
+| a synthetic receipt requirement, "Will an outside company produce or send the receipt?", "No, the receipt is generated and shown by our own checkout." | both | 7 of 7 `does-not-apply` | 7 of 7 `does-not-apply` |
+| GR-06, its own question, "Yes, it has." | both | 7 of 7 `applies` | 7 of 7 `applies` |
+
+The note's example is this set's GR-06 case, so the first row is a reading on the case the
+wording was written for and is optimistic. The question in it is not one of the manifest's
+`businessFact`s. No A5 reading has been taken since the change.
+
 ## The non-resembling subset
 
 A pair labelled `nonResembling` is one where the rule applies although the requirement

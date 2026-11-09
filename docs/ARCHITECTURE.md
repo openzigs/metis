@@ -2649,7 +2649,9 @@ the pre-#1873 code).
   open and is asked again.
 - **One question per fact.** A requirement's facts that differ only in case or punctuation merge
   without a model. Several distinct facts go to the model once to merge those that ask the same
-  thing. A merge reply that cannot be read, or that drops a fact, never drops a question. A
+  thing. The model returns only the merged groups (#2077): a fact merged with no other is asked
+  in its own words (#2066), so its wording is not requested. A merge reply that cannot be read,
+  or that drops a fact, never drops a question. A
   question carries `governing: { kind: "governing", ruleIds, requirementId }`
   (`GoverningQuestionLink` in `@metis/shared`) and the `ambiguityField`
   `governing-applicability`, which names no real ambiguity. Its own `requirementId` is
@@ -2662,7 +2664,10 @@ the pre-#1873 code).
   settle rule applicability and never refine a requirement.
 - **The guard.** `questionLeaksRule` refuses a question that names a control id (whole words,
   with case, spacing and punctuation set aside, so `PCI DSS 3.4` names `PCI-DSS 3.4` and `CC 6.1`
-  names `CC6.1`: #2009) or repeats 8 or more consecutive words of a clause. It is re-asked once in
+  names `CC6.1`: #2009), refers to a rule or clause as such (`rule`, `rules`, `clause`,
+  `clauses` as whole words, #2077: "the seven-year retention rule" names no id), or repeats 8 or
+  more consecutive words of a clause. `policy` is not refused: the template asks to check a
+  requirement "against company policy", and a returns policy is a business fact. It is re-asked once in
   plain words, then replaced by `templateGoverningQuestion`.
 - **Self-resolve.** Governing questions go through the dialog's grounding pass, which searches
   only the project's knowledge index. #1869 keeps governing chunks out of it, so the rulebook can
@@ -2675,7 +2680,20 @@ the pre-#1873 code).
   answered: true })`). The note says that an answer saying the rule's safeguard is in place still
   means the rule applies, and that the findings call then decides compliance. Only an answer
   saying the rule's subject is absent means `does-not-apply`. The first judging's prompt is
-  unchanged.
+  unchanged. **#2078 decision: when the answer contradicts the requirement's own text, the text
+  wins.** The note says that an answer denying what the requirement plainly says (GR-06 sends
+  the buyer list to SurveyCo; the answer says nothing leaves our systems) means `applies`, with a
+  reason that names the contradiction, and that `does-not-apply` needs the subject absent from
+  the text as well as the answer. The answer is not trusted over the text because the two
+  errors cost differently. A wrong `applies` leaves a finding in the panel: the findings call
+  reads the BA's answer with it, and the BA can reject it with a note. A wrong
+  `does-not-apply` removes the finding without a trace, the vanishing finding #2067 set out to
+  prevent. The contradiction is recorded in the settled decision's `reason`, which the
+  applicability API returns. The note sits before the reply-format line, which stays last
+  (`SETTLE_SYSTEM`). Probe on governing-01's VM-01 (recorded in its `ANNOTATION.md`): the
+  contradiction went from `does-not-apply` in 3 of 3 (Sonnet) and 4 of 4 (DeepSeek) to
+  `applies` in all 7. An answer that the subject is absent stayed `does-not-apply` (7 of 7), and
+  a safeguard in place stayed `applies` (7 of 7).
 - **Findings that ask (#2059).** A pair that `applies` is never `uncertain`, but its finding can
   be `needs-ba-input` with a `businessQuestion`. While the stored applicability has an `applies`
   pair, `open` also reads the analysis's `needs-ba-input` rows of
@@ -2700,7 +2718,14 @@ the pre-#1873 code).
   rounds left asks `open` for governing questions only. If there are any, the dialog re-opens
   with a governing-only round. The UI posts that start once per mount of a completed dialog
   (`EnhancementResults`). This covers a refresh that lands after the submit completed the
-  dialog, and dialogs completed before #2059.
+  dialog, and dialogs completed before #2059. With nothing to ask, the dialog is returned
+  without a write (#2077), as is one already complete with every round used.
+  The UI also posts a start once per round per mount for an **open** dialog whose current round
+  has not been generated (`rounds.at(-1).round !== currentRound`, rounds left): the state a
+  submit leaves when ambiguities or a governing question are still open. Before #2077 nothing
+  posted it, so rounds 2 and 3 were never generated. No start is posted for a viewer without
+  `analysis.run` (the route's permission) or when the run has no structured requirements (the
+  route's 400), so neither fails silently once per mount.
   A judging reply that cannot be read is re-asked once, and then settles nothing (#2009).
   An answered pair is never asked again, so a pair whose settle failed (an unreadable reply, a
   provider error or outage, an aborted request) would otherwise be orphaned. Instead, every

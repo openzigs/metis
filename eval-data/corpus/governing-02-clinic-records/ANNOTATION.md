@@ -241,6 +241,7 @@ the report file. A reading is for a decision, never for tuning a prompt.
 |---|---|---|---|---|
 | 2026-11-09 | #1878 | A5 (the shipped path), 3 runs as three `--runs 1` invocations, combined; commit `e613df1ef` | `anthropic/claude-sonnet-5-5` | [`eval-data/readings/governing-02-clinic-records/baseline-A5-sonnet.md`](../../readings/governing-02-clinic-records/baseline-A5-sonnet.md) |
 | 2026-11-09 | #2059 | A5 (the shipped path), 3 runs as three `--runs 1` invocations, combined; commit `206adfd5a` | `anthropic/claude-sonnet-5-5` | [`eval-data/readings/governing-02-clinic-records/baseline-A5-sonnet-2059.md`](../../readings/governing-02-clinic-records/baseline-A5-sonnet-2059.md) |
+| 2026-11-09 | #2066, #2067, #2068 | A5 (the shipped path), 3 runs as three `--runs 1` invocations, combined; commit `484ce9645` | `anthropic/claude-sonnet-5-5` | [`eval-data/readings/governing-02-clinic-records/baseline-A5-sonnet-2067.md`](../../readings/governing-02-clinic-records/baseline-A5-sonnet-2067.md) |
 
 ### The #1878 reading
 
@@ -321,3 +322,41 @@ bar still passes. Three things this reading shows are not #2059's to fix:
 - **The rest of the row is the findings call.** KV-31, KV-33, and KV-26 and KV-14 in most
   runs, read `gap` before any answer, so no question was owed.
 
+### The #2066 to #2068 reading
+
+The third reading of this set. #2067 deferred it, and it was taken once #2066, #2067 and #2068 had all merged.
+The question it answers is whether KV-02 → TP-01 gets its answer back. The #2059 reading lost that
+answer to the reworded question and the settle call. Here #2066 keeps an unmerged question's own words,
+#2067 tells the settle judge that a safeguard in place still applies, and #2068 stops asking
+fallback and decided findings. No prompt was changed after this reading. It cost $2.50 in all ($0.87,
+$0.80 and $0.83 per run), against the owner's pre-approval of up to $20 per issue.
+
+| Bar | Required | Mean over 3 runs | Per run | Pass |
+|---|---|---|---|---|
+| Overall recall | ≥ 0.90 | 0.95 | 0.96 / 0.96 / 0.94 | yes |
+| Non-resembling recall | ≥ 0.85 | 0.92 | 0.92 / 0.92 / 0.92 | yes |
+| Precision | ≥ 0.60 | 0.62 | 0.60 / 0.59 / 0.67 | yes; run 2 alone is under |
+| Citation accuracy | ≥ 0.95 | 1.00 | 1.00 / 1.00 / 1.00 | yes |
+| No-evidence → compliant errors | 0 per run | 0 | 0 / 0 / 0 | yes |
+
+Verdict accuracy was 0.79 (0.75 at #2059). Every negative item was clean in every run, and the
+short-answer row had no `compliant` against its label.
+
+The answer reached its pair's rule in **10 of 21** pair-runs (counted, as at #2059, from
+`answered.questions` naming the pair's rule), and the short-answer row reads 0.48 again. The pairs
+moved under it:
+
+| Pair | #2059 | This reading |
+|---|---|---|
+| KV-02 → TP-01 ("Yes, we do.", compliant) | missed ×3 | compliant, needs-ba-input, compliant |
+| KV-14 → CM-01 ("Yes, they are.", compliant) | compliant, gap, needs-ba-input | needs-ba-input, needs-ba-input, gap |
+| KV-26 → TP-03 ("Yes, we do.", compliant) | gap, needs-ba-input, gap | gap ×3 |
+| KV-28 → TP-05 ("No.", gap) | gap ×3 | gap, gap, needs-ba-input |
+| KV-05, KV-31, KV-33 | unchanged | unchanged |
+
+**KV-02 gets its answer back.** TP-01 was asked in all three runs, and in two of them the
+answer ended `compliant`, as at #1878. KV-14's one `compliant` at #2059 did not recur. Its
+answer reached CM-01 in two runs here as there, and the finding stayed `needs-ba-input` or `gap`.
+That is the findings call reading the answer, which #2071 already tracks, and the
+interval on this row (0.14 to 0.81) is far wider than the move. **Decision: no change. The flag
+stays on and all three changes stay.**

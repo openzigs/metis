@@ -168,6 +168,26 @@ describe("questionLeaksRule — the rulebook guard", () => {
     expect(questionLeaksRule("Will the page keep customers' card numbers?", [CARD])).toBeNull();
   });
 
+  it("#2077 — catches a question that points at a rule or clause as such, which names no id", () => {
+    const retention = {
+      controlId: "DR-01",
+      clauseExcerpt: "Customer records are kept for seven years after the account is closed.",
+    };
+    // DeepSeek's question in #2066's reading of governing-01.
+    const deepseek = "Will the exported orders be kept under the seven-year retention rule?";
+    expect(questionLeaksRule(deepseek, [retention])).toBe("refers to a rule");
+    expect(questionLeaksRule("Which Clauses cover the export?", [retention])).toBe(
+      "refers to a clause",
+    );
+    // A control id is still reported as such.
+    expect(questionLeaksRule("Does rule DR-01 apply?", [retention])).toMatch(/names control/);
+    // Business words that only contain one, and a business policy, are not the rulebook.
+    expect(
+      questionLeaksRule("Will the ruler tool overrule a returns policy?", [retention]),
+    ).toBeNull();
+    expect(questionLeaksRule(FALLBACK_FINDING_QUESTION, [retention])).toBeNull();
+  });
+
   it("the template names no rule and quotes no clause, even when the requirement names a control", () => {
     expectNoRulebook(templateGoverningQuestion(REQ.text, [CARD]), [CARD]);
     const named = templateGoverningQuestion("Make checkout meet EN-03.", [CARD]);
@@ -264,9 +284,37 @@ describe("buildGoverningQuestions", () => {
       { provider },
     );
     expect(sent.map((s) => s.kind)).toEqual(["merge"]);
+    // #2077 — the model is asked for the merged groups only: a fact left alone
+    // keeps its own words (#2066), so writing it again is output thrown away.
+    expect(sent[0]!.system).toContain("leave them out of your reply");
+    expect(sent[0]!.system).toContain("listing only merged questions, each with two or more facts");
+    expect(sent[0]!.system).not.toContain("every fact in exactly one question");
     expect(sent[0]!.user).toContain("F1: Will the saved card be kept with the whole number?");
     expect(sent[0]!.user).not.toContain("EN-03");
     expect(questions.map((q) => q.governing?.ruleIds)).toEqual([[CARD.id, ENCRYPT.id], [AUDIT.id]]);
+  });
+
+  it("#2077 — a reply listing only the merged group asks every other fact in its own words", async () => {
+    const { provider } = stubModel({
+      merge: () => ({
+        questions: [
+          { question: "Will this feature store customers' payment data?", facts: ["F1", "F2"] },
+        ],
+      }),
+    });
+    const questions = await buildGoverningQuestions(
+      [
+        pair(CARD.id, "Will the saved card be kept with the whole number?"),
+        pair(ENCRYPT.id, "Is payment information stored by this feature?"),
+        pair(AUDIT.id, "Will anyone export the saved cards in bulk?"),
+      ],
+      RULES,
+      { provider },
+    );
+    expect(questions.map((q) => [q.question, q.governing?.ruleIds])).toEqual([
+      ["Will this feature store customers' payment data?", [CARD.id, ENCRYPT.id]],
+      ["Will anyone export the saved cards in bulk?", [AUDIT.id]],
+    ]);
   });
 
   it("#2066 — a group the merge leaves alone keeps its own question, verbatim, whatever the model wrote", async () => {
@@ -782,7 +830,7 @@ describe("rejudgeAnswered — the answer is judged back onto the rules it settle
     expect(unreadable.sent[1]!.system).toContain(ANSWER_NOTE);
   });
 
-  it("#2067 — a recorded settle of 'the safeguard is in place' settles the pair applies", async () => {
+  it("#2067 — the settle sends ANSWER_NOTE, and the recorded reply is stored as applies with its answer", async () => {
     const SUPPLIER = {
       id: "rule_supplier",
       revisionId: "rev_1",
@@ -835,6 +883,93 @@ describe("rejudgeAnswered — the answer is judged back onto the rules it settle
     expect(next.requirements[0]!.decisions[0]).toMatchObject({
       verdict: "applies",
       settled: { questionId: "q-supplier", answer: "Yes, it has.", previousVerdict: "uncertain" },
+    });
+  });
+
+  it("#2078 — an answer that contradicts the requirement's text leaves the rule applying, with the contradiction in the reason", async () => {
+    const SUPPLIER = {
+      id: "rule_vm01",
+      revisionId: "rev_1",
+      controlId: "VM-01",
+      summary:
+        "An outside company completes a security review and data protection agreement before it receives personal or payment information.",
+      clauseExcerpt:
+        "Before an outside company receives personal or payment information, it completes a security review and signs a data protection agreement.",
+      source: "Sample policy v1 VM-01",
+    };
+    const QUESTION = "Will SurveyCo receive any of the buyers' personal details?";
+    const ANSWER = "No, we send the questionnaire ourselves; nothing leaves our systems.";
+    const stored = {
+      decidedAt: "2026-11-09T00:00:00.000Z",
+      requirements: [
+        {
+          requirementId: "GR-06",
+          text: "Send the list of last quarter's buyers to SurveyCo so they can email each buyer a short satisfaction questionnaire.",
+          decisions: [
+            {
+              ruleId: SUPPLIER.id,
+              controlId: SUPPLIER.controlId,
+              verdict: "uncertain" as const,
+              reason: "Depends on what reaches the outside company.",
+              businessFact: QUESTION,
+              foundBy: ["screen" as const],
+            },
+          ],
+        },
+      ],
+    };
+    // claude-sonnet-5-5's verdict and reason for this settle on governing-01's
+    // VM-01, probed 2026-11-09: 3 of 3 `does-not-apply` with the prompt before
+    // #2078, 3 of 3 `applies` with it (deepseek-flash: 0 of 4, then 4 of 4).
+    const BEFORE = {
+      decisions: [
+        {
+          rule: "R1",
+          verdict: "does-not-apply",
+          reason:
+            "The analyst confirmed SurveyCo receives no personal details and nothing leaves our systems, so no outside company receives personal or payment information and the review and agreement requirement is not engaged.",
+        },
+      ],
+    };
+    const AFTER = {
+      decisions: [
+        {
+          rule: "R1",
+          verdict: "applies",
+          reason:
+            "The requirement itself says the list of buyers is sent to SurveyCo so it can email them, which means an outside company receives personal information; the analyst's answer that nothing leaves our systems contradicts the requirement's text, so the text wins.",
+        },
+      ],
+    };
+    // Each prompt gets the reply the model gave to it.
+    const { provider, sent } = stubModel({
+      judge: () => (sent.at(-1)!.system.includes("the requirement's text wins") ? AFTER : BEFORE),
+    });
+    const question = {
+      id: "q-surveyco",
+      requirementId: governingQuestionRequirementId("GR-06"),
+      ambiguityField: GOVERNING_QUESTION_FIELD,
+      question: QUESTION,
+      context: "",
+      answer: ANSWER,
+      governing: { kind: "governing" as const, ruleIds: [SUPPLIER.id], requirementId: "GR-06" },
+    };
+    const settlements = await rejudgeAnswered(
+      [question],
+      stored,
+      new Map([[SUPPLIER.id, SUPPLIER]]),
+      { provider },
+    );
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.user).toContain(`Their answer: ${ANSWER}`);
+    expect(settlements).toEqual([
+      expect.objectContaining({ ruleId: SUPPLIER.id, verdict: "applies", answer: ANSWER }),
+    ]);
+    const { next } = applySettlements(stored, settlements);
+    expect(next.requirements[0]!.decisions[0]).toMatchObject({
+      verdict: "applies",
+      reason: expect.stringContaining("contradicts the requirement"),
+      settled: { questionId: "q-surveyco", answer: ANSWER, previousVerdict: "uncertain" },
     });
   });
 
