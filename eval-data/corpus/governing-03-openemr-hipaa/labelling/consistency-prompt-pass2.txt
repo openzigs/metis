@@ -1,0 +1,147 @@
+You are a careful compliance analyst. Below is a security requirements document for an electronic health record system, and 25 requirements: feature requests and bug reports filed by the users and developers of an open-source electronic health record system, quoted in their own words. You are checking ONE rule, {RULE}, against EVERY requirement, one by one, so the rule is applied the same way to all of them.
+
+For each requirement, give one label for rule {RULE}:
+- "does not apply": an independent reader would not attach this rule to the requirement (a stretch reading does not count).
+- "compliant": the requirement, as written, explicitly provides what the rule asks.
+- "gap": the requirement, built as written, would breach the rule.
+- "needs-ba-input": the rule applies, but the requirement is silent or ambiguous on it, and one business fact would settle it.
+Silence is never "compliant". Judge against this document only, as written. Apply the same test to every requirement.
+
+Reply with ONE JSON object and nothing else:
+{"rule": "{RULE}", "labels": [{"item": "OE-01", "label": "does not apply", "reason": "one short sentence"}]}
+Include all 25 requirement ids, in the order given.
+
+=== POLICY ===
+# Electronic Health Record Security Requirements: HIPAA Security Rule and NIST SP 800-63B
+
+Revision: v1 · Compiled: 2026-11-09 · Applies to: the electronic health record system, its patient portal and its interfaces
+
+## Sources and attribution
+
+Every obligation below is quoted from one of two public sources. The reference in bold at the
+start of each paragraph is added here so that a question can name the obligation, and the
+source's own citation follows each one in square brackets. Text left out of a quotation is
+marked "…", and a footnote marker is dropped. Nothing else in a quotation has been changed.
+
+- **Part A** quotes 45 CFR 164.312, Technical safeguards, and 45 CFR 164.308(a)(5)(ii)(C)
+  and (D), from the Electronic Code of Federal Regulations:
+  https://www.ecfr.gov/current/title-45/subtitle-A/subchapter-C/part-164/subpart-C/section-164.312
+  and https://www.ecfr.gov/current/title-45/subtitle-A/subchapter-C/part-164/subpart-C/section-164.308,
+  retrieved 2026-11-09. United States federal regulation, in the public domain.
+- **Part B** quotes NIST Special Publication 800-63B-4, Digital Identity Guidelines:
+  Authentication and Authenticator Management: https://pages.nist.gov/800-63-4/sp800-63b.html,
+  retrieved 2026-11-09. A work of the United States federal government, not subject to
+  copyright in the United States.
+
+## How Part B reads here
+
+Part B is written for federal agencies. Here the verifier and the credential service provider
+(CSP) are the system that signs its users in, the relying party (RP) is the application they
+use once signed in, and the subscriber or claimant is the user: a member of staff, or a
+patient using the portal. Where Part B sets a requirement for each authentication assurance
+level, the AAL2 requirement is the one quoted.
+
+## Part A — HIPAA Security Rule
+
+A covered entity or business associate must, in accordance with § 164.306:
+
+**TS-01** Standard: Access control. Implement technical policies and procedures for electronic information systems that maintain electronic protected health information to allow access only to those persons or software programs that have been granted access rights as specified in § 164.308(a)(4). [45 CFR 164.312(a)(1)]
+
+**TS-02** Unique user identification (Required). Assign a unique name and/or number for identifying and tracking user identity. [45 CFR 164.312(a)(2)(i)]
+
+**TS-03** Emergency access procedure (Required). Establish (and implement as needed) procedures for obtaining necessary electronic protected health information during an emergency. [45 CFR 164.312(a)(2)(ii)]
+
+**TS-04** Automatic logoff (Addressable). Implement electronic procedures that terminate an electronic session after a predetermined time of inactivity. [45 CFR 164.312(a)(2)(iii)]
+
+**TS-05** Encryption and decryption (Addressable). Implement a mechanism to encrypt and decrypt electronic protected health information. [45 CFR 164.312(a)(2)(iv)]
+
+**TS-06** Standard: Audit controls. Implement hardware, software, and/or procedural mechanisms that record and examine activity in information systems that contain or use electronic protected health information. [45 CFR 164.312(b)]
+
+**TS-07** Standard: Integrity. Implement policies and procedures to protect electronic protected health information from improper alteration or destruction. [45 CFR 164.312(c)(1)]
+
+**TS-08** Mechanism to authenticate electronic protected health information (Addressable). Implement electronic mechanisms to corroborate that electronic protected health information has not been altered or destroyed in an unauthorized manner. [45 CFR 164.312(c)(2)]
+
+**TS-09** Standard: Person or entity authentication. Implement procedures to verify that a person or entity seeking access to electronic protected health information is the one claimed. [45 CFR 164.312(d)]
+
+**TS-10** Standard: Transmission security. Implement technical security measures to guard against unauthorized access to electronic protected health information that is being transmitted over an electronic communications network. [45 CFR 164.312(e)(1)]
+
+**TS-11** Integrity controls (Addressable). Implement security measures to ensure that electronically transmitted electronic protected health information is not improperly modified without detection until disposed of. [45 CFR 164.312(e)(2)(i)]
+
+**TS-12** Encryption (Addressable). Implement a mechanism to encrypt electronic protected health information whenever deemed appropriate. [45 CFR 164.312(e)(2)(ii)]
+
+As part of its security awareness and training program, a covered entity or business associate must implement:
+
+**AS-01** Log-in monitoring (Addressable). Procedures for monitoring log-in attempts and reporting discrepancies. [45 CFR 164.308(a)(5)(ii)(C)]
+
+**AS-02** Password management (Addressable). Procedures for creating, changing, and safeguarding passwords. [45 CFR 164.308(a)(5)(ii)(D)]
+
+## Part B — NIST SP 800-63B-4
+
+### Passwords
+
+**PW-01** Passwords SHALL either be chosen by the subscriber or assigned randomly by the CSP. [SP 800-63B-4, Password Authenticators]
+
+**PW-02** Verifiers and CSPs SHALL require passwords that are used as a single-factor authentication mechanism to be a minimum of 15 characters in length. Verifiers and CSPs MAY allow passwords that are only used as part of multi-factor authentication processes to be shorter but SHALL require them to be a minimum of eight characters in length. [SP 800-63B-4, Password Verifiers]
+
+**PW-03** Verifiers and CSPs SHALL NOT impose other composition rules (e.g., requiring mixtures of different character types) for passwords. [SP 800-63B-4, Password Verifiers]
+
+**PW-04** Verifiers and CSPs SHALL NOT require subscribers to change passwords periodically. However, verifiers SHALL force a change if there is evidence that the authenticator has been compromised. [SP 800-63B-4, Password Verifiers]
+
+**PW-05** Verifiers and CSPs SHALL NOT permit the subscriber to store a hint (e.g., a reminder of how the password was created) that is accessible to an unauthenticated claimant. [SP 800-63B-4, Password Verifiers]
+
+**PW-06** Verifiers and CSPs SHALL NOT prompt subscribers to use knowledge-based authentication (KBA) (e.g., “What was the name of your first pet?”) or security questions when choosing passwords. [SP 800-63B-4, Password Verifiers]
+
+**PW-07** When processing a request to establish or change a password, verifiers SHALL compare the prospective secret against a blocklist that contains known commonly used, expected, or compromised passwords. [SP 800-63B-4, Password Verifiers]
+
+**PW-08** Verifiers SHALL allow the use of password managers and autofill functionality. Verifiers SHOULD permit claimants to use the “paste” function when entering a password to facilitate password manager use when password autofill APIs are unavailable. [SP 800-63B-4, Password Verifiers]
+
+**PW-09** Verifiers and CSPs SHALL use approved encryption and an authenticated protected channel when requesting passwords. [SP 800-63B-4, Password Verifiers]
+
+**PW-10** Verifiers SHALL store passwords in a form that is resistant to offline attacks. Passwords SHALL be salted and hashed using a suitable password hashing scheme. [SP 800-63B-4, Password Verifiers]
+
+### Authenticators
+
+**AU-01** At AAL2, authentication SHALL use either a multi-factor authenticator or a combination of two separate authentication factors. [SP 800-63B-4, Authentication Assurance Level 2, Permitted Authenticator Types]
+
+**AU-02** Unless otherwise specified in the description of a given authenticator, the verifier SHALL limit consecutive failed authentication attempts using a specific authenticator on a single subscriber account to no more than 100 by disabling that authenticator. … Authenticators that have been disabled SHALL be required to rebind to the subscriber account … to be usable in the future. [SP 800-63B-4, Rate Limiting (Throttling)]
+
+**AU-03** When an authenticator is added, the CSP SHALL notify the subscriber via a mechanism independent of the transaction binding the new authenticator … [SP 800-63B-4, Binding an Additional Authenticator]
+
+**AU-04** The CSP SHALL provide a mechanism to invalidate the authenticator immediately upon notification from a subscriber that the authenticator’s loss, theft, or compromise is suspected. [SP 800-63B-4, Physical Authenticators]
+
+### Sessions
+
+**SM-01** A definite reauthentication overall timeout SHALL be established, which SHOULD be no more than 24 hours at AAL2. The inactivity timeout SHOULD be no more than 1 hour. [SP 800-63B-4, Authentication Assurance Level 2, Reauthentication]
+
+**SM-02** When either timeout expires, the session SHALL be terminated. Session activity SHALL reset the inactivity timeout, and successful reauthentication during a session SHALL reset both timeouts. [SP 800-63B-4, Reauthentication]
+
+**SM-03** Following authentication, authenticated sessions SHALL NOT fall back to an insecure transport (e.g., from https to http). [SP 800-63B-4, Session Bindings]
+
+**SM-04** POST/PUT content SHALL contain a session identifier that the RP SHALL verify to protect against cross-site request forgery (CSRF). [SP 800-63B-4, Session Bindings]
+
+=== REQUIREMENTS ===
+- OE-08 — Dark theme does not change Select2 box: Select2 box does not entirely get inverted when using the Dark theme. Backgrounds remain light while text does invert, leading to white text color on white background.
+- OE-19 — Add Sent Fax Tracking to etherFAX Module: Currently, the etherFAX module only stores received faxes in the queue table for history and management. Sent faxes are processed but not persisted, making it impossible to track delivery status or review sent fax history. Changes: Store sent fax details in oe_faxsms_queue with TransactionType = 1 when a fax is submitted. Poll etherFAX API on-demand to update sent fax delivery status. Display sent fax history in the UI alongside received faxes. Provide the same action options (view, delete, forward) for sent faxes as received faxes. This gives users visibility into their outbound fax activity and delivery confirmations without requiring them to log into the etherFAX portal.
+- OE-21 — feat(menu): audit log on menu role changes: Admin modifications to main_menu_role and patient_menu_role in the users table should emit an audit log entry. Currently a compromised admin can set a traversal value and later clear it with no audit trail. This is a gap under HIPAA §164.312(b) (audit controls) — changes to access-control configuration should be auditable. Testable conditions: Changing a user's menu role via the admin form produces an audit log entry with the old and new values.
+- OE-23 — Patient portal no longer redirects to login when the session has ended: When a patient's portal session has ended, AJAX requests from portal/patient pages fail silently. The patient sees no message and isn't sent to the login screen. Their actions just do nothing.
+- OE-07 — Improve user experience of the "Maximum Failed Login Attempts (0 for no maximum)." setting: Considering expanding upon the maximum failed login attempts to also offer an option where it automatically resets (ie. will work again automatically rather than require manual intervention by admin) after a certain time. Thus if for example, there a 3 failed requests and it shuts down account, it won't be shut out indefinitely if the user sets this new setting to a time interval (ie. after that time interval, the user can then login).
+- OE-18 — bug: Add Type and Status columns to Appointments Report csv export: In the Appointments Report csv export it does not include the Type and Status columns that are in the visually displayed report. We should display those values.
+- OE-06 — CCDA Zip Export Patient Documents Option: For patient care coordination and patient migration either outside of OpenEMR or from one OpenEMR instance to another OpenEMR instance we should bundle the patient documents into the zip file that we export from the Carecoordination module. This should be an option that we can select as part of the Carecoordination module's Send To -> Download feature. In the same folder as the patient that contains their CCDA document we should have a patient_documents folder that contains all of the documents that have been uploaded to a patient. We need to make sure we follow security privileges on the documents and respect the ACOs that have been setup for document categories / documents as we do the export so that we don't inadvertently leak data to users who shouldn't have access to it.
+- OE-11 — feat: Initial random password for new user: Allow the system to generate a random password for a new user which is sent to to the user via email
+- OE-20 — bug(ui): Login screen renders several headers twice: Repro: go to the login screen (/interface/login/login.php) and look at the network source. … Note the repeated meta tag, stylesheets, and script tags.
+- OE-13 — feat: MFA TOTP should display a seed code to enter into an application that does not use QR Codes: If an application that generates TOTP does not have a QR scanner a seed code should be displayed on the TOTP user screen in the MFA Management screen. Most TOTP systems will display both the QR code and the seed value. I ran into this problem when trying to test the login screen with MFA.
+- OE-25 — Patient portal first-login page: no show/hide on password fields, confusing "Account Name"/"Use Username" labels: On the portal "Please Enter New Credentials" page (first login / forced password reset): The Current Password, New Password and Confirm New Password fields have no show/hide toggle, although the login page has one. New passwords must mix upper/lower case and digits, so blind typing often fails. … The read-only field labelled "Account Name" (the account ID) and the editable "Use Username" are easy to confuse, and users then enter the account ID on the login page, which only matches the chosen login username.
+- OE-04 — Session timeout should force immediate logout: Wasn't sure whether to call this a feature request, bug or security vulnerability. When someone walks away from the computer their session will eventually time out, however whatever was on the screen remains visible until some action is taken. If that was sensitive information there's a problem. … My suggestion is that library/ajax/execute_background_services.php should notice when the user's session expires, and pass back a status code indicating such. The caller than can force a logout. Even better, would be good to see a prominent notice (bright red?) somewhere at the top of the page when the session is close to expiring.
+- OE-03 — encrypt backups: Raif requested this feature. Should be easy to do. PHP now has LibSodium as part of it, which is amazing encryption library.
+- OE-16 — Bug: Minimum password requirement is less than 12 characters: ASVS 2.1.1 (Verify that user set passwords are at least 12 characters in length (after multiple spaces are combined). CWE-521 (Weak Password Requirements) OpenEMR accepts passwords 9 characters or greater, creating a conflict with the ASVS requirement above.
+- OE-14 — Enable Default Login via Auth Provider (Keycloak, Authentik, etc.): Trying to figure out if it's possible to have OpenEMR set in a way that it can be connected to an Auth provider (e.g., Keycloak, Authentik, Zitadel) so that users (Admins, Clinicians, Providers, etc.) are all managed from the Auth provider and then able to login to the openmr.example.com site … We use an auth provider to manage a SSO-type environment and would like to have OpenEMR integrate with that so that we don't have extra layers & layers of user databases to manage
+- OE-12 — feat: Allow admins to force a password reset upon next login of user: (The request has no description beyond its title.)
+- OE-22 — feat(auth): add force_mfa global to require enrollment for all users: OpenEMR has no way for an administrator to require MFA for practitioner-side users. MFA enrollment is entirely self-service (interface/usergroup/mfa_registrations.php), and the login flow only challenges users who have already enrolled. A user who never opens the MFA registration page logs in with just a password, and an admin has no toggle, per-user flag, or "require MFA on next login" mechanism to change that. This proposes a global setting, force_mfa, that — when enabled — blocks completion of any practitioner login until the user has at least one row in login_mfa_registrations, redirecting unenrolled users into the existing TOTP enrollment flow. A separate issue covers the patient portal, which has no MFA at all.
+- OE-02 — Fee sheet link ambiguous behavior: When being on a different tab other then the patient encounter tab Pressing on the Fees-> Fee Sheet "secretly" open a new fee sheet in the encounter without opening the encounter tab and the new fee sheet The user might easily think that the link is not working
+- OE-09 — Handle non-ssl connections to OAuth2 login page: On the OAuth2 login / authorization page for the apis, it will only let you login over HTTPS. If you attempt to login over HTTP it just refreshes the page because the session cookies are not saved. For production installations we need to just fail to serve up any requests for the login screen if it is accessed over a non-ssl connection. For development installations we either need to fail the HTTP request, or make it so the login screen will issue the session cookies when logging in via HTTP. I'm not sure I like this option though as people could likely just turn it on for production and operate in an insecure fashion.
+- OE-17 — Daily report column alignment: The title says it all.
+- OE-24 — Audit log attributes record events to the session's open chart instead of the affected patient: The audit log uses the session's open chart to set the patient_id for patient record and HTTP request events. This causes statements about one patient to be logged against another patient if a different chart is open. … A statement about patient B run while patient A's chart is open is logged against patient A. The statement text in the comments column still has patient B's id, so anything that filters the log by patient_id misses patient B's access and shows a phantom access on patient A.
+- OE-15 — Change/Reset Password for users with emergency access: Currently OpenEMR is not having feature for users to change their password in the login page. We know OpenEMR being a healthcare application users tend to access this application mainly during medical emergency. If they forget their password then they have to wait until an admin gives them the access. In order to resolve this primary issue. We need to supply a simple change password functionality in the main page of OpenEMR. Implement Change password in main login screen. Update password in the backend database.
+- OE-01 — Getting abruptly logged out or cross patient data.: … Appears to happen when same UA is used for multiple windows/browser tabs. I suspect session not being restored or a cookie path issue. Hopefully some will help with any patterns this issue seems to show when issue is encountered.
+- OE-10 — Growth chart indicators are not in the right position: On the growth chart, the values use to be indicated on the chart. But now they are all at the bottom of the chart. … Expected behavior: growth indicators to be show on line graph
+- OE-05 — Audit Logging of Merge Tool: The merge tool doesn't get used often, but when it does, we want to know who used it and what patients were involved with the merge. … I would like to implement audit logging of the merge tool actions. I'm looking for feedback on: Where should log screen live? (should it be a type in the audit log, a new screen on the system log panel, or something that can be accessed from the merge tool?) What data should be logged? Any other ideas? (store JSON representation of merge so it can be undone, ...)

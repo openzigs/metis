@@ -1,0 +1,245 @@
+{
+  "labeller": "labeller 1: claude-opus-5-5 through `claude -p` with every tool switched off (`--tools \"\"`), no MCP server (`--strict-mcp-config` with an empty config), no settings sources and no session persistence, run from an empty directory; given only labeller-1-prompt.txt (seed 21051): policy-v1 and the 25 requirements in a seeded order. It saw no label, no rule summary, no code, no prompt of the product and no arm. It is not the agent that chose the requirements.",
+  "labelledAgainst": "policy-v1.md",
+  "costUsd": 0.1826,
+  "items": [
+    {
+      "id": "OE-01",
+      "applies": [
+        {
+          "ruleId": "TS-01",
+          "verdict": "needs-ba-input",
+          "reason": "The report suggests sessions may show one patient's data in another patient's context, but this is not confirmed.",
+          "businessFact": "Has it been confirmed that users are shown data of a patient other than the one they selected when using multiple tabs?"
+        }
+      ]
+    },
+    {
+      "id": "OE-02",
+      "applies": []
+    },
+    {
+      "id": "OE-03",
+      "applies": [
+        {
+          "ruleId": "TS-05",
+          "verdict": "compliant",
+          "reason": "Backups containing ePHI are encrypted using LibSodium."
+        }
+      ]
+    },
+    {
+      "id": "OE-04",
+      "applies": [
+        {
+          "ruleId": "TS-04",
+          "verdict": "compliant",
+          "reason": "When the session expires on inactivity, the system forces a logout instead of leaving data on screen."
+        },
+        {
+          "ruleId": "SM-02",
+          "verdict": "compliant",
+          "reason": "When the timeout expires, the session is terminated and the user is logged out."
+        },
+        {
+          "ruleId": "SM-01",
+          "verdict": "needs-ba-input",
+          "reason": "The timeout values are not stated.",
+          "businessFact": "What are the configured inactivity timeout and overall reauthentication timeout?"
+        }
+      ]
+    },
+    {
+      "id": "OE-05",
+      "applies": [
+        {
+          "ruleId": "TS-06",
+          "verdict": "compliant",
+          "reason": "Merge tool actions are logged, recording who used it and which patients were involved."
+        }
+      ]
+    },
+    {
+      "id": "OE-06",
+      "applies": [
+        {
+          "ruleId": "TS-01",
+          "verdict": "compliant",
+          "reason": "The export must respect document security privileges and ACOs so only authorised users get the documents."
+        }
+      ]
+    },
+    {
+      "id": "OE-07",
+      "applies": [
+        {
+          "ruleId": "AU-02",
+          "verdict": "gap",
+          "reason": "Unlocking automatically after a time interval re-enables the authenticator without the rebinding the rule requires."
+        }
+      ]
+    },
+    {
+      "id": "OE-08",
+      "applies": []
+    },
+    {
+      "id": "OE-09",
+      "applies": [
+        {
+          "ruleId": "PW-09",
+          "verdict": "needs-ba-input",
+          "reason": "Production refuses non-SSL login, but a development option could issue session cookies over HTTP.",
+          "businessFact": "Will the HTTP login option for development be built, and can it be blocked from being enabled in production?"
+        }
+      ]
+    },
+    {
+      "id": "OE-10",
+      "applies": []
+    },
+    {
+      "id": "OE-11",
+      "applies": [
+        {
+          "ruleId": "PW-01",
+          "verdict": "compliant",
+          "reason": "The system assigns the initial password randomly."
+        },
+        {
+          "ruleId": "PW-02",
+          "verdict": "needs-ba-input",
+          "reason": "The length of the generated password is not stated.",
+          "businessFact": "How many characters long will the generated password be, and is it used alone or with a second factor?"
+        },
+        {
+          "ruleId": "AS-02",
+          "verdict": "needs-ba-input",
+          "reason": "Sending a password by email may not safeguard it, and the email channel's protection is not stated.",
+          "businessFact": "Is the email carrying the initial password encrypted, and must the user change the password at first login?"
+        }
+      ]
+    },
+    {
+      "id": "OE-12",
+      "applies": [
+        {
+          "ruleId": "PW-04",
+          "verdict": "needs-ba-input",
+          "reason": "A forced reset is allowed on evidence of compromise but not as periodic rotation, and the intended use is not stated.",
+          "businessFact": "Will admins force resets only when a compromise is suspected, rather than on a schedule?"
+        }
+      ]
+    },
+    {
+      "id": "OE-13",
+      "applies": []
+    },
+    {
+      "id": "OE-14",
+      "applies": [
+        {
+          "ruleId": "AU-01",
+          "verdict": "needs-ba-input",
+          "reason": "Sign-in moves to an external provider, and the request does not say whether that provider enforces multi-factor authentication.",
+          "businessFact": "Will the external auth provider require multi-factor authentication for all OpenEMR users?"
+        }
+      ]
+    },
+    {
+      "id": "OE-15",
+      "applies": [
+        {
+          "ruleId": "TS-09",
+          "verdict": "needs-ba-input",
+          "reason": "A password reset from the login screen without an admin does not say how the user's identity is verified.",
+          "businessFact": "How will the system verify the identity of a user who resets a forgotten password from the login screen?"
+        },
+        {
+          "ruleId": "PW-07",
+          "verdict": "needs-ba-input",
+          "reason": "Changing a password requires a blocklist check, and the request is silent on it.",
+          "businessFact": "Will the new password be checked against a blocklist of common or compromised passwords?"
+        }
+      ]
+    },
+    {
+      "id": "OE-16",
+      "applies": [
+        {
+          "ruleId": "PW-02",
+          "verdict": "needs-ba-input",
+          "reason": "A 12-character minimum meets the rule only if passwords are always used with a second factor, otherwise 15 is required.",
+          "businessFact": "Are passwords used as a single factor, or always together with MFA?"
+        }
+      ]
+    },
+    {
+      "id": "OE-17",
+      "applies": []
+    },
+    {
+      "id": "OE-18",
+      "applies": []
+    },
+    {
+      "id": "OE-19",
+      "applies": [
+        {
+          "ruleId": "TS-01",
+          "verdict": "needs-ba-input",
+          "reason": "Sent faxes containing ePHI become stored and viewable, deletable and forwardable, but who may do so is not stated.",
+          "businessFact": "Which roles or ACLs are allowed to view, delete and forward sent faxes?"
+        }
+      ]
+    },
+    {
+      "id": "OE-20",
+      "applies": []
+    },
+    {
+      "id": "OE-21",
+      "applies": [
+        {
+          "ruleId": "TS-06",
+          "verdict": "compliant",
+          "reason": "Changes to menu roles produce an audit log entry with the old and new values."
+        }
+      ]
+    },
+    {
+      "id": "OE-22",
+      "applies": [
+        {
+          "ruleId": "AU-01",
+          "verdict": "compliant",
+          "reason": "The force_mfa setting blocks practitioner login until the user enrols in a second factor."
+        }
+      ]
+    },
+    {
+      "id": "OE-23",
+      "applies": []
+    },
+    {
+      "id": "OE-24",
+      "applies": [
+        {
+          "ruleId": "TS-06",
+          "verdict": "compliant",
+          "reason": "The fix makes audit events record the affected patient, so access is tracked correctly."
+        }
+      ]
+    },
+    {
+      "id": "OE-25",
+      "applies": [
+        {
+          "ruleId": "PW-03",
+          "verdict": "gap",
+          "reason": "The page requires new passwords to mix upper case, lower case and digits, which is a forbidden composition rule."
+        }
+      ]
+    }
+  ]
+}

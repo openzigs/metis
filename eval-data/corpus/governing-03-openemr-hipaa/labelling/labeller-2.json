@@ -1,0 +1,242 @@
+{
+  "labeller": "labeller 2: claude-opus-5-5 through `claude -p` with every tool switched off (`--tools \"\"`), no MCP server (`--strict-mcp-config` with an empty config), no settings sources and no session persistence, run from an empty directory; given only labeller-2-prompt.txt (seed 21052): policy-v1 and the 25 requirements in a seeded order. It saw no label, no rule summary, no code, no prompt of the product and no arm. It is not the agent that chose the requirements.",
+  "labelledAgainst": "policy-v1.md",
+  "costUsd": 0.2358,
+  "items": [
+    {
+      "id": "OE-01",
+      "applies": [
+        {
+          "ruleId": "TS-07",
+          "verdict": "needs-ba-input",
+          "reason": "Patient data mixed up across browser tabs could put ePHI into the wrong patient's chart, but the report does not say whether data is saved or only shown.",
+          "businessFact": "Does the cross-patient problem cause data to be saved into the wrong patient's record, or only displayed?"
+        }
+      ]
+    },
+    {
+      "id": "OE-02",
+      "applies": []
+    },
+    {
+      "id": "OE-03",
+      "applies": [
+        {
+          "ruleId": "TS-05",
+          "verdict": "compliant",
+          "reason": "Backups holding ePHI are encrypted with LibSodium."
+        }
+      ]
+    },
+    {
+      "id": "OE-04",
+      "applies": [
+        {
+          "ruleId": "TS-04",
+          "verdict": "compliant",
+          "reason": "The client detects that the session has expired and forces logout, so the screen no longer stays visible."
+        },
+        {
+          "ruleId": "SM-02",
+          "verdict": "compliant",
+          "reason": "When the timeout expires the session is actively ended in the user interface."
+        },
+        {
+          "ruleId": "SM-01",
+          "verdict": "needs-ba-input",
+          "reason": "The request gives no values for the inactivity timeout or the overall timeout.",
+          "businessFact": "What inactivity timeout (no more than 1 hour) and overall reauthentication timeout (no more than 24 hours) will be configured?"
+        }
+      ]
+    },
+    {
+      "id": "OE-05",
+      "applies": [
+        {
+          "ruleId": "TS-06",
+          "verdict": "compliant",
+          "reason": "Merge tool actions will be logged, recording who ran the merge and which patients were involved."
+        }
+      ]
+    },
+    {
+      "id": "OE-06",
+      "applies": [
+        {
+          "ruleId": "TS-01",
+          "verdict": "compliant",
+          "reason": "The export explicitly follows document security privileges and the ACOs set for document categories."
+        }
+      ]
+    },
+    {
+      "id": "OE-07",
+      "applies": [
+        {
+          "ruleId": "AU-02",
+          "verdict": "gap",
+          "reason": "A locked account unlocks itself after a set time instead of requiring the authenticator to be bound again, and the setting still allows no maximum."
+        }
+      ]
+    },
+    {
+      "id": "OE-08",
+      "applies": []
+    },
+    {
+      "id": "OE-09",
+      "applies": [
+        {
+          "ruleId": "PW-09",
+          "verdict": "needs-ba-input",
+          "reason": "Production refuses login over plain HTTP, but an optional HTTP login mode for development is left open.",
+          "businessFact": "Will the HTTP login option for development installations be built, and if so, can it be enabled on a production installation?"
+        },
+        {
+          "ruleId": "TS-10",
+          "verdict": "needs-ba-input",
+          "reason": "Credentials and session cookies may be sent unencrypted if the development HTTP mode exists.",
+          "businessFact": "Will any installation that runs in HTTP mode hold real ePHI?"
+        }
+      ]
+    },
+    {
+      "id": "OE-10",
+      "applies": []
+    },
+    {
+      "id": "OE-11",
+      "applies": [
+        {
+          "ruleId": "PW-01",
+          "verdict": "compliant",
+          "reason": "The initial password is generated randomly by the system."
+        },
+        {
+          "ruleId": "AS-02",
+          "verdict": "needs-ba-input",
+          "reason": "Sending the password by email may not protect it, and the request names no safeguards.",
+          "businessFact": "Will the emailed initial password go over a protected channel and have to be changed at first login?"
+        },
+        {
+          "ruleId": "PW-02",
+          "verdict": "needs-ba-input",
+          "reason": "The request does not give the length of the generated password.",
+          "businessFact": "How many characters long will generated passwords be, and will they be used as a single factor?"
+        }
+      ]
+    },
+    {
+      "id": "OE-12",
+      "applies": [
+        {
+          "ruleId": "PW-04",
+          "verdict": "compliant",
+          "reason": "Admins can force a password change, which gives the system a way to require a change after a compromise."
+        }
+      ]
+    },
+    {
+      "id": "OE-13",
+      "applies": []
+    },
+    {
+      "id": "OE-14",
+      "applies": [
+        {
+          "ruleId": "AU-01",
+          "verdict": "needs-ba-input",
+          "reason": "Authentication moves to an external identity provider, and the request does not say whether that provider enforces multi-factor authentication.",
+          "businessFact": "Will the external identity provider require multi-factor authentication for all OpenEMR users?"
+        }
+      ]
+    },
+    {
+      "id": "OE-15",
+      "applies": [
+        {
+          "ruleId": "TS-09",
+          "verdict": "gap",
+          "reason": "Users who have forgotten their password can change it from the login screen with no step that verifies they are who they claim to be."
+        },
+        {
+          "ruleId": "AS-02",
+          "verdict": "gap",
+          "reason": "The new password-change procedure has no safeguard against an unauthenticated person resetting someone else's password."
+        }
+      ]
+    },
+    {
+      "id": "OE-16",
+      "applies": [
+        {
+          "ruleId": "PW-02",
+          "verdict": "needs-ba-input",
+          "reason": "A 12-character minimum is enough for passwords used with MFA but below the 15 characters required when the password is the only factor.",
+          "businessFact": "Are passwords used as the only authentication factor for any users, such as staff not enrolled in MFA or portal patients?"
+        }
+      ]
+    },
+    {
+      "id": "OE-17",
+      "applies": []
+    },
+    {
+      "id": "OE-18",
+      "applies": []
+    },
+    {
+      "id": "OE-19",
+      "applies": []
+    },
+    {
+      "id": "OE-20",
+      "applies": []
+    },
+    {
+      "id": "OE-21",
+      "applies": [
+        {
+          "ruleId": "TS-06",
+          "verdict": "compliant",
+          "reason": "Changes to menu roles create an audit entry that records the old and new values."
+        }
+      ]
+    },
+    {
+      "id": "OE-22",
+      "applies": [
+        {
+          "ruleId": "AU-01",
+          "verdict": "needs-ba-input",
+          "reason": "force_mfa enforces multi-factor login only when an admin enables it, so practitioners may still sign in with a password alone.",
+          "businessFact": "Will force_mfa be turned on in every production deployment that serves practitioner users?"
+        }
+      ]
+    },
+    {
+      "id": "OE-23",
+      "applies": []
+    },
+    {
+      "id": "OE-24",
+      "applies": [
+        {
+          "ruleId": "TS-06",
+          "verdict": "compliant",
+          "reason": "The fix records audit events against the patient actually affected, so the log reflects real access."
+        }
+      ]
+    },
+    {
+      "id": "OE-25",
+      "applies": [
+        {
+          "ruleId": "PW-03",
+          "verdict": "gap",
+          "reason": "New portal passwords must mix upper and lower case and digits, which is a composition rule the policy forbids."
+        }
+      ]
+    }
+  ]
+}
