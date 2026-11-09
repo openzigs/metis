@@ -267,6 +267,30 @@ describe("buildGoverningQuestions", () => {
     expect(questions.map((q) => q.governing?.ruleIds)).toEqual([[CARD.id, ENCRYPT.id], [AUDIT.id]]);
   });
 
+  it("#2066 — a group the merge leaves alone keeps its own question, verbatim, whatever the model wrote", async () => {
+    const { provider } = stubModel({
+      merge: () => ({
+        questions: [
+          { question: "Will this feature store customers' payment data?", facts: ["F1", "F2"] },
+          { question: "Do you already log each bulk export of saved cards?", facts: ["F3"] },
+        ],
+      }),
+    });
+    const questions = await buildGoverningQuestions(
+      [
+        pair(CARD.id, "Will the saved card be kept with the whole number?"),
+        pair(ENCRYPT.id, "Is payment information stored by this feature?"),
+        pair(AUDIT.id, "Will anyone export the saved cards in bulk?"),
+      ],
+      RULES,
+      { provider },
+    );
+    expect(questions.map((q) => q.question)).toEqual([
+      "Will this feature store customers' payment data?",
+      "Will anyone export the saved cards in bulk?",
+    ]);
+  });
+
   it("a merge reply that drops a fact, repeats one or cannot be read never drops a question", async () => {
     const facts = [
       pair(CARD.id, "Will the saved card be kept with the whole number?"),
@@ -282,6 +306,8 @@ describe("buildGoverningQuestions", () => {
     });
     const got = await buildGoverningQuestions(facts, RULES, { provider: partial.provider });
     expect(got.map((q) => q.governing?.ruleIds)).toEqual([[CARD.id], [ENCRYPT.id]]);
+    // #2066 — F1 came back alone, so its own wording stands.
+    expect(got.map((q) => q.question)).toEqual(facts.map((f) => f.businessFact));
     const broken = stubModel({ merge: () => "not json" });
     const again = await buildGoverningQuestions(facts, RULES, { provider: broken.provider });
     expect(again.map((q) => q.question)).toEqual(facts.map((f) => f.businessFact));
