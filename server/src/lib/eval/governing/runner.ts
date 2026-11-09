@@ -589,6 +589,8 @@ function combineRefusal(
     return `it read another content hash of ${corpus.name}`;
   }
   if (r.stopped) return `it stopped early (${r.stopped.reason})`;
+  // #2063 — its completed runs are the least over its arms: over none, Infinity.
+  if (!r.arms?.length) return "it ran no arms";
   if (!r.provenance?.commit) return "it records no commit";
   if (r.provenance.dirty !== false) {
     return "it ran with uncommitted changes, so no commit names its code";

@@ -1659,13 +1659,22 @@ compliance or certification.
 
 The checks are made by an AI model, and it can miss a rule or apply one wrongly. Before this
 feature was turned on by default, it was measured on a set of requirements it had never been
-tuned on, with the model METIS uses in production (#1878):
+tuned on, with Claude Sonnet 5.5 (`claude-sonnet-5-5`) on Anthropic (#1878):
 
 - it found 94% of the rules that applied, and 92% of those that shared no words with their
   requirement;
 - 60% of the rules it applied did apply;
 - every clause it quoted was word for word;
 - it never called a rule **Compliant** where the requirement gave no evidence for it.
+
+Read those numbers with three caveats:
+
+- **They hold for that model only.** If your deployment uses another model, or the OpenAI,
+  Azure OpenAI, Bedrock or a local provider, accuracy may differ, and it has not been measured.
+- **Precision only just passed.** The bar was 60%, and the average over three runs was 60.3%,
+  0.003 above it. One of the three runs was under the bar, at 58%.
+- **The answers it was scored against were written by an AI model.** No person has reviewed
+  which rules really apply to that set of requirements.
 
 So expect some findings for rules that do not really apply. Review each finding before you
 rely on it.
