@@ -4,7 +4,7 @@
 # Bridges a Python (uvx) MCP server's stdio transport to HTTP+SSE on :8080
 # via the official `mcp-proxy` adapter. This image is self-contained so PR
 # validation does not require ghcr.io/metis-mcps/uvx-runner:latest to exist.
-FROM node:22-alpine3.23
+FROM node:25-alpine3.23
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
