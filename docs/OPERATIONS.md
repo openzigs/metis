@@ -1095,6 +1095,12 @@ in `docs/ARCHITECTURE.md` §10.3.
   and it marked nothing `compliant` without evidence. Expect an analyst to see more rules
   missed and more applied in error than the synthetic set suggests, and read each finding's
   citation.
+- **After #2108's fix, precision passes and recall does not.** The fix was tuned on a
+  real-text tuning set, `governing-04-openemr-asvs`. Re-read once, `governing-03` gave
+  precision 0.76 and recall 0.75, verdict accuracy 0.49, and still no unsupported `compliant`
+  (`eval-data/readings/governing-03-openemr-hipaa/baseline-A5-sonnet-2108.md`). Two of the
+  five bars still fail, so the Preview mark stays. The misses are mostly password rules on a
+  request that creates or forces a password change.
 
 ## 7. Container Image Sizes
 

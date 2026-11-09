@@ -168,10 +168,23 @@ describe("isApiSurfaceFile", () => {
     ["server/handlers/feeds.ts", true],
     ["internal/api/handler/entry.go", true],
     ["app/server/routers/users.py", true],
+    ["web/https/routing/table.go", true],
+    // #2134 — only the immediate parent marks a server: a job or queue handler
+    // somewhere below `server/` (METIS's own layout) is not an API.
+    ["server/src/jobs/handlers/email.ts", false],
+    ["apps/server/src/queue/handler/retry.ts", false],
+    ["pkg/http/client/handler/retry.go", false],
+    ["servers/internal/router/mux.go", false],
+    ["handlers/feeds.ts", false],
     // #2127 — a client directory calls an API; it does not serve one.
     ["src/rest-client/feeds.ts", false],
     ["pkg/api_client/feeds.go", false],
     ["src/GraphQLClient/query.ts", false],
+    // #2134 — nor when client is joined onto an API stem.
+    ["src/grpcclient/feeds.ts", false],
+    ["src/swaggerclient/feeds.ts", false],
+    ["gen/openapiclients/feeds.go", false],
+    ["src/graphqlclient/query.ts", false],
     ["rest/feeds.go", true],
     ["internal/rest_v1/feeds.go", true],
     // #2127 — camel compounds of graphql, openapi and grpc.

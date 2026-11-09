@@ -21,10 +21,12 @@ import {
   replayAnswers,
   SHIPPED_CODE_PATH,
   shippedApplicabilityRules,
+  shippedStages,
   topKRules,
 } from "./arms.js";
 import { resolveFinalAnswerMaxOutputTokens } from "../../analysis/agent-runner.js";
 import { governingRuleSource } from "../../governing/applicability.js";
+import type { FindingsReport } from "../../governing/findings.js";
 import { loadGoverningCorpus, type GoverningCorpus, type GoverningItem } from "./corpus.js";
 
 let corpus: GoverningCorpus;
@@ -939,6 +941,49 @@ describe("A5 — the shipped path (#1878)", () => {
     expect(out.judgements).toEqual([expect.objectContaining({ ruleId: top[0], verdict: "gap" })]);
     expect(out.answered).toBeUndefined();
     expect(out.diagnostics).toMatchObject({ applicable: 1 });
+    // #2108 — each candidate with the pass that found it, its applicability and its finding.
+    expect(out.stages).toEqual([
+      { ruleId: top[0], foundBy: ["top-k"], applicability: "applies", finding: "gap" },
+      { ruleId: top[1], foundBy: ["top-k"], applicability: "does-not-apply" },
+    ]);
+  });
+
+  it("shippedStages: a rule left uncertain carries applicability's Needs BA input as its finding (#2108)", () => {
+    const stages = shippedStages(
+      {
+        decisions: [
+          {
+            ruleId: "DR-06",
+            controlId: "DR-06",
+            verdict: "uncertain",
+            reason: "Depends.",
+            businessFact: "Is any of it held?",
+            foundBy: ["screen", "top-k"],
+          },
+          {
+            ruleId: "DR-01",
+            controlId: "DR-01",
+            verdict: "does-not-apply",
+            reason: "No.",
+            foundBy: ["screen"],
+          },
+        ],
+      },
+      {
+        findings: [
+          { rule: { id: "DR-06" }, status: "needs-ba-input" },
+        ] as unknown as FindingsReport["findings"],
+      },
+    );
+    expect(stages).toEqual([
+      {
+        ruleId: "DR-06",
+        foundBy: ["screen", "top-k"],
+        applicability: "uncertain",
+        finding: "needs-ba-input",
+      },
+      { ruleId: "DR-01", foundBy: ["screen"], applicability: "does-not-apply" },
+    ]);
   });
 
   it("asks production's question, settles the BA's answer, and produces the findings again", async () => {

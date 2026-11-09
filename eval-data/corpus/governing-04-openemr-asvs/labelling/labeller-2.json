@@ -1,0 +1,263 @@
+{
+  "labeller": "labeller 2: claude-opus-5-5 through `claude -p` with every tool switched off (`--tools \"\"`), no MCP server (`--strict-mcp-config` with an empty config), no settings sources and no session persistence, run from an empty directory; given only labeller-2-prompt.txt (seed 21082): policy-v1 and the 25 requirements in a seeded order. It saw no label, no rule summary, no code, no prompt of the product and no arm. It is not the agent that chose the requirements.",
+  "labelledAgainst": "policy-v1.md",
+  "costUsd": 0.2085,
+  "items": [
+    {
+      "id": "OS-01",
+      "applies": []
+    },
+    {
+      "id": "OS-02",
+      "applies": [
+        {
+          "ruleId": "PA-06",
+          "verdict": "compliant",
+          "reason": "It asks for the new-password field to be masked, the same as the other password fields."
+        },
+        {
+          "ruleId": "PA-14",
+          "verdict": "gap",
+          "reason": "The admin reset flow has the admin type the user's new password, so the admin knows it."
+        }
+      ]
+    },
+    {
+      "id": "OS-03",
+      "applies": []
+    },
+    {
+      "id": "OS-04",
+      "applies": [
+        {
+          "ruleId": "PA-15",
+          "verdict": "needs-ba-input",
+          "reason": "A separate SAML2 IdP is proposed, with no statement on verifying authentication strength from the IdP response.",
+          "businessFact": "Does OpenEMR need a specific authentication strength or method (e.g. MFA) from the IdP for any functions?"
+        },
+        {
+          "ruleId": "SE-06",
+          "verdict": "needs-ba-input",
+          "reason": "Session lifetime and re-authentication between OpenEMR and the IdP are not defined.",
+          "businessFact": "What is the maximum time allowed between IdP authentication events before OpenEMR must require re-authentication?"
+        },
+        {
+          "ruleId": "PA-10",
+          "verdict": "needs-ba-input",
+          "reason": "Workstation-login SSO may be single-factor, and it does not say whether the IdP enforces MFA.",
+          "businessFact": "Will the SSO identity provider enforce multi-factor authentication for OpenEMR users?"
+        }
+      ]
+    },
+    {
+      "id": "OS-05",
+      "applies": [
+        {
+          "ruleId": "PA-12",
+          "verdict": "needs-ba-input",
+          "reason": "The generated portal password is fixed to be returned, with no statement that it expires or cannot become the long-term password.",
+          "businessFact": "Must the system-generated portal password expire after first use or a short period, forcing the patient to set their own?"
+        }
+      ]
+    },
+    {
+      "id": "OS-06",
+      "applies": [
+        {
+          "ruleId": "PA-14",
+          "verdict": "gap",
+          "reason": "In the admin reset flow the admin sets the user's new password."
+        },
+        {
+          "ruleId": "PA-09",
+          "verdict": "needs-ba-input",
+          "reason": "It changes lockout-counter behaviour, and it does not say whether the security documentation calls for clearing the counter on admin reset.",
+          "businessFact": "Does the security documentation require the failed-login counter to be cleared when an administrator resets a user's password?"
+        }
+      ]
+    },
+    {
+      "id": "OS-07",
+      "applies": []
+    },
+    {
+      "id": "OS-08",
+      "applies": [
+        {
+          "ruleId": "PA-05",
+          "verdict": "compliant",
+          "reason": "It explicitly removes all character-composition requirements."
+        },
+        {
+          "ruleId": "PA-01",
+          "verdict": "needs-ba-input",
+          "reason": "The password policy is changed without stating the minimum length that remains.",
+          "businessFact": "What minimum password length (at least 8, ideally 15) will the policy keep once composition rules are removed?"
+        }
+      ]
+    },
+    {
+      "id": "OS-09",
+      "applies": [
+        {
+          "ruleId": "PA-06",
+          "verdict": "compliant",
+          "reason": "A show/hide toggle is the permitted temporary view of a masked password field."
+        }
+      ]
+    },
+    {
+      "id": "OS-10",
+      "applies": []
+    },
+    {
+      "id": "OS-11",
+      "applies": [
+        {
+          "ruleId": "PA-08",
+          "verdict": "gap",
+          "reason": "It builds notifications around password expiry, which keeps periodic credential rotation in place."
+        }
+      ]
+    },
+    {
+      "id": "OS-12",
+      "applies": []
+    },
+    {
+      "id": "OS-13",
+      "applies": [
+        {
+          "ruleId": "LG-01",
+          "verdict": "needs-ba-input",
+          "reason": "It asks for 'detailed' password administration logging without stating what metadata each entry holds.",
+          "businessFact": "Which fields (timestamp, acting admin, target user, source IP, action) must each password administration log entry record?"
+        }
+      ]
+    },
+    {
+      "id": "OS-14",
+      "applies": [
+        {
+          "ruleId": "SE-03",
+          "verdict": "needs-ba-input",
+          "reason": "Logout ends in an error, and it does not say whether the server-side session is invalidated.",
+          "businessFact": "Is the patient's portal session invalidated on the server when logout is triggered, before the redirect fails?"
+        }
+      ]
+    },
+    {
+      "id": "OS-15",
+      "applies": [
+        {
+          "ruleId": "SE-03",
+          "verdict": "compliant",
+          "reason": "On token expiry the user must be logged out automatically and sent to the login screen."
+        }
+      ]
+    },
+    {
+      "id": "OS-16",
+      "applies": [
+        {
+          "ruleId": "DP-01",
+          "verdict": "gap",
+          "reason": "A CSRF token is carried in the URL query string, and no remediation moving it to the body or headers is specified."
+        }
+      ]
+    },
+    {
+      "id": "OS-17",
+      "applies": [
+        {
+          "ruleId": "AZ-01",
+          "verdict": "gap",
+          "reason": "The upgrade scripts that change ACLs and schema run with authentication skipped, and no access restriction is specified."
+        }
+      ]
+    },
+    {
+      "id": "OS-18",
+      "applies": [
+        {
+          "ruleId": "LG-01",
+          "verdict": "compliant",
+          "reason": "It trusts X-Forwarded-For only from trusted proxies and stores remote and forwarded IPs as separate structured fields, so the 'where' metadata is accurate."
+        },
+        {
+          "ruleId": "LG-04",
+          "verdict": "needs-ba-input",
+          "reason": "Client-supplied header text is persisted, and it does not say whether forwarded_for is validated or encoded before logging.",
+          "businessFact": "Will the forwarded_for value be validated as IP addresses or encoded before it is written to the audit log?"
+        }
+      ]
+    },
+    {
+      "id": "OS-19",
+      "applies": [
+        {
+          "ruleId": "PA-10",
+          "verdict": "needs-ba-input",
+          "reason": "TOTP is added, but whether it is required depends on a portal_force_mfa toggle.",
+          "businessFact": "Will portal_force_mfa be enabled so that every patient must use a second factor to access the portal?"
+        },
+        {
+          "ruleId": "PA-13",
+          "verdict": "needs-ba-input",
+          "reason": "It says nothing on whether the portal forgotten-password reset will bypass the newly enrolled MFA.",
+          "businessFact": "Must the portal password reset flow require the patient's enrolled second factor before access is granted?"
+        }
+      ]
+    },
+    {
+      "id": "OS-20",
+      "applies": []
+    },
+    {
+      "id": "OS-21",
+      "applies": [
+        {
+          "ruleId": "LG-05",
+          "verdict": "needs-ba-input",
+          "reason": "INSERT/SELECT-only grants and checksum chaining prevent modification, but removing the default DB user's read access is only 'ideally', and encryption is being removed.",
+          "businessFact": "Will the default openemr database user be denied all access to the log tables, leaving only a dedicated least-privilege account?"
+        }
+      ]
+    },
+    {
+      "id": "OS-22",
+      "applies": [
+        {
+          "ruleId": "AZ-01",
+          "verdict": "compliant",
+          "reason": "Edit capability is granted on the basis of the explicitly assigned Demographics Write permission."
+        }
+      ]
+    },
+    {
+      "id": "OS-23",
+      "applies": []
+    },
+    {
+      "id": "OS-24",
+      "applies": [
+        {
+          "ruleId": "AZ-01",
+          "verdict": "needs-ba-input",
+          "reason": "New admin unblock surfaces are added without stating which permission restricts them.",
+          "businessFact": "Which ACL permission is required to view and clear the MFA and portal-account lockout counters?"
+        },
+        {
+          "ruleId": "PA-09",
+          "verdict": "needs-ba-input",
+          "reason": "Manual clearing of brute-force counters changes the throttling control, and it does not say whether the security documentation allows this.",
+          "businessFact": "Does the security documentation permit administrators to manually clear brute-force lockout counters before the window expires?"
+        }
+      ]
+    },
+    {
+      "id": "OS-25",
+      "applies": []
+    }
+  ]
+}
