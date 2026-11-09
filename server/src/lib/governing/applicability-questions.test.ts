@@ -222,6 +222,63 @@ describe("questionLeaksRule — the rulebook guard", () => {
     }
   });
 
+  it("#2098 — a verb between the subject and the rulebook noun stops the look-back", () => {
+    const retention = { controlId: "DR-01", clauseExcerpt: "Records are kept for seven years." };
+    // The determiner belongs to the subject, not to the rules: everyday rules-engine questions.
+    for (const plain of [
+      "Does the app use pricing rules?",
+      "Does the checkout run business rules?",
+      "Does the system follow rules for refunds?",
+      "Does the engine enforce rules that cap discounts?",
+      "Does the order meet rules for refunds?",
+      "Does the platform obey rules for discounts?",
+      "Does the workflow include rules for approvals?",
+    ]) {
+      expect(questionLeaksRule(plain, [retention]), plain).toBeNull();
+    }
+    // A determiner after the verb still points at a particular rule, and a
+    // policy reference reads past a verb-shaped modifier ("acceptable use").
+    for (const [refused, why] of [
+      ["Does the app use the pricing rules?", "refers to a rule"],
+      ["Does the engine enforce the retention rule?", "refers to a rule"],
+      ["Is the export allowed under the acceptable use policy?", "refers to a policy"],
+    ] as const) {
+      expect(questionLeaksRule(refused, [retention]), refused).toBe(why);
+    }
+  });
+
+  it("#2098 — a possessive rulebook noun heads its phrase", () => {
+    const retention = { controlId: "DR-01", clauseExcerpt: "Records are kept for seven years." };
+    for (const [refused, why] of [
+      ["Does the export meet the retention rule's limit?", "refers to a rule"],
+      ["Does the export meet the retention rule’s limit?", "refers to a rule"],
+      ["Does the export meet the retention rules' limits?", "refers to a rule"],
+      ["Does the export meet the retention rules’ limits?", "refers to a rule"],
+      ["Is it allowed by the retention policy's terms?", "refers to a policy"],
+      ["What does the export clause's wording cover?", "refers to a clause"],
+    ] as const) {
+      expect(questionLeaksRule(refused, [retention]), refused).toBe(why);
+    }
+    // A possessive with no determiner pointing at it is still a business fact.
+    for (const plain of [
+      "Will business rules' outcomes change the discount?",
+      "Do customers agree to a returns policy's terms?",
+    ]) {
+      expect(questionLeaksRule(plain, [retention]), plain).toBeNull();
+    }
+  });
+
+  it("#2098 — a company's possessive alone opens a rulebook phrase, in either apostrophe", () => {
+    const retention = { controlId: "DR-01", clauseExcerpt: "Records are kept for seven years." };
+    // No other determiner in reach: only company's / company’s can refuse these.
+    expect(questionLeaksRule("Are backups kept per company's retention rules?", [retention])).toBe(
+      "refers to a rule",
+    );
+    expect(questionLeaksRule("Are backups kept per company’s retention rules?", [retention])).toBe(
+      "refers to a rule",
+    );
+  });
+
   it("#2086 — words quoted from the requirement never trip the rulebook-phrase check in the template", () => {
     for (const text of [
       "Apply the pricing rules engine to every order.",

@@ -184,8 +184,9 @@ const POLICY_PREPOSITIONS = new Set(["under", "per", "against", "within", "by"])
 /**
  * Words that may follow a rulebook noun when it ends its noun phrase ("the
  * retention rule applies", "the rules of …"), as against a noun it modifies
- * ("the pricing rules engine"). They also end the look-back for a determiner,
- * so "Does it follow the export … rule" never reaches across a verb.
+ * ("the pricing rules engine"). They also end the look-back for a determiner
+ * ("Is the export for business rules?" never reaches "the"), as
+ * {@link LOOK_BACK_STOP_VERBS} do for a rule or clause.
  */
 const PHRASE_BOUNDARY_WORDS = new Set([
   // prepositions and conjunctions
@@ -201,6 +202,24 @@ const PHRASE_BOUNDARY_WORDS = new Set([
   ...["allows", "permit", "permits", "forbid", "forbids", "state", "states", "mean", "means"],
 ]);
 
+/**
+ * #2098 — verbs that take rules as their object ("Does the app use pricing
+ * rules?"). They end the look-back for a rule or clause, so the subject's
+ * determiner ("the app") is never read as pointing at the rules; one after the
+ * verb still is ("use the pricing rules"). Only the look-back reads them: after
+ * a rulebook noun they would make "Will the business rules change …" a phrase
+ * head. A policy needs a preposition before its determiner anyway, so they are
+ * not read for one, which keeps "under the acceptable use policy" refused.
+ * Words as often used as nouns ("change", "check", "break", "store") are left
+ * out, so "the credit check rules" still reaches its determiner.
+ */
+const LOOK_BACK_STOP_VERBS = new Set([
+  ...["use", "uses", "run", "runs", "follow", "follows", "enforce", "enforces", "meet", "meets"],
+  ...["obey", "obeys", "honor", "honors", "honour", "honours", "respect", "respects"],
+  ...["include", "includes", "contain", "contains", "implement", "implements"],
+  ...["define", "defines", "need", "needs", "get", "gets", "add", "adds", "create", "creates"],
+]);
+
 /** How many words may stand between the determiner and the rulebook noun ("the seven-year retention rule"). */
 const MAX_PHRASE_GAP = 3;
 
@@ -208,7 +227,16 @@ interface PhraseToken {
   word: string;
   /** Punctuation after the word ends its phrase ("rule?", "rule,"). */
   endsPhrase: boolean;
+  /**
+   * #2098 — the word without its possessive ending ("rule's" → "rule"), the
+   * form {@link RULEBOOK_NOUNS} is looked up by; otherwise `word` itself.
+   */
+  stem: string;
+  /** A possessive ("the retention rule's limit", "rules' limits") heads its noun phrase. */
+  possessive: boolean;
 }
+
+const POSSESSIVE_SUFFIX = /['’]s$/u;
 
 function phraseTokens(text: string): PhraseToken[] {
   const out: PhraseToken[] = [];
@@ -227,7 +255,14 @@ function phraseTokens(text: string): PhraseToken[] {
       if (out.length) out[out.length - 1]!.endsPhrase = true;
       continue;
     }
-    out.push({ word, endsPhrase: /[^'’"“”]/u.test(trailing) });
+    const endsPhrase = /[^'’"“”]/u.test(trailing);
+    if (POSSESSIVE_SUFFIX.test(word)) {
+      out.push({ word, endsPhrase, stem: word.replace(POSSESSIVE_SUFFIX, ""), possessive: true });
+    } else {
+      // "rules'" — a plural possessive leaves its apostrophe in the trailing run.
+      const possessive = word.endsWith("s") && /^['’]/u.test(trailing);
+      out.push({ word, endsPhrase, stem: word, possessive });
+    }
   }
   return out;
 }
@@ -241,16 +276,28 @@ function phraseTokens(text: string): PhraseToken[] {
  *   - `under the data retention policy`: the same shape for a policy, after a
  *     preposition that asks whether something stands under it.
  * A rulebook noun that modifies another noun ("the pricing rules engine"), one
- * that no determiner points at ("business rules"), and `rule-based` all pass.
+ * that no determiner points at ("business rules"), one whose only determiner
+ * sits before a verb ("Does the app use pricing rules?", #2098) and
+ * `rule-based` all pass. A possessive ("the retention rule's limit") heads its
+ * phrase (#2098).
+ *
+ * Knowingly let through, since a guard with no part-of-speech tagging has to
+ * stop somewhere: a phrase with more than {@link MAX_PHRASE_GAP} modifiers ("the
+ * seven year data retention rule"); a numbered id that is not a separate token
+ * holding a digit ("rule-12", "rule no. 12", "rule twelve"); and a rule whose
+ * modifier is a verb in {@link LOOK_BACK_STOP_VERBS} ("the data use rules").
+ * The other way, a verb missing from that set lets the look-back reach the
+ * subject's determiner, and the question is re-asked once.
  */
 function rulebookReference(question: string): string | null {
   const t = phraseTokens(question);
   for (let i = 0; i < t.length; i++) {
-    const noun = RULEBOOK_NOUNS.get(t[i]!.word);
+    const noun = RULEBOOK_NOUNS.get(t[i]!.stem);
     if (!noun) continue;
     const next = t[i + 1];
-    if (noun !== "policy" && next && !t[i]!.endsPhrase && /\p{N}/u.test(next.word)) return noun;
-    const headsPhrase = t[i]!.endsPhrase || !next || PHRASE_BOUNDARY_WORDS.has(next.word);
+    const { possessive, endsPhrase } = t[i]!;
+    if (noun !== "policy" && next && !endsPhrase && /\p{N}/u.test(next.word)) return noun;
+    const headsPhrase = possessive || endsPhrase || !next || PHRASE_BOUNDARY_WORDS.has(next.word);
     if (!headsPhrase) continue;
     for (let j = i - 1; j >= 0 && i - j <= MAX_PHRASE_GAP + 1; j--) {
       const w = t[j]!;
@@ -260,6 +307,7 @@ function rulebookReference(question: string): string | null {
         break;
       }
       if (PHRASE_BOUNDARY_WORDS.has(w.word)) break;
+      if (noun !== "policy" && LOOK_BACK_STOP_VERBS.has(w.word)) break;
     }
   }
   return null;

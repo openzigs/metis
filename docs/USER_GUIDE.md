@@ -1710,6 +1710,26 @@ Read those numbers with three caveats:
 So expect some findings for rules that do not really apply. Review each finding before you
 rely on it.
 
+#### Why governing checks are marked Preview
+
+Governing checks stay on, but they are marked **Preview**. A second measurement, on a set the
+checks had never been tuned on, used real public policies (HIPAA 45 CFR 164.312 and NIST SP 800-63B)
+against 25 real issues of an open-source project (governing-03, #2105). It failed three of its
+five bars:
+
+- it found 80% of the rules that applied (the bar is 90%);
+- it found 50% of those that shared no words with their requirement (the bar is 85%);
+- 52% of the rules it applied did apply (the bar is 60%).
+
+Every clause it quoted was still word for word, and it still never called a rule
+**Compliant** without evidence. Only 31% of its statuses matched the expected ones. That
+figure has no bar.
+
+So the **Governing documents** tab, the **Governing rules** panel and the BRD's **Governing
+rules** section each carry a **Preview** badge with this note: "Governing checks can miss
+rules or flag ones that don't apply. Review each finding before relying on it." The badge
+goes away once the checks pass that measurement.
+
 #### Turning it off
 
 Governing documents are on by default. A deployment administrator can turn the feature off by

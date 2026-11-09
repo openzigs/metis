@@ -13,6 +13,7 @@ import { act, cleanup, render, screen, waitFor, within } from "@testing-library/
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
+  GOVERNING_PREVIEW_NOTE,
   findForbiddenComplianceClaims,
   governingSummarySentence,
   type GoverningAnalysisApplicability,
@@ -33,6 +34,18 @@ import {
 } from "./governing-findings-panel";
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+
+// #2109 — the Preview setting, switchable per test; on unless a test turns it off.
+const preview = vi.hoisted(() => ({ on: true }));
+vi.mock("@metis/shared", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@metis/shared")>();
+  return {
+    ...actual,
+    get GOVERNING_PREVIEW() {
+      return preview.on;
+    },
+  };
+});
 
 const PROJECT = "proj-1";
 const ANALYSIS = "ana-1";
@@ -215,6 +228,29 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
+  preview.on = true;
+});
+
+describe("GoverningFindingsPanel — the Preview mark (#2109)", () => {
+  it("shows the Preview badge and its note under the Governing rules heading", async () => {
+    mount();
+    const panel = await screen.findByTestId("governing-findings");
+    const note = within(panel).getByRole("note");
+    expect(within(note).getByText("Preview")).toBeInTheDocument();
+    expect(note).toHaveTextContent(GOVERNING_PREVIEW_NOTE);
+    expect(findForbiddenComplianceClaims(note.textContent ?? "")).toEqual([]);
+    // Under the heading, before the summary sentence.
+    const heading = within(panel).getByRole("heading", { name: "Governing rules" });
+    expect(heading.nextElementSibling).toBe(note);
+  });
+
+  it("shows no Preview mark when the setting is off", async () => {
+    preview.on = false;
+    mount();
+    const panel = await screen.findByTestId("governing-findings");
+    expect(within(panel).queryByTestId("governing-preview")).toBeNull();
+    expect(panel).not.toHaveTextContent(GOVERNING_PREVIEW_NOTE);
+  });
 });
 
 describe("GoverningFindingsPanel (#1876)", () => {

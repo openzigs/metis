@@ -34,6 +34,7 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { renderedClarifyingQuestionIds } from "@/components/analysis/ClarificationDialog";
+import { GoverningPreviewNotice } from "@/components/governing/governing-preview-notice";
 import { analysisApi, type ClarificationStatePayload } from "@/lib/analysis-api";
 import {
   governingFindingsApi,
@@ -262,6 +263,7 @@ export function GoverningFindingsPanel({
         >
           Governing rules
         </h4>
+        <GoverningPreviewNotice className="mt-1" />
         {sentences.map(({ revisionId, sentence }) => (
           <p
             key={revisionId}
