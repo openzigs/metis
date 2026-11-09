@@ -878,8 +878,39 @@ const RESOLUTION_SHAPE =
  */
 const MIN_INTERNAL_ID_CHARS = 16;
 
-function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+/**
+ * What may stand around an id. Fixed patterns, matched on the few characters
+ * beside each occurrence the text search found: no pattern is built from an id.
+ */
+const ID_ASIDE_OPEN = /\s*\(\s*(?:requirement\s+)?id\s*[:=]?\s*$/i;
+const ID_ASIDE_CLOSE = /^\s*\)/;
+const ID_LABEL = /\[?(?:\bid\s*[:=]\s*)?$/i;
+/** How far before an id its `(id: ` or `[id: ` label is looked for. */
+const ID_LABEL_WINDOW = 32;
+
+/** `text` with each occurrence of `id` (any case) dropped as an aside, or replaced by `"title"`. */
+function replaceId(text: string, id: string, title: string): string {
+  const needle = id.toLowerCase();
+  let out = "";
+  let rest = text;
+  for (let at = rest.toLowerCase().indexOf(needle); at !== -1;) {
+    const before = rest.slice(0, at);
+    const after = rest.slice(at + id.length);
+    const near = before.slice(-ID_LABEL_WINDOW);
+    const lead = before.length - near.length;
+    const open = ID_ASIDE_OPEN.exec(near);
+    const close = ID_ASIDE_CLOSE.exec(after);
+    if (open && close) {
+      out += before.slice(0, lead + open.index);
+      rest = after.slice(close[0].length);
+    } else {
+      // ID_LABEL matches at least the empty string at the end.
+      out += `${before.slice(0, lead + ID_LABEL.exec(near)!.index)}"${title}"`;
+      rest = after.startsWith("]") ? after.slice(1) : after;
+    }
+    at = rest.toLowerCase().indexOf(needle);
+  }
+  return out + rest;
 }
 
 /**
@@ -900,11 +931,7 @@ export function nameRequirementIds(
     if (r.id.length < MIN_INTERNAL_ID_CHARS || !out.toLowerCase().includes(r.id.toLowerCase())) {
       continue;
     }
-    const id = escapeRegExp(r.id);
-    out = out
-      .replace(new RegExp(`\\s*\\(\\s*(?:requirement\\s+)?id\\s*[:=]?\\s*${id}\\s*\\)`, "gi"), "")
-      // A function, so a `$` in the title is never read as a pattern.
-      .replace(new RegExp(`\\[?(?:\\bid\\s*[:=]\\s*)?${id}\\]?`, "gi"), () => `"${r.title}"`);
+    out = replaceId(out, r.id, r.title);
   }
   return out;
 }
