@@ -2671,6 +2671,16 @@ the pre-#1873 code).
   re-judged with #1872's judging prompt, with the question and answer added to the requirement.
   The new verdicts are written with `settled: { questionId, answer, previousVerdict, at }` under
   the analysis row lock (`settleGoverningPairs`). Only an unsettled `uncertain` pair can move.
+- **Findings that ask (#2059).** A pair that `applies` is never `uncertain`, but its finding can
+  be `needs-ba-input` with a `businessQuestion`. While the stored applicability has an `applies`
+  pair with no `settled`, `open` also reads the analysis's `needs-ba-input` rows of
+  `governing_findings` (on the source's own analysis id) and asks each one's `businessQuestion`
+  (`openFindingPairs`), through the same `buildGoverningQuestions`: the same guard, merge and
+  `governing` link. Its answer needs no judging call: `answersForApplyingPairs` records it on the
+  pair as `settled` with `previousVerdict: "applies"`, verdict and reason unchanged
+  (`applySettlements` accepts that only for an `applies` settlement on an unsettled `applies`
+  pair). `findingPairsOf` passes every `settled` answer with its question, so the refresh's
+  findings call and `evidenceIsPresent` read it. A recorded pair is not asked again.
   A judging reply that cannot be read is re-asked once, and then settles nothing (#2009).
   An answered pair is never asked again, so a pair whose settle failed (an unreadable reply, a
   provider error or outage, an aborted request) would otherwise be orphaned. Instead, every
@@ -2804,23 +2814,29 @@ in the report (`SHIPPED_CODE_PATH`, printed as "Code path"):
 3. Production's findings pass: `findingPairsOf`, exported from `findings-store.ts` for this, then
    `evaluateRequirementFindings`.
 4. On a requirement with short-answer pairs, one round of the dialog:
-   - `openGoverningPairs` and `buildGoverningQuestions` produce production's own questions;
+   - `openGoverningPairs`, `openFindingPairs` (over the findings of step 3, #2059) and
+     `buildGoverningQuestions` produce production's own questions;
    - the BA answers each question that links a rule with a `baAnswer`, and the rest go
      unanswered;
-   - `rejudgeAnswered` and `applySettlements` settle the answers;
+   - `rejudgeAnswered`, `answersForApplyingPairs` and `applySettlements` settle the answers
+     (`answersRecorded` counts the answers recorded on a rule that applies);
    - when a settlement applied, the findings are produced again from the settled answers.
 
 Only the top-k search stands in: lexical, as in A1 to A4, for the workspace's vector index.
 Nothing is written to a database. Each record keeps the questions asked and the answer each got
 (`answered.questions`).
 
-The difference from A4 shows in the short-answer row. Production asks the BA only about a rule
-that applicability left `uncertain`. A pair that applicability decided `applies`, and whose finding
-is `needs-ba-input`, has a business question on the finding (the analysis view prints it), but the
-dialog never asks it. The link then falls back to the Questions tab, and the BA's answer never
-reaches that finding. On the held-out set this left the row at 2 or 3 of 7 per run. A4's
-replay, which hands every answer to the findings call, scored 6 or 7 of 7 on the tuning set (#2050).
-The gap is tracked in #2059.
+The difference from A4 shows in the short-answer row. Until #2059, production asked the BA only
+about a rule that applicability left `uncertain`. A pair that applicability decided `applies`, and
+whose finding is `needs-ba-input`, had a business question on the finding, but the dialog never
+asked it, so the BA's answer never reached that finding. On the held-out set this left the row at
+2 or 3 of 7 per run, where A4's replay, which hands every answer to the findings call, scored 6 or
+7 of 7 on the tuning set (#2050). #2059 asks those findings' questions too. A pair whose rule
+`applies` and whose first finding is `gap` or `compliant` is still never asked, as in production.
+On the held-out set the answer then reached the findings call in 10 of 21 pair-runs, against 3
+of 21 before, and the row read 0.48 against 0.38
+(`eval-data/readings/governing-02-clinic-records/baseline-A5-sonnet-2059.md`; what it does not
+show is in that set's `ANNOTATION.md`).
 
 #### Governing rules in the requirements BRD (#1877)
 

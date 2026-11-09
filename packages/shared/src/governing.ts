@@ -133,13 +133,19 @@ export const governingQuestionLinkSchema = z.object({
 });
 export type GoverningQuestionLink = z.infer<typeof governingQuestionLinkSchema>;
 
-/** How a BA's answer re-decided an `uncertain` pair (#1873). */
+/**
+ * How a BA's answer re-decided an `uncertain` pair (#1873), or (#2059) was
+ * recorded on a pair that `applies`, whose finding asked for it.
+ */
 export const governingSettlementSchema = z.object({
   questionId: z.string().min(1),
   /** #1874 — the question the BA answered, so a finding can be judged on both. */
   question: z.string().optional(),
   answer: z.string(),
-  /** The verdict before the answer: always `uncertain`. */
+  /**
+   * The verdict before the answer: `uncertain`, or (#2059) `applies` when the
+   * answer was to a Needs BA input finding and the verdict is unchanged.
+   */
   previousVerdict: z.enum(GOVERNING_APPLICABILITY_VERDICTS),
   at: timestamp,
 });
@@ -154,7 +160,7 @@ export const governingApplicabilityDecisionSchema = z.object({
   /** For `uncertain`: the business fact that would settle it. */
   businessFact: z.string().optional(),
   foundBy: z.array(z.enum(["top-k", "screen"])),
-  /** Set once a BA answer re-decided the pair. */
+  /** Set once a BA answer re-decided the pair, or was recorded on it (#2059). */
   settled: governingSettlementSchema.optional(),
 });
 export type GoverningApplicabilityDecision = z.infer<typeof governingApplicabilityDecisionSchema>;

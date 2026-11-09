@@ -946,7 +946,7 @@ describe("the code a reading ran (#1878)", () => {
       expect(gr11.answeredPairs).toEqual([expect.objectContaining({ verdict: "compliant" })]);
       // An arm on production's code path says whose questions its BA answered.
       expect(toMarkdownReport(combined)).toContain(
-        "A5: production asks its own questions, and only about a rule applicability left `uncertain`.",
+        "A5: production asks its own questions, about a rule applicability left `uncertain` and (#2059) a rule that applies whose finding is Needs BA input.",
       );
     });
 

@@ -1636,11 +1636,13 @@ Every finding quotes the rule's clause, and METIS checks the quote word for word
 policy revision it names. If a quote cannot be found there, METIS drops it. The finding then
 says so, and becomes **Needs BA input**.
 
-A **Needs BA input** finding links to its clarifying question. Only rules METIS was unsure
-about are asked there. For a rule that clearly applies, the finding's question is not one of
-the clarifying questions, so the link opens the Questions tab. Settle it another way: add the
-missing fact to the requirement and run the analysis again, or **Reject** the finding with a
-note that says what you found out.
+A **Needs BA input** finding links to its clarifying question, in plain business words that
+never name the rule. That holds both for a rule METIS was unsure applies and for one that
+clearly applies but where the requirement leaves a fact unstated (#2059). When you answer, the
+findings for that requirement are checked again with your answer and its question, and the
+question is not asked again. A finding asked about in an earlier round, while a later round is
+open, links to the Questions tab instead. You can also add the missing fact to the requirement
+and run the analysis again, or **Reject** the finding with a note that says what you found out.
 
 You can **Accept** or **Reject** each finding with a note. The panel shows the decision, who
 made it and when, and each decision is recorded in the audit log. If a later run changes a

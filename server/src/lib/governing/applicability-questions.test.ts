@@ -12,14 +12,18 @@ const db = vi.hoisted(() => ({
   project: { findFirst: vi.fn() },
   analysis: { findFirst: vi.fn() },
   governingRule: { findMany: vi.fn() },
+  governingFinding: { findMany: vi.fn() },
 }));
 vi.mock("../prisma.js", () => ({ prisma: db, resolveDatabaseProvider: () => "sqlite" }));
 
 const {
   GOVERNING_QUESTION_FIELD,
+  answersForApplyingPairs,
   buildGoverningQuestions,
   governingQuestionRequirementId,
   governingQuestionSourceFor,
+  hasUnansweredApplyingPair,
+  openFindingPairs,
   openGoverningPairs,
   questionLeaksRule,
   rejudgeAnswered,
@@ -397,6 +401,132 @@ describe("openGoverningPairs", () => {
   });
 });
 
+describe("#2059 — a Needs BA input finding on a rule that applies is asked", () => {
+  const AUDIT_QUESTION = "Will every export of customer records be logged?";
+  const finding = (over: Partial<Record<string, unknown>> = {}) => ({
+    requirementId: REQ.id,
+    ruleId: AUDIT.id,
+    status: "needs-ba-input" as const,
+    businessQuestion: AUDIT_QUESTION,
+    ...over,
+  });
+  const question = (ruleIds: string[], answer?: string) => ({
+    id: "q-audit",
+    requirementId: REQ.id,
+    ambiguityField: GOVERNING_QUESTION_FIELD,
+    question: AUDIT_QUESTION,
+    context: "",
+    governing: { kind: "governing" as const, ruleIds, requirementId: REQ.id },
+    ...(answer !== undefined ? { answer } : {}),
+  });
+
+  it("openFindingPairs: the finding's question, for an applies pair only", () => {
+    expect(openFindingPairs(STORED, [finding()], undefined)).toEqual([
+      {
+        requirementId: REQ.id,
+        requirementText: REQ.text,
+        ruleId: AUDIT.id,
+        businessFact: AUDIT_QUESTION,
+      },
+    ]);
+    // A gap or compliant finding asks nothing; nor does one on an uncertain
+    // pair (openGoverningPairs asks applicability's fact), nor on a pair or a
+    // requirement the stored applicability does not hold; a repeat is asked once.
+    expect(
+      openFindingPairs(
+        STORED,
+        [
+          finding({ status: "gap" }),
+          finding({ status: "compliant" }),
+          finding({ ruleId: CARD.id }),
+          finding({ ruleId: "rule_gone" }),
+          finding({ requirementId: "REQ-404" }),
+        ],
+        undefined,
+      ),
+    ).toEqual([]);
+    expect(openFindingPairs(STORED, [finding(), finding()], undefined)).toHaveLength(1);
+    expect(openFindingPairs(STORED, [finding({ businessQuestion: null })], undefined)).toEqual([
+      expect.objectContaining({ ruleId: AUDIT.id, businessFact: "" }),
+    ]);
+  });
+
+  it("openFindingPairs: not again once answered in the dialog, or once an answer is recorded", () => {
+    const state = (answer?: string) => ({
+      rounds: [{ round: 1, questions: [question([AUDIT.id], answer)], answers: [] }],
+    });
+    expect(openFindingPairs(STORED, [finding()], state("Yes, we do."))).toEqual([]);
+    expect(openFindingPairs(STORED, [finding()], state(" "))).toHaveLength(1);
+    const recorded = structuredClone(STORED);
+    recorded.requirements[0]!.decisions[2]!.settled = {
+      questionId: "q-audit",
+      answer: "Yes, we do.",
+      previousVerdict: "applies",
+      at: "2026-11-08T00:00:00.000Z",
+    };
+    expect(openFindingPairs(recorded, [finding()], undefined)).toEqual([]);
+    expect(hasUnansweredApplyingPair(STORED)).toBe(true);
+    expect(hasUnansweredApplyingPair(recorded)).toBe(false);
+  });
+
+  it("buildGoverningQuestions guards a finding's question and links it to its rule", async () => {
+    const { provider, sent } = stubModel({
+      rephrase: () => ({ question: "Will each bulk export of customer records be recorded?" }),
+    });
+    const [q] = await buildGoverningQuestions(
+      openFindingPairs(
+        STORED,
+        [finding({ businessQuestion: "Does the export meet AL-02?" })],
+        undefined,
+      ),
+      RULES,
+      { provider },
+    );
+    expect(sent.map((x) => x.kind)).toEqual(["rephrase"]);
+    expect(q).toMatchObject({
+      question: "Will each bulk export of customer records be recorded?",
+      governing: { kind: "governing", ruleIds: [AUDIT.id], requirementId: REQ.id },
+    });
+    expectNoRulebook(q!.question, [AUDIT]);
+  });
+
+  it("answersForApplyingPairs: the answer, kept with its question, on each linked applies pair", () => {
+    const answered = question([AUDIT.id, CARD.id], "  Yes, we do. ");
+    expect(answersForApplyingPairs([answered], STORED)).toEqual([
+      {
+        requirementId: REQ.id,
+        ruleId: AUDIT.id,
+        verdict: "applies",
+        reason: "Reads records.",
+        questionId: "q-audit",
+        question: AUDIT_QUESTION,
+        answer: "Yes, we do.",
+      },
+    ]);
+    // Unanswered, unlinked, about another requirement, or already recorded: none.
+    expect(answersForApplyingPairs([question([AUDIT.id], " ")], STORED)).toEqual([]);
+    expect(answersForApplyingPairs([{ ...answered, governing: undefined }], STORED)).toEqual([]);
+    expect(
+      answersForApplyingPairs(
+        [{ ...answered, governing: { ...answered.governing, requirementId: "REQ-404" } }],
+        STORED,
+      ),
+    ).toEqual([]);
+    const recorded = structuredClone(STORED);
+    recorded.requirements[0]!.decisions[2]!.settled = {
+      questionId: "q0",
+      answer: "No.",
+      previousVerdict: "applies",
+      at: "2026-11-08T00:00:00.000Z",
+    };
+    expect(answersForApplyingPairs([answered], recorded)).toEqual([]);
+    // Two questions answering the same pair: the first answer is the one recorded.
+    expect(
+      answersForApplyingPairs([answered, { ...answered, id: "q-2", answer: "No." }], STORED),
+    ).toEqual([expect.objectContaining({ questionId: "q-audit" })]);
+  });
+});
+
 describe("rejudgeAnswered — the answer is judged back onto the rules it settles", () => {
   const rules = new Map(
     [CARD, ENCRYPT].map((r) => [r.id, { ...r, revisionId: "rev_1", source: "Policy v1 §4" }]),
@@ -488,6 +618,8 @@ describe("governingQuestionSourceFor — the flag gate", () => {
     db.project.findFirst.mockReset();
     db.analysis.findFirst.mockReset();
     db.governingRule.findMany.mockReset();
+    db.governingFinding.findMany.mockReset();
+    db.governingFinding.findMany.mockResolvedValue([]);
   });
   afterEach(() => {
     delete process.env.GOVERNING_DOCS_ENABLED;
@@ -564,6 +696,57 @@ describe("governingQuestionSourceFor — the flag gate", () => {
     await source.settle([answeredQ, { ...answeredQ, governing: undefined }]);
     expect(db.project.findFirst).not.toHaveBeenCalled();
     expect(chat).not.toHaveBeenCalled();
+  });
+
+  it("#2059 — open reads the analysis's Needs BA input findings only while an applies pair is unanswered", async () => {
+    process.env.GOVERNING_DOCS_ENABLED = "1";
+    const { provider } = stubModel({});
+    const source = governingQuestionSourceFor({ analysisId: "an_1", projectId: "p", provider })!;
+    const onlyApplies = structuredClone(STORED);
+    onlyApplies.requirements[0]!.decisions = [onlyApplies.requirements[0]!.decisions[2]!];
+    db.analysis.findFirst.mockResolvedValue({
+      metadata: JSON.stringify({ governingApplicability: onlyApplies }),
+    });
+    db.project.findFirst.mockResolvedValue({ workspaceId: "ws" });
+    db.governingFinding.findMany.mockResolvedValue([
+      {
+        requirementId: REQ.id,
+        ruleId: AUDIT.id,
+        businessQuestion: "Will every export of customer records be logged?",
+      },
+    ]);
+    db.governingRule.findMany.mockResolvedValue([
+      {
+        ...AUDIT,
+        revisionId: "rev_1",
+        clauseRef: "§7",
+        revision: { revisionLabel: "v1", document: { title: "Policy" } },
+      },
+    ]);
+    const questions = await source.open(undefined);
+    expect(db.governingFinding.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { analysisId: "an_1", status: "needs-ba-input" } }),
+    );
+    expect(questions).toEqual([
+      expect.objectContaining({
+        question: "Will every export of customer records be logged?",
+        governing: { kind: "governing", ruleIds: [AUDIT.id], requirementId: REQ.id },
+      }),
+    ]);
+
+    // Once an answer is recorded on the pair, no finding is read and nothing is asked.
+    onlyApplies.requirements[0]!.decisions[0]!.settled = {
+      questionId: "q1",
+      answer: "Yes.",
+      previousVerdict: "applies",
+      at: "2026-11-08T00:00:00.000Z",
+    };
+    db.analysis.findFirst.mockResolvedValue({
+      metadata: JSON.stringify({ governingApplicability: onlyApplies }),
+    });
+    db.governingFinding.findMany.mockClear();
+    expect(await source.open(undefined)).toEqual([]);
+    expect(db.governingFinding.findMany).not.toHaveBeenCalled();
   });
 
   it("a project with no workspace finds no rules, so asks nothing", async () => {

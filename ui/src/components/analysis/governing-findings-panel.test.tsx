@@ -681,6 +681,18 @@ describe("clarifyingQuestionHref", () => {
     );
   });
 
+  it("#2059 — a question asked from a Needs BA input finding on a rule that applies: its anchor, read on the link, not the namespaced id", () => {
+    // As the server builds it: `requirementId` is namespaced (#2009) and the
+    // analysis's id travels on the governing link, which the finding carries.
+    const asked = {
+      ...link("q-finding", ["r-applies"]),
+      requirementId: "governing:REQ-001",
+    };
+    expect(
+      clarifyingQuestionHref({ requirementId: "REQ-001", ruleId: "r-applies" }, state([[asked]])),
+    ).toBe(clarifyQuestionAnchor("q-finding"));
+  });
+
   it("not a question for another requirement or another rule; none at all is the Questions tab", () => {
     const s = state([[link("q-a", ["r1"], "REQ-002"), link("q-b", ["r2"])]]);
     expect(clarifyingQuestionHref({ requirementId: "REQ-001", ruleId: "r1" }, s)).toBe(
