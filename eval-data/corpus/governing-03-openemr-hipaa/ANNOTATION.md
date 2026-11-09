@@ -229,3 +229,56 @@ the report file. A reading is for a decision, never for tuning a prompt.
 
 | Date | Issue | Arms | Model | Report |
 |---|---|---|---|---|
+| 2026-11-09 | #2105 | A5 (the shipped path), 3 runs as three `--runs 1` invocations, combined; commit `1a6766257` | `anthropic/claude-sonnet-5-5` | [`eval-data/readings/governing-03-openemr-hipaa/baseline-A5-sonnet.md`](../../readings/governing-03-openemr-hipaa/baseline-A5-sonnet.md) |
+
+### The #2105 reading
+
+The first reading of this set, taken once, after the labels, the thresholds and the content
+hash were fixed. No prompt was changed after it, and no label was changed after it. It cost
+$1.95 in all ($0.65, $0.64 and $0.66 per run), against the owner's pre-approval of up to $20.
+Each bar is the one #1867 fixed before any arm ran. It is set beside the latest reading of
+`governing-02` (the #2066 to #2068 reading, the same arm and model):
+
+| Bar | Required | This set: mean over 3 runs | Per run | Pass | `governing-02` |
+|---|---|---|---|---|---|
+| Overall recall | ≥ 0.90 | 0.80 | 0.82 / 0.76 / 0.82 | **no** | 0.95 |
+| Non-resembling recall | ≥ 0.85 | 0.50 | 0.50 / 0.50 / 0.50 | **no** (2 pairs) | 0.92 |
+| Precision | ≥ 0.60 | 0.52 | 0.50 / 0.52 / 0.54 | **no** | 0.62 |
+| Citation accuracy | ≥ 0.95 | 1.00 | 1.00 / 1.00 / 1.00 | yes | 1.00 |
+| No-evidence → compliant errors | 0 per run | 0 | 0 / 0 / 0 | yes | 0 |
+
+Verdict accuracy was 0.31 (0.79 on `governing-02`). Each run left seven of the eight negatives
+clean: OE-23 drew a session rule in runs 1 and 3, and OE-13 (showing the TOTP seed) drew the
+notification rule AU-03 in run 2. **Three of the five bars fail on real text, and none is tuned away here**: this
+set is held out, so the result stands as read. What the reading shows:
+
+- **Recall (0.80).** Six truth pairs were never found in any run: OE-01 → TS-07 (the
+  non-resembling one: tabs mixing two patients' data, against integrity), OE-09 → TS-10
+  (HTTP sign-in, against transmission security), OE-14 → AS-02 and AU-01 (sign-in through an
+  external provider), OE-16 → PW-07 (the blocklist on a password-length change) and
+  OE-25 → PW-03, a plain `gap`: the portal makes new passwords "mix upper/lower case and
+  digits", which is the composition rule 800-63B-4 forbids. That last miss is the clearest
+  defect in the reading. The other non-resembling pair, OE-22 → TS-09, was found in all three
+  runs, so that bar reads 0.50 on two pairs.
+- **Precision (0.52).** The extra rules cluster on three requirements. On OE-15 (change a
+  forgotten password from the sign-in screen) the path applied up to nine more of the password
+  and session rules; on OE-19 (keep and show sent faxes) it added audit, integrity, encryption
+  and transmission; on OE-11 (a random first password sent by email) it added composition,
+  storage and transmission. Some of these are defensible readings that the labellers left off
+  (for example OE-23 → SM-02, the portal session that ends without telling the patient, taken
+  in two runs). That is a limit of AI labels on terse text, and it is not a reason to change a
+  label after seeing an arm's answer.
+- **Verdicts (0.31).** The path almost never says `compliant` on this set: of 39 pair-runs
+  labelled `compliant`, it said `compliant` on 11, `needs-ba-input` on 23 and `gap` on 5. A real
+  issue is often the safeguard itself ("encrypt backups", "audit logging of the merge tool"),
+  and the labellers called that compliant; the path asks for confirmation instead. That is
+  the cautious side, and it made no unsupported `compliant` (0 hard errors). It also called
+  13 of 48 `needs-ba-input` pair-runs `gap`.
+- **Citations held.** Every citation was a sentence of the quoted HIPAA or NIST text.
+
+**Decision: none taken here.** #2105 asked for the reading, not for a flag change. The
+feature stays as #1878 left it, and this reading is evidence for the owner's next decision:
+on real policies and real issue text the shipped path finds fewer of the rules that apply,
+and adds more that do not, than the synthetic held-out set showed. The labels are still AI
+labels; a person's review of the 33 pairs (`annotation.reviewedBy`) would say how much of the
+precision and verdict gap is the path and how much is the labels.

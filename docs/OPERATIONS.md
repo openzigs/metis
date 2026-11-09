@@ -1087,6 +1087,14 @@ in `docs/ARCHITECTURE.md` §10.3.
   was scored against are AI-written and unreviewed. On the OpenAI, Azure OpenAI, Bedrock or
   local providers accuracy has not been measured. Consider turning it off where the
   deployment's model is not one you have measured.
+- **On real policies it measured lower.** A second held-out set quotes the HIPAA Security
+  Rule and NIST SP 800-63B-4 against real OpenEMR issues
+  (`eval-data/readings/governing-03-openemr-hipaa/baseline-A5-sonnet.md`, #2105). There the
+  same path found 0.80 of the rules that apply, and 0.52 of the rules it applied were right,
+  both under their bars (0.90 and 0.60). Every citation was still a sentence of the policy,
+  and it marked nothing `compliant` without evidence. Expect an analyst to see more rules
+  missed and more applied in error than the synthetic set suggests, and read each finding's
+  citation.
 
 ## 7. Container Image Sizes
 

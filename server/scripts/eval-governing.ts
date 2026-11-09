@@ -14,6 +14,7 @@
  *   pnpm --filter server eval:governing --arm A5 --runs 1 --corpus governing-02-clinic-records   # the shipped path (#1878)
  *   pnpm --filter server eval:governing --corpus governing-02-clinic-records \
  *     --combine a.json,b.json,c.json --reading baseline-A5-sonnet   # three invocations, one reading
+ *   pnpm --filter server eval:governing --arm A5 --runs 1 --corpus governing-03-openemr-hipaa   # real HIPAA/NIST text (#2105)
  *
  * #1878 — every report records the commit it ran at and whether the tree was
  * clean, and each arm's production code path. `--combine` builds one reading
@@ -22,7 +23,8 @@
  * refused for a run that stopped early or ran with uncommitted changes.
  *
  * The default corpus is `governing-01`, the TUNING set (#2024): iterate prompts
- * there. `governing-02` is held out: read it only for a decision, and record
+ * there. `governing-02` and `governing-03` (#2105, real published text) are held
+ * out: read them only for a decision, and record
  * every reading in its ANNOTATION.md. Every report says which set it read.
  *
  * Every arm calls a model through the configured provider (`AI_PROVIDER` and
