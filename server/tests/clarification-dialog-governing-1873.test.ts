@@ -14,7 +14,7 @@
  *   - with the flag off, question generation is byte-identical to the dialog
  *     before #1873 (a snapshot taken from that code).
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import type { GoverningAnalysisApplicability } from "@metis/shared";
 import type { AIProvider, ChatMessage, ChatOptions } from "../src/lib/ai/types.js";
 
@@ -1137,11 +1137,12 @@ describe("#2122 — one answer settles the same fact on the analysis's other req
 
   it("#2126 — a carry whose write fails is logged: the next round still opens and asks the pair", async () => {
     const { provider } = carryModel({ verdict: "applies", answer: "A1" });
-    const update = vi.mocked(prisma.analysis.update);
+    // The in-memory DB's `analysis.update`, typed loosely: Prisma's generic signature is not the mock's.
+    const update = prisma.analysis.update as unknown as Mock<(args: unknown) => Promise<unknown>>;
     const real = update.getMockImplementation()!;
     let writes = 0;
     // The question's own settlement is written; the carry's write fails.
-    update.mockImplementation(async (args) => {
+    update.mockImplementation(async (args: unknown) => {
       if (++writes === 2) throw new Error("database unavailable");
       return real(args);
     });
