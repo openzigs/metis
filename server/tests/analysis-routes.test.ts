@@ -1005,12 +1005,30 @@ describe("POST /api/projects/:projectId/analyses/:id/clarify (Epic #922)", () =>
     };
     const aId = seedAnalysis({ agentKeys: ["document"], structuredRequirements });
 
-    // Start a round so there is an active dialog to answer.
-    const start = await request(app)
-      .post(`/api/projects/proj-abcdefghij/analyses/${aId}/clarify`)
-      .set("Authorization", `Bearer ${adminToken}`)
-      .send({ requirements: structuredRequirements });
-    expect(start.status).toBe(200);
+    // An active dialog to answer. #2085 — seeded with a question, because a
+    // submit names the open round's own question ids (the offline stub's start
+    // generates a round with none).
+    const questions = [
+      {
+        id: "q-retention",
+        requirementId: "req-1",
+        ambiguityField: "retention",
+        question: "How long?",
+        context: "",
+      },
+    ];
+    dialogStateStore.set(
+      aId,
+      JSON.stringify({
+        analysisId: aId,
+        currentRound: 1,
+        maxRounds: 3,
+        rounds: [{ round: 1, questions, answers: [] }],
+        resolvedAmbiguities: [],
+        escalatedToSonnet: false,
+        completed: false,
+      }),
+    );
 
     // Submit answers — even if the offline stub resolves nothing, the route
     // must still persist the (refined) requirements idempotently.
@@ -1019,7 +1037,7 @@ describe("POST /api/projects/:projectId/analyses/:id/clarify (Epic #922)", () =>
       .set("Authorization", `Bearer ${adminToken}`)
       .send({
         requirements: structuredRequirements,
-        answers: [{ questionId: "q-unknown", answer: "30 days" }],
+        answers: [{ questionId: questions[0]!.id, answer: "30 days" }],
       });
     expect(submit.status).toBe(200);
 
@@ -1029,6 +1047,18 @@ describe("POST /api/projects/:projectId/analyses/:id/clarify (Epic #922)", () =>
     };
     expect(meta.structuredRequirements).toBeDefined();
     expect(meta.structuredRequirements!.requirements[0]!.id).toBe("req-1");
+
+    // #2085 — a stale client submitting the same round again is refused: the
+    // answered round is no longer open, so nothing is written over it.
+    const again = await request(app)
+      .post(`/api/projects/proj-abcdefghij/analyses/${aId}/clarify`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({
+        requirements: structuredRequirements,
+        answers: [{ questionId: questions[0]!.id, answer: "90 days" }],
+      });
+    expect(again.status).toBe(409);
+    expect(again.body.error.code).toBe("CLARIFY_ROUND_NOT_OPEN");
   });
 
   // #724 — a clarify round's model calls (question generation on start, the
@@ -1360,15 +1390,30 @@ describe("POST /api/projects/:projectId/analyses/:id/clarify (Epic #922)", () =>
           analysisId: aId,
           currentRound: 1,
           maxRounds: 3,
-          rounds: [{ round: 1, questions: [], answers: [] }],
+          rounds: [
+            {
+              round: 1,
+              questions: [
+                {
+                  id: "q-retention",
+                  requirementId: "req-1",
+                  ambiguityField: "retention",
+                  question: "How long?",
+                  context: "",
+                },
+              ],
+              answers: [],
+            },
+          ],
           resolvedAmbiguities: [],
           escalatedToSonnet: false,
           completed: false,
         }),
       );
+      // #2085 — answers name a question of the open round, or the submit is refused.
       const res = await post(aId, {
         requirements: requirementsBody,
-        answers: [{ questionId: "q-unknown", answer: "30 days" }],
+        answers: [{ questionId: "q-retention", answer: "30 days" }],
       });
       expect(res.status).toBe(200);
       const meta = JSON.parse(analyses.get(aId)!.metadata as string) as {

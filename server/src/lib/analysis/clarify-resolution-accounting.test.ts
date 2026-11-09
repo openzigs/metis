@@ -27,7 +27,7 @@ vi.mock("./clarification-dialog-store.js", () => ({
   }),
 }));
 
-import { ClarificationDialog } from "./clarification-dialog.js";
+import { ClarificationDialog, _setDialogState } from "./clarification-dialog.js";
 import { addressedAmbiguities } from "./types/requirements.js";
 import type { AIProvider, ChatResponse } from "../ai/types.js";
 import type { ClarificationState, StructuredRequirements } from "./types/requirements.js";
@@ -190,6 +190,8 @@ describe("clarify resolution accounting (#1117 A)", () => {
       id: "q_forged",
       ambiguityField: "retryStrategy",
     });
+    // #2085 — persisted, so the forged question is one of the open round's own.
+    await _setDialogState(ANALYSIS_ID, started);
 
     const { state } = await dialog.submitAnswers(
       ANALYSIS_ID,
