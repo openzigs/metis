@@ -35,12 +35,13 @@
  *   - **One answer, every requirement (#2122).** An answer is also judged
  *     onto the analysis's other `uncertain` pairs ({@link carryAnswersOver}),
  *     so a fact asked in different words on several requirements is answered
- *     once.
+ *     once. #2126 — only to bring a rule in, after the submit's response, a
+ *     few calls at a time, and never twice against the same answers.
  *
  * Governing text (summaries, clauses) and the requirement reach the model
  * fenced as untrusted data, as #1872 sends them.
  */
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type {
   GoverningAnalysisApplicability,
   GoverningApplicabilityDecision,
@@ -79,6 +80,14 @@ export const MIN_QUOTED_CLAUSE_WORDS = 8;
 
 const MAX_QUESTION_CHARS = 400;
 const MAX_REQUIREMENT_QUOTE_CHARS = 160;
+
+/** #2126 — at most this many carried-answer judging calls are in flight at once. */
+export const CARRY_CONCURRENCY = 4;
+/**
+ * #2126 — the analyses whose carried-answer judgings are remembered
+ * (`carryMemo`), the least recently used evicted first.
+ */
+export const CARRY_MEMO_MAX_ANALYSES = 1_000;
 
 /** The rule text a question is checked against and phrased from. */
 export interface QuestionRule {
@@ -907,27 +916,39 @@ export function carryCandidates(
  * One judging call per requirement with candidate pairs, the requirement
  * followed by every answer (`A1`, …) and the requirement it was asked about,
  * under {@link CARRIED_ANSWER_NOTE}: an answer is used only for a fact that
- * holds for this requirement too. Only a decided verdict that names the answer
- * it used is taken, recorded as that answer's settlement. Anything else (still
- * `uncertain`, no answer named, a failed or unreadable call) settles nothing:
- * the pair is asked as before, so a carry can save the BA a question but never
- * cost one.
+ * holds for this requirement too. Only an `applies` verdict that names the
+ * answer it used is taken, recorded as that answer's settlement. Anything else
+ * (still `uncertain`, #2126 `does-not-apply`, no answer named, a failed or
+ * unreadable call) settles nothing: the pair is asked as before, so a carry can
+ * save the BA a question but never cost one, and never removes a finding.
+ *
+ * #2126 — the calls run {@link CARRY_CONCURRENCY} at a time. With `judged`,
+ * a candidate already judged against the same answers (a readable reply,
+ * whatever it decided) is not sent again, and each one judged now is added:
+ * a retry of the same answers costs no carried call.
  */
 export async function carryAnswersOver(
   answered: readonly ClarifyingQuestion[],
   stored: GoverningAnalysisApplicability,
   rules: ReadonlyMap<string, ApplicabilityRule>,
   deps: BuildGoverningQuestionsDeps,
+  judged?: Set<string>,
 ): Promise<GoverningSettlementInput[]> {
   const given = answered.filter((q) => q.governing && q.answer?.trim());
   if (given.length === 0) return [];
   const textOf = new Map(stored.requirements.map((r) => [r.requirementId, r.text]));
-  const out: GoverningSettlementInput[] = [];
-  for (const candidate of carryCandidates(given, stored)) {
+  const candidates = carryCandidates(given, stored)
+    .map((candidate) => ({ candidate, key: carryKey(candidate, given) }))
+    .filter(({ key }) => !judged?.has(key));
+  const carryOne = async ({
+    candidate,
+    key,
+  }: (typeof candidates)[number]): Promise<GoverningSettlementInput[]> => {
+    const out: GoverningSettlementInput[] = [];
     const linked = candidate.ruleIds
       .map((id) => rules.get(id))
       .filter((r): r is ApplicabilityRule => r !== undefined);
-    if (linked.length === 0) continue;
+    if (linked.length === 0) return out;
     const entries = applicabilityEntries(linked);
     const answers = given.map((q, i) => {
       const about = q.governing!.requirementId;
@@ -957,7 +978,7 @@ export async function carryAnswersOver(
         log.warn("carried answers' judging reply unreadable twice; the rules stay open", {
           requirementId: candidate.requirementId,
         });
-        continue;
+        return out;
       }
       decided = reply.decisions;
     } catch (err) {
@@ -966,11 +987,13 @@ export async function carryAnswersOver(
         requirementId: candidate.requirementId,
         error: (err as Error).message,
       });
-      continue;
+      return out;
     }
+    judged?.add(key);
     for (const e of entries) {
       const d = decided.get(e.index);
-      if (!d || d.verdict === "uncertain") continue;
+      // #2126 — a carried answer can bring a rule in, never rule one out.
+      if (d?.verdict !== "applies") continue;
       const m = /^A(\d+)$/i.exec(d.answer?.trim() ?? "");
       const q = m ? given[Number(m[1]) - 1] : undefined;
       if (!q) continue;
@@ -984,8 +1007,41 @@ export async function carryAnswersOver(
         answer: q.answer!.trim(),
       });
     }
-  }
-  return out;
+    return out;
+  };
+  // #2126 — a small worker pool; the results keep the candidates' order.
+  const results = new Array<GoverningSettlementInput[]>(candidates.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < candidates.length) {
+      const i = next++;
+      results[i] = await carryOne(candidates[i]!);
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(CARRY_CONCURRENCY, candidates.length) }, () => worker()),
+  );
+  return results.flat();
+}
+
+/**
+ * #2126 — what a carried judging of `candidate` is sent, as one key: the
+ * requirement, its candidate rules and the answers (question id and text).
+ * The same key means the same judging, whose result is already known.
+ */
+function carryKey(
+  candidate: { requirementId: string; ruleIds: readonly string[] },
+  given: readonly ClarifyingQuestion[],
+): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify([
+        candidate.requirementId,
+        [...candidate.ruleIds].sort(),
+        given.map((q) => [q.id, q.answer!.trim()]),
+      ]),
+    )
+    .digest("hex");
 }
 
 /**
@@ -1043,7 +1099,9 @@ export interface GoverningQuestionSource {
    * an open linked pair that it left open: a judging call failed, its reply
    * could not be read, or (#2029) none of its open linked rules could be read
    * any more, so it was never sent to the model at all. 0 when it settled
-   * every one, or had none to judge.
+   * every one, or had none to judge. #2126 — the carry of the answers to the
+   * analysis's other requirements (#2122) starts once these are committed and
+   * is not awaited: it never counts here, and `open` waits for it.
    */
   settle(questions: readonly ClarifyingQuestion[], signal?: AbortSignal): Promise<number>;
 }
@@ -1115,9 +1173,90 @@ export function governingQuestionSourceFor(input: {
     ...(input.model ? { model: input.model } : {}),
     ...(signal ? { signal } : {}),
   });
+  const rulesFor = async (ruleIds: readonly string[]) => {
+    const rows = await projectRules(input.projectId, ruleIds);
+    return new Map<string, ApplicabilityRule>(
+      rows.map((r) => [
+        r.id,
+        {
+          id: r.id,
+          revisionId: r.revisionId,
+          controlId: r.controlId,
+          summary: r.summary,
+          clauseExcerpt: r.clauseExcerpt,
+          source: `${r.documentTitle} ${r.revisionLabel} ${r.clauseRef}`.trim(),
+        },
+      ]),
+    );
+  };
+  // #1874 — an answer feeds the findings too: re-evaluate the requirements it
+  // settled pairs of. A failure is logged; the settlement stands. #2010 — off
+  // the request path: the settlement is committed by now. Not under the
+  // request's signal either: a client that goes away after the commit must
+  // not leave the findings stale.
+  const refreshFindings = (applied: readonly GoverningSettlementInput[]) => {
+    if (applied.length === 0) return;
+    void produceGoverningFindingsForAnalysis({
+      analysisId: input.analysisId,
+      projectId: input.projectId,
+      provider: input.provider,
+      requirementIds: [...new Set(applied.map((s) => s.requirementId))],
+      ...(input.model ? { model: input.model } : {}),
+    }).catch((err: unknown) => {
+      log.warn("governing findings could not be refreshed after an answer", {
+        analysisId: input.analysisId,
+        error: (err as Error).message,
+      });
+    });
+  };
+  // #2126 — the carry (#2122) costs one judging call per requirement with open
+  // pairs, so it grows with the analysis, not with the answers: it runs after
+  // the submit's response, as the findings refresh does (#2010), and not under
+  // the request's signal. Chained after any carry still running for the
+  // analysis, it reads the applicability afresh (a pair settled meanwhile is
+  // no candidate), skips what the memo has judged against the same answers,
+  // writes what it settles and refreshes those requirements' findings.
+  const carryInBackground = (answered: readonly ClarifyingQuestion[]) => {
+    const { analysisId } = input;
+    const previous = carriesInFlight.get(analysisId) ?? Promise.resolve();
+    const run = previous
+      .then(async () => {
+        const stored = await readGoverningApplicability(analysisId);
+        if (!stored) return;
+        const candidates = carryCandidates(answered, stored);
+        if (candidates.length === 0) return;
+        const rules = await rulesFor(candidates.flatMap((c) => c.ruleIds));
+        const carried = await carryAnswersOver(
+          answered,
+          stored,
+          rules,
+          deps(),
+          carryMemoFor(analysisId),
+        );
+        const applied = carried.length > 0 ? await settleGoverningPairs(analysisId, carried) : [];
+        log.info("governing answers carried", {
+          analysisId,
+          candidates: candidates.length,
+          settled: applied.length,
+        });
+        refreshFindings(applied);
+      })
+      .catch((err: unknown) => {
+        log.warn("governing answers could not be carried; the other rules stay open", {
+          analysisId,
+          error: (err as Error).message,
+        });
+      });
+    carriesInFlight.set(analysisId, run);
+    void run.then(() => {
+      if (carriesInFlight.get(analysisId) === run) carriesInFlight.delete(analysisId);
+    });
+  };
   return {
     async open(state, signal) {
       if (input.provider.offline) return [];
+      // #2126 — a carry still running may settle a pair this round would ask.
+      await governingCarriesSettled(input.analysisId);
       const stored = await readGoverningApplicability(input.analysisId);
       if (!stored) return [];
       // #2059 — and the questions of Needs BA input findings on rules that apply;
@@ -1150,69 +1289,68 @@ export function governingQuestionSourceFor(input: {
       const answered = withAnswer.filter((q) => hasOpenLinkedPair(stored, q));
       if (answered.length === 0) return 0;
       // #2122 — and the rules of the other open pairs the answers may settle.
-      const carried = carryCandidates(answered, stored);
-      const rows = await projectRules(input.projectId, [
-        ...answered.flatMap((q) => q.governing!.ruleIds),
-        ...carried.flatMap((c) => c.ruleIds),
-      ]);
-      const rules = new Map<string, ApplicabilityRule>(
-        rows.map((r) => [
-          r.id,
-          {
-            id: r.id,
-            revisionId: r.revisionId,
-            controlId: r.controlId,
-            summary: r.summary,
-            clauseExcerpt: r.clauseExcerpt,
-            source: `${r.documentTitle} ${r.revisionLabel} ${r.clauseRef}`.trim(),
-          },
-        ]),
-      );
+      const hasCarry = carryCandidates(answered, stored).length > 0;
+      const rules = await rulesFor(answered.flatMap((q) => q.governing!.ruleIds));
       const own = [
         ...(await rejudgeAnswered(answered, stored, rules, deps(signal))),
         // #2059 — an answer to a rule that applies needs no judging call.
         ...answersForApplyingPairs(answered, stored),
       ];
-      const carriedIn =
-        carried.length > 0 ? await carryAnswersOver(answered, stored, rules, deps(signal)) : [];
-      // #2122 — last, so a pair's own question's settlement always wins.
-      const settlements = [...own, ...carriedIn];
-      const applied = await settleGoverningPairs(input.analysisId, settlements);
+      const applied = await settleGoverningPairs(input.analysisId, own);
       log.info("governing answers settled", {
         analysisId: input.analysisId,
         questions: answered.length,
         settled: applied.length,
         stillUncertain: applied.filter((s) => s.verdict === "uncertain").length,
       });
-      // #1874 — the answer feeds the findings too: re-evaluate the requirements
-      // it settled pairs of. A failure is logged; the settlement stands.
-      // #2010 — off the request path: the settlement is committed by now, so
-      // the BA's submit no longer waits for one model call per affected
-      // requirement. Not under the request's signal either: a client that
-      // goes away after the commit must not leave the findings stale.
-      if (applied.length > 0) {
-        void produceGoverningFindingsForAnalysis({
-          analysisId: input.analysisId,
-          projectId: input.projectId,
-          provider: input.provider,
-          requirementIds: [...new Set(applied.map((s) => s.requirementId))],
-          ...(input.model ? { model: input.model } : {}),
-        }).catch((err: unknown) => {
-          log.warn("governing findings could not be refreshed after an answer", {
-            analysisId: input.analysisId,
-            error: (err as Error).message,
-          });
-        });
-      }
-      // Only the question's own settlements count: a carried one lands under
-      // the answering question's id but says nothing of whether that
-      // question's own rejudge worked (#2016/#2022 backoff contract).
-      const pairKey = (s: GoverningSettlementInput) => `${s.requirementId}\u0000${s.ruleId}`;
-      const ownPairs = new Set(own.map(pairKey));
-      const settledBy = new Set(
-        applied.filter((s) => ownPairs.has(pairKey(s))).map((s) => s.questionId),
-      );
+      refreshFindings(applied);
+      // #2122 — after the questions' own settlements are committed, so a
+      // pair's own answer always wins. #2126 — off the request path.
+      if (hasCarry) carryInBackground(answered);
+      // Only the question's own settlements count: a carried one says nothing
+      // of whether that question's own rejudge worked (#2016/#2022 backoff).
+      const settledBy = new Set(applied.map((s) => s.questionId));
       return answered.filter((q) => !settledBy.has(q.id)).length;
     },
   };
+}
+
+/**
+ * #2126 — the carries still running per analysis, each chained after the one
+ * before it, so `open` can wait for the tail. Process local: on another
+ * replica the next round may ask a pair a carry here is about to settle, as
+ * it did before #2122; a carry never costs the BA a question.
+ */
+const carriesInFlight = new Map<string, Promise<void>>();
+
+/**
+ * #2126 — the carried judgings already made per analysis ({@link carryAnswersOver}'s
+ * `judged`), so an orphan retry with the same answers sends none of them
+ * again. Process local and bounded at {@link CARRY_MEMO_MAX_ANALYSES}; a
+ * restart costs one more carried call per candidate, never a question.
+ */
+const carryMemo = new Map<string, Set<string>>();
+
+function carryMemoFor(analysisId: string): Set<string> {
+  const judged = carryMemo.get(analysisId) ?? new Set<string>();
+  // Re-inserted, so the map's order is the order of last use.
+  carryMemo.delete(analysisId);
+  carryMemo.set(analysisId, judged);
+  if (carryMemo.size > CARRY_MEMO_MAX_ANALYSES) {
+    carryMemo.delete(carryMemo.keys().next().value!);
+  }
+  return judged;
+}
+
+/**
+ * #2126 — resolves once every carry started for `analysisId` so far has
+ * written its settlements (or given up). Never rejects.
+ */
+export function governingCarriesSettled(analysisId: string): Promise<void> {
+  return carriesInFlight.get(analysisId) ?? Promise.resolve();
+}
+
+/** #2126 — test isolation: forget every carry memo. */
+export function resetGoverningCarryMemoForTests(): void {
+  carryMemo.clear();
 }

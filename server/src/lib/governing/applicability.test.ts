@@ -959,6 +959,15 @@ describe("#2122 — carried answers and rule handles", () => {
     );
   });
 
+  it("#2126 — a carried answer can bring a rule in, never rule one out", () => {
+    expect(CARRIED_ANSWER_NOTE).toContain("can bring a rule in, never rule one out");
+    expect(CARRIED_ANSWER_NOTE).toContain("For each rule you decide applies on the strength");
+    // The settle judge's does-not-apply line is not offered to the carried judge.
+    expect(ANSWER_NOTE).toContain("decide does-not-apply only when the answer says");
+    expect(CARRIED_ANSWER_NOTE).not.toContain("decide does-not-apply only when");
+    expect(CARRIED_ANSWER_NOTE).not.toContain("applies or does-not-apply on the strength");
+  });
+
   it("a judging reply keeps the answer handle it names, and only then", () => {
     const got = parseApplicabilityJudgeReply(
       JSON.stringify({

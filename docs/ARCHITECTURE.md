@@ -2739,6 +2739,21 @@ the pre-#1873 code).
   and round 2 asked it twice more: the questions differ in wording, so the fact match is the
   judge's, not a text match. Cost: one extra judging call per requirement with open pairs,
   only on a settle that has a new answer.
+- **A carry brings a rule in, off the request path (#2126).** A carried answer settles only
+  `applies`: `CARRIED_ANSWER_NOTE` drops `ANSWER_NOTE`'s does-not-apply line and asks for
+  `uncertain` where an answer would rule a rule out, and `carryAnswersOver` discards a carried
+  `does-not-apply`, so an answer given on one requirement never removes another's finding. The
+  carry starts once the questions' own settlements are committed and is not awaited by the
+  submit (as #2010 did for the findings refresh), nor run under the request's signal. Per
+  analysis the carries are chained (`carriesInFlight`); each re-reads the applicability, runs
+  its calls `CARRY_CONCURRENCY` (4) at a time, writes what it settles, and asks for its own
+  findings refresh. `open` awaits `governingCarriesSettled(analysisId)` before it reads the
+  pairs, so the next round never asks a pair the carry is about to settle. A per-analysis memo
+  (`carryMemo`, bounded at `CARRY_MEMO_MAX_ANALYSES`) keys each judged candidate by requirement,
+  rules and answers, so an orphan retry with the same answers sends no carried call again; a
+  failed call is not remembered. Both maps are process-local: on another replica the next round
+  may ask what a carry here settles, as before #2122. `settle`'s left-open count reads only the
+  questions' own settlements (#2016/#2022 backoff).
 - **Findings that ask (#2059).** A pair that `applies` is never `uncertain`, but its finding can
   be `needs-ba-input` with a `businessQuestion`. While the stored applicability has an `applies`
   pair, `open` also reads the analysis's `needs-ba-input` rows of
