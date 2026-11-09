@@ -361,7 +361,49 @@ export function verifyRuleCitation(
   if (!revisionText || !excerpt) return null;
   const at = locateClause(revisionText, excerpt, { start: rule.clauseStart, end: rule.clauseEnd });
   if (!at) return null;
-  return at.clauseStart >= rule.clauseStart && at.clauseEnd <= rule.clauseEnd ? at : null;
+  return at.clauseStart >= rule.clauseStart && at.clauseEnd <= rule.clauseEnd
+    ? wholeSentences(revisionText, at, rule)
+    : null;
+}
+
+/**
+ * A stop that ends a sentence: `.`, `!` or `?` before whitespace and a capital,
+ * a digit or a section sign. "e.g. for" and "§4.3" end none.
+ */
+const SENTENCE_END = /[.!?](?=\s+[\p{Lu}\d§])/gu;
+
+/**
+ * #2128 — `at` widened to the whole sentences it falls in, never past the
+ * rule's own clause. The quote is the model's, and a re-check quoted the same
+ * sentence from its verb on ("SHALL require passwords…", without "Verifiers
+ * and CSPs") or without its final period: verbatim, but a fragment to read,
+ * and a citation that moved between refreshes though the sentence had not.
+ */
+function wholeSentences(
+  text: string,
+  at: VerifiedClause,
+  clause: Pick<FindingRule, "clauseStart" | "clauseEnd">,
+): VerifiedClause {
+  const body = text.slice(clause.clauseStart, clause.clauseEnd);
+  const from = at.clauseStart - clause.clauseStart;
+  const to = at.clauseEnd - clause.clauseStart;
+  let start = 0;
+  let end = body.length;
+  for (const m of body.matchAll(SENTENCE_END)) {
+    const after = m.index + 1;
+    if (after <= from) start = after;
+    else if (after >= to) {
+      end = after;
+      break;
+    }
+  }
+  // The whitespace after a stop is the gap between sentences, not the quote.
+  while (start < from && /\s/.test(body[start]!)) start++;
+  return {
+    clauseStart: clause.clauseStart + start,
+    clauseEnd: clause.clauseStart + end,
+    clauseExcerpt: body.slice(start, end),
+  };
 }
 
 /** Enforce the no-evidence rule, verify the citation, neutralise the prose. */

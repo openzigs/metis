@@ -638,7 +638,7 @@ export class ClarificationDialog {
           "started. This does not mean there is nothing to clarify — try again.",
       );
     }
-    return toQuestions(outcome.verdict.questions);
+    return toQuestions(outcome.verdict.questions, requirements);
   }
 
   /**
@@ -871,16 +871,97 @@ const resolutionSchema = z.object({
 const RESOLUTION_SHAPE =
   '{ "resolvedFields": string[], "updatedDescription": string, "remainingUncertainty": number }';
 
-/** Read each question leniently; one without a question or requirement is dropped. */
-function toQuestions(raw: unknown[]): ClarifyingQuestion[] {
+/**
+ * #2128 — an id shorter than this reads as a label a person gave ("REQ-001"),
+ * and is left in a question as written; a longer one is a machine id (a UUID,
+ * a cuid) that means nothing to the analyst.
+ */
+const MIN_INTERNAL_ID_CHARS = 16;
+
+/**
+ * What may stand around an id. Fixed patterns, matched on the few characters
+ * beside each occurrence the text search found: no pattern is built from an id.
+ */
+const ID_ASIDE_OPEN = /\s*\(\s*(?:requirement\s+)?id\s*[:=]?\s*$/i;
+const ID_ASIDE_CLOSE = /^\s*\)/;
+const ID_LABEL = /\[?(?:\bid\s*[:=]\s*)?$/i;
+/** How far before an id its `(id: ` or `[id: ` label is looked for. */
+const ID_LABEL_WINDOW = 32;
+
+/**
+ * ASCII-only lower case. `String.prototype.toLowerCase` can change a string's
+ * length ("İ" becomes two code units), so an index found in its result would
+ * slice the original text in the wrong place. The ids are ASCII, so folding
+ * only A-Z finds them just as well and keeps every index valid.
+ */
+const foldAscii = (s: string): string => s.replace(/[A-Z]/g, (c) => c.toLowerCase());
+
+/** `text` with each occurrence of `id` (any case) dropped as an aside, or replaced by `"title"`. */
+function replaceId(text: string, id: string, title: string): string {
+  const needle = foldAscii(id);
+  let out = "";
+  let rest = text;
+  for (let at = foldAscii(rest).indexOf(needle); at !== -1;) {
+    const before = rest.slice(0, at);
+    const after = rest.slice(at + id.length);
+    const near = before.slice(-ID_LABEL_WINDOW);
+    const lead = before.length - near.length;
+    const open = ID_ASIDE_OPEN.exec(near);
+    const close = ID_ASIDE_CLOSE.exec(after);
+    if (open && close) {
+      out += before.slice(0, lead + open.index);
+      rest = after.slice(close[0].length);
+    } else {
+      // ID_LABEL matches at least the empty string at the end.
+      out += `${before.slice(0, lead + ID_LABEL.exec(near)!.index)}"${title}"`;
+      rest = after.startsWith("]") ? after.slice(1) : after;
+    }
+    at = foldAscii(rest).indexOf(needle);
+  }
+  return out + rest;
+}
+
+/**
+ * #2128 — `text` with the machine ids of `requirements` taken out. The
+ * question prompt labels each requirement `(id: …)` so the reply can say which
+ * one a question is about, and the model copied that label into the question
+ * it wrote: "…the new password length requirement (id: 6280ae21-…)". An
+ * `(id: …)` aside is dropped, since the words before it already name the
+ * requirement; any other mention becomes the requirement's quoted title. Ids
+ * the prompt did not show, and short readable ones, are left as written.
+ */
+export function nameRequirementIds(
+  text: string,
+  requirements: readonly Pick<StructuredRequirement, "id" | "title">[],
+): string {
+  let out = text;
+  for (const r of requirements) {
+    if (r.id.length < MIN_INTERNAL_ID_CHARS || !out.toLowerCase().includes(r.id.toLowerCase())) {
+      continue;
+    }
+    out = replaceId(out, r.id, r.title);
+  }
+  return out;
+}
+
+/**
+ * Read each question leniently; one without a question or requirement is
+ * dropped. #2128 — the question and its context name no machine id of
+ * `requirements`, the ones the prompt showed ({@link nameRequirementIds});
+ * the readability checks pass none.
+ */
+function toQuestions(
+  raw: unknown[],
+  requirements: readonly Pick<StructuredRequirement, "id" | "title">[] = [],
+): ClarifyingQuestion[] {
   return raw
     .filter((q): q is Record<string, unknown> => !!q && typeof q === "object")
     .map((q) => ({
       id: randomUUID(),
       requirementId: typeof q.requirementId === "string" ? q.requirementId : "",
       ambiguityField: typeof q.ambiguityField === "string" ? q.ambiguityField : "",
-      question: typeof q.question === "string" ? q.question : "",
-      context: typeof q.context === "string" ? q.context : "",
+      question: nameRequirementIds(typeof q.question === "string" ? q.question : "", requirements),
+      context: nameRequirementIds(typeof q.context === "string" ? q.context : "", requirements),
     }))
     .filter((q) => q.question && q.requirementId);
 }

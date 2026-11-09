@@ -425,8 +425,32 @@ export function nameHandles(
     const e = byHandle.get(handle.toUpperCase());
     if (!e) return match;
     if (e.handle !== own.handle) return e.rule.controlId;
-    return /^$|[.!?:]\s*$/.test(text.slice(0, offset)) ? "This rule" : "this rule";
+    return startsSentence(text, offset) ? "This rule" : "this rule";
   });
+}
+
+/** True when `offset` in `text` starts a sentence: at the start, or after `.`, `!`, `?` or `:`. */
+function startsSentence(text: string, offset: number): boolean {
+  return /^$|[.!?:]\s*$/.test(text.slice(0, offset));
+}
+
+/**
+ * #2128 — `text` with the answer handles (`A1`, …) of a carried-answer judging
+ * ({@link CARRIED_ANSWER_NOTE}) put back into words: "the analyst's answer"
+ * ("The analyst's answer" where a sentence starts), taking a leading "the" or
+ * "answer" with it. Only `A1`…`A{count}`, the handles the prompt showed, are
+ * replaced. A carried settlement's reason was stored as written and shown to
+ * the BA as "and A1 states that the password is the only sign-in factor".
+ */
+export function nameAnswerHandles(text: string, count: number): string {
+  return text.replace(
+    /(?:\b(?:the|an?)\s+)?(?:\banswer\s+)?\[?\bA(\d+)\b\]?/gi,
+    (match, n: string, offset: number) => {
+      const i = Number(n);
+      if (i < 1 || i > count) return match;
+      return startsSentence(text, offset) ? "The analyst's answer" : "the analyst's answer";
+    },
+  );
 }
 
 /**

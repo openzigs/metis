@@ -922,7 +922,7 @@ describe("ClarificationDialogPanel", () => {
     // Issue #1117 (finding A) — "resolved" was the resolution model's tally and
     // routinely undercounted the user's answers; the panel now reports what was
     // ADDRESSED (answered by the user, or closed by the model).
-    expect(screen.getByText(/2 ambiguities addressed/i)).toBeInTheDocument();
+    expect(screen.getByText(/2 questions addressed/i)).toBeInTheDocument();
   });
 
   it("renders escalatedToSonnet badge when true", () => {

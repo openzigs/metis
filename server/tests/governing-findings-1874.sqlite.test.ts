@@ -344,7 +344,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         revisionId: v1Id,
         revisionLabel: "v1",
         documentTitle: "Information Handling Policy",
-        clauseExcerpt: "never stores a full payment card number in any system",
+        // #2128 — the whole sentence the excerpt falls in, which is the clause.
+        clauseExcerpt: CARD_V1,
         citationDropped: false,
         decision: null,
       });
@@ -453,7 +454,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(card).toMatchObject({
         revisionId: v1Id,
         revisionLabel: "v1",
-        clauseExcerpt: "never stores a full payment card number in any system",
+        // #2128 — the whole sentence the excerpt falls in, which is the clause.
+        clauseExcerpt: CARD_V1,
       });
       expect(String(card.clauseExcerpt)).not.toContain("vault token");
       // #1876 — the rule count is v1's, the revision the findings cite, not v2's.

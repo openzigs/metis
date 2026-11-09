@@ -210,6 +210,19 @@ function turnOf(previous: Promise<void>, signal: AbortSignal | undefined): Promi
 }
 
 /**
+ * #2128 — whether a re-produced finding quotes the same clause. Citations are
+ * now widened to the whole sentence, so a finding stored with the fragment
+ * "SHALL be at least 15 characters" comes back quoting "Verifiers and CSPs
+ * SHALL be at least 15 characters". On the same revision and status that is
+ * the same finding, and the BA's decision on it stands; a quote that no longer
+ * contains the old one is a changed finding, as before.
+ */
+function sameQuote(prior: string | null, next: string | null): boolean {
+  if (prior === next) return true;
+  return prior !== null && prior.trim() !== "" && next !== null && next.includes(prior);
+}
+
+/**
  * Evaluate and store the analysis's governing findings. Rows of the
  * requirements evaluated are upserted, and those of pairs that no longer apply
  * are removed. A BA decision is kept when the finding it was made on is
@@ -330,7 +343,7 @@ async function produceNow(input: ProduceGoverningFindingsInput): Promise<Governi
           const unchanged =
             prior !== undefined &&
             prior.status === data.status &&
-            prior.clauseExcerpt === data.clauseExcerpt &&
+            sameQuote(prior.clauseExcerpt, data.clauseExcerpt) &&
             prior.revisionId === data.revisionId;
           const clearDecision = unchanged
             ? {}

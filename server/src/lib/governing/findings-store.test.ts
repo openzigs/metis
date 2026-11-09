@@ -333,6 +333,38 @@ describe("produceGoverningFindingsForAnalysis — edges", () => {
     ).not.toHaveProperty("decision");
   });
 
+  it("#2128 — a quote widened to its whole sentence keeps the BA's decision; a quote that no longer contains the old one clears it", async () => {
+    const quoting = (clauseExcerpt: string) => ({
+      ...finding("compliant"),
+      citation: { clauseStart: 0, clauseEnd: clauseExcerpt.length, clauseExcerpt },
+    });
+    const run = (clauseExcerpt: string, priorExcerpt: string) => {
+      evaluateRequirementFindings.mockResolvedValue({
+        findings: [quoting(clauseExcerpt)],
+        unverifiedCitations: 0,
+        noEvidenceDemoted: 0,
+      });
+      db.governingFinding.findMany.mockResolvedValue([prior({ clauseExcerpt: priorExcerpt })]);
+      return produceGoverningFindingsForAnalysis({
+        analysisId: "a",
+        projectId: "p",
+        provider,
+        applicability: STORED,
+        requirementIds: ["REQ-001"],
+      });
+    };
+    const widened = await run(
+      "Verifiers SHALL require 15 characters.",
+      "SHALL require 15 characters",
+    );
+    expect(widened.decisionsCleared).toBe(0);
+    expect(db.auditLog.create).not.toHaveBeenCalled();
+
+    const changed = await run("SHALL require 8 characters.", "SHALL require 15 characters");
+    expect(changed.decisionsCleared).toBe(1);
+    expect(db.auditLog.create).toHaveBeenCalledTimes(1);
+  });
+
   it("#2010 — a changed finding that had no decision clears nothing worth auditing", async () => {
     evaluateRequirementFindings.mockResolvedValue({
       findings: [finding("gap")],

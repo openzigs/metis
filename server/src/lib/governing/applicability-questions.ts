@@ -56,6 +56,7 @@ import { prisma } from "../prisma.js";
 import {
   applicabilityEntries,
   buildApplicabilityJudgePrompt,
+  nameAnswerHandles,
   parseApplicabilityJudgeReply,
   type ApplicabilityRule,
 } from "./applicability.js";
@@ -1001,7 +1002,11 @@ export async function carryAnswersOver(
         requirementId: candidate.requirementId,
         ruleId: e.rule.id,
         verdict: d.verdict,
-        reason: d.reason || "Settled by an answer given on another requirement.",
+        // #2128 — the reason names its answer by the prompt's label (`A1`);
+        // the BA reads it, so the label is put back into words.
+        reason:
+          nameAnswerHandles(d.reason, given.length) ||
+          "Settled by an answer given on another requirement.",
         questionId: q.id,
         question: q.question,
         answer: q.answer!.trim(),
