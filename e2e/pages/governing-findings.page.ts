@@ -77,9 +77,12 @@ export class GoverningFindingsPage {
     return finding.getByRole("button", { name: "Reject", exact: true });
   }
 
-  /** "Accepted by <name> on <date>" / "Rejected by …". */
+  /**
+   * "Accepted by <name> on <date>" / "Rejected by …": the line whose text
+   * holds "<decision> by <name>" (a substring match: the date is the locale's).
+   */
   decisionLine(finding: Locator, decision: "Accepted" | "Rejected", deciderName: string): Locator {
-    return finding.getByText(new RegExp(`^${decision} by ${escapeRegExp(deciderName)}( on .+)?$`));
+    return finding.getByText(`${decision} by ${deciderName}`);
   }
 
   /** The decision's note, quoted. */
@@ -118,8 +121,4 @@ export class GoverningFindingsPage {
   questionAnswer(question: string): Locator {
     return this.page.getByLabel(question, { exact: true });
   }
-}
-
-function escapeRegExp(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
