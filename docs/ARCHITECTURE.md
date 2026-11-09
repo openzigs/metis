@@ -2795,7 +2795,16 @@ the pre-#1873 code).
   `submitAnswers` refuses `409 CLARIFY_ROUND_NOT_OPEN`, before anything is written, a submit to
   a completed dialog, to a round already answered (`rounds.at(-1).round !== currentRound`), or
   naming a question id that is not in the latest generated round. The JSON submit and the CSV
-  import both pass through it.
+  import both pass through it. That check runs before the resolution model call, so two submits
+  of one open round that arrive together both pass it (#2101). The round is therefore committed
+  by compare-and-set: `readDialogStateRevision` returns the state with its stored row as the
+  revision, and `replaceDialogState` writes it in one `updateMany` whose `where` also matches
+  `state` on that revision. Of two such submits exactly one is written; the other gets the same
+  409 before its `beforeCommit` runs, so neither its answers nor its refined requirements land.
+  The commit precedes `beforeCommit`; when that throws (`409 REQUIREMENTS_REPLACED`), the round
+  is put back by the same compare-and-set, and a write that landed meanwhile is left in place
+  and logged. On that 409 the panel reads the dialog again and shows the current round. The CSV
+  import answers with the `state` it wrote, which the panel takes as it takes a submit's.
   A judging reply that cannot be read is re-asked once, and then settles nothing (#2009).
   An answered pair is never asked again, so a pair whose settle failed (an unreadable reply, a
   provider error or outage, an aborted request) would otherwise be orphaned. Instead, every

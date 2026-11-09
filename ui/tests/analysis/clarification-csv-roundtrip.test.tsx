@@ -32,6 +32,7 @@ vi.mock("@/lib/plugins-api", async () => {
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 import { ClarificationDialogPanel } from "@/components/analysis/ClarificationDialog";
+import { ApiError } from "@/lib/api-client";
 import type { ClarificationStatePayload } from "@/lib/analysis-api";
 
 function buildState(): ClarificationStatePayload {
@@ -123,6 +124,51 @@ describe("ClarificationDialogPanel CSV round-trip", () => {
     expect(screen.getByTestId("clarify-import-summary")).toHaveTextContent(/1/);
     expect(screen.getByTestId("clarify-import-summary")).toHaveTextContent("q-bogus");
     expect(onComplete).toHaveBeenCalled();
+  });
+
+  // #2101 — the state the import wrote goes straight to the caller.
+  it("hands the state the import wrote to onComplete", async () => {
+    const written = { ...buildState(), currentRound: 2 };
+    analysisApi.importClarifyAnswers.mockResolvedValue({
+      applied: 1,
+      skipped: 0,
+      unmatched: [],
+      state: written,
+    });
+    const { onComplete } = renderPanel();
+
+    const file = new File(["questionId,answer\nq-1,yes"], "answers.csv", { type: "text/csv" });
+    fireEvent.change(screen.getByTestId("clarify-import-input"), { target: { files: [file] } });
+
+    await waitFor(() => expect(onComplete).toHaveBeenCalledWith(written));
+  });
+
+  it("reads the dialog again when the import's round is no longer open", async () => {
+    const { toast } = await import("sonner");
+    analysisApi.importClarifyAnswers.mockRejectedValue(
+      new ApiError(409, "round no longer open", "CLARIFY_ROUND_NOT_OPEN"),
+    );
+    const { onComplete } = renderPanel();
+
+    const file = new File(["x"], "answers.csv", { type: "text/csv" });
+    fireEvent.change(screen.getByTestId("clarify-import-input"), { target: { files: [file] } });
+
+    await waitFor(() => expect(onComplete).toHaveBeenCalledWith());
+    expect(toast.error).toHaveBeenCalledWith("round no longer open");
+  });
+
+  it("does not read the dialog again for any other import failure", async () => {
+    analysisApi.importClarifyAnswers.mockRejectedValue(
+      new ApiError(400, "bad csv headers", "VALIDATION_ERROR"),
+    );
+    const { onComplete } = renderPanel();
+
+    const file = new File(["x"], "answers.csv", { type: "text/csv" });
+    fireEvent.change(screen.getByTestId("clarify-import-input"), { target: { files: [file] } });
+
+    const { toast } = await import("sonner");
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith("bad csv headers"));
+    expect(onComplete).not.toHaveBeenCalled();
   });
 
   it("surfaces the thrown error message when import fails", async () => {
