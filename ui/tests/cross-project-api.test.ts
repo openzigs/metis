@@ -10,6 +10,7 @@ vi.mock("@/lib/api-client", () => ({
 
 import {
   crossProjectUsageByObject,
+  fetchApiEdgeImpact,
   fetchCrossProjectImpact,
   fetchProjectsUsingObject,
 } from "@/lib/cross-project-api";
@@ -71,6 +72,15 @@ describe("fetchCrossProjectImpact", () => {
     expect(mockApiFetch).toHaveBeenCalledWith(
       "/impact-analyses/projects/p%2F1/cross-project-impact",
     );
+  });
+});
+
+describe("fetchApiEdgeImpact (#2115)", () => {
+  it("GETs the run's api-edge-impact endpoint, url-encoding the id", async () => {
+    mockApiFetch.mockResolvedValueOnce({ impactAnalysisId: "ia/1", consumers: [], untouched: [] });
+    const res = await fetchApiEdgeImpact("ia/1");
+    expect(mockApiFetch).toHaveBeenCalledWith("/impact-analyses/ia%2F1/api-edge-impact");
+    expect(res.consumers).toEqual([]);
   });
 });
 

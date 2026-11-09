@@ -5,6 +5,7 @@
  */
 import { apiFetch } from "@/lib/api-client";
 import type {
+  ApiEdgeImpactResult,
   CrossProjectImpactResult,
   CrossProjectObjectUsage,
   ProjectObjectUsage,
@@ -42,6 +43,16 @@ export async function fetchCrossProjectImpact(
 ): Promise<CrossProjectImpactResult> {
   return apiFetch<CrossProjectImpactResult>(
     `/impact-analyses/projects/${encodeURIComponent(projectId)}/cross-project-impact`,
+  );
+}
+
+/**
+ * #2115 — an impact run's reach through product edges of kind `api`: the
+ * consumers its changes reach, and the consumer items they leave untouched.
+ */
+export async function fetchApiEdgeImpact(analysisId: string): Promise<ApiEdgeImpactResult> {
+  return apiFetch<ApiEdgeImpactResult>(
+    `/impact-analyses/${encodeURIComponent(analysisId)}/api-edge-impact`,
   );
 }
 

@@ -17,6 +17,7 @@ vi.mock("@/lib/impact-analysis-api", () => ({
 
 vi.mock("@/lib/cross-project-api", () => ({
   fetchCrossProjectImpact: vi.fn(),
+  fetchApiEdgeImpact: vi.fn(),
 }));
 
 // #240 — useImpactAnalysis invalidates on socket job-lifecycle transitions.
@@ -27,8 +28,9 @@ vi.mock("@/hooks/use-job-events", () => ({
 }));
 
 import { impactAnalysisApi } from "@/lib/impact-analysis-api";
-import { fetchCrossProjectImpact } from "@/lib/cross-project-api";
+import { fetchApiEdgeImpact, fetchCrossProjectImpact } from "@/lib/cross-project-api";
 import {
+  useApiEdgeImpact,
   useImpactAnalyses,
   useImpactAnalysis,
   useCreateImpactAnalysis,
@@ -147,6 +149,30 @@ describe("useCrossProjectImpact", () => {
       wrapper: wrapper(),
     });
     await waitFor(() => expect(result.current.isError).toBe(true));
+  });
+});
+
+describe("useApiEdgeImpact (#2115)", () => {
+  it("waits until enabled and the run id is known", () => {
+    const off = renderHook(() => useApiEdgeImpact("ia-1", false), { wrapper: wrapper() });
+    expect(off.result.current.fetchStatus).toBe("idle");
+    const none = renderHook(() => useApiEdgeImpact(undefined), { wrapper: wrapper() });
+    expect(none.result.current.fetchStatus).toBe("idle");
+    expect(fetchApiEdgeImpact).not.toHaveBeenCalled();
+  });
+
+  it("fetches the run's API-edge impact under the run's detail key", async () => {
+    vi.mocked(fetchApiEdgeImpact).mockResolvedValue({
+      impactAnalysisId: "ia-1",
+      consumers: [],
+      untouched: [],
+    });
+    const { result } = renderHook(() => useApiEdgeImpact("ia-1"), { wrapper: wrapper() });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(fetchApiEdgeImpact).toHaveBeenCalledWith("ia-1");
+    expect(impactAnalysisKeys.apiEdgeImpact("ia-1").slice(0, 3)).toEqual(
+      impactAnalysisKeys.detail("ia-1"),
+    );
   });
 });
 

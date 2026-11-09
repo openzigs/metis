@@ -20,6 +20,7 @@ import { triggerDownload } from "@/lib/plugins-api";
 import {
   useDeleteTableFeedback,
   useImpactAnalysis,
+  useApiEdgeImpact,
   useImpactDrift,
   useMarkTableFeedback,
   useRerunImpactAnalysis,
@@ -147,6 +148,8 @@ function ImpactAnalysisDetailView({
     data.id,
     data.status === "completed" && Boolean(data.rerunOfId),
   );
+  // #2115 — the run's reach through product API edges, read once it is done.
+  const apiEdgeQuery = useApiEdgeImpact(data.id, data.status === "completed");
 
   // #1615 — a project the starter could not access is shown with no content:
   // no matrix column under its bare id, and no repo lookup for it.
@@ -342,6 +345,7 @@ function ImpactAnalysisDetailView({
                   projectId={projectId}
                   projectName={projectName(projectId)}
                   items={items}
+                  apiEdgeImpact={apiEdgeQuery.data ?? null}
                   currentUserId={user?.id ?? null}
                   onMarkFeedback={(itemId, input) => markFeedback.mutate({ itemId, ...input })}
                   onDeleteFeedback={(itemId, feedbackId) =>

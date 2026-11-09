@@ -18,7 +18,7 @@ import type {
   ImpactTableFeedbackView,
 } from "@metis/shared";
 import { impactAnalysisApi, type ImpactRerunResponse } from "@/lib/impact-analysis-api";
-import { fetchCrossProjectImpact } from "@/lib/cross-project-api";
+import { fetchApiEdgeImpact, fetchCrossProjectImpact } from "@/lib/cross-project-api";
 import { useAppMutation } from "@/lib/use-app-mutation";
 import { useJobLifecycle } from "@/hooks/use-job-events";
 
@@ -33,6 +33,7 @@ export const impactAnalysisKeys = {
     [...impactAnalysisKeys.all, "usage-classification", projectId] as const,
   crossProjectImpact: (projectId: string) =>
     [...impactAnalysisKeys.all, "cross-project-impact", projectId] as const,
+  apiEdgeImpact: (id: string) => [...impactAnalysisKeys.detail(id), "api-edge-impact"] as const,
 };
 
 /**
@@ -61,6 +62,20 @@ export function useCrossProjectImpact(projectId: string | null | undefined) {
     queryKey: impactAnalysisKeys.crossProjectImpact(projectId ?? ""),
     queryFn: () => fetchCrossProjectImpact(projectId as string),
     enabled: Boolean(projectId),
+    retry: false,
+  });
+}
+
+/**
+ * #2115 — an impact run's reach through product edges of kind `api`. Fetched
+ * once the run has finished (`enabled`), since its items are what it reads.
+ * Keyed under the run's detail, so refreshing the detail refreshes it.
+ */
+export function useApiEdgeImpact(analysisId: string | null | undefined, enabled = true) {
+  return useQuery({
+    queryKey: impactAnalysisKeys.apiEdgeImpact(analysisId ?? ""),
+    queryFn: () => fetchApiEdgeImpact(analysisId as string),
+    enabled: Boolean(analysisId) && enabled,
     retry: false,
   });
 }

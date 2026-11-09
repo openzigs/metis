@@ -158,3 +158,65 @@ export function rollupUsageClass(classes: readonly UsageClass[]): UsageClass {
   if (classes.some((c) => c === "uncertain")) return "uncertain";
   return "unreferenced";
 }
+
+// ---- API-edge impact (#2115) -------------------------------------------------
+
+/**
+ * #2115 — a consumer's method that calls a provider's API. `run` when it is one
+ * of the consumer's own matches in the same impact run, `edge-evidence` when it
+ * comes from the product edge's recorded evidence (the consumer was not in the
+ * run). `qualifiedName` is null for evidence that names a file and line only.
+ */
+export interface ApiCitingMethod {
+  qualifiedName: string | null;
+  filePath: string;
+  startLine: number | null;
+  endLine: number | null;
+  /** The match confidence (0–1) for a `run` method; null for edge evidence. */
+  confidence: number | null;
+  source: "run" | "edge-evidence";
+}
+
+/**
+ * #2115 — a project downstream of a run's change through a product edge of kind
+ * `api`: the change touched the provider's API surface, so the consumer that
+ * calls that API is affected. Listed only when the change touched the surface.
+ */
+export interface ApiConsumerImpact {
+  edgeId: string;
+  /** detected | declared | overridden. */
+  edgeOrigin: string;
+  /** contract | model | functional | intrusive, or null when unclassified. */
+  edgeStrength: string | null;
+  providerProjectId: string;
+  providerProjectName: string;
+  /** The provider's item (one change) whose symbols touched the API surface. */
+  providerItemId: string;
+  changeTitle: string | null;
+  consumerProjectId: string;
+  consumerProjectName: string;
+  /** The provider files of the change that are API surface. Never empty. */
+  apiSurfaceFiles: string[];
+  /** Empty when the consumer was not in the run and the edge records no evidence. */
+  citingMethods: ApiCitingMethod[];
+}
+
+/**
+ * #2115 — a consumer item whose project reaches a provider only through its
+ * API, in a run where the provider's change touched none of that API: the
+ * consumer's matches are word overlap, not impact, so they are low confidence.
+ */
+export interface ApiSurfaceUntouched {
+  consumerItemId: string;
+  consumerProjectId: string;
+  providerProjectId: string;
+  providerProjectName: string;
+  edgeId: string;
+}
+
+/** #2115 — what an impact run's change does across the product edges of kind `api`. */
+export interface ApiEdgeImpactResult {
+  impactAnalysisId: string;
+  consumers: ApiConsumerImpact[];
+  untouched: ApiSurfaceUntouched[];
+}
