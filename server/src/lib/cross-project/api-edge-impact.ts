@@ -102,7 +102,9 @@ const API_DIR_STEMS = ["graphql", "openapi", "grpc", "swagger"];
 
 /**
  * Generic directory names that are a service's API only in a server: a
- * `handler` or `router` package under a parent in {@link SERVER_PARENTS}.
+ * `handler` or `router` package directly inside a parent in
+ * {@link SERVER_PARENTS}. Only the immediate parent counts, so a job or queue
+ * handler anywhere below `server/` (`server/src/jobs/handlers/`) does not.
  * Elsewhere they are any code's event, error or feed-refresh handlers (Miniflux
  * v2's `internal/reader/handler/`). Matched on the whole name only, so
  * `error-handlers/` never counts. A singular `route` is not listed at all: it
@@ -138,14 +140,16 @@ function dirWords(segment: string): string[] {
 
 /**
  * Whether one directory name marks an API: its whole name or one of its words
- * is an API word, or it holds an API stem — unless one of its words is a client.
+ * is an API word, or it holds an API stem — unless one of its words is a
+ * client, or, for a stem, the name holds `client` at all (`grpcclient/`).
  */
 function isApiDir(segment: string): boolean {
   const lower = segment.toLowerCase();
   if (API_DIR_WORDS.has(lower)) return true;
   const words = dirWords(segment);
   if (words.some((w) => CLIENT_WORDS.has(w))) return false;
-  return words.some((w) => API_DIR_WORDS.has(w)) || API_DIR_STEMS.some((s) => lower.includes(s));
+  if (words.some((w) => API_DIR_WORDS.has(w))) return true;
+  return !lower.includes("client") && API_DIR_STEMS.some((s) => lower.includes(s));
 }
 
 /**
@@ -154,8 +158,9 @@ function isApiDir(segment: string): boolean {
  * directory (`internal/api/entry.go`, `src/routes/users.ts`,
  * `src/RestControllers/Feed.php`) or under a server's handler or router
  * (`internal/http/handler/entry.go`). A file under a UI directory
- * (`internal/ui/pagination.go`), a client (`src/rest-client/`) or a handler
- * outside a server (`internal/reader/handler/handler.go`) is not. A directory
+ * (`internal/ui/pagination.go`), a client (`src/rest-client/`, `src/grpcclient/`)
+ * or a handler outside a server (`internal/reader/handler/handler.go`,
+ * `server/src/jobs/handlers/email.ts`) is not. A directory
  * counts when its whole name or one of its words is an API word, so `rapid/`
  * or `capital.go` never count.
  */
@@ -167,8 +172,9 @@ export function isApiSurfaceFile(filePath: string, providerFiles: ReadonlySet<st
   return dirs.some(
     (d, i) =>
       isApiDir(d) ||
-      (SERVER_DIR_NAMES.has(d.toLowerCase()) &&
-        dirs.slice(0, i).some((p) => SERVER_PARENTS.has(p.toLowerCase()))),
+      (i > 0 &&
+        SERVER_DIR_NAMES.has(d.toLowerCase()) &&
+        SERVER_PARENTS.has(dirs[i - 1].toLowerCase())),
   );
 }
 
