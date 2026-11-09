@@ -124,7 +124,6 @@ A reading of this set is a tuning reading: its numbers are not held-out evidence
 | 2026-11-09 | #2108 | A5 | `anthropic/claude-sonnet-5-5` | before #2108 | 2 (two `--runs 1` invocations) | 0.96 / 0.88 | 0.57 / 0.55 | 0.54 / 0.42 | 1 / 0 |
 | 2026-11-09 | #2108 | A5 | `anthropic/claude-sonnet-5-5` | first draft of the three lines | 1 | 0.96 | 0.74 | 0.67 | 1 |
 | 2026-11-09 | #2108 | A5 | `anthropic/claude-sonnet-5-5` | the three lines as committed | 2 | 0.94 | 0.68 | 0.79 | 0 |
-
 | 2026-11-09 | #2108 | A5, commit `e452afb69` (clean tree) | `anthropic/claude-sonnet-5-5` | the three lines as committed | 2 | 0.92 / 0.83 | 0.71 / 0.71 | 0.75 / 0.71 | 0 / 0 |
 
 The first three rows ran on an uncommitted tree, so they are recorded here and not as

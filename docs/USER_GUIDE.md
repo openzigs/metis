@@ -1748,8 +1748,9 @@ five bars: 76% of the rules it applies do apply, its quotes are still word for w
 still calls nothing **Compliant** without evidence. Two more things changed:
 
 - a request that reports a defect is now checked as the fix it asks for;
-- a request that asks for a safeguard is found **Compliant** more often (49% of its statuses
-  now match).
+- a request that asks for a safeguard is found **Compliant** more often.
+
+Overall, 49% of its statuses now match the expected answer, up from 31%.
 
 It still finds only 75% of the rules that apply, and 50% of those that share no words with
 their requirement. Expect it to miss some password rules on a request that creates or resets

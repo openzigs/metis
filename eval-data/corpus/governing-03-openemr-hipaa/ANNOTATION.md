@@ -368,8 +368,9 @@ with an example taken from `governing-04`, none from this set:
 - `DEFECT_REPORT_LINE` (class 2) and `SAFEGUARD_REQUESTED_LINE` (class 3) in the findings
   call.
 
-On `governing-04` (Sonnet, tuning numbers): precision went from 0.57 / 0.55 to 0.68 and
-verdict accuracy from 0.54 / 0.42 to 0.79, with recall 0.96 / 0.88 before and 0.94 after. On
+On `governing-04` (Sonnet; the committed reading at `e452afb69`): precision went from
+0.57 / 0.55 to 0.71 / 0.71 and verdict accuracy from 0.54 / 0.42 to 0.75 / 0.71, with recall
+0.96 / 0.88 before and 0.92 / 0.83 after. On
 `governing-01` (Sonnet, two runs each): precision went from 0.42 to 0.52 and verdict accuracy
 from 0.68 to 0.85, recall stayed at 1.00, and there were no hard errors before or after.
 
