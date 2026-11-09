@@ -153,6 +153,22 @@ function measure(
   };
 }
 
+/**
+ * `measure`, for the SMALL side of a "the heap grows with the types" bound: the larger heap
+ * of two independent readings. A V8 release landing inside the window can only take bytes
+ * OFF a reading, never add them (#1291, recurred on PR #2081's CI: `small.heap` read about
+ * -0.4 MB, so `4 * small.heap + 4 MB` came to 2.4 MB against a 4.4 MB large reading on code
+ * that had not changed). An under-read small side makes that bound stricter than it is
+ * meant to be, so the larger of two readings is the honest one. The large side keeps a
+ * single reading: an under-read there only makes the bound easier, never a false failure.
+ * Tally and retained counts are deterministic, so they are taken from the first reading.
+ */
+function measureSmall(tree: GoTree): Measured {
+  const first = measure(tree);
+  const second = measure(tree);
+  return { ...first, heap: Math.max(first.heap, second.heap) };
+}
+
 beforeAll(async () => {
   await initCodeGraphParsers();
 });
@@ -358,7 +374,7 @@ describe.each(GO_WIDE_SHAPES.map((s) => [s] as const))(
     let large: Measured;
     let narrow: Measured;
     beforeAll(() => {
-      small = measure(goWideShape(shape, 500, WIDTH));
+      small = measureSmall(goWideShape(shape, 500, WIDTH));
       large = measure(goWideShape(shape, 2_000, WIDTH));
       narrow = measure(goWideShape(shape, 500, WIDTH / 10));
     }, 60_000);
@@ -479,7 +495,7 @@ describe("N types × K cheap own fields over a W that embeds many structs", () =
   ] as const)(
     "%s: past the cap, undecided, and a few entries a type",
     (_name, fields, embedded, tests) => {
-      const small = measure(goOwnFieldsShape(500, fields, embedded, tests));
+      const small = measureSmall(goOwnFieldsShape(500, fields, embedded, tests));
       const large = measure(goOwnFieldsShape(2_000, fields, embedded, tests));
       expect(large.tally).toEqual({ "unknown:budget": tests ? 4_000 : 2_000 });
       expect(large.retained).toMatchObject({ indexedNames: 0, layerTypes: 0 });
@@ -501,7 +517,7 @@ describe("N types × K cheap own fields over a W that embeds many structs", () =
   ] as const)(
     "tuned to sit exactly AT the cap (%s): resolved, and one bounded table a type and view",
     (_name, tests) => {
-      const small = measure(goOwnFieldsShape(500, 8, AT_CAP, tests));
+      const small = measureSmall(goOwnFieldsShape(500, 8, AT_CAP, tests));
       const large = measure(goOwnFieldsShape(2_000, 8, AT_CAP, tests));
       expect(large.tally).toEqual({ "unbound func-value": tests ? 4_000 : 2_000 });
       expect(large.retained).toMatchObject({

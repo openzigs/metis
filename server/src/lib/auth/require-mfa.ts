@@ -8,6 +8,9 @@
  * analysis, chat, review and publishing are not gated. Issue #1564: "admin
  * routes" follows the permission, not the URL — every state-changing route that
  * requires `admin.write` or the `admin` role is gated wherever it is mounted.
+ * Issue #1745: deleting a workspace revokes every member's workspace role, so it
+ * is gated; a workspace admin's own settings (name, logo, budget, integrations,
+ * governing documents) grant no role and are not system administration, so not.
  */
 import type { RequestHandler } from "express";
 import type { AuthPayload } from "@metis/shared";

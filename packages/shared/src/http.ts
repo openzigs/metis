@@ -7,6 +7,13 @@
 import type { PermissionKey, RoleKey } from "./constants.js";
 
 /**
+ * #1745 — how a session signed in. A closed set, because the server decides a
+ * refreshed session's MFA claim on it: a misspelt mode would otherwise read as
+ * a password sign-in, which makes no MFA claim (fail open).
+ */
+export type AuthMode = "mock" | "ldap" | "saml" | "oidc";
+
+/**
  * Decoded JWT access-token payload attached to authenticated requests.
  */
 export interface AuthPayload {
@@ -19,7 +26,7 @@ export interface AuthPayload {
   /** Epic #759 — workspace IDs the user belongs to. */
   workspaces?: string[];
   /** How the user authenticated (mock, ldap, saml, oidc). */
-  authMode?: string;
+  authMode?: AuthMode;
   /** Whether MFA was confirmed via SSO amr/AuthnContext claims. */
   mfaPassed?: boolean;
   /**
