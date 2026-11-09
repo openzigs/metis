@@ -25,6 +25,7 @@ import {
   CLARIFYING_QUESTIONS_ANCHOR,
   GOVERNING_REFRESH_POLL_MS,
   GoverningFindingsPanel,
+  answerSettlementOf,
   clarifyQuestionAnchor,
   clarifyingQuestionHref,
   governingSummarySentences,
@@ -135,6 +136,7 @@ class FakeServer {
     },
   ];
   refreshing = false;
+  applicability: GoverningAnalysisApplicability = APPLICABILITY;
   clarification: ClarificationStatePayload | null = null;
   requests: { method: string; path: string; body: unknown }[] = [];
 
@@ -157,7 +159,7 @@ class FakeServer {
     if (!this.flagOn) return err(404, "NOT_FOUND", "Not found");
     if (this.failWith) return err(this.failWith, "INTERNAL", "Boom");
     if (rest[0] === "governing-applicability" && method === "GET") {
-      return json(200, { applicability: APPLICABILITY });
+      return json(200, { applicability: this.applicability });
     }
     if (rest[0] !== "governing-findings") return err(404, "NOT_FOUND", "Not found");
     if (rest.length === 1 && method === "GET") {
@@ -565,6 +567,122 @@ describe("GoverningFindingsPanel (#1876)", () => {
     await waitFor(() => expect(screen.queryByRole("status")).toBeNull());
     expect(reads()).toBeGreaterThan(before);
     expect(screen.getByRole("article", { name: "RT-01: Compliant" })).toBeInTheDocument();
+  });
+
+  it("#2087 — a finding whose rule an answer did not rule out shows the answer and the judge's reason", async () => {
+    server.applicability = settledApplicability();
+    mount();
+    const audit = await screen.findByRole("article", { name: "AL-02: Needs BA input" });
+    const note = await within(audit).findByTestId("governing-finding-answer");
+    expect(note).toHaveTextContent(
+      `After the answer “${CONTRADICTING_ANSWER}”, this rule applies.`,
+    );
+    expect(note).toHaveTextContent(CONTRADICTION_REASON);
+    // Only the settled pair carries it; the other findings' rules were never asked.
+    for (const name of ["EN-03: Compliant", "RT-01: Gap"]) {
+      const other = screen.getByRole("article", { name });
+      expect(within(other).queryByTestId("governing-finding-answer")).toBeNull();
+    }
+    expect(findForbiddenComplianceClaims(note.textContent ?? "")).toEqual([]);
+  });
+
+  it("#2087 — while a BA answer's re-check runs, the settled reason is read again too", async () => {
+    server.refreshing = true;
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    mount();
+    await screen.findByRole("status");
+    // The applicability read before the settle was written: no reason yet.
+    await waitFor(() =>
+      expect(server.requests.some((r) => r.path.endsWith("/governing-applicability"))).toBe(true),
+    );
+    expect(screen.queryByTestId("governing-finding-answer")).toBeNull();
+    server.applicability = settledApplicability();
+    server.refreshing = false;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(GOVERNING_REFRESH_POLL_MS);
+    });
+    expect(await screen.findByTestId("governing-finding-answer")).toHaveTextContent(
+      CONTRADICTION_REASON,
+    );
+  });
+});
+
+const CONTRADICTING_ANSWER = "No, nothing leaves our systems.";
+const CONTRADICTION_REASON =
+  "The requirement exports customer records in bulk; the answer contradicts the requirement's text, which wins.";
+
+/** The stored applicability after #2078's settle: AL-02 was uncertain, the answer left it applying. */
+function settledApplicability(): GoverningAnalysisApplicability {
+  return {
+    decidedAt: AT,
+    requirements: [
+      {
+        requirementId: "REQ-001",
+        text: REQ_TEXT,
+        decisions: [
+          {
+            ruleId: "rule-audit",
+            controlId: "AL-02",
+            verdict: "applies",
+            reason: CONTRADICTION_REASON,
+            foundBy: ["screen"],
+            settled: {
+              questionId: "q-audit",
+              question: "Will anyone export the saved cards in bulk?",
+              answer: CONTRADICTING_ANSWER,
+              previousVerdict: "uncertain",
+              at: AT,
+            },
+          },
+          {
+            ruleId: "rule-retain",
+            controlId: "RT-01",
+            verdict: "applies",
+            reason: "Card data is kept.",
+            foundBy: ["top-k"],
+          },
+        ],
+      },
+    ],
+  };
+}
+
+describe("answerSettlementOf (#2087)", () => {
+  const audit = finding({ requirementId: "REQ-001", ruleId: "rule-audit" });
+
+  it("the answer that turned an uncertain rule into one that applies, with the reason judged on it", () => {
+    expect(answerSettlementOf(audit, settledApplicability())).toEqual({
+      answer: CONTRADICTING_ANSWER,
+      reason: CONTRADICTION_REASON,
+    });
+  });
+
+  it("#2068 — with later answers recorded, the reason is the first answer's, so that answer is named", () => {
+    const stored = settledApplicability();
+    const d = stored.requirements[0]!.decisions[0]!;
+    d.settled = {
+      ...d.settled!,
+      questionId: "q-later",
+      answer: "Only totals.",
+      earlier: [{ questionId: "q-audit", answer: CONTRADICTING_ANSWER, at: AT }],
+    };
+    expect(answerSettlementOf(audit, stored)?.answer).toBe(CONTRADICTING_ANSWER);
+  });
+
+  it("nothing for a rule no answer re-judged, an answer recorded on a rule that already applied, or another requirement's pair", () => {
+    const stored = settledApplicability();
+    expect(answerSettlementOf(finding({ ruleId: "rule-retain" }), stored)).toBeNull();
+    expect(answerSettlementOf(finding({ ruleId: "rule-none" }), stored)).toBeNull();
+    expect(answerSettlementOf({ ...audit, requirementId: "REQ-002" }, stored)).toBeNull();
+    expect(answerSettlementOf(audit, null)).toBeNull();
+    // #2059 — the reason is applicability's own, not a judgement of the answer.
+    const recorded = settledApplicability();
+    recorded.requirements[0]!.decisions[0]!.settled!.previousVerdict = "applies";
+    expect(answerSettlementOf(audit, recorded)).toBeNull();
+    // An answer that left the rule uncertain: "this rule applies" would be false.
+    const open = settledApplicability();
+    open.requirements[0]!.decisions[0]!.verdict = "uncertain";
+    expect(answerSettlementOf(audit, open)).toBeNull();
   });
 });
 

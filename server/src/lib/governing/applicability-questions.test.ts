@@ -188,6 +188,51 @@ describe("questionLeaksRule — the rulebook guard", () => {
     expect(questionLeaksRule(FALLBACK_FINDING_QUESTION, [retention])).toBeNull();
   });
 
+  it("#2086 — refuses a rulebook reference by its phrase shape, not the bare word", () => {
+    const retention = { controlId: "DR-01", clauseExcerpt: "Records are kept for seven years." };
+    // Everyday analyst words: a rule or clause that modifies another noun, or
+    // one with no determiner pointing at a particular rulebook entry.
+    for (const plain of [
+      "Does the pricing rules engine apply discounts?",
+      "Will business rules decide the discount?",
+      "Is the approval rule-based or manual?",
+      "Is there a validation rule on the email field?",
+      "Will pricing rules change each quarter?",
+      "Does a contract clause cap the refund?",
+      "Will customers agree to the returns policy?",
+      "Will the business rules change next year?",
+      // Punctuation ends a phrase: "the export" does not open "rules apply".
+      "After the export, rules apply to discounts?",
+      "After the export — rules apply to discounts?",
+    ]) {
+      expect(questionLeaksRule(plain, [retention]), plain).toBeNull();
+    }
+    // A particular rule, clause or policy of the rulebook.
+    for (const [refused, why] of [
+      ["Does this meet the seven-year retention rule?", "refers to a rule"],
+      ["Does the retention rule apply here?", "refers to a rule"],
+      ["Do the company's data retention rules cover backups?", "refers to a rule"],
+      ["Which clause covers the export?", "refers to a clause"],
+      ["Is this allowed under rule 12?", "refers to a rule"],
+      ["Does clause 4b allow it?", "refers to a clause"],
+      ["Is it kept under the data retention policy?", "refers to a policy"],
+      ["Is this allowed by our privacy policies?", "refers to a policy"],
+    ] as const) {
+      expect(questionLeaksRule(refused, [retention]), refused).toBe(why);
+    }
+  });
+
+  it("#2086 — words quoted from the requirement never trip the rulebook-phrase check in the template", () => {
+    for (const text of [
+      "Apply the pricing rules engine to every order.",
+      "Make the checkout follow the seven-year retention rule.",
+      "Store orders under the data retention policy.",
+    ]) {
+      const q = templateGoverningQuestion(text, [CARD]);
+      expect(q, text).toContain(`"${text}"`);
+    }
+  });
+
   it("the template names no rule and quotes no clause, even when the requirement names a control", () => {
     expectNoRulebook(templateGoverningQuestion(REQ.text, [CARD]), [CARD]);
     const named = templateGoverningQuestion("Make checkout meet EN-03.", [CARD]);
@@ -941,7 +986,10 @@ describe("rejudgeAnswered — the answer is judged back onto the rules it settle
         },
       ],
     };
-    // Each prompt gets the reply the model gave to it.
+    // Each prompt gets the reply the model gave to it. #2087 — the stub picks
+    // its reply by a phrase in the prompt, so this test proves the phrase is
+    // sent and the stored decision follows the reply. It does not prove the
+    // model's behaviour: the live probes recorded above (and on #2087) do.
     const { provider, sent } = stubModel({
       judge: () => (sent.at(-1)!.system.includes("the requirement's text wins") ? AFTER : BEFORE),
     });

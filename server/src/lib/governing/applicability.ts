@@ -272,7 +272,6 @@ const JUDGE_LINES = [
   FENCE_NOTE,
   'Respond ONLY with one JSON object: {"decisions":[{"rule":"R1","verdict":"applies|does-not-apply|uncertain","reason":"<one sentence>","businessFact":"<the question, for uncertain only>"}]}, naming each rule by the handle at the start of its entry.',
 ];
-const JUDGE_SYSTEM = JUDGE_LINES.join("\n");
 
 const REASK_NOTE =
   "Your previous answer left these rules without a decision, or marked them uncertain without the business question. Decide each one again; an uncertain decision must carry its question.";
@@ -295,8 +294,15 @@ export const ANSWER_NOTE = [
   "A safeguard being in place is never a reason to decide does-not-apply.",
 ].join("\n");
 
-/** #2078 — the settle judge's system prompt: {@link ANSWER_NOTE} before the reply format, which stays last. */
-const SETTLE_SYSTEM = [...JUDGE_LINES.slice(0, -1), ANSWER_NOTE, JUDGE_LINES.at(-1)!].join("\n");
+/**
+ * A judging system prompt: `JUDGE_LINES` with `notes` inserted before the
+ * reply format, which stays the last line. #2078 — {@link ANSWER_NOTE} for the
+ * settle judge; #2087 — and {@link REASK_NOTE} on a re-ask, which used to be
+ * appended after the format line.
+ */
+function judgeSystem(...notes: string[]): string {
+  return [...JUDGE_LINES.slice(0, -1), ...notes, JUDGE_LINES.at(-1)!].join("\n");
+}
 
 /**
  * The judging prompt: one requirement against the summaries and clauses of
@@ -308,9 +314,9 @@ export function buildApplicabilityJudgePrompt(
   entries: readonly Pick<ApplicabilityEntry, "handle" | "rule">[],
   opts: { reask?: boolean; answered?: boolean } = {},
 ): Prompt {
-  const system = opts.answered ? SETTLE_SYSTEM : JUDGE_SYSTEM;
+  const notes = [...(opts.answered ? [ANSWER_NOTE] : []), ...(opts.reask ? [REASK_NOTE] : [])];
   return {
-    systemMessage: opts.reask ? `${system}\n${REASK_NOTE}` : system,
+    systemMessage: judgeSystem(...notes),
     userMessage: [
       requirementBlock(requirementText),
       fenceToolResult(

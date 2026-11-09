@@ -142,32 +142,146 @@ function namesControl(text: string, controlId: string): boolean {
 }
 
 /**
- * #2077 — words that point the analyst at the rulebook itself ("under the
- * seven-year retention rule?"), which name no control id and quote no clause.
- * "Policy" is not one of them: the template asks to check a requirement
- * "against company policy", and a returns policy is a business fact.
+ * #2077, #2086 — the nouns a question uses to point the analyst at the
+ * rulebook itself ("under the seven-year retention rule?"), which name no
+ * control id and quote no clause. Each maps to the word the refusal reports.
+ * They are everyday analyst words too ("the pricing rules engine", "business
+ * rules", "a returns policy"), so a bare one is never refused: only the phrase
+ * shapes {@link rulebookReference} reads.
  */
-const RULEBOOK_WORDS = new Set(["rule", "rules", "clause", "clauses"]);
+const RULEBOOK_NOUNS = new Map([
+  ["rule", "rule"],
+  ["rules", "rule"],
+  ["clause", "clause"],
+  ["clauses", "clause"],
+  ["policy", "policy"],
+  ["policies", "policy"],
+]);
+
+/** Words that open a noun phrase naming one particular rule ("the …", "our …", "which …"). */
+const POINTING_DETERMINERS = new Set([
+  "the",
+  "this",
+  "that",
+  "these",
+  "those",
+  "our",
+  "your",
+  "its",
+  "their",
+  "which",
+  "what",
+  "company's",
+  "company’s",
+]);
 
 /**
- * Why `question` would put the rulebook in front of the analyst, or `null`
- * when it does not: it names one of `rules`' control ids (whole words, case,
- * spacing and punctuation aside: {@link namesControl}), refers to a rule or
- * clause as such ({@link RULEBOOK_WORDS}), or repeats {@link MIN_QUOTED_CLAUSE_WORDS} or more
- * consecutive words of one of their clauses (case and punctuation ignored).
+ * A policy is a business fact ("agree to the returns policy") unless the
+ * question asks whether something stands under it: "under the … policy".
  */
-export function questionLeaksRule(
-  question: string,
-  rules: readonly Pick<QuestionRule, "controlId" | "clauseExcerpt">[],
+const POLICY_PREPOSITIONS = new Set(["under", "per", "against", "within", "by"]);
+
+/**
+ * Words that may follow a rulebook noun when it ends its noun phrase ("the
+ * retention rule applies", "the rules of …"), as against a noun it modifies
+ * ("the pricing rules engine"). They also end the look-back for a determiner,
+ * so "Does it follow the export … rule" never reaches across a verb.
+ */
+const PHRASE_BOUNDARY_WORDS = new Set([
+  // prepositions and conjunctions
+  ...["of", "on", "in", "for", "about", "to", "at", "by", "from", "under", "with", "within"],
+  ...["against", "per", "into", "over", "before", "after", "during", "without", "as", "than"],
+  ...["that", "which", "who", "and", "or", "but", "if", "when", "so"],
+  // auxiliaries and pronouns
+  ...["is", "are", "was", "were", "be", "been", "will", "would", "should", "could", "can"],
+  ...["may", "might", "must", "does", "do", "did", "has", "have", "had", "it", "they", "we"],
+  ...["you", "there", "here", "still", "also", "not", "a", "an"],
+  // what a rule does
+  ...["say", "says", "apply", "applies", "cover", "covers", "require", "requires", "allow"],
+  ...["allows", "permit", "permits", "forbid", "forbids", "state", "states", "mean", "means"],
+]);
+
+/** How many words may stand between the determiner and the rulebook noun ("the seven-year retention rule"). */
+const MAX_PHRASE_GAP = 3;
+
+interface PhraseToken {
+  word: string;
+  /** Punctuation after the word ends its phrase ("rule?", "rule,"). */
+  endsPhrase: boolean;
+}
+
+function phraseTokens(text: string): PhraseToken[] {
+  const out: PhraseToken[] = [];
+  const isWordChar = (c: string) => /[\p{L}\p{N}]/u.test(c);
+  for (const raw of text.toLowerCase().split(/\s+/)) {
+    // An index scan, not an anchored `[^…]+$` pattern, so a long run of
+    // punctuation cannot make the trim quadratic.
+    let start = 0;
+    let end = raw.length;
+    while (start < end && !isWordChar(raw[start]!)) start++;
+    while (end > start && !isWordChar(raw[end - 1]!)) end--;
+    const word = raw.slice(start, end);
+    const trailing = raw.slice(end);
+    if (!word) {
+      // A free-standing dash or bracket breaks the phrase before it.
+      if (out.length) out[out.length - 1]!.endsPhrase = true;
+      continue;
+    }
+    out.push({ word, endsPhrase: /[^'’"“”]/u.test(trailing) });
+  }
+  return out;
+}
+
+/**
+ * #2086 — the rulebook noun a question refers to by phrase shape, or `null`:
+ *   - `rule 12`, `clause 4b`: a rule or clause followed by a numbered id;
+ *   - `the seven-year retention rule`, `which clause covers …`: a rule or
+ *     clause heading a noun phrase that a pointing determiner opens, within
+ *     {@link MAX_PHRASE_GAP} words;
+ *   - `under the data retention policy`: the same shape for a policy, after a
+ *     preposition that asks whether something stands under it.
+ * A rulebook noun that modifies another noun ("the pricing rules engine"), one
+ * that no determiner points at ("business rules"), and `rule-based` all pass.
+ */
+function rulebookReference(question: string): string | null {
+  const t = phraseTokens(question);
+  for (let i = 0; i < t.length; i++) {
+    const noun = RULEBOOK_NOUNS.get(t[i]!.word);
+    if (!noun) continue;
+    const next = t[i + 1];
+    if (noun !== "policy" && next && !t[i]!.endsPhrase && /\p{N}/u.test(next.word)) return noun;
+    const headsPhrase = t[i]!.endsPhrase || !next || PHRASE_BOUNDARY_WORDS.has(next.word);
+    if (!headsPhrase) continue;
+    for (let j = i - 1; j >= 0 && i - j <= MAX_PHRASE_GAP + 1; j--) {
+      const w = t[j]!;
+      if (w.endsPhrase) break;
+      if (POINTING_DETERMINERS.has(w.word)) {
+        if (noun !== "policy" || POLICY_PREPOSITIONS.has(t[j - 1]?.word ?? "")) return noun;
+        break;
+      }
+      if (PHRASE_BOUNDARY_WORDS.has(w.word)) break;
+    }
+  }
+  return null;
+}
+
+function namesAnyControl(
+  text: string,
+  rules: readonly Pick<QuestionRule, "controlId">[],
 ): string | null {
   for (const r of rules) {
     const id = r.controlId.trim();
     if (!id) continue;
-    if (namesControl(question, id)) return `names control ${id}`;
+    if (namesControl(text, id)) return `names control ${id}`;
   }
-  const q = words(question);
-  const rulebookWord = q.find((w) => RULEBOOK_WORDS.has(w));
-  if (rulebookWord) return `refers to a ${rulebookWord.replace(/s$/, "")}`;
+  return null;
+}
+
+function quotesClause(
+  text: string,
+  rules: readonly Pick<QuestionRule, "clauseExcerpt">[],
+): string | null {
+  const q = words(text);
   if (q.length < MIN_QUOTED_CLAUSE_WORDS) return null;
   const grams = new Set<string>();
   for (let i = 0; i + MIN_QUOTED_CLAUSE_WORDS <= q.length; i++) {
@@ -182,6 +296,25 @@ export function questionLeaksRule(
     }
   }
   return null;
+}
+
+/**
+ * Why `question` would put the rulebook in front of the analyst, or `null`
+ * when it does not: it names one of `rules`' control ids (whole words, case,
+ * spacing and punctuation aside: {@link namesControl}), refers to a rule,
+ * clause or policy by phrase shape ({@link rulebookReference}), or repeats
+ * {@link MIN_QUOTED_CLAUSE_WORDS} or more consecutive words of one of their
+ * clauses (case and punctuation ignored).
+ */
+export function questionLeaksRule(
+  question: string,
+  rules: readonly Pick<QuestionRule, "controlId" | "clauseExcerpt">[],
+): string | null {
+  const named = namesAnyControl(question, rules);
+  if (named) return named;
+  const noun = rulebookReference(question);
+  if (noun) return `refers to a ${noun}`;
+  return quotesClause(question, rules);
 }
 
 function clip(text: string, max: number): string {
@@ -201,7 +334,10 @@ export function templateGoverningQuestion(
   const tail =
     "what information will it handle, who will be able to use it, and will any outside company be involved?";
   const quoted = `To check "${clip(requirementText, MAX_REQUIREMENT_QUOTE_CHARS)}" against company policy: ${tail}`;
-  return questionLeaksRule(quoted, rules) === null
+  // #2086 — the quote is the analyst's own requirement, so its words are not
+  // read for rulebook phrases ("the pricing rules engine"); a control id or a
+  // clause quoted in it would still put the rulebook in front of them.
+  return namesAnyControl(quoted, rules) === null && quotesClause(quoted, rules) === null
     ? quoted
     : `To check this requirement against company policy: ${tail}`;
 }
