@@ -32,12 +32,15 @@ let ownerId: string | null = "u-owner";
 const notificationCreate = vi.fn(async (_args: { data: Record<string, unknown> }) => ({
   id: "n-1",
 }));
-const ownerLookup = vi.fn(async () => (ownerId ? { userId: ownerId } : null));
+let coOwnerIds: string[] = [];
+const ownerLookup = vi.fn(async () =>
+  [...(ownerId ? [ownerId] : []), ...coOwnerIds].map((userId) => ({ userId })),
+);
 vi.mock("../../lib/prisma.js", () => ({
   prisma: {
     workspaceMember: {
       findUnique: vi.fn(async () => ({ role: wsRole })),
-      findFirst: (...a: unknown[]) => ownerLookup(...(a as [])),
+      findMany: (...a: unknown[]) => ownerLookup(...(a as [])),
     },
     project: {
       findFirst: vi.fn(async () =>
@@ -147,6 +150,7 @@ describe("Teams link + identity routes (#549)", () => {
     projectWorkspaceId = "ws-1";
     threadAccess = { ok: true, projectId: "pr-1" };
     ownerId = "u-owner";
+    coOwnerIds = [];
     notificationCreate.mockClear();
     ownerLookup.mockClear();
     auditMock.mockClear();
@@ -416,6 +420,13 @@ describe("Teams link + identity routes (#549)", () => {
       currentUser = { userId: "u-admin", role: "developer" };
       await bind("u-admin");
       expect(notified()).toEqual(["u-owner"]);
+    });
+
+    it("every co-owner is told, not only the first owner row", async () => {
+      coOwnerIds = ["u-owner-2"];
+      currentUser = { userId: "u-admin", role: "developer" };
+      await bind("u-alice");
+      expect(notified().sort()).toEqual(["u-alice", "u-owner", "u-owner-2"]);
     });
 
     it("a refused binding is neither audited nor announced", async () => {

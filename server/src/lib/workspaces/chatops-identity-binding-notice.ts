@@ -83,8 +83,10 @@ export async function recordChatIdentityBinding(b: ChatIdentityBinding): Promise
   });
 
   try {
-    const [owner, workspace, people] = await Promise.all([
-      prisma.workspaceMember.findFirst({
+    // Every owner, not the first: a workspace can have co-owners, and the owner
+    // decision on #2089 is that a binding is never silent to an owner.
+    const [owners, workspace, people] = await Promise.all([
+      prisma.workspaceMember.findMany({
         where: { workspaceId: b.workspaceId, role: "owner" },
         select: { userId: true },
       }),
@@ -96,9 +98,9 @@ export async function recordChatIdentityBinding(b: ChatIdentityBinding): Promise
     ]);
 
     const recipients = new Set<string>();
-    if (owner?.userId) recipients.add(owner.userId);
+    for (const o of owners) if (o.userId) recipients.add(o.userId);
     if (b.boundUserId !== b.actorId) recipients.add(b.boundUserId);
-    if (!owner?.userId) {
+    if (owners.length === 0) {
       log.error("Chat identity bound in a workspace with no owner row — owner not notified", {
         workspaceId: b.workspaceId,
       });

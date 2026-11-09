@@ -267,7 +267,7 @@ is just a Teams-side cache of "this AAD subject is that METIS user".
 - **Never silent (#2089):** a binding lets the Teams account run commands as
   the bound member, so each one writes an audit entry (`chatops.identity.bind`:
   actor, workspace, provider, bound member, tenant and AAD object id) and puts
-  a notice in the in-app notifications of the workspace **owner** and of the
+  a notice in the in-app notifications of every workspace **owner** and of the
   bound member (unless they made the binding themselves; the owner binding
   their own account is told once). The notice ignores notification
   preferences. A workspace admin may still bind any member, the owner included,

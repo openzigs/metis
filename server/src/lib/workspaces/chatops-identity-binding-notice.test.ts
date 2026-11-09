@@ -7,7 +7,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const db = vi.hoisted(() => ({
-  workspaceMember: { findFirst: vi.fn() },
+  workspaceMember: { findMany: vi.fn() },
   workspace: { findUnique: vi.fn() },
   user: { findMany: vi.fn() },
   notification: { create: vi.fn() },
@@ -21,7 +21,7 @@ import { recordChatIdentityBinding } from "./chatops-identity-binding-notice.js"
 describe("recordChatIdentityBinding — fallbacks (#2089)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    db.workspaceMember.findFirst.mockResolvedValue({ userId: "u-owner" });
+    db.workspaceMember.findMany.mockResolvedValue([{ userId: "u-owner" }]);
     db.notification.create.mockResolvedValue({ id: "n-1" });
   });
 
