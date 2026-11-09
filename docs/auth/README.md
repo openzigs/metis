@@ -267,6 +267,14 @@ retries up to three times, and runs once more (three more attempts) only when
 the first round ends on a unique-key race with another first sign-in; role
 reconciliation is a further three (#1977).
 
+Role reconciliation also runs again when its provider-role grant hits the
+`(userId, roleId)` key: two first sign-ins of the same person at once (two
+tabs, a double-submitted SSO form) both read "no roles", and the second grant
+collides with the first. The retry reads the row it collided with and judges it
+like any other, so a concurrent explicit (`local` or `scim`) assignment is kept,
+never converted to a provider grant, and both sign-ins succeed (#1971). These
+attempts are the same three, not more.
+
 The upgrade migration fills `users.authSource` from the audit log: an account
 whose every recorded login came through OIDC is marked `oidc`, through SAML
 `saml`; an account SCIM provisioned is marked `scim`. Every other existing

@@ -87,6 +87,41 @@ describe("retryOnWriteConflict", () => {
     expect(sleep).not.toHaveBeenCalled();
   });
 
+  // #1971 — a caller whose re-read judges the other writer's row may retry more.
+  it("runs the transaction again after an error the caller names, and only that one", async () => {
+    const sleep = noWait();
+    const dup = () => Object.assign(new Error("dup"), { code: "P2002" });
+    const alsoRetry = (error: unknown) => (error as { code?: string }).code === "P2002";
+    const run = vi
+      .fn<() => Promise<string>>()
+      .mockRejectedValueOnce(dup())
+      .mockRejectedValueOnce(p2034())
+      .mockResolvedValueOnce("won");
+    await expect(retryOnWriteConflict(run, { sleep, alsoRetry })).resolves.toBe("won");
+    expect(run).toHaveBeenCalledTimes(3);
+    expect(sleep).toHaveBeenCalledTimes(2);
+
+    const other = new Error("boom");
+    const failing = vi.fn(async () => {
+      throw other;
+    });
+    await expect(retryOnWriteConflict(failing, { sleep, alsoRetry })).rejects.toBe(other);
+    expect(failing).toHaveBeenCalledOnce();
+  });
+
+  it("answers the caller's named error once every attempt lost the error it named", async () => {
+    const dup = Object.assign(new Error("dup"), { code: "P2002" });
+    const exhausted = vi.fn(() => new Error("try again"));
+    const run = vi.fn(async () => {
+      throw dup;
+    });
+    await expect(
+      retryOnWriteConflict(run, { exhausted, alsoRetry: () => true, sleep: noWait() }),
+    ).rejects.toThrow("try again");
+    expect(run).toHaveBeenCalledTimes(WRITE_CONFLICT_ATTEMPTS);
+    expect(exhausted).toHaveBeenCalledWith(dup);
+  });
+
   it("waits on a real timer by default", async () => {
     vi.useFakeTimers();
     try {

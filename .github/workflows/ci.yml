@@ -1298,7 +1298,8 @@ jobs:
       # after a write conflict (P2034, or the pg adapter's TransactionWriteConflict).
       # Prove each path lands after injected conflicts in both shapes, and that two
       # unrelated users' first sign-ins, forced to read before either writes, both
-      # land although Postgres aborts one (40001).
+      # land although Postgres aborts one (40001). #1971: two first sign-ins of the
+      # SAME user both land with one grant although the loser hits the unique key.
       - name: Prove login and SCIM transactions retry a write conflict on real Postgres
         working-directory: server
         run: pnpm test:integration write-conflict-retry-1959-postgres
