@@ -264,6 +264,15 @@ is just a Teams-side cache of "this AAD subject is that METIS user".
   `{ tenantId, aadObjectId, email }` (SSO email match) **or**
   `{ tenantId, aadObjectId, userId }` (explicit). No active matching user →
   `404 AAD_USER_UNMAPPED`.
+- **Never silent (#2089):** a binding lets the Teams account run commands as
+  the bound member, so each one writes an audit entry (`chatops.identity.bind`:
+  actor, workspace, provider, bound member, tenant and AAD object id) and puts
+  a notice in the in-app notifications of every workspace **owner** and of the
+  bound member (unless they made the binding themselves; the owner binding
+  their own account is told once). The notice ignores notification
+  preferences. A workspace admin may still bind any member, the owner included,
+  and no MFA sign-in is required: that is the owner's decision, recorded in
+  `docs/auth/azure-ad.md`. There is no removal route yet.
 - **Members of the workspace only (#1431, OWASP A01):** the target must be an
   active member of `:workspaceId`; linking by email searches only that
   workspace's members. A non-member gets the same `404 AAD_USER_UNMAPPED` as an

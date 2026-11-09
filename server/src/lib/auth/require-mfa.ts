@@ -9,8 +9,14 @@
  * routes" follows the permission, not the URL — every state-changing route that
  * requires `admin.write` or the `admin` role is gated wherever it is mounted.
  * Issue #1745: deleting a workspace revokes every member's workspace role, so it
- * is gated; a workspace admin's own settings (name, logo, budget, integrations,
- * governing documents) grant no role and are not system administration, so not.
+ * is gated; a workspace admin's own settings (name, logo, budget, governing
+ * documents) grant no role and are not system administration, so not.
+ * Issue #2089: chat integrations and chat identity binding are NOT gated by the
+ * owner's decision (2026-11-09), not because they grant nothing: an integration
+ * chooses where workspace events go, and a binding lets a chat account run
+ * commands AS the bound member, the owner included. Instead every binding is
+ * audited and announced to the workspace owner and the bound member
+ * (`lib/workspaces/chatops-identity-binding-notice.ts`).
  */
 import type { RequestHandler } from "express";
 import type { AuthPayload } from "@metis/shared";
