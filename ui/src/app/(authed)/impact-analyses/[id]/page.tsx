@@ -346,6 +346,7 @@ function ImpactAnalysisDetailView({
                   projectName={projectName(projectId)}
                   items={items}
                   apiEdgeImpact={apiEdgeQuery.data ?? null}
+                  apiEdgeImpactError={apiEdgeQuery.isError}
                   currentUserId={user?.id ?? null}
                   onMarkFeedback={(itemId, input) => markFeedback.mutate({ itemId, ...input })}
                   onDeleteFeedback={(itemId, feedbackId) =>

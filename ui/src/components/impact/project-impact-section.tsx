@@ -53,6 +53,11 @@ export interface ProjectImpactSectionProps {
    * change, and the items of THIS project a provider's change left untouched.
    */
   apiEdgeImpact?: ApiEdgeImpactResult | null;
+  /**
+   * #2120 — the API-edge read failed. The block then says that part is
+   * unavailable instead of claiming that no other project is affected.
+   */
+  apiEdgeImpactError?: boolean;
   /** Issue #966 — the signed-in caller's user id, forwarded to each requirement group. */
   currentUserId?: string | null;
   /** Issue #966 — mark (or re-mark) a table relevant/not-relevant on the given item. */
@@ -73,6 +78,7 @@ export function ProjectImpactSection({
   crossProjectLoading = false,
   crossProjectError = false,
   apiEdgeImpact,
+  apiEdgeImpactError = false,
   currentUserId,
   onMarkFeedback,
   onDeleteFeedback,
@@ -107,6 +113,7 @@ export function ProjectImpactSection({
         loading={crossProjectLoading}
         error={crossProjectError}
         apiConsumers={apiConsumers}
+        apiEdgeError={apiEdgeImpactError}
       />
 
       {items.length === 0 ? (
@@ -145,11 +152,13 @@ function CrossProjectImpactBlock({
   loading,
   error,
   apiConsumers,
+  apiEdgeError,
 }: {
   result: CrossProjectImpactResult | null | undefined;
   loading: boolean;
   error: boolean;
   apiConsumers: ApiConsumerImpact[];
+  apiEdgeError: boolean;
 }) {
   if (loading) {
     return (
@@ -170,6 +179,23 @@ function CrossProjectImpactBlock({
       <>
         <CrossProjectImpactSection result={null} apiConsumers={apiConsumers} />
         {unavailable}
+      </>
+    );
+  }
+  if (apiEdgeError) {
+    // #2120 — the API-edge read failed, so "no other project is affected" is
+    // not known: show the shared objects that are, and say the rest is missing.
+    const apiUnavailable = (
+      <p className="text-[11px] text-muted-foreground" data-testid="api-edge-impact-error">
+        Impact on projects that call this project&apos;s API is unavailable right now.
+      </p>
+    );
+    const hasShared = Boolean(result?.workspaceId && result.affectedObjects.length > 0);
+    if (!hasShared && apiConsumers.length === 0) return apiUnavailable;
+    return (
+      <>
+        <CrossProjectImpactSection result={result ?? null} apiConsumers={apiConsumers} />
+        {apiUnavailable}
       </>
     );
   }

@@ -3001,8 +3001,10 @@ exists). The underlying endpoints both require `analysis.read`:
 **Through a product's API edges (#2115).** Cross-project impact also follows the
 product edges of kind **api** (declared on the product page, or detected). When a
 run's change matches a file of the provider's API (a file the edge records, a
-spec file, or a file under a directory named `api`, `rest`, `graphql`, `grpc`,
-`rpc`, `openapi`, `swagger` or `endpoints`), the provider's **Cross-project
+spec file, or a file under a directory whose name is, or contains the word,
+`api`, `rest`, `graphql`, `grpc`, `rpc`, `openapi`, `swagger`, `endpoints`,
+`routes`, `router`, `controllers`, `handlers`, `resolvers` or `webhooks`, so
+`RestControllers` and `public_api` count), the provider's **Cross-project
 impact** block names each consumer, the API files the change touches, and the
 consumer's methods that call that API. Those methods are the consumer's own best
 matches when it is in the same run. Otherwise they come from the edge's evidence.
@@ -3011,9 +3013,13 @@ When a change matches the provider but none of its API (a web-UI fix, say), no
 consumer is listed. A consumer that is in the run anyway gets a **Low-confidence
 match** banner on its matches for that change: it reaches the provider only
 through the API, so its matches share words with the change rather than its
-effect. The changes METIS extracts from one pasted text or document count as one
-request here, and each stored requirement as its own. Consumers you cannot open
-are left out. These come from
+effect. The banner needs evidence: when METIS found no code of the provider for
+the change, or the edge does not say which side calls which, no banner is shown.
+The changes METIS extracts from one pasted text or document count as one
+request here, and each stored requirement as its own, so in a document with
+several unrelated changes, one that touches the API keeps the banner off all of
+them. If this part cannot be read, the block says so rather than reporting that
+no other project is affected. Consumers you cannot open are left out. These come from
 `GET /api/impact-analyses/:id/api-edge-impact` (`analysis.read`, authorized like
 the run itself).
 

@@ -28,6 +28,22 @@
  *     confidence. A consumer item with no provider match for the change is
  *     left alone: the change may be the consumer's own.
  *
+ * An untouched flag is a claim, so it needs evidence on both counts (#2120):
+ *
+ *   - **the provider was matched.** A provider item with no direct match (METIS
+ *     could not find the code, #1762, or reached it only through callers) says
+ *     nothing about where the change lands, so it flags no one: unknown, not
+ *     untouched;
+ *   - **the edge says who consumes.** An edge with no direction, or one read
+ *     both ways (`reads` / `writes`), is walked both ways to name consumers but
+ *     flags nothing: either side may be the provider, and the reverse pass
+ *     would mark the real provider's own items untouched.
+ *
+ * A wrongly-counted API file errs toward naming a consumer, which an analyst can
+ * dismiss; a missed one errs toward a false "untouched", which reads as fact.
+ * So the directory list is broad (`routes`, `controllers`, `handlers`, …) and is
+ * matched per word of a segment (`RestControllers`, `public_api`).
+ *
  * "The same change" is one request ({@link changeKey}): a stored requirement,
  * or all the aspects extracted from the run's own text.
  *
@@ -50,8 +66,11 @@ import type {
 } from "@metis/shared";
 import { prisma as defaultPrisma } from "../prisma.js";
 
-/** Directory names that hold a service's API: handlers, specs, schemas. */
-const API_DIR_SEGMENTS = new Set([
+/**
+ * Words of a directory name that mark a service's API: handlers, routes,
+ * controllers, specs, schemas. Matched against each word of a segment.
+ */
+const API_DIR_WORDS = new Set([
   "api",
   "apis",
   "rest",
@@ -60,7 +79,21 @@ const API_DIR_SEGMENTS = new Set([
   "rpc",
   "openapi",
   "swagger",
+  "endpoint",
   "endpoints",
+  "route",
+  "routes",
+  "router",
+  "routers",
+  "routing",
+  "controller",
+  "controllers",
+  "handler",
+  "handlers",
+  "resolver",
+  "resolvers",
+  "webhook",
+  "webhooks",
 ]);
 
 /** A spec file is API surface wherever it sits. */
@@ -71,18 +104,34 @@ const API_SPEC_FILE =
 const MAX_CITING_METHODS = 3;
 
 /**
+ * The words of one directory name: `RestControllers` → rest, controllers;
+ * `public_api` → public, api; `GraphQLHandlers` → graph, ql, handlers.
+ */
+function dirWords(segment: string): string[] {
+  return segment
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean);
+}
+
+/**
  * Whether `filePath` is part of a provider's API surface: a file the API edge
  * records on the provider's side, a spec file, or a file under an API
- * directory (`internal/api/entry.go`, `src/api/users.ts`). A file under a UI
- * directory (`internal/ui/pagination.go`) is not. Directory segments are
- * matched whole, so `rapid/` or `capital.go` never count.
+ * directory (`internal/api/entry.go`, `src/routes/users.ts`,
+ * `src/RestControllers/Feed.php`). A file under a UI directory
+ * (`internal/ui/pagination.go`) is not. A directory counts when its whole name
+ * or one of its words is an API word, so `rapid/` or `capital.go` never count.
  */
 export function isApiSurfaceFile(filePath: string, providerFiles: ReadonlySet<string>): boolean {
   const normalized = filePath.replace(/\\/g, "/");
   if (providerFiles.has(normalized)) return true;
   if (API_SPEC_FILE.test(normalized)) return true;
   const dirs = normalized.split("/").slice(0, -1);
-  return dirs.some((d) => API_DIR_SEGMENTS.has(d.toLowerCase()));
+  return dirs.some(
+    (d) => API_DIR_WORDS.has(d.toLowerCase()) || dirWords(d).some((w) => API_DIR_WORDS.has(w)),
+  );
 }
 
 /** The columns of a `ProductEdge` this module reads. */
@@ -148,17 +197,30 @@ function sideFiles(edge: ApiEdgeRow, repoId: string): { filePath: string; line: 
   return out;
 }
 
+interface ProviderConsumerPair {
+  provider: string;
+  consumer: string;
+  /**
+   * The edge's direction says which side calls which. Only a directed pair can
+   * flag a consumer item untouched: an edge read both ways cannot tell the
+   * provider's own change from a consumer's (#2120).
+   */
+  directed: boolean;
+}
+
 /** The (provider repo, consumer repo) pairs an edge reads as. */
-function providerConsumerPairs(edge: ApiEdgeRow): { provider: string; consumer: string }[] {
+function providerConsumerPairs(edge: ApiEdgeRow): ProviderConsumerPair[] {
   const target = edge.targetRepoId;
   if (!target || target === edge.sourceRepoId) return [];
   if (edge.direction === "consumes" || edge.direction === "depends-on") {
-    return [{ provider: target, consumer: edge.sourceRepoId }];
+    return [{ provider: target, consumer: edge.sourceRepoId, directed: true }];
   }
-  if (edge.direction === "provides") return [{ provider: edge.sourceRepoId, consumer: target }];
+  if (edge.direction === "provides") {
+    return [{ provider: edge.sourceRepoId, consumer: target, directed: true }];
+  }
   return [
-    { provider: target, consumer: edge.sourceRepoId },
-    { provider: edge.sourceRepoId, consumer: target },
+    { provider: target, consumer: edge.sourceRepoId, directed: false },
+    { provider: edge.sourceRepoId, consumer: target, directed: false },
   ];
 }
 
@@ -170,6 +232,13 @@ function providerConsumerPairs(edge: ApiEdgeRow): { provider: string; consumer: 
  * API endpoint" from its "Currently, …" line — so they share one key, and an
  * aspect that matched no API file does not flag a consumer another aspect of
  * the same request reached.
+ *
+ * The trade-off, kept on purpose (#2120): a pasted document carrying several
+ * unrelated changes is still one request here. One aspect touching the API then
+ * keeps every consumer item of the run from being flagged untouched, and the
+ * consumer's citing methods are drawn from all its text-extracted items. That
+ * errs toward naming impact, never toward a false "untouched". An item records
+ * no extraction id that could split the request further.
  */
 function changeKey(item: ImpactItemView): string {
   return item.requirementId ? `requirement:${item.requirementId}` : "source-text";
@@ -212,7 +281,7 @@ export function computeApiEdgeImpact(input: ApiEdgeImpactInput): ApiEdgeImpactRe
       (ORIGIN_RANK[a.origin] ?? 3) - (ORIGIN_RANK[b.origin] ?? 3) || a.id.localeCompare(b.id),
   );
   for (const edge of edges) {
-    for (const { provider, consumer } of providerConsumerPairs(edge)) {
+    for (const { provider, consumer, directed } of providerConsumerPairs(edge)) {
       const providerProjectId = input.repoProject.get(provider);
       const consumerProjectId = input.repoProject.get(consumer);
       if (!providerProjectId || !consumerProjectId) continue;
@@ -225,17 +294,19 @@ export function computeApiEdgeImpact(input: ApiEdgeImpactInput): ApiEdgeImpactRe
       const consumerItems = itemsByProject.get(consumerProjectId) ?? [];
 
       for (const providerItem of providerItems) {
+        const direct = directSymbols(providerItem, provider);
+        // No direct match: where the change lands is unknown, not off the API.
+        if (direct.length === 0) continue;
         const key = changeKey(providerItem);
         const sameChange = consumerItems.filter((c) => changeKey(c) === key);
         const apiSurfaceFiles = [
           ...new Set(
-            directSymbols(providerItem, provider)
-              .map((s) => s.filePath)
-              .filter((f) => isApiSurfaceFile(f, providerFiles)),
+            direct.map((s) => s.filePath).filter((f) => isApiSurfaceFile(f, providerFiles)),
           ),
         ].sort();
 
         if (apiSurfaceFiles.length === 0) {
+          if (!directed) continue;
           for (const c of sameChange) {
             if (untouchedCandidates.has(c.id)) continue;
             untouchedCandidates.set(c.id, {

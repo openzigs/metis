@@ -147,6 +147,14 @@ describe("isApiSurfaceFile", () => {
     ["rapid/capital.go", false],
     ["api.go", false],
     ["internal\\api\\entry.go", true],
+    // #2120 — routes, controllers and handlers, matched per word of a segment.
+    ["app/routes/users.ts", true],
+    ["src/RestControllers/FeedController.php", true],
+    ["pkg/public_api/feeds.go", true],
+    ["src/GraphQLHandlers/entry.ts", true],
+    ["server/webhooks/github.ts", true],
+    ["internal/ui/handler.go", false],
+    ["web/rapidly/capitalize.go", false],
   ])("%s → %s", (path, expected) => {
     expect(isApiSurfaceFile(path, none)).toBe(expected);
   });
@@ -264,6 +272,41 @@ describe("computeApiEdgeImpact — the Miniflux pair", () => {
     expect(result.consumers).toEqual([]);
   });
 
+  it("flags nothing when the provider has no direct match for the change (#2120)", () => {
+    // Only a caller in the provider was reached: where the change lands is unknown.
+    const callersOnly = item(
+      "i-v2-callers",
+      V2,
+      [sym("ui.getPagination", "internal/ui/pagination.go", 0.4, { depth: 1, relation: "caller" })],
+      uiTitle,
+    );
+    expect(run([callersOnly, uiChangeClient])).toEqual({
+      impactAnalysisId: "ia-1",
+      consumers: [],
+      untouched: [],
+    });
+    // METIS could not find the code at all (#1762).
+    const noCode = item("i-v2-none", V2, [], uiTitle);
+    expect(run([noCode, uiChangeClient]).untouched).toEqual([]);
+    // A direct match of another repo is not the provider's match either.
+    const otherRepo = item(
+      "i-v2-fork",
+      V2,
+      [sym("ui.page", "internal/ui/page.go", 0.9, { repo: { id: "r-v2-fork", name: "fork" } })],
+      uiTitle,
+    );
+    expect(run([otherRepo, uiChangeClient]).untouched).toEqual([]);
+  });
+
+  it("names the consumer of a provider laid out in RestControllers (#2120)", () => {
+    const php = item("i-v2-php", V2, [
+      sym("FeedController::update", "src/RestControllers/FeedController.php", 0.9),
+    ]);
+    const result = run([php, apiChangeClient]);
+    expect(result.untouched).toEqual([]);
+    expect(result.consumers[0].apiSurfaceFiles).toEqual(["src/RestControllers/FeedController.php"]);
+  });
+
   it("does nothing when the provider has no item in the run", () => {
     expect(run([uiChangeClient])).toEqual({
       impactAnalysisId: "ia-1",
@@ -294,6 +337,23 @@ describe("computeApiEdgeImpact — the edge", () => {
     const clientApi = item("i-c-api", CLIENT, [sym("Client", "client/api/base.py", 0.9)]);
     expect(run([clientApi], [either]).consumers[0].consumerProjectId).toBe(V2);
   });
+
+  it.each([null, "reads", "writes"])(
+    "never flags the real provider's own item untouched through a %s edge (#2120)",
+    (direction) => {
+      const either = edge({ direction });
+      // An API change with both projects in the run: the reverse pass reads the
+      // client as a provider matched off its API (miniflux.py).
+      const api = run([apiChangeV2, apiChangeClient], [either]);
+      expect(api.untouched).toEqual([]);
+      expect(api.consumers.map((c) => [c.providerProjectId, c.consumerProjectId])).toEqual([
+        [V2, CLIENT],
+      ]);
+      // A UI change: neither side can be told apart as the one that only consumes.
+      const ui = run([uiChangeV2, uiChangeClient], [either]);
+      expect(ui).toEqual({ impactAnalysisId: "ia-1", consumers: [], untouched: [] });
+    },
+  );
 
   it("skips an edge through a resource, an edge within one project, and an unknown repo", () => {
     expect(run([apiChangeV2], [edge({ targetRepoId: null })]).consumers).toEqual([]);
