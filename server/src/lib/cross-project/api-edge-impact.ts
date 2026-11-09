@@ -39,10 +39,13 @@
  *     flags nothing: either side may be the provider, and the reverse pass
  *     would mark the real provider's own items untouched.
  *
- * A wrongly-counted API file errs toward naming a consumer, which an analyst can
- * dismiss; a missed one errs toward a false "untouched", which reads as fact.
- * So the directory list is broad (`routes`, `controllers`, `handlers`, …) and is
- * matched per word of a segment (`RestControllers`, `public_api`).
+ * A wrongly-counted API file errs toward naming a consumer, and a missed one
+ * toward a false "untouched"; both are shown as fact. So the directory list is
+ * broad (`routes`, `controllers`, `resolvers`, …) and is matched per word of a
+ * segment (`RestControllers`, `public_api`), but a generic name — a `handler`,
+ * `router` or `routing` package — counts only in a server (`internal/http/`,
+ * `server/`), and a `client` directory never does (#2127): Miniflux v2's
+ * feed-refresh `internal/reader/handler/` is not its API.
  *
  * "The same change" is one request ({@link changeKey}): a stored requirement,
  * or all the aspects extracted from the run's own text.
@@ -67,8 +70,9 @@ import type {
 import { prisma as defaultPrisma } from "../prisma.js";
 
 /**
- * Words of a directory name that mark a service's API: handlers, routes,
- * controllers, specs, schemas. Matched against each word of a segment.
+ * Words of a directory name that mark a service's API wherever it sits: routes,
+ * controllers, resolvers, specs, schemas. Matched against the whole name and
+ * against each of its words.
  */
 const API_DIR_WORDS = new Set([
   "api",
@@ -81,20 +85,36 @@ const API_DIR_WORDS = new Set([
   "swagger",
   "endpoint",
   "endpoints",
-  "route",
   "routes",
-  "router",
-  "routers",
-  "routing",
   "controller",
   "controllers",
-  "handler",
-  "handlers",
   "resolver",
   "resolvers",
   "webhook",
   "webhooks",
 ]);
+
+/**
+ * API names that camel compounds break apart (`GraphQLSchema` → graph, ql,
+ * schema), so they are also looked for inside the lower-cased name.
+ */
+const API_DIR_STEMS = ["graphql", "openapi", "grpc", "swagger"];
+
+/**
+ * Generic directory names that are a service's API only in a server: a
+ * `handler` or `router` package under a parent in {@link SERVER_PARENTS}.
+ * Elsewhere they are any code's event, error or feed-refresh handlers (Miniflux
+ * v2's `internal/reader/handler/`). Matched on the whole name only, so
+ * `error-handlers/` never counts. A singular `route` is not listed at all: it
+ * names a route helper (`internal/http/route/`); route tables live in `routes/`.
+ */
+const SERVER_DIR_NAMES = new Set(["handler", "handlers", "router", "routers", "routing"]);
+
+/** Parent directories that mark a server, for {@link SERVER_DIR_NAMES}. */
+const SERVER_PARENTS = new Set(["http", "https", "server", "servers"]);
+
+/** Words that make a directory a caller of an API, not its server (`rest-client/`). */
+const CLIENT_WORDS = new Set(["client", "clients"]);
 
 /** A spec file is API surface wherever it sits. */
 const API_SPEC_FILE =
@@ -117,12 +137,27 @@ function dirWords(segment: string): string[] {
 }
 
 /**
+ * Whether one directory name marks an API: its whole name or one of its words
+ * is an API word, or it holds an API stem — unless one of its words is a client.
+ */
+function isApiDir(segment: string): boolean {
+  const lower = segment.toLowerCase();
+  if (API_DIR_WORDS.has(lower)) return true;
+  const words = dirWords(segment);
+  if (words.some((w) => CLIENT_WORDS.has(w))) return false;
+  return words.some((w) => API_DIR_WORDS.has(w)) || API_DIR_STEMS.some((s) => lower.includes(s));
+}
+
+/**
  * Whether `filePath` is part of a provider's API surface: a file the API edge
  * records on the provider's side, a spec file, or a file under an API
  * directory (`internal/api/entry.go`, `src/routes/users.ts`,
- * `src/RestControllers/Feed.php`). A file under a UI directory
- * (`internal/ui/pagination.go`) is not. A directory counts when its whole name
- * or one of its words is an API word, so `rapid/` or `capital.go` never count.
+ * `src/RestControllers/Feed.php`) or under a server's handler or router
+ * (`internal/http/handler/entry.go`). A file under a UI directory
+ * (`internal/ui/pagination.go`), a client (`src/rest-client/`) or a handler
+ * outside a server (`internal/reader/handler/handler.go`) is not. A directory
+ * counts when its whole name or one of its words is an API word, so `rapid/`
+ * or `capital.go` never count.
  */
 export function isApiSurfaceFile(filePath: string, providerFiles: ReadonlySet<string>): boolean {
   const normalized = filePath.replace(/\\/g, "/");
@@ -130,7 +165,10 @@ export function isApiSurfaceFile(filePath: string, providerFiles: ReadonlySet<st
   if (API_SPEC_FILE.test(normalized)) return true;
   const dirs = normalized.split("/").slice(0, -1);
   return dirs.some(
-    (d) => API_DIR_WORDS.has(d.toLowerCase()) || dirWords(d).some((w) => API_DIR_WORDS.has(w)),
+    (d, i) =>
+      isApiDir(d) ||
+      (SERVER_DIR_NAMES.has(d.toLowerCase()) &&
+        dirs.slice(0, i).some((p) => SERVER_PARENTS.has(p.toLowerCase()))),
   );
 }
 
