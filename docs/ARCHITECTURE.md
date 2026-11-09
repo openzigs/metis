@@ -2671,6 +2671,11 @@ the pre-#1873 code).
   re-judged with #1872's judging prompt, with the question and answer added to the requirement.
   The new verdicts are written with `settled: { questionId, answer, previousVerdict, at }` under
   the analysis row lock (`settleGoverningPairs`). Only an unsettled `uncertain` pair can move.
+  #2067: this re-judging alone gets `ANSWER_NOTE` (`buildApplicabilityJudgePrompt(…, {
+  answered: true })`). The note says that an answer saying the rule's safeguard is in place still
+  means the rule applies, and that the findings call then decides compliance. Only an answer
+  saying the rule's subject is absent means `does-not-apply`. The first judging's prompt is
+  unchanged.
 - **Findings that ask (#2059).** A pair that `applies` is never `uncertain`, but its finding can
   be `needs-ba-input` with a `businessQuestion`. While the stored applicability has an `applies`
   pair, `open` also reads the analysis's `needs-ba-input` rows of
