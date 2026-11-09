@@ -125,5 +125,16 @@ A reading of this set is a tuning reading: its numbers are not held-out evidence
 | 2026-11-09 | #2108 | A5 | `anthropic/claude-sonnet-5-5` | first draft of the three lines | 1 | 0.96 | 0.74 | 0.67 | 1 |
 | 2026-11-09 | #2108 | A5 | `anthropic/claude-sonnet-5-5` | the three lines as committed | 2 | 0.94 | 0.68 | 0.79 | 0 |
 
-These tuning runs ran on an uncommitted tree, so they are recorded here and not as
-readings. The committed reading at the PR's commit is below.
+| 2026-11-09 | #2108 | A5, commit `e452afb69` (clean tree) | `anthropic/claude-sonnet-5-5` | the three lines as committed | 2 | 0.92 / 0.83 | 0.71 / 0.71 | 0.75 / 0.71 | 0 / 0 |
+
+The first three rows ran on an uncommitted tree, so they are recorded here and not as
+readings. The last is the committed reading,
+[`eval-data/readings/governing-04-openemr-asvs/baseline-A5-sonnet.md`](../../readings/governing-04-openemr-asvs/baseline-A5-sonnet.md)
+($1.20). Precision rose from about 0.56 to 0.68–0.74 and verdict accuracy from about 0.48 to
+0.71–0.79, with no hard error after the change. Recall moved from 0.96 / 0.88 to between
+0.83 and 0.94: no measurable change at 24 truth pairs.
+
+Every miss in the committed reading is `judged-does-not-apply`. In both runs OS-02 → PA-14
+and OS-04 → PA-10 (single sign-on, and whether it keeps a second factor) were missed. The
+second is the kind of miss `governing-03` showed on OE-14 → AU-01. The next change to the
+judge is tuned here, on it.

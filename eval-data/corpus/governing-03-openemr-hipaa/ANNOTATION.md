@@ -410,7 +410,9 @@ before.** Pair by pair, over the three runs:
 
   PW-07 reads "When processing a request to establish or change a password", so OE-11 and
   OE-12 do engage it. That is a defect of the new line, not a doubtful label. `governing-04`
-  holds no such pair, which is why the tuning did not show it.
+  holds no pair of that kind (a flow that sets a password, against a rule on every new
+  password). There, recall moved within run-to-run noise (0.96 / 0.88 before, 0.83 to 0.94
+  after), so the tuning did not show the loss.
 - **Still wrong:** the misses of the first reading other than OE-25 (OE-01 → TS-07, OE-09 →
   TS-10, OE-14 → AS-02 and AU-01, OE-16 → PW-07), and OE-15 → AS-02, still asked about where
   the label is `gap` (3 of 3). Also 19 compliant pair-runs that are still
