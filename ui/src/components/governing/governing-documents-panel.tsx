@@ -28,6 +28,7 @@ import {
   type GoverningDocumentListItem,
   type GoverningRevision,
 } from "@/lib/governing-api";
+import { GoverningPreviewNotice } from "./governing-preview-notice";
 import { GoverningRulesTable } from "./governing-rules-table";
 import { GoverningUploadDialog, type UploadTarget } from "./governing-upload-dialog";
 
@@ -179,6 +180,7 @@ export function GoverningDocumentsPanel({ workspaceId }: { workspaceId: string }
 
   return (
     <div className="space-y-6">
+      <GoverningPreviewNotice />
       {canManage ? (
         <div className="flex justify-end">
           <Button type="button" onClick={() => setUpload({ kind: "document" })}>

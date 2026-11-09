@@ -45,6 +45,9 @@
  * own rows cite, exactly as the analysis route reads them.
  */
 import {
+  GOVERNING_PREVIEW,
+  GOVERNING_PREVIEW_LABEL,
+  GOVERNING_PREVIEW_NOTE,
   governingSummarySentence,
   neutraliseComplianceClaims,
   type GoverningFinding,
@@ -363,10 +366,25 @@ function leadIn(section: GoverningSection): string {
   return `> **Checked against the workspace's governing documents.** Each finding below is copied from the governing findings METIS stored for ${source}, as the analysis view shows them: its status, the rule's control id, the clause METIS verified against the cited revision, and the analyst's decision. No model was asked again to write this section. ${recorded} A rejected finding is listed and marked **Rejected**, not left out. Not an audit opinion.`;
 }
 
+/**
+ * #2109 — the Preview mark the UI shows on its governing surfaces, as a quoted
+ * line under the heading; none when `GOVERNING_PREVIEW` is off.
+ */
+export function governingPreviewLines(): string[] {
+  return GOVERNING_PREVIEW
+    ? [`> **${GOVERNING_PREVIEW_LABEL}:** ${GOVERNING_PREVIEW_NOTE}`, ""]
+    : [];
+}
+
 /** The section as Markdown lines, starting with its heading. */
 export function renderGoverningSection(section: GoverningSection): string[] {
   const multiple = section.runs.length > 1;
-  const out: string[] = [GOVERNING_SECTION_HEADING, "", leadIn(section)];
+  const out: string[] = [
+    GOVERNING_SECTION_HEADING,
+    "",
+    ...governingPreviewLines(),
+    leadIn(section),
+  ];
   for (const run of section.runs) {
     if (multiple) {
       const when = formatStartedAt(run.startedAt);

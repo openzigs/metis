@@ -3,7 +3,23 @@
  * stored governing findings (#1874) and worded through the #1875 guard.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { findForbiddenComplianceClaims, type GoverningFinding } from "@metis/shared";
+import {
+  GOVERNING_PREVIEW_NOTE,
+  findForbiddenComplianceClaims,
+  type GoverningFinding,
+} from "@metis/shared";
+
+// #2109 — the Preview setting, switchable per test; on unless a test turns it off.
+const preview = vi.hoisted(() => ({ on: true }));
+vi.mock("@metis/shared", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@metis/shared")>();
+  return {
+    ...actual,
+    get GOVERNING_PREVIEW() {
+      return preview.on;
+    },
+  };
+});
 
 const db = vi.hoisted(() => ({
   requirementFindMany: vi.fn(),
@@ -738,5 +754,47 @@ describe("the BRD without governing findings is unchanged — #1877", () => {
       { runs: [{ ...run, omitted: 2 }] },
     ];
     for (const v of variants) expect(governingSectionFacts(v)).not.toBe(base);
+  });
+});
+
+describe("the Preview mark (#2109)", () => {
+  const LEAD_IN = /^> \*\*Checked against the workspace's governing documents\.\*\*/;
+  const section = (): GoverningSection => ({
+    runs: [
+      {
+        analysisId: "run-1",
+        startedAt: NOW,
+        findings: [
+          {
+            ...(row() as unknown as GoverningFinding),
+            createdAt: NOW.toISOString(),
+            updatedAt: NOW.toISOString(),
+          },
+        ],
+        requirementText: new Map(),
+        revisions: [],
+        omitted: 0,
+      },
+    ],
+  });
+  afterEach(() => {
+    preview.on = true;
+  });
+
+  it("quotes the Preview note under the heading, before the lead-in", () => {
+    const lines = renderGoverningSection(section());
+    expect(lines[0]).toBe(GOVERNING_SECTION_HEADING);
+    expect(lines[2]).toBe(`> **Preview:** ${GOVERNING_PREVIEW_NOTE}`);
+    expect(lines[3]).toBe("");
+    expect(lines[4]).toMatch(LEAD_IN);
+    expect(findForbiddenComplianceClaims(lines.join("\n"))).toEqual([]);
+  });
+
+  it("leaves the note out when the setting is off", () => {
+    preview.on = false;
+    const markdown = renderGoverningSection(section()).join("\n");
+    expect(markdown).not.toContain("**Preview:**");
+    expect(markdown).not.toContain(GOVERNING_PREVIEW_NOTE);
+    expect(renderGoverningSection(section())[2]).toMatch(LEAD_IN);
   });
 });
