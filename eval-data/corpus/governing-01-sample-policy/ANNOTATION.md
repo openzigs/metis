@@ -210,6 +210,27 @@ the right way round, 20 of 20. That includes GR-20's "No." → `gap`, newly reac
 GR-11's "No." → `compliant`. No short answer was misread, so #2038's polarity line was
 not re-tried.
 
+### #2053: a judging reply cut off at the output cap
+
+The GR-06 and GR-30 failures above were judging replies stopped at `max_tokens`. A judging
+batch whose reply is cut off at the output cap is now judged again in halves, down to one rule,
+instead of being re-asked whole into the same cap. A reply that ends normally is handled as
+before, so nothing else in this set's readings can move.
+
+No DeepSeek key was available, so the failure was reproduced on `claude-sonnet-5-5` with the
+judging call's output cap forced down to 700 tokens. Uncapped, Sonnet judges GR-06's and
+GR-30's 13 candidates in 938 and 1,239 tokens. The probe ran `decideApplicability` with the
+whole rule set, the screen on and top-k off, twice per requirement, on 2026-11-09:
+
+| | GR-06 | GR-30 |
+|---|---|---|
+| Before | failed 2 of 2: both asks `max_tokens` at 700 | failed 2 of 2, the same way |
+| After | decided 2 of 2: 12 rules cut off, then 6 + (6 cut off → 3 + 3) | decided 2 of 2: 14 rules cut off, then 7 + (7 cut off → 4 + 3) |
+
+GR-06's `applies` set after the split was the uncapped one: AL-02, EN-01, EN-05, VM-01, VM-03
+and VM-05. A DeepSeek A4 reading on this set is still owed. It would confirm that DeepSeek's
+cut-off replies are now decided, and that the main row's hard errors stay at 0.
+
 ### #2059: the shipped path asks a Needs BA input finding on a rule that applies
 
 Read on 2026-11-09 with arm **A5** (the shipped path) on `anthropic/deepseek-flash`. There
