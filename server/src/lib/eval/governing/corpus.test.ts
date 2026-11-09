@@ -347,7 +347,12 @@ describe("validateGoverningCorpus — the drift it must catch", () => {
     const withSources = clone(manifest);
     withSources.synthetic = true;
     withSources.sources = [
-      { title: "A rule", url: "https://example.gov/rule", license: "PD", retrievedAt: "2026-11-09" },
+      {
+        title: "A rule",
+        url: "https://example.gov/rule",
+        license: "PD",
+        retrievedAt: "2026-11-09",
+      },
     ];
     expect(validateGoverningCorpus(withSources, files)).toContain(
       "a synthetic corpus must not carry sources",
@@ -749,6 +754,111 @@ describe("the held-out set of real text (#2105)", () => {
     expect(annotation).toMatch(/Neither is the agent that chose the requirements/);
     expect(annotation).toMatch(/wrote no label/);
     expect(annotation).toMatch(/never iterate a prompt against this set/i);
+    expect(annotation).toMatch(/## Readings/);
+  });
+});
+
+const REAL_TUNING = "governing-04-openemr-asvs";
+const REAL_TUNING_DIR = resolveGoverningCorpusDir(REAL_TUNING);
+
+describe("the tuning set of real text (#2108)", () => {
+  async function tuning(): Promise<{ manifest: GoverningCorpusManifest; files: CorpusFiles }> {
+    const manifest = JSON.parse(
+      await fs.readFile(path.join(REAL_TUNING_DIR, "manifest.json"), "utf8"),
+    ) as GoverningCorpusManifest;
+    const policies = new Map<string, string>();
+    for (const rev of manifest.policy.revisions) {
+      policies.set(rev.revision, await fs.readFile(path.join(REAL_TUNING_DIR, rev.file), "utf8"));
+    }
+    const annotation = await fs.readFile(path.join(REAL_TUNING_DIR, "ANNOTATION.md"), "utf8");
+    return {
+      manifest,
+      files: { present: await listCorpusFiles(REAL_TUNING_DIR), policies, annotation },
+    };
+  }
+
+  it("loads as a tuning set of real text, every guard passing", async () => {
+    const corpus = await loadGoverningCorpus(REAL_TUNING);
+    const { manifest, files } = await tuning();
+    expect(validateGoverningCorpus(manifest, files)).toEqual([]);
+    expect(manifest.synthetic).toBe(false);
+    expect(corpus.manifest.purpose).toBe("tuning");
+    expect(corpus.rules).toHaveLength(30);
+    expect(manifest.items).toHaveLength(25);
+    expect(manifest.items.filter((i) => i.applies.length === 0).length).toBeGreaterThanOrEqual(
+      MIN_NEGATIVE_ITEMS,
+    );
+    for (const text of files.policies.values()) {
+      expect(trustServicesCriteriaMarkers(text)).toEqual([]);
+      expect(evaluationLeaks(text)).toEqual([]);
+    }
+  });
+
+  it("quotes the OWASP ASVS under its own numbers, and keeps its CC BY-SA notice in the policy", async () => {
+    const corpus = await loadGoverningCorpus(REAL_TUNING);
+    expect(corpus.ruleById.get("PA-05")!.clause).toBe(
+      "Verify that passwords of any composition can be used, without rules limiting the type of characters permitted. There must be no requirement for a minimum number of upper or lower case characters, numbers, or special characters. [ASVS 5.0.0, 6.2.5]",
+    );
+    for (const r of corpus.rules) {
+      expect(r.clause, r.id).toMatch(/^Verify that\b/);
+      expect(r.clause, r.id).toMatch(/\[ASVS 5\.0\.0, \d+\.\d+\.\d+\]$/);
+    }
+    expect(corpus.policyText).toContain("https://github.com/OWASP/ASVS/tree/v5.0.0_release/5.0/en");
+    expect(corpus.policyText).toMatch(/Creative Commons Attribution-ShareAlike\s+4\.0/);
+    expect(corpus.policyText).toMatch(/stays under that licence/);
+    expect(corpus.policyText).toMatch(/retrieved 2026-11-09/);
+  });
+
+  it("quotes OpenEMR issues that the held-out governing-03 does not use", async () => {
+    const { manifest } = await tuning();
+    const heldOut = JSON.parse(
+      await fs.readFile(path.join(REAL_DIR, "manifest.json"), "utf8"),
+    ) as GoverningCorpusManifest;
+    const issues = manifest.items.map((i) => i.source);
+    for (const s of issues)
+      expect(s).toMatch(/^https:\/\/github\.com\/openemr\/openemr\/issues\/\d+$/);
+    expect(new Set(issues).size).toBe(issues.length);
+    const heldOutIssues = new Set(heldOut.items.map((i) => i.source));
+    expect(issues.filter((s) => heldOutIssues.has(s))).toEqual([]);
+    // Nor the held-out set's policy: its tuning must not be tuning on governing-03's rules.
+    expect(manifest.policy.title).not.toBe(heldOut.policy.title);
+    expect(manifest.sources?.map((s) => s.url)).toContain(
+      "https://github.com/OWASP/ASVS/tree/v5.0.0_release/5.0/en",
+    );
+  });
+
+  it("keeps governing-01's thresholds and, as a tuning set, records no hash", async () => {
+    const { manifest } = await tuning();
+    expect(manifest.thresholds).toEqual((await committed()).manifest.thresholds);
+    expect(manifest.contentHash).toBeUndefined();
+    expect(manifest.annotation.groundTruthFixedBeforeAnyArmRan).toBe(true);
+    expect(manifest.annotation.reviewedBy).toBeNull();
+  });
+
+  it("holds the adjudicated labels: both blind labellers where they agreed, the third pass where they did not", async () => {
+    await expectAdjudicatedLabels(REAL_TUNING_DIR);
+  });
+
+  it("marks a pair non-resembling exactly when it shares no vocabulary with its rule", async () => {
+    const corpus = await loadGoverningCorpus(REAL_TUNING);
+    for (const item of corpus.manifest.items) {
+      for (const p of item.applies) {
+        const rule = corpus.ruleById.get(p.ruleId)!;
+        const shared = sharedVocabulary(
+          `${item.title}\n${item.text}`,
+          `${rule.clause}\n${rule.summary}`,
+        );
+        expect(p.nonResembling === true, `${item.id} → ${p.ruleId}`).toBe(shared.length === 0);
+      }
+    }
+  });
+
+  it("records the blind procedure and that prompts are tuned here, never on governing-03", async () => {
+    const { files } = await tuning();
+    const annotation = files.annotation!;
+    expect(annotation).toMatch(/wrote no label/);
+    expect(annotation).toMatch(/Neither is the agent that chose the requirements/);
+    expect(annotation).toMatch(/governing-03.{0,40}held out/);
     expect(annotation).toMatch(/## Readings/);
   });
 });
