@@ -35,3 +35,5 @@ server/tests/fixtures/go-oracle/*.snapshot.json
 # #1867 — `pnpm eval:governing --baseline` writes one arm record per line
 # (`toJsonReport`); a reflow would more than triple the file and the diff.
 eval-data/corpus/governing-*/baseline-*.json
+# #1878 — and a decision reading (`--reading`) is written the same way.
+eval-data/readings/governing-*/baseline-*.json
