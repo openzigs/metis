@@ -2748,10 +2748,14 @@ the pre-#1873 code).
   analysis the carries are chained (`carriesInFlight`); each re-reads the applicability, runs
   its calls `CARRY_CONCURRENCY` (4) at a time, writes what it settles, and asks for its own
   findings refresh. `open` awaits `governingCarriesSettled(analysisId)` before it reads the
-  pairs, so the next round never asks a pair the carry is about to settle. A per-analysis memo
-  (`carryMemo`, bounded at `CARRY_MEMO_MAX_ANALYSES`) keys each judged candidate by requirement,
-  rules and answers, so an orphan retry with the same answers sends no carried call again; a
-  failed call is not remembered. Both maps are process-local: on another replica the next round
+  pairs, so the next round never asks a pair the carry is about to settle; it stops waiting
+  when its signal aborts, and the carry runs on (#2133). A per-analysis memo (`carryMemo`,
+  bounded at `CARRY_MEMO_MAX_ANALYSES` analyses of at most `CARRY_MEMO_MAX_KEYS` judgings each,
+  the oldest forgotten first) keys each judged candidate by requirement, rules and answers, so
+  an orphan retry with the same answers sends no carried call again. A failed call is not
+  remembered, and (#2133) a judging is remembered only after what the carry settled is
+  written: `carryAnswersOver` reports it in `judgedNow`, and a write that throws leaves it to
+  be judged again. Both maps are process-local: on another replica the next round
   may ask what a carry here settles, as before #2122. `settle`'s left-open count reads only the
   questions' own settlements (#2016/#2022 backoff).
 - **Findings that ask (#2059).** A pair that `applies` is never `uncertain`, but its finding can

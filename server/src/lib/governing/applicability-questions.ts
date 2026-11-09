@@ -89,6 +89,11 @@ export const CARRY_CONCURRENCY = 4;
  * (`carryMemo`), the least recently used evicted first.
  */
 export const CARRY_MEMO_MAX_ANALYSES = 1_000;
+/**
+ * #2133 — the carried-answer judgings remembered per analysis, the oldest
+ * forgotten first: a forgotten one costs one more carried call, never a question.
+ */
+export const CARRY_MEMO_MAX_KEYS = 1_000;
 
 /** The rule text a question is checked against and phrased from. */
 export interface QuestionRule {
@@ -925,15 +930,18 @@ export function carryCandidates(
  *
  * #2126 — the calls run {@link CARRY_CONCURRENCY} at a time. With `judged`,
  * a candidate already judged against the same answers (a readable reply,
- * whatever it decided) is not sent again, and each one judged now is added:
- * a retry of the same answers costs no carried call.
+ * whatever it decided) is not sent again: a retry of the same answers costs no
+ * carried call. #2133 — each one judged now is added to `judgedNow`, for the
+ * caller to remember only once what it settled is written: a failed write is
+ * no judging to skip next time.
  */
 export async function carryAnswersOver(
   answered: readonly ClarifyingQuestion[],
   stored: GoverningAnalysisApplicability,
   rules: ReadonlyMap<string, ApplicabilityRule>,
   deps: BuildGoverningQuestionsDeps,
-  judged?: Set<string>,
+  judged?: ReadonlySet<string>,
+  judgedNow?: Set<string>,
 ): Promise<GoverningSettlementInput[]> {
   const given = answered.filter((q) => q.governing && q.answer?.trim());
   if (given.length === 0) return [];
@@ -990,7 +998,7 @@ export async function carryAnswersOver(
       });
       return out;
     }
-    judged?.add(key);
+    judgedNow?.add(key);
     for (const e of entries) {
       const d = decided.get(e.index);
       // #2126 — a carried answer can bring a rule in, never rule one out.
@@ -1106,7 +1114,8 @@ export interface GoverningQuestionSource {
    * any more, so it was never sent to the model at all. 0 when it settled
    * every one, or had none to judge. #2126 — the carry of the answers to the
    * analysis's other requirements (#2122) starts once these are committed and
-   * is not awaited: it never counts here, and `open` waits for it.
+   * is not awaited: it never counts here, and `open` waits for it (#2133: until
+   * its signal aborts).
    */
   settle(questions: readonly ClarifyingQuestion[], signal?: AbortSignal): Promise<number>;
 }
@@ -1231,14 +1240,13 @@ export function governingQuestionSourceFor(input: {
         const candidates = carryCandidates(answered, stored);
         if (candidates.length === 0) return;
         const rules = await rulesFor(candidates.flatMap((c) => c.ruleIds));
-        const carried = await carryAnswersOver(
-          answered,
-          stored,
-          rules,
-          deps(),
-          carryMemoFor(analysisId),
-        );
+        const memo = carryMemoFor(analysisId);
+        const judgedNow = new Set<string>();
+        const carried = await carryAnswersOver(answered, stored, rules, deps(), memo, judgedNow);
         const applied = carried.length > 0 ? await settleGoverningPairs(analysisId, carried) : [];
+        // #2133 — remembered once what they settled is written: a write that
+        // throws leaves them to be judged again by the next carry.
+        rememberCarried(memo, judgedNow);
         log.info("governing answers carried", {
           analysisId,
           candidates: candidates.length,
@@ -1261,7 +1269,8 @@ export function governingQuestionSourceFor(input: {
     async open(state, signal) {
       if (input.provider.offline) return [];
       // #2126 — a carry still running may settle a pair this round would ask.
-      await governingCarriesSettled(input.analysisId);
+      // #2133 — a client that goes away stops waiting; the carry runs on.
+      await untilAborted(governingCarriesSettled(input.analysisId), signal);
       const stored = await readGoverningApplicability(input.analysisId);
       if (!stored) return [];
       // #2059 — and the questions of Needs BA input findings on rules that apply;
@@ -1331,8 +1340,10 @@ const carriesInFlight = new Map<string, Promise<void>>();
 /**
  * #2126 — the carried judgings already made per analysis ({@link carryAnswersOver}'s
  * `judged`), so an orphan retry with the same answers sends none of them
- * again. Process local and bounded at {@link CARRY_MEMO_MAX_ANALYSES}; a
- * restart costs one more carried call per candidate, never a question.
+ * again. Process local and bounded at {@link CARRY_MEMO_MAX_ANALYSES}, each
+ * holding at most {@link CARRY_MEMO_MAX_KEYS} (#2133); a restart costs one more
+ * carried call per candidate, never a question. A judging is remembered only
+ * once what it settled is written (#2133).
  */
 const carryMemo = new Map<string, Set<string>>();
 
@@ -1345,6 +1356,36 @@ function carryMemoFor(analysisId: string): Set<string> {
     carryMemo.delete(carryMemo.keys().next().value!);
   }
   return judged;
+}
+
+/**
+ * #2133 — add `keys` to an analysis's memo, forgetting its oldest judgings
+ * past {@link CARRY_MEMO_MAX_KEYS}. Exported for its unit test.
+ */
+export function rememberCarried(memo: Set<string>, keys: Iterable<string>): void {
+  for (const key of keys) {
+    // Re-inserted, so the set's order is the order of last judging.
+    memo.delete(key);
+    memo.add(key);
+    if (memo.size > CARRY_MEMO_MAX_KEYS) memo.delete(memo.values().next().value!);
+  }
+}
+
+/**
+ * #2133 — `waited`, or a rejection with the signal's reason once `signal`
+ * aborts, whichever comes first. `waited` itself is never cancelled.
+ */
+function untilAborted(waited: Promise<void>, signal: AbortSignal | undefined): Promise<void> {
+  if (!signal) return waited;
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<void>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    void waited.then(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    });
+  });
 }
 
 /**

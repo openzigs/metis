@@ -18,6 +18,7 @@ vi.mock("../prisma.js", () => ({ prisma: db, resolveDatabaseProvider: () => "sql
 
 const {
   CARRY_CONCURRENCY,
+  CARRY_MEMO_MAX_KEYS,
   GOVERNING_QUESTION_FIELD,
   answersForApplyingPairs,
   buildGoverningQuestions,
@@ -30,6 +31,7 @@ const {
   openGoverningPairs,
   questionLeaksRule,
   rejudgeAnswered,
+  rememberCarried,
   templateGoverningQuestion,
 } = await import("./applicability-questions.js");
 const { FALLBACK_FINDING_QUESTION } = await import("./findings.js");
@@ -1236,13 +1238,13 @@ describe("#2122 — carryAnswersOver: an answer is judged onto the other require
       judge: () => ({ decisions: [{ rule: "R1", verdict: "uncertain", reason: "?" }] }),
     });
     vi.mocked(failing.chat).mockRejectedValueOnce(new Error("rate limited"));
-    await carryAnswersOver(answered, stored, rules, failing, judged);
+    await carryAnswersOver(answered, stored, rules, failing, judged, judged);
     // The first candidate's call failed, so only the second is remembered.
     expect(judged.size).toBe(1);
     const again = stubModel({
       judge: () => ({ decisions: [{ rule: "R1", verdict: "applies", reason: "y", answer: "A1" }] }),
     });
-    const got = await carryAnswersOver(answered, stored, rules, again, judged);
+    const got = await carryAnswersOver(answered, stored, rules, again, judged, judged);
     expect(again.sent).toHaveLength(1);
     expect(again.sent[0]!.user).toContain(REQ.text);
     expect(got.map((s) => s.requirementId)).toEqual([REQ.id]);
@@ -1251,11 +1253,39 @@ describe("#2122 — carryAnswersOver: an answer is judged onto the other require
     const third = stubModel({
       judge: () => ({ decisions: [{ rule: "R1", verdict: "uncertain", reason: "?" }] }),
     });
-    expect(await carryAnswersOver(answered, stored, rules, third, judged)).toEqual([]);
+    expect(await carryAnswersOver(answered, stored, rules, third, judged, judged)).toEqual([]);
     expect(third.chat).not.toHaveBeenCalled();
     // A changed answer is a new judging.
-    await carryAnswersOver([q("q1", [CARD.id], "No.")], stored, rules, third, judged);
+    await carryAnswersOver([q("q1", [CARD.id], "No.")], stored, rules, third, judged, judged);
     expect(third.chat).toHaveBeenCalledTimes(2);
+  });
+
+  it("#2133 — what is judged now is reported apart, and the memo it skips by is left alone", async () => {
+    const answered = [q("q1", [CARD.id], "Yes.")];
+    const skip = new Set<string>();
+    const judgedNow = new Set<string>();
+    const model = stubModel({
+      judge: () => ({ decisions: [{ rule: "R1", verdict: "applies", reason: "y", answer: "A1" }] }),
+    });
+    const got = await carryAnswersOver(answered, stored, rules, model, skip, judgedNow);
+    expect(got).toHaveLength(2);
+    expect(judgedNow.size).toBe(2);
+    expect(skip.size).toBe(0);
+  });
+
+  it("#2133 — the memo of one analysis keeps at most CARRY_MEMO_MAX_KEYS judgings, the oldest forgotten first", () => {
+    const memo = new Set<string>();
+    rememberCarried(
+      memo,
+      Array.from({ length: CARRY_MEMO_MAX_KEYS }, (_, i) => `k${i}`),
+    );
+    expect(memo.size).toBe(CARRY_MEMO_MAX_KEYS);
+    // k0 judged again is the newest, so k1 is the oldest when one more arrives.
+    rememberCarried(memo, ["k0", "new"]);
+    expect(memo.size).toBe(CARRY_MEMO_MAX_KEYS);
+    expect(memo.has("k0")).toBe(true);
+    expect(memo.has("k1")).toBe(false);
+    expect(memo.has("new")).toBe(true);
   });
 
   it("#2126 — at most CARRY_CONCURRENCY calls are in flight, and the results keep the candidates' order", async () => {
