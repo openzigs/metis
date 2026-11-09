@@ -521,7 +521,7 @@ describe("GoverningFindingsPanel (#1876)", () => {
       }),
     );
     expect(screen.getByTestId("governing-summary-sentence").textContent).toBe(
-      "1 gap found against 3 of 40 applicable rules in Information Handling Policy v3; 1 rule needs BA input. Not an audit opinion.",
+      "3 of 40 rules in Information Handling Policy v3 apply. 1 gap found; 1 rule needs BA input. Not an audit opinion.",
     );
     // innerText is not in jsdom; read each text node on its own so adjacent
     // elements cannot join into, or split, a phrase.
@@ -824,12 +824,12 @@ describe("governingSummarySentences", () => {
       {
         revisionId: "rev-1",
         sentence:
-          "1 gap found against 2 of 12 applicable rules in Information Handling Policy v3; 1 rule needs BA input. Not an audit opinion.",
+          "2 of 12 rules in Information Handling Policy v3 apply. 1 gap found; 1 rule needs BA input. Not an audit opinion.",
       },
       {
         revisionId: "rev-9",
         sentence:
-          "No gaps found against 1 of 1 applicable rule in Retention Standard v1. Not an audit opinion.",
+          "1 of 1 rule in Retention Standard v1 applies. No gaps found. Not an audit opinion.",
       },
     ]);
   });
@@ -846,7 +846,7 @@ describe("governingSummarySentences", () => {
     ).toEqual([
       {
         revisionId: "rev-1",
-        sentence: "No gaps found against 2 of 2 applicable rules in P v3. Not an audit opinion.",
+        sentence: "2 of 2 rules in P v3 apply. No gaps found. Not an audit opinion.",
       },
     ]);
   });

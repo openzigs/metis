@@ -231,13 +231,17 @@ function plural(count: number, one: string, many: string): string {
 }
 
 /**
- * The governing-findings summary sentence, e.g. "No gaps found against 12 of 40
- * applicable rules in Information Security Policy v3. Not an audit opinion."
+ * The governing-findings summary, e.g. "12 of 40 rules in Information Security
+ * Policy v3 apply. No gaps found. Not an audit opinion."
  *
  * "No gaps found" is said only when there are no gaps AND no rule still waits on
  * BA input; otherwise the gap count is stated. The title and revision label are
  * neutralised too, so a document named "SOC 2 Compliant Controls" cannot carry a
  * claim into the sentence.
+ *
+ * #2122 — the rule count and the gap count are two sentences. "4 gaps found
+ * against 5 of 26 applicable rules" read as five rules with gaps, where a gap
+ * is one requirement short of one rule and five was every rule that applied.
  */
 export function governingSummarySentence(input: {
   applicable: number;
@@ -254,10 +258,12 @@ export function governingSummarySentence(input: {
     .map(stripBareCompliant)
     .join(" ");
   const where = document ? ` in ${document}` : "";
-  const scope = `against ${applicable} of ${total} applicable ${total === 1 ? "rule" : "rules"}${where}`;
+  const scope = `${applicable} of ${total} ${total === 1 ? "rule" : "rules"}${where} ${
+    applicable === 1 ? "applies" : "apply"
+  }.`;
   if (gaps === 0 && needsInput === 0) {
-    return `No gaps found ${scope}. ${GOVERNING_AUDIT_DISCLAIMER}`;
+    return `${scope} No gaps found. ${GOVERNING_AUDIT_DISCLAIMER}`;
   }
   const open = needsInput > 0 ? `; ${plural(needsInput, "rule needs", "rules need")} BA input` : "";
-  return `${plural(gaps, "gap", "gaps")} found ${scope}${open}. ${GOVERNING_AUDIT_DISCLAIMER}`;
+  return `${scope} ${plural(gaps, "gap", "gaps")} found${open}. ${GOVERNING_AUDIT_DISCLAIMER}`;
 }

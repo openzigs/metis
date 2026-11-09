@@ -188,25 +188,19 @@ export function ClarificationDialogPanel({
   const currentRound = state.rounds[state.rounds.length - 1];
   const questions = currentRound?.questions ?? [];
 
-  // Self-resolution: pre-fill grounded/partial questions with the server's
-  // suggested answer so the human confirms (or edits) rather than re-typing.
-  // Open questions start blank. Keyed on the question set so a new round/state
-  // re-seeds the pre-filled answers.
+  // Self-resolution: a grounded/partial question OFFERS the server's suggested
+  // answer beside its box; it is never filled in. #2122 — pre-filled boxes read
+  // "9 of 28 answered" before the BA typed anything, and Submit sent every one:
+  // a wrong suggestion submitted by accident settled a governing finding. A box
+  // holds only what the user typed, accepted or submitted before.
   const seedAnswers = (): Record<string, string> => {
     const seed: Record<string, string> = {};
     const submitted = new Map((currentRound?.answers ?? []).map((a) => [a.questionId, a.answer]));
     for (const q of questions) {
-      // Issue #1104 (finding C) — an answer the user already submitted wins over
-      // the grounded suggestion; re-opening a round must never blank their work.
+      // Issue #1104 (finding C) — an answer the user already submitted is kept;
+      // re-opening a round must never blank their work.
       const prior = q.answer ?? submitted.get(q.id);
-      if (prior) {
-        seed[q.id] = prior;
-      } else if (
-        (q.groundingStatus === "grounded" || q.groundingStatus === "partial") &&
-        q.groundedAnswer
-      ) {
-        seed[q.id] = q.groundedAnswer;
-      }
+      if (prior) seed[q.id] = prior;
     }
     return seed;
   };
@@ -261,7 +255,10 @@ export function ClarificationDialogPanel({
       analysisApi.submitClarifyAnswers(
         projectId,
         analysisId,
-        Object.entries(answers).map(([questionId, answer]) => ({ questionId, answer })),
+        // #2122 — only the boxes the user filled: a blank box is no answer.
+        Object.entries(answers)
+          .filter(([, answer]) => answer.trim().length > 0)
+          .map(([questionId, answer]) => ({ questionId, answer })),
       ),
     successMessage: (result) =>
       result.state?.completed ? "Clarification complete" : "Answers submitted",
@@ -467,7 +464,11 @@ export function ClarificationDialogPanel({
               className="scroll-mt-4 rounded border border-border p-3"
               data-testid={isSelfResolved ? "grounded-question" : "open-question"}
             >
-              <Label htmlFor={`clarify-answer-${q.id}`} className="mb-1 block text-sm font-medium">
+              <Label
+                htmlFor={`clarify-answer-${q.id}`}
+                id={`clarify-label-${q.id}`}
+                className="mb-1 block text-sm font-medium"
+              >
                 {q.question}
               </Label>
               {q.context && <p className="mb-2 text-xs text-muted-foreground">{q.context}</p>}
@@ -490,8 +491,8 @@ export function ClarificationDialogPanel({
                     data-testid="grounding-badge"
                   >
                     {grounded
-                      ? "Answered from project knowledge — confirm or edit"
-                      : "Partially answered — review and complete"}
+                      ? "Suggested from project knowledge — not answered until you use it"
+                      : "Partly suggested from project knowledge — review before you use it"}
                   </span>
                   {sources.length > 0 && (
                     // #427 — render human-readable source labels (basename — repo)
@@ -505,13 +506,31 @@ export function ClarificationDialogPanel({
                       Suggested answer (from {sources.map((s) => s.label).join(", ")})
                     </p>
                   )}
+                  {q.groundedAnswer && (
+                    <div className="flex items-start justify-between gap-2 rounded bg-muted px-2 py-1">
+                      <p className="text-xs text-foreground" data-testid="suggested-answer">
+                        {q.groundedAnswer}
+                      </p>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        aria-describedby={`clarify-label-${q.id}`}
+                        onClick={() =>
+                          setAnswers((prev) => ({ ...prev, [q.id]: q.groundedAnswer ?? "" }))
+                        }
+                      >
+                        Use suggested answer
+                      </Button>
+                    </div>
+                  )}
                 </div>
               )}
 
               <Input
                 id={`clarify-answer-${q.id}`}
                 placeholder={
-                  isSelfResolved ? "Confirm or edit the suggested answer…" : "Your answer..."
+                  isSelfResolved ? "Your answer, or use the suggestion above…" : "Your answer..."
                 }
                 value={answers[q.id] ?? ""}
                 onChange={(e) => setAnswers((prev) => ({ ...prev, [q.id]: e.target.value }))}
@@ -529,7 +548,7 @@ export function ClarificationDialogPanel({
         </p>
         <Button
           onClick={() => submitMutation.mutate()}
-          disabled={submitMutation.isPending || Object.values(answers).filter(Boolean).length === 0}
+          disabled={submitMutation.isPending || answeredCount === 0}
         >
           {submitMutation.isPending ? "Submitting…" : "Submit Answers"}
         </Button>

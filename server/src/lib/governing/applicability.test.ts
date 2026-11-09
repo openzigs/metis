@@ -40,7 +40,9 @@ const {
   GOVERNING_ANALYSIS_ACTOR,
   GOVERNING_RULES_UNAVAILABLE,
   ANSWER_NOTE,
+  CARRIED_ANSWER_NOTE,
   buildApplicabilityJudgePrompt,
+  nameHandles,
   governingApplicabilityHookFor,
   planScreenBatches,
   SCREEN_ROOM_MAX_SHRINK,
@@ -934,6 +936,66 @@ describe("reply parsing", () => {
       readable: false,
       decisions: new Map(),
     });
+  });
+});
+
+describe("#2122 — carried answers and rule handles", () => {
+  const entries = applicabilityEntries([AUDIT, ENCRYPT]);
+
+  it("a carried-answer judging gets CARRIED_ANSWER_NOTE instead of ANSWER_NOTE, before the reply format", () => {
+    const first = buildApplicabilityJudgePrompt(REQUIREMENT.text, []).systemMessage;
+    const carried = buildApplicabilityJudgePrompt(REQUIREMENT.text, [], {
+      answered: true,
+      carried: true,
+    }).systemMessage;
+    const lines = first.split("\n");
+    expect(carried).toBe([...lines.slice(0, -1), CARRIED_ANSWER_NOTE, lines.at(-1)!].join("\n"));
+    expect(carried).not.toContain(ANSWER_NOTE);
+    expect(CARRIED_ANSWER_NOTE).toContain("Never carry a fact about one requirement's own data");
+    expect(CARRIED_ANSWER_NOTE).toContain('add "answer":"A1" to its decision');
+    // The same rules on applying versus being met as the settle judge's.
+    expect(CARRIED_ANSWER_NOTE).toContain(
+      "A safeguard being in place is never a reason to decide does-not-apply.",
+    );
+  });
+
+  it("a judging reply keeps the answer handle it names, and only then", () => {
+    const got = parseApplicabilityJudgeReply(
+      JSON.stringify({
+        decisions: [
+          { rule: "R1", verdict: "applies", reason: "y", answer: " A2 " },
+          { rule: "R2", verdict: "applies", reason: "y", answer: 3 },
+        ],
+      }),
+      entries,
+    );
+    expect(got.decisions.get(0)).toEqual({ verdict: "applies", reason: "y", answer: "A2" });
+    expect(got.decisions.get(1)).toEqual({ verdict: "applies", reason: "y" });
+  });
+
+  it("a reason's handles read as 'this rule' for its own rule and the control id for another", () => {
+    const got = parseApplicabilityJudgeReply(
+      JSON.stringify({
+        decisions: [
+          { rule: "R1", verdict: "applies", reason: "R1 applies, unlike [R2]; R9 is unknown." },
+        ],
+      }),
+      entries,
+    );
+    expect(got.decisions.get(0)?.reason).toBe(
+      `This rule applies, unlike ${ENCRYPT.controlId}; R9 is unknown.`,
+    );
+  });
+
+  it("nameHandles capitalises only at a sentence start and leaves words that merely contain a handle", () => {
+    const own = entries[0]!;
+    expect(nameHandles("Whether R1 is met depends on R2.", own, entries)).toBe(
+      `Whether this rule is met depends on ${ENCRYPT.controlId}.`,
+    );
+    expect(nameHandles("Met. R1 holds: R1 again. R10 and AR1 stay.", own, entries)).toBe(
+      "Met. This rule holds: This rule again. R10 and AR1 stay.",
+    );
+    expect(nameHandles("", own, entries)).toBe("");
   });
 });
 
