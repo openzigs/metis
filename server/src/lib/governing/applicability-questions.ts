@@ -364,7 +364,8 @@ function isRecord(v: unknown): v is Record<string, unknown> {
  * Merge `groups` (distinct facts of one requirement) that the model says ask
  * the same thing. A reply that cannot be read, or that leaves a fact out,
  * leaves those facts as their own questions: a merge is an economy, never a
- * reason to drop a question.
+ * reason to drop a question. Only a group of two or more facts takes the
+ * model's wording; a fact left on its own is asked as it was written (#2066).
  */
 async function mergeFacts(
   requirementText: string,
@@ -402,7 +403,10 @@ async function mergeFacts(
     }
     if (members.length === 0) continue;
     merged.push({
-      text: entry.question.trim(),
+      // #2066 — a fact merged with no other keeps its own words: the prompt
+      // says to leave those as they are, and a reworded one has settled the
+      // other way on the same answer.
+      text: members.length === 1 ? groups[members[0]!]!.text : entry.question.trim(),
       pairs: members.flatMap((i) => groups[i]!.pairs),
     });
   }
