@@ -192,6 +192,10 @@ export interface GoverningArmReport {
   configuration: Record<string, string | number | boolean>;
   /** The metrics the arm fixes by construction, reported `n/a` (#1900). */
   byConstruction: ByConstruction;
+  /** #1878 — the production functions the arm called, in order; empty when it names none. */
+  codePath: string[];
+  /** #2033 — the arm replays the short-answer pairs' BA answers. */
+  replaysAnswers: boolean;
   /** Runs in which every requirement was assessed; only these are scored. */
   completedRuns: number;
   summary: MetricsSummary;
@@ -237,6 +241,8 @@ export interface GoverningReport {
     reviewedBy: string | null;
   };
   thresholds: GoverningCorpus["manifest"]["thresholds"];
+  /** #1878 — the code that produced the reading. */
+  provenance: GoverningProvenance;
   runsRequested: number;
   budgetUsd: number;
   spentUsd: number;
@@ -246,6 +252,16 @@ export interface GoverningReport {
   comparisons: ArmComparison[];
   detectableGap: string;
   screenPromptSizes: ScreenPromptSize[];
+}
+
+/** #1878 — the commit a reading ran at, and whether the tree had uncommitted changes. */
+export interface GoverningProvenance {
+  /** The HEAD commit; null when it could not be read. */
+  commit: string | null;
+  /** True when the working tree had a change; null when that could not be read. */
+  dirty: boolean | null;
+  /** #1878 — the invocations a combined reading was built from, in run order; empty for one. */
+  combinedFrom: string[];
 }
 
 export interface GoverningRunOptions {
@@ -261,6 +277,8 @@ export interface GoverningRunOptions {
   /** Milliseconds; a seam for tests. */
   now?: () => number;
   log?: (line: string) => void;
+  /** #1878 — the commit the run is at; recorded in the report. Default: unknown. */
+  provenance?: Pick<GoverningProvenance, "commit" | "dirty">;
 }
 
 function costOf(records: readonly ItemRunRecord[]): ArmCost {
@@ -421,15 +439,63 @@ export async function runGoverningEval(
   for (const recs of records.values()) {
     recs.sort((a, b) => a.run - b.run || order.get(a.itemId)! - order.get(b.itemId)!);
   }
+  return assembleGoverningReport(corpus, {
+    arms: opts.arms.map((arm) => ({ ...armMeta(arm), records: records.get(arm.id)! })),
+    runs: opts.runs,
+    budgetUsd: opts.budget.budgetUsd,
+    spentUsd: ledger.committedUsd(),
+    unpricedCalls: ledger.unpricedCalls(),
+    stopped,
+    provenance: {
+      commit: opts.provenance?.commit ?? null,
+      dirty: opts.provenance?.dirty ?? null,
+      combinedFrom: [],
+    },
+  });
+}
 
+/** What a report says of an arm, apart from its records and scores. */
+type ArmMeta = Pick<
+  GoverningArmReport,
+  "id" | "label" | "configuration" | "byConstruction" | "codePath" | "replaysAnswers"
+>;
+
+function armMeta(arm: GoverningArm): ArmMeta {
+  return {
+    id: arm.id,
+    label: arm.label,
+    configuration: arm.configuration,
+    byConstruction: arm.byConstruction ?? {},
+    codePath: [...(arm.codePath ?? [])],
+    replaysAnswers: arm.replaysAnswers === true,
+  };
+}
+
+interface AssembleInput {
+  /** Each arm with its records, sorted by run then item order. */
+  arms: Array<ArmMeta & { records: ItemRunRecord[] }>;
+  runs: number;
+  budgetUsd: number;
+  spentUsd: number;
+  unpricedCalls: number;
+  stopped: GoverningReport["stopped"];
+  provenance: GoverningProvenance;
+}
+
+/**
+ * Score every arm's records against the corpus and build the report. Only runs
+ * in which every requirement was assessed are scored.
+ */
+function assembleGoverningReport(corpus: GoverningCorpus, input: AssembleInput): GoverningReport {
+  const items = corpus.manifest.items;
   const scored = new Map<string, ItemScore[][]>();
   // #2041 — the set's own count, so a run-less arm does not read as a set without them.
   const shortPairs = items.reduce((n, item) => n + shortAnswerPairs(item).length, 0);
-  const arms: GoverningArmReport[] = opts.arms.map((arm) => {
-    const recs = records.get(arm.id)!;
+  const arms: GoverningArmReport[] = input.arms.map((arm) => {
+    const recs = arm.records;
     const runsScored: ItemScore[][] = [];
     const answeredRuns: ReturnType<typeof scoreAnswered>["counts"][][] = [];
-    for (let run = 1; run <= opts.runs; run++) {
+    for (let run = 1; run <= input.runs; run++) {
       const inRun = recs.filter((r) => r.run === run);
       if (inRun.length !== items.length) break;
       runsScored.push(items.map((item, i) => scoreItem(corpus, item, inRun[i]!)));
@@ -442,15 +508,11 @@ export async function runGoverningEval(
     }
     scored.set(arm.id, runsScored);
     const summary = summarizeRuns(runsScored);
-    const byConstruction = arm.byConstruction ?? {};
     return {
-      id: arm.id,
-      label: arm.label,
-      configuration: arm.configuration,
-      byConstruction,
+      ...arm,
       completedRuns: runsScored.length,
       summary,
-      thresholds: checkThresholds(summary, corpus.manifest.thresholds, byConstruction),
+      thresholds: checkThresholds(summary, corpus.manifest.thresholds, arm.byConstruction),
       cost: costOf(recs),
       failures: recs.filter((r) => r.error !== undefined).length,
       shortAnswers: arm.replaysAnswers ? summarizeAnswered(answeredRuns, {}, shortPairs) : null,
@@ -470,16 +532,129 @@ export async function runGoverningEval(
       reviewedBy: corpus.manifest.annotation.reviewedBy,
     },
     thresholds: corpus.manifest.thresholds,
-    runsRequested: opts.runs,
-    budgetUsd: opts.budget.budgetUsd,
-    spentUsd: ledger.committedUsd(),
-    unpricedCalls: ledger.unpricedCalls(),
-    stopped,
+    provenance: input.provenance,
+    runsRequested: input.runs,
+    budgetUsd: input.budgetUsd,
+    spentUsd: input.spentUsd,
+    unpricedCalls: input.unpricedCalls,
+    stopped: input.stopped,
     arms,
     comparisons: compareWithA0(scored),
     detectableGap: minimumDetectableGapStatement(items.filter((i) => i.applies.length > 0).length),
     screenPromptSizes: measureScreenPromptSizes(corpus, SCREEN_SIZE_RULE_COUNTS),
   };
+}
+
+/** One invocation's report, as {@link toJsonReport} wrote it, and where it was read from. */
+export interface SavedGoverningReport {
+  source: string;
+  report: unknown;
+}
+
+/** A saved run's records, renumbered to `run`, with the scores `toJsonReport` left out. */
+function savedRecords(
+  corpus: GoverningCorpus,
+  arm: ArmMeta,
+  raw: readonly ItemRunRecord[],
+  run: number,
+): ItemRunRecord[] {
+  const byId = new Map(corpus.manifest.items.map((i) => [i.id, i]));
+  return raw.map((r) => {
+    const item = byId.get(r.itemId);
+    if (!item) throw new Error(`a record for ${r.itemId}, which is not in ${corpus.name}`);
+    return {
+      ...r,
+      run,
+      pairs: scoreItem(corpus, item, { judgements: r.judgements }).pairs,
+      ...(arm.replaysAnswers && shortAnswerPairs(item).length > 0
+        ? { answeredPairs: scoreAnswered(item, r.answered, r.error !== undefined).pairs }
+        : {}),
+    };
+  });
+}
+
+/** The arms of a report as a comparable string: ids, configuration and code path. */
+function armsKey(r: GoverningReport): string {
+  return JSON.stringify(r.arms.map((a) => [a.id, a.configuration, a.codePath ?? []]));
+}
+
+/** Why `r` cannot be combined into a reading of `corpus` beside `first`, or null when it can. */
+function combineRefusal(
+  corpus: GoverningCorpus,
+  r: GoverningReport,
+  first: GoverningReport,
+): string | null {
+  if (r.corpus?.id !== corpus.name) return `it read ${String(r.corpus?.id)}, not ${corpus.name}`;
+  if (r.corpus.contentHash !== (corpus.manifest.contentHash?.value ?? null)) {
+    return `it read another content hash of ${corpus.name}`;
+  }
+  if (r.stopped) return `it stopped early (${r.stopped.reason})`;
+  if (!r.provenance?.commit) return "it records no commit";
+  if (r.provenance.dirty !== false) {
+    return "it ran with uncommitted changes, so no commit names its code";
+  }
+  if (r.provenance.commit !== first.provenance.commit) {
+    return `it ran at ${r.provenance.commit}, not ${first.provenance.commit}`;
+  }
+  if (armsKey(r) !== armsKey(first))
+    return "it ran other arms, or the same arms configured otherwise";
+  return null;
+}
+
+/**
+ * #1878 — one reading from several invocations of the same arms on the same
+ * set at the same commit: three runs cannot finish inside one ten-minute
+ * command (#2038), so a decision reading is three `--runs 1` invocations,
+ * combined here. Each invocation's completed runs are renumbered in order and
+ * scored afresh against the corpus. Refused when the invocations differ in
+ * set, content hash, commit, arms or their configuration, when one stopped
+ * early, or when one ran with uncommitted changes: a reading must name the
+ * code that produced it.
+ */
+export function combineGoverningReports(
+  corpus: GoverningCorpus,
+  saved: readonly SavedGoverningReport[],
+): GoverningReport {
+  if (saved.length === 0) throw new Error("nothing to combine");
+  const reports = saved.map((s) => s.report as GoverningReport);
+  const first = reports[0]!;
+  saved.forEach((s, i) => {
+    const why = combineRefusal(corpus, reports[i]!, first);
+    if (why !== null) throw new Error(`cannot combine ${s.source}: ${why}`);
+  });
+  const arms = first.arms.map((a) => ({
+    id: a.id,
+    label: a.label,
+    configuration: a.configuration,
+    byConstruction: a.byConstruction ?? {},
+    codePath: a.codePath ?? [],
+    replaysAnswers: a.replaysAnswers === true,
+    records: [] as ItemRunRecord[],
+  }));
+  let run = 0;
+  for (const r of reports) {
+    const completed = Math.min(...r.arms.map((a) => a.completedRuns));
+    for (let k = 1; k <= completed; k++) {
+      run++;
+      r.arms.forEach((a, i) => {
+        const raw = a.records.filter((x) => x.run === k);
+        arms[i]!.records.push(...savedRecords(corpus, arms[i]!, raw, run));
+      });
+    }
+  }
+  return assembleGoverningReport(corpus, {
+    arms,
+    runs: run,
+    budgetUsd: reports.reduce((s, r) => s + r.budgetUsd, 0),
+    spentUsd: reports.reduce((s, r) => s + r.spentUsd, 0),
+    unpricedCalls: reports.reduce((s, r) => s + r.unpricedCalls, 0),
+    stopped: null,
+    provenance: {
+      commit: first.provenance.commit,
+      dirty: false,
+      combinedFrom: saved.map((s) => s.source),
+    },
+  });
 }
 
 /**
@@ -618,11 +793,48 @@ export function setStatement(
   return "**tuning** (prompts are iterated on this set, so its numbers are not held-out evidence).";
 }
 
+/**
+ * #1878 — where a committed reading of `corpus` is written: beside the
+ * corpora, never inside one (a held-out set holds ground truth only, #2024).
+ * `name` is the file stem, `baseline-<arm>-<model>` (`baseline-A5-sonnet`).
+ */
+export function readingPaths(
+  repoRoot: string,
+  corpus: string,
+  name: string,
+): { json: string; md: string } {
+  if (!/^baseline-A\d+(?:-[a-z0-9]+)+$/.test(name)) {
+    throw new Error(
+      `a reading is named baseline-<arm>-<model>, e.g. baseline-A5-sonnet, not ${name}`,
+    );
+  }
+  if (!/^[a-z0-9-]+$/.test(corpus)) throw new Error(`not a corpus name: ${corpus}`);
+  const base = `${repoRoot}/eval-data/readings/${corpus}/${name}`;
+  return { json: `${base}.json`, md: `${base}.md` };
+}
+
+/** #1878 — the commit a reading ran at, in words, and what it was combined from. */
+export function provenanceStatement(p: GoverningProvenance): string {
+  const commit = p.commit ? `commit \`${p.commit}\`` : "**commit unknown**";
+  const tree =
+    p.dirty === false
+      ? "clean tree"
+      : p.dirty === true
+        ? "**uncommitted changes**, so the commit does not name the code"
+        : "tree state unknown";
+  const from =
+    p.combinedFrom.length > 0
+      ? `; combined from ${p.combinedFrom.length} invocations (${p.combinedFrom.map((f) => `\`${f}\``).join(", ")})`
+      : "";
+  return `${commit}, ${tree}${from}.`;
+}
+
 export function toMarkdownReport(report: GoverningReport): string {
   const lines: string[] = [];
   const c = report.corpus;
   lines.push(`# Governing-rules eval — \`${c.id}\``, "");
   lines.push(`Set: ${setStatement(c)}`, "");
+  lines.push(`Code: ${provenanceStatement(report.provenance)}`, "");
   lines.push(
     `Requirements: **${c.items}** · Rules: **${c.rules}** (\`${c.policy}\`, revision ${c.revision}) · ` +
       `Runs requested: **${report.runsRequested}** · Budget: **$${report.budgetUsd}** · ` +
@@ -753,6 +965,9 @@ export function toMarkdownReport(report: GoverningReport): string {
     for (const [k, v] of Object.entries(a.configuration)) lines.push(`| ${k} | ${String(v)} |`);
     const { missed, hardErrors } = misses(a);
     lines.push("");
+    if (a.codePath.length > 0) {
+      lines.push("Code path:", "", ...a.codePath.map((step, i) => `${i + 1}. ${step}`), "");
+    }
     lines.push(
       `Non-resembling pairs missed in every run: ${missed.length === 0 ? "none" : missed.join("; ")}.`,
       "",

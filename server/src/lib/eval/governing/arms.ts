@@ -24,6 +24,9 @@
  *     policy text, with the no-evidence rule enforced in code. #2033 — then,
  *     on a requirement with short-answer pairs, the BA's answers replayed
  *     ({@link replayAnswers}) and the findings after them returned apart.
+ *   - **A5 — the shipped path (#1878):** A4's applicability and findings, then
+ *     production's own clarification round: the questions production asks,
+ *     the BA's answers settled onto the rules, and the findings produced again.
  *
  * Retrieval is lexical (production's BM25 options over the committed text), so
  * every arm runs offline apart from its model calls. Arms are chosen only by
@@ -56,7 +59,13 @@ import {
   type ApplicabilitySet,
   type RuleApplicability,
 } from "../../governing/applicability.js";
-import { rejudgeAnswered } from "../../governing/applicability-questions.js";
+import {
+  buildGoverningQuestions,
+  openGoverningPairs,
+  rejudgeAnswered,
+  type QuestionRule,
+} from "../../governing/applicability-questions.js";
+import { applySettlements, toStoredApplicability } from "../../governing/applicability-store.js";
 import { locateClause } from "../../governing/clause-verify.js";
 import {
   evaluateRequirementFindings,
@@ -64,6 +73,7 @@ import {
   type FindingRule,
   type FindingsReport,
 } from "../../governing/findings.js";
+import { findingPairsOf } from "../../governing/findings-store.js";
 import { createInMemoryBM25 } from "../../rag/bm25-index.js";
 import { chunkMarkdown } from "../../rag/chunker.js";
 import {
@@ -71,6 +81,7 @@ import {
   ruleIdsIn,
   shortAnswerPairs,
   type GoverningCorpus,
+  type ShortAnswerPair,
   type GoverningItem,
   type GoverningRule,
   type GoverningVerdict,
@@ -80,6 +91,7 @@ import {
   citationVerified,
   stripRuleMarker,
   type AnsweredOutput,
+  type AnsweredQuestion,
   type ByConstruction,
   type GoverningArmOutput,
   type GoverningJudgement,
@@ -98,6 +110,11 @@ export interface GoverningArm {
    * findings after it (`answered`), so the report gives those pairs their own row.
    */
   replaysAnswers?: boolean;
+  /**
+   * #1878 — the production functions the arm calls, in order: recorded in the
+   * report, so a reading says which code produced it.
+   */
+  codePath?: readonly string[];
   assess(
     item: GoverningItem,
     corpus: GoverningCorpus,
@@ -122,7 +139,7 @@ export interface GoverningArmDeps {
 }
 
 /** The registered arms, in report order. */
-export const GOVERNING_ARM_IDS = ["A0", "A1", "A2", "A3", "A4"] as const;
+export const GOVERNING_ARM_IDS = ["A0", "A1", "A2", "A3", "A4", "A5"] as const;
 export type GoverningArmId = (typeof GOVERNING_ARM_IDS)[number];
 
 /** A1 / A2's default top-k over 40 rule summaries. */
@@ -887,12 +904,242 @@ export function createA4Arm(deps: GoverningArmDeps): GoverningArm {
   };
 }
 
+// ── A5 ─────────────────────────────────────────────────────────────────────
+
+/**
+ * #1878 — the corpus's rules as an analysis reads stored ones
+ * (`governingApplicabilityForProject`): each with the `source` the judge is
+ * shown, built as production builds it (document title, revision label,
+ * clause reference — the rule id stands in for the clause reference).
+ */
+export function shippedApplicabilityRules(
+  corpus: Pick<GoverningCorpus, "name" | "rules" | "manifest">,
+): ApplicabilityRule[] {
+  const where = `${corpus.manifest.policy.title} ${corpus.manifest.policy.scored}`;
+  return corpusApplicabilityRules(corpus).map((r) => ({ ...r, source: `${where} ${r.id}` }));
+}
+
+/** The production functions A5 calls, in the order an analysis and its dialog call them. */
+export const SHIPPED_CODE_PATH: readonly string[] = Object.freeze([
+  "governing/applicability.ts decideApplicability (#1872)",
+  "governing/applicability-store.ts toStoredApplicability",
+  "governing/findings-store.ts findingPairsOf + governing/findings.ts evaluateRequirementFindings (#1874)",
+  "governing/applicability-questions.ts openGoverningPairs + buildGoverningQuestions (#1873)",
+  "governing/applicability-questions.ts rejudgeAnswered + governing/applicability-store.ts applySettlements (#1873)",
+  "governing/findings-store.ts findingPairsOf + governing/findings.ts evaluateRequirementFindings (the refresh after an answer)",
+]);
+
+type StoredRequirement = GoverningAnalysisApplicability["requirements"][number];
+
+/** Production's findings pass over one stored requirement (`produceNow`, without the write). */
+async function shippedFindings(
+  requirement: StoredRequirement,
+  corpus: GoverningCorpus,
+  findingRules: ReadonlyMap<string, FindingRule>,
+  provider: AIProvider,
+): Promise<FindingsReport> {
+  const { pairs, answers } = findingPairsOf(requirement, findingRules);
+  return evaluateRequirementFindings({
+    requirement: { id: requirement.requirementId, text: requirement.text },
+    answers,
+    pairs,
+    revisionText: () => corpus.policyText,
+    provider,
+  });
+}
+
+/**
+ * A5 — the shipped path (#1878): what an analysis and its clarification dialog
+ * run, end to end, through production's own functions ({@link SHIPPED_CODE_PATH}):
+ *
+ *   1. applicability (`decideApplicability`), stored as the analysis stores it;
+ *   2. findings over every pair that applies or may apply (`findingPairsOf`,
+ *      `evaluateRequirementFindings`) — the reading before any answer;
+ *   3. on a requirement with short-answer pairs, the dialog: production asks
+ *      the questions it would ask (`openGoverningPairs`, `buildGoverningQuestions`),
+ *      the BA answers each question that links a rule with a recorded
+ *      `baAnswer` (the others go unanswered), the answers are settled
+ *      (`rejudgeAnswered`, `applySettlements`), and, when a settlement
+ *      applied, the requirement's findings are produced again with the
+ *      settled answers — production's refresh after an answer.
+ *
+ * Unlike A4's replay, the question the BA answers is production's, not the
+ * corpus's `businessFact`, and an answer reaches the findings call only
+ * through a settlement, as in production. So a short-answer pair whose rule
+ * already applied before the answer is never asked, and its finding after the
+ * "answer" is the refresh's (or the first reading's).
+ *
+ * Top-k is the lexical search A1 to A4 use, standing in for the workspace's
+ * vector index (`governingIndexRetriever`); nothing is written to a database.
+ */
+export function createA5Arm(deps: GoverningArmDeps): GoverningArm {
+  const topK = deps.topK ?? DEFAULT_RULE_TOP_K;
+  return {
+    id: "A5",
+    label: "A5 — the shipped path: applicability, findings, the BA's questions and the refresh",
+    replaysAnswers: true,
+    codePath: SHIPPED_CODE_PATH,
+    configuration: {
+      searcher:
+        "production BM25 options (createInMemoryBM25) over rule id + summary, standing in for governingIndexRetriever",
+      topK,
+      applicability: "decideApplicability, rules with production's source line",
+      findings:
+        "findingPairsOf + evaluateRequirementFindings, as produceGoverningFindingsForAnalysis",
+      questions: "openGoverningPairs + buildGoverningQuestions: production's question text",
+      answers:
+        "a question linking a rule with a baAnswer is given that answer; rejudgeAnswered + applySettlements; findings produced again when a settlement applied",
+      reading: "readFindings: status as verdict, the verified clause as citation",
+      model: deps.model,
+    },
+    async assess(item, corpus, { provider }) {
+      const text = requirementText(item);
+      const rules = shippedApplicabilityRules(corpus);
+      const set = await decideApplicability({
+        requirement: { id: item.id, text },
+        rules,
+        provider,
+        retrieve: async (query, k) => topKRules(corpus, query, k).map((r) => r.id),
+        topK,
+      });
+      const stored = toStoredApplicability([
+        { requirementId: item.id, text, chunks: [], governing: set },
+      ]);
+      const requirement = stored.requirements[0]!;
+      const findingRules = corpusFindingRules(corpus);
+      // decideApplicability throws rather than return an undecided set, and
+      // the runner scores a throw as a failure.
+      const report = await shippedFindings(requirement, corpus, findingRules, provider);
+      const out: GoverningArmOutput = {
+        ...readFindings(report),
+        diagnostics: {
+          candidates: set.candidates,
+          applicable: report.findings.length,
+          unverifiedCitations: report.unverifiedCitations,
+          noEvidenceDemoted: report.noEvidenceDemoted,
+        },
+      };
+      const short = shortAnswerPairs(item);
+      if (short.length === 0) return out;
+      const dialog = await shippedDialog({
+        stored,
+        short,
+        rules,
+        corpus,
+        findingRules,
+        before: out.judgements,
+        provider,
+      });
+      return {
+        ...out,
+        answered: dialog.answered,
+        diagnostics: { ...out.diagnostics, ...dialog.diagnostics },
+      };
+    },
+  };
+}
+
+interface ShippedDialogInput {
+  stored: GoverningAnalysisApplicability;
+  short: readonly ShortAnswerPair[];
+  rules: readonly ApplicabilityRule[];
+  corpus: GoverningCorpus;
+  findingRules: ReadonlyMap<string, FindingRule>;
+  /** The findings before any answer: what stands when no settlement applied. */
+  before: readonly GoverningJudgement[];
+  provider: AIProvider;
+}
+
+/**
+ * #1878 — one round of production's clarification dialog for one requirement,
+ * with the BA answering from the corpus's `baAnswer`s. A question links one or
+ * more rules; it is answered with the `baAnswer` of the first rule it links
+ * that has one, and left unanswered otherwise. A short-answer pair whose rule
+ * was open and asked, but that the settle returned nothing for, is a settle
+ * failure (#2041). A throw is returned as `error`, so the reading before the
+ * answers is kept.
+ */
+export async function shippedDialog(
+  input: ShippedDialogInput,
+): Promise<{ answered: AnsweredOutput; diagnostics: Record<string, number> }> {
+  const { stored, short, provider } = input;
+  const answerOf = new Map(short.map((p) => [p.ruleId, p.answer]));
+  const diagnostics = {
+    questionsAsked: 0,
+    questionsAnswered: 0,
+    answersSettled: 0,
+    answersSettleFailed: 0,
+    findingsRefreshed: 0,
+    answeredNoEvidenceDemoted: 0,
+  };
+  try {
+    const open = openGoverningPairs(stored, undefined);
+    const byId = new Map(input.rules.map((r) => [r.id, r]));
+    const questionRules = new Map<string, QuestionRule>();
+    for (const p of open) {
+      const r = byId.get(p.ruleId);
+      if (r) questionRules.set(r.id, r);
+    }
+    const questions =
+      open.length === 0 ? [] : await buildGoverningQuestions(open, questionRules, { provider });
+    diagnostics.questionsAsked = questions.length;
+    const answered: ClarifyingQuestion[] = [];
+    const asked: AnsweredQuestion[] = [];
+    for (const q of questions) {
+      const ruleIds = q.governing?.ruleIds ?? [];
+      const answer = ruleIds.map((id) => answerOf.get(id)).find((a) => a !== undefined);
+      asked.push({ ruleIds: [...ruleIds], question: q.question, answer: answer ?? null });
+      if (answer !== undefined) answered.push({ ...q, answer });
+    }
+    diagnostics.questionsAnswered = answered.length;
+    const settlements =
+      answered.length === 0 ? [] : await rejudgeAnswered(answered, stored, byId, { provider });
+    const { next, applied } = applySettlements(stored, settlements);
+    diagnostics.answersSettled = applied.filter((s) => s.verdict !== "uncertain").length;
+    // An answered pair asked about but given no settlement: its settle failed.
+    const answeredRules = new Set(answered.flatMap((q) => q.governing?.ruleIds ?? []));
+    const settledBack = new Set(settlements.map((s) => s.ruleId));
+    const settleFailures = short
+      .map((p) => p.ruleId)
+      .filter((id) => answeredRules.has(id) && !settledBack.has(id));
+    diagnostics.answersSettleFailed = settleFailures.length;
+    let judgements: GoverningJudgement[] = [...input.before];
+    if (applied.length > 0) {
+      const requirement = next.requirements[0]!;
+      const report = await shippedFindings(requirement, input.corpus, input.findingRules, provider);
+      judgements = readFindings(report).judgements;
+      diagnostics.findingsRefreshed = 1;
+      diagnostics.answeredNoEvidenceDemoted = report.noEvidenceDemoted;
+    }
+    return {
+      answered: {
+        judgements,
+        questions: asked,
+        ...(settleFailures.length > 0 ? { settleFailures } : {}),
+      },
+      diagnostics,
+    };
+  } catch (err) {
+    return {
+      answered: {
+        judgements: [],
+        error: (err instanceof Error ? err.message : String(err))
+          .replace(/\s+/g, " ")
+          .trim()
+          .slice(0, 300),
+      },
+      diagnostics,
+    };
+  }
+}
+
 const FACTORIES: Record<GoverningArmId, (deps: GoverningArmDeps) => GoverningArm> = {
   A0: createA0Arm,
   A1: createA1Arm,
   A2: createA2Arm,
   A3: createA3Arm,
   A4: createA4Arm,
+  A5: createA5Arm,
 };
 
 /** `--arms A0,A2` → the ids, upper-cased, deduplicated, in report order. Default: A0. */
