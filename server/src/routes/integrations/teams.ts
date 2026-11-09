@@ -58,6 +58,7 @@ import {
   type TeamsNotificationTargetStore,
 } from "../../lib/teams/notification-target-store.js";
 import { canAccessThread } from "../../lib/discussions/access.js";
+import { recordChatIdentityBinding } from "../../lib/workspaces/chatops-identity-binding-notice.js";
 import { prisma } from "../../lib/prisma.js";
 
 const log = createChildLogger("teams-routes");
@@ -408,6 +409,8 @@ export function teamsIntegrationRouter(
   // Establishing/removing an identity binding is an administrative mapping
   // operation, so it requires workspace admin. The runtime resolver itself
   // (resolveUserFromAadObjectId) is consumed by later phases, not exposed here.
+  // #2089 — no MFA gate (owner decision), but never silent: every binding is
+  // audited and announced to the workspace owner and the bound member.
   r.post(
     "/workspaces/:workspaceId/identities",
     requireAuth,
@@ -450,6 +453,14 @@ export function teamsIntegrationRouter(
           "No active METIS user matches the supplied identity — sender left unmapped",
         );
       }
+      await recordChatIdentityBinding({
+        actorId: req.user?.userId ?? null,
+        workspaceId,
+        provider: "teams",
+        boundUserId: outcome.userId,
+        externalScope: body.tenantId,
+        externalId: body.aadObjectId,
+      });
       res
         .status(201)
         .json(

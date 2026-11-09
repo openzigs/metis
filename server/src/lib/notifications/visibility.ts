@@ -47,11 +47,17 @@ export const REDACTED_TYPE = "unavailable";
 
 /**
  * Notification types that are not about a project, shown to their recipient
- * with no project check. Empty: every type written today is about a project.
- * Adding one is a security decision — its title, message and link must name
- * nothing a former project member should not keep seeing.
+ * with no project check. Adding one is a security decision — its title, message
+ * and link must name nothing a former project member should not keep seeing.
+ *
+ * - `chat_identity_bound` (#2089): a chat account was bound to a workspace
+ *   member. It names the workspace, the member and the actor, all known to the
+ *   recipient (its owner, or the member themselves), no project and no link —
+ *   and the recipient keeps the record of who could act as them.
  */
-export const PROJECTLESS_NOTIFICATION_TYPES: ReadonlySet<string> = new Set<string>();
+export const PROJECTLESS_NOTIFICATION_TYPES: ReadonlySet<string> = new Set<string>([
+  "chat_identity_bound",
+]);
 
 /** The columns this module reads and rewrites on a stored notification. */
 export interface StoredNotification {
