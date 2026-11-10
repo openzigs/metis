@@ -4,12 +4,13 @@
  * (That METIS accepts and refuses what it sends is proven against the real
  * node-saml validator in server/tests/saml-entra-mock-idp-1553.sqlite.test.ts.)
  */
-import { deflateRawSync } from "node:zlib";
+import { deflateRawSync, inflateRawSync } from "node:zlib";
 import { SignedXml } from "xml-crypto";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   DEFAULT_PROFILE,
   ENTRA_CLAIM,
+  MAX_AUTHN_REQUEST_BYTES,
   MAX_FORM_BYTES,
   MAX_PICKER_NONCES,
   escapeXml,
@@ -210,6 +211,36 @@ describe("mock Entra SAML IdP (#1553) — sign-in", () => {
     expect(xml).toContain("<Audience>https://another-application.example/sp</Audience>");
   });
 
+  /** The two windows' end times in `xml`. */
+  const windowEnds = (/** @type {string} */ xml) => ({
+    subject: Date.parse(
+      /<SubjectConfirmationData [^>]*NotOnOrAfter="([^"]+)"/.exec(xml)?.[1] ?? "",
+    ),
+    conditions: Date.parse(/<Conditions [^>]*NotOnOrAfter="([^"]+)"/.exec(xml)?.[1] ?? ""),
+  });
+
+  // #1558 — each window closes alone, so one check's regression is not masked by the other.
+  it("expired: 'conditions' closes only the Conditions window, past the 30 s skew", async () => {
+    idp.setProfile({ expired: "conditions" });
+    const ends = windowEnds((await signIn()).xml);
+    expect(ends.conditions).toBeLessThan(Date.now() - 60_000);
+    expect(ends.subject).toBeGreaterThan(Date.now() + 60_000);
+  });
+
+  it("expired: 'subjectConfirmation' closes only the SubjectConfirmationData window", async () => {
+    idp.setProfile({ expired: "subjectConfirmation" });
+    const ends = windowEnds((await signIn()).xml);
+    expect(ends.subject).toBeLessThan(Date.now() - 60_000);
+    expect(ends.conditions).toBeGreaterThan(Date.now() + 60_000);
+  });
+
+  it("starts the Conditions window 5 minutes before IssueInstant, as Entra does (#1558)", async () => {
+    const { xml } = await signIn();
+    const issued = Date.parse(/<Assertion [^>]*IssueInstant="([^"]+)"/.exec(xml)?.[1] ?? "");
+    const notBefore = Date.parse(/<Conditions NotBefore="([^"]+)"/.exec(xml)?.[1] ?? "");
+    expect(issued - notBefore).toBe(5 * 60_000);
+  });
+
   it("an issuer override names another tenant in the Response and the assertion, signed with the same key (#1555)", async () => {
     const other = "https://sts.windows.net/0b1ec700-1555-4000-8000-0000000074e2/";
     idp.setProfile({ signing: "both", issuer: other });
@@ -290,6 +321,37 @@ describe("mock Entra SAML IdP (#1553) — refusals", () => {
 describe("helpers", () => {
   it("escapeXml escapes markup and quotes", () => {
     expect(escapeXml(`a&b<c>"d"`)).toBe("a&amp;b&lt;c&gt;&quot;d&quot;");
+  });
+
+  it("refuses a request that inflates past MAX_AUTHN_REQUEST_BYTES (#1558)", async () => {
+    // A well-formed request for this SP, padded past the cap: only the cap refuses it.
+    const request = Buffer.from(
+      inflateRawSync(Buffer.from(authnRequest(), "base64")).toString("utf8") +
+        `<!--${" ".repeat(MAX_AUTHN_REQUEST_BYTES)}-->`,
+      "utf8",
+    );
+    const bomb = deflateRawSync(request).toString("base64");
+    expect(bomb.length).toBeLessThan(2_000);
+    expect(() => readAuthnRequest(bomb)).toThrow(/maxOutputLength|buffer|larger/i);
+    const res = await fetch(`${idp.ssoUrl}?${new URLSearchParams({ SAMLRequest: bomb })}`);
+    expect(res.status).toBe(400);
+    expect(await res.text()).toMatch(/AADSTS7500529/);
+  });
+
+  it("serves an upper-case tenant id, on paths of any case (#1558)", async () => {
+    const upper = await startMockEntraSamlIdp({
+      spEntityId: SP,
+      acsUrl: ACS,
+      user: USER,
+      tenantId: "AB12CD34-1558-4000-8000-0000000000EF",
+    });
+    try {
+      expect((await fetch(upper.metadataUrl)).status).toBe(200);
+      expect((await fetch(upper.metadataUrl.toLowerCase())).status).toBe(200);
+      expect(upper.issuer).toBe("https://sts.windows.net/AB12CD34-1558-4000-8000-0000000000EF/");
+    } finally {
+      await upper.close();
+    }
   });
 
   it("readAuthnRequest refuses XML that is not an AuthnRequest", () => {
