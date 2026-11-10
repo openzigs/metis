@@ -40,6 +40,29 @@ const GATE_TEXT: Record<string, string> = {
   implementGate: "This feature has no tasks.md yet. Run /speckit.tasks on it first.",
 };
 
+/** #1583 — the command that writes each gate artifact, in the page's words. */
+const GATE_ARTIFACT_COMMAND: Record<string, string> = {
+  "spec.md": "Run /speckit.specify first.",
+  "plan.md": "Run /speckit.plan on it first.",
+  "tasks.md": "Run /speckit.tasks on it first.",
+};
+
+/**
+ * #1583 — the gate text naming every artifact the server says is missing
+ * (`details.missing`), with the command for the first. `null` when the server
+ * sent no usable list (an older server), so the per-gate text is used.
+ */
+function missingArtifactsText(missing: unknown): string | null {
+  if (!Array.isArray(missing) || missing.length === 0) return null;
+  if (!missing.every((m) => typeof m === "string" && GATE_ARTIFACT_COMMAND[m])) return null;
+  const names = missing as string[];
+  const list =
+    names.length === 1
+      ? names[0]
+      : `${names.slice(0, -1).join(", ")} or ${names[names.length - 1]}`;
+  return `This feature has no ${list} yet. ${GATE_ARTIFACT_COMMAND[names[0]!]}`;
+}
+
 /** Server codes whose message names API fields or legacy command names. */
 const CODE_TEXT: Record<string, string> = {
   SPEC_KIT_PLAN_NEEDS_SPEC: "There is no spec.md yet. Run /speckit.specify first.",
@@ -139,7 +162,9 @@ export function describeSpecKitError(err: unknown): string {
     return SPEC_KIT_FAILED;
   }
   if (err.code === "SPECKIT_GATE_UNMET") {
-    const details = err.details as { required?: unknown } | undefined;
+    const details = err.details as { required?: unknown; missing?: unknown } | undefined;
+    const missing = missingArtifactsText(details?.missing);
+    if (missing) return missing;
     const required = typeof details?.required === "string" ? details.required : "";
     if (GATE_TEXT[required]) return GATE_TEXT[required]!;
   }

@@ -47,6 +47,7 @@ import {
 } from "@/lib/spec-kit-jobs";
 import { useSocket } from "@/lib/socket-client";
 import { joinJobRoom } from "@/lib/job-rooms";
+import { claimTerminalToast, releaseTerminalToast } from "@/lib/terminal-toast";
 import { analysisApi } from "@/lib/analysis-api";
 import { queryKeys } from "@/lib/query-keys";
 import { Button } from "@/components/ui/button";
@@ -435,6 +436,14 @@ export default function SpecKitPage() {
   const followJob = (jobId: string, onEvent: () => void): (() => void) => {
     const live = socketRef.current;
     if (!live) return () => undefined;
+    // #1583 — the page announces this job's outcome itself (its callbacks, in
+    // its own words), so the app-wide terminal toast must not as well. Joining
+    // the job's room delivered its terminal event to that layer too: every
+    // command toasted twice, and a refused one (a phase gate) added the
+    // generic "The Spec Kit operation failed. Please try again." Claimed
+    // before joining, so a replayed terminal event finds it claimed. Given
+    // back when the page is left mid-job: the page then announces nothing.
+    const claimed = claimTerminalToast(jobId);
     const leave = joinJobRoom(live, jobId);
     const onLifecycle = (event: JobLifecycleEvent): void => {
       if (event.jobId === jobId) onEvent();
@@ -443,6 +452,7 @@ export default function SpecKitPage() {
     return () => {
       leave();
       live.off("job:lifecycle" as never, onLifecycle as never);
+      if (claimed && hasLeftPage()) releaseTerminalToast(jobId);
     };
   };
 

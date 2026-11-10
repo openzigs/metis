@@ -71,6 +71,7 @@ import {
   listFeatures,
   ensureLegacyFeature,
   kebab,
+  MAX_SLUG_WORDS_LENGTH,
   truncateAtWord,
   archiveFeature,
   restoreFeature,
@@ -106,20 +107,22 @@ describe("kebab", () => {
   it("returns 'feature' for empty input", () => {
     expect(kebab("###")).toBe("feature");
   });
-  it("truncates to 80 chars", () => {
+  it("truncates a single long word to MAX_SLUG_WORDS_LENGTH chars", () => {
     const long = "a".repeat(200);
-    expect(kebab(long).length).toBe(80);
+    expect(kebab(long).length).toBe(MAX_SLUG_WORDS_LENGTH);
+    expect(MAX_SLUG_WORDS_LENGTH).toBe(48);
   });
-  it("#786 — truncates at a word boundary, never mid-word", () => {
+  it("#786 / #1583 — truncates at a word boundary, never mid-word, and short", () => {
     const title =
       "Mark all entries as read older than N days (Miniflux #4478): let a user mark every entry";
     const slug = kebab(title);
-    expect(slug).toBe(
-      "mark-all-entries-as-read-older-than-n-days-miniflux-4478-let-a-user-mark-every",
-    );
-    expect(slug.length).toBeLessThanOrEqual(80);
+    // #1583 — the run-10 slugs were 60 to 72 characters.
+    expect(slug).toBe("mark-all-entries-as-read-older-than-n-days");
+    expect(slug.length).toBeLessThanOrEqual(MAX_SLUG_WORDS_LENGTH);
     // The walkthrough got `…-let-a-user-mark-eve`.
     expect(kebab(`${title} entry entry`)).toBe(slug);
+    // A title that fits is kept whole.
+    expect(kebab("Mark all entries as read older than N days")).toBe(slug);
   });
 });
 

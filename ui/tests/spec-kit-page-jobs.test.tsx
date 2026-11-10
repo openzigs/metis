@@ -111,6 +111,7 @@ import SpecKitPage from "@/app/(authed)/projects/[id]/spec-kit/page";
 import { ApiError } from "@/lib/api-client";
 import { loadWatchedJobs, rememberWatchedJob } from "@/lib/spec-kit-jobs";
 import { loadHandoff, saveHandoff } from "@/lib/spec-kit-display";
+import { __resetTerminalToastsForTests, fireTerminalToast } from "@/lib/terminal-toast";
 
 const m = specKitApi as unknown as Record<string, ReturnType<typeof vi.fn>>;
 const WRITER: AuthUser = {
@@ -144,6 +145,7 @@ const plant = (job: Partial<SpecKitJobDto> & { id: string }): void => {
 beforeEach(() => {
   window.sessionStorage.clear();
   server.jobs.clear();
+  __resetTerminalToastsForTests();
   routerReplace.mockReset();
   for (const fn of [toastSuccess, toastError, toastWarning]) fn.mockClear();
   for (const fn of Object.values(socket)) fn.mockReset();
@@ -270,6 +272,65 @@ describe("Spec Kit page — a command as a background job (#1059)", () => {
     // …and both are given up once the job is over.
     expect(socket.off).toHaveBeenCalledWith("job:lifecycle", listening[0]![1]);
     expect(socket.emit).toHaveBeenCalledWith("unsubscribe:job", { jobId: "job-1" });
+  });
+
+  describe("#1583 — one toast per command", () => {
+    /** The app-wide layer (`useGlobalJobToasts`) hearing the job's terminal event. */
+    const globalLayerHears = (status: "completed" | "failed"): boolean =>
+      fireTerminalToast({
+        kind: "spec-kit",
+        jobId: "job-1",
+        projectId: "p1",
+        status,
+        ...(status === "failed"
+          ? { error: "The Spec Kit operation failed. Please try again." }
+          : { message: "Generated tasks.md (v1)." }),
+        ts: Date.now(),
+      });
+
+    it("a refused command says why once, without the generic failure toast (d-S7-1)", async () => {
+      open();
+      await run("/speckit.tasks");
+      await waitFor(() => expect(progress()).toBeInTheDocument());
+      // The terminal event reaches the global layer through the job room the page joined.
+      expect(globalLayerHears("failed")).toBe(false);
+      patch("job-1", {
+        status: "failed",
+        error: {
+          status: 412,
+          code: "SPECKIT_GATE_UNMET",
+          message:
+            "plan.md and tasks.md are required — run /speckit.plan with this featureSlug first",
+          details: { required: "tasksGate", missing: ["plan.md", "tasks.md"] },
+        },
+      });
+      const text = "This feature has no plan.md or tasks.md yet. Run /speckit.plan on it first.";
+      await waitFor(() => expect(screen.getByTestId("spec-kit-error")).toHaveTextContent(text));
+      expect(toastError).toHaveBeenCalledTimes(1);
+      expect(toastError).toHaveBeenCalledWith(text);
+    });
+
+    it("a finished command toasts once (d-S4-2)", async () => {
+      open();
+      await run("/speckit.tasks");
+      await waitFor(() => expect(progress()).toBeInTheDocument());
+      patch("job-1", { status: "succeeded", result: { message: "Generated tasks.md (v1)." } });
+      await waitFor(() => expect(screen.getByTestId("spec-kit-result")).toBeInTheDocument());
+      expect(globalLayerHears("completed")).toBe(false);
+      expect(toastSuccess).toHaveBeenCalledTimes(1);
+    });
+
+    it("leaves the outcome to the global layer when the page is left mid-command", async () => {
+      const page = open();
+      await run("/speckit.tasks");
+      await waitFor(() => expect(progress()).toBeInTheDocument());
+      page.unmount();
+      await waitFor(() =>
+        expect(socket.emit).toHaveBeenCalledWith("unsubscribe:job", { jobId: "job-1" }),
+      );
+      expect(globalLayerHears("completed")).toBe(true);
+      expect(toastSuccess).toHaveBeenCalledWith("Generated tasks.md (v1).");
+    });
   });
 
   describe("re-attaching", () => {

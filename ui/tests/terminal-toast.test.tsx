@@ -20,6 +20,7 @@ import type { JobLifecycleEvent } from "@metis/shared";
 import {
   fireTerminalToast,
   claimTerminalToast,
+  releaseTerminalToast,
   terminalToastText,
   isTerminalJobStatus,
   isStaleReplay,
@@ -186,6 +187,25 @@ describe("claimTerminalToast", () => {
     expect(claimTerminalToast("claimed-3")).toBe(false);
     expect(claimTerminalToast(null)).toBe(false);
     expect(claimTerminalToast(undefined)).toBe(false);
+  });
+});
+
+describe("releaseTerminalToast (#1583)", () => {
+  it("gives a claimed job back, so the global layer toasts it", () => {
+    expect(claimTerminalToast("released-1")).toBe(true);
+    releaseTerminalToast("released-1");
+    expect(
+      fireTerminalToast(lifecycle({ jobId: "released-1", status: "completed", message: "x" })),
+    ).toBe(true);
+    expect(toast.success).toHaveBeenCalledTimes(1);
+    // Only once: the toast marked it again.
+    expect(
+      fireTerminalToast(lifecycle({ jobId: "released-1", status: "completed", message: "x" })),
+    ).toBe(false);
+    // Nothing to give back is not an error.
+    releaseTerminalToast(null);
+    releaseTerminalToast("never-claimed");
+    expect(claimTerminalToast("never-claimed")).toBe(true);
   });
 });
 

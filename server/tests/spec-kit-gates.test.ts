@@ -121,6 +121,31 @@ describe("requireGate", () => {
     ).rejects.toMatchObject({ status: 412, code: "SPECKIT_GATE_UNMET", required: "specGate" });
   });
 
+  it("#1583 — names every missing artifact, and the command for the first of them", async () => {
+    // d-S9-3: feature 002 held spec.md only and was told it lacked tasks.md.
+    await writeFeatureArtifact({ featureId: "f1", key: "spec.md", content: "Spec" });
+    await expect(requireGate({ featureId: "f1", gate: "implementGate" })).rejects.toMatchObject({
+      required: "implementGate",
+      missing: ["plan.md", "tasks.md"],
+      message: "plan.md and tasks.md are required — run /speckit.plan with this featureSlug first",
+    });
+    await writeFeatureArtifact({ featureId: "f1", key: "plan.md", content: "Plan" });
+    await expect(requireGate({ featureId: "f1", gate: "tasksGate" })).rejects.toMatchObject({
+      missing: ["tasks.md"],
+      message: "tasks.md is required — run /speckit.tasks with this featureSlug first",
+    });
+    // A plan.md without its spec.md: the spec comes first.
+    await writeFeatureArtifact({ featureId: "f2", key: "plan.md", content: "Plan" });
+    await expect(requireGate({ featureId: "f2", gate: "tasksGate" })).rejects.toMatchObject({
+      missing: ["spec.md", "tasks.md"],
+      message: "spec.md and tasks.md are required — run /speckit.specify first",
+    });
+    await expect(requireGate({ featureId: "f3", gate: "implementGate" })).rejects.toMatchObject({
+      missing: ["spec.md", "plan.md", "tasks.md"],
+      message: "spec.md, plan.md and tasks.md are required — run /speckit.specify first",
+    });
+  });
+
   it("returns the status when gate is met", async () => {
     await writeFeatureArtifact({ featureId: "f1", key: "spec.md", content: "Spec" });
     const s = await requireGate({ featureId: "f1", gate: "specGate" });

@@ -292,7 +292,9 @@ import { errorHandler } from "../src/middleware/error-handler.js";
 
 function makeApp(): express.Express {
   const app = express();
-  app.use(express.json());
+  // Above an artifact's 200,000-character limit, as the app's own parser is
+  // (`JSON_LIMIT`): the default 100 kB would refuse such a body with a 413.
+  app.use(express.json({ limit: "1mb" }));
   app.use("/api/projects/:projectId/spec-kit", specKitRouter());
   app.use(errorHandler);
   return app;
@@ -358,6 +360,31 @@ describe("/api/projects/:projectId/spec-kit", () => {
       .send({ content: "hello" });
     expect(res.status).toBe(200);
     expect(res.body.data.artifact.name).toBe("spec.md");
+  });
+
+  it("#1583 — an over-size PUT says the limit in words, not as a Zod issue array", async () => {
+    // d-S10-1: 200,001 characters came back as `[{"origin":"string","code":"too_big",…}]`.
+    for (const url of [
+      "/api/projects/p1/spec-kit/files/constitution.md",
+      "/api/projects/p1/spec-kit/features/001-a/artifacts/notes.md",
+    ]) {
+      const res = await request(makeApp())
+        .put(url)
+        .send({ content: "x".repeat(200_001) });
+      expect(res.status, url).toBe(400);
+      expect(res.body.error.code).toBe("BAD_REQUEST");
+      expect(res.body.error.message).toBe("content is too long: at most 200,000 characters");
+      expect(res.body.error.details).toEqual({
+        fields: [{ field: "content", message: "content is too long" }],
+      });
+    }
+    // Any other refusal is the shared friendly summary.
+    const missing = await request(makeApp())
+      .put("/api/projects/p1/spec-kit/files/constitution.md")
+      .send({});
+    expect(missing.status).toBe(400);
+    expect(missing.body.error.message).toBe("content is required");
+    expect(missing.body.error.message).not.toMatch(/^\[/);
   });
 
   it("PUT /files/:name rejects unknown names", async () => {
