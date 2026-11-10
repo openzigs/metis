@@ -159,12 +159,15 @@ const FENCE_NOTE =
 // and forcing a first password to change (governing-04 OS-27 → PA-12) on its
 // being random and expiring. The exemption now covers only what an entry or a
 // check already in place holds (OS-18 → LG-01 stays compliant), and a safeguard
-// the requirement adds must be provided whole. Tuned with Sonnet on governing-01
-// and governing-04; governing-03 stays held out.
+// the requirement adds must be provided whole. That made a safeguard provided
+// in all but one "ideally" step read as whole (governing-04 OS-21 → LG-05, 1 of
+// 8 probe runs, 0 of 8 before), so a step named as what would happen ideally is
+// open even when the rest is provided. Tuned with Sonnet on governing-01 and
+// governing-04; governing-03 stays held out.
 export const DEFECT_REPORT_LINE =
   "A requirement is often a defect report: it describes what is wrong today and asks, said or not, for it to be put right. Judge the behaviour it asks for once fixed, not the defect it describes: a report that a token travels in the URL asks for it to stop doing so. What the report says the system does today, outside what it asks to fix, still counts as part of the requirement.";
 export const SAFEGUARD_REQUESTED_LINE =
-  "When what the requirement asks for is the safeguard the rule requires (it removes the rules the rule forbids, it adds the log entry or the check the rule asks for), it is compliant: quote the words that ask for it. A part of the rule the requirement leaves untouched is not a reason to ask: when it changes one item of an entry or a check it says is already in place, the items it leaves alone stand as they are today. But a safeguard the requirement adds must be provided whole: when the rule lists what it must hold (an entry naming who, when and what; the old and the new value; a first password that is random and expires), every item listed is part of what is added, and providing one is not providing the rest. If the requirement says what it will hold and a listed item is not among them, it is gap; if it provides some and is silent on the others, it is needs-ba-input. And when the requirement leaves part of the safeguard itself open (a setting that can leave it switched off, a step it names only as a wish), that part is not provided: it is needs-ba-input.";
+  "When what the requirement asks for is the safeguard the rule requires (it removes the rules the rule forbids, it adds the log entry or the check the rule asks for), it is compliant: quote the words that ask for it. A part of the rule the requirement leaves untouched is not a reason to ask: when it changes one item of an entry or a check it says is already in place, the items it leaves alone stand as they are today. But a safeguard the requirement adds must be provided whole: when the rule lists what it must hold (an entry naming who, when and what; the old and the new value; a first password that is random and expires), every item listed is part of what is added, and providing one is not providing the rest. If the requirement says what it will hold and a listed item is not among them, it is gap; if it provides some and is silent on the others, it is needs-ba-input. And when the requirement leaves part of the safeguard itself open (a setting that can leave it switched off, a step it names only as a wish or as what would happen ideally), that part is not provided, even when the rest of the safeguard is: it is needs-ba-input.";
 
 const SYSTEM = [
   "You check one business requirement against governing rules (internal policy obligations) that apply to it.",

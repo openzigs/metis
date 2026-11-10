@@ -613,6 +613,11 @@ describe("parsing and evidence", () => {
     expect(line).toMatch(/provides some and is silent on the others, it is needs-ba-input/);
     // The whole-safeguard sentence follows the exemption it bounds.
     expect(line.indexOf("provided whole")).toBeGreaterThan(line.indexOf("leaves untouched"));
+    // A part named only as what would happen ideally is open even when the rest is provided
+    // (governing-04 OS-21 → LG-05: table permissions provided, "ideally" no default access).
+    expect(line).toContain(
+      "a step it names only as a wish or as what would happen ideally), that part is not provided, even when the rest of the safeguard is: it is needs-ba-input.",
+    );
   });
 
   it("#2017 — a quote of the question alone, or across two answers, is not evidence", () => {

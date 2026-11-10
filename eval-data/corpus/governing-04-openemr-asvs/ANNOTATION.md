@@ -245,3 +245,14 @@ The last row is the committed reading,
   this change (#2108's and #2140's), so that pair was never a stable gain.
 - Recall is the judge's, and does not move. Every remaining findings-call error (OS-09,
   OS-11, OS-15, OS-29) was there at #2140's reading.
+- **A hard error found after the reading, and fixed.** A tuning run at #2149's first commit
+  gave OS-21 → LG-05 (`needs-ba-input`) as `compliant` in 1 of 2 runs, through the findings
+  call. The requirement asks for table permissions and "ideally" no access for the default
+  user. A findings-only probe gave `compliant` in 1 of 8 runs with #2152's line and in 0 of 8
+  with #2108's: "a safeguard the requirement adds must be provided whole" made the provided
+  parts read as the whole. The line now says that a step named as what would happen ideally is
+  open "even when the rest of the safeguard is" (0 of 10 after). On the 19-item probe (three
+  runs) that wording still gave 0 hard errors and found 39 of 51 `compliant` pairs, against 43
+  before it. The pairs it lost (OS-27 → PA-10, whose TOTP step is "for Example", and
+  `governing-01`'s GR-22 → CM-05) are asked about, not called compliant. The committed reading
+  above ran before this wording.
