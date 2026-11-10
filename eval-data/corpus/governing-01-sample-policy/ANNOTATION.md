@@ -413,6 +413,54 @@ A `compliant` on either is a **hard error**, so a reading now measures the risk.
   GR-38 were added (#2155). Read it as A0 on GR-01 to GR-36 only; the next A0 baseline
   is the first over all 38.
 
+### #2152: a safeguard the requirement adds is provided whole (tuned, not shipped)
+
+**Not shipped.** The wording below was read once on the held-out `governing-03`, together
+with #2149's judge change, at commit `320ac11b3`. There a pair whose safeguard the
+requirement leaves switchable off became `compliant` in 3 of 3 runs (`needs-ba-input` in 3 of
+3 at #2108), with the same applicability verdict, so by the findings call. The no-evidence
+bar, which had passed, failed. So the line was reverted in the same PR, and the shipped line
+is #2108's. GR-37 → AL-02 is still a hard error of the shipped prompts. The reading, and why
+the read is put down to this line, are in that set's `ANNOTATION.md`, "The #2149 and #2152
+attempt and re-read". The wording that was read:
+
+> When what the requirement asks for is the safeguard the rule requires (it removes the rules
+> the rule forbids, it adds the log entry or the check the rule asks for), it is compliant:
+> quote the words that ask for it. A part of the rule the requirement leaves untouched is not
+> a reason to ask: when it changes one item of an entry or a check it says is already in
+> place, the items it leaves alone stand as they are today. But a safeguard the requirement
+> adds must be provided whole: when the rule lists what it must hold (an entry naming who,
+> when and what; the old and the new value; a first password that is random and expires),
+> every item listed is part of what is added, and providing one is not providing the rest. If
+> the requirement says what it will hold and a listed item is not among them, it is gap; if
+> it provides some and is silent on the others, it is needs-ba-input. And when the
+> requirement leaves part of the safeguard itself open (a setting that can leave it switched
+> off, a step it names only as a wish or as what would happen ideally), that part is not
+> provided, even when the rest of the safeguard is: it is needs-ba-input.
+
+The tuning that led to it:
+
+The line excused "a part of the rule the requirement leaves untouched". #2152 narrowed that
+to what an entry or a check *already in place* holds, and added that a safeguard the
+requirement adds must provide every item the rule lists: a listed item the requirement's own
+list leaves out is `gap`, and one it is silent on is `needs-ba-input`. No label changed.
+
+Measured with `anthropic/claude-sonnet-5-5`, on uncommitted trees, so none is a reading:
+
+- **The findings call alone**, every labelled pair passed to it as applying (a probe outside
+  `eval:governing`, so retrieval and the judge play no part), three runs of the 19 items that
+  hold a `compliant` label or GR-37/GR-38. With the shipped line, GR-37 → AL-02 was
+  `compliant` in 3 of 3 runs, and 5 hard errors in all (the other two on `governing-04`,
+  OS-27 → PA-12). With the final line: 0 hard errors, and 43 of 51 `compliant` pairs found,
+  against 39 before.
+- **A5, two runs:** recall 0.98 / 0.98, precision 0.56 / 0.54, verdict accuracy 0.85 / 0.83,
+  no hard error. GR-37 → AL-02 is `needs-ba-input` and GR-38 → AL-06 `gap` in both runs.
+  #2108's committed numbers (1.00, 0.52, 0.85, on the 36 items before GR-37 and GR-38) are
+  within run-to-run noise of these.
+- Two broader drafts ("when the rule asks for several things", and a third example in the
+  list) also gave 0 hard errors, but lost `compliant` on OS-18 → LG-01, a fix to one field of
+  an audit entry already written, in 3 of 3 runs. The final wording keeps it.
+
 ## Limits to state plainly
 
 - One annotator, and it wrote both sides: the same agent wrote the policy and the

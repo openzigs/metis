@@ -218,3 +218,48 @@ The last row is the committed reading,
 - At 47 truth pairs each miss moves a run's recall by about 0.02, and the shipped prompts
   range from 0.66 to 0.74 over four runs. Draft 2's gain over them (about 0.08) is at the edge
   of that noise, and its precision cost (about 0.04) is inside it.
+
+### #2152 readings: the findings call's safeguard line (tuned, not shipped)
+
+**Not shipped.** Read once on `governing-03` with #2149's judge change, this line turned a
+pair whose safeguard can be switched off into a wrong `compliant` in 3 of 3 runs, so it was
+reverted (`governing-01`'s `ANNOTATION.md` quotes it, and `governing-03`'s holds the
+reading). The shipped findings line is #2108's. The rows below and the reading
+`baseline-A5-sonnet-2152` measure the draft, not the shipped prompts. #2140's reading stays
+the baseline of the shipped prompts.
+
+#2152 drafted a change to one line of the findings call, `SAFEGUARD_REQUESTED_LINE`: a safeguard the
+requirement adds is provided whole, and only what an entry or a check already in place holds
+is excused. The judge is #2108's, unchanged. All runs are A5 with
+`anthropic/claude-sonnet-5-5`, scored on the 33 items and 47 truth pairs.
+
+| Prompts | Runs | Recall | Precision | Verdict accuracy | Hard errors |
+|---|---|---|---|---|---|
+| #2108's, as shipped; commit `c7cc77b20`, clean tree (#2140's reading) | 2 | 0.66 / 0.70 | 0.69 / 0.65 | 0.51 / 0.55 | 1 / 1 |
+| #2152's line, uncommitted tree | 2 | 0.68 / 0.66 | 0.70 / 0.72 | 0.60 / 0.55 | 0 / 0 |
+| #2152's line; commit `dbd9a8aa4`, clean tree | 2 | 0.66 / 0.68 | 0.70 / 0.70 | 0.57 / 0.60 | 0 / 0 |
+
+The last row is the committed reading,
+[`eval-data/readings/governing-04-openemr-asvs/baseline-A5-sonnet-2152.md`](../../readings/governing-04-openemr-asvs/baseline-A5-sonnet-2152.md)
+($1.65). #2149 tuned its judge change on top of this draft.
+
+- **With the draft, the hard errors #2140's reading had were gone.** Both were OS-27 → PA-12 (`compliant`
+  where the label is `needs-ba-input`): forcing a first password to change earned compliant on
+  the rule's other parts, that it is random and expires. It is the same defect as
+  `governing-01`'s GR-37.
+- **The draft kept #2108's requested-safeguard gain:** OS-08 → PA-05 is `compliant` in every run.
+  OS-09 → PA-06 is `needs-ba-input` in every run, as it was in both committed readings before
+  this change (#2108's and #2140's), so that pair was never a stable gain.
+- Recall is the judge's, and does not move. Every remaining findings-call error (OS-09,
+  OS-11, OS-15, OS-29) was there at #2140's reading.
+- **A hard error found after the reading, and fixed.** A tuning run at #2149's first commit
+  gave OS-21 → LG-05 (`needs-ba-input`) as `compliant` in 1 of 2 runs, through the findings
+  call. The requirement asks for table permissions and "ideally" no access for the default
+  user. A findings-only probe gave `compliant` in 1 of 8 runs with #2152's line and in 0 of 8
+  with #2108's: "a safeguard the requirement adds must be provided whole" made the provided
+  parts read as the whole. The line now says that a step named as what would happen ideally is
+  open "even when the rest of the safeguard is" (0 of 10 after). On the 19-item probe (three
+  runs) that wording still gave 0 hard errors and found 39 of 51 `compliant` pairs, against 43
+  before it. The pairs it lost (OS-27 → PA-10, whose TOTP step is "for Example", and
+  `governing-01`'s GR-22 → CM-05) are asked about, not called compliant. The committed reading
+  above ran before this wording.
