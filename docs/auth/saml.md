@@ -14,10 +14,10 @@ Identification and Authentication Failures) and the one configurable knob it add
 
 A SAML login is a two-leg flow:
 
-1. **AuthnRequest (initiate)** — `GET /auth/saml/login` redirects the browser to
+1. **AuthnRequest (initiate)** — `GET /api/auth/saml/login` redirects the browser to
    the IdP with a signed/unsigned `AuthnRequest` carrying a unique request `ID`.
 2. **Response (ACS)** — the IdP POSTs a `SAMLResponse` back to
-   `POST /auth/saml/acs`. The Response wraps an `Assertion` and echoes the
+   `POST /api/auth/saml/acs`. The Response wraps an `Assertion` and echoes the
    request id in its `InResponseTo` attribute.
 
 > **The ACS URL is on the API origin** (`<API origin>/api/auth/saml/acs`), not

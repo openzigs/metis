@@ -17,8 +17,15 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # ENTRA_STATE_DIR moves the pid and log (scripts/lib/entra-harness-shell.test.mjs).
 PID_FILE="${ENTRA_STATE_DIR:-${REPO_ROOT}/scripts/saml-harness/.entra}/idp.pid"
 
-# Is pid $1 still the mock? A pid alone may have been recycled.
-is_mock() { [[ "$1" =~ ^[0-9]+$ ]] && ps -p "$1" -o command= 2>/dev/null | grep -qF "entra-idp.mjs"; }
+# Is pid $1 still the mock? A pid alone may have been recycled. The mock is a
+# node process whose script is entra-idp.mjs, not any command line that merely
+# mentions it (an editor, a grep, `node -e … entra-idp.mjs`) (#2204).
+MOCK_COMMAND_RE='^([^[:space:]]*/)?node[[:space:]]+(/.*/)?entra-idp\.mjs([[:space:]]|$)'
+is_mock() {
+  local command
+  [[ "$1" =~ ^[0-9]+$ ]] && command="$(ps -p "$1" -o command= 2>/dev/null)" &&
+    [[ "${command}" =~ ${MOCK_COMMAND_RE} ]]
+}
 
 if [[ ! -f "${PID_FILE}" ]]; then
   printf '  OK the mock Entra IdP is not running\n'

@@ -40,7 +40,8 @@ vi.mock("../src/lib/prisma.js", async () => {
 });
 
 const { createApp } = await import("../src/app.js");
-const { upsertProvider, __resetProviders } = await import("../src/lib/auth/sso-config.js");
+const { upsertProvider, __resetProviders, getStoredProviderByMode } =
+  await import("../src/lib/auth/sso-config.js");
 const { __resetSAMLInstances, parseIdPMetadata } = await import("../src/lib/auth/saml-provider.js");
 const { verifyAccessToken } = await import("../src/lib/auth/jwt.js");
 const { requireMfa } = await import("../src/lib/auth/require-mfa.js");
@@ -398,13 +399,30 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     });
 
     it("#1562: the admin page shows the configured issuer beside the last refused one, until the metadata changes", async () => {
-      const parsed = await configure();
+      await configure();
+      const metadata = await (await fetch(idp.metadataUrl)).text();
       const admin = await signIn(entraUser("ada", [ADMINS]), { signing: "both", mfa: true });
       const token = cookieValue(admin, "metis.at");
       const summary = () =>
         request(app)
           .get("/api/admin/auth/saml/issuer-refusal")
           .set("Authorization", `Bearer ${token}`);
+      /** #2204 — the admin pastes IdP metadata and saves, through the real admin route. */
+      const repaste = async (xml: string) => {
+        const res = await request(app)
+          .put("/api/admin/auth/providers/saml")
+          .set("Authorization", `Bearer ${token}`)
+          .send({
+            name: "Microsoft Entra ID (mock)",
+            enabled: true,
+            entityId: ENTITY_ID,
+            acsUrl: ACS_URL,
+            idpMetadataXml: xml,
+            groupMappings: [{ claimValue: ADMINS, role: "admin" }],
+            defaultRole: "reader",
+          });
+        expect(res.status).toBe(200);
+      };
 
       const otherTenant = "https://sts.windows.net/0b1ec700-1562-4000-8000-0000000074e2/";
       const refused = await signIn(entraUser("ivy", [ADMINS]), {
@@ -421,28 +439,42 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         });
       });
 
-      // The admin re-pastes metadata naming the issuer the IdP really asserts
-      // (one SAML provider: the old config is replaced, as the admin PUT does).
-      __resetProviders();
-      upsertProvider({
-        mode: "saml",
-        name: "Microsoft Entra ID (mock)",
-        enabled: true,
-        groupMappings: [{ claimValue: ADMINS, role: "admin" }],
-        defaultRole: "reader",
-        saml: {
-          entityId: ENTITY_ID,
-          acsUrl: ACS_URL,
-          idpMetadataXml: "",
-          idpSsoUrl: parsed.ssoUrl,
-          idpCerts: parsed.certs,
-          idpIssuer: otherTenant,
-          signRequests: false,
-        },
-      });
+      // The admin re-pastes metadata naming the issuer the refused assertion named:
+      // the PUT replaces the configured issuer, and the warning clears.
+      const otherMetadata = metadata.replace(
+        `entityID="${idp.issuer}"`,
+        `entityID="${otherTenant}"`,
+      );
+      expect(otherMetadata).not.toBe(metadata);
+      await repaste(otherMetadata);
       expect((await summary()).body.data).toEqual({
         configuredIssuer: otherTenant,
         lastRefused: null,
+      });
+
+      // #2204 — the IdP still asserts its own issuer, so this one is refused
+      // against the new configuration; switching back to the original metadata
+      // reports the older refusal against it, not nothing.
+      const refusedAgain = await signIn(entraUser("ivy", [ADMINS]), { signing: "both" });
+      expect(refusedAgain.status).toBe(401);
+      await vi.waitFor(async () => {
+        expect((await summary()).body.data.lastRefused?.assertionIssuer).toBe(idp.issuer);
+      });
+      await repaste(metadata);
+      expect((await summary()).body.data).toEqual({
+        configuredIssuer: idp.issuer,
+        lastRefused: { assertionIssuer: otherTenant, at: expect.any(String) },
+      });
+      // #2204 — the provider store is in memory and mints a fresh id at each
+      // boot (and per replica): a refusal recorded before a restart is still
+      // reported once the provider is seeded again.
+      const idBefore = getStoredProviderByMode("saml")?.id;
+      __resetProviders();
+      await configure();
+      expect(getStoredProviderByMode("saml")?.id).not.toBe(idBefore);
+      expect((await summary()).body.data).toEqual({
+        configuredIssuer: idp.issuer,
+        lastRefused: { assertionIssuer: otherTenant, at: expect.any(String) },
       });
     });
 

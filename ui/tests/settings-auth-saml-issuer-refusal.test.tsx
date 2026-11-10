@@ -5,7 +5,7 @@
  * assertion named, and what to do about it.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { makeWrapper, TEST_USER } from "./test-utils";
 import AdminAuthPage from "@/app/(authed)/settings/auth/page";
 
@@ -63,6 +63,30 @@ describe("Admin Authentication page — SAML Issuer refusal (#1562)", () => {
     render(<AdminAuthPage />, { wrapper: makeWrapper({ initialUser: ADMIN }) });
 
     expect(await screen.findByTestId("saml-refused-issuer")).toHaveTextContent("(no Issuer)");
+  });
+
+  it("#2204: saving the SAML configuration reads the refusal again, so the warning clears", async () => {
+    let refusal: unknown = {
+      configuredIssuer: CONFIGURED,
+      lastRefused: { assertionIssuer: ASSERTED, at: "2026-11-10T09:00:00.000Z" },
+    };
+    const fetchMock = vi.fn((url: string, init?: { method?: string }) => {
+      if (url === "/api/admin/auth/providers/saml" && init?.method === "PUT") {
+        // The save re-reads the issuer from the pasted metadata.
+        refusal = { configuredIssuer: ASSERTED, lastRefused: null };
+        return Promise.resolve(respond({ provider: {} }));
+      }
+      return Promise.resolve(respond(url === "/api/admin/auth/saml/issuer-refusal" ? refusal : {}));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<AdminAuthPage />, { wrapper: makeWrapper({ initialUser: ADMIN }) });
+
+    expect(await screen.findByTestId("saml-issuer-refusal-warning")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Save SAML/ }));
+
+    await waitFor(() =>
+      expect(screen.queryByTestId("saml-issuer-refusal-warning")).not.toBeInTheDocument(),
+    );
   });
 
   it.each([
