@@ -283,16 +283,25 @@ describe("runEntraHarness (#1559)", () => {
     cleanups.push(() => idp.close());
     const samlRequest = authnRequest(config.metisApiUrl);
 
-    const page = await (
-      await fetch(`${idp.ssoUrl}?${new URLSearchParams({ SAMLRequest: samlRequest })}`)
-    ).text();
+    const render = async () =>
+      (await fetch(`${idp.ssoUrl}?${new URLSearchParams({ SAMLRequest: samlRequest })}`)).text();
+    const page = await render();
     for (const a of PRESET_ACCOUNTS) expect(page).toContain(a.user.upn);
 
     /** @param {number} account @param {string} signing */
     const signIn = async (account, signing) => {
+      // #1562 — each POST carries the one-use nonce of the picker it came from.
+      const nonce = /** @type {string} */ (
+        /name="nonce" value="([^"]*)"/.exec(await render())?.[1]
+      );
       const res = await fetch(idp.ssoUrl, {
         method: "POST",
-        body: new URLSearchParams({ SAMLRequest: samlRequest, account: String(account), signing }),
+        body: new URLSearchParams({
+          SAMLRequest: samlRequest,
+          nonce,
+          account: String(account),
+          signing,
+        }),
       });
       expect(res.status).toBe(200);
       return Buffer.from(/** @type {string} */ (idp.lastResponse()), "base64").toString("utf8");
@@ -307,6 +316,22 @@ describe("runEntraHarness (#1559)", () => {
     expect(olga).toContain(ENTRA_CLAIM.groupsLink);
     expect(olga).not.toContain(`Name="${ENTRA_CLAIM.groups}"`);
   });
+
+  // #1562 — the configured signing option reaches the mock: it is what the
+  // picker preselects (the mock's own default is "assertion", the harness's "both").
+  it.each(["both", "assertion", "response"])(
+    "the picker preselects the configured signing option %s",
+    async (signing) => {
+      const config = testConfig(undefined, { seed: false, signing });
+      const { idp } = await runEntraHarness({ config });
+      cleanups.push(() => idp.close());
+      const query = new URLSearchParams({ SAMLRequest: authnRequest(config.metisApiUrl) });
+      const page = await (await fetch(`${idp.ssoUrl}?${query}`)).text();
+      expect([...page.matchAll(/<option value="(\w+)" selected>/g)].map((m) => m[1])).toEqual([
+        signing,
+      ]);
+    },
+  );
 
   it("without a seed, says so and how to configure METIS by hand", async () => {
     const { idp, banner } = await runEntraHarness({

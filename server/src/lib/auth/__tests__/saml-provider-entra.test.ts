@@ -349,6 +349,11 @@ describe("#1555 the assertion Issuer must be the configured IdP issuer", () => {
       `SAML assertion Issuer "${OTHER_TENANT_ISSUER}" does not match the configured IdP ` +
         `issuer "${ENTRA_ISSUER}"`,
     );
+    // #1562 — both values, structured, for the ACS to record for the admin page.
+    expect(result.issuerRefusal).toEqual({
+      assertionIssuer: OTHER_TENANT_ISSUER,
+      configuredIssuer: ENTRA_ISSUER,
+    });
   });
 
   it("compares exactly: the issuer without Entra's trailing slash is refused", async () => {
@@ -383,6 +388,10 @@ describe("#1555 the assertion Issuer must be the configured IdP issuer", () => {
     expect(result.error).toBe(
       `The SAML assertion has no Issuer; the configured IdP issuer is "${ENTRA_ISSUER}"`,
     );
+    expect(result.issuerRefusal).toEqual({
+      assertionIssuer: null,
+      configuredIssuer: ENTRA_ISSUER,
+    });
   });
 
   it("does not check the Issuer when no IdP issuer is configured", async () => {
@@ -392,5 +401,15 @@ describe("#1555 the assertion Issuer must be the configured IdP issuer", () => {
     );
 
     expect(result.success).toBe(true);
+    expect(result.issuerRefusal).toBeUndefined();
+  });
+
+  it("a refusal for another reason carries no issuerRefusal (#1562)", async () => {
+    const result = await validateSAMLResponse(
+      entraResponse(alice, { signing: "assertion" }),
+      config,
+    );
+    expect(result.success).toBe(false);
+    expect(result.issuerRefusal).toBeUndefined();
   });
 });

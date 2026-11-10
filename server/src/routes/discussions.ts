@@ -79,6 +79,10 @@ const log = createChildLogger("discussions-routes");
 const MAX_BODY_LEN = 10_000;
 const DEFAULT_PAGE_SIZE = 50;
 const MAX_PAGE_SIZE = 100;
+/** #2187 — the requirement picker answers this many matches… */
+const REQUIREMENT_PICKER_LIMIT = 20;
+/** …from this many of the project's newest requirements. */
+const REQUIREMENT_PICKER_SCAN = 500;
 
 // ---- Schemas ----------------------------------------------------------------
 
@@ -246,9 +250,50 @@ export function discussionsRouter(): Router {
         createdById: true,
         createdAt: true,
         updatedAt: true,
+        // #2187 — the attached requirement's title, so a thread links to it by
+        // name. A soft-deleted requirement is reported as none.
+        requirement: { select: { id: true, title: true, analysisId: true, deletedAt: true } },
       },
     });
-    res.json({ success: true, data: threads });
+    res.json({
+      success: true,
+      data: threads.map(({ requirement, ...thread }) => ({
+        ...thread,
+        requirement:
+          requirement && !requirement.deletedAt
+            ? { id: requirement.id, title: requirement.title, analysisId: requirement.analysisId }
+            : null,
+      })),
+    });
+  });
+
+  // GET /api/discussions/requirements?projectId=…&q=… — #2187: the requirement
+  // picker that attaches a thread to a requirement. Member-gated like the thread
+  // list; only the project's live requirements, matched on title. The match runs
+  // here rather than in SQL so it is case-insensitive on both database backends.
+  r.get("/requirements", requireAuth, async (req: Request, res: Response) => {
+    const actor = actorFromReq(req);
+    const projectId = typeof req.query.projectId === "string" ? req.query.projectId : "";
+    if (!projectId) {
+      throw new AppError(400, "VALIDATION_ERROR", "projectId query param is required");
+    }
+    const term = typeof req.query.q === "string" ? req.query.q.trim().toLowerCase() : "";
+
+    const allowed = await canAccessProjectDiscussions(actor, projectId, {
+      resource: "discussion_thread",
+      resourceId: projectId,
+      action: "discussion.requirement.search",
+    });
+    if (!allowed) throw projectNotFound();
+
+    const rows = await prisma.requirement.findMany({
+      where: { projectId, deletedAt: null, analysis: { deletedAt: null } },
+      orderBy: { createdAt: "desc" },
+      take: REQUIREMENT_PICKER_SCAN,
+      select: { id: true, title: true, analysisId: true, createdAt: true },
+    });
+    const matches = term ? rows.filter((r) => r.title.toLowerCase().includes(term)) : rows;
+    res.json({ success: true, data: matches.slice(0, REQUIREMENT_PICKER_LIMIT) });
   });
 
   // POST /api/discussions/threads — create a project-scoped thread.

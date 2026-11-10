@@ -82,6 +82,6 @@ else
 fi
 
 log "SAML harness is UP."
-printf '  Log in:   %s/auth/saml/login\n' "${METIS_API_URL:-http://localhost:4000}"
+printf '  Log in:   %s/api/auth/saml/login\n' "${METIS_API_URL:-http://localhost:4000}"
 printf '  Users:    user1@example.com / user2@example.com (any password)\n'
 printf '  Tear down: make saml-down\n'

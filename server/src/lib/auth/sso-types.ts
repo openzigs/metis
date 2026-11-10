@@ -98,6 +98,12 @@ export interface SSOAuthResult {
     rawClaims: Record<string, unknown>;
   };
   error?: string;
+  /**
+   * #1562 — set only when a SAML assertion was refused for its Issuer (#1555):
+   * the Issuer it named (null when it named none) and the configured IdP
+   * issuer, so the admin page can show the two side by side.
+   */
+  issuerRefusal?: { assertionIssuer: string | null; configuredIssuer: string };
 }
 
 /** SCIM 2.0 resource types. */

@@ -25,7 +25,13 @@
  *
  * Node built-ins + global fetch (Node 18+) only.
  */
-import { DEFAULTS, buildSamlProviderBody, idpMetadataUrl, trimSlash } from "./lib/saml-harness.mjs";
+import {
+  DEFAULTS,
+  buildSamlProviderBody,
+  idpMetadataUrl,
+  spLoginUrl,
+  trimSlash,
+} from "./lib/saml-harness.mjs";
 
 /** @param {string} msg */
 function log(msg) {
@@ -117,7 +123,7 @@ async function main() {
 
   process.stdout.write("\n");
   ok("SAML harness seed complete.");
-  log(`Start the login flow at: ${metisApiUrl}/auth/saml/login`);
+  log(`Start the login flow at: ${spLoginUrl(metisApiUrl)}`);
   log("Mock IdP test users: user1@example.com / user2@example.com (any password)");
 }
 

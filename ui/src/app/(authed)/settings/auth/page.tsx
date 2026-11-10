@@ -65,6 +65,15 @@ interface SamlGroupOverage {
   windowDays: number;
 }
 
+/**
+ * #1562 — the last SAML sign-in refused because its assertion's Issuer is not
+ * the configured IdP issuer (#1555), against the issuer configured now.
+ */
+interface SamlIssuerRefusal {
+  configuredIssuer: string;
+  lastRefused: { assertionIssuer: string | null; at: string } | null;
+}
+
 export default function AdminAuthPage() {
   const { user } = useAuth();
   const [_providers, setProviders] = useState<SSOProvider[]>([]);
@@ -80,6 +89,7 @@ export default function AdminAuthPage() {
   const [samlMetadataConfigured, setSamlMetadataConfigured] = useState(false);
   const [samlEnabled, setSamlEnabled] = useState(false);
   const [samlOverage, setSamlOverage] = useState<SamlGroupOverage | null>(null);
+  const [samlIssuerRefusal, setSamlIssuerRefusal] = useState<SamlIssuerRefusal | null>(null);
 
   // OIDC form state
   const [oidcName, setOidcName] = useState("OIDC Provider");
@@ -163,11 +173,24 @@ export default function AdminAuthPage() {
     }
   }, []);
 
+  const fetchSamlIssuerRefusal = useCallback(async () => {
+    try {
+      const res = await fetch("/api/admin/auth/saml/issuer-refusal");
+      if (res.ok) {
+        const body = await res.json();
+        setSamlIssuerRefusal(body.data ?? null);
+      }
+    } catch {
+      /* the warning is advisory: no warning on a failed read */
+    }
+  }, []);
+
   useEffect(() => {
     fetchProviders();
     fetchLDAPConfig();
     fetchSamlOverage();
-  }, [fetchProviders, fetchSamlOverage]);
+    fetchSamlIssuerRefusal();
+  }, [fetchProviders, fetchSamlOverage, fetchSamlIssuerRefusal]);
 
   const fetchLDAPConfig = async () => {
     try {
@@ -384,6 +407,34 @@ export default function AdminAuthPage() {
               <CardDescription>Upload IdP metadata and configure SP settings.</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
+              {samlIssuerRefusal?.lastRefused && (
+                <Alert variant="warning" data-testid="saml-issuer-refusal-warning">
+                  <AlertTitle>METIS refused a SAML sign-in for its Issuer</AlertTitle>
+                  <AlertDescription>
+                    <p>
+                      METIS signs a SAML user in only when the assertion&rsquo;s Issuer is exactly
+                      the configured IdP issuer. The last refused sign-in, at{" "}
+                      {new Date(samlIssuerRefusal.lastRefused.at).toLocaleString()}:
+                    </p>
+                    <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1">
+                      <dt>Configured IdP issuer</dt>
+                      <dd className="font-mono break-all" data-testid="saml-configured-issuer">
+                        {samlIssuerRefusal.configuredIssuer}
+                      </dd>
+                      <dt>Issuer the IdP sent</dt>
+                      <dd className="font-mono break-all" data-testid="saml-refused-issuer">
+                        {samlIssuerRefusal.lastRefused.assertionIssuer ?? "(no Issuer)"}
+                      </dd>
+                    </dl>
+                    <p>
+                      If the identity provider you trust sent it, paste the identity
+                      provider&rsquo;s current metadata below and save: METIS reads the issuer from
+                      its entityID. If you do not recognise it, another identity provider is signing
+                      with the same certificate, and the refusal is correct.
+                    </p>
+                  </AlertDescription>
+                </Alert>
+              )}
               {samlOverage && samlOverage.total > 0 && (
                 <Alert variant="warning" data-testid="saml-group-overage-warning">
                   <AlertTitle>

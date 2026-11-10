@@ -36,6 +36,10 @@ import {
   generateAuthnRequestUrl,
 } from "../lib/auth/saml-provider.js";
 import { SAML_GROUP_OVERAGE_ACTION } from "../lib/auth/saml-group-overage.js";
+import {
+  SAML_ISSUER_REFUSED_ACTION,
+  issuerRefusalAuditMetadata,
+} from "../lib/auth/saml-issuer-refusal.js";
 import { generateAuthorizationUrl, exchangeCodeForTokens } from "../lib/auth/oidc-provider.js";
 import { reconcileTrustedLoginRole } from "../lib/auth/durable-roles.js";
 import { oidcAssertedIdentities, samlAssertedIdentities } from "../lib/auth/bootstrap-admins.js";
@@ -245,6 +249,16 @@ export function ssoRouter(): Router {
         target: { type: "user", id: "saml-unknown" },
         metadata: { reason: result.error, mode: "saml" },
       });
+      if (result.issuerRefusal) {
+        // #1562 — the admin Authentication page shows the last refused Issuer
+        // beside the configured one (`samlIssuerRefusalSummary`).
+        audit({
+          actor: null,
+          action: SAML_ISSUER_REFUSED_ACTION,
+          target: { type: "sso-provider", id: provider.id },
+          metadata: issuerRefusalAuditMetadata(result.issuerRefusal),
+        });
+      }
       throw new AppError(401, "SAML_AUTH_FAILED", result.error ?? "SAML authentication failed");
     }
 

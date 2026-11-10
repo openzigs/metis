@@ -98,6 +98,39 @@ the insecure path), preserved across updates that omit it, and surfaced
 configs stored before #520 are reported and treated as `requireSignedResponse:
 true`.
 
+## Upgrading past the assertion Issuer check (#1555, #1562)
+
+From the release that ships #1555, METIS refuses an assertion whose `Issuer` is not
+**byte for byte** the configured IdP issuer. The configured issuer is the first
+`EntityDescriptor` `entityID` in the IdP metadata you pasted on the admin page (or
+set in `AUTH_SAML_IDP_METADATA_XML`), read when the metadata is saved. Earlier
+releases stored it and did not compare it with the assertion. So a deployment whose
+stored issuer is not exactly what its IdP asserts signs **no one** in through SAML
+after the upgrade, though it worked before. Known ways to get there:
+
+- metadata that bundles several entities (an `EntitiesDescriptor`), where the first
+  `entityID` is not the IdP that signs your assertions;
+- metadata edited by hand, or copied from another environment or tenant;
+- an issuer that differs only in its trailing slash or case (Entra's is
+  `https://sts.windows.net/<tenant-id>/`, slash included).
+
+**Before upgrading**, compare the issuer METIS stores (**Admin → Authentication →
+SAML 2.0**, or `saml.idpIssuer` in `GET /api/admin/auth/providers`) with the
+`Issuer` in a real assertion from your IdP (any SAML tracer browser extension
+shows it). If they differ, paste the IdP's current metadata and save before you
+upgrade, so the two match.
+
+**After upgrading**, if SAML sign-ins fail with `SAML assertion Issuer "…" does not
+match the configured IdP issuer "…"`, the **SAML 2.0** tab shows the configured
+issuer beside the Issuer the last refused assertion named, with the time
+(`GET /api/admin/auth/saml/issuer-refusal`, recorded as the
+`sso.saml.issuer_refused` audit event). If you trust the IdP that sent it, paste
+that IdP's current metadata and save: METIS reads the issuer from it again, and the
+warning clears, because only refusals against the issuer configured now are
+shown. If you do not recognise the Issuer, another IdP is signing with the same
+certificate, and the refusal is the check working. The local break-glass
+admin account (password form) still signs in while you fix it.
+
 ## MFA for security-sensitive actions (#1554)
 
 A SAML sign-in records whether it used MFA (the assertion's

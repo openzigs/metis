@@ -122,6 +122,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         method: "POST",
         body: new URLSearchParams({
           SAMLRequest: location.searchParams.get("SAMLRequest") ?? "",
+          // #1562 — the picker's one-use nonce, as the browser posts it back.
+          nonce: /name="nonce" value="([^"]*)"/.exec(picker)?.[1] ?? "",
           account: String(account),
           signing,
         }),
