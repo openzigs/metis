@@ -2,7 +2,7 @@
  * #273 — the first-run New-project wizard: name → source → ingest in one dialog,
  * landing on the new project's Overview with the ingest running.
  */
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { afterEach, describe, it, expect, vi, beforeEach } from "vitest";
 import { render, renderHook, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useRouter } from "next/navigation";
@@ -329,6 +329,58 @@ describe("NewProjectWizard", () => {
 });
 
 describe("NewProjectDialog", () => {
+  // #2197 — the dialog sends the active workspace only once validated against
+  // the caller's workspaces (GET /workspaces).
+  beforeEach(() => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve({
+          ok: true,
+          status: 200,
+          statusText: "OK",
+          text: () =>
+            Promise.resolve(
+              JSON.stringify({
+                success: true,
+                data: [
+                  { id: "ws-1", name: "One", slug: "one", logoUrl: null, role: "member" },
+                  { id: "ws-9", name: "Nine", slug: "nine", logoUrl: null, role: "member" },
+                ],
+              }),
+            ),
+        }),
+      ),
+    );
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    window.localStorage.clear();
+  });
+
+  async function createThroughDialog() {
+    const user = userEvent.setup();
+    create.mockResolvedValue({ ...PROJECT, primaryRepo: null } as never);
+    const Wrapper = makeWrapper({});
+    render(
+      <Wrapper>
+        <NewProjectDialog />
+      </Wrapper>,
+    );
+    await user.click(screen.getByRole("button", { name: "New project" }));
+    await fillName(user);
+    await user.click(screen.getByLabelText("Skip — add a source later"));
+    await user.click(next());
+    await user.click(screen.getByRole("button", { name: "Create project" }));
+    await waitFor(() => expect(create).toHaveBeenCalled());
+    return create.mock.calls[0][0].workspaceId;
+  }
+
+  it("never sends a stored workspace the caller is not in (#2197)", async () => {
+    window.localStorage.setItem("metis.activeWorkspaceId", "ws-previous-user");
+    expect(await createThroughDialog()).toBe("ws-1");
+  });
+
   it("opens the wizard, creates in the active workspace, and closes on success", async () => {
     const user = userEvent.setup();
     window.localStorage.setItem("metis.activeWorkspaceId", "ws-9");
