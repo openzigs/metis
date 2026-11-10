@@ -10,6 +10,7 @@
 import {
   CHANGE_SEVERITIES,
   portfolioImpactUnderOlderRule,
+  portfolioLinkResources,
   portfolioModifierText,
   portfolioOtherLinkKinds,
   portfolioResourceLists,
@@ -49,10 +50,14 @@ export interface ImpactHop {
   fromProductId: string;
   toProductId: string;
   consumer: { repoConnectionId: string; label: string };
+  /** #2183 — read only for its label, so a hop that lacks it still reads. */
+  provider?: { repoConnectionId: string; label: string };
   integrationKind: string | null;
   confidence: number;
   resource: { kind: string; name: string } | null;
   callSites: Array<{ filePath: string; line: number | null }>;
+  /** #2183 — where the provider provides what changes; absent on a hop stored before. */
+  providerSites?: Array<{ filePath: string; line: number | null }>;
   contract: {
     version: number;
     items: Array<{ id: string; change: string; breaking: boolean }>;
@@ -85,9 +90,21 @@ const strOrNull = (v: unknown): v is string | null => v === null || isStr(v);
 const arrayOf = <T>(v: unknown, ok: (x: unknown) => x is T): v is T[] =>
   Array.isArray(v) && v.every(ok);
 
+const isSite = (c: unknown): c is ImpactHop["callSites"][number] =>
+  isObj(c) && isStr(c.filePath) && (c.line === null || isNum(c.line));
+
 function isHop(v: unknown): v is ImpactHop {
   if (!isObj(v)) return false;
-  const { consumer, resource, callSites, contract, sharedObjects, severity } = v;
+  const {
+    consumer,
+    provider,
+    resource,
+    callSites,
+    providerSites,
+    contract,
+    sharedObjects,
+    severity,
+  } = v;
   return (
     arrayOf(v.edgeIds, isStr) &&
     isStr(v.fromProductId) &&
@@ -97,12 +114,11 @@ function isHop(v: unknown): v is ImpactHop {
     isStr(consumer.label) &&
     strOrNull(v.integrationKind) &&
     isNum(v.confidence) &&
+    (provider === undefined ||
+      (isObj(provider) && isStr(provider.repoConnectionId) && isStr(provider.label))) &&
     (resource === null || (isObj(resource) && isStr(resource.kind) && isStr(resource.name))) &&
-    arrayOf(
-      callSites,
-      (c): c is ImpactHop["callSites"][number] =>
-        isObj(c) && isStr(c.filePath) && (c.line === null || isNum(c.line)),
-    ) &&
+    arrayOf(callSites, isSite) &&
+    (providerSites === undefined || arrayOf(providerSites, isSite)) &&
     (contract === null ||
       (isObj(contract) &&
         isNum(contract.version) &&
@@ -156,9 +172,15 @@ export interface HopDerivation {
   severity: string;
 }
 
+/**
+ * Why a file is in a deep dive: the gap engine cited it, the consumer uses what
+ * changes there (`call-site`), or (#2183) the product provides it there.
+ */
+export type DeepDiveFileKind = "cited" | "call-site" | "provides";
+
 export interface DeepDive {
   repos: Array<{ label: string; role: string }>;
-  files: Array<{ location: string; repo: string; callSite: boolean }>;
+  files: Array<{ location: string; repo: string; kind: DeepDiveFileKind }>;
   contract: {
     version: number;
     items: Array<{ id: string; change: string; breaking: boolean }>;
@@ -223,6 +245,34 @@ function paragraphFor(view: PortfolioAssessmentView, p: Product): string {
   return prose || p.baSummary;
 }
 
+const siteLocation = (s: { filePath: string; line: number | null }) =>
+  s.line === null ? s.filePath : `${s.filePath}:${s.line}`;
+
+/**
+ * #2183 — where a product's code provides what changes downstream: the
+ * provider's side of every hop out of it, on any product's path this reader is
+ * shown. A host the gap engine found nothing in has no other file evidence.
+ */
+function providerFiles(view: PortfolioAssessmentView, productId: string): DeepDive["files"] {
+  // The same file of the same repo once: two products downstream of one table share it.
+  const out = new Map<string, DeepDive["files"][number]>();
+  for (const q of view.products) {
+    if (q.coverage === "restricted") continue;
+    for (const h of storedImpact(q)?.hops ?? []) {
+      if (h.fromProductId !== productId || !h.provider) continue;
+      for (const s of h.providerSites ?? []) {
+        const location = siteLocation(s);
+        out.set(`${h.provider.label}\u0000${location}`, {
+          location,
+          repo: h.provider.label,
+          kind: "provides",
+        });
+      }
+    }
+  }
+  return [...out.values()];
+}
+
 function deepDiveFor(
   view: PortfolioAssessmentView,
   p: Product,
@@ -245,14 +295,15 @@ function deepDiveFor(
         (r.citations as CodeCitation[]).map((c) => ({
           location: `${c.filePath}:${c.startLine}`,
           repo: labels.get(c.repoConnectionId ?? r.repoConnectionId) ?? "Unnamed repository",
-          callSite: false,
+          kind: "cited" as const,
         })),
       ),
     ...(last?.callSites ?? []).map((s) => ({
-      location: s.line === null ? s.filePath : `${s.filePath}:${s.line}`,
+      location: siteLocation(s),
       repo: last!.consumer.label,
-      callSite: true,
+      kind: "call-site" as const,
     })),
+    ...providerFiles(view, p.productId),
   ];
   return {
     repos: [...repoRows.values()],
@@ -261,7 +312,12 @@ function deepDiveFor(
       last?.contract && last.contract.items.length > 0
         ? { version: last.contract.version, items: last.contract.items }
         : null,
-    resources: portfolioResourceLists(last?.resource ?? null, last?.sharedObjects ?? []),
+    // #2183 — and the resources of every other link the change reaches it by.
+    resources: portfolioResourceLists(
+      last?.resource ?? null,
+      last?.sharedObjects ?? [],
+      portfolioLinkResources(p.technicalDetail),
+    ),
   };
 }
 

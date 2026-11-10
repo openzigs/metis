@@ -1725,8 +1725,13 @@ over detection's, then the copy that links a contract.
   "latest-contract-version"`). -1 when the edge's confidence is under 0.5; capped at both
   ends. A path is as severe as its weakest hop.
 - **Evidence** per hop (`technicalDetail.impact.hops`): the edges, both repos, the
-  consumer's call sites, the contract items changed, the shared resource, and for a
-  `database` hop the tables and columns both projects use (`crossProjectImpact`, #309).
+  consumer's call sites, the provider's side of the same edge (`providerSites`, #2183:
+  the only file evidence of a host the gap engine cited nothing in), the contract items
+  changed, the shared resource, and for a `database` hop the tables and columns both
+  projects use (`crossProjectImpact`, #309). Each stored link (`impact.links`, #1963)
+  carries `resources`, every resource its edges cross (#2183): two edges between the
+  same repos through `orders` and `customers` are one link with both, so the deep dive
+  lists both tables, not only the shown path's.
 
 The impact goes into the product rows (`impactKind`, `via`, `edgeIds`, `severity`). A
 product reached outside the scope gets its own `downstream-consumer` row (`not-checked`
@@ -1754,7 +1759,13 @@ layer writes the business-analyst report. It is stored in `PortfolioAssessment.r
   the impact overview (`report-overview.ts`: what must change, what is downstream,
   restricted products counted but never named), then the model's prose.
 - **Per affected product.** One functional, business and stakeholder paragraph each
-  (after arXiv 2511.00262), with the product ids it names (`mentions`).
+  (after arXiv 2511.00262), with the product ids it names (`mentions`). #2183 — the
+  prompt's line for each product says where the change meets it (`ReportProduct.touches`:
+  its tables and topics, then its cited, call-site and provider files; at most 8, each
+  cut to 160 characters, fenced like the rest), and the model is told to give a product
+  only a behaviour its own line shows and never to guess the owner. Before, it named
+  products by coverage and impact only and assigned a receipt rule to the product that
+  holds the flag, not the one that sends receipts.
 - **Requirements.** The statement restated as functional and non-functional
   requirements (#1612 `kind`, `NFR_CATEGORIES`). When the model gives none, the
   assessment's criteria stand in and `requirementsSource` says `template`.

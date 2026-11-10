@@ -124,7 +124,7 @@ describe("impactGroups", () => {
 
     const ledger = impactGroups(impactView()).affected[1];
     expect(ledger.deepDive.files).toEqual([
-      { location: "src/client/billing.ts:88", repo: "acme/p-ledger", callSite: true },
+      { location: "src/client/billing.ts:88", repo: "acme/p-ledger", kind: "call-site" },
     ]);
     expect(ledger.deepDive.contract).toEqual({
       version: 4,
@@ -141,10 +141,80 @@ describe("impactGroups", () => {
     const billing = impactGroups(impactView()).affected[0];
     expect(billing.deepDive.repos).toEqual([{ label: "acme/payments", role: "partial" }]);
     expect(billing.deepDive.files).toEqual([
-      { location: "src/transfer.ts:42", repo: "acme/payments", callSite: false },
+      { location: "src/transfer.ts:42", repo: "acme/payments", kind: "cited" },
     ]);
     expect(billing.derivation).toEqual([]);
     expect(billing.path).toEqual([]);
+  });
+
+  it("#2183 — lists where a host the gap engine cited nothing in provides what changes", () => {
+    const v = impactView();
+    v.repos = v.repos.map((r) => ({ ...r, citations: [] }));
+    const withSites = (productId: string, sites: Record<number, unknown>) => {
+      const row = v.products.find((p) => p.productId === productId)!;
+      const hops = (row.technicalDetail as { impact: { hops: Array<Record<string, unknown>> } })
+        .impact.hops;
+      // Copies: the fixture shares one hop object between two paths.
+      (row.technicalDetail as { impact: { hops: unknown[] } }).impact.hops = hops.map((h, i) =>
+        sites[i] ? { ...h, providerSites: sites[i] } : h,
+      );
+    };
+    withSites("p-ledger", { 0: [{ filePath: "openapi.yaml", line: 12 }] });
+    // Warehouse's path repeats Billing → Ledger: its file is listed once.
+    withSites("p-warehouse", {
+      0: [{ filePath: "openapi.yaml", line: 12 }],
+      1: [{ filePath: "src/ledger/write.ts", line: null }],
+    });
+    withSites("p-events", { 0: [{ filePath: "src/events/publish.ts", line: 3 }] });
+    const byId = new Map(impactGroups(v).affected.map((p) => [p.productId, p]));
+    expect(byId.get("p-billing")!.deepDive.files).toEqual([
+      { location: "openapi.yaml:12", repo: "acme/p-billing", kind: "provides" },
+      { location: "src/events/publish.ts:3", repo: "acme/p-billing", kind: "provides" },
+    ]);
+    // Ledger passes the change on to Warehouse: its own side of that hop.
+    expect(byId.get("p-ledger")!.deepDive.files).toEqual([
+      { location: "src/client/billing.ts:88", repo: "acme/p-ledger", kind: "call-site" },
+      { location: "src/ledger/write.ts", repo: "acme/p-ledger", kind: "provides" },
+    ]);
+    // A hop out of it on a path the reader is not shown adds nothing.
+    const secret = v.products.find((p) => p.productId === "p-secret")!;
+    secret.technicalDetail = impactDetail("high", [
+      hop({ from: "p-billing", to: "p-secret", providerSites: [{ filePath: "x.ts", line: 1 }] }),
+    ]);
+    expect(
+      impactGroups(v)
+        .affected.find((p) => p.productId === "p-billing")!
+        .deepDive.files.map((f) => f.location),
+    ).not.toContain("x.ts:1");
+  });
+
+  it("#2183 — lists the tables of every link the change reaches a product by", () => {
+    const v = impactView();
+    const warehouse = v.products.find((p) => p.productId === "p-warehouse")!;
+    (warehouse.technicalDetail.impact as Record<string, unknown>).links = [
+      {
+        integrationKind: "database",
+        fromProductId: "p-ledger",
+        edgeProductIds: ["p-warehouse"],
+        providerRepoId: "r-p-ledger",
+        consumerRepoId: "r-p-warehouse",
+        resources: [
+          { kind: "table", name: "payments" },
+          { kind: "table", name: "customers" },
+        ],
+      },
+    ];
+    const dive = impactGroups(v).affected.find((p) => p.productId === "p-warehouse")!.deepDive;
+    expect(dive.resources).toEqual([
+      {
+        heading: "Tables and columns",
+        items: [
+          { name: "payments", detail: null },
+          { name: "customers", detail: null },
+          { name: "public.ledger_entries", detail: "table, used" },
+        ],
+      },
+    ]);
   });
 
   it("carries nothing for a restricted product but how it is reached", () => {
@@ -222,6 +292,10 @@ describe("storedImpact", () => {
     expect(storedImpact(bad({ consumer: null }))).toBeNull();
     expect(storedImpact(bad({ resource: { kind: 1 } }))).toBeNull();
     expect(storedImpact(bad({ callSites: [{ filePath: "a", line: "1" }] }))).toBeNull();
+    // #2183 — optional, but a malformed one is refused like the rest.
+    expect(storedImpact(bad({ providerSites: [{ filePath: 1, line: null }] }))).toBeNull();
+    expect(storedImpact(bad({ provider: { label: "x" } }))).toBeNull();
+    expect(storedImpact(bad({ provider: undefined, providerSites: undefined }))).not.toBeNull();
     expect(storedImpact(bad({ contract: { version: 1, items: [{ id: "x" }] } }))).toBeNull();
     expect(storedImpact(bad({ sharedObjects: [{ objectName: "t" }] }))).toBeNull();
     expect(

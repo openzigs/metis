@@ -22,9 +22,17 @@ import {
   IMPACT_LABEL,
   viaLabel,
   type AffectedProduct,
+  type DeepDiveFileKind,
   type NotAffectedProduct,
 } from "@/lib/portfolio-impact";
 import { PortfolioPathDiagram } from "./portfolio-path-diagram";
+
+/** After a deep-dive file: why it is listed (a cited file needs no note). */
+const FILE_KIND_NOTE: Record<DeepDiveFileKind, string> = {
+  cited: "",
+  "call-site": " (call site)",
+  provides: " (provides what changes)",
+};
 
 const SEVERITY_VARIANT: Record<string, "destructive" | "warning" | "info"> = {
   critical: "destructive",
@@ -134,7 +142,7 @@ function DeepDive({ product }: { product: AffectedProduct }) {
         items={d.files.map((f) => (
           <>
             {f.repo} · <Mono>{f.location}</Mono>
-            {f.callSite ? " (call site)" : ""}
+            {FILE_KIND_NOTE[f.kind]}
           </>
         ))}
       />

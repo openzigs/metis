@@ -92,6 +92,8 @@ const MAX_CONTRACT_ITEMS = 20;
 const MAX_SHARED_OBJECTS = 20;
 /** #1963 — links one product keeps, at most, of each edge kind. */
 const MAX_LINKS_PER_KIND = 5;
+/** #2183 — resources one link keeps, at most. */
+const MAX_LINK_RESOURCES = 10;
 
 // ─── Result ─────────────────────────────────────────────────────────────────
 
@@ -142,6 +144,12 @@ export interface ImpactHop {
   resource: { kind: string; name: string } | null;
   /** Where the consumer uses what changes, as detection recorded it. */
   callSites: Array<{ filePath: string; line: number | null }>;
+  /**
+   * #2183 — the provider's side of the same edge: where its code provides what
+   * the consumer uses (the table it writes, the API it serves). The only file
+   * evidence a host the gap engine found nothing in has.
+   */
+  providerSites: Array<{ filePath: string; line: number | null }>;
   contract: ImpactContractEvidence | null;
   sharedObjects: ImpactSharedObject[];
   severity: HopSeverity;
@@ -160,6 +168,12 @@ export interface ImpactLink {
   edgeProductIds: string[];
   providerRepoId: string;
   consumerRepoId: string;
+  /**
+   * #2183 — every resource the link's edges cross: two edges between the same
+   * repos through different tables are one link, and the deep dive lists both
+   * tables, not only the shown path's.
+   */
+  resources: Array<{ kind: string; name: string }>;
 }
 
 export interface ProductImpact {
@@ -363,9 +377,9 @@ function parseEvidence(raw: string): Evidence[] {
   }
 }
 
-/** The consumer's side of an edge: its file, and the evidence lines in it. */
-function callSitesOf(edge: EdgeRow, consumerIsSource: boolean): ImpactHop["callSites"] {
-  const file = consumerIsSource ? edge.sourceFile : edge.targetFile;
+/** One side of an edge (its source, or its target): its file, and the evidence lines in it. */
+function sitesOf(edge: EdgeRow, source: boolean): ImpactHop["callSites"] {
+  const file = source ? edge.sourceFile : edge.targetFile;
   if (!file) return [];
   const lines = parseEvidence(edge.evidence)
     .filter((e) => e.filePath === file)
@@ -901,12 +915,25 @@ function linkKey(l: ImpactLink): string {
   ].join("\u0000");
 }
 
-/** #1963 — record a link on `target`, once, and at most `MAX_LINKS_PER_KIND` of its kind. */
+/**
+ * #1963 — record a link on `target`, once, and at most `MAX_LINKS_PER_KIND` of
+ * its kind. #2183 — a link already recorded gains the new one's resources (up
+ * to `MAX_LINK_RESOURCES`), so a second table between the same repos is kept.
+ */
 function addLink(target: ProductImpact, link: ImpactLink): void {
   const sameKind = target.links.filter((l) => l.integrationKind === link.integrationKind);
+  const known = sameKind.find((l) => linkKey(l) === linkKey(link));
+  if (known) {
+    for (const r of link.resources) {
+      if (known.resources.length >= MAX_LINK_RESOURCES) break;
+      if (!known.resources.some((k) => k.kind === r.kind && k.name === r.name)) {
+        known.resources.push(r);
+      }
+    }
+    return;
+  }
   if (sameKind.length >= MAX_LINKS_PER_KIND) return;
-  if (sameKind.some((l) => linkKey(l) === linkKey(link))) return;
-  target.links.push(link);
+  target.links.push({ ...link, resources: link.resources.slice(0, MAX_LINK_RESOURCES) });
 }
 
 /** #1963 — the edge kinds a product is reached by beyond its shown path's. */
@@ -1081,7 +1108,12 @@ async function walkFrom(
           confidence: c.confidence,
           origin: oneOf(PRODUCT_EDGE_ORIGINS, c.consumerEdge.origin) ?? "detected",
           resource,
-          callSites: callSitesOf(c.consumerEdge, c.consumerIsSource),
+          callSites: sitesOf(c.consumerEdge, c.consumerIsSource),
+          // Two edges meeting at a resource: the provider's is the first, from its source.
+          providerSites:
+            c.edges.length > 1
+              ? sitesOf(c.edges[0], true)
+              : sitesOf(c.consumerEdge, !c.consumerIsSource),
           contract,
           sharedObjects,
           severity: hopSeverity,
@@ -1121,6 +1153,7 @@ async function walkFrom(
               edgeProductIds: [...new Set(c.edges.map((e) => e.productId))].sort(),
               providerRepoId: c.provider,
               consumerRepoId: c.consumer,
+              resources: resource ? [resource] : [],
             });
           }
           const hops = [...from.hops, hopTo(productId)];

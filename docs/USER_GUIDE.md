@@ -2153,7 +2153,11 @@ reaches.
 Each product's **Technical deep dive** lists its repositories and files, the contract items
 that changed, and the shared resources the coupling goes through, grouped as databases,
 tables and columns, topics, identity providers and buckets. It also draws the path of
-products the change travels along.
+products the change travels along. A file marked **(call site)** is where a downstream
+product uses what changes; one marked **(provides what changes)** is where this product's
+code provides it, for example the table it writes, so the product chosen to build the
+requirement lists files even when the check found nothing that covers it. The tables are
+every table the change reaches the product through, not only the one on the path drawn.
 
 If nothing covers the requirement yet, no product's code changes until one is chosen to
 build it, so there is nothing to work the impact out from. Choose that product under
@@ -5296,7 +5300,7 @@ Click any document card to open the rich preview. The previewer renders:
 - **GFM tables** — structured data in clean table format
 - **Table of Contents** — sidebar navigation auto-generated from headings
 
-Each card and detail view also shows a separate **Indexing** badge. This reflects whether the generated markdown has been published into the searchable knowledge base yet. If indexing is still queued or running, the document remains readable in the preview, but retrieval freshness may lag until indexing completes.
+Each card and detail view also shows a separate **Indexing** badge. This reflects whether the generated markdown has been published into the searchable knowledge base yet. If indexing is still queued or running, the document remains readable in the preview, but retrieval freshness may lag until indexing completes. For ten minutes after a document finishes generating, the page checks again every few seconds while its indexing is pending, so the badge moves on to **indexed** (or **quarantined**, when it awaits approval) without a reload.
 
 ### 30.5 Using the TOC Sidebar
 

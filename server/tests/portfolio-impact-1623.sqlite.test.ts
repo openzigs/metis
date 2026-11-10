@@ -162,6 +162,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           label: "acme/storefront",
         });
         expect(apiHop.callSites).toEqual([{ filePath: "src/checkout/order-client.ts", line: 42 }]);
+        // #2183 — and the provider's side of the same edge (the edge's target here).
+        expect(apiHop.providerSites).toEqual([{ filePath: "schema.graphql", line: 3 }]);
         // The provider's contract item, from the contract's latest version.
         expect(apiHop.contract).toEqual(
           expect.objectContaining({
@@ -190,6 +192,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         const [dbHop] = reporting.hops;
         expect(dbHop.resource).toEqual({ kind: "table", name: "orders" });
         expect(dbHop.callSites).toEqual([{ filePath: "sql/daily-report.sql", line: 7 }]);
+        // #2183 — the writer's file, from the edge's source; no evidence line names it.
+        expect(dbHop.providerSites).toEqual([{ filePath: "src/orders/store.ts", line: null }]);
         // The table both projects use, from the cross-project usage classifications.
         expect(dbHop.sharedObjects).toEqual([
           { schemaName: null, objectName: "orders", objectType: "table", usageClass: "used" },
@@ -247,6 +251,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
             edgeProductIds: [P.reporting],
             providerRepoId: R.ordersApi,
             consumerRepoId: R.reporting,
+            resources: [],
           });
           // Stored on the row and read back by the overview.
           const stored = withImpact(
@@ -366,6 +371,49 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
     });
 
+    it("#2183 — a second table between the same repos is one link carrying both tables", async () => {
+      await db.productResource.create({
+        data: {
+          id: "res-customers-2183",
+          productId: P.reporting,
+          kind: "table",
+          name: "customers",
+        },
+      });
+      await db.productEdge.create({
+        data: {
+          id: "e-orders-reporting-customers-2183",
+          productId: P.reporting,
+          sourceRepoId: R.ordersApi,
+          targetRepoId: R.reporting,
+          edgeType: "calls",
+          confidence: 0.8,
+          evidence: "[]",
+          integrationKind: "database",
+          strength: "intrusive",
+          direction: "writes",
+          resourceId: "res-customers-2183",
+        },
+      });
+      try {
+        const reporting = of(await ordersImpact(), P.reporting);
+        // The shown path is still one hop, through one table.
+        expect(reporting.hops).toHaveLength(1);
+        const database = reporting.links.filter((l) => l.integrationKind === "database");
+        expect(database).toHaveLength(1);
+        expect(database[0].resources).toEqual(
+          expect.arrayContaining([
+            { kind: "table", name: "orders" },
+            { kind: "table", name: "customers" },
+          ]),
+        );
+        expect(database[0].resources).toHaveLength(2);
+      } finally {
+        await db.productEdge.delete({ where: { id: "e-orders-reporting-customers-2183" } });
+        await db.productResource.delete({ where: { id: "res-customers-2183" } });
+      }
+    });
+
     it("two edges meeting at a shared table: the writer reaches the other user", async () => {
       // A declared repo -> table edge each, no target repo: paired through the resource.
       await db.productEdge.createMany({
@@ -376,6 +424,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
             sourceRepoId: R.ordersApi,
             targetRepoId: null,
             resourceId: ORDERS_TABLE,
+            sourceFile: "src/orders/writer.ts",
             edgeType: "produces",
             confidence: 1,
             integrationKind: "database",
@@ -411,6 +460,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(n.hops).toHaveLength(1);
         expect(n.hops[0].resource).toEqual({ kind: "table", name: "orders" });
         expect(n.hops[0].origin).toBe("declared");
+        // #2183 — the provider's side is the writer's edge, from its source.
+        expect(n.hops[0].providerSites).toEqual([{ filePath: "src/orders/writer.ts", line: null }]);
+        expect(n.hops[0].callSites).toEqual([]);
       } finally {
         await db.productEdge.deleteMany({
           where: { id: { in: ["e-orders-writes-table-1623", "e-notifier-reads-table-1623"] } },

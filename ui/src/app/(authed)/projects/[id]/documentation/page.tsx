@@ -162,6 +162,40 @@ interface GeneratedDoc {
   }>;
 }
 
+/** #2183 — how often a finished document whose index is still being built is read again. */
+export const INDEXING_POLL_MS = 5_000;
+/**
+ * #2183 — for how long after it was generated: a document that never indexes
+ * (one published before the indexing outbox existed reads `pending` for good)
+ * is not polled forever.
+ */
+export const INDEXING_POLL_WINDOW_MS = 10 * 60_000;
+
+type IndexingDoc = Pick<GeneratedDoc, "status" | "indexing" | "generatedAt">;
+
+/**
+ * #2183 — whether a document finished generating in the last
+ * {@link INDEXING_POLL_WINDOW_MS} and its index is still to be built. Indexing
+ * runs as its own scheduler task after the generation job ends, and that job's
+ * terminal event was the page's last refresh, so a BRD read "Queued for
+ * indexing" until a reload. The page reads such a document again until it
+ * settles. Exported for unit testing.
+ */
+export function indexingInFlight(doc: IndexingDoc | undefined, now = Date.now()): boolean {
+  if (!doc || !isExportable(doc.status) || !doc.generatedAt) return false;
+  const age = now - Date.parse(doc.generatedAt);
+  if (!(age < INDEXING_POLL_WINDOW_MS)) return false;
+  return (doc.indexing?.state ?? "pending") === "pending";
+}
+
+/** #2183 — the `refetchInterval` of a query whose documents may still be indexing. */
+export function indexingPollInterval(
+  docs: IndexingDoc[] | undefined,
+  now = Date.now(),
+): number | false {
+  return (docs ?? []).some((d) => indexingInFlight(d, now)) ? INDEXING_POLL_MS : false;
+}
+
 export default function DocumentationPage(): React.ReactElement {
   const params = useParams<{ id: string }>();
   const projectId = params?.id ?? "";
@@ -190,6 +224,7 @@ export default function DocumentationPage(): React.ReactElement {
     queryKey: ["generated-docs", projectId],
     queryFn: () => apiFetch<GeneratedDoc[]>(`/projects/${projectId}/docs`),
     enabled: Boolean(projectId),
+    refetchInterval: (q) => indexingPollInterval(q.state.data),
   });
 
   // Fetch single doc detail
@@ -197,6 +232,7 @@ export default function DocumentationPage(): React.ReactElement {
     queryKey: ["generated-docs", projectId, selectedDoc],
     queryFn: () => apiFetch<GeneratedDoc>(`/projects/${projectId}/docs/${selectedDoc}`),
     enabled: Boolean(selectedDoc),
+    refetchInterval: (q) => indexingPollInterval(q.state.data ? [q.state.data] : []),
   });
 
   // #190 — a previous version's body, fetched only when the user opens it.
