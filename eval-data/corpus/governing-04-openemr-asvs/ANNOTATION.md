@@ -301,8 +301,10 @@ The last row is the committed reading,
 hard error.
 
 - **What draft B found:** OS-26, OS-27 and OS-32 → PA-04, OS-08 → PA-04 in some runs, and
-  OS-04, OS-17 and OS-30 → PA-10. It drew no PA-01 extra in any run. The PA-05 extra on OS-26
-  was there before it too.
+  OS-04, OS-17 and OS-30 → PA-10. It drew no PA-01 extra in any run. The committed reading
+  at `320ac11b3` has no PA-05 extra on OS-26. The readings before draft B had one: #2140's
+  (`baseline-A5-sonnet-2140`) in 1 of 2 runs, and #2152's draft at `dbd9a8aa4`
+  (`baseline-A5-sonnet-2152`) in 2 of 2.
 - **Its extras:** OS-10 → PA-04 (a strength meter on the password-setting step), OS-29 →
   PA-10 (one-time login links) and OS-27 → PA-02. Each is arguable, and none is labelled.
 - The hard error at `cee01ada6` was OS-21 → LG-05, from the findings call. #2152's "ideally"
