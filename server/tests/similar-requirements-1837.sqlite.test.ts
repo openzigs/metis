@@ -377,6 +377,62 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(lot?.codeLinks.map((l) => l.freshness)).toEqual(["stale", "unverified"]);
     });
 
+    it("#1891 — lists each (file, symbol) once, the current row kept, and a repeat takes no slot of the cap", async () => {
+      // lot's semantic link to recall.ts (0.6, never checked) and a current agent citation of it.
+      const repeat = await db.requirementCodeMapping.create({
+        data: {
+          requirementId: ids.lot!,
+          projectId: A,
+          filePath: "src/inventory/recall.ts",
+          startLine: 10,
+          endLine: 40,
+          confidence: 0.5,
+          source: "analysis-grounding",
+          freshness: "fresh",
+        },
+      });
+      try {
+        const [lot] = await findSimilarRequirements(
+          A,
+          { requirementId: ids.batch },
+          { db, limit: 1 },
+        );
+        // Still listed surer first; the repeat's current row speaks for recall.ts.
+        expect(lot!.codeLinks.map((l) => [l.filePath, l.source, l.freshness])).toEqual([
+          ["src/inventory/lots.ts", "semantic", "unverified"],
+          ["src/inventory/recall.ts", "analysis-grounding", "fresh"],
+        ]);
+        // The kept row is the one a borrow of the link copies.
+        expect(lot!.codeLinks[1]!.mappingId).toBe(repeat.id);
+
+        // 2 distinct links + 18 = the cap exactly, over 21 rows: not truncated.
+        await db.requirementCodeMapping.createMany({
+          data: Array.from({ length: SIMILAR_CODE_LINKS_PER_ITEM - 2 }, (_, i) => ({
+            requirementId: ids.lot!,
+            projectId: A,
+            filePath: `src/inventory/extra-${i}.ts`,
+            confidence: 0.1,
+          })),
+        });
+        const [atCap] = await findSimilarRequirements(
+          A,
+          { requirementId: ids.batch },
+          { db, limit: 1 },
+        );
+        expect(atCap!.codeLinks).toHaveLength(SIMILAR_CODE_LINKS_PER_ITEM);
+        expect(new Set(atCap!.codeLinks.map((l) => l.filePath)).size).toBe(
+          SIMILAR_CODE_LINKS_PER_ITEM,
+        );
+        expect(atCap!.codeLinksTruncated).toBe(false);
+      } finally {
+        await db.requirementCodeMapping.deleteMany({
+          where: {
+            OR: [{ id: repeat.id }, { filePath: { startsWith: "src/inventory/extra-" } }],
+          },
+        });
+      }
+    });
+
     it("#1840 — each code link carries its saved row's id, for the borrow to name", async () => {
       const [lot] = await findSimilarRequirements(
         A,
