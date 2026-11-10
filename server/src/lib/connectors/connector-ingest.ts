@@ -537,6 +537,14 @@ export interface IngestSourceOptions {
    * another run holds it.
    */
   lease?: ConnectorIngestLease;
+  /**
+   * Issue #1579 — called with the run's file count: once with `processed: 0`
+   * when the selection is known, then after every selected file settles
+   * (embedded, unchanged, failed or refused by the confined read). `total` is
+   * the number selected. Lets a caller show "120 of 450 files" instead of a
+   * step label that sits unchanged for the whole ingest.
+   */
+  onProgress?: (p: { processed: number; total: number }) => void;
 }
 
 /** Issue #182 — the limits one repository-source ingest runs under. */
@@ -973,6 +981,9 @@ async function runSourceIngest(
       });
     }
     await writer.write(true);
+    const reportProgress = () =>
+      options.onProgress?.({ processed: state.processed, total: state.selected });
+    reportProgress();
 
     const ctx = unitContext(projectId, connectorId, "repo", actorId);
     await forEachBounded(selection.selected, limits.concurrency, async (file) => {
@@ -983,6 +994,7 @@ async function runSourceIngest(
       });
       if (!read.ok) {
         state.processed += 1;
+        reportProgress();
         if (read.reason === "too-large") {
           state.skipped.tooLarge += 1;
           recordTooLarge(file.relPath);
@@ -1013,6 +1025,7 @@ async function runSourceIngest(
       if (outcome.action === "unchanged") state.unchanged += 1;
       if (outcome.failed) state.failed += 1;
       state.chunkCount += outcome.chunkCount;
+      reportProgress();
       await writer.write();
     });
     // #756 — a file absent from this checkout (deleted upstream, or not in the

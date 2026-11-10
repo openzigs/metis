@@ -8,7 +8,7 @@
  * per-project coverage + reindex control so an operator can migrate a project
  * to the active backend's dimension after switching backends.
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError } from "@/lib/api-client";
 import { embeddingsApi } from "@/lib/embeddings-api";
@@ -21,6 +21,11 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { PageHeader } from "@/components/ui/page-header";
 
+/** Issue #1579 — the query parameter that keeps the checked project across a reload. */
+const PROJECT_PARAM = "project";
+/** Issue #1579 — how often coverage is re-read while a reindex runs that this page cannot follow. */
+const RUNNING_POLL_MS = 5000;
+
 export default function AdminEmbeddingsPage() {
   const qc = useQueryClient();
   const [projectId, setProjectId] = useState("");
@@ -31,6 +36,19 @@ export default function AdminEmbeddingsPage() {
   // transient terminal feedback).
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const [lastReindexMessage, setLastReindexMessage] = useState<string | null>(null);
+  // Issue #1579 — the last job this page saw end, so coverage read a moment
+  // before the run released its guard cannot send the page back to it.
+  const [finishedJobId, setFinishedJobId] = useState<string | null>(null);
+
+  // Issue #1579 — a reload used to drop the project, and with it any sign of the
+  // reindex running for it. The checked project lives in the URL instead.
+  useEffect(() => {
+    const fromUrl = new URLSearchParams(window.location.search).get(PROJECT_PARAM)?.trim();
+    if (fromUrl) {
+      setProjectId(fromUrl);
+      setSubmittedProjectId(fromUrl);
+    }
+  }, []);
 
   const status = useQuery({
     queryKey: queryKeys.admin.embeddings(),
@@ -41,13 +59,30 @@ export default function AdminEmbeddingsPage() {
     queryKey: queryKeys.admin.embeddingsCoverage(submittedProjectId),
     queryFn: () => embeddingsApi.coverage(submittedProjectId),
     enabled: submittedProjectId.length > 0,
+    // A reindex is running and this page has no job of it to follow (another
+    // replica or the CLI runs it): re-read until it ends.
+    refetchInterval: (query) => {
+      const shadow = query.state.data?.shadow;
+      return shadow?.inProgress && (!shadow.jobId || shadow.jobId === finishedJobId)
+        ? RUNNING_POLL_MS
+        : false;
+    },
   });
+
+  // Issue #1579 — the reindex the server says is running, when it can name it.
+  // Followed exactly as one this page started, so a reload mid-run re-attaches
+  // to its progress instead of offering a second reindex.
+  const shadow = coverage.data?.shadow;
+  const runningJobId =
+    shadow?.inProgress && shadow.jobId && shadow.jobId !== finishedJobId ? shadow.jobId : null;
+  const followedJobId = activeJobId ?? runningJobId;
 
   // Subscribe to the in-flight reindex job: drives the progress bar and fires the
   // terminal success/failure toast (the failure text is already the server's
   // user-safe generic message, #254). On terminal, refresh coverage and clear.
-  const jobEvent = useJobToast(activeJobId, {
+  const jobEvent = useJobToast(followedJobId, {
     onTerminal: (event) => {
+      setFinishedJobId(event.jobId);
       if (event.status === "completed") {
         setLastReindexMessage(event.message ?? "Reindex complete.");
       }
@@ -66,7 +101,7 @@ export default function AdminEmbeddingsPage() {
     },
   });
 
-  const reindexing = activeJobId !== null || reindex.isPending;
+  const reindexing = followedJobId !== null || reindex.isPending || shadow?.inProgress === true;
   const active = status.data?.active;
 
   return (
@@ -182,9 +217,13 @@ export default function AdminEmbeddingsPage() {
           className="flex items-end gap-3"
           onSubmit={(e) => {
             e.preventDefault();
+            const id = projectId.trim();
             setLastReindexMessage(null);
             setActiveJobId(null);
-            setSubmittedProjectId(projectId.trim());
+            setSubmittedProjectId(id);
+            const url = new URL(window.location.href);
+            url.searchParams.set(PROJECT_PARAM, id);
+            window.history.replaceState(window.history.state, "", url);
           }}
         >
           <div className="flex-1 max-w-md">
@@ -224,7 +263,11 @@ export default function AdminEmbeddingsPage() {
                   <span className="text-muted-foreground">Matching active model:</span>{" "}
                   <span className="font-mono">{coverage.data.matchingChunks}</span>
                 </span>
-                {coverage.data.needsReindex ? (
+                {reindexing ? (
+                  <Badge variant="outline" data-testid="reindex-in-progress">
+                    Reindex in progress
+                  </Badge>
+                ) : coverage.data.needsReindex ? (
                   <Badge variant="destructive" data-testid="needs-reindex">
                     Reindex recommended
                   </Badge>
@@ -253,13 +296,18 @@ export default function AdminEmbeddingsPage() {
                   : `Reindex to ${coverage.data.currentModel} (${coverage.data.currentDimension}d)`}
               </Button>
 
-              {activeJobId ? (
+              {followedJobId ? (
                 <JobProgress
                   progress={jobEvent?.progress}
                   message={jobEvent?.message ?? "Reindexing embeddings…"}
                   label="Reindex progress"
                   testId="reindex-progress"
                 />
+              ) : shadow?.inProgress ? (
+                <p className="text-sm text-muted-foreground" data-testid="reindex-elsewhere">
+                  A reindex is running for this project on another server process. This page checks
+                  again every few seconds.
+                </p>
               ) : null}
 
               {reindex.isError ? (

@@ -114,7 +114,7 @@ const recordJobScope = vi.hoisted(() =>
 );
 vi.mock("../../lib/socket/job-scope-store.js", () => ({ recordJobScope }));
 
-import { embeddingsAdminRouter, runReindexJob } from "./embeddings.js";
+import { embeddingsAdminRouter, runReindexJob, runningReindexJobId } from "./embeddings.js";
 import { AppError } from "../../middleware/error-handler.js";
 import { ReindexConflictError } from "../../lib/rag/knowledge-service.js";
 
@@ -538,6 +538,85 @@ describe("GET /admin/embeddings/projects/:id/coverage — shadow state (#787)", 
     // Without this, a project with 64 chunks of completed work looks exactly like
     // one that was never reindexed at all.
     expect(res.body.data.shadow).toMatchObject({ shadowChunks: 64, resumable: true });
+  });
+});
+
+// #1579 — a page that reloaded mid-reindex read "Up to date" with a live
+// Reindex button: it had lost the POST's job id and coverage did not name one.
+describe("GET /admin/embeddings/projects/:id/coverage — the running reindex's job id (#1579)", () => {
+  const coverage = {
+    totalChunks: 10,
+    modelCounts: { m: 10 },
+    currentModel: "m",
+    currentDimension: 1,
+    matchingChunks: 10,
+    mismatchedModels: [],
+    needsReindex: false,
+  };
+  const shadowState = (inProgress: boolean) => ({
+    projectId: "p1",
+    inProgress,
+    shadowChunks: 0,
+    shadowModels: [],
+    resumable: false,
+    lease: null,
+  });
+  const result = { reindexedChunks: 1, totalChunks: 1, currentModel: "m", currentDimension: 1 };
+
+  beforeEach(() => {
+    coverageReport.mockResolvedValue(coverage);
+  });
+
+  it("names the job this process is running, and forgets it once the run ends", async () => {
+    let finish!: (v: unknown) => void;
+    reindexProject.mockReturnValueOnce(new Promise((r) => (finish = r)));
+    const run = runReindexJob("job-running", "p1", {});
+    reindexShadowState.mockResolvedValue(shadowState(true));
+
+    const during = await request(makeApp()).get("/admin/embeddings/projects/p1/coverage");
+    expect(during.body.data.shadow).toMatchObject({ inProgress: true, jobId: "job-running" });
+    expect(runningReindexJobId("p2")).toBeNull();
+
+    finish(result);
+    await run;
+    expect(runningReindexJobId("p1")).toBeNull();
+  });
+
+  it("forgets a failed run too", async () => {
+    reindexProject.mockRejectedValueOnce(new Error("boom"));
+    await runReindexJob("job-failed", "p1", {});
+    expect(runningReindexJobId("p1")).toBeNull();
+  });
+
+  it("a second request refused by the reindex guard does not take the running job's slot", async () => {
+    let finish!: (v: unknown) => void;
+    reindexProject.mockReturnValueOnce(new Promise((r) => (finish = r)));
+    const first = runReindexJob("job-first", "p1", {});
+    reindexProject.mockRejectedValueOnce(new ReindexConflictError("p1"));
+    await runReindexJob("job-second", "p1", {});
+
+    expect(runningReindexJobId("p1")).toBe("job-first");
+    finish(result);
+    await first;
+  });
+
+  it("names no job while nothing runs, even if the map were stale", async () => {
+    let finish!: (v: unknown) => void;
+    reindexProject.mockReturnValueOnce(new Promise((r) => (finish = r)));
+    const run = runReindexJob("job-x", "p1", {});
+    // Another replica's lease expired, say: the shadow says nothing is running.
+    reindexShadowState.mockResolvedValue(shadowState(false));
+
+    const res = await request(makeApp()).get("/admin/embeddings/projects/p1/coverage");
+    expect(res.body.data.shadow).toMatchObject({ inProgress: false, jobId: null });
+    finish(result);
+    await run;
+  });
+
+  it("reports a reindex running elsewhere as in progress with no job id", async () => {
+    reindexShadowState.mockResolvedValue(shadowState(true));
+    const res = await request(makeApp()).get("/admin/embeddings/projects/p1/coverage");
+    expect(res.body.data.shadow).toMatchObject({ inProgress: true, jobId: null });
   });
 });
 
