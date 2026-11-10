@@ -22,6 +22,40 @@ vi.mock("./clarification-dialog-store.js", () => ({
   deleteDialogState: vi.fn(async (id: string) => {
     store.delete(id);
   }),
+  // #2101 / #2142 — the compare-and-set writes over the same map.
+  readDialogStateRevision: vi.fn(async (id: string) => {
+    const v = store.get(id);
+    return v ? { state: structuredClone(v) as unknown, revision: JSON.stringify(v) } : undefined;
+  }),
+  replaceDialogState: vi.fn(async (id: string, revision: string | undefined, state: unknown) => {
+    // #2142 — no revision: created only while there is no row.
+    const held = store.get(id);
+    if (revision === undefined ? held !== undefined : JSON.stringify(held) !== revision) {
+      return null;
+    }
+    store.set(id, structuredClone(state));
+    return JSON.stringify(state);
+  }),
+  // #2142 — one transaction: `alongside` throwing rolls the state write back.
+  commitDialogState: vi.fn(
+    async (
+      id: string,
+      revision: string,
+      state: unknown,
+      alongside: (tx: unknown) => Promise<void>,
+    ) => {
+      const held = store.get(id);
+      if (JSON.stringify(held) !== revision) return null;
+      store.set(id, structuredClone(state));
+      try {
+        await alongside({});
+      } catch (err) {
+        store.set(id, held);
+        throw err;
+      }
+      return JSON.stringify(state);
+    },
+  ),
 }));
 
 import { ClarificationDialog } from "./clarification-dialog.js";
@@ -400,6 +434,40 @@ describe("#2128 — a clarifying question never shows a requirement's internal i
     expect(
       nameRequirementIds(`How does the password length requirement (id: ${LENGTH_ID}) fit?`, reqs),
     ).toBe("How does the password length requirement fit?");
+  });
+
+  // #2143 — a label or a quoted name before "requirement" already names it: only
+  // punctuation, an article or a preposition leaves it bare.
+  it("#2143 — 'requirement' after a label, a number or a quoted name is not bare", async () => {
+    const { nameRequirementIds } = await import("./clarification-dialog.js");
+    const reqs = [req(LENGTH_ID, "Minimum password length")];
+    expect(nameRequirementIds(`The REQ-001 requirement (id: ${LENGTH_ID}) is unclear.`, reqs)).toBe(
+      "The REQ-001 requirement is unclear.",
+    );
+    expect(
+      nameRequirementIds(`Is the "Password length" requirement (id: ${LENGTH_ID}) met?`, reqs),
+    ).toBe('Is the "Password length" requirement met?');
+    expect(
+      nameRequirementIds(`Is the “Password length” requirement (id: ${LENGTH_ID}) met?`, reqs),
+    ).toBe("Is the “Password length” requirement met?");
+    // Punctuation still leaves it bare.
+    expect(nameRequirementIds(`Unclear: requirement (id: ${LENGTH_ID}).`, reqs)).toBe(
+      'Unclear: requirement "Minimum password length".',
+    );
+  });
+
+  // #2143 — whether "requirement" is bare is read over the label window before the
+  // aside, not over the whole question built so far.
+  it("#2143 — a long question before the aside reads the same as a short one", async () => {
+    const { nameRequirementIds } = await import("./clarification-dialog.js");
+    const reqs = [req(LENGTH_ID, "Minimum password length")];
+    const lead = "Before anything else, and with the export rules in mind, ".repeat(40);
+    expect(nameRequirementIds(`${lead}is the requirement (id: ${LENGTH_ID}) met?`, reqs)).toBe(
+      `${lead}is the requirement "Minimum password length" met?`,
+    );
+    expect(
+      nameRequirementIds(`${lead}is the length requirement (id: ${LENGTH_ID}) met?`, reqs),
+    ).toBe(`${lead}is the length requirement met?`);
   });
 
   it("#2132 — a bracket is taken only with the bracket that closes it", async () => {

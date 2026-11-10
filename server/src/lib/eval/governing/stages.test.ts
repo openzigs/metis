@@ -41,6 +41,22 @@ describe("stageErrors", () => {
     ]);
   });
 
+  // #2143 — a rule that applies but could not be cited (soft-deleted, its document
+  // gone) gets no finding; that is not the findings call's error.
+  it("names a miss whose rule could not be cited apart from the findings call", () => {
+    const errors = stageErrors(
+      [
+        { ruleId: "LG-01", truth: "compliant", verdict: null },
+        { ruleId: "LG-02", truth: "gap", verdict: null },
+      ],
+      [{ ...stage("LG-01", "applies"), citable: false }, stage("LG-02", "uncertain")],
+    );
+    expect(errors.map((e) => [e.ruleId, e.kind, e.stage])).toEqual([
+      ["LG-01", "missed", "rule-not-citable"],
+      ["LG-02", "missed", "findings-call"],
+    ]);
+  });
+
   it("names an extra rule by the applicability verdict that brought it in", () => {
     const errors = stageErrors(
       [
@@ -115,9 +131,9 @@ describe("stageSection", () => {
     });
     const text = lines.join("\n");
     expect(text).toContain("## Where each error arose (#2108)");
-    expect(text).toContain("| missed | 2 | 0 | 0 | 0 | 0 |");
-    expect(text).toContain("| extra | 0 | 0 | 1 | 0 | 0 |");
-    expect(text).toContain("| wrong-verdict | 0 | 0 | 0 | 0 | 0 |");
+    expect(text).toContain("| missed | 2 | 0 | 0 | 0 | 0 | 0 |");
+    expect(text).toContain("| extra | 0 | 0 | 1 | 0 | 0 | 0 |");
+    expect(text).toContain("| wrong-verdict | 0 | 0 | 0 | 0 | 0 | 0 |");
     expect(text).toContain(
       "- OS-08 → PA-05: missed, not-a-candidate (label gap, said none): 2 of 2 run(s)",
     );

@@ -32,11 +32,35 @@ vi.mock("./clarification-dialog-store.js", () => ({
       ? { state: JSON.parse(JSON.stringify(v)) as unknown, revision: JSON.stringify(v) }
       : undefined;
   }),
-  replaceDialogState: vi.fn(async (id: string, revision: string, state: unknown) => {
-    if (JSON.stringify(store.get(id)) !== revision) return null;
-    store.set(id, JSON.parse(JSON.stringify(state)));
+  replaceDialogState: vi.fn(async (id: string, revision: string | undefined, state: unknown) => {
+    // #2142 — no revision: created only while there is no row.
+    const held = store.get(id);
+    if (revision === undefined ? held !== undefined : JSON.stringify(held) !== revision) {
+      return null;
+    }
+    store.set(id, structuredClone(state));
     return JSON.stringify(state);
   }),
+  // #2142 — one transaction: `alongside` throwing rolls the state write back.
+  commitDialogState: vi.fn(
+    async (
+      id: string,
+      revision: string,
+      state: unknown,
+      alongside: (tx: unknown) => Promise<void>,
+    ) => {
+      const held = store.get(id);
+      if (JSON.stringify(held) !== revision) return null;
+      store.set(id, structuredClone(state));
+      try {
+        await alongside({});
+      } catch (err) {
+        store.set(id, held);
+        throw err;
+      }
+      return JSON.stringify(state);
+    },
+  ),
 }));
 
 import { ClarificationDialog, _setDialogState } from "./clarification-dialog.js";
@@ -497,10 +521,13 @@ describe("#2101 — two submits of one open round at the same time", () => {
     expect(JSON.stringify(store.get(ANALYSIS_ID))).toBe(before);
   });
 
-  it("leaves a write that landed meanwhile in place when it cannot re-open the round", async () => {
+  it("#2142 — beforeCommit writes in the round's transaction; a refusal makes no restore write", async () => {
     const q = await openRound();
     const dialog = new ClarificationDialog({ provider: makeProvider() });
-    const meanwhile = { marker: "written while the requirements were persisted" };
+    const storeModule = await import("./clarification-dialog-store.js");
+    vi.mocked(storeModule.replaceDialogState).mockClear();
+    vi.mocked(storeModule.commitDialogState).mockClear();
+    const handed: unknown[] = [];
 
     await expect(
       dialog.submitAnswers(
@@ -508,13 +535,18 @@ describe("#2101 — two submits of one open round at the same time", () => {
         [{ questionId: q.id, answer: "READ COMMITTED." }],
         REQUIREMENTS,
         undefined,
-        async () => {
-          store.set(ANALYSIS_ID, meanwhile);
+        async (_round, tx) => {
+          handed.push(tx);
           throw new Error("REQUIREMENTS_REPLACED");
         },
       ),
     ).rejects.toThrow("REQUIREMENTS_REPLACED");
 
-    expect(store.get(ANALYSIS_ID)).toEqual(meanwhile);
+    // The transaction commitDialogState opened is the one beforeCommit wrote in,
+    // and the round was never written outside it: nothing to put back.
+    expect(handed).toHaveLength(1);
+    expect(handed[0]).toBeDefined();
+    expect(vi.mocked(storeModule.commitDialogState)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(storeModule.replaceDialogState)).not.toHaveBeenCalled();
   });
 });

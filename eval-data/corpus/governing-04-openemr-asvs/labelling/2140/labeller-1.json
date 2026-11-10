@@ -1,0 +1,127 @@
+{
+  "labeller": "labeller 1: claude-opus-5-5 through `claude -p` with every tool switched off (`--tools \"\"`), no MCP server (`--strict-mcp-config` with an empty config), no settings sources and no session persistence, run from an empty directory; given only labelling/2140/labeller-1-prompt.txt (seed 21401): policy-v1 and the 8 requirements added for #2140 (OS-26 to OS-33) in a seeded order. It saw no label, no rule summary, no code, no prompt of the product and no arm. It is not the agent that chose the requirements.",
+  "labelledAgainst": "policy-v1.md",
+  "costUsd": 0.1221,
+  "items": [
+    {
+      "id": "OS-26",
+      "applies": [
+        {
+          "ruleId": "PA-01",
+          "verdict": "compliant",
+          "reason": "The initial user password must be at least 12 characters, which exceeds the 8-character minimum."
+        }
+      ]
+    },
+    {
+      "id": "OS-27",
+      "applies": [
+        {
+          "ruleId": "PA-12",
+          "verdict": "needs-ba-input",
+          "reason": "Forcing a change at first login stops the default password becoming long-term, but the request does not say whether default passwords are random per user and expire.",
+          "businessFact": "Are new users' default passwords securely randomly generated for each user, and do they expire after a short period if not used?"
+        },
+        {
+          "ruleId": "PA-10",
+          "verdict": "compliant",
+          "reason": "The request requires all new users to set up a TOTP second factor."
+        }
+      ]
+    },
+    {
+      "id": "OS-28",
+      "applies": [
+        {
+          "ruleId": "PA-02",
+          "verdict": "compliant",
+          "reason": "The fix restores the patient's ability to change their password without being forced to create a new username."
+        },
+        {
+          "ruleId": "PA-03",
+          "verdict": "needs-ba-input",
+          "reason": "The report does not say whether the portal password change form requires the current password as well as the new one.",
+          "businessFact": "Does the portal password change form require the patient's current password as well as the new password?"
+        }
+      ]
+    },
+    {
+      "id": "OS-29",
+      "applies": [
+        {
+          "ruleId": "DP-01",
+          "verdict": "needs-ba-input",
+          "reason": "Copyable one-time invitation links probably carry the login token in the URL.",
+          "businessFact": "Does the one-time telehealth invitation link put the authentication token in the URL or query string?"
+        },
+        {
+          "ruleId": "PA-12",
+          "verdict": "needs-ba-input",
+          "reason": "The links are one-time use, but the request does not say whether the codes are securely random or expire after a short time.",
+          "businessFact": "Are third-party one-time login tokens securely randomly generated, and do they expire after a short period as well as after first use?"
+        }
+      ]
+    },
+    {
+      "id": "OS-30",
+      "applies": [
+        {
+          "ruleId": "PA-12",
+          "verdict": "gap",
+          "reason": "Letting admins turn off the forced change means admin-created initial portal credentials can become the patient's long-term password."
+        },
+        {
+          "ruleId": "DP-01",
+          "verdict": "needs-ba-input",
+          "reason": "The proposed one-time auto-login could carry its secret token in the URL or query string.",
+          "businessFact": "Will the one-time auto-login token be passed in the URL or query string, or only in the message body or headers?"
+        }
+      ]
+    },
+    {
+      "id": "OS-31",
+      "applies": [
+        {
+          "ruleId": "PA-15",
+          "verdict": "needs-ba-input",
+          "reason": "Encounter signing will rely on Google SSO, but the request does not say whether the app checks the authentication strength and recentness that Google returns.",
+          "businessFact": "When an encounter is signed via Google SSO, does the application require and verify a fresh authentication (for example auth_time or forced re-prompt) from the information Google returns?"
+        }
+      ]
+    },
+    {
+      "id": "OS-32",
+      "applies": [
+        {
+          "ruleId": "PA-03",
+          "verdict": "needs-ba-input",
+          "reason": "The page will make password updates independent of username updates, but it is silent on whether the current password is required.",
+          "businessFact": "Will the independent password update on the portal credential settings page require the patient's current password as well as the new one?"
+        },
+        {
+          "ruleId": "PA-11",
+          "verdict": "needs-ba-input",
+          "reason": "Patients can update their username and password, but the request does not say whether they are notified afterwards.",
+          "businessFact": "Is the patient notified, for example by email, after their portal username or password is changed?"
+        },
+        {
+          "ruleId": "SE-04",
+          "verdict": "needs-ba-input",
+          "reason": "The request does not say whether a password change offers to end the patient's other active sessions.",
+          "businessFact": "After a portal password change, is the patient given the option to terminate all other active sessions?"
+        }
+      ]
+    },
+    {
+      "id": "OS-33",
+      "applies": [
+        {
+          "ruleId": "PA-14",
+          "verdict": "needs-ba-input",
+          "reason": "The administrator starts the credential reset, but the report does not say whether the admin can see or choose the patient's new password.",
+          "businessFact": "Does the admin-initiated portal credential reset send the patient a reset link or a system-generated secret that the administrator never sees or chooses?"
+        }
+      ]
+    }
+  ]
+}

@@ -37,11 +37,35 @@ vi.mock("../src/lib/analysis/clarification-dialog-store.js", () => ({
       ? { state: JSON.parse(JSON.stringify(v)) as unknown, revision: JSON.stringify(v) }
       : undefined;
   }),
-  replaceDialogState: vi.fn(async (id: string, revision: string, state: unknown) => {
-    if (JSON.stringify(fakeStore.get(id)) !== revision) return null;
-    fakeStore.set(id, JSON.parse(JSON.stringify(state)));
+  replaceDialogState: vi.fn(async (id: string, revision: string | undefined, state: unknown) => {
+    // #2142 — no revision: created only while there is no row.
+    const held = fakeStore.get(id);
+    if (revision === undefined ? held !== undefined : JSON.stringify(held) !== revision) {
+      return null;
+    }
+    fakeStore.set(id, structuredClone(state));
     return JSON.stringify(state);
   }),
+  // #2142 — one transaction: `alongside` throwing rolls the state write back.
+  commitDialogState: vi.fn(
+    async (
+      id: string,
+      revision: string,
+      state: unknown,
+      alongside: (tx: unknown) => Promise<void>,
+    ) => {
+      const held = fakeStore.get(id);
+      if (JSON.stringify(held) !== revision) return null;
+      fakeStore.set(id, structuredClone(state));
+      try {
+        await alongside({});
+      } catch (err) {
+        fakeStore.set(id, held);
+        throw err;
+      }
+      return JSON.stringify(state);
+    },
+  ),
 }));
 
 const mem = vi.hoisted(() => ({
@@ -905,11 +929,14 @@ describe("#2068 — a finding still Needs BA input after its answer reaches the 
     // Every round used, and already recorded as complete: no write either.
     fakeStore.set(ANALYSIS, { ...completed, currentRound: 4 });
     expect((await dialog.startOrContinue(ANALYSIS, REQS)).completed).toBe(true);
+    // #2142 — a start writes by compare-and-set; neither writer was called.
     expect(vi.mocked(dialogStore.writeDialogState)).not.toHaveBeenCalled();
+    expect(vi.mocked(dialogStore.replaceDialogState)).not.toHaveBeenCalled();
     // One that used every round and is not marked complete yet is written once.
     fakeStore.set(ANALYSIS, { ...completed, currentRound: 4, completed: false });
     expect((await dialog.startOrContinue(ANALYSIS, REQS)).completed).toBe(true);
-    expect(vi.mocked(dialogStore.writeDialogState)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(dialogStore.replaceDialogState)).toHaveBeenCalledTimes(1);
+    expect(fakeStore.get(ANALYSIS)).toMatchObject({ currentRound: 4, completed: true });
   });
 
   it("a dialog that used every round stays complete, and reads no finding", async () => {
@@ -1339,6 +1366,66 @@ describe("#2122 — one answer settles the same fact on the analysis's other req
       refresh.release();
     });
 
+    it("#2143 — a judging that settled nothing is remembered even when the write fails", async () => {
+      const { provider, sent } = carryModel({ verdict: "applies", answer: "A1" });
+      const chat = vi.mocked(provider.chat);
+      const real = chat.getMockImplementation()!;
+      let carryWriteFails = true;
+      let failNextWrite = false;
+      chat.mockImplementation(async (messages, o) => {
+        const user = messages.map((m) => String(m.content)).join("\n");
+        if (isCarry(o)) {
+          failNextWrite = carryWriteFails;
+          // REQ-009's judging settles nothing; REQ-007's settles its pair.
+          if (user.includes(THIRD_TEXT)) {
+            sent.push({ system: String(o?.systemMessage ?? ""), user });
+            return {
+              content: JSON.stringify({
+                decisions: [
+                  { rule: "R1", verdict: "uncertain", reason: "?", businessFact: "Is it?" },
+                ],
+              }),
+              model: "m",
+              provider: "anthropic" as const,
+            } as Awaited<ReturnType<typeof real>>;
+          }
+        } else if (String(o?.systemMessage ?? "").includes("You decide which")) {
+          throw new Error("provider unavailable");
+        }
+        return real(messages, o);
+      });
+      const update = prisma.analysis.update as unknown as Mock<(args: unknown) => Promise<unknown>>;
+      const realUpdate = update.getMockImplementation()!;
+      update.mockImplementation(async (args: unknown) => {
+        if (failNextWrite) {
+          failNextWrite = carryWriteFails = false;
+          throw new Error("database unavailable");
+        }
+        return realUpdate(args);
+      });
+      const carriedTo = (text: string) =>
+        sent.filter((s) => s.system.includes("each named A1") && s.user.includes(text)).length;
+      try {
+        const source = sourceFor(provider);
+        const [q1] = await source.open(undefined);
+        const answered = { ...q1!, answer: "Yes, the password is the only factor." };
+
+        await source.settle([answered]);
+        await governingCarriesSettled(ANALYSIS);
+        expect([carriedTo(OTHER_TEXT), carriedTo(THIRD_TEXT)]).toEqual([1, 1]);
+
+        // The write failed: the settling judging is sent again, the other is not.
+        await source.settle([answered]);
+        await governingCarriesSettled(ANALYSIS);
+        expect([carriedTo(OTHER_TEXT), carriedTo(THIRD_TEXT)]).toEqual([2, 1]);
+        const read = await readGoverningApplicability(ANALYSIS);
+        expect(read!.requirements[1]!.decisions[0]!.settled).toMatchObject({ questionId: q1!.id });
+      } finally {
+        update.mockImplementation(realUpdate);
+        refresh.release();
+      }
+    });
+
     it("open stops waiting for a carry once its signal aborts; the carry still lands", async () => {
       const { provider } = carryModel({ verdict: "applies", answer: "A1" });
       const chat = vi.mocked(provider.chat);
@@ -1353,33 +1440,72 @@ describe("#2122 — one answer settles the same fact on the analysis's other req
         }
         return real(messages, o);
       });
-      const source = sourceFor(provider);
-      const [q1] = await source.open(undefined);
-      await source.settle([{ ...q1!, answer: "Yes, the password is the only factor." }]);
-      await vi.waitFor(() => expect(carryStarted).toBe(true));
+      // #2143 — released in `finally`: a failed assertion must not leave the carry
+      // held, or every later test's `open` waits on it until it times out.
+      try {
+        const source = sourceFor(provider);
+        const [q1] = await source.open(undefined);
+        await source.settle([{ ...q1!, answer: "Yes, the password is the only factor." }]);
+        await vi.waitFor(() => expect(carryStarted).toBe(true));
 
-      const outcome = (p: Promise<unknown>) =>
-        Promise.race([
-          p.then(
-            () => "opened",
-            (e: unknown) => (e as Error).message,
-          ),
-          new Promise((resolve) => setTimeout(() => resolve("still waiting"), 200)),
-        ]);
-      const controller = new AbortController();
-      const opened = source.open(undefined, controller.signal);
-      controller.abort(new Error("client went away"));
-      expect(await outcome(opened)).toBe("client went away");
-      // Already aborted: refused at once.
-      expect(await outcome(source.open(undefined, controller.signal))).toBe("client went away");
+        const outcome = (p: Promise<unknown>) =>
+          Promise.race([
+            p.then(
+              () => "opened",
+              (e: unknown) => (e as Error).message,
+            ),
+            new Promise((resolve) => setTimeout(() => resolve("still waiting"), 200)),
+          ]);
+        const controller = new AbortController();
+        const opened = source.open(undefined, controller.signal);
+        controller.abort(new Error("client went away"));
+        expect(await outcome(opened)).toBe("client went away");
+        // Already aborted: refused at once.
+        expect(await outcome(source.open(undefined, controller.signal))).toBe("client went away");
 
-      release();
-      await governingCarriesSettled(ANALYSIS);
-      const read = await readGoverningApplicability(ANALYSIS);
-      expect(read!.requirements[1]!.decisions[0]!.settled).toMatchObject({ questionId: q1!.id });
-      // A signal that never aborts waits for nothing once the carries are done.
-      expect(await outcome(source.open(undefined, new AbortController().signal))).toBe("opened");
-      refresh.release();
+        release();
+        await governingCarriesSettled(ANALYSIS);
+        const read = await readGoverningApplicability(ANALYSIS);
+        expect(read!.requirements[1]!.decisions[0]!.settled).toMatchObject({ questionId: q1!.id });
+        // A signal that never aborts waits for nothing once the carries are done.
+        expect(await outcome(source.open(undefined, new AbortController().signal))).toBe("opened");
+      } finally {
+        release();
+        refresh.release();
+      }
+    });
+
+    it("#2143 — the test reset forgets a carry still in flight, so the next test does not wait on it", async () => {
+      const { provider } = carryModel({ verdict: "applies", answer: "A1" });
+      const chat = vi.mocked(provider.chat);
+      const real = chat.getMockImplementation()!;
+      let release = () => {};
+      const held = new Promise<void>((resolve) => (release = resolve));
+      let carryStarted = false;
+      chat.mockImplementation(async (messages, o) => {
+        if (isCarry(o)) {
+          carryStarted = true;
+          await held;
+        }
+        return real(messages, o);
+      });
+      try {
+        const source = sourceFor(provider);
+        const [q1] = await source.open(undefined);
+        await source.settle([{ ...q1!, answer: "Yes, the password is the only factor." }]);
+        await vi.waitFor(() => expect(carryStarted).toBe(true));
+        const waited = (p: Promise<void>) =>
+          Promise.race([
+            p.then(() => "settled"),
+            new Promise((resolve) => setTimeout(() => resolve("still waiting"), 200)),
+          ]);
+        expect(await waited(governingCarriesSettled(ANALYSIS))).toBe("still waiting");
+        resetGoverningCarryMemoForTests();
+        expect(await waited(governingCarriesSettled(ANALYSIS))).toBe("settled");
+      } finally {
+        release();
+        refresh.release();
+      }
     });
   });
 });

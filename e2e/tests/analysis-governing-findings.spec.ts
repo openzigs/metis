@@ -68,6 +68,10 @@ test.describe("Analysis view — Governing rules panel (#1876, #2060)", () => {
   let documentId: string;
 
   test.beforeEach(async ({ page }) => {
+    // #2143 — this test's ids only: a seed that fails must not leave afterEach
+    // deleting the previous test's workspace again.
+    workspaceId = "";
+    documentId = "";
     const primed = await primeAdminUser(API_BASE);
     api = await request.newContext({
       baseURL: API_BASE,
@@ -81,6 +85,8 @@ test.describe("Analysis view — Governing rules panel (#1876, #2060)", () => {
       }),
       "create the workspace",
     );
+    // #2143 — set at once, so afterEach deletes it even when a later step fails.
+    workspaceId = workspace.id;
     const project = await created<{ id?: string; project?: { id?: string } }>(
       await api.post("/api/projects", {
         data: {
@@ -101,7 +107,6 @@ test.describe("Analysis view — Governing rules panel (#1876, #2060)", () => {
       databaseUrl: dbUrl(),
     });
     expect(seeded.workspaceId).toBe(workspace.id);
-    workspaceId = seeded.workspaceId;
     documentId = seeded.documentId;
 
     const loginPage = new LoginPage(page);
@@ -197,21 +202,21 @@ test.describe("Analysis view — Governing rules panel (#1876, #2060)", () => {
       access.controlId,
       "Accepted",
       GOVERNING_FIXTURE.acceptNote,
-      GOVERNING_FIXTURE.deciderName,
+      ADMIN_USER.displayName,
     );
     await governing.decide(
       rejected,
       retention.controlId,
       "Rejected",
       GOVERNING_FIXTURE.rejectNote,
-      GOVERNING_FIXTURE.deciderName,
+      ADMIN_USER.displayName,
     );
 
     await governing.reload();
 
     await test.step("the acceptance and its note are read back", async () => {
       await expect(
-        governing.decisionLine(accepted, "Accepted", GOVERNING_FIXTURE.deciderName),
+        governing.decisionLine(accepted, "Accepted", ADMIN_USER.displayName),
       ).toBeVisible();
       await expect(governing.decisionNote(accepted)).toHaveText(GOVERNING_FIXTURE.acceptNote);
       await expect(governing.noteInput(accepted, access.controlId)).toHaveValue(
@@ -221,7 +226,7 @@ test.describe("Analysis view — Governing rules panel (#1876, #2060)", () => {
 
     await test.step("the rejection and its note are read back", async () => {
       await expect(
-        governing.decisionLine(rejected, "Rejected", GOVERNING_FIXTURE.deciderName),
+        governing.decisionLine(rejected, "Rejected", ADMIN_USER.displayName),
       ).toBeVisible();
       await expect(governing.decisionNote(rejected)).toHaveText(GOVERNING_FIXTURE.rejectNote);
     });

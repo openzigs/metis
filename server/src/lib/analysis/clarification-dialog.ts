@@ -6,6 +6,7 @@
  * Haiku to Sonnet when uncertainty exceeds a threshold.
  */
 import { randomUUID } from "node:crypto";
+import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import type { AIProvider, ChatMessage } from "../ai/types.js";
 import { HAIKU_MODEL_ID, SONNET_MODEL_ID, tierModelFor } from "../ai/model-router.js";
@@ -20,6 +21,7 @@ import {
 } from "./structured-verdict.js";
 import { noUsableItem } from "./unread-reply.js";
 import {
+  commitDialogState,
   deleteDialogState,
   readDialogState,
   readDialogStateRevision,
@@ -329,7 +331,8 @@ export class ClarificationDialog {
     requirements: StructuredRequirements,
     signal?: AbortSignal,
   ): Promise<ClarificationState> {
-    const existing = await readDialogState(analysisId);
+    const read = await readDialogStateRevision(analysisId);
+    const existing = read?.state;
     // Issue #937 — a remounted Questions tab POSTed a second start while the
     // first was still generating, and that second round replaced the first
     // one's questions (and billed question generation twice). A start that
@@ -337,21 +340,50 @@ export class ClarificationDialog {
     const key = `${analysisId}:${existing?.currentRound ?? 1}`;
     const inFlight = startsInFlight.get(key);
     if (inFlight) return inFlight;
-    const started = this.runStart(analysisId, requirements, existing, signal).finally(() => {
+    const started = this.runStart(analysisId, requirements, read, signal).finally(() => {
       startsInFlight.delete(key);
     });
     startsInFlight.set(key, started);
     return started;
   }
 
+  /**
+   * #2142 — a start writes by compare-and-set on the state it read, as a
+   * submit does (#2101): an unconditional write here, after the model calls,
+   * overwrote whatever landed meanwhile. When another write did land, this
+   * start's state is dropped and the stored one returned: that writer's round
+   * is the one being answered.
+   */
+  private async writeStart(
+    analysisId: string,
+    revision: string | undefined,
+    state: ClarificationState,
+  ): Promise<ClarificationState> {
+    if ((await replaceDialogState(analysisId, revision, state)) !== null) return state;
+    const current = await readDialogState(analysisId);
+    log.warn("A clarification start was not written: the dialog changed while it ran", {
+      analysisId,
+      round: state.currentRound,
+      returned: current ? "stored state" : "none",
+    });
+    if (current) return current;
+    throw new AppError(
+      409,
+      "CLARIFY_ROUND_NOT_OPEN",
+      "The clarification dialog was reset while its questions were being prepared. Reload " +
+        "the questions.",
+    );
+  }
+
   private async runStart(
     analysisId: string,
     requirements: StructuredRequirements,
-    existing: ClarificationState | undefined,
+    read: { state: ClarificationState; revision: string } | undefined,
     signal: AbortSignal | undefined,
   ): Promise<ClarificationState> {
     requirements = withAmbiguityDefaults(requirements);
-    let state = existing;
+    const revision = read?.revision;
+    let state = read?.state;
 
     if (!state) {
       state = {
@@ -375,7 +407,7 @@ export class ClarificationDialog {
     if (state.currentRound > MAX_ROUNDS) {
       if (!state.completed) {
         state.completed = true;
-        await writeDialogState(analysisId, state);
+        return this.writeStart(analysisId, revision, state);
       }
       return state;
     }
@@ -396,13 +428,15 @@ export class ClarificationDialog {
         questions: await this.groundQuestions(reopen, signal),
         answers: [],
       });
-      await writeDialogState(analysisId, state);
-      log.info("Clarification re-opened for governing questions", {
-        analysisId,
-        round: state.currentRound,
-        questions: reopen.length,
-      });
-      return state;
+      const written = await this.writeStart(analysisId, revision, state);
+      if (written === state) {
+        log.info("Clarification re-opened for governing questions", {
+          analysisId,
+          round: state.currentRound,
+          questions: reopen.length,
+        });
+      }
+      return written;
     }
 
     // Issue #937 — the current round has already been generated and is still
@@ -429,8 +463,7 @@ export class ClarificationDialog {
 
     if (unresolvedReqs.length === 0 && governingQuestions.length === 0) {
       state.completed = true;
-      await writeDialogState(analysisId, state);
-      return state;
+      return this.writeStart(analysisId, revision, state);
     }
 
     const questions =
@@ -458,9 +491,7 @@ export class ClarificationDialog {
     };
 
     state.rounds.push(round);
-    await writeDialogState(analysisId, state);
-
-    return state;
+    return this.writeStart(analysisId, revision, state);
   }
 
   /**
@@ -476,18 +507,24 @@ export class ClarificationDialog {
    * submit read, so of two submits of one open round (two tabs, or a tab and a
    * CSV import) exactly one is written: the other is refused with 409
    * CLARIFY_ROUND_NOT_OPEN before `beforeCommit` runs, so neither its answers
-   * nor its refined requirements land. Committed first, then `beforeCommit`;
-   * when that throws, the round is put back as it was read.
+   * nor its refined requirements land.
+   *
+   * #2142 — `beforeCommit` writes in the transaction the round is committed
+   * in (`tx`), so the two land together or not at all: when it throws, or the
+   * process dies between them, the round is still open as it was read.
    */
   async submitAnswers(
     analysisId: string,
     answers: ClarificationAnswer[],
     requirements: StructuredRequirements,
     signal?: AbortSignal,
-    beforeCommit?: (result: {
-      state: ClarificationState;
-      updatedRequirements: StructuredRequirements;
-    }) => Promise<void>,
+    beforeCommit?: (
+      result: {
+        state: ClarificationState;
+        updatedRequirements: StructuredRequirements;
+      },
+      tx: Prisma.TransactionClient,
+    ) => Promise<void>,
   ): Promise<{ state: ClarificationState; updatedRequirements: StructuredRequirements }> {
     requirements = withAmbiguityDefaults(requirements);
     const read = await readDialogStateRevision(analysisId);
@@ -579,7 +616,10 @@ export class ClarificationDialog {
     }
 
     // #2101 — only if no other write landed since this submit read the state.
-    const committed = await replaceDialogState(analysisId, revision, state);
+    // #2142 — and with `beforeCommit`'s writes, in one transaction.
+    const committed = await commitDialogState(analysisId, revision, state, async (tx) => {
+      await beforeCommit?.({ state, updatedRequirements }, tx);
+    });
     if (committed === null) {
       throw new AppError(
         409,
@@ -587,20 +627,6 @@ export class ClarificationDialog {
         "These answers were not saved: this clarification round was answered somewhere " +
           "else at the same time. Reload the questions and answer the current round.",
       );
-    }
-    try {
-      await beforeCommit?.({ state, updatedRequirements });
-    } catch (err) {
-      // #1668 — a refused commit leaves the round open to answer again.
-      const restored = await replaceDialogState(
-        analysisId,
-        committed,
-        JSON.parse(revision) as ClarificationState,
-      ).catch(() => null);
-      if (restored === null) {
-        log.warn("A refused clarification submit could not re-open its round", { analysisId });
-      }
-      throw err;
     }
 
     // #1873 — judge the answered governing questions back onto the rules they
@@ -922,9 +948,22 @@ const ID_LABEL_WINDOW = 32;
 /**
  * #2132 — text that ends in a "requirement" no other word describes: at the
  * start, after punctuation, or after only an article or a preposition.
+ * #2143 — punctuation, not a digit or a quote: "the REQ-001 requirement" and
+ * `the "Login" requirement` are named already.
  */
 const BARE_REQUIREMENT =
-  /(?:^|[^\p{L}\s]\s*|\b(?:the|this|that|a|an|each|for|of|in|on|to|about|with|by|from|and|or)\s+)requirement$/iu;
+  /(?:^|[^\p{L}\p{N}\s"'“”‘’]\s*|\b(?:the|this|that|a|an|each|for|of|in|on|to|about|with|by|from|and|or)\s+)requirement$/iu;
+
+/**
+ * #2143 — whether `text` ends in a bare "requirement", read over the last
+ * {@link ID_LABEL_WINDOW} characters only: the question built so far can be
+ * long, and only the words just before the aside decide. The window is longer
+ * than "requirement", so its start-of-text case still holds only for a text
+ * that is the word alone.
+ */
+function endsInBareRequirement(text: string): boolean {
+  return BARE_REQUIREMENT.test(text.slice(-ID_LABEL_WINDOW));
+}
 
 /**
  * ASCII-only lower case. `String.prototype.toLowerCase` can change a string's
@@ -950,7 +989,7 @@ function replaceId(text: string, id: string, title: string): string {
       const kept = before.slice(0, lead + open.index);
       // #2132 — "Requirement (id: X) is unclear." loses its referent without
       // the aside: a bare "requirement" is named by the quoted title instead.
-      out += BARE_REQUIREMENT.test(out + kept) ? `${kept} "${title}"` : kept;
+      out += endsInBareRequirement(out + kept) ? `${kept} "${title}"` : kept;
       rest = after.slice(close[0].length);
     } else {
       // ID_LABEL matches at least the empty string at the end. #2132 — its

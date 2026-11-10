@@ -90,10 +90,25 @@ export const CARRY_CONCURRENCY = 4;
  */
 export const CARRY_MEMO_MAX_ANALYSES = 1_000;
 /**
- * #2133 — the carried-answer judgings remembered per analysis, the oldest
- * forgotten first: a forgotten one costs one more carried call, never a question.
+ * #2133 — the carried-answer judgings remembered, the oldest forgotten first: a
+ * forgotten one costs one more carried call, never a question. #2143 — one
+ * budget over every analysis, not one per analysis: per analysis, the process
+ * could hold {@link CARRY_MEMO_MAX_ANALYSES} times as many. The least recently
+ * used analysis loses its oldest judging first.
  */
-export const CARRY_MEMO_MAX_KEYS = 1_000;
+export const CARRY_MEMO_MAX_KEYS = 10_000;
+
+/**
+ * #2126, #2133 — {@link carryAnswersOver}'s memo: the judgings to skip, and
+ * where it reports the ones it makes now. #2143 — one object, not two
+ * optional sets that had to be passed together.
+ */
+export interface CarryMemoUse {
+  /** Judged already against the same answers (a readable reply): not sent again. */
+  judged: ReadonlySet<string>;
+  /** Each key judged now, with whether its judging settled any pair. */
+  judgedNow: Map<string, boolean>;
+}
 
 /** The rule text a question is checked against and phrased from. */
 export interface QuestionRule {
@@ -928,27 +943,26 @@ export function carryCandidates(
  * unreadable call) settles nothing: the pair is asked as before, so a carry can
  * save the BA a question but never cost one, and never removes a finding.
  *
- * #2126 — the calls run {@link CARRY_CONCURRENCY} at a time. With `judged`,
+ * #2126 — the calls run {@link CARRY_CONCURRENCY} at a time. With a `memo`,
  * a candidate already judged against the same answers (a readable reply,
  * whatever it decided) is not sent again: a retry of the same answers costs no
- * carried call. #2133 — each one judged now is added to `judgedNow`, for the
- * caller to remember only once what it settled is written: a failed write is
- * no judging to skip next time.
+ * carried call. #2133 — each one judged now is reported in `judgedNow`, for the
+ * caller to remember; #2143 — with whether it settled anything, since only a
+ * settling one waits for its write (a failed write is no judging to skip).
  */
 export async function carryAnswersOver(
   answered: readonly ClarifyingQuestion[],
   stored: GoverningAnalysisApplicability,
   rules: ReadonlyMap<string, ApplicabilityRule>,
   deps: BuildGoverningQuestionsDeps,
-  judged?: ReadonlySet<string>,
-  judgedNow?: Set<string>,
+  memo?: CarryMemoUse,
 ): Promise<GoverningSettlementInput[]> {
   const given = answered.filter((q) => q.governing && q.answer?.trim());
   if (given.length === 0) return [];
   const textOf = new Map(stored.requirements.map((r) => [r.requirementId, r.text]));
   const candidates = carryCandidates(given, stored)
     .map((candidate) => ({ candidate, key: carryKey(candidate, given) }))
-    .filter(({ key }) => !judged?.has(key));
+    .filter(({ key }) => !memo?.judged.has(key));
   const carryOne = async ({
     candidate,
     key,
@@ -998,7 +1012,6 @@ export async function carryAnswersOver(
       });
       return out;
     }
-    judgedNow?.add(key);
     for (const e of entries) {
       const d = decided.get(e.index);
       // #2126 — a carried answer can bring a rule in, never rule one out.
@@ -1020,6 +1033,7 @@ export async function carryAnswersOver(
         answer: q.answer!.trim(),
       });
     }
+    memo?.judgedNow.set(key, out.length > 0);
     return out;
   };
   // #2126 — a small worker pool; the results keep the candidates' order.
@@ -1240,13 +1254,20 @@ export function governingQuestionSourceFor(input: {
         const candidates = carryCandidates(answered, stored);
         if (candidates.length === 0) return;
         const rules = await rulesFor(candidates.flatMap((c) => c.ruleIds));
-        const memo = carryMemoFor(analysisId);
-        const judgedNow = new Set<string>();
-        const carried = await carryAnswersOver(answered, stored, rules, deps(), memo, judgedNow);
+        const judgedNow = new Map<string, boolean>();
+        const carried = await carryAnswersOver(answered, stored, rules, deps(), {
+          judged: carryMemoFor(analysisId),
+          judgedNow,
+        });
+        const settling = (settled: boolean) =>
+          [...judgedNow].filter(([, s]) => s === settled).map(([key]) => key);
+        // #2143 — a judging that settled nothing has nothing to write, so it is
+        // remembered now: a write that throws does not send it again.
+        rememberCarried(analysisId, settling(false));
         const applied = carried.length > 0 ? await settleGoverningPairs(analysisId, carried) : [];
-        // #2133 — remembered once what they settled is written: a write that
-        // throws leaves them to be judged again by the next carry.
-        rememberCarried(memo, judgedNow);
+        // #2133 — the settling ones once what they settled is written: a write
+        // that throws leaves them to be judged again by the next carry.
+        rememberCarried(analysisId, settling(true));
         log.info("governing answers carried", {
           analysisId,
           candidates: candidates.length,
@@ -1340,12 +1361,15 @@ const carriesInFlight = new Map<string, Promise<void>>();
 /**
  * #2126 — the carried judgings already made per analysis ({@link carryAnswersOver}'s
  * `judged`), so an orphan retry with the same answers sends none of them
- * again. Process local and bounded at {@link CARRY_MEMO_MAX_ANALYSES}, each
- * holding at most {@link CARRY_MEMO_MAX_KEYS} (#2133); a restart costs one more
- * carried call per candidate, never a question. A judging is remembered only
- * once what it settled is written (#2133).
+ * again. Process local and bounded at {@link CARRY_MEMO_MAX_ANALYSES}
+ * analyses and, over all of them, {@link CARRY_MEMO_MAX_KEYS} judgings
+ * (#2133, #2143); a restart costs one more carried call per candidate, never a
+ * question. A settling judging is remembered only once what it settled is
+ * written (#2133).
  */
 const carryMemo = new Map<string, Set<string>>();
+/** #2143 — the judgings {@link carryMemo} holds, over every analysis. */
+let carryMemoKeys = 0;
 
 function carryMemoFor(analysisId: string): Set<string> {
   const judged = carryMemo.get(analysisId) ?? new Set<string>();
@@ -1353,22 +1377,43 @@ function carryMemoFor(analysisId: string): Set<string> {
   carryMemo.delete(analysisId);
   carryMemo.set(analysisId, judged);
   if (carryMemo.size > CARRY_MEMO_MAX_ANALYSES) {
-    carryMemo.delete(carryMemo.keys().next().value!);
+    const [oldest, keys] = carryMemo.entries().next().value!;
+    carryMemoKeys -= keys.size;
+    carryMemo.delete(oldest);
   }
   return judged;
 }
 
+/** #2143 — forget the oldest judging of the least recently used analysis. */
+function forgetOldestCarried(): void {
+  const [analysisId, keys] = carryMemo.entries().next().value!;
+  const oldest = keys.values().next();
+  if (!oldest.done) {
+    keys.delete(oldest.value);
+    carryMemoKeys--;
+  }
+  if (keys.size === 0) carryMemo.delete(analysisId);
+}
+
 /**
- * #2133 — add `keys` to an analysis's memo, forgetting its oldest judgings
- * past {@link CARRY_MEMO_MAX_KEYS}. Exported for its unit test.
+ * #2133 — add `keys` to an analysis's memo. #2143 — past
+ * {@link CARRY_MEMO_MAX_KEYS} over every analysis, the least recently used
+ * analysis's oldest judgings are forgotten first. Exported for its unit test.
  */
-export function rememberCarried(memo: Set<string>, keys: Iterable<string>): void {
+export function rememberCarried(analysisId: string, keys: Iterable<string>): void {
+  const memo = carryMemoFor(analysisId);
   for (const key of keys) {
     // Re-inserted, so the set's order is the order of last judging.
-    memo.delete(key);
+    if (memo.delete(key)) carryMemoKeys--;
     memo.add(key);
-    if (memo.size > CARRY_MEMO_MAX_KEYS) memo.delete(memo.values().next().value!);
+    carryMemoKeys++;
+    while (carryMemoKeys > CARRY_MEMO_MAX_KEYS) forgetOldestCarried();
   }
+}
+
+/** #2143 — an analysis's remembered judgings, oldest first, without touching the order of use. */
+export function carriedJudgingsForTests(analysisId: string): string[] {
+  return [...(carryMemo.get(analysisId) ?? [])];
 }
 
 /**
@@ -1396,7 +1441,13 @@ export function governingCarriesSettled(analysisId: string): Promise<void> {
   return carriesInFlight.get(analysisId) ?? Promise.resolve();
 }
 
-/** #2126 — test isolation: forget every carry memo. */
+/**
+ * #2126 — test isolation: forget every carry memo. #2143 — and every carry in
+ * flight, so a test that fails while a carry is held does not leave the next
+ * test's `open` waiting on it.
+ */
 export function resetGoverningCarryMemoForTests(): void {
   carryMemo.clear();
+  carryMemoKeys = 0;
+  carriesInFlight.clear();
 }

@@ -56,8 +56,9 @@ NIST SP 800-63B-4 excerpts (public domain) and two GitLab Handbook pages (Record
 Retention Policy, Security Compliance Controls) under CC BY-SA 4.0.
 eval-data/corpus/governing-04-openemr-asvs/policy-v1.md quotes 30 requirements of the
 OWASP Application Security Verification Standard 5.0.0 (OWASP Foundation), under
-CC BY-SA 4.0. Each file carries its source, author and licence in its header and stays
-under CC BY-SA 4.0 whatever the licence of the repository around it.
+CC BY-SA 4.0; the labelling prompts beside it (its labelling/ directory) quote that
+file whole, header included. Each file carries its source, author and licence in its
+header and stays under CC BY-SA 4.0 whatever the licence of the repository around it.
 
 Three entries need a recorded decision rather than a line in a list. (A fourth,
 the proprietary `@github/copilot` CLI, left the tree when GitHub Copilot support was

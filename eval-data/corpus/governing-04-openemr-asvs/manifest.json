@@ -22,6 +22,14 @@
   ],
   "files": [
     "ANNOTATION.md",
+    "labelling/2140/adjudication-prompt.txt",
+    "labelling/2140/adjudication.json",
+    "labelling/2140/consistency-prompt-pass2.txt",
+    "labelling/2140/consistency-prompt.txt",
+    "labelling/2140/labeller-1-prompt.txt",
+    "labelling/2140/labeller-1.json",
+    "labelling/2140/labeller-2-prompt.txt",
+    "labelling/2140/labeller-2.json",
     "labelling/adjudication-prompt.txt",
     "labelling/adjudication.json",
     "labelling/labeller-1-prompt.txt",
@@ -45,8 +53,8 @@
   "annotation": {
     "labelledBy": "two independent AI labellers (claude-opus-5-5), blind to every prompt of the product and neither of them the agent that chose the requirements, adjudicated by a third pass; not a person",
     "labelledAt": "2026-11-09",
-    "groundTruthFixedBeforeAnyArmRan": true,
-    "procedure": "Policy quoted from the OWASP ASVS 5.0.0; requirements quoted from real OpenEMR issues by the agent dispatched on #2108, which wrote no label. Labelled against policy-v1 by two tool-less sessions given only the policy and the requirements; each disagreement settled by a third tool-less pass with a written reason. No arm had run on it when the labels were fixed. See ANNOTATION.md and labelling/.",
+    "groundTruthFixedBeforeAnyArmRan": false,
+    "procedure": "Policy quoted from the OWASP ASVS 5.0.0; requirements quoted from real OpenEMR issues by the agent dispatched on #2108, which wrote no label. Labelled against policy-v1 by two tool-less sessions given only the policy and the requirements; each disagreement settled by a third tool-less pass with a written reason. No arm had run on it when the labels were fixed. See ANNOTATION.md and labelling/. #2140 added OS-26 to OS-33, chosen and quoted by the agent dispatched on #2140, which wrote no label, and labelled the same way (labelling/2140/) before any arm ran on them; then ran governing-03's per-rule consistency pass on PA-04, PA-10 and AZ-01 over all 33 items, after arms had run on this set, changing a cell only where both blind passes agreed.",
     "reviewedBy": null
   },
   "thresholds": {
@@ -311,6 +319,11 @@
       "source": "https://github.com/openemr/openemr/issues/6299",
       "applies": [
         {
+          "ruleId": "PA-04",
+          "verdict": "needs-ba-input",
+          "businessFact": "Will passwords set or changed under the new policy be rejected if they appear in a list of at least the top 3000 common passwords that meet the policy?"
+        },
+        {
           "ruleId": "PA-05",
           "verdict": "compliant"
         }
@@ -412,6 +425,11 @@
       "source": "https://github.com/openemr/openemr/issues/11770",
       "applies": [
         {
+          "ruleId": "PA-10",
+          "verdict": "needs-ba-input",
+          "businessFact": "Must these upgrade scripts stay reachable before any user account exists, or can they be gated behind authenticated (MFA) admin access?"
+        },
+        {
           "ruleId": "AZ-01",
           "verdict": "needs-ba-input",
           "businessFact": "Must acl_upgrade.php and sql_upgrade.php still run before any user account exists, or can they be restricted to authenticated administrators (or a one-time setup token)?"
@@ -458,7 +476,14 @@
       "title": "Add Prescription History to Patient Report",
       "text": "Add Prescription History as an option to the Patient Report, as this information can be important to have available and share. … Add option for \"Prescription History\" to the patient report. If there are no prescriptions, then the report would display \"No prescriptions on file\". If there are prescriptions on the patient chart and the options is checked, then the report would display all the prescription entries and be available to print/download as PDF.",
       "source": "https://github.com/openemr/openemr/issues/12036",
-      "applies": []
+      "applies": [
+        {
+          "ruleId": "AZ-01",
+          "verdict": "needs-ba-input",
+          "businessFact": "Should the Prescription History report option be available only to users holding an explicit prescription/medication view permission?",
+          "nonResembling": true
+        }
+      ]
     },
     {
       "id": "OS-21",
@@ -517,6 +542,165 @@
       "text": "When a zip of DICOM images is opened in the Documents DICOM viewer, only the first image is shown, and if the images have different sizes (for example a landscape and two portrait views of one study) the viewer also raises \"A load error has occurred. See log for details.\" and the other images are lost. … Expected behavior: Every image in the zip can be viewed, one at a time (previous/next), each fitted to the viewer, whatever its size.",
       "source": "https://github.com/openemr/openemr/issues/15069",
       "applies": []
+    },
+    {
+      "id": "OS-26",
+      "title": "Strengthen part of username and password creation process",
+      "text": "This file is called when a user begins setting up OpenEMR for the first time … Make the following happen via HTML5 attributes: initial user password min length of 12. database password min length of 12. Also: the \"initial user\" of \"admin\" is too easy to guess … make the username a minimum of 12 characters as well to ensure if they don't go with our randomized suggestion they still pick something with some complexity (enforce with html5)",
+      "source": "https://github.com/openemr/openemr/issues/2090",
+      "applies": [
+        {
+          "ruleId": "PA-01",
+          "verdict": "compliant"
+        },
+        {
+          "ruleId": "PA-04",
+          "verdict": "needs-ba-input",
+          "businessFact": "Is the initial user password entered during setup checked against a list of at least the top 3000 common passwords that meet the 12-character policy?"
+        }
+      ]
+    },
+    {
+      "id": "OS-27",
+      "title": "Force new user change default password in first login",
+      "text": "How can I force all new users change default password in first login? If applicable to define security steps to users?! for Example: Need all users in first login do the following: 1. Change default password. 2. force to have TOTP step",
+      "source": "https://github.com/openemr/openemr/issues/3176",
+      "applies": [
+        {
+          "ruleId": "PA-04",
+          "verdict": "needs-ba-input",
+          "businessFact": "Will the new password chosen at the forced first-login change be checked against a list of at least the top 3000 common passwords?"
+        },
+        {
+          "ruleId": "PA-10",
+          "verdict": "compliant"
+        },
+        {
+          "ruleId": "PA-12",
+          "verdict": "needs-ba-input",
+          "businessFact": "Are new users' default passwords securely randomly generated for each user, and do they expire after a short period if not used?"
+        }
+      ]
+    },
+    {
+      "id": "OS-28",
+      "title": "5.0.2 Bug: Portal asks to create new username when changing pass when email only is on",
+      "text": "The patient portal in 5.0.2 asks for the user to create a new username when they are changing passwords when email substitution for usernames is turned on. This shouldn't be happening when this is turned on.",
+      "source": "https://github.com/openemr/openemr/issues/3613",
+      "applies": [
+        {
+          "ruleId": "PA-02",
+          "verdict": "compliant"
+        },
+        {
+          "ruleId": "PA-03",
+          "verdict": "needs-ba-input",
+          "businessFact": "Does the portal password change form require the patient's current password as well as the new password?"
+        }
+      ]
+    },
+    {
+      "id": "OS-29",
+      "title": "Telehealth Third Party Onetime Login Link invitations both copy link and email",
+      "text": "Building on the one time login links that Jerry built, we want to have the third party participants be able to get a one time invitation as well. We also want to be able to copy the invitation link and invitation message for the third party. Since we generate these links on the fly we need a button to be able to generate the link and copy it since browsers prevent direct copy access when doing an asynchronous request.",
+      "source": "https://github.com/openemr/openemr/issues/6371",
+      "applies": [
+        {
+          "ruleId": "PA-12",
+          "verdict": "needs-ba-input",
+          "businessFact": "Are third-party one-time login tokens securely randomly generated, and do they expire after a short period as well as after first use?"
+        },
+        {
+          "ruleId": "AZ-01",
+          "verdict": "needs-ba-input",
+          "businessFact": "Which users or roles are explicitly permitted to generate and send third-party telehealth invitation links?"
+        },
+        {
+          "ruleId": "DP-01",
+          "verdict": "gap"
+        }
+      ]
+    },
+    {
+      "id": "OS-30",
+      "title": "feat: Add ability to prevent forced portal credential change",
+      "text": "Currently we force patient to change their credentials when portal credentials are created from MRD. Some admins prefer to prevent this action. … Add and persist a checkbox flag to create_portallogin to set the patient_access_onsite portal_pwd_status column to prevent. A nice addition while here would be to create a onetime to auto login and take patient to say portal documents to create intake forms or to appointments or even the portals change password dialog.",
+      "source": "https://github.com/openemr/openemr/issues/6813",
+      "applies": [
+        {
+          "ruleId": "PA-10",
+          "verdict": "gap"
+        },
+        {
+          "ruleId": "PA-12",
+          "verdict": "gap"
+        },
+        {
+          "ruleId": "PA-14",
+          "verdict": "gap"
+        },
+        {
+          "ruleId": "DP-01",
+          "verdict": "needs-ba-input",
+          "businessFact": "Will the one-time auto-login token be passed in the URL or query string, or only in the message body or headers?",
+          "nonResembling": true
+        }
+      ]
+    },
+    {
+      "id": "OS-31",
+      "title": "feat: When google single sign on is enabled it still requires user to use password from openEMR to sign the encounter doesn't use single sign on.",
+      "text": "Even with google single sign on it still requires user to use password from openEMR while signing the encounter. Google single sign on works perfectly with the login but when it comes to signing an encounter single sign on doesn't work. It requires openEMR user password. We have made it where it will use single sign for encounter signing. …",
+      "source": "https://github.com/openemr/openemr/issues/7254",
+      "applies": [
+        {
+          "ruleId": "PA-15",
+          "verdict": "needs-ba-input",
+          "businessFact": "When an encounter is signed via Google SSO, does the application require and verify a fresh authentication (for example auth_time or forced re-prompt) from the information Google returns?",
+          "nonResembling": true
+        }
+      ]
+    },
+    {
+      "id": "OS-32",
+      "title": "feat: Improve Portal Credential Settings page for patients",
+      "text": "Clinican testing of the patient portal credential settings page found the page to be confusing. They recommended changing up some of labels, providing more visual separating for the various credential settings and making the username and password updates independent of each other.",
+      "source": "https://github.com/openemr/openemr/issues/7650",
+      "applies": [
+        {
+          "ruleId": "PA-03",
+          "verdict": "needs-ba-input",
+          "businessFact": "Will the independent password update on the portal credential settings page require the patient's current password as well as the new one?"
+        },
+        {
+          "ruleId": "PA-04",
+          "verdict": "needs-ba-input",
+          "businessFact": "Will the redesigned portal password update reject passwords found in a list of at least the top 3000 common passwords?"
+        },
+        {
+          "ruleId": "PA-11",
+          "verdict": "needs-ba-input",
+          "businessFact": "Is the patient notified, for example by email, after their portal username or password is changed?"
+        },
+        {
+          "ruleId": "SE-04",
+          "verdict": "needs-ba-input",
+          "businessFact": "After a portal password change, is the patient given the option to terminate all other active sessions?"
+        }
+      ]
+    },
+    {
+      "id": "OS-33",
+      "title": "[Patient Dashboard] Credentials reset dialog displays an outdated read-only email address after the patient's email is updated",
+      "text": "A patient exists with Patient Portal credentials. … 1. Login as Administartor. 1. Create a patient. 2. Generate Patient Portal login credentials. 3. Update the patient's email address in the patient record. 4. Save the changes. 5. Click Reset option under Credentials … Actual Result: The Credential reset dialog displays the previous email address in a read-only field. Since the field is not editable, the administrator cannot update it before sending the reset. Expected Result: The password reset dialog should display the current email address from the patient's record. If the patient's email has been updated, the reset dialog should reflect the updated value instead of a stale email address.",
+      "source": "https://github.com/openemr/openemr/issues/12874",
+      "applies": [
+        {
+          "ruleId": "PA-14",
+          "verdict": "needs-ba-input",
+          "businessFact": "Does the admin-initiated portal credential reset send the patient a reset link or a system-generated secret that the administrator never sees or chooses?"
+        }
+      ]
     }
   ]
 }

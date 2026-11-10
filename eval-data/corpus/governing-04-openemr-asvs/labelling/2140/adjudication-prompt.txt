@@ -1,0 +1,128 @@
+Two analysts labelled software requirements against the security requirements document below, independently. The requirements are feature requests and bug reports filed by the users and developers of an open-source electronic health record system, quoted in their own words. For each (requirement, rule) pair the analysts disagree on, decide the correct label yourself, from the document and the requirement's wording alone.
+
+The labels are:
+- "does not apply": an independent reader would not attach this rule to the requirement (a stretch reading does not count).
+- "compliant": the requirement, as written, explicitly provides what the rule asks.
+- "gap": the requirement, built as written, would breach the rule.
+- "needs-ba-input": the rule applies, but the requirement is silent or ambiguous on it, and one business fact would settle it.
+Silence is never "compliant".
+
+Neither analyst is more senior; do not favour A or B. If the pair genuinely cannot be settled from the text, say "unsettled" rather than guessing. When your label is "needs-ba-input", also write the business fact a business analyst would have to supply, as one question ("businessFact").
+
+Reply with ONE JSON object and nothing else:
+{"decisions": [{"n": 1, "item": "OS-00", "rule": "XX-00", "label": "gap", "reason": "one or two sentences citing the wording that decides it", "businessFact": "needs-ba-input only"}]}
+
+=== POLICY ===
+# Web Application Security Requirements: OWASP ASVS 5.0.0 (excerpts)
+
+Revision: v1 · Compiled: 2026-11-09 · Applies to: the electronic health record system, its patient portal and its interfaces
+
+## Sources and attribution
+
+Every requirement below is quoted from the OWASP Application Security Verification Standard
+5.0.0, by the OWASP Foundation: https://github.com/OWASP/ASVS/tree/v5.0.0_release/5.0/en,
+retrieved 2026-11-09. The ASVS is released under the Creative Commons Attribution-ShareAlike
+4.0 International License (https://creativecommons.org/licenses/by-sa/4.0/), and this file,
+which quotes it, stays under that licence whatever the licence of the repository around it.
+
+The reference in bold at the start of each paragraph is added here so that a question can
+name the requirement, and the ASVS's own requirement number follows each one in square
+brackets. Text left out of a quotation is marked "…": in PA-10, SE-03 and LG-03 a sentence
+that sets a stricter level, or covers self-contained tokens, is cut. Nothing else in a
+quotation has been changed.
+
+## Part A — Authentication (ASVS chapter V6)
+
+**PA-01** Verify that user set passwords are at least 8 characters in length although a minimum of 15 characters is strongly recommended. [ASVS 5.0.0, 6.2.1]
+
+**PA-02** Verify that users can change their password. [ASVS 5.0.0, 6.2.2]
+
+**PA-03** Verify that password change functionality requires the user's current and new password. [ASVS 5.0.0, 6.2.3]
+
+**PA-04** Verify that passwords submitted during account registration or password change are checked against an available set of, at least, the top 3000 passwords which match the application's password policy, e.g. minimum length. [ASVS 5.0.0, 6.2.4]
+
+**PA-05** Verify that passwords of any composition can be used, without rules limiting the type of characters permitted. There must be no requirement for a minimum number of upper or lower case characters, numbers, or special characters. [ASVS 5.0.0, 6.2.5]
+
+**PA-06** Verify that password input fields use type=password to mask the entry. Applications may allow the user to temporarily view the entire masked password, or the last typed character of the password. [ASVS 5.0.0, 6.2.6]
+
+**PA-07** Verify that "paste" functionality, browser password helpers, and external password managers are permitted. [ASVS 5.0.0, 6.2.7]
+
+**PA-08** Verify that a user's password stays valid until it is discovered to be compromised or the user rotates it. The application must not require periodic credential rotation. [ASVS 5.0.0, 6.2.10]
+
+**PA-09** Verify that controls to prevent attacks such as credential stuffing and password brute force are implemented according to the application's security documentation. [ASVS 5.0.0, 6.3.1]
+
+**PA-10** Verify that either a multi-factor authentication mechanism or a combination of single-factor authentication mechanisms, must be used in order to access the application. … [ASVS 5.0.0, 6.3.3]
+
+**PA-11** Verify that users are notified after updates to authentication details, such as credential resets or modification of the username or email address. [ASVS 5.0.0, 6.3.7]
+
+**PA-12** Verify that system generated initial passwords or activation codes are securely randomly generated, follow the existing password policy, and expire after a short period of time or after they are initially used. These initial secrets must not be permitted to become the long term password. [ASVS 5.0.0, 6.4.1]
+
+**PA-13** Verify that a secure process for resetting a forgotten password is implemented, that does not bypass any enabled multi-factor authentication mechanisms. [ASVS 5.0.0, 6.4.3]
+
+**PA-14** Verify that administrative users can initiate the password reset process for the user, but that this does not allow them to change or choose the user's password. This prevents a situation where they know the user's password. [ASVS 5.0.0, 6.4.6]
+
+**PA-15** Verify that, if an application uses a separate Identity Provider (IdP) and expects specific authentication strength, methods, or recentness for specific functions, the application verifies this using the information returned by the IdP. [ASVS 5.0.0, 6.8.4]
+
+## Part B — Session management (ASVS chapter V7)
+
+**SE-01** Verify that the application generates a new session token on user authentication, including re-authentication, and terminates the current session token. [ASVS 5.0.0, 7.2.4]
+
+**SE-02** Verify that there is an inactivity timeout such that re-authentication is enforced according to risk analysis and documented security decisions. [ASVS 5.0.0, 7.3.1]
+
+**SE-03** Verify that when session termination is triggered (such as logout or expiration), the application disallows any further use of the session. For reference tokens or stateful sessions, this means invalidating the session data at the application backend. … [ASVS 5.0.0, 7.4.1]
+
+**SE-04** Verify that the application gives the option to terminate all other active sessions after a successful change or removal of any authentication factor (including password change via reset or recovery and, if present, an MFA settings update). [ASVS 5.0.0, 7.4.3]
+
+**SE-05** Verify that all pages that require authentication have easy and visible access to logout functionality. [ASVS 5.0.0, 7.4.4]
+
+**SE-06** Verify that session lifetime and termination between Relying Parties (RPs) and Identity Providers (IdPs) behave as documented, requiring re-authentication as necessary such as when the maximum time between IdP authentication events is reached. [ASVS 5.0.0, 7.6.1]
+
+## Part C — Authorization (ASVS chapter V8)
+
+**AZ-01** Verify that the application ensures that function-level access is restricted to consumers with explicit permissions. [ASVS 5.0.0, 8.2.1]
+
+**AZ-02** Verify that the application ensures that data-specific access is restricted to consumers with explicit permissions to specific data items to mitigate insecure direct object reference (IDOR) and broken object level authorization (BOLA). [ASVS 5.0.0, 8.2.2]
+
+**AZ-03** Verify that the application enforces authorization rules at a trusted service layer and doesn't rely on controls that an untrusted consumer could manipulate, such as client-side JavaScript. [ASVS 5.0.0, 8.3.1]
+
+## Part D — Data protection (ASVS chapter V14)
+
+**DP-01** Verify that sensitive data is only sent to the server in the HTTP message body or header fields, and that the URL and query string do not contain sensitive information, such as an API key or session token. [ASVS 5.0.0, 14.2.1]
+
+## Part E — Security logging (ASVS chapter V16)
+
+**LG-01** Verify that each log entry includes necessary metadata (such as when, where, who, what) that would allow for a detailed investigation of the timeline when an event happens. [ASVS 5.0.0, 16.2.1]
+
+**LG-02** Verify that all authentication operations are logged, including successful and unsuccessful attempts. Additional metadata, such as the type of authentication or factors used, should also be collected. [ASVS 5.0.0, 16.3.1]
+
+**LG-03** Verify that failed authorization attempts are logged. … [ASVS 5.0.0, 16.3.2]
+
+**LG-04** Verify that all logging components appropriately encode data to prevent log injection. [ASVS 5.0.0, 16.4.1]
+
+**LG-05** Verify that logs are protected from unauthorized access and cannot be modified. [ASVS 5.0.0, 16.4.2]
+
+=== DISPUTED PAIRS ===
+1. OS-26 — Strengthen part of username and password creation process: This file is called when a user begins setting up OpenEMR for the first time … Make the following happen via HTML5 attributes: initial user password min length of 12. database password min length of 12. Also: the "initial user" of "admin" is too easy to guess … make the username a minimum of 12 characters as well to ensure if they don't go with our randomized suggestion they still pick something with some complexity (enforce with html5)
+   Rule PA-04.
+   A: does not apply
+   B: needs-ba-input (question: Is the initial user password checked against a list of at least the top 3000 common passwords during setup?) — The initial account password is set at creation, but nothing says it is checked against a list of common passwords.
+
+2. OS-28 — 5.0.2 Bug: Portal asks to create new username when changing pass when email only is on: The patient portal in 5.0.2 asks for the user to create a new username when they are changing passwords when email substitution for usernames is turned on. This shouldn't be happening when this is turned on.
+   Rule PA-02.
+   A: compliant — The fix restores the patient's ability to change their password without being forced to create a new username.
+   B: does not apply
+
+3. OS-29 — Telehealth Third Party Onetime Login Link invitations both copy link and email: Building on the one time login links that Jerry built, we want to have the third party participants be able to get a one time invitation as well. We also want to be able to copy the invitation link and invitation message for the third party. Since we generate these links on the fly we need a button to be able to generate the link and copy it since browsers prevent direct copy access when doing an asynchronous request.
+   Rule DP-01.
+   A: needs-ba-input (question: Does the one-time telehealth invitation link put the authentication token in the URL or query string?) — Copyable one-time invitation links probably carry the login token in the URL.
+   B: gap — A copyable or emailed one-time login link carries the login secret in the URL.
+
+4. OS-30 — feat: Add ability to prevent forced portal credential change: Currently we force patient to change their credentials when portal credentials are created from MRD. Some admins prefer to prevent this action. … Add and persist a checkbox flag to create_portallogin to set the patient_access_onsite portal_pwd_status column to prevent. A nice addition while here would be to create a onetime to auto login and take patient to say portal documents to create intake forms or to appointments or even the portals change password dialog.
+   Rule PA-14.
+   A: gap — Credentials are created by staff, and with no forced change the staff member keeps knowing the patient's password.
+   B: does not apply
+
+5. OS-33 — [Patient Dashboard] Credentials reset dialog displays an outdated read-only email address after the patient's email is updated: A patient exists with Patient Portal credentials. … 1. Login as Administartor. 1. Create a patient. 2. Generate Patient Portal login credentials. 3. Update the patient's email address in the patient record. 4. Save the changes. 5. Click Reset option under Credentials … Actual Result: The Credential reset dialog displays the previous email address in a read-only field. Since the field is not editable, the administrator cannot update it before sending the reset. Expected Result: The password reset dialog should display the current email address from the patient's record. If the patient's email has been updated, the reset dialog should reflect the updated value instead of a stale email address.
+   Rule PA-12.
+   A: does not apply
+   B: needs-ba-input (question: Are the reset credentials emailed to the patient securely randomly generated, and do they expire after a short time or on first use?) — The reset sends system-generated portal credentials, but nothing says whether they are securely random, follow the password policy, or expire after first use.
