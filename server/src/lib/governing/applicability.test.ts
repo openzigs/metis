@@ -1056,6 +1056,44 @@ describe("#2122 — carried answers and rule handles", () => {
     // A run with a handle the prompt did not show: only the shown one is named.
     expect(nameAnswerHandles("A1 and A9 agree.", 1)).toBe("The analyst's answer and A9 agree.");
   });
+
+  // #2143 — the Annex/Appendix guard covered only the first handle of a run.
+  it("#2143 — every handle of a run after Annex or Appendix stays a part of the document", () => {
+    expect(nameAnswerHandles("Annex A1 and A2 apply.", 2)).toBe("Annex A1 and A2 apply.");
+    expect(nameAnswerHandles("Appendix A1, A2 and A3 apply.", 3)).toBe(
+      "Appendix A1, A2 and A3 apply.",
+    );
+    expect(nameAnswerHandles("Annex [A1] applies.", 1)).toBe("Annex [A1] applies.");
+    expect(nameAnswerHandles("Annex [A1] and [A2] apply.", 2)).toBe("Annex [A1] and [A2] apply.");
+    // An answer named as one after the annex is still an answer.
+    expect(nameAnswerHandles("Annex A1 and the answer A2 agree.", 2)).toBe(
+      "Annex A1 and the analyst's answer agree.",
+    );
+    // And a handle after the annex's sentence has ended is one too.
+    expect(nameAnswerHandles("See Annex A1. A2 agrees.", 2)).toBe(
+      "See Annex A1. The analyst's answer agrees.",
+    );
+  });
+
+  // #2143 — only "and" joins handles into the analyst's answers: "or" names one of them,
+  // and a comma alone may only end a clause ("Per A1, A2 does not apply").
+  it("#2143 — handles joined by or, or by a comma alone, are named one by one", () => {
+    expect(nameAnswerHandles("Either A1 or A2 says so.", 2)).toBe(
+      "Either the analyst's answer or the analyst's answer says so.",
+    );
+    expect(nameAnswerHandles("Per A1, A2 does not apply.", 2)).toBe(
+      "Per the analyst's answer, the analyst's answer does not apply.",
+    );
+    expect(nameAnswerHandles("A1, A2 or A3 settles it.", 3)).toBe(
+      "The analyst's answer, the analyst's answer or the analyst's answer settles it.",
+    );
+    // An "or" anywhere in the run names them one by one, even beside an "and".
+    expect(nameAnswerHandles("A1 and A2 or A3 settle it.", 3)).toBe(
+      "The analyst's answer and the analyst's answer or the analyst's answer settle it.",
+    );
+    // A list that ends in "and" is still one plural run.
+    expect(nameAnswerHandles("A1, A2, and A3 agree.", 3)).toBe("The analyst's answers agree.");
+  });
 });
 
 describe("planBatches and the budget", () => {

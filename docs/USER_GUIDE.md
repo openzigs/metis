@@ -3027,7 +3027,7 @@ A file counts as the provider's API when it is one of these (#2127, #2134):
 - a file the edge records on the provider's side;
 - a spec file (`openapi*.yaml`, `swagger*.json`, `asyncapi*.yml`, `.proto`,
   `.graphql`, `.graphqls`, `.gql`), wherever it sits;
-- a file under a folder whose name is, or contains the word, `api`, `rest`,
+- a file under a folder whose name is, or contains the word, `api(s)`, `rest`,
   `graphql`, `grpc`, `rpc`, `openapi`, `swagger`, `endpoint(s)`, `routes`,
   `controller(s)`, `resolver(s)` or `webhook(s)`, so `RestControllers`,
   `public_api` and `GraphQLSchema` count;
@@ -3038,8 +3038,8 @@ A file counts as the provider's API when it is one of these (#2127, #2134):
   `server/src/jobs/handlers/` do not count.
 
 A singular `route` folder never counts (it is a route helper, such as
-Miniflux's `internal/http/route/`), and neither does a client folder, which
-calls an API rather than serving one: any folder with the word `client` in its
+Miniflux's `internal/http/route/`). A client folder never counts either, since
+it calls an API rather than serving one: any folder with the word `client` in its
 name (`rest-client`, `api_client`, `GraphQLClient`), or with `client` joined
 onto `graphql`, `grpc`, `openapi` or `swagger` (`grpcclient`, `swaggerclient`).
 
@@ -3054,7 +3054,8 @@ request here, and each stored requirement as its own, so in a document with
 several unrelated changes, one that touches the API keeps the banner off all of
 them. While this part is still loading, the block says **Checking projects that
 call this project's API…**, and if it cannot be read, the block says so; in
-neither case does it report that no other project is affected. Consumers you cannot open are left out. These come from
+neither case does it report that no other project is affected. Consumers you
+cannot open are left out. These come from
 `GET /api/impact-analyses/:id/api-edge-impact` (`analysis.read`, authorized like
 the run itself).
 

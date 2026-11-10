@@ -986,6 +986,25 @@ describe("A5 — the shipped path (#1878)", () => {
     ]);
   });
 
+  it("shippedStages: a rule findingPairsOf could not cite is marked not citable (#2143)", () => {
+    const decision = (ruleId: string) => ({
+      ruleId,
+      controlId: ruleId,
+      verdict: "applies" as const,
+      reason: "Yes.",
+      foundBy: ["screen" as const],
+    });
+    const stages = shippedStages(
+      { decisions: [decision("DR-06"), decision("DR-07")] },
+      { findings: [] as unknown as FindingsReport["findings"] },
+      new Set(["DR-07"]),
+    );
+    expect(stages).toEqual([
+      { ruleId: "DR-06", foundBy: ["screen"], applicability: "applies" },
+      { ruleId: "DR-07", foundBy: ["screen"], applicability: "applies", citable: false },
+    ]);
+  });
+
   it("asks production's question, settles the BA's answer, and produces the findings again", async () => {
     const { provider, calls } = stubProvider([
       ...applicability("uncertain"),

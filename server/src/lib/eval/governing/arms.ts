@@ -940,31 +940,38 @@ export const SHIPPED_CODE_PATH: readonly string[] = Object.freeze([
 
 type StoredRequirement = GoverningAnalysisApplicability["requirements"][number];
 
-/** Production's findings pass over one stored requirement (`produceNow`, without the write). */
+/**
+ * Production's findings pass over one stored requirement (`produceNow`, without
+ * the write). #2143 — with the rules it could not cite (`ruleGone`), which get
+ * no finding.
+ */
 async function shippedFindings(
   requirement: StoredRequirement,
   corpus: GoverningCorpus,
   findingRules: ReadonlyMap<string, FindingRule>,
   provider: AIProvider,
-): Promise<FindingsReport> {
-  const { pairs, answers } = findingPairsOf(requirement, findingRules);
-  return evaluateRequirementFindings({
+): Promise<FindingsReport & { ruleGone: ReadonlySet<string> }> {
+  const { pairs, answers, ruleGone } = findingPairsOf(requirement, findingRules);
+  const report = await evaluateRequirementFindings({
     requirement: { id: requirement.requirementId, text: requirement.text },
     answers,
     pairs,
     revisionText: () => corpus.policyText,
     provider,
   });
+  return { ...report, ruleGone };
 }
 
 /**
  * #2108 — each candidate rule of one requirement as the shipped path decided
  * it: the passes that found it, its applicability verdict, and the status of
  * its finding before any answer (absent when no finding was produced).
+ * #2143 — a rule in `ruleGone` is marked `citable: false`.
  */
 export function shippedStages(
   set: Pick<ApplicabilitySet, "decisions">,
   report: Pick<FindingsReport, "findings">,
+  ruleGone: ReadonlySet<string> = new Set(),
 ): RuleStage[] {
   const status = new Map(report.findings.map((f) => [f.rule.id, f.status]));
   return set.decisions.map((d) => {
@@ -974,6 +981,7 @@ export function shippedStages(
       foundBy: [...d.foundBy],
       applicability: d.verdict,
       ...(finding ? { finding } : {}),
+      ...(ruleGone.has(d.ruleId) ? { citable: false as const } : {}),
     };
   });
 }
@@ -1046,7 +1054,7 @@ export function createA5Arm(deps: GoverningArmDeps): GoverningArm {
       const report = await shippedFindings(requirement, corpus, findingRules, provider);
       const out: GoverningArmOutput = {
         ...readFindings(report),
-        stages: shippedStages(set, report),
+        stages: shippedStages(set, report, report.ruleGone),
         diagnostics: {
           candidates: set.candidates,
           applicable: report.findings.length,

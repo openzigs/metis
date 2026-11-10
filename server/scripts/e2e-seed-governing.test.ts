@@ -17,8 +17,10 @@ import {
   POLICY_TEXT,
   rulesWithFindings,
 } from "../../e2e/fixtures/governing-fixture.js";
-import { GOVERNING_QUESTION_FIELD as SERVER_GOVERNING_QUESTION_FIELD } from "../src/lib/governing/applicability-questions.js";
-import { governingQuestionRequirementId } from "../src/lib/governing/applicability-questions.js";
+import {
+  GOVERNING_QUESTION_FIELD as SERVER_GOVERNING_QUESTION_FIELD,
+  governingQuestionRequirementId,
+} from "../src/lib/governing/applicability-questions.js";
 import {
   GOVERNING_QUESTION_FIELD,
   buildGoverningApplicability,

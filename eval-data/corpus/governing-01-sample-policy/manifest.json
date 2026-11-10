@@ -601,6 +601,24 @@
       "title": "Rename the Specials menu",
       "text": "Rename the Specials menu to Offers across the website and the mobile app.",
       "applies": []
+    },
+    {
+      "id": "GR-37",
+      "title": "Name who ran each customer export",
+      "text": "When someone in customer services exports the full customer list for the regional sales review, put their name in the audit trail so we can see who ran it.",
+      "applies": [
+        {
+          "ruleId": "AL-02",
+          "verdict": "needs-ba-input",
+          "businessFact": "Will each export's audit entry also record when it ran and which customers it covered?"
+        }
+      ]
+    },
+    {
+      "id": "GR-38",
+      "title": "Log new shelf prices",
+      "text": "Whenever a store manager changes a product's shelf price in the back office, write the new price to the audit log, along with the manager's name and the time.",
+      "applies": [{ "ruleId": "AL-06", "verdict": "gap" }]
     }
   ]
 }

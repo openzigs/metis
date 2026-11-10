@@ -19,6 +19,12 @@ export interface RuleStage {
   applicability: "applies" | "does-not-apply" | "uncertain";
   /** The finding's status; absent when the rule did not apply or the findings call gave none. */
   finding?: GoverningVerdict;
+  /**
+   * #2143 — false when the rule applied but could not be cited (soft-deleted, or
+   * its document deleted: `findingPairsOf`'s `ruleGone`), so no finding was
+   * asked for. Absent otherwise.
+   */
+  citable?: false;
 }
 
 /** What went wrong with one (requirement, rule) pair. */
@@ -31,6 +37,8 @@ export type StageErrorKind = "missed" | "extra" | "wrong-verdict";
  *   - `applicability-applies` / `applicability-uncertain`: an extra rule the
  *     judge brought in, or (uncertain) a wrong verdict that is applicability's
  *     Needs BA input, given without a findings call;
+ *   - `rule-not-citable` (#2143): a miss whose rule applied but could not be
+ *     cited, so the findings call was never asked about it;
  *   - `findings-call`: the findings call gave the wrong status, or none.
  */
 export const STAGES = [
@@ -38,6 +46,7 @@ export const STAGES = [
   "judged-does-not-apply",
   "applicability-applies",
   "applicability-uncertain",
+  "rule-not-citable",
   "findings-call",
 ] as const;
 export type Stage = (typeof STAGES)[number];
@@ -71,7 +80,9 @@ export function stageErrors(
         ? "not-a-candidate"
         : s.applicability === "does-not-apply"
           ? "judged-does-not-apply"
-          : "findings-call";
+          : s.citable === false
+            ? "rule-not-citable"
+            : "findings-call";
       out.push({ ...at, kind: "missed", stage });
     } else {
       const stage = s?.applicability === "uncertain" ? "applicability-uncertain" : "findings-call";
@@ -111,7 +122,8 @@ export function stageSection(report: { arms: readonly StagedArm[] }): string[] {
       "`not-a-candidate` (neither the top-k search nor the screen found the rule), " +
       "`judged-does-not-apply` (the applicability judge ruled a candidate out), " +
       "`applicability-applies` / `applicability-uncertain` (the judge brought an extra rule in, or left a rule " +
-      "uncertain, which is Needs BA input without a findings call), and `findings-call` (the findings call " +
+      "uncertain, which is Needs BA input without a findings call), `rule-not-citable` (the rule applied but " +
+      "could not be cited, so no finding was asked for), and `findings-call` (the findings call " +
       "gave the wrong status). Whether a label itself is doubtful is a reader's call, recorded in ANNOTATION.md.",
     "",
   );

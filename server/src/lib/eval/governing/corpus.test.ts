@@ -62,6 +62,26 @@ describe("the committed governing corpus", () => {
     expect(corpus.policyText).toContain(`**AL-02** ${corpus.ruleById.get("AL-02")!.clause}`);
   });
 
+  // #2143 — SAFEGUARD_REQUESTED_LINE lets the part of a multi-part rule a requirement
+  // provides earn compliant on the rest. The no-evidence bar cannot see that (the
+  // finding quotes real words), so these pairs measure it: compliant on either is a
+  // hard error.
+  it("holds the safeguard-line pairs: one part of a multi-part rule provided, the rest not (#2143)", async () => {
+    const corpus = await loadGoverningCorpus(NAME);
+    const pairOf = (id: string) => corpus.manifest.items.find((i) => i.id === id)?.applies;
+    expect(pairOf("GR-37")).toEqual([
+      expect.objectContaining({ ruleId: "AL-02", verdict: "needs-ba-input" }),
+    ]);
+    expect(pairOf("GR-38")).toEqual([{ ruleId: "AL-06", verdict: "gap" }]);
+    // Each provides one part of its rule in its own words: the person (AL-02), the new value (AL-06).
+    expect(corpus.ruleById.get("AL-02")!.clause).toMatch(
+      /naming the person, the time and the scope/,
+    );
+    expect(corpus.ruleById.get("AL-06")!.clause).toMatch(/the previous value and the new value/);
+    const annotation = await fs.readFile(path.join(DIR, "ANNOTATION.md"), "utf8");
+    expect(annotation).toMatch(/GR-37 and GR-38/);
+  });
+
   it("lists every file of its directory in the manifest (and lists nothing that is not there)", async () => {
     const { manifest } = await committed();
     const present = (await listCorpusFiles(DIR)).filter((f) => f !== "manifest.json");

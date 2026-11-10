@@ -176,6 +176,13 @@ describe("isApiSurfaceFile", () => {
     ["pkg/http/client/handler/retry.go", false],
     ["servers/internal/router/mux.go", false],
     ["handlers/feeds.ts", false],
+    // #2143 — deliberate negatives: a handler or router directory whose parent is
+    // `src`, not a server word, is not counted, even under `server/`. Real API
+    // handlers there are missed; that is the price of not reading METIS's own
+    // job and queue handlers (above) as an API. The caller still records a file
+    // the edge itself names (`providerFiles`).
+    ["server/src/handlers/users.ts", false],
+    ["server/src/routers/user.ts", false],
     // #2127 — a client directory calls an API; it does not serve one.
     ["src/rest-client/feeds.ts", false],
     ["pkg/api_client/feeds.go", false],
