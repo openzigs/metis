@@ -66,11 +66,35 @@ vi.mock("../src/lib/analysis/clarification-dialog-store.js", () => ({
     const v = dialogStore.get(id);
     return v ? { state: structuredClone(v) as unknown, revision: JSON.stringify(v) } : undefined;
   }),
-  replaceDialogState: vi.fn(async (id: string, revision: string, state: unknown) => {
-    if (JSON.stringify(dialogStore.get(id)) !== revision) return null;
+  replaceDialogState: vi.fn(async (id: string, revision: string | undefined, state: unknown) => {
+    // #2142 — no revision: created only while there is no row.
+    const held = dialogStore.get(id);
+    if (revision === undefined ? held !== undefined : JSON.stringify(held) !== revision) {
+      return null;
+    }
     dialogStore.set(id, structuredClone(state));
     return JSON.stringify(state);
   }),
+  // #2142 — one transaction: `alongside` throwing rolls the state write back.
+  commitDialogState: vi.fn(
+    async (
+      id: string,
+      revision: string,
+      state: unknown,
+      alongside: (tx: unknown) => Promise<void>,
+    ) => {
+      const held = dialogStore.get(id);
+      if (JSON.stringify(held) !== revision) return null;
+      dialogStore.set(id, structuredClone(state));
+      try {
+        await alongside({});
+      } catch (err) {
+        dialogStore.set(id, held);
+        throw err;
+      }
+      return JSON.stringify(state);
+    },
+  ),
 }));
 
 describe("generative-e2e clarify fixtures", () => {

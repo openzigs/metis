@@ -188,6 +188,9 @@ function roundNotOpen(error: unknown): boolean {
   return error instanceof ApiError && error.code === "CLARIFY_ROUND_NOT_OPEN";
 }
 
+/** #2142 — what a submit and an import both say when their round had closed. */
+const ROUND_CLOSED_MESSAGE = "This round was already answered. Showing the current questions.";
+
 export function ClarificationDialogPanel({
   projectId,
   analysisId,
@@ -283,7 +286,7 @@ export function ClarificationDialogPanel({
       result.state?.completed ? "Clarification complete" : "Answers submitted",
     errorMessage: (error) =>
       roundNotOpen(error)
-        ? "This round was already answered. Showing the current questions."
+        ? ROUND_CLOSED_MESSAGE
         : resolveErrorMessage(error, "Failed to submit answers"),
     // Issue #1117 (finding D) — do NOT clear the answers here. Blanking local
     // state in the same tick left a window where the panel showed nothing
@@ -329,10 +332,14 @@ export function ClarificationDialogPanel({
       onComplete(result.state);
     },
     onError: (error) => {
-      const message = error instanceof Error ? error.message : "Failed to import answers";
-      toast.error(message);
       // #2101 — as a submit: the round closed, so move to the current one.
-      if (roundNotOpen(error)) onComplete();
+      // #2142 — and say so in the submit's words, not the server's raw text.
+      if (roundNotOpen(error)) {
+        toast.error(ROUND_CLOSED_MESSAGE);
+        onComplete();
+        return;
+      }
+      toast.error(error instanceof Error ? error.message : "Failed to import answers");
     },
   });
 
