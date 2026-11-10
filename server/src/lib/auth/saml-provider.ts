@@ -440,10 +440,12 @@ function claimValues(value: unknown): string[] {
   return values.filter((v): v is string => typeof v === "string" && v.length > 0);
 }
 
-/** `<x>text</x>` as xml2js parses it with `explicitCharkey` (node-saml's setting). */
+/**
+ * `<x>text</x>` as xml2js parses it with `explicitCharkey` (node-saml's
+ * setting), or as a bare string; trimmed either way (#1558).
+ */
 function textOf(node: unknown): string | undefined {
-  if (typeof node === "string") return node;
-  const text = (node as { _?: unknown } | null)?._;
+  const text = typeof node === "string" ? node : (node as { _?: unknown } | null)?._;
   return typeof text === "string" ? text.trim() : undefined;
 }
 

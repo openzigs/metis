@@ -185,6 +185,16 @@ describe("#1552 MFA detection", () => {
     expect(result.user?.mfaPassed).toBe(true);
   });
 
+  // #1558 — an IdP that pretty-prints its XML wraps the class ref in whitespace.
+  it("reads a class ref wrapped in whitespace", async () => {
+    const result = await validateSAMLResponse(
+      entraResponse(alice, { classRef: `\n    ${ENTRA_CLASS_REF.mobileTwoFactorContract}\n  ` }),
+      config,
+    );
+    expect(result.success).toBe(true);
+    expect(result.user?.mfaPassed).toBe(true);
+  });
+
   it.each([
     [
       "PasswordProtectedTransport (password over TLS)",

@@ -115,6 +115,15 @@ test.describe.serial("SAML sign-in against an Entra-profile IdP (#1553)", () => 
     await idp?.close();
   });
 
+  // The stack has no Ingress: route the SAML button's /api/auth/saml/login (on
+  // the UI's port) to the API's port. Once per test's page (#1558), not once
+  // per sign-in, which stacked a handler for every sign-in on the page.
+  test.beforeEach(async ({ page }) => {
+    await page.route(`${UI_BASE}/api/auth/saml/login`, (route) =>
+      route.fulfill({ status: 302, headers: { location: `${API_BASE}/api/auth/saml/login` } }),
+    );
+  });
+
   /** Sign out, open /login and press the SAML button as `user` under `profile`. */
   async function signInWithSamlButton(
     page: Page,
@@ -124,9 +133,6 @@ test.describe.serial("SAML sign-in against an Entra-profile IdP (#1553)", () => 
     idp.setUser(user);
     idp.setProfile(profile);
     await page.context().clearCookies();
-    await page.route(`${UI_BASE}/api/auth/saml/login`, (route) =>
-      route.fulfill({ status: 302, headers: { location: `${API_BASE}/api/auth/saml/login` } }),
-    );
     const login = new SSOLoginPage(page);
     await login.goto();
     await login.getSSOButton(PROVIDER).click();

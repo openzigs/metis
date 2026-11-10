@@ -68,7 +68,7 @@ interface EntraProfile {
   method: EntraAuthMethod;
   mfaSignals: "both" | "amr" | "classRef";
   groupOverage: boolean;
-  expired: boolean;
+  expired: boolean | "conditions" | "subjectConfirmation";
   wrongAudience: boolean;
   issuer: string;
 }
@@ -154,7 +154,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
 
     afterAll(async () => {
       await idp?.close();
-      process.env.CORS_ORIGIN = previousCors;
+      // #1558 — assigning undefined would store the string "undefined".
+      if (previousCors === undefined) delete process.env.CORS_ORIGIN;
+      else process.env.CORS_ORIGIN = previousCors;
       await db?.$disconnect();
       sqlite?.cleanup();
     });
@@ -359,6 +361,17 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     it.each([
       ["a wrong audience", { wrongAudience: true }, /audience/i],
       ["an expired assertion", { expired: true }, /subject confirmation|expired|not on or after/i],
+      // #1558 — each window alone, so one check's regression is not masked by the other.
+      [
+        "an assertion whose Conditions window alone has closed",
+        { expired: "conditions" },
+        /SAML assertion expired/i,
+      ],
+      [
+        "an assertion whose SubjectConfirmationData window alone has closed",
+        { expired: "subjectConfirmation" },
+        /No valid subject confirmation/i,
+      ],
     ] as const)("%s is refused", async (_label, profile, message) => {
       await configure();
       const acs = await signIn(entraUser("eve", [ADMINS]), { signing: "both", ...profile });

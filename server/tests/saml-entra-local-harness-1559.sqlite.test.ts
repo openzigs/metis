@@ -103,7 +103,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       await new Promise((resolve) => server?.close(resolve));
       __resetProviders();
       __resetSAMLInstances();
-      process.env.CORS_ORIGIN = previousCors;
+      // #1558 — assigning undefined would store the string "undefined".
+      if (previousCors === undefined) delete process.env.CORS_ORIGIN;
+      else process.env.CORS_ORIGIN = previousCors;
       await db?.$disconnect();
       sqlite?.cleanup();
     });

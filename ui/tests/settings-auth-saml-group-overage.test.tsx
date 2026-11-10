@@ -40,33 +40,44 @@ afterEach(() => {
 describe("Admin Authentication page — SAML group overage warning (#1552)", () => {
   it("names the users who got the default role and the Entra setting to choose", async () => {
     stubFetch({
-      total: 3,
+      total: 4,
+      windowDays: 30,
       recent: [
-        { userId: "u1", username: "olga", at: "2026-10-29T10:00:00.000Z" },
-        { userId: "u2", username: null, at: "2026-10-29T09:00:00.000Z" },
-        { userId: "u1", username: "olga", at: "2026-10-28T09:00:00.000Z" },
+        { userId: "u1", username: "olga", role: "reader", at: "2026-10-29T10:00:00.000Z" },
+        { userId: "u2", username: null, role: null, at: "2026-10-29T09:00:00.000Z" },
+        { userId: "u3", username: "otto", role: "developer", at: "2026-10-29T08:00:00.000Z" },
+        { userId: "u1", username: "olga", role: "reader", at: "2026-10-28T09:00:00.000Z" },
       ],
     });
     render(<AdminAuthPage />, { wrapper: makeWrapper({ initialUser: ADMIN }) });
 
     const warning = await screen.findByTestId("saml-group-overage-warning");
     expect(warning).toHaveAttribute("role", "alert");
-    expect(warning).toHaveTextContent("3 SAML sign-ins arrived without the user's groups");
-    expect(warning).toHaveTextContent("got the default role: olga, u2.");
+    expect(warning).toHaveTextContent(
+      "4 SAML sign-ins in the last 30 days arrived without the user's groups",
+    );
+    // #1558 — an app-role mapping can still match, so each user's role is named.
+    expect(warning).toHaveTextContent("no group mapping could match them");
+    expect(warning).toHaveTextContent("olga (reader), u2, otto (developer).");
+    expect(warning).not.toHaveTextContent("got the default role");
     expect(warning).toHaveTextContent("Groups assigned to the application");
   });
 
   it("says one sign-in in the singular", async () => {
-    stubFetch({ total: 1, recent: [{ userId: "u1", username: "olga", at: "x" }] });
+    stubFetch({
+      total: 1,
+      windowDays: 30,
+      recent: [{ userId: "u1", username: "olga", role: "reader", at: "x" }],
+    });
     render(<AdminAuthPage />, { wrapper: makeWrapper({ initialUser: ADMIN }) });
 
     expect(await screen.findByTestId("saml-group-overage-warning")).toHaveTextContent(
-      "1 SAML sign-in arrived without the user's groups",
+      "1 SAML sign-in in the last 30 days arrived without the user's groups",
     );
   });
 
   it.each([
-    ["no overage was recorded", { total: 0, recent: [] }, true],
+    ["no overage was recorded", { total: 0, recent: [], windowDays: 30 }, true],
     ["the read fails", null, false],
   ])("shows no warning when %s", async (_label, overage, ok) => {
     const fetchMock = stubFetch(overage, ok);

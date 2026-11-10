@@ -37,7 +37,8 @@ vi.mock("../src/lib/prisma.js", async () => {
 });
 
 const { createApp } = await import("../src/app.js");
-const { upsertProvider, __resetProviders } = await import("../src/lib/auth/sso-config.js");
+const { upsertProvider, getStoredProviderByMode, __resetProviders } =
+  await import("../src/lib/auth/sso-config.js");
 const { __resetSAMLInstances } = await import("../src/lib/auth/saml-provider.js");
 const { verifyAccessToken } = await import("../src/lib/auth/jwt.js");
 const { requireMfa } = await import("../src/lib/auth/require-mfa.js");
@@ -85,7 +86,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     }, MIGRATED_SQLITE_HOOK_TIMEOUT_MS);
 
     afterAll(async () => {
-      process.env.CORS_ORIGIN = previousCors;
+      // #1558 — assigning undefined would store the string "undefined".
+      if (previousCors === undefined) delete process.env.CORS_ORIGIN;
+      else process.env.CORS_ORIGIN = previousCors;
       await db?.$disconnect();
       sqlite?.cleanup();
     });
@@ -195,7 +198,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           .get("/api/admin/auth/saml/group-overage")
           .set("Authorization", `Bearer ${adminToken}`);
       // Ordinary sign-ins (this test's and the previous one's) record nothing.
-      expect((await overageSummary()).body.data).toEqual({ total: 0, recent: [] });
+      expect((await overageSummary()).body.data).toEqual({ total: 0, recent: [], windowDays: 30 });
 
       const acs = await signIn({
         upn: "olga@contoso.example",
@@ -214,7 +217,35 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
       const summary = (await overageSummary()).body.data;
       expect(summary.recent).toEqual([
-        { userId: expect.any(String), username: "olga", at: expect.any(String) },
+        { userId: expect.any(String), username: "olga", role: "reader", at: expect.any(String) },
+      ]);
+
+      // #1558 — the warning is windowed: an overage older than 30 days (the admin
+      // has since fixed the group claim) no longer counts.
+      const day = 24 * 60 * 60 * 1000;
+      await db.auditLog.create({
+        data: {
+          action: "sso.saml.group_overage",
+          targetType: "user",
+          targetId: "olga-long-ago",
+          ts: new Date(Date.now() - 31 * day),
+          metadata: JSON.stringify({ username: "olga-long-ago", role: "reader" }),
+        },
+      });
+      await db.auditLog.create({
+        data: {
+          action: "sso.saml.group_overage",
+          targetType: "user",
+          targetId: "olga-last-month",
+          ts: new Date(Date.now() - 29 * day),
+          metadata: JSON.stringify({ username: "olga-last-month", role: "reader" }),
+        },
+      });
+      const windowed = (await overageSummary()).body.data;
+      expect(windowed.total).toBe(2);
+      expect(windowed.recent.map((r: { userId: string }) => r.userId)).toEqual([
+        summary.recent[0].userId,
+        "olga-last-month",
       ]);
 
       // Admin-only.
@@ -222,6 +253,38 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         .get("/api/admin/auth/saml/group-overage")
         .set("Authorization", `Bearer ${cookieValue(acs, "metis.at")}`);
       expect(olga.status).toBe(403);
+    });
+
+    it("#1558: an overage user whose app role matches a mapping is reported with that role", async () => {
+      await configureFromEntraMetadata();
+      // configureFromEntraMetadata's mappings plus one on an app role value.
+      upsertProvider({
+        ...getStoredProviderByMode("saml")!,
+        groupMappings: [
+          { claimValue: entra.ENTRA_GROUP.metisAdmins, role: "admin" },
+          { claimValue: "METIS.Developer", role: "developer" },
+        ],
+      });
+      const admin = await signIn({
+        upn: "ada@contoso.example",
+        objectId: "ada00000-1552-4000-8000-000000000001",
+        displayName: "Ada",
+        groups: [entra.ENTRA_GROUP.metisAdmins],
+      });
+      const acs = await signIn({
+        upn: "otto@contoso.example",
+        objectId: "ada00000-1552-4000-8000-000000000004",
+        displayName: "Otto",
+        groupOverage: true,
+        roles: ["METIS.Developer"],
+      });
+      expect(await roleOf(acs)).toBe("developer");
+      await vi.waitFor(async () => {
+        const res = await request(app)
+          .get("/api/admin/auth/saml/group-overage")
+          .set("Authorization", `Bearer ${cookieValue(admin, "metis.at")}`);
+        expect(res.body.data.recent[0]).toMatchObject({ username: "otto", role: "developer" });
+      });
     });
 
     it("a password-only session is refused by requireMfa, an MFA session is not, across a refresh", async () => {

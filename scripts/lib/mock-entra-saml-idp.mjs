@@ -127,7 +127,10 @@ const DSIG = {
  *   with no `authnmethodsreferences` claim, as for an app that has not added the
  *   optional `amr` claim
  * @property {boolean} groupOverage   send `groups.link` instead of `groups`
- * @property {boolean} expired        the assertion's validity window has passed
+ * @property {boolean | "conditions" | "subjectConfirmation"} expired
+ *   `true`: the assertion was issued two hours ago and both of its windows have
+ *   passed; `"conditions"` or `"subjectConfirmation"`: only that window has
+ *   passed (#1558), so a regression in one check is not masked by the other
  * @property {boolean} wrongAudience  the Audience is not the SP's entity id
  * @property {string} [issuer]        the Issuer the Response and assertion name, signed with
  *   this IdP's own key (#1555: another tenant's issuer); default: this IdP's issuer
@@ -139,7 +142,7 @@ export const DEFAULT_PROFILE = Object.freeze({
   mfa: false,
   mfaSignals: /** @type {const} */ ("both"),
   groupOverage: false,
-  expired: false,
+  expired: /** @type {boolean | "conditions" | "subjectConfirmation"} */ (false),
   wrongAudience: false,
   issuer: /** @type {string | undefined} */ (undefined),
 });
@@ -319,8 +322,14 @@ const attribute = (name, values) =>
 export function buildEntraResponse(input, identity) {
   const { user, profile } = input;
   const now = input.now ?? Date.now();
-  // An expired assertion was issued two hours ago; its windows closed 50 min ago.
-  const issued = profile.expired ? now - 2 * 60 * 60_000 : now;
+  // `expired: true` was issued two hours ago, so both windows have closed: the
+  // SubjectConfirmationData's (5 min) 1 h 55 min ago, the Conditions' (70 min)
+  // 50 min ago. #1558 — `"conditions"` or `"subjectConfirmation"` closes only
+  // that one, 10 minutes ago (past node-saml's 30 s skew), on a fresh assertion.
+  const issued = profile.expired === true ? now - 2 * 60 * 60_000 : now;
+  const subjectEnd =
+    profile.expired === "subjectConfirmation" ? now - 10 * 60_000 : issued + 5 * 60_000;
+  const conditionsEnd = profile.expired === "conditions" ? now - 10 * 60_000 : issued + 70 * 60_000;
   /** @param {number} ms */
   const iso = (ms) => new Date(ms).toISOString();
   const responseId = `_${randomUUID()}`;
@@ -362,9 +371,10 @@ export function buildEntraResponse(input, identity) {
     `<Issuer>${issuerXml}</Issuer>` +
     `<Subject><NameID Format="urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress">${escapeXml(user.upn)}</NameID>` +
     `<SubjectConfirmation Method="urn:oasis:names:tc:SAML:2.0:cm:bearer">` +
-    `<SubjectConfirmationData InResponseTo="${escapeXml(input.inResponseTo)}" NotOnOrAfter="${iso(issued + 5 * 60_000)}" Recipient="${escapeXml(input.acsUrl)}"/>` +
+    `<SubjectConfirmationData InResponseTo="${escapeXml(input.inResponseTo)}" NotOnOrAfter="${iso(subjectEnd)}" Recipient="${escapeXml(input.acsUrl)}"/>` +
     `</SubjectConfirmation></Subject>` +
-    `<Conditions NotBefore="${iso(issued - 5_000)}" NotOnOrAfter="${iso(issued + 70 * 60_000)}">` +
+    // Entra starts the Conditions window about 5 minutes before IssueInstant (#1558).
+    `<Conditions NotBefore="${iso(issued - 5 * 60_000)}" NotOnOrAfter="${iso(conditionsEnd)}">` +
     `<AudienceRestriction><Audience>${escapeXml(audience)}</Audience></AudienceRestriction></Conditions>` +
     `<AttributeStatement>${attrs.join("")}</AttributeStatement>` +
     `<AuthnStatement AuthnInstant="${iso(issued - 1_000)}" SessionIndex="${assertionId}"><AuthnContext>` +
@@ -392,6 +402,9 @@ export function buildEntraResponse(input, identity) {
   return xml;
 }
 
+/** The largest inflated AuthnRequest read (#1558); longer is refused as invalid. */
+export const MAX_AUTHN_REQUEST_BYTES = 64 * 1024;
+
 /**
  * The fields of an SP-initiated AuthnRequest that Entra checks. The input is
  * the SP's own request, bounded by the URL it arrived in.
@@ -399,7 +412,10 @@ export function buildEntraResponse(input, identity) {
  * @param {string} encoded  the `SAMLRequest` query value (deflated, base64)
  */
 export function readAuthnRequest(encoded) {
-  const xml = inflateRawSync(Buffer.from(encoded, "base64")).toString("utf8");
+  // #1558 — a small deflated input can inflate to gigabytes; a real request is under 2 KB.
+  const xml = inflateRawSync(Buffer.from(encoded, "base64"), {
+    maxOutputLength: MAX_AUTHN_REQUEST_BYTES,
+  }).toString("utf8");
   const head = /<(?:\w+:)?AuthnRequest\b([^>]*)>/.exec(xml)?.[1];
   if (head === undefined) throw new Error("not an AuthnRequest");
   return {
@@ -520,6 +536,8 @@ export async function startMockEntraSamlIdp(options) {
   const identity = generateSigningIdentity();
   const tenantId = options.tenantId ?? randomUUID();
   const issuer = `https://sts.windows.net/${tenantId}/`;
+  /** The tenant's path prefix, lowercased like the request path it is compared with. */
+  const tenantPath = `/${tenantId.toLowerCase()}`;
   const host = options.host ?? "127.0.0.1";
   const accounts = options.accounts ?? [];
   let user = options.user;
@@ -610,10 +628,11 @@ export async function startMockEntraSamlIdp(options) {
 
   const server = createServer((req, res) => {
     const url = new URL(req.url ?? "/", ids.baseUrl || "http://localhost");
+    // Paths match case-insensitively, as Entra's do; #1558 — so the tenant is lowercased too.
     const path = url.pathname.toLowerCase();
     if (
       req.method === "GET" &&
-      path === `/${tenantId}/federationmetadata/2007-06/federationmetadata.xml`
+      path === `${tenantPath}/federationmetadata/2007-06/federationmetadata.xml`
     ) {
       calls.metadata += 1;
       return send(
@@ -623,7 +642,7 @@ export async function startMockEntraSamlIdp(options) {
         buildFederationMetadata(ids, identity),
       );
     }
-    if (req.method === "GET" && path === `/${tenantId}/saml2`) {
+    if (req.method === "GET" && path === `${tenantPath}/saml2`) {
       calls.sso += 1;
       const encoded = url.searchParams.get("SAMLRequest");
       const checked = checkRequest(encoded);
@@ -643,7 +662,7 @@ export async function startMockEntraSamlIdp(options) {
         }),
       );
     }
-    if (req.method === "POST" && path === `/${tenantId}/saml2` && accounts.length > 0) {
+    if (req.method === "POST" && path === `${tenantPath}/saml2` && accounts.length > 0) {
       pick(req, res).catch(() => send(res, 400, "text/plain", "The request is not valid."));
       return;
     }

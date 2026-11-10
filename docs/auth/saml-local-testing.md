@@ -138,7 +138,7 @@ Entra's defaults):
 | `signing` | `"assertion"` | Entra's **Signing Option**: `"assertion"` (Sign SAML assertion, Entra's default — METIS refuses it), `"response"` (Sign SAML response — refused too, METIS requires a signed assertion), `"both"` (Sign SAML response and assertion — what [azure-ad.md](./azure-ad.md) tells admins to choose) ([Certificate signing options](https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/certificate-signing-options)) |
 | `mfa` | `false` | `true` adds `multipleauthn` to `authnmethodsreferences` and sends the `MobileTwoFactorContract` class; `false` is a password-only sign-in (`Password`) |
 | `groupOverage` | `false` | sends `groups.link` (a Graph link) instead of `groups`, as Entra does past 150 groups ([group claims](https://learn.microsoft.com/en-us/entra/identity/hybrid/connect/how-to-connect-fed-group-claims)) |
-| `expired` | `false` | the assertion was issued two hours ago and its windows closed 50 minutes ago |
+| `expired` | `false` | `true`: the assertion was issued two hours ago, so both windows have closed (the SubjectConfirmationData's 1 h 55 min ago, the Conditions' 50 min ago). `"conditions"` or `"subjectConfirmation"`: only that window closed, 10 minutes ago, on a fresh assertion, so each check is tested alone (#1558) |
 | `wrongAudience` | `false` | the Audience names another application |
 | `issuer` | the IdP's own | the Issuer the Response and the assertion name, still signed with the IdP's key; another tenant's `https://sts.windows.net/<tenant-id>/` is refused (#1555) |
 
