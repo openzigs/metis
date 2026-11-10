@@ -84,6 +84,16 @@ describe("effectiveReviewStatus (#1749)", () => {
     );
   });
 
+  it("gives way to the stored status once the requirement is read again after the review (#2184 panel)", () => {
+    const settled = { reqId: "r1", reviewStatus: "approved" as const, version: 3 };
+    // Before the read-back: the review just sent still counts.
+    expect(effectiveReviewStatus(req, settled, { readAt: 100, sentAt: 200 })).toBe("approved");
+    // A read after it is the truth, even at the same version: a review alone
+    // does not bump the version, so a later reject elsewhere reads back here.
+    const rejected = { ...req, reviewStatus: "rejected" };
+    expect(effectiveReviewStatus(rejected, settled, { readAt: 300, sentAt: 200 })).toBe("rejected");
+  });
+
   it("ignores a review of another requirement, or of an older version", () => {
     expect(effectiveReviewStatus(req, { reqId: "r2", reviewStatus: "approved", version: 3 })).toBe(
       "pending",

@@ -22,15 +22,30 @@ export interface SettledReview {
   version: number;
 }
 
+/** When the requirement was last read, and when the review was sent (both epoch ms). */
+export interface ReviewTiming {
+  /** The read's `dataUpdatedAt`. */
+  readAt?: number;
+  /** The review mutation's `submittedAt`. */
+  sentAt?: number;
+}
+
 /**
  * The requirement's review status as the card should show it: the one just
- * set, while the requirement read back is still the version it was set on.
+ * set, while the requirement read back is still the version it was set on and
+ * has not been read again since the review was sent. A review alone does not
+ * bump the version (#1162), so without the read time the override would
+ * outlive a later reject from another user or tab, and the card would read
+ * "Approved" with Approve disabled until a reload (#2184 panel).
  */
 export function effectiveReviewStatus(
   req: { id: string; version: number; reviewStatus?: string | null },
   settled: SettledReview | null | undefined,
+  timing: ReviewTiming = {},
 ): string | null {
-  if (settled && settled.reqId === req.id && settled.version === req.version) {
+  const readSince =
+    timing.readAt !== undefined && timing.sentAt !== undefined && timing.readAt > timing.sentAt;
+  if (settled && !readSince && settled.reqId === req.id && settled.version === req.version) {
     return settled.reviewStatus;
   }
   return req.reviewStatus ?? null;

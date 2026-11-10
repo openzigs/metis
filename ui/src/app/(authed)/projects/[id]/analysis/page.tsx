@@ -1369,6 +1369,7 @@ export default function AnalysisPage(): React.ReactElement {
                                 status={effectiveReviewStatus(
                                   req,
                                   review.isSuccess ? review.variables : null,
+                                  { readAt: detail.dataUpdatedAt, sentAt: review.submittedAt },
                                 )}
                                 writeHint={requirementWriteHint}
                                 pending={review.isPending}
