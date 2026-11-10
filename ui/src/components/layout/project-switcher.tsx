@@ -21,6 +21,7 @@ import {
   resolveActiveProjectId,
   writeStoredActiveProjectId as writeStoredActiveId,
 } from "@/lib/active-project";
+import { useActiveWorkspaceId } from "@/lib/active-workspace";
 
 /**
  * Extract the project id from `/projects/<id>/...` paths so the switcher
@@ -42,7 +43,8 @@ function projectIdFromPath(pathname: string | null): string | null {
 export function ProjectSwitcher() {
   const router = useRouter();
   const pathname = usePathname();
-  const projects = useQuery(projectSwitcherQuery);
+  // #1584 — the active workspace's projects only.
+  const projects = useQuery(projectSwitcherQuery(useActiveWorkspaceId()));
 
   const items: readonly Project[] = useMemo(
     () => projects.data?.items ?? [],

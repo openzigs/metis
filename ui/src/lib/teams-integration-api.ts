@@ -73,16 +73,11 @@ const teamsBase = (workspaceId: string) =>
 export const teamsIntegrationApi = {
   /**
    * Fetch the current installation summary, or `null` when Teams is not yet
-   * installed for the workspace (the server 404s in that case).
+   * installed for the workspace (#1584: the server answers 200 with `null`, so
+   * "not connected" no longer logs a 404 to the browser console).
    */
-  getInstallation: async (workspaceId: string): Promise<TeamsInstallationSummary | null> => {
-    try {
-      return await apiFetch<TeamsInstallationSummary>(`${teamsBase(workspaceId)}/installation`);
-    } catch (err) {
-      if (isNotFound(err)) return null;
-      throw err;
-    }
-  },
+  getInstallation: (workspaceId: string) =>
+    apiFetch<TeamsInstallationSummary | null>(`${teamsBase(workspaceId)}/installation`),
 
   /** Register (or replace) the bot credentials for the workspace. */
   install: (workspaceId: string, input: TeamsInstallInput) =>
@@ -107,12 +102,3 @@ export const teamsIntegrationApi = {
       },
     }),
 };
-
-function isNotFound(err: unknown): boolean {
-  return (
-    typeof err === "object" &&
-    err !== null &&
-    "status" in err &&
-    (err as { status: number }).status === 404
-  );
-}

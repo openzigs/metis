@@ -2173,9 +2173,13 @@ available on **all** current models.
 after every `chat()` / `stream()` the gateway provider and the native Anthropic
 provider (including Anthropic-compatible endpoints such as DeepSeek, #796) emit
 one structured log line — `cacheReadTokens`, `promptTokens`, the derived read-based hit ratio, and
-the **call type** (`agent-loop` · `synthesis` · `grounding` · `chat` ·
-`unknown`) and **model** tags — and accumulates per-(call type, model) rolling
-totals in a small in-process aggregator. On the native Anthropic path the
+the **call type** (`agent-loop` · `synthesis` · `grounding` ·
+`claim-extraction` · `warmup` · `chat` · `discussion` · `spec-kit` · `analysis` ·
+`docs-gen` · `impact-analysis` · `unknown`) and **model** tags — and accumulates
+per-(call type, model) rolling totals in a small in-process aggregator. A call
+site's own tag wins; a call that sets none is tagged by the run it belongs to
+(`analysis`, `docs-gen` or `impact-analysis`, #1584), so `unknown` is left for
+calls outside any of those runs. On the native Anthropic path the
 hit-ratio denominator is the full prompt (`input_tokens` + cache reads + cache
 writes), because `input_tokens` there excludes the cache fields. The
 OpenAI-compatible provider (OpenAI, Azure, local runtimes) does not parse cache
@@ -2208,7 +2212,7 @@ Response envelope (`{ success, data }`):
     "generatedAt": "2026-07-05T00:00:00.000Z",
     "buckets": [
       {
-        "callType": "synthesis",        // agent-loop · synthesis · grounding · chat · unknown
+        "callType": "synthesis",        // any call type listed above
         "model": "claude-sonnet-4-6",   // already ARN-redacted at record time
         "calls": 2,
         "promptTokens": 800,

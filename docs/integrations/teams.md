@@ -63,6 +63,10 @@ DELETE /api/integrations/teams/workspaces/:workspaceId/installation
 GET    /api/integrations/teams/workspaces/:workspaceId/manifest?packageId=<guid>&publicHost=https://...&botName=METIS
 ```
 
+`GET .../installation` answers `200` with `data: null` when the workspace has no
+Teams app installed (#1584); `DELETE .../installation` and `GET .../manifest`
+still answer `404 TEAMS_NOT_INSTALLED` then.
+
 `POST .../install` body:
 
 ```jsonc

@@ -9,6 +9,7 @@
  *     which is tied to the bindings shown and makes the admin the owner (#502);
  *     a list over the server's cap is confirmed by its digest instead (#611)
  *   • audit — per-entry audit trail (read/write/rotate/delete)
+ *   • delete — soft-delete, behind a confirmation (#1584)
  *
  * Permissions: requires `vault.read` (server enforces). Roles without it see a
  * forbidden notice in place of the table. Revealing plaintext needs
@@ -22,6 +23,7 @@ import Link from "next/link";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { hasPermission } from "@metis/shared";
 import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/ui/alert-dialog";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -644,15 +646,28 @@ function EntryDetail({
           Soft-deletes the entry. Anything still referencing
           <code className="mx-1">${`{vault:${entry.label}}`}</code> will fail to resolve.
         </p>
-        <Button
-          variant="destructive"
-          size="sm"
-          onClick={() => remove.mutate()}
-          disabled={remove.isPending}
-          data-testid="vault-entry-delete-btn"
-        >
-          {remove.isPending ? "Deleting…" : "Delete entry"}
-        </Button>
+        {/* #1584 — a delete breaks every reference to the label, so it asks first. */}
+        <ConfirmDialog
+          title={`Delete vault entry ${entry.label}?`}
+          description={
+            <>
+              Anything still referencing <code>${`{vault:${entry.label}}`}</code> will fail to
+              resolve.
+            </>
+          }
+          confirmLabel="Delete entry"
+          onConfirm={() => remove.mutate()}
+          trigger={
+            <Button
+              variant="destructive"
+              size="sm"
+              disabled={remove.isPending}
+              data-testid="vault-entry-delete-btn"
+            >
+              {remove.isPending ? "Deleting…" : "Delete entry"}
+            </Button>
+          }
+        />
         {deleteError ? (
           <p role="alert" className="text-xs text-destructive">
             {deleteError}
