@@ -11,6 +11,7 @@ import {
   DEFAULT_PROFILE,
   ENTRA_CLAIM,
   MAX_FORM_BYTES,
+  MAX_PICKER_NONCES,
   escapeXml,
   readAuthnRequest,
   startMockEntraSamlIdp,
@@ -217,12 +218,24 @@ describe("mock Entra SAML IdP (#1553) — sign-in", () => {
     expect(xml).not.toContain(idp.issuer);
     expect(/^<samlp:Response [^>]*><Issuer [^>]*>([^<]*)<\/Issuer>/.exec(xml)?.[1]).toBe(other);
     expect(/<Assertion [^>]*><Issuer>([^<]*)<\/Issuer>/.exec(xml)?.[1]).toBe(other);
+    // #1562 — real Entra names the same tenant in Issuer, identityprovider and tenantid.
+    expect(claim(xml, ENTRA_CLAIM.identityProvider)).toEqual([other]);
+    expect(claim(xml, ENTRA_CLAIM.tenantId)).toEqual(["0b1ec700-1555-4000-8000-0000000074e2"]);
     const sigs = signatures(xml);
     expect(sigs).toHaveLength(2);
     for (const sig of sigs) expect(verifies(xml, sig)).toBe(true);
 
     idp.setProfile({});
-    expect((await signIn()).xml).toContain(`<Issuer>${idp.issuer}</Issuer>`);
+    const own = (await signIn()).xml;
+    expect(own).toContain(`<Issuer>${idp.issuer}</Issuer>`);
+    expect(claim(own, ENTRA_CLAIM.tenantId)).toEqual([idp.tenantId]);
+  });
+
+  it("an issuer override that is not an Entra tenant issuer keeps the mock's own tenant id", async () => {
+    idp.setProfile({ signing: "both", issuer: "https://idp.example/other" });
+    const { xml } = await signIn();
+    expect(claim(xml, ENTRA_CLAIM.identityProvider)).toEqual(["https://idp.example/other"]);
+    expect(claim(xml, ENTRA_CLAIM.tenantId)).toEqual([idp.tenantId]);
   });
 
   it("setProfile returns unnamed fields to Entra's defaults; setUser changes who signs in", async () => {
@@ -314,12 +327,25 @@ describe("mock Entra SAML IdP (#1559) — account picker", () => {
     return deflateRawSync(Buffer.from(xml, "utf8")).toString("base64");
   }
 
-  /** POST the picker's form. @param {Record<string, string>} fields */
-  function post(fields) {
+  /** Render the picker and return the one-use nonce its form carries (#1562). */
+  async function renderNonce() {
+    const html = await (
+      await fetch(`${picker.ssoUrl}?${new URLSearchParams({ SAMLRequest: pickerRequest() })}`)
+    ).text();
+    return /** @type {string} */ (/name="nonce" value="([^"]*)"/.exec(html)?.[1]);
+  }
+
+  /**
+   * POST the picker's form, with the nonce of a fresh render unless `fields`
+   * names one (`nonce: ""` sends none).
+   * @param {Record<string, string>} fields
+   */
+  async function post(fields) {
+    const { nonce = await renderNonce(), ...rest } = fields;
     return fetch(picker.ssoUrl, {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams(fields),
+      body: new URLSearchParams(nonce === "" ? rest : { ...rest, nonce }),
     });
   }
 
@@ -345,7 +371,48 @@ describe("mock Entra SAML IdP (#1559) — account picker", () => {
     );
     expect(html).toContain('value="1"><strong>Max</strong> &lt;max@contoso.example&gt;</button>');
     expect(html).not.toContain("SAMLResponse");
+    expect(html).toMatch(/<input type="hidden" name="nonce" value="[0-9a-f]{32}" \/>/);
     expect(picker.lastResponse()).toBeUndefined();
+  });
+
+  it("each render carries a new nonce (#1562)", async () => {
+    const [a, b] = [await renderNonce(), await renderNonce()];
+    expect(a).toMatch(/^[0-9a-f]{32}$/);
+    expect(b).not.toBe(a);
+  });
+
+  it("counts each request to the SAML endpoint, the picker's POST included (#1562)", async () => {
+    const before = picker.calls.sso;
+    const res = await post({ SAMLRequest: pickerRequest(), account: "0", signing: "both" });
+    expect(res.status).toBe(200);
+    // The render that minted the nonce, then the POST.
+    expect(picker.calls.sso).toBe(before + 2);
+  });
+
+  it.each([
+    ["no nonce", ""],
+    ["a nonce this IdP never rendered", "0".repeat(32)],
+  ])("refuses a picker POST with %s (#1562)", async (_label, nonce) => {
+    const res = await post({ SAMLRequest: pickerRequest(), account: "0", signing: "both", nonce });
+    expect(res.status).toBe(403);
+    expect(await res.text()).toMatch(/expired or was not issued by this IdP/);
+    expect(picker.lastResponse()).toBeUndefined();
+  });
+
+  it("keeps the last MAX_PICKER_NONCES nonces: the oldest unused one expires (#1562)", async () => {
+    const first = await renderNonce();
+    const second = await renderNonce();
+    for (let i = 0; i < MAX_PICKER_NONCES - 1; i += 1) await renderNonce();
+    const fields = { SAMLRequest: pickerRequest(), account: "0", signing: "both" };
+    expect((await post({ ...fields, nonce: first })).status).toBe(403);
+    expect((await post({ ...fields, nonce: second })).status).toBe(200);
+  });
+
+  it("a nonce signs in once: replaying the same form is refused (#1562)", async () => {
+    const nonce = await renderNonce();
+    const fields = { SAMLRequest: pickerRequest(), account: "0", signing: "both", nonce };
+    expect((await post(fields)).status).toBe(200);
+    expect((await post(fields)).status).toBe(403);
   });
 
   it("checks the request before showing the picker", async () => {

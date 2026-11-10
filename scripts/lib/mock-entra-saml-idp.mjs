@@ -39,7 +39,7 @@
  * `scripts/entra-idp.mjs` (`make entra-up`, #1559).
  */
 import { execFileSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -130,7 +130,9 @@ const DSIG = {
  * @property {boolean} expired        the assertion's validity window has passed
  * @property {boolean} wrongAudience  the Audience is not the SP's entity id
  * @property {string} [issuer]        the Issuer the Response and assertion name, signed with
- *   this IdP's own key (#1555: another tenant's issuer); default: this IdP's issuer
+ *   this IdP's own key (#1555: another tenant's issuer); default: this IdP's issuer.
+ *   The `identityprovider` claim names it too, and an Entra issuer's tenant id
+ *   becomes the `tenantid` claim, as Entra sends them together (#1562)
  */
 
 /** Entra's own defaults: assertion-only signing, a password sign-in. */
@@ -450,9 +452,13 @@ export const SIGNING_OPTIONS = Object.freeze([
  * account itself, so a person signs in by hand as any preset account under any
  * signing option. It posts the request back to the SAML endpoint.
  *
+ * `nonce` is the one-use token the POST must carry (#1562), so a page on
+ * another origin cannot submit the picker for the person running the mock.
+ *
  * @param {{
  *   action: string, samlRequest: string, relayState: string | null,
  *   accounts: ReadonlyArray<EntraAccount>, signing: EntraProfile["signing"],
+ *   nonce: string,
  * }} input
  */
 export function accountPickerPage(input) {
@@ -478,6 +484,7 @@ export function accountPickerPage(input) {
     `<h1>Pick an account</h1><p>Mock Microsoft Entra ID, for local testing only.</p>` +
     `<form method="POST" action="${escapeXml(input.action)}">` +
     `<input type="hidden" name="SAMLRequest" value="${escapeXml(input.samlRequest)}" />${relay}` +
+    `<input type="hidden" name="nonce" value="${escapeXml(input.nonce)}" />` +
     `<label>Signing option <select name="signing">${options}</select></label>` +
     `<ul>${buttons}</ul></form></body></html>`
   );
@@ -485,6 +492,18 @@ export function accountPickerPage(input) {
 
 /** The largest picker form read; an AuthnRequest is a few hundred bytes. */
 export const MAX_FORM_BYTES = 64 * 1024;
+
+/** How many rendered, unused picker nonces are kept; the oldest goes first (#1562). */
+export const MAX_PICKER_NONCES = 100;
+
+/**
+ * Entra's tenant id from an Entra issuer (`https://sts.windows.net/<tenant>/`),
+ * or undefined for any other issuer.
+ * @param {string} issuer
+ */
+function tenantOfIssuer(issuer) {
+  return /^https:\/\/sts\.windows\.net\/([^/]+)\/$/.exec(issuer)?.[1];
+}
 
 /**
  * The picker's urlencoded form, or null past MAX_FORM_BYTES.
@@ -527,8 +546,12 @@ export async function startMockEntraSamlIdp(options) {
   let profile = { ...DEFAULT_PROFILE, ...options.profile };
   /** @type {string | undefined} */
   let lastResponse;
+  /** Each request to the SAML endpoint, the picker's POST included. */
   const calls = { metadata: 0, sso: 0 };
   const ids = { tenantId, issuer, ssoUrl: "", baseUrl: "" };
+  /** Nonces of rendered pickers not yet posted, oldest first (a Set keeps insertion order). */
+  /** @type {Set<string>} */
+  const pickerNonces = new Set();
 
   /**
    * Check an SP-initiated AuthnRequest as Entra does.
@@ -565,10 +588,12 @@ export async function startMockEntraSamlIdp(options) {
    * @param {EntraProfile} as
    */
   function answer(res, inResponseTo, relayState, who, as) {
+    const asIssuer = as.issuer ?? issuer;
     const xml = buildEntraResponse(
       {
-        issuer: as.issuer ?? issuer,
-        tenantId,
+        issuer: asIssuer,
+        // #1562 — another tenant's issuer comes with that tenant's tenantid, as Entra sends it.
+        tenantId: tenantOfIssuer(asIssuer) ?? tenantId,
         spEntityId: options.spEntityId,
         acsUrl: options.acsUrl,
         inResponseTo,
@@ -592,8 +617,19 @@ export async function startMockEntraSamlIdp(options) {
    * @param {import("node:http").ServerResponse} res
    */
   async function pick(req, res) {
+    calls.sso += 1;
     const form = await readForm(req);
     if (form === null) return send(res, 413, "text/plain", "The form is too large.");
+    // #1562 — the nonce of a picker this IdP rendered, used once.
+    const nonce = form.get("nonce") ?? "";
+    if (!pickerNonces.delete(nonce)) {
+      return send(
+        res,
+        403,
+        "text/plain",
+        "The sign-in page expired or was not issued by this IdP. Start the sign-in again.",
+      );
+    }
     const checked = checkRequest(form.get("SAMLRequest"));
     if ("error" in checked) return send(res, 400, "text/plain", checked.error);
     const index = form.get("account") ?? "";
@@ -630,6 +666,12 @@ export async function startMockEntraSamlIdp(options) {
       if ("error" in checked) return send(res, 400, "text/plain", checked.error);
       const relayState = url.searchParams.get("RelayState");
       if (accounts.length === 0) return answer(res, checked.request.id, relayState, user, profile);
+      const nonce = randomBytes(16).toString("hex");
+      pickerNonces.add(nonce);
+      if (pickerNonces.size > MAX_PICKER_NONCES) {
+        const [oldest] = pickerNonces;
+        pickerNonces.delete(oldest);
+      }
       return send(
         res,
         200,
@@ -640,6 +682,7 @@ export async function startMockEntraSamlIdp(options) {
           relayState,
           accounts,
           signing: profile.signing,
+          nonce,
         }),
       );
     }

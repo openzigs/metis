@@ -383,5 +383,63 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect.arrayContaining([expect.stringMatching(/^metis\.at=/)]),
       );
     });
+
+    it("#1562: the admin page shows the configured issuer beside the last refused one, until the metadata changes", async () => {
+      const parsed = await configure();
+      const admin = await signIn(entraUser("ada", [ADMINS]), { signing: "both", mfa: true });
+      const token = cookieValue(admin, "metis.at");
+      const summary = () =>
+        request(app)
+          .get("/api/admin/auth/saml/issuer-refusal")
+          .set("Authorization", `Bearer ${token}`);
+
+      const otherTenant = "https://sts.windows.net/0b1ec700-1562-4000-8000-0000000074e2/";
+      const refused = await signIn(entraUser("ivy", [ADMINS]), {
+        signing: "both",
+        issuer: otherTenant,
+      });
+      expect(refused.status).toBe(401);
+      await vi.waitFor(async () => {
+        const res = await summary();
+        expect(res.status).toBe(200);
+        expect(res.body.data).toEqual({
+          configuredIssuer: idp.issuer,
+          lastRefused: { assertionIssuer: otherTenant, at: expect.any(String) },
+        });
+      });
+
+      // The admin re-pastes metadata naming the issuer the IdP really asserts
+      // (one SAML provider: the old config is replaced, as the admin PUT does).
+      __resetProviders();
+      upsertProvider({
+        mode: "saml",
+        name: "Microsoft Entra ID (mock)",
+        enabled: true,
+        groupMappings: [{ claimValue: ADMINS, role: "admin" }],
+        defaultRole: "reader",
+        saml: {
+          entityId: ENTITY_ID,
+          acsUrl: ACS_URL,
+          idpMetadataXml: "",
+          idpSsoUrl: parsed.ssoUrl,
+          idpCerts: parsed.certs,
+          idpIssuer: otherTenant,
+          signRequests: false,
+        },
+      });
+      expect((await summary()).body.data).toEqual({
+        configuredIssuer: otherTenant,
+        lastRefused: null,
+      });
+    });
+
+    it("#1562: the issuer-refusal summary is admin-only", async () => {
+      await configure();
+      const member = await signIn(entraUser("max", [MEMBERS]), { signing: "both" });
+      const res = await request(app)
+        .get("/api/admin/auth/saml/issuer-refusal")
+        .set("Authorization", `Bearer ${cookieValue(member, "metis.at")}`);
+      expect(res.status).toBe(403);
+    });
   },
 );

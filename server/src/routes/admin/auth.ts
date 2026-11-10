@@ -23,6 +23,7 @@ import {
 } from "../../lib/auth/sso-config.js";
 import { parseIdPMetadata } from "../../lib/auth/saml-provider.js";
 import { samlGroupOverageSummary } from "../../lib/auth/saml-group-overage.js";
+import { samlIssuerRefusalSummary } from "../../lib/auth/saml-issuer-refusal.js";
 import {
   getLDAPConfigForUI,
   setLDAPConfig,
@@ -61,6 +62,18 @@ export function adminAuthRouter(): Router {
   // the default role. Usernames and times only.
   r.get("/saml/group-overage", async (_req: Request, res: Response) => {
     const body: ApiResponse = { success: true, data: await samlGroupOverageSummary() };
+    res.json(body);
+  });
+
+  // --- The last SAML sign-in refused for its assertion Issuer (#1555, #1562) ---
+  // The configured IdP issuer beside the Issuer the last refused assertion
+  // named, so an admin can see why every SAML sign-in fails after an upgrade.
+  r.get("/saml/issuer-refusal", async (_req: Request, res: Response) => {
+    const configuredIssuer = getStoredProviderByMode("saml")?.saml?.idpIssuer ?? "";
+    const body: ApiResponse = {
+      success: true,
+      data: await samlIssuerRefusalSummary(configuredIssuer),
+    };
     res.json(body);
   });
 
