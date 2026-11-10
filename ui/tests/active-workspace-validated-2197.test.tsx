@@ -149,8 +149,10 @@ describe("useValidatedActiveWorkspaceId (#2197)", () => {
     const { result } = renderHook(() => useValidatedActiveWorkspaceId(), {
       wrapper: makeWrapper({ initialUser: TEST_USER }),
     });
-    expect(result.current).toEqual({ workspaceId: null, isLoading: true });
-    await waitFor(() => expect(result.current).toEqual({ workspaceId: "ws-b", isLoading: false }));
+    expect(result.current).toMatchObject({ workspaceId: null, status: "loading" });
+    await waitFor(() =>
+      expect(result.current).toMatchObject({ workspaceId: "ws-b", status: "ready" }),
+    );
   });
 });
 

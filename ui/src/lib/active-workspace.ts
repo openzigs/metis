@@ -94,20 +94,33 @@ export function resolveActiveWorkspaceId(
 }
 
 /**
+ * Whether the caller's workspaces have been read: `loading` until they are,
+ * `error` when they could not be, else `ready`.
+ */
+export type ActiveWorkspaceStatus = "loading" | "error" | "ready";
+
+/**
  * #2197 — the stored active workspace, validated against the caller's own
  * workspaces. The raw stored id can name a workspace the caller is not in (a
  * second user on a shared browser, a membership since removed), and sent as a
  * filter it lists none of that workspace's projects. Until the list is read
- * `isLoading` is true and there is no id; a list that cannot be read validates
- * nothing, so there is no id then either (the server scopes the caller anyway).
+ * the status is `loading` and there is no id; a list that cannot be read
+ * validates nothing, so there is no id then either (the server scopes the
+ * caller anyway).
+ *
+ * #2208 — "no id" is therefore not "no workspace" unless the status is
+ * `ready`: a create form must not send it as one (it would put the project in
+ * no workspace). `retry` re-reads the list after an error.
  */
 export function useValidatedActiveWorkspaceId(): {
   workspaceId: string | null;
-  isLoading: boolean;
+  status: ActiveWorkspaceStatus;
+  retry: () => void;
 } {
   const storedId = useActiveWorkspaceId();
   const list = useQuery(workspaceListQuery);
-  if (list.isPending) return { workspaceId: null, isLoading: true };
-  if (list.isError) return { workspaceId: null, isLoading: false };
-  return { workspaceId: resolveActiveWorkspaceId(storedId, list.data), isLoading: false };
+  const retry = () => void list.refetch();
+  if (list.isPending) return { workspaceId: null, status: "loading", retry };
+  if (list.isError) return { workspaceId: null, status: "error", retry };
+  return { workspaceId: resolveActiveWorkspaceId(storedId, list.data), status: "ready", retry };
 }

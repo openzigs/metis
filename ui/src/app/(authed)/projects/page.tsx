@@ -28,7 +28,6 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { PageHeader } from "@/components/ui/page-header";
-
 import { useValidatedActiveWorkspaceId } from "@/lib/active-workspace";
 
 export default function ProjectsPage() {
@@ -42,7 +41,7 @@ export default function ProjectsPage() {
     queryKey: queryKeys.projects.list({ workspaceId: activeWorkspaceId }),
     queryFn: () =>
       projectsApi.list(activeWorkspaceId ? { workspaceId: activeWorkspaceId } : undefined),
-    enabled: !workspace.isLoading,
+    enabled: workspace.status !== "loading",
   });
 
   const [open, setOpen] = useState(false);
@@ -70,13 +69,18 @@ export default function ProjectsPage() {
               <DialogHeader>
                 <DialogTitle>Create project</DialogTitle>
               </DialogHeader>
-              <ProjectCreateForm workspaceId={activeWorkspaceId} onCreated={() => setOpen(false)} />
+              <ProjectCreateForm
+                workspaceId={activeWorkspaceId}
+                workspaceStatus={workspace.status}
+                onRetryWorkspaces={workspace.retry}
+                onCreated={() => setOpen(false)}
+              />
             </DialogContent>
           </Dialog>
         }
       />
 
-      {workspace.isLoading || list.isLoading ? (
+      {workspace.status === "loading" || list.isLoading ? (
         <SkeletonText lines={4} />
       ) : list.error ? (
         <p role="alert" className="text-destructive">

@@ -25,7 +25,8 @@ import { projectsApi, type CreatedProject } from "@/lib/projects-api";
 import { repoConnectorsApi } from "@/lib/connectors-api";
 import { applyJobLifecycleEvent } from "@/hooks/use-active-jobs";
 import { queryKeys } from "@/lib/query-keys";
-import { useValidatedActiveWorkspaceId } from "@/lib/active-workspace";
+import { useValidatedActiveWorkspaceId, type ActiveWorkspaceStatus } from "@/lib/active-workspace";
+import { WorkspaceStatusNotice } from "@/components/projects/workspace-status-notice";
 import { mapFieldErrors, type FieldErrorMap } from "@/lib/form-validation";
 import { isHttpUrl, slugSuggestionMessage, urlSuggestionMessage } from "@/lib/error-suggestion";
 import { resolveErrorMessage } from "@/lib/use-app-mutation";
@@ -61,11 +62,23 @@ type IngestOutcome =
 export interface NewProjectWizardProps {
   /** Active workspace the project is created in (optional). */
   workspaceId?: string | null;
+  /**
+   * #2208 — whether `workspaceId` is known yet (`useValidatedActiveWorkspaceId`).
+   * Create is disabled until it is `ready`. Defaults to `ready`.
+   */
+  workspaceStatus?: ActiveWorkspaceStatus;
+  /** Re-read the workspaces after an error. */
+  onRetryWorkspaces?: () => void;
   /** Called once the project exists, before navigating — e.g. close the dialog. */
   onDone?: () => void;
 }
 
-export function NewProjectWizard({ workspaceId, onDone }: NewProjectWizardProps) {
+export function NewProjectWizard({
+  workspaceId,
+  workspaceStatus = "ready",
+  onRetryWorkspaces,
+  onDone,
+}: NewProjectWizardProps) {
   const qc = useQueryClient();
   const router = useRouter();
   const [step, setStep] = useState<StepId>("name");
@@ -368,6 +381,8 @@ export function NewProjectWizard({ workspaceId, onDone }: NewProjectWizardProps)
             </p>
           ) : null}
 
+          <WorkspaceStatusNotice status={workspaceStatus} onRetry={onRetryWorkspaces} />
+
           <div className="flex justify-between">
             <Button
               type="button"
@@ -379,7 +394,7 @@ export function NewProjectWizard({ workspaceId, onDone }: NewProjectWizardProps)
             </Button>
             <Button
               type="button"
-              disabled={create.isPending}
+              disabled={create.isPending || workspaceStatus !== "ready"}
               onClick={() => {
                 setFormError(null);
                 create.mutate();
@@ -404,7 +419,7 @@ export function NewProjectDialog() {
   const [open, setOpen] = useState(false);
   // #2197 — the active workspace the top bar shows, validated: a stored id the
   // caller is not a member of is never sent as the new project's workspace.
-  const { workspaceId } = useValidatedActiveWorkspaceId();
+  const workspace = useValidatedActiveWorkspaceId();
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
@@ -419,7 +434,14 @@ export function NewProjectDialog() {
             Name it, point it at its code, and start the ingest — in one go.
           </DialogDescription>
         </DialogHeader>
-        {open ? <NewProjectWizard workspaceId={workspaceId} onDone={() => setOpen(false)} /> : null}
+        {open ? (
+          <NewProjectWizard
+            workspaceId={workspace.workspaceId}
+            workspaceStatus={workspace.status}
+            onRetryWorkspaces={workspace.retry}
+            onDone={() => setOpen(false)}
+          />
+        ) : null}
       </DialogContent>
     </Dialog>
   );

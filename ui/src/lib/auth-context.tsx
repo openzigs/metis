@@ -14,6 +14,7 @@ import { useRouter } from "next/navigation";
 import { ApiError, apiFetch, refreshAccessToken, setOnRefreshFailure } from "@/lib/api-client";
 import { queryKeys } from "@/lib/query-keys";
 import { workspaceListQuery, writeStoredActiveWorkspaceId } from "@/lib/active-workspace";
+import { writeStoredActiveProjectId } from "@/lib/active-project";
 import { closeSocket } from "@/lib/socket-client";
 import { useQueryClient } from "@tanstack/react-query";
 import type { AuthUser, LoginCredentials, LoginResponse } from "@/lib/auth-types";
@@ -138,12 +139,15 @@ export function AuthProvider({
     // next user to sign in on this browser starts in a workspace they may not
     // be in.
     writeStoredActiveWorkspaceId(null);
+    // #2208 — and so was the active project.
+    writeStoredActiveProjectId(null);
     setUser(null);
-    queryClient.removeQueries({ queryKey: queryKeys.auth.all });
-    // #2206 review — the cached workspace list is this user's memberships too:
-    // left in the cache, the next user's /projects validated their stored id
-    // against it (sign-in is a client-side navigation on the same client).
-    queryClient.removeQueries({ queryKey: workspaceListQuery.queryKey });
+    // #2206 review, #2208 — every cached query is this user's data (their
+    // profile, their workspace memberships, their projects…). Sign-in is a
+    // client-side navigation on the same client, so whatever is left is what
+    // the next user to sign in on this browser reads first. The page that
+    // observed these unmounts with the user (AppShell renders nothing).
+    queryClient.clear();
     router.push("/login");
   }, [queryClient, router]);
 
@@ -220,6 +224,18 @@ export function AuthProvider({
       closeSocket();
       setUser(null);
       queryClient.removeQueries({ queryKey: queryKeys.auth.all });
+      // #2208 — an expired session drops the cached workspace list as sign-out
+      // does: within its 60 s staleTime a different user signing in here
+      // (client-side) would validate their stored workspace against it.
+      //
+      // Decided, not overlooked: the stored active workspace and project ids
+      // are KEPT. An expiry is usually the same user signing straight back in,
+      // whose choice should survive it; a different user's /projects validates
+      // the stored workspace against their own list (#2197), and a project page
+      // checks access on the server. Nor is the whole cache cleared as on
+      // sign-out: on a public route (an invite link) the page keeps rendering,
+      // and its cleared queries would refetch into the same failed refresh.
+      queryClient.removeQueries({ queryKey: workspaceListQuery.queryKey });
       if (signingOutRef.current || isPublicRoute(window.location.pathname)) {
         return;
       }

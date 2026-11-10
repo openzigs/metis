@@ -229,6 +229,24 @@ describe("AuthProvider", () => {
     expect(queryClient.getQueryData(workspaceListQuery.queryKey)).toBeUndefined();
   });
 
+  // #2208 — every cached query is the signed-out user's, not only the two above.
+  it("logout drops every cached query and the active project", async () => {
+    fetchMock.mockResolvedValueOnce(ok({ success: true, data: null }));
+    window.localStorage.setItem("metis.activeProjectId", "p-mine");
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(["projects", "switcher", "ws-userA"], { items: [{ id: "p-mine" }] });
+    queryClient.setQueryData(["notifications"], [{ id: "n-1" }]);
+    const { result } = renderHook(() => useAuth(), {
+      wrapper: makeWrapper({ initialUser: TEST_USER, queryClient }),
+    });
+
+    await act(async () => {
+      await result.current.logout();
+    });
+    expect(queryClient.getQueryCache().getAll()).toHaveLength(0);
+    expect(window.localStorage.getItem("metis.activeProjectId")).toBeNull();
+  });
+
   it("refresh re-fetches the user", async () => {
     const { result } = renderHook(() => useAuth(), {
       wrapper: makeWrapper({ initialUser: TEST_USER }),
@@ -449,6 +467,33 @@ describe("AuthProvider — onRefreshFailure redirect (#411)", () => {
     });
     const router = (useRouter as unknown as () => { replace: ReturnType<typeof vi.fn> })();
     expect(router.replace).not.toHaveBeenCalled();
+  });
+
+  // #2208 — within the list's 60 s staleTime, a different user signing in here
+  // after an expiry validated their stored workspace against the old list. The
+  // stored ids stay, on purpose (see the comment in auth-context.tsx).
+  it("an expired session drops the cached workspace list but keeps the stored ids", async () => {
+    stubLocation("/dashboard");
+    window.localStorage.setItem("metis.activeWorkspaceId", "ws-mine");
+    window.localStorage.setItem("metis.activeProjectId", "p-mine");
+    fetchMock.mockImplementation((url: unknown) => {
+      if (String(url) === "/api/auth/refresh") return Promise.resolve(ok({ success: false }, 401));
+      return Promise.resolve(ok({ success: false, error: { code: "TOKEN_EXPIRED" } }, 401));
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(workspaceListQuery.queryKey, [{ id: "ws-mine", name: "Mine" }]);
+    const { result } = renderHook(() => useAuth(), {
+      wrapper: makeWrapper({ initialUser: TEST_USER, queryClient }),
+    });
+
+    await act(async () => {
+      await apiFetch("/projects").catch(() => undefined);
+    });
+    expect(result.current.user).toBeNull();
+    expect(queryClient.getQueryData(workspaceListQuery.queryKey)).toBeUndefined();
+    expect(window.localStorage.getItem("metis.activeWorkspaceId")).toBe("ws-mine");
+    expect(window.localStorage.getItem("metis.activeProjectId")).toBe("p-mine");
+    window.localStorage.clear();
   });
 
   it("does NOT redirect or strip ?next when already on /login (cold-login guard)", async () => {
