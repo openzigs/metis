@@ -12,12 +12,13 @@
  * checked against the migrations it should hold, so an incomplete one fails
  * loudly and names what is missing.
  *
- * `stopBefore` builds the database as it stood BEFORE a named migration, so a
- * test can insert rows in the old shape and then apply that migration — the
+ * `stopBefore` hands back the database as it stood BEFORE a named migration, so
+ * a test can insert rows in the old shape and then apply that migration — the
  * way a deployed database meets it. (`migrate deploy` runs over a copy of the
- * migrations directory holding only the migrations applied so far.) That path
- * still spawns the CLI per suite: the migration under test must be applied by
- * real Prisma.
+ * migrations directory holding only the migrations applied so far.) #2146 —
+ * `globalSetup` snapshots one template per name in {@link STOP_BEFORE_MIGRATIONS}
+ * on its way up the chain, so such a suite spawns the CLI only to apply the
+ * migration under test, which real Prisma must do.
  */
 import { execFileSync } from "node:child_process";
 import {
@@ -40,22 +41,65 @@ const SERVER_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 export const SQLITE_MIGRATIONS_DIR = path.join(SERVER_ROOT, "prisma", "migrations");
 
 /**
- * Hook budget for a `beforeAll` that calls {@link createMigratedSqlite}. The hook
- * does real work — it spawns the Prisma CLI and replays the WHOLE migration chain
- * — so its duration grows with every migration and with CI's monorepo fan-out.
- * Under the default 10 s `hookTimeout` it passed locally (~3 s) and timed out on
- * CI once #149 added one more migration (PR #242, `agents-real-providers`). The
- * other suites that run `migrate deploy` in a hook already declare 120 s
- * (`ai-conversation.sqlite.test.ts`); this is that budget, in one place.
+ * Hook budget for a `beforeAll` that calls {@link createMigratedSqlite}, or a test that
+ * calls its `apply()` / `applyRemaining()`. The call itself copies a `globalSetup`
+ * template (#1364, #2146); `apply()` and `applyRemaining()` still spawn the Prisma CLI,
+ * whose duration grows with the migrations it applies and with CI's monorepo fan-out.
+ * Under the default 10 s `hookTimeout` a full replay once timed out on CI (PR #242,
+ * `agents-real-providers`); 120 s is the budget the suites that spawn `migrate deploy`
+ * share (`ai-conversation.sqlite.test.ts`), in one place.
  */
 export const MIGRATED_SQLITE_HOOK_TIMEOUT_MS = 120_000;
 
-/** The `provide`/`inject` key under which `globalSetup` hands workers the template's path. */
-export const MIGRATED_SQLITE_TEMPLATE_KEY = "migratedSqliteTemplate";
+/**
+ * #2146 — every `stopBefore` a suite passes, each a migration directory name. `globalSetup`
+ * builds one template per entry, and {@link createMigratedSqlite} refuses a name missing
+ * here rather than spawn the CLI for it inside the fan-out: a new migration test adds its
+ * migration to this list.
+ */
+export const STOP_BEFORE_MIGRATIONS: readonly string[] = [
+  "20260927000000_issue129_unified_agents_subagents",
+  "20261001000000_issue369_issue_draft_dedup_unique",
+  "20261003000457_issue457_repo_primary_unique",
+  "20261004000474_issue474_document_source_title",
+  "20261006000525_issue525_generated_source_by_id",
+  "20261014000761_issue761_token_usage_cost_usd",
+  "20261025001395_issue1395_user_identities",
+  "20261028001447_issue1447_notification_project_id",
+  "20261104001527_issue1527_product_home_workspace",
+  "20261105001612_issue1612_requirement_kind",
+  "20261106001618_issue1618_product_edge_coupling",
+  "20261107001621_issue1621_portfolio_assessment",
+  "20261109001624_issue1624_portfolio_report",
+  "20261110001687_issue1687_product_edge_detected_classification",
+  "20261111001725_issue1725_portfolio_host_product",
+  "20261112001754_issue1754_impact_stored_link_seeds",
+  "20261113001830_issue1830_code_citation_freshness",
+  "20261113001835_issue1835_requirement_embeddings",
+  "20261114001831_issue1831_citation_symbol_identity",
+  "20261114001838_issue1838_requirement_similarity_dismissals",
+  "20261115001839_issue1839_borrowed_citation_origin",
+  "20261116001868_issue1868_governing_documents",
+  "20261117001864_issue1864_document_updated_at",
+  "20261117001870_issue1870_governing_rule_extraction",
+  "20261118001947_issue1947_governing_extraction_retry_metering",
+  "20261119001874_issue1874_governing_findings",
+];
+
+/** The database files `globalSetup` builds for workers to copy. */
+export interface MigratedSqliteTemplates {
+  /** The head schema: every migration applied. */
+  head: string;
+  /** Keyed by a {@link STOP_BEFORE_MIGRATIONS} name: every migration before it applied. */
+  stopBefore: Record<string, string>;
+}
+
+/** The `provide`/`inject` key under which `globalSetup` hands workers the templates. */
+export const MIGRATED_SQLITE_TEMPLATES_KEY = "migratedSqliteTemplates";
 
 declare module "vitest" {
   interface ProvidedContext {
-    migratedSqliteTemplate: string;
+    migratedSqliteTemplates: MigratedSqliteTemplates;
   }
 }
 
@@ -186,36 +230,92 @@ function migrationWorkspace(dir: string) {
 }
 
 /**
- * Migrates the whole chain once into a fresh directory: `globalSetup`'s template, which
- * every head-schema suite copies instead of spawning its own Prisma CLI.
+ * Migrates the whole chain once into a fresh directory, snapshotting the database just
+ * before each `stopBefore` migration on the way up: `globalSetup`'s templates, which
+ * suites copy instead of spawning their own Prisma CLI. Each snapshot costs one CLI spawn
+ * that applies only the migrations since the last, so the chain is still replayed once.
  */
-export function buildMigratedSqliteTemplate(): { dbFile: string; cleanup(): void } {
+export function buildMigratedSqliteTemplates(
+  stopBefore: readonly string[] = STOP_BEFORE_MIGRATIONS,
+): MigratedSqliteTemplates & { cleanup(): void } {
+  const names = migrationNames();
+  const unknown = stopBefore.filter((name) => !names.includes(name));
+  if (unknown.length > 0) {
+    throw new Error(
+      `stopBefore names no migration in ${SQLITE_MIGRATIONS_DIR}: ${unknown.join(", ")}`,
+    );
+  }
+  const stops = new Set(stopBefore);
   const dir = mkdtempSync(path.join(os.tmpdir(), "metis-migrated-template-"));
-  const ws = migrationWorkspace(dir);
-  for (const name of migrationNames()) ws.copy(name);
-  ws.deploy();
-  ws.assertComplete();
-  return { dbFile: ws.dbFile, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  const cleanup = () => rmSync(dir, { recursive: true, force: true });
+  try {
+    const ws = migrationWorkspace(dir);
+    const snapshots: Record<string, string> = {};
+    for (const name of names) {
+      if (stops.has(name)) {
+        ws.deploy();
+        ws.assertComplete();
+        const snapshot = path.join(dir, `before-${name}.db`);
+        copyFileSync(ws.dbFile, snapshot);
+        snapshots[name] = snapshot;
+      }
+      ws.copy(name);
+    }
+    ws.deploy();
+    ws.assertComplete();
+    return { head: ws.dbFile, stopBefore: snapshots, cleanup };
+  } catch (err) {
+    cleanup();
+    throw err;
+  }
+}
+
+/**
+ * The template file a suite copies, out of what `globalSetup` provided. Under a config
+ * without that `globalSetup` nothing was provided, and `inject()` returns `undefined`.
+ */
+export function migratedSqliteTemplate(
+  provided: MigratedSqliteTemplates | undefined,
+  stopBefore?: string,
+): string {
+  if (!provided) {
+    throw new Error(
+      "createMigratedSqlite found no migrated SQLite template: this vitest config does not " +
+        "list tests/global-setup-migrated-sqlite.ts in `globalSetup` (vitest.config.ts does)",
+    );
+  }
+  if (!stopBefore) return provided.head;
+  if (!Object.hasOwn(provided.stopBefore, stopBefore)) {
+    throw new Error(
+      `no migrated SQLite template stops before ${stopBefore}: add it to ` +
+        "STOP_BEFORE_MIGRATIONS in tests/helpers/sqlite-migrated-db.ts",
+    );
+  }
+  return provided.stopBefore[stopBefore]!;
 }
 
 export function createMigratedSqlite(
   prefix: string,
   opts: { stopBefore?: string } = {},
 ): MigratedSqlite {
+  const template = migratedSqliteTemplate(inject(MIGRATED_SQLITE_TEMPLATES_KEY), opts.stopBefore);
   const dir = mkdtempSync(path.join(os.tmpdir(), `metis-${prefix}-`));
-  const ws = migrationWorkspace(dir);
-  const { dbFile } = ws;
-  if (opts.stopBefore) {
+  const cleanup = () => rmSync(dir, { recursive: true, force: true });
+  let ws: ReturnType<typeof migrationWorkspace>;
+  try {
+    ws = migrationWorkspace(dir);
     for (const name of migrationNames()) {
       if (name === opts.stopBefore) break;
       ws.copy(name);
     }
-    ws.deploy();
-  } else {
-    for (const name of migrationNames()) ws.copy(name);
-    copyFileSync(inject(MIGRATED_SQLITE_TEMPLATE_KEY), dbFile);
+    copyFileSync(template, ws.dbFile);
+    ws.assertComplete();
+  } catch (err) {
+    // The suite never gets a handle to call cleanup() on, so the directory goes here.
+    cleanup();
+    throw err;
   }
-  ws.assertComplete();
+  const { dbFile } = ws;
   return {
     dir,
     dbFile,
@@ -240,6 +340,6 @@ export function createMigratedSqlite(
         db.close();
       }
     },
-    cleanup: () => rmSync(dir, { recursive: true, force: true }),
+    cleanup,
   };
 }
