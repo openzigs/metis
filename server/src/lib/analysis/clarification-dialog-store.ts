@@ -133,6 +133,16 @@ export async function replaceDialogState(
  * round, and no restore write is needed (#2101's could itself be overwritten).
  * Returns the new revision, or `null` when the compare-and-set found the row
  * changed, and neither it nor `alongside` wrote anything.
+ *
+ * #2156 — lock order, on Postgres: the compare-and-set locks the dialog row
+ * first, and the submit's `alongside` (the metadata merge) then locks the
+ * `analyses` row. Deleting an analysis takes them the other way round — the
+ * `analyses` row, then this row through `onDelete: Cascade` (so does deleting
+ * its project, which cascades to the analysis). A submit racing a delete can
+ * therefore deadlock; Postgres detects it and aborts one of the two
+ * transactions, which rolls back whole and fails (nothing half-written).
+ * Harmless, but not deadlock-free: do not cite this order as one nothing
+ * reverses.
  */
 export async function commitDialogState(
   analysisId: string,

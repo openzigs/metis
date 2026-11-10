@@ -202,7 +202,7 @@ describe("clarification-dialog-store", () => {
       expect(alongside).not.toHaveBeenCalled();
     });
 
-    it("rethrows alongside's failure out of the transaction, so it rolls back", async () => {
+    it("rethrows alongside's failure out of the transaction (rollback: see the SQLite suite)", async () => {
       mockTable.updateMany.mockResolvedValue({ count: 1 });
       await expect(
         commitDialogState("a-1", "rev-0", makeState(), async () => {

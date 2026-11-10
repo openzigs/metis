@@ -13,50 +13,27 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // ── in-memory dialog store mock ───────────────────────────────────────────
-const store = new Map<string, unknown>();
-vi.mock("./clarification-dialog-store.js", () => ({
-  readDialogState: vi.fn(async (id: string) => store.get(id)),
-  writeDialogState: vi.fn(async (id: string, state: unknown) => {
-    store.set(id, state);
-  }),
-  deleteDialogState: vi.fn(async (id: string) => {
-    store.delete(id);
-  }),
-  // #2101 / #2142 — the compare-and-set writes over the same map.
-  readDialogStateRevision: vi.fn(async (id: string) => {
-    const v = store.get(id);
-    return v ? { state: structuredClone(v) as unknown, revision: JSON.stringify(v) } : undefined;
-  }),
-  replaceDialogState: vi.fn(async (id: string, revision: string | undefined, state: unknown) => {
-    // #2142 — no revision: created only while there is no row.
-    const held = store.get(id);
-    if (revision === undefined ? held !== undefined : JSON.stringify(held) !== revision) {
-      return null;
-    }
-    store.set(id, structuredClone(state));
-    return JSON.stringify(state);
-  }),
-  // #2142 — one transaction: `alongside` throwing rolls the state write back.
-  commitDialogState: vi.fn(
-    async (
-      id: string,
-      revision: string,
-      state: unknown,
-      alongside: (tx: unknown) => Promise<void>,
-    ) => {
-      const held = store.get(id);
-      if (JSON.stringify(held) !== revision) return null;
-      store.set(id, structuredClone(state));
-      try {
-        await alongside({});
-      } catch (err) {
-        store.set(id, held);
-        throw err;
-      }
-      return JSON.stringify(state);
-    },
-  ),
-}));
+// #2156 — hoisted: the mock factory below hands it to the shared fake.
+const store = vi.hoisted(() => new Map<string, unknown>());
+vi.mock("./clarification-dialog-store.js", async () => {
+  const { dialogStoreCasFakes } = await import("../../../tests/helpers/dialog-store-cas-fake.js");
+  return {
+    readDialogState: vi.fn(async (id: string) => store.get(id)),
+    writeDialogState: vi.fn(async (id: string, state: unknown) => {
+      store.set(id, state);
+    }),
+    deleteDialogState: vi.fn(async (id: string) => {
+      store.delete(id);
+    }),
+    // #2101 / #2142 — the compare-and-set writes over the same map.
+    readDialogStateRevision: vi.fn(async (id: string) => {
+      const v = store.get(id);
+      return v ? { state: structuredClone(v) as unknown, revision: JSON.stringify(v) } : undefined;
+    }),
+    // #2101 / #2142 / #2156 — the compare-and-set writers, shared.
+    ...dialogStoreCasFakes(store),
+  };
+});
 
 import { ClarificationDialog } from "./clarification-dialog.js";
 import type { GroundingRetriever } from "./ambiguity-grounding.js";
