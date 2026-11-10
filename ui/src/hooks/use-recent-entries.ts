@@ -13,8 +13,11 @@ export const RESUMABLE_SESSIONS_KEY = ["resumable-sessions"];
  * {@link reconcileRecentSessions}).
  *
  * Until the server answers, only analysis entries show, so a stale session is
- * never listed. If the server cannot be asked, the tracker's own list shows —
- * the panel as it was before this check, rather than an empty one.
+ * never listed. If the server cannot be asked, only analyses show too: the
+ * tracker is shared by everyone who signs in on this browser, so its sessions
+ * are never listed unchecked (#2199 review). A session touched after the
+ * server's last answer still shows, so one the user just started is not hidden
+ * until the next refetch.
  */
 export function useRecentEntries(refreshMs: number): RecentEntry[] {
   const [entries, setEntries] = useState(() => recentTracker.list());
@@ -29,7 +32,6 @@ export function useRecentEntries(refreshMs: number): RecentEntry[] {
     refetchInterval: 60_000,
   });
 
-  if (resumable.isError) return entries;
   if (!resumable.data) return entries.filter((e) => e.kind !== "session");
-  return reconcileRecentSessions(entries, resumable.data);
+  return reconcileRecentSessions(entries, resumable.data, resumable.dataUpdatedAt);
 }

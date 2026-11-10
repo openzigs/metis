@@ -73,6 +73,14 @@ describe("reconcileRecentSessions (#2187)", () => {
     expect(out[0]).toMatchObject({ id: "live", label: "New Chat" });
   });
 
+  it("keeps a session touched after the answer was read, drops one touched before", () => {
+    const answeredAt = Date.parse("2026-10-25T00:00:00Z");
+    expect(reconcileRecentSessions(entries, [], answeredAt).map((e) => e.id)).toEqual([
+      "live",
+      "a1",
+    ]);
+  });
+
   it("drops every session when the server lists none", () => {
     expect(reconcileRecentSessions(entries, []).map((e) => e.id)).toEqual(["a1"]);
   });
@@ -98,10 +106,23 @@ describe("useRecentEntries (#2187)", () => {
     expect(result.current[0].label).toBe("Invoice tables");
   });
 
-  it("falls back to the tracker's own list when the server cannot be asked", async () => {
+  it("lists no unchecked session when the server cannot be asked", async () => {
     listResumable.mockRejectedValue(new Error("offline"));
     const { result } = renderHook(() => useRecentEntries(5000), { wrapper: makeWrapper({}) });
-    await waitFor(() => expect(result.current.map((e) => e.id)).toEqual(["live", "a1", "stale"]));
+    await waitFor(() => expect(listResumable).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 20));
+    expect(result.current.map((e) => e.id)).toEqual(["a1"]);
+  });
+
+  it("shows a session touched after the server's answer before the next refetch", async () => {
+    listResumable.mockResolvedValue([session("live", "Invoice tables")]);
+    const { result } = renderHook(() => useRecentEntries(20), { wrapper: makeWrapper({}) });
+    await waitFor(() => expect(result.current.map((e) => e.id)).toEqual(["live", "a1"]));
+    recentTracker.touch(
+      entry("session", "fresh", "New Chat", new Date(Date.now() + 1000).toISOString()),
+    );
+    await waitFor(() => expect(result.current.map((e) => e.id)).toContain("fresh"));
+    expect(listResumable).toHaveBeenCalledTimes(1);
   });
 });
 

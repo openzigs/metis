@@ -105,12 +105,19 @@ export const _MAX_PER_KIND = MAX_PER_KIND;
 export function reconcileRecentSessions(
   entries: readonly RecentEntry[],
   resumable: ReadonlyArray<{ id: string; title: string }>,
+  /** When the server's answer was read (ms). A session touched after it is
+   *  newer than the answer, which cannot vouch for it either way, so it stays
+   *  listed under the tracker's label until the next answer (#2199 review). */
+  answeredAtMs?: number,
 ): RecentEntry[] {
   const titles = new Map(resumable.map((s) => [s.id, s.title]));
   return entries.flatMap((e) => {
     if (e.kind !== "session") return [e];
     const title = titles.get(e.id);
-    if (title === undefined) return [];
+    if (title === undefined) {
+      const touched = Date.parse(e.touchedAt);
+      return answeredAtMs !== undefined && touched > answeredAtMs ? [e] : [];
+    }
     return [{ ...e, label: title || e.label }];
   });
 }
