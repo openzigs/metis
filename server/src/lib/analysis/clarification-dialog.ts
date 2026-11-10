@@ -22,6 +22,8 @@ import { noUsableItem } from "./unread-reply.js";
 import {
   deleteDialogState,
   readDialogState,
+  readDialogStateRevision,
+  replaceDialogState,
   writeDialogState,
 } from "./clarification-dialog-store.js";
 import type { GoverningQuestionSource } from "../governing/applicability-questions.js";
@@ -465,10 +467,17 @@ export class ClarificationDialog {
    * Submit answers for the current round and process them.
    * Returns updated requirements and dialog state.
    *
-   * #1668 — `beforeCommit` runs on the result before the round is written to
-   * the dialog state. When it throws, nothing is written, so the round stays
-   * open and can be answered again: the caller persists the requirements there,
-   * and refuses (409 REQUIREMENTS_REPLACED) without consuming the round.
+   * #1668 — `beforeCommit` runs on the result as part of committing the round.
+   * When it throws, the round is left open and can be answered again: the
+   * caller persists the requirements there, and refuses (409
+   * REQUIREMENTS_REPLACED) without consuming the round.
+   *
+   * #2101 — the round is committed by compare-and-set on the state this
+   * submit read, so of two submits of one open round (two tabs, or a tab and a
+   * CSV import) exactly one is written: the other is refused with 409
+   * CLARIFY_ROUND_NOT_OPEN before `beforeCommit` runs, so neither its answers
+   * nor its refined requirements land. Committed first, then `beforeCommit`;
+   * when that throws, the round is put back as it was read.
    */
   async submitAnswers(
     analysisId: string,
@@ -481,10 +490,11 @@ export class ClarificationDialog {
     }) => Promise<void>,
   ): Promise<{ state: ClarificationState; updatedRequirements: StructuredRequirements }> {
     requirements = withAmbiguityDefaults(requirements);
-    const state = await readDialogState(analysisId);
-    if (!state) {
+    const read = await readDialogStateRevision(analysisId);
+    if (!read) {
       throw new Error(`No clarification dialog found for analysis ${analysisId}`);
     }
+    const { state, revision } = read;
 
     const currentRound = state.rounds[state.rounds.length - 1];
     if (!currentRound) {
@@ -568,8 +578,30 @@ export class ClarificationDialog {
       state.completed = true;
     }
 
-    await beforeCommit?.({ state, updatedRequirements });
-    await writeDialogState(analysisId, state);
+    // #2101 — only if no other write landed since this submit read the state.
+    const committed = await replaceDialogState(analysisId, revision, state);
+    if (committed === null) {
+      throw new AppError(
+        409,
+        "CLARIFY_ROUND_NOT_OPEN",
+        "These answers were not saved: this clarification round was answered somewhere " +
+          "else at the same time. Reload the questions and answer the current round.",
+      );
+    }
+    try {
+      await beforeCommit?.({ state, updatedRequirements });
+    } catch (err) {
+      // #1668 — a refused commit leaves the round open to answer again.
+      const restored = await replaceDialogState(
+        analysisId,
+        committed,
+        JSON.parse(revision) as ClarificationState,
+      ).catch(() => null);
+      if (restored === null) {
+        log.warn("A refused clarification submit could not re-open its round", { analysisId });
+      }
+      throw err;
+    }
 
     // #1873 — judge the answered governing questions back onto the rules they
     // settle, after the round is committed so a refused submit settles nothing.
@@ -887,6 +919,12 @@ const ID_ASIDE_CLOSE = /^\s*\)/;
 const ID_LABEL = /\[?(?:\bid\s*[:=]\s*)?$/i;
 /** How far before an id its `(id: ` or `[id: ` label is looked for. */
 const ID_LABEL_WINDOW = 32;
+/**
+ * #2132 — text that ends in a "requirement" no other word describes: at the
+ * start, after punctuation, or after only an article or a preposition.
+ */
+const BARE_REQUIREMENT =
+  /(?:^|[^\p{L}\s]\s*|\b(?:the|this|that|a|an|each|for|of|in|on|to|about|with|by|from|and|or)\s+)requirement$/iu;
 
 /**
  * ASCII-only lower case. `String.prototype.toLowerCase` can change a string's
@@ -909,12 +947,21 @@ function replaceId(text: string, id: string, title: string): string {
     const open = ID_ASIDE_OPEN.exec(near);
     const close = ID_ASIDE_CLOSE.exec(after);
     if (open && close) {
-      out += before.slice(0, lead + open.index);
+      const kept = before.slice(0, lead + open.index);
+      // #2132 — "Requirement (id: X) is unclear." loses its referent without
+      // the aside: a bare "requirement" is named by the quoted title instead.
+      out += BARE_REQUIREMENT.test(out + kept) ? `${kept} "${title}"` : kept;
       rest = after.slice(close[0].length);
     } else {
-      // ID_LABEL matches at least the empty string at the end.
-      out += `${before.slice(0, lead + ID_LABEL.exec(near)!.index)}"${title}"`;
-      rest = after.startsWith("]") ? after.slice(1) : after;
+      // ID_LABEL matches at least the empty string at the end. #2132 — its
+      // `[` is taken only with the `]` that closes it ("[id: X ]"), so "[X,
+      // other]" keeps both brackets rather than a stray `]`.
+      const label = ID_LABEL.exec(near)!;
+      const bracketClose = /^\s*\]/.exec(after);
+      const takesBracket = label[0].startsWith("[") && bracketClose !== null;
+      const labelAt = lead + label.index + (label[0].startsWith("[") && !takesBracket ? 1 : 0);
+      out += `${before.slice(0, labelAt)}"${title}"`;
+      rest = takesBracket ? after.slice(bracketClose[0].length) : after;
     }
     at = foldAscii(rest).indexOf(needle);
   }
@@ -927,7 +974,8 @@ function replaceId(text: string, id: string, title: string): string {
  * one a question is about, and the model copied that label into the question
  * it wrote: "…the new password length requirement (id: 6280ae21-…)". An
  * `(id: …)` aside is dropped, since the words before it already name the
- * requirement; any other mention becomes the requirement's quoted title. Ids
+ * requirement (#2132: after a bare "requirement", which names none, the title
+ * takes its place); any other mention becomes the requirement's quoted title. Ids
  * the prompt did not show, and short readable ones, are left as written.
  */
 export function nameRequirementIds(

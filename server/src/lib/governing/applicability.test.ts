@@ -47,6 +47,7 @@ const {
   governingApplicabilityHookFor,
   planScreenBatches,
   SCREEN_ROOM_MAX_SHRINK,
+  SAME_SUBJECT_LINE,
   screenRoom,
 } = await import("./applicability.js");
 type ApplicabilityRule = import("./applicability.js").ApplicabilityRule;
@@ -875,6 +876,20 @@ describe("#1997 — the judging prompt's precision guidance", () => {
     expect(systemMessage).not.toMatch(/releasing every change/);
   });
 
+  // #2108 — tuned on governing-04: a sign-in or logging requirement drew most of the
+  // policy's rules on that subject, and a rule the requirement's text says the flow
+  // breaks today could be ruled out as "the system it runs on".
+  it("keeps, of the rules sharing a subject, those whose matter the requirement sets, changes or says how it is done today", () => {
+    const { systemMessage } = buildApplicabilityJudgePrompt(REQUIREMENT.text, []);
+    expect(systemMessage.split("\n")).toContain(SAME_SUBJECT_LINE);
+    expect(SAME_SUBJECT_LINE).toContain("says how the flow it changes does that thing today");
+    expect(SAME_SUBJECT_LINE).toContain("The other rules on that subject do not apply.");
+    // The settle and carry judges share the same lines.
+    expect(
+      buildApplicabilityJudgePrompt(REQUIREMENT.text, [], { answered: true }).systemMessage,
+    ).toContain(SAME_SUBJECT_LINE);
+  });
+
   // #2050 — on governing-01 the screen found EN-01 (GR-09), CM-02 (GR-20) and CM-03 (GR-21) in
   // every run and the judge ruled each does-not-apply: a courier connection read as "platform
   // encryption", and a release-process requirement as not "about" testing or undo. Cosmetic
@@ -1018,6 +1033,28 @@ describe("#2122 — carried answers and rule handles", () => {
     expect(nameAnswerHandles("Per An answer A1, yes.", 1)).toBe("Per the analyst's answer, yes.");
     expect(nameAnswerHandles("A0, A2, AA1 and A1x stay.", 1)).toBe("A0, A2, AA1 and A1x stay.");
     expect(nameAnswerHandles("", 3)).toBe("");
+  });
+
+  it("#2132 — a control id is no answer handle: A1.2, Annex A1, Appendix A1", () => {
+    expect(nameAnswerHandles("SOC 2 A1.2 requires it, as A1 says.", 1)).toBe(
+      "SOC 2 A1.2 requires it, as the analyst's answer says.",
+    );
+    expect(nameAnswerHandles("Annex A1 and Appendix A1 are cited; A1 agrees.", 1)).toBe(
+      "Annex A1 and Appendix A1 are cited; the analyst's answer agrees.",
+    );
+    // A handle that ends a sentence is still one.
+    expect(nameAnswerHandles("As stated in A1.", 1)).toBe("As stated in the analyst's answer.");
+  });
+
+  it("#2132 — a run of shown handles reads as the analyst's answers", () => {
+    expect(nameAnswerHandles("The answers A1 and A2 agree.", 2)).toBe(
+      "The analyst's answers agree.",
+    );
+    expect(nameAnswerHandles("Per A1, A2 and [A3], yes.", 3)).toBe(
+      "Per the analyst's answers, yes.",
+    );
+    // A run with a handle the prompt did not show: only the shown one is named.
+    expect(nameAnswerHandles("A1 and A9 agree.", 1)).toBe("The analyst's answer and A9 agree.");
   });
 });
 

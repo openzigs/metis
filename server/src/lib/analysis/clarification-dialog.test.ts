@@ -387,6 +387,39 @@ describe("#2128 — a clarifying question never shows a requirement's internal i
     expect(nameRequirementIds("", reqs)).toBe("");
   });
 
+  it("#2132 — an aside after a bare 'requirement' gives way to the title, so the referent is kept", async () => {
+    const { nameRequirementIds } = await import("./clarification-dialog.js");
+    const reqs = [req(LENGTH_ID, "Minimum password length")];
+    expect(nameRequirementIds(`Requirement (id: ${LENGTH_ID}) is unclear.`, reqs)).toBe(
+      'Requirement "Minimum password length" is unclear.',
+    );
+    expect(nameRequirementIds(`Is the requirement (id: ${LENGTH_ID}) met?`, reqs)).toBe(
+      'Is the requirement "Minimum password length" met?',
+    );
+    // Words that already name the requirement keep the aside dropped.
+    expect(
+      nameRequirementIds(`How does the password length requirement (id: ${LENGTH_ID}) fit?`, reqs),
+    ).toBe("How does the password length requirement fit?");
+  });
+
+  it("#2132 — a bracket is taken only with the bracket that closes it", async () => {
+    const { nameRequirementIds } = await import("./clarification-dialog.js");
+    const reqs = [req(LENGTH_ID, "Minimum password length")];
+    expect(nameRequirementIds(`See [${LENGTH_ID}, REQ-002].`, reqs)).toBe(
+      'See ["Minimum password length", REQ-002].',
+    );
+    expect(nameRequirementIds(`See [id: ${LENGTH_ID} ] now.`, reqs)).toBe(
+      'See "Minimum password length" now.',
+    );
+    expect(nameRequirementIds(`See [ID: ${LENGTH_ID}].`, reqs)).toBe(
+      'See "Minimum password length".',
+    );
+    // A `]` no `[` opened is not the label's to take.
+    expect(nameRequirementIds(`See ${LENGTH_ID}] now.`, reqs)).toBe(
+      'See "Minimum password length"] now.',
+    );
+  });
+
   it("text whose lower case is longer than itself is not corrupted", async () => {
     const { nameRequirementIds } = await import("./clarification-dialog.js");
     const reqs = [req(LENGTH_ID, "Minimum password length")];

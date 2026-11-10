@@ -50,6 +50,7 @@ export const GOVERNING_CORPORA = [
   "governing-01-sample-policy",
   "governing-02-clinic-records",
   "governing-03-openemr-hipaa",
+  "governing-04-openemr-asvs",
 ] as const;
 export type GoverningCorpusName = (typeof GOVERNING_CORPORA)[number];
 

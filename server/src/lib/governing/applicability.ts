@@ -256,10 +256,24 @@ export function buildApplicabilityScreenPrompt(
 // when those rules apply. Without them the judge ruled out encryption in transit
 // for a new courier connection, and testing and undo for a release-process
 // requirement, in every run, while applying change rules to a button recolour.
+// #2108 — tuned on governing-04 (real ASVS text against real OpenEMR issues)
+// with Sonnet; governing-03 stays held out. A requirement about sign-in,
+// passwords, sessions or logging drew most of the policy's rules on that
+// subject (password administration logging drew log encoding and log
+// protection). And the "what the requirement itself changes" line below can
+// drop a rule that the requirement's own text says the flow it changes breaks
+// today. One line says both: of a subject's rules, the ones that apply are
+// those whose specific matter the requirement sets, changes, or says how the
+// system does it now. Its example is governing-04's own (a notice of expired
+// passwords), never a held-out set's.
+export const SAME_SUBJECT_LINE =
+  "When several rules share the requirement's subject (sign-in, passwords, sessions, logging, access), a rule on that subject applies only when the requirement sets or changes the specific thing that rule governs, or says how the flow it changes does that thing today (a reminder that a password has expired says passwords expire, which brings in a rule on password rotation, even though the requirement only asks for the reminder). The other rules on that subject do not apply.";
+
 const JUDGE_LINES = [
   "You decide which of a company's governing rules (internal policy obligations and controls) apply to one business requirement.",
   "The rules listed were gathered broadly so that none is missed: expect most of them not to apply.",
   "A rule applies only when an independent reader would agree that what the requirement asks for falls under it. A stretch reading is not enough: a rule that could be attached to almost any new feature (least privilege on any new screen, say) does not apply unless the requirement is itself about that subject.",
+  SAME_SUBJECT_LINE,
   "Judge what the requirement itself changes, not the systems it runs on. Rules that hold for every system — encryption of data in transit or at rest, retention periods, named owners of datasets, the standing terms of supplier contracts — are already the platform's job and do not apply unless the requirement creates something new of exactly that kind. A new place the data is kept brings in the rules on storing it; a new connection or copy that sends personal information to an outside company brings in encryption in transit; a new supplier brings in that supplier's review and its entry in the supplier register.",
   "Expect one to three rules to apply to a typical requirement, and often none. If more seem to, keep the ones the requirement most directly engages and decide the rest does-not-apply.",
   "Give EVERY rule listed exactly one decision:",
@@ -441,17 +455,35 @@ function startsSentence(text: string, offset: number): boolean {
  * "answer" with it. Only `A1`…`A{count}`, the handles the prompt showed, are
  * replaced. A carried settlement's reason was stored as written and shown to
  * the BA as "and A1 states that the password is the only sign-in factor".
+ * #2132 — a run of shown handles ("the answers A1 and A2") reads "the
+ * analyst's answers", and a control id is left as written: `A1.2` (SOC 2),
+ * "Annex A1", "Appendix A1".
  */
 export function nameAnswerHandles(text: string, count: number): string {
-  return text.replace(
-    /(?:\b(?:the|an?)\s+)?(?:\banswer\s+)?\[?\bA(\d+)\b\]?/gi,
-    (match, n: string, offset: number) => {
-      const i = Number(n);
-      if (i < 1 || i > count) return match;
-      return startsSentence(text, offset) ? "The analyst's answer" : "the analyst's answer";
-    },
-  );
+  const shown = (n: string) => Number(n) >= 1 && Number(n) <= count;
+  const words = (offset: number, plural: boolean) =>
+    `${startsSentence(text, offset) ? "The" : "the"} analyst's answer${plural ? "s" : ""}`;
+  return text.replace(ANSWER_HANDLE_RUN, (run: string, offset: number) => {
+    const handles = [...run.matchAll(/\bA(\d+)\b/gi)].map((m) => m[1]!);
+    if (handles.every(shown)) return words(offset, handles.length > 1);
+    // A run with a handle the prompt did not show: each shown one on its own.
+    return run.replace(ONE_ANSWER_HANDLE, (one: string, n: string, at: number) =>
+      shown(n) ? words(offset + at, false) : one,
+    );
+  });
 }
+
+/**
+ * #2132 — a run of answer handles ("A1", "A1 and A2", "A1, A2 and A3"), with
+ * a leading "the"/"a"/"an" and "answer"/"answers". A handle followed by
+ * `.<digit>` is a control id (SOC 2 `A1.2`), and one after "Annex" or
+ * "Appendix" names a part of a document: neither is an answer. No capture
+ * group, so the replacer is given the run and its offset.
+ */
+const ANSWER_HANDLE_RUN =
+  /(?<!\b(?:annex|appendix)\s+)(?:\b(?:the|an?)\s+)?(?:\banswers?\s+)?\[?\bA\d+\b(?!\.\d)\]?(?:(?:\s*,\s*(?:and\s+)?|\s+(?:and|or)\s+)\[?\bA\d+\b(?!\.\d)\]?)*/gi;
+/** One answer handle of a run, with its "the"/"answer" words. */
+const ONE_ANSWER_HANDLE = /(?:\b(?:the|an?)\s+)?(?:\banswers?\s+)?\[?\bA(\d+)\b(?!\.\d)\]?/gi;
 
 /**
  * Resolve a rule a reply names to the entry it was shown as: its handle, or a

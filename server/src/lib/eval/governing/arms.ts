@@ -100,6 +100,7 @@ import {
   type GoverningArmOutput,
   type GoverningJudgement,
 } from "./scorer.js";
+import type { RuleStage } from "./stages.js";
 
 /** One configuration under test. */
 export interface GoverningArm {
@@ -957,6 +958,27 @@ async function shippedFindings(
 }
 
 /**
+ * #2108 — each candidate rule of one requirement as the shipped path decided
+ * it: the passes that found it, its applicability verdict, and the status of
+ * its finding before any answer (absent when no finding was produced).
+ */
+export function shippedStages(
+  set: Pick<ApplicabilitySet, "decisions">,
+  report: Pick<FindingsReport, "findings">,
+): RuleStage[] {
+  const status = new Map(report.findings.map((f) => [f.rule.id, f.status]));
+  return set.decisions.map((d) => {
+    const finding = status.get(d.ruleId);
+    return {
+      ruleId: d.ruleId,
+      foundBy: [...d.foundBy],
+      applicability: d.verdict,
+      ...(finding ? { finding } : {}),
+    };
+  });
+}
+
+/**
  * A5 — the shipped path (#1878): what an analysis and its clarification dialog
  * run, end to end, through production's own functions ({@link SHIPPED_CODE_PATH}):
  *
@@ -1024,6 +1046,7 @@ export function createA5Arm(deps: GoverningArmDeps): GoverningArm {
       const report = await shippedFindings(requirement, corpus, findingRules, provider);
       const out: GoverningArmOutput = {
         ...readFindings(report),
+        stages: shippedStages(set, report),
         diagnostics: {
           candidates: set.candidates,
           applicable: report.findings.length,

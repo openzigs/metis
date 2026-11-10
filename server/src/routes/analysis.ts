@@ -155,6 +155,7 @@ import { getRequirementDiff } from "../lib/change-analysis/requirement-diff-serv
 import { parseListPageQuery, sliceListPage } from "../lib/analysis/list-page.js";
 import {
   addressedAmbiguities,
+  type ClarificationState,
   type StructuredRequirements,
 } from "../lib/analysis/types/requirements.js";
 import { clarifyRequestSchema } from "../lib/analysis/clarify-request-schema.js";
@@ -1454,7 +1455,8 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
    * POST /api/projects/:projectId/analyses/:id/clarify/import
    * Consume a filled CSV, match answers to the current round by `questionId`,
    * and apply them through the EXISTING submit path (`submitAnswers` +
-   * `persistClarifiedRequirements`). Returns `{ applied, skipped, unmatched }`.
+   * `persistClarifiedRequirements`). Returns `{ applied, skipped, unmatched }`,
+   * and (#2101) the dialog `state` it wrote when any answer was applied.
    */
   projectScoped.post(
     "/:id/clarify/import",
@@ -1518,6 +1520,9 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
         answer,
       }));
 
+      // #2101 — the state this import wrote, so the panel takes it at once
+      // rather than showing the answered round until a refetch lands.
+      let written: ClarificationState | undefined;
       if (applied.length > 0) {
         const requirements = (await getStructuredRequirements(analysisId)) ?? undefined;
         if (!requirements) {
@@ -1539,17 +1544,18 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
         });
         // Issue #1602 — merged onto the list as it is now, as the JSON submit is,
         // and (#1668) before the round is written to the dialog state.
-        await runInAnalysisUsageScope({ projectId, sessionId: analysisId }, () =>
+        const result = await runInAnalysisUsageScope({ projectId, sessionId: analysisId }, () =>
           dialog.submitAnswers(analysisId, applied, requirements, undefined, (round) =>
             persistClarifiedRound(analysisId, requirements, round),
           ),
         );
+        written = result.state;
         // Issue #1116 — the CSV round-trip is the same submit path, so it must
         // reach the artifact the same way.
         await applyClarificationsToRequirements(analysisId);
       }
 
-      res.json(ok({ applied: applied.length, skipped, unmatched }));
+      res.json(ok({ applied: applied.length, skipped, unmatched, state: written }));
     },
   );
 

@@ -61,6 +61,16 @@ vi.mock("../src/lib/analysis/clarification-dialog-store.js", () => ({
   deleteDialogState: vi.fn(async (id: string) => {
     dialogStore.delete(id);
   }),
+  // #2101 — compare-and-set over the same map: the revision is the stored JSON.
+  readDialogStateRevision: vi.fn(async (id: string) => {
+    const v = dialogStore.get(id);
+    return v ? { state: structuredClone(v) as unknown, revision: JSON.stringify(v) } : undefined;
+  }),
+  replaceDialogState: vi.fn(async (id: string, revision: string, state: unknown) => {
+    if (JSON.stringify(dialogStore.get(id)) !== revision) return null;
+    dialogStore.set(id, structuredClone(state));
+    return JSON.stringify(state);
+  }),
 }));
 
 describe("generative-e2e clarify fixtures", () => {

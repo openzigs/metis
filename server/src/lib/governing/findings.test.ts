@@ -7,7 +7,9 @@ import { describe, expect, it, vi } from "vitest";
 import type { AIProvider, ChatMessage, ChatOptions } from "../ai/types.js";
 import { TOOL_RESULT_FENCE } from "../ai/tool-runtime/fence.js";
 import {
+  DEFECT_REPORT_LINE,
   FALLBACK_FINDING_QUESTION,
+  SAFEGUARD_REQUESTED_LINE,
   buildFindingsPrompt,
   evaluateRequirementFindings,
   evidenceIsPresent,
@@ -318,6 +320,25 @@ describe("every citation is verified against the cited revision's stored text", 
     );
   });
 
+  it("#2132 — an abbreviation before a capital ends no sentence: the quote keeps its subject", () => {
+    const clause =
+      "Records are kept for seven years. The U.S. Government agencies must approve every export. See Art. 32 for the rest.";
+    const text = `§6 Exports\n${clause}`;
+    const rule = ruleIn(text, { id: "rule_exp", controlId: "EX-01" }, clause);
+    // "U.S. Government": neither period ends the sentence, so it starts at "The".
+    expect(verifyRuleCitation(text, rule, "Government agencies must approve")?.clauseExcerpt).toBe(
+      "The U.S. Government agencies must approve every export.",
+    );
+    // "Art. 32": the period of a reference word ends none either.
+    expect(verifyRuleCitation(text, rule, "32 for the rest")?.clauseExcerpt).toBe(
+      "See Art. 32 for the rest.",
+    );
+    // A real stop before a capital still ends one.
+    expect(verifyRuleCitation(text, rule, "are kept for seven")?.clauseExcerpt).toBe(
+      "Records are kept for seven years.",
+    );
+  });
+
   it("an excerpt of another rule's clause is verbatim policy text but does not cite this rule", () => {
     expect(
       verifyRuleCitation(V1, CARD, "Every bulk export of customer records is written"),
@@ -560,6 +581,20 @@ describe("parsing and evidence", () => {
     expect(systemMessage).toContain("together with the end of the question it answers");
     // #2022 — the short answer is quoted whole.
     expect(systemMessage).toContain('("Yes, we do.") whole,');
+  });
+
+  it("#2108 — the prompt reads a defect report as the fix it asks for, and a requested safeguard as provided", () => {
+    const { systemMessage } = buildFindingsPrompt("r", [], []);
+    expect(systemMessage).toContain(DEFECT_REPORT_LINE);
+    expect(systemMessage).toContain(SAFEGUARD_REQUESTED_LINE);
+    // Both come before the no-silence line, which still bounds them.
+    const lines = systemMessage.split("\n");
+    const silence = lines.findIndex((l) => l.startsWith("Silence is never compliant"));
+    expect(lines.indexOf(DEFECT_REPORT_LINE)).toBeGreaterThan(-1);
+    expect(lines.indexOf(DEFECT_REPORT_LINE)).toBeLessThan(silence);
+    expect(lines.indexOf(SAFEGUARD_REQUESTED_LINE)).toBeLessThan(silence);
+    // A safeguard left open is still asked about, not called compliant.
+    expect(SAFEGUARD_REQUESTED_LINE).toMatch(/switched off.*needs-ba-input/);
   });
 
   it("#2017 — a quote of the question alone, or across two answers, is not evidence", () => {

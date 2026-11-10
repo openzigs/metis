@@ -1,0 +1,266 @@
+{
+  "labeller": "labeller 1: claude-opus-5-5 through `claude -p` with every tool switched off (`--tools \"\"`), no MCP server (`--strict-mcp-config` with an empty config), no settings sources and no session persistence, run from an empty directory; given only labeller-1-prompt.txt (seed 21081): policy-v1 and the 25 requirements in a seeded order. It saw no label, no rule summary, no code, no prompt of the product and no arm. It is not the agent that chose the requirements.",
+  "labelledAgainst": "policy-v1.md",
+  "costUsd": 0.178,
+  "items": [
+    {
+      "id": "OS-01",
+      "applies": [
+        {
+          "ruleId": "SE-03",
+          "verdict": "needs-ba-input",
+          "reason": "The issue covers what the user sees after a timeout but does not say whether the expired session is invalidated on the server.",
+          "businessFact": "After a timeout, is the session invalidated on the server so the old session cannot be reused?"
+        }
+      ]
+    },
+    {
+      "id": "OS-02",
+      "applies": [
+        {
+          "ruleId": "PA-06",
+          "verdict": "compliant",
+          "reason": "The request asks for the new-password field on the reset screen to be masked like the other password fields."
+        },
+        {
+          "ruleId": "PA-14",
+          "verdict": "gap",
+          "reason": "The admin reset flow has the administrator type the user's new password, so the administrator chooses and knows it."
+        }
+      ]
+    },
+    {
+      "id": "OS-03",
+      "applies": [
+        {
+          "ruleId": "SE-03",
+          "verdict": "needs-ba-input",
+          "reason": "The issue covers logout after session expiry but does not say whether the expired session is invalidated on the server.",
+          "businessFact": "When a session expires, is the session data invalidated on the server so the old session cannot be reused?"
+        }
+      ]
+    },
+    {
+      "id": "OS-04",
+      "applies": [
+        {
+          "ruleId": "PA-15",
+          "verdict": "needs-ba-input",
+          "reason": "SSO via an external IdP is requested, but the request does not say whether the EHR relies on the IdP for authentication strength or recentness, or how it would check this.",
+          "businessFact": "Does the EHR need a specific authentication strength, method or recentness from the IdP (for example MFA for clinicians), and must it check this in the IdP response?"
+        },
+        {
+          "ruleId": "SE-06",
+          "verdict": "needs-ba-input",
+          "reason": "The request does not define session lifetime or termination between the EHR (relying party) and the IdP.",
+          "businessFact": "What is the maximum time allowed between IdP authentication events before the EHR forces re-authentication, and should logging out of one end the session in the other?"
+        }
+      ]
+    },
+    {
+      "id": "OS-05",
+      "applies": [
+        {
+          "ruleId": "PA-12",
+          "verdict": "needs-ba-input",
+          "reason": "The system generates initial portal passwords, but the request does not say whether they are securely random, expire, or must be changed at first login.",
+          "businessFact": "Are generated portal passwords produced with a cryptographically secure random generator, and do they expire or have to be changed at first login?"
+        }
+      ]
+    },
+    {
+      "id": "OS-06",
+      "applies": [
+        {
+          "ruleId": "PA-14",
+          "verdict": "gap",
+          "reason": "In the admin reset flow the administrator sets the user's password, and this request keeps that flow."
+        }
+      ]
+    },
+    {
+      "id": "OS-07",
+      "applies": []
+    },
+    {
+      "id": "OS-08",
+      "applies": [
+        {
+          "ruleId": "PA-05",
+          "verdict": "compliant",
+          "reason": "The request explicitly removes the rules requiring numbers, upper and lower case letters and special characters."
+        }
+      ]
+    },
+    {
+      "id": "OS-09",
+      "applies": [
+        {
+          "ruleId": "PA-06",
+          "verdict": "compliant",
+          "reason": "The request asks for a show/hide control, which the rule explicitly allows on masked password fields."
+        }
+      ]
+    },
+    {
+      "id": "OS-10",
+      "applies": []
+    },
+    {
+      "id": "OS-11",
+      "applies": [
+        {
+          "ruleId": "PA-08",
+          "verdict": "needs-ba-input",
+          "reason": "The request mentions passwords having expired, which suggests periodic expiry, but does not say why passwords expire.",
+          "businessFact": "Do passwords expire on a fixed schedule, or only when a password is found to be compromised?"
+        }
+      ]
+    },
+    {
+      "id": "OS-12",
+      "applies": []
+    },
+    {
+      "id": "OS-13",
+      "applies": [
+        {
+          "ruleId": "LG-01",
+          "verdict": "needs-ba-input",
+          "reason": "The request asks for 'detailed' password administration logging but does not say what each log entry must record.",
+          "businessFact": "What must each password administration log entry record (for example the acting admin, target user, action, timestamp and source IP)?"
+        }
+      ]
+    },
+    {
+      "id": "OS-14",
+      "applies": [
+        {
+          "ruleId": "SE-03",
+          "verdict": "needs-ba-input",
+          "reason": "Portal logout ends in a 'not found' error, and the issue does not say whether the session is ended on the server before that happens.",
+          "businessFact": "Does a portal logout invalidate the session on the server even when the redirect fails?"
+        }
+      ]
+    },
+    {
+      "id": "OS-15",
+      "applies": [
+        {
+          "ruleId": "SE-03",
+          "verdict": "compliant",
+          "reason": "The request requires the user to be logged out automatically when the token expires."
+        }
+      ]
+    },
+    {
+      "id": "OS-16",
+      "applies": [
+        {
+          "ruleId": "DP-01",
+          "verdict": "compliant",
+          "reason": "The issue asks for the CSRF token to be taken out of the URL query string because of how URLs leak."
+        }
+      ]
+    },
+    {
+      "id": "OS-17",
+      "applies": [
+        {
+          "ruleId": "AZ-01",
+          "verdict": "needs-ba-input",
+          "reason": "The upgrade scripts can be run without authentication, and the issue says they have historically had to run before any user account exists, but it does not state the access rule that should replace this.",
+          "businessFact": "Must acl_upgrade.php and sql_upgrade.php still run before any user account exists, or can they be limited to authenticated administrators (or a one-time setup token)?"
+        }
+      ]
+    },
+    {
+      "id": "OS-18",
+      "applies": [
+        {
+          "ruleId": "LG-01",
+          "verdict": "compliant",
+          "reason": "Trusting X-Forwarded-For only from trusted proxies, and storing the remote IP and forwarded value as separate fields, keeps the 'where' metadata accurate."
+        },
+        {
+          "ruleId": "LG-04",
+          "verdict": "needs-ba-input",
+          "reason": "Arbitrary forwarded text would still be stored in its own field, and the request does not say whether it is validated or encoded first.",
+          "businessFact": "Must forwarded_for values be validated as IP addresses (or encoded) before they are written to the audit log?"
+        }
+      ]
+    },
+    {
+      "id": "OS-19",
+      "applies": [
+        {
+          "ruleId": "PA-10",
+          "verdict": "compliant",
+          "reason": "The request adds TOTP-based MFA to the patient portal and a portal_force_mfa setting to require it."
+        },
+        {
+          "ruleId": "PA-13",
+          "verdict": "needs-ba-input",
+          "reason": "The request does not say whether the portal's forgotten-password reset will require the enrolled second factor.",
+          "businessFact": "Must the patient portal's forgotten-password reset require the patient's enrolled MFA factor before a new password can be set?"
+        }
+      ]
+    },
+    {
+      "id": "OS-20",
+      "applies": [
+        {
+          "ruleId": "AZ-02",
+          "verdict": "needs-ba-input",
+          "reason": "The new report section exposes and exports a patient's prescription history, but the request does not say who may generate or download it for which patients.",
+          "businessFact": "Which users may include and download prescription history in a patient report, and only for patients they are permitted to access?"
+        }
+      ]
+    },
+    {
+      "id": "OS-21",
+      "applies": [
+        {
+          "ruleId": "LG-05",
+          "verdict": "compliant",
+          "reason": "The proposal restricts the log tables to INSERT and SELECT, uses a dedicated minimum-permission database user, and adds checksum chaining to detect tampering."
+        }
+      ]
+    },
+    {
+      "id": "OS-22",
+      "applies": [
+        {
+          "ruleId": "AZ-01",
+          "verdict": "compliant",
+          "reason": "The request asks that editing demographics be allowed exactly when the user has the explicit Demographics (Write) permission."
+        }
+      ]
+    },
+    {
+      "id": "OS-23",
+      "applies": []
+    },
+    {
+      "id": "OS-24",
+      "applies": [
+        {
+          "ruleId": "PA-09",
+          "verdict": "needs-ba-input",
+          "reason": "Manual unblocking changes how the brute-force lockout works, and the request does not say whether the security documentation allows it.",
+          "businessFact": "Does the security documentation allow administrators to clear MFA and portal-account lockout counters manually before the lockout window ends?"
+        },
+        {
+          "ruleId": "AZ-01",
+          "verdict": "needs-ba-input",
+          "reason": "The request adds an unblock function but does not say which permission is needed to use it.",
+          "businessFact": "Which ACL permission is required to use the unblock function for the new lockout counters?"
+        }
+      ]
+    },
+    {
+      "id": "OS-25",
+      "applies": []
+    }
+  ]
+}

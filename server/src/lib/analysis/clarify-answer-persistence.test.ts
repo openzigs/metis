@@ -25,6 +25,18 @@ vi.mock("./clarification-dialog-store.js", () => ({
   deleteDialogState: vi.fn(async (id: string) => {
     store.delete(id);
   }),
+  // #2101 — compare-and-set over the same map: the revision is the stored JSON.
+  readDialogStateRevision: vi.fn(async (id: string) => {
+    const v = store.get(id);
+    return v
+      ? { state: JSON.parse(JSON.stringify(v)) as unknown, revision: JSON.stringify(v) }
+      : undefined;
+  }),
+  replaceDialogState: vi.fn(async (id: string, revision: string, state: unknown) => {
+    if (JSON.stringify(store.get(id)) !== revision) return null;
+    store.set(id, JSON.parse(JSON.stringify(state)));
+    return JSON.stringify(state);
+  }),
 }));
 
 import { ClarificationDialog, _setDialogState } from "./clarification-dialog.js";
@@ -405,5 +417,104 @@ describe("#2085 — only the open, latest generated round takes answers", () => 
     await _setDialogState(ANALYSIS_ID, { ...persisted, currentRound: 1 });
 
     await refused([{ questionId: q.id, answer: "SERIALIZABLE." }]);
+  });
+});
+
+describe("#2101 — two submits of one open round at the same time", () => {
+  /**
+   * A provider whose resolution calls each wait until `n` of them are out, so
+   * every submit has read the open round before any of them writes.
+   */
+  function heldResolutions(n: number): AIProvider {
+    let waiting = 0;
+    let release!: () => void;
+    const allOut = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const chat = vi.fn(async (): Promise<ChatResponse> => {
+      waiting += 1;
+      if (waiting === n) release();
+      await allOut;
+      return { content: RESOLUTION_RESPONSE } as ChatResponse;
+    });
+    return { ...makeProvider(), chat } as unknown as AIProvider;
+  }
+
+  async function openRound() {
+    const dialog = new ClarificationDialog({ provider: makeProvider() });
+    const started = await dialog.startOrContinue(ANALYSIS_ID, REQUIREMENTS);
+    return started.rounds[0]!.questions[0]!;
+  }
+
+  it("writes exactly one; the other is refused before its beforeCommit runs", async () => {
+    const q = await openRound();
+    const dialog = new ClarificationDialog({ provider: heldResolutions(2) });
+    const committed: string[] = [];
+    const submit = (answer: string) =>
+      dialog.submitAnswers(
+        ANALYSIS_ID,
+        [{ questionId: q.id, answer }],
+        REQUIREMENTS,
+        undefined,
+        async () => {
+          committed.push(answer);
+        },
+      );
+
+    const results = await Promise.allSettled([submit("READ COMMITTED."), submit("SERIALIZABLE.")]);
+
+    const won = results.filter((r) => r.status === "fulfilled");
+    const lost = results.filter((r) => r.status === "rejected");
+    expect(won).toHaveLength(1);
+    expect(lost).toHaveLength(1);
+    expect(lost[0]!.reason).toMatchObject({ statusCode: 409, code: "CLARIFY_ROUND_NOT_OPEN" });
+    const winner = won[0]!.value.state.rounds[0]!.questions[0]!.answer!;
+    // Only the winner's requirements were persisted, and its answer is the one stored.
+    expect(committed).toEqual([winner]);
+    const persisted = store.get(ANALYSIS_ID) as ClarificationState;
+    expect(persisted.rounds[0]!.questions[0]!.answer).toBe(winner);
+    expect(persisted.rounds[0]!.answers).toEqual([{ questionId: q.id, answer: winner }]);
+    expect(persisted.currentRound).toBe(2);
+  });
+
+  it("a beforeCommit that throws puts the round back exactly as it was read", async () => {
+    const q = await openRound();
+    const before = JSON.stringify(store.get(ANALYSIS_ID));
+    const dialog = new ClarificationDialog({ provider: makeProvider() });
+
+    await expect(
+      dialog.submitAnswers(
+        ANALYSIS_ID,
+        [{ questionId: q.id, answer: "READ COMMITTED." }],
+        REQUIREMENTS,
+        undefined,
+        async () => {
+          throw new Error("REQUIREMENTS_REPLACED");
+        },
+      ),
+    ).rejects.toThrow("REQUIREMENTS_REPLACED");
+
+    expect(JSON.stringify(store.get(ANALYSIS_ID))).toBe(before);
+  });
+
+  it("leaves a write that landed meanwhile in place when it cannot re-open the round", async () => {
+    const q = await openRound();
+    const dialog = new ClarificationDialog({ provider: makeProvider() });
+    const meanwhile = { marker: "written while the requirements were persisted" };
+
+    await expect(
+      dialog.submitAnswers(
+        ANALYSIS_ID,
+        [{ questionId: q.id, answer: "READ COMMITTED." }],
+        REQUIREMENTS,
+        undefined,
+        async () => {
+          store.set(ANALYSIS_ID, meanwhile);
+          throw new Error("REQUIREMENTS_REPLACED");
+        },
+      ),
+    ).rejects.toThrow("REQUIREMENTS_REPLACED");
+
+    expect(store.get(ANALYSIS_ID)).toEqual(meanwhile);
   });
 });
