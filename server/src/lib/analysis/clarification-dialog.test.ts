@@ -445,6 +445,23 @@ describe("#2128 — a clarifying question never shows a requirement's internal i
     ).toBe('Is the "Password length" requirement met?');
   });
 
+  // #2166 — a quoted name that ends in sentence punctuation still names the requirement:
+  // only a capital "Requirement" starts the next sentence.
+  it("#2166 — a quoted name ending in '!' or '?' before 'requirement' is not bare", async () => {
+    const { nameRequirementIds } = await import("./clarification-dialog.js");
+    const reqs = [req(LENGTH_ID, "Minimum password length")];
+    expect(nameRequirementIds(`Is the "Login!" requirement (id: ${LENGTH_ID}) met?`, reqs)).toBe(
+      'Is the "Login!" requirement met?',
+    );
+    expect(nameRequirementIds(`Is the ‘Why?’ requirement (id: ${LENGTH_ID}) met?`, reqs)).toBe(
+      "Is the ‘Why?’ requirement met?",
+    );
+    // A capital R after the quote still starts a sentence, and is bare.
+    expect(
+      nameRequirementIds(`He said "done." Requirement (id: ${LENGTH_ID}) is unclear.`, reqs),
+    ).toBe('He said "done." Requirement "Minimum password length" is unclear.');
+  });
+
   // #2143 — whether "requirement" is bare is read over the label window before the
   // aside, not over the whole question built so far.
   it("#2143 — a long question before the aside reads the same as a short one", async () => {

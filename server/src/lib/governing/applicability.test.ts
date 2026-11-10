@@ -1128,6 +1128,39 @@ describe("#2122 — carried answers and rule handles", () => {
     );
     expect(nameAnswerHandles("Annex A1, A2 or A3 applies.", 3)).toBe("Annex A1, A2 or A3 applies.");
     expect(nameAnswerHandles("Annex A1, A2, and A3 apply.", 3)).toBe("Annex A1, A2, and A3 apply.");
+    // #2166 — three items with commas alone: no conjunction closes the list, so the
+    // last two are named.
+    expect(nameAnswerHandles("Annex A1, A2, A3 apply.", 3)).toBe(
+      "Annex A1, the analyst's answer, the analyst's answer apply.",
+    );
+  });
+
+  // #2166 — "Per Annex A3, A1 and A2 agree." and "Annex A1, A2 and A3 apply." have the
+  // same shape: a comma, then a run that a conjunction closes. A document lists its parts
+  // in order, so the run continues the list only when its first handle comes after the
+  // part before the comma. A run that goes back is the answers, named.
+  it("#2166 — after 'Annex A3,' a run a conjunction closes is named unless it continues in order", () => {
+    expect(nameAnswerHandles("Per Annex A3, A1 and A2 agree.", 3)).toBe(
+      "Per Annex A3, the analyst's answers agree.",
+    );
+    expect(nameAnswerHandles("Per Annex A3, A1 or A2 applies.", 3)).toBe(
+      "Per Annex A3, the analyst's answer or the analyst's answer applies.",
+    );
+    expect(nameAnswerHandles("Per Appendix [A3], [A1] and [A2] agree.", 3)).toBe(
+      "Per Appendix [A3], the analyst's answers agree.",
+    );
+    // A run that goes on in order is still the document's list, and so is one that
+    // repeats no part before it: the choice, recorded. "Per Annex A1, A2 and A3 agree."
+    // reads the same as the list and is left as written.
+    expect(nameAnswerHandles("Annex A1, A2 and A3 apply.", 3)).toBe("Annex A1, A2 and A3 apply.");
+    expect(nameAnswerHandles("Annex A2, A3 or A5 applies.", 5)).toBe("Annex A2, A3 or A5 applies.");
+    expect(nameAnswerHandles("Per Annex A1, A2 and A3 agree.", 3)).toBe(
+      "Per Annex A1, A2 and A3 agree.",
+    );
+    // A run that repeats the part before it does not continue the list either.
+    expect(nameAnswerHandles("Per Annex A2, A2 and A3 agree.", 3)).toBe(
+      "Per Annex A2, the analyst's answers agree.",
+    );
   });
 });
 

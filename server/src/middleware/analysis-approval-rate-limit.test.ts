@@ -8,10 +8,12 @@ import request from "supertest";
 import { errorHandler } from "./error-handler.js";
 import {
   ANALYSIS_APPROVAL_PREAUTH_DEFAULT_MAX,
+  ANALYSIS_APPROVAL_REVIEW_DEFAULT_MAX,
   analysisApprovalEditRateLimiter,
   analysisApprovalPreAuthRateLimiter,
   analysisApprovalPromoteRateLimiter,
   analysisApprovalReopenRateLimiter,
+  analysisApprovalReviewRateLimiter,
 } from "./analysis-approval-rate-limit.js";
 
 function app(userId?: string) {
@@ -144,6 +146,53 @@ describe("analysisApprovalEditRateLimiter (#1580)", () => {
     try {
       const res = await request(editApp("edit-user-3")).patch("/");
       expect(res.headers["ratelimit-limit"]).toBe("120");
+    } finally {
+      process.env.NODE_ENV = prev;
+    }
+  });
+});
+
+describe("analysisApprovalReviewRateLimiter (#2167)", () => {
+  function reviewApp(userId?: string) {
+    const a = express();
+    a.use((req, _res, next) => {
+      if (userId) (req as unknown as { user: { userId: string } }).user = { userId };
+      next();
+    });
+    a.use(analysisApprovalReviewRateLimiter);
+    a.put("/", (_req, res) => res.json({ ok: true }));
+    return a;
+  }
+
+  afterEach(() => {
+    delete process.env.ANALYSIS_APPROVAL_REVIEW_RATE_LIMIT_MAX;
+  });
+
+  it("caps each user separately, under its own key and env var", async () => {
+    process.env.ANALYSIS_APPROVAL_REVIEW_RATE_LIMIT_MAX = "1";
+    const a = reviewApp("review-user-1");
+    expect((await request(a).put("/")).status).toBe(200);
+    const limited = await request(a).put("/");
+    expect(limited.status).toBe(429);
+    expect(limited.body.error.code).toBe("RATE_LIMITED");
+    expect(limited.body.error.message).toContain("review");
+    expect((await request(reviewApp("review-user-2")).put("/")).status).toBe(200);
+  });
+
+  it("keys an unauthenticated caller by IP", async () => {
+    process.env.ANALYSIS_APPROVAL_REVIEW_RATE_LIMIT_MAX = "1";
+    const a = reviewApp();
+    expect((await request(a).put("/")).status).toBe(200);
+    expect((await request(a).put("/")).status).toBe(429);
+  });
+
+  it("defaults to 300 per window outside tests", async () => {
+    const prev = process.env.NODE_ENV;
+    process.env.NODE_ENV = "production";
+    try {
+      const res = await request(reviewApp("review-user-3")).put("/");
+      expect(ANALYSIS_APPROVAL_REVIEW_DEFAULT_MAX).toBe(300);
+      expect(res.headers["ratelimit-limit"]).toBe("300");
     } finally {
       process.env.NODE_ENV = prev;
     }

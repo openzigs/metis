@@ -587,16 +587,28 @@ async function expectAdjudicatedRound(
       `${round}: the consistency change ${arrow(key)} names a cell of this round`,
     ).toBe(true);
   }
+  const kept = new Set<string>();
   for (const k of adjudication.consistencyPass.keptAsStanding) {
     const key = `${k.item} ${k.rule}`;
+    // #2166 — two checks, so a failure says which: the cell is not this round's, or
+    // its label is not the one the entry says it kept.
+    expect(
+      finalLabel.has(key),
+      `${round}: the kept cell ${arrow(key)} is a cell of this round`,
+    ).toBe(true);
     expect(
       finalLabel.get(key),
-      `${round}: the kept cell ${arrow(key)} is a cell of this round, holding its standing label`,
+      `${round}: the kept cell ${arrow(key)} holds its standing label`,
     ).toBe(k.standing);
     expect(consistent.has(key), `${round}: ${arrow(key)} is kept or changed, not both`).toBe(false);
+    kept.add(key);
   }
   expect(decided.size).toBe(cells.filter(([a, b]) => a !== b).length);
   expect(consistent.size).toBe(adjudication.consistencyPass.changes.length);
+  // #2166 — each kept cell is listed once, as each change is.
+  expect(kept.size, `${round}: each kept cell is listed once`).toBe(
+    adjudication.consistencyPass.keptAsStanding.length,
+  );
   // The agreement figures recorded beside the decisions are the labels' own.
   const applies = cells.map(([a, b]) => [String(a !== none), String(b !== none)] as const);
   expect(cohensKappa(applies)).toBeCloseTo(adjudication.agreement.applicability.kappa, 3);
@@ -984,12 +996,21 @@ describe("the tuning set of real text (#2108)", () => {
       );
     });
 
-    it("a kept entry whose standing label is not the label", async () => {
+    it("a kept entry whose standing label is not the cell's label", async () => {
       const dir = await withRoundOne((pass) => {
         pass.keptAsStanding[0]!.standing = "gap";
       });
       await expect(expectAdjudicatedLabels(dir, rounds)).rejects.toThrow(
-        /labelling: the kept cell OS-10 → PA-04 .*holding its standing label/,
+        /labelling: the kept cell OS-10 → PA-04 holds its standing label/,
+      );
+    });
+
+    it("a kept entry listed twice", async () => {
+      const dir = await withRoundOne((pass) => {
+        pass.keptAsStanding.push({ ...pass.keptAsStanding[0]! });
+      });
+      await expect(expectAdjudicatedLabels(dir, rounds)).rejects.toThrow(
+        /labelling: each kept cell is listed once/,
       );
     });
 
