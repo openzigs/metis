@@ -19,7 +19,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // #2156 — hoisted: the mock factory below hands it to the shared fake.
 const store = vi.hoisted(() => new Map<string, unknown>());
 vi.mock("./clarification-dialog-store.js", async () => {
-  const { dialogStoreCasFakes } = await import("../../../tests/helpers/dialog-store-cas-fake.js");
+  const { dialogStoreCasFakes, jsonClone } =
+    await import("../../../tests/helpers/dialog-store-cas-fake.js");
   return {
     readDialogState: vi.fn(async (id: string) => store.get(id)),
     writeDialogState: vi.fn(async (id: string, state: unknown) => {
@@ -28,15 +29,8 @@ vi.mock("./clarification-dialog-store.js", async () => {
     deleteDialogState: vi.fn(async (id: string) => {
       store.delete(id);
     }),
-    // #2101 — compare-and-set over the same map: the revision is the stored JSON.
-    readDialogStateRevision: vi.fn(async (id: string) => {
-      const v = store.get(id);
-      return v
-        ? { state: JSON.parse(JSON.stringify(v)) as unknown, revision: JSON.stringify(v) }
-        : undefined;
-    }),
     // #2101 / #2142 / #2156 — the compare-and-set writers, shared.
-    ...dialogStoreCasFakes(store),
+    ...dialogStoreCasFakes(store, jsonClone),
   };
 });
 

@@ -64,11 +64,6 @@ vi.mock("../src/lib/analysis/clarification-dialog-store.js", async () => {
     deleteDialogState: vi.fn(async (id: string) => {
       dialogStore.delete(id);
     }),
-    // #2101 — compare-and-set over the same map: the revision is the stored JSON.
-    readDialogStateRevision: vi.fn(async (id: string) => {
-      const v = dialogStore.get(id);
-      return v ? { state: structuredClone(v) as unknown, revision: JSON.stringify(v) } : undefined;
-    }),
     // #2101 / #2142 / #2156 — the compare-and-set writers, shared.
     ...dialogStoreCasFakes(dialogStore),
   };

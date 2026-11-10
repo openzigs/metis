@@ -136,13 +136,14 @@ export async function replaceDialogState(
  *
  * #2156 — lock order, on Postgres: the compare-and-set locks the dialog row
  * first, and the submit's `alongside` (the metadata merge) then locks the
- * `analyses` row. Deleting an analysis takes them the other way round — the
- * `analyses` row, then this row through `onDelete: Cascade` (so does deleting
- * its project, which cascades to the analysis). A submit racing a delete can
- * therefore deadlock; Postgres detects it and aborts one of the two
- * transactions, which rolls back whole and fails (nothing half-written).
- * Harmless, but not deadlock-free: do not cite this order as one nothing
- * reverses.
+ * `analyses` row. A hard delete of an analysis takes them the other way
+ * round — the `analyses` row, then this row through `onDelete: Cascade` (so
+ * does a hard delete of its project). No app path does that: `deleteProject`
+ * is a soft delete and `server/src` deletes no analysis, so only an
+ * out-of-band delete (the dev and eval scripts in `server/scripts`) can race a
+ * submit into a deadlock. Postgres then aborts one of the two transactions,
+ * which rolls back whole and fails (nothing half-written). Harmless, but not
+ * deadlock-free: do not cite this order as one nothing reverses.
  */
 export async function commitDialogState(
   analysisId: string,

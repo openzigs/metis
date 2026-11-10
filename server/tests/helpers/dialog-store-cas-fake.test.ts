@@ -4,11 +4,33 @@
  * dialog against the behaviour it will meet.
  */
 import { describe, expect, it, vi } from "vitest";
-import { dialogStoreCasFakes } from "./dialog-store-cas-fake.js";
+import { dialogStoreCasFakes, jsonClone } from "./dialog-store-cas-fake.js";
 
 const round = (n: number) => ({ analysisId: "a-1", currentRound: n });
 
 describe("dialogStoreCasFakes", () => {
+  describe("readDialogStateRevision", () => {
+    it.each([
+      ["structured clone", undefined],
+      ["JSON clone", jsonClone],
+    ])("hands out a revision both writers accept, with a %s copy", async (_name, clone) => {
+      const store = new Map<string, unknown>([["a-1", round(1)]]);
+      const fakes = dialogStoreCasFakes(store, clone);
+      const read = await fakes.readDialogStateRevision("a-1");
+      expect(read?.state).toEqual(round(1));
+      expect(read?.state).not.toBe(store.get("a-1"));
+      expect(await fakes.replaceDialogState("a-1", read?.revision, round(2))).not.toBeNull();
+      const reread = await fakes.readDialogStateRevision("a-1");
+      expect(
+        await fakes.commitDialogState("a-1", reread!.revision, round(3), async () => {}),
+      ).not.toBeNull();
+    });
+
+    it("reads nothing for a missing row", async () => {
+      expect(await dialogStoreCasFakes(new Map()).readDialogStateRevision("a-1")).toBeUndefined();
+    });
+  });
+
   describe("replaceDialogState", () => {
     it("with no revision, creates the row only while there is none", async () => {
       const store = new Map<string, unknown>();
