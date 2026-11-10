@@ -100,7 +100,10 @@ export function matchSynthesized(
 }
 
 /** What the join reads of a reviewed requirement. */
-export type JoinableRequirement = Pick<StructuredRequirement, "id" | "title" | "synthesisItemKey">;
+export type JoinableRequirement = Pick<
+  StructuredRequirement,
+  "id" | "title" | "synthesisItemKey" | "extractedTitle"
+>;
 
 /**
  * Issue #1204 — a requirement the title fallback refused: the items it was
@@ -179,8 +182,11 @@ export function matchSynthesizedReportingRefusals(
   const candidates: Array<OneToOneCandidate<string, number, number[]>> = [];
   for (const req of approved) {
     if (decided.has(req.id) || byStructuredId.has(req.id)) continue;
-    const needle = significantTokens(req.title);
-    const key = titleKey(req.title);
+    // #1580 — synthesis titled its items after the extracted title, so a
+    // requirement retitled at the checkpoint is joined on the title it had.
+    const joinTitle = req.extractedTitle ?? req.title;
+    const needle = significantTokens(joinTitle);
+    const key = titleKey(joinTitle);
     synthTokens.forEach((tokens, synthIdx) => {
       if (!titlePool[synthIdx]) return;
       const score = containmentScore(needle, tokens);

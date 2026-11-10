@@ -69,6 +69,12 @@ vi.mock("../middleware/analysis-approval-rate-limit.js", () => ({
     }
     next();
   },
+  // #1580 — the checkpoint edit route's own limiter; covered in its own suite.
+  analysisApprovalEditRateLimiter: (
+    _req: express.Request,
+    _res: express.Response,
+    next: express.NextFunction,
+  ) => next(),
   analysisApprovalPromoteRateLimiter: (
     _req: express.Request,
     res: express.Response,
