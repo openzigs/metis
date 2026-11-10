@@ -32,7 +32,7 @@ export const DEFAULTS = Object.freeze({
   /** METIS server base (the dev server / docker-compose `server`). */
   metisApiUrl: "http://localhost:4000",
   /** METIS UI base — the SP ACS lives behind the API, see acsPath. */
-  spEntityId: "http://localhost:4000/auth/saml/metadata",
+  spEntityId: "http://localhost:4000/api/auth/saml/metadata",
   /** Default METIS role for a SAML login (mock IdP emits no group claim). */
   defaultRole: "admin",
   /** Provider display name shown on the METIS login page. */
@@ -63,23 +63,34 @@ export function idpSsoUrl(idpBaseUrl) {
 
 /**
  * METIS SP Assertion Consumer Service URL — the POST target node-saml uses as
- * `callbackUrl`. Mounted at `/auth/saml/acs` (verified in server/src/routes/sso.ts).
+ * `callbackUrl`. `routes/sso.ts` defines `/auth/saml/acs` on the API router,
+ * which `server/src/app.ts` mounts at `/api` — hence `/api/auth/saml/acs` (#1562).
  *
  * @param {string} metisApiUrl
  * @returns {string}
  */
 export function spAcsUrl(metisApiUrl) {
-  return `${trimSlash(metisApiUrl)}/auth/saml/acs`;
+  return `${trimSlash(metisApiUrl)}/api/auth/saml/acs`;
 }
 
 /**
- * METIS SP entity id / metadata URL (`/auth/saml/metadata`).
+ * METIS SP entity id / metadata URL (`/api/auth/saml/metadata`).
  *
  * @param {string} metisApiUrl
  * @returns {string}
  */
 export function spEntityId(metisApiUrl) {
-  return `${trimSlash(metisApiUrl)}/auth/saml/metadata`;
+  return `${trimSlash(metisApiUrl)}/api/auth/saml/metadata`;
+}
+
+/**
+ * Where a SAML sign-in starts (`/api/auth/saml/login`).
+ *
+ * @param {string} metisApiUrl
+ * @returns {string}
+ */
+export function spLoginUrl(metisApiUrl) {
+  return `${trimSlash(metisApiUrl)}/api/auth/saml/login`;
 }
 
 /**

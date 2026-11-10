@@ -5,9 +5,11 @@ import {
   idpSsoUrl,
   spAcsUrl,
   spEntityId,
+  spLoginUrl,
   buildSamlProviderBody,
   trimSlash,
 } from "./saml-harness.mjs";
+import { spEndpoints } from "./entra-idp-harness.mjs";
 
 describe("trimSlash", () => {
   it("removes a single trailing slash", () => {
@@ -36,12 +38,29 @@ describe("URL builders", () => {
     expect(idpSsoUrl("http://localhost:4500/")).toBe("http://localhost:4500/api/saml/sso");
   });
 
-  it("derives the METIS SP ACS URL (matches server/src/routes/sso.ts)", () => {
-    expect(spAcsUrl("http://localhost:4000")).toBe("http://localhost:4000/auth/saml/acs");
+  it("derives the METIS SP ACS URL under the /api mount (server/src/app.ts, routes/sso.ts)", () => {
+    expect(spAcsUrl("http://localhost:4000")).toBe("http://localhost:4000/api/auth/saml/acs");
   });
 
   it("derives the METIS SP entity id / metadata URL", () => {
-    expect(spEntityId("http://localhost:4000")).toBe("http://localhost:4000/auth/saml/metadata");
+    expect(spEntityId("http://localhost:4000")).toBe(
+      "http://localhost:4000/api/auth/saml/metadata",
+    );
+  });
+
+  it("derives the METIS SAML login URL the seed prints", () => {
+    expect(spLoginUrl("http://localhost:4000/")).toBe("http://localhost:4000/api/auth/saml/login");
+  });
+
+  // #1562 — the generic harness named /auth/saml/... while the API serves
+  // /api/auth/saml/...; the Entra harness's endpoints are proven against the
+  // real routes (server/tests/saml-entra-local-harness-1559.sqlite.test.ts).
+  it("names the same SP endpoints as the Entra harness, and DEFAULTS agrees", () => {
+    const api = "http://localhost:4000";
+    expect({ entityId: spEntityId(api), acsUrl: spAcsUrl(api), loginUrl: spLoginUrl(api) }).toEqual(
+      spEndpoints(api),
+    );
+    expect(DEFAULTS.spEntityId).toBe(spEntityId(DEFAULTS.metisApiUrl));
   });
 });
 
@@ -53,8 +72,8 @@ describe("buildSamlProviderBody", () => {
     expect(body).toMatchObject({
       name: DEFAULTS.providerName,
       enabled: true,
-      entityId: "http://localhost:4000/auth/saml/metadata",
-      acsUrl: "http://localhost:4000/auth/saml/acs",
+      entityId: "http://localhost:4000/api/auth/saml/metadata",
+      acsUrl: "http://localhost:4000/api/auth/saml/acs",
       idpMetadataXml: META,
       signRequests: false,
       requireSignedResponse: true,
@@ -71,8 +90,8 @@ describe("buildSamlProviderBody", () => {
       defaultRole: "reader",
       enabled: false,
     });
-    expect(body.acsUrl).toBe("https://metis.test:9000/auth/saml/acs");
-    expect(body.entityId).toBe("https://metis.test:9000/auth/saml/metadata");
+    expect(body.acsUrl).toBe("https://metis.test:9000/api/auth/saml/acs");
+    expect(body.entityId).toBe("https://metis.test:9000/api/auth/saml/metadata");
     expect(body.name).toBe("Corp IdP");
     expect(body.defaultRole).toBe("reader");
     expect(body.enabled).toBe(false);
