@@ -438,7 +438,13 @@ describe("discussions routes", () => {
         expect.objectContaining({
           select: expect.objectContaining({
             requirement: {
-              select: { id: true, title: true, analysisId: true, deletedAt: true },
+              select: {
+                id: true,
+                title: true,
+                analysisId: true,
+                deletedAt: true,
+                analysis: { select: { deletedAt: true } },
+              },
             },
           }),
         }),
@@ -456,6 +462,67 @@ describe("discussions routes", () => {
       ]);
       const res = await request(app).get("/discussions/threads?projectId=p1");
       expect(res.body.data[0].requirement).toBeNull();
+    });
+
+    // #2203 — the picker leaves out a requirement whose analysis is
+    // soft-deleted; the list must not report one as live either.
+    it("reports a requirement in a soft-deleted analysis as no requirement", async () => {
+      canAccessProjectDiscussions.mockResolvedValue(true);
+      threadFindMany.mockResolvedValue([
+        {
+          id: "t1",
+          requirementId: "r1",
+          requirement: {
+            id: "r1",
+            title: "In a deleted run",
+            analysisId: "a1",
+            deletedAt: null,
+            analysis: { deletedAt: new Date() },
+          },
+        },
+        {
+          id: "t2",
+          requirementId: "r2",
+          requirement: {
+            id: "r2",
+            title: "In a live run",
+            analysisId: "a2",
+            deletedAt: null,
+            analysis: { deletedAt: null },
+          },
+        },
+      ]);
+      const res = await request(app).get("/discussions/threads?projectId=p1");
+      expect(res.body.data[0].requirement).toBeNull();
+      expect(res.body.data[1].requirement).toEqual({
+        id: "r2",
+        title: "In a live run",
+        analysisId: "a2",
+      });
+    });
+  });
+
+  // #2203 — an anchor is accepted only where the picker and the list see it: a
+  // requirement in a soft-deleted analysis is refused, as the picker hides it.
+  describe("requirement anchor — the analysis must be live (#2203)", () => {
+    it("looks the requirement up with a live analysis", async () => {
+      canAccessProjectDiscussions.mockResolvedValue(true);
+      requirementFindFirst.mockResolvedValueOnce(null);
+      const res = await request(app)
+        .post("/discussions/threads")
+        .send({ projectId: "p1", anchor: { requirementId: "r-in-deleted-run" } });
+      expect(res.status).toBe(400);
+      expect(requirementFindFirst).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            id: "r-in-deleted-run",
+            projectId: "p1",
+            deletedAt: null,
+            analysis: { deletedAt: null },
+          },
+        }),
+      );
+      expect(threadCreate).not.toHaveBeenCalled();
     });
   });
 
@@ -483,9 +550,51 @@ describe("discussions routes", () => {
       expect(requirementFindMany).toHaveBeenCalledWith(
         expect.objectContaining({
           where: { projectId: "p1", deletedAt: null, analysis: { deletedAt: null } },
-          orderBy: { createdAt: "desc" },
+          orderBy: [{ createdAt: "desc" }, { id: "desc" }],
         }),
       );
+    });
+
+    // #2203 — the scan used to stop at the newest 500 requirements, so a match
+    // older than that (a project past ~5 runs) could never be attached.
+    it("pages past the first scan to find an older match", async () => {
+      canAccessProjectDiscussions.mockResolvedValue(true);
+      const filler = (from: number, n: number) =>
+        Array.from({ length: n }, (_, i) => ({
+          id: `f${from + i}`,
+          title: `Filler ${from + i}`,
+          analysisId: "a9",
+          createdAt: new Date(),
+        }));
+      requirementFindMany
+        .mockResolvedValueOnce(filler(0, 500))
+        .mockResolvedValueOnce([
+          ...filler(500, 10),
+          { id: "old", title: "Old feed refresh", analysisId: "a1", createdAt: new Date() },
+        ]);
+      const res = await request(app).get("/discussions/requirements?projectId=p1&q=feed%20refresh");
+      expect(res.body.data.map((r: { id: string }) => r.id)).toEqual(["old"]);
+      expect(requirementFindMany).toHaveBeenCalledTimes(2);
+      expect(requirementFindMany).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({ skip: 500, take: 500 }),
+      );
+    });
+
+    it("stops paging once 20 matches are found", async () => {
+      canAccessProjectDiscussions.mockResolvedValue(true);
+      requirementFindMany.mockReset();
+      requirementFindMany.mockResolvedValue(
+        Array.from({ length: 500 }, (_, i) => ({
+          id: `r${i}`,
+          title: `Requirement ${i}`,
+          analysisId: "a1",
+          createdAt: new Date(),
+        })),
+      );
+      const res = await request(app).get("/discussions/requirements?projectId=p1&q=requirement");
+      expect(res.body.data).toHaveLength(20);
+      expect(requirementFindMany).toHaveBeenCalledTimes(1);
     });
 
     it("matches the term case-insensitively on the title", async () => {

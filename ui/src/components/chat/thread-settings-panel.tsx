@@ -65,6 +65,8 @@ export function ThreadSettingsPanel({
   const [anchorKind, setAnchorKind] = useState<AnchorKind>("requirementId");
   const [anchorId, setAnchorId] = useState("");
   const [savingAnchor, setSavingAnchor] = useState(false);
+  // #2187 — a Requirement is picked by title once the project is known.
+  const pickRequirement = anchorKind === "requirementId" && !!projectId;
 
   async function selectMode(next: AiResponseMode) {
     if (next === mode || savingMode) return;
@@ -134,7 +136,8 @@ export function ThreadSettingsPanel({
 
       {/* Optional anchor. */}
       <div className="space-y-2">
-        <Label htmlFor="anchor-id">Anchor (optional)</Label>
+        {/* #2203 — the label names the id box only while there is one. */}
+        <Label htmlFor={pickRequirement ? undefined : "anchor-id"}>Anchor (optional)</Label>
         <p className="text-xs text-muted-foreground">
           Attach this discussion to a Requirement, Analysis, or Spec Kit feature for context.
         </p>
@@ -152,7 +155,7 @@ export function ThreadSettingsPanel({
               </option>
             ))}
           </select>
-          {anchorKind === "requirementId" && projectId ? null : (
+          {pickRequirement ? null : (
             <>
               <Input
                 id="anchor-id"
@@ -171,7 +174,7 @@ export function ThreadSettingsPanel({
             </>
           )}
         </div>
-        {anchorKind === "requirementId" && projectId ? (
+        {pickRequirement && projectId ? (
           <DiscussionRequirementPicker
             projectId={projectId}
             value={null}
