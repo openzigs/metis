@@ -48,8 +48,6 @@ export const GOVERNING_FIXTURE = {
   /** Notes the spec types into Accept and Reject. */
   acceptNote: "Confirmed with the data owner on the export review (e2e #2060).",
   rejectNote: "Exports keep 90 days of history only, see the export spec (e2e #2060).",
-  /** The mock admin's display name (`fixtures/seed-user.ts`), shown as the decider. */
-  deciderName: "System Admin",
 } as const;
 
 export const GOVERNING_RULES: readonly GoverningFixtureRule[] = [

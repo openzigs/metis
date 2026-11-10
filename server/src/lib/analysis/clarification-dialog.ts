@@ -922,9 +922,22 @@ const ID_LABEL_WINDOW = 32;
 /**
  * #2132 — text that ends in a "requirement" no other word describes: at the
  * start, after punctuation, or after only an article or a preposition.
+ * #2143 — punctuation, not a digit or a quote: "the REQ-001 requirement" and
+ * `the "Login" requirement` are named already.
  */
 const BARE_REQUIREMENT =
-  /(?:^|[^\p{L}\s]\s*|\b(?:the|this|that|a|an|each|for|of|in|on|to|about|with|by|from|and|or)\s+)requirement$/iu;
+  /(?:^|[^\p{L}\p{N}\s"'“”‘’]\s*|\b(?:the|this|that|a|an|each|for|of|in|on|to|about|with|by|from|and|or)\s+)requirement$/iu;
+
+/**
+ * #2143 — whether `text` ends in a bare "requirement", read over the last
+ * {@link ID_LABEL_WINDOW} characters only: the question built so far can be
+ * long, and only the words just before the aside decide. The window is longer
+ * than "requirement", so its start-of-text case still holds only for a text
+ * that is the word alone.
+ */
+function endsInBareRequirement(text: string): boolean {
+  return BARE_REQUIREMENT.test(text.slice(-ID_LABEL_WINDOW));
+}
 
 /**
  * ASCII-only lower case. `String.prototype.toLowerCase` can change a string's
@@ -950,7 +963,7 @@ function replaceId(text: string, id: string, title: string): string {
       const kept = before.slice(0, lead + open.index);
       // #2132 — "Requirement (id: X) is unclear." loses its referent without
       // the aside: a bare "requirement" is named by the quoted title instead.
-      out += BARE_REQUIREMENT.test(out + kept) ? `${kept} "${title}"` : kept;
+      out += endsInBareRequirement(out + kept) ? `${kept} "${title}"` : kept;
       rest = after.slice(close[0].length);
     } else {
       // ID_LABEL matches at least the empty string at the end. #2132 — its

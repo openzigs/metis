@@ -509,7 +509,7 @@ describe("toJsonReport", () => {
     const wrong = corpus.manifest.items
       .flatMap((i) => i.applies)
       .filter((p) => p.verdict !== "compliant").length;
-    expect(md).toContain(`| wrong-verdict | 0 | 0 | 0 | 0 | ${wrong} |`);
+    expect(md).toContain(`| wrong-verdict | 0 | 0 | 0 | 0 | 0 | ${wrong} |`);
   });
 
   it("prints no stage section for arms that record no stages", async () => {

@@ -464,16 +464,25 @@ function startsSentence(text: string, offset: number): boolean {
  * the BA as "and A1 states that the password is the only sign-in factor".
  * #2132 — a run of shown handles ("the answers A1 and A2") reads "the
  * analyst's answers", and a control id is left as written: `A1.2` (SOC 2),
- * "Annex A1", "Appendix A1".
+ * "Annex A1", "Appendix A1". #2143 — so is every handle of a run after
+ * "Annex" ("Annex A1 and A2", "Annex [A1]"); and only "and" makes a run plural:
+ * "A1 or A2" names one answer, and "Per A1, A2 does not apply" two clauses, so
+ * each handle of those is named on its own.
  */
 export function nameAnswerHandles(text: string, count: number): string {
   const shown = (n: string) => Number(n) >= 1 && Number(n) <= count;
   const words = (offset: number, plural: boolean) =>
     `${startsSentence(text, offset) ? "The" : "the"} analyst's answer${plural ? "s" : ""}`;
   return text.replace(ANSWER_HANDLE_RUN, (run: string, offset: number) => {
+    // #2143 — the rest of a run of document parts ("Annex A1 and A2"): the
+    // lookbehind of ANSWER_HANDLE_RUN sees only the run's first handle.
+    const before = text.slice(Math.max(0, offset - DOCUMENT_PART_LOOKBACK), offset);
+    if (/^\[?A\d/i.test(run) && DOCUMENT_PART_RUN_BEFORE.test(before)) return run;
     const handles = [...run.matchAll(/\bA(\d+)\b/gi)].map((m) => m[1]!);
-    if (handles.every(shown)) return words(offset, handles.length > 1);
-    // A run with a handle the prompt did not show: each shown one on its own.
+    const joined = handles.length === 1 || (/\band\b/i.test(run) && !/\bor\b/i.test(run));
+    if (joined && handles.every(shown)) return words(offset, handles.length > 1);
+    // A run with a handle the prompt did not show, or not joined by "and":
+    // each shown one on its own.
     return run.replace(ONE_ANSWER_HANDLE, (one: string, n: string, at: number) =>
       shown(n) ? words(offset + at, false) : one,
     );
@@ -488,7 +497,15 @@ export function nameAnswerHandles(text: string, count: number): string {
  * group, so the replacer is given the run and its offset.
  */
 const ANSWER_HANDLE_RUN =
-  /(?<!\b(?:annex|appendix)\s+)(?:\b(?:the|an?)\s+)?(?:\banswers?\s+)?\[?\bA\d+\b(?!\.\d)\]?(?:(?:\s*,\s*(?:and\s+)?|\s+(?:and|or)\s+)\[?\bA\d+\b(?!\.\d)\]?)*/gi;
+  /(?<!\b(?:annex|appendix)\s+\[?)(?:\b(?:the|an?)\s+)?(?:\banswers?\s+)?\[?\bA\d+\b(?!\.\d)\]?(?:(?:\s*,\s*(?:and\s+)?|\s+(?:and|or)\s+)\[?\bA\d+\b(?!\.\d)\]?)*/gi;
+/**
+ * #2143 — text that ends inside a run of document parts: "Annex" or
+ * "Appendix", one or more handles, and the separator before the next. Read
+ * over at most {@link DOCUMENT_PART_LOOKBACK} characters before a run.
+ */
+const DOCUMENT_PART_RUN_BEFORE =
+  /\b(?:annex|appendix)\s+\[?A\d+\]?(?:(?:\s*,\s*(?:and\s+)?|\s+(?:and|or)\s+)\[?A\d+\]?)*(?:\s*,\s*(?:and\s+)?|\s+(?:and|or)\s+)$/i;
+const DOCUMENT_PART_LOOKBACK = 200;
 /** One answer handle of a run, with its "the"/"answer" words. */
 const ONE_ANSWER_HANDLE = /(?:\b(?:the|an?)\s+)?(?:\banswers?\s+)?\[?\bA(\d+)\b(?!\.\d)\]?/gi;
 

@@ -2750,12 +2750,13 @@ the pre-#1873 code).
   findings refresh. `open` awaits `governingCarriesSettled(analysisId)` before it reads the
   pairs, so the next round never asks a pair the carry is about to settle; it stops waiting
   when its signal aborts, and the carry runs on (#2133). A per-analysis memo (`carryMemo`,
-  bounded at `CARRY_MEMO_MAX_ANALYSES` analyses of at most `CARRY_MEMO_MAX_KEYS` judgings each,
-  the oldest forgotten first) keys each judged candidate by requirement, rules and answers, so
-  an orphan retry with the same answers sends no carried call again. A failed call is not
-  remembered, and (#2133) a judging is remembered only after what the carry settled is
-  written: `carryAnswersOver` reports it in `judgedNow`, and a write that throws leaves it to
-  be judged again. Both maps are process-local: on another replica the next round
+  bounded at `CARRY_MEMO_MAX_ANALYSES` analyses and, over all of them, `CARRY_MEMO_MAX_KEYS`
+  judgings, the least recently used analysis's oldest forgotten first, #2143) keys each judged
+  candidate by requirement, rules and answers, so an orphan retry with the same answers sends
+  no carried call again. A failed call is not remembered. `carryAnswersOver` reports each
+  judging in `judgedNow` with whether it settled a pair: one that settled nothing is
+  remembered at once, and (#2133) one that settled is remembered only after the write, so a
+  write that throws leaves it to be judged again. Both maps are process-local: on another replica the next round
   may ask what a carry here settles, as before #2122. `settle`'s left-open count reads only the
   questions' own settlements (#2016/#2022 backoff).
 - **Findings that ask (#2059).** A pair that `applies` is never `uncertain`, but its finding can
@@ -4788,7 +4789,8 @@ the consistency pass (#2140 added one). A5 now records each candidate rule's **s
 (`GoverningArmOutput.stages`, `eval/governing/stages.ts`): the pass that found it, its
 applicability and its finding. `stageSection` prints "Where each error arose": each miss,
 extra rule and wrong verdict counted as `not-a-candidate`, `judged-does-not-apply`,
-`applicability-applies`, `applicability-uncertain` or `findings-call`. Three prompt lines were
+`applicability-applies`, `applicability-uncertain`, `rule-not-citable` (#2143: the rule applied
+but could not be cited, so no finding was asked for) or `findings-call`. Three prompt lines were
 tuned on `governing-04`:
 
 - `SAME_SUBJECT_LINE` in the applicability judge: of the rules sharing a subject, only those
