@@ -464,6 +464,16 @@ export function requirementsCollaborationRouter(): Router {
             version: result.version,
           },
         });
+        // #2219 — taking the source rewrote the wording: a review that pinned
+        // the replaced version is told, as for an Edit-dialog save.
+        if (result.choice === "source" && result.changed) {
+          dispatchReviewedRequirementEdited({
+            requirementId,
+            fromVersion: result.version - 1,
+            toVersion: result.version,
+            actorId: req.user.userId,
+          });
+        }
         res.json({ success: true, data: result });
       } catch (err) {
         if (err instanceof SourceDivergenceError) {

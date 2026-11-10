@@ -125,7 +125,12 @@ describe("resolveSourceDivergence — Take the source version superseded by a ne
 
     expect(updateRequirementWithHistory).toHaveBeenCalledWith(
       db,
-      expect.objectContaining({ actorId: "u1", expectedVersion: 2, keepHiddenLabels: true }),
+      expect.objectContaining({
+        actorId: "u1",
+        expectedVersion: 2,
+        keepHiddenLabels: true,
+        reopenApproval: true,
+      }),
     );
     expect(result).toMatchObject({ choice: "source", changed: true, superseded: true });
   });
