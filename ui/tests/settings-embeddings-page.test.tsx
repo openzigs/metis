@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { QueryClient } from "@tanstack/react-query";
 import { makeWrapper } from "./test-utils";
 import { __resetTerminalToastsForTests } from "@/lib/terminal-toast";
 import AdminEmbeddingsPage from "@/app/(authed)/settings/embeddings/page";
@@ -436,6 +437,102 @@ describe("AdminEmbeddingsPage", () => {
         await waitFor(() => expect(screen.getByTestId("needs-reindex")).toBeInTheDocument());
         expect(screen.queryByTestId("reindex-progress")).not.toBeInTheDocument();
         expect(screen.getByTestId("reindex-button")).toBeEnabled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    // #2213 — a lost own job stayed in state: the page kept re-reading coverage
+    // every 15 s, and a later reindex was followed under the dead job's id.
+    it("forgets a job it lost: stops re-reading, and follows a later reindex by its own id", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+        statusMock.mockResolvedValue(makeStatus());
+        coverageMock.mockResolvedValue(makeCoverage());
+        reindexMock.mockResolvedValue({ jobId: "job-x", projectId: "proj_1", status: "started" });
+
+        render(<AdminEmbeddingsPage />, { wrapper: makeWrapper({ queryClient: client }) });
+        fireEvent.change(screen.getByTestId("project-id-input"), { target: { value: "proj_1" } });
+        fireEvent.click(screen.getByRole("button", { name: /check coverage/i }));
+        await waitFor(() => expect(screen.getByTestId("needs-reindex")).toBeInTheDocument());
+
+        fireEvent.click(screen.getByTestId("reindex-button"));
+        await waitFor(() => expect(screen.getByTestId("reindex-progress")).toBeInTheDocument());
+
+        // The job's server dies: the next re-read says nothing runs.
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(15_000);
+        });
+        await waitFor(() => expect(screen.getByTestId("needs-reindex")).toBeInTheDocument());
+        const readsWhenLost = coverageMock.mock.calls.length;
+
+        // Nothing runs and nothing is followed: no more re-reads.
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(45_000);
+        });
+        expect(coverageMock).toHaveBeenCalledTimes(readsWhenLost);
+
+        // Another reindex starts for the project; the page follows it, not the dead id.
+        coverageMock.mockResolvedValue(running("job-y"));
+        await act(async () => {
+          await client.refetchQueries();
+        });
+        await waitFor(() =>
+          expect(fake.socket.emit).toHaveBeenLastCalledWith("subscribe:job", { jobId: "job-y" }),
+        );
+        expect(screen.getByTestId("reindex-progress")).toBeInTheDocument();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    // #2213 — a coverage read sent just before Reindex, resolving just after,
+    // counted as "read after the enqueue" and dropped the page's new job.
+    it("keeps following its job when a coverage read sent before the enqueue lands after it", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+        statusMock.mockResolvedValue(makeStatus());
+        coverageMock.mockResolvedValue(makeCoverage());
+        reindexMock.mockResolvedValue({ jobId: "job-x", projectId: "proj_1", status: "started" });
+
+        render(<AdminEmbeddingsPage />, { wrapper: makeWrapper({ queryClient: client }) });
+        fireEvent.change(screen.getByTestId("project-id-input"), { target: { value: "proj_1" } });
+        fireEvent.click(screen.getByRole("button", { name: /check coverage/i }));
+        await waitFor(() => expect(screen.getByTestId("needs-reindex")).toBeInTheDocument());
+
+        // A coverage read goes out, and is still in flight when Reindex is clicked.
+        let resolveRead: (report: EmbeddingsCoverageReport) => void = () => {};
+        coverageMock.mockImplementationOnce(
+          () => new Promise<EmbeddingsCoverageReport>((resolve) => (resolveRead = resolve)),
+        );
+        let refetch: Promise<void> = Promise.resolve();
+        act(() => {
+          refetch = client.refetchQueries();
+        });
+        await waitFor(() => expect(coverageMock).toHaveBeenCalledTimes(2));
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(50);
+        });
+
+        fireEvent.click(screen.getByTestId("reindex-button"));
+        await waitFor(() => expect(screen.getByTestId("reindex-progress")).toBeInTheDocument());
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(50);
+        });
+
+        // It lands after the enqueue, from before the job started: nothing runs.
+        await act(async () => {
+          resolveRead(makeCoverage({ totalChunks: 11 }));
+          await refetch;
+          await vi.advanceTimersByTimeAsync(10);
+        });
+        await waitFor(() => expect(screen.getByText("11")).toBeInTheDocument());
+
+        expect(screen.getByTestId("reindex-progress")).toBeInTheDocument();
+        expect(screen.getByTestId("reindex-button")).toBeDisabled();
+        expect(screen.queryByTestId("needs-reindex")).not.toBeInTheDocument();
       } finally {
         vi.useRealTimers();
       }
