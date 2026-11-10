@@ -1,9 +1,9 @@
 ---
 issue: 2152
-section: Fixed
+section: Changed
 ---
 
-- Governing checks: a requirement that provides one part of a rule with several parts (it names
-  who ran an export, but not when or what was taken) is no longer reported **Compliant** on the
-  parts it leaves out. It is **Needs BA input**, or a **Gap** when the requirement lists what it
-  records and a part is missing. Governing checks stay marked **Preview**.
+- `eval:governing`: a change to the findings call was tuned and not shipped. It stopped one
+  provided part of a multi-part rule from earning **Compliant** on the rest on both tuning sets.
+  Read once on the held-out `governing-03`, it reported a safeguard that can be switched off as
+  **Compliant** in every run. Governing checks are unchanged and stay marked **Preview**.

@@ -597,29 +597,6 @@ describe("parsing and evidence", () => {
     expect(SAFEGUARD_REQUESTED_LINE).toMatch(/switched off.*needs-ba-input/);
   });
 
-  it("#2152 — one provided part of a multi-part safeguard does not earn compliant on the rest", () => {
-    const line = SAFEGUARD_REQUESTED_LINE;
-    // A part left untouched is excused only for what is already in place, never for what the
-    // requirement adds (GR-37: naming the exporter earned compliant on the time and the scope).
-    expect(line).toMatch(
-      /leaves untouched is not a reason to ask: when it changes one item of an entry or a check it says is already in place/,
-    );
-    expect(line).toContain("a safeguard the requirement adds must be provided whole");
-    expect(line).toContain(
-      "every item listed is part of what is added, and providing one is not providing the rest",
-    );
-    // Which status a missing item gets: listed contents that leave it out are a gap; silence asks.
-    expect(line).toMatch(/says what it will hold and a listed item is not among them, it is gap/);
-    expect(line).toMatch(/provides some and is silent on the others, it is needs-ba-input/);
-    // The whole-safeguard sentence follows the exemption it bounds.
-    expect(line.indexOf("provided whole")).toBeGreaterThan(line.indexOf("leaves untouched"));
-    // A part named only as what would happen ideally is open even when the rest is provided
-    // (governing-04 OS-21 → LG-05: table permissions provided, "ideally" no default access).
-    expect(line).toContain(
-      "a step it names only as a wish or as what would happen ideally), that part is not provided, even when the rest of the safeguard is: it is needs-ba-input.",
-    );
-  });
-
   it("#2017 — a quote of the question alone, or across two answers, is not evidence", () => {
     const answers = [
       { question: "Will every customer export be logged?", answer: "Yes, we do." },

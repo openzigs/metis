@@ -409,7 +409,32 @@ A `compliant` on either is a **hard error**, so a reading now measures the risk.
   name of the person earned compliant on the time and the scope. GR-38 → AL-06 came back
   `gap`, which is right. So the risk is real; changing the line is #2152.
 
-### #2152: a safeguard the requirement adds is provided whole
+### #2152: a safeguard the requirement adds is provided whole (tuned, not shipped)
+
+**Not shipped.** The wording below was read once on the held-out `governing-03`, together
+with #2149's judge change, at commit `320ac11b3`. There a pair whose safeguard the
+requirement leaves switchable off became `compliant` in 3 of 3 runs (`needs-ba-input` in 3 of
+3 at #2108), with the same applicability verdict, so by the findings call. The no-evidence
+bar, which had passed, failed. So the line was reverted in the same PR, and the shipped line
+is #2108's. GR-37 → AL-02 is still a hard error of the shipped prompts. The reading, and why
+the read is put down to this line, are in that set's `ANNOTATION.md`, "The #2149 and #2152
+attempt and re-read". The wording that was read:
+
+> When what the requirement asks for is the safeguard the rule requires (it removes the rules
+> the rule forbids, it adds the log entry or the check the rule asks for), it is compliant:
+> quote the words that ask for it. A part of the rule the requirement leaves untouched is not
+> a reason to ask: when it changes one item of an entry or a check it says is already in
+> place, the items it leaves alone stand as they are today. But a safeguard the requirement
+> adds must be provided whole: when the rule lists what it must hold (an entry naming who,
+> when and what; the old and the new value; a first password that is random and expires),
+> every item listed is part of what is added, and providing one is not providing the rest. If
+> the requirement says what it will hold and a listed item is not among them, it is gap; if
+> it provides some and is silent on the others, it is needs-ba-input. And when the
+> requirement leaves part of the safeguard itself open (a setting that can leave it switched
+> off, a step it names only as a wish or as what would happen ideally), that part is not
+> provided, even when the rest of the safeguard is: it is needs-ba-input.
+
+The tuning that led to it:
 
 The line excused "a part of the rule the requirement leaves untouched". #2152 narrowed that
 to what an entry or a check *already in place* holds, and added that a safeguard the
