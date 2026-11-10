@@ -1329,6 +1329,13 @@ jobs:
         working-directory: server
         run: pnpm test:integration cross-project-guard-1180-postgres
 
+      # Issue #2209 — the discussion requirement picker matches titles in SQL
+      # with a raw `LOWER() LIKE … ESCAPE` query; SQLite's LIKE ignores ASCII
+      # case by itself, so only Postgres shows the case folding holds.
+      - name: Prove the case-insensitive requirement picker search on real Postgres
+        working-directory: server
+        run: pnpm test:integration discussion-requirement-search-2209-postgres
+
       # Issue #1016 — two open reviews of one requirement: leaving one restores
       # the requirement only when no other open review covers it. Prove the
       # requirement-row lock makes two racing withdraws see each other.

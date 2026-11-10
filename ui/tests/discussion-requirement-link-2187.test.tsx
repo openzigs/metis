@@ -121,8 +121,8 @@ describe("DiscussionRequirementPicker (#2187)", () => {
     renderWith(<DiscussionRequirementPicker projectId="p-1" value={null} onChange={vi.fn()} />);
     expect(searchMock).not.toHaveBeenCalled();
     await user.click(screen.getByLabelText("About requirement (optional)"));
-    const list = await screen.findByRole("list", { name: "Matching requirements" });
-    expect(within(list).getAllByRole("button")).toHaveLength(2);
+    const list = await screen.findByRole("listbox", { name: "Matching requirements" });
+    expect(within(list).getAllByRole("option")).toHaveLength(2);
     expect(searchMock).toHaveBeenCalledWith("p-1", "");
 
     await user.type(screen.getByLabelText("About requirement (optional)"), "metrics");
@@ -134,7 +134,7 @@ describe("DiscussionRequirementPicker (#2187)", () => {
     const user = userEvent.setup();
     renderWith(<DiscussionRequirementPicker projectId="p-1" value={null} onChange={onChange} />);
     await user.click(screen.getByLabelText("About requirement (optional)"));
-    await user.click(await screen.findByRole("button", { name: /Metrics IP allowlist/ }));
+    await user.click(await screen.findByRole("option", { name: /Metrics IP allowlist/ }));
     expect(onChange).toHaveBeenCalledWith(METRICS);
   });
 
@@ -167,7 +167,7 @@ describe("starting a discussion about a requirement (#2187)", () => {
     renderWith(<DiscussionsListPage />);
     await user.type(screen.getByLabelText("New discussion"), "Read timestamps");
     await user.click(screen.getByLabelText("About requirement (optional)"));
-    await user.click(await screen.findByRole("button", { name: /Track reading time/ }));
+    await user.click(await screen.findByRole("option", { name: /Track reading time/ }));
     await user.click(screen.getByRole("button", { name: "Start discussion" }));
     await waitFor(() =>
       expect(createThreadMock).toHaveBeenCalledWith({
@@ -245,7 +245,7 @@ describe("ThreadSettingsPanel attaches a requirement by title (#2187)", () => {
     // No paste-an-id box for a requirement once the project is known.
     expect(screen.queryByPlaceholderText("Paste the id to anchor to")).not.toBeInTheDocument();
     await user.click(screen.getByLabelText("Requirement"));
-    await user.click(await screen.findByRole("button", { name: /Metrics IP allowlist/ }));
+    await user.click(await screen.findByRole("option", { name: /Metrics IP allowlist/ }));
     await waitFor(() =>
       expect(updateMock).toHaveBeenCalledWith("t-1", { anchor: { requirementId: "req-2" } }),
     );
@@ -269,7 +269,7 @@ describe("DiscussionRequirementPicker accessibility and results (#2203)", () => 
     expect(box).toHaveAttribute("aria-autocomplete", "list");
     expect(box).toHaveAttribute("aria-expanded", "false");
     await user.click(box);
-    const list = await screen.findByRole("list", { name: "Matching requirements" });
+    const list = await screen.findByRole("listbox", { name: "Matching requirements" });
     expect(box).toHaveAttribute("aria-expanded", "true");
     expect(box).toHaveAttribute("aria-controls", list.id);
   });
@@ -279,12 +279,12 @@ describe("DiscussionRequirementPicker accessibility and results (#2203)", () => 
     renderWith(<DiscussionRequirementPicker projectId="p-1" value={null} onChange={vi.fn()} />);
     const box = screen.getByRole("combobox", { name: "About requirement (optional)" });
     await user.click(box);
-    await screen.findByRole("list", { name: "Matching requirements" });
+    await screen.findByRole("listbox", { name: "Matching requirements" });
     searchMock.mockReturnValue(new Promise(() => undefined));
     await user.type(box, "metrics");
     await waitFor(() => expect(searchMock).toHaveBeenCalledWith("p-1", "metrics"));
     expect(screen.queryByText("Searching…")).not.toBeInTheDocument();
-    expect(screen.getByRole("list", { name: "Matching requirements" })).toBeInTheDocument();
+    expect(screen.getByRole("listbox", { name: "Matching requirements" })).toBeInTheDocument();
   });
 });
 

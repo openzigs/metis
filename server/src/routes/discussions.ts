@@ -41,6 +41,7 @@ import {
   MessageChangeError,
 } from "../lib/discussions/edit-message.js";
 import { promoteMessageToRequirement, PromoteError } from "../lib/discussions/promote.js";
+import { searchProjectRequirements } from "../lib/discussions/requirement-search.js";
 import { AI_RESPONSE_MODES, shouldAIRespond } from "../lib/discussions/ai-gate.js";
 import {
   streamAIReply,
@@ -79,13 +80,6 @@ const log = createChildLogger("discussions-routes");
 const MAX_BODY_LEN = 10_000;
 const DEFAULT_PAGE_SIZE = 50;
 const MAX_PAGE_SIZE = 100;
-/** #2187 — the requirement picker answers this many matches… */
-const REQUIREMENT_PICKER_LIMIT = 20;
-/**
- * …reading the project's requirements, newest first, this many at a time until
- * that many match or none are left (#2203: one page lost every older one).
- */
-const REQUIREMENT_PICKER_SCAN = 500;
 
 // ---- Schemas ----------------------------------------------------------------
 
@@ -288,15 +282,15 @@ export function discussionsRouter(): Router {
 
   // GET /api/discussions/requirements?projectId=…&q=… — #2187: the requirement
   // picker that attaches a thread to a requirement. Member-gated like the thread
-  // list; only the project's live requirements, matched on title. The match runs
-  // here rather than in SQL so it is case-insensitive on both database backends.
+  // list; only the project's live requirements, matched on title in SQL (#2209,
+  // `lib/discussions/requirement-search.ts`).
   r.get("/requirements", requireAuth, async (req: Request, res: Response) => {
     const actor = actorFromReq(req);
     const projectId = typeof req.query.projectId === "string" ? req.query.projectId : "";
     if (!projectId) {
       throw new AppError(400, "VALIDATION_ERROR", "projectId query param is required");
     }
-    const term = typeof req.query.q === "string" ? req.query.q.trim().toLowerCase() : "";
+    const term = typeof req.query.q === "string" ? req.query.q : "";
 
     const allowed = await canAccessProjectDiscussions(actor, projectId, {
       resource: "discussion_thread",
@@ -305,20 +299,7 @@ export function discussionsRouter(): Router {
     });
     if (!allowed) throw projectNotFound();
 
-    const matches: Array<{ id: string; title: string; analysisId: string; createdAt: Date }> = [];
-    for (let skip = 0; matches.length < REQUIREMENT_PICKER_LIMIT; skip += REQUIREMENT_PICKER_SCAN) {
-      const page = await prisma.requirement.findMany({
-        where: { projectId, deletedAt: null, analysis: { deletedAt: null } },
-        // The id tie-break keeps the pages stable when createdAt repeats.
-        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-        skip,
-        take: REQUIREMENT_PICKER_SCAN,
-        select: { id: true, title: true, analysisId: true, createdAt: true },
-      });
-      matches.push(...(term ? page.filter((r) => r.title.toLowerCase().includes(term)) : page));
-      if (page.length < REQUIREMENT_PICKER_SCAN) break;
-    }
-    res.json({ success: true, data: matches.slice(0, REQUIREMENT_PICKER_LIMIT) });
+    res.json({ success: true, data: await searchProjectRequirements(projectId, term) });
   });
 
   // POST /api/discussions/threads — create a project-scoped thread.

@@ -49,6 +49,7 @@ const analysisFindFirst = vi.fn();
 const requirementFindFirst = vi.fn();
 const requirementFindMany = vi.fn();
 const specKitFeatureFindFirst = vi.fn();
+const queryRaw = vi.fn();
 vi.mock("../lib/prisma.js", () => ({
   prisma: {
     discussionThread: {
@@ -69,6 +70,8 @@ vi.mock("../lib/prisma.js", () => ({
       findMany: (...a: unknown[]) => requirementFindMany(...a),
     },
     specKitFeature: { findFirst: (...a: unknown[]) => specKitFeatureFindFirst(...a) },
+    // #2209 — the picker's title match (lib/discussions/requirement-search.ts).
+    $queryRaw: (strings: TemplateStringsArray, ...values: unknown[]) => queryRaw(strings, values),
   },
 }));
 
@@ -555,74 +558,46 @@ describe("discussions routes", () => {
       );
     });
 
-    // #2203 — the scan used to stop at the newest 500 requirements, so a match
-    // older than that (a project past ~5 runs) could never be attached.
-    it("pages past the first scan to find an older match", async () => {
+    // #2209 — the title match runs in SQL; what it matches is pinned against
+    // real databases (tests/discussion-requirement-picker.sqlite.test.ts and the
+    // -postgres integration suite), and its query in requirement-search.test.ts.
+    it("matches a term in SQL, binding the project and the term as typed", async () => {
       canAccessProjectDiscussions.mockResolvedValue(true);
-      const filler = (from: number, n: number) =>
-        Array.from({ length: n }, (_, i) => ({
-          id: `f${from + i}`,
-          title: `Filler ${from + i}`,
-          analysisId: "a9",
-          createdAt: new Date(),
-        }));
-      requirementFindMany
-        .mockResolvedValueOnce(filler(0, 500))
-        .mockResolvedValueOnce([
-          ...filler(500, 10),
-          { id: "old", title: "Old feed refresh", analysisId: "a1", createdAt: new Date() },
-        ]);
-      const res = await request(app).get("/discussions/requirements?projectId=p1&q=feed%20refresh");
-      expect(res.body.data.map((r: { id: string }) => r.id)).toEqual(["old"]);
-      expect(requirementFindMany).toHaveBeenCalledTimes(2);
-      expect(requirementFindMany).toHaveBeenNthCalledWith(
-        2,
-        expect.objectContaining({ skip: 500, take: 500 }),
+      queryRaw.mockResolvedValue([{ id: "r3" }, { id: "r1" }]);
+      requirementFindMany.mockResolvedValue([rows[0], rows[2]]);
+      const res = await request(app).get("/discussions/requirements?projectId=p1&q=Mark%20ALL");
+      expect(res.status).toBe(200);
+      expect(res.body.data.map((r: { id: string }) => r.id)).toEqual(["r3", "r1"]);
+      const [, values] = queryRaw.mock.calls[0] as [TemplateStringsArray, unknown[]];
+      expect(values).toEqual(["p1", "%Mark ALL%", 20]);
+      expect(requirementFindMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { projectId: "p1", id: { in: ["r3", "r1"] } } }),
       );
     });
 
-    it("stops paging once 20 matches are found", async () => {
+    it("answers no requirement when nothing matches", async () => {
       canAccessProjectDiscussions.mockResolvedValue(true);
-      requirementFindMany.mockReset();
-      requirementFindMany.mockResolvedValue(
-        Array.from({ length: 500 }, (_, i) => ({
-          id: `r${i}`,
-          title: `Requirement ${i}`,
-          analysisId: "a1",
-          createdAt: new Date(),
-        })),
-      );
-      const res = await request(app).get("/discussions/requirements?projectId=p1&q=requirement");
-      expect(res.body.data).toHaveLength(20);
-      expect(requirementFindMany).toHaveBeenCalledTimes(1);
+      queryRaw.mockResolvedValue([]);
+      const res = await request(app).get("/discussions/requirements?projectId=p1&q=zz");
+      expect(res.status).toBe(200);
+      expect(res.body.data).toEqual([]);
+      expect(requirementFindMany).not.toHaveBeenCalled();
     });
 
-    it("matches the term case-insensitively on the title", async () => {
+    it("answers at most 20 requirements for a blank term, with no SQL match", async () => {
       canAccessProjectDiscussions.mockResolvedValue(true);
       requirementFindMany.mockResolvedValue(rows);
-      const res = await request(app).get("/discussions/requirements?projectId=p1&q=mark%20all");
-      expect(res.body.data.map((r: { id: string }) => r.id)).toEqual(["r3", "r1"]);
-    });
-
-    it("answers at most 20 matches", async () => {
-      canAccessProjectDiscussions.mockResolvedValue(true);
-      requirementFindMany.mockResolvedValue(
-        Array.from({ length: 30 }, (_, i) => ({
-          id: `r${i}`,
-          title: `Requirement ${i}`,
-          analysisId: "a1",
-          createdAt: new Date(),
-        })),
-      );
-      const res = await request(app).get("/discussions/requirements?projectId=p1");
-      expect(res.body.data).toHaveLength(20);
+      await request(app).get("/discussions/requirements?projectId=p1&q=%20%20");
+      expect(requirementFindMany).toHaveBeenCalledWith(expect.objectContaining({ take: 20 }));
+      expect(queryRaw).not.toHaveBeenCalled();
     });
 
     it("404s a non-member before reading any requirement", async () => {
       canAccessProjectDiscussions.mockResolvedValue(false);
-      const res = await request(app).get("/discussions/requirements?projectId=p1");
+      const res = await request(app).get("/discussions/requirements?projectId=p1&q=mark");
       expect(res.status).toBe(404);
       expect(requirementFindMany).not.toHaveBeenCalled();
+      expect(queryRaw).not.toHaveBeenCalled();
     });
 
     it("400s without a projectId", async () => {

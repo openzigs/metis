@@ -797,7 +797,7 @@ describe("DiscussionThreadView", () => {
     await user.click(await screen.findByTestId("thread-settings-toggle"));
     expect(screen.queryByPlaceholderText("Paste the id to anchor to")).not.toBeInTheDocument();
     await user.click(screen.getByRole("combobox", { name: "Requirement" }));
-    await user.click(await screen.findByRole("button", { name: /Mark all as read/ }));
+    await user.click(await screen.findByRole("option", { name: /Mark all as read/ }));
     await waitFor(() =>
       expect(updateThreadSettings).toHaveBeenCalledWith("t1", {
         anchor: { requirementId: "req-9" },

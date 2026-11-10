@@ -1756,6 +1756,8 @@ model Requirement {
 
   @@unique([projectId, externalSource, externalId], name: "requirement_external_dedup")
   @@index([projectId])
+  /// #2209 — the discussion requirement picker reads a project's live requirements newest first.
+  @@index([projectId, createdAt, id])
   @@index([analysisId])
   @@index([parentId])
   @@index([implementedByPr])
