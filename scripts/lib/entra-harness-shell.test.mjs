@@ -3,10 +3,11 @@
  * run for real against a scratch state directory (ENTRA_STATE_DIR), so a
  * developer's own running mock is never touched.
  *
- * Both scripts trust the pid file only when that pid's command line is still
- * scripts/entra-idp.mjs: a recycled pid neither blocks a start nor gets
- * signalled. entra-down reports a mock that outlives SIGTERM instead of
- * claiming it stopped.
+ * Both scripts trust the pid file only when that pid is still a node process
+ * running entra-idp.mjs: a recycled pid neither blocks a start nor gets
+ * signalled, even when its command line merely mentions entra-idp.mjs (#2204).
+ * entra-down reports a mock that outlives SIGTERM instead of claiming it
+ * stopped.
  */
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -42,15 +43,28 @@ function alive(pid) {
 }
 
 /**
- * A long-lived node process. `marker` lands in its command line, so with
- * "entra-idp.mjs" it passes for the mock; `ignoreTerm` makes it outlive SIGTERM.
- * @param {{ marker: string, ignoreTerm?: boolean }} opts
+ * A long-lived process; `ignoreTerm` makes it outlive SIGTERM.
+ *
+ * - `script`: node runs a file of that name, so "entra-idp.mjs" passes for the mock;
+ * - `marker`: `node -e <code> <marker>`, which only mentions the name;
+ * - `shellMarker`: a bash process with `marker` on its command line.
+ * @param {{ script?: string, marker?: string, shellMarker?: string, ignoreTerm?: boolean }} opts
  */
-async function longLived({ marker, ignoreTerm = false }) {
+async function longLived({ script, marker, shellMarker, ignoreTerm = false }) {
   const code = `${ignoreTerm ? "process.on('SIGTERM', () => {});" : ""} setInterval(() => {}, 1000); console.log('up');`;
-  const child = spawn(process.execPath, ["-e", code, marker], {
-    stdio: ["ignore", "pipe", "ignore"],
-  });
+  /** @type {[string, string[]]} */
+  let command;
+  if (script) {
+    const file = join(stateDir(), script);
+    writeFileSync(file, code);
+    command = [process.execPath, [file]];
+  } else if (shellMarker) {
+    // A loop, so bash does not exec its last command and drop the marker.
+    command = ["bash", ["-c", "echo up; while :; do sleep 1; done", shellMarker]];
+  } else {
+    command = [process.execPath, ["-e", code, /** @type {string} */ (marker)]];
+  }
+  const child = spawn(command[0], command[1], { stdio: ["ignore", "pipe", "ignore"] });
   cleanups.push(() => {
     if (child.pid && alive(child.pid)) process.kill(child.pid, "SIGKILL");
   });
@@ -71,7 +85,7 @@ function run(script, dir, args = []) {
 describe("make entra-down (#1562)", () => {
   it("reports a mock that is still running after SIGTERM, and keeps its pid file", async () => {
     const dir = stateDir();
-    const pid = await longLived({ marker: "entra-idp.mjs", ignoreTerm: true });
+    const pid = await longLived({ script: "entra-idp.mjs", ignoreTerm: true });
     writeFileSync(join(dir, "idp.pid"), `${pid}\n`);
 
     const down = run(DOWN, dir);
@@ -82,9 +96,14 @@ describe("make entra-down (#1562)", () => {
     expect(alive(pid)).toBe(true);
   }, 20_000);
 
-  it("never signals a recycled pid: another process is left running", async () => {
+  it.each([
+    ["another program", { marker: "some-other-program.mjs" }],
+    // #2204 — the command line only mentions the mock's file name.
+    ["node -e naming entra-idp.mjs as an argument", { marker: "entra-idp.mjs" }],
+    ["a shell naming entra-idp.mjs", { shellMarker: "entra-idp.mjs" }],
+  ])("never signals a recycled pid (%s): it is left running", async (_label, opts) => {
     const dir = stateDir();
-    const pid = await longLived({ marker: "some-other-program.mjs" });
+    const pid = await longLived(opts);
     writeFileSync(join(dir, "idp.pid"), `${pid}\n`);
 
     const down = run(DOWN, dir);
@@ -98,7 +117,7 @@ describe("make entra-down (#1562)", () => {
 describe("make entra-up (#1562)", () => {
   it("starts over a recycled pid, refuses a second copy, and entra-down stops it", async () => {
     const dir = stateDir();
-    const other = await longLived({ marker: "some-other-program.mjs" });
+    const other = await longLived({ marker: "entra-idp.mjs" });
     writeFileSync(join(dir, "idp.pid"), `${other}\n`);
 
     const up = run(UP, dir, ["--no-seed", "--port=0"]);

@@ -332,6 +332,11 @@ export function buildEntraResponse(input, identity) {
   const subjectEnd =
     profile.expired === "subjectConfirmation" ? now - 10 * 60_000 : issued + 5 * 60_000;
   const conditionsEnd = profile.expired === "conditions" ? now - 10 * 60_000 : issued + 70 * 60_000;
+  // Entra starts the Conditions window about 5 minutes before IssueInstant
+  // (#1558), a 75-minute window. #2205 — a closed one keeps that length, so it
+  // never ends before it starts.
+  const conditionsStart =
+    profile.expired === "conditions" ? conditionsEnd - 75 * 60_000 : issued - 5 * 60_000;
   /** @param {number} ms */
   const iso = (ms) => new Date(ms).toISOString();
   const responseId = `_${randomUUID()}`;
@@ -375,8 +380,7 @@ export function buildEntraResponse(input, identity) {
     `<SubjectConfirmation Method="urn:oasis:names:tc:SAML:2.0:cm:bearer">` +
     `<SubjectConfirmationData InResponseTo="${escapeXml(input.inResponseTo)}" NotOnOrAfter="${iso(subjectEnd)}" Recipient="${escapeXml(input.acsUrl)}"/>` +
     `</SubjectConfirmation></Subject>` +
-    // Entra starts the Conditions window about 5 minutes before IssueInstant (#1558).
-    `<Conditions NotBefore="${iso(issued - 5 * 60_000)}" NotOnOrAfter="${iso(conditionsEnd)}">` +
+    `<Conditions NotBefore="${iso(conditionsStart)}" NotOnOrAfter="${iso(conditionsEnd)}">` +
     `<AudienceRestriction><Audience>${escapeXml(audience)}</Audience></AudienceRestriction></Conditions>` +
     `<AttributeStatement>${attrs.join("")}</AttributeStatement>` +
     `<AuthnStatement AuthnInstant="${iso(issued - 1_000)}" SessionIndex="${assertionId}"><AuthnContext>` +

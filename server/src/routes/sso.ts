@@ -38,6 +38,7 @@ import {
 import { SAML_GROUP_OVERAGE_ACTION } from "../lib/auth/saml-group-overage.js";
 import {
   SAML_ISSUER_REFUSED_ACTION,
+  SAML_ISSUER_REFUSAL_TARGET_TYPE,
   issuerRefusalAuditMetadata,
 } from "../lib/auth/saml-issuer-refusal.js";
 import { generateAuthorizationUrl, exchangeCodeForTokens } from "../lib/auth/oidc-provider.js";
@@ -255,7 +256,11 @@ export function ssoRouter(): Router {
         audit({
           actor: null,
           action: SAML_ISSUER_REFUSED_ACTION,
-          target: { type: "sso-provider", id: provider.id },
+          // Keyed on the issuer, not the per-boot provider id (#2204).
+          target: {
+            type: SAML_ISSUER_REFUSAL_TARGET_TYPE,
+            id: result.issuerRefusal.configuredIssuer,
+          },
           metadata: issuerRefusalAuditMetadata(result.issuerRefusal),
         });
       }
@@ -306,9 +311,13 @@ export function ssoRouter(): Router {
     });
     if (result.user.groupOverage) {
       // #1552 — the IdP listed no groups (Entra's overage claim), so no group
-      // mapping matched: the user got an app-role mapping's role or the default
-      // role (#1558), recorded below. The admin Authentication page warns from
-      // these events (`samlGroupOverageSummary`).
+      // mapping matched. The role the user signed in with is recorded below
+      // (#1558): an explicit local grant (the first-admin bootstrap is one) or a
+      // SCIM grant wins; else an app-role mapping's role, else the default role
+      // (`resolveEffectiveRoleFromRows`, #2205). `reconcileTrustedLoginRole`
+      // also yields Reader for a revoked authority or an initialised user with
+      // no role rows. The admin Authentication page
+      // warns from these events (`samlGroupOverageSummary`).
       audit({
         actor: { id: userRow.id },
         action: SAML_GROUP_OVERAGE_ACTION,

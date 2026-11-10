@@ -449,10 +449,12 @@ function claimValues(value: unknown): string[] {
 
 /**
  * `<x>text</x>` as xml2js parses it with `explicitCharkey` (node-saml's
- * setting), or as a bare string; trimmed either way (#1558).
+ * setting, `@node-saml/node-saml/lib/xml.js`): always `{ _: text }`, never a
+ * bare string, so there is no string branch to keep (#2205). Trimmed, since an
+ * IdP that pretty-prints its XML wraps the text in whitespace (#1558).
  */
 function textOf(node: unknown): string | undefined {
-  const text = typeof node === "string" ? node : (node as { _?: unknown } | null)?._;
+  const text = (node as { _?: unknown } | null)?._;
   return typeof text === "string" ? text.trim() : undefined;
 }
 

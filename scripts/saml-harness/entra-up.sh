@@ -25,8 +25,15 @@ LOG_FILE="${STATE_DIR}/idp.log"
 READY_LINE="Mock Entra ID is up."
 
 die() { printf '  FAIL %s\n' "$*" >&2; exit 1; }
-# Is pid $1 still the mock? A pid alone may have been recycled (#1562).
-is_mock() { [[ "$1" =~ ^[0-9]+$ ]] && ps -p "$1" -o command= 2>/dev/null | grep -qF "entra-idp.mjs"; }
+# Is pid $1 still the mock? A pid alone may have been recycled (#1562). The mock
+# is a node process whose script is entra-idp.mjs, not any command line that
+# merely mentions it (an editor, a grep, `node -e … entra-idp.mjs`) (#2204).
+MOCK_COMMAND_RE='^([^[:space:]]*/)?node[[:space:]]+(/.*/)?entra-idp\.mjs([[:space:]]|$)'
+is_mock() {
+  local command
+  [[ "$1" =~ ^[0-9]+$ ]] && command="$(ps -p "$1" -o command= 2>/dev/null)" &&
+    [[ "${command}" =~ ${MOCK_COMMAND_RE} ]]
+}
 
 for bin in node openssl; do
   command -v "${bin}" >/dev/null 2>&1 || die "required tool '${bin}' not found on PATH"
