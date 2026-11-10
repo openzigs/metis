@@ -393,7 +393,7 @@ describe("Teams link + identity routes (#549)", () => {
         projectId: null,
       });
       expect(data.message).toBe(
-        'Name u-admin linked Microsoft Teams account aad-9 to you in the workspace "Acme". ' +
+        'Name u-admin linked Microsoft Teams account "aad-9" to you in the workspace "Acme". ' +
           "Chat commands from that account now run with your permissions in this workspace.",
       );
     });
@@ -462,6 +462,102 @@ describe("Teams link + identity routes (#549)", () => {
       expect(res.status).toBe(201);
       expect(notified()).toEqual(["u-alice"]);
       expect(auditMock).toHaveBeenCalledTimes(1);
+    });
+
+    // #2107 — the email (SSO match) branch is audited and announced too, not
+    // only the explicit userId branch.
+    it("a binding by email is audited and announced like one by userId", async () => {
+      currentUser = { userId: "u-admin", role: "developer" };
+      const resolver = stubResolver();
+      const res = await request(createApp(stubLinkStore(), resolver))
+        .post("/api/integrations/teams/workspaces/ws-1/identities")
+        .send({ tenantId: "tenant-a", aadObjectId: "aad-9", email: "alice@corp.com" });
+      expect(res.status).toBe(201);
+      expect(resolver.linkByEmail).toHaveBeenCalled();
+      expect(resolver.linkExplicit).not.toHaveBeenCalled();
+      expect(auditMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "chatops.identity.bind",
+          target: { type: "user", id: "u-alice" },
+        }),
+      );
+      expect(notified().sort()).toEqual(["u-alice", "u-owner"]);
+    });
+
+    describe("a rebind that replaces another member's binding (#2107)", () => {
+      /** A resolver whose link moved the account from `replaced` to the named user. */
+      function rebindFrom(replaced: string): TeamsAadIdentityResolver {
+        return stubResolver({
+          linkExplicit: vi.fn(async (p: { userId: string }): Promise<LinkOutcome> => ({
+            ok: true,
+            userId: p.userId,
+            replacedUserId: replaced,
+          })),
+        });
+      }
+      const rebind = (replaced: string, userId: string) =>
+        request(createApp(stubLinkStore(), rebindFrom(replaced)))
+          .post("/api/integrations/teams/workspaces/ws-1/identities")
+          .send({ tenantId: "tenant-a", aadObjectId: "aad-9", userId });
+      const to = (userId: string) =>
+        notificationCreate.mock.calls.find((c) => c[0].data.userId === userId)?.[0].data;
+
+      it("records the replaced member in the audit entry", async () => {
+        currentUser = { userId: "u-admin", role: "developer" };
+        const res = await rebind("u-bob", "u-alice");
+        expect(res.status).toBe(201);
+        expect(auditMock).toHaveBeenCalledWith(
+          expect.objectContaining({
+            metadata: {
+              workspaceId: "ws-1",
+              provider: "teams",
+              boundUserId: "u-alice",
+              externalScope: "tenant-a",
+              externalId: "aad-9",
+              replacedUserId: "u-bob",
+            },
+          }),
+        );
+      });
+
+      it("tells the replaced member their chat account no longer acts as them", async () => {
+        currentUser = { userId: "u-admin", role: "developer" };
+        await rebind("u-bob", "u-alice");
+        expect(notified().sort()).toEqual(["u-alice", "u-bob", "u-owner"]);
+        expect(to("u-bob")).toMatchObject({
+          type: "chat_identity_bound",
+          title: "A Microsoft Teams account no longer acts as you",
+          message:
+            'Name u-admin linked Microsoft Teams account "aad-9", which acted as you, to ' +
+            'Name u-alice in the workspace "Acme". Chat commands from that account now run ' +
+            "with Name u-alice's permissions, not yours.",
+        });
+        expect(JSON.parse(to("u-bob")?.payload as string)).toMatchObject({
+          replacedUserId: "u-bob",
+        });
+        // The owner and the new member learn whom the account acted as before.
+        expect(to("u-owner")?.message).toMatch(/ It previously acted as Name u-bob\.$/);
+        expect(to("u-alice")?.title).toBe("A Microsoft Teams account can now act as you");
+        expect(to("u-alice")?.message).toMatch(/ It previously acted as Name u-bob\.$/);
+      });
+
+      it("a replaced owner is told once, with the replacement notice", async () => {
+        currentUser = { userId: "u-admin", role: "developer" };
+        await rebind("u-owner", "u-alice");
+        expect(notified().sort()).toEqual(["u-alice", "u-owner"]);
+        expect(to("u-owner")?.title).toBe("A Microsoft Teams account no longer acts as you");
+      });
+
+      it("a member who moves their own binding to someone else is not told", async () => {
+        currentUser = { userId: "u-admin", role: "developer" };
+        await rebind("u-admin", "u-alice");
+        expect(notified().sort()).toEqual(["u-alice", "u-owner"]);
+        expect(auditMock).toHaveBeenCalledWith(
+          expect.objectContaining({
+            metadata: expect.objectContaining({ replacedUserId: "u-admin" }),
+          }),
+        );
+      });
     });
 
     it("a failed recipient lookup never fails the bind; the audit row is still queued", async () => {

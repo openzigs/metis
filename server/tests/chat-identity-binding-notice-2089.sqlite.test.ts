@@ -123,7 +123,7 @@ describe.skipIf(!isSqlite)(
         redacted: false,
       });
       expect(rows[0].message).toContain(
-        'Adam Admin linked Microsoft Teams account aad-owner to you in the workspace "Acme"',
+        'Adam Admin linked Microsoft Teams account "aad-owner" to you in the workspace "Acme"',
       );
       expect(list.body.data.unreadCount).toBe(1);
 
@@ -148,6 +148,48 @@ describe.skipIf(!isSqlite)(
           boundUserId: "u-owner",
           externalScope: "tenant-a",
           externalId: "aad-owner",
+        });
+      });
+    });
+
+    it("#2107 — a rebind tells the member it replaced, and the audit log names them", async () => {
+      await db.user.create({
+        data: {
+          id: "u-alice",
+          username: "u-alice",
+          displayName: "Alice",
+          email: "u-alice@example.test",
+        },
+      });
+      await db.workspaceMember.create({
+        data: { workspaceId: WS, userId: "u-alice", role: "member" },
+      });
+      const link = (userId: string) =>
+        request(app())
+          .post(`/api/integrations/teams/workspaces/${WS}/identities`)
+          .set("Authorization", `Bearer ${token("u-admin")}`)
+          .send({ tenantId: "tenant-a", aadObjectId: "aad-shared", userId });
+      expect((await link("u-alice")).status).toBe(201);
+      expect((await link("u-admin")).status).toBe(201);
+
+      const list = await request(app())
+        .get("/api/notifications")
+        .set("Authorization", `Bearer ${token("u-alice")}`);
+      const titles = (list.body.data.notifications as Row[]).map((r) => r.title).sort();
+      expect(titles).toEqual([
+        "A Microsoft Teams account can now act as you",
+        "A Microsoft Teams account no longer acts as you",
+      ]);
+
+      await vi.waitFor(async () => {
+        const rows = await db.auditLog.findMany({
+          where: { action: "chatops.identity.bind", targetId: "u-admin" },
+        });
+        expect(rows).toHaveLength(1);
+        expect(JSON.parse(rows[0].metadata ?? "{}")).toMatchObject({
+          externalId: "aad-shared",
+          boundUserId: "u-admin",
+          replacedUserId: "u-alice",
         });
       });
     });

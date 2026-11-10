@@ -460,6 +460,8 @@ export function teamsIntegrationRouter(
         boundUserId: outcome.userId,
         externalScope: body.tenantId,
         externalId: body.aadObjectId,
+        // #2107 — a rebind took the account away from this member.
+        replacedUserId: outcome.replacedUserId ?? null,
       });
       res
         .status(201)

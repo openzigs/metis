@@ -13,6 +13,16 @@
  *     are not the actor. Recipients are deduplicated, so an owner binding their
  *     own chat account is told once.
  *
+ * A REBIND (#2107) moves an existing binding from one member to another, which
+ * silently took the chat account away from the first. The audit entry records
+ * that member as `replacedUserId`, and they are told too (unless they made the
+ * rebind themselves): their chat commands no longer run as them.
+ *
+ * The notice text names the external id and the workspace name, which the
+ * admin it exposes can choose (any 1-200 characters for the id). Both are
+ * quoted with their quotes and control characters escaped, and the id is cut
+ * to a GUID's length, so that input cannot pass for the notice's own wording.
+ *
  * The notice is a security receipt, so it is NOT gated on notification
  * preferences: an owner who has muted in-app notifications must still learn
  * that someone can now act as them. Its type is project-less
@@ -57,6 +67,29 @@ export interface ChatIdentityBinding {
   externalScope: string;
   /** The chat account's id (Teams AAD object id, Slack user id). */
   externalId: string;
+  /**
+   * #2107 — the member a rebind took this chat account away from (from the
+   * resolver's result); absent or null for a new binding.
+   */
+  replacedUserId?: string | null;
+}
+
+/**
+ * Longest external id shown in full: a Teams AAD object id is a 36-character
+ * GUID and a Slack user id is shorter. The audit entry keeps the full value.
+ */
+const MAX_EXTERNAL_ID_SHOWN = 40;
+/** Longest workspace name shown in full (`routes/workspaces.ts` allows 100). */
+const MAX_WORKSPACE_NAME_SHOWN = 100;
+
+/**
+ * `value` as a double-quoted string with its own quotes and control characters
+ * escaped (JSON rules), cut at `max` characters with an ellipsis, so text a
+ * user chose cannot close the quote and read as the notice's own sentence.
+ */
+function quoted(value: string, max: number): string {
+  const chars = [...value];
+  return JSON.stringify(chars.length > max ? `${chars.slice(0, max).join("")}…` : value);
 }
 
 /** A user's name as shown in a notice, falling back to a neutral label. */
@@ -69,6 +102,7 @@ function nameOf(u: { displayName: string; username: string } | null | undefined)
  * have failed and been logged); never throws.
  */
 export async function recordChatIdentityBinding(b: ChatIdentityBinding): Promise<void> {
+  const replacedId = b.replacedUserId || null;
   audit({
     actor: b.actorId,
     action: CHAT_IDENTITY_BIND_ACTION,
@@ -79,6 +113,7 @@ export async function recordChatIdentityBinding(b: ChatIdentityBinding): Promise
       boundUserId: b.boundUserId,
       externalScope: b.externalScope,
       externalId: b.externalId,
+      ...(replacedId ? { replacedUserId: replacedId } : {}),
     },
   });
 
@@ -92,7 +127,15 @@ export async function recordChatIdentityBinding(b: ChatIdentityBinding): Promise
       }),
       prisma.workspace.findUnique({ where: { id: b.workspaceId }, select: { name: true } }),
       prisma.user.findMany({
-        where: { id: { in: [b.boundUserId, ...(b.actorId ? [b.actorId] : [])] } },
+        where: {
+          id: {
+            in: [
+              b.boundUserId,
+              ...(b.actorId ? [b.actorId] : []),
+              ...(replacedId ? [replacedId] : []),
+            ],
+          },
+        },
         select: { id: true, displayName: true, username: true },
       }),
     ]);
@@ -100,6 +143,7 @@ export async function recordChatIdentityBinding(b: ChatIdentityBinding): Promise
     const recipients = new Set<string>();
     for (const o of owners) if (o.userId) recipients.add(o.userId);
     if (b.boundUserId !== b.actorId) recipients.add(b.boundUserId);
+    if (replacedId && replacedId !== b.actorId) recipients.add(replacedId);
     if (owners.length === 0) {
       log.error("Chat identity bound in a workspace with no owner row — owner not notified", {
         workspaceId: b.workspaceId,
@@ -109,8 +153,12 @@ export async function recordChatIdentityBinding(b: ChatIdentityBinding): Promise
     const byId = new Map(people.map((p) => [p.id, p]));
     const actor = b.actorId ? nameOf(byId.get(b.actorId)) : "A workspace admin";
     const bound = nameOf(byId.get(b.boundUserId));
+    const replaced = replacedId ? nameOf(byId.get(replacedId)) : null;
     const provider = PROVIDER_LABEL[b.provider];
-    const where = workspace?.name ? `the workspace "${workspace.name}"` : "a workspace";
+    const account = `${provider} account ${quoted(b.externalId, MAX_EXTERNAL_ID_SHOWN)}`;
+    const where = workspace?.name
+      ? `the workspace ${quoted(workspace.name, MAX_WORKSPACE_NAME_SHOWN)}`
+      : "a workspace";
     const payload = JSON.stringify({
       kind: CHAT_IDENTITY_BOUND_TYPE,
       workspaceId: b.workspaceId,
@@ -118,22 +166,36 @@ export async function recordChatIdentityBinding(b: ChatIdentityBinding): Promise
       boundUserId: b.boundUserId,
       actorId: b.actorId,
       externalId: b.externalId,
+      ...(replacedId ? { replacedUserId: replacedId } : {}),
     });
 
     await Promise.all(
       [...recipients].map(async (userId) => {
         const toBound = userId === b.boundUserId;
-        const title = toBound
-          ? `A ${provider} account can now act as you`
-          : `A ${provider} account can now act as ${bound}`;
-        const message =
-          `${actor} linked ${provider} account ${b.externalId} to ` +
-          `${toBound ? "you" : bound} in ${where}. Chat commands from that account ` +
-          `now run with ${toBound ? "your" : "their"} permissions in this workspace.`;
+        let title: string;
+        let message: string;
+        if (userId === replacedId) {
+          title = `A ${provider} account no longer acts as you`;
+          message =
+            `${actor} linked ${account}, which acted as you, to ${bound} in ${where}. ` +
+            `Chat commands from that account now run with ${bound}'s permissions, not yours.`;
+        } else {
+          title = toBound
+            ? `A ${provider} account can now act as you`
+            : `A ${provider} account can now act as ${bound}`;
+          message =
+            `${actor} linked ${account} to ${toBound ? "you" : bound} in ${where}. ` +
+            `Chat commands from that account now run with ${toBound ? "your" : "their"} ` +
+            `permissions in this workspace.` +
+            (replaced ? ` It previously acted as ${replaced}.` : "");
+        }
         try {
           await prisma.notification.create({
             data: {
               userId,
+              // CHAT_IDENTITY_BOUND_TYPE, written as a literal on purpose: the
+              // #1447 writer scan (tests/notification-writers-1447.test.ts)
+              // reads `type` from the AST and rejects an unlisted identifier.
               type: "chat_identity_bound",
               title,
               message,
