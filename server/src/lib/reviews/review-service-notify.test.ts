@@ -22,7 +22,7 @@ const mockPrisma = {
     updateMany: vi.fn(async () => ({ count: 0 })),
   },
   reviewerAssignment: { updateMany: vi.fn(), findMany: vi.fn() },
-  baseline: { create: vi.fn() },
+  baseline: { create: vi.fn(), count: vi.fn(async () => 0), updateMany: vi.fn() },
   auditLog: { create: vi.fn() },
   $transaction: vi.fn(),
 };
@@ -121,6 +121,7 @@ describe("submitReview → dispatchReviewSubmitted", () => {
       title: "Sprint 4 sign-off",
       actorId: "user-req",
       reviewerIds: ["rev-a", "rev-b"],
+      reopened: false,
     });
     expect(dispatchedInTx).toEqual([false]); // post-commit, not inside the tx
   });

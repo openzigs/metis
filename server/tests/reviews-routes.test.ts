@@ -44,7 +44,9 @@ const mockPrisma = {
     updateMany: vi.fn(async () => ({ count: 0 })),
   },
   reviewerAssignment: { updateMany: vi.fn(), findMany: vi.fn() },
-  baseline: { create: vi.fn() },
+  // #2219 — a re-approval numbers its baseline (`count`); a re-review detaches
+  // the earlier one (`updateMany`).
+  baseline: { create: vi.fn(), count: vi.fn(async () => 0), updateMany: vi.fn() },
   auditLog: { findMany: vi.fn(), create: vi.fn() },
   $transaction: vi.fn(),
 };
@@ -60,6 +62,7 @@ vi.mock("../src/lib/prisma.js", () => ({
 vi.mock("../src/lib/reviews/notify.js", () => ({
   dispatchReviewSubmitted: vi.fn(),
   dispatchReviewDecision: vi.fn(),
+  dispatchReviewedRequirementEdited: vi.fn(),
 }));
 
 // Keep the REAL `buildAuditLogData` (the service persists sign-off evidence
@@ -962,6 +965,75 @@ describe("POST /reviews/:reviewId/withdraw", () => {
 
     expect(res.status).toBe(409);
     expect(res.body.error.code).toBe("ILLEGAL_REVIEW_TRANSITION");
+  });
+});
+
+describe("POST /reviews/:reviewId/reopen — #2219 Request re-review", () => {
+  it("lets the requester re-review an approved review on the current versions", async () => {
+    mockPrisma.reviewRequest.findUnique.mockResolvedValue(
+      makeReview({ status: "approved", items: [makeItem({ pinnedVersion: 1 })] }),
+    );
+    mockPrisma.requirement.findMany.mockResolvedValue([
+      { id: "req-1", version: 2, reviewStatus: "draft", labels: "[]" },
+    ]);
+
+    const res = await request(app).post("/reviews/rev-1/reopen").send({});
+
+    expect(res.status).toBe(200);
+    // Guarded on the approved status it validated the transition from.
+    expect(mockPrisma.reviewRequest.updateMany).toHaveBeenCalledWith({
+      where: { id: "rev-1", status: "approved" },
+      data: { status: "in_review", decidedAt: null },
+    });
+    // The earlier round's baseline is kept but no longer the review's.
+    expect(mockPrisma.baseline.updateMany).toHaveBeenCalledWith({
+      where: { reviewRequestId: "rev-1" },
+      data: { reviewRequestId: null },
+    });
+    // Re-pinned at the edited version, and every decision starts again.
+    expect(mockPrisma.reviewRequestItem.update).toHaveBeenCalledWith({
+      where: { id: "item-1" },
+      data: { pinnedVersion: 2, priorReviewStatus: "draft" },
+    });
+    expect(mockPrisma.reviewerAssignment.updateMany).toHaveBeenCalledWith({
+      where: { reviewRequestId: "rev-1" },
+      data: { decision: "pending", note: null, decidedAt: null },
+    });
+    expect(auditRows()).toContainEqual(
+      expect.objectContaining({ action: "review.reopen", inTx: true }),
+    );
+  });
+
+  it("409s a review that is not approved", async () => {
+    mockPrisma.reviewRequest.findUnique.mockResolvedValue(makeReview({ status: "in_review" }));
+
+    const res = await request(app).post("/reviews/rev-1/reopen").send({});
+
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe("ILLEGAL_REVIEW_TRANSITION");
+    expect(mockPrisma.baseline.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("403s a non-requester without review.admin", async () => {
+    testUser.userId = "user-other";
+    testUser.role = "developer";
+    mockPrisma.reviewRequest.findUnique.mockResolvedValue(makeReview({ status: "approved" }));
+
+    const res = await request(app).post("/reviews/rev-1/reopen").send({});
+
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe("NOT_REQUESTER");
+    expect(mockPrisma.reviewRequest.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("403s a role without review.create", async () => {
+    testUser.role = "reader";
+    mockPrisma.reviewRequest.findUnique.mockResolvedValue(makeReview({ status: "approved" }));
+
+    const res = await request(app).post("/reviews/rev-1/reopen").send({});
+
+    expect(res.status).toBe(403);
+    expect(mockPrisma.reviewRequest.updateMany).not.toHaveBeenCalled();
   });
 });
 

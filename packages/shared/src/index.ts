@@ -33,6 +33,7 @@ export * from "./schema-impact.js";
 export * from "./impact-table-grouping.js";
 export * from "./cross-project.js";
 export * from "./requirement-links.js";
+export * from "./requirement-approval.js";
 export * from "./similar-requirements.js";
 export * from "./finops.js";
 export * from "./rag-hardening.js";

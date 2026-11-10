@@ -85,4 +85,14 @@ describe("reviewsApi", () => {
     await reviewsApi.withdraw("rev_1");
     expect(apiFetchMock).toHaveBeenCalledWith("/reviews/rev_1/withdraw", { method: "POST" });
   });
+
+  it("requests a re-review of an approved review (#2219)", async () => {
+    await reviewsApi.reopen("rev_1");
+    expect(apiFetchMock).toHaveBeenCalledWith("/reviews/rev_1/reopen", { method: "POST" });
+  });
+
+  it("reads a requirement's approval state, encoding its id (#2219)", async () => {
+    await reviewsApi.requirementApproval("req/1");
+    expect(apiFetchMock).toHaveBeenCalledWith("/requirements/req%2F1/approval");
+  });
 });

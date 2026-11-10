@@ -44,10 +44,12 @@ vi.mock("../src/lib/audit/audit-service.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/lib/audit/audit-service.js")>()),
   audit,
 }));
-vi.mock("../src/lib/reviews/notify.js", () => ({
+const notify = vi.hoisted(() => ({
   dispatchReviewSubmitted: vi.fn(),
   dispatchReviewDecision: vi.fn(),
+  dispatchReviewedRequirementEdited: vi.fn(),
 }));
+vi.mock("../src/lib/reviews/notify.js", () => notify);
 
 const { applyClarificationsToRequirements, CLARIFICATION_VERSION_REASON } =
   await import("../src/lib/analysis/clarification-enrichment.js");
@@ -390,6 +392,37 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
             }),
           }),
         );
+      });
+
+      it("#2219 — a content edit of an approved requirement returns it to awaiting review", async () => {
+        const id = await makeRequirement({ version: 1, reviewStatus: "approved" });
+        audit.mockClear();
+
+        const r = await request(app())
+          .patch(`/api/analyses/${ANALYSIS}/requirements/${id}`)
+          .set("Authorization", `Bearer ${token()}`)
+          .send({ title: "Reworded", version: 1 });
+
+        expect(r.status).toBe(200);
+        expect(await db.requirement.findUniqueOrThrow({ where: { id } })).toMatchObject({
+          title: "Reworded",
+          reviewStatus: "draft",
+          version: 2,
+        });
+        expect(audit).toHaveBeenCalledWith(
+          expect.objectContaining({
+            action: "analysis.requirement.update",
+            metadata: expect.objectContaining({
+              reviewStatus: { from: "approved", to: "draft" },
+            }),
+          }),
+        );
+        expect(notify.dispatchReviewedRequirementEdited).toHaveBeenCalledWith({
+          requirementId: id,
+          fromVersion: 1,
+          toVersion: 2,
+          actorId: REQUESTER,
+        });
       });
 
       it("does not audit a status that did not change", async () => {

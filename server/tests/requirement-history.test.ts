@@ -410,6 +410,36 @@ describe("requirement history router", () => {
       expect(auditArg.metadata).toMatchObject({ restoredFrom: 1, newVersion: 4 });
     });
 
+    it("#2219 — restoring other wording over an approval reopens it, audits it and tells the review", async () => {
+      primeRestore();
+      mockPrisma.requirement.findUnique.mockImplementation(
+        async (args: { select?: Record<string, unknown> }) =>
+          args.select && "title" in args.select
+            ? { ...CURRENT, reviewStatus: "approved" }
+            : { id: "req-1", version: 4, updatedAt: new Date("2026-04-04T00:00:00Z") },
+      );
+
+      const res = await request(app).post("/requirements/req-1/restore/1").send({});
+
+      expect(res.status).toBe(200);
+      const updateArg = mockPrisma.requirement.updateMany.mock.calls[0][0] as {
+        data: Record<string, unknown>;
+      };
+      expect(updateArg.data.reviewStatus).toBe("draft");
+      const auditArg = auditSpy.mock.calls[0][0] as { metadata: unknown };
+      expect(auditArg.metadata).toMatchObject({
+        reviewStatus: { from: "approved", to: "draft" },
+      });
+      // Post-commit: the reviews pinned at the replaced version (3) are looked up.
+      await vi.waitFor(() =>
+        expect(mockPrisma.reviewRequestItem.findMany).toHaveBeenCalledWith(
+          expect.objectContaining({
+            where: expect.objectContaining({ requirementId: "req-1", pinnedVersion: 3 }),
+          }),
+        ),
+      );
+    });
+
     it.each(["developer", "reader"])("forbids restore for role %s", async (role) => {
       testUser.role = role;
       primeRestore();

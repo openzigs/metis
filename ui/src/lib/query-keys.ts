@@ -121,6 +121,9 @@ export const queryKeys = {
     /** Requirement version history feeding the review-item diff view (#770 API). */
     requirementHistory: (requirementId: string) =>
       [...queryKeys.reviews.all, "requirement-history", requirementId] as const,
+    /** #2219 — the approved / in-review reviews an edit of the requirement reopens. */
+    requirementApproval: (requirementId: string) =>
+      [...queryKeys.reviews.all, "requirement-approval", requirementId] as const,
   },
   /** Epic #609 (#620) — immutable requirement baselines (list, contents, compare). */
   baselines: {

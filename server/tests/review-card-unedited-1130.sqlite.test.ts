@@ -43,6 +43,7 @@ vi.mock("../src/lib/audit/audit-service.js", async (importOriginal) => ({
 vi.mock("../src/lib/reviews/notify.js", () => ({
   dispatchReviewSubmitted: vi.fn(),
   dispatchReviewDecision: vi.fn(),
+  dispatchReviewedRequirementEdited: vi.fn(),
 }));
 
 const { requirementsCollaborationRouter } = await import("../src/routes/requirements.js");

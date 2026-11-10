@@ -386,7 +386,29 @@ export interface UpdateWithHistoryParams {
    * requirement Edit dialog, never see the hidden labels.
    */
   keepHiddenLabels?: boolean;
+  /**
+   * Issue #2219 — an analyst's edit: when it changes the content of an approved
+   * requirement, the approval was of the old wording, so the same write moves
+   * `reviewStatus` back to `draft` (awaiting review). An explicit
+   * `untrackedData.reviewStatus` wins. Off for system writers.
+   */
+  reopenApproval?: boolean;
 }
+
+/**
+ * Issue #2219 — whether a requirement row holds an approval: the typed column,
+ * else a legacy `review:approved` label (the precedence every reader uses).
+ */
+export function holdsApproval(row: { reviewStatus?: unknown; labels?: unknown }): boolean {
+  if (row.reviewStatus !== null && row.reviewStatus !== undefined) {
+    return row.reviewStatus === "approved";
+  }
+  const labels = typeof row.labels === "string" ? row.labels : null;
+  return parseRequirementLabels(labels).includes("review:approved");
+}
+
+/** The status an approval goes back to when its wording is edited (#2219). */
+export const REOPENED_REVIEW_STATUS = "draft";
 
 /**
  * How many times an UNVERSIONED write (an edit with no `expectedVersion`, or a
@@ -551,9 +573,20 @@ async function updateOnce(
     const changed = Object.keys(changedFields).length > 0;
     const nextVersion = existing.version + 1;
 
+    const untracked: UntrackedRequirementData = { ...params.untrackedData };
+    // #2219 — the approval was of the old wording: an edit that changes it
+    // returns the requirement to awaiting review, in the same conditional write.
+    if (
+      changed &&
+      params.reopenApproval &&
+      untracked.reviewStatus === undefined &&
+      holdsApproval(existing)
+    ) {
+      untracked.reviewStatus = REOPENED_REVIEW_STATUS;
+    }
     const untrackedChanges: ChangedFields = {};
     const untrackedWrite: Record<string, unknown> = {};
-    for (const [field, value] of Object.entries(params.untrackedData ?? {})) {
+    for (const [field, value] of Object.entries(untracked)) {
       const from = nullish(existing[field]);
       if (valuesEqual(from, value)) continue;
       untrackedChanges[field] = { from, to: nullish(value) };
@@ -621,6 +654,8 @@ export interface RestoreParams {
   reason?: string | null;
   /** Issue #1118 — see {@link UpdateWithHistoryParams.projectId}. */
   projectId?: string;
+  /** Issue #2219 — see {@link UpdateWithHistoryParams.reopenApproval}. */
+  reopenApproval?: boolean;
 }
 
 export interface RestoreResult {
@@ -629,6 +664,8 @@ export interface RestoreResult {
   updatedAt: Date;
   restoredFrom: number;
   changedFields: ChangedFields;
+  /** #2219 — set when the restore moved an approved requirement back to awaiting review. */
+  reviewStatusChange?: FieldChange;
 }
 
 /**
@@ -668,8 +705,8 @@ async function restoreOnce(
         deletedAt: null,
         ...(params.projectId ? { projectId: params.projectId } : {}),
       },
-      select: TRACKED_ROW_SELECT,
-    })) as (RequirementSnapshot & { id: string; version: number }) | null;
+      select: { ...TRACKED_ROW_SELECT, reviewStatus: true },
+    })) as (RequirementSnapshot & { id: string; version: number; reviewStatus?: unknown }) | null;
 
     if (!existing) {
       throw new RequirementVersionError("NOT_FOUND", "Requirement not found");
@@ -698,10 +735,19 @@ async function restoreOnce(
     const before = pickTracked(existing);
     const changedFields = computeChangedFields(before, state);
     const nextVersion = existing.version + 1;
+    // #2219 — restoring other wording over an approval reopens it, as an edit does.
+    const reopen =
+      params.reopenApproval === true &&
+      Object.keys(changedFields).length > 0 &&
+      holdsApproval(existing);
 
     const { count } = await txc.requirement.updateMany({
       where: { id: params.requirementId, version: existing.version, deletedAt: null },
-      data: { ...state, version: nextVersion },
+      data: {
+        ...state,
+        version: nextVersion,
+        ...(reopen ? { reviewStatus: REOPENED_REVIEW_STATUS } : {}),
+      },
     });
     if (count !== 1) throw versionConflict();
 
@@ -726,6 +772,14 @@ async function restoreOnce(
       updatedAt: updated.updatedAt,
       restoredFrom: params.targetVersion,
       changedFields,
+      ...(reopen
+        ? {
+            reviewStatusChange: {
+              from: nullish(existing.reviewStatus),
+              to: REOPENED_REVIEW_STATUS,
+            },
+          }
+        : {}),
     };
   });
 }

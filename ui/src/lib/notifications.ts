@@ -43,7 +43,12 @@ type Listener = (snapshot: Notification[]) => void;
 const MAX_NOTIFICATIONS = 50;
 
 /** Persisted `Notification.type`s shown as a warning, live or hydrated alike. */
-const WARN_TYPES: ReadonlySet<string> = new Set(["sla_deadline", "review_rejected"]);
+const WARN_TYPES: ReadonlySet<string> = new Set([
+  "sla_deadline",
+  "review_rejected",
+  // #2219 — an approved requirement was edited: the approval needs a re-review.
+  "review_item_changed",
+]);
 
 export class NotificationStore {
   private items: Notification[] = [];
@@ -318,10 +323,11 @@ export function discussionMentionEventToNotification(
 
 /**
  * #104 — map a `review:notification` event into a Notification draft. A
- * rejection is a `warn`: it asks the requester to act.
+ * rejection is a `warn`: it asks the requester to act, and so (#2219) is an
+ * edit of an approved requirement, which asks for a re-review.
  */
 export function reviewEventToNotification(event: ReviewNotificationEvent): NotificationDraft {
-  return inAppDraft(event, event.kind, event.kind === "review_rejected" ? "warn" : "info");
+  return inAppDraft(event, event.kind, WARN_TYPES.has(event.kind) ? "warn" : "info");
 }
 
 export const _MAX_NOTIFICATIONS_FOR_TESTS = MAX_NOTIFICATIONS;

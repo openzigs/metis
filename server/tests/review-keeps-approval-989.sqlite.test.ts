@@ -34,6 +34,7 @@ vi.mock("../src/lib/prisma.js", async () => {
 vi.mock("../src/lib/reviews/notify.js", () => ({
   dispatchReviewSubmitted: vi.fn(),
   dispatchReviewDecision: vi.fn(),
+  dispatchReviewedRequirementEdited: vi.fn(),
 }));
 
 const { createReviewRequest, submitReview, withdrawReview, closeReview, recordDecision } =

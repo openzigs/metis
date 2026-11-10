@@ -6090,6 +6090,34 @@ meantime, the toast says so and the page shows the current status.
 A withdrawn review cannot be resubmitted from the UI yet: request a
 new review from the project's Requirements page.
 
+### Editing an approved requirement (#2219)
+
+An approval is of a wording, so editing that wording reopens it:
+
+- **The Edit dialog warns before you save**, for example "Approved as
+  v1 by Test Coordinator; saving creates v2 and reopens review." For a
+  requirement in a review still in progress it says the reviewers keep
+  deciding on the version they were given.
+- **After the save the requirement is awaiting review again**: its
+  Approved button is no longer pressed. Restoring an older version from
+  History over an approval does the same. A save that changes nothing
+  keeps the approval.
+- **The review says the wording moved on.** An approved (or in-review)
+  review whose requirement was edited since shows "v2 differs from the
+  approved v1" on that requirement's card, with the changes from the
+  approved version to the current one. The card still shows the version
+  the reviewers approved.
+- **Request re-review.** The requester, or a review administrator, gets
+  a **Request re-review** button on such a review. After a confirmation
+  it puts the review back to **In review** on each requirement's current
+  version, clears every reviewer's decision and asks them again. The
+  baseline the first approval created is kept, and the next approval
+  creates a new one (named "… round 2").
+- **Who is told.** The review's reviewers and requester get one
+  notification, on the first edit after the approval (not on every
+  save), linking to the review. The person who made the edit is not
+  notified.
+
 **One requirement in two open reviews (#1016).** You can request a
 second review of requirements that are already in review, for example
 to ask another group to sign them off. While another review is still

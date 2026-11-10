@@ -20,6 +20,7 @@ import { prisma } from "../lib/prisma.js";
 import { requirementScopeWhere } from "../lib/requirements/requirement-authz.js";
 import { audit } from "../lib/audit/audit-service.js";
 import { assertRequirementsExportable } from "../lib/reviews/approval-gate.js";
+import { dispatchReviewedRequirementEdited } from "../lib/reviews/notify.js";
 import {
   TRACKED_FIELDS,
   pickTracked,
@@ -235,14 +236,29 @@ export function requirementHistoryRouter(): Router {
           reason,
           // Issue #1118 — defence in depth alongside the router guard.
           projectId: requirementScopeWhere(req).projectId,
+          // Issue #2219 — restoring other wording over an approval reopens it.
+          reopenApproval: true,
         });
 
         audit({
           actor: req.user.userId,
           action: "requirement.restore",
           target: { type: "requirement", id: requirementId },
-          metadata: { restoredFrom: targetVersion, newVersion: result.version },
+          metadata: {
+            restoredFrom: targetVersion,
+            newVersion: result.version,
+            ...(result.reviewStatusChange ? { reviewStatus: result.reviewStatusChange } : {}),
+          },
         });
+        // #2219 — post-commit: a review that pinned the replaced version is told.
+        if (Object.keys(result.changedFields).length > 0) {
+          dispatchReviewedRequirementEdited({
+            requirementId,
+            fromVersion: result.version - 1,
+            toVersion: result.version,
+            actorId: req.user.userId,
+          });
+        }
 
         res.json({ success: true, data: result });
       } catch (err) {

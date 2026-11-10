@@ -182,6 +182,7 @@ import {
   type ClarifyExportRow,
 } from "../lib/analysis/clarify-csv.js";
 import { audit } from "../lib/audit/audit-service.js";
+import { dispatchReviewedRequirementEdited } from "../lib/reviews/notify.js";
 import { buildProvider, loadAIConfig } from "../lib/ai/index.js";
 import { getKnowledgeService } from "../lib/rag/knowledge-service.js";
 import { BedrockDirectProvider } from "../lib/ai/providers/bedrock-direct-provider.js";
@@ -920,6 +921,15 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
           ...(updated.reviewStatusChange ? { reviewStatus: updated.reviewStatusChange } : {}),
         },
       });
+      // #2219 — post-commit: a review that pinned the replaced version is told.
+      if (updated.changed) {
+        dispatchReviewedRequirementEdited({
+          requirementId: reqId,
+          fromVersion: updated.version - 1,
+          toVersion: updated.version,
+          actorId: actor.id,
+        });
+      }
       // `version` is additive: the next optimistic-lock token for the caller.
       res.json(ok({ id: reqId, version: updated.version }));
     },

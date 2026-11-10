@@ -15,10 +15,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // ---- Prisma double ----------------------------------------------------------
 const notificationCreate = vi.fn();
 const prefFindMany = vi.fn();
+const itemFindMany = vi.fn();
 vi.mock("../prisma.js", () => ({
   prisma: {
     notification: { create: (...a: unknown[]) => notificationCreate(...a) },
     notificationPreference: { findMany: (...a: unknown[]) => prefFindMany(...a) },
+    // #2219 — the reviews that pinned an edited requirement.
+    reviewRequestItem: { findMany: (...a: unknown[]) => itemFindMany(...a) },
   },
 }));
 
@@ -51,6 +54,8 @@ const {
   dispatchReviewSubmitted,
   notifyReviewDecision,
   dispatchReviewDecision,
+  notifyReviewedRequirementEdited,
+  dispatchReviewedRequirementEdited,
   reviewHref,
 } = await import("./notify.js");
 
@@ -328,5 +333,120 @@ describe("dispatch wrappers", () => {
 
     expect(() => dispatchReviewDecision(decisionInput())).not.toThrow();
     await vi.waitFor(() => expect(notificationCreate).toHaveBeenCalled());
+  });
+});
+describe("#2219 — notifyReviewedRequirementEdited", () => {
+  const editInput = (over: Record<string, unknown> = {}) => ({
+    requirementId: "req-1",
+    fromVersion: 1,
+    toVersion: 2,
+    actorId: "user-editor",
+    ...over,
+  });
+  const item = (over: Record<string, unknown> = {}) => ({
+    requirement: { title: "Password length" },
+    reviewRequest: {
+      id: "rev-1",
+      title: "Sprint 4 sign-off",
+      status: "approved",
+      projectId: "proj-1",
+      requestedById: "user-req",
+      assignments: [{ reviewerId: "rev-a" }, { reviewerId: "rev-b" }],
+      ...over,
+    },
+  });
+
+  it("asks only for reviews pinned at the replaced version that still stand", async () => {
+    itemFindMany.mockResolvedValue([]);
+    await notifyReviewedRequirementEdited(editInput());
+    expect(itemFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          requirementId: "req-1",
+          pinnedVersion: 1,
+          reviewRequest: { status: { in: ["approved", "in_review"] } },
+        },
+      }),
+    );
+    expect(notificationCreate).not.toHaveBeenCalled();
+  });
+
+  it("tells the requester and every reviewer of an approved review, once each", async () => {
+    itemFindMany.mockResolvedValue([item()]);
+
+    await notifyReviewedRequirementEdited(editInput());
+
+    const rows = createdRows();
+    expect(rows.map((r) => r.userId).sort()).toEqual(["rev-a", "rev-b", "user-req"]);
+    for (const row of rows) {
+      expect(row.type).toBe("review_item_changed");
+      expect(row.title).toBe("Approved requirement changed");
+      expect(row.href).toBe("/reviews/rev-1");
+      expect(row.projectId).toBe("proj-1");
+      expect(String(row.message)).toContain('"Password length" was edited to v2');
+      expect(String(row.message)).toContain("approved v1");
+      expect(JSON.parse(String(row.payload))).toMatchObject({
+        kind: "review_item_changed",
+        requirementId: "req-1",
+        pinnedVersion: 1,
+        currentVersion: 2,
+      });
+    }
+    // The open review page re-reads the review.
+    expect(to).toHaveBeenCalledWith("project:proj-1");
+    expect(emit).toHaveBeenCalledWith(
+      "review:changed",
+      expect.objectContaining({ reviewId: "rev-1" }),
+    );
+  });
+
+  it("never notifies the editor, and one person in two reviews gets one row", async () => {
+    itemFindMany.mockResolvedValue([
+      item({ requestedById: "user-editor" }),
+      item({
+        id: "rev-2",
+        status: "in_review",
+        requestedById: "rev-a",
+        assignments: [],
+      }),
+    ]);
+
+    await notifyReviewedRequirementEdited(editInput());
+
+    const rows = createdRows();
+    expect(rows.map((r) => r.userId).sort()).toEqual(["rev-a", "rev-b"]);
+    // The first (most recent) review wins for rev-a.
+    expect(rows.every((r) => r.href === "/reviews/rev-1")).toBe(true);
+  });
+
+  it("words an in-review review as one still deciding on the pinned version", async () => {
+    itemFindMany.mockResolvedValue([item({ status: "in_review", assignments: [] })]);
+
+    await notifyReviewedRequirementEdited(editInput());
+
+    const [row] = createdRows();
+    expect(row.title).toBe("Requirement under review changed");
+    expect(String(row.message)).toContain("is reviewing v1");
+  });
+
+  it("respects a recipient who turned review notifications off", async () => {
+    itemFindMany.mockResolvedValue([item({ assignments: [] })]);
+    prefFindMany.mockResolvedValue([
+      { channel: "inApp", event: "requirementsApproved", enabled: false },
+    ]);
+
+    await notifyReviewedRequirementEdited(editInput());
+
+    expect(notificationCreate).not.toHaveBeenCalled();
+  });
+
+  it("never throws: a failed lookup or a failed send is logged", async () => {
+    itemFindMany.mockRejectedValueOnce(new Error("db down"));
+    await expect(notifyReviewedRequirementEdited(editInput())).resolves.toBeUndefined();
+
+    itemFindMany.mockResolvedValue([item({ assignments: [] })]);
+    shouldNotifySpy.mockRejectedValueOnce(new Error("prefs down"));
+    await expect(notifyReviewedRequirementEdited(editInput())).resolves.toBeUndefined();
+    expect(() => dispatchReviewedRequirementEdited(editInput())).not.toThrow();
   });
 });

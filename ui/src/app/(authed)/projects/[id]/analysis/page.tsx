@@ -128,6 +128,7 @@ import { SimilarRequirementsPanel } from "@/components/requirements/similar-requ
 import { TraceabilityView } from "@/components/traceability/traceability-view";
 import { UntestedRequirementsPanel } from "@/components/traceability/untested-requirements-panel";
 import { RequirementHistoryTab } from "@/components/requirements/RequirementHistoryTab";
+import { RequirementApprovalWarning } from "@/components/requirements/RequirementApprovalWarning";
 import { SourceDivergenceNotice } from "@/components/requirements/SourceDivergenceNotice";
 import { CriteriaProposalNotice } from "@/components/requirements/CriteriaProposalNotice";
 import { CriteriaProposalsSummary } from "@/components/requirements/CriteriaProposalsSummary";
@@ -619,6 +620,8 @@ export default function AnalysisPage(): React.ReactElement {
     },
     onSettled: () => {
       qc.invalidateQueries({ queryKey: queryKeys.analyses.detail(selectedAnalysisId!) });
+      // #2219 — an edit can put an approved review out of date.
+      qc.invalidateQueries({ queryKey: queryKeys.reviews.all });
     },
     onSuccess: () => {
       setEditingReq(null);
@@ -2005,6 +2008,14 @@ function RequirementEditModal(props: {
             recorded as a new version, and the requirements list refreshes on success.
           </DialogDescription>
         </DialogHeader>
+        {/* #2219 — say before the save that it reopens an approval. */}
+        {requirement ? (
+          <RequirementApprovalWarning
+            requirementId={requirement.id}
+            version={requirement.version}
+            reviewStatus={requirement.reviewStatus ?? null}
+          />
+        ) : null}
         <form
           className="space-y-3"
           onSubmit={(e) => {

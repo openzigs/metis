@@ -2300,6 +2300,8 @@ export async function updateRequirementRow(input: {
       untrackedData,
       actorId: input.actorId ?? null,
       expectedVersion: input.expectedVersion,
+      // Issue #2219 — an edit of approved wording returns it to awaiting review.
+      reopenApproval: true,
     });
     const reviewStatusChange = result.untrackedChanges.reviewStatus;
     return {

@@ -38,6 +38,17 @@ vi.mock("../src/middleware/optimistic-lock.js", async (importOriginal) => ({
 vi.mock("../src/routes/comments.js", () => ({
   requirementCommentsRouter: () => express.Router(),
 }));
+// #2219 — the notification fan-out and the approval read have their own suites.
+const reviewDoubles = vi.hoisted(() => ({
+  dispatchReviewedRequirementEdited: vi.fn(),
+  readRequirementApproval: vi.fn(),
+}));
+vi.mock("../src/lib/reviews/notify.js", () => ({
+  dispatchReviewedRequirementEdited: reviewDoubles.dispatchReviewedRequirementEdited,
+}));
+vi.mock("../src/lib/reviews/requirement-approval.js", () => ({
+  readRequirementApproval: reviewDoubles.readRequirementApproval,
+}));
 
 const { requirementsCollaborationRouter } = await import("../src/routes/requirements.js");
 
@@ -248,5 +259,92 @@ describe("POST /requirements/:id/assignments slaDeadline (zod 3 parity)", () => 
 
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe("VALIDATION_ERROR");
+  });
+});
+
+describe("#2219 — an edit of an approved requirement", () => {
+  let app: ReturnType<typeof createApp>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    app = createApp();
+    mockPrisma.requirement.updateMany.mockResolvedValue({ count: 1 });
+    mockPrisma.requirementVersion.create.mockResolvedValue({});
+  });
+
+  it("returns it to awaiting review and tells the reviews that pinned the replaced version", async () => {
+    mockPrisma.requirement.findUnique
+      .mockResolvedValueOnce({ ...EXISTING, reviewStatus: "approved" })
+      .mockResolvedValueOnce({ id: "req-1", version: 3, updatedAt: new Date() });
+
+    const res = await request(app).put("/requirements/req-1").send({ body: "New body" });
+
+    expect(res.status).toBe(200);
+    expect(mockPrisma.requirement.updateMany).toHaveBeenCalledWith({
+      where: { id: "req-1", version: 2, deletedAt: null },
+      data: { body: "New body", reviewStatus: "draft", version: 3 },
+    });
+    expect(reviewDoubles.dispatchReviewedRequirementEdited).toHaveBeenCalledWith({
+      requirementId: "req-1",
+      fromVersion: 2,
+      toVersion: 3,
+      actorId: "user-1",
+    });
+  });
+
+  it("tells nobody when the save changed nothing", async () => {
+    mockPrisma.requirement.findUnique
+      .mockResolvedValueOnce({ ...EXISTING, reviewStatus: "approved" })
+      .mockResolvedValueOnce({ id: "req-1", version: 2, updatedAt: new Date() });
+
+    const res = await request(app).put("/requirements/req-1").send({ body: "Body" });
+
+    expect(res.status).toBe(200);
+    expect(mockPrisma.requirement.updateMany).not.toHaveBeenCalled();
+    expect(reviewDoubles.dispatchReviewedRequirementEdited).not.toHaveBeenCalled();
+  });
+
+  it("an Approve click (status only) neither reopens nor notifies", async () => {
+    mockPrisma.requirement.findUnique
+      .mockResolvedValueOnce({ ...EXISTING, reviewStatus: "draft" })
+      .mockResolvedValueOnce({ id: "req-1", version: 2, updatedAt: new Date() });
+
+    const res = await request(app).put("/requirements/req-1").send({ reviewStatus: "approved" });
+
+    expect(res.status).toBe(200);
+    expect(mockPrisma.requirement.updateMany).toHaveBeenCalledWith({
+      where: { id: "req-1", version: 2, deletedAt: null },
+      data: { reviewStatus: "approved" },
+    });
+    expect(reviewDoubles.dispatchReviewedRequirementEdited).not.toHaveBeenCalled();
+  });
+});
+
+describe("GET /requirements/:id/approval — #2219", () => {
+  let app: ReturnType<typeof createApp>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    app = createApp();
+  });
+
+  it("returns the approval state the Edit dialog warns from", async () => {
+    const approval = { requirementId: "req-1", version: 1, reviewStatus: "approved", reviews: [] };
+    reviewDoubles.readRequirementApproval.mockResolvedValue(approval);
+
+    const res = await request(app).get("/requirements/req-1/approval");
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toEqual(approval);
+    expect(reviewDoubles.readRequirementApproval).toHaveBeenCalledWith("req-1", undefined);
+  });
+
+  it("404s a requirement the reader cannot find", async () => {
+    reviewDoubles.readRequirementApproval.mockResolvedValue(null);
+
+    const res = await request(app).get("/requirements/req-1/approval");
+
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe("REQUIREMENT_NOT_FOUND");
   });
 });

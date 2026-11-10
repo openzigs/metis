@@ -43,6 +43,7 @@ vi.mock("../src/lib/audit/audit-service.js", async (importOriginal) => ({
 vi.mock("../src/lib/reviews/notify.js", () => ({
   dispatchReviewSubmitted: vi.fn(),
   dispatchReviewDecision: vi.fn(),
+  dispatchReviewedRequirementEdited: vi.fn(),
 }));
 vi.mock("../src/lib/docs-gen/incremental.js", () => ({
   checkIncrementalRegeneration: state.check,

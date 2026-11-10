@@ -44,6 +44,12 @@ const KNOWN_TYPES = [
  */
 const PROJECTLESS_TYPES = ["chat_identity_bound"]; // #2089
 
+/**
+ * Project-scoped types first written after the #1447 backfill: every row
+ * carries its project from the start, so no backfill branch exists for them.
+ */
+const POST_BACKFILL_TYPES = ["review_item_changed"]; // #2219
+
 function sourceFiles(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {
     const full = path.join(dir, name);
@@ -182,7 +188,7 @@ describe("#1447 — every notification writer records its project", () => {
 
   it("the writable types are exactly the known ones — a new type must be placed", () => {
     const types = [...new Set(writers.flatMap((w) => w.types))].sort();
-    expect(types).toEqual([...KNOWN_TYPES, ...PROJECTLESS_TYPES].sort());
+    expect(types).toEqual([...KNOWN_TYPES, ...POST_BACKFILL_TYPES, ...PROJECTLESS_TYPES].sort());
   });
 
   it("only the decided types are opted out of the project check", () => {
