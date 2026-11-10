@@ -154,6 +154,20 @@ describe("PortfolioImpactView", () => {
     expect(within(bdive).queryByRole("img")).toBeNull();
   });
 
+  it("#2183 — says a host's file is where it provides what changes", async () => {
+    const user = userEvent.setup();
+    const v = impactView();
+    const ledger = v.products.find((p) => p.productId === "p-ledger")!;
+    const impact = ledger.technicalDetail.impact as { hops: Array<Record<string, unknown>> };
+    impact.hops = [{ ...impact.hops[0], providerSites: [{ filePath: "openapi.yaml", line: 12 }] }];
+    renderView(v);
+    const billing = card("Billing");
+    await user.click(within(billing).getByRole("button", { name: "Technical deep dive" }));
+    expect(within(billing).getByTestId("portfolio-deep-dive")).toHaveTextContent(
+      "acme/p-billing · openapi.yaml:12 (provides what changes)",
+    );
+  });
+
   it("says one hidden link in the singular", async () => {
     const user = userEvent.setup();
     const v = impactView();

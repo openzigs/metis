@@ -16,6 +16,7 @@ import {
   PORTFOLIO_DEGRADED_REASON,
   PORTFOLIO_NOT_AFFECTED_OLDER_RULE,
   portfolioImpactUnderOlderRule,
+  portfolioLinkResources,
   portfolioModifierText,
   portfolioOtherLinkKinds,
   portfolioRestrictedNote,
@@ -84,6 +85,10 @@ const hopSchema = z.object({
   confidence: z.number(),
   resource: z.object({ kind: z.string(), name: z.string() }).nullable(),
   callSites: z.array(z.object({ filePath: z.string(), line: z.number().nullable() })),
+  // #2183 — a hop stored before #2183 has none.
+  providerSites: z
+    .array(z.object({ filePath: z.string(), line: z.number().nullable() }))
+    .default([]),
   contract: z
     .object({
       version: z.number(),
@@ -156,6 +161,28 @@ function modifierText(m: Hop["severity"]["modifiers"][number]): string {
   return mdInline(portfolioModifierText(m));
 }
 
+const site = (s: { filePath: string; line: number | null }) =>
+  s.line === null ? s.filePath : `${s.filePath}:${s.line}`;
+
+/**
+ * #2183 — where a product's code provides what changes downstream: the
+ * provider's side of every hop out of it, on any product's path the reader is
+ * shown. A host the gap engine found nothing in has no other file evidence.
+ */
+function providerSitesOf(v: PortfolioAssessmentView, productId: string): string[] {
+  const lines = new Set<string>();
+  for (const q of v.products) {
+    if (q.coverage === "restricted") continue;
+    for (const h of impactOf(q)?.hops ?? []) {
+      if (h.fromProductId !== productId) continue;
+      for (const s of h.providerSites) {
+        lines.add(`- ${code(site(s))} (${mdInline(h.provider.label)}): provides what changes`);
+      }
+    }
+  }
+  return [...lines];
+}
+
 function deepDive(
   v: PortfolioAssessmentView,
   p: Row,
@@ -190,9 +217,9 @@ function deepDive(
         ),
       ),
     ...(last?.callSites ?? []).map(
-      (s) =>
-        `- ${code(s.line === null ? s.filePath : `${s.filePath}:${s.line}`)} (${mdInline(last!.consumer.label)}): call site`,
+      (s) => `- ${code(site(s))} (${mdInline(last!.consumer.label)}): call site`,
     ),
+    ...providerSitesOf(v, p.productId),
   ];
   if (files.length > 0) out.push("**Files**", "", ...files, "");
 
@@ -207,7 +234,12 @@ function deepDive(
     );
   }
   // #1673 — one list per resource kind, as the page groups them.
-  for (const list of portfolioResourceLists(last?.resource ?? null, last?.sharedObjects ?? [])) {
+  // #2183 — and the resources of every other link the change reaches it by.
+  for (const list of portfolioResourceLists(
+    last?.resource ?? null,
+    last?.sharedObjects ?? [],
+    portfolioLinkResources(p.technicalDetail),
+  )) {
     out.push(
       `**${list.heading}**`,
       "",

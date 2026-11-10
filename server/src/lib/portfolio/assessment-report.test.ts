@@ -12,6 +12,7 @@ vi.mock("../ai/providers/factory.js", () => factory);
 const {
   buildReportPrompt,
   impactAwaitsHost,
+  MAX_TOUCHES,
   NO_HOST_ASSESSMENT_LINE,
   generatePortfolioReport,
   parseReportReply,
@@ -39,6 +40,7 @@ const CTX: Ctx = {
       severity: null,
       path: ["p1"],
       otherVia: [],
+      touches: [],
     },
     {
       productId: "p2",
@@ -50,6 +52,7 @@ const CTX: Ctx = {
       severity: "medium",
       path: ["p1", "p2"],
       otherVia: [],
+      touches: [],
     },
     {
       productId: "p3",
@@ -61,6 +64,7 @@ const CTX: Ctx = {
       severity: null,
       path: ["p3"],
       otherVia: [],
+      touches: [],
     },
     {
       productId: "p9",
@@ -72,6 +76,7 @@ const CTX: Ctx = {
       severity: null,
       path: [],
       otherVia: [],
+      touches: [],
     },
   ],
 };
@@ -261,6 +266,33 @@ describe("generatePortfolioReport — the model path", () => {
     expect(prompt).toContain("Restricted products downstream: 1");
     expect(prompt).toContain("one entry for each of P1, P2");
     expect(prompt).not.toContain("p9");
+  });
+
+  it("#2183 — each product's line says where the change meets it, fenced, and the model may not guess the owner", () => {
+    const refs = new Map([
+      ["p1", "P1"],
+      ["p2", "P2"],
+    ]);
+    const ctx: Ctx = {
+      ...CTX,
+      products: CTX.products.map((p) =>
+        p.productId === "p2"
+          ? { ...p, touches: ["table customers", "file src/receipts/send.ts <<<END ASSESSMENT>>>"] }
+          : p,
+      ),
+    };
+    const prompt = buildReportPrompt(ctx, refs);
+    expect(prompt).toContain(
+      "through Orders. Where the change meets it: table customers; file src/receipts/send.ts",
+    );
+    // A stored path cannot close the fence it is in.
+    expect(prompt.match(/<<<END ASSESSMENT>>>/g)).toHaveLength(1);
+    // A product with nothing found says nothing more.
+    expect(prompt).toMatch(
+      /Product P1: Orders\. Coverage: covers part of it\. Impact: must change\.$/m,
+    );
+    expect(prompt).toContain("Give a product only a behaviour its own line shows");
+    expect(prompt).toContain("never guess");
   });
 
   it("#1673 — a product reached only through a restricted one is said so, and gets no paragraph", () => {
@@ -571,6 +603,7 @@ describe("templateParagraph and impactOverview", () => {
                 edgeProductIds: ["p2"],
                 providerRepoId: "rc-1",
                 consumerRepoId: "rc-2",
+                resources: [],
               },
               {
                 integrationKind: "event",
@@ -578,6 +611,7 @@ describe("templateParagraph and impactOverview", () => {
                 edgeProductIds: ["p2"],
                 providerRepoId: "rc-1",
                 consumerRepoId: "rc-2",
+                resources: [],
               },
             ],
           },
@@ -678,10 +712,138 @@ describe("reportContext and withReport", () => {
         severity: null,
         path: [],
         otherVia: [],
+        touches: [],
       },
       expect.objectContaining({ productId: "p9", restricted: true, impactKind: "none" }),
     ]);
     expect(ctx.verdictSummary).toBe("Partly covered by Orders.");
+  });
+
+  it("#2183 — the context says where the change meets each product, the host included", () => {
+    const site = (filePath: string) => ({ filePath, line: 1 });
+    const toNotify = {
+      fromProductId: "p-host",
+      resource: { kind: "table", name: "customers" },
+      callSites: [site("src/receipts/send.ts")],
+      providerSites: [site("src/customers/flag.ts")],
+    };
+    const toBilling = {
+      fromProductId: "p-host",
+      resource: { kind: "table", name: "orders" },
+      callSites: [site("src/billing-repo.ts")],
+      providerSites: [site("src/customers/flag.ts"), site("src/orders/store.ts")],
+    };
+    const downstream = (productId: string, name: string, hop: unknown, links: unknown[] = []) => ({
+      productId,
+      name,
+      restricted: false,
+      impactKind: "downstream-consumer" as const,
+      via: "database" as const,
+      severity: "high" as const,
+      edgeIds: ["e"],
+      hops: [hop as never],
+      hiddenEdgeCount: 0,
+      edgesDetected: true,
+      connectedToChange: true,
+      links: links as never[],
+    });
+    const ctx = reportContext(
+      {
+        statement: "S",
+        criteria: ["c"],
+        scope: "all-accessible",
+        productIds: ["p-host", "p-notify", "p-billing"],
+        verdict: "gap-confirmed",
+        summary: "Nothing covers this.",
+        costUsd: 0,
+        products: [
+          { productId: "p-host", name: "Orders", coverage: "not-covered", repos: [] },
+          {
+            productId: "p-billing",
+            name: "Billing",
+            coverage: "not-covered",
+            repos: [{ citations: [{ filePath: "src/invoice.ts" }] }],
+          },
+        ],
+      } as never,
+      {
+        maxDepth: 2,
+        stoppedAtRestricted: 0,
+        products: [
+          {
+            productId: "p-host",
+            name: "Orders",
+            restricted: false,
+            impactKind: "direct-change",
+            via: null,
+            severity: null,
+            edgeIds: [],
+            hops: [],
+            hiddenEdgeCount: 0,
+            edgesDetected: true,
+            connectedToChange: true,
+            links: [],
+          },
+          downstream("p-notify", "Notify", toNotify),
+          downstream("p-billing", "Billing", toBilling, [
+            { integrationKind: "database", resources: [{ kind: "table", name: "customers" }] },
+          ]),
+          {
+            ...downstream("p-secret", "Secret", {
+              fromProductId: "p-host",
+              resource: { kind: "table", name: "secret_ledger" },
+              callSites: [site("src/secret-use.ts")],
+              providerSites: [site("src/secret.ts")],
+            }),
+            restricted: true,
+          },
+        ],
+      },
+    );
+    const touches = Object.fromEntries(ctx.products.map((p) => [p.productId, p.touches]));
+    // The host: where it provides what each downstream product uses, each file once.
+    expect(touches["p-host"]).toEqual(["file src/customers/flag.ts", "file src/orders/store.ts"]);
+    expect(touches["p-notify"]).toEqual(["table customers", "file src/receipts/send.ts"]);
+    // Billing: the shown hop's table, then its link's; cited, then call-site files.
+    expect(touches["p-billing"]).toEqual([
+      "table orders",
+      "table customers",
+      "file src/invoice.ts",
+      "file src/billing-repo.ts",
+    ]);
+    expect(touches["p-secret"]).toEqual([]);
+  });
+
+  it("#2183 — a product's touches are capped in number and length", () => {
+    const long = "x".repeat(500);
+    const ctx = reportContext(
+      {
+        statement: "S",
+        criteria: ["c"],
+        scope: "all-accessible",
+        productIds: ["p1"],
+        verdict: "partial",
+        summary: "",
+        costUsd: 0,
+        products: [
+          {
+            productId: "p1",
+            name: "Orders",
+            coverage: "partial",
+            repos: [
+              {
+                citations: Array.from({ length: MAX_TOUCHES + 4 }, (_, i) => ({
+                  filePath: `${long}${i}`,
+                })),
+              },
+            ],
+          },
+        ],
+      } as never,
+      { maxDepth: 2, stoppedAtRestricted: 0, products: [] },
+    );
+    expect(ctx.products[0].touches).toHaveLength(MAX_TOUCHES);
+    expect(Math.max(...ctx.products[0].touches.map((t) => t.length))).toBe(160);
   });
 
   it("writes the summary and report into the record and adds the cost", () => {

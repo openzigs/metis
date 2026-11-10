@@ -40,7 +40,7 @@ import { estimateUsageCostUsd } from "../ai/token-tracker.js";
 import { createChildLogger } from "../logger.js";
 import { fenced } from "./gap-prompts.js";
 import type { PortfolioGapResult } from "./gap-engine.js";
-import type { PortfolioImpactResult } from "./impact-engine.js";
+import type { PortfolioImpactResult, ProductImpact } from "./impact-engine.js";
 import { EntityIndex, checkProse, sanitizeProse } from "./report-entities.js";
 import { impactOverview } from "./report-overview.js";
 import { callJsonLlmRetryingCutOff, resolvePortfolioMaxOutputTokens } from "./output-cap.js";
@@ -68,6 +68,13 @@ export interface ReportProduct {
   path: string[];
   /** #1963 — the other edge kinds the change reaches it by; empty when restricted. */
   otherVia: string[];
+  /**
+   * #2183 — where the change meets it, so the model can tell which product owns
+   * a behaviour instead of guessing: the tables and topics it is reached by, and
+   * its files the assessment found (cited, its call sites, and where it provides
+   * what changes downstream). Empty when restricted.
+   */
+  touches: string[];
 }
 
 export interface ReportContext {
@@ -79,6 +86,40 @@ export interface ReportContext {
   /** #1963 — how many products the verdict left out as not in scope of the change. */
   notInScope: number;
   products: ReportProduct[];
+}
+
+/** #2183 — entries of a product's `touches` the prompt carries, at most, and their length. */
+export const MAX_TOUCHES = 8;
+const TOUCH_CHARS = 160;
+
+/**
+ * #2183 — a readable product's {@link ReportProduct.touches}: its tables and
+ * topics first (the shown hop's and every link's), then its files. Each once.
+ */
+function touchesOf(
+  productId: string,
+  g: PortfolioGapResult["products"][number] | undefined,
+  i: ProductImpact | undefined,
+  impact: PortfolioImpactResult,
+): string[] {
+  const out = new Set<string>();
+  const last = i?.hops.at(-1);
+  const resources = [
+    ...(last?.resource ? [last.resource] : []),
+    ...(i?.links ?? []).flatMap((l) => l.resources ?? []),
+  ];
+  for (const r of resources) out.add(`${r.kind} ${r.name}`);
+  const files = [
+    ...(g?.repos ?? []).flatMap((r) => (r.citations ?? []).map((c) => c.filePath)),
+    ...(last?.callSites ?? []).map((c) => c.filePath),
+    ...impact.products
+      .filter((q) => !q.restricted)
+      .flatMap((q) => q.hops)
+      .filter((h) => h.fromProductId === productId)
+      .flatMap((h) => (h.providerSites ?? []).map((c) => c.filePath)),
+  ];
+  for (const f of files) out.add(`file ${f}`);
+  return [...out].slice(0, MAX_TOUCHES).map((t) => t.slice(0, TOUCH_CHARS));
 }
 
 /** The report's view of a gap result and its impact. */
@@ -104,6 +145,7 @@ export function reportContext(
       path: restricted ? [] : [...(i?.hops.map((h) => h.fromProductId) ?? []), productId],
       otherVia:
         restricted || !i ? [] : portfolioOtherLinkKinds({ impact: { links: i.links } }, i.via),
+      touches: restricted ? [] : touchesOf(productId, g, i, impact),
     };
   });
   return {
@@ -241,7 +283,10 @@ export function buildReportPrompt(ctx: ReportContext, refs: ReadonlyMap<string, 
     ...(impactAwaitsHost(ctx) ? [NO_HOST_ASSESSMENT_LINE] : []),
     ...shown.map(
       (p) =>
-        `Product ${refs.get(p.productId)}: ${p.name ?? p.productId}. Coverage: ${COVERAGE_TEXT[p.coverage]}. Impact: ${impactText(p, nameOf)}.`,
+        `Product ${refs.get(p.productId)}: ${p.name ?? p.productId}. Coverage: ${COVERAGE_TEXT[p.coverage]}. Impact: ${impactText(p, nameOf)}.${
+          // #2183 — what the change meets in it, so the model need not guess who does what.
+          p.touches.length > 0 ? ` Where the change meets it: ${p.touches.join("; ")}.` : ""
+        }`,
     ),
     ...(restricted > 0
       ? [`Restricted products downstream: ${restricted} (do not name or describe them).`]
@@ -267,6 +312,10 @@ export function buildReportPrompt(ctx: ReportContext, refs: ReadonlyMap<string, 
     "  with its functional impact (what changes in what it does), business impact (what it",
     "  means for the business) and stakeholder impact (who is affected and how), one or two",
     "  sentences each.",
+    "  Give a product only a behaviour its own line shows: the tables, topics and files where",
+    "  the change meets it say what it does. When no line shows which product does something,",
+    "  say the products involved must agree on it; never guess. Do not name those tables,",
+    "  topics or files.",
     "- requirements: the requirement restated as short, checkable requirements. Mark each",
     '  "functional" or "non-functional"; give a non-functional one a category, one of',
     `  ${NFR_CATEGORIES.join(", ")}.`,

@@ -152,6 +152,7 @@ describe("otherLinkKinds (#1963)", () => {
     edgeProductIds: ["p2"],
     providerRepoId: "rc-1",
     consumerRepoId: "rc-2",
+    resources: [],
   });
 
   it("is each kind but the shown path's, once, in the integration kinds' order", () => {

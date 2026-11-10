@@ -534,10 +534,39 @@ export interface PortfolioResourceList {
 }
 
 /**
+ * #2183 — the resources of every stored link into a product
+ * (`technicalDetail.impact.links[].resources`): the tables and topics each
+ * classified edge the change reaches it by crosses, not only the shown path's.
+ * Two edges between the same repos (one through `orders`, one through
+ * `customers`) are one link carrying both. Each once, in stored order; a
+ * malformed entry, and a row stored before #2183 (no `resources`), add none.
+ */
+export function portfolioLinkResources(
+  technicalDetail: unknown,
+): Array<{ kind: string; name: string }> {
+  const links = (technicalDetail as { impact?: { links?: unknown } } | null | undefined)?.impact
+    ?.links;
+  if (!Array.isArray(links)) return [];
+  const out = new Map<string, { kind: string; name: string }>();
+  for (const l of links) {
+    const resources = (l as { resources?: unknown } | null)?.resources;
+    if (!Array.isArray(resources)) continue;
+    for (const r of resources) {
+      const { kind, name } = (r ?? {}) as { kind?: unknown; name?: unknown };
+      if (typeof kind !== "string" || typeof name !== "string") continue;
+      const key = `${kind}\u0000${name}`;
+      if (!out.has(key)) out.set(key, { kind, name });
+    }
+  }
+  return [...out.values()];
+}
+
+/**
  * The resource a hop crosses (#1618 `ProductResource`) and the tables and
  * columns both ends use (#309), grouped under one heading per resource kind,
  * in a fixed order. The resource itself is left out when the usage
- * classifications already list it.
+ * classifications already list it. #2183 — `alsoVia` are the resources of the
+ * product's other links ({@link portfolioLinkResources}), each listed once.
  */
 export function portfolioResourceLists(
   resource: { kind: string; name: string } | null,
@@ -547,6 +576,7 @@ export function portfolioResourceLists(
     objectType: string;
     usageClass: string;
   }>,
+  alsoVia: ReadonlyArray<{ kind: string; name: string }> = [],
 ): PortfolioResourceList[] {
   const lists = new Map<string, PortfolioResourceList["items"]>();
   const add = (heading: string, item: PortfolioResourceList["items"][number]) => {
@@ -554,12 +584,13 @@ export function portfolioResourceLists(
     items.push(item);
     lists.set(heading, items);
   };
-  if (resource && !sharedObjects.some((o) => o.objectName === resource.name)) {
-    const heading = portfolioResourceGroup(resource.kind);
-    add(heading, {
-      name: resource.name,
-      detail: heading === OTHER_RESOURCES ? resource.kind : null,
-    });
+  const listed = new Set<string>();
+  for (const r of [...(resource ? [resource] : []), ...alsoVia]) {
+    const key = `${r.kind}\u0000${r.name}`;
+    if (listed.has(key) || sharedObjects.some((o) => o.objectName === r.name)) continue;
+    listed.add(key);
+    const heading = portfolioResourceGroup(r.kind);
+    add(heading, { name: r.name, detail: heading === OTHER_RESOURCES ? r.kind : null });
   }
   for (const o of sharedObjects) {
     add(PORTFOLIO_RESOURCE_GROUPS.table, {
