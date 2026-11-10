@@ -164,25 +164,33 @@ describe.skipIf(!enabled)("#2147 — a review waits for a checkpoint edit (Postg
     const order: string[] = [];
 
     state.db = client;
-    const edit = editCheckpointRequirement(analysisId, approvalId, { title: EDITED }).then((r) => {
-      order.push("edit committed");
-      return r;
-    });
-    await atHold;
-    // The edit holds the approval row; the review's conditional UPDATE must wait.
-    const review = reviewApprovalRequest(analysisId, approvalId, {
-      status: "approved",
-      reviewerId: USER,
-    }).then((r) => {
-      order.push("review landed");
-      return r;
-    });
-    await new Promise((resolve) => setTimeout(resolve, HELD_MS));
-    expect(order, "the review landed while the edit held the approval").toEqual([]);
+    // #2157 — released and reset whatever happens: a red assertion used to
+    // leave the edit's transaction held until its 30 s timeout.
+    try {
+      const edit = editCheckpointRequirement(analysisId, approvalId, { title: EDITED }).then(
+        (r) => {
+          order.push("edit committed");
+          return r;
+        },
+      );
+      await atHold;
+      // The edit holds the approval row; the review's conditional UPDATE must wait.
+      const review = reviewApprovalRequest(analysisId, approvalId, {
+        status: "approved",
+        reviewerId: USER,
+      }).then((r) => {
+        order.push("review landed");
+        return r;
+      });
+      await new Promise((resolve) => setTimeout(resolve, HELD_MS));
+      expect(order, "the review landed while the edit held the approval").toEqual([]);
 
-    release();
-    await Promise.all([edit, review]);
-    state.db = db;
+      release();
+      await Promise.all([edit, review]);
+    } finally {
+      release();
+      state.db = db;
+    }
 
     expect(order).toEqual(["edit committed", "review landed"]);
     const approval = await db.approvalRequest.findUniqueOrThrow({ where: { id: approvalId } });

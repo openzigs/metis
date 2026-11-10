@@ -49,10 +49,11 @@ export interface CheckpointRequirementEditorProps {
   draft: CheckpointDraft;
   onDraftChange: (update: (draft: CheckpointDraft) => CheckpointDraft) => void;
   /**
-   * #2147 — the approval is no longer pending (reviewed meanwhile): the text
-   * stays on screen to copy, with where to edit it now, and cannot be saved.
+   * The approval's status. #2147 — once it is no longer pending (reviewed
+   * meanwhile), the text stays on screen to copy, with where to edit it now,
+   * and cannot be saved. #2157 — where that is depends on how it was resolved.
    */
-  resolved: boolean;
+  status: string;
   onDone: () => void;
 }
 
@@ -71,6 +72,25 @@ export function checkpointEditPatch(
   return Object.keys(patch).length > 0 ? patch : null;
 }
 
+/**
+ * #2157 — where a refused edit can be made instead. A rejected requirement is
+ * left out of the promoted set, so it is not on the Requirements page: Reopen
+ * returns it to pending, and the kept text is editable here again. While the
+ * 409's refresh is in flight the status still reads pending and the outcome is
+ * not known, so the message says nothing about where it went.
+ */
+function refusedMessage(status: string): string {
+  const refused = "This requirement was already reviewed, so it can no longer be edited here.";
+  if (status === "pending") return refused;
+  if (status === "rejected") {
+    return (
+      "This requirement was rejected, so it is left out and can no longer be edited here. " +
+      "Reopen it to edit it here again."
+    );
+  }
+  return `${refused} Edit it on the Requirements page.`;
+}
+
 export function CheckpointRequirementEditor({
   projectId,
   analysisId,
@@ -79,7 +99,7 @@ export function CheckpointRequirementEditor({
   itemName,
   draft,
   onDraftChange,
-  resolved,
+  status,
   onDone,
 }: CheckpointRequirementEditorProps): React.ReactElement {
   const qc = useQueryClient();
@@ -104,7 +124,8 @@ export function CheckpointRequirementEditor({
     },
   });
   const refused =
-    resolved || (save.error instanceof ApiError && save.error.code === "APPROVAL_ALREADY_REVIEWED");
+    status !== "pending" ||
+    (save.error instanceof ApiError && save.error.code === "APPROVAL_ALREADY_REVIEWED");
 
   return (
     <form
@@ -163,8 +184,7 @@ export function CheckpointRequirementEditor({
       </div>
       {refused ? (
         <p role="alert" className="text-xs text-destructive">
-          This requirement was already reviewed, so it can no longer be edited here. Edit it on the
-          Requirements page.
+          {refusedMessage(status)}
         </p>
       ) : (
         save.isError && (
