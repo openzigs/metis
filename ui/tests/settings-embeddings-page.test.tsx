@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { makeWrapper } from "./test-utils";
 import { __resetTerminalToastsForTests } from "@/lib/terminal-toast";
 import AdminEmbeddingsPage from "@/app/(authed)/settings/embeddings/page";
@@ -53,6 +54,16 @@ vi.mock("@/lib/socket-client", () => ({
 const statusMock = vi.mocked(embeddingsApi.status);
 const coverageMock = vi.mocked(embeddingsApi.coverage);
 const reindexMock = vi.mocked(embeddingsApi.reindex);
+// `next/navigation` is mocked in tests/setup.ts; the router is one shared object.
+const useSearchParamsMock = vi.mocked(useSearchParams);
+const routerReplace = vi.mocked(useRouter)().replace as ReturnType<typeof vi.fn>;
+
+/** Open the page at `/settings/embeddings?<query>`. */
+function atQuery(query: string) {
+  useSearchParamsMock.mockReturnValue(
+    new URLSearchParams(query) as ReturnType<typeof useSearchParams>,
+  );
+}
 
 function makeStatus(over: Partial<EmbeddingsStatus> = {}): EmbeddingsStatus {
   return {
@@ -230,11 +241,13 @@ describe("AdminEmbeddingsPage", () => {
       });
 
     afterEach(() => {
-      window.history.replaceState(null, "", "/");
+      useSearchParamsMock.mockImplementation(
+        () => new URLSearchParams() as ReturnType<typeof useSearchParams>,
+      );
     });
 
     it("re-checks the project named in the URL, so a reload keeps it", async () => {
-      window.history.replaceState(null, "", "/settings/embeddings?project=proj_url");
+      atQuery("projectId=proj_url");
       statusMock.mockResolvedValue(makeStatus());
       coverageMock.mockResolvedValue(makeCoverage());
 
@@ -244,7 +257,9 @@ describe("AdminEmbeddingsPage", () => {
       expect(screen.getByTestId("project-id-input")).toHaveValue("proj_url");
     });
 
-    it("puts the checked project in the URL", async () => {
+    // #2196 — through the router and as `projectId`, like the other settings pages.
+    it("puts the checked project in the URL through the router, keeping other params", async () => {
+      atQuery("tab=coverage");
       statusMock.mockResolvedValue(makeStatus());
       coverageMock.mockResolvedValue(makeCoverage());
 
@@ -253,11 +268,25 @@ describe("AdminEmbeddingsPage", () => {
       fireEvent.click(screen.getByRole("button", { name: /check coverage/i }));
 
       await waitFor(() => expect(coverageMock).toHaveBeenCalledWith("proj_9"));
-      expect(new URLSearchParams(window.location.search).get("project")).toBe("proj_9");
+      expect(routerReplace).toHaveBeenCalledWith(
+        "/settings/embeddings?tab=coverage&projectId=proj_9",
+      );
+    });
+
+    it("does not read the old `project` param", async () => {
+      atQuery("project=proj_old");
+      statusMock.mockResolvedValue(makeStatus());
+      coverageMock.mockResolvedValue(makeCoverage());
+
+      render(<AdminEmbeddingsPage />, { wrapper: makeWrapper() });
+      await waitFor(() => expect(statusMock).toHaveBeenCalled());
+
+      expect(screen.getByTestId("project-id-input")).toHaveValue("");
+      expect(coverageMock).not.toHaveBeenCalled();
     });
 
     it("follows the running job's progress and offers no second reindex", async () => {
-      window.history.replaceState(null, "", "/settings/embeddings?project=proj_1");
+      atQuery("projectId=proj_1");
       statusMock.mockResolvedValue(makeStatus());
       coverageMock.mockResolvedValue(running("job-x"));
 
@@ -296,7 +325,7 @@ describe("AdminEmbeddingsPage", () => {
     });
 
     it("does not go back to a job it saw end when coverage still reads it as running", async () => {
-      window.history.replaceState(null, "", "/settings/embeddings?project=proj_1");
+      atQuery("projectId=proj_1");
       statusMock.mockResolvedValue(makeStatus());
       coverageMock.mockResolvedValue(running("job-x"));
 
@@ -312,16 +341,121 @@ describe("AdminEmbeddingsPage", () => {
       expect(subscribes).toHaveLength(1);
     });
 
-    it("says a reindex runs elsewhere when the server cannot name its job, and polls", async () => {
+    // #2196 — the page's own job ended, but coverage read a moment before the
+    // run released its guard still lists it running: keep re-reading until it
+    // does not, or the page sits on "Reindex in progress" until a reload.
+    it("keeps re-reading coverage after its job ends while coverage still lists it running", async () => {
       vi.useFakeTimers({ shouldAdvanceTime: true });
       try {
-        window.history.replaceState(null, "", "/settings/embeddings?project=proj_1");
+        atQuery("projectId=proj_1");
+        statusMock.mockResolvedValue(makeStatus());
+        coverageMock.mockResolvedValue(running("job-x"));
+
+        render(<AdminEmbeddingsPage />, { wrapper: makeWrapper() });
+        await waitFor(() =>
+          expect(fake.socket.emit).toHaveBeenCalledWith("subscribe:job", { jobId: "job-x" }),
+        );
+
+        act(() => fake.fire("job:lifecycle", lifecycle({ status: "completed", message: "Done." })));
+        await waitFor(() => expect(coverageMock).toHaveBeenCalledTimes(2));
+        expect(screen.getByTestId("reindex-in-progress")).toBeInTheDocument();
+        expect(screen.getByTestId("reindex-button")).toBeDisabled();
+
+        coverageMock.mockResolvedValue(makeCoverage({ needsReindex: false, mismatchedModels: [] }));
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(5000);
+        });
+        await waitFor(() => expect(screen.getByTestId("coverage-ok")).toBeInTheDocument());
+        expect(screen.getByTestId("reindex-button")).toBeEnabled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    // #2196 — a followed job never re-read coverage, so a server that died
+    // mid-reindex (no terminal event) froze the progress bar until a reload.
+    it("re-reads coverage slowly while following a re-attached job, and lets go of one that died", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        atQuery("projectId=proj_1");
+        statusMock.mockResolvedValue(makeStatus());
+        coverageMock.mockResolvedValue(running("job-x"));
+
+        render(<AdminEmbeddingsPage />, { wrapper: makeWrapper() });
+        await waitFor(() => expect(screen.getByTestId("reindex-progress")).toBeInTheDocument());
+
+        // Not at the fast "cannot follow" cadence: the job's events drive the bar.
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(5000);
+        });
+        expect(coverageMock).toHaveBeenCalledTimes(1);
+
+        // The server restarted: nothing runs, and the run left a checkpoint.
+        coverageMock.mockResolvedValue(makeCoverage());
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(10_000);
+        });
+        await waitFor(() => expect(screen.getByTestId("needs-reindex")).toBeInTheDocument());
+        expect(screen.queryByTestId("reindex-progress")).not.toBeInTheDocument();
+        expect(screen.getByTestId("reindex-button")).toBeEnabled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("lets go of a job this page started once coverage read after it says nothing runs", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        statusMock.mockResolvedValue(makeStatus());
+        coverageMock.mockResolvedValue(makeCoverage());
+        reindexMock.mockResolvedValue({ jobId: "job-x", projectId: "proj_1", status: "started" });
+
+        render(<AdminEmbeddingsPage />, { wrapper: makeWrapper() });
+        fireEvent.change(screen.getByTestId("project-id-input"), { target: { value: "proj_1" } });
+        fireEvent.click(screen.getByRole("button", { name: /check coverage/i }));
+        await waitFor(() => expect(screen.getByTestId("needs-reindex")).toBeInTheDocument());
+
+        fireEvent.click(screen.getByTestId("reindex-button"));
+        // Coverage read before the job started still says nothing runs: that is
+        // not a dead run, so the page follows the job.
+        await waitFor(() => expect(screen.getByTestId("reindex-progress")).toBeInTheDocument());
+
+        // While the run is alive, the slow re-read sees it and the page keeps following.
+        coverageMock.mockResolvedValue(running("job-x"));
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(15_000);
+        });
+        await waitFor(() => expect(coverageMock).toHaveBeenCalledTimes(2));
+        expect(screen.getByTestId("reindex-progress")).toBeInTheDocument();
+
+        // Then its server dies: the next re-read says nothing runs.
+        coverageMock.mockResolvedValue(makeCoverage());
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(15_000);
+        });
+        await waitFor(() => expect(screen.getByTestId("needs-reindex")).toBeInTheDocument());
+        expect(screen.queryByTestId("reindex-progress")).not.toBeInTheDocument();
+        expect(screen.getByTestId("reindex-button")).toBeEnabled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("says a reindex runs that it cannot follow when the server cannot name its job, and polls", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        atQuery("projectId=proj_1");
         statusMock.mockResolvedValue(makeStatus());
         coverageMock.mockResolvedValue(running(null));
 
         render(<AdminEmbeddingsPage />, { wrapper: makeWrapper() });
 
         await waitFor(() => expect(screen.getByTestId("reindex-elsewhere")).toBeInTheDocument());
+        // #2196 — neutral: the run may be this process's own, or the CLI's.
+        expect(screen.getByTestId("reindex-elsewhere")).toHaveTextContent(
+          "A reindex is running for this project that this page cannot follow.",
+        );
+        expect(screen.getByTestId("reindex-elsewhere")).not.toHaveTextContent(/server process/);
         expect(screen.getByTestId("reindex-in-progress")).toBeInTheDocument();
         expect(screen.getByTestId("reindex-button")).toBeDisabled();
         expect(screen.queryByTestId("reindex-progress")).not.toBeInTheDocument();

@@ -981,8 +981,21 @@ async function runSourceIngest(
       });
     }
     await writer.write(true);
-    const reportProgress = () =>
-      options.onProgress?.({ processed: state.processed, total: state.selected });
+    // #2196 — the caller's callback runs inside the per-file worker: a throw
+    // there must not fail the ingest. Logged once, not once per file.
+    let progressThrowLogged = false;
+    const reportProgress = () => {
+      try {
+        options.onProgress?.({ processed: state.processed, total: state.selected });
+      } catch (err) {
+        if (progressThrowLogged) return;
+        progressThrowLogged = true;
+        log.warn("ingestSourceAsKnowledge: progress callback threw; the ingest carries on", {
+          connectorId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    };
     reportProgress();
 
     const ctx = unitContext(projectId, connectorId, "repo", actorId);

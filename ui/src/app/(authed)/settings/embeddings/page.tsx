@@ -9,6 +9,7 @@
  * to the active backend's dimension after switching backends.
  */
 import { useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError } from "@/lib/api-client";
 import { embeddingsApi } from "@/lib/embeddings-api";
@@ -21,13 +22,25 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { PageHeader } from "@/components/ui/page-header";
 
-/** Issue #1579 — the query parameter that keeps the checked project across a reload. */
-const PROJECT_PARAM = "project";
+/**
+ * Issue #1579 — the query parameter that keeps the checked project across a
+ * reload. `projectId`, as on the other settings pages (#2196).
+ */
+const PROJECT_PARAM = "projectId";
 /** Issue #1579 — how often coverage is re-read while a reindex runs that this page cannot follow. */
 const RUNNING_POLL_MS = 5000;
+/**
+ * Issue #2196 — how often coverage is re-read while the page follows a job. The
+ * job's own events drive the progress bar; this slow read only notices a run
+ * that ended without one (its server process died), so the bar cannot freeze.
+ */
+const FOLLOWING_POLL_MS = 15_000;
 
 export default function AdminEmbeddingsPage() {
   const qc = useQueryClient();
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const urlProjectId = searchParams?.get(PROJECT_PARAM)?.trim() ?? "";
   const [projectId, setProjectId] = useState("");
   const [submittedProjectId, setSubmittedProjectId] = useState("");
   // Issue #423 — the reindex is async now: the POST returns a `jobId` we
@@ -35,6 +48,9 @@ export default function AdminEmbeddingsPage() {
   // is stashed here for a persistent at-a-glance confirmation (the toast is the
   // transient terminal feedback).
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
+  // Issue #2196 — when the page's own job was enqueued, so a coverage read
+  // taken after it can tell a run that died from one not yet visible.
+  const [activeJobSince, setActiveJobSince] = useState(0);
   const [lastReindexMessage, setLastReindexMessage] = useState<string | null>(null);
   // Issue #1579 — the last job this page saw end, so coverage read a moment
   // before the run released its guard cannot send the page back to it.
@@ -43,12 +59,11 @@ export default function AdminEmbeddingsPage() {
   // Issue #1579 — a reload used to drop the project, and with it any sign of the
   // reindex running for it. The checked project lives in the URL instead.
   useEffect(() => {
-    const fromUrl = new URLSearchParams(window.location.search).get(PROJECT_PARAM)?.trim();
-    if (fromUrl) {
-      setProjectId(fromUrl);
-      setSubmittedProjectId(fromUrl);
+    if (urlProjectId) {
+      setProjectId(urlProjectId);
+      setSubmittedProjectId(urlProjectId);
     }
-  }, []);
+  }, [urlProjectId]);
 
   const status = useQuery({
     queryKey: queryKeys.admin.embeddings(),
@@ -60,12 +75,14 @@ export default function AdminEmbeddingsPage() {
     queryFn: () => embeddingsApi.coverage(submittedProjectId),
     enabled: submittedProjectId.length > 0,
     // A reindex is running and this page has no job of it to follow (another
-    // replica or the CLI runs it): re-read until it ends.
+    // replica or the CLI runs it, or coverage still names the job this page saw
+    // end): re-read until it ends. While following a job, re-read slowly (#2196).
     refetchInterval: (query) => {
       const shadow = query.state.data?.shadow;
-      return shadow?.inProgress && (!shadow.jobId || shadow.jobId === finishedJobId)
-        ? RUNNING_POLL_MS
-        : false;
+      if (shadow?.inProgress && (!shadow.jobId || shadow.jobId === finishedJobId)) {
+        return RUNNING_POLL_MS;
+      }
+      return activeJobId !== null || shadow?.inProgress ? FOLLOWING_POLL_MS : false;
     },
   });
 
@@ -75,7 +92,11 @@ export default function AdminEmbeddingsPage() {
   const shadow = coverage.data?.shadow;
   const runningJobId =
     shadow?.inProgress && shadow.jobId && shadow.jobId !== finishedJobId ? shadow.jobId : null;
-  const followedJobId = activeJobId ?? runningJobId;
+  // Issue #2196 — coverage read after the page's own job was enqueued says no
+  // reindex runs: the run died with its server, and no terminal event will come.
+  const activeJobLost =
+    activeJobId !== null && coverage.dataUpdatedAt > activeJobSince && !shadow?.inProgress;
+  const followedJobId = (activeJobLost ? null : activeJobId) ?? runningJobId;
 
   // Subscribe to the in-flight reindex job: drives the progress bar and fires the
   // terminal success/failure toast (the failure text is already the server's
@@ -97,6 +118,7 @@ export default function AdminEmbeddingsPage() {
     mutationFn: (id: string) => embeddingsApi.reindex(id),
     onSuccess: (enqueued) => {
       setLastReindexMessage(null);
+      setActiveJobSince(Date.now());
       setActiveJobId(enqueued.jobId);
     },
   });
@@ -221,9 +243,9 @@ export default function AdminEmbeddingsPage() {
             setLastReindexMessage(null);
             setActiveJobId(null);
             setSubmittedProjectId(id);
-            const url = new URL(window.location.href);
-            url.searchParams.set(PROJECT_PARAM, id);
-            window.history.replaceState(window.history.state, "", url);
+            const params = new URLSearchParams(searchParams?.toString() ?? "");
+            params.set(PROJECT_PARAM, id);
+            router.replace(`/settings/embeddings?${params.toString()}`);
           }}
         >
           <div className="flex-1 max-w-md">
@@ -305,8 +327,8 @@ export default function AdminEmbeddingsPage() {
                 />
               ) : shadow?.inProgress ? (
                 <p className="text-sm text-muted-foreground" data-testid="reindex-elsewhere">
-                  A reindex is running for this project on another server process. This page checks
-                  again every few seconds.
+                  A reindex is running for this project that this page cannot follow. This page
+                  checks again every few seconds.
                 </p>
               ) : null}
 
