@@ -17,6 +17,7 @@
  * via `setOrchestratorForTests`.
  */
 import { Router, type Request, type Response, type NextFunction } from "express";
+import type { Prisma } from "@prisma/client";
 import {
   type ApiResponse,
   ANALYSIS_SPECIALIST_AGENT_KEYS,
@@ -215,6 +216,8 @@ async function promoteAndNote(
  * when the list was replaced by another extraction run meanwhile, nothing is
  * written, so the request is refused (409) rather than answered 200 with an
  * `updatedRequirements` that was never stored; the caller re-reads the new list.
+ * #2142 — written in `tx`, the transaction that commits the round, so the
+ * refusal rolls the round back with it.
  */
 async function persistClarifiedRound(
   analysisId: string,
@@ -223,12 +226,14 @@ async function persistClarifiedRound(
     state: Parameters<typeof addressedAmbiguities>[0];
     updatedRequirements: StructuredRequirements;
   },
+  tx: Prisma.TransactionClient,
 ): Promise<void> {
   const written = await persistClarifiedRequirements(
     analysisId,
     before,
     result.updatedRequirements,
     addressedAmbiguities(result.state),
+    tx,
   );
   if (!written) {
     throw new AppError(
@@ -1117,12 +1122,13 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
         // requirements so they reach `Analysis.metadata` and flow downstream
         // into synthesis (#212). Issue #1602 — merged onto the list as it is
         // now, not written from the copy read before the model call, so a
-        // requirement synthesis offered meanwhile (#1569) survives. #1668 —
-        // before the round is written to the dialog state, so a 409 for a
-        // replaced list leaves the round open to answer again.
+        // requirement synthesis offered meanwhile (#1569) survives. #1668 /
+        // #2142 — in the transaction that writes the round to the dialog
+        // state, so a 409 for a replaced list rolls the round back with it and
+        // leaves it open to answer again.
         const result = await runInAnalysisUsageScope(usageScope, () =>
-          dialog.submitAnswers(analysisId, answers, requirements, undefined, (round) =>
-            persistClarifiedRound(analysisId, requirements, round),
+          dialog.submitAnswers(analysisId, answers, requirements, undefined, (round, tx) =>
+            persistClarifiedRound(analysisId, requirements, round, tx),
           ),
         );
         // Issue #1116 — and into the ARTIFACT path. `structuredRequirements` is
@@ -1540,10 +1546,10 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
           governingQuestions: governingQuestionSourceFor({ analysisId, projectId, provider }),
         });
         // Issue #1602 — merged onto the list as it is now, as the JSON submit is,
-        // and (#1668) before the round is written to the dialog state.
+        // and (#1668 / #2142) in the transaction that writes the round.
         const result = await runInAnalysisUsageScope({ projectId, sessionId: analysisId }, () =>
-          dialog.submitAnswers(analysisId, applied, requirements, undefined, (round) =>
-            persistClarifiedRound(analysisId, requirements, round),
+          dialog.submitAnswers(analysisId, applied, requirements, undefined, (round, tx) =>
+            persistClarifiedRound(analysisId, requirements, round, tx),
           ),
         );
         written = result.state;

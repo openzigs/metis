@@ -8,18 +8,23 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockTable = {
   findUnique: vi.fn(),
+  create: vi.fn(),
   upsert: vi.fn(),
   updateMany: vi.fn(),
   deleteMany: vi.fn(),
 };
 
+/** #2142 — the transaction client is the same fake, marked so a test can tell. */
+const txClient = { clarificationDialogState: mockTable, inTransaction: true };
 const mockPrisma = {
   clarificationDialogState: mockTable,
+  $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(txClient)),
 };
 
 vi.mock("../src/lib/prisma.js", () => ({ prisma: mockPrisma }));
 
 const {
+  commitDialogState,
   readDialogState,
   readDialogStateRevision,
   replaceDialogState,
@@ -121,6 +126,56 @@ describe("clarification-dialog-store", () => {
     it("returns null when the row changed since it was read", async () => {
       mockTable.updateMany.mockResolvedValue({ count: 0 });
       expect(await replaceDialogState("a-1", "rev-0", makeState())).toBeNull();
+    });
+
+    // #2142 — a start that read no row.
+    it("with no revision, creates the row and returns its revision", async () => {
+      const state = makeState();
+      mockTable.create.mockResolvedValue({});
+      expect(await replaceDialogState("a-1", undefined, state)).toBe(JSON.stringify(state));
+      expect(mockTable.create).toHaveBeenCalledWith({
+        data: { analysisId: "a-1", state: JSON.stringify(state) },
+      });
+      expect(mockTable.updateMany).not.toHaveBeenCalled();
+      expect(mockTable.upsert).not.toHaveBeenCalled();
+    });
+
+    it("with no revision, returns null when another writer created the row first", async () => {
+      mockTable.create.mockRejectedValue(Object.assign(new Error("unique"), { code: "P2002" }));
+      expect(await replaceDialogState("a-1", undefined, makeState())).toBeNull();
+    });
+
+    it("with no revision, rethrows any other failure", async () => {
+      mockTable.create.mockRejectedValue(new Error("disk full"));
+      await expect(replaceDialogState("a-1", undefined, makeState())).rejects.toThrow("disk full");
+    });
+  });
+
+  // #2142 — the submit's round and its requirements, in one transaction.
+  describe("commitDialogState", () => {
+    it("writes the state in the transaction and runs alongside with that transaction", async () => {
+      const state = makeState();
+      mockTable.updateMany.mockResolvedValue({ count: 1 });
+      const alongside = vi.fn(async () => {});
+      expect(await commitDialogState("a-1", "rev-0", state, alongside)).toBe(JSON.stringify(state));
+      expect(mockPrisma.$transaction).toHaveBeenCalledTimes(1);
+      expect(alongside).toHaveBeenCalledWith(txClient);
+    });
+
+    it("runs nothing alongside when the compare-and-set finds the row changed", async () => {
+      mockTable.updateMany.mockResolvedValue({ count: 0 });
+      const alongside = vi.fn(async () => {});
+      expect(await commitDialogState("a-1", "rev-0", makeState(), alongside)).toBeNull();
+      expect(alongside).not.toHaveBeenCalled();
+    });
+
+    it("rethrows alongside's failure out of the transaction, so it rolls back", async () => {
+      mockTable.updateMany.mockResolvedValue({ count: 1 });
+      await expect(
+        commitDialogState("a-1", "rev-0", makeState(), async () => {
+          throw new Error("REQUIREMENTS_REPLACED");
+        }),
+      ).rejects.toThrow("REQUIREMENTS_REPLACED");
     });
   });
 

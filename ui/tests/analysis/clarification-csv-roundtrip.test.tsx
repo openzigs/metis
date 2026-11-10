@@ -154,7 +154,11 @@ describe("ClarificationDialogPanel CSV round-trip", () => {
     fireEvent.change(screen.getByTestId("clarify-import-input"), { target: { files: [file] } });
 
     await waitFor(() => expect(onComplete).toHaveBeenCalledWith());
-    expect(toast.error).toHaveBeenCalledWith("round no longer open");
+    // #2142 — the submit's words, not the server's raw text.
+    expect(toast.error).toHaveBeenCalledWith(
+      "This round was already answered. Showing the current questions.",
+    );
+    expect(toast.error).not.toHaveBeenCalledWith("round no longer open");
   });
 
   it("does not read the dialog again for any other import failure", async () => {
