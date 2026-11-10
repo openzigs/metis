@@ -2756,9 +2756,9 @@ the pre-#1873 code).
   no carried call again. A failed call is not remembered. `carryAnswersOver` reports each
   judging in `judgedNow` with whether it settled a pair: one that settled nothing is
   remembered at once, and (#2133) one that settled is remembered only after the write, so a
-  write that throws leaves it to be judged again. Both maps are process-local: on another replica the next round
-  may ask what a carry here settles, as before #2122. `settle`'s left-open count reads only the
-  questions' own settlements (#2016/#2022 backoff).
+  write that throws leaves it to be judged again. Both maps are process-local: on another
+  replica the next round may ask what a carry here settles, as before #2122. `settle`'s
+  left-open count reads only the questions' own settlements (#2016/#2022 backoff).
 - **Findings that ask (#2059).** A pair that `applies` is never `uncertain`, but its finding can
   be `needs-ba-input` with a `businessQuestion`. While the stored applicability has an `applies`
   pair, `open` also reads the analysis's `needs-ba-input` rows of
