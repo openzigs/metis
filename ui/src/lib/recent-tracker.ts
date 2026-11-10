@@ -94,6 +94,35 @@ export const recentTracker = {
 export const _MAX_PER_KIND = MAX_PER_KIND;
 
 /**
+ * #2187 — Recent as the server sees it. The tracker lives in the browser, keeps
+ * entries forever and is shared by everyone who signs in on that browser, so
+ * walkthrough run 10 found seven untitled "New Chat" sessions in Workbench
+ * Recent that `/sessions` did not list (`c-10-7`). A session entry is kept only
+ * while the server still lists it among the caller's resumable sessions — the
+ * list `/sessions` shows — and is labelled with the title the server holds.
+ * Analysis entries pass through unchanged.
+ */
+export function reconcileRecentSessions(
+  entries: readonly RecentEntry[],
+  resumable: ReadonlyArray<{ id: string; title: string }>,
+  /** When the server's answer was read (ms). A session touched after it is
+   *  newer than the answer, which cannot vouch for it either way, so it stays
+   *  listed under the tracker's label until the next answer (#2199 review). */
+  answeredAtMs?: number,
+): RecentEntry[] {
+  const titles = new Map(resumable.map((s) => [s.id, s.title]));
+  return entries.flatMap((e) => {
+    if (e.kind !== "session") return [e];
+    const title = titles.get(e.id);
+    if (title === undefined) {
+      const touched = Date.parse(e.touchedAt);
+      return answeredAtMs !== undefined && touched > answeredAtMs ? [e] : [];
+    }
+    return [{ ...e, label: title || e.label }];
+  });
+}
+
+/**
  * #1139 — the session's title once a turn has been stored: the title Recent
  * lists it under. This is the server's own rename (#980), applied to the same
  * inputs, so the label is the title the server now holds: a session still

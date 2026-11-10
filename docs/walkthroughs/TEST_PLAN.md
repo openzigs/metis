@@ -517,7 +517,7 @@ substance, as for the answer key.
 ### Phase 10 — Chat with citations
 - **Steps:**
   1. In `/chat`, pick the project scope (`components/chat/project-scope-selector`) and ask the BA questions below (`POST /api/ai/stream`, sessions via `/api/ai/sessions`).
-  2. Also try `/workbench`.
+  2. Also try `/workbench`. Its **Recent** panel lists only sessions that `/sessions` also lists, under the same titles; an expired session, or one belonging to another persona signed in on the same browser, is not listed (#2187).
   3. Resume, fork and compact a session (`/api/ai/sessions/:id/resume|fork|compact`), and check `/sessions`: each row names its session after the first question and shows its project (linked) and last activity (#738). `GET /api/ai/sessions` with no filter lists your own sessions, newest first, with `page.hasMore` (`?limit=&offset=`); another user's sessions never appear.
   4. In one project-scoped session, ask BA question 1, then follow up with `Show me the exact lines for the first citation`.
 - **Works:** answers stream, tool activity renders, there is no scope-degradation notice (unless retrieval is genuinely empty), and fork and compact keep the history.
@@ -525,7 +525,7 @@ substance, as for the answer key.
 
 ### Phase 11 — Discussions, presence, comments and mentions
 - **Steps:**
-  1. In `/projects/:id/discussions`, create a thread (`POST /api/discussions/threads`), post a message that mentions a second user, and ask for an AI reply (`POST …/threads/:id/ai-respond`).
+  1. In `/projects/:id/discussions`, create a thread about a requirement: give it a title, pick the requirement under **About requirement (optional)** (`GET /api/discussions/requirements?projectId=…&q=…`, #2187), then **Start discussion** (`POST /api/discussions/threads` with `anchor.requirementId`). Post a message that mentions a second user, and ask for an AI reply (`POST …/threads/:id/ai-respond`).
   2. Open `/projects/:id/discussions/:discussionId` as a second user too, to check presence. **[2nd user]**: operator-run or operator-approved ("Second-user steps"), or verify presence from the database and say so. J1.4b and J1.4c repeat the two-user checks on the analyst's own project, so a run short of time may record this phase's second-user steps as covered there.
   3. Comment on a requirement and reply to it (`POST /api/requirements/:reqId/comments`, then `POST /api/comments/:threadId/replies`).
   4. Edit, then delete, one of your own discussion messages (`PATCH` / `DELETE /api/discussions/threads/:id/messages/:messageId`, #734) while the second context has the thread open. As the second user, look for **Edit** and **Delete** on that message (a UI check; never call the API as them).
@@ -535,6 +535,7 @@ substance, as for the answer key.
   - The mentioned user gets a notification (`/api/notifications`) that names the author and opens the comment (#735).
   - Edit and delete work for requirement comments and for discussion messages. A discussion edit is marked "(edited)" and appears live in the other context, and a deletion disappears there live. The second user sees no **Edit** or **Delete** on the first user's message (#734; the server's 403 for that call is covered by `server/src/routes/discussions.multi-member.test.ts`).
   - A teammate's live discussion message shows their display name, not a raw user id (#734).
+  - The list shows *About: <requirement title>* under the thread, and the thread page's header links to that requirement on its run's Requirements tab (#2187).
 - **Useful:** the AI reply cites project sources and answers the thread's question about Miniflux.
 
 ### Phase 12 — Publishing (issues, PRs, batches) — sandbox only

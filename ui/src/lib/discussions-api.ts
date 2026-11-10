@@ -24,6 +24,30 @@ export interface DiscussionThread {
   createdById: string;
   createdAt: string;
   updatedAt?: string;
+  /**
+   * #2187 — the requirement the thread is about, by title (list reads only);
+   * null when none is attached or it was deleted.
+   */
+  requirement?: DiscussionRequirementRef | null;
+}
+
+/** #2187 — a requirement a thread can be attached to, as the picker lists it. */
+export interface DiscussionRequirementRef {
+  id: string;
+  title: string;
+  analysisId: string;
+  /** Set on picker results; tells apart same-titled requirements of two runs. */
+  createdAt?: string;
+}
+
+/** #2187 — where a requirement opens: its run's Requirements tab, scrolled to it. */
+export function requirementHref(projectId: string, req: DiscussionRequirementRef): string {
+  const qs = new URLSearchParams({
+    analysisId: req.analysisId,
+    tab: "requirements",
+    requirementId: req.id,
+  });
+  return `/projects/${encodeURIComponent(projectId)}/analysis?${qs.toString()}`;
 }
 
 /** A discussion message with full human/AI attribution. */
@@ -77,6 +101,23 @@ export async function createThread(input: {
     method: "POST",
     body: input,
   });
+}
+
+/**
+ * #2187 — the project's requirements a thread can be attached to, matched on
+ * title (newest first, at most 20).
+ */
+export async function searchThreadRequirements(
+  projectId: string,
+  q?: string,
+): Promise<DiscussionRequirementRef[]> {
+  const params = new URLSearchParams({ projectId });
+  if (q?.trim()) params.set("q", q.trim());
+  return (
+    (await apiFetch<DiscussionRequirementRef[]>(
+      `/discussions/requirements?${params.toString()}`,
+    )) ?? []
+  );
 }
 
 /** A thread anchor — at most one of these is set per update. */

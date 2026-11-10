@@ -17,7 +17,8 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { createThread, listThreads } from "@/lib/discussions-api";
+import { createThread, listThreads, type DiscussionRequirementRef } from "@/lib/discussions-api";
+import { DiscussionRequirementPicker } from "@/components/chat/discussion-requirement-picker";
 import { useSocket } from "@/lib/socket-client";
 import { keepSubscribed } from "@/lib/socket-subscription";
 import { projectJoin } from "@/lib/socket-rooms";
@@ -30,6 +31,8 @@ export default function DiscussionsListPage() {
   const queryClient = useQueryClient();
   const [title, setTitle] = useState("");
   const [creating, setCreating] = useState(false);
+  // #2187 — the requirement the new discussion is about (optional).
+  const [requirement, setRequirement] = useState<DiscussionRequirementRef | null>(null);
 
   const {
     data: threads = [],
@@ -69,6 +72,7 @@ export default function DiscussionsListPage() {
       const thread = await createThread({
         projectId,
         ...(title.trim() ? { title: title.trim() } : {}),
+        ...(requirement ? { anchor: { requirementId: requirement.id } } : {}),
       });
       await queryClient.invalidateQueries({ queryKey: ["discussions", projectId] });
       router.push(`/projects/${projectId}/discussions/${thread.id}`);
@@ -86,22 +90,32 @@ export default function DiscussionsListPage() {
         description="Collaborate with your team and the AI participant in a shared, realtime thread."
       />
 
-      <Card className="flex flex-col gap-2 p-4 sm:flex-row sm:items-end">
-        <div className="flex-1">
-          <label htmlFor="new-discussion-title" className="text-sm font-medium">
-            New discussion
-          </label>
-          <Input
-            id="new-discussion-title"
-            placeholder="Optional title…"
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
+      <Card className="flex flex-col gap-3 p-4">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+          <div className="flex-1">
+            <label htmlFor="new-discussion-title" className="text-sm font-medium">
+              New discussion
+            </label>
+            <Input
+              id="new-discussion-title"
+              placeholder="Optional title…"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              disabled={creating}
+            />
+          </div>
+          <Button onClick={() => void handleCreate()} disabled={creating || !projectId}>
+            {creating ? "Creating…" : "Start discussion"}
+          </Button>
+        </div>
+        {projectId ? (
+          <DiscussionRequirementPicker
+            projectId={projectId}
+            value={requirement}
+            onChange={setRequirement}
             disabled={creating}
           />
-        </div>
-        <Button onClick={() => void handleCreate()} disabled={creating || !projectId}>
-          {creating ? "Creating…" : "Start discussion"}
-        </Button>
+        ) : null}
       </Card>
 
       {error ? (
@@ -125,8 +139,17 @@ export default function DiscussionsListPage() {
                 href={`/projects/${projectId}/discussions/${t.id}`}
                 className="flex items-center justify-between rounded-md border border-border p-3 text-sm transition-colors hover:bg-accent"
               >
-                <span className="font-medium">{t.title || "Untitled discussion"}</span>
-                <span className="text-xs text-muted-foreground">AI: {t.aiResponseMode}</span>
+                <span className="flex min-w-0 flex-col">
+                  <span className="font-medium">{t.title || "Untitled discussion"}</span>
+                  {t.requirement ? (
+                    <span className="truncate text-xs text-muted-foreground">
+                      About: {t.requirement.title}
+                    </span>
+                  ) : null}
+                </span>
+                <span className="shrink-0 text-xs text-muted-foreground">
+                  AI: {t.aiResponseMode}
+                </span>
               </Link>
             </li>
           ))}

@@ -47,6 +47,7 @@ const messageFindFirst = vi.fn();
 const aiTokenUsageCreate = vi.fn();
 const analysisFindFirst = vi.fn();
 const requirementFindFirst = vi.fn();
+const requirementFindMany = vi.fn();
 const specKitFeatureFindFirst = vi.fn();
 vi.mock("../lib/prisma.js", () => ({
   prisma: {
@@ -63,7 +64,10 @@ vi.mock("../lib/prisma.js", () => ({
     },
     aiTokenUsage: { create: (...a: unknown[]) => aiTokenUsageCreate(...a) },
     analysis: { findFirst: (...a: unknown[]) => analysisFindFirst(...a) },
-    requirement: { findFirst: (...a: unknown[]) => requirementFindFirst(...a) },
+    requirement: {
+      findFirst: (...a: unknown[]) => requirementFindFirst(...a),
+      findMany: (...a: unknown[]) => requirementFindMany(...a),
+    },
     specKitFeature: { findFirst: (...a: unknown[]) => specKitFeatureFindFirst(...a) },
   },
 }));
@@ -404,6 +408,116 @@ describe("discussions routes", () => {
 
     it("rejects a missing projectId with 400", async () => {
       const res = await request(app).get("/discussions/threads");
+      expect(res.status).toBe(400);
+      expect(canAccessProjectDiscussions).not.toHaveBeenCalled();
+    });
+  });
+
+  // #2187 — a thread attached to a requirement says which one, so the list and
+  // the thread page can link to it by title, not by a pasted id.
+  describe("GET /threads — the attached requirement (#2187)", () => {
+    it("returns each thread's live requirement as { id, title, analysisId }", async () => {
+      canAccessProjectDiscussions.mockResolvedValue(true);
+      threadFindMany.mockResolvedValue([
+        {
+          id: "t1",
+          requirementId: "r1",
+          requirement: { id: "r1", title: "Mark all as read", analysisId: "a1", deletedAt: null },
+        },
+        { id: "t2", requirementId: null, requirement: null },
+      ]);
+      const res = await request(app).get("/discussions/threads?projectId=p1");
+      expect(res.status).toBe(200);
+      expect(res.body.data[0].requirement).toEqual({
+        id: "r1",
+        title: "Mark all as read",
+        analysisId: "a1",
+      });
+      expect(res.body.data[1].requirement).toBeNull();
+      expect(threadFindMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          select: expect.objectContaining({
+            requirement: {
+              select: { id: true, title: true, analysisId: true, deletedAt: true },
+            },
+          }),
+        }),
+      );
+    });
+
+    it("reports a soft-deleted requirement as no requirement", async () => {
+      canAccessProjectDiscussions.mockResolvedValue(true);
+      threadFindMany.mockResolvedValue([
+        {
+          id: "t1",
+          requirementId: "r1",
+          requirement: { id: "r1", title: "Gone", analysisId: "a1", deletedAt: new Date() },
+        },
+      ]);
+      const res = await request(app).get("/discussions/threads?projectId=p1");
+      expect(res.body.data[0].requirement).toBeNull();
+    });
+  });
+
+  // #2187 — the requirement picker behind "About requirement": the project's
+  // own requirements, matched on title, for a project member only.
+  describe("GET /requirements (#2187 — requirement picker)", () => {
+    const rows = [
+      { id: "r3", title: "Mark ALL entries as read", analysisId: "a2", createdAt: new Date() },
+      { id: "r2", title: "Metrics endpoint auth", analysisId: "a2", createdAt: new Date() },
+      { id: "r1", title: "Mark all as read before date", analysisId: "a1", createdAt: new Date() },
+    ];
+
+    it("lists the project's live requirements, newest first, scoped to the project", async () => {
+      canAccessProjectDiscussions.mockResolvedValue(true);
+      requirementFindMany.mockResolvedValue(rows);
+      const res = await request(app).get("/discussions/requirements?projectId=p1");
+      expect(res.status).toBe(200);
+      expect(res.body.data.map((r: { id: string }) => r.id)).toEqual(["r3", "r2", "r1"]);
+      expect(res.body.data[0]).toEqual({
+        id: "r3",
+        title: "Mark ALL entries as read",
+        analysisId: "a2",
+        createdAt: expect.any(String),
+      });
+      expect(requirementFindMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { projectId: "p1", deletedAt: null, analysis: { deletedAt: null } },
+          orderBy: { createdAt: "desc" },
+        }),
+      );
+    });
+
+    it("matches the term case-insensitively on the title", async () => {
+      canAccessProjectDiscussions.mockResolvedValue(true);
+      requirementFindMany.mockResolvedValue(rows);
+      const res = await request(app).get("/discussions/requirements?projectId=p1&q=mark%20all");
+      expect(res.body.data.map((r: { id: string }) => r.id)).toEqual(["r3", "r1"]);
+    });
+
+    it("answers at most 20 matches", async () => {
+      canAccessProjectDiscussions.mockResolvedValue(true);
+      requirementFindMany.mockResolvedValue(
+        Array.from({ length: 30 }, (_, i) => ({
+          id: `r${i}`,
+          title: `Requirement ${i}`,
+          analysisId: "a1",
+          createdAt: new Date(),
+        })),
+      );
+      const res = await request(app).get("/discussions/requirements?projectId=p1");
+      expect(res.body.data).toHaveLength(20);
+    });
+
+    it("404s a non-member before reading any requirement", async () => {
+      canAccessProjectDiscussions.mockResolvedValue(false);
+      const res = await request(app).get("/discussions/requirements?projectId=p1");
+      expect(res.status).toBe(404);
+      expect(requirementFindMany).not.toHaveBeenCalled();
+    });
+
+    it("400s without a projectId", async () => {
+      const res = await request(app).get("/discussions/requirements");
       expect(res.status).toBe(400);
       expect(canAccessProjectDiscussions).not.toHaveBeenCalled();
     });
