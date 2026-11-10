@@ -24,6 +24,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { HoverHint } from "@/components/spec-kit/hover-hint";
 import {
   Select,
   SelectContent,
@@ -35,6 +36,13 @@ import {
 export interface DataMappingsPanelProps {
   projectId: string;
   requirementId: string;
+  /**
+   * #1591 — why the viewer cannot change this requirement's mappings (they lack
+   * `connector.write`, which add, remove and suggest all require). Set: those
+   * controls are disabled and carry this hint, and the add form and the
+   * suggestions are not offered. Omitted: they are enabled.
+   */
+  writeHint?: string;
 }
 
 export function dataMappingsKey(projectId: string, requirementId: string) {
@@ -66,6 +74,7 @@ function targetPath(m: {
 export function DataMappingsPanel({
   projectId,
   requirementId,
+  writeHint,
 }: DataMappingsPanelProps): React.ReactElement {
   const qc = useQueryClient();
   const [showForm, setShowForm] = useState(false);
@@ -173,6 +182,9 @@ export function DataMappingsPanel({
   }
 
   const list = mappings.data ?? [];
+  // #1591 — a hint set while the form or the suggestions are open (auth
+  // refetched mid-session) closes them, so nothing is sent past the hint.
+  const formOpen = showForm && !writeHint;
 
   return (
     <section
@@ -185,22 +197,27 @@ export function DataMappingsPanel({
           Data mappings
         </h4>
         <div className="flex gap-1">
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => setShowForm((v) => !v)}
-            aria-expanded={showForm}
-          >
-            {showForm ? "Cancel" : "Add mapping"}
-          </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => suggestMutation.mutate()}
-            disabled={suggestMutation.isPending}
-          >
-            {suggestMutation.isPending ? "Suggesting…" : "Suggest mappings"}
-          </Button>
+          <HoverHint hint={writeHint}>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setShowForm((v) => !v)}
+              aria-expanded={formOpen}
+              disabled={Boolean(writeHint)}
+            >
+              {formOpen ? "Cancel" : "Add mapping"}
+            </Button>
+          </HoverHint>
+          <HoverHint hint={writeHint}>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => suggestMutation.mutate()}
+              disabled={suggestMutation.isPending || Boolean(writeHint)}
+            >
+              {suggestMutation.isPending ? "Suggesting…" : "Suggest mappings"}
+            </Button>
+          </HoverHint>
         </div>
       </div>
 
@@ -236,22 +253,24 @@ export function DataMappingsPanel({
                   {m.note ? ` · ${m.note}` : ""}
                 </div>
               </div>
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => removeMutation.mutate(m.id)}
-                disabled={removeMutation.isPending}
-                aria-label={`Remove mapping ${targetPath(m)}`}
-              >
-                Remove
-              </Button>
+              <HoverHint hint={writeHint}>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => removeMutation.mutate(m.id)}
+                  disabled={removeMutation.isPending || Boolean(writeHint)}
+                  aria-label={`Remove mapping ${targetPath(m)}`}
+                >
+                  Remove
+                </Button>
+              </HoverHint>
             </li>
           ))}
         </ul>
       )}
 
       {/* Add-mapping form */}
-      {showForm ? (
+      {formOpen ? (
         <form onSubmit={submitForm} className="mt-3 space-y-2 border-t border-border pt-3">
           <div>
             <Label htmlFor="dm-connector">Database connector</Label>
@@ -317,7 +336,7 @@ export function DataMappingsPanel({
       ) : null}
 
       {/* Suggested candidates */}
-      {candidates ? (
+      {candidates && !writeHint ? (
         <div
           className="mt-3 border-t border-border pt-3"
           aria-label="Suggested data mappings"

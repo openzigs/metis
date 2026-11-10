@@ -185,7 +185,7 @@ import {
   runSpendLabel,
 } from "@/components/analysis/analysis-usage-header";
 import { runTokensLabel } from "@/lib/run-tokens";
-import { REQUIRES_PROJECT_UPDATE } from "@/lib/permission-hints";
+import { REQUIRES_CONNECTOR_WRITE, REQUIRES_PROJECT_UPDATE } from "@/lib/permission-hints";
 import { PortfolioCheckLink } from "@/components/portfolio/portfolio-check-link";
 
 const SPECIALIST_AGENTS: AnalysisAgentKey[] = ["document", "code", "database", "web"];
@@ -506,6 +506,10 @@ export default function AnalysisPage(): React.ReactElement {
   // gets the controls disabled with the reason rather than a 403 afterwards.
   const canEditRequirements = user?.permissions.includes("project.update") ?? false;
   const requirementWriteHint = canEditRequirements ? undefined : REQUIRES_PROJECT_UPDATE;
+  // #1591 — a requirement's data mappings are `connector.write` writes.
+  const dataMappingWriteHint = user?.permissions.includes("connector.write")
+    ? undefined
+    : REQUIRES_CONNECTOR_WRITE;
   // #1833 — re-running the code evaluation is the agent Regenerate, an
   // `analysis.run` write server-side: a viewer without it is offered no re-run.
   const canRunAnalysis = user?.permissions.includes("analysis.run") ?? false;
@@ -1434,11 +1438,18 @@ export default function AnalysisPage(): React.ReactElement {
                               ))}
                             </div>
                           ) : null}
-                          <DataMappingsPanel projectId={projectId} requirementId={req.id} />
+                          {/* #1591 — mapping writes are `connector.write`; link and
+                            duplicate-answer writes are `project.update`. */}
+                          <DataMappingsPanel
+                            projectId={projectId}
+                            requirementId={req.id}
+                            writeHint={dataMappingWriteHint}
+                          />
                           <RequirementLinksPanel
                             projectId={projectId}
                             requirementId={req.id}
                             workspaceId={project.data?.workspaceId ?? null}
+                            writeHint={requirementWriteHint}
                           />
                           {/* #1838 — similar requirements and the duplicate warning;
                             #1840 — "Start from these citations" for an editor. */}
@@ -1446,6 +1457,7 @@ export default function AnalysisPage(): React.ReactElement {
                             projectId={projectId}
                             requirementId={req.id}
                             canEdit={canEditRequirements}
+                            writeHint={requirementWriteHint}
                           />
                           <div className="mt-3 border-t border-border pt-3">
                             <TraceabilityView

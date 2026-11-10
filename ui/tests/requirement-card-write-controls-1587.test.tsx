@@ -51,7 +51,11 @@ import { CriteriaProposalsSummary } from "@/components/requirements/CriteriaProp
 import { SourceDivergenceNotice } from "@/components/requirements/SourceDivergenceNotice";
 import { REQUIRES_PROJECT_UPDATE } from "@/lib/permission-hints";
 
-/** As the Analysis page derives it (#1566): a hint only without `project.update`. */
+/**
+ * Fixture: the hint each role is rendered with, written the way the Analysis
+ * page derives it (#1566). A test-local copy, so nothing here asserts the
+ * page's own derivation; #1591 dropped the test that only checked this copy.
+ */
 const writeHintFor = (role: RoleKey) =>
   ROLE_PERMISSIONS[role].includes("project.update") ? undefined : REQUIRES_PROJECT_UPDATE;
 
@@ -106,11 +110,6 @@ beforeEach(() => {
 
 describe("#1587 — a developer cannot reach the card's project.update writes", () => {
   const hint = writeHintFor("developer");
-
-  it("the hint is set for a developer and not for a coordinator", () => {
-    expect(hint).toBe("Requires project.update");
-    expect(writeHintFor("coordinator")).toBeUndefined();
-  });
 
   it("assignee picker: Add and Remove are disabled with the hint; nothing is sent", async () => {
     renderWith(<AssigneePicker requirementId="req-1" projectId="p1" writeHint={hint} />);

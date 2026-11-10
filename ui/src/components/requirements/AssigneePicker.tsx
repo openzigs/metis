@@ -132,7 +132,9 @@ export function AssigneePicker({
         </HoverHint>
       </div>
 
-      {open && (
+      {/* #1591 — not on `open` alone: a hint set while the search is open (auth
+        refetched mid-session) closes it, so no assign can be sent past it. */}
+      {open && !writeHint && (
         <div className="absolute z-50 mt-1 w-56 rounded-md border bg-popover shadow-md">
           <div className="p-2">
             <Input

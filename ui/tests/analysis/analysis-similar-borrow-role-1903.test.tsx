@@ -272,3 +272,34 @@ describe("Analysis page — 'Start from these citations' follows the viewer's ro
     expect(screen.queryByRole("button", { name: ACTION })).toBeNull();
   });
 });
+
+// #1591 — the duplicate warning's answers are `project.update` writes too.
+describe("Analysis page — the duplicate warning follows the viewer's role (#1591)", () => {
+  const answers = () => [
+    screen.getByRole("button", { name: "Mark as duplicate of REQ-7 Lot tracking for recalls" }),
+    screen.getByRole("button", { name: "Not a duplicate of REQ-7 Lot tracking for recalls" }),
+  ];
+
+  beforeEach(() => {
+    forRequirement.mockResolvedValue({ items: [{ ...LOT, label: "duplicate" }] });
+  });
+
+  it("disables both answers, with the reason, for a viewer without project.update", async () => {
+    await openRequirements(["project.read", "analysis.read"]);
+    for (const button of answers()) {
+      expect(button).toBeDisabled();
+      expect(button.closest("[data-hover-hint]")).toHaveAttribute(
+        "title",
+        "Requires project.update",
+      );
+    }
+  });
+
+  it("leaves both answers enabled for a viewer with project.update", async () => {
+    await openRequirements(["project.read", "project.update"]);
+    for (const button of answers()) {
+      expect(button).toBeEnabled();
+      expect(button.closest("[data-hover-hint]")).toBeNull();
+    }
+  });
+});

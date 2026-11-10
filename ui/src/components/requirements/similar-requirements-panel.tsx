@@ -50,6 +50,7 @@ import { requirementLinksKey } from "@/components/requirements/requirement-links
 import { traceabilityKey } from "@/components/traceability/traceability-view";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { HoverHint } from "@/components/spec-kit/hover-hint";
 
 /** Debounce before a draft is looked up. */
 export const DRAFT_DEBOUNCE_MS = 500;
@@ -459,10 +460,12 @@ function DuplicateWarning({
   projectId,
   requirementId,
   item,
+  writeHint,
 }: {
   projectId: string;
   requirementId: string;
   item: SimilarRequirementItem;
+  writeHint?: string;
 }): React.ReactElement {
   const queryClient = useQueryClient();
   const refresh = async () => {
@@ -500,24 +503,28 @@ function DuplicateWarning({
         {alreadyLinksText(item)}.
       </p>
       <div className="flex gap-2">
-        <Button
-          size="sm"
-          variant="outline"
-          disabled={busy}
-          onClick={() => mark.mutate()}
-          aria-label={`Mark as duplicate of ${nameOf(item)}`}
-        >
-          Mark as duplicate
-        </Button>
-        <Button
-          size="sm"
-          variant="ghost"
-          disabled={busy}
-          onClick={() => dismiss.mutate()}
-          aria-label={`Not a duplicate of ${nameOf(item)}`}
-        >
-          Not a duplicate
-        </Button>
+        <HoverHint hint={writeHint}>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={busy || Boolean(writeHint)}
+            onClick={() => mark.mutate()}
+            aria-label={`Mark as duplicate of ${nameOf(item)}`}
+          >
+            Mark as duplicate
+          </Button>
+        </HoverHint>
+        <HoverHint hint={writeHint}>
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={busy || Boolean(writeHint)}
+            onClick={() => dismiss.mutate()}
+            aria-label={`Not a duplicate of ${nameOf(item)}`}
+          >
+            Not a duplicate
+          </Button>
+        </HoverHint>
       </div>
     </div>
   );
@@ -527,11 +534,19 @@ export function SimilarRequirementsPanel({
   projectId,
   requirementId,
   canEdit = false,
+  writeHint,
 }: {
   projectId: string;
   requirementId: string;
   /** #1840 — the viewer may edit the requirement (`project.update`): offers "Start from these citations". */
   canEdit?: boolean;
+  /**
+   * #1591 — why the viewer cannot answer the duplicate warning: "Mark as
+   * duplicate" adds a requirement link and "Not a duplicate" is remembered for
+   * the pair, both `project.update` writes server-side. Set: both are disabled
+   * and carry this hint. Omitted: they are enabled.
+   */
+  writeHint?: string;
 }): React.ReactElement {
   const query = useQuery({
     queryKey: similarRequirementsKey(projectId, requirementId),
@@ -558,6 +573,7 @@ export function SimilarRequirementsPanel({
           projectId={projectId}
           requirementId={requirementId}
           item={item}
+          writeHint={writeHint}
         />
       ))}
       {query.isPending ? (
