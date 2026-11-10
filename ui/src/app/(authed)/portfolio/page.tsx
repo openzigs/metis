@@ -23,7 +23,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import { MAX_PAGE_SIZE } from "@metis/shared";
+import { MAX_PAGE_SIZE, type PortfolioAssessmentListItem } from "@metis/shared";
 import { Card } from "@/components/ui/card";
 import { PageHeader } from "@/components/ui/page-header";
 import { ApiError } from "@/lib/api-client";
@@ -40,6 +40,15 @@ const VERDICT_LABEL: Record<string, string> = {
   "gap-confirmed": "Nothing covers it",
   "could-not-verify": "Could not tell",
 };
+
+/**
+ * #1749 — a recent check says whether a product was chosen to build it, so the
+ * with-host and no-host runs of one statement do not read the same.
+ */
+function hostLabel(a: Pick<PortfolioAssessmentListItem, "hostProductId" | "hostProductName">) {
+  if (!a.hostProductId) return "No product chosen to build it";
+  return `Built by ${a.hostProductName ?? "the product chosen"}`;
+}
 
 export default function PortfolioPage() {
   const searchParams = useSearchParams();
@@ -144,7 +153,7 @@ function PortfolioEntry({
                     : a.status === "failed"
                       ? "Failed"
                       : "Running"}{" "}
-                  · {a.productCount} product{a.productCount === 1 ? "" : "s"} ·{" "}
+                  · {a.productCount} product{a.productCount === 1 ? "" : "s"} · {hostLabel(a)} ·{" "}
                   {new Date(a.createdAt).toLocaleString()}
                 </p>
               </li>

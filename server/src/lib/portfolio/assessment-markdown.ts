@@ -37,6 +37,24 @@ const COVERAGE_LABEL: Record<Row["coverage"], string> = {
   restricted: "Restricted",
 };
 
+/**
+ * #1749 — a product's summary in the Products table, without the coverage it
+ * opens with: the Coverage column already says that, so "Does not cover it."
+ * read twice in one row. What the summary adds is kept ("Covers it: Orders
+ * (acme/orders-api)." reads "Orders (acme/orders-api)."); a summary that is
+ * only its coverage leaves the cell empty. A summary about something else (a
+ * downstream product's impact sentence) is kept whole.
+ */
+export function summaryAfterCoverage(summary: string, coverageLabel: string): string {
+  const text = summary.trim();
+  if (!text.toLowerCase().startsWith(coverageLabel.toLowerCase())) return text;
+  const rest = text.slice(coverageLabel.length).replace(/^[\s:.]+/, "");
+  if (rest === "") return "";
+  const reason = /^\((.+)\)\.?$/.exec(rest);
+  if (reason) return `Reason: ${reason[1]}.`;
+  return rest.charAt(0).toUpperCase() + rest.slice(1);
+}
+
 const IMPACT_LABEL: Record<Row["impactKind"], string> = {
   "direct-change": "Must change",
   "downstream-consumer": "Downstream consumer",
@@ -328,7 +346,7 @@ export function renderPortfolioAssessmentMarkdown(v: PortfolioAssessmentView): s
     ...v.products.map((p) =>
       p.coverage === "restricted"
         ? `| ${cell(name(p.productId))} | Restricted |  |  |  |`
-        : `| ${cell(name(p.productId))} | ${COVERAGE_LABEL[p.coverage]} | ${cell(p.baSummary)} | ${impactCell(p)} | ${p.severity ? cell(p.severity) : ""} |`,
+        : `| ${cell(name(p.productId))} | ${COVERAGE_LABEL[p.coverage]} | ${cell(summaryAfterCoverage(p.baSummary, COVERAGE_LABEL[p.coverage]))} | ${impactCell(p)} | ${p.severity ? cell(p.severity) : ""} |`,
     ),
   );
   // #1689 — a check stored under an older rule may have missed a product it reaches.

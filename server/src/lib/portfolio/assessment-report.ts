@@ -206,6 +206,24 @@ function impactText(p: ReportProduct, nameOf: (id: string) => string): string {
   }${from}`;
 }
 
+/**
+ * #1749 — the impact is empty only because no product was chosen to build the
+ * requirement: nothing must change, nothing is reached, and nothing covers it.
+ * The impact walk starts from the products that change, so with none it found
+ * nothing, which is not the same as "no product is affected" (the UI's
+ * `impactNeedsHost`).
+ */
+export function impactAwaitsHost(ctx: Pick<ReportContext, "products">): boolean {
+  return (
+    ctx.products.every((p) => p.impactKind === "none") &&
+    !ctx.products.some((p) => p.coverage === "covers")
+  );
+}
+
+/** #1749 — what the model is told when {@link impactAwaitsHost}. */
+export const NO_HOST_ASSESSMENT_LINE =
+  "Impact: no product was chosen to build this requirement and none covers it, so no product changes yet and the assessment could not tell which products the change would reach. Do not say that no product is affected; say the impact is known once a product is chosen to build it.";
+
 export function buildReportPrompt(ctx: ReportContext, refs: ReadonlyMap<string, string>): string {
   const nameOf = (id: string) => ctx.products.find((p) => p.productId === id)?.name ?? id;
   const shown = ctx.products.filter((p) => !p.restricted);
@@ -220,6 +238,7 @@ export function buildReportPrompt(ctx: ReportContext, refs: ReadonlyMap<string, 
           `Not in scope: ${ctx.notInScope} ${ctx.notInScope === 1 ? "product was" : "products were"} not checked, but ${ctx.notInScope === 1 ? "it is" : "they are"} not connected to any product the change touches, so the verdict leaves ${ctx.notInScope === 1 ? "it" : "them"} out.`,
         ]
       : []),
+    ...(impactAwaitsHost(ctx) ? [NO_HOST_ASSESSMENT_LINE] : []),
     ...shown.map(
       (p) =>
         `Product ${refs.get(p.productId)}: ${p.name ?? p.productId}. Coverage: ${COVERAGE_TEXT[p.coverage]}. Impact: ${impactText(p, nameOf)}.`,

@@ -684,6 +684,9 @@ export function productsRouter(): Router {
             : e.evidence) as ProductEdgeEvidence[],
           sourceFile: e.sourceFile,
           targetFile: e.targetFile,
+          // #1749 — so a diagram can say a shared-table edge writes or reads a table.
+          integrationKind: e.integrationKind,
+          direction: e.direction,
         });
         const edgeInfos: ProductEdgeInfo[] = readableEdges.map(toEdgeInfo);
 

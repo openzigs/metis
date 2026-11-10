@@ -22,6 +22,25 @@ export interface ProductEdgeInfo {
   evidence: ProductEdgeEvidence[];
   sourceFile?: string | null;
   targetFile?: string | null;
+  /** #1618 — what crosses the boundary (`database` for a shared table); absent when unclassified. */
+  integrationKind?: string | null;
+  /** #1618 — the edge's direction from its source's side (`writes` / `reads` for a table). */
+  direction?: string | null;
+}
+
+/**
+ * #1749 — the label a diagram draws on an edge. A shared-table edge is stored
+ * `produces` (its source writes the table) or `consumes`, which reads as a
+ * message being sent; the diagram says what it is instead. Every other edge
+ * keeps its type.
+ */
+export function edgeDiagramLabel(
+  edge: Pick<ProductEdgeInfo, "edgeType" | "integrationKind" | "direction">,
+): string {
+  if (edge.integrationKind !== "database") return edge.edgeType;
+  if (edge.direction === "writes") return "writes a shared table";
+  if (edge.direction === "reads") return "reads a shared table";
+  return "shares a table";
 }
 
 /**
@@ -237,7 +256,7 @@ function generateServiceMapDiagram(
 
   // Add edges
   for (const edge of edges) {
-    const label = `${edge.edgeType} (${(edge.confidence * 100).toFixed(0)}%)`;
+    const label = `${docCell(edgeDiagramLabel(edge))} (${(edge.confidence * 100).toFixed(0)}%)`;
     lines.push(
       `    ${naming.nodeId(edge.sourceRepoId)} -->|"${label}"| ${naming.nodeId(edge.targetRepoId)}`,
     );
@@ -280,7 +299,7 @@ function generateDataFlowDiagram(edges: ProductEdgeInfo[], naming: RepoNaming): 
     const src = naming.nodeId(edge.sourceRepoId);
     const tgt = naming.nodeId(edge.targetRepoId);
     const arrow = edge.edgeType === "calls" ? "->>" : "-->>";
-    lines.push(`    ${src}${arrow}${tgt}: ${edge.edgeType}`);
+    lines.push(`    ${src}${arrow}${tgt}: ${docCell(edgeDiagramLabel(edge))}`);
   }
 
   lines.push("```");

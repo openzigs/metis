@@ -132,6 +132,10 @@ import { SourceDivergenceNotice } from "@/components/requirements/SourceDivergen
 import { CriteriaProposalNotice } from "@/components/requirements/CriteriaProposalNotice";
 import { CriteriaProposalsSummary } from "@/components/requirements/CriteriaProposalsSummary";
 import { StartSpecKitFeatureAction } from "@/components/requirements/start-spec-kit-feature";
+import {
+  RequirementReviewButtons,
+  effectiveReviewStatus,
+} from "@/components/analysis/requirement-review-buttons";
 import { findingsApi } from "@/lib/findings-api";
 // Epic #34 — collaboration on requirements (comments, assignees/SLA, optimistic-lock merge).
 import { useAuth } from "@/lib/auth-context";
@@ -936,9 +940,18 @@ export default function AnalysisPage(): React.ReactElement {
 
           <div className="space-y-2">
             {/* Issue #733 — warn which capabilities the run will have before starting. */}
-            <AnalysisCapabilityHint projectId={projectId} selectedAgents={selectedAgents} />
+            <AnalysisCapabilityHint
+              projectId={projectId}
+              selectedAgents={selectedAgents}
+              codeAgentLabel={
+                personaByKey.get("code")
+                  ? `${personaByKey.get("code")!.name} (${personaByKey.get("code")!.role})`
+                  : undefined
+              }
+            />
             <AnalysisRunSummary
               docCount={selectedDocs.length}
+              availableDocCount={allDocs.filter((d) => d.status === "ready").length}
               hasRequirements={
                 extraInstructions.trim().length > 0 || importedRequirementIds.length > 0
               }
@@ -1353,38 +1366,22 @@ export default function AnalysisPage(): React.ReactElement {
                               >
                                 History
                               </Button>
-                              <HoverHint hint={requirementWriteHint}>
-                                <Button
-                                  size="sm"
-                                  variant={req.reviewStatus === "approved" ? "default" : "outline"}
-                                  onClick={() =>
-                                    review.mutate({
-                                      reqId: req.id,
-                                      reviewStatus: "approved",
-                                      version: req.version,
-                                    })
-                                  }
-                                  disabled={!canEditRequirements || review.isPending}
-                                >
-                                  Approve
-                                </Button>
-                              </HoverHint>
-                              <HoverHint hint={requirementWriteHint}>
-                                <Button
-                                  size="sm"
-                                  variant={req.reviewStatus === "rejected" ? "default" : "outline"}
-                                  onClick={() =>
-                                    review.mutate({
-                                      reqId: req.id,
-                                      reviewStatus: "rejected",
-                                      version: req.version,
-                                    })
-                                  }
-                                  disabled={!canEditRequirements || review.isPending}
-                                >
-                                  Reject
-                                </Button>
-                              </HoverHint>
+                              {/* #1749 — a state already set is not offered again. */}
+                              <RequirementReviewButtons
+                                status={effectiveReviewStatus(
+                                  req,
+                                  review.isSuccess ? review.variables : null,
+                                )}
+                                writeHint={requirementWriteHint}
+                                pending={review.isPending}
+                                onReview={(reviewStatus) =>
+                                  review.mutate({
+                                    reqId: req.id,
+                                    reviewStatus,
+                                    version: req.version,
+                                  })
+                                }
+                              />
                               {/* #1626 — an approved requirement can be checked
                                 against every product in the portfolio. */}
                               {req.reviewStatus === "approved" ? (

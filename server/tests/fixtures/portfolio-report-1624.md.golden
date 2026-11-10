@@ -48,10 +48,10 @@ Refunds are only partly delivered today. Orders must change, and Reporting is hi
 
 | Product | Coverage | Summary | Impact | Severity |
 | --- | --- | --- | --- | --- |
-| Orders | Covers part of it | Covers part of it: Orders (acme/orders-api). Not found: It posts within 2 seconds. | Must change |  |
+| Orders | Covers part of it | Orders (acme/orders-api). Not found: It posts within 2 seconds. | Must change |  |
 | p-partner | Restricted |  |  |  |
-| Reporting | Does not cover it | Does not cover it. | Downstream consumer via database | medium |
-| Storefront | Does not cover it | Does not cover it. | Downstream consumer via api | medium |
+| Reporting | Does not cover it |  | Downstream consumer via database | medium |
+| Storefront | Does not cover it |  | Downstream consumer via api | medium |
 | Notifications | Not checked | Downstream consumer via event (low). | Downstream consumer via event | low |
 
 ## Technical deep dive

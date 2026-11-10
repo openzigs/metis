@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   RESTRICTED_REPO_LABEL,
   docCell,
+  edgeDiagramLabel,
   evidenceRepoId,
   generateUnifiedArchitectureDoc,
   type ProductEdgeInfo,
@@ -113,6 +114,40 @@ describe("unified-doc-generator", () => {
     expect(flow).toContain("The Service Map shows it._");
 
     expect(generateUnifiedArchitectureDoc(baseInput).content).not.toContain("Not drawn here");
+  });
+
+  // #1749 — a shared-table edge is stored `produces`, and both diagrams drew that word.
+  it("labels a shared-table edge by what it does to the table in both diagrams", () => {
+    const table = (direction: string | null, edgeType: string): ProductEdgeInfo => ({
+      sourceRepoId: "r1",
+      targetRepoId: "r2",
+      edgeType,
+      confidence: 0.8,
+      evidence: [],
+      integrationKind: "database",
+      direction,
+    });
+    const doc = generateUnifiedArchitectureDoc({
+      ...baseInput,
+      edges: [table("writes", "produces"), table("reads", "consumes")],
+    });
+    const map = doc.content.split("## Service Map")[1]!.split("## API Contracts")[0]!;
+    const flow = doc.content.split("## Data Flow")[1]!.split("## Cross-Cutting")[0]!;
+    expect(map).toContain('-->|"writes a shared table (80%)"|');
+    expect(map).toContain('-->|"reads a shared table (80%)"|');
+    expect(flow).toContain(": writes a shared table");
+    expect(flow).toContain(": reads a shared table");
+    expect(map + flow).not.toMatch(/produces|consumes/);
+    // A call keeps its type.
+    expect(generateUnifiedArchitectureDoc(baseInput).content).toContain('-->|"calls (95%)"|');
+  });
+
+  it("edgeDiagramLabel keeps a non-table edge's type and names a table edge of no direction", () => {
+    expect(edgeDiagramLabel({ edgeType: "produces", integrationKind: "event" })).toBe("produces");
+    expect(edgeDiagramLabel({ edgeType: "produces" })).toBe("produces");
+    expect(
+      edgeDiagramLabel({ edgeType: "produces", integrationKind: "database", direction: null }),
+    ).toBe("shares a table");
   });
 
   it("handles empty edges gracefully", () => {

@@ -141,6 +141,18 @@ describe("with edit rights", () => {
     expect(within(declared).queryByRole("combobox")).not.toBeInTheDocument();
   });
 
+  // #1749 — `w-full` in the table cell let the table clip it to "contrac" at 1440 px.
+  it("keeps the strength override at its own width, not the cell's", async () => {
+    serve(product());
+    renderPanel(true);
+    await screen.findByRole("table");
+    const select = within(rows()[0]).getByRole("combobox", { name: /Override strength of/ });
+    expect(select.className.split(/\s+/)).toEqual(
+      expect.arrayContaining(["w-auto", "min-w-[10rem]", "shrink-0"]),
+    );
+    expect(select.className.split(/\s+/)).not.toContain("w-full");
+  });
+
   it("treats an overridden edge as detected: no delete, but a revert (#1687)", async () => {
     serve(product({ edges: [edge({ origin: "overridden", strength: "intrusive" })] }));
     renderPanel(true);

@@ -3,7 +3,7 @@
  * exactly one of statement and requirement, and a scope that names exactly
  * one product or none. Keyboard operable; axe passes.
  */
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createPortfolioAssessmentSchema } from "@metis/shared";
@@ -212,5 +212,52 @@ describe("PortfolioAssessmentForm", () => {
     expect(await axeViolations(container)).toEqual([]);
     await user.click(screen.getByRole("radio", { name: "One product" }));
     expect(await axeViolations(container)).toEqual([]);
+  });
+});
+
+// #1749 — the "choose the product that will build it" link lands at
+// `#portfolio-host`; the picker gets the focus, not only the scroll.
+describe("PortfolioAssessmentForm — arriving at the host picker (#1749)", () => {
+  afterEach(() => {
+    window.location.hash = "";
+  });
+
+  const picker = () => screen.getByLabelText("Which product will build this? (optional)");
+
+  it("focuses the host picker when the page is opened at #portfolio-host", () => {
+    window.location.hash = "#portfolio-host";
+    setup();
+    expect(picker()).toHaveFocus();
+  });
+
+  it("waits for the product list, since the picker is disabled until then", () => {
+    window.location.hash = "#portfolio-host";
+    const { rerender, onSubmit } = setup({ productsLoading: true });
+    expect(picker()).not.toHaveFocus();
+    rerender(<PortfolioAssessmentForm products={products} pending={false} onSubmit={onSubmit} />);
+    expect(picker()).toHaveFocus();
+  });
+
+  it("leaves the focus alone on any other arrival", () => {
+    setup();
+    expect(picker()).not.toHaveFocus();
+  });
+
+  it("focuses it once, not again when the list reloads", async () => {
+    window.location.hash = "#portfolio-host";
+    const user = userEvent.setup();
+    const { rerender, onSubmit } = setup();
+    const statement = screen.getByLabelText("Requirement statement");
+    await user.click(statement);
+    rerender(
+      <PortfolioAssessmentForm
+        products={products}
+        productsLoading
+        pending={false}
+        onSubmit={onSubmit}
+      />,
+    );
+    rerender(<PortfolioAssessmentForm products={products} pending={false} onSubmit={onSubmit} />);
+    expect(statement).toHaveFocus();
   });
 });

@@ -613,6 +613,9 @@ export function toListItem(v: PortfolioAssessmentView): PortfolioAssessmentListI
     // #1668 — the products it was scoped to: a product the impact walk reached
     // outside the scope (#1623) has a row of its own, but is not counted.
     productCount: v.productIds.length,
+    // #1749 — the view already dropped a host this reader cannot read.
+    hostProductId: v.hostProductId,
+    hostProductName: v.hostProductId ? (v.productNames[v.hostProductId] ?? null) : null,
     createdById: v.createdById,
     createdAt: v.createdAt,
     updatedAt: v.updatedAt,

@@ -184,6 +184,11 @@ function AffectedCard({ product, host }: { product: AffectedProduct; host: boole
   const via = viaLabel(product.via);
   // #1963 — the path shown is the most severe link; every other edge kind is named too.
   const also = product.otherVia.map((k) => viaLabel(k)).join(", ");
+  // #1749 — how far downstream it is, which only the path diagram used to show.
+  // A neighbour (one hop) says nothing more than "via".
+  const hops = product.impactKind === "downstream-consumer" ? product.path.length - 1 : 0;
+  const hopText = hops > 1 ? `${hops} hops` : null;
+  const reach = via ? `via ${via}${hopText ? ` (${hopText})` : ""}` : hopText && `${hopText} away`;
   return (
     <li
       className="space-y-2 rounded-lg border border-border p-4"
@@ -202,9 +207,9 @@ function AffectedCard({ product, host }: { product: AffectedProduct; host: boole
             Chosen to build this
           </Badge>
         ) : null}
-        {via || also ? (
+        {reach || also ? (
           <span className="text-xs text-muted-foreground" data-testid="portfolio-impact-via">
-            {[via ? `via ${via}` : null, also ? `also ${also}` : null].filter(Boolean).join(", ")}
+            {[reach, also ? `also ${also}` : null].filter(Boolean).join(", ")}
           </span>
         ) : null}
         {product.severity ? <SeverityBadge severity={product.severity} /> : null}

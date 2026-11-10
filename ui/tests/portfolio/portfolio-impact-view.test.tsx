@@ -60,9 +60,31 @@ describe("PortfolioImpactView", () => {
     expect(within(card("Ledger")).getByTestId("portfolio-impact-via")).toHaveTextContent(
       "via an API, also an event, a shared database",
     );
-    // A product reached by one kind only says that one.
+    // A product reached by one kind only says that one (#1749: and how many hops away).
     expect(within(card("Warehouse")).getByTestId("portfolio-impact-via")).toHaveTextContent(
-      /^via a shared database$/,
+      /^via a shared database \(2 hops\)$/,
+    );
+  });
+
+  it("#1749 — gives a downstream product's hop count past its neighbours", () => {
+    renderView();
+    // Two hops from the change: the card says so, not only the path diagram.
+    expect(within(card("Warehouse")).getByTestId("portfolio-impact-via")).toHaveTextContent(
+      "via a shared database (2 hops)",
+    );
+    // A neighbour is one hop away, which "via" already says.
+    expect(within(card("Ledger")).getByTestId("portfolio-impact-via")).toHaveTextContent(
+      /^via an API$/,
+    );
+  });
+
+  it("#1749 — gives the hop count when the path's link kind is not known", () => {
+    const v = impactView();
+    const warehouse = v.products.find((p) => p.productId === "p-warehouse")!;
+    warehouse.via = null;
+    renderView(v);
+    expect(within(card("Warehouse")).getByTestId("portfolio-impact-via")).toHaveTextContent(
+      /^2 hops away$/,
     );
   });
 

@@ -25,7 +25,8 @@ const store = vi.hoisted(() => ({ getPortfolioAssessment: vi.fn() }));
 vi.mock("./assessment-store.js", () => store);
 
 const { resolveReaderAccess, viewPortfolioAssessment } = await import("./assessment-view.js");
-const { renderPortfolioAssessmentMarkdown } = await import("./assessment-markdown.js");
+const { renderPortfolioAssessmentMarkdown, summaryAfterCoverage } =
+  await import("./assessment-markdown.js");
 
 const GOLDEN = fileURLToPath(
   new URL("../../../tests/fixtures/portfolio-report-1624.md.golden", import.meta.url),
@@ -399,9 +400,11 @@ describe("renderPortfolioAssessmentMarkdown (#1624)", () => {
     expect(md.indexOf("## Products")).toBeLessThan(md.indexOf("## Technical deep dive"));
     expect(md).not.toContain("<b>");
     expect(md).toContain("Reporting reads the new ledger rows | twice.");
+    // #1749 — the Summary column no longer repeats the Coverage column.
     expect(md).toContain(
-      "| Covers part of it: Orders (acme/orders-api). Not found: It posts within 2 seconds. |",
+      "| Covers part of it | Orders (acme/orders-api). Not found: It posts within 2 seconds. |",
     );
+    expect(md).not.toMatch(/\| Does not cover it \| Does not cover it\. \|/);
     // A stored paragraph is escaped too, whoever wrote it.
     const a = fixture();
     a.report!.products[0].business = "<img src=x onerror=alert(1)> wins";
@@ -543,5 +546,34 @@ describe("renderPortfolioAssessmentMarkdown (#1624)", () => {
       "_The model gave no restatement, so these are the assessment's criteria._",
     );
     expect(md).toContain("## Non-functional requirements\n\n_None identified._");
+  });
+});
+
+describe("summaryAfterCoverage (#1749)", () => {
+  it("leaves the cell empty when the summary is only its coverage", () => {
+    expect(summaryAfterCoverage("Does not cover it.", "Does not cover it")).toBe("");
+    expect(summaryAfterCoverage("  Does not cover it  ", "Does not cover it")).toBe("");
+  });
+
+  it("keeps what the summary adds after its coverage", () => {
+    expect(summaryAfterCoverage("Covers it: Orders (acme/orders-api).", "Covers it")).toBe(
+      "Orders (acme/orders-api).",
+    );
+    expect(
+      summaryAfterCoverage("Not checked. the model call failed for one repo.", "Not checked"),
+    ).toBe("The model call failed for one repo.");
+  });
+
+  it("reads a bare reason in brackets as the reason", () => {
+    expect(summaryAfterCoverage("Not checked (could-not-verify).", "Not checked")).toBe(
+      "Reason: could-not-verify.",
+    );
+  });
+
+  it("keeps a summary about something else whole", () => {
+    expect(summaryAfterCoverage("Downstream consumer via event (low).", "Does not cover it")).toBe(
+      "Downstream consumer via event (low).",
+    );
+    expect(summaryAfterCoverage("", "Covers it")).toBe("");
   });
 });
