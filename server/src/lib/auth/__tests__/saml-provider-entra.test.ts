@@ -186,6 +186,8 @@ describe("#1552 MFA detection", () => {
   });
 
   // #1558 — an IdP that pretty-prints its XML wraps the class ref in whitespace.
+  // #2205 — node-saml parses with `explicitCharkey`, so the class ref reaches
+  // `textOf` as `{ _: text }`; this guards the trim on that path (the only one).
   it("reads a class ref wrapped in whitespace", async () => {
     const result = await validateSAMLResponse(
       entraResponse(alice, { classRef: `\n    ${ENTRA_CLASS_REF.mobileTwoFactorContract}\n  ` }),

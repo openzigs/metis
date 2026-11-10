@@ -234,6 +234,20 @@ describe("mock Entra SAML IdP (#1553) — sign-in", () => {
     expect(ends.conditions).toBeGreaterThan(Date.now() + 60_000);
   });
 
+  // #2205 — `expired: "conditions"` once ended the window 10 minutes ago but
+  // started it 5 minutes ago.
+  it.each([false, true, "conditions", "subjectConfirmation"])(
+    "expired: %s — the Conditions window starts 75 minutes before it ends",
+    async (expired) => {
+      idp.setProfile({
+        expired: /** @type {boolean | "conditions" | "subjectConfirmation"} */ (expired),
+      });
+      const { xml } = await signIn();
+      const notBefore = Date.parse(/<Conditions NotBefore="([^"]+)"/.exec(xml)?.[1] ?? "");
+      expect(windowEnds(xml).conditions - notBefore).toBe(75 * 60_000);
+    },
+  );
+
   it("starts the Conditions window 5 minutes before IssueInstant, as Entra does (#1558)", async () => {
     const { xml } = await signIn();
     const issued = Date.parse(/<Assertion [^>]*IssueInstant="([^"]+)"/.exec(xml)?.[1] ?? "");

@@ -71,13 +71,15 @@ or an app role value.
 in a SAML token, nested groups included. Past that it omits the groups claim
 entirely and sends `http://schemas.microsoft.com/claims/groups.link` (a Graph
 link) instead. METIS does not call Graph, so no group mapping can match such a
-user: they get the role of a matching app-role mapping (Entra's `role` claim has
-no overage), or else the provider's **default role**. The server logs a
+user. A role granted to them explicitly (by an admin in METIS, by SCIM, or by the
+first-admin bootstrap, `METIS_BOOTSTRAP_ADMINS`) still wins, as at every sign-in;
+otherwise they get the role of a matching app-role mapping (Entra's `role` claim has no
+overage), or else the provider's **default role**. The server logs a
 `SAML group overage` warning, the sign-in is recorded as an
 `sso.saml.group_overage` audit event, and **Admin → Authentication → SAML 2.0**
-shows a warning naming the users it happened to in the last 30 days, with the
-role each got. The warning clears 30 days after the last overage, once the
-group claim is fixed (#1558).
+shows a warning naming the users it happened to in the last 30 days, each once
+with the role of their newest such sign-in. The warning clears 30 days after the
+last overage, once the group claim is fixed (#1558, #2205).
 "Groups assigned to the application" emits only the groups assigned to the METIS
 app (direct members only), which keeps users under the limit. Sources: Microsoft
 Learn, [Configure group claims for applications](https://learn.microsoft.com/en-us/entra/identity/hybrid/connect/how-to-connect-fed-group-claims)
