@@ -783,6 +783,21 @@ export const analysisApi = {
       { method: "PUT", body },
     ),
 
+  /**
+   * Issue #1580 — edit the title and/or description of the requirement a
+   * PENDING requirement approval reviews, before approving promotes it.
+   */
+  editCheckpointRequirement: (
+    projectId: string,
+    analysisId: string,
+    approvalId: string,
+    body: { title?: string; description?: string },
+  ) =>
+    apiFetch<StructuredRequirement>(
+      `/projects/${projectId}/analyses/${analysisId}/approvals/${approvalId}/requirement`,
+      { method: "PATCH", body },
+    ),
+
   /** Issue #723 — return a rejected approval to pending so it can be reviewed again. */
   reopenApproval: (projectId: string, analysisId: string, approvalId: string) =>
     apiFetch<ApprovalRequestPayload>(
@@ -1093,6 +1108,11 @@ export interface StructuredRequirement {
    * synthesis item that matched nothing extracted. The UI reads only its presence.
    */
   synthesisItemKey?: string;
+  /**
+   * Issue #1580 — set once a reviewer retitled it in the approval checkpoint:
+   * the title the analysis extracted, shown beside the reviewed one.
+   */
+  extractedTitle?: string;
 }
 
 /**

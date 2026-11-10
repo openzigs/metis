@@ -34,6 +34,7 @@ import {
   countApprovedRequirements,
   PromoteApprovedRequirementsButton,
 } from "./PromoteApprovedRequirementsButton";
+import { CheckpointRequirementEditor } from "./CheckpointRequirementEditor";
 
 interface ApprovalsPanelProps {
   projectId: string;
@@ -363,6 +364,8 @@ function ApprovalCard({
 }): React.ReactElement {
   const qc = useQueryClient();
   const [note, setNote] = useState("");
+  // #1580 — the requirement's title and description, edited before approving.
+  const [editing, setEditing] = useState(false);
   const isResolved = approval.status !== "pending";
   // #403 — older stored requirements carry no `ambiguities` array.
   const allAmbiguities = requirement ? ambiguitiesOf(requirement) : [];
@@ -449,8 +452,25 @@ function ApprovalCard({
         </span>
       </div>
 
-      {requirement && (
+      {requirement && editing && !isResolved && (
+        <CheckpointRequirementEditor
+          projectId={projectId}
+          analysisId={analysisId}
+          approvalId={approval.id}
+          requirement={requirement}
+          itemName={itemName}
+          onDone={() => setEditing(false)}
+        />
+      )}
+
+      {requirement && !(editing && !isResolved) && (
         <div className="space-y-2 rounded border border-border bg-muted/40 p-2">
+          {/* #1580 — a reviewer retitled it here; say what the analysis called it. */}
+          {requirement.extractedTitle && requirement.extractedTitle !== requirement.title && (
+            <p className="text-xs text-muted-foreground" data-testid="approval-extracted-title">
+              Edited. The analysis titled it: {requirement.extractedTitle}
+            </p>
+          )}
           {requirement.description && (
             <p className="text-xs text-muted-foreground">{requirement.description}</p>
           )}
@@ -495,7 +515,8 @@ function ApprovalCard({
             <Button
               size="sm"
               onClick={() => reviewMutation.mutate("approved")}
-              disabled={decided || alreadyReviewed}
+              // #1580 — not with an unsaved edit open: it would promote the old text.
+              disabled={decided || alreadyReviewed || editing}
             >
               Approve
             </Button>
@@ -503,10 +524,21 @@ function ApprovalCard({
               size="sm"
               variant="outline"
               onClick={() => reviewMutation.mutate("rejected")}
-              disabled={decided || alreadyReviewed}
+              disabled={decided || alreadyReviewed || editing}
             >
               Reject
             </Button>
+            {requirement && !editing && (
+              <Button
+                size="sm"
+                variant="ghost"
+                aria-label={`Edit ${itemName}`}
+                onClick={() => setEditing(true)}
+                disabled={decided || alreadyReviewed}
+              >
+                Edit
+              </Button>
+            )}
           </div>
           {reviewMutation.isError && (
             <p role="alert" className="text-xs text-destructive">

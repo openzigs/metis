@@ -31,6 +31,7 @@ import {
   MAX_IMPORTED_REQUIREMENTS_PER_ANALYSIS,
   hasPermission,
   governingFindingDecisionInputSchema,
+  editCheckpointRequirementSchema,
 } from "@metis/shared";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
@@ -77,6 +78,7 @@ import {
   analysisMatrixUserRateLimiter,
 } from "../middleware/analysis-matrix-rate-limit.js";
 import {
+  analysisApprovalEditRateLimiter,
   analysisApprovalPreAuthRateLimiter,
   analysisApprovalPromoteRateLimiter,
   analysisApprovalReopenRateLimiter,
@@ -157,6 +159,7 @@ import {
   type StructuredRequirements,
 } from "../lib/analysis/types/requirements.js";
 import { clarifyRequestSchema } from "../lib/analysis/clarify-request-schema.js";
+import { editCheckpointRequirement } from "../lib/analysis/checkpoint-requirement-edit.js";
 import { meterAnalysisProvider, runInAnalysisUsageScope } from "../lib/analysis/analysis-usage.js";
 // Issue #1116 — carry the submitted answers into the persisted requirement rows
 // (and therefore into the drafts/issues they become), not just the metadata the
@@ -1981,6 +1984,46 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
       });
 
       res.json(ok(updated));
+    },
+  );
+
+  /**
+   * PATCH /api/projects/:projectId/analyses/:id/approvals/:approvalId/requirement
+   * Issue #1580 (`b-7-8`) — edit the title and description of the requirement a
+   * PENDING `requirement` approval reviews, so a reviewer can correct it before
+   * approving promotes it. Scoped like the review route (#1097): the analysis
+   * to its project, the approval to its analysis. 409 once it is resolved.
+   */
+  projectScoped.patch(
+    "/:id/approvals/:approvalId/requirement",
+    // Per-IP, ahead of auth: CodeQL js/missing-rate-limiting (PR #902).
+    analysisApprovalPreAuthRateLimiter,
+    requireAuth,
+    requirePermission("analysis.run"),
+    analysisApprovalEditRateLimiter,
+    async (req: Request, res: Response) => {
+      const analysisId = String(req.params.id);
+      const projectId = String(req.params.projectId);
+      const approvalId = String(req.params.approvalId);
+      const parsed = editCheckpointRequirementSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        throw new AppError(400, "VALIDATION_ERROR", "Invalid requirement edit", {
+          issues: parsed.error.flatten(),
+        });
+      }
+      await ensureAnalysisVisible(analysisId, projectId);
+
+      const actor = actorFromReq(req);
+      const requirement = await editCheckpointRequirement(analysisId, approvalId, parsed.data);
+
+      audit({
+        actor: { id: actor.id },
+        action: "analysis.approval.edit",
+        target: { type: "approval_request", id: approvalId },
+        metadata: { analysisId, fields: Object.keys(parsed.data) },
+      });
+
+      res.json(ok(requirement));
     },
   );
 

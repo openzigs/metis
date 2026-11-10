@@ -8,6 +8,7 @@ import request from "supertest";
 import { errorHandler } from "./error-handler.js";
 import {
   ANALYSIS_APPROVAL_PREAUTH_DEFAULT_MAX,
+  analysisApprovalEditRateLimiter,
   analysisApprovalPreAuthRateLimiter,
   analysisApprovalPromoteRateLimiter,
   analysisApprovalReopenRateLimiter,
@@ -98,6 +99,51 @@ describe("analysisApprovalPromoteRateLimiter (#723)", () => {
     try {
       const res = await request(promoteApp("promote-user-3")).post("/");
       expect(res.headers["ratelimit-limit"]).toBe("30");
+    } finally {
+      process.env.NODE_ENV = prev;
+    }
+  });
+});
+
+describe("analysisApprovalEditRateLimiter (#1580)", () => {
+  function editApp(userId?: string) {
+    const a = express();
+    a.use((req, _res, next) => {
+      if (userId) (req as unknown as { user: { userId: string } }).user = { userId };
+      next();
+    });
+    a.use(analysisApprovalEditRateLimiter);
+    a.patch("/", (_req, res) => res.json({ ok: true }));
+    return a;
+  }
+
+  afterEach(() => {
+    delete process.env.ANALYSIS_APPROVAL_EDIT_RATE_LIMIT_MAX;
+  });
+
+  it("caps each user separately, under its own key and env var", async () => {
+    process.env.ANALYSIS_APPROVAL_EDIT_RATE_LIMIT_MAX = "1";
+    const a = editApp("edit-user-1");
+    expect((await request(a).patch("/")).status).toBe(200);
+    const limited = await request(a).patch("/");
+    expect(limited.status).toBe(429);
+    expect(limited.body.error.message).toContain("edit");
+    expect((await request(editApp("edit-user-2")).patch("/")).status).toBe(200);
+  });
+
+  it("keys an unauthenticated caller by IP", async () => {
+    process.env.ANALYSIS_APPROVAL_EDIT_RATE_LIMIT_MAX = "1";
+    const a = editApp();
+    expect((await request(a).patch("/")).status).toBe(200);
+    expect((await request(a).patch("/")).status).toBe(429);
+  });
+
+  it("defaults to 120 per window outside tests", async () => {
+    const prev = process.env.NODE_ENV;
+    process.env.NODE_ENV = "production";
+    try {
+      const res = await request(editApp("edit-user-3")).patch("/");
+      expect(res.headers["ratelimit-limit"]).toBe("120");
     } finally {
       process.env.NODE_ENV = prev;
     }
