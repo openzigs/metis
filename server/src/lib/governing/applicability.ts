@@ -273,8 +273,15 @@ export function buildApplicabilityScreenPrompt(
 // 0.76 -> 0.65, the password-change request's extra rules came back, and a
 // wrong Compliant broke the no-evidence bar. It is not shipped; the sentence
 // and the reading are in governing-03's ANNOTATION.md.
+// #2149 — tuned on governing-04 and governing-01 with Sonnet. #2140's sentence
+// keyed on what each new password "must be", which drew the length and
+// composition rules too. This one keys on a rule whose OWN words name the step
+// (ASVS 6.2.4 names "passwords submitted during account registration or
+// password change"; 6.3.3 what "access the application" must use), and keeps
+// the policy rules (length, composition) and the change function's own rules
+// under the same-subject limit. Its examples are generic, never a held-out set's.
 export const SAME_SUBJECT_LINE =
-  "When several rules share the requirement's subject (sign-in, passwords, sessions, logging, access), a rule on that subject applies only when the requirement sets or changes the specific thing that rule governs, or says how the flow it changes does that thing today (a reminder that a password has expired says passwords expire, which brings in a rule on password rotation, even though the requirement only asks for the reminder). The other rules on that subject do not apply.";
+  "When several rules share the requirement's subject (sign-in, passwords, sessions, logging, access), a rule on that subject applies only when the requirement sets or changes the specific thing that rule governs, or says how the flow it changes does that thing today (a reminder that a password has expired says passwords expire, which brings in a rule on password rotation, even though the requirement only asks for the reminder). The other rules on that subject do not apply. But a rule whose own words name the step the requirement adds or changes applies to it, even when the requirement says nothing of that rule's matter: a rule on every password submitted at registration or at a password change applies to a flow where a password is chosen or changed, and a rule on what every way into the application must use applies to a new way in. Rules on the password policy itself (its length, which characters it allows) and on how the password-change function works still apply only as above.";
 
 const JUDGE_LINES = [
   "You decide which of a company's governing rules (internal policy obligations and controls) apply to one business requirement.",
