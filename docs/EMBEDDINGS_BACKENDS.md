@@ -697,9 +697,18 @@ reindex it cannot follow and re-reads coverage every 5 seconds until it ends. It
 the same when coverage still names a job the page has just seen finish.
 
 While it follows a job, the page also re-reads coverage every 15 seconds (#2196). If
-the server process running the reindex dies, no terminal event arrives; the next read
-reports nothing running, and the page drops the progress bar and offers the reindex
-again, which resumes from the checkpoint.
+the server process running the reindex dies, no terminal event arrives; once a read
+reports nothing running, the page drops the progress bar, stops re-reading and offers
+the reindex again, which resumes from the checkpoint. Only a read *sent* after the page
+started its reindex counts (#2213): one already in flight when you clicked can have been
+answered before the job began.
+
+On Postgres that recovery is not immediate. `shadow.inProgress` also reads the
+project's reindex lease, which a dead holder no longer renews but which stays live
+until it expires — up to `REINDEX_LEASE_TTL_MS` (default 120 s) after the holder's
+last renewal (see "The reindex lease" below). Until then coverage still reports a
+reindex running, and the page keeps showing it as running; the button comes back once the lease
+expires. On SQLite there is no lease, so the first read after the restart recovers.
 
 > **Upgrading from the 384-dim default? CLEAR `EMBED_DIM` (or set it to 768).**
 > `EMBED_DIM` does **not** resize the `xenova` / `sidecar` backends — they always
