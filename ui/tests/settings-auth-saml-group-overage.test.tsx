@@ -1,8 +1,8 @@
 /**
  * #1552 — the admin Authentication page warns when SAML sign-ins arrived with
  * a group overage (Microsoft Entra ID sends a Graph link instead of the groups
- * past 150), naming the users who got the default role and the Entra setting
- * that fixes it.
+ * past 150), naming the users it happened to with the role each signed in
+ * with, and the Entra setting that fixes it.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
@@ -38,7 +38,7 @@ afterEach(() => {
 });
 
 describe("Admin Authentication page — SAML group overage warning (#1552)", () => {
-  it("names the users who got the default role and the Entra setting to choose", async () => {
+  it("names each user once with the role they signed in with, and the Entra setting to choose", async () => {
     stubFetch({
       total: 4,
       windowDays: 30,
@@ -46,7 +46,9 @@ describe("Admin Authentication page — SAML group overage warning (#1552)", () 
         { userId: "u1", username: "olga", role: "reader", at: "2026-10-29T10:00:00.000Z" },
         { userId: "u2", username: null, role: null, at: "2026-10-29T09:00:00.000Z" },
         { userId: "u3", username: "otto", role: "developer", at: "2026-10-29T08:00:00.000Z" },
-        { userId: "u1", username: "olga", role: "reader", at: "2026-10-28T09:00:00.000Z" },
+        // #2205 — an older sign-in by olga with another role: she is listed once,
+        // with her newest sign-in's role.
+        { userId: "u1", username: "olga", role: "developer", at: "2026-10-28T09:00:00.000Z" },
       ],
     });
     render(<AdminAuthPage />, { wrapper: makeWrapper({ initialUser: ADMIN }) });
@@ -59,7 +61,11 @@ describe("Admin Authentication page — SAML group overage warning (#1552)", () 
     // #1558 — an app-role mapping can still match, so each user's role is named.
     expect(warning).toHaveTextContent("no group mapping could match them");
     expect(warning).toHaveTextContent("olga (reader), u2, otto (developer).");
+    expect(warning).not.toHaveTextContent("olga (developer)");
     expect(warning).not.toHaveTextContent("got the default role");
+    // #2205 — an explicit grant (local, which the first-admin bootstrap is, or
+    // SCIM) wins over the IdP's mappings (`resolveEffectiveRoleFromRows`).
+    expect(warning).toHaveTextContent("a role granted in METIS or by SCIM takes precedence");
     expect(warning).toHaveTextContent("Groups assigned to the application");
   });
 
