@@ -18,6 +18,7 @@ vi.mock("../prisma.js", () => ({ prisma: db, resolveDatabaseProvider: () => "sql
 
 const {
   CARRY_CONCURRENCY,
+  CARRY_MEMO_MAX_ANALYSES,
   CARRY_MEMO_MAX_KEYS,
   GOVERNING_QUESTION_FIELD,
   answersForApplyingPairs,
@@ -32,6 +33,8 @@ const {
   questionLeaksRule,
   rejudgeAnswered,
   rememberCarried,
+  carriedJudgingsForTests,
+  resetGoverningCarryMemoForTests,
   templateGoverningQuestion,
 } = await import("./applicability-questions.js");
 const { FALLBACK_FINDING_QUESTION } = await import("./findings.js");
@@ -1234,17 +1237,24 @@ describe("#2122 — carryAnswersOver: an answer is judged onto the other require
   it("#2126 — with a memo, the same answers are not judged twice; a failed call is tried again", async () => {
     const answered = [q("q1", [CARD.id], "Yes.")];
     const judged = new Set<string>();
+    // The memo as the caller keeps it: what is judged now is remembered for next time.
+    const remembering = async (model: Parameters<typeof carryAnswersOver>[3]) => {
+      const use = { judged, judgedNow: new Map<string, boolean>() };
+      const got = await carryAnswersOver(answered, stored, rules, model, use);
+      for (const key of use.judgedNow.keys()) judged.add(key);
+      return got;
+    };
     const failing = stubModel({
       judge: () => ({ decisions: [{ rule: "R1", verdict: "uncertain", reason: "?" }] }),
     });
     vi.mocked(failing.chat).mockRejectedValueOnce(new Error("rate limited"));
-    await carryAnswersOver(answered, stored, rules, failing, judged, judged);
+    await remembering(failing);
     // The first candidate's call failed, so only the second is remembered.
     expect(judged.size).toBe(1);
     const again = stubModel({
       judge: () => ({ decisions: [{ rule: "R1", verdict: "applies", reason: "y", answer: "A1" }] }),
     });
-    const got = await carryAnswersOver(answered, stored, rules, again, judged, judged);
+    const got = await remembering(again);
     expect(again.sent).toHaveLength(1);
     expect(again.sent[0]!.user).toContain(REQ.text);
     expect(got.map((s) => s.requirementId)).toEqual([REQ.id]);
@@ -1253,39 +1263,101 @@ describe("#2122 — carryAnswersOver: an answer is judged onto the other require
     const third = stubModel({
       judge: () => ({ decisions: [{ rule: "R1", verdict: "uncertain", reason: "?" }] }),
     });
-    expect(await carryAnswersOver(answered, stored, rules, third, judged, judged)).toEqual([]);
+    expect(await remembering(third)).toEqual([]);
     expect(third.chat).not.toHaveBeenCalled();
     // A changed answer is a new judging.
-    await carryAnswersOver([q("q1", [CARD.id], "No.")], stored, rules, third, judged, judged);
+    await carryAnswersOver([q("q1", [CARD.id], "No.")], stored, rules, third, {
+      judged,
+      judgedNow: new Map(),
+    });
     expect(third.chat).toHaveBeenCalledTimes(2);
   });
 
   it("#2133 — what is judged now is reported apart, and the memo it skips by is left alone", async () => {
     const answered = [q("q1", [CARD.id], "Yes.")];
     const skip = new Set<string>();
-    const judgedNow = new Set<string>();
+    const judgedNow = new Map<string, boolean>();
     const model = stubModel({
       judge: () => ({ decisions: [{ rule: "R1", verdict: "applies", reason: "y", answer: "A1" }] }),
     });
-    const got = await carryAnswersOver(answered, stored, rules, model, skip, judgedNow);
+    const got = await carryAnswersOver(answered, stored, rules, model, { judged: skip, judgedNow });
     expect(got).toHaveLength(2);
-    expect(judgedNow.size).toBe(2);
+    expect([...judgedNow.values()]).toEqual([true, true]);
     expect(skip.size).toBe(0);
   });
 
-  it("#2133 — the memo of one analysis keeps at most CARRY_MEMO_MAX_KEYS judgings, the oldest forgotten first", () => {
-    const memo = new Set<string>();
-    rememberCarried(
-      memo,
-      Array.from({ length: CARRY_MEMO_MAX_KEYS }, (_, i) => `k${i}`),
-    );
-    expect(memo.size).toBe(CARRY_MEMO_MAX_KEYS);
-    // k0 judged again is the newest, so k1 is the oldest when one more arrives.
-    rememberCarried(memo, ["k0", "new"]);
-    expect(memo.size).toBe(CARRY_MEMO_MAX_KEYS);
-    expect(memo.has("k0")).toBe(true);
-    expect(memo.has("k1")).toBe(false);
-    expect(memo.has("new")).toBe(true);
+  // #2143 — the caller remembers a judging that settled nothing before the write,
+  // and a settling one after it; so it is told which is which.
+  it("#2143 — each judging made now says whether it settled a pair", async () => {
+    const answered = [q("q1", [CARD.id], "Yes.")];
+    const judgedNow = new Map<string, boolean>();
+    let call = 0;
+    const model = stubModel({
+      judge: () =>
+        call++ === 0
+          ? { decisions: [{ rule: "R1", verdict: "applies", reason: "y", answer: "A1" }] }
+          : { decisions: [{ rule: "R1", verdict: "uncertain", reason: "?" }] },
+    });
+    const got = await carryAnswersOver(answered, stored, rules, model, {
+      judged: new Set(),
+      judgedNow,
+    });
+    expect(got).toHaveLength(1);
+    expect([...judgedNow.values()].sort()).toEqual([false, true]);
+  });
+
+  it("#2143 — one judging budget over every analysis: the least recently used analysis forgets its oldest first", () => {
+    resetGoverningCarryMemoForTests();
+    try {
+      rememberCarried(
+        "a",
+        Array.from({ length: CARRY_MEMO_MAX_KEYS - 1 }, (_, i) => `a${i}`),
+      );
+      rememberCarried("b", ["b0"]);
+      // At the budget: nothing forgotten yet.
+      expect(carriedJudgingsForTests("a")).toHaveLength(CARRY_MEMO_MAX_KEYS - 1);
+      // Over it: "a", used least recently, loses its oldest; "b" keeps everything.
+      rememberCarried("b", ["b1", "b2"]);
+      expect(carriedJudgingsForTests("a")).toHaveLength(CARRY_MEMO_MAX_KEYS - 3);
+      expect(carriedJudgingsForTests("a").slice(0, 1)).toEqual(["a2"]);
+      expect(carriedJudgingsForTests("b")).toEqual(["b0", "b1", "b2"]);
+      // A key judged again is the newest of its analysis and is not counted twice.
+      rememberCarried("a", ["a2"]);
+      expect(carriedJudgingsForTests("a")).toHaveLength(CARRY_MEMO_MAX_KEYS - 3);
+      expect(carriedJudgingsForTests("a").at(-1)).toBe("a2");
+      expect(carriedJudgingsForTests("b")).toEqual(["b0", "b1", "b2"]);
+      // An analysis that loses every judging is dropped; the budget then counts the rest.
+      rememberCarried(
+        "c",
+        Array.from({ length: CARRY_MEMO_MAX_KEYS }, (_, i) => `c${i}`),
+      );
+      expect(carriedJudgingsForTests("a")).toEqual([]);
+      expect(carriedJudgingsForTests("b")).toEqual([]);
+      expect(carriedJudgingsForTests("c")).toHaveLength(CARRY_MEMO_MAX_KEYS);
+    } finally {
+      resetGoverningCarryMemoForTests();
+    }
+  });
+
+  it("#2143 — an analysis evicted past CARRY_MEMO_MAX_ANALYSES gives its judgings back to the budget", () => {
+    resetGoverningCarryMemoForTests();
+    try {
+      // One more analysis than the bound: a0 is evicted with its judging.
+      for (let i = 0; i <= CARRY_MEMO_MAX_ANALYSES; i++) rememberCarried(`a${i}`, [`k${i}`]);
+      expect(carriedJudgingsForTests("a0")).toEqual([]);
+      // A new analysis evicts a1 the same way; its judgings then fill the budget exactly.
+      rememberCarried(
+        "z",
+        Array.from(
+          { length: CARRY_MEMO_MAX_KEYS - CARRY_MEMO_MAX_ANALYSES + 1 },
+          (_, i) => `z${i}`,
+        ),
+      );
+      // Nothing more was forgotten: a2, now the least recently used, keeps its judging.
+      expect(carriedJudgingsForTests("a2")).toEqual(["k2"]);
+    } finally {
+      resetGoverningCarryMemoForTests();
+    }
   });
 
   it("#2126 — at most CARRY_CONCURRENCY calls are in flight, and the results keep the candidates' order", async () => {

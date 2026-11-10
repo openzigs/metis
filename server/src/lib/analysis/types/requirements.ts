@@ -46,6 +46,13 @@ export interface StructuredRequirement {
    * joins the item (its criteria and evidence) onto this requirement by it.
    */
   synthesisItemKey?: string;
+  /**
+   * Issue #1580 — the title the extraction gave it, kept the first time a
+   * reviewer retitles it in the approval checkpoint. Synthesis wrote its items
+   * against that title, so promotion's title join reads this one; the row is
+   * still written with the reviewed `title`.
+   */
+  extractedTitle?: string;
 }
 
 export interface StructuredRequirements {

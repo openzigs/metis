@@ -40,6 +40,7 @@ import {
   POLICY_TEXT,
   type GoverningFixtureRule,
 } from "../../e2e/fixtures/governing-fixture.js";
+import type { ClarificationState } from "../src/lib/analysis/types/requirements.js";
 
 /** `GOVERNING_QUESTION_FIELD` in `src/lib/governing/applicability-questions.ts`. */
 export const GOVERNING_QUESTION_FIELD = "governing-applicability";
@@ -93,6 +94,7 @@ export function buildGoverningApplicability(ruleIds: SeededRuleIds, decidedAt: D
  * one, so the Questions tab renders it as is and starts nothing (no model call).
  */
 export function buildGoverningClarificationState(analysisId: string, ruleIds: SeededRuleIds) {
+  // #2143 — checked against the dialog's own type, so a field it renames fails here.
   return {
     analysisId,
     currentRound: 1,
@@ -121,7 +123,7 @@ export function buildGoverningClarificationState(analysisId: string, ruleIds: Se
     answeredAmbiguities: [],
     escalatedToSonnet: false,
     completed: false,
-  };
+  } satisfies ClarificationState;
 }
 
 export async function main(): Promise<void> {

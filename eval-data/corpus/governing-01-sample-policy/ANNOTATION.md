@@ -381,12 +381,40 @@ first five letters, so "records" meets "recorded" and "finance" meets "financial
 a surface check. A synonym ("download" for "extraction") still passes, which is the
 point of the subset.
 
+## Safeguard-line pairs (#2143)
+
+`SAFEGUARD_REQUESTED_LINE` (`server/src/lib/governing/findings.ts`, #2108) tells the
+findings call that a requirement asking for a rule's safeguard is compliant. A review of
+#2141 found the risk in it: when a rule has several parts, the one part a requirement
+provides could earn compliant on the rest. The no-evidence bar cannot catch that, because
+the finding quotes real words of the requirement. So **GR-37 and GR-38** were added, on
+2026-11-09, by the agent dispatched on #2143 (`claude-opus-5-5`). Each provides one part
+of a multi-part rule:
+
+| Item | Rule | What it provides | What it leaves out | Label |
+|---|---|---|---|---|
+| GR-37 | AL-02 (bulk extraction logged with the person, the time and the scope) | the person who ran the export | the time and the scope | `needs-ba-input`: it names the purpose, not the whole entry |
+| GR-38 | AL-06 (staff price changes logged with the previous value and the new value) | the new price, the manager and the time | the previous price | `gap`: it lists what each entry holds, and the previous value is not among them |
+
+A `compliant` on either is a **hard error**, so a reading now measures the risk.
+
+- **Who labelled them, and when.** They were written and labelled the same way as the
+  other 36, by an agent and not by a person. Arms had already run on this tuning set, but
+  none had run on these two items when their labels were fixed.
+- **Not blind.** The agent that wrote them knew the line they test. That is why each
+  label follows from the text alone: what the rule lists against what the requirement
+  says it records.
+- **First measured** with A5 and `anthropic/claude-sonnet-5-5`, one run on an uncommitted
+  tree (so not a reading), $0.93. **GR-37 → AL-02 came back `compliant`, a hard error**: the
+  name of the person earned compliant on the time and the scope. GR-38 → AL-06 came back
+  `gap`, which is right. So the risk is real; changing the line is #2152.
+
 ## Limits to state plainly
 
 - One annotator, and it wrote both sides: the same agent wrote the policy and the
   requirements, so its labels may follow its own reading of each clause more closely
   than an outside reader's would.
-- 36 items is small. At this size a gap between two arms needs roughly 20 points or
+- 38 items is small. At this size a gap between two arms needs roughly 20 points or
   more to be significant; the report states the bar with every comparison.
 - The thresholds are a **proposal** (`thresholds.status`). A later issue may change them
   only by appending to `thresholds.changes` with the issue, the date and the reason; the

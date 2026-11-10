@@ -2750,12 +2750,13 @@ the pre-#1873 code).
   findings refresh. `open` awaits `governingCarriesSettled(analysisId)` before it reads the
   pairs, so the next round never asks a pair the carry is about to settle; it stops waiting
   when its signal aborts, and the carry runs on (#2133). A per-analysis memo (`carryMemo`,
-  bounded at `CARRY_MEMO_MAX_ANALYSES` analyses of at most `CARRY_MEMO_MAX_KEYS` judgings each,
-  the oldest forgotten first) keys each judged candidate by requirement, rules and answers, so
-  an orphan retry with the same answers sends no carried call again. A failed call is not
-  remembered, and (#2133) a judging is remembered only after what the carry settled is
-  written: `carryAnswersOver` reports it in `judgedNow`, and a write that throws leaves it to
-  be judged again. Both maps are process-local: on another replica the next round
+  bounded at `CARRY_MEMO_MAX_ANALYSES` analyses and, over all of them, `CARRY_MEMO_MAX_KEYS`
+  judgings, the least recently used analysis's oldest forgotten first, #2143) keys each judged
+  candidate by requirement, rules and answers, so an orphan retry with the same answers sends
+  no carried call again. A failed call is not remembered. `carryAnswersOver` reports each
+  judging in `judgedNow` with whether it settled a pair: one that settled nothing is
+  remembered at once, and (#2133) one that settled is remembered only after the write, so a
+  write that throws leaves it to be judged again. Both maps are process-local: on another replica the next round
   may ask what a carry here settles, as before #2122. `settle`'s left-open count reads only the
   questions' own settlements (#2016/#2022 backoff).
 - **Findings that ask (#2059).** A pair that `applies` is never `uncertain`, but its finding can
@@ -4784,11 +4785,12 @@ defect report, password rule or sign-in flow, so the defects `governing-03` show
 be tuned there. **`governing-04-openemr-asvs`** (`purpose: "tuning"`, `synthetic: false`)
 quotes 30 OWASP ASVS 5.0.0 requirements (CC BY-SA 4.0, kept in the policy's header) against 25
 OpenEMR issues that `governing-03` does not use. It was labelled blind the same way, without
-the consistency pass. A5 now records each candidate rule's **stage**
+the consistency pass (#2140 added one). A5 now records each candidate rule's **stage**
 (`GoverningArmOutput.stages`, `eval/governing/stages.ts`): the pass that found it, its
 applicability and its finding. `stageSection` prints "Where each error arose": each miss,
 extra rule and wrong verdict counted as `not-a-candidate`, `judged-does-not-apply`,
-`applicability-applies`, `applicability-uncertain` or `findings-call`. Three prompt lines were
+`applicability-applies`, `applicability-uncertain`, `rule-not-citable` (#2143: the rule applied
+but could not be cited, so no finding was asked for) or `findings-call`. Three prompt lines were
 tuned on `governing-04`:
 
 - `SAME_SUBJECT_LINE` in the applicability judge: of the rules sharing a subject, only those
@@ -4802,6 +4804,16 @@ tuned on `governing-04`:
 non-resembling recall (0.50)
 (`eval-data/readings/governing-03-openemr-hipaa/baseline-A5-sonnet-2108.md`; the diagnosis is
 in its `ANNOTATION.md`).
+
+**Rules on every new password, tried and not shipped (#2140).** `governing-04` gained eight
+OpenEMR issues that set or change a password or add a way of signing in (OS-26 to OS-33,
+labelled blind in `labelling/2140/`), and `governing-03`'s per-rule consistency pass on the
+counterparts of its cross-cutting rules (PA-04, PA-10, AZ-01). The corpus test now checks
+labels round by round (`expectAdjudicatedLabels(dir, rounds)`), each item in exactly one
+round. A sentence inside `SAME_SUBJECT_LINE`, tuned there, raised `governing-03` recall
+(0.75 → 0.83) but cut precision (0.76 → 0.65) and gave a wrong `compliant`, so it was
+reverted and the judge's prompts are #2108's
+(`eval-data/readings/governing-03-openemr-hipaa/baseline-A5-sonnet-2140.md`).
 
 **Readings and their code (#1878).** Every report records `provenance`: the commit it ran at
 (`git rev-parse HEAD`), whether the tree was clean, and each arm's `codePath`. Three runs do not
@@ -9841,6 +9853,7 @@ Raw Documents
 - `GET /api/analysis/:id/approvals` — List approval requests for an analysis
 - `PUT /api/analysis/:id/approvals/:approvalId` — Approve or reject an approval request
 - `POST /api/projects/:projectId/analyses/:id/approvals/:approvalId/reopen` — Return a rejected approval to pending (#723)
+- `PATCH /api/projects/:projectId/analyses/:id/approvals/:approvalId/requirement` — Edit the `title` and/or `description` of the structured requirement a **pending** `requirement` approval reviews (`editCheckpointRequirementSchema`); approving then promotes the edited text (#1580). `analysis.run`, project-scoped, pre-auth and per-user rate limited (`ANALYSIS_APPROVAL_EDIT_RATE_LIMIT_MAX`, default 120 / 15 min), audited as `analysis.approval.edit`. 409 `APPROVAL_ALREADY_REVIEWED` once the approval is resolved. Written under the analysis row lock and, on Postgres, a `FOR UPDATE` on the approval row, so a concurrent review waits for the edit. The first retitle keeps the extracted title in `extractedTitle`, which promotion's title join (`matchSynthesizedReportingRefusals`) reads in place of `title`, so a retitled requirement keeps the synthesis item written against its extracted title (`lib/analysis/checkpoint-requirement-edit.ts`)
 - `POST /api/projects/:projectId/analyses/:id/approvals/promote` — Promote the approved requirements of a completed run whose gate is open but which has no requirement rows; `analysis.run`, project-scoped, rate-limited, idempotent (#723)
 - `POST /api/projects/:projectId/analyses/:id/approvals/approve-all` — Approve every pending approval of the analysis in one write (optional `reviewNote`), then promote once; resolved approvals are left alone. `analysis.run`, project-scoped, rate-limited under the promote key. Requirements promoted from the checkpoint are created `approved` and listed in `metadata.checkpointApprovedRequirementIds`; that status alone is not review work, so a newer run's checkpoint may replace them (#939). Since #1588 they are `approved` only when the caller holds `project.update` (`signOffForRole`, `lib/analysis/checkpoint-sign-off.ts`); otherwise they are created `draft` (not listed in `checkpointApprovedRequirementIds`, so a coordinator's later approval of one counts as review work; still carrying the #1389 approved-criteria record; the status is recorded in `metadata.checkpointSignOff`). The same applies to the review PUT, `promote` and `reject-added`, and to the append a reopened-then-approved requirement takes. The orchestrator's re-persist of a reviewed set (a Regenerate or resume) is `approved` only if both the recorded `checkpointSignOff` is not `draft` and the user who triggered it (the run's starter when there is no actor) holds `project.update`, read from durable roles by `signOffForResave`; a system-started run (NULL starter) and a deactivated user re-save as `draft`. Lazy promotion in `generateDrafts` uses the requester's permission
 

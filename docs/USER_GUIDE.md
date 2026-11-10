@@ -3027,7 +3027,7 @@ A file counts as the provider's API when it is one of these (#2127, #2134):
 - a file the edge records on the provider's side;
 - a spec file (`openapi*.yaml`, `swagger*.json`, `asyncapi*.yml`, `.proto`,
   `.graphql`, `.graphqls`, `.gql`), wherever it sits;
-- a file under a folder whose name is, or contains the word, `api`, `rest`,
+- a file under a folder whose name is, or contains the word, `api(s)`, `rest`,
   `graphql`, `grpc`, `rpc`, `openapi`, `swagger`, `endpoint(s)`, `routes`,
   `controller(s)`, `resolver(s)` or `webhook(s)`, so `RestControllers`,
   `public_api` and `GraphQLSchema` count;
@@ -3038,8 +3038,8 @@ A file counts as the provider's API when it is one of these (#2127, #2134):
   `server/src/jobs/handlers/` do not count.
 
 A singular `route` folder never counts (it is a route helper, such as
-Miniflux's `internal/http/route/`), and neither does a client folder, which
-calls an API rather than serving one: any folder with the word `client` in its
+Miniflux's `internal/http/route/`). A client folder never counts either, since
+it calls an API rather than serving one: any folder with the word `client` in its
 name (`rest-client`, `api_client`, `GraphQLClient`), or with `client` joined
 onto `graphql`, `grpc`, `openapi` or `swagger` (`grpcclient`, `swaggerclient`).
 
@@ -3054,7 +3054,8 @@ request here, and each stored requirement as its own, so in a document with
 several unrelated changes, one that touches the API keeps the banner off all of
 them. While this part is still loading, the block says **Checking projects that
 call this project's API…**, and if it cannot be read, the block says so; in
-neither case does it report that no other project is affected. Consumers you cannot open are left out. These come from
+neither case does it report that no other project is affected. Consumers you
+cannot open are left out. These come from
 `GET /api/impact-analyses/:id/api-edge-impact` (`analysis.read`, authorized like
 the run itself).
 
@@ -5876,6 +5877,8 @@ Before tickets are created, METIS creates approval requests for:
 View approvals at **Analysis → Approvals** tab. Each item shows its status (Pending / Approved / Rejected) and supports adding reviewer notes. Tickets can only be created once all required approvals are resolved.
 
 **Requirements the analysis wrote up on its own (#1569).** The analysis sometimes writes up a requirement that is not on the list METIS extracted for you to review. For example, the code or database agents may find security or operations work. When the analysis says such a requirement restates nothing on the list, METIS adds it to the Approvals tab as a requirement of its own, marked **Written up by the analysis**, with its own pending approval. Approve it and it is saved with its acceptance criteria and evidence; reject it and it is left out. Before this change those requirements were dropped when you approved, and the tab only warned that their criteria and evidence would not be carried over. The banner above the approvals says how many were added this way. A requirement the analysis wrote up without saying which listed requirement it restates is still not added, because it may repeat one already on the list; the banner still counts those.
+
+**Editing a requirement before you approve it (#1580).** A pending requirement has an **Edit** button beside **Approve** and **Reject**. It lets you change the requirement's title and description, and approving saves the requirement with your wording. While the editor is open, **Approve** and **Reject** for that requirement are turned off, so you cannot approve the old text by mistake. A retitled requirement shows the title the analysis gave it ("Edited. The analysis titled it: …"). It still gets the acceptance criteria and evidence the analysis wrote for it. You can edit a requirement only while its approval is pending. Once it is approved, edit it on the Requirements page instead. Editing needs the same permission as approving.
 
 **Who can approve requirements here (#1588).** Anyone who can run analyses (a developer, coordinator or admin) can resolve the checkpoint. What approving does depends on whether you hold the `project.update` permission, the same one that approving a requirement anywhere else needs. With it (coordinator, admin), the requirements you approve are added to the Requirements hub as **Approved**. Without it (developer), approving still completes the checkpoint and adds the requirements to the hub, but as **Draft**; a coordinator then approves them there. The Approvals tab tells you so: *"Your approval adds these as drafts; a coordinator approves them."* Rejecting, leaving out the requirements the analysis added, and reopening a rejection work the same for everyone. A Regenerate re-creates the approved list with the permission of whoever started the run, and a run the scheduler started re-creates it as drafts.
 
