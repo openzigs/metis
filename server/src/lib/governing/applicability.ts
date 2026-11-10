@@ -273,6 +273,14 @@ export function buildApplicabilityScreenPrompt(
 // 0.76 -> 0.65, the password-change request's extra rules came back, and a
 // wrong Compliant broke the no-evidence bar. It is not shipped; the sentence
 // and the reading are in governing-03's ANNOTATION.md.
+// #2149 — a narrower sentence, bringing in only a rule whose OWN words name the
+// step the requirement adds (ASVS 6.2.4's "passwords submitted during account
+// registration or password change") and keeping the length and composition
+// rules out, was tuned on governing-04 and governing-01 (recall 0.67 -> 0.82
+// there, no password-policy extra) and read once on governing-03 with #2152's
+// findings line: recall 0.75 -> 0.81, but the password-change request drew
+// extra rules again and gave a wrong Compliant. Not shipped either; see
+// governing-03's ANNOTATION.md.
 export const SAME_SUBJECT_LINE =
   "When several rules share the requirement's subject (sign-in, passwords, sessions, logging, access), a rule on that subject applies only when the requirement sets or changes the specific thing that rule governs, or says how the flow it changes does that thing today (a reminder that a password has expired says passwords expire, which brings in a rule on password rotation, even though the requirement only asks for the reminder). The other rules on that subject do not apply.";
 

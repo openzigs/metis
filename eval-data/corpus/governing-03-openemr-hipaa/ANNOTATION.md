@@ -232,6 +232,7 @@ the report file. A reading is for a decision, never for tuning a prompt.
 | 2026-11-09 | #2105 | A5 (the shipped path), 3 runs as three `--runs 1` invocations, combined; commit `1a6766257` | `anthropic/claude-sonnet-5-5` | [`eval-data/readings/governing-03-openemr-hipaa/baseline-A5-sonnet.md`](../../readings/governing-03-openemr-hipaa/baseline-A5-sonnet.md) |
 | 2026-11-09 | #2108 | A5, 3 runs as three `--runs 1` invocations, combined; commit `b7f9f8657`, after the fix tuned on `governing-04` | `anthropic/claude-sonnet-5-5` | [`eval-data/readings/governing-03-openemr-hipaa/baseline-A5-sonnet-2108.md`](../../readings/governing-03-openemr-hipaa/baseline-A5-sonnet-2108.md) |
 | 2026-11-10 | #2140 | A5, 3 runs as three `--runs 1` invocations, combined; commit `15b11e09e`, with a sentence tuned on `governing-04` that was then **not shipped** | `anthropic/claude-sonnet-5-5` | [`eval-data/readings/governing-03-openemr-hipaa/baseline-A5-sonnet-2140.md`](../../readings/governing-03-openemr-hipaa/baseline-A5-sonnet-2140.md) |
+| 2026-11-10 | #2149, #2152 | A5, 3 runs in one `--runs 3` invocation; commit `320ac11b3`, with a judge sentence (#2149) and a findings line (#2152) tuned on `governing-04` and `governing-01`, both then **not shipped** | `anthropic/claude-sonnet-5-5` | [`eval-data/readings/governing-03-openemr-hipaa/baseline-A5-sonnet-2149.md`](../../readings/governing-03-openemr-hipaa/baseline-A5-sonnet-2149.md) |
 
 ### The #2105 reading
 
@@ -478,3 +479,81 @@ failure is the bar that matters most to an analyst: a gap reported as `compliant
 sentence was reverted in the same PR, and the shipped prompts are #2108's. This set has now
 been read three times; the next change to the judge must be tuned elsewhere and read here once
 more. The follow-up is #2149.
+
+### The #2149 and #2152 attempt and re-read
+
+**What was tried.** Two prompt changes, each tuned with Sonnet on `governing-04` and
+`governing-01` only, were read here **together, once**, as #2152 asked, so that this set was
+read once for both:
+
+- **#2152, the findings call.** `SAFEGUARD_REQUESTED_LINE` was reworded: a safeguard the
+  requirement adds is provided whole, and only what an entry or a check already in place holds
+  is excused. `governing-01`'s `ANNOTATION.md` quotes it in full.
+- **#2149, the judge.** One sentence was added inside `SAME_SUBJECT_LINE`, after its
+  exclusion. Its examples are generic, and no item, label or rule of this set reached a
+  prompt:
+
+> But a rule whose own words name the step the requirement adds or changes applies to it, even
+> when the requirement says nothing of that rule's matter: a rule on every password submitted at
+> registration or at a password change applies to a flow where a password is chosen or changed,
+> and a rule on what every way into the application must use applies to a new way in. Rules on
+> the password policy itself (its length, which characters it allows) and on how the
+> password-change function works still apply only as above.
+
+**The re-read.** One reading, three runs in one `--runs 3` invocation, at commit `320ac11b3`
+on a clean tree, $2.13:
+[`eval-data/readings/governing-03-openemr-hipaa/baseline-A5-sonnet-2149.md`](../../readings/governing-03-openemr-hipaa/baseline-A5-sonnet-2149.md).
+
+| Bar | Required | #2108 (shipped) | #2140 draft | #2149 + #2152: mean | Per run | Pass |
+|---|---|---|---|---|---|---|
+| Overall recall | ≥ 0.90 | 0.75 | 0.83 | 0.81 | 0.76 / 0.82 / 0.85 | **no** |
+| Non-resembling recall | ≥ 0.85 | 0.50 | 0.50 | 0.50 | 0.50 ×3 | **no** (2 pairs) |
+| Precision | ≥ 0.60 | 0.76 | 0.65 | 0.72 | 0.66 / 0.77 / 0.72 | yes |
+| Citation accuracy | ≥ 0.95 | 1.00 | 1.00 | 1.00 | 1.00 ×3 | yes |
+| No-evidence → compliant errors | 0 per run | 0 | 1 (worst run) | 2 (worst run) | 2 / 1 / 1 | **no** |
+
+| Label | #2108: what the path said | #2149 + #2152: what the path said |
+|---|---|---|
+| compliant (39 pair-runs) | compliant 20, needs-ba-input 19, missed 0 | compliant 20, needs-ba-input 17, missed 2 |
+| gap (12) | gap 9, needs-ba-input 3, compliant 0 | gap 9, needs-ba-input 2, **compliant 1** |
+| needs-ba-input (48) | needs-ba-input 20, gap 3, missed 25 | needs-ba-input 28, **compliant 3**, missed 17 |
+| extra rules | 23 (none on OE-15) | 32 (5 on OE-15) |
+
+- **What the judge sentence found.** OE-11 → PW-07 (the blocklist rule on a new user's
+  initial password) was missed in 3 of 3 runs before and is found in all 3. OE-12 → PW-07
+  (2 of 3 missed before) is found in all 3. OE-16 → PW-07 is found in 1 of 3 (0 before), and
+  OE-14 → AU-01 in 1 of 3 (0 before). OE-11 → PW-02, the length rule, is still missed in 2 of
+  3 runs: the sentence keeps length rules out on purpose (#2149's decision on PA-01 and PA-05,
+  `governing-04`'s `ANNOTATION.md`).
+- **Where the four hard errors came from:**
+  - **OE-22 → AU-01, in 3 of 3 runs.** The label is `needs-ba-input`: multi-factor sign-in is
+    required only "when enabled" (the adjudication note above). At #2108 the judge applied the
+    rule, found by the screen, and the finding was `needs-ba-input` in all three runs. Here the
+    judge gives the same verdict and the finding is `compliant` in all three. So the error is
+    the findings call's, and #2152's line is the only change to that call.
+    - #2152's line excused what "a check it says is already in place" leaves alone. That reads
+      the "when enabled" setting as left alone, ahead of the "a setting that can leave it
+      switched off" clause.
+    - One caveat: the batch also held AU-03 in all three runs, against 1 of 3 at #2108, so the
+      batch was not the same.
+  - **OE-15 → AS-02, in 1 of 3 runs.** The password-change request again. #2140's draft gave
+    it in 2 of 3, and #2108 in 0 of 3. With this sentence OE-15 draws PW-10 in 3 of 3 runs, and
+    PW-01 and PW-09 in 1 of 3 each: 5 extra pair-runs, against 0 at #2108 and 12 at #2140.
+    That is the "rule on how the password-change function works" the sentence was meant to
+    leave out.
+- **Recall gained is mostly the judge's; the hard errors are the findings call's.** This
+  reading cannot split the two changes further, because they were read together.
+
+**Decision: neither change is shipped.** Three bars would fail, as at #2140, against two at
+#2108. The new failure is again the one that matters most to an analyst: a pair the label
+leaves open, or a gap, reported as `compliant`, in every run. #2149's own condition, "without
+the extra rules and without a wrong compliant", is not met either. Both lines were reverted in
+their PRs, so the shipped prompts stay #2108's. This set has now been read four times.
+
+The next change has to be tuned elsewhere, with tuning pairs of the two kinds found here, and
+read here once more:
+
+- a check already in place whose safeguard a setting can switch off;
+- a password-change request against the change function's own rules.
+
+The follow-up is filed from #2149.
