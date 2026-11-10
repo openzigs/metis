@@ -13,10 +13,14 @@
  * (sub-agents, apply-diff, summaries) so a session's figures add up to the
  * ledger. Every token figure on the page is the ledger's, named with and
  * without cache, and every cost is the ledger's stored cost.
+ *
+ * #1584 — the chat-turns table shows a page at a time (the server's default
+ * 50) and **Load more chat turns** appends the next, older page.
  */
 import { useMemo, useState } from "react";
 import Link from "next/link";
-import { useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
+import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -187,10 +191,20 @@ export default function RunsPage() {
   });
 
   // #1007 — chat turns, from the usage ledger, under the same filters.
-  const chatTurns = useQuery({
+  // #1584 — a page at a time; each next page starts after the last one's cursor.
+  const chatTurns = useInfiniteQuery({
     queryKey: ["runs-chat-turns", queryFilters],
-    queryFn: () => runsApi.chatTurns(queryFilters),
+    queryFn: ({ pageParam }) =>
+      runsApi.chatTurns(pageParam ? { ...queryFilters, cursor: pageParam } : queryFilters),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (last) => last.nextCursor ?? undefined,
   });
+  const turnPages = chatTurns.data?.pages ?? [];
+  const turnItems = turnPages.flatMap((p) => p.items);
+  // Each page names its own sessions' whole spend; a session on two pages once.
+  const turnSessions = [
+    ...new Map(turnPages.flatMap((p) => p.sessions ?? []).map((x) => [x.sessionId, x])).values(),
+  ];
 
   return (
     <div className="space-y-6 p-2 md:p-0" data-testid="runs-page">
@@ -287,33 +301,54 @@ export default function RunsPage() {
         </div>
         {chatTurns.isLoading ? (
           <SkeletonText lines={3} />
-        ) : chatTurns.isError ? (
+        ) : chatTurns.isError && !chatTurns.isFetchNextPageError ? (
           <div className="text-sm text-destructive">
             Failed to load chat turns: {(chatTurns.error as Error).message}
           </div>
-        ) : (chatTurns.data?.items ?? []).length === 0 ? (
+        ) : turnItems.length === 0 ? (
           <div className="text-sm text-muted-foreground" data-testid="runs-chat-turns-empty">
             No chat turns of yours match these filters.
           </div>
         ) : (
           <>
             <ResponsiveTable
-              data={chatTurns.data!.items}
+              data={turnItems}
               getRowKey={(t) => t.id}
               ariaLabel="Chat turns"
               data-testid="runs-chat-turns-table"
               columns={chatTurnColumns}
             />
-            {(chatTurns.data!.sessions ?? []).length > 0 ? (
+            {chatTurns.hasNextPage ? (
+              <div className="flex items-center gap-3">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void chatTurns.fetchNextPage()}
+                  disabled={chatTurns.isFetchingNextPage}
+                  data-testid="runs-chat-turns-more"
+                >
+                  {chatTurns.isFetchingNextPage ? "Loading…" : "Load more chat turns"}
+                </Button>
+                <span className="text-xs text-muted-foreground">
+                  Showing the newest {turnItems.length}.
+                </span>
+              </div>
+            ) : null}
+            {chatTurns.isFetchNextPageError ? (
+              <div role="alert" className="text-sm text-destructive">
+                Failed to load more chat turns: {(chatTurns.error as Error).message}
+              </div>
+            ) : null}
+            {turnSessions.length > 0 ? (
               <div className="space-y-1 pt-2">
                 <h3 className="text-sm font-semibold">Session totals</h3>
                 <p className="text-xs text-muted-foreground">
-                  Each listed session&apos;s whole chat spend in the ledger, whatever page of turns
-                  is shown above: its turn rows, the calls recorded against the session outside
-                  them, and the two together.
+                  Each listed session&apos;s whole chat spend in the ledger, however many of its
+                  turns are shown above: its turn rows, the calls recorded against the session
+                  outside them, and the two together.
                 </p>
                 <ResponsiveTable
-                  data={chatTurns.data!.sessions!}
+                  data={turnSessions}
                   getRowKey={(s) => s.sessionId}
                   ariaLabel="Chat session totals"
                   data-testid="runs-chat-sessions-table"

@@ -42,7 +42,7 @@
  * leak through this code path.
  */
 import { createChildLogger } from "../logger.js";
-import type { CacheTelemetryCallType } from "./types.js";
+import type { CacheTelemetryCallType, ChatOptions } from "./types.js";
 
 const log = createChildLogger("ai-cache-hit-telemetry");
 
@@ -153,6 +153,19 @@ export interface CacheHitStats {
 }
 
 const DEFAULT_CALL_TYPE: CacheTelemetryCallType = "unknown";
+
+/**
+ * #1584 — `opts` tagged with `callType` unless the call site already tagged it:
+ * a wrapper that knows the workload (an analysis, docs-gen or impact run) names
+ * it for the calls that would otherwise be counted as `"unknown"`. A call
+ * site's own, finer tag (`"synthesis"`, `"grounding"`, `"chat"`, …) wins.
+ */
+export function withDefaultCallType(
+  opts: ChatOptions | undefined,
+  callType: CacheTelemetryCallType,
+): ChatOptions {
+  return opts?.callType ? opts : { ...opts, callType };
+}
 
 /** Composite key for the per-(callType, model) bucket map. `\u0000` can never appear in either part. */
 function bucketKey(callType: CacheTelemetryCallType, model: string): string {

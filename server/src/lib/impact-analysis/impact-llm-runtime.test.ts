@@ -294,6 +294,30 @@ describe("createImpactLlmRuntime — metering (#1021)", () => {
     });
   });
 
+  it("#1584 — tags an untagged stage call as the impact run's, and keeps a call site's own tag", async () => {
+    const { runtime } = runtimeWith();
+    const seen: Array<ChatOptions | undefined> = [];
+    const inner = fakeProvider({
+      chat: async (_m, o) => {
+        seen.push(o);
+        return { content: "{}", usage: USAGE, model: "claude-sonnet-5", provider: "anthropic" };
+      },
+    });
+    const streamed: Array<ChatOptions | undefined> = [];
+    inner.stream = async function* (_m: unknown, o?: ChatOptions) {
+      streamed.push(o);
+      yield { type: "done" } as ChatChunk;
+    } as AIProvider["stream"];
+    const provider = runtime.instrument(inner, "seeding");
+    await provider.chat([]);
+    await provider.chat([], { callType: "grounding" });
+    for await (const _ of provider.stream([])) void _;
+    for await (const _ of provider.stream([], { callType: "synthesis" })) void _;
+    await runtime.flush();
+    expect(seen.map((o) => o?.callType)).toEqual(["impact-analysis", "grounding"]);
+    expect(streamed.map((o) => o?.callType)).toEqual(["impact-analysis", "synthesis"]);
+  });
+
   it("passes the provider identity and the non-chat methods straight through", async () => {
     const { runtime } = runtimeWith();
     const inner = fakeProvider();

@@ -49,6 +49,14 @@ export type CacheTelemetryCallType =
   | "chat"
   | "discussion"
   | "spec-kit"
+  // #1584 — the workload a provider wrapper knows a call belongs to, for a
+  // call site that set no tag of its own: an analysis run's calls
+  // (`meterAnalysisProvider`), a docs-gen run's (`scopedToGeneration`) and an
+  // impact run's stages (`createImpactLlmRuntime`). Before this, run 10's
+  // admin readout put 299 calls under "unknown".
+  | "analysis"
+  | "docs-gen"
+  | "impact-analysis"
   | "unknown";
 
 // ── Multimodal content blocks (#660) ───────────────────────────────────

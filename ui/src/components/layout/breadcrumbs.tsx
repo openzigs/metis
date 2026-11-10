@@ -4,7 +4,8 @@ import { Fragment } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
-import { projectsApi } from "@/lib/projects-api";
+import { projectSwitcherQuery } from "@/lib/active-project";
+import { useActiveWorkspaceId } from "@/lib/active-workspace";
 import { pageCrumbs } from "@/lib/breadcrumb-trail";
 import { cn } from "@/lib/utils";
 import {
@@ -34,11 +35,8 @@ import { ProjectSwitcher } from "./project-switcher";
  */
 export function Breadcrumbs() {
   const pathname = usePathname() ?? "";
-  const projects = useQuery({
-    queryKey: ["projects", "switcher"],
-    queryFn: () => projectsApi.list({ limit: 50 }),
-    staleTime: 30_000,
-  });
+  // The switcher's own list (#1584: the active workspace's).
+  const projects = useQuery(projectSwitcherQuery(useActiveWorkspaceId()));
 
   const hasProjects = (projects.data?.items.length ?? 0) > 0;
   const onProjectPath = /^\/projects\/[^/]+/.test(pathname);

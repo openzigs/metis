@@ -21,6 +21,7 @@
  */
 import { createChildLogger } from "../logger.js";
 import { recordUsage } from "../finops/index.js";
+import { withDefaultCallType } from "../ai/cache-hit-telemetry.js";
 import { getConfigService, type ConfigService } from "../config/config-service.js";
 import type {
   AIProvider,
@@ -340,7 +341,11 @@ export function scopedToGeneration(provider: AIProvider): AIProvider {
         log.warn("Could not note a retried docs-gen attempt to the run", { err: String(err) });
       }
     };
-    const callOpts = withRetriedAttemptListener(withSignal(opts, scope.signal), onRetriedAttempt);
+    // #1584 — an untagged call inside a run is docs-gen's in the cache telemetry.
+    const callOpts = withRetriedAttemptListener(
+      withSignal(withDefaultCallType(opts, "docs-gen"), scope.signal),
+      onRetriedAttempt,
+    );
     return provider.chat(messages, callOpts).catch((err: unknown) => {
       if (scope.signal.aborted)
         recordAbortedCall(scope, provider, messages, opts, { outputChars: 0 });
@@ -355,7 +360,10 @@ export function scopedToGeneration(provider: AIProvider): AIProvider {
       if (stopped) throw stopped;
       const seen: Parameters<typeof recordAbortedCall>[4] = { outputChars: 0 };
       try {
-        for await (const chunk of provider.stream(messages, withSignal(opts, scope.signal))) {
+        for await (const chunk of provider.stream(
+          messages,
+          withSignal(withDefaultCallType(opts, "docs-gen"), scope.signal),
+        )) {
           if (chunk.type === "delta") seen.outputChars += chunk.content.length;
           else if (chunk.type === "usage") seen.usage = chunk.usage;
           yield chunk;

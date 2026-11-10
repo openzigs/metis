@@ -14,12 +14,17 @@ export const ACTIVE_PROJECT_STORAGE_KEY = "metis.activeProjectId";
 /**
  * The switcher's project list. Shared (same key, same request) so a page that
  * needs the active project reads the very list the top bar resolved it from.
+ *
+ * #1584 — the active workspace's projects (`useActiveWorkspaceId`), not every
+ * project the user can open; all of them only while no workspace is known.
  */
-export const projectSwitcherQuery = {
-  queryKey: ["projects", "switcher"] as const,
-  queryFn: () => projectsApi.list({ limit: 50 }),
-  staleTime: 30_000,
-};
+export function projectSwitcherQuery(workspaceId: string | null) {
+  return {
+    queryKey: ["projects", "switcher", workspaceId] as const,
+    queryFn: () => projectsApi.list(workspaceId ? { limit: 50, workspaceId } : { limit: 50 }),
+    staleTime: 30_000,
+  };
+}
 
 export function readStoredActiveProjectId(): string | null {
   if (typeof window === "undefined") return null;

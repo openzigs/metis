@@ -23,6 +23,7 @@ import {
   readStoredActiveProjectId,
   resolveActiveProjectId,
 } from "@/lib/active-project";
+import { useActiveWorkspaceId } from "@/lib/active-workspace";
 
 const STORAGE_KEY = "metis.chat.projectScope";
 
@@ -245,7 +246,7 @@ export function useProjectScope() {
   // default and again on the real value. `hydrated` lets it wait for the real one.
   const [hydrated, setHydrated] = useState(false);
   // #1139 — the top bar's own list, so the active project is the one it shows.
-  const projects = useQuery(projectSwitcherQuery);
+  const projects = useQuery(projectSwitcherQuery(useActiveWorkspaceId()));
 
   useEffect(() => {
     if (hydrated) return;

@@ -109,7 +109,8 @@ export const CHAT_TURN_MAX_LIMIT = 200;
  * So the caller's sessions are read {@link CHAT_TURN_SESSION_BATCH} at a time.
  * Every value a statement binds counts, not only the ids: the page read binds
  * a batch's session ids, their projects (at most one per session), the three
- * steps, the two dates and LIMIT/OFFSET — at most 400 + 400 + 3 + 2 + 2 = 807.
+ * steps, the two dates and LIMIT/OFFSET — at most 400 + 400 + 3 + 2 + 2 = 807,
+ * and 810 on a later page, whose cursor binds a time twice and an id (#1584).
  * There is no cap on the sessions themselves: a caller with several thousand
  * gets the same page, in one more statement per 400 sessions.
  */
@@ -129,6 +130,18 @@ export interface ChatTurnFilter {
   from?: Date;
   to?: Date;
   limit?: number;
+  /**
+   * #1584 — the page after this position: rows strictly older than it in the
+   * list's order (newest first, id breaking a tie). From a previous page's
+   * {@link ChatTurnPage.nextCursor}, via {@link decodeChatTurnCursor}.
+   */
+  before?: ChatTurnCursor;
+}
+
+/** A position in the list: the last row of a page. */
+export interface ChatTurnCursor {
+  createdAt: Date;
+  id: string;
 }
 
 export interface ChatTurn {
@@ -177,6 +190,40 @@ export interface ChatTurnPage {
   items: ChatTurn[];
   /** One entry per session that has a turn in `items`, in order of first appearance. */
   sessions: ChatSessionSpend[];
+  /** #1584 — names the next page when there are older turns; `null` on the last page. */
+  nextCursor: string | null;
+}
+
+/** Ledger ids are cuids; 512 bounds a cursor id well past one. */
+const MAX_CURSOR_ID_CHARS = 512;
+/** base64url of `{"t":<ISO>,"id":<id>}`: ~4/3 of (id + timestamp + keys), rounded up. */
+const MAX_CURSOR_CHARS = 1024;
+/** The shape `Date#toISOString` writes, and only that. */
+const ISO_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+
+/** #1584 — an opaque cursor for the row `r`: base64url JSON, so a client never builds one. */
+export function encodeChatTurnCursor(r: ChatTurnCursor): string {
+  return Buffer.from(JSON.stringify({ t: r.createdAt.toISOString(), id: r.id })).toString(
+    "base64url",
+  );
+}
+
+/** The position a cursor from {@link encodeChatTurnCursor} names, or `null` when it is not one. */
+export function decodeChatTurnCursor(raw: unknown): ChatTurnCursor | null {
+  if (typeof raw !== "string" || raw.length === 0 || raw.length > MAX_CURSOR_CHARS) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(Buffer.from(raw, "base64url").toString("utf8"));
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null) return null;
+  const { t, id } = parsed as { t?: unknown; id?: unknown };
+  if (typeof t !== "string" || !ISO_INSTANT.test(t)) return null;
+  if (typeof id !== "string" || id.length === 0 || id.length > MAX_CURSOR_ID_CHARS) return null;
+  const createdAt = new Date(t);
+  if (Number.isNaN(createdAt.getTime())) return null;
+  return { createdAt, id };
 }
 
 function spend(rows: readonly LedgerUsageRow[]): ChatSpend {
@@ -227,6 +274,17 @@ function inBatches<T>(items: readonly T[], size: number): T[][] {
   return out;
 }
 
+/** A batch's session ids grouped under their project, in first-seen order. */
+function byProject(batch: readonly OwnedSession[]): Array<[string, string[]]> {
+  const groups = new Map<string, string[]>();
+  for (const s of batch) {
+    const ids = groups.get(s.projectId);
+    if (ids) ids.push(s.id);
+    else groups.set(s.projectId, [s.id]);
+  }
+  return [...groups];
+}
+
 /** Newest first; rows written in the same millisecond by id, so the order is total. */
 function newestFirst(
   a: { createdAt: Date; id: string },
@@ -251,6 +309,11 @@ function newestFirst(
  * those together. Any row of the true page is among its own batch's newest
  * `take`, so nothing is missed, and the order is the one a single statement
  * would give. The session subtotals read only the sessions on the page.
+ *
+ * #1584 — LATER PAGES. Each batch reads one row past the page, so a page that
+ * has older turns behind it says so (`nextCursor`, its last row). Given that
+ * cursor, every batch reads only rows strictly after it in the same order, and
+ * the argument above holds for the page that follows.
  */
 /** A ledger row billed to a project (a workspace-level row has none, #1947). */
 function hasProject<T extends { projectId: string | null }>(r: T): r is T & { projectId: string } {
@@ -259,7 +322,7 @@ function hasProject<T extends { projectId: string | null }>(r: T): r is T & { pr
 
 export async function listChatTurns(filter: ChatTurnFilter): Promise<ChatTurnPage> {
   const owned = await ownedSessions(filter);
-  if (owned.length === 0) return { items: [], sessions: [] };
+  if (owned.length === 0) return { items: [], sessions: [], nextCursor: null };
   const sessionProject = new Map(owned.map((s) => [s.id, s.projectId]));
   const take = pageSize(filter.limit, CHAT_TURN_DEFAULT_LIMIT, CHAT_TURN_MAX_LIMIT);
 
@@ -267,18 +330,36 @@ export async function listChatTurns(filter: ChatTurnFilter): Promise<ChatTurnPag
   if (filter.from) createdAt.gte = filter.from;
   if (filter.to) createdAt.lte = filter.to;
 
+  const before = filter.before;
   const found = [];
   for (const batch of inBatches(owned, CHAT_TURN_SESSION_BATCH)) {
     found.push(
       ...(await prisma.tokenUsage.findMany({
         where: {
-          projectId: { in: [...new Set(batch.map((s) => s.projectId))] },
-          sessionId: { in: batch.map((s) => s.id) },
+          // #1584 — each session under its OWN project, in the statement: a row
+          // filtered out after the read would leave the page short and hide
+          // whether older turns remain. Binds each id and project once, as the
+          // separate project and session lists did.
+          OR: byProject(batch).map(([projectId, sessionIds]) => ({
+            projectId,
+            sessionId: { in: sessionIds },
+          })),
           agentStep: { in: [...CHAT_TURN_LEDGER_STEPS] },
           ...(filter.from || filter.to ? { createdAt } : {}),
+          ...(before
+            ? {
+                AND: {
+                  OR: [
+                    { createdAt: { lt: before.createdAt } },
+                    { createdAt: before.createdAt, id: { lt: before.id } },
+                  ],
+                },
+              }
+            : {}),
         },
         orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-        take,
+        // One past the page: whether older turns remain (#1584).
+        take: take + 1,
         select: {
           ...LEDGER_USAGE_SELECT,
           id: true,
@@ -290,12 +371,15 @@ export async function listChatTurns(filter: ChatTurnFilter): Promise<ChatTurnPag
       })),
     );
   }
-  // A ledger row is the session's only under the session's own project.
-  const rows = found
+  // A ledger row is the session's only under the session's own project (the
+  // statement already asks for no other).
+  const listable = found
     .filter(hasProject)
     .filter((r) => r.sessionId !== null && sessionProject.get(r.sessionId) === r.projectId)
-    .sort(newestFirst)
-    .slice(0, take);
+    .sort(newestFirst);
+  const rows = listable.slice(0, take);
+  const last = rows[rows.length - 1];
+  const nextCursor = listable.length > take && last ? encodeChatTurnCursor(last) : null;
   const items = rows.map((row) => {
     const one = spend([row]);
     return {
@@ -317,6 +401,7 @@ export async function listChatTurns(filter: ChatTurnFilter): Promise<ChatTurnPag
       rows.map((r) => r.sessionId as string),
       sessionProject,
     ),
+    nextCursor,
   };
 }
 
