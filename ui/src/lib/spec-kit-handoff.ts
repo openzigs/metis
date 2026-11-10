@@ -161,13 +161,14 @@ export function buildHandoffInstructions(
   // A heading is never a requirement. A bare one names the next block, though:
   // #1583 — with the criteria as bare paragraphs, this header became AC-1's
   // title, and the run's Summary listed NR-1 as "Spec Kit handoff: evaluate…".
-  // So each requirement is headed by its own label, which names it instead.
+  // So each requirement is headed by its own label and first sentence, which
+  // name it instead, and keep the list scannable by name (#1583 review).
   const header = `# Spec Kit handoff: evaluate these requirements from spec.md against the current implementation. Only spec.md's requirements are sent.${note}`;
   let text = header;
   const sent: string[] = [];
   const omitted: string[] = [];
   for (const r of requirements) {
-    const block = `\n\n### ${r.label}\n${r.label}: ${r.text}`;
+    const block = `\n\n### ${r.label}: ${headingName(r.text)}\n${r.label}: ${r.text}`;
     if (text.length + block.length < MAX_EXTRA_INSTRUCTIONS) {
       text += block;
       sent.push(r.label);
@@ -182,6 +183,14 @@ export function buildHandoffInstructions(
     omitted: capOmitted(omitted),
     omittedCount: omitted.length,
   };
+}
+
+/** A requirement's heading name: its first sentence, clipped (the analysis titles a block by its heading). */
+const HEADING_NAME_MAX = 80;
+function headingName(text: string): string {
+  const end = text.search(/[.!?](?:\s|$)/);
+  const first = (end === -1 ? text : text.slice(0, end + 1)).replace(/\s+/g, " ").trim();
+  return first.length > HEADING_NAME_MAX ? `${first.slice(0, HEADING_NAME_MAX - 1).trimEnd()}…` : first;
 }
 
 /** The pre-#994 shape for a spec without acceptance criteria, cut between paragraphs. */

@@ -191,27 +191,31 @@ describe("extractNewRequirementCandidates — the Spec Kit handoff shape (#994)"
   });
 
   it("#1583 — titles each requirement by its own label, never by the handoff's header", async () => {
-    // The shape since #1583: each criterion under a heading of its own label.
+    // The shape since #1583: each criterion under a heading of its own label and first sentence.
     // Before it, the bare header named the block after it, and the run's
     // Summary listed NR-1 as "Spec Kit handoff: evaluate these requirements…".
     const text = [
       "# Spec Kit handoff: evaluate these requirements from spec.md against the current implementation. Only spec.md's requirements are sent.",
       "",
-      "### AC-1",
+      "### AC-1: Mark all as read.",
       "AC-1: Mark all as read. Given a feed with unread entries. When the user marks all as read. Then every entry is read.",
       "",
-      "### AC-2",
+      "### AC-2: Older than N days.",
       "AC-2: Older than N days. Given entries of mixed age. When the user picks 7 days. Then only older entries are read.",
       "",
-      "### NFR-1",
+      "### NFR-1: Bulk update finishes in under 2 seconds for 10,000 entries.",
       "NFR-1: Bulk update finishes in under 2 seconds for 10,000 entries.",
     ].join("\n");
     const changes = extractChangesHeuristically(text);
-    expect(changes.map((c) => c.title)).toEqual(["AC-1", "AC-2", "NFR-1"]);
+    expect(changes.map((c) => c.title)).toEqual([
+      "AC-1: Mark all as read.",
+      "AC-2: Older than N days.",
+      "NFR-1: Bulk update finishes in under 2 seconds for 10,000 entries.",
+    ]);
     const candidates = await extractNewRequirementCandidates(text);
     expect(candidates.map((c) => c.text.split(":")[0])).toEqual(["AC-1", "AC-2", "NFR-1"]);
     // The old shape is what titled NR-1 with the header.
-    const old = text.replace(/### [A-Z]+-\d\n/g, "");
+    const old = text.replace(/### [A-Z]+-\d:[^\n]*\n/g, "");
     expect(extractChangesHeuristically(old)[0]!.title).toMatch(/^Spec Kit handoff/);
   });
 });

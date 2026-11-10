@@ -1765,7 +1765,7 @@ describe("SpecKitPage — #789", () => {
 
   it("records what the handoff sent and left out on the run, and says so (#994)", async () => {
     const ac = (n: number) =>
-      `- **AC-${n}**: Criterion ${n}\n  - **Given** ${"g".repeat(600)}\n  - **Then** done`;
+      `- **AC-${n}**: Criterion ${n}.\n  - **Given** ${"g".repeat(580)}\n  - **Then** done`;
     m.listFiles!.mockResolvedValue({
       enabled: true,
       artifacts: [
