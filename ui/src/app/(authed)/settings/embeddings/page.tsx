@@ -72,7 +72,12 @@ export default function AdminEmbeddingsPage() {
 
   const coverage = useQuery({
     queryKey: queryKeys.admin.embeddingsCoverage(submittedProjectId),
-    queryFn: () => embeddingsApi.coverage(submittedProjectId),
+    // Issue #2213 — stamped with when the read was SENT: one resolving after an
+    // enqueue may still have been answered before the job started.
+    queryFn: async () => {
+      const sentAt = Date.now();
+      return { ...(await embeddingsApi.coverage(submittedProjectId)), sentAt };
+    },
     enabled: submittedProjectId.length > 0,
     // A reindex is running and this page has no job of it to follow (another
     // replica or the CLI runs it, or coverage still names the job this page saw
@@ -94,9 +99,16 @@ export default function AdminEmbeddingsPage() {
     shadow?.inProgress && shadow.jobId && shadow.jobId !== finishedJobId ? shadow.jobId : null;
   // Issue #2196 — coverage read after the page's own job was enqueued says no
   // reindex runs: the run died with its server, and no terminal event will come.
+  // Issue #2213 — "after" means sent after, not resolved after.
   const activeJobLost =
-    activeJobId !== null && coverage.dataUpdatedAt > activeJobSince && !shadow?.inProgress;
+    activeJobId !== null && (coverage.data?.sentAt ?? 0) > activeJobSince && !shadow?.inProgress;
   const followedJobId = (activeJobLost ? null : activeJobId) ?? runningJobId;
+
+  // Issue #2213 — forget a lost job: kept, it held the slow re-read running and
+  // outranked the id of any reindex started later.
+  useEffect(() => {
+    if (activeJobLost) setActiveJobId(null);
+  }, [activeJobLost]);
 
   // Subscribe to the in-flight reindex job: drives the progress bar and fires the
   // terminal success/failure toast (the failure text is already the server's
