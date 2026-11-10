@@ -115,8 +115,9 @@ test.describe("Analysis page — evaluate new requirements (#907 / #908)", () =>
     await analysis.goto(projectId);
 
     await test.step("no docs, no requirements", async () => {
+      // #1749 — an empty selection reads every ready document; this project has none.
       await expect(analysis.runSummary).toHaveText(
-        "This run uses 0 documents + requirements provided: no.",
+        "This run uses no documents + requirements provided: no.",
       );
     });
 
