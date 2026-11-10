@@ -183,8 +183,11 @@ vi.mock("@/lib/history-api", () => ({
 
 // ---- Heavy sub-panels that self-fetch — render inert ----------------------
 
+// #1591 — inert, but exposes the hint the page passes it.
 vi.mock("@/components/traceability/data-mappings-panel", () => ({
-  DataMappingsPanel: () => null,
+  DataMappingsPanel: ({ writeHint }: { writeHint?: string }) => (
+    <div data-testid="data-mappings-stub" data-write-hint={writeHint ?? ""} />
+  ),
 }));
 vi.mock("@/components/traceability/traceability-view", () => ({
   TraceabilityView: () => null,
@@ -608,6 +611,28 @@ describe("AnalysisPage requirement write controls (#1566)", () => {
     const add = screen.getByRole("button", { name: /add assignee/i });
     expect(add).toBeEnabled();
     expect(add.closest("[data-hover-hint]")).toBeNull();
+  });
+
+  // #1591 — links are `project.update` writes; data mappings `connector.write`.
+  it("disables Add link and passes the connector.write hint to data mappings for a developer", async () => {
+    renderPage(DEVELOPER);
+    await waitForRequirement();
+    const add = screen.getByRole("button", { name: "Add link" });
+    expect(add).toBeDisabled();
+    expect(add.closest("[data-hover-hint]")).toHaveAttribute("title", "Requires project.update");
+    expect(screen.getByTestId("data-mappings-stub")).toHaveAttribute(
+      "data-write-hint",
+      "Requires connector.write",
+    );
+  });
+
+  it("leaves Add link enabled and passes data mappings no hint for a coordinator", async () => {
+    renderPage(WRITER);
+    await waitForRequirement();
+    const add = screen.getByRole("button", { name: "Add link" });
+    expect(add).toBeEnabled();
+    expect(add.closest("[data-hover-hint]")).toBeNull();
+    expect(screen.getByTestId("data-mappings-stub")).toHaveAttribute("data-write-hint", "");
   });
 
   it("leaves the controls enabled, with no hint, for a project.update holder", async () => {

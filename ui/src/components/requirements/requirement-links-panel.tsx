@@ -30,6 +30,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { HoverHint } from "@/components/spec-kit/hover-hint";
 import {
   Dialog,
   DialogContent,
@@ -43,6 +44,12 @@ export interface RequirementLinksPanelProps {
   requirementId: string;
   /** The requirement's workspace; null when the project has no workspace. */
   workspaceId?: string | null;
+  /**
+   * #1591 — why the viewer cannot add or remove a link (they lack
+   * `project.update`, which both link routes require). Set: Add link and Unlink
+   * are disabled and carry this hint. Omitted: they are enabled.
+   */
+  writeHint?: string;
 }
 
 export function requirementLinksKey(requirementId: string) {
@@ -86,12 +93,14 @@ function LinkRow({
   currentProjectId,
   onUnlink,
   unlinking,
+  writeHint,
 }: {
   link: RequirementLinkView;
   direction: "outgoing" | "incoming";
   currentProjectId: string;
   onUnlink: (linkId: string) => void;
   unlinking: boolean;
+  writeHint?: string;
 }): React.ReactElement {
   const counterpart = link.requirement;
   const crossProject = counterpart.projectId !== currentProjectId;
@@ -122,15 +131,17 @@ function LinkRow({
           ) : null}
         </div>
       </div>
-      <Button
-        size="sm"
-        variant="ghost"
-        onClick={() => onUnlink(link.id)}
-        disabled={unlinking}
-        aria-label={`Unlink ${counterpart.title}`}
-      >
-        Unlink
-      </Button>
+      <HoverHint hint={writeHint}>
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={() => onUnlink(link.id)}
+          disabled={unlinking || Boolean(writeHint)}
+          aria-label={`Unlink ${counterpart.title}`}
+        >
+          Unlink
+        </Button>
+      </HoverHint>
     </li>
   );
 }
@@ -302,6 +313,7 @@ export function RequirementLinksPanel({
   projectId,
   requirementId,
   workspaceId,
+  writeHint,
 }: RequirementLinksPanelProps): React.ReactElement {
   const qc = useQueryClient();
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -339,9 +351,16 @@ export function RequirementLinksPanel({
         <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
           Linked requirements
         </h4>
-        <Button size="sm" variant="outline" onClick={() => setDialogOpen(true)}>
-          Add link
-        </Button>
+        <HoverHint hint={writeHint}>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => setDialogOpen(true)}
+            disabled={Boolean(writeHint)}
+          >
+            Add link
+          </Button>
+        </HoverHint>
       </div>
 
       {links.isLoading ? (
@@ -364,6 +383,7 @@ export function RequirementLinksPanel({
               currentProjectId={projectId}
               onUnlink={removeMutation.mutate}
               unlinking={removeMutation.isPending}
+              writeHint={writeHint}
             />
           ))}
           {incoming.map((link) => (
@@ -374,13 +394,15 @@ export function RequirementLinksPanel({
               currentProjectId={projectId}
               onUnlink={removeMutation.mutate}
               unlinking={removeMutation.isPending}
+              writeHint={writeHint}
             />
           ))}
         </ul>
       )}
 
+      {/* #1591 — a hint set while the dialog is open closes it (cf. #1587's picker). */}
       <AddLinkDialog
-        open={dialogOpen}
+        open={dialogOpen && !writeHint}
         onOpenChange={setDialogOpen}
         projectId={projectId}
         requirementId={requirementId}
