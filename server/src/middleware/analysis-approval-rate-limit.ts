@@ -1,6 +1,9 @@
 /**
- * Rate limiter for `POST /api/projects/:projectId/analyses/:id/approvals/:approvalId/reopen`
- * (#723).
+ * Rate limiters for the approval checkpoint's state-changing routes under
+ * `/api/projects/:projectId/analyses/:id/approvals`: reopen (#723), the
+ * checkpoint requirement edit (`PATCH …/:approvalId/requirement`, #1580) and
+ * promote (#723), each under its own key and cap, plus one pre-auth ceiling
+ * that also covers approve-all and reject-added.
  *
  * Reopening a rejected approval is a database write that closes the promotion
  * gate again, so it is bounded like the other state-changing analysis routes
@@ -118,8 +121,9 @@ export const analysisApprovalPromoteRateLimiter: RequestHandler = rateLimit({
 }) as unknown as RequestHandler;
 
 /**
- * PR #902 CI — a coarse ceiling AHEAD of `requireAuth` on the promote and
- * reopen routes only. CodeQL `js/missing-rate-limiting` flags the route's own
+ * PR #902 CI — a coarse ceiling AHEAD of `requireAuth` on the approval routes
+ * that write: promote, approve-all, reject-added, reopen and (#1580) the
+ * checkpoint requirement edit. CodeQL `js/missing-rate-limiting` flags the route's own
  * `requireAuth` ("performs authorization, but is not rate-limited") unless an
  * `express-rate-limit` handler precedes it; the per-user limiters above then
  * run after the permission check, unchanged. Same shape as

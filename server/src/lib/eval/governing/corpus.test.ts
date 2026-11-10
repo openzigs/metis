@@ -515,7 +515,9 @@ async function expectAdjudicatedLabels(
       owner.set(id, round);
     }
   }
-  expect([...owner.keys()].sort()).toEqual(manifest.items.map((i) => i.id).sort());
+  expect([...owner.keys()].sort(), "every item of the manifest is labelled in a round").toEqual(
+    manifest.items.map((i) => i.id).sort(),
+  );
 }
 
 /** One labelling round's checks; returns the ids of the items it labelled. */
@@ -541,6 +543,8 @@ async function expectAdjudicatedRound(
   );
   const none = "does not apply";
   const cells: Array<readonly [string, string]> = [];
+  // #2154 — each cell of this round's items, with the label it ends on.
+  const finalLabel = new Map<string, string>();
   const inRound = new Set(labelled);
   for (const item of manifest.items.filter((i) => inRound.has(i.id))) {
     const truth = new Map(item.applies.map((p) => [p.ruleId, p.verdict as string]));
@@ -570,7 +574,26 @@ async function expectAdjudicatedRound(
         standing = c.to;
       }
       expect(truth.get(rule.id) ?? none, `${item.id} → ${rule.id}`).toBe(standing);
+      finalLabel.set(`${item.id} ${rule.id}`, standing);
     }
+  }
+  // #2154 — the loop reads only this round's items, so an entry naming an item of
+  // another round (or a rule the manifest lacks) would go unchecked: every change and
+  // every kept cell must be a cell the loop read.
+  const arrow = (key: string) => key.replace(" ", " → ");
+  for (const key of consistent.keys()) {
+    expect(
+      finalLabel.has(key),
+      `${round}: the consistency change ${arrow(key)} names a cell of this round`,
+    ).toBe(true);
+  }
+  for (const k of adjudication.consistencyPass.keptAsStanding) {
+    const key = `${k.item} ${k.rule}`;
+    expect(
+      finalLabel.get(key),
+      `${round}: the kept cell ${arrow(key)} is a cell of this round, holding its standing label`,
+    ).toBe(k.standing);
+    expect(consistent.has(key), `${round}: ${arrow(key)} is kept or changed, not both`).toBe(false);
   }
   expect(decided.size).toBe(cells.filter(([a, b]) => a !== b).length);
   expect(consistent.size).toBe(adjudication.consistencyPass.changes.length);
@@ -899,11 +922,86 @@ describe("the tuning set of real text (#2108)", () => {
 
   it("FAILS when an item is labelled in no round, or in two (#2140)", async () => {
     // Only the first round: OS-26 to OS-33 are labelled nowhere.
-    await expect(expectAdjudicatedLabels(REAL_TUNING_DIR)).rejects.toThrow();
+    await expect(expectAdjudicatedLabels(REAL_TUNING_DIR)).rejects.toThrow(
+      /every item of the manifest is labelled in a round/,
+    );
     // The same round twice: every item it holds is labelled twice.
     await expect(
       expectAdjudicatedLabels(REAL_TUNING_DIR, ["labelling", "labelling/2140", "labelling/2140"]),
     ).rejects.toThrow(/labelled in one round only/);
+  });
+
+  // #2154 — the label loop reads only the round's own items, so an entry naming an
+  // item of another round was never checked.
+  describe("FAILS on a consistency entry that names an item of another round (#2154)", () => {
+    const copies: string[] = [];
+    afterAll(async () => {
+      await Promise.all(copies.map((d) => fs.rm(d, { recursive: true, force: true })));
+    });
+    /** A copy of governing-04 whose round-1 consistency pass `mutate` has edited. */
+    async function withRoundOne(
+      mutate: (pass: AdjudicationFile["consistencyPass"]) => void,
+    ): Promise<string> {
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), "governing-rounds-"));
+      copies.push(dir);
+      await fs.cp(REAL_TUNING_DIR, dir, { recursive: true });
+      const file = path.join(dir, "labelling", "adjudication.json");
+      const adjudication = JSON.parse(await fs.readFile(file, "utf8")) as AdjudicationFile;
+      mutate(adjudication.consistencyPass);
+      await fs.writeFile(file, JSON.stringify(adjudication), "utf8");
+      return dir;
+    }
+    const rounds = ["labelling", "labelling/2140"];
+
+    it("the unedited copy passes", async () => {
+      await expect(expectAdjudicatedLabels(await withRoundOne(() => {}), rounds)).resolves.toBe(
+        undefined,
+      );
+    });
+
+    it("a change to OS-27 → PA-04, a round-2 cell, in round 1's file", async () => {
+      const dir = await withRoundOne((pass) => {
+        pass.changes.push({
+          item: "OS-27",
+          rule: "PA-04",
+          from: "needs-ba-input",
+          to: "does not apply",
+          blindPasses: ["does not apply", "does not apply"],
+          reason: "A contradictory change no check reads.",
+        });
+      });
+      await expect(expectAdjudicatedLabels(dir, rounds)).rejects.toThrow(
+        /labelling: the consistency change OS-27 → PA-04 names a cell of this round/,
+      );
+    });
+
+    it("a kept entry for OS-29 → PA-10, a round-2 cell, in round 1's file", async () => {
+      const dir = await withRoundOne((pass) => {
+        pass.keptAsStanding.push({ item: "OS-29", rule: "PA-10", standing: "gap" });
+      });
+      await expect(expectAdjudicatedLabels(dir, rounds)).rejects.toThrow(
+        /labelling: the kept cell OS-29 → PA-10 is a cell of this round/,
+      );
+    });
+
+    it("a kept entry whose standing label is not the label", async () => {
+      const dir = await withRoundOne((pass) => {
+        pass.keptAsStanding[0]!.standing = "gap";
+      });
+      await expect(expectAdjudicatedLabels(dir, rounds)).rejects.toThrow(
+        /labelling: the kept cell OS-10 → PA-04 .*holding its standing label/,
+      );
+    });
+
+    it("a cell recorded both as changed and as kept", async () => {
+      const dir = await withRoundOne((pass) => {
+        const c = pass.changes[0]!;
+        pass.keptAsStanding.push({ item: c.item, rule: c.rule, standing: c.to });
+      });
+      await expect(expectAdjudicatedLabels(dir, rounds)).rejects.toThrow(
+        /labelling: .* is kept or changed, not both/,
+      );
+    });
   });
 
   it("adds #2140's pairs: flows that set or change a password, or open a sign-in path, against rules on every one (#2140)", async () => {

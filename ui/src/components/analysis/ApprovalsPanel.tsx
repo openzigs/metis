@@ -34,7 +34,11 @@ import {
   countApprovedRequirements,
   PromoteApprovedRequirementsButton,
 } from "./PromoteApprovedRequirementsButton";
-import { CheckpointRequirementEditor } from "./CheckpointRequirementEditor";
+import {
+  CheckpointRequirementEditor,
+  checkpointDraftOf,
+  type CheckpointDraft,
+} from "./CheckpointRequirementEditor";
 
 interface ApprovalsPanelProps {
   projectId: string;
@@ -342,6 +346,11 @@ export function addressedAmbiguityKeys(
   return new Set([...(state.resolvedAmbiguities ?? []), ...(state.answeredAmbiguities ?? [])]);
 }
 
+/** #2147 — replace one approval's open edit; `undefined` closes it. */
+type DraftUpdate = (
+  update: (draft: CheckpointDraft | undefined) => CheckpointDraft | undefined,
+) => void;
+
 function ApprovalCard({
   approval,
   requirement,
@@ -350,6 +359,8 @@ function ApprovalCard({
   projectId,
   analysisId,
   onChange,
+  draft,
+  onDraftChange,
 }: {
   approval: ApprovalRequestPayload;
   /** #922 — matched structured requirement for `requirement` approvals. */
@@ -361,11 +372,17 @@ function ApprovalCard({
   projectId: string;
   analysisId: string;
   onChange: () => void;
+  /**
+   * #1580 — the requirement's title and description, edited before approving;
+   * undefined while no edit is open. #2147 — held by the panel, so Approve all
+   * can see it and a move to Resolved does not lose it.
+   */
+  draft: CheckpointDraft | undefined;
+  onDraftChange: DraftUpdate;
 }): React.ReactElement {
   const qc = useQueryClient();
   const [note, setNote] = useState("");
-  // #1580 — the requirement's title and description, edited before approving.
-  const [editing, setEditing] = useState(false);
+  const editing = draft !== undefined;
   const isResolved = approval.status !== "pending";
   // #403 — older stored requirements carry no `ambiguities` array.
   const allAmbiguities = requirement ? ambiguitiesOf(requirement) : [];
@@ -452,18 +469,22 @@ function ApprovalCard({
         </span>
       </div>
 
-      {requirement && editing && !isResolved && (
+      {/* #2147 — also once resolved: the typed text stays, with where to edit it. */}
+      {requirement && draft && (
         <CheckpointRequirementEditor
           projectId={projectId}
           analysisId={analysisId}
           approvalId={approval.id}
           requirement={requirement}
           itemName={itemName}
-          onDone={() => setEditing(false)}
+          draft={draft}
+          onDraftChange={(update) => onDraftChange((d) => (d ? update(d) : d))}
+          resolved={isResolved}
+          onDone={() => onDraftChange(() => undefined)}
         />
       )}
 
-      {requirement && !(editing && !isResolved) && (
+      {requirement && !draft && (
         <div className="space-y-2 rounded border border-border bg-muted/40 p-2">
           {/* #1580 — a reviewer retitled it here; say what the analysis called it. */}
           {requirement.extractedTitle && requirement.extractedTitle !== requirement.title && (
@@ -533,7 +554,7 @@ function ApprovalCard({
                 size="sm"
                 variant="ghost"
                 aria-label={`Edit ${itemName}`}
-                onClick={() => setEditing(true)}
+                onClick={() => onDraftChange(() => checkpointDraftOf(requirement))}
                 disabled={decided || alreadyReviewed}
               >
                 Edit
@@ -590,12 +611,15 @@ function ApproveAllPending({
   analysisId,
   pendingCount,
   approvesAsDraft,
+  openEdits,
   onChange,
 }: {
   projectId: string;
   analysisId: string;
   pendingCount: number;
   approvesAsDraft: boolean;
+  /** #2147 — pending requirements with an edit open: approving now promotes the old text. */
+  openEdits: number;
   onChange: () => void;
 }): React.ReactElement {
   const qc = useQueryClient();
@@ -611,11 +635,21 @@ function ApproveAllPending({
     },
   });
 
+  // #2147 — as a card's own Approve is held while its editor is open (#1580).
+  const editsOpenNote = openEdits > 0 && (
+    <p className="text-xs text-warning" data-testid="approve-all-edits-open">
+      Save or cancel the open edit{openEdits === 1 ? "" : "s"} first: approving all now would
+      promote the text as it was before {openEdits === 1 ? "that edit" : "those edits"}.
+    </p>
+  );
   if (!confirming) {
     return (
-      <Button size="sm" onClick={() => setConfirming(true)}>
-        Approve all {pendingCount} pending
-      </Button>
+      <div className="space-y-1">
+        <Button size="sm" onClick={() => setConfirming(true)} disabled={openEdits > 0}>
+          Approve all {pendingCount} pending
+        </Button>
+        {editsOpenNote}
+      </div>
     );
   }
   return (
@@ -632,7 +666,7 @@ function ApproveAllPending({
           size="sm"
           aria-label="Confirm approve all"
           onClick={() => approveAll.mutate()}
-          disabled={approveAll.isPending}
+          disabled={approveAll.isPending || openEdits > 0}
         >
           Approve all
         </Button>
@@ -645,6 +679,7 @@ function ApproveAllPending({
           Cancel
         </Button>
       </div>
+      {editsOpenNote}
       {approveAll.isError && (
         <p role="alert" className="text-xs text-destructive">
           Could not approve all pending approvals.{" "}
@@ -786,6 +821,16 @@ export function ApprovalsPanel({
     queryKey: ["approvals", analysisId],
     queryFn: () => analysisApi.listApprovals(projectId, analysisId),
   });
+  // #2147 — every open checkpoint edit, by approval id (see `ApprovalCard`).
+  const [drafts, setDrafts] = useState<Readonly<Record<string, CheckpointDraft>>>({});
+  const draftUpdate =
+    (approvalId: string): DraftUpdate =>
+    (update) =>
+      setDrafts((all) => {
+        const { [approvalId]: current, ...rest } = all;
+        const next = update(current);
+        return next ? { ...rest, [approvalId]: next } : rest;
+      });
   // #1000 — the questions already answered (or resolved) in the clarification
   // dialog, so a requirement no longer lists them as open. Keyed under the
   // analysis detail so the dialog's refresh after a submit refreshes this too.
@@ -852,6 +897,8 @@ export function ApprovalsPanel({
       projectId={projectId}
       analysisId={analysisId}
       onChange={() => query.refetch()}
+      draft={drafts[approval.id]}
+      onDraftChange={draftUpdate(approval.id)}
     />
   );
 
@@ -914,6 +961,7 @@ export function ApprovalsPanel({
               analysisId={analysisId}
               pendingCount={pending.length}
               approvesAsDraft={approvesAsDraft}
+              openEdits={pending.filter((a) => drafts[a.id]).length}
               onChange={() => query.refetch()}
             />
           </div>
@@ -990,6 +1038,8 @@ export function ApprovalsPanel({
               projectId={projectId}
               analysisId={analysisId}
               onChange={() => query.refetch()}
+              draft={drafts[approval.id]}
+              onDraftChange={draftUpdate(approval.id)}
             />
           ))}
         </div>

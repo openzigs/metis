@@ -467,7 +467,10 @@ function startsSentence(text: string, offset: number): boolean {
  * "Annex A1", "Appendix A1". #2143 — so is every handle of a run after
  * "Annex" ("Annex A1 and A2", "Annex [A1]"); and only "and" makes a run plural:
  * "A1 or A2" names one answer, and "Per A1, A2 does not apply" two clauses, so
- * each handle of those is named on its own.
+ * each handle of those is named on its own. #2155 — "answers" makes a run
+ * plural as "and" does ("The answers A1, A2 confirm it"), and after "Annex A3,"
+ * a comma alone ends the document's list as well: "Per Annex A3, A1 says …"
+ * names A1.
  */
 export function nameAnswerHandles(text: string, count: number): string {
   const shown = (n: string) => Number(n) >= 1 && Number(n) <= count;
@@ -477,9 +480,18 @@ export function nameAnswerHandles(text: string, count: number): string {
     // #2143 — the rest of a run of document parts ("Annex A1 and A2"): the
     // lookbehind of ANSWER_HANDLE_RUN sees only the run's first handle.
     const before = text.slice(Math.max(0, offset - DOCUMENT_PART_LOOKBACK), offset);
-    if (/^\[?A\d/i.test(run) && DOCUMENT_PART_RUN_BEFORE.test(before)) return run;
+    // #2155 — a comma alone ends a clause here as it does below ("Per Annex A3,
+    // A1 says …"): only a run that "and" or "or" closes continues the list. In
+    // doubt the handle is named, never left for the BA to read.
+    const continuesList = !/,\s*$/.test(before) || /\b(?:and|or)\b/i.test(run);
+    if (/^\[?A\d/i.test(run) && continuesList && DOCUMENT_PART_RUN_BEFORE.test(before)) {
+      return run;
+    }
     const handles = [...run.matchAll(/\bA(\d+)\b/gi)].map((m) => m[1]!);
-    const joined = handles.length === 1 || (/\band\b/i.test(run) && !/\bor\b/i.test(run));
+    // #2155 — a run that opens with "answers" ("The answers A1, A2") was
+    // written as several answers, so a comma alone joins it too.
+    const plural = /\band\b/i.test(run) || /^(?:(?:the|an?)\s+)?answers\b/i.test(run);
+    const joined = handles.length === 1 || (plural && !/\bor\b/i.test(run));
     if (joined && handles.every(shown)) return words(offset, handles.length > 1);
     // A run with a handle the prompt did not show, or not joined by "and":
     // each shown one on its own.

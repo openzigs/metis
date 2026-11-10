@@ -8,8 +8,12 @@
  * approving first and editing the promoted row on the Requirements page. This
  * edits the reviewed requirement while its approval is still pending. The
  * server refuses a resolved approval (409), and the panel then refreshes.
+ *
+ * #2147 — the typed text is a {@link CheckpointDraft} the panel holds, not
+ * state of this component: a refresh that finds the approval resolved moves
+ * its card to the Resolved list, which mounts a new card, and the text and the
+ * message saying where to edit instead went with the old one.
  */
-import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { analysisApi, type StructuredRequirement } from "@/lib/analysis-api";
 import { ApiError } from "@/lib/api-client";
@@ -22,6 +26,19 @@ import { Textarea } from "@/components/ui/textarea";
 const MAX_TITLE = 255;
 const MAX_DESCRIPTION = 4096;
 
+/** #2147 — an open edit: what the reviewer has typed so far. */
+export interface CheckpointDraft {
+  title: string;
+  description: string;
+}
+
+/** #2147 — a new draft, holding the reviewed text. */
+export function checkpointDraftOf(
+  requirement: Pick<StructuredRequirement, "title" | "description">,
+): CheckpointDraft {
+  return { title: requirement.title, description: requirement.description ?? "" };
+}
+
 export interface CheckpointRequirementEditorProps {
   projectId: string;
   analysisId: string;
@@ -29,6 +46,13 @@ export interface CheckpointRequirementEditorProps {
   requirement: Pick<StructuredRequirement, "title" | "description">;
   /** For accessible names: what the card calls this requirement. */
   itemName: string;
+  draft: CheckpointDraft;
+  onDraftChange: (update: (draft: CheckpointDraft) => CheckpointDraft) => void;
+  /**
+   * #2147 — the approval is no longer pending (reviewed meanwhile): the text
+   * stays on screen to copy, with where to edit it now, and cannot be saved.
+   */
+  resolved: boolean;
   onDone: () => void;
 }
 
@@ -53,11 +77,13 @@ export function CheckpointRequirementEditor({
   approvalId,
   requirement,
   itemName,
+  draft,
+  onDraftChange,
+  resolved,
   onDone,
 }: CheckpointRequirementEditorProps): React.ReactElement {
   const qc = useQueryClient();
-  const [title, setTitle] = useState(requirement.title);
-  const [description, setDescription] = useState(requirement.description ?? "");
+  const { title, description } = draft;
   const patch = checkpointEditPatch(requirement, title, description);
   const titleBlank = title.trim().length === 0;
 
@@ -70,12 +96,15 @@ export function CheckpointRequirementEditor({
       onDone();
     },
     onError: (err) => {
-      // Someone approved or rejected it meanwhile: show where it went.
+      // Someone approved or rejected it meanwhile: show where it went. The
+      // refresh moves the card to Resolved, where `resolved` keeps the text.
       if (err instanceof ApiError && err.code === "APPROVAL_ALREADY_REVIEWED") {
         void qc.invalidateQueries({ queryKey: ["approvals", analysisId] });
       }
     },
   });
+  const refused =
+    resolved || (save.error instanceof ApiError && save.error.code === "APPROVAL_ALREADY_REVIEWED");
 
   return (
     <form
@@ -83,7 +112,7 @@ export function CheckpointRequirementEditor({
       data-testid="checkpoint-requirement-editor"
       onSubmit={(e) => {
         e.preventDefault();
-        if (patch && !titleBlank) save.mutate(patch);
+        if (patch && !titleBlank && !refused) save.mutate(patch);
       }}
     >
       <label className="block space-y-1 text-xs font-medium text-foreground">
@@ -92,7 +121,11 @@ export function CheckpointRequirementEditor({
           aria-label={`Title of ${itemName}`}
           value={title}
           maxLength={MAX_TITLE}
-          onChange={(e) => setTitle(e.target.value)}
+          readOnly={refused}
+          onChange={(e) => {
+            const next = e.target.value;
+            onDraftChange((d) => ({ ...d, title: next }));
+          }}
         />
       </label>
       <label className="block space-y-1 text-xs font-medium text-foreground">
@@ -102,14 +135,22 @@ export function CheckpointRequirementEditor({
           value={description}
           maxLength={MAX_DESCRIPTION}
           rows={4}
-          onChange={(e) => setDescription(e.target.value)}
+          readOnly={refused}
+          onChange={(e) => {
+            const next = e.target.value;
+            onDraftChange((d) => ({ ...d, description: next }));
+          }}
         />
       </label>
-      {titleBlank && <p className="text-xs text-destructive">A requirement needs a title.</p>}
+      {titleBlank && !refused && (
+        <p className="text-xs text-destructive">A requirement needs a title.</p>
+      )}
       <div className="flex items-center gap-2">
-        <Button type="submit" size="sm" disabled={!patch || titleBlank || save.isPending}>
-          {save.isPending ? "Saving…" : "Save"}
-        </Button>
+        {!refused && (
+          <Button type="submit" size="sm" disabled={!patch || titleBlank || save.isPending}>
+            {save.isPending ? "Saving…" : "Save"}
+          </Button>
+        )}
         <Button
           type="button"
           size="sm"
@@ -117,17 +158,22 @@ export function CheckpointRequirementEditor({
           onClick={onDone}
           disabled={save.isPending}
         >
-          Cancel
+          {refused ? "Close" : "Cancel"}
         </Button>
       </div>
-      {save.isError && (
+      {refused ? (
         <p role="alert" className="text-xs text-destructive">
-          {save.error instanceof ApiError && save.error.code === "APPROVAL_ALREADY_REVIEWED"
-            ? "This requirement was already reviewed, so it can no longer be edited here. Edit it on the Requirements page."
-            : save.error instanceof ApiError
+          This requirement was already reviewed, so it can no longer be edited here. Edit it on the
+          Requirements page.
+        </p>
+      ) : (
+        save.isError && (
+          <p role="alert" className="text-xs text-destructive">
+            {save.error instanceof ApiError
               ? save.error.message
               : "Could not save the edit. Try again."}
-        </p>
+          </p>
+        )
       )}
     </form>
   );
