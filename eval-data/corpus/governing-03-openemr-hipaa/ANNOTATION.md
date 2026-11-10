@@ -231,6 +231,7 @@ the report file. A reading is for a decision, never for tuning a prompt.
 |---|---|---|---|---|
 | 2026-11-09 | #2105 | A5 (the shipped path), 3 runs as three `--runs 1` invocations, combined; commit `1a6766257` | `anthropic/claude-sonnet-5-5` | [`eval-data/readings/governing-03-openemr-hipaa/baseline-A5-sonnet.md`](../../readings/governing-03-openemr-hipaa/baseline-A5-sonnet.md) |
 | 2026-11-09 | #2108 | A5, 3 runs as three `--runs 1` invocations, combined; commit `b7f9f8657`, after the fix tuned on `governing-04` | `anthropic/claude-sonnet-5-5` | [`eval-data/readings/governing-03-openemr-hipaa/baseline-A5-sonnet-2108.md`](../../readings/governing-03-openemr-hipaa/baseline-A5-sonnet-2108.md) |
+| 2026-11-10 | #2140 | A5, 3 runs as three `--runs 1` invocations, combined; commit `15b11e09e`, with a sentence tuned on `governing-04` that was then **not shipped** | `anthropic/claude-sonnet-5-5` | [`eval-data/readings/governing-03-openemr-hipaa/baseline-A5-sonnet-2140.md`](../../readings/governing-03-openemr-hipaa/baseline-A5-sonnet-2140.md) |
 
 ### The #2105 reading
 
@@ -424,3 +425,56 @@ before.** Pair by pair, over the three runs:
 marked **Preview**, until this set passes its bars. It still fails two of the five, so the
 Preview mark stays. The recall loss is a follow-up, to be tuned on a split that holds the
 pair it missed. It is never tuned on this set.
+
+### The #2140 attempt and re-read
+
+**What was tried.** #2108's same-subject line ruled out the blocklist rule (PW-07) and the
+length rule (PW-02) on OE-11 and OE-12. #2140 added a sentence inside that line, tuned with
+Sonnet on `governing-04` and checked on `governing-01`. Its examples are `governing-04`'s
+(OS-26, OS-31), and no item, label or rule of this set reached a prompt:
+
+> But a rule on what each new or changed password must be (its length, a check against common
+> passwords) applies to a requirement that adds or changes a step where a password is chosen or
+> generated (the first administrator's password chosen at setup), and a rule on the strength
+> every sign-in must have (a second factor, the strength checked from an identity provider)
+> applies to a requirement that adds or changes a way of signing in (signing an encounter
+> through single sign-on), even when the requirement says nothing of that rule's matter. Rules
+> on what happens around those steps (logging them, notices, other sessions) still apply only
+> as above.
+
+Before it could be tuned, `governing-04` needed pairs of this kind with labels it could trust.
+This set holds OE-11 → PW-07 and OE-12 → PW-07 only because its consistency pass added them
+(both labellers had left them off). `governing-04` had no consistency pass, so #2140 ran one
+there, on the counterparts of this set's cross-cutting rules (that set's `ANNOTATION.md`).
+
+**The re-read**: one reading, three runs, at commit `15b11e09e` on a clean tree, $2.20.
+
+| Bar | Required | #2108 | #2140: mean | Per run | Pass |
+|---|---|---|---|---|---|
+| Overall recall | ≥ 0.90 | 0.75 | 0.83 | 0.85 / 0.82 / 0.82 | **no** |
+| Non-resembling recall | ≥ 0.85 | 0.50 | 0.50 | 0.50 / 0.50 / 0.50 | **no** (2 pairs) |
+| Precision | ≥ 0.60 | 0.76 | 0.65 | 0.64 / 0.64 / 0.68 | yes |
+| Citation accuracy | ≥ 0.95 | 1.00 | 1.00 | 1.00 ×3 | yes |
+| No-evidence → compliant errors | 0 per run | 0 | 1 (worst run) | 1 / 1 / 0 | **no** |
+
+| Label | #2108: what the path said | #2140: what the path said |
+|---|---|---|
+| compliant (39 pair-runs) | compliant 20, needs-ba-input 19, missed 0 | compliant 19, needs-ba-input 17, missed 3 |
+| gap (12) | gap 9, needs-ba-input 3, compliant 0, missed 0 | gap 6, needs-ba-input 3, **compliant 2**, missed 1 |
+| needs-ba-input (48) | needs-ba-input 20, gap 3, missed 25 | needs-ba-input 29, gap 6, missed 13 |
+| extra rules | 23 (none on OE-15) | 44 (12 on OE-15) |
+
+- **The pairs #2140 named are found:** OE-11 → PW-07 and PW-02, OE-12 → PW-07 and OE-16 →
+  PW-07 in every run, and OE-14 → AU-01 is no longer missed.
+- **The over-application #2108 removed came part of the way back.** OE-15, the password-change
+  request, draws PW-01, PW-02, PW-03 and PW-10 again (12 extra pair-runs, against 0 at #2108
+  and 24 at #2105); OE-12 draws PW-02, and OE-25 draws PW-02 and PW-07.
+- **A wrong `compliant`:** OE-15 → AS-02, labelled `gap`, is `compliant` in 2 of 3 runs. With
+  more password rules applying, the findings call reads the request's password procedure as
+  meeting AS-02. That breaks the no-evidence bar, which had passed at #2105 and #2108.
+
+**Decision: not shipped.** Three of the five bars would fail, against two now, and the new
+failure is the bar that matters most to an analyst: a gap reported as `compliant`. So the
+sentence was reverted in the same PR, and the shipped prompts are #2108's. This set has now
+been read three times; the next change to the judge must be tuned elsewhere and read here once
+more. The follow-up is filed from #2140.

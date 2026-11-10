@@ -1,0 +1,138 @@
+{
+  "labeller": "labeller 2: claude-opus-5-5 through `claude -p` with every tool switched off (`--tools \"\"`), no MCP server (`--strict-mcp-config` with an empty config), no settings sources and no session persistence, run from an empty directory; given only labelling/2140/labeller-2-prompt.txt (seed 21402): policy-v1 and the 8 requirements added for #2140 (OS-26 to OS-33) in a seeded order. It saw no label, no rule summary, no code, no prompt of the product and no arm. It is not the agent that chose the requirements.",
+  "labelledAgainst": "policy-v1.md",
+  "costUsd": 0.1034,
+  "items": [
+    {
+      "id": "OS-26",
+      "applies": [
+        {
+          "ruleId": "PA-01",
+          "verdict": "compliant",
+          "reason": "The initial user password must be at least 12 characters, which exceeds the 8-character minimum."
+        },
+        {
+          "ruleId": "PA-04",
+          "verdict": "needs-ba-input",
+          "reason": "The initial account password is set at creation, but nothing says it is checked against a list of common passwords.",
+          "businessFact": "Is the initial user password checked against a list of at least the top 3000 common passwords during setup?"
+        }
+      ]
+    },
+    {
+      "id": "OS-27",
+      "applies": [
+        {
+          "ruleId": "PA-12",
+          "verdict": "needs-ba-input",
+          "reason": "A forced change at first login stops the default password becoming long-term, but nothing says it is random or expires.",
+          "businessFact": "Are new users' default passwords unique and securely randomly generated, and do they expire after a short period?"
+        },
+        {
+          "ruleId": "PA-10",
+          "verdict": "compliant",
+          "reason": "The requirement asks for a mandatory TOTP step at first login, which gives multi-factor authentication."
+        }
+      ]
+    },
+    {
+      "id": "OS-28",
+      "applies": [
+        {
+          "ruleId": "PA-03",
+          "verdict": "needs-ba-input",
+          "reason": "The fix concerns the portal password change flow but does not say whether the current password is required.",
+          "businessFact": "Does the portal password change flow (with email used as username) require the patient's current password as well as the new one?"
+        }
+      ]
+    },
+    {
+      "id": "OS-29",
+      "applies": [
+        {
+          "ruleId": "DP-01",
+          "verdict": "gap",
+          "reason": "A copyable or emailed one-time login link carries the login secret in the URL."
+        },
+        {
+          "ruleId": "PA-12",
+          "verdict": "needs-ba-input",
+          "reason": "The links are one-time, but nothing says whether they are securely random or expire after a short period.",
+          "businessFact": "Are third-party invitation tokens securely randomly generated, and do they expire after a short period even if never used?"
+        }
+      ]
+    },
+    {
+      "id": "OS-30",
+      "applies": [
+        {
+          "ruleId": "PA-12",
+          "verdict": "gap",
+          "reason": "Turning off the forced change lets the initial password created from the medical record become the patient's long-term password."
+        },
+        {
+          "ruleId": "PA-14",
+          "verdict": "gap",
+          "reason": "Credentials are created by staff, and with no forced change the staff member keeps knowing the patient's password."
+        },
+        {
+          "ruleId": "DP-01",
+          "verdict": "needs-ba-input",
+          "reason": "The proposed one-time auto-login may put a login token in the URL.",
+          "businessFact": "Would the one-time auto-login token be carried in the URL or query string, or in the request body or headers?"
+        }
+      ]
+    },
+    {
+      "id": "OS-31",
+      "applies": [
+        {
+          "ruleId": "PA-15",
+          "verdict": "needs-ba-input",
+          "reason": "Signing an encounter will rely on Google SSO, but nothing says the app checks the IdP's authentication time or method for this function.",
+          "businessFact": "When an encounter is signed through Google SSO, does the application require and verify a fresh authentication (for example the auth_time claim) from the IdP?"
+        }
+      ]
+    },
+    {
+      "id": "OS-32",
+      "applies": [
+        {
+          "ruleId": "PA-03",
+          "verdict": "needs-ba-input",
+          "reason": "The password update is made independent of the username update, but nothing says it still requires the current password.",
+          "businessFact": "Will the separate password update on the portal credential settings page require the patient's current password as well as the new one?"
+        },
+        {
+          "ruleId": "PA-11",
+          "verdict": "needs-ba-input",
+          "reason": "Patients can change their username and password, but nothing says they are notified afterwards.",
+          "businessFact": "Is the patient notified, for example by email, after their portal username or password is changed?"
+        },
+        {
+          "ruleId": "SE-04",
+          "verdict": "needs-ba-input",
+          "reason": "Nothing says patients are offered the option to end other sessions after a password change.",
+          "businessFact": "After a portal password change, is the patient offered the option to terminate all other active sessions?"
+        }
+      ]
+    },
+    {
+      "id": "OS-33",
+      "applies": [
+        {
+          "ruleId": "PA-14",
+          "verdict": "needs-ba-input",
+          "reason": "An administrator starts the portal credential reset, but the text does not say whether the administrator can see or choose the new password.",
+          "businessFact": "Does the administrator-initiated portal reset send the patient a reset process or link, rather than a password the administrator can see or set?"
+        },
+        {
+          "ruleId": "PA-12",
+          "verdict": "needs-ba-input",
+          "reason": "The reset sends system-generated portal credentials, but nothing says whether they are securely random, follow the password policy, or expire after first use.",
+          "businessFact": "Are the reset credentials emailed to the patient securely randomly generated, and do they expire after a short time or on first use?"
+        }
+      ]
+    }
+  ]
+}
