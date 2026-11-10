@@ -20,6 +20,7 @@ import {
   portfolioOtherLinkKinds,
   portfolioRestrictedNote,
   portfolioImpactUnderOlderRule,
+  portfolioLinkResources,
   portfolioRestrictedRule,
   portfolioResourceGroup,
   portfolioResourceLists,
@@ -202,6 +203,61 @@ describe("#1673 — the wording the page and the export share", () => {
       },
     ]);
     expect(portfolioResourceLists(null, [])).toEqual([]);
+  });
+
+  it("#2183 — lists the tables of the product's other links too, each once", () => {
+    const orders = { kind: "table", name: "orders" };
+    const customers = { kind: "table", name: "customers" };
+    expect(
+      portfolioResourceLists(orders, [], [orders, customers, { kind: "topic", name: "paid" }]),
+    ).toEqual([
+      {
+        heading: "Tables and columns",
+        items: [
+          { name: "orders", detail: null },
+          { name: "customers", detail: null },
+        ],
+      },
+      { heading: "Topics", items: [{ name: "paid", detail: null }] },
+    ]);
+    // One the usage classifications already name is not listed twice either.
+    expect(
+      portfolioResourceLists(
+        null,
+        [{ schemaName: null, objectName: "customers", objectType: "table", usageClass: "reads" }],
+        [customers],
+      ),
+    ).toEqual([
+      { heading: "Tables and columns", items: [{ name: "customers", detail: "table, reads" }] },
+    ]);
+  });
+
+  it("#2183 — reads every link's resources, once each, ignoring malformed ones", () => {
+    const detail = (links: unknown) => ({ impact: { links } });
+    expect(
+      portfolioLinkResources(
+        detail([
+          { integrationKind: "database", resources: [{ kind: "table", name: "orders" }] },
+          {
+            integrationKind: "database",
+            resources: [
+              { kind: "table", name: "customers" },
+              { kind: "table", name: "orders" },
+              { kind: 1, name: "x" },
+              null,
+            ],
+          },
+          { integrationKind: "event" },
+          null,
+        ]),
+      ),
+    ).toEqual([
+      { kind: "table", name: "orders" },
+      { kind: "table", name: "customers" },
+    ]);
+    expect(portfolioLinkResources(detail("no"))).toEqual([]);
+    expect(portfolioLinkResources({})).toEqual([]);
+    expect(portfolioLinkResources(null)).toEqual([]);
   });
 
   it("names every degraded reason the report writes", () => {

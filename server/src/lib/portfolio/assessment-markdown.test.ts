@@ -547,6 +547,53 @@ describe("renderPortfolioAssessmentMarkdown (#1624)", () => {
     );
     expect(md).toContain("## Non-functional requirements\n\n_None identified._");
   });
+
+  it("#2183 — a host's deep dive lists where it provides what changes, and every linked table", async () => {
+    const a = fixture();
+    // A gap-confirmed host: the gap engine cited nothing in it.
+    a.repos = a.repos.map((r) => (r.productId === "p-orders" ? { ...r, citations: [] } : r));
+    const reporting = a.products.find((p) => p.productId === "p-reporting")!;
+    const impact = (reporting.technicalDetail as { impact: Record<string, unknown> }).impact;
+    const [dbHop] = impact.hops as Array<Record<string, unknown>>;
+    dbHop.providerSites = [{ filePath: "src/orders/store.ts", line: 12 }];
+    impact.links = [
+      {
+        integrationKind: "database",
+        fromProductId: "p-orders",
+        edgeProductIds: ["p-reporting"],
+        providerRepoId: "rc-orders",
+        consumerRepoId: "rc-report",
+        resources: [
+          { kind: "table", name: "orders" },
+          { kind: "table", name: "customers" },
+        ],
+      },
+    ];
+    const store1 = a.products.find((p) => p.productId === "p-storefront")!;
+    const [apiHop] = (
+      store1.technicalDetail as { impact: { hops: Array<Record<string, unknown>> } }
+    ).impact.hops;
+    // The same file twice (two downstream products) is listed once; a line-less site as the file.
+    apiHop.providerSites = [
+      { filePath: "schema.graphql", line: null },
+      { filePath: "src/orders/store.ts", line: 12 },
+    ];
+    store.getPortfolioAssessment.mockResolvedValue(a);
+    const md = await exported();
+    const section = (heading: string) => {
+      const s = md.slice(md.indexOf(`### ${heading}\n`));
+      return s.slice(0, s.indexOf("\n### ", 1));
+    };
+    const orders = section("Orders");
+    expect(orders).toContain(
+      "**Files**\n\n- `src/orders/store.ts:12` (acme/orders-api): provides what changes\n- `schema.graphql` (acme/orders-api): provides what changes\n",
+    );
+    expect(orders.match(/src\/orders\/store\.ts/g)).toHaveLength(1);
+    // Reporting, reached through `orders`, also lists `customers` from its link.
+    const rep = section("Reporting");
+    expect(rep).toContain("- `customers`");
+    expect(rep).not.toContain("provides what changes");
+  });
 });
 
 describe("summaryAfterCoverage (#1749)", () => {
