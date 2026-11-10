@@ -74,9 +74,15 @@ export default function AdminEmbeddingsPage() {
     queryKey: queryKeys.admin.embeddingsCoverage(submittedProjectId),
     // Issue #2213 — stamped with when the read was SENT: one resolving after an
     // enqueue may still have been answered before the job started.
+    // Issue #2218 — and with when the read before it was sent, if that one too
+    // said nothing runs, so one read alone cannot drop the page's job.
     queryFn: async () => {
       const sentAt = Date.now();
-      return { ...(await embeddingsApi.coverage(submittedProjectId)), sentAt };
+      const prior = qc.getQueryData<{ sentAt: number; shadow?: { inProgress: boolean } }>(
+        queryKeys.admin.embeddingsCoverage(submittedProjectId),
+      );
+      const priorIdleSentAt = prior && !prior.shadow?.inProgress ? prior.sentAt : null;
+      return { ...(await embeddingsApi.coverage(submittedProjectId)), sentAt, priorIdleSentAt };
     },
     enabled: submittedProjectId.length > 0,
     // A reindex is running and this page has no job of it to follow (another
@@ -100,8 +106,14 @@ export default function AdminEmbeddingsPage() {
   // Issue #2196 — coverage read after the page's own job was enqueued says no
   // reindex runs: the run died with its server, and no terminal event will come.
   // Issue #2213 — "after" means sent after, not resolved after.
+  // Issue #2218 — and it takes TWO reads in a row, both sent after the enqueue.
+  // On Postgres with several replicas, one read can reach a replica before the
+  // job's own has taken the reindex lease, and report nothing running.
   const activeJobLost =
-    activeJobId !== null && (coverage.data?.sentAt ?? 0) > activeJobSince && !shadow?.inProgress;
+    activeJobId !== null &&
+    !shadow?.inProgress &&
+    (coverage.data?.sentAt ?? 0) > activeJobSince &&
+    (coverage.data?.priorIdleSentAt ?? 0) > activeJobSince;
   const followedJobId = (activeJobLost ? null : activeJobId) ?? runningJobId;
 
   // Issue #2213 — forget a lost job: kept, it held the slow re-read running and

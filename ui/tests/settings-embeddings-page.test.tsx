@@ -404,7 +404,8 @@ describe("AdminEmbeddingsPage", () => {
       }
     });
 
-    it("lets go of a job this page started once coverage read after it says nothing runs", async () => {
+    // #2218 — two reads in a row, not one: see the multi-replica test below.
+    it("lets go of a job this page started once two coverage reads after it say nothing runs", async () => {
       vi.useFakeTimers({ shouldAdvanceTime: true });
       try {
         statusMock.mockResolvedValue(makeStatus());
@@ -429,8 +430,14 @@ describe("AdminEmbeddingsPage", () => {
         await waitFor(() => expect(coverageMock).toHaveBeenCalledTimes(2));
         expect(screen.getByTestId("reindex-progress")).toBeInTheDocument();
 
-        // Then its server dies: the next re-read says nothing runs.
+        // Then its server dies: the next re-read says nothing runs. One read is
+        // not enough to let go (#2218); the one after it is.
         coverageMock.mockResolvedValue(makeCoverage());
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(15_000);
+        });
+        await waitFor(() => expect(coverageMock).toHaveBeenCalledTimes(3));
+        expect(screen.getByTestId("reindex-progress")).toBeInTheDocument();
         await act(async () => {
           await vi.advanceTimersByTimeAsync(15_000);
         });
@@ -460,9 +467,9 @@ describe("AdminEmbeddingsPage", () => {
         fireEvent.click(screen.getByTestId("reindex-button"));
         await waitFor(() => expect(screen.getByTestId("reindex-progress")).toBeInTheDocument());
 
-        // The job's server dies: the next re-read says nothing runs.
+        // The job's server dies: the next two re-reads say nothing runs.
         await act(async () => {
-          await vi.advanceTimersByTimeAsync(15_000);
+          await vi.advanceTimersByTimeAsync(30_000);
         });
         await waitFor(() => expect(screen.getByTestId("needs-reindex")).toBeInTheDocument());
         const readsWhenLost = coverageMock.mock.calls.length;
@@ -481,6 +488,54 @@ describe("AdminEmbeddingsPage", () => {
         await waitFor(() =>
           expect(fake.socket.emit).toHaveBeenLastCalledWith("subscribe:job", { jobId: "job-y" }),
         );
+        expect(screen.getByTestId("reindex-progress")).toBeInTheDocument();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    // #2218 — on Postgres with several replicas a read can reach another
+    // replica before the job's own has taken the reindex lease: it says nothing
+    // runs although the job is about to. One such read used to drop the job for
+    // good; the page now waits for a second read in a row.
+    it("keeps following its job through one read that says nothing runs, then the lease is seen", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        statusMock.mockResolvedValue(makeStatus());
+        coverageMock.mockResolvedValue(makeCoverage());
+        reindexMock.mockResolvedValue({ jobId: "job-x", projectId: "proj_1", status: "started" });
+
+        render(<AdminEmbeddingsPage />, { wrapper: makeWrapper() });
+        fireEvent.change(screen.getByTestId("project-id-input"), { target: { value: "proj_1" } });
+        fireEvent.click(screen.getByRole("button", { name: /check coverage/i }));
+        await waitFor(() => expect(screen.getByTestId("needs-reindex")).toBeInTheDocument());
+
+        fireEvent.click(screen.getByTestId("reindex-button"));
+        await waitFor(() => expect(screen.getByTestId("reindex-progress")).toBeInTheDocument());
+
+        // Read 1 after the enqueue reaches a replica before the lease is taken.
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(15_000);
+        });
+        await waitFor(() => expect(coverageMock).toHaveBeenCalledTimes(2));
+        expect(screen.getByTestId("reindex-progress")).toBeInTheDocument();
+        expect(screen.getByTestId("reindex-button")).toBeDisabled();
+
+        // Read 2 sees the lease (another replica: no job id). Still the page's job.
+        coverageMock.mockResolvedValue(running(null));
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(15_000);
+        });
+        await waitFor(() => expect(coverageMock).toHaveBeenCalledTimes(3));
+        expect(screen.getByTestId("reindex-progress")).toBeInTheDocument();
+        expect(fake.socket.emit).toHaveBeenLastCalledWith("subscribe:job", { jobId: "job-x" });
+
+        // A running read between two idle ones restarts the count.
+        coverageMock.mockResolvedValue(makeCoverage());
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(5000);
+        });
+        await waitFor(() => expect(coverageMock).toHaveBeenCalledTimes(4));
         expect(screen.getByTestId("reindex-progress")).toBeInTheDocument();
       } finally {
         vi.useRealTimers();

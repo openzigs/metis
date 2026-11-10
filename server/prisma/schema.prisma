@@ -1755,8 +1755,8 @@ model Requirement {
   similarityDismissalsB RequirementSimilarityDismissal[] @relation("SimilarityDismissalB")
 
   @@unique([projectId, externalSource, externalId], name: "requirement_external_dedup")
-  @@index([projectId])
   /// #2209 — the discussion requirement picker reads a project's live requirements newest first.
+  /// #2218 — also serves every read by `projectId` alone, so that index is gone.
   @@index([projectId, createdAt, id])
   @@index([analysisId])
   @@index([parentId])

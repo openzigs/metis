@@ -13,6 +13,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { requirementMatchQuery } from "../src/lib/discussions/requirement-search.js";
 import { readGeneratedClientProvider } from "./lib/db/generated-client-provider.js";
 import {
   createMigratedSqlite,
@@ -24,15 +25,11 @@ const MIGRATION = "20261121002209_issue2209_requirement_picker_index";
 const INDEX = "requirements_projectId_createdAt_id_idx";
 const SERVER_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-/** The picker's id read, as `requirement-search.ts` sends it to SQLite. */
-const PICKER_READ = `SELECT r."id" FROM "requirements" r
-    JOIN "analyses" a ON a."id" = r."analysisId"
-    WHERE r."projectId" = ?
-      AND r."deletedAt" IS NULL
-      AND a."deletedAt" IS NULL
-      AND LOWER(r."title") LIKE LOWER(?) ESCAPE '!'
-    ORDER BY r."createdAt" DESC, r."id" DESC
-    LIMIT 20`;
+/**
+ * #2218 — the picker's id read is the statement `requirement-search.ts` builds
+ * for SQLite, not a copy of it, so the plan pinned here cannot drift from it.
+ */
+const PICKER_READ = requirementMatchQuery("sqlite", "p-1", "feeds");
 
 describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
   "#2209 — requirements (projectId, createdAt, id) index migration: up -> reverse -> up",
@@ -67,7 +64,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     const plan = () =>
       withDb((db) =>
         (
-          db.prepare(`EXPLAIN QUERY PLAN ${PICKER_READ}`).all("p-1", "%feeds%") as Array<{
+          db.prepare(`EXPLAIN QUERY PLAN ${PICKER_READ.sql}`).all(...PICKER_READ.values) as Array<{
             detail: string;
           }>
         )

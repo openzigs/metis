@@ -67,8 +67,8 @@ export interface NewProjectWizardProps {
    * Create is disabled until it is `ready`. Defaults to `ready`.
    */
   workspaceStatus?: ActiveWorkspaceStatus;
-  /** Re-read the workspaces after an error. */
-  onRetryWorkspaces?: () => void;
+  /** Re-read the workspaces after an error; a returned promise settles with the read. */
+  onRetryWorkspaces?: () => unknown;
   /** Called once the project exists, before navigating — e.g. close the dialog. */
   onDone?: () => void;
 }
