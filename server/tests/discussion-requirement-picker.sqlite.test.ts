@@ -4,8 +4,10 @@
  * Prisma, so it cannot tell whether the relation filters and the paged scan do
  * what they say. This pins that:
  *
- * - a requirement older than the picker's first 500-row page can still be
- *   found and attached (the scan used to stop there);
+ * - a requirement behind more than 500 newer ones can still be found and
+ *   attached (#2203: the first scan stopped at one 500-row page);
+ * - #2209: the title match runs in SQL — case-insensitive, with the term's own
+ *   `%`, `_` and `!` matched literally, at most 20 newest first;
  * - a requirement whose analysis is soft-deleted is hidden by the picker,
  *   refused as an anchor, and reported as no requirement by GET /threads, so
  *   the three agree.
@@ -98,6 +100,31 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         data: { id: "p-1", name: "P1", slug: "p-1", createdById: "u-alice", workspaceId: "ws-1" },
       });
       await db.analysis.create({ data: { id: "a-live", projectId: "p-1" } });
+      // #2209 — another project's requirement with a matching title is never offered.
+      await db.project.create({
+        data: { id: "p-2", name: "P2", slug: "p-2", createdById: "u-alice", workspaceId: "ws-1" },
+      });
+      await db.analysis.create({ data: { id: "a-other", projectId: "p-2" } });
+      await db.requirement.create({
+        data: {
+          id: "r-other-project",
+          projectId: "p-2",
+          analysisId: "a-other",
+          title: "Refresh feeds in another project",
+          body: "b",
+        },
+      });
+      // …nor a soft-deleted one of this project's.
+      await db.requirement.create({
+        data: {
+          id: "r-deleted",
+          projectId: "p-1",
+          analysisId: "a-live",
+          title: "Refresh feeds, removed",
+          body: "b",
+          deletedAt: new Date(),
+        },
+      });
       await db.analysis.create({
         data: { id: "a-gone", projectId: "p-1", deletedAt: new Date() },
       });
@@ -134,6 +161,22 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           createdAt: new Date(base + (NEWER + 5) * 1000),
         },
       });
+      // #2209 — titles holding the LIKE wildcards and the escape character,
+      // older than everything above so the newest-20 listing is unchanged.
+      await db.requirement.createMany({
+        data: [
+          ["r-pct", "Hit 100% of feeds"],
+          ["r-under", "Store read_at per entry"],
+          ["r-bang", "Warn me! before purging"],
+        ].map(([id, title], i) => ({
+          id,
+          projectId: "p-1",
+          analysisId: "a-live",
+          title,
+          body: "b",
+          createdAt: new Date(base - (i + 1) * 1000),
+        })),
+      });
       // A thread attached before the run was deleted.
       await db.discussionThread.create({
         data: {
@@ -157,6 +200,33 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const res = await get("/api/discussions/requirements?projectId=p-1&q=REFRESH%20feeds");
       expect(res.status).toBe(200);
       expect(res.body.data.map((r: { id: string }) => r.id)).toEqual(["r-old"]);
+    });
+
+    it("matches the term's %, _ and ! literally, not as wildcards (#2209)", async () => {
+      const ids = async (q: string) =>
+        (
+          await get(`/api/discussions/requirements?projectId=p-1&q=${encodeURIComponent(q)}`)
+        ).body.data.map((r: { id: string }) => r.id);
+      expect(await ids("%")).toEqual(["r-pct"]);
+      expect(await ids("d_a")).toEqual(["r-under"]);
+      expect(await ids("me!")).toEqual(["r-bang"]);
+      expect(await ids("no such title")).toEqual([]);
+    });
+
+    it("answers at most 20 matches, newest first, none from a soft-deleted run (#2209)", async () => {
+      const res = await get("/api/discussions/requirements?projectId=p-1&q=%20FILLER%20");
+      const ids = res.body.data.map((r: { id: string }) => r.id);
+      expect(ids).toEqual(
+        Array.from({ length: 20 }, (_, i) => `r-new-${String(NEWER - 1 - i).padStart(3, "0")}`),
+      );
+      expect(res.body.data[0]).toEqual({
+        id: `r-new-${NEWER - 1}`,
+        title: `Filler requirement ${NEWER - 1}`,
+        analysisId: "a-live",
+        createdAt: new Date(Date.UTC(2026, 0, 1) + NEWER * 1000).toISOString(),
+      });
+      const deleted = await get("/api/discussions/requirements?projectId=p-1&q=deleted%20run");
+      expect(deleted.body.data).toEqual([]);
     });
 
     it("lists the newest 20 live requirements, none from a soft-deleted run", async () => {

@@ -7,6 +7,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
+import { useQuery } from "@tanstack/react-query";
 import type { ResumableSessionDto } from "@metis/shared";
 import { makeWrapper } from "./test-utils";
 
@@ -33,6 +34,7 @@ vi.mock("@/components/chat/loaded-skills-panel", () => ({ LoadedSkillsPanel: () 
 
 import { sdkApi } from "@/lib/sdk-alignment-api";
 import { recentTracker } from "@/lib/recent-tracker";
+import { RESUMABLE_SESSIONS_KEY } from "@/hooks/use-recent-entries";
 import WorkbenchPage from "@/app/(authed)/workbench/page";
 
 const listResumable = vi.mocked(sdkApi.listResumable);
@@ -53,9 +55,30 @@ function session(id: string, title: string): ResumableSessionDto {
   };
 }
 
+/**
+ * #2209 — a second observer of the Recent list's own query, rendered beside the
+ * page. Both are told of the query's outcome in one batch, so once this shows
+ * the query settled, the page has rendered that outcome too: a settled signal
+ * to assert a negative after, in place of a fixed sleep.
+ */
+function QuerySettledProbe() {
+  const { status } = useQuery({
+    queryKey: RESUMABLE_SESSIONS_KEY,
+    queryFn: () => sdkApi.listResumable(),
+    enabled: false,
+  });
+  return <span data-testid="resumable-status">{status}</span>;
+}
+
 function renderPage() {
   const Wrapper = makeWrapper({ withAuth: false });
-  return render(<WorkbenchPage />, { wrapper: Wrapper });
+  return render(
+    <>
+      <WorkbenchPage />
+      <QuerySettledProbe />
+    </>,
+    { wrapper: Wrapper },
+  );
 }
 
 beforeEach(() => {
@@ -100,8 +123,7 @@ describe("Workbench Recent lists only resumable sessions (#2203)", () => {
     listResumable.mockRejectedValue(new Error("offline"));
     renderPage();
     const recent = await screen.findByTestId("workbench-recent");
-    await waitFor(() => expect(listResumable).toHaveBeenCalled());
-    await new Promise((r) => setTimeout(r, 20));
+    await waitFor(() => expect(screen.getByTestId("resumable-status")).toHaveTextContent("error"));
     expect(
       within(recent)
         .getAllByRole("link")

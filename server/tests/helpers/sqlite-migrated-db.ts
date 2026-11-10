@@ -85,6 +85,7 @@ export const STOP_BEFORE_MIGRATIONS: readonly string[] = [
   "20261118001947_issue1947_governing_extraction_retry_metering",
   "20261119001874_issue1874_governing_findings",
   "20261120001558_issue1558_audit_action_ts_index",
+  "20261121002209_issue2209_requirement_picker_index",
 ];
 
 /** The database files `globalSetup` builds for workers to copy. */
