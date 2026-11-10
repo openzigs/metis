@@ -216,5 +216,44 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           ?.reviewStatus,
       ).toBe("approved");
     });
+
+    // #2223 review — approving a review pinned at v0 must not approve the v1
+    // an analyst saved while the review was still in progress.
+    it("approving an in-review review leaves a requirement edited since its pin awaiting review", async () => {
+      const REQ_B = "req-2219-b";
+      await db.requirement.create({
+        data: {
+          id: REQ_B,
+          projectId: PROJECT,
+          analysisId: ANALYSIS,
+          title: "Export format",
+          body: "JSON",
+        },
+      });
+      const created = (await createReviewRequest(REQUESTER, PROJECT, {
+        title: "Export sign-off",
+        policy: "all",
+        reviewerIds: [REVIEWER],
+        items: [{ requirementId: REQ_B }],
+      })) as { id: string };
+      await submitReview(REQUESTER, created.id, false);
+
+      await updateRequirementWithHistory(db as never, {
+        requirementId: REQ_B,
+        patch: { body: "JSON or OPML" },
+        actorId: EDITOR,
+        projectId: PROJECT,
+        reopenApproval: true,
+      });
+
+      const decided = await recordDecision(REVIEWER, created.id, "approved");
+      expect(decided.status).toBe("approved");
+      const row = await db.requirement.findUnique({
+        where: { id: REQ_B },
+        select: { reviewStatus: true, version: true },
+      });
+      expect(row?.version).toBe(1);
+      expect(row?.reviewStatus).not.toBe("approved");
+    });
   },
 );

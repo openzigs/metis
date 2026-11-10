@@ -583,8 +583,9 @@ describe("POST /reviews/:reviewId/decision", () => {
       where: { id: "rev-1", status: "in_review" },
       data: expect.objectContaining({ status: "approved" }),
     });
+    // #2219 — approval writes each requirement only at its pinned version.
     expect(mockPrisma.requirement.updateMany).toHaveBeenCalledWith({
-      where: { id: { in: ["req-1"] } },
+      where: { id: "req-1", version: 2 },
       data: { reviewStatus: "approved" },
     });
     const baselineArg = mockPrisma.baseline.create.mock.calls[0][0];

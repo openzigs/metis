@@ -792,10 +792,23 @@ export async function recordDecision(
         // #1016 — the lock order submit and withdraw use (review row, then the
         // scope's requirements by id), so overlapping reviews cannot deadlock.
         await lockScopeRequirements(tx, requirementIds);
-        await tx.requirement.updateMany({
-          where: { id: { in: requirementIds } },
-          data: { reviewStatus: derived },
-        });
+        if (status === "approved") {
+          // #2219 — an approval covers the pinned wording only. A requirement
+          // edited after it was pinned (its version moved on) stays awaiting
+          // review: approving v1 must never mark v2 approved.
+          for (const item of review.items) {
+            if (item.requirementId === null) continue;
+            await tx.requirement.updateMany({
+              where: { id: item.requirementId, version: item.pinnedVersion },
+              data: { reviewStatus: derived },
+            });
+          }
+        } else {
+          await tx.requirement.updateMany({
+            where: { id: { in: requirementIds } },
+            data: { reviewStatus: derived },
+          });
+        }
       }
 
       if (status === "approved") {
