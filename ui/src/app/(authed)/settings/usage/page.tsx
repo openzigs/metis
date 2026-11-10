@@ -13,8 +13,11 @@
  */
 import { useQuery } from "@tanstack/react-query";
 import { useRouter, useSearchParams } from "next/navigation";
-import { apiFetch } from "@/lib/api-client";
-import { useActiveWorkspaceId } from "@/lib/active-workspace";
+import {
+  resolveActiveWorkspaceId,
+  useActiveWorkspaceId,
+  workspaceListQuery,
+} from "@/lib/active-workspace";
 import { useAuth } from "@/lib/auth-context";
 import { projectsApi } from "@/lib/projects-api";
 import { PageHeader } from "@/components/ui/page-header";
@@ -31,11 +34,6 @@ const SCOPES: ReadonlyArray<{ id: UsageScope; label: string; adminOnly?: boolean
   { id: "workspace", label: "Workspace" },
   { id: "platform", label: "All projects", adminOnly: true },
 ];
-
-interface WorkspaceOption {
-  id: string;
-  name: string;
-}
 
 const SELECT_CLASS = "h-9 rounded-md border border-input bg-background px-2 text-sm";
 
@@ -65,11 +63,8 @@ export default function SettingsUsagePage() {
     queryFn: () => projectsApi.list({ limit: 100 }),
     enabled: scope === "project",
   });
-  const workspaces = useQuery({
-    queryKey: ["settings-usage", "workspaces"],
-    queryFn: () => apiFetch<WorkspaceOption[]>("/workspaces"),
-    enabled: scope === "workspace",
-  });
+  // #2208 — the top bar's own list (same key, same request), not a copy.
+  const workspaces = useQuery({ ...workspaceListQuery, enabled: scope === "workspace" });
 
   const workspaceList = workspaces.data ?? [];
   // The header switcher's active workspace (#2197: through its store, so a
@@ -92,9 +87,7 @@ export default function SettingsUsagePage() {
     ? workspaceParam
     : adminOutsideWorkspace
       ? adminOutsideWorkspace
-      : isMine(stored)
-        ? stored
-        : (workspaceList[0]?.id ?? "");
+      : (resolveActiveWorkspaceId(stored, workspaceList) ?? "");
 
   return (
     <div className="space-y-6 p-2 md:p-0" data-testid="settings-usage-root">

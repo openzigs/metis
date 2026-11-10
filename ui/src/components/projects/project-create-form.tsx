@@ -21,6 +21,8 @@
  *    and switcher instead of leaving the user on the list.
  *  - #428 — when the project was created but its repository was not linked
  *    (`primaryRepoError`), a warning says why and points to Connections.
+ *  - #2208 — Create stays disabled, with a notice, until the caller's
+ *    workspaces are read: before then `workspaceId` is unknown, not "none".
  */
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -40,6 +42,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { VaultPicker } from "@/components/connectors/vault-picker";
+import { WorkspaceStatusNotice } from "@/components/projects/workspace-status-notice";
+import type { ActiveWorkspaceStatus } from "@/lib/active-workspace";
 
 const REQUIRED_FIELDS = ["name", "slug"] as const;
 const FIELD_LABELS: Record<string, string> = { name: "Name", slug: "Slug" };
@@ -60,11 +64,23 @@ export function deriveSlug(name: string): string {
 export interface ProjectCreateFormProps {
   /** Active workspace the project should be created in (optional). */
   workspaceId?: string | null;
+  /**
+   * #2208 — whether `workspaceId` is known yet (`useValidatedActiveWorkspaceId`).
+   * Create is disabled until it is `ready`. Defaults to `ready`.
+   */
+  workspaceStatus?: ActiveWorkspaceStatus;
+  /** Re-read the workspaces after an error. */
+  onRetryWorkspaces?: () => void;
   /** Called with the created project after a successful create. */
   onCreated?: (project: Project) => void;
 }
 
-export function ProjectCreateForm({ workspaceId, onCreated }: ProjectCreateFormProps) {
+export function ProjectCreateForm({
+  workspaceId,
+  workspaceStatus = "ready",
+  onRetryWorkspaces,
+  onCreated,
+}: ProjectCreateFormProps) {
   const router = useRouter();
 
   const [name, setName] = useState("");
@@ -102,7 +118,11 @@ export function ProjectCreateForm({ workspaceId, onCreated }: ProjectCreateFormP
   }, [slug]);
 
   const slugValid = slug.trim() === "" || SLUG_PATTERN.test(slug.trim());
-  const canSubmit = hasRequiredValues({ name, slug }, REQUIRED_FIELDS) && slugValid && repoValid;
+  const canSubmit =
+    hasRequiredValues({ name, slug }, REQUIRED_FIELDS) &&
+    slugValid &&
+    repoValid &&
+    workspaceStatus === "ready";
 
   const create = useAppMutation<CreatedProject, void>({
     mutationFn: () =>
@@ -315,6 +335,8 @@ export function ProjectCreateForm({ workspaceId, onCreated }: ProjectCreateFormP
           {formError}
         </p>
       ) : null}
+
+      <WorkspaceStatusNotice status={workspaceStatus} onRetry={onRetryWorkspaces} />
 
       <div className="flex justify-end">
         <Button

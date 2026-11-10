@@ -5,7 +5,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { writeStoredActiveWorkspaceId } from "@/lib/active-workspace";
+import { QueryClient } from "@tanstack/react-query";
+import { workspaceListQuery, writeStoredActiveWorkspaceId } from "@/lib/active-workspace";
 import { makeWrapper, TEST_USER } from "./test-utils";
 import SettingsUsagePage from "@/app/(authed)/settings/usage/page";
 
@@ -150,6 +151,25 @@ describe("<SettingsUsagePage /> (#31)", () => {
     await waitFor(() => expect(screen.getByTestId("workspace-panel")).toHaveTextContent("ws-1"));
     act(() => writeStoredActiveWorkspaceId("ws-2"));
     await waitFor(() => expect(screen.getByTestId("workspace-panel")).toHaveTextContent("ws-2"));
+  });
+
+  // #2208 — the page reads the top bar's workspace list (one key, one request)
+  // rather than fetching its own copy of it.
+  it("reads the top bar's cached workspace list instead of its own", async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(workspaceListQuery.queryKey, [
+      { id: "ws-cached", name: "Cached", slug: "c", logoUrl: null, role: "member" },
+    ]);
+    useSearchParamsMock.mockReturnValue(
+      new URLSearchParams("scope=workspace") as ReturnType<typeof useSearchParams>,
+    );
+    render(<SettingsUsagePage />, {
+      wrapper: makeWrapper({ initialUser: TEST_USER, queryClient }),
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId("workspace-panel")).toHaveTextContent("ws-cached"),
+    );
+    expect(apiFetch).not.toHaveBeenCalledWith("/workspaces");
   });
 
   it("falls back to the first workspace when the stored one is not the caller's", async () => {
