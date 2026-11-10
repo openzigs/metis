@@ -1,0 +1,136 @@
+You are a careful compliance analyst. Below is a security requirements document for an electronic health record system, and 33 requirements: feature requests and bug reports filed by the users and developers of an open-source electronic health record system, quoted in their own words. You are checking ONE rule, {RULE}, against EVERY requirement, one by one, so the rule is applied the same way to all of them.
+
+For each requirement, give one label for rule {RULE}:
+- "does not apply": an independent reader would not attach this rule to the requirement (a stretch reading does not count).
+- "compliant": the requirement, as written, explicitly provides what the rule asks.
+- "gap": the requirement, built as written, would breach the rule.
+- "needs-ba-input": the rule applies, but the requirement is silent or ambiguous on it, and one business fact would settle it.
+Silence is never "compliant". Judge against this document only, as written. Apply the same test to every requirement.
+
+Reply with ONE JSON object and nothing else:
+{"rule": "{RULE}", "labels": [{"item": "OS-01", "label": "does not apply", "reason": "one short sentence", "businessFact": "one question, for needs-ba-input only"}]}
+Include all 33 requirement ids, in the order given.
+
+=== POLICY ===
+# Web Application Security Requirements: OWASP ASVS 5.0.0 (excerpts)
+
+Revision: v1 · Compiled: 2026-11-09 · Applies to: the electronic health record system, its patient portal and its interfaces
+
+## Sources and attribution
+
+Every requirement below is quoted from the OWASP Application Security Verification Standard
+5.0.0, by the OWASP Foundation: https://github.com/OWASP/ASVS/tree/v5.0.0_release/5.0/en,
+retrieved 2026-11-09. The ASVS is released under the Creative Commons Attribution-ShareAlike
+4.0 International License (https://creativecommons.org/licenses/by-sa/4.0/), and this file,
+which quotes it, stays under that licence whatever the licence of the repository around it.
+
+The reference in bold at the start of each paragraph is added here so that a question can
+name the requirement, and the ASVS's own requirement number follows each one in square
+brackets. Text left out of a quotation is marked "…": in PA-10, SE-03 and LG-03 a sentence
+that sets a stricter level, or covers self-contained tokens, is cut. Nothing else in a
+quotation has been changed.
+
+## Part A — Authentication (ASVS chapter V6)
+
+**PA-01** Verify that user set passwords are at least 8 characters in length although a minimum of 15 characters is strongly recommended. [ASVS 5.0.0, 6.2.1]
+
+**PA-02** Verify that users can change their password. [ASVS 5.0.0, 6.2.2]
+
+**PA-03** Verify that password change functionality requires the user's current and new password. [ASVS 5.0.0, 6.2.3]
+
+**PA-04** Verify that passwords submitted during account registration or password change are checked against an available set of, at least, the top 3000 passwords which match the application's password policy, e.g. minimum length. [ASVS 5.0.0, 6.2.4]
+
+**PA-05** Verify that passwords of any composition can be used, without rules limiting the type of characters permitted. There must be no requirement for a minimum number of upper or lower case characters, numbers, or special characters. [ASVS 5.0.0, 6.2.5]
+
+**PA-06** Verify that password input fields use type=password to mask the entry. Applications may allow the user to temporarily view the entire masked password, or the last typed character of the password. [ASVS 5.0.0, 6.2.6]
+
+**PA-07** Verify that "paste" functionality, browser password helpers, and external password managers are permitted. [ASVS 5.0.0, 6.2.7]
+
+**PA-08** Verify that a user's password stays valid until it is discovered to be compromised or the user rotates it. The application must not require periodic credential rotation. [ASVS 5.0.0, 6.2.10]
+
+**PA-09** Verify that controls to prevent attacks such as credential stuffing and password brute force are implemented according to the application's security documentation. [ASVS 5.0.0, 6.3.1]
+
+**PA-10** Verify that either a multi-factor authentication mechanism or a combination of single-factor authentication mechanisms, must be used in order to access the application. … [ASVS 5.0.0, 6.3.3]
+
+**PA-11** Verify that users are notified after updates to authentication details, such as credential resets or modification of the username or email address. [ASVS 5.0.0, 6.3.7]
+
+**PA-12** Verify that system generated initial passwords or activation codes are securely randomly generated, follow the existing password policy, and expire after a short period of time or after they are initially used. These initial secrets must not be permitted to become the long term password. [ASVS 5.0.0, 6.4.1]
+
+**PA-13** Verify that a secure process for resetting a forgotten password is implemented, that does not bypass any enabled multi-factor authentication mechanisms. [ASVS 5.0.0, 6.4.3]
+
+**PA-14** Verify that administrative users can initiate the password reset process for the user, but that this does not allow them to change or choose the user's password. This prevents a situation where they know the user's password. [ASVS 5.0.0, 6.4.6]
+
+**PA-15** Verify that, if an application uses a separate Identity Provider (IdP) and expects specific authentication strength, methods, or recentness for specific functions, the application verifies this using the information returned by the IdP. [ASVS 5.0.0, 6.8.4]
+
+## Part B — Session management (ASVS chapter V7)
+
+**SE-01** Verify that the application generates a new session token on user authentication, including re-authentication, and terminates the current session token. [ASVS 5.0.0, 7.2.4]
+
+**SE-02** Verify that there is an inactivity timeout such that re-authentication is enforced according to risk analysis and documented security decisions. [ASVS 5.0.0, 7.3.1]
+
+**SE-03** Verify that when session termination is triggered (such as logout or expiration), the application disallows any further use of the session. For reference tokens or stateful sessions, this means invalidating the session data at the application backend. … [ASVS 5.0.0, 7.4.1]
+
+**SE-04** Verify that the application gives the option to terminate all other active sessions after a successful change or removal of any authentication factor (including password change via reset or recovery and, if present, an MFA settings update). [ASVS 5.0.0, 7.4.3]
+
+**SE-05** Verify that all pages that require authentication have easy and visible access to logout functionality. [ASVS 5.0.0, 7.4.4]
+
+**SE-06** Verify that session lifetime and termination between Relying Parties (RPs) and Identity Providers (IdPs) behave as documented, requiring re-authentication as necessary such as when the maximum time between IdP authentication events is reached. [ASVS 5.0.0, 7.6.1]
+
+## Part C — Authorization (ASVS chapter V8)
+
+**AZ-01** Verify that the application ensures that function-level access is restricted to consumers with explicit permissions. [ASVS 5.0.0, 8.2.1]
+
+**AZ-02** Verify that the application ensures that data-specific access is restricted to consumers with explicit permissions to specific data items to mitigate insecure direct object reference (IDOR) and broken object level authorization (BOLA). [ASVS 5.0.0, 8.2.2]
+
+**AZ-03** Verify that the application enforces authorization rules at a trusted service layer and doesn't rely on controls that an untrusted consumer could manipulate, such as client-side JavaScript. [ASVS 5.0.0, 8.3.1]
+
+## Part D — Data protection (ASVS chapter V14)
+
+**DP-01** Verify that sensitive data is only sent to the server in the HTTP message body or header fields, and that the URL and query string do not contain sensitive information, such as an API key or session token. [ASVS 5.0.0, 14.2.1]
+
+## Part E — Security logging (ASVS chapter V16)
+
+**LG-01** Verify that each log entry includes necessary metadata (such as when, where, who, what) that would allow for a detailed investigation of the timeline when an event happens. [ASVS 5.0.0, 16.2.1]
+
+**LG-02** Verify that all authentication operations are logged, including successful and unsuccessful attempts. Additional metadata, such as the type of authentication or factors used, should also be collected. [ASVS 5.0.0, 16.3.1]
+
+**LG-03** Verify that failed authorization attempts are logged. … [ASVS 5.0.0, 16.3.2]
+
+**LG-04** Verify that all logging components appropriately encode data to prevent log injection. [ASVS 5.0.0, 16.4.1]
+
+**LG-05** Verify that logs are protected from unauthorized access and cannot be modified. [ASVS 5.0.0, 16.4.2]
+
+=== REQUIREMENTS ===
+- OS-30 — feat: Add ability to prevent forced portal credential change: Currently we force patient to change their credentials when portal credentials are created from MRD. Some admins prefer to prevent this action. … Add and persist a checkbox flag to create_portallogin to set the patient_access_onsite portal_pwd_status column to prevent. A nice addition while here would be to create a onetime to auto login and take patient to say portal documents to create intake forms or to appointments or even the portals change password dialog.
+- OS-28 — 5.0.2 Bug: Portal asks to create new username when changing pass when email only is on: The patient portal in 5.0.2 asks for the user to create a new username when they are changing passwords when email substitution for usernames is turned on. This shouldn't be happening when this is turned on.
+- OS-09 — Show/Hide password button is not present on the login page.: The show/hide password button is not present on the login page as required by ASVS control ID: 2.1.2 …
+- OS-31 — feat: When google single sign on is enabled it still requires user to use password from openEMR to sign the encounter doesn't use single sign on.: Even with google single sign on it still requires user to use password from openEMR while signing the encounter. Google single sign on works perfectly with the login but when it comes to signing an encounter single sign on doesn't work. It requires openEMR user password. We have made it where it will use single sign for encounter signing. …
+- OS-19 — feat(portal): add multi-factor authentication to patient portal: The OpenEMR patient portal has no multi-factor authentication. Patient login is username/password with optional reCAPTCHA only. There is no TOTP, U2F, WebAuthn, magic-link, SMS, or email-OTP option for patients, and no admin toggle to require any second factor. … This proposes adding MFA to the portal from scratch: TOTP at minimum, with a portal_force_mfa global mirroring the practitioner-side enforcement work, plus a self-enrollment page under portal/account/.
+- OS-13 — password administration logging: Add detailed password administration logging
+- OS-08 — Remove Password Composition Requirements: Currently, passwords are required to have a number, lowercase letter, uppercase letter, and special character. However, many security standards, such as NIST (section 5.1.1.1) and ASVS (standard 2.1.9) recommend against password composition requirements because they do not significantly increase the strength of passwords. … Do not require passwords to contain numbers, special characters, etc.
+- OS-23 — bug/The calendar needs to scale horizontally: In the Calendar day view, when many providers are selected, provider columns are squeezed into the available viewport width instead of expanding and scrolling horizontally. That makes provider names hard to read, the provider close (X) control hard to use, and appointment cells too narrow to work with comfortably. … Expected behavior: Each provider column keeps a usable minimum width so names and controls remain readable/clickable. When providers exceed the viewport width, the calendar grid scrolls horizontally.
+- OS-07 — Language selection on portal login screen does not match username and password structure: When allowing a language selection, the label is full width and text centered with the select box below it. This differs from the above username and password setup where the labels are flush left, next to the input selection. Language choice should continue the design pattern
+- OS-11 — feat: Notify users for password issues: Users may not know that their password have expired or failed for login attempts. … Add a notification email to system email queue so user can fix any upcoming issues.
+- OS-04 — Single sign on: For a big part of the user of the system used, we need to add the SSO on Openemr to recognize and authenticate the user when the user logged on to the account or laptop the user used. … Is it possible to support any kind of SSO like SAML2 to Openemr?!
+- OS-20 — Add Prescription History to Patient Report: Add Prescription History as an option to the Patient Report, as this information can be important to have available and share. … Add option for "Prescription History" to the patient report. If there are no prescriptions, then the report would display "No prescriptions on file". If there are prescriptions on the patient chart and the options is checked, then the report would display all the prescription entries and be available to print/download as PDF.
+- OS-33 — [Patient Dashboard] Credentials reset dialog displays an outdated read-only email address after the patient's email is updated: A patient exists with Patient Portal credentials. … 1. Login as Administartor. 1. Create a patient. 2. Generate Patient Portal login credentials. 3. Update the patient's email address in the patient record. 4. Save the changes. 5. Click Reset option under Credentials … Actual Result: The Credential reset dialog displays the previous email address in a read-only field. Since the field is not editable, the administrator cannot update it before sending the reset. Expected Result: The password reset dialog should display the current email address from the patient's record. If the patient's email has been updated, the reset dialog should reflect the updated value instead of a stale email address.
+- OS-01 — logout doesn't return to login screen after session times out: so user has to have a bookmark of login screen or have a home page set to login page … not sure if the logic flow makes it to this code
+- OS-12 — bug: Calendar: user created appointment is invisible due to duration of zero minutes: A user created an appointment. The appointment is not visible to the user in the calendar, thus not clickable, due to a duration of zero minutes. (The duration of zero minutes happened because of a custom category, but was not the user's intention.) … Expected behavior: That the appointment would have some minimum height, thus be clickable.
+- OS-29 — Telehealth Third Party Onetime Login Link invitations both copy link and email: Building on the one time login links that Jerry built, we want to have the third party participants be able to get a one time invitation as well. We also want to be able to copy the invitation link and invitation message for the third party. Since we generate these links on the fly we need a button to be able to generate the link and copy it since browsers prevent direct copy access when doing an asynchronous request.
+- OS-06 — login_fail_counter not reset when an admin resets a password: When you reset a user's password in Admin-> Users … There is nothing that will reset the login_fail_counter in users_secure. Right now, you have to manually go into the table and reset the field to 0 for a user to log in again if you have max reties enabled and admin reset a password.
+- OS-25 — bug(documents): DICOM viewer shows only the first image of a zip and fails when the images differ in size: When a zip of DICOM images is opened in the Documents DICOM viewer, only the first image is shown, and if the images have different sizes (for example a landscape and two portrait views of one study) the viewer also raises "A load error has occurred. See log for details." and the other images are lost. … Expected behavior: Every image in the zip can be viewed, one at a time (previous/next), each fitted to the viewer, whatever its size.
+- OS-22 — [ACL] Users with only "Patients → Demographics (Write)" permission are unable to edit patient demographics: A user assigned only the Patients → Demographics (Write) permission through Advanced ACL is unable to edit patient demographic information. Although the user can access the Demographics page, all fields remain in read-only mode and cannot be modified. … Expected Result: The user should be able to edit patient demographic fields and save the changes based on the assigned Write permission.
+- OS-27 — Force new user change default password in first login: How can I force all new users change default password in first login? If applicable to define security steps to users?! for Example: Need all users in first login do the following: 1. Change default password. 2. force to have TOTP step
+- OS-26 — Strengthen part of username and password creation process: This file is called when a user begins setting up OpenEMR for the first time … Make the following happen via HTML5 attributes: initial user password min length of 12. database password min length of 12. Also: the "initial user" of "admin" is too easy to guess … make the username a minimum of 12 characters as well to ensure if they don't go with our randomized suggestion they still pick something with some complexity (enforce with html5)
+- OS-17 — Upgrade entry points (acl_upgrade.php, sql_upgrade.php) allow unauthenticated HTTP access: acl_upgrade.php and sql_upgrade.php both declare $ignoreAuth = true before loading interface/globals.php, which skips auth.inc.php. Anyone who can reach these scripts over HTTP can invoke them, potentially triggering ACL/schema mutations without any authenticated session. … These scripts are reachable from the admin UI (admin.php) mid-upgrade, and historically had to run before any user account exists.
+- OS-03 — Logout from expired session: … To reproduce, let session expire or get closed. Then try to use 'Logout' dropdown option from menu. Noticed that logout.php does get called but user gets no response possibly because changes to auth library resulting in login.php never getting called. This was a decent compromise to users having to enter emr link in address bar.
+- OS-02 — Password is not obscured when resetting user password: When resetting a user password, "User`s New Password" is not obscured in the way that it is for "Your Password". The password is successfully obscured when creating a new user, this is only an issue when resetting a user's password.
+- OS-10 — feat: Password strength meter missing: According to ASVS 2.1.8 there should be a password strength meter provided to help users set a stronger password which is missing in the application. This may be a security threat. … According to the ASVS, when a user is setting their password, a password strength meter should be provided.
+- OS-15 — Token expire shows error instead of login screen: When the authentication token expires, the user is not logged out. Instead, the portal displays an error indicating that the site ID is missing. This is misleading, as the actual issue is an expired authentication token rather than a missing site parameter. … Expected behavior: The user should be logged out automatically and redirected to the login screen when the token expires. A clear message such as "Session expired. Please log in again." should be shown instead of a site id missing error.
+- OS-18 — Honor X-Forwarded-For only from trusted proxies in audit logging: collectIpAddresses() (library/sanitize.inc.php:29) appends $_SERVER['HTTP_X_FORWARDED_FOR'] to the logged IP string with no check that the request actually arrived through a trusted reverse proxy. The returned ip_string is then written into the log table by EventAuditLogger::newEvent() for login events, MFA failures, API requests (src/Common/Logging/Audit/LogTablesSink.php), and other auth events. Any client that can reach the OpenEMR HTTP listener directly … can set X-Forwarded-For to arbitrary text and have it persisted verbatim in the audit trail. … Structured logging. Return remote_ip and forwarded_for as separate fields and persist them as separate columns / structured payload in the audit log rather than concatenating into the comments string.
+- OS-32 — feat: Improve Portal Credential Settings page for patients: Clinican testing of the patient portal credential settings page found the page to be confusing. They recommended changing up some of labels, providing more visual separating for the various credential settings and making the username and password updates independent of each other.
+- OS-14 — Patient Portal Logout - Not Working: The Patient Portal logout functionality is currently not working as expected. When a user attempts to log out, instead of being redirected to the login page, the system displays a "Requested URL not found" error. Its reproduced in the live demo server also.
+- OS-16 — CSRF token exposed in URL in interface/patient_file/letter.php back-link: The CSRF token is embedded directly in the URL query string (csrf_token_form=...). Because the app enforces CSRF validation on GET requests via CsrfUtils::checkCsrfInput(INPUT_GET, ...), this pattern is encouraged across the codebase. CWE-598. Tokens in URLs leak via: Referer headers when the page loads external resources or the user follows outbound links. Browser history, bookmarks, screenshots. Reverse proxies, web-server access logs, APM/analytics tooling.
+- OS-24 — Admin unblock UI parity for new MFA and portal-account lockout counters (… followup): … added three new failed-login counter axes for brute-force throttling: per-user MFA, per-IP MFA, per-portal-account. Each of these can auto-recover via the corresponding window (default 3600s = 1h), but if an admin disables auto-recovery (window=0) OR wants to unblock a legitimate user faster than the window, they currently have no UI. … This issue tracks parity: extend the existing surfaces to cover the new MFA counters, and add a small new report for the per-portal-account counter … Shipping a lockout mechanism without a corresponding admin recovery UI is a self-DoS risk.
+- OS-21 — reactor(audit): Improve immutability and tamper-resistance: Today, the event logging system uses encryption as a means of trying to address certification requirements around immutability and tamper-resistance. The logic is well-intentioned, but somewhat faulty. … Proposal stages: Remove encryption from the audit logs (on all columns that use it). … Update table permissions: log (and log_comment_encrypt) should have permissions set at a MySQL level to allow INSERT and SELECT, but not UPDATE, DELETE, TRUNCATE, etc. Ideally, the "default" openemr DB user has no access to the table(s) at all; a new user with minimum permissions should exist for dedicated access. Have some sort of checksum chaining, similar to how git commit hashes work. Tamper detection could examine the chain, re-checksum, and ensure there are no mismatches
+- OS-05 — Fix portal generate random password does not return password: The last commit with the patient access onsite refactor in create_portallogin.php was generating an empty password sent out because the function did not return the password. Not sure how I missed that, lol, but going to fix it ASAP.

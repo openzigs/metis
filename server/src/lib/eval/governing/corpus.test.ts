@@ -474,21 +474,55 @@ function cohensKappa(pairs: ReadonlyArray<readonly [string, string]>): number {
  * agreed, the third pass's where they did not, then the consistency pass's where
  * both of its blind passes moved a cell; and the agreement figures recorded beside
  * them are the labels' own.
+ *
+ * #2140 — a set can be labelled in rounds (`labelling/`, then `labelling/2140/`
+ * for items added later). Each round's labellers label only its own items, so
+ * each round is checked over the items its labellers list, and every item of
+ * the manifest belongs to exactly one round.
  */
-async function expectAdjudicatedLabels(dir: string): Promise<void> {
+async function expectAdjudicatedLabels(
+  dir: string,
+  rounds: readonly string[] = ["labelling"],
+): Promise<void> {
+  const manifest = JSON.parse(
+    await fs.readFile(path.join(dir, "manifest.json"), "utf8"),
+  ) as GoverningCorpusManifest;
+  const owner = new Map<string, string>();
+  for (const round of rounds) {
+    const labelled = await expectAdjudicatedRound(dir, round, manifest);
+    for (const id of labelled) {
+      expect(owner.get(id), `${id} is labelled in one round only`).toBeUndefined();
+      owner.set(id, round);
+    }
+  }
+  expect([...owner.keys()].sort()).toEqual(manifest.items.map((i) => i.id).sort());
+}
+
+/** One labelling round's checks; returns the ids of the items it labelled. */
+async function expectAdjudicatedRound(
+  dir: string,
+  round: string,
+  manifest: GoverningCorpusManifest,
+): Promise<string[]> {
   const read = async <T>(rel: string): Promise<T> =>
-    JSON.parse(await fs.readFile(path.join(dir, rel), "utf8")) as T;
-  const manifest = await read<GoverningCorpusManifest>("manifest.json");
-  const first = labelGrid(await read<LabelFile>("labelling/labeller-1.json"));
-  const second = labelGrid(await read<LabelFile>("labelling/labeller-2.json"));
-  const adjudication = await read<AdjudicationFile>("labelling/adjudication.json");
+    JSON.parse(await fs.readFile(path.join(dir, round, rel), "utf8")) as T;
+  const firstFile = await read<LabelFile>("labeller-1.json");
+  const secondFile = await read<LabelFile>("labeller-2.json");
+  const labelled = firstFile.items.map((i) => i.id);
+  expect(secondFile.items.map((i) => i.id).sort(), `${round}: both label the same items`).toEqual(
+    [...labelled].sort(),
+  );
+  const first = labelGrid(firstFile);
+  const second = labelGrid(secondFile);
+  const adjudication = await read<AdjudicationFile>("adjudication.json");
   const decided = new Map(adjudication.disagreements.map((d) => [`${d.item} ${d.rule}`, d]));
   const consistent = new Map(
     adjudication.consistencyPass.changes.map((c) => [`${c.item} ${c.rule}`, c]),
   );
   const none = "does not apply";
   const cells: Array<readonly [string, string]> = [];
-  for (const item of manifest.items) {
+  const inRound = new Set(labelled);
+  for (const item of manifest.items.filter((i) => inRound.has(i.id))) {
     const truth = new Map(item.applies.map((p) => [p.ruleId, p.verdict as string]));
     for (const rule of manifest.rules) {
       const a = first.get(item.id)?.get(rule.id) ?? none;
@@ -524,6 +558,7 @@ async function expectAdjudicatedLabels(dir: string): Promise<void> {
   const applies = cells.map(([a, b]) => [String(a !== none), String(b !== none)] as const);
   expect(cohensKappa(applies)).toBeCloseTo(adjudication.agreement.applicability.kappa, 3);
   expect(cohensKappa(cells)).toBeCloseTo(adjudication.agreement.fourWay.kappa, 3);
+  return labelled;
 }
 
 describe("the held-out governing corpus (#2024)", () => {
@@ -784,7 +819,8 @@ describe("the tuning set of real text (#2108)", () => {
     expect(manifest.synthetic).toBe(false);
     expect(corpus.manifest.purpose).toBe("tuning");
     expect(corpus.rules).toHaveLength(30);
-    expect(manifest.items).toHaveLength(25);
+    // 25 items from #2108, and OS-26 to OS-33 from #2140.
+    expect(manifest.items).toHaveLength(33);
     expect(manifest.items.filter((i) => i.applies.length === 0).length).toBeGreaterThanOrEqual(
       MIN_NEGATIVE_ITEMS,
     );
@@ -831,12 +867,45 @@ describe("the tuning set of real text (#2108)", () => {
     const { manifest } = await tuning();
     expect(manifest.thresholds).toEqual((await committed()).manifest.thresholds);
     expect(manifest.contentHash).toBeUndefined();
-    expect(manifest.annotation.groundTruthFixedBeforeAnyArmRan).toBe(true);
+    // #2140 — its consistency pass ran after arms had run on this tuning set, so it says so.
+    expect(manifest.annotation.groundTruthFixedBeforeAnyArmRan).toBe(false);
+    expect(manifest.annotation.procedure).toMatch(/after arms had run on this set/);
     expect(manifest.annotation.reviewedBy).toBeNull();
   });
 
   it("holds the adjudicated labels: both blind labellers where they agreed, the third pass where they did not", async () => {
-    await expectAdjudicatedLabels(REAL_TUNING_DIR);
+    await expectAdjudicatedLabels(REAL_TUNING_DIR, ["labelling", "labelling/2140"]);
+  });
+
+  it("FAILS when an item is labelled in no round, or in two (#2140)", async () => {
+    // Only the first round: OS-26 to OS-33 are labelled nowhere.
+    await expect(expectAdjudicatedLabels(REAL_TUNING_DIR)).rejects.toThrow();
+    // The same round twice: every item it holds is labelled twice.
+    await expect(
+      expectAdjudicatedLabels(REAL_TUNING_DIR, ["labelling", "labelling/2140", "labelling/2140"]),
+    ).rejects.toThrow(/labelled in one round only/);
+  });
+
+  it("adds #2140's pairs: flows that set or change a password, or open a sign-in path, against rules on every one (#2140)", async () => {
+    const corpus = await loadGoverningCorpus(REAL_TUNING);
+    const pairs = new Map(
+      corpus.manifest.items.map((i) => [i.id, i.applies.map((p) => `${p.ruleId}:${p.verdict}`)]),
+    );
+    for (const id of ["OS-26", "OS-27", "OS-28", "OS-29", "OS-30", "OS-31", "OS-32", "OS-33"]) {
+      expect(pairs.get(id)?.length, id).toBeGreaterThan(0);
+    }
+    // The kind #2140 is about: a rule on every password set or changed, on a flow that sets one.
+    expect(pairs.get("OS-26")).toContain("PA-04:needs-ba-input");
+    expect(pairs.get("OS-27")).toContain("PA-12:needs-ba-input");
+    expect(pairs.get("OS-32")).toEqual(
+      expect.arrayContaining([
+        "PA-03:needs-ba-input",
+        "PA-11:needs-ba-input",
+        "SE-04:needs-ba-input",
+      ]),
+    );
+    // And on a flow that opens a sign-in path or relies on one.
+    expect(pairs.get("OS-31")).toContain("PA-15:needs-ba-input");
   });
 
   it("marks a pair non-resembling exactly when it shares no vocabulary with its rule", async () => {

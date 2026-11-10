@@ -266,8 +266,19 @@ export function buildApplicabilityScreenPrompt(
 // those whose specific matter the requirement sets, changes, or says how the
 // system does it now. Its example is governing-04's own (a notice of expired
 // passwords), never a held-out set's.
-export const SAME_SUBJECT_LINE =
-  "When several rules share the requirement's subject (sign-in, passwords, sessions, logging, access), a rule on that subject applies only when the requirement sets or changes the specific thing that rule governs, or says how the flow it changes does that thing today (a reminder that a password has expired says passwords expire, which brings in a rule on password rotation, even though the requirement only asks for the reminder). The other rules on that subject do not apply.";
+// #2140 — that line ruled out a rule on EVERY new or changed password (the
+// blocklist, the length) on a requirement that creates one, because the
+// requirement never named the rule's matter; and a multi-factor rule on a new
+// way of signing in. So a step that makes a password, or a new way of signing
+// in, brings in the rules every such password or sign-in must meet. Tuned with
+// Sonnet on governing-04 (its #2140 items OS-26 to OS-33 and its consistency
+// pass) and governing-01; both examples are governing-04's own (OS-26, OS-31),
+// and governing-03 stays held out. A first draft that named "every way of
+// signing in" without the strength drew the authentication-logging rule onto
+// most sign-in requirements, hence the last sentence.
+export const EVERY_INSTANCE_SENTENCE =
+  "But a rule on what each new or changed password must be (its length, a check against common passwords) applies to a requirement that adds or changes a step where a password is chosen or generated (the first administrator's password chosen at setup), and a rule on the strength every sign-in must have (a second factor, the strength checked from an identity provider) applies to a requirement that adds or changes a way of signing in (signing an encounter through single sign-on), even when the requirement says nothing of that rule's matter. Rules on what happens around those steps (logging them, notices, other sessions) still apply only as above.";
+export const SAME_SUBJECT_LINE = `When several rules share the requirement's subject (sign-in, passwords, sessions, logging, access), a rule on that subject applies only when the requirement sets or changes the specific thing that rule governs, or says how the flow it changes does that thing today (a reminder that a password has expired says passwords expire, which brings in a rule on password rotation, even though the requirement only asks for the reminder). ${EVERY_INSTANCE_SENTENCE} The other rules on that subject do not apply.`;
 
 const JUDGE_LINES = [
   "You decide which of a company's governing rules (internal policy obligations and controls) apply to one business requirement.",

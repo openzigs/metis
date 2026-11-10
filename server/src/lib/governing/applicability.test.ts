@@ -48,6 +48,7 @@ const {
   planScreenBatches,
   SCREEN_ROOM_MAX_SHRINK,
   SAME_SUBJECT_LINE,
+  EVERY_INSTANCE_SENTENCE,
   screenRoom,
 } = await import("./applicability.js");
 type ApplicabilityRule = import("./applicability.js").ApplicabilityRule;
@@ -888,6 +889,32 @@ describe("#1997 — the judging prompt's precision guidance", () => {
     expect(
       buildApplicabilityJudgePrompt(REQUIREMENT.text, [], { answered: true }).systemMessage,
     ).toContain(SAME_SUBJECT_LINE);
+  });
+
+  // #2140 — the same-subject line ruled out the blocklist and length rules on a flow that
+  // sets a password, and a multi-factor rule on a new way of signing in, because the
+  // requirement never named the rule's matter.
+  it("brings in the rules every new password or every sign-in must meet on a step that makes one, ahead of the same-subject exclusion", () => {
+    const { systemMessage } = buildApplicabilityJudgePrompt(REQUIREMENT.text, []);
+    expect(systemMessage).toContain(EVERY_INSTANCE_SENTENCE);
+    expect(EVERY_INSTANCE_SENTENCE).toContain("a step where a password is chosen or generated");
+    expect(EVERY_INSTANCE_SENTENCE).toContain("a way of signing in");
+    expect(EVERY_INSTANCE_SENTENCE).toContain(
+      "even when the requirement says nothing of that rule's matter",
+    );
+    // What surrounds the step (its logging, notices, other sessions) stays under the narrow test,
+    // so the authentication-logging rule is not drawn onto every sign-in requirement.
+    expect(EVERY_INSTANCE_SENTENCE).toContain("logging them, notices, other sessions");
+    // It qualifies the exclusion, so it must come before it, inside the same line.
+    const at = SAME_SUBJECT_LINE.indexOf(EVERY_INSTANCE_SENTENCE);
+    expect(at).toBeGreaterThan(0);
+    expect(at).toBeLessThan(
+      SAME_SUBJECT_LINE.indexOf("The other rules on that subject do not apply."),
+    );
+    // Its examples are governing-04's own, never the held-out governing-03's (OE-11, OE-12).
+    expect(EVERY_INSTANCE_SENTENCE).not.toMatch(
+      /initial random|force a password reset|next login/i,
+    );
   });
 
   // #2050 — on governing-01 the screen found EN-01 (GR-09), CM-02 (GR-20) and CM-03 (GR-21) in
