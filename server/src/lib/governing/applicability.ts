@@ -266,6 +266,13 @@ export function buildApplicabilityScreenPrompt(
 // those whose specific matter the requirement sets, changes, or says how the
 // system does it now. Its example is governing-04's own (a notice of expired
 // passwords), never a held-out set's.
+// #2140 — this line rules out the blocklist and length rules on a flow that
+// sets a password. A sentence bringing in "the rules every new password or
+// every sign-in must meet" on a step that makes one was tuned on governing-04
+// and read once on governing-03: recall 0.75 -> 0.83, but precision
+// 0.76 -> 0.65, the password-change request's extra rules came back, and a
+// wrong Compliant broke the no-evidence bar. It is not shipped; the sentence
+// and the reading are in governing-03's ANNOTATION.md.
 export const SAME_SUBJECT_LINE =
   "When several rules share the requirement's subject (sign-in, passwords, sessions, logging, access), a rule on that subject applies only when the requirement sets or changes the specific thing that rule governs, or says how the flow it changes does that thing today (a reminder that a password has expired says passwords expire, which brings in a rule on password rotation, even though the requirement only asks for the reminder). The other rules on that subject do not apply.";
 

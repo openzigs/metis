@@ -4784,7 +4784,7 @@ defect report, password rule or sign-in flow, so the defects `governing-03` show
 be tuned there. **`governing-04-openemr-asvs`** (`purpose: "tuning"`, `synthetic: false`)
 quotes 30 OWASP ASVS 5.0.0 requirements (CC BY-SA 4.0, kept in the policy's header) against 25
 OpenEMR issues that `governing-03` does not use. It was labelled blind the same way, without
-the consistency pass. A5 now records each candidate rule's **stage**
+the consistency pass (#2140 added one). A5 now records each candidate rule's **stage**
 (`GoverningArmOutput.stages`, `eval/governing/stages.ts`): the pass that found it, its
 applicability and its finding. `stageSection` prints "Where each error arose": each miss,
 extra rule and wrong verdict counted as `not-a-candidate`, `judged-does-not-apply`,
@@ -4802,6 +4802,16 @@ tuned on `governing-04`:
 non-resembling recall (0.50)
 (`eval-data/readings/governing-03-openemr-hipaa/baseline-A5-sonnet-2108.md`; the diagnosis is
 in its `ANNOTATION.md`).
+
+**Rules on every new password, tried and not shipped (#2140).** `governing-04` gained eight
+OpenEMR issues that set or change a password or add a way of signing in (OS-26 to OS-33,
+labelled blind in `labelling/2140/`), and `governing-03`'s per-rule consistency pass on the
+counterparts of its cross-cutting rules (PA-04, PA-10, AZ-01). The corpus test now checks
+labels round by round (`expectAdjudicatedLabels(dir, rounds)`), each item in exactly one
+round. A sentence inside `SAME_SUBJECT_LINE`, tuned there, raised `governing-03` recall
+(0.75 → 0.83) but cut precision (0.76 → 0.65) and gave a wrong `compliant`, so it was
+reverted and the judge's prompts are #2108's
+(`eval-data/readings/governing-03-openemr-hipaa/baseline-A5-sonnet-2140.md`).
 
 **Readings and their code (#1878).** Every report records `provenance`: the commit it ran at
 (`git rev-parse HEAD`), whether the tree was clean, and each arm's `codePath`. Three runs do not
