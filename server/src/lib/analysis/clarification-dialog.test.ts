@@ -13,50 +13,22 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // ── in-memory dialog store mock ───────────────────────────────────────────
-const store = new Map<string, unknown>();
-vi.mock("./clarification-dialog-store.js", () => ({
-  readDialogState: vi.fn(async (id: string) => store.get(id)),
-  writeDialogState: vi.fn(async (id: string, state: unknown) => {
-    store.set(id, state);
-  }),
-  deleteDialogState: vi.fn(async (id: string) => {
-    store.delete(id);
-  }),
-  // #2101 / #2142 — the compare-and-set writes over the same map.
-  readDialogStateRevision: vi.fn(async (id: string) => {
-    const v = store.get(id);
-    return v ? { state: structuredClone(v) as unknown, revision: JSON.stringify(v) } : undefined;
-  }),
-  replaceDialogState: vi.fn(async (id: string, revision: string | undefined, state: unknown) => {
-    // #2142 — no revision: created only while there is no row.
-    const held = store.get(id);
-    if (revision === undefined ? held !== undefined : JSON.stringify(held) !== revision) {
-      return null;
-    }
-    store.set(id, structuredClone(state));
-    return JSON.stringify(state);
-  }),
-  // #2142 — one transaction: `alongside` throwing rolls the state write back.
-  commitDialogState: vi.fn(
-    async (
-      id: string,
-      revision: string,
-      state: unknown,
-      alongside: (tx: unknown) => Promise<void>,
-    ) => {
-      const held = store.get(id);
-      if (JSON.stringify(held) !== revision) return null;
-      store.set(id, structuredClone(state));
-      try {
-        await alongside({});
-      } catch (err) {
-        store.set(id, held);
-        throw err;
-      }
-      return JSON.stringify(state);
-    },
-  ),
-}));
+// #2156 — hoisted: the mock factory below hands it to the shared fake.
+const store = vi.hoisted(() => new Map<string, unknown>());
+vi.mock("./clarification-dialog-store.js", async () => {
+  const { dialogStoreCasFakes } = await import("../../../tests/helpers/dialog-store-cas-fake.js");
+  return {
+    readDialogState: vi.fn(async (id: string) => store.get(id)),
+    writeDialogState: vi.fn(async (id: string, state: unknown) => {
+      store.set(id, state);
+    }),
+    deleteDialogState: vi.fn(async (id: string) => {
+      store.delete(id);
+    }),
+    // #2101 / #2142 / #2156 — the compare-and-set writers, shared.
+    ...dialogStoreCasFakes(store),
+  };
+});
 
 import { ClarificationDialog } from "./clarification-dialog.js";
 import type { GroundingRetriever } from "./ambiguity-grounding.js";
@@ -454,6 +426,23 @@ describe("#2128 — a clarifying question never shows a requirement's internal i
     expect(nameRequirementIds(`Unclear: requirement (id: ${LENGTH_ID}).`, reqs)).toBe(
       'Unclear: requirement "Minimum password length".',
     );
+  });
+
+  // #2155 — a closing quote after sentence punctuation ends that sentence, so the
+  // "Requirement" that starts the next one is bare.
+  it("#2155 — 'Requirement' after a quoted sentence that ended is bare", async () => {
+    const { nameRequirementIds } = await import("./clarification-dialog.js");
+    const reqs = [req(LENGTH_ID, "Minimum password length")];
+    expect(
+      nameRequirementIds(`He said "done." Requirement (id: ${LENGTH_ID}) is unclear.`, reqs),
+    ).toBe('He said "done." Requirement "Minimum password length" is unclear.');
+    expect(
+      nameRequirementIds(`She asked ‘why?’ Requirement (id: ${LENGTH_ID}) is open.`, reqs),
+    ).toBe('She asked ‘why?’ Requirement "Minimum password length" is open.');
+    // A quoted name with no sentence punctuation still names the requirement.
+    expect(
+      nameRequirementIds(`Is the "Password length" requirement (id: ${LENGTH_ID}) met?`, reqs),
+    ).toBe('Is the "Password length" requirement met?');
   });
 
   // #2143 — whether "requirement" is bare is read over the label window before the

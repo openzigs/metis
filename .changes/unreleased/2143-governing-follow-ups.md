@@ -9,4 +9,5 @@ section: Fixed
   longer gets the requirement's title added after it.
 - Carried answers: the server's memory of carried judgings is one budget over all analyses.
 - `eval:governing`: two `governing-01` pairs measure whether one part of a multi-part rule earns
-  **Compliant** on the rest (it does), and a rule that could not be cited is its own stage.
+  **Compliant** on the rest (a first run found it can, #2152), and a rule that could not be
+  cited is its own stage.

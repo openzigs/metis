@@ -153,6 +153,13 @@ const FENCE_NOTE =
 // (gap) instead of the fix it asks for. And a requirement whose whole point is
 // a rule's safeguard ("do not require passwords to contain numbers, special
 // characters") was asked about instead of found compliant.
+// #2152 — "a part of the rule the requirement leaves untouched" lets the one
+// part of a multi-part rule a requirement provides earn compliant on the rest
+// (governing-01 GR-37 → AL-02; governing-04 OS-27 → PA-12). A rewording tuned
+// on those sets removed both, and was read once on governing-03 with #2149's
+// judge change: a pair whose safeguard can be switched off became compliant in
+// 3 of 3 runs (0 before), by the findings call alone. It is not shipped; the
+// wording and the reading are in governing-01's and governing-03's ANNOTATION.md.
 export const DEFECT_REPORT_LINE =
   "A requirement is often a defect report: it describes what is wrong today and asks, said or not, for it to be put right. Judge the behaviour it asks for once fixed, not the defect it describes: a report that a token travels in the URL asks for it to stop doing so. What the report says the system does today, outside what it asks to fix, still counts as part of the requirement.";
 export const SAFEGUARD_REQUESTED_LINE =
