@@ -309,7 +309,9 @@ export function ssoRouter(): Router {
       // mapping matched. The role the user signed in with is recorded below
       // (#1558): an explicit local grant (the first-admin bootstrap is one) or a
       // SCIM grant wins; else an app-role mapping's role, else the default role
-      // (`resolveEffectiveRoleFromRows`, #2205). The admin Authentication page
+      // (`resolveEffectiveRoleFromRows`, #2205). `reconcileTrustedLoginRole`
+      // also yields Reader for a revoked authority or an initialised user with
+      // no role rows. The admin Authentication page
       // warns from these events (`samlGroupOverageSummary`).
       audit({
         actor: { id: userRow.id },
