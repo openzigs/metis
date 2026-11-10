@@ -91,6 +91,24 @@ export async function replaceDialogState(
 ): Promise<string | null> {
   const serialized = JSON.stringify(state);
   if (revision === undefined) {
+    // A writer that read no state may have read a row that will not parse
+    // (readDialogStateRevision ignores it). Creating would then collide with
+    // that row forever, so compare-and-set over its raw text instead: the
+    // corrupt row is replaced, as the old unconditional upsert replaced it.
+    // Read first rather than catching the create's unique violation, which
+    // would abort an enclosing Postgres transaction.
+    const existing = await client.clarificationDialogState.findUnique({
+      where: { analysisId },
+      select: { state: true },
+    });
+    if (existing) {
+      if (parses(existing.state)) return null;
+      const { count } = await client.clarificationDialogState.updateMany({
+        where: { analysisId, state: existing.state },
+        data: { state: serialized },
+      });
+      return count === 1 ? serialized : null;
+    }
     try {
       await client.clarificationDialogState.create({ data: { analysisId, state: serialized } });
       return serialized;
@@ -127,6 +145,15 @@ export async function commitDialogState(
     if (committed !== null) await alongside(tx);
     return committed;
   });
+}
+
+function parses(text: string): boolean {
+  try {
+    JSON.parse(text);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Delete the durable dialog state for an analysis (no-op when absent). */

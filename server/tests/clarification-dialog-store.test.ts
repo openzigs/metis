@@ -129,25 +129,58 @@ describe("clarification-dialog-store", () => {
     });
 
     // #2142 — a start that read no row.
-    it("with no revision, creates the row and returns its revision", async () => {
-      const state = makeState();
-      mockTable.create.mockResolvedValue({});
-      expect(await replaceDialogState("a-1", undefined, state)).toBe(JSON.stringify(state));
-      expect(mockTable.create).toHaveBeenCalledWith({
-        data: { analysisId: "a-1", state: JSON.stringify(state) },
+    describe("with no revision", () => {
+      beforeEach(() => {
+        mockTable.findUnique.mockResolvedValue(null);
       });
-      expect(mockTable.updateMany).not.toHaveBeenCalled();
-      expect(mockTable.upsert).not.toHaveBeenCalled();
-    });
 
-    it("with no revision, returns null when another writer created the row first", async () => {
-      mockTable.create.mockRejectedValue(Object.assign(new Error("unique"), { code: "P2002" }));
-      expect(await replaceDialogState("a-1", undefined, makeState())).toBeNull();
-    });
+      it("with no revision, creates the row and returns its revision", async () => {
+        const state = makeState();
+        mockTable.create.mockResolvedValue({});
+        expect(await replaceDialogState("a-1", undefined, state)).toBe(JSON.stringify(state));
+        expect(mockTable.create).toHaveBeenCalledWith({
+          data: { analysisId: "a-1", state: JSON.stringify(state) },
+        });
+        expect(mockTable.updateMany).not.toHaveBeenCalled();
+        expect(mockTable.upsert).not.toHaveBeenCalled();
+      });
 
-    it("with no revision, rethrows any other failure", async () => {
-      mockTable.create.mockRejectedValue(new Error("disk full"));
-      await expect(replaceDialogState("a-1", undefined, makeState())).rejects.toThrow("disk full");
+      it("with no revision, returns null when another writer created the row first", async () => {
+        mockTable.create.mockRejectedValue(Object.assign(new Error("unique"), { code: "P2002" }));
+        expect(await replaceDialogState("a-1", undefined, makeState())).toBeNull();
+      });
+
+      it("with no revision, rethrows any other failure", async () => {
+        mockTable.create.mockRejectedValue(new Error("disk full"));
+        await expect(replaceDialogState("a-1", undefined, makeState())).rejects.toThrow(
+          "disk full",
+        );
+      });
+
+      it("with no revision, replaces a row that will not parse by compare-and-set on its raw text", async () => {
+        const state = makeState();
+        mockTable.findUnique.mockResolvedValue({ state: "{not-json" });
+        mockTable.updateMany.mockResolvedValue({ count: 1 });
+        expect(await replaceDialogState("a-1", undefined, state)).toBe(JSON.stringify(state));
+        expect(mockTable.updateMany).toHaveBeenCalledWith({
+          where: { analysisId: "a-1", state: "{not-json" },
+          data: { state: JSON.stringify(state) },
+        });
+        expect(mockTable.create).not.toHaveBeenCalled();
+      });
+
+      it("with no revision, returns null when the corrupt row changed before the replace", async () => {
+        mockTable.findUnique.mockResolvedValue({ state: "{not-json" });
+        mockTable.updateMany.mockResolvedValue({ count: 0 });
+        expect(await replaceDialogState("a-1", undefined, makeState())).toBeNull();
+      });
+
+      it("with no revision, returns null without writing when a readable row exists", async () => {
+        mockTable.findUnique.mockResolvedValue({ state: JSON.stringify(makeState()) });
+        expect(await replaceDialogState("a-1", undefined, makeState())).toBeNull();
+        expect(mockTable.updateMany).not.toHaveBeenCalled();
+        expect(mockTable.create).not.toHaveBeenCalled();
+      });
     });
   });
 

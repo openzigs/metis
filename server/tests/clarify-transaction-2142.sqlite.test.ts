@@ -385,6 +385,20 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(storedRow(id)).toBeUndefined();
     });
 
+    it("a start over a dialog row that will not parse replaces it, and the next start continues", async () => {
+      const id = await seedAnalysis(() => "{not json");
+
+      const first = await clarify(id, {});
+
+      expect(first.status).toBe(200);
+      expect(first.body.data.rounds).toHaveLength(1);
+      expect(JSON.parse(storedRow(id)!)).toEqual(first.body.data);
+
+      const again = await clarify(id, {});
+      expect(again.status).toBe(200);
+      expect(again.body.data).toEqual(first.body.data);
+    });
+
     it("a start that wins its compare-and-set stores the round it answers with", async () => {
       const id = await seedAnalysis();
 
