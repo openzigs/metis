@@ -158,6 +158,9 @@ export async function resolveSourceDivergence(
     },
     // The source never carries METIS's hidden traceability labels; keep them.
     keepHiddenLabels: true,
+    // #2219 — taking the source is an analyst's edit of the wording: an
+    // approved requirement returns to awaiting review.
+    reopenApproval: true,
     actorId: params.actorId,
     reason: SOURCE_TAKEN_VERSION_REASON,
     projectId: params.projectId,

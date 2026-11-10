@@ -39,6 +39,7 @@ vi.mock("../src/lib/prisma.js", async (importOriginal) => {
 vi.mock("../src/lib/reviews/notify.js", () => ({
   dispatchReviewSubmitted: vi.fn(),
   dispatchReviewDecision: vi.fn(),
+  dispatchReviewedRequirementEdited: vi.fn(),
 }));
 
 const { selectPrismaAdapter } = await import("../src/lib/prisma.js");

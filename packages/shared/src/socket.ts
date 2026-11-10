@@ -488,7 +488,9 @@ export interface ServerToClientEvents {
    * on submit (`review_requested`); the requester on each decision
    * (`review_decided`), or — for the decision that settles the review — on the
    * terminal outcome instead (`review_approved` / `review_rejected`, with the
-   * auto-created baselineId when one exists; #1581).
+   * auto-created baselineId when one exists; #1581); and #2219 — the reviewers
+   * and requester when a requirement the review pinned is edited
+   * (`review_item_changed`).
    * Delivered to the recipient's personal `user:{id}` room only.
    */
   "review:notification": (data: ReviewNotificationEvent) => void;
@@ -562,7 +564,12 @@ export interface DiscussionMentionEvent extends InAppNotificationFields {
 
 /** Payload of `review:notification`. */
 export interface ReviewNotificationEvent extends InAppNotificationFields {
-  kind: "review_requested" | "review_decided" | "review_approved" | "review_rejected";
+  kind:
+    | "review_requested"
+    | "review_decided"
+    | "review_approved"
+    | "review_rejected"
+    | "review_item_changed";
   reviewId: string;
   userId: string;
   ts: number;
@@ -570,6 +577,10 @@ export interface ReviewNotificationEvent extends InAppNotificationFields {
   reviewerId?: string;
   decision?: "approved" | "rejected";
   baselineId?: string | null;
+  /** #2219 — `review_item_changed`: the edited requirement and its pinned/current versions. */
+  requirementId?: string;
+  pinnedVersion?: number;
+  currentVersion?: number;
 }
 
 export interface ConnectorRoomEvent {

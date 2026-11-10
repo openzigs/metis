@@ -14,6 +14,9 @@
  *   POST /api/reviews/:reviewId/withdraw       — in_review → draft (requester or review.admin)
  *   POST /api/reviews/:reviewId/close          — any non-closed → closed (requester or
  *                                                review.admin)
+ *   POST /api/reviews/:reviewId/reopen         — #2219 "Request re-review": approved →
+ *                                                in_review, re-pins current versions
+ *                                                (review.create; requester or review.admin)
  *
  * All state changes go through `lib/reviews/state-machine.ts` and are audited
  * via the shared `audit()` service (see `lib/reviews/review-service.ts`).
@@ -34,6 +37,7 @@ import {
   getReviewDetail,
   listReviews,
   recordDecision,
+  reopenReview,
   submitReview,
   withdrawReview,
 } from "../lib/reviews/review-service.js";
@@ -255,6 +259,19 @@ export function reviewsRouter(): Router {
       const { userId, role } = requireUser(req);
       await assertReviewAccess(req, String(req.params.reviewId));
       const review = await closeReview(userId, String(req.params.reviewId), isReviewAdmin(role));
+      res.json({ success: true, data: review });
+    },
+  );
+
+  // POST /:reviewId/reopen — #2219 approved → in_review (re-pins current versions).
+  r.post(
+    "/:reviewId/reopen",
+    requireAuth,
+    requirePermission("review.create"),
+    async (req: Request, res: Response) => {
+      const { userId, role } = requireUser(req);
+      await assertReviewAccess(req, String(req.params.reviewId));
+      const review = await reopenReview(userId, String(req.params.reviewId), isReviewAdmin(role));
       res.json({ success: true, data: review });
     },
   );

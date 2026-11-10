@@ -7,6 +7,11 @@
  * snapshot from the requirement-history API, epic #770) plus the field-level
  * diff that version introduced. Spec-document items render title + pin only —
  * document version diffs are out of scope for this issue.
+ *
+ * #2219 — when the requirement has been edited since the pin, an approved or
+ * in-review card says so ("v2 differs from the approved v1") with the diff from
+ * the pinned version to the current one: an approval is of a wording, and the
+ * wording on the card is no longer the requirement's.
  */
 import { useQuery } from "@tanstack/react-query";
 import { criteriaAsPromoted, parseAcceptanceCriteria } from "@metis/shared";
@@ -17,9 +22,9 @@ import {
   sharedCriteriaMarks,
 } from "@/components/analysis/SharedCriteriaNote";
 import { Card } from "@/components/ui/card";
-import { historyApi } from "@/lib/history-api";
+import { historyApi, type ChangedFields } from "@/lib/history-api";
 import { queryKeys } from "@/lib/query-keys";
-import type { ReviewItem } from "@/lib/reviews-api";
+import type { ReviewItem, ReviewRequest, ReviewStatus } from "@/lib/reviews-api";
 import { VersionDiff } from "./VersionDiff";
 
 /**
@@ -28,7 +33,50 @@ import { VersionDiff } from "./VersionDiff";
  */
 const META_FIELDS = ["priority", "type", "storyPoints"] as const;
 
-export function ReviewItemCard({ item }: { item: ReviewItem }) {
+/** Review statuses whose pinned versions an edit puts out of date (#2219). */
+const PINNING_STATUSES: ReadonlySet<ReviewStatus> = new Set(["approved", "in_review"]);
+
+/**
+ * #2219 — the requirement's current version when it was edited after `item`
+ * was pinned and the review still stands on the pin (approved or in review);
+ * otherwise null. Exported for testing.
+ */
+export function outOfDateVersion(item: ReviewItem, status: ReviewStatus): number | null {
+  if (!PINNING_STATUSES.has(status)) return null;
+  const current = item.requirement?.version;
+  return current !== undefined && current !== item.pinnedVersion ? current : null;
+}
+
+/** #2219 — whether any requirement in `review` was edited after its pin. */
+export function reviewOutOfDate(review: Pick<ReviewRequest, "items" | "status">): boolean {
+  return review.items.some((item) => outOfDateVersion(item, review.status) !== null);
+}
+
+/**
+ * #2219 — the field changes from one snapshot to another, in the history
+ * diff's shape. Exported for testing.
+ */
+export function snapshotDiff(
+  from: Record<string, unknown>,
+  to: Record<string, unknown>,
+): ChangedFields {
+  const diff: ChangedFields = {};
+  for (const field of new Set([...Object.keys(from), ...Object.keys(to)])) {
+    const a = from[field] ?? null;
+    const b = to[field] ?? null;
+    if (JSON.stringify(a) !== JSON.stringify(b)) diff[field] = { from: a, to: b };
+  }
+  return diff;
+}
+
+export function ReviewItemCard({
+  item,
+  reviewStatus,
+}: {
+  item: ReviewItem;
+  /** The review's status: an out-of-date pin is flagged only while it stands (#2219). */
+  reviewStatus?: ReviewStatus;
+}) {
   const requirementId = item.requirementId;
   const history = useQuery({
     queryKey: queryKeys.reviews.requirementHistory(requirementId ?? "none"),
@@ -61,6 +109,11 @@ export function ReviewItemCard({ item }: { item: ReviewItem }) {
       ? history.data.original
       : undefined;
   const snapshot = entry?.snapshot ?? original?.snapshot;
+  const currentVersion = reviewStatus ? outOfDateVersion(item, reviewStatus) : null;
+  const currentSnapshot =
+    currentVersion === null
+      ? undefined
+      : history.data?.versions.find((v) => v.version === currentVersion)?.snapshot;
   const title =
     typeof snapshot?.title === "string" && snapshot.title !== ""
       ? snapshot.title
@@ -72,6 +125,15 @@ export function ReviewItemCard({ item }: { item: ReviewItem }) {
         <h3 className="text-sm font-semibold">{title}</h3>
         <PinBadge version={item.pinnedVersion} />
       </div>
+
+      {currentVersion !== null ? (
+        <OutOfDateNotice
+          pinnedVersion={item.pinnedVersion}
+          currentVersion={currentVersion}
+          approved={reviewStatus === "approved"}
+          diff={snapshot && currentSnapshot ? snapshotDiff(snapshot, currentSnapshot) : null}
+        />
+      ) : null}
 
       {history.isLoading ? (
         <p className="text-xs text-muted-foreground">Loading version history…</p>
@@ -156,6 +218,49 @@ function PinnedContent({
       ) : null}
       <SnapshotMeta snapshot={snapshot} />
     </>
+  );
+}
+
+/** #2219 — the requirement changed after the pin: say so, and show what changed. */
+function OutOfDateNotice({
+  pinnedVersion,
+  currentVersion,
+  approved,
+  diff,
+}: {
+  pinnedVersion: number;
+  currentVersion: number;
+  approved: boolean;
+  /** Pinned → current changes; null while either snapshot is unavailable. */
+  diff: ChangedFields | null;
+}) {
+  return (
+    <div
+      role="status"
+      className="space-y-2 rounded-md border border-warning/40 bg-warning-muted p-3"
+      data-testid="review-item-out-of-date"
+    >
+      <p className="text-sm font-medium">
+        v{currentVersion} differs from the {approved ? "approved" : "pinned"} v{pinnedVersion}
+      </p>
+      <p className="text-xs text-muted-foreground">
+        {approved
+          ? `The requirement was edited after this review approved it, so the approval is of v${pinnedVersion}. Request a re-review to approve the current wording.`
+          : `The requirement was edited while this review is open. Reviewers are deciding on v${pinnedVersion}, shown below.`}
+      </p>
+      {diff && Object.keys(diff).length > 0 ? (
+        <div className="space-y-1">
+          <h4 className="text-xs font-semibold text-muted-foreground">
+            Changes from v{pinnedVersion} to v{currentVersion}
+          </h4>
+          <VersionDiff changedFields={diff} />
+        </div>
+      ) : diff ? (
+        <p className="text-xs text-muted-foreground">
+          v{currentVersion} has the same wording as v{pinnedVersion}.
+        </p>
+      ) : null}
+    </div>
   );
 }
 

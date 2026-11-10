@@ -771,3 +771,161 @@ describe("originalVersionOf — #1130", () => {
     expect(current.title).toBe("T3");
   });
 });
+describe("#2219 — an edit of approved wording reopens the approval", () => {
+  const APPROVED = {
+    id: "r1",
+    version: 1,
+    title: "Password length",
+    body: "At least 12 characters",
+    priority: "high",
+    type: "feature",
+    labels: "[]",
+    storyPoints: null,
+    reviewStatus: "approved",
+  };
+  const after = { id: "r1", version: 2, updatedAt: new Date() };
+
+  const edit = async (
+    row: Record<string, unknown>,
+    params: Partial<Parameters<typeof updateRequirementWithHistory>[1]> = {},
+  ) => {
+    const { client, requirement, requirementVersion } = makeClient();
+    requirement.findUnique.mockResolvedValueOnce(row).mockResolvedValueOnce(after);
+    const result = await updateRequirementWithHistory(client, {
+      requirementId: "r1",
+      patch: { body: "15 characters, or 8 with MFA" },
+      reopenApproval: true,
+      ...params,
+    });
+    return { result, requirement, requirementVersion };
+  };
+
+  it("returns an approved requirement to awaiting review in the same conditional write", async () => {
+    const { result, requirement, requirementVersion } = await edit(APPROVED);
+
+    expect(requirement.updateMany).toHaveBeenCalledTimes(1);
+    expect(requirement.updateMany).toHaveBeenCalledWith({
+      where: { id: "r1", version: 1, deletedAt: null },
+      data: {
+        body: "15 characters, or 8 with MFA",
+        reviewStatus: "draft",
+        version: 2,
+      },
+    });
+    expect(result.untrackedChanges).toEqual({
+      reviewStatus: { from: "approved", to: "draft" },
+    });
+    // The status is still not versioned: only the content change is recorded.
+    const created = requirementVersion.create.mock.calls[0][0] as {
+      data: { changedFields: string };
+    };
+    expect(Object.keys(JSON.parse(created.data.changedFields))).toEqual(["body"]);
+  });
+
+  it("treats a legacy `review:approved` label as an approval", async () => {
+    const { result } = await edit({
+      ...APPROVED,
+      reviewStatus: null,
+      labels: JSON.stringify(["review:approved"]),
+    });
+    expect(result.untrackedChanges.reviewStatus).toEqual({
+      from: null,
+      to: "draft",
+    });
+  });
+
+  it("leaves a requirement that is not approved as it is", async () => {
+    for (const reviewStatus of ["rejected", "deferred", "draft", null]) {
+      const { result, requirement } = await edit({ ...APPROVED, reviewStatus });
+      expect(result.untrackedChanges).toEqual({});
+      expect(requirement.updateMany.mock.calls[0][0]).not.toHaveProperty("data.reviewStatus");
+    }
+  });
+
+  it("does not reopen on a save that changes nothing", async () => {
+    const { result, requirement } = await edit(APPROVED, {
+      patch: { body: "At least 12 characters" },
+    });
+    expect(result).toMatchObject({ changed: false, untrackedChanges: {} });
+    expect(requirement.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("does not reopen for a writer that did not ask (a system write)", async () => {
+    const { result } = await edit(APPROVED, { reopenApproval: undefined });
+    expect(result.untrackedChanges).toEqual({});
+  });
+
+  it("lets an explicit review status in the same write win", async () => {
+    const { result } = await edit(APPROVED, {
+      untrackedData: { reviewStatus: "approved" },
+    });
+    expect(result.untrackedChanges).toEqual({});
+  });
+
+  const RESTORE_ROWS = [
+    {
+      version: 2,
+      changedFields: JSON.stringify({ body: { from: "B1", to: "B2" } }),
+      actorId: null,
+      reason: null,
+      createdAt: new Date(),
+    },
+    {
+      version: 1,
+      changedFields: JSON.stringify({
+        title: { from: "T0", to: "Password length" },
+      }),
+      actorId: null,
+      reason: null,
+      createdAt: new Date(),
+    },
+  ];
+
+  const restore = async (reviewStatus: string | null, reopenApproval: boolean | undefined) => {
+    const { client, requirement, requirementVersion } = makeClient();
+    requirement.findUnique
+      .mockResolvedValueOnce({
+        ...APPROVED,
+        version: 2,
+        body: "B2",
+        reviewStatus,
+      })
+      .mockResolvedValueOnce({ id: "r1", version: 3, updatedAt: new Date() });
+    requirementVersion.findMany.mockResolvedValue(RESTORE_ROWS);
+    const result = await restoreRequirementVersion(client, {
+      requirementId: "r1",
+      targetVersion: 1,
+      reopenApproval,
+    });
+    const data = (
+      requirement.updateMany.mock.calls[0][0] as {
+        data: Record<string, unknown>;
+      }
+    ).data;
+    return { result, data };
+  };
+
+  it("a restore of other wording over an approval reopens it too", async () => {
+    const { result, data } = await restore("approved", true);
+    expect(data).toMatchObject({
+      body: "B1",
+      reviewStatus: "draft",
+      version: 3,
+    });
+    expect(result.reviewStatusChange).toEqual({
+      from: "approved",
+      to: "draft",
+    });
+  });
+
+  it("a restore without the flag, or of an unapproved row, leaves the status", async () => {
+    for (const [reviewStatus, reopenApproval] of [
+      ["approved", undefined],
+      ["rejected", true],
+    ] as const) {
+      const { result, data } = await restore(reviewStatus, reopenApproval);
+      expect(result.reviewStatusChange).toBeUndefined();
+      expect(data).not.toHaveProperty("reviewStatus");
+    }
+  });
+});

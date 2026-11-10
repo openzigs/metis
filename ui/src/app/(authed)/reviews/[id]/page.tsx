@@ -33,6 +33,10 @@ import { ReviewHeader } from "@/components/reviews/ReviewHeader";
 import { ReviewItemCard } from "@/components/reviews/ReviewItemCard";
 import { ReviewerPanel } from "@/components/reviews/ReviewerPanel";
 import { canWithdrawReview, WithdrawReviewButton } from "@/components/reviews/WithdrawReviewButton";
+import {
+  canRequestReReview,
+  RequestReReviewButton,
+} from "@/components/reviews/RequestReReviewButton";
 
 /**
  * The caller's own assignment, or null. Exported for unit testing.
@@ -168,6 +172,8 @@ export default function ReviewDetailPage() {
             actions={
               canWithdrawReview(review, user) ? (
                 <WithdrawReviewButton review={review} user={user} />
+              ) : canRequestReReview(review, user) ? (
+                <RequestReReviewButton review={review} user={user} />
               ) : undefined
             }
           />
@@ -177,7 +183,7 @@ export default function ReviewDetailPage() {
               Scope ({review.items.length} item{review.items.length === 1 ? "" : "s"})
             </h2>
             {review.items.map((item) => (
-              <ReviewItemCard key={item.id} item={item} />
+              <ReviewItemCard key={item.id} item={item} reviewStatus={review.status} />
             ))}
           </section>
 

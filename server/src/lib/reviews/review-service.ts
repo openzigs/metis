@@ -490,11 +490,54 @@ export async function submitReview(
   reviewId: string,
   isAdmin: boolean,
 ): Promise<unknown> {
+  return startReviewRound(actorId, reviewId, isAdmin, "submit");
+}
+
+/**
+ * #2219 — "Request re-review": approved → in_review. A requirement edited after
+ * the sign-off left the approval pinned to wording nobody approved; this starts
+ * a fresh decision round on the CURRENT versions, exactly as a submit does
+ * (re-pins every item, resets every reviewer's decision, notifies them). The
+ * baseline the earlier approval produced is kept as the record of that round
+ * but detached from the review, so the next approval creates its own.
+ */
+export async function reopenReview(
+  actorId: string,
+  reviewId: string,
+  isAdmin: boolean,
+): Promise<unknown> {
+  return startReviewRound(actorId, reviewId, isAdmin, "reopen");
+}
+
+/**
+ * #2219 — a baseline name the project does not hold yet. The first approval of
+ * a review takes the plain name; a re-approval after a re-review cannot reuse
+ * it (`@@unique([projectId, name])`), so it is numbered by round.
+ */
+async function nextBaselineName(
+  tx: ReviewTx,
+  projectId: string,
+  title: string,
+  reviewId: string,
+): Promise<string> {
+  const base = `${title} (review ${reviewId.slice(-8)})`;
+  const taken = await tx.baseline.count({ where: { projectId, name: { startsWith: base } } });
+  return taken === 0 ? base : `${base} round ${taken + 1}`;
+}
+
+/** Submit (draft → in_review) or re-review (approved → in_review). */
+async function startReviewRound(
+  actorId: string,
+  reviewId: string,
+  isAdmin: boolean,
+  event: "submit" | "reopen",
+): Promise<unknown> {
   const review = await loadReviewOr404(reviewId);
   assertRequesterOrAdmin(review, actorId, isAdmin);
 
-  // Throws IllegalReviewTransitionError (409) outside `draft`.
-  const nextStatus = transition(review.status as ReviewRequestStatus, "submit");
+  // Throws IllegalReviewTransitionError (409) outside `draft` (submit) or
+  // `approved` (reopen).
+  const nextStatus = transition(review.status as ReviewRequestStatus, event);
 
   const currentPins = await resolveCurrentPins(
     review.projectId,
@@ -525,6 +568,15 @@ export async function submitReview(
       data: { status: nextStatus, decidedAt: null },
     });
     if (transitioned.count === 0) throw reviewStateChangedError();
+
+    // #2219 — the earlier round's baseline stays, as that round's record, but
+    // no longer belongs to the review: the next approval creates its own.
+    if (event === "reopen") {
+      await tx.baseline.updateMany({
+        where: { reviewRequestId: reviewId },
+        data: { reviewRequestId: null },
+      });
+    }
 
     // #989 — capture each requirement's status before the review touches it,
     // so a withdraw (or a close before any verdict) can give it back.
@@ -593,7 +645,7 @@ export async function submitReview(
     await tx.auditLog.create({
       data: buildAuditLogData({
         actorId,
-        action: "review.submit",
+        action: `review.${event}`,
         targetType: AUDIT_TARGET,
         targetId: reviewId,
         metadata: {
@@ -618,6 +670,7 @@ export async function submitReview(
     title: review.title,
     actorId,
     reviewerIds: review.assignments.map((a) => a.reviewerId),
+    reopened: event === "reopen",
   });
   // #1574 — an open review page shows the new status without a reload.
   emitReviewChanged(review.projectId, reviewId);
@@ -739,10 +792,23 @@ export async function recordDecision(
         // #1016 — the lock order submit and withdraw use (review row, then the
         // scope's requirements by id), so overlapping reviews cannot deadlock.
         await lockScopeRequirements(tx, requirementIds);
-        await tx.requirement.updateMany({
-          where: { id: { in: requirementIds } },
-          data: { reviewStatus: derived },
-        });
+        if (status === "approved") {
+          // #2219 — an approval covers the pinned wording only. A requirement
+          // edited after it was pinned (its version moved on) stays awaiting
+          // review: approving v1 must never mark v2 approved.
+          for (const item of review.items) {
+            if (item.requirementId === null) continue;
+            await tx.requirement.updateMany({
+              where: { id: item.requirementId, version: item.pinnedVersion },
+              data: { reviewStatus: derived },
+            });
+          }
+        } else {
+          await tx.requirement.updateMany({
+            where: { id: { in: requirementIds } },
+            data: { reviewStatus: derived },
+          });
+        }
       }
 
       if (status === "approved") {
@@ -754,7 +820,7 @@ export async function recordDecision(
             data: {
               projectId: review.projectId,
               reviewRequestId: reviewId,
-              name: `${review.title} (review ${reviewId.slice(-8)})`,
+              name: await nextBaselineName(tx, review.projectId, review.title, reviewId),
               description: `Auto-created from approved review "${review.title}"`,
               createdById: actorId,
               items: { create: pinsForBaseline },

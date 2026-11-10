@@ -4,7 +4,7 @@
  * Server surface: `server/src/routes/reviews.ts` (#617). Payload shapes mirror
  * `REVIEW_DETAIL_INCLUDE` in `server/src/lib/reviews/review-service.ts`.
  */
-import type { SharedCriteriaRecord } from "@metis/shared";
+import type { RequirementApproval, SharedCriteriaRecord } from "@metis/shared";
 import { apiFetch } from "@/lib/api-client";
 
 // ---- Types ------------------------------------------------------------------
@@ -161,6 +161,22 @@ export const reviewsApi = {
    */
   withdraw(reviewId: string): Promise<ReviewRequest> {
     return apiFetch<ReviewRequest>(`/reviews/${reviewId}/withdraw`, { method: "POST" });
+  },
+
+  /**
+   * #2219 — "Request re-review": approved → in_review, re-pinning every item at
+   * its current version and asking the reviewers again. Requester or
+   * `review.admin` only.
+   */
+  reopen(reviewId: string): Promise<ReviewRequest> {
+    return apiFetch<ReviewRequest>(`/reviews/${reviewId}/reopen`, { method: "POST" });
+  },
+
+  /** #2219 — the approved and in-review reviews that pinned a requirement. */
+  requirementApproval(requirementId: string): Promise<RequirementApproval> {
+    return apiFetch<RequirementApproval>(
+      `/requirements/${encodeURIComponent(requirementId)}/approval`,
+    );
   },
 
   /** Record the caller's approve/reject decision (assigned reviewers only). */

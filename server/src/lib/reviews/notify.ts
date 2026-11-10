@@ -12,6 +12,9 @@
  *     `review_rejected`, carrying the auto-created baselineId when one exists).
  *     #1581 — that row is sent INSTEAD of the decision's `review_decided`: one
  *     decision is one notification.
+ *   - #2219 — **an edit of a requirement an approved or in-review review pinned**
+ *     → that review's reviewers and requester (`review_item_changed`), once:
+ *     only the edit that moves the requirement off the pinned version notifies.
  *
  * PREFERENCES (#614/#608): every send is gated per recipient via
  * `shouldNotify(userId, "inApp", "requirementsApproved")` — review lifecycle
@@ -34,6 +37,7 @@ import { prisma } from "../prisma.js";
 import { createChildLogger } from "../logger.js";
 import { getSocketServer } from "../socket/registry.js";
 import { shouldNotify } from "../notifications/preferences.js";
+import { emitReviewChanged } from "./review-events.js";
 
 const log = createChildLogger("reviews:notify");
 
@@ -45,7 +49,11 @@ const PREFERENCE_EVENT = "requirementsApproved" as const;
 
 /** Machine-readable `Notification.type` values written by this module. */
 export type ReviewNotificationKind =
-  "review_requested" | "review_decided" | "review_approved" | "review_rejected";
+  | "review_requested"
+  | "review_decided"
+  | "review_approved"
+  | "review_rejected"
+  | "review_item_changed";
 
 /** Deep link to the review detail page (`ui/src/app/(authed)/reviews/[id]`). */
 export function reviewHref(reviewId: string): string {
@@ -140,6 +148,8 @@ export interface ReviewSubmittedInput {
   /** The submitting actor (requester or review admin) — never self-notified. */
   actorId: string;
   reviewerIds: string[];
+  /** #2219 — a re-review of an approved review whose requirements changed. */
+  reopened?: boolean;
 }
 
 /**
@@ -159,8 +169,10 @@ export async function notifyReviewSubmitted(input: ReviewSubmittedInput): Promis
           await persistAndEmit({
             userId: reviewerId,
             kind: "review_requested",
-            title: "Review requested",
-            message: `You are assigned as a reviewer on "${input.title}"`,
+            title: input.reopened ? "Re-review requested" : "Review requested",
+            message: input.reopened
+              ? `"${input.title}" changed since it was approved and needs your review again`
+              : `You are assigned as a reviewer on "${input.title}"`,
             reviewId: input.reviewId,
             projectId: input.projectId,
             extra: { projectId: input.projectId },
@@ -263,5 +275,121 @@ export function dispatchReviewDecision(input: ReviewDecisionInput): void {
     });
   } catch (err) {
     log.error("dispatchReviewDecision: synchronous failure", { reviewId: input.reviewId, err });
+  }
+}
+
+// ---- Edit of a pinned requirement → reviewers + requester ----------------------
+
+/** Review statuses whose pinned versions an edit makes out of date (#2219). */
+const PINNING_STATUSES = ["approved", "in_review"] as const;
+
+export interface ReviewedRequirementEditInput {
+  requirementId: string;
+  /** The version the edit replaced. */
+  fromVersion: number;
+  /** The version the edit wrote. */
+  toVersion: number;
+  /** The editor — never notified of their own edit. */
+  actorId: string;
+}
+
+/**
+ * #2219 — tell the reviewers and the requester of every approved or in-review
+ * review that pinned the version this edit replaced that the requirement has
+ * changed since. Only a review pinned at `fromVersion` qualifies, so the first
+ * edit after a sign-off notifies and a second edit (the pin is already out of
+ * date) does not: each person is told once. A person in several such reviews
+ * gets one notification, for the most recent one. Every affected review's open
+ * page re-reads it. Never throws.
+ */
+export async function notifyReviewedRequirementEdited(
+  input: ReviewedRequirementEditInput,
+): Promise<void> {
+  try {
+    const items = await prisma.reviewRequestItem.findMany({
+      where: {
+        requirementId: input.requirementId,
+        pinnedVersion: input.fromVersion,
+        reviewRequest: { status: { in: [...PINNING_STATUSES] } },
+      },
+      select: {
+        requirement: { select: { title: true } },
+        reviewRequest: {
+          select: {
+            id: true,
+            title: true,
+            status: true,
+            projectId: true,
+            requestedById: true,
+            assignments: { select: { reviewerId: true } },
+          },
+        },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+
+    const recipients = new Map<string, (typeof items)[number]>();
+    for (const item of items) {
+      const review = item.reviewRequest;
+      emitReviewChanged(review.projectId, review.id);
+      for (const userId of [review.requestedById, ...review.assignments.map((a) => a.reviewerId)]) {
+        if (userId !== input.actorId && !recipients.has(userId)) recipients.set(userId, item);
+      }
+    }
+
+    await Promise.allSettled(
+      [...recipients].map(async ([userId, item]) => {
+        const review = item.reviewRequest;
+        try {
+          if (!(await shouldNotify(userId, "inApp", PREFERENCE_EVENT))) return;
+          const approved = review.status === "approved";
+          const name = item.requirement?.title ?? "A requirement";
+          await persistAndEmit({
+            userId,
+            kind: "review_item_changed",
+            title: approved ? "Approved requirement changed" : "Requirement under review changed",
+            message: approved
+              ? `"${name}" was edited to v${input.toVersion} after "${review.title}" approved v${input.fromVersion}. It needs a re-review.`
+              : `"${name}" was edited to v${input.toVersion} while "${review.title}" is reviewing v${input.fromVersion}.`,
+            reviewId: review.id,
+            projectId: review.projectId,
+            extra: {
+              projectId: review.projectId,
+              requirementId: input.requirementId,
+              pinnedVersion: input.fromVersion,
+              currentVersion: input.toVersion,
+            },
+          });
+        } catch (err) {
+          log.warn("Failed to fan out review_item_changed notification", {
+            reviewId: review.id,
+            userId,
+            err,
+          });
+        }
+      }),
+    );
+  } catch (err) {
+    log.error("notifyReviewedRequirementEdited top-level error", {
+      requirementId: input.requirementId,
+      err,
+    });
+  }
+}
+
+/** Fire-and-forget wrapper — no throw / rejection can reach the caller. */
+export function dispatchReviewedRequirementEdited(input: ReviewedRequirementEditInput): void {
+  try {
+    void notifyReviewedRequirementEdited(input).catch((err: unknown) => {
+      log.error("dispatchReviewedRequirementEdited: fan-out rejected", {
+        requirementId: input.requirementId,
+        err,
+      });
+    });
+  } catch (err) {
+    log.error("dispatchReviewedRequirementEdited: synchronous failure", {
+      requirementId: input.requirementId,
+      err,
+    });
   }
 }

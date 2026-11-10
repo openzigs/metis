@@ -391,7 +391,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect((await call("get", "/api/reviews/rv-a", READER_A)).status).toBe(200);
       });
 
-      it.each(["submit", "withdraw", "close"])(
+      it.each(["submit", "withdraw", "close", "reopen"])(
         "POST /:reviewId/%s — a cross-workspace review.admin gets 404 and the review is unchanged",
         async (action) => {
           const res = await call("post", `/api/reviews/rv-a/${action}`, B, {});

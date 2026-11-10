@@ -3,6 +3,8 @@
  *
  * Routes:
  *   PUT    /api/requirements/:requirementId   — update with optimistic-lock
+ *   GET    /api/requirements/:requirementId/approval — #2219: the approved and
+ *          in-review reviews that pinned it (the Edit dialog's warning)
  *   POST   /api/requirements/:requirementId/assignments — assign to user
  *   DELETE /api/requirements/:requirementId/assignments/:assigneeId — un-assign
  *   GET    /api/requirements/:requirementId/assignments — list assignments
@@ -55,6 +57,8 @@ import {
 // throwing inside the lock's pre-flight read.
 import { visibleRequirementLabels } from "../lib/analysis/requirement-labels.js";
 import { audit } from "../lib/audit/audit-service.js";
+import { dispatchReviewedRequirementEdited } from "../lib/reviews/notify.js";
+import { readRequirementApproval } from "../lib/reviews/requirement-approval.js";
 import {
   eligibleAssigneeIds,
   isEligibleAssignee,
@@ -176,6 +180,23 @@ export function requirementsCollaborationRouter(): Router {
 
   // Epic #610 (#624) — typed cross-project requirement links.
   r.use("/:requirementId/links", requirementLinksRouter());
+
+  // GET /api/requirements/:requirementId/approval — Issue #2219. The approved
+  // and in-review reviews that pinned this requirement, with who approved, so
+  // the Edit dialog can warn before an edit reopens an approval.
+  r.get(
+    "/:requirementId/approval",
+    requireAuth,
+    requirePermission("review.read"),
+    async (req: Request, res: Response) => {
+      const data = await readRequirementApproval(
+        String(req.params.requirementId),
+        requirementScopeWhere(req).projectId,
+      );
+      if (!data) throw new AppError(404, "REQUIREMENT_NOT_FOUND", "Requirement not found");
+      res.json({ success: true, data });
+    },
+  );
 
   // GET /api/requirements/:requirementId/assignments
   r.get(
@@ -356,8 +377,19 @@ export function requirementsCollaborationRouter(): Router {
           // Issue #940 — the Edit dialog only ever sees the visible labels;
           // keep the hidden `finding:<id>` traceability labels it cannot show.
           keepHiddenLabels: true,
+          // Issue #2219 — an edit of approved wording returns it to awaiting review.
+          reopenApproval: true,
         });
         auditReviewStatusChange(req.user.userId, requirementId, result.untrackedChanges);
+        // #2219 — post-commit: a review that pinned the replaced version is told.
+        if (result.changed) {
+          dispatchReviewedRequirementEdited({
+            requirementId,
+            fromVersion: result.version - 1,
+            toVersion: result.version,
+            actorId: req.user.userId,
+          });
+        }
         res.json({
           success: true,
           data: { id: result.id, version: result.version, updatedAt: result.updatedAt },
@@ -432,6 +464,16 @@ export function requirementsCollaborationRouter(): Router {
             version: result.version,
           },
         });
+        // #2219 — taking the source rewrote the wording: a review that pinned
+        // the replaced version is told, as for an Edit-dialog save.
+        if (result.choice === "source" && result.changed) {
+          dispatchReviewedRequirementEdited({
+            requirementId,
+            fromVersion: result.version - 1,
+            toVersion: result.version,
+            actorId: req.user.userId,
+          });
+        }
         res.json({ success: true, data: result });
       } catch (err) {
         if (err instanceof SourceDivergenceError) {
