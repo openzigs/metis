@@ -486,8 +486,9 @@ export interface ServerToClientEvents {
   /**
    * Epic #609 (#621) — a review lifecycle event for the recipient: reviewers
    * on submit (`review_requested`); the requester on each decision
-   * (`review_decided`) and on the terminal outcome (`review_approved` /
-   * `review_rejected`, with the auto-created baselineId when one exists).
+   * (`review_decided`), or — for the decision that settles the review — on the
+   * terminal outcome instead (`review_approved` / `review_rejected`, with the
+   * auto-created baselineId when one exists; #1581).
    * Delivered to the recipient's personal `user:{id}` room only.
    */
   "review:notification": (data: ReviewNotificationEvent) => void;

@@ -15,9 +15,11 @@ const notificationCreate = vi.fn();
 const userRoleFindFirst = vi.fn();
 const prefFindMany = vi.fn();
 const userFindUnique = vi.fn();
+const threadFindFirst = vi.fn();
 vi.mock("../prisma.js", () => ({
   prisma: {
     user: { findUnique: (...a: unknown[]) => userFindUnique(...a) },
+    discussionThread: { findFirst: (...a: unknown[]) => threadFindFirst(...a) },
     notification: { create: (...a: unknown[]) => notificationCreate(...a) },
     userRole: { findFirst: (...a: unknown[]) => userRoleFindFirst(...a) },
     notificationPreference: { findMany: (...a: unknown[]) => prefFindMany(...a) },
@@ -88,6 +90,8 @@ describe("discussion mention notifications", () => {
     // #614 — default: no stored preference rows (inApp × mention defaults ON).
     prefFindMany.mockResolvedValue([]);
     userFindUnique.mockResolvedValue({ displayName: "Alice Author", username: "alice" });
+    // Default: the thread's title is not readable (the #980 wording applies).
+    threadFindFirst.mockResolvedValue(null);
   });
 
   it("creates a Notification and emits to the mentioned member's user room", async () => {
@@ -102,7 +106,8 @@ describe("discussion mention notifications", () => {
     // #980 — the link opens the thread itself, and the text names the author.
     expect(data.href).toBe("/projects/p1/discussions/t1");
     expect(data.title).toBe("Alice Author mentioned you in a discussion");
-    expect(data.message).toContain("Alice Author");
+    // #1581 — the message quotes what was said.
+    expect(data.message).toBe("“hey @bob look at this”");
     expect(userFindUnique).toHaveBeenCalledWith(
       expect.objectContaining({ where: { id: "author" } }),
     );
@@ -110,6 +115,36 @@ describe("discussion mention notifications", () => {
     expect(emit).toHaveBeenCalledWith(
       "discussion:mention",
       expect.objectContaining({ threadId: "t1", messageId: "m1", mentionedUserId: "bob" }),
+    );
+  });
+
+  it("#1581 — names the thread, read by id AND project, and quotes the message like a requirement mention", async () => {
+    resolveUsernames.mockResolvedValue([{ id: "bob", username: "bob" }]);
+    threadFindFirst.mockResolvedValue({ title: "  Feed refresh\n schedule " });
+
+    await notifyDiscussionMentions(baseInput({ body: "@bob   can you\n\ncheck the default?" }));
+
+    expect(threadFindFirst).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: "t1", projectId: "p1", deletedAt: null } }),
+    );
+    const data = notificationCreate.mock.calls[0][0].data;
+    expect(data.title).toBe('Alice Author mentioned you in "Feed refresh schedule"');
+    expect(data.message).toBe("“@bob can you check the default?”");
+    expect(emit.mock.calls[0][1]).toMatchObject({ title: data.title, message: data.message });
+  });
+
+  it("#1581 — a long thread title is cut, and a failed title read keeps the notification", async () => {
+    resolveUsernames.mockResolvedValue([{ id: "bob", username: "bob" }]);
+    threadFindFirst.mockResolvedValueOnce({ title: "x".repeat(300) });
+    await notifyDiscussionMentions(baseInput());
+    const title = String(notificationCreate.mock.calls[0][0].data.title);
+    expect(title).toBe(`Alice Author mentioned you in "${"x".repeat(119)}…"`);
+
+    __resetMentionNotifyLimiter();
+    threadFindFirst.mockRejectedValueOnce(new Error("db down"));
+    await notifyDiscussionMentions(baseInput());
+    expect(notificationCreate.mock.calls[1][0].data.title).toBe(
+      "Alice Author mentioned you in a discussion",
     );
   });
 

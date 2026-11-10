@@ -256,6 +256,11 @@ export default function ChatPage() {
       };
     }
     setReady(false);
+    // #1581 — **New chat** while this resume is in flight bumps the generation:
+    // the resumed chat must not land on top of the new one ~1.5 s later (a
+    // question typed meanwhile went to the old session).
+    const gen = scopeGenRef.current;
+    const superseded = () => cancelled || scopeGenRef.current !== gen;
     void (async () => {
       try {
         // #1412 — only a chat link (`?sessionId=`) is told a 404 apart; the
@@ -263,7 +268,7 @@ export default function ChatPage() {
         const restored = resumeSessionId
           ? await resumeChatSession(restoreId, { tellNotFound: true })
           : await resumeChatSession(restoreId);
-        if (cancelled) return;
+        if (superseded()) return;
         if (!restored || restored === CHAT_NOT_FOUND_RESULT) {
           // #1412 — a chat named by a link that the server answers 404 for
           // (deleted, in a project that was deleted, or not yours) says so,
@@ -297,9 +302,9 @@ export default function ChatPage() {
         setSessionAgentNotice(restored.agentNotice ?? null);
         storeActiveSessionId(restored.session.id);
       } catch (err) {
-        if (!cancelled) setError((err as Error).message);
+        if (!superseded()) setError((err as Error).message);
       } finally {
-        if (!cancelled) setReady(true);
+        if (!superseded()) setReady(true);
       }
     })();
     // #1573 — the cleanup does NOT abort the turn in flight: a re-run that is
@@ -654,7 +659,10 @@ export default function ChatPage() {
 
   return (
     <div className="flex h-[calc(100vh-12rem)] gap-4 p-6">
-      <div className="flex flex-1 flex-col gap-4">
+      {/* #1581 — `min-w-0`: a flex item's minimum width is its content's, so a
+          resumed transcript's long line (a path, a code block) widened the
+          column past the page and pushed the header and Skills panel off it. */}
+      <div className="flex min-w-0 flex-1 flex-col gap-4">
         <PageHeader
           title="Chat"
           actions={

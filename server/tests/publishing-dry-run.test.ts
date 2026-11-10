@@ -44,6 +44,58 @@ describe("buildDryRunPlan", () => {
     expect(kinds).toContain("subIssue.attach");
     expect(plan.totalActions).toBe(plan.actions.length);
     expect(plan.estimatedDurationMs).toBeGreaterThan(0);
+    // #1581 — an epic this run creates has no number yet: the attach names it
+    // by title and carries no made-up issue number (it used to say #1000).
+    expect(plan.actions.find((a) => a.kind === "subIssue.attach")).toEqual({
+      kind: "subIssue.attach",
+      draftId: "d_feat",
+      parentDraftId: "d_epic",
+      parentTitle: "[Epic] Apollo",
+    });
+  });
+
+  it("#1581 — a feature attached to an epic that already exists carries the epic's real number", () => {
+    const drafts = [
+      {
+        id: "d_epic",
+        title: "[Epic] Apollo",
+        body: "epic body",
+        labels: ["epic"],
+        parentDraftId: null,
+        draftType: "epic",
+      },
+      {
+        id: "d_feat",
+        title: "[Feature] Login",
+        body: "feature body",
+        labels: ["feature"],
+        parentDraftId: "d_epic",
+        draftType: "feature",
+      },
+    ];
+    const plan = buildDryRunPlan({
+      batchId: "b1",
+      targetOwner: target.owner,
+      targetRepo: target.repo,
+      targetBaseUrl: null,
+      provider: target.provider,
+      drafts,
+      additionalLabels: [],
+      existingByHash: new Map([
+        [
+          computeDedupHash(target.owner, target.repo, "[Epic] Apollo"),
+          { issueNumber: 42, bodyHash: computeBodyHash("an older epic body") },
+        ],
+      ]),
+      perCallMs: 1000,
+    });
+    expect(plan.actions.find((a) => a.kind === "subIssue.attach")).toEqual({
+      kind: "subIssue.attach",
+      draftId: "d_feat",
+      parentDraftId: "d_epic",
+      parentTitle: "[Epic] Apollo",
+      parentIssueNumber: 42,
+    });
   });
 
   it("#1064 — a matched draft is compared by the text that is published, not by its stored bytes", () => {

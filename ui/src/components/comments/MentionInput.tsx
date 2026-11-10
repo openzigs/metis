@@ -41,6 +41,12 @@ interface MentionInputProps {
    * someone it cannot notify.
    */
   projectId?: string;
+  /**
+   * #1581 — where the suggestion list opens. `above` for a box pinned to the
+   * bottom of its container (the comment panel's "New comment"): opened below,
+   * the list fell past the bottom of the panel and the picker looked absent.
+   */
+  placement?: "below" | "above";
 }
 
 /**
@@ -81,6 +87,7 @@ export function MentionInput({
   onKeyDown: onKeyDownProp,
   ariaLabel,
   projectId,
+  placement = "below",
 }: MentionInputProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [trigger, setTrigger] = useState<{
@@ -190,7 +197,11 @@ export function MentionInput({
       {showDropdown && (
         <ul
           role="listbox"
-          className="absolute z-50 mt-1 max-h-48 w-full overflow-auto rounded-md border bg-popover shadow-md"
+          className={cn(
+            "absolute z-50 max-h-48 w-full overflow-auto rounded-md border bg-popover shadow-md",
+            placement === "above" ? "bottom-full mb-1" : "mt-1",
+          )}
+          data-placement={placement}
           aria-label="User suggestions"
         >
           {suggestions.map((user, idx) => (

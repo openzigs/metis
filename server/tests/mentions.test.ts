@@ -7,7 +7,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockPrisma = {
   user: { findMany: vi.fn() },
-  mention: { upsert: vi.fn(), updateMany: vi.fn() },
+  mention: { upsert: vi.fn(), updateMany: vi.fn(), create: vi.fn() },
   // #614 — no stored rows: inApp × mention defaults ON (send).
   notificationPreference: { findMany: vi.fn(async () => []) },
   // #734/#735 — where the comment lives (link, text, audience).
@@ -194,6 +194,57 @@ describe("fanOutMentions", () => {
       "comment:mention",
       expect.objectContaining({ commentId: "comment-1", mentionedUserId: "user-2" }),
     );
+  });
+
+  // ---- #1581 — an edited comment notifies only the users it newly mentions --
+
+  it("onlyNew: notifies a user the edit added, and skips one already mentioned", async () => {
+    mockPrisma.user.findMany.mockResolvedValue([
+      { id: "user-2", username: "bob" },
+      { id: "user-3", username: "eve" },
+    ]);
+    // bob was mentioned before the edit: his Mention row already exists.
+    mockPrisma.mention.create.mockImplementation(
+      async ({ data }: { data: { mentionedUserId: string } }) => {
+        if (data.mentionedUserId === "user-2") {
+          throw Object.assign(new Error("Unique constraint failed"), { code: "P2002" });
+        }
+        return {};
+      },
+    );
+    mockPrisma.mention.updateMany.mockResolvedValue({ count: 1 });
+
+    await fanOutMentions("comment-1", "@bob and now @eve", "author-1", { onlyNew: true });
+
+    expect(mockPrisma.mention.upsert).not.toHaveBeenCalled();
+    expect(mockPrisma.mention.create).toHaveBeenCalledWith({
+      data: { commentId: "comment-1", mentionedUserId: "user-3", notified: false },
+    });
+    expect(mockPrisma.notification.create).toHaveBeenCalledTimes(1);
+    expect(mockPrisma.notification.create.mock.calls[0][0].data.userId).toBe("user-3");
+    expect(mockIoTo).toHaveBeenCalledWith("user:user-3");
+    expect(mockIoTo).not.toHaveBeenCalledWith("user:user-2");
+  });
+
+  it("onlyNew: any other insert failure is not read as 'already mentioned' and notifies nobody", async () => {
+    mockPrisma.user.findMany.mockResolvedValue([{ id: "user-3", username: "eve" }]);
+    mockPrisma.mention.create.mockRejectedValue(new Error("db down"));
+
+    await expect(
+      fanOutMentions("comment-1", "@eve", "author-1", { onlyNew: true }),
+    ).resolves.toBeUndefined();
+    expect(mockPrisma.notification.create).not.toHaveBeenCalled();
+  });
+
+  it("dispatchMentions passes onlyNew through to the fan-out", async () => {
+    mockPrisma.user.findMany.mockResolvedValue([{ id: "user-3", username: "eve" }]);
+    mockPrisma.mention.create.mockResolvedValue({});
+    mockPrisma.mention.updateMany.mockResolvedValue({ count: 1 });
+
+    dispatchMentions("comment-1", "@eve", "author-1", { onlyNew: true });
+
+    await vi.waitFor(() => expect(mockPrisma.mention.create).toHaveBeenCalled());
+    expect(mockPrisma.mention.upsert).not.toHaveBeenCalled();
   });
 
   it("does not throw even if socket is not registered", async () => {

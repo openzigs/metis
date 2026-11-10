@@ -11,7 +11,7 @@ import { useState } from "react";
 import type { CommentThread, CommentItem } from "@/lib/collaboration-api";
 import { commentApi } from "@/lib/collaboration-api";
 import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
+import { ConfirmDialog } from "@/components/ui/alert-dialog";
 import { MentionInput } from "@/components/comments/MentionInput";
 
 interface CommentThreadProps {
@@ -50,11 +50,13 @@ function CommentBubble({
   currentUserId,
   onDeleted,
   onEdited,
+  projectId,
 }: {
   comment: CommentItem;
   currentUserId?: string;
   onDeleted: (id: string) => void;
   onEdited: (id: string, body: string) => void;
+  projectId?: string;
 }) {
   const [editing, setEditing] = useState(false);
   const [editBody, setEditBody] = useState(comment.body ?? "");
@@ -106,22 +108,35 @@ function CommentBubble({
               >
                 Edit
               </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-5 px-1 text-xs text-destructive"
-                onClick={handleDelete}
-              >
-                Delete
-              </Button>
+              {/* #1581 — a delete asks first, as a discussion message's does. */}
+              <ConfirmDialog
+                trigger={
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-5 px-1 text-xs text-destructive"
+                    data-testid="comment-delete"
+                  >
+                    Delete
+                  </Button>
+                }
+                title="Delete this comment?"
+                description="Everyone who can see this thread sees “This comment was deleted.” in its place. It cannot be undone."
+                confirmLabel="Delete"
+                confirmVariant="destructive"
+                onConfirm={() => void handleDelete().catch(() => {})}
+              />
             </div>
           )}
         </div>
         {editing ? (
           <div className="mt-1 flex flex-col gap-1">
-            <Textarea
+            {/* #1581 — editing offers the same @ picker as writing does. */}
+            <MentionInput
               value={editBody}
-              onChange={(e) => setEditBody(e.target.value)}
+              onChange={setEditBody}
+              projectId={projectId}
+              ariaLabel="Edit comment"
               className="min-h-[60px] text-sm"
             />
             <div className="flex gap-1">
@@ -198,6 +213,7 @@ export function CommentThreadComponent({
             currentUserId={currentUserId}
             onDeleted={handleDeleted}
             onEdited={handleEdited}
+            projectId={projectId}
           />
         ))}
       </div>
