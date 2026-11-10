@@ -28,7 +28,7 @@ import type { PrismaClient } from "@prisma/client";
 import { prisma as defaultPrisma } from "../prisma.js";
 import { AppError } from "../../middleware/error-handler.js";
 import { classifyTestSymbol } from "../code-graph/test-conventions.js";
-import { uniqueCodeLinks } from "./code-link-key.js";
+import { uniqueCurrentCodeLinks } from "./code-link-key.js";
 import { resolveTestedByForTargets, type TestedByPrisma } from "./tested-by.js";
 import { hideSupersededBorrowedLinks } from "./borrow-citations.js";
 
@@ -201,13 +201,16 @@ export async function getRequirementChain(
       previousEndLine: true,
       originRequirementId: true,
     },
-    orderBy: [{ confidence: "desc" }],
+    // #1891 — the id last, so rows equal on rank keep one order, not the database's.
+    orderBy: [{ confidence: "desc" }, { id: "asc" }],
   });
   // #1839 — a link borrowed from a similar requirement gives way to this
   // requirement's own analysis grounding of the same file: never shown twice.
   // #1825 — then each (filePath, codeSymbolId) once: the code agent's citation and
-  // the semantic mapper can both link a file. The surer row (read first) is kept.
-  const directRows = uniqueCodeLinks(hideSupersededBorrowedLinks(storedDirectRows));
+  // the semantic mapper can both link a file. #1891 — the row kept is the more
+  // current (freshness tier), then the surer: an out-of-date citation at a higher
+  // confidence no longer hides the current link to the same code.
+  const directRows = uniqueCurrentCodeLinks(hideSupersededBorrowedLinks(storedDirectRows));
   const originLabels = await borrowedOriginLabels(prisma, projectId, directRows);
 
   // #814 — the tests that cover this requirement, resolved from the code rows
@@ -215,7 +218,7 @@ export async function getRequirementChain(
   // from a borrowed link: its code node is labelled, a test it reached is not.
   // Filtered before the dedupe: a borrowed row can outrank this requirement's own
   // lower-confidence row on the same code, and filtering after would drop both.
-  const ownRows = uniqueCodeLinks(
+  const ownRows = uniqueCurrentCodeLinks(
     storedDirectRows.filter((row) => row.source !== SIMILAR_REQUIREMENT_SOURCE),
   );
   const tested = await resolveTestedByForTargets(

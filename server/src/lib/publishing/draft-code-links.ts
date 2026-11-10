@@ -4,8 +4,10 @@
  * A requirement's code links (`RequirementCodeMapping`) were shown on its
  * traceability panel and nowhere in the issue a developer receives. This module
  * renders the links that are ALREADY PERSISTED for the requirement, in this
- * project: it never derives, re-ranks or filters them, so whatever rule decided
- * which links exist (and "no link" is one of its outcomes) is the only rule.
+ * project: it never derives or re-ranks them, so whatever rule decided which
+ * links exist (and "no link" is one of its outcomes) is the only rule. It
+ * filters in two ways only: each (file, symbol) is listed once, the surer row
+ * kept (#1825), and a borrowed link is left out (#1893, WHICH LINKS below).
  *
  * Paths and symbol names come from an ingested repository, so they are
  * untrusted text going into a Markdown body that GitHub renders:
