@@ -279,8 +279,10 @@ export function buildApplicabilityScreenPrompt(
 // rules out, was tuned on governing-04 and governing-01 (recall 0.67 -> 0.82
 // there, no password-policy extra) and read once on governing-03 with #2152's
 // findings line: recall 0.75 -> 0.81, but the password-change request drew
-// extra rules again and gave a wrong Compliant. Not shipped either; see
-// governing-03's ANNOTATION.md.
+// extra rules again and gave a wrong Compliant (OE-15 -> AS-02, a gap, in 1 of
+// 3 runs). The read's other three hard errors, OE-22 -> AU-01 (open: a second
+// factor only "when enabled") in 3 of 3 runs, came from #2152's findings line.
+// Not shipped either; see governing-03's ANNOTATION.md.
 export const SAME_SUBJECT_LINE =
   "When several rules share the requirement's subject (sign-in, passwords, sessions, logging, access), a rule on that subject applies only when the requirement sets or changes the specific thing that rule governs, or says how the flow it changes does that thing today (a reminder that a password has expired says passwords expire, which brings in a rule on password rotation, even though the requirement only asks for the reminder). The other rules on that subject do not apply.";
 
@@ -490,8 +492,13 @@ export function nameAnswerHandles(text: string, count: number): string {
     const before = text.slice(Math.max(0, offset - DOCUMENT_PART_LOOKBACK), offset);
     // #2155 — a comma alone ends a clause here as it does below ("Per Annex A3,
     // A1 says …"): only a run that "and" or "or" closes continues the list. In
-    // doubt the handle is named, never left for the BA to read.
-    const continuesList = !/,\s*$/.test(before) || /\b(?:and|or)\b/i.test(run);
+    // doubt the handle is named, never left for the BA to read. #2166 — and a
+    // run that "and" or "or" closes has the same shape after a clause ("Per
+    // Annex A3, A1 and A2 agree.") as in a list ("Annex A1, A2 and A3"). A
+    // document lists its parts in order, so only a run that goes on past the
+    // part before the comma continues the list.
+    const continuesList =
+      !/,\s*$/.test(before) || (/\b(?:and|or)\b/i.test(run) && goesOnInOrder(before, run));
     if (/^\[?A\d/i.test(run) && continuesList && DOCUMENT_PART_RUN_BEFORE.test(before)) {
       return run;
     }
@@ -526,6 +533,16 @@ const ANSWER_HANDLE_RUN =
 const DOCUMENT_PART_RUN_BEFORE =
   /\b(?:annex|appendix)\s+\[?A\d+\]?(?:(?:\s*,\s*(?:and\s+)?|\s+(?:and|or)\s+)\[?A\d+\]?)*(?:\s*,\s*(?:and\s+)?|\s+(?:and|or)\s+)$/i;
 const DOCUMENT_PART_LOOKBACK = 200;
+/**
+ * #2166 — whether `run` goes on, in order, from the document part `before`
+ * ends in ("Annex A1, " then "A2 and A3"): its first handle's number is
+ * greater than that part's. "Annex A3, " then "A1 and A2" goes back.
+ */
+function goesOnInOrder(before: string, run: string): boolean {
+  const last = /A(\d+)\]?\s*,\s*$/i.exec(before);
+  const first = /A(\d+)/i.exec(run);
+  return last !== null && first !== null && Number(first[1]) > Number(last[1]);
+}
 /** One answer handle of a run, with its "the"/"answer" words. */
 const ONE_ANSWER_HANDLE = /(?:\b(?:the|an?)\s+)?(?:\banswers?\s+)?\[?\bA(\d+)\b(?!\.\d)\]?/gi;
 

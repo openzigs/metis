@@ -4815,10 +4815,25 @@ round. A sentence inside `SAME_SUBJECT_LINE`, tuned there, raised `governing-03`
 reverted and the judge's prompts are #2108's
 (`eval-data/readings/governing-03-openemr-hipaa/baseline-A5-sonnet-2140.md`).
 
+**A judge sentence and a findings line, tried and not shipped (#2149, #2152).** Two prompt
+changes were tuned on `governing-04` and `governing-01` and read together, once, on
+`governing-03` (commit `320ac11b3`). #2149 added a sentence inside `SAME_SUBJECT_LINE`: a rule
+whose own words name the step the requirement adds applies to it (the blocklist rule on a flow
+that sets a password), while length and composition rules stay out. #2152 reworded
+`SAFEGUARD_REQUESTED_LINE` in the findings call: a safeguard the requirement adds is provided
+whole, and only what a check already in place holds is excused. Recall rose (0.75 → 0.81) and
+precision held (0.72), but the no-evidence bar failed with four hard errors over the three runs:
+OE-22 → AU-01 (open: a second factor only "when enabled") in 3 of 3, from the findings line,
+and OE-15 → AS-02 (a gap, the password-change request) in 1 of 3. Both were reverted, so the
+judge's and the findings call's prompts are #2108's
+(`eval-data/readings/governing-03-openemr-hipaa/baseline-A5-sonnet-2149.md`; the diagnosis is in
+`governing-03`'s `ANNOTATION.md`, "The #2149 and #2152 attempt and re-read").
+
 **Readings and their code (#1878).** Every report records `provenance`: the commit it ran at
-(`git rev-parse HEAD`), whether the tree was clean, and each arm's `codePath`. Three runs do not
-finish inside one ten-minute command (#2038). So a decision reading is three `--runs 1`
-invocations, joined by `--combine a.json,b.json,c.json`, which calls no model.
+(`git rev-parse HEAD`), whether the tree was clean, and each arm's `codePath`. Three runs may not
+finish inside one ten-minute command (#2038). So a decision reading can be three `--runs 1`
+invocations, joined by `--combine a.json,b.json,c.json`, which calls no model. One `--runs 3`
+invocation that finishes is a reading too: #2149's `governing-03` read was one.
 `combineGoverningReports` renumbers the runs and scores them again against the corpus. It refuses
 invocations that differ in set, content hash, commit, arms or configuration, any that stopped
 early, and any run with uncommitted changes. `--reading baseline-<arm>-<model>` writes the result
