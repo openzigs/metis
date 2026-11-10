@@ -110,17 +110,22 @@ export type ActiveWorkspaceStatus = "loading" | "error" | "ready";
  *
  * #2208 — "no id" is therefore not "no workspace" unless the status is
  * `ready`: a create form must not send it as one (it would put the project in
- * no workspace). `retry` re-reads the list after an error.
+ * no workspace). `retry` re-reads the list after an error, settling when the
+ * read does.
+ *
+ * #2218 — a failed REFETCH is not an unread list: TanStack keeps the last
+ * list read with `status: "error"`, and that list still validates the id. Only
+ * a list never read is `error`.
  */
 export function useValidatedActiveWorkspaceId(): {
   workspaceId: string | null;
   status: ActiveWorkspaceStatus;
-  retry: () => void;
+  retry: () => Promise<unknown>;
 } {
   const storedId = useActiveWorkspaceId();
   const list = useQuery(workspaceListQuery);
-  const retry = () => void list.refetch();
+  const retry = () => list.refetch();
   if (list.isPending) return { workspaceId: null, status: "loading", retry };
-  if (list.isError) return { workspaceId: null, status: "error", retry };
+  if (list.data === undefined) return { workspaceId: null, status: "error", retry };
   return { workspaceId: resolveActiveWorkspaceId(storedId, list.data), status: "ready", retry };
 }

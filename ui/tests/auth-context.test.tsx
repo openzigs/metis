@@ -63,6 +63,8 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllGlobals();
   _resetAuthRetryState();
+  // #2218 — here, not at a test's end, so a test that fails cannot leak it.
+  window.localStorage.clear();
 });
 
 function ok(body: unknown, status = 200): Response {
@@ -493,7 +495,6 @@ describe("AuthProvider — onRefreshFailure redirect (#411)", () => {
     expect(queryClient.getQueryData(workspaceListQuery.queryKey)).toBeUndefined();
     expect(window.localStorage.getItem("metis.activeWorkspaceId")).toBe("ws-mine");
     expect(window.localStorage.getItem("metis.activeProjectId")).toBe("p-mine");
-    window.localStorage.clear();
   });
 
   it("does NOT redirect or strip ?next when already on /login (cold-login guard)", async () => {

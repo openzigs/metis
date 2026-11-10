@@ -8,6 +8,9 @@
  *   attached (#2203: the first scan stopped at one 500-row page);
  * - #2209: the title match runs in SQL — case-insensitive, with the term's own
  *   `%`, `_` and `!` matched literally, at most 20 newest first;
+ * - #2218: the match folds case beyond ASCII ("über" finds "Über …"), which
+ *   SQLite's own `LOWER()` / `LIKE` do not, and GLOB's `*`, `?` and `[` in a
+ *   term match literally;
  * - a requirement whose analysis is soft-deleted is hidden by the picker,
  *   refused as an anchor, and reported as no requirement by GET /threads, so
  *   the three agree.
@@ -37,6 +40,7 @@ vi.mock("../src/lib/prisma.js", async () => {
       return state.db;
     },
     Prisma,
+    resolveDatabaseProvider: () => "sqlite",
   };
 });
 vi.mock("../src/lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
@@ -168,6 +172,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           ["r-pct", "Hit 100% of feeds"],
           ["r-under", "Store read_at per entry"],
           ["r-bang", "Warn me! before purging"],
+          // #2218 — a non-ASCII capital, and GLOB's own wildcards.
+          ["r-umlaut", "Über-Zeitplan für Abrufe"],
+          ["r-glob", "Mark [draft]? entries as *done*"],
         ].map(([id, title], i) => ({
           id,
           projectId: "p-1",
@@ -211,6 +218,28 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(await ids("d_a")).toEqual(["r-under"]);
       expect(await ids("me!")).toEqual(["r-bang"]);
       expect(await ids("no such title")).toEqual([]);
+    });
+
+    it("folds case beyond ASCII, which SQLite's LOWER and LIKE do not (#2218)", async () => {
+      const ids = async (q: string) =>
+        (
+          await get(`/api/discussions/requirements?projectId=p-1&q=${encodeURIComponent(q)}`)
+        ).body.data.map((r: { id: string }) => r.id);
+      expect(await ids("über")).toEqual(["r-umlaut"]);
+      expect(await ids("ÜBER-ZEITPLAN FÜR")).toEqual(["r-umlaut"]);
+      expect(await ids("fur")).toEqual([]);
+    });
+
+    it("matches GLOB's *, ? and [ in a term literally (#2218)", async () => {
+      const ids = async (q: string) =>
+        (
+          await get(`/api/discussions/requirements?projectId=p-1&q=${encodeURIComponent(q)}`)
+        ).body.data.map((r: { id: string }) => r.id);
+      expect(await ids("[DRAFT]?")).toEqual(["r-glob"]);
+      expect(await ids("*")).toEqual(["r-glob"]);
+      expect(await ids("?")).toEqual(["r-glob"]);
+      expect(await ids("[d")).toEqual(["r-glob"]);
+      expect(await ids("T]")).toEqual(["r-glob"]);
     });
 
     it("answers at most 20 matches, newest first, none from a soft-deleted run (#2209)", async () => {

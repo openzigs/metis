@@ -69,8 +69,8 @@ export interface ProjectCreateFormProps {
    * Create is disabled until it is `ready`. Defaults to `ready`.
    */
   workspaceStatus?: ActiveWorkspaceStatus;
-  /** Re-read the workspaces after an error. */
-  onRetryWorkspaces?: () => void;
+  /** Re-read the workspaces after an error; a returned promise settles with the read. */
+  onRetryWorkspaces?: () => unknown;
   /** Called with the created project after a successful create. */
   onCreated?: (project: Project) => void;
 }
