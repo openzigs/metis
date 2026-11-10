@@ -19,7 +19,7 @@ import { runsPreAuthRateLimiter, runsUserRateLimiter } from "../middleware/runs-
 import { requirePermission } from "../middleware/require-permission.js";
 import { requireRunProjectAccess } from "../middleware/require-run-project-access.js";
 import { listRuns } from "../lib/replay/runs-service.js";
-import { listChatTurns } from "../lib/ai/conversation/chat-turn-ledger.js";
+import { decodeChatTurnCursor, listChatTurns } from "../lib/ai/conversation/chat-turn-ledger.js";
 import { assertLiveProjectAccess, projectNotFound } from "../lib/custom-agents/authz.js";
 import { isAdminActor, listAccessibleProjectIds } from "../lib/acp/authz.js";
 import { AppError } from "../middleware/error-handler.js";
@@ -124,6 +124,13 @@ export function runsRouter(): Router {
       const from = parseDate(req.query.from);
       const to = parseDate(req.query.to);
       const limit = parseLimit(req.query.limit);
+      // #1584 — `?cursor=` is a previous page's `nextCursor`; a malformed one is
+      // refused rather than silently read as the first page.
+      const before =
+        req.query.cursor === undefined ? undefined : decodeChatTurnCursor(req.query.cursor);
+      if (before === null) {
+        throw new AppError(400, "INVALID_CURSOR", "Invalid chat turn list cursor");
+      }
       const accessibleProjectIds = await listProjectScope(req.user, projectId);
       const page = await listChatTurns({
         userId: req.user.userId,
@@ -132,6 +139,7 @@ export function runsRouter(): Router {
         from,
         to,
         limit,
+        before,
         accessibleProjectIds,
       });
       res.json(ok(page));

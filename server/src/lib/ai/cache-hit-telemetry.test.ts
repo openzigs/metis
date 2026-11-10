@@ -31,6 +31,7 @@ const {
   recordCacheHit,
   getCacheHitAggregator,
   __resetCacheHitAggregatorSingleton,
+  withDefaultCallType,
 } = await import("./cache-hit-telemetry.js");
 
 beforeEach(() => {
@@ -246,6 +247,16 @@ describe("recordCacheHit (per-call emission)", () => {
   it("defaults a missing cacheWriteTokens to 0 (gateway path)", () => {
     recordCacheHit({ callType: "chat", model: "m", cacheReadTokens: 5, promptTokens: 10 });
     expect(getCacheHitAggregator().snapshot("chat", "m")?.sumCacheWriteTokens).toBe(0);
+  });
+
+  it("#1584 — withDefaultCallType names the workload only when the call site set none", () => {
+    expect(withDefaultCallType(undefined, "analysis")).toEqual({ callType: "analysis" });
+    expect(withDefaultCallType({ maxTokens: 9 }, "docs-gen")).toEqual({
+      maxTokens: 9,
+      callType: "docs-gen",
+    });
+    const own = { callType: "grounding" as const };
+    expect(withDefaultCallType(own, "impact-analysis")).toBe(own);
   });
 
   it("defaults a missing call type to 'unknown'", () => {

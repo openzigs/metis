@@ -171,7 +171,12 @@ export function projectsRouter(): Router {
       const qWorkspace = toScalar(req.query.workspaceId);
       workspaceIds = qWorkspace ? [qWorkspace] : undefined;
     } else {
-      workspaceIds = req.user?.workspaces ?? [];
+      // #1584 — a member may narrow to ONE of their own workspaces (the header
+      // project switcher lists the active workspace's projects). It can only
+      // narrow: a workspace they are not in leaves none of its projects.
+      const mine = req.user?.workspaces ?? [];
+      const qWorkspace = toScalar(req.query.workspaceId);
+      workspaceIds = qWorkspace ? mine.filter((id) => id === qWorkspace) : mine;
       // #561 — the claim can outlive a removal; the membership row must agree.
       memberUserId = req.user?.userId ?? "";
     }

@@ -38,6 +38,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { recordUsage } from "../finops/token-tracker.js";
 import { createChildLogger } from "../logger.js";
 import { decorateProvider } from "../ai/provider-decorator.js";
+import { withDefaultCallType } from "../ai/cache-hit-telemetry.js";
 import {
   noteUnmeteredAttempt,
   reportedUsageOf,
@@ -206,8 +207,9 @@ export function meterAnalysisProvider(provider: AIProvider): AIProvider {
     // the same scope, once: on what the provider reported for it, or — when it
     // reported nothing — recorded as unmetered. Outside a scope the call is
     // not metered here, so neither is the attempt (the adapter records it).
+    // #1584 — inside a run, an untagged call is the analysis's in the cache telemetry.
     const callOpts = scope
-      ? withRetriedAttemptListener(opts, (a) => {
+      ? withRetriedAttemptListener(withDefaultCallType(opts, "analysis"), (a) => {
           const reported = reportedUsageOf(a.error);
           if (reported) record(a.provider, a.model, reported);
           else noteUnmeteredAnalysisAttempt(scope, a);
@@ -220,7 +222,8 @@ export function meterAnalysisProvider(provider: AIProvider): AIProvider {
 
   async function* stream(messages: ChatMessage[], opts?: ChatOptions): AsyncGenerator<ChatChunk> {
     assertCallAllowed();
-    for await (const chunk of provider.stream(messages, opts)) {
+    const streamOpts = storage.getStore() ? withDefaultCallType(opts, "analysis") : opts;
+    for await (const chunk of provider.stream(messages, streamOpts)) {
       // The model the stream reports it ran, as `chat()` prices `res.model`;
       // the requested model only when the adapter does not say.
       if (chunk.type === "usage") {

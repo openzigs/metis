@@ -379,6 +379,26 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         }
       });
 
+      it("#1584 — follows nextCursor page by page across batches and the tie, in one statement's order", async () => {
+        const all = await sqlPage(MANY, 200);
+        const walk = async (size: number, pages: number) => {
+          const seen: string[] = [];
+          let cursor: string | null = null;
+          for (let i = 0; i < pages; i += 1) {
+            const q: string = cursor ? `&cursor=${encodeURIComponent(cursor)}` : "";
+            const res = await get(`/api/runs/chat-turns?limit=${size}${q}`, MANY);
+            expect(res.status).toBe(200);
+            seen.push(...(res.body.data.items as Turn[]).map((t) => t.id));
+            cursor = res.body.data.nextCursor as string | null;
+            expect(cursor).not.toBeNull();
+          }
+          return seen;
+        };
+        // The newest three rows share one instant and come from three batches.
+        expect(await walk(1, 3)).toEqual(all.slice(0, 3));
+        expect(await walk(50, 4)).toEqual(all);
+      });
+
       it("gives every listed session its whole chat spend, equal to a direct SQL sum", async () => {
         const res = await get("/api/runs/chat-turns?limit=200", MANY);
         const items = res.body.data.items as Turn[];
@@ -448,7 +468,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       it("another member of the project sees none of them", async () => {
         const res = await get("/api/runs/chat-turns?limit=200", "uOther");
         expect(res.status).toBe(200);
-        expect(res.body.data).toEqual({ items: [], sessions: [] });
+        expect(res.body.data).toEqual({ items: [], sessions: [], nextCursor: null });
       });
     });
 
@@ -466,7 +486,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           userId: "uDel",
           accessibleProjectIds: accessibleProjectIds.slice(0, 1_500),
         });
-        expect(none).toEqual({ items: [], sessions: [] });
+        expect(none).toEqual({ items: [], sessions: [], nextCursor: null });
       });
     });
 

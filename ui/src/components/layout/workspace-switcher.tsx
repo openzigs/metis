@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo } from "react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import { Building2, ChevronsUpDown, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -14,6 +14,12 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { apiFetch } from "@/lib/api-client";
+import {
+  useActiveWorkspaceId,
+  writeStoredActiveWorkspaceId as writeStoredWorkspaceId,
+} from "@/lib/active-workspace";
+import { projectsApi } from "@/lib/projects-api";
+import { queryKeys } from "@/lib/query-keys";
 
 interface Workspace {
   id: string;
@@ -23,53 +29,54 @@ interface Workspace {
   role: string;
 }
 
-const STORAGE_KEY = "metis.activeWorkspaceId";
-
-function readStoredWorkspaceId(): string | null {
-  if (typeof window === "undefined") return null;
-  try {
-    return window.localStorage.getItem(STORAGE_KEY);
-  } catch {
-    return null;
-  }
+/** The project id in a `/projects/<id>/...` path, else `null`. */
+function projectIdFromPath(pathname: string | null): string | null {
+  return pathname?.match(/^\/projects\/([^/?#]+)(?:[/?#]|$)/)?.[1] ?? null;
 }
 
-function writeStoredWorkspaceId(id: string | null): void {
-  if (typeof window === "undefined") return;
-  try {
-    if (id) window.localStorage.setItem(STORAGE_KEY, id);
-    else window.localStorage.removeItem(STORAGE_KEY);
-  } catch {
-    /* swallow */
-  }
-}
-
-async function fetchWorkspaces(): Promise<Workspace[]> {
-  try {
-    return await apiFetch<Workspace[]>("/workspaces");
-  } catch {
-    return [];
-  }
-}
+/**
+ * #1584 — a failed read is an error, not an empty list: swallowing it cached
+ * "no workspaces" for a minute after one transient 500 (run 10, wave F), and
+ * the query's own retry never ran. A list that cannot be read renders as none.
+ */
+const fetchWorkspaces = () => apiFetch<Workspace[]>("/workspaces");
 
 /**
  * Header workspace switcher (Epic #759, Issue #766).
  * Dropdown shows all workspaces the user belongs to. Switching
- * sets the active workspace and triggers a project list refetch.
+ * sets the active workspace, which the project switcher lists (#1584).
+ *
+ * #1584 — on a project's pages the active workspace is that project's, so the
+ * crumb never names one workspace over a project in another. A user who never
+ * picked one (a second user, say) used to see their first workspace there.
  */
 export function WorkspaceSwitcher() {
   const router = useRouter();
+  const pathId = projectIdFromPath(usePathname());
   const { data, isLoading } = useQuery({
     queryKey: ["workspaces", "switcher"],
     queryFn: fetchWorkspaces,
     staleTime: 60_000,
   });
+  // Shared with the project switcher and Overview: usually already cached.
+  const pathProject = useQuery({
+    queryKey: queryKeys.projects.detail(pathId ?? ""),
+    queryFn: () => projectsApi.get(pathId as string),
+    enabled: Boolean(pathId),
+  });
 
   const workspaces: Workspace[] = useMemo(() => data ?? [], [data]);
+  const isMember = (id: string | null | undefined): id is string =>
+    Boolean(id) && workspaces.some((w) => w.id === id);
 
-  const storedId = readStoredWorkspaceId();
-  const activeId =
-    storedId && workspaces.some((w) => w.id === storedId) ? storedId : (workspaces[0]?.id ?? null);
+  const storedId = useActiveWorkspaceId();
+  const projectWorkspaceId =
+    pathId && !pathProject.isError ? pathProject.data?.workspaceId : undefined;
+  const activeId = isMember(projectWorkspaceId)
+    ? projectWorkspaceId
+    : isMember(storedId)
+      ? storedId
+      : (workspaces[0]?.id ?? null);
   const active = workspaces.find((w) => w.id === activeId) ?? null;
 
   useEffect(() => {
@@ -78,8 +85,11 @@ export function WorkspaceSwitcher() {
 
   function handleSelect(ws: Workspace) {
     writeStoredWorkspaceId(ws.id);
-    // Force re-render — refresh project list for new workspace
-    router.refresh();
+    // A project page names its own workspace; leave it for the chosen one's
+    // projects. (A project in no workspace is listed under every one.)
+    if (pathId && projectWorkspaceId && projectWorkspaceId !== ws.id) router.push("/projects");
+    // Pages that read the stored id on render pick the new one up.
+    else router.refresh();
   }
 
   if (isLoading) {

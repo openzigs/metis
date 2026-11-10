@@ -561,13 +561,31 @@ describe("<VaultPage />", () => {
     expect(screen.getByText("vault.read")).toBeInTheDocument();
   });
 
-  it("deletes a secret and closes the detail panel", async () => {
+  it("deletes a secret only after the confirmation, and closes the detail panel", async () => {
     removeMock.mockResolvedValueOnce(undefined as unknown as void);
     renderPage();
     await waitFor(() => expect(screen.getByTestId("vault-list")).toBeInTheDocument());
     fireEvent.click(screen.getByTestId("vault-row-open-sec_1"));
     fireEvent.click(screen.getByTestId("vault-entry-delete-btn"));
+    // #1584 — the button opens a confirmation; nothing is deleted yet.
+    const dialog = await screen.findByRole("alertdialog");
+    expect(dialog).toHaveTextContent(/fail to resolve/i);
+    expect(removeMock).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete entry" }));
     await waitFor(() => expect(removeMock).toHaveBeenCalledWith("sec_1"));
+    await waitFor(() => expect(screen.queryByTestId("vault-entry-delete")).not.toBeInTheDocument());
+  });
+
+  it("cancelling the delete confirmation deletes nothing (#1584)", async () => {
+    renderPage();
+    await waitFor(() => expect(screen.getByTestId("vault-list")).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId("vault-row-open-sec_1"));
+    fireEvent.click(screen.getByTestId("vault-entry-delete-btn"));
+    const dialog = await screen.findByRole("alertdialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
+    expect(removeMock).not.toHaveBeenCalled();
+    expect(screen.getByTestId("vault-entry-delete")).toBeInTheDocument();
   });
 });
 

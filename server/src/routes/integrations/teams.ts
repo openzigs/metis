@@ -12,7 +12,7 @@
  *
  *   ADMIN install/connect flow (workspace-scoped, requires workspace admin):
  *     POST   /api/integrations/teams/workspaces/:workspaceId/install
- *     GET    /api/integrations/teams/workspaces/:workspaceId/installation
+ *     GET    /api/integrations/teams/workspaces/:workspaceId/installation  (data: null when none)
  *     DELETE /api/integrations/teams/workspaces/:workspaceId/installation
  *     GET    /api/integrations/teams/workspaces/:workspaceId/manifest
  *
@@ -276,11 +276,10 @@ export function teamsIntegrationRouter(
     requireAuth,
     requireWorkspaceRole("admin"),
     async (req: Req, res: Response) => {
+      // #1584 — "not connected" is a state the settings page renders, not an
+      // error: a 404 here was logged to the browser console on every visit.
       const summary = await store.getByWorkspace(req.params.workspaceId);
-      if (!summary) {
-        throw new AppError(404, "TEAMS_NOT_INSTALLED", "No Teams app installed for workspace");
-      }
-      res.json(ok(summary));
+      res.json(ok(summary ?? null));
     },
   );
 
