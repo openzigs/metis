@@ -121,9 +121,12 @@ export const analysisApprovalPromoteRateLimiter: RequestHandler = rateLimit({
 }) as unknown as RequestHandler;
 
 /**
- * PR #902 CI — a coarse ceiling AHEAD of `requireAuth` on the approval routes
- * that write: promote, approve-all, reject-added, reopen and (#1580) the
- * checkpoint requirement edit. CodeQL `js/missing-rate-limiting` flags the route's own
+ * PR #902 CI — a coarse ceiling AHEAD of `requireAuth` on these approval routes:
+ * promote, approve-all, reject-added, reopen and (#1580) the checkpoint
+ * requirement edit. Not on every approval route that writes (#2157): the
+ * per-card review, `PUT /:id/approvals/:approvalId`, has no limiter of its own
+ * and is bounded only by the app-wide `apiRateLimiter` on `/api` (#1539).
+ * CodeQL `js/missing-rate-limiting` flags the route's own
  * `requireAuth` ("performs authorization, but is not rate-limited") unless an
  * `express-rate-limit` handler precedes it; the per-user limiters above then
  * run after the permission check, unchanged. Same shape as

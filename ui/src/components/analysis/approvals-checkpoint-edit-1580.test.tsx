@@ -14,6 +14,8 @@ const listApprovals = vi.fn();
 const reviewApproval = vi.fn();
 const editCheckpointRequirement = vi.fn();
 const approveAllApprovals = vi.fn();
+const rejectAddedApprovals = vi.fn();
+const reopenApproval = vi.fn();
 
 vi.mock("@/lib/socket-client", () => ({ useSocket: () => null }));
 vi.mock("@/lib/analysis-api", async (importOriginal) => {
@@ -26,6 +28,8 @@ vi.mock("@/lib/analysis-api", async (importOriginal) => {
       reviewApproval: (...args: unknown[]) => reviewApproval(...args),
       editCheckpointRequirement: (...args: unknown[]) => editCheckpointRequirement(...args),
       approveAllApprovals: (...args: unknown[]) => approveAllApprovals(...args),
+      rejectAddedApprovals: (...args: unknown[]) => rejectAddedApprovals(...args),
+      reopenApproval: (...args: unknown[]) => reopenApproval(...args),
     },
   };
 });
@@ -98,6 +102,8 @@ describe("#1580 — edit a requirement in the approval checkpoint", () => {
     );
     expect(screen.getByRole("button", { name: "Approve" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Reject" })).toBeDisabled();
+    // #2157 — a pending approval's editor takes typing.
+    expect(screen.getByLabelText(`Title of ${TITLE}`)).not.toHaveAttribute("readonly");
     // Nothing changed yet: nothing to save.
     expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
   });
@@ -156,7 +162,9 @@ describe("#1580 — edit a requirement in the approval checkpoint", () => {
     expect(screen.getByText("Entries older than X are marked read.")).toBeInTheDocument();
   });
 
-  it("says where to edit once the approval was resolved meanwhile, and refreshes the list", async () => {
+  // #2157 — until the refresh lands, the card does not know how the approval
+  // was resolved, so it does not say where the requirement went.
+  it("says it was already reviewed on a 409, and refreshes the list to learn how", async () => {
     editCheckpointRequirement.mockRejectedValue(
       new ApiError(409, "already approved", "APPROVAL_ALREADY_REVIEWED"),
     );
@@ -168,10 +176,9 @@ describe("#1580 — edit a requirement in the approval checkpoint", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
-    expect(await screen.findByText(/Edit it on the Requirements page/)).toHaveAttribute(
-      "role",
-      "alert",
-    );
+    const alert = await screen.findByText(/was already reviewed/);
+    expect(alert).toHaveAttribute("role", "alert");
+    expect(alert).not.toHaveTextContent(/Requirements page|Reopen/);
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["approvals", ANALYSIS_ID] });
   });
 
@@ -204,6 +211,9 @@ describe("#1580 — edit a requirement in the approval checkpoint", () => {
     expect(listApprovals).toHaveBeenCalledTimes(2);
     expect(screen.getByLabelText(`Description of ${TITLE}`)).toHaveValue("Too late.");
     expect(screen.getByRole("alert")).toHaveTextContent(/Edit it on the Requirements page/);
+    // #2157 — kept to copy, not to type into.
+    expect(screen.getByLabelText(`Title of ${TITLE}`)).toHaveAttribute("readonly");
+    expect(screen.getByLabelText(`Description of ${TITLE}`)).toHaveAttribute("readonly");
     // Nothing more to save here, and Close puts the card back as it is.
     expect(screen.queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
@@ -301,6 +311,122 @@ describe("#1580 — edit a requirement in the approval checkpoint", () => {
     expect(await screen.findByTestId("approval-extracted-title")).toHaveTextContent(
       `Edited. The analysis titled it: ${TITLE}`,
     );
+  });
+});
+
+// #2157 — follow-ups from #2151's review.
+describe("#2157 — checkpoint edits and the list-wide actions", () => {
+  const OTHER = "Show unread counts per feed";
+  const twoRequirements = () => ({
+    structuredRequirements: {
+      requirements: [
+        { id: "REQ-1", title: TITLE, description: "First.", ambiguities: [], evidenceNeeds: [] },
+        { id: "REQ-2", title: OTHER, description: "Second.", ambiguities: [], evidenceNeeds: [] },
+      ],
+      totalAmbiguities: 0,
+      totalEvidenceNeeds: 0,
+    },
+  });
+  const second = (over: Partial<ApprovalRequestPayload> = {}) =>
+    approval({ id: "ap_2", itemId: "REQ-2", ...over });
+  const listing = (items: ApprovalRequestPayload[]) => ({
+    items,
+    ticketStatus: {
+      allowed: false,
+      pendingCount: items.filter((a) => a.status === "pending").length,
+      rejectedCount: 0,
+    },
+  });
+  const reviewed = { reviewedAt: "2026-10-30T01:00:00.000Z" };
+
+  it("a resolved card's kept edit does not hold Approve all for the pending ones", async () => {
+    listApprovals.mockResolvedValue(listing([approval(), second()]));
+    const { qc } = renderPanel(twoRequirements());
+    fireEvent.click(await screen.findByRole("button", { name: `Edit ${OTHER}` }));
+    expect(screen.getByRole("button", { name: "Approve all 2 pending" })).toBeDisabled();
+
+    // Someone approved the second one meanwhile; its card keeps the typed text.
+    listApprovals.mockResolvedValue(
+      listing([approval(), second({ status: "approved", ...reviewed })]),
+    );
+    await act(() => qc.invalidateQueries({ queryKey: ["approvals", ANALYSIS_ID] }));
+
+    await screen.findByText("Resolved (1)");
+    expect(screen.getByLabelText(`Title of ${OTHER}`)).toHaveValue(OTHER);
+    expect(screen.getByRole("button", { name: "Approve all 1 pending" })).toBeEnabled();
+    expect(screen.queryByTestId("approve-all-edits-open")).not.toBeInTheDocument();
+  });
+
+  it("points a rejected requirement's kept edit to Reopen, which takes it back up", async () => {
+    reopenApproval.mockResolvedValue(approval());
+    const { qc } = renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: `Edit ${TITLE}` }));
+    fireEvent.change(screen.getByLabelText(`Title of ${TITLE}`), {
+      target: { value: "Retitled while someone rejected it" },
+    });
+    listApprovals.mockResolvedValue(listing([approval({ status: "rejected", ...reviewed })]));
+    await act(() => qc.invalidateQueries({ queryKey: ["approvals", ANALYSIS_ID] }));
+
+    await screen.findByText("Resolved (1)");
+    const alert = within(screen.getByTestId("checkpoint-requirement-editor")).getByRole("alert");
+    expect(alert).toHaveTextContent(/was rejected/);
+    expect(alert).toHaveTextContent(/Reopen it to edit it here/);
+    // A rejected requirement is left out: it is not on the Requirements page.
+    expect(alert).not.toHaveTextContent(/Requirements page/);
+
+    listApprovals.mockResolvedValue(listing([approval()]));
+    fireEvent.click(screen.getByRole("button", { name: `Reopen ${TITLE}` }));
+
+    // Pending again: the kept text is editable and can be saved.
+    expect(await screen.findByRole("button", { name: "Save" })).toBeEnabled();
+    expect(screen.getByLabelText(`Title of ${TITLE}`)).toHaveValue(
+      "Retitled while someone rejected it",
+    );
+    expect(screen.getByLabelText(`Title of ${TITLE}`)).not.toHaveAttribute("readonly");
+  });
+
+  it("holds Leave out the added while an added requirement's edit is open", async () => {
+    listApprovals.mockResolvedValue(
+      listing([approval({ origin: "ticked" }), second({ origin: "added" })]),
+    );
+    renderPanel(twoRequirements());
+    const leaveOut = await screen.findByRole("button", {
+      name: "Leave out the 1 added by the analysis",
+    });
+
+    // An edit on a ticked item does not touch what Leave out rejects.
+    fireEvent.click(screen.getByRole("button", { name: `Edit ${TITLE}` }));
+    expect(leaveOut).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    fireEvent.click(screen.getByRole("button", { name: `Edit ${OTHER}` }));
+    expect(leaveOut).toBeDisabled();
+    expect(screen.getByTestId("leave-out-added-edits-open")).toHaveTextContent(
+      "Save or cancel the open edit first",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(leaveOut).toBeEnabled();
+    expect(screen.queryByTestId("leave-out-added-edits-open")).not.toBeInTheDocument();
+  });
+
+  it("holds the Leave out confirm when an added requirement's edit opens after it was asked", async () => {
+    listApprovals.mockResolvedValue(
+      listing([approval({ origin: "ticked" }), second({ origin: "added" })]),
+    );
+    renderPanel(twoRequirements());
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Leave out the 1 added by the analysis" }),
+    );
+    const confirm = screen.getByRole("button", { name: "Confirm leave out added" });
+    expect(confirm).toBeEnabled();
+
+    fireEvent.click(screen.getByRole("button", { name: `Edit ${OTHER}` }));
+
+    expect(confirm).toBeDisabled();
+    fireEvent.click(confirm);
+    // A mutation calls its function after a tick: give it one.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(rejectAddedApprovals).not.toHaveBeenCalled();
   });
 });
 

@@ -479,7 +479,7 @@ function ApprovalCard({
           itemName={itemName}
           draft={draft}
           onDraftChange={(update) => onDraftChange((d) => (d ? update(d) : d))}
-          resolved={isResolved}
+          status={approval.status}
           onDone={() => onDraftChange(() => undefined)}
         />
       )}
@@ -734,11 +734,14 @@ function LeaveOutAdded({
   projectId,
   analysisId,
   addedCount,
+  openEdits,
   onChange,
 }: {
   projectId: string;
   analysisId: string;
   addedCount: number;
+  /** #2157 — added requirements with an edit open: their own Reject is held too. */
+  openEdits: number;
   onChange: () => void;
 }): React.ReactElement {
   const qc = useQueryClient();
@@ -753,11 +756,26 @@ function LeaveOutAdded({
     },
   });
 
+  // #2157 — as a card's own Reject is held while its editor is open (#1580).
+  const editsOpenNote = openEdits > 0 && (
+    <p className="text-xs text-warning" data-testid="leave-out-added-edits-open">
+      Save or cancel the open edit{openEdits === 1 ? "" : "s"} first: leaving them out now would
+      reject {openEdits === 1 ? "that requirement" : "those requirements"} with the edit unsaved.
+    </p>
+  );
   if (!confirming) {
     return (
-      <Button size="sm" variant="outline" onClick={() => setConfirming(true)}>
-        Leave out the {addedCount} added by the analysis
-      </Button>
+      <div className="space-y-1">
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => setConfirming(true)}
+          disabled={openEdits > 0}
+        >
+          Leave out the {addedCount} added by the analysis
+        </Button>
+        {editsOpenNote}
+      </div>
     );
   }
   return (
@@ -774,7 +792,7 @@ function LeaveOutAdded({
           size="sm"
           aria-label="Confirm leave out added"
           onClick={() => rejectAdded.mutate()}
-          disabled={rejectAdded.isPending}
+          disabled={rejectAdded.isPending || openEdits > 0}
         >
           Leave them out
         </Button>
@@ -787,6 +805,7 @@ function LeaveOutAdded({
           Cancel
         </Button>
       </div>
+      {editsOpenNote}
       {rejectAdded.isError && (
         <p role="alert" className="text-xs text-destructive">
           Could not leave out the added requirements.{" "}
@@ -1000,6 +1019,7 @@ export function ApprovalsPanel({
                       projectId={projectId}
                       analysisId={analysisId}
                       addedCount={split.added.length}
+                      openEdits={split.added.filter((a) => drafts[a.id]).length}
                       onChange={() => query.refetch()}
                     />
                   </div>
