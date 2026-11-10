@@ -49,6 +49,11 @@ describe("runsApi", () => {
     expect(apiFetchMock).toHaveBeenLastCalledWith(
       "/runs/chat-turns?projectId=p+1&sessionId=chat-a&limit=10",
     );
+    // #1584 — the next page's cursor travels with the filters.
+    await runsApi.chatTurns({ sessionId: "chat-a", cursor: "eyJ0Ijoi+/=" });
+    expect(apiFetchMock).toHaveBeenLastCalledWith(
+      "/runs/chat-turns?sessionId=chat-a&cursor=eyJ0Ijoi%2B%2F%3D",
+    );
   });
 
   it("get() / replay() URL-encode the id", async () => {

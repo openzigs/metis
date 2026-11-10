@@ -615,6 +615,64 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         }
       });
 
+      it("#1584 — pages past the first with nextCursor, and says when there is no more", async () => {
+        const seen: string[] = [];
+        let cursor: string | null = null;
+        const cursors: Array<string | null> = [];
+        for (let page = 0; page < 3; page += 1) {
+          const q: string = cursor ? `&cursor=${encodeURIComponent(cursor)}` : "";
+          const res = await get(`/api/runs/chat-turns?limit=2${q}`, "A");
+          expect(res.status).toBe(200);
+          seen.push(...(res.body.data.items as Turn[]).map((t) => t.id));
+          // Each page's session totals cover only the sessions it lists.
+          const listed = new Set((res.body.data.items as Turn[]).map((t) => t.sessionId));
+          expect(
+            new Set((res.body.data.sessions as SessionSpend[]).map((x) => x.sessionId)),
+          ).toEqual(listed);
+          cursor = res.body.data.nextCursor as string | null;
+          cursors.push(cursor);
+        }
+        expect(seen).toEqual(A_TURNS);
+        expect(cursors.map((c) => c !== null)).toEqual([true, true, false]);
+        // A page that holds the last turn exactly has no next page either.
+        const whole = await get(`/api/runs/chat-turns?limit=${A_TURNS.length}`, "A");
+        expect(whole.body.data.nextCursor).toBeNull();
+        const more = await get(`/api/runs/chat-turns?limit=${A_TURNS.length - 1}`, "A");
+        expect(more.body.data.nextCursor).not.toBeNull();
+      });
+
+      it("#1584 — a cursor keeps the other filters", async () => {
+        const first = await get("/api/runs/chat-turns?limit=1&projectId=pA", "A");
+        const cursor = encodeURIComponent(first.body.data.nextCursor as string);
+        const rest = await ids(`/api/runs/chat-turns?projectId=pA&cursor=${cursor}`, "A");
+        const all = await ids("/api/runs/chat-turns?projectId=pA", "A");
+        expect(all.length).toBeGreaterThan(1);
+        expect([(first.body.data.items as Turn[])[0]!.id, ...rest]).toEqual(all);
+      });
+
+      it("#1584 — refuses a cursor it did not issue with 400 INVALID_CURSOR", async () => {
+        const forged = (o: unknown) =>
+          encodeURIComponent(Buffer.from(JSON.stringify(o)).toString("base64url"));
+        for (const bad of [
+          "not-a-cursor",
+          "",
+          forged({ t: "yesterday", id: "x" }),
+          forged({ t: "2026-10-09T10:05:00.000Z" }),
+          forged({ t: "2026-10-09T10:05:00.000Z", id: "" }),
+          forged({ t: "2026-10-09T10:05:00.000Z", id: "x".repeat(513) }),
+          forged({ t: "2026-13-45T99:99:99.000Z", id: "x" }),
+          forged(["2026-10-09T10:05:00.000Z", "x"]),
+          forged(null),
+          "a".repeat(1025),
+        ]) {
+          const res = await get(`/api/runs/chat-turns?cursor=${bad}`, "A");
+          expect(res.status).toBe(400);
+          expect(res.body.error.code).toBe("INVALID_CURSOR");
+        }
+        const arr = await get("/api/runs/chat-turns?cursor=a&cursor=b", "A");
+        expect(arr.status).toBe(400);
+      });
+
       it("GET /api/runs: ?limit=abc is no longer a 500 and ?limit=-3 no longer the oldest rows", async () => {
         for (let i = 0; i < 4; i += 1) {
           await db.agentRun.create({

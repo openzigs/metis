@@ -363,6 +363,80 @@ describe("/runs chat turns (#1007)", () => {
     );
   });
 
+  describe("more than one page (#1584)", () => {
+    const zero = {
+      calls: 0,
+      tokens: { withoutCache: 0, withCache: 0 },
+      costUsd: 0,
+      unpricedTokens: 0,
+    };
+    const session = (sessionId: string, turnCount: number) => ({
+      sessionId,
+      projectId: "p1",
+      turnCount,
+      turns: zero,
+      other: zero,
+      total: zero,
+    });
+
+    it("appends the next, older page and its sessions, each session once", async () => {
+      chatTurns
+        .mockResolvedValueOnce({
+          items: [turn({ id: "t1" })],
+          sessions: [session("chat-a", 2)],
+          nextCursor: "cur-1",
+        } as never)
+        .mockResolvedValueOnce({
+          items: [
+            turn({ id: "t2", sessionId: "chat-a" }),
+            turn({ id: "t3", sessionId: "chat-b", model: "older-model" }),
+          ],
+          sessions: [session("chat-a", 2), session("chat-b", 1)],
+          nextCursor: null,
+        } as never);
+      renderRuns();
+      const more = await screen.findByTestId("runs-chat-turns-more");
+      expect(more).toHaveTextContent("Load more chat turns");
+      expect(screen.getByTestId("runs-chat-turns")).toHaveTextContent("Showing the newest 1.");
+      expect(
+        within(screen.getByTestId("runs-chat-turns-table")).queryByText(/older-model/),
+      ).toBeNull();
+
+      fireEvent.click(more);
+      await waitFor(() => expect(chatTurns).toHaveBeenLastCalledWith({ cursor: "cur-1" }));
+      const table = await screen.findByTestId("runs-chat-turns-table");
+      await waitFor(() => expect(table).toHaveTextContent("older-model"));
+      // The first page's row is still listed: the page is appended, not swapped.
+      expect(within(table).getAllByText("chat-a").length).toBe(2);
+      expect(within(table).getByText("chat-b")).toBeInTheDocument();
+      // The last page: no more to load.
+      expect(screen.queryByTestId("runs-chat-turns-more")).not.toBeInTheDocument();
+      const sessions = screen.getByTestId("runs-chat-sessions-table");
+      expect(within(sessions).getAllByText("chat-a")).toHaveLength(1);
+      expect(within(sessions).getByText("chat-b")).toBeInTheDocument();
+    });
+
+    it("offers no pager when the server names no next page", async () => {
+      chatTurns.mockResolvedValue({ items: [turn()], nextCursor: null } as never);
+      renderRuns();
+      await screen.findByTestId("runs-chat-turns-table");
+      expect(screen.queryByTestId("runs-chat-turns-more")).not.toBeInTheDocument();
+    });
+
+    it("keeps the loaded turns when the next page fails, and says so", async () => {
+      chatTurns
+        .mockResolvedValueOnce({ items: [turn({ id: "t1" })], nextCursor: "cur-1" } as never)
+        .mockRejectedValueOnce(new Error("ledger down"));
+      renderRuns();
+      fireEvent.click(await screen.findByTestId("runs-chat-turns-more"));
+      expect(
+        await screen.findByText(/Failed to load more chat turns: ledger down/),
+      ).toBeInTheDocument();
+      expect(screen.getByTestId("runs-chat-turns-table")).toBeInTheDocument();
+      expect(screen.queryByText(/Failed to load chat turns:/)).not.toBeInTheDocument();
+    });
+  });
+
   it("reports a failed read without hiding the runs", async () => {
     list.mockResolvedValue({ items: [run()] } as never);
     chatTurns.mockRejectedValue(new Error("ledger down"));

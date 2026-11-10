@@ -98,6 +98,8 @@ export interface ChatTurnPage {
   items: ChatTurnSummary[];
   /** One entry per session with a turn in `items`. Absent from an older server. */
   sessions?: ChatSessionSpend[];
+  /** #1584 — names the next (older) page; `null` on the last. Absent from an older server. */
+  nextCursor?: string | null;
 }
 
 export interface AgentRunStep {
@@ -124,6 +126,11 @@ export interface AgentRunListFilters {
   limit?: number;
 }
 
+/** #1584 — the run filters, plus the `nextCursor` of the page before. */
+export interface ChatTurnFilters extends AgentRunListFilters {
+  cursor?: string;
+}
+
 export const runsApi = {
   list(filters: AgentRunListFilters = {}): Promise<{ items: AgentRunSummary[] }> {
     const qs = new URLSearchParams();
@@ -134,7 +141,7 @@ export const runsApi = {
     return apiFetch<{ items: AgentRunSummary[] }>(`/runs${suffix}`);
   },
   /** #1007 — the caller's own chat turns from the usage ledger, under the same filters. */
-  chatTurns(filters: AgentRunListFilters = {}): Promise<ChatTurnPage> {
+  chatTurns(filters: ChatTurnFilters = {}): Promise<ChatTurnPage> {
     const qs = new URLSearchParams();
     for (const [k, v] of Object.entries(filters)) {
       if (v !== undefined && v !== null && v !== "") qs.set(k, String(v));

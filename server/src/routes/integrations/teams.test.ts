@@ -295,11 +295,11 @@ describe("Teams integration routes (#548)", () => {
       expect(store.install).not.toHaveBeenCalled();
     });
 
-    it("GET installation → 404 when none installed", async () => {
+    it("GET installation → 200 with null data when none installed (#1584: no console 404)", async () => {
       const app = createApp(stubStore({ getByWorkspace: vi.fn(async () => null) }));
       const res = await request(app).get("/api/integrations/teams/workspaces/ws-1/installation");
-      expect(res.status).toBe(404);
-      expect(res.body.error.code).toBe("TEAMS_NOT_INSTALLED");
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ success: true, data: null });
     });
 
     it("GET installation → 200 when installed", async () => {

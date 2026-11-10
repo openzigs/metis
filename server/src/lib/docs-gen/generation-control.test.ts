@@ -240,6 +240,28 @@ describe("scopedToGeneration", () => {
     expect(await wrapped.models()).toEqual(["claude-sonnet-4"]);
   });
 
+  it("#1584 — tags an untagged call inside a run as docs-gen, and keeps a call site's own tag", async () => {
+    const inner = hangingProvider([{ type: "delta", content: "hi" }]);
+    const wrapped = scopedToGeneration(inner);
+    const control = new GenerationControl("d", "p");
+    await withGenerationScope(control, async () => {
+      void wrapped.chat(MESSAGES, { sessionId: "s" }).catch(() => undefined);
+      void wrapped.chat(MESSAGES, { callType: "synthesis" }).catch(() => undefined);
+      const gen = wrapped.stream(MESSAGES);
+      await gen.next();
+      const own = wrapped.stream(MESSAGES, { callType: "warmup" });
+      await own.next();
+      control.stop("aborted");
+      await gen.next().catch(() => undefined);
+      await own.next().catch(() => undefined);
+    });
+    expect(inner.chatOpts.map((o) => o?.callType)).toEqual(["docs-gen", "synthesis"]);
+    expect(inner.streamOpts.map((o) => o?.callType)).toEqual(["docs-gen", "warmup"]);
+    // Outside a run the call is not docs-gen's to claim.
+    void wrapped.chat(MESSAGES, {}).catch(() => undefined);
+    expect(inner.chatOpts[2]?.callType).toBeUndefined();
+  });
+
   it("aborts an in-flight stream on stop and records an estimate of what it spent", async () => {
     const inner = hangingProvider([{ type: "delta", content: "x".repeat(70) }]);
     const wrapped = scopedToGeneration(inner);

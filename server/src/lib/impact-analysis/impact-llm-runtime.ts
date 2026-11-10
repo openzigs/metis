@@ -58,6 +58,7 @@ import {
   withRetriedAttemptListener,
 } from "../ai/retried-attempts.js";
 import { decorateProvider } from "../ai/provider-decorator.js";
+import { withDefaultCallType } from "../ai/cache-hit-telemetry.js";
 import { currentImpactProjectId } from "./impact-llm-scope.js";
 
 const log = createChildLogger("impact-llm-runtime");
@@ -416,7 +417,11 @@ export function createImpactLlmRuntime(opts: ImpactLlmRuntimeOptions): ImpactLlm
         const res = await withDeadline(stage, chatOpts?.signal, (signal) =>
           provider.chat(
             messages,
-            withRetriedAttemptListener({ ...chatOpts, signal }, onRetriedAttempt),
+            withRetriedAttemptListener(
+              // #1584 — an untagged stage call is the impact run's in the cache telemetry.
+              { ...withDefaultCallType(chatOpts, "impact-analysis"), signal },
+              onRetriedAttempt,
+            ),
           ),
         );
         statsFor(stage).calls += 1;
@@ -430,7 +435,10 @@ export function createImpactLlmRuntime(opts: ImpactLlmRuntimeOptions): ImpactLlm
       // starts streaming must bring its own idle timeout.
       async *stream(messages: ChatMessage[], chatOpts?: ChatOptions) {
         let sawUsage = false;
-        for await (const chunk of provider.stream(messages, chatOpts)) {
+        for await (const chunk of provider.stream(
+          messages,
+          withDefaultCallType(chatOpts, "impact-analysis"),
+        )) {
           if (chunk.type === "usage") {
             sawUsage = true;
             statsFor(stage).calls += 1;

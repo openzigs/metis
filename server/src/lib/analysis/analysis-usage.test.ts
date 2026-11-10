@@ -93,6 +93,35 @@ describe("meterAnalysisProvider", () => {
     ]);
   });
 
+  it("#1584 — tags an untagged call inside a run as the analysis's, and keeps a call site's own tag", async () => {
+    const seen: Array<ChatOptions | undefined> = [];
+    const inner = new FakeProvider();
+    const chat = inner.chat.bind(inner);
+    inner.chat = async (_m?: ChatMessage[], o?: ChatOptions) => {
+      seen.push(o);
+      return chat();
+    };
+    const stream = inner.stream.bind(inner);
+    inner.stream = (_m?: ChatMessage[], o?: ChatOptions) => {
+      seen.push(o);
+      return stream();
+    };
+    const metered = meterAnalysisProvider(inner);
+    await runInAnalysisUsageScope(SCOPE, async () => {
+      await metered.chat([]);
+      await metered.chat([], { callType: "agent-loop" });
+      for await (const _ of metered.stream([], { maxTokens: 5 })) void _;
+      for await (const _ of metered.stream([], { callType: "chat" })) void _;
+    });
+    expect(seen.map((o) => o?.callType)).toEqual(["analysis", "agent-loop", "analysis", "chat"]);
+    expect(seen[2]?.maxTokens).toBe(5);
+    // Outside a run the wrapper claims nothing.
+    seen.length = 0;
+    await metered.chat([]);
+    for await (const _ of metered.stream([])) void _;
+    expect(seen.map((o) => o?.callType)).toEqual([undefined, undefined]);
+  });
+
   it("records nothing outside a scope", async () => {
     const metered = meterAnalysisProvider(new FakeProvider());
     await metered.chat([]);

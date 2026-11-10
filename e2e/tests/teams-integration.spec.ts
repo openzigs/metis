@@ -99,7 +99,9 @@ test.describe("Epic #547 — Microsoft Teams integration page", () => {
         const gone = await ctx.get(
           `/api/integrations/teams/workspaces/${workspaceId}/installation`,
         );
-        expect(gone.status()).toBe(404);
+        // #1584 — "not connected" answers 200 with null data, not a 404.
+        expect(gone.status()).toBe(200);
+        expect((await gone.json()).data).toBeNull();
       });
     } finally {
       await ctx.dispose();
