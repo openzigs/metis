@@ -62,6 +62,29 @@ describe("findNotVisibleClaims", () => {
     );
   });
 
+  it("#1583 — does NOT flag a listed file whose source the plan honestly says it was not shown", async () => {
+    // The #4478 plan (run 10): `context.go` was named only as a callee.
+    const CTX = "internal/http/request/context.go";
+    const plan =
+      "**Not visible**: the source of `internal/http/request/context.go` was not provided in the retrieved context, and no line locator exists for `QueryInt64Param`.";
+    const named = { files: [...FILES, CTX], excerpts: [{ filePath: QB, text: QB_SOURCE }] };
+    expect(await findNotVisibleClaims(plan, named, lookup)).toEqual([]);
+    // Its source WAS shown — as an excerpt, or as a snippet in it: flagged.
+    const excerpt = { ...named, excerpts: [{ filePath: CTX, text: "package request" }] };
+    expect(await findNotVisibleClaims(plan, excerpt, lookup)).toEqual([{ named: CTX, file: CTX }]);
+    const snippet = { files: [...FILES, CTX], bodies: [{ name: "QueryIntParam", filePath: CTX }] };
+    expect(await findNotVisibleClaims(plan, snippet, lookup)).toEqual([{ named: CTX, file: CTX }]);
+    // Saying a listed file is ABSENT is false whatever was shown of it.
+    for (const absent of [
+      "The router (`internal/http/request/context.go`) is not in the retrieved context.",
+      "Its router, `internal/http/request/context.go`, is not in the given context.",
+    ]) {
+      expect(await findNotVisibleClaims(absent, named, lookup), absent).toEqual([
+        { named: CTX, file: CTX },
+      ]);
+    }
+  });
+
   it("says nothing of a file truly absent, a sentence with no such claim, or an empty context", async () => {
     const lookupSpy = vi.fn(lookup);
     expect(

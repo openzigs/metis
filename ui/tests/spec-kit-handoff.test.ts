@@ -82,9 +82,25 @@ describe("buildHandoffInstructions", () => {
     expect(r.sent).toEqual(["AC-1", "AC-2", "NFR-1", "NFR-2"]);
     const blocks = r.text.split("\n\n");
     expect(blocks[0]).toMatch(/^# Spec Kit handoff: evaluate these requirements from spec\.md/);
-    expect(blocks.slice(1).map((b) => b.split(":")[0])).toEqual(["AC-1", "AC-2", "NFR-1", "NFR-2"]);
+    // #1583 — each under a heading of its own label and first sentence, so the
+    // header above names none of them and the list still reads by name.
+    const headings = blocks.slice(1).map((b) => b.split("\n")[0]!);
+    expect(headings.map((h) => h.split(":")[0])).toEqual([
+      "### AC-1",
+      "### AC-2",
+      "### NFR-1",
+      "### NFR-2",
+    ]);
+    expect(headings.every((h) => /^### [A-Z]+-\d+: \S/.test(h))).toBe(true);
+    expect(blocks.slice(1).map((b) => b.split("\n")[1]!.split(":")[0])).toEqual([
+      "AC-1",
+      "AC-2",
+      "NFR-1",
+      "NFR-2",
+    ]);
     // One line per requirement: never split into one requirement per sub-bullet.
-    expect(blocks.every((b) => !b.includes("\n"))).toBe(true);
+    expect(blocks[0]!.includes("\n")).toBe(false);
+    expect(blocks.slice(1).every((b) => b.split("\n").length === 2)).toBe(true);
     // Not the spec's other sections.
     expect(r.text).not.toContain("Readers");
   });
@@ -100,15 +116,26 @@ describe("buildHandoffInstructions", () => {
     expect(r.text.endsWith("AC-5: short.")).toBe(true);
   });
 
+  it("names each heading by its first sentence, clipped, never the whole criterion (#1583 review)", () => {
+    const long = "z".repeat(200);
+    const spec = `## Acceptance criteria\n- **AC-1**: Mark all as read. Then every entry is read.\n- **AC-2**: ${long}\n`;
+    const [, a, b] = buildHandoffInstructions(["spec.md"], spec).text.split("\n\n");
+    expect(a!.split("\n")[0]).toBe("### AC-1: Mark all as read.");
+    const h2 = b!.split("\n")[0]!;
+    expect(h2.startsWith("### AC-2: zzz")).toBe(true);
+    expect(h2.endsWith("…")).toBe(true);
+    expect(h2.length).toBeLessThan(100);
+  });
+
   it("sends a requirement that ends one under the cap, and leaves out one that ends at it (#994 review)", () => {
     // The server flags `length >= MAX_EXTRA_INSTRUCTIONS` as truncated input, so a
     // structured handoff of exactly the cap must never be emitted.
     const withBody = (n: number) =>
       buildHandoffInstructions(
         ["spec.md"],
-        `## Acceptance criteria\n- **AC-1**: ${"y".repeat(n)}.`,
+        `## Acceptance criteria\n- **AC-1**: Short. ${"y".repeat(n)}.`,
       );
-    const fixed = withBody(1).text.length - 1; // header + "\n\nAC-1: " + "."
+    const fixed = withBody(1).text.length - 1; // header + "\n\n### AC-1: Short.\nAC-1: Short. " + "."
     const under = withBody(MAX_EXTRA_INSTRUCTIONS - 1 - fixed);
     expect(under.text).toHaveLength(MAX_EXTRA_INSTRUCTIONS - 1);
     expect(under).toMatchObject({ sent: ["AC-1"], omitted: [], truncated: false });

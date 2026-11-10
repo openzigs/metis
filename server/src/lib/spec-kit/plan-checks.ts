@@ -5,8 +5,9 @@
  *    for Miniflux #4479 had `entry_query_builder.go` in its context and still
  *    wrote that `WithLimit`'s semantics were "not visible", then blamed a
  *    parse-time default. The claim is checked against the files the plan was
- *    given (`plan-context.md`): a named file on that list is flagged, and a
- *    named function only when its SOURCE was shown — a code snippet of it, or
+ *    given (`plan-context.md`): a named file on that list is flagged when the
+ *    plan says it is absent, or says it was not shown although its source was
+ *    (#1583), and a named function only when its SOURCE was shown — a code snippet of it, or
  *    a retrieved source excerpt that declares it. A function the context named
  *    only by a locator or as a caller may honestly be called not visible
  *    (PR #1164 panel): its file is listed, its body is not.
@@ -36,6 +37,19 @@ const MAX_SCANNED_CHARS = 200_000;
  */
 const NOT_VISIBLE_RE =
   /\bnot (?:visible|shown|seen|provided|included|available|present) in the (?:retrieved |provided |given )?(?:context|source)\b|\bnot in the (?:retrieved |provided |given )?context\b|\b(?:cannot|can't|could not) (?:see|find)\b[^.\n]{0,80}\bin the (?:retrieved |provided |given )?(?:context|source)\b/i;
+
+/**
+ * #1583 — the claims among those that a FILE is absent from the context ("not
+ * in the retrieved context", "could not find … in the context"), as opposed to
+ * its source not being shown ("its source was not provided in the retrieved
+ * context"). A file the context only names — as a callee's or a caller's
+ * locator — has no source shown, and the prompt allows saying so: the #4478
+ * plan wrote that `internal/http/request/context.go` "was not provided in the
+ * retrieved context — the file is named … only as a callee", and the card
+ * called that a false claim.
+ */
+const ABSENT_FROM_CONTEXT_RE =
+  /\bnot in the (?:retrieved |provided |given )?context\b|\b(?:cannot|can't|could not) find\b[^.\n]{0,80}\bin the (?:retrieved |provided |given )?(?:context|source)\b/i;
 
 /** Sentences of `text`, split on `.`/`!`/`?` followed by space, or on a line break. */
 function sentences(text: string): string[] {
@@ -161,11 +175,21 @@ export async function findNotVisibleClaims(
   const { files: contextFiles, bodies = [], excerpts = [] } = context;
   if (contextFiles.length === 0) return [];
   const inContext = new Set(contextFiles);
+  // #1583 — a file whose source the context showed: an excerpt of it, or a snippet in it.
+  const sourceShown = new Set([
+    ...excerpts.map((e) => e.filePath),
+    ...bodies.map((b) => b.filePath),
+  ]);
   const claimedPaths: string[] = [];
   const claimedNames: string[] = [];
   for (const sentence of sentences(plan)) {
     if (!NOT_VISIBLE_RE.test(sentence)) continue;
-    claimedPaths.push(...extractReferencedPaths(sentence));
+    // Absent from a context that lists it is always false; not shown is false
+    // only for a file whose source was shown.
+    const absent = ABSENT_FROM_CONTEXT_RE.test(sentence);
+    claimedPaths.push(
+      ...extractReferencedPaths(sentence).filter((p) => absent || sourceShown.has(p)),
+    );
     for (const m of sentence.matchAll(/`([^`\n]{1,120})`/g)) {
       const id = CODE_NAME_RE.exec(m[1]!.trim());
       if (id) claimedNames.push(id[1]!);

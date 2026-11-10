@@ -15,8 +15,14 @@ import { isUniqueViolation } from "../db/prisma-errors.js";
 
 export const SPECKIT_FEATURE_SLUG_RE = /^\d{3}-[a-z0-9-]{1,80}$/;
 
-/** The word part of a slug (`NNN-<words>`), per {@link SPECKIT_FEATURE_SLUG_RE}. */
-const MAX_SLUG_WORDS_LENGTH = 80;
+/**
+ * The longest word part (`NNN-<words>`) a slug is GIVEN from a title. The
+ * validation regex ({@link SPECKIT_FEATURE_SLUG_RE}) still accepts 80, so every
+ * existing slug and a forced one stay valid. #1583 — at 80, a pasted issue's
+ * first sentence made slugs of 60 to 72 characters, which are the directory
+ * (`specs/<slug>/`), the branch name and every reference to the feature.
+ */
+export const MAX_SLUG_WORDS_LENGTH = 48;
 
 export interface SpecKitFeatureDto {
   id: string;
@@ -72,9 +78,9 @@ export function truncateAtWord(text: string, max: number): string {
 /**
  * Convert a free-form feature title into a kebab slug. Strips non-alphanumeric
  * characters, collapses whitespace into hyphens, lowercases, and truncates to
- * 80 chars (matching the slug-validation regex) — at the last whole word that
- * fits (#786: the walkthrough's slug ended `…-mark-eve`). A single word longer
- * than 80 chars is cut hard.
+ * {@link MAX_SLUG_WORDS_LENGTH} chars — at the last whole word that fits (#786:
+ * the walkthrough's slug ended `…-mark-eve`). A single word longer than that is
+ * cut hard.
  */
 export function kebab(input: string): string {
   const full = input

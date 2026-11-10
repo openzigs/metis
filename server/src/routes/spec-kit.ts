@@ -154,6 +154,24 @@ function ok<T>(data: T): { success: true; data: T } {
 }
 
 /**
+ * #1583 — a refused request body, in words. `error.message` is Zod's serialized
+ * issue array, which an over-size `PUT` of an artifact returned whole (`d-S10-1`).
+ * A string over its limit says the limit; anything else is the shared friendly
+ * summary (`zodErrorToFriendly`), with the fields in `details`.
+ */
+export function invalidBody(error: ZodError): AppError {
+  const friendly = zodErrorToFriendly(error);
+  const issue = error.issues.length === 1 ? error.issues[0]! : null;
+  const tooLong =
+    issue?.code === "too_big" && issue.origin === "string" && issue.path.length > 0
+      ? `${String(issue.path[issue.path.length - 1])} is too long: at most ${Number(issue.maximum).toLocaleString("en-US")} characters`
+      : null;
+  return new AppError(400, "BAD_REQUEST", tooLong ?? friendly.message, {
+    fields: friendly.fields,
+  });
+}
+
+/**
  * Epic #406 (#423) — pull the human-readable completion line out of a Spec Kit
  * command result so it can be surfaced as the TERMINAL `job:lifecycle` message.
  *
@@ -340,7 +358,11 @@ function rethrow(err: unknown): never {
     );
   }
   if (err instanceof GateUnmetError) {
-    throw new AppError(err.status, err.code, err.message, { required: err.required });
+    throw new AppError(err.status, err.code, err.message, {
+      required: err.required,
+      // #1583 — so the page can name every artifact it is waiting for.
+      ...(err.missing.length > 0 ? { missing: [...err.missing] } : {}),
+    });
   }
   if (err instanceof BudgetExceededError) {
     throw new AppError(err.status, err.code, err.message, {
@@ -480,7 +502,7 @@ async function discardReservedFeature(
 async function prepareCommand(req: Request, res: Response): Promise<PreparedCommand> {
   const parsed = specKitCommandRequestSchema.safeParse(req.body ?? {});
   if (!parsed.success) {
-    throw new AppError(400, "BAD_REQUEST", parsed.error.message);
+    throw invalidBody(parsed.error);
   }
   const cmdRaw = String(req.params.cmd ?? "");
   const input = parsed.data.input;
@@ -745,7 +767,7 @@ export function specKitRouter(): Router {
     async (req, res) => {
       const parsed = enabledSchema.safeParse(req.body);
       if (!parsed.success) {
-        throw new AppError(400, "BAD_REQUEST", parsed.error.message);
+        throw invalidBody(parsed.error);
       }
       try {
         const enabled = await setSpecKitEnabled(
@@ -816,7 +838,7 @@ export function specKitRouter(): Router {
     async (req, res) => {
       const parsed = specKitWriteRequestSchema.safeParse(req.body);
       if (!parsed.success) {
-        throw new AppError(400, "BAD_REQUEST", parsed.error.message);
+        throw invalidBody(parsed.error);
       }
       try {
         const projectId = projectIdFrom(req);
@@ -862,7 +884,7 @@ export function specKitRouter(): Router {
     async (req, res) => {
       const parsed = constitutionSchema.safeParse(req.body ?? {});
       if (!parsed.success) {
-        throw new AppError(400, "BAD_REQUEST", parsed.error.message);
+        throw invalidBody(parsed.error);
       }
       try {
         const projectId = projectIdFrom(req);
@@ -1100,7 +1122,7 @@ export function specKitRouter(): Router {
     requirePermission("project.update"),
     async (req, res) => {
       const parsed = specKitFromRequirementsRequestSchema.safeParse(req.body ?? {});
-      if (!parsed.success) throw new AppError(400, "BAD_REQUEST", parsed.error.message);
+      if (!parsed.success) throw invalidBody(parsed.error);
       const projectId = projectIdFrom(req);
       if (parsed.data.projectId !== undefined && parsed.data.projectId !== projectId) {
         throw new AppError(
@@ -1230,7 +1252,7 @@ export function specKitRouter(): Router {
     requirePermission("project.update"),
     async (req, res) => {
       const parsed = z.object({ content: z.string().max(200_000) }).safeParse(req.body ?? {});
-      if (!parsed.success) throw new AppError(400, "BAD_REQUEST", parsed.error.message);
+      if (!parsed.success) throw invalidBody(parsed.error);
       try {
         const projectId = projectIdFrom(req);
         await ensureEnabled(projectId);
@@ -1331,7 +1353,7 @@ export function specKitRouter(): Router {
         const parsed = z
           .object({ restoreTo: z.string().min(1).max(40).optional() })
           .safeParse(req.body ?? {});
-        if (!parsed.success) throw new AppError(400, "BAD_REQUEST", parsed.error.message);
+        if (!parsed.success) throw invalidBody(parsed.error);
         const feature = await restoreFeature({
           projectId,
           slug: String(req.params.slug ?? ""),
@@ -1584,7 +1606,7 @@ async function dispatchNamespaced(
       // #953 — a dry run plans and checks the credential; anything else is a
       // live export through the vault-bound, target-guarded GitHub client.
       const extra = tasksExportBodySchema.safeParse(body);
-      if (!extra.success) throw new AppError(400, "BAD_REQUEST", extra.error.message);
+      if (!extra.success) throw invalidBody(extra.error);
       if (!ctx.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
       // BOLA: requireProjectAccess() already ran on the route, before the job wrapper.
       const exportInput = {
