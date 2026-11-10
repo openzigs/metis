@@ -3,6 +3,8 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { PROACTIVE_REFRESH_MS, useAuth } from "@/lib/auth-context";
 import { _resetAuthRetryState, apiFetch } from "@/lib/api-client";
 import { makeWrapper, TEST_USER } from "./test-utils";
+import { QueryClient } from "@tanstack/react-query";
+import { workspaceListQuery } from "@/lib/active-workspace";
 import { useRouter } from "next/navigation";
 import { closeSocket, useSocket, __resetSocketStatusForTests } from "@/lib/socket-client";
 
@@ -185,6 +187,7 @@ describe("AuthProvider", () => {
 
   it("logout still clears state when the upstream call throws", async () => {
     fetchMock.mockRejectedValueOnce(new Error("network"));
+    window.localStorage.setItem("metis.activeWorkspaceId", "ws-mine");
     const { result } = renderHook(() => useAuth(), {
       wrapper: makeWrapper({ initialUser: TEST_USER }),
     });
@@ -193,6 +196,37 @@ describe("AuthProvider", () => {
       await result.current.logout();
     });
     expect(result.current.user).toBeNull();
+    expect(window.localStorage.getItem("metis.activeWorkspaceId")).toBeNull();
+  });
+
+  // #2197 — a second user on a shared browser must not inherit the first's
+  // active workspace (a non-member id filtered /projects down to nothing).
+  it("logout forgets the signed-out user's active workspace", async () => {
+    fetchMock.mockResolvedValueOnce(ok({ success: true, data: null }));
+    window.localStorage.setItem("metis.activeWorkspaceId", "ws-mine");
+    const { result } = renderHook(() => useAuth(), {
+      wrapper: makeWrapper({ initialUser: TEST_USER }),
+    });
+
+    await act(async () => {
+      await result.current.logout();
+    });
+    expect(window.localStorage.getItem("metis.activeWorkspaceId")).toBeNull();
+  });
+
+  // #2206 review — the next user must not validate against the last user's list.
+  it("logout drops the signed-out user's cached workspace list", async () => {
+    fetchMock.mockResolvedValueOnce(ok({ success: true, data: null }));
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(workspaceListQuery.queryKey, [{ id: "ws-userA", name: "A" }]);
+    const { result } = renderHook(() => useAuth(), {
+      wrapper: makeWrapper({ initialUser: TEST_USER, queryClient }),
+    });
+
+    await act(async () => {
+      await result.current.logout();
+    });
+    expect(queryClient.getQueryData(workspaceListQuery.queryKey)).toBeUndefined();
   });
 
   it("refresh re-fetches the user", async () => {

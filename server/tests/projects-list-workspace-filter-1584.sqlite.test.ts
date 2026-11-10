@@ -38,10 +38,17 @@ vi.mock("../src/lib/prisma.js", async () => {
   };
 });
 vi.mock("../src/lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
+// #2197 — the real `listProjects`, observed: the route's own narrowing is
+// asserted on what it passes, not only on what the membership check leaves.
+vi.mock("../src/lib/projects/project-service.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/lib/projects/project-service.js")>();
+  return { ...actual, listProjects: vi.fn(actual.listProjects) };
+});
 
 const { projectsRouter } = await import("../src/routes/projects.js");
 const { errorHandler, notFoundHandler } = await import("../src/middleware/error-handler.js");
 const { issueTokens } = await import("../src/lib/auth/jwt.js");
+const { listProjects } = await import("../src/lib/projects/project-service.js");
 
 const P1 = "proj-1584-ws1";
 const P2 = "proj-1584-ws2";
@@ -127,6 +134,20 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const one = bearer("u-one", ["ws-1"]);
       expect(await ids(one, "?workspaceId=ws-2")).toEqual([P_OPEN]);
       expect(await ids(one, "?workspaceId=ws-3")).toEqual([P_OPEN]);
+    });
+
+    // #2197 (survivor M12) — the route narrows on its own: widening its filter to
+    // `[qWorkspace]` still listed only P_OPEN above, because #561's membership
+    // check in `listProjects` denied ws-2 a second time. Assert the first layer.
+    it("the route passes no workspace at all for one the token does not claim", async () => {
+      const spy = vi.mocked(listProjects);
+      spy.mockClear();
+      await ids(bearer("u-one", ["ws-1"]), "?workspaceId=ws-2");
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(spy.mock.calls[0]![0]).toMatchObject({ workspaceIds: [], memberUserId: "u-one" });
+      spy.mockClear();
+      await ids(bearer("u-two", ["ws-1", "ws-2"]), "?workspaceId=ws-2");
+      expect(spy.mock.calls[0]![0]).toMatchObject({ workspaceIds: ["ws-2"] });
     });
 
     it("a claim with no membership row behind it grants nothing through the filter (#561)", async () => {

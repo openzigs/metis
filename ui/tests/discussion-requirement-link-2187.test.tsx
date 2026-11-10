@@ -259,3 +259,50 @@ describe("ThreadSettingsPanel attaches a requirement by title (#2187)", () => {
     expect(screen.getByPlaceholderText("Paste the id to anchor to")).toBeInTheDocument();
   });
 });
+
+// #2203 — review follow-ups on the picker and the Settings anchor.
+describe("DiscussionRequirementPicker accessibility and results (#2203)", () => {
+  it("is a list-autocomplete combobox that says when its list is open", async () => {
+    const user = userEvent.setup();
+    renderWith(<DiscussionRequirementPicker projectId="p-1" value={null} onChange={vi.fn()} />);
+    const box = screen.getByRole("combobox", { name: "About requirement (optional)" });
+    expect(box).toHaveAttribute("aria-autocomplete", "list");
+    expect(box).toHaveAttribute("aria-expanded", "false");
+    await user.click(box);
+    const list = await screen.findByRole("list", { name: "Matching requirements" });
+    expect(box).toHaveAttribute("aria-expanded", "true");
+    expect(box).toHaveAttribute("aria-controls", list.id);
+  });
+
+  it("keeps the last results on screen while the next term is fetched", async () => {
+    const user = userEvent.setup();
+    renderWith(<DiscussionRequirementPicker projectId="p-1" value={null} onChange={vi.fn()} />);
+    const box = screen.getByRole("combobox", { name: "About requirement (optional)" });
+    await user.click(box);
+    await screen.findByRole("list", { name: "Matching requirements" });
+    searchMock.mockReturnValue(new Promise(() => undefined));
+    await user.type(box, "metrics");
+    await waitFor(() => expect(searchMock).toHaveBeenCalledWith("p-1", "metrics"));
+    expect(screen.queryByText("Searching…")).not.toBeInTheDocument();
+    expect(screen.getByRole("list", { name: "Matching requirements" })).toBeInTheDocument();
+  });
+});
+
+describe("ThreadSettingsPanel anchor label (#2203)", () => {
+  it("points the label at nothing while the picker stands in for the id box", () => {
+    renderWith(<ThreadSettingsPanel threadId="t-1" aiResponseMode="off" projectId="p-1" />);
+    const label = screen.getByText("Anchor (optional)");
+    expect(label).not.toHaveAttribute("for");
+    expect(document.getElementById("anchor-id")).toBeNull();
+  });
+
+  it("labels the id box once it is shown", async () => {
+    const user = userEvent.setup();
+    renderWith(<ThreadSettingsPanel threadId="t-1" aiResponseMode="off" projectId="p-1" />);
+    await user.selectOptions(screen.getByLabelText("Anchor type"), "analysisId");
+    expect(screen.getByLabelText("Anchor (optional)")).toHaveAttribute(
+      "placeholder",
+      "Paste the id to anchor to",
+    );
+  });
+});

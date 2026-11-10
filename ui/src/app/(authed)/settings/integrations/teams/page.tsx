@@ -19,6 +19,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/lib/auth-context";
+import { readStoredActiveWorkspaceId, resolveActiveWorkspaceId } from "@/lib/active-workspace";
 import {
   canManageIntegrations,
   listIntegrationWorkspaces,
@@ -50,8 +51,6 @@ const REINSTALL_MESSAGES: Record<TeamsReinstallReason, string> = {
     "This bot's app type is not one Teams recognises, so it cannot sign in. Disconnect it and reconnect it with a supported app type.",
 };
 
-const ACTIVE_WORKSPACE_STORAGE_KEY = "metis.activeWorkspaceId";
-
 export default function TeamsIntegrationPage() {
   const { user } = useAuth();
   const isSystemAdmin = user?.role === "admin";
@@ -67,14 +66,7 @@ export default function TeamsIntegrationPage() {
   // Default the selection to the stored active workspace, else the first one.
   useEffect(() => {
     if (workspaceId || workspaces.length === 0) return;
-    let stored: string | null = null;
-    try {
-      stored = window.localStorage.getItem(ACTIVE_WORKSPACE_STORAGE_KEY);
-    } catch {
-      stored = null;
-    }
-    const initial = workspaces.find((w) => w.id === stored)?.id ?? workspaces[0]?.id ?? "";
-    setWorkspaceId(initial);
+    setWorkspaceId(resolveActiveWorkspaceId(readStoredActiveWorkspaceId(), workspaces) ?? "");
   }, [workspaces, workspaceId]);
 
   const selected = workspaces.find((w) => w.id === workspaceId) ?? null;

@@ -1142,7 +1142,7 @@ The AI answers from **this project's own sources**, as the project chat does: it
 - **AI participation** — a 3-way control to set the thread's mode (**Off**, **On mention**, or **Auto**). Your choice takes effect immediately.
 - **Anchor (optional)** — attach the discussion to a specific Requirement, Analysis, or Spec Kit feature so it carries that context. For a **Requirement**, search the project's requirements by title and pick one; an Analysis or Spec Kit feature still takes its id. (Both controls are available to thread members only.)
 
-**Discussing a requirement.** When you start a discussion, **About requirement (optional)** under the title lets you pick the requirement it is about: click the box to see the project's newest requirements, or type part of a title to narrow them. The date beside each one tells apart requirements with the same title from different runs. The discussions list then shows *About: …* under the thread's title, and the thread page links to the requirement. [#2187]
+**Discussing a requirement.** When you start a discussion, **About requirement (optional)** under the title lets you pick the requirement it is about: click the box to see the project's newest requirements, or type part of a title to narrow them; typing searches every requirement in the project, however old its run. The date beside each one tells apart requirements with the same title from different runs. The discussions list then shows *About: …* under the thread's title, and the thread page links to the requirement. [#2187]
 
 **Cost note.** Human-to-human chatter never calls the AI and never incurs any token cost — only an actual AI reply does, and AI replies are rate-limited per person per thread to keep spend predictable.
 

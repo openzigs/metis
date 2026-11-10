@@ -59,7 +59,10 @@ interface SSOProvider {
  */
 interface SamlGroupOverage {
   total: number;
-  recent: Array<{ userId: string; username: string | null; at: string }>;
+  /** #1558 — each sign-in's resulting role: an app-role mapping can still match. */
+  recent: Array<{ userId: string; username: string | null; role: string | null; at: string }>;
+  /** #1558 — only the last `windowDays` days count, so the warning clears once fixed. */
+  windowDays: number;
 }
 
 /**
@@ -436,16 +439,21 @@ export default function AdminAuthPage() {
                 <Alert variant="warning" data-testid="saml-group-overage-warning">
                   <AlertTitle>
                     {samlOverage.total === 1
-                      ? "1 SAML sign-in arrived without the user's groups"
-                      : `${samlOverage.total} SAML sign-ins arrived without the user's groups`}
+                      ? "1 SAML sign-in"
+                      : `${samlOverage.total} SAML sign-ins`}
+                    {` in the last ${samlOverage.windowDays} days arrived without the user's groups`}
                   </AlertTitle>
                   <AlertDescription>
                     <p>
                       The identity provider sent a link to the groups instead of the groups
-                      (Microsoft Entra ID does this for a user in more than 150 groups), so these
-                      users got the default role:{" "}
+                      (Microsoft Entra ID does this for a user in more than 150 groups), so no group
+                      mapping could match them. Each got the role of a matching app-role mapping, or
+                      else the default role:{" "}
                       {samlOverage.recent
-                        .map((event) => event.username ?? event.userId)
+                        .map((event) => {
+                          const name = event.username ?? event.userId;
+                          return event.role ? `${name} (${event.role})` : name;
+                        })
                         .filter((name, i, all) => all.indexOf(name) === i)
                         .join(", ")}
                       .
