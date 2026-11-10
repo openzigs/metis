@@ -1,10 +1,11 @@
 ---
 issue: 2149
-section: Fixed
+section: Changed
 ---
 
-- Governing checks: a request that adds or changes a step where a password is chosen, or a new
-  way of signing in, now draws the rules whose own words name that step (a check of every new
-  password against common passwords; what every sign-in must use). It no longer drops them for
-  saying nothing of their matter, and it does not draw the password length and composition
-  rules with them. Governing checks stay marked **Preview**.
+- `eval:governing`: a change to the applicability judge was tuned and not shipped. It brought in
+  the common-password check on flows that set a password, and the second-factor rule on new
+  ways of signing in. Read once on the held-out `governing-03` together with #2152's change,
+  recall rose from 0.75 to 0.81, but a password-change request drew extra rules again and four
+  open pairs were reported as **Compliant**. Governing checks are unchanged and stay marked
+  **Preview**.

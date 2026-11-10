@@ -890,29 +890,6 @@ describe("#1997 — the judging prompt's precision guidance", () => {
     ).toContain(SAME_SUBJECT_LINE);
   });
 
-  // #2149 — the line ruled out the blocklist rule on a flow that sets a password, and the
-  // multi-factor rule on a new way of signing in. #2140's sentence brought them back with the
-  // length and composition rules; this one brings in only a rule whose own words name the step.
-  it("brings in a rule whose own words name the step the requirement adds, and no policy rule with it", () => {
-    const line = SAME_SUBJECT_LINE;
-    const exclusion = line.indexOf("The other rules on that subject do not apply.");
-    const step = line.indexOf(
-      "But a rule whose own words name the step the requirement adds or changes applies to it",
-    );
-    const policy = line.indexOf(
-      "Rules on the password policy itself (its length, which characters it allows) and on how the password-change function works still apply only as above.",
-    );
-    // The exception follows the exclusion it qualifies, and the policy limit closes the line.
-    expect(exclusion).toBeGreaterThan(-1);
-    expect(step).toBeGreaterThan(exclusion);
-    expect(policy).toBeGreaterThan(step);
-    expect(line.endsWith("still apply only as above.")).toBe(true);
-    expect(line).toContain("even when the requirement says nothing of that rule's matter");
-    // Both kinds #2140 measured: a password chosen or changed, and a new way in.
-    expect(line).toContain("applies to a flow where a password is chosen or changed");
-    expect(line).toContain("applies to a new way in");
-  });
-
   // #2050 — on governing-01 the screen found EN-01 (GR-09), CM-02 (GR-20) and CM-03 (GR-21) in
   // every run and the judge ruled each does-not-apply: a courier connection read as "platform
   // encryption", and a release-process requirement as not "about" testing or undo. Cosmetic

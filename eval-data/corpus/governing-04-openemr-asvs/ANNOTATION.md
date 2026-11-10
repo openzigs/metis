@@ -263,3 +263,52 @@ The last row is the committed reading,
   before it. The pairs it lost (OS-27 → PA-10, whose TOTP step is "for Example", and
   `governing-01`'s GR-22 → CM-05) are asked about, not called compliant. The committed reading
   above ran before this wording.
+
+### #2149: the judge on password flows (tuned, not shipped)
+
+**First, a decision on PA-01 (length) and PA-05 (composition): no consistency pass.** #2140's
+draft drew both onto most password flows, where no label has them, and #2140 asked whether
+those extras were missing labels. They are kept as errors, for three reasons:
+
+- **The rules' own words.** PA-04 names its step ("passwords submitted during account
+  registration or password change"). PA-01 and PA-05 state what the password policy is. A
+  flow that sets one password does not set the policy.
+- **The held-out set's labels.** `governing-03` scores its length rule and the other password
+  rules as extras on the password-change request (OE-15; #2140's reading). Those labels are
+  out of scope to change. A pass that added PA-01 and PA-05 here would tune the judge towards
+  extras that the decision set counts as errors.
+- **Independence.** These two rules would be chosen *because* an arm drew them. #2140 chose
+  its consistency rules as counterparts of `governing-03`'s, not from an arm's errors.
+
+**The sentence.** It keys on a rule whose own words name the step the requirement adds or
+changes, and keeps the policy rules, and the change function's own rules, under the
+same-subject limit. `governing-03`'s `ANNOTATION.md` quotes it. All runs are A5 with
+`anthropic/claude-sonnet-5-5`, on top of #2152's findings line, scored on 33 items and 47
+truth pairs:
+
+| Prompts | Runs | Recall | Precision | Verdict accuracy | Hard errors |
+|---|---|---|---|---|---|
+| #2152's line, judge as shipped; `dbd9a8aa4` (reading `baseline-A5-sonnet-2152`) | 2 | 0.66 / 0.68 | 0.70 / 0.70 | 0.57 / 0.60 | 0 / 0 |
+| draft A: a policy rule applies only when the requirement sets the policy | 1 | 0.79 | 0.65 | 0.66 | 0 |
+| draft B: the policy rules and the change function's rules stay limited | 2 | 0.81 / 0.83 | 0.67 / 0.65 | 0.64 / 0.66 | 0 / 0 |
+| draft B; commit `cee01ada6`, clean tree | 2 | 0.79 / 0.83 | 0.66 / 0.75 | 0.64 / 0.68 | 1 / 0 |
+| draft B, and #2152's "ideally" wording; commit `320ac11b3`, clean tree | 2 | 0.81 / 0.83 | 0.69 / 0.70 | 0.68 / 0.66 | 0 / 0 |
+
+The last row is the committed reading,
+[`eval-data/readings/governing-04-openemr-asvs/baseline-A5-sonnet-2149.md`](../../readings/governing-04-openemr-asvs/baseline-A5-sonnet-2149.md)
+($1.76). It ran at the same commit as `governing-03`'s re-read. On `governing-01`, draft B
+(2 runs) gave recall 1.00 / 1.00, precision 0.51 / 0.54, verdict accuracy 0.85 / 0.88 and no
+hard error.
+
+- **What draft B found:** OS-26, OS-27 and OS-32 → PA-04, OS-08 → PA-04 in some runs, and
+  OS-04, OS-17 and OS-30 → PA-10. It drew no PA-01 extra in any run. The PA-05 extra on OS-26
+  was there before it too.
+- **Its extras:** OS-10 → PA-04 (a strength meter on the password-setting step), OS-29 →
+  PA-10 (one-time login links) and OS-27 → PA-02. Each is arguable, and none is labelled.
+- The hard error at `cee01ada6` was OS-21 → LG-05, from the findings call. #2152's "ideally"
+  wording was added for it.
+- **Not shipped:** read on `governing-03` with #2152's line, recall rose from 0.75 to 0.81.
+  But the password-change request drew extra rules again, and four hard errors broke the
+  no-evidence bar. That set's `ANNOTATION.md`, "The #2149 and #2152 attempt and re-read", has
+  the diagnosis. The shipped judge is #2108's, and #2140's reading stays the baseline of the
+  shipped prompts.
