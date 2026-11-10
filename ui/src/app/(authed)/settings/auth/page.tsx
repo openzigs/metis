@@ -55,7 +55,7 @@ interface SSOProvider {
 
 /**
  * #1552 — SAML sign-ins whose IdP sent no groups (Microsoft Entra ID sends a
- * Graph link instead past 150 groups), so the user got the default role.
+ * Graph link instead past 150 groups), so no group mapping could match them.
  */
 interface SamlGroupOverage {
   total: number;
@@ -447,14 +447,18 @@ export default function AdminAuthPage() {
                     <p>
                       The identity provider sent a link to the groups instead of the groups
                       (Microsoft Entra ID does this for a user in more than 150 groups), so no group
-                      mapping could match them. Each got the role of a matching app-role mapping, or
-                      else the default role:{" "}
+                      mapping could match them. Each is listed with the role they signed in with: a
+                      role granted in METIS or by SCIM takes precedence, then a matching app-role
+                      mapping, then the default role:{" "}
                       {samlOverage.recent
+                        // #2205 — once per user, with their newest sign-in's role.
+                        .filter(
+                          (event, i, all) => all.findIndex((e) => e.userId === event.userId) === i,
+                        )
                         .map((event) => {
                           const name = event.username ?? event.userId;
                           return event.role ? `${name} (${event.role})` : name;
                         })
-                        .filter((name, i, all) => all.indexOf(name) === i)
                         .join(", ")}
                       .
                     </p>

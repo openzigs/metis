@@ -306,9 +306,11 @@ export function ssoRouter(): Router {
     });
     if (result.user.groupOverage) {
       // #1552 — the IdP listed no groups (Entra's overage claim), so no group
-      // mapping matched: the user got an app-role mapping's role or the default
-      // role (#1558), recorded below. The admin Authentication page warns from
-      // these events (`samlGroupOverageSummary`).
+      // mapping matched. The role the user signed in with is recorded below
+      // (#1558): an explicit local grant (the first-admin bootstrap is one) or a
+      // SCIM grant wins; else an app-role mapping's role, else the default role
+      // (`resolveEffectiveRoleFromRows`, #2205). The admin Authentication page
+      // warns from these events (`samlGroupOverageSummary`).
       audit({
         actor: { id: userRow.id },
         action: SAML_GROUP_OVERAGE_ACTION,
