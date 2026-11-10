@@ -923,10 +923,11 @@ const ID_LABEL_WINDOW = 32;
  * #2132 — text that ends in a "requirement" no other word describes: at the
  * start, after punctuation, or after only an article or a preposition.
  * #2143 — punctuation, not a digit or a quote: "the REQ-001 requirement" and
- * `the "Login" requirement` are named already.
+ * `the "Login" requirement` are named already. #2155 — but a closing quote
+ * after sentence punctuation ends a sentence: `He said "done." Requirement`.
  */
 const BARE_REQUIREMENT =
-  /(?:^|[^\p{L}\p{N}\s"'“”‘’]\s*|\b(?:the|this|that|a|an|each|for|of|in|on|to|about|with|by|from|and|or)\s+)requirement$/iu;
+  /(?:^|[^\p{L}\p{N}\s"'“”‘’]\s*|[.!?]["'”’]+\s*|\b(?:the|this|that|a|an|each|for|of|in|on|to|about|with|by|from|and|or)\s+)requirement$/iu;
 
 /**
  * #2143 — whether `text` ends in a bare "requirement", read over the last
