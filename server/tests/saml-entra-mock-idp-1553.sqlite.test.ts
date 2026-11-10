@@ -40,7 +40,8 @@ vi.mock("../src/lib/prisma.js", async () => {
 });
 
 const { createApp } = await import("../src/app.js");
-const { upsertProvider, __resetProviders } = await import("../src/lib/auth/sso-config.js");
+const { upsertProvider, __resetProviders, getStoredProviderByMode } =
+  await import("../src/lib/auth/sso-config.js");
 const { __resetSAMLInstances, parseIdPMetadata } = await import("../src/lib/auth/saml-provider.js");
 const { verifyAccessToken } = await import("../src/lib/auth/jwt.js");
 const { requireMfa } = await import("../src/lib/auth/require-mfa.js");
@@ -447,6 +448,17 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect((await summary()).body.data.lastRefused?.assertionIssuer).toBe(idp.issuer);
       });
       await repaste(metadata);
+      expect((await summary()).body.data).toEqual({
+        configuredIssuer: idp.issuer,
+        lastRefused: { assertionIssuer: otherTenant, at: expect.any(String) },
+      });
+      // #2204 — the provider store is in memory and mints a fresh id at each
+      // boot (and per replica): a refusal recorded before a restart is still
+      // reported once the provider is seeded again.
+      const idBefore = getStoredProviderByMode("saml")?.id;
+      __resetProviders();
+      await configure();
+      expect(getStoredProviderByMode("saml")?.id).not.toBe(idBefore);
       expect((await summary()).body.data).toEqual({
         configuredIssuer: idp.issuer,
         lastRefused: { assertionIssuer: otherTenant, at: expect.any(String) },

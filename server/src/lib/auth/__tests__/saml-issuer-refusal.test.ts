@@ -10,7 +10,6 @@ const findMany = vi.fn();
 vi.mock("../../prisma.js", () => ({ prisma: { auditLog: { findMany } } }));
 
 const {
-  ISSUER_REFUSAL_WINDOW,
   MAX_RECORDED_ISSUER_LENGTH,
   SAML_ISSUER_REFUSAL_TARGET_TYPE,
   SAML_ISSUER_REFUSED_ACTION,
@@ -18,12 +17,10 @@ const {
   samlIssuerRefusalSummary,
 } = await import("../saml-issuer-refusal.js");
 
-const PROVIDER_ID = "saml-provider-1562";
 const CONFIGURED = "https://sts.windows.net/aaaa0000-1562-4000-8000-000000000001/";
 const ASSERTED = "https://sts.windows.net/bbbb0000-1562-4000-8000-000000000002/";
 const AT = new Date("2026-11-10T09:00:00.000Z");
-const EARLIER = new Date("2026-11-09T09:00:00.000Z");
-const configured = (configuredIssuer: string) => ({ id: PROVIDER_ID, configuredIssuer });
+const configured = (configuredIssuer: string) => ({ configuredIssuer });
 
 /** An audit row as the ACS writes it. */
 function row(metadata: unknown, ts = AT) {
@@ -55,7 +52,7 @@ describe("issuerRefusalAuditMetadata", () => {
 });
 
 describe("samlIssuerRefusalSummary", () => {
-  it("#2204: reads the provider's newest refusals, filtered for the [targetType, targetId, action] index", async () => {
+  it("#2204: reads the provider's newest refusals, keyed on the configured issuer, not the per-boot provider id", async () => {
     findMany.mockResolvedValue([
       row({ assertionIssuer: ASSERTED, configuredIssuer: CONFIGURED, mode: "saml" }),
     ]);
@@ -67,25 +64,13 @@ describe("samlIssuerRefusalSummary", () => {
       expect.objectContaining({
         where: {
           targetType: SAML_ISSUER_REFUSAL_TARGET_TYPE,
-          targetId: PROVIDER_ID,
+          targetId: CONFIGURED,
           action: SAML_ISSUER_REFUSED_ACTION,
         },
         orderBy: { ts: "desc" },
-        take: ISSUER_REFUSAL_WINDOW,
+        take: 1,
       }),
     );
-  });
-
-  it("#2204: issuer A refused, then B refused, then back to A reports A's newest refusal", async () => {
-    findMany.mockResolvedValue([
-      row({ assertionIssuer: CONFIGURED, configuredIssuer: ASSERTED }, AT),
-      row({ assertionIssuer: ASSERTED, configuredIssuer: CONFIGURED }, EARLIER),
-      row({ assertionIssuer: "https://older.example/", configuredIssuer: CONFIGURED }, EARLIER),
-    ]);
-    expect((await samlIssuerRefusalSummary(configured(CONFIGURED))).lastRefused).toEqual({
-      assertionIssuer: ASSERTED,
-      at: EARLIER.toISOString(),
-    });
   });
 
   it("reports an assertion that named no Issuer", async () => {

@@ -6,9 +6,13 @@
  * issuer (the metadata `entityID` `parseIdPMetadata` read) is refused. A
  * deployment upgrading with a stored issuer its IdP does not assert would
  * refuse every SAML sign-in, so the ACS records each Issuer refusal as an
- * audit event against the SAML provider (durable and shared by every replica)
- * and this reads the newest back, so an admin sees both values without reading
- * server logs.
+ * audit event (durable and shared by every replica) and this reads the newest
+ * back, so an admin sees both values without reading server logs.
+ *
+ * The event's target is the configured issuer, not the provider: the SAML
+ * provider store is in memory and its id is minted afresh at each boot, so an
+ * id would orphan every earlier refusal on a restart and hide it from another
+ * replica. The issuer is stable across both (#2204).
  *
  * Only a refusal against the issuer configured now is reported: re-pasting the
  * IdP metadata, which changes the configured issuer, clears the warning.
@@ -25,15 +29,8 @@ export const SAML_ISSUER_REFUSED_ACTION = "sso.saml.issuer_refused";
  */
 export const MAX_RECORDED_ISSUER_LENGTH = 512;
 
-/** The audit target type the ACS records a refusal against, with the provider id. */
-export const SAML_ISSUER_REFUSAL_TARGET_TYPE = "sso-provider";
-
-/**
- * How many of the provider's newest refusals are read to find one against the
- * configured issuer (#2204): refusals against an issuer configured in between
- * (A, then B, then A again) must not hide the newest one against A.
- */
-export const ISSUER_REFUSAL_WINDOW = 20;
+/** The audit target type the ACS records a refusal against; the target id is the configured issuer. */
+export const SAML_ISSUER_REFUSAL_TARGET_TYPE = "saml-issuer";
 
 export interface SamlIssuerRefusal {
   /** The issuer METIS compares assertions with; empty when none is configured. */
@@ -65,23 +62,22 @@ function parseMetadata(raw: string | null): Record<string, unknown> | null {
 }
 
 export async function samlIssuerRefusalSummary(provider: {
-  /** The SAML provider's id: the ACS records each refusal against it. */
-  id: string;
   configuredIssuer: string;
 }): Promise<SamlIssuerRefusal> {
   const { configuredIssuer } = provider;
   // With no issuer configured, #1555's check does not run and nothing is refused.
   if (!configuredIssuer) return { configuredIssuer, lastRefused: null };
-  // Filtered on the provider as well as the action, so the read uses the
-  // `[targetType, targetId, action]` index instead of walking the audit table.
+  // Keyed on the configured issuer, so only refusals against it are read (a
+  // wrong issuer refused on every sign-in cannot crowd them out), through the
+  // `[targetType, targetId, action]` index.
   const rows = await prisma.auditLog.findMany({
     where: {
       targetType: SAML_ISSUER_REFUSAL_TARGET_TYPE,
-      targetId: provider.id,
+      targetId: configuredIssuer,
       action: SAML_ISSUER_REFUSED_ACTION,
     },
     orderBy: { ts: "desc" },
-    take: ISSUER_REFUSAL_WINDOW,
+    take: 1,
     select: { ts: true, metadata: true },
   });
   for (const row of rows) {

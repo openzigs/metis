@@ -73,7 +73,6 @@ export function adminAuthRouter(): Router {
     const body: ApiResponse = {
       success: true,
       data: await samlIssuerRefusalSummary({
-        id: provider?.id ?? "",
         configuredIssuer: provider?.saml?.idpIssuer ?? "",
       }),
     };
