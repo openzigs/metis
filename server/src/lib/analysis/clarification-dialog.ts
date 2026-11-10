@@ -953,7 +953,14 @@ const ID_LABEL_WINDOW = 32;
  * after sentence punctuation ends a sentence: `He said "done." Requirement`.
  */
 const BARE_REQUIREMENT =
-  /(?:^|[^\p{L}\p{N}\s"'“”‘’]\s*|[.!?]["'”’]+\s*|\b(?:the|this|that|a|an|each|for|of|in|on|to|about|with|by|from|and|or)\s+)requirement$/iu;
+  /(?:^|[^\p{L}\p{N}\s"'“”‘’]\s*|\b(?:the|this|that|a|an|each|for|of|in|on|to|about|with|by|from|and|or)\s+)requirement$/iu;
+/**
+ * #2155's closing-quote case, apart from {@link BARE_REQUIREMENT} because it
+ * is case-sensitive. #2166 — a quoted name can end in `!` or `?` too (`the
+ * "Login!" requirement`), so only a capital "Requirement" starts the next
+ * sentence.
+ */
+const REQUIREMENT_AFTER_QUOTED_SENTENCE = /[.!?]["'”’]+\s*Requirement$/u;
 
 /**
  * #2143 — whether `text` ends in a bare "requirement", read over the last
@@ -963,7 +970,8 @@ const BARE_REQUIREMENT =
  * that is the word alone.
  */
 function endsInBareRequirement(text: string): boolean {
-  return BARE_REQUIREMENT.test(text.slice(-ID_LABEL_WINDOW));
+  const tail = text.slice(-ID_LABEL_WINDOW);
+  return BARE_REQUIREMENT.test(tail) || REQUIREMENT_AFTER_QUOTED_SENTENCE.test(tail);
 }
 
 /**

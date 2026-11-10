@@ -34,10 +34,13 @@ The steps ran in this order, in one session on 2026-11-06:
 4. **36 requirements were written in business language**, then labelled against v1:
    30 where at least one rule applies, and 6 negative items where none does. A
    requirement names no rule id and copies no five-word run from any clause. The loader
-   enforces both.
+   enforces both. Two more, GR-37 and GR-38, were added later (#2143, "Safeguard-line
+   pairs" below), so the set now holds 38: 32 where a rule applies and the same 6 negatives.
 5. **The pass thresholds were written into the manifest** (`thresholds`).
 6. **Only then was any arm run.** The ground truth and the thresholds were fixed before
-   the A0 baseline (`baseline-A0.{json,md}`) was measured. Neither was changed after it.
+   the A0 baseline (`baseline-A0.{json,md}`) was measured. No label of those 36 items and
+   no threshold was changed after it. The ground truth did grow after it, by GR-37 and
+   GR-38, whose labels were fixed before any arm ran on them.
 
 One change was made to the policy after the first A0 runs, and it is recorded here. The
 first version of the policy opened with a sentence saying it was a synthetic fixture for
@@ -451,10 +454,13 @@ Measured with `anthropic/claude-sonnet-5-5`, on uncommitted trees, so none is a 
   `eval:governing`, so retrieval and the judge play no part), three runs of the 19 items that
   hold a `compliant` label or GR-37/GR-38. With the shipped line, GR-37 → AL-02 was
   `compliant` in 3 of 3 runs, and 5 hard errors in all (the other two on `governing-04`,
-  OS-27 → PA-12). With the final line: 0 hard errors, and 43 of 51 `compliant` pairs found,
-  against 39 before.
-- **A5, two runs:** recall 0.98 / 0.98, precision 0.56 / 0.54, verdict accuracy 0.85 / 0.83,
-  no hard error. GR-37 → AL-02 is `needs-ba-input` and GR-38 → AL-06 `gap` in both runs.
+  OS-27 → PA-12). With draft 5, the line before the "ideally" wording was added: 0 hard
+  errors, and 43 of 51 `compliant` pairs found, against 39 with the shipped line. With the
+  final wording quoted above: 0 hard errors, and 39 of 51 found. The pairs it lost
+  (`governing-04`'s OS-27 → PA-10 and this set's GR-22 → CM-05) are asked about, not called
+  compliant (`governing-04`'s `ANNOTATION.md`).
+- **A5, two runs, with draft 5** (no A5 run of the final wording on this set is recorded):
+  recall 0.98 / 0.98, precision 0.56 / 0.54, verdict accuracy 0.85 / 0.83, no hard error. GR-37 → AL-02 is `needs-ba-input` and GR-38 → AL-06 `gap` in both runs.
   #2108's committed numbers (1.00, 0.52, 0.85, on the 36 items before GR-37 and GR-38) are
   within run-to-run noise of these.
 - Two broader drafts ("when the rule asks for several things", and a third example in the
