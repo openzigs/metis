@@ -474,6 +474,27 @@ describe("recorded progress and outcome (#182 AC 4)", () => {
     expect(seen).toEqual([0, 1, 2]);
   });
 
+  // #2196 — the callback ran unguarded inside the per-file worker, so one throw
+  // failed the whole source ingest. A progress report is not worth a run.
+  it("finishes the ingest when onProgress throws, and logs the throw once", async () => {
+    await writeFiles({ "a.ts": "a", "b.ts": "b", "c.ts": "c" });
+    let calls = 0;
+
+    const summary = await ingestSourceAsKnowledge("p1", "c1", "u1", root, {
+      onProgress: () => {
+        calls += 1;
+        throw new Error("socket gone");
+      },
+    });
+
+    expect(calls).toBe(4);
+    expect(summary.documentsCreated).toBe(3);
+    expect(lastState()).toMatchObject({ status: "completed", processed: 3, created: 3 });
+    const warns = h.warns.filter((w) => w.msg.includes("progress callback"));
+    expect(warns).toHaveLength(1);
+    expect(warns[0]?.meta).toMatchObject({ connectorId: "c1", error: "socket gone" });
+  });
+
   it("records embedding failures and marks the run partial", async () => {
     await writeFiles({ "a.ts": "a", "b.ts": "b" });
     h.onIngest = (doc) =>
