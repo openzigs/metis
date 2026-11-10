@@ -47,6 +47,7 @@ import {
 import type { SimilarityVerifier, VerifierLabel } from "./similarity-verifier.js";
 import { resolveRequirementReviewStatus } from "../analysis/analysis-service.js";
 import { parseRequirementLabels } from "../analysis/requirement-labels.js";
+import { uniqueCurrentCodeLinks } from "../traceability/code-link-key.js";
 
 const log = createChildLogger("similar-requirements");
 
@@ -300,30 +301,39 @@ async function hydrate(
     // No `select`: every column is read, so #1830's `freshness` arrives when it exists.
     db.requirementCodeMapping.findMany({
       where: { projectId, requirementId: { in: ids } },
-      orderBy: [{ confidence: "desc" }, { createdAt: "asc" }],
+      // #1891 — the id last, so rows equal on rank keep one order, not the database's.
+      orderBy: [{ confidence: "desc" }, { createdAt: "asc" }, { id: "asc" }],
     }),
     pairDecisions(db, self, ids),
   ]);
   const byId = new Map(reqs.map((r) => [r.id, r]));
+  const rowsByRequirement = new Map<string, typeof mappings>();
+  for (const m of mappings) {
+    const rows = rowsByRequirement.get(m.requirementId);
+    if (rows) rows.push(m);
+    else rowsByRequirement.set(m.requirementId, [m]);
+  }
   const links = new Map<string, SimilarRequirementCodeLink[]>();
   // #1931 — the requirements holding more links than the cap returns.
   const truncated = new Set<string>();
-  for (const m of mappings) {
-    const list = links.get(m.requirementId) ?? [];
-    if (list.length >= SIMILAR_CODE_LINKS_PER_ITEM) {
-      truncated.add(m.requirementId);
-      continue;
-    }
-    list.push({
-      mappingId: m.id,
-      filePath: m.filePath,
-      codeSymbolId: m.codeSymbolId,
-      startLine: m.startLine,
-      endLine: m.endLine,
-      source: m.source,
-      freshness: freshnessOf(m),
-    });
-    links.set(m.requirementId, list);
+  for (const [requirementId, rows] of rowsByRequirement) {
+    // #1891 — each (filePath, codeSymbolId) once, as the chain lists it, so a
+    // repeat takes no slot of the cap. The row kept is the more current, then the
+    // surer, so an out-of-date link does not hide a current (borrowable) one.
+    const unique = uniqueCurrentCodeLinks(rows.map((m) => ({ ...m, freshness: freshnessOf(m) })));
+    if (unique.length > SIMILAR_CODE_LINKS_PER_ITEM) truncated.add(requirementId);
+    links.set(
+      requirementId,
+      unique.slice(0, SIMILAR_CODE_LINKS_PER_ITEM).map((m) => ({
+        mappingId: m.id,
+        filePath: m.filePath,
+        codeSymbolId: m.codeSymbolId,
+        startLine: m.startLine,
+        endLine: m.endLine,
+        source: m.source,
+        freshness: m.freshness,
+      })),
+    );
   }
   return candidates.flatMap((c) => {
     const r = byId.get(c.id);

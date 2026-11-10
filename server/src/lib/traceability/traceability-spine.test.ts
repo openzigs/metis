@@ -228,6 +228,48 @@ describe("getRequirementChain", () => {
     expect(chain.groundedFiles).toEqual(["src/login.ts", "src/session.ts"]);
   });
 
+  // #1891 — a semantic row is always `unverified`, an agent citation can be
+  // `stale`: the stale one at a higher confidence must not hide the current link.
+  it("keeps the more current row of a repeated (file, symbol), then the surer, and reads the id last (#1891)", async () => {
+    const link = (filePath: string, confidence: number, source: string, freshness: string) => ({
+      codeSymbolId: "sym-1",
+      filePath,
+      startLine: 3,
+      endLine: 9,
+      confidence,
+      source,
+      freshness,
+      commitSha: null,
+      validatedAt: null,
+    });
+    const codeLinks = vi
+      .fn()
+      .mockResolvedValue([
+        link("src/login.ts", 0.9, "analysis-grounding", "stale"),
+        link("src/session.ts", 0.8, "analysis-grounding", "fresh"),
+        link("src/login.ts", 0.6, "semantic", "unverified"),
+        link("src/session.ts", 0.7, "semantic", "unverified"),
+        link("src/moved.ts", 0.3, "analysis-grounding", "moved"),
+      ]);
+    const p = {
+      requirement: { findFirst: vi.fn().mockResolvedValue({ id: "req-1", title: "Login" }) },
+      requirementSpecMapping: { findMany: vi.fn().mockResolvedValue([]) },
+      specCodeMapping: { findMany: vi.fn() },
+      requirementCodeMapping: { findMany: codeLinks },
+      codeSymbol: { findMany: vi.fn().mockResolvedValue([]) },
+      codeEdge: { findMany: vi.fn().mockResolvedValue([]) },
+    };
+    const chain = await getRequirementChain("proj-1", "req-1", deps(p));
+    // The kept rows stay in the order read (surer first).
+    expect(chain.directCode.map((c) => [c.filePath, c.source, c.freshness])).toEqual([
+      ["src/session.ts", "analysis-grounding", "fresh"],
+      ["src/login.ts", "semantic", "unverified"],
+      ["src/moved.ts", "analysis-grounding", "moved"],
+    ]);
+    // Equal rank keeps the read order, so the read ends on the id: one winner, always.
+    expect(codeLinks.mock.calls[0]![0].orderBy).toEqual([{ confidence: "desc" }, { id: "asc" }]);
+  });
+
   it("404s for an unknown requirement", async () => {
     const p = { requirement: { findFirst: vi.fn().mockResolvedValue(null) } };
     await expect(getRequirementChain("proj-1", "ghost", deps(p))).rejects.toMatchObject({
