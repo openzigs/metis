@@ -9,6 +9,8 @@
  * in this tab and (through the `storage` event) in the user's other tabs.
  */
 import { useSyncExternalStore } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { apiFetch } from "@/lib/api-client";
 
 export const ACTIVE_WORKSPACE_STORAGE_KEY = "metis.activeWorkspaceId";
 
@@ -52,4 +54,60 @@ function subscribe(onChange: () => void): () => void {
 /** The stored active workspace id, re-rendering the caller whenever it changes. */
 export function useActiveWorkspaceId(): string | null {
   return useSyncExternalStore(subscribe, readStoredActiveWorkspaceId, () => null);
+}
+
+/** A workspace the caller belongs to, as `GET /api/workspaces` lists it. */
+export interface WorkspaceSummary {
+  id: string;
+  name: string;
+  slug: string;
+  logoUrl: string | null;
+  role: string;
+}
+
+/**
+ * The caller's workspaces: the top bar's list, shared (same key, same request)
+ * so a page that validates the stored id reads the list the switcher resolved
+ * its own from.
+ *
+ * #1584 — a failed read is an error, not an empty list: swallowing it cached
+ * "no workspaces" for a minute after one transient 500 (run 10, wave F), and
+ * the query's own retry never ran. A list that cannot be read renders as none.
+ */
+export const workspaceListQuery = {
+  queryKey: ["workspaces", "switcher"] as const,
+  queryFn: () => apiFetch<WorkspaceSummary[]>("/workspaces"),
+  staleTime: 60_000,
+};
+
+/**
+ * The active workspace off a project page: the stored one while the caller is
+ * still a member of it, else their first workspace, else none. This is the
+ * switcher's own rule (a project page's workspace overrides it there).
+ */
+export function resolveActiveWorkspaceId(
+  storedId: string | null,
+  workspaces: readonly { id: string }[],
+): string | null {
+  if (storedId && workspaces.some((w) => w.id === storedId)) return storedId;
+  return workspaces[0]?.id ?? null;
+}
+
+/**
+ * #2197 — the stored active workspace, validated against the caller's own
+ * workspaces. The raw stored id can name a workspace the caller is not in (a
+ * second user on a shared browser, a membership since removed), and sent as a
+ * filter it lists none of that workspace's projects. Until the list is read
+ * `isLoading` is true and there is no id; a list that cannot be read validates
+ * nothing, so there is no id then either (the server scopes the caller anyway).
+ */
+export function useValidatedActiveWorkspaceId(): {
+  workspaceId: string | null;
+  isLoading: boolean;
+} {
+  const storedId = useActiveWorkspaceId();
+  const list = useQuery(workspaceListQuery);
+  if (list.isPending) return { workspaceId: null, isLoading: true };
+  if (list.isError) return { workspaceId: null, isLoading: false };
+  return { workspaceId: resolveActiveWorkspaceId(storedId, list.data), isLoading: false };
 }

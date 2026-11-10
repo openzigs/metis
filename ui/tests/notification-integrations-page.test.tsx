@@ -107,6 +107,21 @@ describe("NotificationIntegrationsPage", () => {
     expect(screen.getByTestId("event-routing-card")).toBeInTheDocument();
   });
 
+  // #2197 — through the active-workspace store, validated against the list.
+  it("defaults to the top bar's active workspace, else the first when it is not listed", async () => {
+    wsList.mockResolvedValue([ADMIN_WS, MEMBER_WS]);
+    window.localStorage.setItem("metis.activeWorkspaceId", "w2");
+    const first = renderPage();
+    await waitFor(() => expect(screen.getByTestId("ni-workspace-select")).toHaveValue("w2"));
+    first.unmount();
+    window.localStorage.setItem("metis.activeWorkspaceId", "ws-not-mine");
+    renderPage();
+    await waitFor(() => expect(screen.getByTestId("ni-workspace-select")).toHaveValue("w1"));
+    // A select shows its first option for an unknown value; what is read is the proof.
+    await waitFor(() => expect(slackApi.getInstallation).toHaveBeenCalledWith("w1"));
+    expect(slackApi.getInstallation).not.toHaveBeenCalledWith("ws-not-mine");
+  });
+
   it("shows loading + empty workspace states", async () => {
     let resolve!: (v: unknown) => void;
     wsList.mockReturnValue(new Promise((r) => (resolve = r)));
