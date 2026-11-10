@@ -409,6 +409,29 @@ A `compliant` on either is a **hard error**, so a reading now measures the risk.
   name of the person earned compliant on the time and the scope. GR-38 → AL-06 came back
   `gap`, which is right. So the risk is real; changing the line is #2152.
 
+### #2152: a safeguard the requirement adds is provided whole
+
+The line excused "a part of the rule the requirement leaves untouched". #2152 narrowed that
+to what an entry or a check *already in place* holds, and added that a safeguard the
+requirement adds must provide every item the rule lists: a listed item the requirement's own
+list leaves out is `gap`, and one it is silent on is `needs-ba-input`. No label changed.
+
+Measured with `anthropic/claude-sonnet-5-5`, on uncommitted trees, so none is a reading:
+
+- **The findings call alone**, every labelled pair passed to it as applying (a probe outside
+  `eval:governing`, so retrieval and the judge play no part), three runs of the 19 items that
+  hold a `compliant` label or GR-37/GR-38. With the shipped line, GR-37 → AL-02 was
+  `compliant` in 3 of 3 runs, and 5 hard errors in all (the other two on `governing-04`,
+  OS-27 → PA-12). With the final line: 0 hard errors, and 43 of 51 `compliant` pairs found,
+  against 39 before.
+- **A5, two runs:** recall 0.98 / 0.98, precision 0.56 / 0.54, verdict accuracy 0.85 / 0.83,
+  no hard error. GR-37 → AL-02 is `needs-ba-input` and GR-38 → AL-06 `gap` in both runs.
+  #2108's committed numbers (1.00, 0.52, 0.85, on the 36 items before GR-37 and GR-38) are
+  within run-to-run noise of these.
+- Two broader drafts ("when the rule asks for several things", and a third example in the
+  list) also gave 0 hard errors, but lost `compliant` on OS-18 → LG-01, a fix to one field of
+  an audit entry already written, in 3 of 3 runs. The final wording keeps it.
+
 ## Limits to state plainly
 
 - One annotator, and it wrote both sides: the same agent wrote the policy and the
