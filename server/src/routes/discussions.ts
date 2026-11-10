@@ -81,7 +81,10 @@ const DEFAULT_PAGE_SIZE = 50;
 const MAX_PAGE_SIZE = 100;
 /** #2187 — the requirement picker answers this many matches… */
 const REQUIREMENT_PICKER_LIMIT = 20;
-/** …from this many of the project's newest requirements. */
+/**
+ * …reading the project's requirements, newest first, this many at a time until
+ * that many match or none are left (#2203: one page lost every older one).
+ */
 const REQUIREMENT_PICKER_SCAN = 500;
 
 // ---- Schemas ----------------------------------------------------------------
@@ -188,7 +191,14 @@ async function validateAnchor(
 
   if (anchor.requirementId) {
     const row = await prisma.requirement.findFirst({
-      where: { id: anchor.requirementId, projectId, deletedAt: null },
+      // #2203 — nor in a soft-deleted analysis: the picker hides those and the
+      // thread list would report the anchor as none.
+      where: {
+        id: anchor.requirementId,
+        projectId,
+        deletedAt: null,
+        analysis: { deletedAt: null },
+      },
       select: { id: true },
     });
     if (!row) throw new AppError(400, "INVALID_ANCHOR", "requirement anchor not found in project");
@@ -251,8 +261,17 @@ export function discussionsRouter(): Router {
         createdAt: true,
         updatedAt: true,
         // #2187 — the attached requirement's title, so a thread links to it by
-        // name. A soft-deleted requirement is reported as none.
-        requirement: { select: { id: true, title: true, analysisId: true, deletedAt: true } },
+        // name. A soft-deleted requirement is reported as none, and so (#2203)
+        // is one whose analysis is soft-deleted, as the picker leaves it out.
+        requirement: {
+          select: {
+            id: true,
+            title: true,
+            analysisId: true,
+            deletedAt: true,
+            analysis: { select: { deletedAt: true } },
+          },
+        },
       },
     });
     res.json({
@@ -260,7 +279,7 @@ export function discussionsRouter(): Router {
       data: threads.map(({ requirement, ...thread }) => ({
         ...thread,
         requirement:
-          requirement && !requirement.deletedAt
+          requirement && !requirement.deletedAt && !requirement.analysis?.deletedAt
             ? { id: requirement.id, title: requirement.title, analysisId: requirement.analysisId }
             : null,
       })),
@@ -286,13 +305,19 @@ export function discussionsRouter(): Router {
     });
     if (!allowed) throw projectNotFound();
 
-    const rows = await prisma.requirement.findMany({
-      where: { projectId, deletedAt: null, analysis: { deletedAt: null } },
-      orderBy: { createdAt: "desc" },
-      take: REQUIREMENT_PICKER_SCAN,
-      select: { id: true, title: true, analysisId: true, createdAt: true },
-    });
-    const matches = term ? rows.filter((r) => r.title.toLowerCase().includes(term)) : rows;
+    const matches: Array<{ id: string; title: string; analysisId: string; createdAt: Date }> = [];
+    for (let skip = 0; matches.length < REQUIREMENT_PICKER_LIMIT; skip += REQUIREMENT_PICKER_SCAN) {
+      const page = await prisma.requirement.findMany({
+        where: { projectId, deletedAt: null, analysis: { deletedAt: null } },
+        // The id tie-break keeps the pages stable when createdAt repeats.
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        skip,
+        take: REQUIREMENT_PICKER_SCAN,
+        select: { id: true, title: true, analysisId: true, createdAt: true },
+      });
+      matches.push(...(term ? page.filter((r) => r.title.toLowerCase().includes(term)) : page));
+      if (page.length < REQUIREMENT_PICKER_SCAN) break;
+    }
     res.json({ success: true, data: matches.slice(0, REQUIREMENT_PICKER_LIMIT) });
   });
 
