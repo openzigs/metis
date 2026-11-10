@@ -382,9 +382,15 @@ export function verifyRuleCitation(
 
 /**
  * A stop that ends a sentence: `.`, `!` or `?` before whitespace and a capital,
- * a digit or a section sign. "e.g. for" and "§4.3" end none.
+ * a digit or a section sign. "e.g. for" and "§4.3" end none. #2132 — nor does
+ * the period of an abbreviation: a single capital letter standing alone or
+ * after another period ("U.S. Government", "J. Smith"), or a short title or
+ * reference word ("Dr. Patel", "No. 5", "Art. 32"). A sentence that does end
+ * on a lone capital ("…in Appendix B. The…") runs on into the next one: the
+ * quote is longer, never cut short of its subject.
  */
-const SENTENCE_END = /[.!?](?=\s+[\p{Lu}\d§])/gu;
+const SENTENCE_END =
+  /(?:(?<!(?:^|[\s(.])\p{Lu})(?<!(?:^|[\s(])(?:Mr|Mrs|Ms|Dr|Prof|St|No|Art|Sec|Fig|Vol))\.|[!?])(?=\s+[\p{Lu}\d§])/gu;
 
 /**
  * #2128 — `at` widened to the whole sentences it falls in, never past the

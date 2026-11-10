@@ -919,6 +919,12 @@ const ID_ASIDE_CLOSE = /^\s*\)/;
 const ID_LABEL = /\[?(?:\bid\s*[:=]\s*)?$/i;
 /** How far before an id its `(id: ` or `[id: ` label is looked for. */
 const ID_LABEL_WINDOW = 32;
+/**
+ * #2132 — text that ends in a "requirement" no other word describes: at the
+ * start, after punctuation, or after only an article or a preposition.
+ */
+const BARE_REQUIREMENT =
+  /(?:^|[^\p{L}\s]\s*|\b(?:the|this|that|a|an|each|for|of|in|on|to|about|with|by|from|and|or)\s+)requirement$/iu;
 
 /**
  * ASCII-only lower case. `String.prototype.toLowerCase` can change a string's
@@ -941,12 +947,21 @@ function replaceId(text: string, id: string, title: string): string {
     const open = ID_ASIDE_OPEN.exec(near);
     const close = ID_ASIDE_CLOSE.exec(after);
     if (open && close) {
-      out += before.slice(0, lead + open.index);
+      const kept = before.slice(0, lead + open.index);
+      // #2132 — "Requirement (id: X) is unclear." loses its referent without
+      // the aside: a bare "requirement" is named by the quoted title instead.
+      out += BARE_REQUIREMENT.test(out + kept) ? `${kept} "${title}"` : kept;
       rest = after.slice(close[0].length);
     } else {
-      // ID_LABEL matches at least the empty string at the end.
-      out += `${before.slice(0, lead + ID_LABEL.exec(near)!.index)}"${title}"`;
-      rest = after.startsWith("]") ? after.slice(1) : after;
+      // ID_LABEL matches at least the empty string at the end. #2132 — its
+      // `[` is taken only with the `]` that closes it ("[id: X ]"), so "[X,
+      // other]" keeps both brackets rather than a stray `]`.
+      const label = ID_LABEL.exec(near)!;
+      const bracketClose = /^\s*\]/.exec(after);
+      const takesBracket = label[0].startsWith("[") && bracketClose !== null;
+      const labelAt = lead + label.index + (label[0].startsWith("[") && !takesBracket ? 1 : 0);
+      out += `${before.slice(0, labelAt)}"${title}"`;
+      rest = takesBracket ? after.slice(bracketClose[0].length) : after;
     }
     at = foldAscii(rest).indexOf(needle);
   }
@@ -959,7 +974,8 @@ function replaceId(text: string, id: string, title: string): string {
  * one a question is about, and the model copied that label into the question
  * it wrote: "…the new password length requirement (id: 6280ae21-…)". An
  * `(id: …)` aside is dropped, since the words before it already name the
- * requirement; any other mention becomes the requirement's quoted title. Ids
+ * requirement (#2132: after a bare "requirement", which names none, the title
+ * takes its place); any other mention becomes the requirement's quoted title. Ids
  * the prompt did not show, and short readable ones, are left as written.
  */
 export function nameRequirementIds(
