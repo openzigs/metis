@@ -16,28 +16,23 @@
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const store = new Map<string, unknown>();
-vi.mock("./clarification-dialog-store.js", () => ({
-  readDialogState: vi.fn(async (id: string) => store.get(id)),
-  writeDialogState: vi.fn(async (id: string, state: unknown) => {
-    store.set(id, JSON.parse(JSON.stringify(state)));
-  }),
-  deleteDialogState: vi.fn(async (id: string) => {
-    store.delete(id);
-  }),
-  // #2101 — compare-and-set over the same map: the revision is the stored JSON.
-  readDialogStateRevision: vi.fn(async (id: string) => {
-    const v = store.get(id);
-    return v
-      ? { state: JSON.parse(JSON.stringify(v)) as unknown, revision: JSON.stringify(v) }
-      : undefined;
-  }),
-  replaceDialogState: vi.fn(async (id: string, revision: string, state: unknown) => {
-    if (JSON.stringify(store.get(id)) !== revision) return null;
-    store.set(id, JSON.parse(JSON.stringify(state)));
-    return JSON.stringify(state);
-  }),
-}));
+// #2156 — hoisted: the mock factory below hands it to the shared fake.
+const store = vi.hoisted(() => new Map<string, unknown>());
+vi.mock("./clarification-dialog-store.js", async () => {
+  const { dialogStoreCasFakes, jsonClone } =
+    await import("../../../tests/helpers/dialog-store-cas-fake.js");
+  return {
+    readDialogState: vi.fn(async (id: string) => store.get(id)),
+    writeDialogState: vi.fn(async (id: string, state: unknown) => {
+      store.set(id, JSON.parse(JSON.stringify(state)));
+    }),
+    deleteDialogState: vi.fn(async (id: string) => {
+      store.delete(id);
+    }),
+    // #2101 / #2142 / #2156 — the compare-and-set writers, shared.
+    ...dialogStoreCasFakes(store, jsonClone),
+  };
+});
 
 import { ClarificationDialog, _setDialogState } from "./clarification-dialog.js";
 import { addressedAmbiguities } from "./types/requirements.js";

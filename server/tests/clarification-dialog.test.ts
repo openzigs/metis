@@ -7,31 +7,25 @@ import { describe, expect, it, vi, afterEach, beforeEach } from "vitest";
 // in-memory Map in tests so these unit tests exercise the dialog logic without
 // a real database; the "survives a restart" test below clears the dialog
 // module's cache (there is none) and re-reads from this shared store.
-const fakeStore = new Map<string, unknown>();
-vi.mock("../src/lib/analysis/clarification-dialog-store.js", () => ({
-  readDialogState: vi.fn(async (id: string) => {
-    const v = fakeStore.get(id);
-    return v ? (JSON.parse(JSON.stringify(v)) as unknown) : undefined;
-  }),
-  writeDialogState: vi.fn(async (id: string, state: unknown) => {
-    fakeStore.set(id, JSON.parse(JSON.stringify(state)));
-  }),
-  deleteDialogState: vi.fn(async (id: string) => {
-    fakeStore.delete(id);
-  }),
-  // #2101 — compare-and-set over the same map: the revision is the stored JSON.
-  readDialogStateRevision: vi.fn(async (id: string) => {
-    const v = fakeStore.get(id);
-    return v
-      ? { state: JSON.parse(JSON.stringify(v)) as unknown, revision: JSON.stringify(v) }
-      : undefined;
-  }),
-  replaceDialogState: vi.fn(async (id: string, revision: string, state: unknown) => {
-    if (JSON.stringify(fakeStore.get(id)) !== revision) return null;
-    fakeStore.set(id, JSON.parse(JSON.stringify(state)));
-    return JSON.stringify(state);
-  }),
-}));
+// #2156 — hoisted: the mock factory below hands it to the shared fake.
+const fakeStore = vi.hoisted(() => new Map<string, unknown>());
+vi.mock("../src/lib/analysis/clarification-dialog-store.js", async () => {
+  const { dialogStoreCasFakes, jsonClone } = await import("./helpers/dialog-store-cas-fake.js");
+  return {
+    readDialogState: vi.fn(async (id: string) => {
+      const v = fakeStore.get(id);
+      return v ? (JSON.parse(JSON.stringify(v)) as unknown) : undefined;
+    }),
+    writeDialogState: vi.fn(async (id: string, state: unknown) => {
+      fakeStore.set(id, JSON.parse(JSON.stringify(state)));
+    }),
+    deleteDialogState: vi.fn(async (id: string) => {
+      fakeStore.delete(id);
+    }),
+    // #2101 / #2142 / #2156 — the compare-and-set writers, shared.
+    ...dialogStoreCasFakes(fakeStore, jsonClone),
+  };
+});
 
 import {
   ClarificationDialog,

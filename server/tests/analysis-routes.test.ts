@@ -131,6 +131,14 @@ vi.mock("../src/lib/prisma.js", async () => {
           return { analysisId: where.analysisId, state: dialogStateStore.get(where.analysisId) };
         },
       ),
+      // #2142 — a start that read no row creates it, only while there is none.
+      create: vi.fn(async ({ data }: { data: { analysisId: string; state: string } }) => {
+        if (dialogStateStore.has(data.analysisId)) {
+          throw Object.assign(new Error("Unique constraint failed"), { code: "P2002" });
+        }
+        dialogStateStore.set(data.analysisId, data.state);
+        return data;
+      }),
       // #2101 — the submit's compare-and-set: written only over the state it read.
       updateMany: vi.fn(
         async ({

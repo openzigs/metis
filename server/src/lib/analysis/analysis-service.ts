@@ -427,13 +427,17 @@ export async function lockAnalysisRow(
 async function mergeAnalysisMetadata(
   id: string,
   merge: (current: Record<string, unknown>) => Record<string, unknown>,
+  /** #2142 — the caller's transaction to merge in; a new one when absent. */
+  inTx?: Prisma.TransactionClient,
 ): Promise<void> {
-  await prisma.$transaction(async (tx) => {
+  const run = async (tx: Prisma.TransactionClient) => {
     await lockAnalysisRow(tx, id);
     const row = await tx.analysis.findFirst({ where: { id }, select: { metadata: true } });
     const next = merge(parseMetadata(row?.metadata ?? null));
     await tx.analysis.update({ where: { id }, data: { metadata: JSON.stringify(next) } });
-  });
+  };
+  if (inTx) return run(inTx);
+  await prisma.$transaction(run);
 }
 
 /** #1873 — where an analysis keeps its governing-rule applicability (#1872). */
@@ -686,29 +690,36 @@ export function mergeClarifiedList(
  * {@link appendStructuredRequirements}, so the two writers serialise and
  * neither writes over the other. Returns false when the round's list was
  * replaced by another extraction run meanwhile, and nothing was written.
+ * #2142 — `tx` is the transaction the clarify round itself is committed in.
  */
 export async function persistClarifiedRequirements(
   id: string,
   before: StructuredRequirements & { runId?: string },
   after: StructuredRequirements & { runId?: string },
   addressed: ReadonlySet<string>,
+  tx?: Prisma.TransactionClient,
 ): Promise<boolean> {
   let written = true;
-  await mergeAnalysisMetadata(id, (current) => {
-    const runId = typeof current.structuredRunId === "string" ? current.structuredRunId : undefined;
-    const merged = mergeClarifiedList(
-      current.structuredRequirements as StructuredRequirements | undefined,
-      runId,
-      before,
-      after,
-      addressed,
-    );
-    if (!merged) {
-      written = false;
-      return current;
-    }
-    return { ...current, structuredRequirements: merged };
-  });
+  await mergeAnalysisMetadata(
+    id,
+    (current) => {
+      const runId =
+        typeof current.structuredRunId === "string" ? current.structuredRunId : undefined;
+      const merged = mergeClarifiedList(
+        current.structuredRequirements as StructuredRequirements | undefined,
+        runId,
+        before,
+        after,
+        addressed,
+      );
+      if (!merged) {
+        written = false;
+        return current;
+      }
+      return { ...current, structuredRequirements: merged };
+    },
+    tx,
+  );
   if (!written) {
     log.warn("Clarify round not written: its requirements list was replaced by a new run", {
       analysisId: id,

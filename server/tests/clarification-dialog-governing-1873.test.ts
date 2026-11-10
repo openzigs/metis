@@ -18,31 +18,25 @@ import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vite
 import type { GoverningAnalysisApplicability } from "@metis/shared";
 import type { AIProvider, ChatMessage, ChatOptions } from "../src/lib/ai/types.js";
 
-const fakeStore = new Map<string, unknown>();
-vi.mock("../src/lib/analysis/clarification-dialog-store.js", () => ({
-  readDialogState: vi.fn(async (id: string) => {
-    const v = fakeStore.get(id);
-    return v ? (JSON.parse(JSON.stringify(v)) as unknown) : undefined;
-  }),
-  writeDialogState: vi.fn(async (id: string, state: unknown) => {
-    fakeStore.set(id, JSON.parse(JSON.stringify(state)));
-  }),
-  deleteDialogState: vi.fn(async (id: string) => {
-    fakeStore.delete(id);
-  }),
-  // #2101 — compare-and-set over the same map: the revision is the stored JSON.
-  readDialogStateRevision: vi.fn(async (id: string) => {
-    const v = fakeStore.get(id);
-    return v
-      ? { state: JSON.parse(JSON.stringify(v)) as unknown, revision: JSON.stringify(v) }
-      : undefined;
-  }),
-  replaceDialogState: vi.fn(async (id: string, revision: string, state: unknown) => {
-    if (JSON.stringify(fakeStore.get(id)) !== revision) return null;
-    fakeStore.set(id, JSON.parse(JSON.stringify(state)));
-    return JSON.stringify(state);
-  }),
-}));
+// #2156 — hoisted: the mock factory below hands it to the shared fake.
+const fakeStore = vi.hoisted(() => new Map<string, unknown>());
+vi.mock("../src/lib/analysis/clarification-dialog-store.js", async () => {
+  const { dialogStoreCasFakes, jsonClone } = await import("./helpers/dialog-store-cas-fake.js");
+  return {
+    readDialogState: vi.fn(async (id: string) => {
+      const v = fakeStore.get(id);
+      return v ? (JSON.parse(JSON.stringify(v)) as unknown) : undefined;
+    }),
+    writeDialogState: vi.fn(async (id: string, state: unknown) => {
+      fakeStore.set(id, JSON.parse(JSON.stringify(state)));
+    }),
+    deleteDialogState: vi.fn(async (id: string) => {
+      fakeStore.delete(id);
+    }),
+    // #2101 / #2142 / #2156 — the compare-and-set writers, shared.
+    ...dialogStoreCasFakes(fakeStore, jsonClone),
+  };
+});
 
 const mem = vi.hoisted(() => ({
   metadata: "{}" as string,
@@ -905,11 +899,14 @@ describe("#2068 — a finding still Needs BA input after its answer reaches the 
     // Every round used, and already recorded as complete: no write either.
     fakeStore.set(ANALYSIS, { ...completed, currentRound: 4 });
     expect((await dialog.startOrContinue(ANALYSIS, REQS)).completed).toBe(true);
+    // #2142 — a start writes by compare-and-set; neither writer was called.
     expect(vi.mocked(dialogStore.writeDialogState)).not.toHaveBeenCalled();
+    expect(vi.mocked(dialogStore.replaceDialogState)).not.toHaveBeenCalled();
     // One that used every round and is not marked complete yet is written once.
     fakeStore.set(ANALYSIS, { ...completed, currentRound: 4, completed: false });
     expect((await dialog.startOrContinue(ANALYSIS, REQS)).completed).toBe(true);
-    expect(vi.mocked(dialogStore.writeDialogState)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(dialogStore.replaceDialogState)).toHaveBeenCalledTimes(1);
+    expect(fakeStore.get(ANALYSIS)).toMatchObject({ currentRound: 4, completed: true });
   });
 
   it("a dialog that used every round stays complete, and reads no finding", async () => {

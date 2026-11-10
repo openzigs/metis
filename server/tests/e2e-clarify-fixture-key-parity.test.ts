@@ -52,26 +52,22 @@ function oneOf<T extends string>(values: readonly T[], value: string): T {
 }
 
 // #532 — the dialog persists its state; keep it in memory for this test.
-const dialogStore = new Map<string, unknown>();
-vi.mock("../src/lib/analysis/clarification-dialog-store.js", () => ({
-  readDialogState: vi.fn(async (id: string) => structuredClone(dialogStore.get(id))),
-  writeDialogState: vi.fn(async (id: string, state: unknown) => {
-    dialogStore.set(id, structuredClone(state));
-  }),
-  deleteDialogState: vi.fn(async (id: string) => {
-    dialogStore.delete(id);
-  }),
-  // #2101 — compare-and-set over the same map: the revision is the stored JSON.
-  readDialogStateRevision: vi.fn(async (id: string) => {
-    const v = dialogStore.get(id);
-    return v ? { state: structuredClone(v) as unknown, revision: JSON.stringify(v) } : undefined;
-  }),
-  replaceDialogState: vi.fn(async (id: string, revision: string, state: unknown) => {
-    if (JSON.stringify(dialogStore.get(id)) !== revision) return null;
-    dialogStore.set(id, structuredClone(state));
-    return JSON.stringify(state);
-  }),
-}));
+// #2156 — hoisted: the mock factory below hands it to the shared fake.
+const dialogStore = vi.hoisted(() => new Map<string, unknown>());
+vi.mock("../src/lib/analysis/clarification-dialog-store.js", async () => {
+  const { dialogStoreCasFakes } = await import("./helpers/dialog-store-cas-fake.js");
+  return {
+    readDialogState: vi.fn(async (id: string) => structuredClone(dialogStore.get(id))),
+    writeDialogState: vi.fn(async (id: string, state: unknown) => {
+      dialogStore.set(id, structuredClone(state));
+    }),
+    deleteDialogState: vi.fn(async (id: string) => {
+      dialogStore.delete(id);
+    }),
+    // #2101 / #2142 / #2156 — the compare-and-set writers, shared.
+    ...dialogStoreCasFakes(dialogStore),
+  };
+});
 
 describe("generative-e2e clarify fixtures", () => {
   let dir: string;

@@ -1094,6 +1094,41 @@ describe("#2122 — carried answers and rule handles", () => {
     // A list that ends in "and" is still one plural run.
     expect(nameAnswerHandles("A1, A2, and A3 agree.", 3)).toBe("The analyst's answers agree.");
   });
+
+  // #2155 — a run that opens with "answers" was written as several answers, so a comma
+  // alone joins it; an "or" still names them one by one.
+  it("#2155 — a run that opens with 'answers' is one plural run", () => {
+    expect(nameAnswerHandles("The answers A1, A2 confirm it.", 2)).toBe(
+      "The analyst's answers confirm it.",
+    );
+    expect(nameAnswerHandles("Per answers [A1], [A2], yes.", 2)).toBe(
+      "Per the analyst's answers, yes.",
+    );
+    expect(nameAnswerHandles("The answers A1 or A2 settle it.", 2)).toBe(
+      "The analyst's answer or the analyst's answer settle it.",
+    );
+    // A singular "answer" with a comma alone is still two clauses.
+    expect(nameAnswerHandles("Per the answer A1, A2 does not apply.", 2)).toBe(
+      "Per the analyst's answer, the analyst's answer does not apply.",
+    );
+  });
+
+  // #2155 — a comma alone ends a clause for the document-part rule too: only a run that
+  // a conjunction closes continues the list after "Annex", and in doubt the handle is named.
+  it("#2155 — a handle after 'Annex A3,' is named unless a conjunction makes it a list", () => {
+    expect(nameAnswerHandles("Per Annex A3, A1 says the key is rotated.", 3)).toBe(
+      "Per Annex A3, the analyst's answer says the key is rotated.",
+    );
+    expect(nameAnswerHandles("Appendix A1, A2 apply.", 2)).toBe(
+      "Appendix A1, the analyst's answer apply.",
+    );
+    // A list a conjunction closes still stays a part of the document.
+    expect(nameAnswerHandles("Appendix A1, A2 and A3 apply.", 3)).toBe(
+      "Appendix A1, A2 and A3 apply.",
+    );
+    expect(nameAnswerHandles("Annex A1, A2 or A3 applies.", 3)).toBe("Annex A1, A2 or A3 applies.");
+    expect(nameAnswerHandles("Annex A1, A2, and A3 apply.", 3)).toBe("Annex A1, A2, and A3 apply.");
+  });
 });
 
 describe("planBatches and the budget", () => {

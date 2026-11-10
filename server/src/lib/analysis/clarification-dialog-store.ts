@@ -11,8 +11,10 @@
  * parameter), never string-interpolated into SQL, so it cannot be used for
  * injection. The serialized payload is JSON and is parsed defensively.
  */
+import type { Prisma } from "@prisma/client";
 import { prisma } from "../prisma.js";
 import { createChildLogger } from "../logger.js";
+import { isUniqueViolation } from "../db/prisma-errors.js";
 import type { ClarificationState } from "./types/requirements.js";
 
 const log = createChildLogger("clarification-dialog-store");
@@ -76,18 +78,93 @@ export async function readDialogStateRevision(
  * `revision`, in one conditional UPDATE, so two writers that read the same
  * revision cannot both succeed. Returns the new revision, or `null` when the
  * row changed (or is gone) since it was read, and nothing was written.
+ *
+ * #2142 — `revision` `undefined` is a writer that read no row: the state is
+ * created only while there is still none, and `null` when another writer
+ * created it first. `client` is the transaction to write in, if any.
  */
 export async function replaceDialogState(
   analysisId: string,
-  revision: string,
+  revision: string | undefined,
   state: ClarificationState,
+  client: Prisma.TransactionClient = prisma,
 ): Promise<string | null> {
   const serialized = JSON.stringify(state);
-  const { count } = await prisma.clarificationDialogState.updateMany({
+  if (revision === undefined) {
+    // A writer that read no state may have read a row that will not parse
+    // (readDialogStateRevision ignores it). Creating would then collide with
+    // that row forever, so compare-and-set over its raw text instead: the
+    // corrupt row is replaced, as the old unconditional upsert replaced it.
+    // Read first rather than catching the create's unique violation, which
+    // would abort an enclosing Postgres transaction.
+    const existing = await client.clarificationDialogState.findUnique({
+      where: { analysisId },
+      select: { state: true },
+    });
+    if (existing) {
+      if (parses(existing.state)) return null;
+      const { count } = await client.clarificationDialogState.updateMany({
+        where: { analysisId, state: existing.state },
+        data: { state: serialized },
+      });
+      return count === 1 ? serialized : null;
+    }
+    try {
+      await client.clarificationDialogState.create({ data: { analysisId, state: serialized } });
+      return serialized;
+    } catch (err) {
+      if (isUniqueViolation(err)) return null;
+      throw err;
+    }
+  }
+  const { count } = await client.clarificationDialogState.updateMany({
     where: { analysisId, state: revision },
     data: { state: serialized },
   });
   return count === 1 ? serialized : null;
+}
+
+/**
+ * #2142 — {@link replaceDialogState} and the writes that belong with it, in one
+ * transaction: `alongside` runs only once the compare-and-set has landed, and
+ * when it throws, the state write is rolled back with it and the error
+ * rethrown. So a submit's round and its refined requirements are committed
+ * together or not at all — a refused or crashed submit never consumes the
+ * round, and no restore write is needed (#2101's could itself be overwritten).
+ * Returns the new revision, or `null` when the compare-and-set found the row
+ * changed, and neither it nor `alongside` wrote anything.
+ *
+ * #2156 — lock order, on Postgres: the compare-and-set locks the dialog row
+ * first, and the submit's `alongside` (the metadata merge) then locks the
+ * `analyses` row. A hard delete of an analysis takes them the other way
+ * round — the `analyses` row, then this row through `onDelete: Cascade` (so
+ * does a hard delete of its project). No app path does that: `deleteProject`
+ * is a soft delete and `server/src` deletes no analysis, so only an
+ * out-of-band delete (the dev and eval scripts in `server/scripts`) can race a
+ * submit into a deadlock. Postgres then aborts one of the two transactions,
+ * which rolls back whole and fails (nothing half-written). Harmless, but not
+ * deadlock-free: do not cite this order as one nothing reverses.
+ */
+export async function commitDialogState(
+  analysisId: string,
+  revision: string,
+  state: ClarificationState,
+  alongside: (tx: Prisma.TransactionClient) => Promise<void>,
+): Promise<string | null> {
+  return prisma.$transaction(async (tx) => {
+    const committed = await replaceDialogState(analysisId, revision, state, tx);
+    if (committed !== null) await alongside(tx);
+    return committed;
+  });
+}
+
+function parses(text: string): boolean {
+  try {
+    JSON.parse(text);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Delete the durable dialog state for an analysis (no-op when absent). */

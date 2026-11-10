@@ -408,6 +408,10 @@ A `compliant` on either is a **hard error**, so a reading now measures the risk.
   tree (so not a reading), $0.93. **GR-37 → AL-02 came back `compliant`, a hard error**: the
   name of the person earned compliant on the time and the scope. GR-38 → AL-06 came back
   `gap`, which is right. So the risk is real; changing the line is #2152.
+- **The committed baseline predates them.** `baseline-A0.{json,md}` was measured on the
+  first 36 items (its `corpus.items` reads 36) and was not re-recorded when GR-37 and
+  GR-38 were added (#2155). Read it as A0 on GR-01 to GR-36 only; the next A0 baseline
+  is the first over all 38.
 
 ### #2152: a safeguard the requirement adds is provided whole (tuned, not shipped)
 

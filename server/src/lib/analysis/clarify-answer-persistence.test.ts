@@ -16,28 +16,23 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // ── in-memory dialog store mock (same shape as clarification-dialog.test.ts) ──
-const store = new Map<string, unknown>();
-vi.mock("./clarification-dialog-store.js", () => ({
-  readDialogState: vi.fn(async (id: string) => store.get(id)),
-  writeDialogState: vi.fn(async (id: string, state: unknown) => {
-    store.set(id, JSON.parse(JSON.stringify(state)));
-  }),
-  deleteDialogState: vi.fn(async (id: string) => {
-    store.delete(id);
-  }),
-  // #2101 — compare-and-set over the same map: the revision is the stored JSON.
-  readDialogStateRevision: vi.fn(async (id: string) => {
-    const v = store.get(id);
-    return v
-      ? { state: JSON.parse(JSON.stringify(v)) as unknown, revision: JSON.stringify(v) }
-      : undefined;
-  }),
-  replaceDialogState: vi.fn(async (id: string, revision: string, state: unknown) => {
-    if (JSON.stringify(store.get(id)) !== revision) return null;
-    store.set(id, JSON.parse(JSON.stringify(state)));
-    return JSON.stringify(state);
-  }),
-}));
+// #2156 — hoisted: the mock factory below hands it to the shared fake.
+const store = vi.hoisted(() => new Map<string, unknown>());
+vi.mock("./clarification-dialog-store.js", async () => {
+  const { dialogStoreCasFakes, jsonClone } =
+    await import("../../../tests/helpers/dialog-store-cas-fake.js");
+  return {
+    readDialogState: vi.fn(async (id: string) => store.get(id)),
+    writeDialogState: vi.fn(async (id: string, state: unknown) => {
+      store.set(id, JSON.parse(JSON.stringify(state)));
+    }),
+    deleteDialogState: vi.fn(async (id: string) => {
+      store.delete(id);
+    }),
+    // #2101 / #2142 / #2156 — the compare-and-set writers, shared.
+    ...dialogStoreCasFakes(store, jsonClone),
+  };
+});
 
 import { ClarificationDialog, _setDialogState } from "./clarification-dialog.js";
 import type { AIProvider, ChatResponse } from "../ai/types.js";
@@ -497,10 +492,13 @@ describe("#2101 — two submits of one open round at the same time", () => {
     expect(JSON.stringify(store.get(ANALYSIS_ID))).toBe(before);
   });
 
-  it("leaves a write that landed meanwhile in place when it cannot re-open the round", async () => {
+  it("#2142 — beforeCommit writes in the round's transaction; a refusal makes no restore write", async () => {
     const q = await openRound();
     const dialog = new ClarificationDialog({ provider: makeProvider() });
-    const meanwhile = { marker: "written while the requirements were persisted" };
+    const storeModule = await import("./clarification-dialog-store.js");
+    vi.mocked(storeModule.replaceDialogState).mockClear();
+    vi.mocked(storeModule.commitDialogState).mockClear();
+    const handed: unknown[] = [];
 
     await expect(
       dialog.submitAnswers(
@@ -508,13 +506,18 @@ describe("#2101 — two submits of one open round at the same time", () => {
         [{ questionId: q.id, answer: "READ COMMITTED." }],
         REQUIREMENTS,
         undefined,
-        async () => {
-          store.set(ANALYSIS_ID, meanwhile);
+        async (_round, tx) => {
+          handed.push(tx);
           throw new Error("REQUIREMENTS_REPLACED");
         },
       ),
     ).rejects.toThrow("REQUIREMENTS_REPLACED");
 
-    expect(store.get(ANALYSIS_ID)).toEqual(meanwhile);
+    // The transaction commitDialogState opened is the one beforeCommit wrote in,
+    // and the round was never written outside it: nothing to put back.
+    expect(handed).toHaveLength(1);
+    expect(handed[0]).toBeDefined();
+    expect(vi.mocked(storeModule.commitDialogState)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(storeModule.replaceDialogState)).not.toHaveBeenCalled();
   });
 });
