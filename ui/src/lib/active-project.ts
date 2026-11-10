@@ -12,6 +12,15 @@ import { projectsApi } from "@/lib/projects-api";
 export const ACTIVE_PROJECT_STORAGE_KEY = "metis.activeProjectId";
 
 /**
+ * The project id in a `/projects/<id>/...` path, else `null`: the project the
+ * user is actually looking at, even after a hard reload. Both top-bar
+ * switchers read it.
+ */
+export function projectIdFromPath(pathname: string | null): string | null {
+  return pathname?.match(/^\/projects\/([^/?#]+)(?:[/?#]|$)/)?.[1] ?? null;
+}
+
+/**
  * The switcher's project list. Shared (same key, same request) so a page that
  * needs the active project reads the very list the top bar resolved it from.
  *

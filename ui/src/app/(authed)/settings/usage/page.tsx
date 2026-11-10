@@ -14,6 +14,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useRouter, useSearchParams } from "next/navigation";
 import { apiFetch } from "@/lib/api-client";
+import { useActiveWorkspaceId } from "@/lib/active-workspace";
 import { useAuth } from "@/lib/auth-context";
 import { projectsApi } from "@/lib/projects-api";
 import { PageHeader } from "@/components/ui/page-header";
@@ -31,20 +32,9 @@ const SCOPES: ReadonlyArray<{ id: UsageScope; label: string; adminOnly?: boolean
   { id: "platform", label: "All projects", adminOnly: true },
 ];
 
-/** Same key the header workspace switcher writes. */
-const ACTIVE_WORKSPACE_KEY = "metis.activeWorkspaceId";
-
 interface WorkspaceOption {
   id: string;
   name: string;
-}
-
-function storedWorkspaceId(): string | null {
-  try {
-    return window.localStorage.getItem(ACTIVE_WORKSPACE_KEY);
-  } catch {
-    return null;
-  }
 }
 
 const SELECT_CLASS = "h-9 rounded-md border border-input bg-background px-2 text-sm";
@@ -82,7 +72,10 @@ export default function SettingsUsagePage() {
   });
 
   const workspaceList = workspaces.data ?? [];
-  const stored = scope === "workspace" ? storedWorkspaceId() : null;
+  // The header switcher's active workspace (#2197: through its store, so a
+  // switch in the top bar re-renders this page).
+  const activeWorkspaceId = useActiveWorkspaceId();
+  const stored = scope === "workspace" ? activeWorkspaceId : null;
   // Only a workspace the caller belongs to is selectable, so a stale id in the
   // URL (an old finops bookmark) falls back rather than rendering a panel the
   // picker cannot show.

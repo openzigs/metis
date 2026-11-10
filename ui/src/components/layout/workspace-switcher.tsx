@@ -13,33 +13,16 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { apiFetch } from "@/lib/api-client";
+import { projectIdFromPath } from "@/lib/active-project";
 import {
+  resolveActiveWorkspaceId,
   useActiveWorkspaceId,
+  workspaceListQuery,
   writeStoredActiveWorkspaceId as writeStoredWorkspaceId,
+  type WorkspaceSummary as Workspace,
 } from "@/lib/active-workspace";
 import { projectsApi } from "@/lib/projects-api";
 import { queryKeys } from "@/lib/query-keys";
-
-interface Workspace {
-  id: string;
-  name: string;
-  slug: string;
-  logoUrl: string | null;
-  role: string;
-}
-
-/** The project id in a `/projects/<id>/...` path, else `null`. */
-function projectIdFromPath(pathname: string | null): string | null {
-  return pathname?.match(/^\/projects\/([^/?#]+)(?:[/?#]|$)/)?.[1] ?? null;
-}
-
-/**
- * #1584 — a failed read is an error, not an empty list: swallowing it cached
- * "no workspaces" for a minute after one transient 500 (run 10, wave F), and
- * the query's own retry never ran. A list that cannot be read renders as none.
- */
-const fetchWorkspaces = () => apiFetch<Workspace[]>("/workspaces");
 
 /**
  * Header workspace switcher (Epic #759, Issue #766).
@@ -49,15 +32,19 @@ const fetchWorkspaces = () => apiFetch<Workspace[]>("/workspaces");
  * #1584 — on a project's pages the active workspace is that project's, so the
  * crumb never names one workspace over a project in another. A user who never
  * picked one (a second user, say) used to see their first workspace there.
+ *
+ * #2197 — and it is STORED, on purpose: opening a project in another workspace
+ * switches the active workspace, as choosing it here would. The project
+ * switcher, /projects, the wizard and the settings pages all read the stored
+ * id, so they then agree with the crumb the user just saw. A render-only
+ * override would leave the project switcher listing another workspace's
+ * projects under this crumb, and flip the crumb back on leaving the page with
+ * nothing chosen.
  */
 export function WorkspaceSwitcher() {
   const router = useRouter();
   const pathId = projectIdFromPath(usePathname());
-  const { data, isLoading } = useQuery({
-    queryKey: ["workspaces", "switcher"],
-    queryFn: fetchWorkspaces,
-    staleTime: 60_000,
-  });
+  const { data, isLoading } = useQuery(workspaceListQuery);
   // Shared with the project switcher and Overview: usually already cached.
   const pathProject = useQuery({
     queryKey: queryKeys.projects.detail(pathId ?? ""),
@@ -74,9 +61,7 @@ export function WorkspaceSwitcher() {
     pathId && !pathProject.isError ? pathProject.data?.workspaceId : undefined;
   const activeId = isMember(projectWorkspaceId)
     ? projectWorkspaceId
-    : isMember(storedId)
-      ? storedId
-      : (workspaces[0]?.id ?? null);
+    : resolveActiveWorkspaceId(storedId, workspaces);
   const active = workspaces.find((w) => w.id === activeId) ?? null;
 
   useEffect(() => {

@@ -29,24 +29,20 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { PageHeader } from "@/components/ui/page-header";
 
-const WORKSPACE_STORAGE_KEY = "metis.activeWorkspaceId";
-
-function getActiveWorkspaceId(): string | null {
-  if (typeof window === "undefined") return null;
-  try {
-    return window.localStorage.getItem(WORKSPACE_STORAGE_KEY);
-  } catch {
-    return null;
-  }
-}
+import { useValidatedActiveWorkspaceId } from "@/lib/active-workspace";
 
 export default function ProjectsPage() {
   const qc = useQueryClient();
-  const activeWorkspaceId = getActiveWorkspaceId();
+  // #2197 — the validated id, not the raw stored one: a workspace the caller is
+  // not in (a second user on a shared browser) filtered the list down to the
+  // unassigned projects. Subscribed, so a switch in the top bar re-lists.
+  const workspace = useValidatedActiveWorkspaceId();
+  const activeWorkspaceId = workspace.workspaceId;
   const list = useQuery({
     queryKey: queryKeys.projects.list({ workspaceId: activeWorkspaceId }),
     queryFn: () =>
       projectsApi.list(activeWorkspaceId ? { workspaceId: activeWorkspaceId } : undefined),
+    enabled: !workspace.isLoading,
   });
 
   const [open, setOpen] = useState(false);
@@ -80,7 +76,7 @@ export default function ProjectsPage() {
         }
       />
 
-      {list.isLoading ? (
+      {workspace.isLoading || list.isLoading ? (
         <SkeletonText lines={4} />
       ) : list.error ? (
         <p role="alert" className="text-destructive">

@@ -185,6 +185,7 @@ describe("AuthProvider", () => {
 
   it("logout still clears state when the upstream call throws", async () => {
     fetchMock.mockRejectedValueOnce(new Error("network"));
+    window.localStorage.setItem("metis.activeWorkspaceId", "ws-mine");
     const { result } = renderHook(() => useAuth(), {
       wrapper: makeWrapper({ initialUser: TEST_USER }),
     });
@@ -193,6 +194,22 @@ describe("AuthProvider", () => {
       await result.current.logout();
     });
     expect(result.current.user).toBeNull();
+    expect(window.localStorage.getItem("metis.activeWorkspaceId")).toBeNull();
+  });
+
+  // #2197 — a second user on a shared browser must not inherit the first's
+  // active workspace (a non-member id filtered /projects down to nothing).
+  it("logout forgets the signed-out user's active workspace", async () => {
+    fetchMock.mockResolvedValueOnce(ok({ success: true, data: null }));
+    window.localStorage.setItem("metis.activeWorkspaceId", "ws-mine");
+    const { result } = renderHook(() => useAuth(), {
+      wrapper: makeWrapper({ initialUser: TEST_USER }),
+    });
+
+    await act(async () => {
+      await result.current.logout();
+    });
+    expect(window.localStorage.getItem("metis.activeWorkspaceId")).toBeNull();
   });
 
   it("refresh re-fetches the user", async () => {

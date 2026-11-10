@@ -13,6 +13,7 @@ import {
 import { useRouter } from "next/navigation";
 import { ApiError, apiFetch, refreshAccessToken, setOnRefreshFailure } from "@/lib/api-client";
 import { queryKeys } from "@/lib/query-keys";
+import { writeStoredActiveWorkspaceId } from "@/lib/active-workspace";
 import { closeSocket } from "@/lib/socket-client";
 import { useQueryClient } from "@tanstack/react-query";
 import type { AuthUser, LoginCredentials, LoginResponse } from "@/lib/auth-types";
@@ -133,6 +134,10 @@ export function AuthProvider({
     // #1391 — the realtime socket was authenticated as this user. Close it now,
     // before the redirect, rather than waiting for the `user` effect below.
     closeSocket();
+    // #2197 — the active workspace was this user's choice. Left behind, the
+    // next user to sign in on this browser starts in a workspace they may not
+    // be in.
+    writeStoredActiveWorkspaceId(null);
     setUser(null);
     queryClient.removeQueries({ queryKey: queryKeys.auth.all });
     router.push("/login");
