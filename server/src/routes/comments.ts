@@ -484,6 +484,9 @@ export function commentsRouter(): Router {
       });
       // #1318 — mention notifications quote the comment; quote the new text.
       await refreshCommentMentionExcerpts(commentId, parsed.data.body);
+      // #1581 — a mention added by the edit notifies, as it would in a new
+      // comment; a user the comment already mentioned is not notified again.
+      dispatchMentions(commentId, parsed.data.body, req.user.userId, { onlyNew: true });
       emitCommentChanged(existing.thread);
 
       res.json({ success: true, data: commentView(updated) });

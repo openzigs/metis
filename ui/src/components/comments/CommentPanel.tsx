@@ -188,6 +188,8 @@ export function CommentPanel({
             onChange={setNewBody}
             placeholder="Write a comment… Use @username to mention"
             projectId={projectId}
+            placement="above"
+            ariaLabel="New comment"
             className="mb-2 min-h-[70px] text-sm"
           />
           <Button

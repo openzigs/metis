@@ -241,31 +241,47 @@ describe("notifyReviewDecision", () => {
     expect(to).toHaveBeenCalledWith("user:user-req");
   });
 
-  it("adds a review_approved row (with baselineId payload) on terminal approval", async () => {
+  it("sends ONE review_approved row (with baselineId payload) on terminal approval (#1581)", async () => {
     await notifyReviewDecision(
       decisionInput({ decision: "approved", outcome: "approved", baselineId: "base-9" }),
     );
 
     const rows = createdRows();
-    expect(rows).toHaveLength(2);
-    expect(rows.map((r) => r.type)).toEqual(["review_decided", "review_approved"]);
-    // #1447 — both rows record the review's project.
-    expect(rows.map((r) => r.projectId)).toEqual(["proj-1", "proj-1"]);
-    const terminal = rows[1];
+    // #1581 — one decision, one notification: no review_decided beside it.
+    expect(rows.map((r) => r.type)).toEqual(["review_approved"]);
+    // #1447 — the row records the review's project.
+    expect(rows[0].projectId).toBe("proj-1");
+    const terminal = rows[0];
     expect(terminal.userId).toBe("user-req");
-    expect(String(terminal.message)).toContain("approved");
-    expect(JSON.parse(String(terminal.payload)).baselineId).toBe("base-9");
-    expect(emit).toHaveBeenCalledTimes(2);
+    expect(terminal.title).toBe("Review approved");
+    // It names the reviewer, as the dropped review_decided row did.
+    expect(terminal.message).toBe(
+      'Alice Reviewer approved "Sprint 4 sign-off" — a baseline was created',
+    );
+    const payload = JSON.parse(String(terminal.payload));
+    expect(payload.baselineId).toBe("base-9");
+    expect(payload.reviewerId).toBe("rev-a");
+    expect(payload.decision).toBe("approved");
+    expect(emit).toHaveBeenCalledTimes(1);
   });
 
-  it("adds a review_rejected row on terminal rejection", async () => {
+  it("sends ONE review_rejected row on terminal rejection (#1581)", async () => {
     await notifyReviewDecision(
       decisionInput({ decision: "rejected", outcome: "rejected", baselineId: null }),
     );
 
     const rows = createdRows();
-    expect(rows.map((r) => r.type)).toEqual(["review_decided", "review_rejected"]);
-    expect(String(rows[1].message)).toContain("rejected");
+    expect(rows.map((r) => r.type)).toEqual(["review_rejected"]);
+    expect(rows[0].title).toBe("Review rejected");
+    expect(rows[0].message).toBe('Alice Reviewer rejected "Sprint 4 sign-off"');
+    expect(JSON.parse(String(rows[0].payload)).baselineId).toBeNull();
+    expect(emit).toHaveBeenCalledTimes(1);
+  });
+
+  it("a terminal approval with no baseline (a docs-only scope) does not claim one", async () => {
+    await notifyReviewDecision(decisionInput({ outcome: "approved", baselineId: undefined }));
+
+    expect(createdRows()[0].message).toBe('Alice Reviewer approved "Sprint 4 sign-off"');
   });
 
   it("suppresses everything when the requester disabled inApp × requirementsApproved", async () => {

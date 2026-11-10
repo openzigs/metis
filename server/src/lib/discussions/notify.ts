@@ -32,7 +32,12 @@ import { userRoom } from "@metis/shared";
 import { prisma } from "../prisma.js";
 import { createChildLogger } from "../logger.js";
 import { getSocketServer } from "../socket/registry.js";
-import { parseMentions, resolveUsernames } from "../collaboration/mentions.js";
+import {
+  commentExcerpt,
+  parseMentions,
+  resolveUsernames,
+  truncateGraphemes,
+} from "../collaboration/mentions.js";
 import { shouldNotify } from "../notifications/preferences.js";
 import { resolveRateLimitStore, type RateLimitStore } from "./rate-limit-store.js";
 import { canAccessProjectDiscussions } from "./access.js";
@@ -190,6 +195,28 @@ async function authorName(authorId: string): Promise<string> {
   }
 }
 
+const MAX_THREAD_TITLE_IN_TEXT = 120;
+
+/**
+ * #1581 — the thread's title for the notification text, as a requirement
+ * mention names its requirement. Read with the project as well as the id, so a
+ * thread id from another project can never lend its title. `null` (never
+ * throws) when the thread cannot be read or has no title.
+ */
+async function threadTitle(threadId: string, projectId: string): Promise<string | null> {
+  try {
+    const thread = await prisma.discussionThread.findFirst({
+      where: { id: threadId, projectId, deletedAt: null },
+      select: { title: true },
+    });
+    const title = thread?.title.replace(/\s+/g, " ").trim();
+    return title ? truncateGraphemes(title, MAX_THREAD_TITLE_IN_TEXT) : null;
+  } catch (err) {
+    log.warn("Failed to read the mentioned thread's title", { threadId, err });
+    return null;
+  }
+}
+
 /**
  * Resolve @mentions in a discussion message and deliver in-app notifications to
  * the mentioned project members. Never throws.
@@ -204,6 +231,8 @@ export async function notifyDiscussionMentions(input: DiscussionMentionInput): P
     const io = getSocketServer();
     const cfg = loadMentionNotifyConfig();
     const who = await authorName(authorId);
+    const thread = await threadTitle(threadId, projectId);
+    const where = thread ? `"${thread}"` : "a discussion";
 
     await Promise.allSettled(
       users
@@ -231,9 +260,12 @@ export async function notifyDiscussionMentions(input: DiscussionMentionInput): P
               ts: Date.now(),
             };
 
+            // #1581 — who, which thread, and a quote of the message: what a
+            // requirement mention already says (#1318). Only ever sent to a
+            // member who may open the thread, so it shows nothing new to them.
             const shown = {
-              title: `${who} mentioned you in a discussion`,
-              message: `${who} mentioned you in a discussion thread`,
+              title: `${who} mentioned you in ${where}`,
+              message: commentExcerpt(body) || `${who} mentioned you in ${where}`,
               // #980 — the thread's own page; `?thread=` landed on the list.
               href: `/projects/${encodeURIComponent(projectId)}/discussions/${encodeURIComponent(threadId)}`,
             };

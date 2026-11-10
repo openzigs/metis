@@ -10,6 +10,8 @@
  *   - **each reviewer decision** → the requester (`review_decided`);
  *   - **terminal approve/reject** → the requester (`review_approved` /
  *     `review_rejected`, carrying the auto-created baselineId when one exists).
+ *     #1581 — that row is sent INSTEAD of the decision's `review_decided`: one
+ *     decision is one notification.
  *
  * PREFERENCES (#614/#608): every send is gated per recipient via
  * `shouldNotify(userId, "inApp", "requirementsApproved")` — review lifecycle
@@ -207,40 +209,47 @@ export interface ReviewDecisionInput {
 }
 
 /**
- * Notify the requester of one reviewer's decision — plus, when that decision
- * completed the aggregate, of the terminal approve/reject outcome. Never
- * throws.
+ * Notify the requester of one reviewer's decision. When that decision completed
+ * the aggregate, the one row sent is the terminal approve/reject outcome, and it
+ * names the reviewer and their decision as well (#1581: a `review_decided` row
+ * beside it said the same thing twice). Never throws.
  */
 export async function notifyReviewDecision(input: ReviewDecisionInput): Promise<void> {
   try {
-    // #614 — requester preference gate; one check covers both rows (same cell).
+    // #614 — requester preference gate.
     if (!(await shouldNotify(input.requestedById, "inApp", PREFERENCE_EVENT))) return;
 
-    await persistAndEmit({
-      userId: input.requestedById,
-      kind: "review_decided",
-      title: `Reviewer ${input.decision} your review`,
-      message: `${input.reviewerName} ${input.decision} "${input.title}"`,
-      reviewId: input.reviewId,
+    const decided = `${input.reviewerName} ${input.decision} "${input.title}"`;
+    const extra = {
       projectId: input.projectId,
-      extra: { projectId: input.projectId, reviewerId: input.reviewerId, decision: input.decision },
-    });
+      reviewerId: input.reviewerId,
+      decision: input.decision,
+    };
 
-    if (input.outcome !== null) {
-      const approved = input.outcome === "approved";
-      const baselineId = input.baselineId ?? null;
+    if (input.outcome === null) {
       await persistAndEmit({
         userId: input.requestedById,
-        kind: approved ? "review_approved" : "review_rejected",
-        title: approved ? "Review approved" : "Review rejected",
-        message: approved
-          ? `"${input.title}" was approved${baselineId ? " — a baseline was created" : ""}`
-          : `"${input.title}" was rejected`,
+        kind: "review_decided",
+        title: `Reviewer ${input.decision} your review`,
+        message: decided,
         reviewId: input.reviewId,
         projectId: input.projectId,
-        extra: { projectId: input.projectId, baselineId },
+        extra,
       });
+      return;
     }
+
+    const approved = input.outcome === "approved";
+    const baselineId = input.baselineId ?? null;
+    await persistAndEmit({
+      userId: input.requestedById,
+      kind: approved ? "review_approved" : "review_rejected",
+      title: approved ? "Review approved" : "Review rejected",
+      message: approved && baselineId ? `${decided} — a baseline was created` : decided,
+      reviewId: input.reviewId,
+      projectId: input.projectId,
+      extra: { ...extra, baselineId },
+    });
   } catch (err) {
     log.error("notifyReviewDecision top-level error", { reviewId: input.reviewId, err });
   }

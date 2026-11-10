@@ -116,7 +116,16 @@ function actionDetail(action: DryRunAction): string {
     case "issue.skipDuplicate":
       return `#${action.existingIssueNumber} · ${action.reason ?? "duplicate"}`;
     case "subIssue.attach":
-      return `→ epic #${action.parentIssueNumber ?? "?"}`;
+      // #1581 — an epic this run creates has no number until the tracker
+      // assigns one, so it is named by title (the plan used to show `#1000`).
+      if (action.parentIssueNumber !== undefined) {
+        return action.parentTitle
+          ? `→ epic #${action.parentIssueNumber} · ${action.parentTitle}`
+          : `→ epic #${action.parentIssueNumber}`;
+      }
+      return action.parentTitle
+        ? `→ epic “${action.parentTitle}”, created in this run`
+        : "→ its epic";
     default:
       return "";
   }

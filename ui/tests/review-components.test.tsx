@@ -81,6 +81,53 @@ describe("formatDiffValue", () => {
     expect(formatDiffValue(5)).toBe("5");
     expect(formatDiffValue(["a", "b"])).toBe('["a","b"]');
   });
+
+  it("#1581 — never shows a METIS block marker in a string value", () => {
+    expect(formatDiffValue("Title <!-- metis:criteria-flag -->")).toBe("Title");
+    expect(formatDiffValue("<!-- metis:clarifications:start -->")).toBe("—");
+  });
+});
+
+describe("VersionDiff — a body change (#1581)", () => {
+  const from = "Feeds refresh.";
+  const to = [
+    "Feeds refresh on a schedule.",
+    "",
+    "<!-- metis:clarifications:start -->",
+    "## Clarifications",
+    "",
+    "- **Q:** How often?",
+    "<!-- metis:clarifications:end -->",
+  ].join("\n");
+
+  it("renders both sides as Markdown, with no raw source or markers", () => {
+    render(<VersionDiff changedFields={{ body: { from, to } }} />);
+    const row = screen.getByTestId("diff-field-body");
+    expect(row.textContent).not.toMatch(/metis:|##|\*\*Q:\*\*/);
+    // The new side's heading and emphasis are elements, not characters.
+    const added = screen.getByTestId("diff-to");
+    expect(added.tagName).toBe("INS");
+    expect(added.querySelector("h5")).toHaveTextContent("Clarifications");
+    expect(added.querySelector("strong")).toHaveTextContent("Q:");
+    expect(screen.getByTestId("diff-from").tagName).toBe("DEL");
+    expect(screen.getByTestId("diff-from")).toHaveTextContent("Feeds refresh.");
+    // No `pre-wrap` around rendered blocks; a plain field keeps it.
+    expect(added.className).not.toContain("whitespace-pre-wrap");
+  });
+
+  it("an empty side reads as —, and a non-body field stays plain text", () => {
+    render(
+      <VersionDiff
+        changedFields={{ body: { from: null, to: "**new**" }, title: { from: "## a", to: "b" } }}
+      />,
+    );
+    const body = screen.getByTestId("diff-field-body");
+    expect(body.querySelector("del")).toHaveTextContent("—");
+    expect(body.querySelector("ins strong")).toHaveTextContent("new");
+    const title = screen.getByTestId("diff-field-title");
+    expect(title.querySelector("del")).toHaveTextContent("## a");
+    expect(title.querySelector("del")!.className).toContain("whitespace-pre-wrap");
+  });
 });
 
 describe("VersionDiff", () => {

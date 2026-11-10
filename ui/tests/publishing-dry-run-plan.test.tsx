@@ -280,7 +280,35 @@ describe("DryRunPlanPanel", () => {
         })}
       />,
     );
-    expect(screen.getByText(/→ epic #\?/)).toBeTruthy();
+    expect(screen.getByText("→ its epic")).toBeTruthy();
+  });
+
+  it("#1581 — an attach names the epic: by title when this run creates it, never a made-up number", () => {
+    render(
+      <DryRunPlanPanel
+        plan={makePlan({
+          totalActions: 2,
+          actions: [
+            {
+              kind: "subIssue.attach",
+              draftId: "draft_000000002",
+              parentDraftId: "draft_000000001",
+              parentTitle: "[Epic] Apollo",
+            },
+            {
+              kind: "subIssue.attach",
+              draftId: "draft_000000003",
+              parentDraftId: "draft_000000009",
+              parentTitle: "[Epic] Hermes",
+              parentIssueNumber: 42,
+            },
+          ],
+        })}
+      />,
+    );
+    expect(screen.getByText("→ epic “[Epic] Apollo”, created in this run")).toBeTruthy();
+    expect(screen.getByText("→ epic #42 · [Epic] Hermes")).toBeTruthy();
+    expect(screen.queryByText(/#1000|#\?/)).toBeNull();
   });
 
   it("uses the singular for a one-action plan", () => {

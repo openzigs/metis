@@ -349,7 +349,15 @@ export const dryRunActionSchema = z.object({
   body: z.string().optional(),
   labels: z.array(z.string()).optional(),
   parentDraftId: idSchema.optional(),
+  /**
+   * On a `subIssue.attach`: the epic's issue number when the epic already
+   * exists on the tracker. Absent when the epic is created by this same run:
+   * a plan cannot know the number the tracker will assign (#1581 — it used to
+   * show a made-up `#1000`), so `parentTitle` names the epic instead.
+   */
   parentIssueNumber: z.number().int().optional(),
+  /** #1581 — on a `subIssue.attach`: the epic draft's title. */
+  parentTitle: z.string().optional(),
   existingIssueNumber: z.number().int().optional(),
   /**
    * #1106 — on an `issue.create`: METIS's own record names this issue for the

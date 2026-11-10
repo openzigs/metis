@@ -2,7 +2,7 @@
  * Epic #728 / Issue #734-#735 — Comment components tests.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { useState } from "react";
 import { makeWrapper } from "./test-utils";
 
@@ -164,13 +164,56 @@ describe("CommentThread", () => {
     });
   });
 
-  it("calls commentApi.delete when user deletes a comment", async () => {
+  it("calls commentApi.delete once the delete is confirmed (#1581)", async () => {
     mockCommentApi.delete.mockResolvedValue(undefined);
     renderThread();
     fireEvent.click(screen.getByRole("button", { name: /delete/i }));
+    // #1581 — the click asks first; nothing is deleted yet.
+    const dialog = await screen.findByRole("alertdialog");
+    expect(dialog).toHaveTextContent("Delete this comment?");
+    expect(mockCommentApi.delete).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
     await waitFor(() => {
       expect(mockCommentApi.delete).toHaveBeenCalledWith("c1");
     });
+    expect(await screen.findByText(/This comment was deleted/i)).toBeInTheDocument();
+  });
+
+  it("Cancel in the delete confirmation keeps the comment (#1581)", async () => {
+    renderThread();
+    fireEvent.click(screen.getByRole("button", { name: /delete/i }));
+    const dialog = await screen.findByRole("alertdialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(mockCommentApi.delete).not.toHaveBeenCalled();
+    expect(screen.getByText("Hello world")).toBeInTheDocument();
+  });
+
+  it("editing a comment offers the @ picker, scoped to the project (#1581)", async () => {
+    const apiClientMod = await import("@/lib/api-client");
+    const apiFetchMock = apiClientMod.apiFetch as ReturnType<typeof vi.fn>;
+    apiFetchMock.mockResolvedValue([{ id: "u9", username: "dana", displayName: "Dana" }]);
+    const Wrapper = makeWrapper({});
+    render(
+      <Wrapper>
+        <CommentThreadComponent
+          thread={makeThread()}
+          currentUserId={CURRENT_USER_ID}
+          onUpdated={vi.fn()}
+          projectId="p1"
+        />
+      </Wrapper>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /edit/i }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Edit comment" }), {
+      target: { value: "Hello @da" },
+    });
+
+    await waitFor(() =>
+      expect(apiFetchMock).toHaveBeenCalledWith("/users?search=da&limit=8&projectId=p1"),
+    );
+    fireEvent.mouseDown(await screen.findByRole("option", { name: /@dana/ }));
+    expect(screen.getByRole("textbox", { name: "Edit comment" })).toHaveValue("Hello @dana ");
   });
 
   it("submits a reply via commentApi.reply", async () => {
@@ -261,6 +304,32 @@ describe("CommentPanel", () => {
       expect(apiFetchMock).toHaveBeenCalledWith("/users?search=ne&limit=8&projectId=p1");
       expect(apiFetchMock).toHaveBeenCalledWith("/users?search=re&limit=8&projectId=p1");
     });
+  });
+
+  it("opens the New comment box's suggestions ABOVE it, inside the panel (#1581)", async () => {
+    mockCommentApi.listForRequirement.mockResolvedValue([]);
+    const apiClientMod = await import("@/lib/api-client");
+    (apiClientMod.apiFetch as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { id: "u9", username: "dana", displayName: "Dana" },
+    ]);
+    const Wrapper = makeWrapper({});
+    render(
+      <Wrapper>
+        <CommentPanel
+          open
+          onClose={vi.fn()}
+          requirementId="req1"
+          projectId="p1"
+          currentUserId={CURRENT_USER_ID}
+        />
+      </Wrapper>,
+    );
+    fireEvent.change(screen.getByRole("textbox", { name: "New comment" }), {
+      target: { value: "@da" },
+    });
+    const list = await screen.findByRole("listbox", { name: "User suggestions" });
+    expect(list).toHaveAttribute("data-placement", "above");
+    expect(list.className).toContain("bottom-full");
   });
 
   it("renders threads returned from API", async () => {

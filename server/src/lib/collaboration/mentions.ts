@@ -16,6 +16,7 @@ import { createChildLogger } from "../logger.js";
 import { getSocketServer } from "../socket/registry.js";
 import { shouldNotify } from "../notifications/preferences.js";
 import { canAccessProjectDiscussions } from "../discussions/access.js";
+import { isUniqueViolation } from "../db/prisma-errors.js";
 
 const log = createChildLogger("collaboration:mentions");
 
@@ -90,7 +91,7 @@ const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
  * cut. Counted in graphemes, never UTF-16 units, so the cut cannot split a
  * surrogate pair or an emoji sequence (#1318).
  */
-function truncateGraphemes(text: string, max: number): string {
+export function truncateGraphemes(text: string, max: number): string {
   const parts = Array.from(graphemes.segment(text), (s) => s.segment);
   if (parts.length <= max) return text;
   return `${parts
@@ -192,11 +193,15 @@ async function canOpenProject(userId: string, projectId: string): Promise<boolea
  * @param commentId  The id of the newly created comment.
  * @param body       The raw comment body text.
  * @param authorId   The id of the comment author (excluded from self-mentions).
+ * @param opts.onlyNew  #1581 — an EDITED comment: notify only users it did not
+ *   already mention. The Mention row is inserted and a unique-index conflict
+ *   means "already mentioned here", so two edits racing notify a user once.
  */
 export async function fanOutMentions(
   commentId: string,
   body: string,
   authorId: string,
+  opts: { onlyNew?: boolean } = {},
 ): Promise<void> {
   try {
     const usernames = parseMentions(body);
@@ -218,22 +223,24 @@ export async function fanOutMentions(
     await Promise.allSettled(
       users.map(async (u) => {
         try {
-          // Upsert: the unique index on (commentId, mentionedUserId) prevents
-          // duplicate notifications if fanOutMentions is called twice.
-          await prisma.mention.upsert({
-            where: {
-              commentId_mentionedUserId: {
-                commentId,
-                mentionedUserId: u.id,
-              },
-            },
-            update: {},
-            create: {
-              commentId,
-              mentionedUserId: u.id,
-              notified: false,
-            },
-          });
+          if (opts.onlyNew) {
+            try {
+              await prisma.mention.create({
+                data: { commentId, mentionedUserId: u.id, notified: false },
+              });
+            } catch (err) {
+              if (isUniqueViolation(err)) return; // mentioned before the edit
+              throw err;
+            }
+          } else {
+            // Upsert: the unique index on (commentId, mentionedUserId) keeps one
+            // Mention row if fanOutMentions is called twice.
+            await prisma.mention.upsert({
+              where: { commentId_mentionedUserId: { commentId, mentionedUserId: u.id } },
+              update: {},
+              create: { commentId, mentionedUserId: u.id, notified: false },
+            });
+          }
 
           // #614 — per-user preference gate (inApp × mention), enforced
           // before the socket emit + Notification row. The Mention upsert
@@ -321,9 +328,14 @@ export async function fanOutMentions(
  * (during promise construction) nor an async rejection can ever propagate to —
  * or leave an unhandled rejection alongside — the request handler.
  */
-export function dispatchMentions(commentId: string, body: string, authorId: string): void {
+export function dispatchMentions(
+  commentId: string,
+  body: string,
+  authorId: string,
+  opts: { onlyNew?: boolean } = {},
+): void {
   try {
-    void fanOutMentions(commentId, body, authorId).catch((err: unknown) => {
+    void fanOutMentions(commentId, body, authorId, opts).catch((err: unknown) => {
       log.error("dispatchMentions: fan-out rejected", { commentId, err });
     });
   } catch (err) {

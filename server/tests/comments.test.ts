@@ -47,9 +47,10 @@ vi.mock("../src/middleware/require-permission.js", () => ({
 }));
 const refreshCommentMentionExcerpts = vi.fn().mockResolvedValue(undefined);
 const retractCommentMentionExcerpts = vi.fn().mockResolvedValue(undefined);
+const dispatchMentions = vi.fn();
 vi.mock("../src/lib/collaboration/mentions.js", () => ({
   fanOutMentions: vi.fn().mockResolvedValue(undefined),
-  dispatchMentions: vi.fn(),
+  dispatchMentions: (...a: unknown[]) => dispatchMentions(...a),
   // #1318 — edit/delete rewrite the excerpt their mention notifications quote.
   refreshCommentMentionExcerpts: (...a: unknown[]) => refreshCommentMentionExcerpts(...a),
   retractCommentMentionExcerpts: (...a: unknown[]) => retractCommentMentionExcerpts(...a),
@@ -290,6 +291,10 @@ describe("comments router", () => {
       expect(res.body.data.body).toBe("Updated body");
       // #1318 — the comment's mention notifications quote the new text.
       expect(refreshCommentMentionExcerpts).toHaveBeenCalledWith("c-1", "Updated body");
+      // #1581 — a mention the edit added notifies; only new ones (see fanOutMentions).
+      expect(dispatchMentions).toHaveBeenCalledWith("c-1", "Updated body", "user-1", {
+        onlyNew: true,
+      });
     });
 
     it("returns 403 when editing another user's comment", async () => {
@@ -307,6 +312,7 @@ describe("comments router", () => {
       const res = await request(app).patch("/comments/c-1").send({ body: "hacked" });
 
       expect(res.status).toBe(403);
+      expect(dispatchMentions).not.toHaveBeenCalled();
     });
 
     it("returns 404 for deleted comment", async () => {

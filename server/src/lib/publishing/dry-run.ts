@@ -92,8 +92,10 @@ export function buildDryRunPlan(input: DryRunInput): DryRunPlan {
   const epics = drafts.filter((d) => d.draftType === "epic");
   const features = drafts.filter((d) => d.draftType !== "epic");
   const ordered = [...epics, ...features];
-  const epicNumbers = new Map<string, number>();
-  let nextSyntheticNumber = 1000;
+  // #1581 — the epics a feature can be attached to: its issue number when the
+  // epic already exists, none when this run creates it (the tracker assigns
+  // the number; the plan used to show a made-up one from 1000 up).
+  const epicTargets = new Map<string, { title: string; issueNumber?: number }>();
   for (const d of ordered) {
     const hash = computeDedupHash(input.targetOwner, input.targetRepo, d.title);
     const existing = input.existingByHash.get(hash);
@@ -130,7 +132,9 @@ export function buildDryRunPlan(input: DryRunInput): DryRunPlan {
           ...gateMark(d.id),
         });
       }
-      if (d.draftType === "epic") epicNumbers.set(d.id, existing.issueNumber);
+      if (d.draftType === "epic") {
+        epicTargets.set(d.id, { title: d.title, issueNumber: existing.issueNumber });
+      }
       continue;
     }
     const mayMatch = input.mayMatch?.get(d.id);
@@ -149,14 +153,15 @@ export function buildDryRunPlan(input: DryRunInput): DryRunPlan {
         : {}),
       ...gateMark(d.id),
     });
-    const synthetic = nextSyntheticNumber++;
-    if (d.draftType === "epic") epicNumbers.set(d.id, synthetic);
-    if (d.parentDraftId && epicNumbers.has(d.parentDraftId)) {
+    if (d.draftType === "epic") epicTargets.set(d.id, { title: d.title });
+    const parent = d.parentDraftId ? epicTargets.get(d.parentDraftId) : undefined;
+    if (d.parentDraftId && parent) {
       actions.push({
         kind: "subIssue.attach",
         draftId: d.id,
         parentDraftId: d.parentDraftId,
-        parentIssueNumber: epicNumbers.get(d.parentDraftId),
+        parentTitle: parent.title,
+        ...(parent.issueNumber !== undefined ? { parentIssueNumber: parent.issueNumber } : {}),
       });
     }
   }
