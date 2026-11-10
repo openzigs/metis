@@ -57,6 +57,13 @@ import { ConfirmDialog } from "@/components/ui/alert-dialog";
 const SELECT_CLASS =
   "flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
+/**
+ * #1749 — the strength override sits in a table cell next to its Apply button,
+ * where `w-full` let the table squeeze it to "contrac" / "intrusiv" at 1440 px.
+ * It keeps the width of its longest option instead.
+ */
+const STRENGTH_SELECT_CLASS = `${SELECT_CLASS.replace("w-full", "w-auto")} min-w-[10rem] shrink-0`;
+
 function errorText(err: unknown, fallback: string): string {
   return err instanceof ApiError ? err.message : fallback;
 }
@@ -318,7 +325,7 @@ function StrengthOverride({
         value={choice ?? current}
         disabled={override.isPending}
         onChange={(e) => setChoice(e.target.value)}
-        className={SELECT_CLASS}
+        className={STRENGTH_SELECT_CLASS}
       >
         {edge.strength === null && <option value="">unclassified</option>}
         {PRODUCT_COUPLING_STRENGTHS.map((s) => (

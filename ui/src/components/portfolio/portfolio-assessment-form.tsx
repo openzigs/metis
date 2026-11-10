@@ -23,12 +23,15 @@
  */
 "use client";
 
-import { useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import type { CreatePortfolioAssessmentInput, PortfolioAssessmentScope } from "@metis/shared";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+
+/** #1725 — the host picker's id, the fragment a check that needs a host links to. */
+const HOST_PICKER_ID = "portfolio-host";
 
 /** The statement's limit in `createPortfolioAssessmentSchema`. */
 export const STATEMENT_MAX = 8_000;
@@ -114,6 +117,17 @@ export function PortfolioAssessmentForm({
         ? [{ id: hostId, name: hostName ?? "Selected product" }, ...options]
         : options;
   const host = hostOptions.some((p) => p.id === hostId) ? hostId : "";
+
+  // #1749 — a check that needed a host links here at `#portfolio-host`: put the
+  // focus on the picker, not only the scroll, once the list it waits on is in.
+  const hostRef = useRef<HTMLSelectElement>(null);
+  const hostFocused = useRef(false);
+  useEffect(() => {
+    if (hostFocused.current || productsLoading) return;
+    if (window.location.hash !== `#${HOST_PICKER_ID}`) return;
+    hostFocused.current = true;
+    hostRef.current?.focus();
+  }, [productsLoading]);
 
   const hasSource = requirement ? true : statement.trim().length > 0;
   const hasScope = scope === "all-accessible" || productId !== "";
@@ -259,9 +273,10 @@ export function PortfolioAssessmentForm({
             />
           </div>
         ) : null}
-        <Label htmlFor="portfolio-host">Which product will build this? (optional)</Label>
+        <Label htmlFor={HOST_PICKER_ID}>Which product will build this? (optional)</Label>
         <select
-          id="portfolio-host"
+          ref={hostRef}
+          id={HOST_PICKER_ID}
           className="h-9 w-full max-w-sm rounded-md border border-input bg-background px-2 text-sm"
           value={host}
           disabled={productsLoading}

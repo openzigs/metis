@@ -186,6 +186,8 @@ describe("portfolio entry page", () => {
         status: "completed",
         verdict: "gap-confirmed",
         productCount: 1,
+        hostProductId: "p-billing",
+        hostProductName: "Billing",
         createdById: "u1",
         createdAt: "2026-11-01T10:00:00.000Z",
         updatedAt: "2026-11-01T10:00:00.000Z",
@@ -197,6 +199,8 @@ describe("portfolio entry page", () => {
         status: "running",
         verdict: null,
         productCount: 3,
+        hostProductId: null,
+        hostProductName: null,
         createdById: "u1",
         createdAt: "2026-11-01T10:00:00.000Z",
         updatedAt: "2026-11-01T10:00:00.000Z",
@@ -208,6 +212,8 @@ describe("portfolio entry page", () => {
         status: "failed",
         verdict: null,
         productCount: 2,
+        hostProductId: "p-gone",
+        hostProductName: null,
         createdById: "u1",
         createdAt: "2026-11-01T10:00:00.000Z",
         updatedAt: "2026-11-01T10:00:00.000Z",
@@ -217,10 +223,11 @@ describe("portfolio entry page", () => {
     const items = await screen.findAllByTestId("portfolio-recent-item");
     expect(api.list).toHaveBeenCalledWith("p-billing");
     expect(within(items[0]).getByRole("link")).toHaveAttribute("href", "/portfolio/pa-1");
-    expect(items[0]).toHaveTextContent("Nothing covers it · 1 product");
+    // #1749 — each row says whether a product was chosen to build it.
+    expect(items[0]).toHaveTextContent("Nothing covers it · 1 product · Built by Billing ·");
     expect(items[1]).toHaveTextContent(`${"x".repeat(140)}…`);
-    expect(items[1]).toHaveTextContent("Running · 3 products");
-    expect(items[2]).toHaveTextContent("Failed · 2 products");
+    expect(items[1]).toHaveTextContent("Running · 3 products · No product chosen to build it ·");
+    expect(items[2]).toHaveTextContent("Failed · 2 products · Built by the product chosen ·");
     expect(screen.getByRole("radio", { name: "One product" })).toBeChecked();
     await waitFor(() => expect(screen.getByLabelText("Product")).toHaveValue("p-billing"));
   });

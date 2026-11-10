@@ -406,6 +406,51 @@ describe("products-multi routes", () => {
       );
     });
 
+    // #1749 — the documents' diagrams name a shared-table edge by what it does,
+    // which needs the stored kind and direction (`edgeDiagramLabel` is unit-tested).
+    it("hands the generator a shared-table edge's kind and direction", async () => {
+      mockPrisma.product.findUnique.mockResolvedValue({
+        id: "p1",
+        name: "My Product",
+        description: null,
+        repos: [
+          { repoConnectionId: "rc1", role: "backend-api", repoConnection: { repoName: "a" } },
+          { repoConnectionId: "rc2", role: "frontend", repoConnection: { repoName: "b" } },
+        ],
+      });
+      mockPrisma.productAnalysis.create.mockResolvedValue({ id: "a1" });
+      mockPrisma.productDocument.create.mockResolvedValue({ id: "d1" });
+      mockPrisma.productEdge.findMany.mockResolvedValueOnce([
+        {
+          sourceRepoId: "rc1",
+          targetRepoId: "rc2",
+          edgeType: "produces",
+          confidence: 0.8,
+          evidence: "[]",
+          sourceFile: null,
+          targetFile: null,
+          integrationKind: "database",
+          direction: "writes",
+        },
+      ]);
+
+      const res = await request(app).post("/products/p1/analyze");
+      expect(res.status).toBe(200);
+      const { generateUnifiedArchitectureDoc } =
+        await import("../lib/products/unified-doc-generator.js");
+      expect(vi.mocked(generateUnifiedArchitectureDoc)).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          edges: [
+            expect.objectContaining({
+              edgeType: "produces",
+              integrationKind: "database",
+              direction: "writes",
+            }),
+          ],
+        }),
+      );
+    });
+
     it("marks the analysis failed when detection throws", async () => {
       mockPrisma.product.findUnique.mockResolvedValue({
         id: "p1",

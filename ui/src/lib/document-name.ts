@@ -27,6 +27,17 @@ export interface DocumentName {
 }
 
 /**
+ * #1749 — a repository ingest stores two kinds of document: each source file,
+ * keyed with the ingester's `src/` marker, and the repository's summary (its
+ * overview, README and manifests such as `package.json`), keyed without one.
+ * A manifest is therefore listed twice under one path; its summary copy says so.
+ */
+const REPO_SOURCE_FILE_RE = /^connector:repo:[^:]+:src\//;
+
+/** #1749 — what the secondary line adds for a repository-summary document. */
+export const REPO_SUMMARY_NOTE = "repository summary";
+
+/**
  * #547 — `source` is the row's `documents.source`: only a `repo` row is read as
  * a repository file, so an upload named `connector:repo:…` keeps its name.
  */
@@ -37,9 +48,13 @@ export function formatDocumentName(
 ): DocumentName {
   const parsed = formatSourceLabel(filename, repoNames);
   if (source === "repo" && parsed.isConnector && parsed.path) {
+    const summary = !REPO_SOURCE_FILE_RE.test(parsed.rawId);
+    const secondary = [parsed.repoLabel, summary ? REPO_SUMMARY_NOTE : undefined]
+      .filter(Boolean)
+      .join(" · ");
     return {
       primary: parsed.path,
-      ...(parsed.repoLabel ? { secondary: parsed.repoLabel } : {}),
+      ...(secondary ? { secondary } : {}),
       rawId: parsed.rawId,
       kind: "repo",
     };

@@ -325,6 +325,14 @@ export interface PortfolioAssessmentListItem {
   status: PortfolioAssessmentStatus;
   verdict: PortfolioVerdict | null;
   productCount: number;
+  /**
+   * #1749 — the product chosen to build the requirement, as the reader's view
+   * has it (null when none was, or the reader cannot read it), so a check with
+   * a host and one without read differently in a list.
+   */
+  hostProductId: string | null;
+  /** #1749 — that product's name; null when there is no readable host. */
+  hostProductName: string | null;
   createdById: string;
   createdAt: string;
   updatedAt: string;

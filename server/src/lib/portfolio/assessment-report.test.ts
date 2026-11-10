@@ -11,6 +11,8 @@ vi.mock("../ai/providers/factory.js", () => factory);
 
 const {
   buildReportPrompt,
+  impactAwaitsHost,
+  NO_HOST_ASSESSMENT_LINE,
   generatePortfolioReport,
   parseReportReply,
   reportContext,
@@ -280,6 +282,33 @@ describe("generatePortfolioReport — the model path", () => {
       "Product P3: Idle. Coverage: does not cover it. Impact: may be reached through a restricted product (do not describe how).",
     );
     expect(prompt).toMatch(/one entry for each of P1, P2,$/m);
+  });
+
+  it("#1749 — with no host and nothing covering it, the prompt says the impact waits on a host", () => {
+    const refs = new Map([
+      ["p1", "P1"],
+      ["p3", "P3"],
+    ]);
+    const noHost: Ctx = {
+      ...CTX,
+      verdict: "gap-confirmed",
+      products: CTX.products
+        .filter((p) => p.productId === "p1" || p.productId === "p3")
+        .map((p) => ({ ...p, coverage: "not-covered", impactKind: "none", path: [p.productId] })),
+    };
+    expect(impactAwaitsHost(noHost)).toBe(true);
+    const prompt = buildReportPrompt(noHost, refs);
+    expect(prompt).toContain(NO_HOST_ASSESSMENT_LINE);
+    expect(prompt).toContain("Do not say that no product is affected");
+    // A product that covers it, or one that must change, means the impact did not wait.
+    const covered: Ctx = {
+      ...noHost,
+      products: noHost.products.map((p, i) => (i === 0 ? { ...p, coverage: "covers" } : p)),
+    };
+    expect(impactAwaitsHost(covered)).toBe(false);
+    expect(buildReportPrompt(covered, refs)).not.toContain(NO_HOST_ASSESSMENT_LINE);
+    expect(impactAwaitsHost(CTX)).toBe(false);
+    expect(buildReportPrompt(CTX, refs)).not.toContain(NO_HOST_ASSESSMENT_LINE);
   });
 
   it("#1963 — a verdict that left products out as not in scope says so, and never 'the portfolio'", () => {

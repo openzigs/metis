@@ -160,3 +160,61 @@ describe("AnalysisCapabilityHint — prompt-only agents (#938)", () => {
     expect(screen.queryByTestId("analysis-prompt-only-agents")).not.toBeInTheDocument();
   });
 });
+
+// #1749 — a run without the code agent, on a project whose code is indexed,
+// gets no code-grounded verdicts; the form says so before it starts.
+describe("AnalysisCapabilityHint — code agent not selected (#1749)", () => {
+  const indexed = {
+    codeGraphPresent: false,
+    repoSourceIngested: true,
+    fusedCodeRetrievalEnabled: true,
+    schemaContextEnabled: true,
+  };
+
+  it("warns, naming the agent, when the code is indexed and the code agent is left out", async () => {
+    capabilityPreview.mockResolvedValue(indexed);
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <AnalysisCapabilityHint
+          projectId="proj-1"
+          selectedAgents={["document"]}
+          codeAgentLabel="Winston (Solution Architect)"
+        />
+      </QueryClientProvider>,
+    );
+    const notice = await screen.findByTestId("analysis-code-agent-not-selected");
+    expect(notice).toHaveTextContent(
+      /^Winston \(Solution Architect\) is not selected, so this run will not read the project's code/,
+    );
+    expect(notice).toHaveTextContent(
+      /no implemented, partial or gap verdict and no code citations/,
+    );
+  });
+
+  it("warns when only a code graph is present, with a generic name when none is given", async () => {
+    capabilityPreview.mockResolvedValue({
+      ...indexed,
+      repoSourceIngested: false,
+      codeGraphPresent: true,
+    });
+    renderHint(["document", "web"]);
+    expect(await screen.findByTestId("analysis-code-agent-not-selected")).toHaveTextContent(
+      /^The code agent is not selected/,
+    );
+  });
+
+  it("does not warn when the code agent is selected", async () => {
+    capabilityPreview.mockResolvedValue(indexed);
+    renderHint(["document", "code"]);
+    await waitFor(() => expect(capabilityPreview).toHaveBeenCalled());
+    expect(screen.queryByTestId("analysis-code-agent-not-selected")).not.toBeInTheDocument();
+  });
+
+  it("does not warn when the project has no code to read", async () => {
+    capabilityPreview.mockResolvedValue({ ...indexed, repoSourceIngested: false });
+    renderHint(["document"]);
+    await waitFor(() => expect(capabilityPreview).toHaveBeenCalled());
+    expect(screen.queryByTestId("analysis-code-agent-not-selected")).not.toBeInTheDocument();
+  });
+});

@@ -17,10 +17,16 @@
  * send made instead of making a second. Any answer from the server, or a
  * different selection, starts afresh with a new token. The page moves to the
  * new feature only while this action is still on screen.
+ *
+ * #1749 — while Spec Kit is off for the project the action is disabled with
+ * that reason, and links to the Spec Kit page where it is turned on, instead of
+ * explaining only through a 409 after the click. The 409 (Spec Kit turned off
+ * after the page loaded) links there too.
  */
 import { useRef, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   SPEC_KIT_FROM_REQUIREMENTS_MAX_IDS,
@@ -42,15 +48,22 @@ export interface SpecKitSeedCandidate {
   reviewStatus?: string | null;
 }
 
+/** #1749 — why the action is disabled while Spec Kit is off for the project. */
+export const SPEC_KIT_OFF_REASON =
+  "Spec Kit is off for this project. Turn it on from the Spec Kit page first.";
+
 /**
  * Why the action cannot run on `selected`, or `undefined` when it can.
  * `writeHint` is the page's own reason the viewer cannot write (no `project.update`).
+ * `specKitOff` is true only once the project is known to have Spec Kit off.
  */
 export function startSpecKitFeatureBlocker(
   selected: readonly SpecKitSeedCandidate[],
   writeHint?: string,
+  specKitOff = false,
 ): string | undefined {
   if (writeHint) return writeHint;
+  if (specKitOff) return SPEC_KIT_OFF_REASON;
   if (selected.length === 0) {
     return "Select one or more approved requirements to start a Spec Kit feature from them.";
   }
@@ -82,9 +95,12 @@ export function refusedRequirementIds(err: unknown): string[] | null {
 const START_SPEC_KIT_RESPONSE_LOST =
   "The response was lost, so the feature may already have been created. Start again with the same selection: it opens that feature rather than creating a second one.";
 
+const isSpecKitDisabled = (err: unknown): boolean =>
+  err instanceof ApiError && err.code === "SPEC_KIT_DISABLED";
+
 function describeFailure(err: unknown): string {
   if (isLostResponse(err)) return START_SPEC_KIT_RESPONSE_LOST;
-  if (err instanceof ApiError && err.code === "SPEC_KIT_DISABLED") {
+  if (isSpecKitDisabled(err)) {
     return "Spec Kit is off for this project. Turn it on from the Spec Kit page, then try again.";
   }
   if (err instanceof ApiError && err.code === SPEC_KIT_REQUIREMENTS_NOT_APPROVED_CODE) {
@@ -107,7 +123,19 @@ interface Props {
 export function StartSpecKitFeatureAction({ projectId, selected, writeHint }: Props) {
   const router = useRouter();
   const qc = useQueryClient();
-  const [failure, setFailure] = useState<{ text: string; ids: string[] | null } | null>(null);
+  const [failure, setFailure] = useState<{
+    text: string;
+    ids: string[] | null;
+    specKitOff: boolean;
+  } | null>(null);
+  // #1749 — read whether Spec Kit is on; an unread state blocks nothing (the server checks).
+  const specKit = useQuery({
+    queryKey: queryKeys.projects.specKitEnabled(projectId),
+    queryFn: () => specKitApi.getEnabled(projectId),
+    retry: false,
+  });
+  const specKitOff = specKit.data?.enabled === false;
+  const specKitHref = `/projects/${encodeURIComponent(projectId)}/spec-kit`;
   /** This start's token and the selection it sends; kept only after a lost response. */
   const pendingStart = useRef<{ ids: string; token: string } | null>(null);
   const start = useMutation({
@@ -124,7 +152,10 @@ export function StartSpecKitFeatureAction({ projectId, selected, writeHint }: Pr
       // feature may exist, and a retry must name the same start.
       if (!isLostResponse(err)) pendingStart.current = null;
       const text = describeFailure(err);
-      setFailure({ text, ids: refusedRequirementIds(err) });
+      setFailure({ text, ids: refusedRequirementIds(err), specKitOff: isSpecKitDisabled(err) });
+      if (isSpecKitDisabled(err)) {
+        void qc.invalidateQueries({ queryKey: queryKeys.projects.specKitEnabled(projectId) });
+      }
       toast.error(text);
     },
   });
@@ -146,7 +177,7 @@ export function StartSpecKitFeatureAction({ projectId, selected, writeHint }: Pr
       },
     );
   };
-  const blocker = startSpecKitFeatureBlocker(selected, writeHint);
+  const blocker = startSpecKitFeatureBlocker(selected, writeHint, specKitOff);
   const titleOf = new Map(selected.map((r) => [r.id, r.title]));
 
   return (
@@ -163,15 +194,32 @@ export function StartSpecKitFeatureAction({ projectId, selected, writeHint }: Pr
             {start.isPending ? "Starting Spec Kit feature…" : "Start Spec Kit feature"}
           </Button>
         </HoverHint>
-        <span className="text-xs text-muted-foreground" data-testid="start-spec-kit-feature-count">
-          {selected.length === 0
-            ? "Tick approved requirements to start a Spec Kit feature from them."
-            : `${selected.length} selected`}
-        </span>
+        {specKitOff && !writeHint ? (
+          <span className="text-xs text-muted-foreground" data-testid="start-spec-kit-off">
+            Spec Kit is off for this project.{" "}
+            <Link href={specKitHref} className="font-medium text-foreground underline">
+              Turn it on from the Spec Kit page
+            </Link>
+          </span>
+        ) : (
+          <span
+            className="text-xs text-muted-foreground"
+            data-testid="start-spec-kit-feature-count"
+          >
+            {selected.length === 0
+              ? "Tick approved requirements to start a Spec Kit feature from them."
+              : `${selected.length} selected`}
+          </span>
+        )}
       </div>
       {failure ? (
         <div role="alert" className="text-sm text-destructive" data-testid="start-spec-kit-error">
           <p>{failure.text}</p>
+          {failure.specKitOff ? (
+            <Link href={specKitHref} className="font-medium underline">
+              Open the Spec Kit page
+            </Link>
+          ) : null}
           {failure.ids && failure.ids.length > 0 ? (
             <ul className="list-disc pl-5" data-testid="start-spec-kit-refused-ids">
               {failure.ids.map((id) => (

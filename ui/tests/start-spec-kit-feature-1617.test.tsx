@@ -11,7 +11,7 @@
  * and on the written `spec.md` by the server suite (#1616).
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient } from "@tanstack/react-query";
 import { makeWrapper } from "./test-utils";
 
@@ -32,8 +32,9 @@ vi.mock("next/navigation", async () => {
 });
 
 const startFeature = vi.hoisted(() => vi.fn());
+const getEnabled = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/spec-kit-api", () => ({
-  specKitApi: { startFeatureFromRequirements: startFeature },
+  specKitApi: { startFeatureFromRequirements: startFeature, getEnabled },
 }));
 
 const toastSuccess = vi.hoisted(() => vi.fn());
@@ -45,6 +46,7 @@ vi.mock("sonner", () => ({
 import { ApiError } from "@/lib/api-client";
 import { queryKeys } from "@/lib/query-keys";
 import {
+  SPEC_KIT_OFF_REASON,
   StartSpecKitFeatureAction,
   refusedRequirementIds,
   startSpecKitFeatureBlocker,
@@ -83,6 +85,8 @@ const tooltip = () => button().closest("[data-hover-hint]")?.getAttribute("title
 beforeEach(() => {
   routerPush.mockReset();
   startFeature.mockReset();
+  getEnabled.mockReset();
+  getEnabled.mockResolvedValue({ enabled: true });
   toastSuccess.mockReset();
   toastError.mockReset();
 });
@@ -169,6 +173,63 @@ describe("StartSpecKitFeatureAction (#1617)", () => {
     expect(alert).toHaveTextContent("Spec Kit is off for this project");
     expect(alert).not.toHaveTextContent("PUT /enabled");
     expect(screen.queryByTestId("start-spec-kit-refused-ids")).not.toBeInTheDocument();
+    // #1749 — and links to the page that turns it on.
+    expect(within(alert).getByRole("link", { name: "Open the Spec Kit page" })).toHaveAttribute(
+      "href",
+      "/projects/p1/spec-kit",
+    );
+  });
+
+  it("does not link to the Spec Kit page on any other failure", async () => {
+    startFeature.mockRejectedValue(new ApiError(500, "boom", "INTERNAL"));
+    renderAction([APPROVED_A]);
+    fireEvent.click(button());
+    const alert = await screen.findByRole("alert");
+    expect(within(alert).queryByRole("link")).not.toBeInTheDocument();
+  });
+});
+
+// #1749 — the action said Spec Kit was off only through a 409 after the click.
+describe("StartSpecKitFeatureAction — Spec Kit off (#1749)", () => {
+  it("is disabled with the reason, and links to the Spec Kit page, while Spec Kit is off", async () => {
+    getEnabled.mockResolvedValue({ enabled: false });
+    renderAction([APPROVED_A]);
+    const off = await screen.findByTestId("start-spec-kit-off");
+    expect(
+      within(off).getByRole("link", { name: "Turn it on from the Spec Kit page" }),
+    ).toHaveAttribute("href", "/projects/p1/spec-kit");
+    expect(button()).toBeDisabled();
+    expect(tooltip()).toBe(SPEC_KIT_OFF_REASON);
+    fireEvent.click(button());
+    expect(startFeature).not.toHaveBeenCalled();
+    expect(getEnabled).toHaveBeenCalledWith("p1");
+  });
+
+  it("stays enabled when Spec Kit is on", async () => {
+    renderAction([APPROVED_A]);
+    await waitFor(() => expect(getEnabled).toHaveBeenCalled());
+    expect(button()).toBeEnabled();
+    expect(screen.queryByTestId("start-spec-kit-off")).not.toBeInTheDocument();
+  });
+
+  it("blocks nothing when whether Spec Kit is on cannot be read (the server still checks)", async () => {
+    getEnabled.mockRejectedValue(new ApiError(500, "boom", "INTERNAL"));
+    renderAction([APPROVED_A]);
+    await waitFor(() => expect(getEnabled).toHaveBeenCalled());
+    expect(button()).toBeEnabled();
+  });
+
+  it("keeps the write hint first for a viewer who cannot write", async () => {
+    getEnabled.mockResolvedValue({ enabled: false });
+    renderAction([APPROVED_A], "Requires project.update");
+    await waitFor(() => expect(getEnabled).toHaveBeenCalled());
+    expect(tooltip()).toBe("Requires project.update");
+    expect(screen.queryByTestId("start-spec-kit-off")).not.toBeInTheDocument();
+  });
+
+  it("ranks Spec Kit off before the selection in the blocker", () => {
+    expect(startSpecKitFeatureBlocker([], undefined, true)).toBe(SPEC_KIT_OFF_REASON);
+    expect(startSpecKitFeatureBlocker([APPROVED_A], undefined, false)).toBeUndefined();
   });
 });
 

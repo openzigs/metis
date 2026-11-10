@@ -228,6 +228,10 @@ describe("viewPortfolioAssessment", () => {
     const v = (await view())!;
     expect(v.hostProductId).toBe("p3");
     expect(v.productNames).toEqual({ p3: "Three" });
+    // #1749 — a list row names the host too.
+    expect(toListItem(v)).toEqual(
+      expect.objectContaining({ hostProductId: "p3", hostProductName: "Three" }),
+    );
   });
 
   it("#1725 — a host the reader cannot read now is withheld, name and id", async () => {
@@ -235,6 +239,10 @@ describe("viewPortfolioAssessment", () => {
     const v = (await view())!;
     expect(v.hostProductId).toBeNull();
     expect(v.productNames).not.toHaveProperty("p9");
+    // #1749 — and so does its list row.
+    expect(toListItem(v)).toEqual(
+      expect.objectContaining({ hostProductId: null, hostProductName: null }),
+    );
   });
 
   it("#1725 — an admin's view names the host, read with the assessment's own products", async () => {
@@ -1017,7 +1025,8 @@ describe("renderPortfolioAssessmentMarkdown", () => {
     const md = renderPortfolioAssessmentMarkdown((await view())!);
     expect(md).toContain("Reset &lt;script&gt;x&lt;/script&gt;");
     expect(md).not.toContain("<script>");
-    expect(md).toContain("| Two | Does not cover it | Does not cover it \\| at all. |");
+    // #1749 — the Summary cell drops the coverage it opens with; what is left stays escaped.
+    expect(md).toContain("| Two | Does not cover it | \\| at all. |");
     expect(md).toContain("### One: acme/one-api (implemented)");
     expect(md).toContain("- `src/a.ts`");
     expect(md).toContain("**Verdict:** Implemented");

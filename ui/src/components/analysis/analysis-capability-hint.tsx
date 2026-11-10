@@ -12,6 +12,11 @@
  * Issue #938 — it also names the enabled custom and library agents the run will
  * invoke, and says they run prompt-only: none of their tools run (tools apply
  * only when a chat delegates to the agent), so their findings are ungrounded.
+ *
+ * #1749 — when the project's code is indexed but the code agent is not ticked,
+ * it says the run will not read that code: a documents-only run gives no
+ * implemented / partial / gap verdicts and cites no code, which a $0.12
+ * Business-Analyst-only run on the walkthrough showed without a word of warning.
  */
 import { useQuery } from "@tanstack/react-query";
 import { deriveCapabilityReasons, type AnalysisPromptOnlyAgent } from "@metis/shared";
@@ -22,11 +27,14 @@ interface Props {
   projectId: string;
   /** Agents selected in the form — gates code/database reasons. */
   selectedAgents: AnalysisAgentKey[];
+  /** #1749 — how the code agent is named in the form (its persona); a generic name if unset. */
+  codeAgentLabel?: string;
 }
 
 export function AnalysisCapabilityHint({
   projectId,
   selectedAgents,
+  codeAgentLabel = "The code agent",
 }: Props): React.ReactElement | null {
   const preview = useQuery({
     queryKey: ["analysis", "capability-preview", projectId],
@@ -46,10 +54,24 @@ export function AnalysisCapabilityHint({
   });
 
   const agents = preview.data.promptOnlyAgents ?? [];
-  if (reasons.length === 0 && agents.length === 0) return null;
+  // #1749 — code is there to read, and the run will not read it.
+  const codeLeftOut =
+    !selectedAgents.includes("code") &&
+    (preview.data.repoSourceIngested || preview.data.codeGraphPresent);
+  if (reasons.length === 0 && agents.length === 0 && !codeLeftOut) return null;
 
   return (
     <>
+      {codeLeftOut && (
+        <div
+          data-testid="analysis-code-agent-not-selected"
+          className="rounded border border-warning/40 bg-warning-muted p-2 text-xs text-warning"
+        >
+          <span className="font-medium">{codeAgentLabel} is not selected,</span> so this run will
+          not read the project&apos;s code: requirements get no implemented, partial or gap verdict
+          and no code citations. Select it for a run grounded in the code.
+        </div>
+      )}
       {reasons.length > 0 && (
         <div
           data-testid="analysis-capability-hint"

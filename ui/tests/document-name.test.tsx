@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { render, screen } from "@testing-library/react";
-import { formatDocumentName } from "@/lib/document-name";
+import { REPO_SUMMARY_NOTE, formatDocumentName } from "@/lib/document-name";
 import { DocumentName } from "@/components/projects/document-name";
 
 // #717 — keyed as connector-ingest.ts keys `server/vitest.config.ts`: the `src/`
@@ -54,6 +54,21 @@ describe("formatDocumentName", () => {
       rawId: KEY,
       kind: "file",
     });
+  });
+
+  // #1749 — a manifest is ingested as a source file and as part of the
+  // repository's summary; the two rows had one name and read as a duplicate.
+  it("tells a repository-summary document from the source file of the same path", () => {
+    const source = formatDocumentName("connector:repo:c1:src/package.json", "repo", { c1: "wms" });
+    const summary = formatDocumentName("connector:repo:c1:package.json", "repo", { c1: "wms" });
+    expect(source).toMatchObject({ primary: "package.json", secondary: "wms" });
+    expect(summary).toMatchObject({
+      primary: "package.json",
+      secondary: `wms · ${REPO_SUMMARY_NOTE}`,
+    });
+    expect(formatDocumentName("connector:repo:c1:OVERVIEW.md", "repo").secondary).toBe(
+      `c1 · ${REPO_SUMMARY_NOTE}`,
+    );
   });
 
   it("labels a generated document readably", () => {
