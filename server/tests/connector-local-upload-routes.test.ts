@@ -744,6 +744,65 @@ describe("asynchronous deep-ingest (#373)", () => {
     expect(isConnectorIngestActive("repo_github_x")).toBe(false);
   });
 
+  // #1579 — run 10's first ingest sat on "Ingesting source code" at 3/5 for
+  // 17 minutes; the card had no figure to tell a slow run from a stuck one.
+  it("names the source-file count inside step 3 and moves the bar through the step", async () => {
+    const token = await login("admin");
+    const steps: Array<{ step: string; current?: number; total?: number }> = [];
+    const emitterImpl = vi.mocked(getRepoConnectorEmitter).getMockImplementation()!;
+    vi.mocked(getRepoConnectorEmitter).mockImplementation(
+      () =>
+        ({
+          progress: vi.fn((event: { step: string; current?: number; total?: number }) =>
+            steps.push({ step: event.step, current: event.current, total: event.total }),
+          ),
+          status: vi.fn(),
+          discovery: vi.fn(),
+        }) as unknown as ReturnType<typeof getRepoConnectorEmitter>,
+    );
+    let open!: () => void;
+    const gate = new Promise<void>((resolve) => (open = resolve));
+    vi.mocked(ingestSourceAsKnowledge).mockImplementationOnce(async (...args) => {
+      const onProgress = args[4]?.onProgress;
+      onProgress?.({ processed: 0, total: 450 });
+      onProgress?.({ processed: 120, total: 450 });
+      onProgress?.({ processed: 450, total: 450 });
+      await gate;
+      return { documentsCreated: 3, documentsUpdated: 0, chunkCount: 42, failures: 0 };
+    });
+
+    const res = await deepIngest(token);
+    expect(res.status).toBe(202);
+    const jobId = res.body.data.jobId as string;
+    try {
+      // The last file is always sent, whatever the throttle: (2 + 450/450) / 5 = 60%.
+      await vi.waitFor(() =>
+        expect(getLastJobLifecycle(jobId)).toMatchObject({
+          status: "progress",
+          progress: 60,
+          message: "Ingesting source code (450 of 450 files)",
+        }),
+      );
+      const sourceSteps = steps.filter((s) => s.step.startsWith("Ingesting source code"));
+      // The first count is sent at once, so the card shows a figure straight
+      // away; the second came inside the throttle window and is not.
+      expect(sourceSteps).toEqual([
+        { step: "Ingesting source code", current: 3, total: 5 },
+        { step: "Ingesting source code (0 of 450 files)", current: 3, total: 5 },
+        { step: "Ingesting source code (450 of 450 files)", current: 3, total: 5 },
+      ]);
+    } finally {
+      open();
+      await vi.waitFor(() => expect(getLastJobLifecycle(jobId)?.status).toBe("completed"));
+      // Every other test ends its wait on the default emitter's hooks.
+      vi.mocked(getRepoConnectorEmitter).mockImplementation(emitterImpl);
+    }
+    expect(steps.map((s) => s.step).slice(-2)).toEqual([
+      "Indexing metadata",
+      "Discovering connections",
+    ]);
+  });
+
   it("reports a failure on the bus with fixed text, never the exception, and frees the connector", async () => {
     const RAW = "EACCES: permission denied, open '/srv/metis/.git/config' token=ghp_secret";
     vi.mocked(ingestSourceAsKnowledge).mockRejectedValueOnce(new Error(RAW));

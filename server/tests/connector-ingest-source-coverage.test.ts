@@ -437,6 +437,43 @@ describe("recorded progress and outcome (#182 AC 4)", () => {
     expect(h.audits.at(-1)?.metadata).toMatchObject({ status: "completed", indexed: 2 });
   });
 
+  // #1579 — the deep-ingest card sat on "Ingesting source code 3/5" for 17
+  // minutes with no figure; the caller needs a per-file count to show one.
+  it("reports a file count to onProgress: 0 of N once selected, then every file, skips included", async () => {
+    await writeFiles({ "a.ts": "a", "b.ts": "b", "c.ts": "c" });
+    h.onIngest = (doc) =>
+      doc.filename.endsWith("src/b.ts") ? { status: "failed", chunkCount: 0 } : undefined;
+    const seen: Array<{ processed: number; total: number }> = [];
+
+    await ingestSourceAsKnowledge("p1", "c1", "u1", root, {
+      onProgress: (p) => seen.push({ ...p }),
+    });
+
+    expect(seen).toEqual([
+      { processed: 0, total: 3 },
+      { processed: 1, total: 3 },
+      { processed: 2, total: 3 },
+      { processed: 3, total: 3 },
+    ]);
+  });
+
+  it("counts a file the confined read refused as processed, so the count still reaches N", async () => {
+    await writeFiles({ "a.ts": "a", "big.ts": "x".repeat(50) });
+    const seen: number[] = [];
+    // `big.ts` passes selection at 50 bytes, then grows past the ceiling before the read.
+    h.onIngest = null;
+    await ingestSourceAsKnowledge("p1", "c1", "u1", root, {
+      limits: { maxFileBytes: 60 },
+      onProgress: (p) => {
+        seen.push(p.processed);
+        if (p.processed === 0) writeFileSync(path.join(root, "big.ts"), "x".repeat(500));
+      },
+    });
+
+    expect(lastState().skipped.tooLarge).toBe(1);
+    expect(seen).toEqual([0, 1, 2]);
+  });
+
   it("records embedding failures and marks the run partial", async () => {
     await writeFiles({ "a.ts": "a", "b.ts": "b" });
     h.onIngest = (doc) =>
