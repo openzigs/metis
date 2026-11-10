@@ -22,6 +22,7 @@ import {
   type AiResponseMode,
   type ThreadAnchor,
 } from "@/lib/discussions-api";
+import { DiscussionRequirementPicker } from "@/components/chat/discussion-requirement-picker";
 
 const MODE_LABELS: Record<AiResponseMode, { label: string; hint: string }> = {
   off: { label: "Off", hint: "The AI never replies, even when @AI-mentioned." },
@@ -44,6 +45,11 @@ export interface ThreadSettingsPanelProps {
   onModeChange?: (mode: AiResponseMode) => void;
   /** Notified after a successful anchor update. */
   onAnchorChange?: (anchor: ThreadAnchor) => void;
+  /**
+   * #2187 — the thread's project. When given, a Requirement anchor is chosen by
+   * searching the project's requirements on title instead of pasting an id.
+   */
+  projectId?: string;
 }
 
 export function ThreadSettingsPanel({
@@ -51,6 +57,7 @@ export function ThreadSettingsPanel({
   aiResponseMode,
   onModeChange,
   onAnchorChange,
+  projectId,
 }: ThreadSettingsPanelProps) {
   const [mode, setMode] = useState<AiResponseMode>(aiResponseMode);
   const [savingMode, setSavingMode] = useState<AiResponseMode | null>(null);
@@ -75,10 +82,9 @@ export function ThreadSettingsPanel({
     }
   }
 
-  async function saveAnchor() {
-    if (!anchorId.trim() || savingAnchor) return;
+  async function saveAnchor(anchor: ThreadAnchor = { [anchorKind]: anchorId.trim() }) {
+    if (!Object.values(anchor).some((v) => v) || savingAnchor) return;
     setSavingAnchor(true);
-    const anchor: ThreadAnchor = { [anchorKind]: anchorId.trim() };
     try {
       await updateThreadSettings(threadId, { anchor });
       onAnchorChange?.(anchor);
@@ -146,21 +152,36 @@ export function ThreadSettingsPanel({
               </option>
             ))}
           </select>
-          <Input
-            id="anchor-id"
-            value={anchorId}
-            onChange={(e) => setAnchorId(e.target.value)}
-            placeholder="Paste the id to anchor to"
-            disabled={savingAnchor}
-          />
-          <Button
-            type="button"
-            onClick={() => void saveAnchor()}
-            disabled={savingAnchor || !anchorId.trim()}
-          >
-            {savingAnchor ? "Saving…" : "Anchor"}
-          </Button>
+          {anchorKind === "requirementId" && projectId ? null : (
+            <>
+              <Input
+                id="anchor-id"
+                value={anchorId}
+                onChange={(e) => setAnchorId(e.target.value)}
+                placeholder="Paste the id to anchor to"
+                disabled={savingAnchor}
+              />
+              <Button
+                type="button"
+                onClick={() => void saveAnchor()}
+                disabled={savingAnchor || !anchorId.trim()}
+              >
+                {savingAnchor ? "Saving…" : "Anchor"}
+              </Button>
+            </>
+          )}
         </div>
+        {anchorKind === "requirementId" && projectId ? (
+          <DiscussionRequirementPicker
+            projectId={projectId}
+            value={null}
+            label="Requirement"
+            disabled={savingAnchor}
+            onChange={(r) => {
+              if (r) void saveAnchor({ requirementId: r.id });
+            }}
+          />
+        ) : null}
       </div>
     </div>
   );

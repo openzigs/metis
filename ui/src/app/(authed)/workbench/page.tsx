@@ -44,6 +44,7 @@ import {
   type WorkbenchLayout,
 } from "@/lib/workbench-storage";
 import { recentTracker } from "@/lib/recent-tracker";
+import { useRecentEntries } from "@/hooks/use-recent-entries";
 import { WORKBENCH_SESSION_TITLE, titleFromQuestion } from "@metis/shared";
 import { readStoredActiveProjectId, resolveActiveProjectId } from "@/lib/active-project";
 import { LoadedSkillsPanel } from "@/components/chat/loaded-skills-panel";
@@ -715,11 +716,8 @@ function EmptyState({ title, cta, href, hrefLabel }: EmptyStateProps) {
 }
 
 function RecentList() {
-  const [entries, setEntries] = useState(() => recentTracker.list());
-  useEffect(() => {
-    const id = window.setInterval(() => setEntries(recentTracker.list()), 5000);
-    return () => window.clearInterval(id);
-  }, []);
+  // #2187 — only the sessions the server still lists (as /sessions does).
+  const entries = useRecentEntries(5000);
   if (entries.length === 0) {
     return <p className="text-xs text-muted-foreground">Nothing recent yet.</p>;
   }

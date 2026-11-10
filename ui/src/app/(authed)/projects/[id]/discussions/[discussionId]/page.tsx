@@ -10,9 +10,9 @@
  */
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/lib/auth-context";
-import { listThreads, type AiResponseMode } from "@/lib/discussions-api";
+import { listThreads, requirementHref, type AiResponseMode } from "@/lib/discussions-api";
 import { DiscussionThreadView } from "@/components/chat/discussion-thread-view";
 import { PageHeader } from "@/components/ui/page-header";
 
@@ -29,6 +29,9 @@ export default function DiscussionThreadPage() {
   });
   const thread = threads.find((t) => t.id === discussionId);
   const aiResponseMode: AiResponseMode = thread?.aiResponseMode ?? "on_mention";
+  const queryClient = useQueryClient();
+  // #2187 — the requirement this discussion is about, linked by its title.
+  const requirement = thread?.requirement ?? null;
 
   return (
     <div className="flex h-[calc(100vh-9rem)] flex-col gap-3 p-6">
@@ -42,6 +45,19 @@ export default function DiscussionThreadPage() {
           </Link>
         }
         title={thread?.title || "Discussion"}
+        description={
+          requirement ? (
+            <span data-testid="discussion-requirement">
+              About requirement:{" "}
+              <Link
+                href={requirementHref(projectId, requirement)}
+                className="font-medium text-primary hover:underline"
+              >
+                {requirement.title}
+              </Link>
+            </span>
+          ) : undefined
+        }
       />
       <div className="min-h-0 flex-1">
         <DiscussionThreadView
@@ -49,6 +65,9 @@ export default function DiscussionThreadPage() {
           currentUserId={user?.id}
           aiResponseMode={aiResponseMode}
           projectId={projectId}
+          onAnchorChange={() =>
+            void queryClient.invalidateQueries({ queryKey: ["discussions", projectId] })
+          }
         />
       </div>
     </div>

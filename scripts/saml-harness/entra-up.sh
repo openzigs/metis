@@ -18,18 +18,21 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-STATE_DIR="${REPO_ROOT}/scripts/saml-harness/.entra"
+# ENTRA_STATE_DIR moves the pid and log (scripts/lib/entra-harness-shell.test.mjs).
+STATE_DIR="${ENTRA_STATE_DIR:-${REPO_ROOT}/scripts/saml-harness/.entra}"
 PID_FILE="${STATE_DIR}/idp.pid"
 LOG_FILE="${STATE_DIR}/idp.log"
 READY_LINE="Mock Entra ID is up."
 
 die() { printf '  FAIL %s\n' "$*" >&2; exit 1; }
+# Is pid $1 still the mock? A pid alone may have been recycled (#1562).
+is_mock() { [[ "$1" =~ ^[0-9]+$ ]] && ps -p "$1" -o command= 2>/dev/null | grep -qF "entra-idp.mjs"; }
 
 for bin in node openssl; do
   command -v "${bin}" >/dev/null 2>&1 || die "required tool '${bin}' not found on PATH"
 done
 
-if [[ -f "${PID_FILE}" ]] && kill -0 "$(cat "${PID_FILE}")" 2>/dev/null; then
+if [[ -f "${PID_FILE}" ]] && is_mock "$(cat "${PID_FILE}")"; then
   die "the mock Entra IdP is already running (pid $(cat "${PID_FILE}")); run make entra-down first"
 fi
 
@@ -39,7 +42,8 @@ pid=$!
 echo "${pid}" >"${PID_FILE}"
 
 for _ in $(seq 1 60); do
-  if grep -qF "${READY_LINE}" "${LOG_FILE}"; then
+  # -s: the backgrounded redirect may not have created the log yet.
+  if grep -qsF "${READY_LINE}" "${LOG_FILE}"; then
     cat "${LOG_FILE}"
     printf '  Log: %s\n' "${LOG_FILE}"
     exit 0

@@ -346,7 +346,14 @@ export async function validateSAMLResponse(
     const issuerError = assertionIssuerError(profile.issuer, config.idpIssuer);
     if (issuerError) {
       log.warn("SAML assertion Issuer refused", { error: issuerError });
-      return { success: false, error: issuerError };
+      return {
+        success: false,
+        error: issuerError,
+        issuerRefusal: {
+          assertionIssuer: profile.issuer || null,
+          configuredIssuer: config.idpIssuer,
+        },
+      };
     }
 
     const claims = profile as Record<string, unknown>;
