@@ -9,7 +9,7 @@
  *   - the load-failure message is an assertive live region (role="alert") so
  *     SR users hear it instead of silently seeing red text.
  */
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { afterEach, describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { makeWrapper } from "./test-utils";
 
@@ -32,7 +32,22 @@ function renderPage() {
 beforeEach(() => {
   vi.clearAllMocks();
   window.localStorage.clear();
+  // #2197 — the page validates the active workspace against GET /workspaces
+  // before listing; a caller in none lists unfiltered.
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(() =>
+      Promise.resolve({
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        text: () => Promise.resolve(JSON.stringify({ success: true, data: [] })),
+      }),
+    ),
+  );
 });
+
+afterEach(() => vi.unstubAllGlobals());
 
 describe("ProjectsPage — screen-reader affordances (#58)", () => {
   it("exposes an h1 and a level-2 heading per project card", async () => {

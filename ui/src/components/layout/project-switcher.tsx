@@ -16,23 +16,13 @@ import {
 import { projectsApi, type Project } from "@/lib/projects-api";
 import { queryKeys } from "@/lib/query-keys";
 import {
+  projectIdFromPath,
   projectSwitcherQuery,
   readStoredActiveProjectId as readStoredActiveId,
   resolveActiveProjectId,
   writeStoredActiveProjectId as writeStoredActiveId,
 } from "@/lib/active-project";
 import { useActiveWorkspaceId } from "@/lib/active-workspace";
-
-/**
- * Extract the project id from `/projects/<id>/...` paths so the switcher
- * always reflects the project the user is actually looking at, even after
- * a hard reload.
- */
-function projectIdFromPath(pathname: string | null): string | null {
-  if (!pathname) return null;
-  const match = pathname.match(/^\/projects\/([^/?#]+)(?:[/?#]|$)/);
-  return match?.[1] ?? null;
-}
 
 /**
  * Header switcher backed by the real `/api/projects` endpoint. Falls back to

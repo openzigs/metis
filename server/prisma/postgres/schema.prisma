@@ -419,6 +419,9 @@ model AuditLog {
   /// per-fire rows sharing a job's target range are not scanned.
   @@index([targetType, targetId, action])
   @@index([ts])
+  /// #1558 — the admin SAML group-overage warning reads one action, newest
+  /// first, in a time window (`samlGroupOverageSummary`).
+  @@index([action, ts])
   @@map("audit_logs")
 }
 

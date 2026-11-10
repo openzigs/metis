@@ -10,7 +10,7 @@
  * id. It is used when a discussion is started and in a thread's Settings.
  */
 import { useId, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
@@ -49,6 +49,9 @@ export function DiscussionRequirementPicker({
     queryKey: ["discussion-requirements", projectId, debounced],
     queryFn: () => searchThreadRequirements(projectId, debounced),
     enabled: open && !!projectId && !value,
+    // #2203 — keep the last results on screen while the next term is fetched,
+    // rather than flipping to "Searching…" on every keystroke.
+    placeholderData: keepPreviousData,
   });
 
   if (value) {
@@ -86,6 +89,9 @@ export function DiscussionRequirementPicker({
         placeholder="Search requirements by title…"
         autoComplete="off"
         disabled={disabled}
+        // #2203 — a search box that opens a list of matches is a combobox.
+        role="combobox"
+        aria-autocomplete="list"
         aria-controls={open ? listId : undefined}
         aria-expanded={open}
         onFocus={() => setOpen(true)}

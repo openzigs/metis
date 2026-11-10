@@ -310,9 +310,10 @@ export function ssoRouter(): Router {
       },
     });
     if (result.user.groupOverage) {
-      // #1552 — the user signed in with the default role because the IdP listed
-      // no groups (Entra's overage claim). The admin Authentication page warns
-      // from these events (`samlGroupOverageSummary`).
+      // #1552 — the IdP listed no groups (Entra's overage claim), so no group
+      // mapping matched: the user got an app-role mapping's role or the default
+      // role (#1558), recorded below. The admin Authentication page warns from
+      // these events (`samlGroupOverageSummary`).
       audit({
         actor: { id: userRow.id },
         action: SAML_GROUP_OVERAGE_ACTION,

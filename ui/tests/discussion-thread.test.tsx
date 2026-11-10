@@ -28,6 +28,8 @@ vi.mock("@/lib/discussions-api", async (orig) => {
     streamAiReply: vi.fn(),
     editMessage: vi.fn(),
     deleteMessage: vi.fn(),
+    searchThreadRequirements: vi.fn(),
+    updateThreadSettings: vi.fn(),
   };
 });
 
@@ -60,7 +62,9 @@ import {
   editMessage,
   listMessages,
   postMessage,
+  searchThreadRequirements,
   streamAiReply,
+  updateThreadSettings,
 } from "@/lib/discussions-api";
 import { toast } from "sonner";
 import {
@@ -777,6 +781,30 @@ describe("DiscussionThreadView", () => {
     await user.click(await screen.findByTestId("thread-settings-toggle"));
     expect(await screen.findByTestId("thread-settings-panel")).toBeInTheDocument();
     expect(screen.getByRole("radiogroup", { name: /ai participation/i })).toBeInTheDocument();
+  });
+
+  // #2203 — the thread page's Settings path: the view must hand the panel its
+  // project (else the paste-an-id box returns) and the anchor callback (else
+  // the page header is never re-read after an attach).
+  it("attaches a requirement by title from Settings and tells the page", async () => {
+    vi.mocked(searchThreadRequirements).mockResolvedValue([
+      { id: "req-9", title: "Mark all as read", analysisId: "an-1" },
+    ]);
+    vi.mocked(updateThreadSettings).mockResolvedValue({} as never);
+    const onAnchorChange = vi.fn();
+    const user = userEvent.setup();
+    renderView({ projectId: "p1", onAnchorChange });
+    await user.click(await screen.findByTestId("thread-settings-toggle"));
+    expect(screen.queryByPlaceholderText("Paste the id to anchor to")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("combobox", { name: "Requirement" }));
+    await user.click(await screen.findByRole("button", { name: /Mark all as read/ }));
+    await waitFor(() =>
+      expect(updateThreadSettings).toHaveBeenCalledWith("t1", {
+        anchor: { requirementId: "req-9" },
+      }),
+    );
+    expect(searchThreadRequirements).toHaveBeenCalledWith("p1", "");
+    await waitFor(() => expect(onAnchorChange).toHaveBeenCalled());
   });
 
   it("hides the Settings toggle for a non-member", async () => {

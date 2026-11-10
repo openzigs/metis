@@ -371,8 +371,10 @@ export async function listChatTurns(filter: ChatTurnFilter): Promise<ChatTurnPag
       })),
     );
   }
-  // A ledger row is the session's only under the session's own project (the
-  // statement already asks for no other).
+  // A ledger row is the session's only under the session's own project. Since
+  // #1584 the statement already asks for no other, so this filter removes
+  // nothing today: it is defence in depth, kept so a future change to the
+  // statement cannot list a row under another project's session.
   const listable = found
     .filter(hasProject)
     .filter((r) => r.sessionId !== null && sessionProject.get(r.sessionId) === r.projectId)
