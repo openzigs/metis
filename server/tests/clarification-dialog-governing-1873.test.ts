@@ -37,11 +37,35 @@ vi.mock("../src/lib/analysis/clarification-dialog-store.js", () => ({
       ? { state: JSON.parse(JSON.stringify(v)) as unknown, revision: JSON.stringify(v) }
       : undefined;
   }),
-  replaceDialogState: vi.fn(async (id: string, revision: string, state: unknown) => {
-    if (JSON.stringify(fakeStore.get(id)) !== revision) return null;
-    fakeStore.set(id, JSON.parse(JSON.stringify(state)));
+  replaceDialogState: vi.fn(async (id: string, revision: string | undefined, state: unknown) => {
+    // #2142 — no revision: created only while there is no row.
+    const held = fakeStore.get(id);
+    if (revision === undefined ? held !== undefined : JSON.stringify(held) !== revision) {
+      return null;
+    }
+    fakeStore.set(id, structuredClone(state));
     return JSON.stringify(state);
   }),
+  // #2142 — one transaction: `alongside` throwing rolls the state write back.
+  commitDialogState: vi.fn(
+    async (
+      id: string,
+      revision: string,
+      state: unknown,
+      alongside: (tx: unknown) => Promise<void>,
+    ) => {
+      const held = fakeStore.get(id);
+      if (JSON.stringify(held) !== revision) return null;
+      fakeStore.set(id, structuredClone(state));
+      try {
+        await alongside({});
+      } catch (err) {
+        fakeStore.set(id, held);
+        throw err;
+      }
+      return JSON.stringify(state);
+    },
+  ),
 }));
 
 const mem = vi.hoisted(() => ({
@@ -905,11 +929,14 @@ describe("#2068 — a finding still Needs BA input after its answer reaches the 
     // Every round used, and already recorded as complete: no write either.
     fakeStore.set(ANALYSIS, { ...completed, currentRound: 4 });
     expect((await dialog.startOrContinue(ANALYSIS, REQS)).completed).toBe(true);
+    // #2142 — a start writes by compare-and-set; neither writer was called.
     expect(vi.mocked(dialogStore.writeDialogState)).not.toHaveBeenCalled();
+    expect(vi.mocked(dialogStore.replaceDialogState)).not.toHaveBeenCalled();
     // One that used every round and is not marked complete yet is written once.
     fakeStore.set(ANALYSIS, { ...completed, currentRound: 4, completed: false });
     expect((await dialog.startOrContinue(ANALYSIS, REQS)).completed).toBe(true);
-    expect(vi.mocked(dialogStore.writeDialogState)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(dialogStore.replaceDialogState)).toHaveBeenCalledTimes(1);
+    expect(fakeStore.get(ANALYSIS)).toMatchObject({ currentRound: 4, completed: true });
   });
 
   it("a dialog that used every round stays complete, and reads no finding", async () => {
