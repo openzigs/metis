@@ -83,6 +83,7 @@ import {
   analysisApprovalPreAuthRateLimiter,
   analysisApprovalPromoteRateLimiter,
   analysisApprovalReopenRateLimiter,
+  analysisApprovalReviewRateLimiter,
 } from "../middleware/analysis-approval-rate-limit.js";
 import { AppError } from "../middleware/error-handler.js";
 import { documentFile } from "../middleware/document-file-upload.js";
@@ -1623,11 +1624,17 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
    * bound to their parent: `ensureAnalysisVisible(id, projectId)` ties the
    * analysis to the path project, and `reviewApprovalRequest(analysisId, ...)`
    * ties the nested `:approvalId` to that analysis (scoped `findFirst`).
+   *
+   * Issue #2167 — rate limited like its sibling approval writes: the pre-auth
+   * ceiling ahead of `requireAuth`, then a per-user limiter of its own.
    */
   projectScoped.put(
     "/:id/approvals/:approvalId",
+    // Per-IP, ahead of auth: CodeQL js/missing-rate-limiting (PR #902).
+    analysisApprovalPreAuthRateLimiter,
     requireAuth,
     requirePermission("analysis.run"),
+    analysisApprovalReviewRateLimiter,
     async (req: Request, res: Response) => {
       const analysisId = String(req.params.id);
       const projectId = String(req.params.projectId);

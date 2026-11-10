@@ -1,9 +1,10 @@
 /**
  * Rate limiters for the approval checkpoint's state-changing routes under
  * `/api/projects/:projectId/analyses/:id/approvals`: reopen (#723), the
- * checkpoint requirement edit (`PATCH …/:approvalId/requirement`, #1580) and
- * promote (#723), each under its own key and cap, plus one pre-auth ceiling
- * that also covers approve-all and reject-added.
+ * checkpoint requirement edit (`PATCH …/:approvalId/requirement`, #1580), the
+ * per-card review (`PUT …/:approvalId`, #2167) and promote (#723), each under
+ * its own key and cap, plus one pre-auth ceiling that also covers approve-all
+ * and reject-added.
  *
  * Reopening a rejected approval is a database write that closes the promotion
  * gate again, so it is bounded like the other state-changing analysis routes
@@ -91,6 +92,38 @@ export const analysisApprovalEditRateLimiter: RequestHandler = rateLimit({
 }) as unknown as RequestHandler;
 
 /**
+ * Rate limiter for `PUT /api/projects/:projectId/analyses/:id/approvals/:approvalId`
+ * (#2167). A review writes the approval and, once the gate opens, promotes the
+ * requirement set, so it is bounded like reopen and edit, under its own key and
+ * cap. It is the route a reviewer clicks once per card, so its cap is higher:
+ * 300 / 15 min clears a long list worked through by hand, and approve-all
+ * covers a list longer than that in one request.
+ */
+export const ANALYSIS_APPROVAL_REVIEW_DEFAULT_MAX = 300;
+
+// `as unknown as RequestHandler` bridges the Express 4↔5 type split.
+export const analysisApprovalReviewRateLimiter: RequestHandler = rateLimit({
+  store: clusterRateLimitStore("analysis-approval-review"),
+  windowMs: envMs("ANALYSIS_APPROVAL_REVIEW_RATE_LIMIT_WINDOW_MS", FIFTEEN_MIN_MS, { min: 1 }),
+  limit: () =>
+    intFromEnv("ANALYSIS_APPROVAL_REVIEW_RATE_LIMIT_MAX", ANALYSIS_APPROVAL_REVIEW_DEFAULT_MAX),
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req, res) => {
+    const userId = req.user?.userId;
+    if (userId) return `user:${userId}`;
+    return `ip:${ipKeyGenerator(req.ip ?? "", res.req?.socket?.remoteFamily === "IPv6" ? 64 : 32)}`;
+  },
+  message: {
+    success: false,
+    error: {
+      code: "RATE_LIMITED",
+      message: "Too many approval review requests — please try again later",
+    },
+  } satisfies ApiResponse,
+}) as unknown as RequestHandler;
+
+/**
  * Rate limiter for `POST /api/projects/:projectId/analyses/:id/approvals/promote`
  * (#723). Promotion writes the requirement set, so it is bounded like the
  * reopen route above (CodeQL `js/missing-rate-limiting`), under its own key
@@ -121,12 +154,11 @@ export const analysisApprovalPromoteRateLimiter: RequestHandler = rateLimit({
 }) as unknown as RequestHandler;
 
 /**
- * PR #902 CI — a coarse ceiling AHEAD of `requireAuth` on these approval routes:
- * promote, approve-all, reject-added, reopen and (#1580) the checkpoint
- * requirement edit. Not on every approval route that writes (#2157): the
- * per-card review, `PUT /:id/approvals/:approvalId`, has no limiter of its own
- * and is bounded only by the app-wide `apiRateLimiter` on `/api` (#1539).
- * CodeQL `js/missing-rate-limiting` flags the route's own
+ * PR #902 CI — a coarse ceiling AHEAD of `requireAuth` on every approval route
+ * that writes: promote, approve-all, reject-added, reopen, (#1580) the
+ * checkpoint requirement edit and (#2167) the per-card review,
+ * `PUT /:id/approvals/:approvalId`, which until then was bounded only by the
+ * app-wide `apiRateLimiter` on `/api` (#1539). CodeQL `js/missing-rate-limiting` flags the route's own
  * `requireAuth` ("performs authorization, but is not rate-limited") unless an
  * `express-rate-limit` handler precedes it; the per-user limiters above then
  * run after the permission check, unchanged. Same shape as

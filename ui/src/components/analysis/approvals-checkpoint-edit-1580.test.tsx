@@ -423,6 +423,12 @@ describe("#2157 — checkpoint edits and the list-wide actions", () => {
     fireEvent.click(screen.getByRole("button", { name: `Edit ${OTHER}` }));
 
     expect(confirm).toBeDisabled();
+    // #2167 — the confirm says why, not just a greyed-out button.
+    expect(
+      within(screen.getByTestId("leave-out-added-confirm")).getByTestId(
+        "leave-out-added-edits-open",
+      ),
+    ).toHaveTextContent("Save or cancel the open edit first");
     fireEvent.click(confirm);
     // A mutation calls its function after a tick: give it one.
     await new Promise((resolve) => setTimeout(resolve, 10));

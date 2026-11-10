@@ -34,6 +34,7 @@ vi.mock("../middleware/analysis-approval-rate-limit.js", () => ({
   analysisApprovalPromoteRateLimiter: passThrough,
   analysisApprovalPreAuthRateLimiter: passThrough,
   analysisApprovalEditRateLimiter: passThrough,
+  analysisApprovalReviewRateLimiter: passThrough,
 }));
 
 vi.mock("../lib/prisma.js", () => ({

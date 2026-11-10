@@ -163,19 +163,22 @@ describe.skipIf(!enabled)("#2147 — a review waits for a checkpoint edit (Postg
     const { client, atHold, release } = holdingEdit(db);
     const order: string[] = [];
 
+    // #2167 — hoisted so the `finally` can wait for both, whichever line threw.
+    let edit: Promise<unknown> | undefined;
+    let review: Promise<unknown> | undefined;
     state.db = client;
     // #2157 — released and reset whatever happens: a red assertion used to
     // leave the edit's transaction held until its 30 s timeout.
     try {
-      const edit = editCheckpointRequirement(analysisId, approvalId, { title: EDITED }).then(
-        (r) => {
-          order.push("edit committed");
-          return r;
-        },
-      );
-      await atHold;
+      edit = editCheckpointRequirement(analysisId, approvalId, { title: EDITED }).then((r) => {
+        order.push("edit committed");
+        return r;
+      });
+      // #2167 — an edit that fails before its metadata write never reaches the
+      // hold: its rejection ends the wait, not the test's 120 s timeout.
+      await Promise.race([atHold, edit]);
       // The edit holds the approval row; the review's conditional UPDATE must wait.
-      const review = reviewApprovalRequest(analysisId, approvalId, {
+      review = reviewApprovalRequest(analysisId, approvalId, {
         status: "approved",
         reviewerId: USER,
       }).then((r) => {
@@ -189,6 +192,8 @@ describe.skipIf(!enabled)("#2147 — a review waits for a checkpoint edit (Postg
       await Promise.all([edit, review]);
     } finally {
       release();
+      // #2167 — both settle before afterAll's cleanup deletes the rows they write.
+      await Promise.allSettled([edit, review]);
       state.db = db;
     }
 

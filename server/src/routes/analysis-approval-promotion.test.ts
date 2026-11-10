@@ -40,6 +40,8 @@ vi.mock("../middleware/analysis-deepdive-rate-limit.js", () => ({
 const reopenLimiter = vi.hoisted(() => ({ limited: false, calls: 0 }));
 const promoteLimiter = vi.hoisted(() => ({ limited: false, calls: 0 }));
 const preAuthLimiter = vi.hoisted(() => ({ limited: false, calls: 0 }));
+// #2167 — the per-card review PUT's own limiter.
+const reviewLimiter = vi.hoisted(() => ({ limited: false, calls: 0 }));
 const analysisRow = vi.hoisted(() => ({
   status: "completed",
   metadata: null as Record<string, unknown> | null,
@@ -64,6 +66,18 @@ vi.mock("../middleware/analysis-approval-rate-limit.js", () => ({
   ) => {
     reopenLimiter.calls += 1;
     if (reopenLimiter.limited) {
+      res.status(429).json({ success: false, error: { code: "RATE_LIMITED", message: "slow" } });
+      return;
+    }
+    next();
+  },
+  analysisApprovalReviewRateLimiter: (
+    _req: express.Request,
+    res: express.Response,
+    next: express.NextFunction,
+  ) => {
+    reviewLimiter.calls += 1;
+    if (reviewLimiter.limited) {
       res.status(429).json({ success: false, error: { code: "RATE_LIMITED", message: "slow" } });
       return;
     }
@@ -208,6 +222,8 @@ beforeEach(() => {
   promoteLimiter.calls = 0;
   preAuthLimiter.limited = false;
   preAuthLimiter.calls = 0;
+  reviewLimiter.limited = false;
+  reviewLimiter.calls = 0;
   authCalls.n = 0;
   analysisRow.status = "completed";
   analysisRow.metadata = null;
@@ -215,33 +231,49 @@ beforeEach(() => {
   readSynthesisOutput.mockResolvedValue(null);
 });
 
-describe("approval promote/reopen — per-IP limiter ahead of the route's auth (PR #902)", () => {
-  const routes = [
+describe("approval promote/reopen/review — per-IP limiter ahead of the route's auth (PR #902)", () => {
+  const routes: Array<{
+    method: "post" | "put";
+    path: string;
+    url: string;
+    perUser: { limited: boolean; calls: number };
+  }> = [
     {
+      method: "post",
       path: "/:id/approvals/promote",
       url: "/api/projects/proj-1/analyses/analysis-1/approvals/promote",
       perUser: promoteLimiter,
     },
     {
+      method: "post",
       path: "/:id/approvals/:approvalId/reopen",
       url: "/api/projects/proj-1/analyses/analysis-1/approvals/ap_1/reopen",
       perUser: reopenLimiter,
     },
     {
+      method: "post",
       path: "/:id/approvals/approve-all",
       url: "/api/projects/proj-1/analyses/analysis-1/approvals/approve-all",
       perUser: promoteLimiter,
     },
     {
+      method: "post",
       path: "/:id/approvals/reject-added",
       url: "/api/projects/proj-1/analyses/analysis-1/approvals/reject-added",
       perUser: promoteLimiter,
     },
+    // #2167 — the per-card review had no limiter of its own.
+    {
+      method: "put",
+      path: "/:id/approvals/:approvalId",
+      url: "/api/projects/proj-1/analyses/analysis-1/approvals/ap_1",
+      perUser: reviewLimiter,
+    },
   ];
 
   it.each(routes)(
-    "registers the pre-auth limiter first, before requireAuth, on $path",
-    async ({ path }) => {
+    "registers the pre-auth limiter first, before requireAuth, on $method $path",
+    async ({ method, path }) => {
       const { requireAuth } = await import("../middleware/auth.js");
       const limits = await import("../middleware/analysis-approval-rate-limit.js");
       const { projectScoped } = initAnalysisRouter();
@@ -249,7 +281,7 @@ describe("approval promote/reopen — per-IP limiter ahead of the route's auth (
         route?: { path: string; methods: Record<string, boolean>; stack: { handle: unknown }[] };
       };
       const layer = (projectScoped as unknown as { stack: Layer[] }).stack.find(
-        (l) => l.route?.path === path && l.route.methods.post,
+        (l) => l.route?.path === path && l.route.methods[method],
       );
       const handles = layer?.route?.stack.map((s) => s.handle) ?? [];
       // CodeQL js/missing-rate-limiting reads exactly this order.
@@ -259,11 +291,11 @@ describe("approval promote/reopen — per-IP limiter ahead of the route's auth (
   );
 
   it.each(routes)(
-    "answers 429 from the pre-auth limiter before the route's auth on $path",
-    async ({ url, perUser }) => {
+    "answers 429 from the pre-auth limiter before the route's auth on $method $path",
+    async ({ method, url, perUser }) => {
       preAuthLimiter.limited = true;
 
-      const res = await request(createApp()).post(url);
+      const res = await request(createApp())[method](url).send({ status: "approved" });
 
       expect(res.status).toBe(429);
       expect(preAuthLimiter.calls).toBe(1);
@@ -272,23 +304,24 @@ describe("approval promote/reopen — per-IP limiter ahead of the route's auth (
       expect(perUser.calls).toBe(0);
       expect(promoteApprovedRequirements).not.toHaveBeenCalled();
       expect(reopenApprovalRequest).not.toHaveBeenCalled();
+      expect(reviewApprovalRequest).not.toHaveBeenCalled();
     },
   );
 
   it.each(routes)(
-    "lets the request through to the per-user limiter on $path",
-    async ({ url, perUser }) => {
+    "lets the request through to the per-user limiter on $method $path",
+    async ({ method, url, perUser }) => {
       approveAllPendingApprovalRequests.mockResolvedValue({ approvedCount: 0 });
       rejectPendingRequirementApprovals.mockResolvedValue({ rejectedCount: 0 });
       // Queue the promotion only for the route that consumes it.
-      if (perUser === promoteLimiter) {
+      if (perUser === promoteLimiter || perUser === reviewLimiter) {
         promoteApprovedRequirements.mockResolvedValueOnce({
           status: "promoted",
           requirementCount: 1,
         });
       }
 
-      const res = await request(createApp()).post(url);
+      const res = await request(createApp())[method](url).send({ status: "approved" });
 
       expect(res.status).toBe(200);
       expect(preAuthLimiter.calls).toBe(1);
@@ -336,6 +369,19 @@ describe("PUT .../approvals/:approvalId — #1104 promotion retry", () => {
     expect(res.status).toBe(200);
     expect(res.body.data.status).toBe("approved");
     expect(res.body.data.promotion.status).toBe("unavailable");
+  });
+
+  it("is rate limited per user, after the route's auth, before the review runs (#2167)", async () => {
+    reviewLimiter.limited = true;
+
+    const res = await approve();
+
+    expect(res.status).toBe(429);
+    expect(reviewLimiter.calls).toBe(1);
+    // The route's own requireAuth ran: the per-user key is the signed-in user.
+    expect(authCalls.n).toBe(2);
+    expect(reviewApprovalRequest).not.toHaveBeenCalled();
+    expect(promoteApprovedRequirements).not.toHaveBeenCalled();
   });
 });
 
