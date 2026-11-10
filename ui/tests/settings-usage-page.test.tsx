@@ -3,8 +3,9 @@
  * The three panels have their own suites; here they are stubs naming their subject.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { writeStoredActiveWorkspaceId } from "@/lib/active-workspace";
 import { makeWrapper, TEST_USER } from "./test-utils";
 import SettingsUsagePage from "@/app/(authed)/settings/usage/page";
 
@@ -140,6 +141,15 @@ describe("<SettingsUsagePage /> (#31)", () => {
     renderAt("scope=workspace");
     await waitFor(() => expect(screen.getByTestId("workspace-panel")).toHaveTextContent("ws-2"));
     expect(apiFetch).toHaveBeenCalledWith("/workspaces");
+  });
+
+  // #2197 — read through the store, so the top bar's switch reaches the page.
+  it("follows a workspace switch in the top bar while open", async () => {
+    window.localStorage.setItem("metis.activeWorkspaceId", "ws-1");
+    renderAt("scope=workspace");
+    await waitFor(() => expect(screen.getByTestId("workspace-panel")).toHaveTextContent("ws-1"));
+    act(() => writeStoredActiveWorkspaceId("ws-2"));
+    await waitFor(() => expect(screen.getByTestId("workspace-panel")).toHaveTextContent("ws-2"));
   });
 
   it("falls back to the first workspace when the stored one is not the caller's", async () => {

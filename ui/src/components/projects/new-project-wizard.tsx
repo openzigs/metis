@@ -25,6 +25,7 @@ import { projectsApi, type CreatedProject } from "@/lib/projects-api";
 import { repoConnectorsApi } from "@/lib/connectors-api";
 import { applyJobLifecycleEvent } from "@/hooks/use-active-jobs";
 import { queryKeys } from "@/lib/query-keys";
+import { useValidatedActiveWorkspaceId } from "@/lib/active-workspace";
 import { mapFieldErrors, type FieldErrorMap } from "@/lib/form-validation";
 import { isHttpUrl, slugSuggestionMessage, urlSuggestionMessage } from "@/lib/error-suggestion";
 import { resolveErrorMessage } from "@/lib/use-app-mutation";
@@ -398,19 +399,12 @@ export function NewProjectWizard({ workspaceId, onDone }: NewProjectWizardProps)
   );
 }
 
-const WORKSPACE_STORAGE_KEY = "metis.activeWorkspaceId";
-
-function activeWorkspaceId(): string | null {
-  try {
-    return window.localStorage.getItem(WORKSPACE_STORAGE_KEY);
-  } catch {
-    return null;
-  }
-}
-
 /** The wizard behind a "New project" button — the Home empty state's action. */
 export function NewProjectDialog() {
   const [open, setOpen] = useState(false);
+  // #2197 — the active workspace the top bar shows, validated: a stored id the
+  // caller is not a member of is never sent as the new project's workspace.
+  const { workspaceId } = useValidatedActiveWorkspaceId();
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
@@ -425,10 +419,7 @@ export function NewProjectDialog() {
             Name it, point it at its code, and start the ingest — in one go.
           </DialogDescription>
         </DialogHeader>
-        {/* Mounted only while open, so the workspace is read when it is used. */}
-        {open ? (
-          <NewProjectWizard workspaceId={activeWorkspaceId()} onDone={() => setOpen(false)} />
-        ) : null}
+        {open ? <NewProjectWizard workspaceId={workspaceId} onDone={() => setOpen(false)} /> : null}
       </DialogContent>
     </Dialog>
   );

@@ -65,10 +65,12 @@ make saml-up        # == bash scripts/saml-harness/up.sh
    `PUT`s it to the admin API. METIS parses the entryPoint / cert / issuer out
    of the metadata itself, so the cert METIS trusts is exactly the cert the mock
    signs with. The seed then re-reads the provider and asserts it is enabled.
+   METIS has one SAML provider, so the seed **replaces any SAML provider you
+   configured locally**; set `SKIP_SEED=1` to keep it.
 
 ## Log in end-to-end
 
-1. Open `http://localhost:4000/auth/saml/login` (or click the **Local Mock
+1. Open `http://localhost:4000/api/auth/saml/login` (or click the **Local Mock
    SAML** button on the METIS `/login` page).
 2. METIS redirects to the mock IdP. Enter a test user email:
    - `user1@example.com`
@@ -76,7 +78,7 @@ make saml-up        # == bash scripts/saml-harness/up.sh
 
    (any password — the mock accepts any `@example.com` / `@example.org` email).
 3. The mock IdP POSTs a **signed** SAML Response back to METIS's ACS
-   (`/auth/saml/acs`). METIS validates the signature + `InResponseTo` +
+   (`/api/auth/saml/acs`). METIS validates the signature + `InResponseTo` +
    `NotOnOrAfter`, issues its session cookies, and redirects to the dashboard.
 
 ### Roles
@@ -168,7 +170,9 @@ make entra-up       # 2. the mock, detached; `make entra-down` stops it
    Federation Metadata to `/api/admin/auth/providers/saml` with the SP Entity ID
    `<METIS_API_URL>/api/auth/saml/metadata`, the ACS URL `<METIS_API_URL>/api/auth/saml/acs`,
    `requireSignedResponse: true`, and each preset group mapped to a role, then reads
-   the provider back and checks it is enabled;
+   the provider back and checks it is enabled. METIS has one SAML provider, so
+   **the seed replaces any SAML provider you configured locally** (its metadata,
+   group mappings and default role); pass `--no-seed` (or `SKIP_SEED=1`) to keep it;
 3. prints the METIS login URL and the users, and serves until stopped.
 
 Sign in from `http://localhost:3000/login` with the **Microsoft Entra ID (mock)**
@@ -207,8 +211,13 @@ SAML provider configured, as `make saml-down` does; delete or disable it on
 | `ENTRA_PROVIDER_NAME` | `Microsoft Entra ID (mock)` | The provider's label on the login page. |
 | `SKIP_SEED=1` (`--no-seed`) | — | Start the mock without seeding; the runner prints what to paste instead. |
 
-`make entra-up` refuses to start a second copy; `make entra-down` signals only a
-process that is still `scripts/entra-idp.mjs`.
+`make entra-up` refuses to start a second copy; both it and `make entra-down` trust
+the pid file only while that pid is still `scripts/entra-idp.mjs`, so a recycled pid
+neither blocks a start nor gets signalled. If the mock is still running 5 seconds
+after `make entra-down` sends SIGTERM, it says so, keeps the pid file and exits 1.
+The account picker's form carries a one-use nonce, and the mock refuses a POST
+without one it rendered, so a page on another origin cannot submit the picker for
+you (#1562).
 
 Where it runs:
 
@@ -226,6 +235,8 @@ Where it runs:
   and `server/tests/saml-entra-local-harness-1559.sqlite.test.ts` — the
   `make entra-up` runner: its settings, the seed through METIS's real admin API,
   and each preset user signing in through the account picker with the role above.
+- `scripts/lib/entra-harness-shell.test.mjs` — `entra-up.sh` and `entra-down.sh`
+  themselves, against a scratch `ENTRA_STATE_DIR`.
 
 The e2e stack has no Ingress, so the spec routes the SAML button's
 `/api/auth/saml/login` (on the UI's port) to the API's port, as the Ingress does
@@ -290,7 +301,7 @@ identity and the already-seeded METIS provider keeps trusting it.
 ### Why `AUTH_MODE` stays `mock`
 
 SAML is configured through the **admin API**, not env vars. The SSO routes
-(`/auth/saml/login`, `/auth/saml/acs`, `/auth/saml/metadata`) are always mounted
+(`/api/auth/saml/login`, `/api/auth/saml/acs`, `/api/auth/saml/metadata`) are always mounted
 and read the **stored provider config** — they do not gate on `AUTH_MODE`. So the
 dev server keeps `AUTH_MODE=mock` (which is also what lets the seed script obtain
 an admin token to call the admin API), and SAML login is layered on top exactly
