@@ -82,9 +82,22 @@ describe("buildHandoffInstructions", () => {
     expect(r.sent).toEqual(["AC-1", "AC-2", "NFR-1", "NFR-2"]);
     const blocks = r.text.split("\n\n");
     expect(blocks[0]).toMatch(/^# Spec Kit handoff: evaluate these requirements from spec\.md/);
-    expect(blocks.slice(1).map((b) => b.split(":")[0])).toEqual(["AC-1", "AC-2", "NFR-1", "NFR-2"]);
+    // #1583 — each under a heading of its own label, so the header above names none of them.
+    expect(blocks.slice(1).map((b) => b.split("\n")[0])).toEqual([
+      "### AC-1",
+      "### AC-2",
+      "### NFR-1",
+      "### NFR-2",
+    ]);
+    expect(blocks.slice(1).map((b) => b.split("\n")[1]!.split(":")[0])).toEqual([
+      "AC-1",
+      "AC-2",
+      "NFR-1",
+      "NFR-2",
+    ]);
     // One line per requirement: never split into one requirement per sub-bullet.
-    expect(blocks.every((b) => !b.includes("\n"))).toBe(true);
+    expect(blocks[0]!.includes("\n")).toBe(false);
+    expect(blocks.slice(1).every((b) => b.split("\n").length === 2)).toBe(true);
     // Not the spec's other sections.
     expect(r.text).not.toContain("Readers");
   });
@@ -108,7 +121,7 @@ describe("buildHandoffInstructions", () => {
         ["spec.md"],
         `## Acceptance criteria\n- **AC-1**: ${"y".repeat(n)}.`,
       );
-    const fixed = withBody(1).text.length - 1; // header + "\n\nAC-1: " + "."
+    const fixed = withBody(1).text.length - 1; // header + "\n\n### AC-1\nAC-1: " + "."
     const under = withBody(MAX_EXTRA_INSTRUCTIONS - 1 - fixed);
     expect(under.text).toHaveLength(MAX_EXTRA_INSTRUCTIONS - 1);
     expect(under).toMatchObject({ sent: ["AC-1"], omitted: [], truncated: false });

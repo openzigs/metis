@@ -111,6 +111,26 @@ describe("describeSpecKitError", () => {
     ).toMatch(/no tasks\.md yet/);
   });
 
+  it("#1583 — names every artifact the gate is missing, with the command for the first", () => {
+    const gate = (details: Record<string, unknown>) =>
+      describeSpecKitError(new ApiError(412, "x", "SPECKIT_GATE_UNMET", details));
+    // d-S9-3: a feature with spec.md only, refused by /speckit.implement.
+    expect(gate({ required: "implementGate", missing: ["plan.md", "tasks.md"] })).toBe(
+      "This feature has no plan.md or tasks.md yet. Run /speckit.plan on it first.",
+    );
+    expect(gate({ required: "implementGate", missing: ["spec.md", "plan.md", "tasks.md"] })).toBe(
+      "This feature has no spec.md, plan.md or tasks.md yet. Run /speckit.specify first.",
+    );
+    expect(gate({ required: "tasksGate", missing: ["tasks.md"] })).toBe(
+      "This feature has no tasks.md yet. Run /speckit.tasks on it first.",
+    );
+    // A list it cannot read falls back to the gate's own text.
+    expect(gate({ required: "planGate", missing: ["notes.md"] })).toBe(
+      "This feature has no plan.md yet. Run /speckit.plan on it first.",
+    );
+    expect(gate({ required: "planGate", missing: [] })).toMatch(/no plan\.md yet/);
+  });
+
   it("falls back to the server message for an unknown gate", () => {
     expect(describeSpecKitError(new ApiError(412, "raw gate text", "SPECKIT_GATE_UNMET", {}))).toBe(
       "raw gate text",

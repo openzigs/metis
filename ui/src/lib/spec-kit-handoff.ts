@@ -158,13 +158,16 @@ export function buildHandoffInstructions(
   const requirements = specRequirements(body);
   if (!requirements.some((r) => r.label.startsWith("AC-"))) return unstructured(note, body);
 
-  // A bare heading names the next block rather than becoming a requirement.
+  // A heading is never a requirement. A bare one names the next block, though:
+  // #1583 — with the criteria as bare paragraphs, this header became AC-1's
+  // title, and the run's Summary listed NR-1 as "Spec Kit handoff: evaluate…".
+  // So each requirement is headed by its own label, which names it instead.
   const header = `# Spec Kit handoff: evaluate these requirements from spec.md against the current implementation. Only spec.md's requirements are sent.${note}`;
   let text = header;
   const sent: string[] = [];
   const omitted: string[] = [];
   for (const r of requirements) {
-    const block = `\n\n${r.label}: ${r.text}`;
+    const block = `\n\n### ${r.label}\n${r.label}: ${r.text}`;
     if (text.length + block.length < MAX_EXTRA_INSTRUCTIONS) {
       text += block;
       sent.push(r.label);

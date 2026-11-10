@@ -47,6 +47,17 @@ describe("toSpecKitJobError — the synchronous route's statuses and codes", () 
     });
   });
 
+  it("#1583 — carries the gate's missing artifacts to the page", () => {
+    const err = new GateUnmetError("implementGate", "plan.md and tasks.md are required", [
+      "plan.md",
+      "tasks.md",
+    ]);
+    expect(toSpecKitJobError(err).details).toEqual({
+      required: "implementGate",
+      missing: ["plan.md", "tasks.md"],
+    });
+  });
+
   it("keeps the budget's 402 with the figures", () => {
     expect(toSpecKitJobError(new BudgetExceededError(200, 150))).toEqual({
       status: 402,
