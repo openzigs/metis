@@ -190,7 +190,9 @@ const HEADING_NAME_MAX = 80;
 function headingName(text: string): string {
   const end = text.search(/[.!?](?:\s|$)/);
   const first = (end === -1 ? text : text.slice(0, end + 1)).replace(/\s+/g, " ").trim();
-  return first.length > HEADING_NAME_MAX ? `${first.slice(0, HEADING_NAME_MAX - 1).trimEnd()}…` : first;
+  return first.length > HEADING_NAME_MAX
+    ? `${first.slice(0, HEADING_NAME_MAX - 1).trimEnd()}…`
+    : first;
 }
 
 /** The pre-#994 shape for a spec without acceptance criteria, cut between paragraphs. */
