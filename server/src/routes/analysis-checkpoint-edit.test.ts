@@ -47,6 +47,7 @@ vi.mock("../middleware/analysis-approval-rate-limit.js", () => {
     analysisApprovalPreAuthRateLimiter: limited("preAuth"),
     analysisApprovalEditRateLimiter: limited("edit"),
     analysisApprovalReopenRateLimiter: pass,
+    analysisApprovalReviewRateLimiter: pass,
     analysisApprovalPromoteRateLimiter: pass,
   };
 });
