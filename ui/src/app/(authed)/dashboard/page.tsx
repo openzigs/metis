@@ -13,10 +13,10 @@ import Link from "next/link";
 import { Card } from "@/components/ui/card";
 import { projectsApi } from "@/lib/projects-api";
 import { tasksApi, schedulerApi } from "@/lib/scheduler-api";
-import { recentTracker } from "@/lib/recent-tracker";
+import { useRecentEntries } from "@/hooks/use-recent-entries";
 import { asyncApi } from "@/lib/async-platform-api";
 import { Button } from "@/components/ui/button";
-import { useEffect, useState, type ReactNode } from "react";
+import type { ReactNode } from "react";
 import { PageHeader } from "@/components/ui/page-header";
 import { NewProjectDialog } from "@/components/projects/new-project-wizard";
 
@@ -274,11 +274,8 @@ function ScheduledJobsWidget() {
 }
 
 function RecentActivityWidget() {
-  const [entries, setEntries] = useState(() => recentTracker.list());
-  useEffect(() => {
-    const id = window.setInterval(() => setEntries(recentTracker.list()), REFRESH_MS);
-    return () => window.clearInterval(id);
-  }, []);
+  // #2187 — only the sessions the server still lists (as /sessions does).
+  const entries = useRecentEntries(REFRESH_MS);
   return (
     <WidgetShell
       title="Recent activity"

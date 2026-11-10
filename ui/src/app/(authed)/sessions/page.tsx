@@ -10,11 +10,13 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { SkeletonText } from "@/components/ui/skeleton";
 import { sdkApi } from "@/lib/sdk-alignment-api";
+import { RESUMABLE_SESSIONS_KEY } from "@/hooks/use-recent-entries";
 import { PageHeader } from "@/components/ui/page-header";
 import { EmptyState } from "@/components/ui/empty-state";
 import { timeAgo } from "@/lib/time-ago";
 
-const QK = ["resumable-sessions"];
+// #2187 — shared with Recent (Workbench and dashboard), which lists only these.
+const QK = RESUMABLE_SESSIONS_KEY;
 
 export default function SessionsPage() {
   const qc = useQueryClient();

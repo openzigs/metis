@@ -14,6 +14,7 @@ import {
   listMessages,
   postMessage,
   promoteMessage,
+  searchThreadRequirements,
   updateThreadSettings,
   streamAiReply,
   parseDiscussionSseFrame,
@@ -72,6 +73,21 @@ describe("discussions-api REST", () => {
     expect(threads).toEqual([{ id: "t1", projectId: "p1" }]);
     expect(fetchMock).toHaveBeenLastCalledWith(
       "/api/discussions/threads?projectId=p1",
+      expect.any(Object),
+    );
+  });
+
+  it("searchThreadRequirements asks the project's requirements, with the trimmed term (#2187)", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ success: true, data: [{ id: "r1" }] }));
+    expect(await searchThreadRequirements("p 1", "  read at ")).toEqual([{ id: "r1" }]);
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      "/api/discussions/requirements?projectId=p+1&q=read+at",
+      expect.any(Object),
+    );
+    fetchMock.mockResolvedValueOnce(jsonResponse({ success: true }));
+    expect(await searchThreadRequirements("p1", "   ")).toEqual([]);
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      "/api/discussions/requirements?projectId=p1",
       expect.any(Object),
     );
   });
