@@ -687,6 +687,14 @@ not automatically re-embedded. After changing `EMBED_BACKEND` / `EMBED_MODEL` /
 2. Trigger a **reindex** for any project flagged as needing one, or call
    `POST /api/admin/embeddings/projects/:projectId/reindex`.
 
+The page keeps the checked project in its address (`?project=<id>`), so a reload
+re-reads its coverage. While a reindex runs, the coverage route reports
+`shadow.inProgress: true` and, when the answering server process is the one running
+it, `shadow.jobId` (#1579): the page then shows **Reindex in progress**, disables the
+button and follows that job's progress again. A reindex running on another replica, or
+from `pnpm embeddings:migrate`, has no job id there; the page says so and re-reads
+coverage every 5 seconds until it ends.
+
 > **Upgrading from the 384-dim default? CLEAR `EMBED_DIM` (or set it to 768).**
 > `EMBED_DIM` does **not** resize the `xenova` / `sidecar` backends — they always
 > emit their model's native width (768 for `gte-modernbert-base`). It is read only

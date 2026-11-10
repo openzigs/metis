@@ -37,6 +37,19 @@ export interface EmbeddingsCoverageReport {
   matchingChunks: number;
   mismatchedModels: string[];
   needsReindex: boolean;
+  /**
+   * Issue #787 — the project's shadow-reindex state. `inProgress` is true while a
+   * reindex runs anywhere; `jobId` (#1579) names it when the server answering is
+   * the one running it, so a page that reloaded mid-run can follow it again.
+   */
+  shadow?: ReindexShadowState;
+}
+
+export interface ReindexShadowState {
+  inProgress: boolean;
+  shadowChunks: number;
+  resumable: boolean;
+  jobId: string | null;
 }
 
 /**

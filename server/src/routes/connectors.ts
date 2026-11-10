@@ -196,6 +196,9 @@ function projectIdOf(req: Request): string {
   return id;
 }
 
+/** #1579 — the most often a deep ingest names its source-file count. */
+const SOURCE_PROGRESS_INTERVAL_MS = 1000;
+
 /**
  * #114 — the only text a failed deep-ingest's progress event may carry to the
  * browser. The exception is logged server-side.
@@ -283,7 +286,8 @@ async function runDeepIngest(
   const { jobId, known } = opts;
   const emitter = getRepoConnectorEmitter();
   const total = 5;
-  const emitProgress = (step: string, current: number) => {
+  // `done` is how far into the step the run is, 0 to 1 (#1579).
+  const emitProgress = (step: string, current: number, done = 0) => {
     emitter.progress({
       connectorId,
       projectId,
@@ -299,9 +303,30 @@ async function runDeepIngest(
         "repo-ingest",
         jobId,
         projectId,
-        Math.round(((current - 1) / total) * 100),
+        Math.round(((current - 1 + done) / total) * 100),
         step,
       );
+  };
+  // #1579 — step 3 is most of a first ingest (17 minutes in walkthrough run 10)
+  // and used to read "Ingesting source code" with no figure the whole time, so
+  // a slow run and a stuck one looked the same. Name the file count, at most
+  // once per SOURCE_PROGRESS_INTERVAL_MS: the first count and the last always go.
+  let lastSourceProgressAt: number | null = null;
+  const onSourceProgress = ({ processed, total: files }: { processed: number; total: number }) => {
+    const now = Date.now();
+    const last = processed >= files;
+    if (
+      !last &&
+      lastSourceProgressAt !== null &&
+      now - lastSourceProgressAt < SOURCE_PROGRESS_INTERVAL_MS
+    )
+      return;
+    lastSourceProgressAt = now;
+    emitProgress(
+      `Ingesting source code (${processed} of ${files} files)`,
+      3,
+      files > 0 ? processed / files : 1,
+    );
   };
 
   try {
@@ -337,6 +362,7 @@ async function runDeepIngest(
     const srcSummary = await ingestSourceAsKnowledge(projectId, connectorId, userId, source.path, {
       boundary: source.boundary,
       lease,
+      onProgress: onSourceProgress,
     });
     const metadata = { failures: 0, stepFailed: false };
     emitProgress("Indexing metadata", 4);

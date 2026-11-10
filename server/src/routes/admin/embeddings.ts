@@ -73,6 +73,20 @@ function parseProjectId(raw: string): string {
 }
 
 /**
+ * Issue #1579 — the job id of the reindex THIS process is running for a project,
+ * so the coverage route can hand it to a page that reloaded mid-run and lost the
+ * id it got from the POST. Process-local like the in-flight guard: a reindex
+ * running on another replica (or from the `embeddings:migrate` CLI) still reads
+ * `shadow.inProgress`, with no job id to follow.
+ */
+const runningReindexJobs = new Map<string, string>();
+
+/** Issue #1579 — the running reindex's job id for `projectId`, or `null`. */
+export function runningReindexJobId(projectId: string): string | null {
+  return runningReindexJobs.get(projectId) ?? null;
+}
+
+/**
  * Background reindex worker (Epic #406 / #423). Runs OUTSIDE the HTTP request so
  * a large-corpus re-embed never holds the connection open. Streams lifecycle
  * progress on the `embeddings-reindex` JobKind keyed by `jobId`, scoped to the
@@ -89,6 +103,9 @@ export async function runReindexJob(
   opts: { batchSize?: number; fresh?: boolean } = {},
 ): Promise<void> {
   jobEvents.started("embeddings-reindex", jobId, projectId, "Reindexing embeddings");
+  // A second request while one runs fails on the reindex guard; it must not
+  // take the slot from the job that is actually running.
+  if (!runningReindexJobs.has(projectId)) runningReindexJobs.set(projectId, jobId);
   try {
     const result = await getKnowledgeService().reindexProject(projectId, {
       ...(opts.batchSize !== undefined ? { batchSize: opts.batchSize } : {}),
@@ -132,6 +149,8 @@ export async function runReindexJob(
       projectId,
       genericFailureMessage("embeddings-reindex"),
     );
+  } finally {
+    if (runningReindexJobs.get(projectId) === jobId) runningReindexJobs.delete(projectId);
   }
 }
 
@@ -234,7 +253,10 @@ export function embeddingsAdminRouter(): Router {
           // one that was never reindexed if you only look at coverage.
           svc.reindexShadowState(projectId),
         ]);
-        res.json(ok({ ...report, shadow }));
+        // #1579 — with the job id, a page that reloaded mid-run follows the
+        // running reindex instead of offering a second one.
+        const jobId = shadow.inProgress ? runningReindexJobId(projectId) : null;
+        res.json(ok({ ...report, shadow: { ...shadow, jobId } }));
       } catch (err) {
         next(err);
       }
