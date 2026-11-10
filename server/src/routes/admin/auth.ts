@@ -69,10 +69,13 @@ export function adminAuthRouter(): Router {
   // The configured IdP issuer beside the Issuer the last refused assertion
   // named, so an admin can see why every SAML sign-in fails after an upgrade.
   r.get("/saml/issuer-refusal", async (_req: Request, res: Response) => {
-    const configuredIssuer = getStoredProviderByMode("saml")?.saml?.idpIssuer ?? "";
+    const provider = getStoredProviderByMode("saml");
     const body: ApiResponse = {
       success: true,
-      data: await samlIssuerRefusalSummary(configuredIssuer),
+      data: await samlIssuerRefusalSummary({
+        id: provider?.id ?? "",
+        configuredIssuer: provider?.saml?.idpIssuer ?? "",
+      }),
     };
     res.json(body);
   });

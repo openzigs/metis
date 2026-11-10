@@ -6,8 +6,9 @@
  * issuer (the metadata `entityID` `parseIdPMetadata` read) is refused. A
  * deployment upgrading with a stored issuer its IdP does not assert would
  * refuse every SAML sign-in, so the ACS records each Issuer refusal as an
- * audit event (durable and shared by every replica) and this reads the newest
- * back, so an admin sees both values without reading server logs.
+ * audit event against the SAML provider (durable and shared by every replica)
+ * and this reads the newest back, so an admin sees both values without reading
+ * server logs.
  *
  * Only a refusal against the issuer configured now is reported: re-pasting the
  * IdP metadata, which changes the configured issuer, clears the warning.
@@ -23,6 +24,16 @@ export const SAML_ISSUER_REFUSED_ACTION = "sso.saml.issuer_refused";
  * unbounded.
  */
 export const MAX_RECORDED_ISSUER_LENGTH = 512;
+
+/** The audit target type the ACS records a refusal against, with the provider id. */
+export const SAML_ISSUER_REFUSAL_TARGET_TYPE = "sso-provider";
+
+/**
+ * How many of the provider's newest refusals are read to find one against the
+ * configured issuer (#2204): refusals against an issuer configured in between
+ * (A, then B, then A again) must not hide the newest one against A.
+ */
+export const ISSUER_REFUSAL_WINDOW = 20;
 
 export interface SamlIssuerRefusal {
   /** The issuer METIS compares assertions with; empty when none is configured. */
@@ -53,25 +64,36 @@ function parseMetadata(raw: string | null): Record<string, unknown> | null {
   }
 }
 
-export async function samlIssuerRefusalSummary(
-  configuredIssuer: string,
-): Promise<SamlIssuerRefusal> {
+export async function samlIssuerRefusalSummary(provider: {
+  /** The SAML provider's id: the ACS records each refusal against it. */
+  id: string;
+  configuredIssuer: string;
+}): Promise<SamlIssuerRefusal> {
+  const { configuredIssuer } = provider;
   // With no issuer configured, #1555's check does not run and nothing is refused.
   if (!configuredIssuer) return { configuredIssuer, lastRefused: null };
-  const row = await prisma.auditLog.findFirst({
-    where: { action: SAML_ISSUER_REFUSED_ACTION },
+  // Filtered on the provider as well as the action, so the read uses the
+  // `[targetType, targetId, action]` index instead of walking the audit table.
+  const rows = await prisma.auditLog.findMany({
+    where: {
+      targetType: SAML_ISSUER_REFUSAL_TARGET_TYPE,
+      targetId: provider.id,
+      action: SAML_ISSUER_REFUSED_ACTION,
+    },
     orderBy: { ts: "desc" },
+    take: ISSUER_REFUSAL_WINDOW,
     select: { ts: true, metadata: true },
   });
-  const meta = parseMetadata(row?.metadata ?? null);
-  if (!row || meta?.configuredIssuer !== configuredIssuer) {
-    return { configuredIssuer, lastRefused: null };
+  for (const row of rows) {
+    const meta = parseMetadata(row.metadata);
+    if (meta?.configuredIssuer !== configuredIssuer) continue;
+    return {
+      configuredIssuer,
+      lastRefused: {
+        assertionIssuer: typeof meta.assertionIssuer === "string" ? meta.assertionIssuer : null,
+        at: row.ts.toISOString(),
+      },
+    };
   }
-  return {
-    configuredIssuer,
-    lastRefused: {
-      assertionIssuer: typeof meta.assertionIssuer === "string" ? meta.assertionIssuer : null,
-      at: row.ts.toISOString(),
-    },
-  };
+  return { configuredIssuer, lastRefused: null };
 }

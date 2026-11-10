@@ -291,6 +291,8 @@ export default function AdminAuthPage() {
       if (res.ok) {
         setMessage("SAML configuration saved");
         fetchProviders();
+        // A save that changes the configured issuer clears the warning (#2204).
+        fetchSamlIssuerRefusal();
       } else {
         const body = await res.json();
         setMessage(apiErrorMessage(body.error, "Failed to save"));

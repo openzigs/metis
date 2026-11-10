@@ -38,6 +38,7 @@ import {
 import { SAML_GROUP_OVERAGE_ACTION } from "../lib/auth/saml-group-overage.js";
 import {
   SAML_ISSUER_REFUSED_ACTION,
+  SAML_ISSUER_REFUSAL_TARGET_TYPE,
   issuerRefusalAuditMetadata,
 } from "../lib/auth/saml-issuer-refusal.js";
 import { generateAuthorizationUrl, exchangeCodeForTokens } from "../lib/auth/oidc-provider.js";
@@ -255,7 +256,7 @@ export function ssoRouter(): Router {
         audit({
           actor: null,
           action: SAML_ISSUER_REFUSED_ACTION,
-          target: { type: "sso-provider", id: provider.id },
+          target: { type: SAML_ISSUER_REFUSAL_TARGET_TYPE, id: provider.id },
           metadata: issuerRefusalAuditMetadata(result.issuerRefusal),
         });
       }
