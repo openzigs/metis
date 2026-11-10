@@ -19,6 +19,12 @@ vi.mock("@/lib/scheduler-api", () => ({
   tasksApi: { list: vi.fn() },
   schedulerApi: { list: vi.fn() },
 }));
+// #2187 — Recent lists a session only while the server lists it as resumable.
+vi.mock("@/lib/sdk-alignment-api", () => ({
+  sdkApi: {
+    listResumable: vi.fn(async () => [{ id: "s-1", title: "Recent Chat" }]),
+  },
+}));
 
 const projectsListMock = vi.mocked(projectsApi.list);
 const tasksListMock = vi.mocked(tasksApi.list);

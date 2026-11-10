@@ -78,6 +78,8 @@ export interface DiscussionThreadViewProps {
   isMember?: boolean;
   /** Optional header slot (presence avatars, settings button — #487/#488). */
   header?: React.ReactNode;
+  /** #2187 — told when Settings attaches the thread to something new. */
+  onAnchorChange?: () => void;
 }
 
 /** Merge a message into the list by id (last write wins), preserving order. */
@@ -136,6 +138,7 @@ export function DiscussionThreadView({
   projectId,
   isMember = true,
   header,
+  onAnchorChange,
 }: DiscussionThreadViewProps) {
   const socket = useSocket();
   const [messages, setMessages] = useState<DiscussionListMessage[]>([]);
@@ -425,7 +428,13 @@ export function DiscussionThreadView({
       {isMember && showSettings ? (
         <div className="rounded-md border border-border p-4">
           {/* #488 — aiResponseMode segmented control + optional anchor. */}
-          <ThreadSettingsPanel threadId={threadId} aiResponseMode={mode} onModeChange={setMode} />
+          <ThreadSettingsPanel
+            threadId={threadId}
+            aiResponseMode={mode}
+            onModeChange={setMode}
+            projectId={projectId}
+            onAnchorChange={onAnchorChange}
+          />
         </div>
       ) : null}
       {/* #662 — SC 2.2.2 Pause, Stop, Hide. The thread auto-updates live from
