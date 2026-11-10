@@ -699,6 +699,7 @@ export default function AnalysisPage(): React.ReactElement {
 
   // Issue #906 — auto-select a freshly-ingested doc after the documents cache
   // has been invalidated/refetched so the new row exists before it is checked.
+  const codePersona = personaByKey.get("code");
   const allDocs = useMemo(() => docs.data?.items ?? [], [docs.data]);
   const invalidateDocs = useMemo(
     () => () => qc.invalidateQueries({ queryKey: queryKeys.documents.forProject(projectId) }),
@@ -943,15 +944,12 @@ export default function AnalysisPage(): React.ReactElement {
             <AnalysisCapabilityHint
               projectId={projectId}
               selectedAgents={selectedAgents}
-              codeAgentLabel={
-                personaByKey.get("code")
-                  ? `${personaByKey.get("code")!.name} (${personaByKey.get("code")!.role})`
-                  : undefined
-              }
+              codeAgentLabel={codePersona ? `${codePersona.name} (${codePersona.role})` : undefined}
             />
             <AnalysisRunSummary
               docCount={selectedDocs.length}
               availableDocCount={allDocs.filter((d) => d.status === "ready").length}
+              listIsPartial={Boolean(docs.data?.nextCursor)}
               hasRequirements={
                 extraInstructions.trim().length > 0 || importedRequirementIds.length > 0
               }

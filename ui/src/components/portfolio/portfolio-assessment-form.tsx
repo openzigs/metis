@@ -30,11 +30,11 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 
-/** The statement's limit in `createPortfolioAssessmentSchema`. */
-export /** #1725 — the host picker's id, the fragment a check that needs a host links to. */
+/** #1725 — the host picker's id, the fragment a check that needs a host links to. */
 const HOST_PICKER_ID = "portfolio-host";
 
-const STATEMENT_MAX = 8_000;
+/** The statement's limit in `createPortfolioAssessmentSchema`. */
+export const STATEMENT_MAX = 8_000;
 
 export interface PortfolioFormProduct {
   id: string;
@@ -273,7 +273,7 @@ export function PortfolioAssessmentForm({
             />
           </div>
         ) : null}
-        <Label htmlFor="portfolio-host">Which product will build this? (optional)</Label>
+        <Label htmlFor={HOST_PICKER_ID}>Which product will build this? (optional)</Label>
         <select
           ref={hostRef}
           id={HOST_PICKER_ID}

@@ -25,6 +25,22 @@ describe("AnalysisRunSummary (#907)", () => {
     );
   });
 
+  // The list is the first page only: a count from it would be wrong for a big project.
+  it("drops the number when the loaded list is only the first page", () => {
+    render(
+      <AnalysisRunSummary
+        docCount={0}
+        availableDocCount={25}
+        listIsPartial
+        hasRequirements={false}
+      />,
+    );
+    expect(screen.getByTestId("analysis-run-summary")).toHaveTextContent(
+      "This run uses all the project's documents + requirements provided: no.",
+    );
+    expect(screen.getByTestId("analysis-run-summary")).not.toHaveTextContent("25");
+  });
+
   it("names the one document when the project has only one", () => {
     render(<AnalysisRunSummary docCount={0} availableDocCount={1} hasRequirements={false} />);
     expect(screen.getByTestId("analysis-run-summary")).toHaveTextContent(
