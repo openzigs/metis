@@ -270,7 +270,13 @@ is just a Teams-side cache of "this AAD subject is that METIS user".
   a notice in the in-app notifications of every workspace **owner** and of the
   bound member (unless they made the binding themselves; the owner binding
   their own account is told once). The notice ignores notification
-  preferences. A workspace admin may still bind any member, the owner included,
+  preferences. **Rebinding (#2107)** an AAD id that is already bound to another
+  member moves it: the audit entry adds `replacedUserId`, and that member is
+  told the account no longer acts as them (unless they made the rebind). The
+  notice quotes the AAD object id and the workspace name with their own quotes
+  and line breaks escaped, and shows at most 40 characters of the id, so the
+  admin it exposes cannot word it; the audit entry keeps the full id. A
+  workspace admin may still bind any member, the owner included,
   and no MFA sign-in is required: that is the owner's decision, recorded in
   `docs/auth/azure-ad.md`. There is no removal route yet.
 - **Members of the workspace only (#1431, OWASP A01):** the target must be an

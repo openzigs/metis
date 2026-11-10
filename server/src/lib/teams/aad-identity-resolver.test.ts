@@ -272,13 +272,13 @@ describe("TeamsAadIdentityResolver (#549)", () => {
       deletedAt: null,
     });
     db.members.push({ workspaceId: WS, userId: "u-bob" });
-    await resolver.linkExplicit({
+    const first = await resolver.linkExplicit({
       workspaceId: "ws-1",
       tenantId: T,
       aadObjectId: OID,
       userId: "u-alice",
     });
-    await resolver.linkExplicit({
+    const rebind = await resolver.linkExplicit({
       workspaceId: "ws-1",
       tenantId: T,
       aadObjectId: OID,
@@ -286,6 +286,41 @@ describe("TeamsAadIdentityResolver (#549)", () => {
     });
     expect(db.identities).toHaveLength(1);
     expect((await resolver.resolveUserFromAadObjectId(T, OID, WS))?.userId).toBe("u-bob");
+    // #2107 — a new binding replaces nobody; the rebind names who it replaced.
+    expect(first).toEqual({ ok: true, userId: "u-alice" });
+    expect(rebind).toEqual({ ok: true, userId: "u-bob", replacedUserId: "u-alice" });
+  });
+
+  it("#2107 — re-binding to the member who already holds it replaces nobody", async () => {
+    const params = { workspaceId: WS, tenantId: T, aadObjectId: OID, email: "alice@corp.com" };
+    await resolver.linkByEmail(params);
+    expect(await resolver.linkByEmail(params)).toEqual({ ok: true, userId: "u-alice" });
+  });
+
+  it("#2107 — another workspace's binding of the same id is not a replacement", async () => {
+    db.members.push({ workspaceId: "ws-2", userId: "u-alice" });
+    await resolver.linkExplicit({
+      workspaceId: "ws-2",
+      tenantId: T,
+      aadObjectId: OID,
+      userId: "u-alice",
+    });
+    db.users.push({
+      id: "u-bob",
+      username: "bob",
+      email: "bob@corp.com",
+      status: "active",
+      deletedAt: null,
+    });
+    db.members.push({ workspaceId: WS, userId: "u-bob" });
+    expect(
+      await resolver.linkExplicit({
+        workspaceId: WS,
+        tenantId: T,
+        aadObjectId: OID,
+        userId: "u-bob",
+      }),
+    ).toEqual({ ok: true, userId: "u-bob" });
   });
 
   it("linkByEmail falls back to a case-insensitive scan when the stored email is mixed-case", async () => {

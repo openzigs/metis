@@ -42,8 +42,13 @@ export interface ResolvedMetisUser {
   email: string;
 }
 
-/** Outcome of a link attempt — distinguishes the SSO-match miss from success. */
-export type LinkOutcome = { ok: true; userId: string } | { ok: false; reason: "no_matching_user" };
+/**
+ * Outcome of a link attempt — distinguishes the SSO-match miss from success.
+ * `replacedUserId` (#2107) names the member a rebind took the binding away
+ * from; it is absent for a new binding and for a rebind to the same member.
+ */
+export type LinkOutcome =
+  { ok: true; userId: string; replacedUserId?: string } | { ok: false; reason: "no_matching_user" };
 
 export class TeamsAadIdentityResolver {
   private readonly db: PrismaClient;
@@ -108,8 +113,9 @@ export class TeamsAadIdentityResolver {
    * same answer whether the email is unknown or belongs to a non-member.
    *
    * Idempotent: re-binding the same `(workspaceId, tenantId, aadObjectId)`
-   * updates that workspace's stored `userId`/`email` in place. Another
-   * workspace's binding of the same identity is a different row, never touched.
+   * updates that workspace's stored `userId`/`email` in place, and reports the
+   * member it replaced (#2107). Another workspace's binding of the same identity
+   * is a different row, never touched.
    */
   async linkByEmail(params: {
     workspaceId: string;
@@ -191,12 +197,25 @@ export class TeamsAadIdentityResolver {
     userId: string,
     email: string | null,
   ): Promise<LinkOutcome> {
+    const key = { workspaceId_tenantId_aadObjectId: { workspaceId, tenantId, aadObjectId } };
+    // #2107 — a rebind silently takes the binding away from its previous member,
+    // so read who held it first: the caller audits and tells that member. The
+    // read and the upsert are not one atomic step: two admins rebinding the same
+    // id at the same instant both report the original holder, and the member
+    // the first rebind named (who held it only between the two) goes unnamed.
+    // The owner is still told of both binds.
+    const previous = await this.db.teamsUserIdentity.findUnique({
+      where: key,
+      select: { userId: true },
+    });
     await this.db.teamsUserIdentity.upsert({
-      where: { workspaceId_tenantId_aadObjectId: { workspaceId, tenantId, aadObjectId } },
+      where: key,
       create: { workspaceId, tenantId, aadObjectId, userId, email },
       update: { userId, email },
     });
-    return { ok: true, userId };
+    return previous && previous.userId !== userId
+      ? { ok: true, userId, replacedUserId: previous.userId }
+      : { ok: true, userId };
   }
 }
 
