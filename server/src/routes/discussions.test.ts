@@ -50,7 +50,10 @@ const requirementFindFirst = vi.fn();
 const requirementFindMany = vi.fn();
 const specKitFeatureFindFirst = vi.fn();
 const queryRaw = vi.fn();
-vi.mock("../lib/prisma.js", () => ({
+vi.mock("../lib/prisma.js", async () => ({
+  // #2218 — the picker builds its match with `Prisma.sql`, per backend.
+  Prisma: (await vi.importActual<typeof import("@prisma/client")>("@prisma/client")).Prisma,
+  resolveDatabaseProvider: () => "postgresql",
   prisma: {
     discussionThread: {
       create: (...a: unknown[]) => threadCreate(...a),
@@ -71,7 +74,7 @@ vi.mock("../lib/prisma.js", () => ({
     },
     specKitFeature: { findFirst: (...a: unknown[]) => specKitFeatureFindFirst(...a) },
     // #2209 — the picker's title match (lib/discussions/requirement-search.ts).
-    $queryRaw: (strings: TemplateStringsArray, ...values: unknown[]) => queryRaw(strings, values),
+    $queryRaw: (query: { values: unknown[] }) => queryRaw(query),
   },
 }));
 
@@ -568,11 +571,23 @@ describe("discussions routes", () => {
       const res = await request(app).get("/discussions/requirements?projectId=p1&q=Mark%20ALL");
       expect(res.status).toBe(200);
       expect(res.body.data.map((r: { id: string }) => r.id)).toEqual(["r3", "r1"]);
-      const [, values] = queryRaw.mock.calls[0] as [TemplateStringsArray, unknown[]];
+      const [{ values }] = queryRaw.mock.calls[0] as [{ values: unknown[] }];
       expect(values).toEqual(["p1", "%Mark ALL%", 20]);
       expect(requirementFindMany).toHaveBeenCalledWith(
         expect.objectContaining({ where: { projectId: "p1", id: { in: ["r3", "r1"] } } }),
       );
+    });
+
+    // #2218 — the term becomes a LIKE pattern over every live title: capped.
+    it("matches on at most the first 200 characters of the term", async () => {
+      canAccessProjectDiscussions.mockResolvedValue(true);
+      queryRaw.mockResolvedValue([]);
+      const res = await request(app).get(
+        `/discussions/requirements?projectId=p1&q=${"a".repeat(200)}${"b".repeat(300)}`,
+      );
+      expect(res.status).toBe(200);
+      const [{ values }] = queryRaw.mock.calls[0] as [{ values: unknown[] }];
+      expect(values[1]).toBe(`%${"a".repeat(200)}%`);
     });
 
     it("answers no requirement when nothing matches", async () => {
