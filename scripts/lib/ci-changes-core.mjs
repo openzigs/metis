@@ -63,6 +63,8 @@ export const POSTGRES_PATTERNS = Object.freeze([
   // *-pgvector integration suites.
   "server/src/lib/analysis/analysis-service.ts",
   "server/src/lib/analysis/approval-checkpoint.ts",
+  // #2147 — checkpoint-edit-lock-2147-postgres runs the real checkpoint edit.
+  "server/src/lib/analysis/checkpoint-requirement-edit.ts",
   // #1528 — scheduled-analysis-system-start-1528-postgres drives the real handler
   // and orchestrator.
   "server/src/lib/analysis/orchestrator.ts",

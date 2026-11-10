@@ -172,6 +172,23 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(r2).not.toHaveProperty("extractedTitle");
     });
 
+    // #2147 — the `edit.title !== requirement.title` branch: a title sent
+    // unchanged (the editor sends only changed fields, an API caller may not)
+    // is no retitle, so no extracted title is recorded for it.
+    it("records no extracted title when the title is sent unchanged", async () => {
+      const { id, approvals } = await seedAnalysis();
+
+      await editCheckpointRequirement(id, approvals["REQ-2"]!, {
+        title: R2.title,
+        description: "Only the description is new.",
+      });
+
+      const r2 = (await getStructuredRequirements(id))!.requirements[1]!;
+      expect(r2.title).toBe(R2.title);
+      expect(r2.description).toBe("Only the description is new.");
+      expect(r2).not.toHaveProperty("extractedTitle");
+    });
+
     it("promotes the edited text, with the criteria synthesis wrote for the extracted title", async () => {
       const { id, approvals } = await seedAnalysis();
       // Shares one significant word with the extracted title: joined on the
