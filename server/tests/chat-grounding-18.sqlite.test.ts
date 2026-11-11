@@ -428,6 +428,50 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(res.body.data.citations).toEqual(expected);
         expect(await replyCitations(sessionId)).toEqual([expected]);
       });
+
+      const SEARCH = JSON.stringify({ tool: "search_code_graph", args: { query: "Validator" } });
+      const validatorAt = (lines: [number, number], status: string) => ({
+        text: `src/validator.ts:${lines[0]}-${lines[1]}`,
+        path: "src/validator.ts",
+        lines,
+        status,
+        source: "repo",
+      });
+
+      it("the /stream tool loop checks the answer against what its tools read, live and on reload", async () => {
+        process.env.CHAT_CODE_SEARCH_TOOLS = "true";
+        model.chatReplies = [SEARCH, "It is `src/validator.ts:5-12`."];
+        const sessionId = await newSession(PROJECT);
+        const res = await post("/api/ai/stream", { sessionId, message: "where is validation?" });
+        expect(res.text).toContain("event: done");
+        const expected = [validatorAt([5, 12], "verified")];
+        expect(citationFrames(res.text)).toEqual([expected]);
+        expect(res.text.indexOf("event: citations")).toBeLessThan(res.text.indexOf("event: done"));
+        expect(await replyCitations(sessionId)).toEqual([expected]);
+      });
+
+      it.each(["/api/ai/stream", "/api/ai/chat"])(
+        "%s: a follow-up re-citing lines an earlier turn's tool read is verified-earlier, not not-read",
+        async (route) => {
+          process.env.CHAT_CODE_SEARCH_TOOLS = "true";
+          const sessionId = await newSession(PROJECT);
+          model.chatReplies = [SEARCH, "It is `src/validator.ts:5-12`."];
+          await post(route, { sessionId, message: "where is validation?" });
+          // The follow-up calls no tool: it answers from what the first turn read.
+          model.chatReplies = ["As above, `src/validator.ts:5-12`; not `src/validator.ts:90-99`."];
+          const res = await post(route, { sessionId, message: "and where exactly?" });
+          const expected = [
+            validatorAt([5, 12], "verified-earlier"),
+            validatorAt([90, 99], "span-unverified"),
+          ];
+          if (route.endsWith("/chat")) expect(res.body.data.citations).toEqual(expected);
+          else expect(citationFrames(res.text)).toEqual([expected]);
+          expect(await replyCitations(sessionId)).toEqual([
+            [validatorAt([5, 12], "verified")],
+            expected,
+          ]);
+        },
+      );
     });
 
     describe("#439 — what the tools read of the project counts as grounding", () => {

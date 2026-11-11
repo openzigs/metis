@@ -278,7 +278,8 @@ export interface CitableExcerpt {
 export function citedExcerptIds(answer: string, excerpts: readonly CitableExcerpt[]): string[] {
   if (!answer || excerpts.length === 0) return [];
   const numbers = new Set<number>();
-  for (const m of answer.matchAll(/\[(\d+(?:\s*,\s*\d+)*)\]/g)) {
+  // #2242 — not an index after an identifier or a call (`arr[1]`), as citation checking reads it.
+  for (const m of answer.matchAll(/(?<![\w)])\[(\d+(?:\s*,\s*\d+)*)\]/g)) {
     for (const n of m[1]!.split(",")) numbers.add(Number.parseInt(n.trim(), 10));
   }
   const cited: string[] = [];

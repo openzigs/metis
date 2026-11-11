@@ -41,6 +41,14 @@ const wrongLines: ChatCitation = {
   lines: [900, 900],
   status: "span-unverified",
 };
+/** #2242 panel — read by a tool in an earlier turn of the conversation. */
+const earlier: ChatCitation = { ...verifiedCode, status: "verified-earlier" };
+const ambiguous: ChatCitation = {
+  text: "util.ts:40",
+  path: "util.ts",
+  lines: [40, 40],
+  status: "ambiguous",
+};
 
 describe("citationHref", () => {
   it("links a verified citation of the project's code to its lines on GitHub", () => {
@@ -50,6 +58,11 @@ describe("citationHref", () => {
     expect(citationHref({ ...verifiedCode, lines: undefined }, repo)).toBe(
       `https://github.com/acme/reader/blob/${repo.ref}/internal/model/feed.go`,
     );
+  });
+
+  it("links a citation verified in an earlier turn too", () => {
+    expect(citationHref(earlier, repo)).toBe(citationHref(verifiedCode, repo));
+    expect(citationHref(ambiguous, repo)).toBeNull();
   });
 
   it("links nothing that is unverified, a document, or without a repo", () => {
@@ -66,6 +79,8 @@ describe("citationSummary", () => {
     expect(citationSummary([verifiedCode, fabricated, wrongLines])).toBe(
       "Citations · 1 verified · 2 not verified",
     );
+    // Verified in an earlier turn counts as verified; ambiguous does not.
+    expect(citationSummary([earlier, ambiguous])).toBe("Citations · 1 verified · 1 not verified");
   });
 });
 
@@ -132,8 +147,20 @@ describe("CitationList", () => {
     expect(list).toHaveBeenCalledWith("p1");
   });
 
+  it("marks a citation read earlier in the conversation verified, and an ambiguous one with a warning", () => {
+    render(<CitationListView citations={[earlier, ambiguous]} repo={repo} />);
+    const items = within(screen.getByTestId("chat-citations")).getAllByTestId("chat-citation");
+    expect(items[0]!.textContent).toBe(
+      `✓ ${verifiedCode.text} — read earlier in this conversation`,
+    );
+    expect(within(items[0]!).getByRole("link")).toBeInTheDocument();
+    expect(items[1]!.textContent).toBe(
+      "⚠ util.ts:40 — names more than one file read, and none of them at these lines",
+    );
+  });
+
   it("stays closed and muted when every citation was verified", () => {
-    render(<CitationListView citations={[verifiedCode]} repo={repo} />);
+    render(<CitationListView citations={[verifiedCode, earlier]} repo={repo} />);
     const list = screen.getByTestId("chat-citations");
     expect(list).not.toHaveAttribute("open");
     expect(list.className).toContain("text-muted-foreground");

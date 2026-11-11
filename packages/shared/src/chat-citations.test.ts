@@ -1,6 +1,6 @@
 /** #2242 — the one validator the server and the chat page use for a reply's citations. */
 import { describe, expect, it } from "vitest";
-import { MAX_CHAT_CITATIONS, parseChatCitations } from "./chat-citations.js";
+import { isVerifiedCitation, MAX_CHAT_CITATIONS, parseChatCitations } from "./chat-citations.js";
 
 describe("parseChatCitations", () => {
   it("round-trips well-formed citations", () => {
@@ -14,6 +14,14 @@ describe("parseChatCitations", () => {
       },
       { text: "[4]", path: "", status: "not-read" },
       { text: "FRD.md lines 2-3", path: "FRD.md", lines: [2, 3], status: "span-unverified" },
+      {
+        text: "src/b.ts:4",
+        path: "src/b.ts",
+        lines: [4, 4],
+        status: "verified-earlier",
+        source: "repo",
+      },
+      { text: "util.ts:4", path: "util.ts", lines: [4, 4], status: "ambiguous" },
     ];
     expect(parseChatCitations(c)).toEqual(c);
   });
@@ -59,5 +67,15 @@ describe("parseChatCitations", () => {
       status: "verified",
     }));
     expect(parseChatCitations(many)).toHaveLength(MAX_CHAT_CITATIONS);
+  });
+});
+
+describe("isVerifiedCitation", () => {
+  it("is true for a citation verified this turn or an earlier one, and only those", () => {
+    expect(isVerifiedCitation("verified")).toBe(true);
+    expect(isVerifiedCitation("verified-earlier")).toBe(true);
+    expect(isVerifiedCitation("span-unverified")).toBe(false);
+    expect(isVerifiedCitation("ambiguous")).toBe(false);
+    expect(isVerifiedCitation("not-read")).toBe(false);
   });
 });

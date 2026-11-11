@@ -9,16 +9,32 @@
  *
  * - `verified`: the file or document is one the turn retrieved or read, and
  *   any cited line range lies within lines that were read;
+ * - `verified-earlier`: the file and lines were read by a tool in an earlier
+ *   turn of the same conversation, still in the model's context — the #773
+ *   history digest tells the model those citations stand;
  * - `span-unverified`: the file was retrieved or read, but not the cited
  *   lines (or it was read as a document excerpt, which has no line numbers);
+ * - `ambiguous`: a short path that names more than one file read, none of
+ *   whose read lines cover the citation;
  * - `not-read`: nothing the turn retrieved or read is that file or document.
  *
  * Recorded on the assistant row (`meta.citations`) and streamed as a
  * `citations` event, so the label is the same live and after a reload.
  */
 
-export const CHAT_CITATION_STATUSES = ["verified", "span-unverified", "not-read"] as const;
+export const CHAT_CITATION_STATUSES = [
+  "verified",
+  "verified-earlier",
+  "span-unverified",
+  "ambiguous",
+  "not-read",
+] as const;
 export type ChatCitationStatus = (typeof CHAT_CITATION_STATUSES)[number];
+
+/** Whether a status means the citation checked out (this turn or an earlier one). */
+export function isVerifiedCitation(status: ChatCitationStatus): boolean {
+  return status === "verified" || status === "verified-earlier";
+}
 
 /** Where a cited file came from: a repository the project connects, or a document. */
 export const CHAT_CITATION_SOURCES = ["repo", "document"] as const;

@@ -5,7 +5,9 @@ import {
   citationsMeta,
   collectCitationEvidence,
   normalizePath,
+  priorToolEvidence,
   verifyCitations,
+  type PriorRow,
   type ToolEvidence,
 } from "./citation-verification.js";
 
@@ -177,12 +179,41 @@ describe("collectCitationEvidence — what the tools read", () => {
     });
   });
 
-  it("treats two files ending in the cited name as no match", () => {
+  it("verifies a short path naming two files read when one of them covers the lines", () => {
     const ev = collectCitationEvidence(null, [
-      tool({ result: "a/util.ts (lines 1-9 of 9)" }),
-      tool({ result: "b/util.ts (lines 1-9 of 9)" }),
+      tool({ result: "a/util.ts (lines 1-9 of 90)" }),
+      tool({ result: "b/util.ts (lines 50-60 of 90)" }),
     ]);
-    expect(verifyCitations("util.ts:2", ev)[0]).toMatchObject({ status: "not-read" });
+    expect(verifyCitations("util.ts:55", ev)[0]).toMatchObject({
+      path: "b/util.ts",
+      status: "verified",
+      source: "repo",
+    });
+  });
+
+  it("calls a short path naming two files read, neither at those lines, ambiguous — not unread", () => {
+    const ev = collectCitationEvidence(null, [
+      tool({ result: "a/util.ts (lines 1-9 of 90)" }),
+      tool({ result: "b/util.ts (lines 1-9 of 90)" }),
+    ]);
+    expect(verifyCitations("util.ts:40", ev)[0]).toEqual({
+      text: "util.ts:40",
+      path: "util.ts",
+      lines: [40, 40],
+      status: "ambiguous",
+    });
+    // With no line it cannot be checked either way: a `/` path is listed as ambiguous…
+    expect(
+      verifyCitations(
+        "see x/util.ts",
+        collectCitationEvidence(null, [
+          tool({ result: "a/x/util.ts (lines 1-9 of 9)" }),
+          tool({ result: "b/x/util.ts (lines 1-9 of 9)" }),
+        ]),
+      )[0],
+    ).toMatchObject({ status: "ambiguous" });
+    // …and a bare name is a mention.
+    expect(verifyCitations("see util.ts", ev)).toEqual([]);
   });
 
   it("calls a file read as code anywhere in the turn a repository file", () => {
@@ -193,16 +224,175 @@ describe("collectCitationEvidence — what the tools read", () => {
   });
 });
 
-describe("bounded work on hostile input", () => {
-  it("scans a long run of path characters in linear time, in an answer and in a tool result", () => {
-    const run = "a".repeat(200_000);
-    const t0 = performance.now();
-    const ev = collectCitationEvidence({ contexts: [run] }, [
-      tool({ tool: "search_code_graph", result: run }),
+const row = (parts: PriorRow["parts"], over: Partial<PriorRow> = {}): PriorRow => ({
+  role: "assistant",
+  kind: "message",
+  compactedAt: null,
+  parts,
+  ...over,
+});
+const result = (name: string, text: string, over: Record<string, unknown> = {}) =>
+  ({ type: "tool_result", toolCallId: "c1", name, text, ...over }) as PriorRow["parts"][number];
+
+describe("citations read in an earlier turn of the conversation", () => {
+  const earlier = [
+    row([
+      { type: "tool_call", id: "c1", name: "read_file_slice", args: { path: "src/a.ts" } },
+      result("read_file_slice", "src/a.ts (lines 10-40 of 300)\n10| x"),
+      { type: "text", text: "src/a.ts:12-20 does it." },
+    ]),
+  ];
+
+  it("marks a follow-up's re-citation of lines an earlier turn read verified-earlier, not not-read", () => {
+    const ev = collectCitationEvidence(null, [], priorToolEvidence(earlier));
+    expect(verifyCitations("As before, src/a.ts:12-20 does it.", ev)).toEqual([
+      {
+        text: "src/a.ts:12-20",
+        path: "src/a.ts",
+        lines: [12, 20],
+        status: "verified-earlier",
+        source: "repo",
+      },
     ]);
-    expect(verifyCitations(run, ev)).toEqual([]);
-    expect(performance.now() - t0).toBeLessThan(1000);
+    // Without the earlier turns the same answer is a false alarm.
+    expect(verifyCitations("src/a.ts:12-20", collectCitationEvidence(null))[0]!.status).toBe(
+      "not-read",
+    );
   });
+
+  it("still flags lines no turn read, and prefers this turn's read when there is one", () => {
+    const ev = collectCitationEvidence(
+      null,
+      [tool({ result: "src/a.ts (lines 100-120 of 300)" })],
+      priorToolEvidence(earlier),
+    );
+    expect(verifyCitations("src/a.ts:200", ev)[0]!.status).toBe("span-unverified");
+    expect(verifyCitations("src/a.ts:105", ev)[0]!.status).toBe("verified");
+    expect(verifyCitations("src/a.ts:30", ev)[0]!.status).toBe("verified-earlier");
+  });
+
+  it("joins lines read this turn and earlier", () => {
+    const ev = collectCitationEvidence(
+      null,
+      [tool({ result: "src/a.ts (lines 41-60 of 300)" })],
+      priorToolEvidence(earlier),
+    );
+    expect(verifyCitations("src/a.ts:35-50", ev)[0]!.status).toBe("verified-earlier");
+  });
+
+  it("reads earlier search-knowledge results and code-search locators", () => {
+    const ev = collectCitationEvidence(
+      null,
+      [],
+      priorToolEvidence([
+        row([
+          result("search-knowledge", "[1] policies/refunds.md#3 (score=0.8)\nRefunds"),
+          result("search_code_symbols", "fn check — src/check.go:5-30"),
+        ]),
+      ]),
+    );
+    expect(verifyCitations("policies/refunds.md and src/check.go:6", ev)).toEqual([
+      expect.objectContaining({
+        path: "policies/refunds.md",
+        status: "verified-earlier",
+        source: "document",
+      }),
+      expect.objectContaining({ path: "src/check.go", status: "verified-earlier", source: "repo" }),
+    ]);
+  });
+
+  it("ignores compacted rows, user rows, failed or refused calls, and tools that are not the project's", () => {
+    const tools = priorToolEvidence([
+      row([result("read_file_slice", "src/b.ts (lines 1-9 of 9)")], { compactedAt: new Date() }),
+      row([result("read_file_slice", "src/c.ts (lines 1-9 of 9)")], { role: "user" }),
+      row([result("read_file_slice", "src/d.ts (lines 1-9 of 9)")], { kind: "summary" }),
+      row([
+        result("read_file_slice", "src/e.ts (lines 1-9 of 9)", { isError: true }),
+        result("read_file_slice", "src/f.ts (lines 1-9 of 9)", { executed: false }),
+        result("fetch_url", "[1] src/g.ts#0 (score=0.9)\nsrc/g.ts:1-9"),
+      ]),
+    ]);
+    const ev = collectCitationEvidence(null, [], tools);
+    expect(
+      verifyCitations("src/b.ts:1 src/c.ts:1 src/d.ts:1 src/e.ts:1 src/f.ts:1 src/g.ts:1", ev).map(
+        (c) => c.status,
+      ),
+    ).toEqual(["not-read", "not-read", "not-read", "not-read", "not-read", "not-read"]);
+  });
+});
+
+describe("[n] references", () => {
+  const ev = collectCitationEvidence({
+    contexts: [],
+    excerpts: [
+      { name: "FRD-12.md", source: "upload" },
+      { name: "internal/model/feed.go", source: "repo" },
+    ],
+    // The fused block numbers on from the excerpts: its first entry is [3].
+    codeEntries: [{ n: 3, path: "internal/model/feed.go", lines: [120, 150] }],
+  });
+
+  it("resolves a number past the excerpts to the fused code entry, with its locator", () => {
+    expect(verifyCitations("See [1] and [3].", ev)).toEqual([
+      { text: "[1]", path: "FRD-12.md", status: "verified", source: "document" },
+      {
+        text: "[3]",
+        path: "internal/model/feed.go",
+        lines: [120, 150],
+        status: "verified",
+        source: "repo",
+      },
+    ]);
+  });
+
+  it("resolves a fused entry when no excerpt was retrieved", () => {
+    const codeOnly = collectCitationEvidence({
+      contexts: [],
+      codeEntries: [{ n: 1, path: "src/a.ts", lines: [1, 9] }],
+    });
+    expect(verifyCitations("[1]", codeOnly)[0]).toMatchObject({
+      path: "src/a.ts",
+      status: "verified",
+    });
+  });
+
+  it("is not an index after an identifier, inside inline code, or zero", () => {
+    expect(
+      verifyCitations("Use items[0], arr[1], f()[2], `[1]` and `x = y[2]`; see [0].", ev),
+    ).toEqual([]);
+  });
+
+  it("reads [1][2] as two references", () => {
+    expect(verifyCitations("Both say so [1][2].", ev).map((c) => c.path)).toEqual([
+      "FRD-12.md",
+      "internal/model/feed.go",
+    ]);
+  });
+
+  it("still counts inline-code path citations", () => {
+    expect(verifyCitations("`FRD-12.md` [2]", ev).map((c) => c.status)).toEqual([
+      "verified",
+      "verified",
+    ]);
+  });
+});
+
+describe("bounded work on hostile input", () => {
+  it.each(["a", "a-", "a.", "a/", "a-a.", "[1,"])(
+    "scans a long run of %s in linear time, in an answer and in tool results",
+    (unit) => {
+      const run = unit.repeat(Math.ceil(200_000 / unit.length));
+      const t0 = performance.now();
+      const ev = collectCitationEvidence(
+        { contexts: [run], excerpts: [{ name: "x.md" }] },
+        [tool({ tool: "search_code_graph", result: run })],
+        [tool({ tool: "search_code_graph", result: run })],
+      );
+      verifyCitations(run, ev);
+      // Quadratic takes seconds at this size; linear takes milliseconds. Wide on purpose.
+      expect(performance.now() - t0).toBeLessThan(2000);
+    },
+  );
 });
 
 describe("URL blanking on hostile input", () => {

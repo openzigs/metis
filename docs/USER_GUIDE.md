@@ -3586,6 +3586,8 @@ Opening Chat from a project (`/chat?projectId=…`) scopes it to that project.
 **Checked citations.** When an answer cites a file (`internal/model/feed.go:120-150`, a path, or an excerpt number such as `[2]`), METIS checks each citation against what that turn actually retrieved or read. That means the excerpts it was given and the files and line ranges its code and knowledge tools returned. A **Citations** line under the reply counts them, and opens to list each one:
 
 - **✓ verified**: the file or document is one the turn read, and so are the cited lines. A verified citation of the project's code links to the file on GitHub at those lines, when the project has exactly one GitHub repository connected.
+- **✓ read earlier in this conversation**: an earlier answer in the same chat read those lines, and the model is still building on that. It links the same way. Turns that were summarised to save space no longer count.
+- **⚠ names more than one file read**: a short name such as `util.ts:40` matches several files the chat read, and none of them at those lines.
 - **⚠ the file was read, but not these lines**: the turn read that file, but not the lines cited. It also shows when a document excerpt, which has no line numbers, is cited by line.
 - **✗ not in anything this reply retrieved or read**: no source the turn used is that file. Treat the claim as unsupported.
 

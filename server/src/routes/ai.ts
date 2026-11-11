@@ -147,6 +147,7 @@ import {
 import {
   citationsMeta,
   collectCitationEvidence,
+  priorToolEvidence,
   verifyCitations,
   type ToolEvidence,
 } from "../lib/ai/citation-verification.js";
@@ -603,6 +604,11 @@ export interface RagContextCapture {
    * the answer cited and carry them into the next turn.
    */
   excerpts?: CitableExcerpt[];
+  /**
+   * #2242 — the fused code block's entries by their `[n]`, which continue the
+   * excerpts' numbering, so a citation of one resolves to its locator.
+   */
+  codeEntries?: Array<{ n: number; path: string; lines: [number, number] }>;
 }
 
 /** #2240 — what the conversation adds to a turn's retrieval. */
@@ -804,11 +810,18 @@ export async function buildAutoRagContext(
       maxSymbols: cfg.getNumber("CHAT_FUSED_CODE_MAX_SYMBOLS", 12),
       searcher: fusedDeps.searcher,
       lineLookup: fusedDeps.lineLookup,
+      // #2242 — numbered on from the excerpts, so `[n]` names one entry only.
+      firstIndex: listed.length + 1,
     });
 
     if (capture && fused.block) {
       capture.contexts.push(fused.block);
       capture.sources += fused.usedSymbols;
+      capture.codeEntries = fused.hits.map((h, i) => ({
+        n: listed.length + 1 + i,
+        path: h.filePath,
+        lines: [h.startLine, h.endLine],
+      }));
     }
     if (!ragBlock && !fused.block) return "";
     if (!fused.block) return ragBlock;
@@ -820,6 +833,7 @@ export async function buildAutoRagContext(
       capture.contexts.length = 0;
       capture.sources = 0;
       delete capture.excerpts;
+      delete capture.codeEntries;
     }
     log.debug("Auto-RAG retrieval failed, continuing without context", {
       projectId,
@@ -1992,10 +2006,15 @@ export function aiRouter(): Router {
       }
 
       // #2242 — every citation in the answer, checked against what the turn
-      // retrieved and what its project-reading tools returned.
+      // retrieved and what its project-reading tools returned, and what the
+      // earlier turns still in its history read (#773 tells the model those stand).
       const citations = verifyCitations(
         outContent,
-        collectCitationEvidence(ragCapture, chatToolRecords),
+        collectCitationEvidence(
+          ragCapture,
+          chatToolRecords,
+          priorToolEvidence(turn.historyRows ?? []),
+        ),
       );
 
       // #136/#137 — the reply, with the provider-reported usage, into the transcript.
@@ -2453,7 +2472,11 @@ export function aiRouter(): Router {
     const streamCitations = (answer: string) => {
       const checked = verifyCitations(
         answer,
-        collectCitationEvidence(ragCapture, streamToolRecords),
+        collectCitationEvidence(
+          ragCapture,
+          streamToolRecords,
+          priorToolEvidence(prepared?.historyRows ?? []),
+        ),
       );
       if (checked.length > 0) send("citations", { type: "citations", citations: checked });
       return checked;

@@ -6,25 +6,30 @@
  * the file on GitHub at the lines it cites; one that does not resolve is
  * marked, so a fabricated `file:line` no longer reads like a real one.
  */
+import { isVerifiedCitation } from "@metis/shared";
 import type { ChatCitation } from "@/lib/ai-client";
 import { buildCodeCitationBlobUrl, type CodeCitationRepo } from "@/lib/code-citation-blob-url";
 import { useCodeCitationRepo } from "@/components/findings/code-citation-repo-context";
 
 const NOTE: Record<ChatCitation["status"], string> = {
   verified: "in the sources this reply read",
+  "verified-earlier": "read earlier in this conversation",
   "span-unverified": "the file was read, but not these lines",
+  ambiguous: "names more than one file read, and none of them at these lines",
   "not-read": "not in anything this reply retrieved or read",
 };
 
 const MARK: Record<ChatCitation["status"], string> = {
   verified: "✓",
+  "verified-earlier": "✓",
   "span-unverified": "⚠",
+  ambiguous: "⚠",
   "not-read": "✗",
 };
 
 /** The summary line: how many citations resolved and how many did not. */
 export function citationSummary(citations: readonly ChatCitation[]): string {
-  const verified = citations.filter((c) => c.status === "verified").length;
+  const verified = citations.filter((c) => isVerifiedCitation(c.status)).length;
   const unverified = citations.length - verified;
   const parts = [`Citations · ${verified} verified`];
   if (unverified > 0) parts.push(`${unverified} not verified`);
@@ -33,7 +38,7 @@ export function citationSummary(citations: readonly ChatCitation[]): string {
 
 /** A link to a verified citation of the project's code, or `null` when it cannot have one. */
 export function citationHref(c: ChatCitation, repo: CodeCitationRepo | null): string | null {
-  if (c.status !== "verified" || c.source !== "repo") return null;
+  if (!isVerifiedCitation(c.status) || c.source !== "repo") return null;
   return buildCodeCitationBlobUrl(repo, {
     filePath: c.path,
     startLine: c.lines?.[0] ?? 0,
@@ -76,7 +81,7 @@ export function CitationListView({
   repo: CodeCitationRepo | null;
 }) {
   if (citations.length === 0) return null;
-  const problems = citations.some((c) => c.status !== "verified");
+  const problems = citations.some((c) => !isVerifiedCitation(c.status));
   return (
     <details
       data-testid="chat-citations"
