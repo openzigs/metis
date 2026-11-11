@@ -3,8 +3,14 @@
 /**
  * Epic #157 — Per-document ACL editor.
  *
- * Lets a reviewer assign user/role/group subjects to the document. An empty
+ * Lets a reviewer assign user/role subjects to the document. An empty
  * list = unrestricted. Updates propagate to every chunk on save.
+ *
+ * #2248 — no `group` subject is offered: METIS stores no group membership, so
+ * a group subject matches nobody: it grants no access, and a document whose
+ * only subjects are groups is retrievable by admins alone. A group subject
+ * already on a document is still listed, with that warning, so it can be
+ * removed.
  */
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -14,6 +20,9 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
+/** The subject kinds a reviewer can add (#2248 — not `group`; see above). */
+type AddableKind = Exclude<AclSubject["kind"], "group">;
+
 export function AclEditor(props: {
   projectId: string;
   documentId: string;
@@ -22,7 +31,7 @@ export function AclEditor(props: {
 }) {
   const qc = useQueryClient();
   const [subjects, setSubjects] = useState<AclSubject[]>(props.initialSubjects);
-  const [draftKind, setDraftKind] = useState<AclSubject["kind"]>("user");
+  const [draftKind, setDraftKind] = useState<AddableKind>("user");
   const [draftValue, setDraftValue] = useState("");
 
   const save = useMutation({
@@ -59,6 +68,13 @@ export function AclEditor(props: {
             >
               <span>
                 <code>{s.kind}</code> · {s.value}
+                {s.kind === "group" && (
+                  <span className="block text-muted-foreground" data-testid="acl-group-warning">
+                    Matches no one: METIS does not know group membership, so this entry grants no
+                    access (only admins and the other entries here can retrieve the document).
+                    Remove it, or name users or roles instead.
+                  </span>
+                )}
               </span>
               <Button
                 size="sm"
@@ -79,12 +95,11 @@ export function AclEditor(props: {
             id={`acl-kind-${props.documentId}`}
             className="h-9 w-full rounded-md border bg-background px-3 text-sm"
             value={draftKind}
-            onChange={(e) => setDraftKind(e.target.value as AclSubject["kind"])}
+            onChange={(e) => setDraftKind(e.target.value as AddableKind)}
             data-testid="acl-kind-select"
           >
             <option value="user">user</option>
             <option value="role">role</option>
-            <option value="group">group</option>
           </select>
         </div>
         <div className="flex-1 space-y-1">
@@ -93,7 +108,7 @@ export function AclEditor(props: {
             id={`acl-value-${props.documentId}`}
             value={draftValue}
             onChange={(e) => setDraftValue(e.target.value)}
-            placeholder="e.g. u_123 or admin or eng-team"
+            placeholder="e.g. u_123 or admin"
             data-testid="acl-value-input"
           />
         </div>

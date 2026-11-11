@@ -22,6 +22,8 @@
  *                         { kind: "role",  value: actor.role   } ✅
  *                         { kind: "group", value: g } when g ∈ actor.groups ✅
  *   - The `admin` role bypasses ACLs entirely (audit-logged at the call site).
+ *   - A shared-audience actor (#2248) sees unrestricted chunks only: no subject
+ *     matches it and it has no bypass.
  *
  * Performance:
  *   - The filter runs over the candidate pool returned by the dense / hybrid
@@ -46,17 +48,64 @@ export interface AclActor {
   role: string;
   /** Optional group membership (Phase 11 user-mgmt or future SSO). */
   groups?: string[];
+  /**
+   * #2248 — set by {@link sharedAudienceActor} only: the retrieval is for an
+   * audience, not one person, so it sees unrestricted chunks and nothing else.
+   */
+  sharedAudience?: true;
+}
+
+/** An actor built by {@link sharedAudienceActor}; nothing else carries the flag. */
+export type SharedAudienceActor = AclActor & { sharedAudience: true };
+
+/** The `role` a shared-audience actor reports in the ACL-denial audit row. */
+export const SHARED_AUDIENCE_ROLE = "shared-audience";
+
+/**
+ * #2248 — the ACL actor for a reply the whole audience of a shared surface
+ * reads: a discussion thread (any project member may open it) or a Teams
+ * channel (whose membership METIS does not hold). Such a reply is grounded only
+ * on unrestricted chunks, so a chunk restricted to the member who triggered it
+ * never reaches the others. `triggeredBy` attributes the audit row; it grants
+ * nothing — no user, role or group subject matches, and there is no admin
+ * bypass.
+ */
+export function sharedAudienceActor(triggeredBy: string): SharedAudienceActor {
+  return { userId: triggeredBy, role: SHARED_AUDIENCE_ROLE, sharedAudience: true };
+}
+
+/** #2248 — the user an ACL actor was asked for is soft-deleted, not active, or absent. */
+export class InactiveAclActorError extends Error {
+  constructor() {
+    super("ACL actor unavailable: the user is not active");
+    this.name = "InactiveAclActorError";
+  }
 }
 
 /**
- * #2225 — the ACL actor for a retrieval a user started, read from durable state
- * (the same role `requireAuth` re-reads for every request), for a caller that
- * holds only the requester's id: the chat `search-knowledge` tool, the Teams
- * `@AI` reply, federated search. A lookup failure rejects; the caller must
- * fail closed (retrieve nothing), never search without an actor.
+ * #2225 — the ACL actor for a retrieval a user started, for a caller that holds
+ * only the requester's id: chat auto-RAG, the chat `search-knowledge` tool,
+ * `POST /api/projects/:id/retrieve`, federated search. The role is read from
+ * durable state, not from the token's claim (`requireAuth` only verifies the
+ * JWT).
+ *
+ * #2248 — the user must still be live (`status: "active"`, not soft-deleted),
+ * as `loadLiveAuthPayload` requires: `resolveDurableRole` ignores
+ * deprovisioning, so a SCIM-deleted admin would otherwise keep the ACL bypass
+ * until their token expired. An inactive user rejects with
+ * {@link InactiveAclActorError} — no bypass and no access. Any rejection means
+ * the caller must fail closed (retrieve nothing), never search without an actor.
  */
 export async function resolveAclActor(userId: string): Promise<AclActor> {
-  return { userId, role: await resolveDurableRole(userId) };
+  const [live, role] = await Promise.all([
+    prisma.user.findFirst({
+      where: { id: userId, status: "active", deletedAt: null },
+      select: { id: true },
+    }),
+    resolveDurableRole(userId),
+  ]);
+  if (!live) throw new InactiveAclActorError();
+  return { userId, role };
 }
 
 /** Parse a JSON-encoded ACL string from Prisma into a normalized list. */
@@ -87,10 +136,12 @@ export function serializeAclSubjects(subjects: AclSubject[]): string {
 }
 
 /**
- * Visibility check. Empty ACL is unrestricted; admin bypasses; otherwise we
- * require at least one matching subject (user / role / group).
+ * Visibility check. Empty ACL is unrestricted; a shared audience sees nothing
+ * else; admin bypasses; otherwise we require at least one matching subject
+ * (user / role / group).
  */
 export function isVisibleTo(acl: ChunkAcl, actor: AclActor): boolean {
+  if (actor.sharedAudience) return acl.subjects.length === 0;
   if (actor.role === "admin") return true;
   if (acl.subjects.length === 0) return true;
   for (const subj of acl.subjects) {

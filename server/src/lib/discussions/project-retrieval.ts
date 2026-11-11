@@ -7,15 +7,18 @@
  * it is imported lazily so loading the Teams path does not pull in the whole
  * chat router until a reply actually needs excerpts.
  *
- * #2225 — retrieval runs for `requesterId`, the member whose message triggered
- * the reply, so a chunk whose ACL excludes them never grounds it.
+ * #2248 — a discussion reply is read by the whole thread (and a Teams reply by
+ * the whole channel), so retrieval runs for a shared audience: only
+ * unrestricted chunks, never one restricted to the member who triggered it.
+ * `triggeredBy` attributes the ACL-denial audit row and grants nothing.
  */
 import type { RagContextCapture } from "../../routes/ai.js";
+import { sharedAudienceActor } from "../rag/acl.js";
 import type { RetrievedContext } from "./ai-responder.js";
 
 export function projectRetriever(
   projectId: string,
-  requesterId: string,
+  triggeredBy: string,
 ): (query: string) => Promise<RetrievedContext> {
   return async (query) => {
     const { buildAutoRagContext } = await import("../../routes/ai.js");
@@ -23,7 +26,7 @@ export function projectRetriever(
     const block = await buildAutoRagContext(
       projectId,
       [{ role: "user", content: query }],
-      requesterId,
+      sharedAudienceActor(triggeredBy),
       undefined,
       capture,
     );

@@ -835,11 +835,13 @@ describe("discussions routes", () => {
 
       await request(app).post("/discussions/threads/t1/ai-respond").send({ messageId: "m1" });
 
-      // #2225 — retrieved for the member who asked (u1), so their ACLs apply.
+      // #2248 — the reply is broadcast to the thread, so it is retrieved for a
+      // shared audience (unrestricted chunks only), never for the asker's ACLs;
+      // u1 only attributes the audit row.
       expect(buildAutoRagContext).toHaveBeenCalledWith(
         "p1",
         [{ role: "user", content: "q?" }],
-        "u1",
+        { userId: "u1", role: "shared-audience", sharedAudience: true },
         undefined,
         expect.objectContaining({ contexts: expect.any(Array) }),
       );

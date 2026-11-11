@@ -51,6 +51,7 @@ import {
 import { resolveDiscussionTools } from "../lib/discussions/grounding.js";
 import { loadRecentHistory } from "../lib/discussions/thread-context.js";
 import { buildAutoRagContext, type RagContextCapture } from "./ai.js";
+import { sharedAudienceActor } from "../lib/rag/acl.js";
 import {
   checkThreadAIRateLimit,
   loadThreadAIRateLimitConfig,
@@ -655,14 +656,15 @@ export function discussionsRouter(): Router {
     // #739 — ground the reply in the thread's project, as chat does: its
     // auto-RAG excerpts, and its read-only tools (bounded; see grounding.ts).
     const provider = discussionProvider();
-    // #2225 — for the member who asked: a chunk whose ACL excludes them never
-    // grounds the reply they triggered.
+    // #2248 — the reply is broadcast to the whole thread, so it is grounded
+    // for a shared audience: unrestricted chunks only, never one restricted
+    // to the member who asked (`actor.id` only attributes the audit row).
     const retrieve = async (query: string): Promise<RetrievedContext> => {
       const capture: RagContextCapture = { contexts: [], sources: 0 };
       const block = await buildAutoRagContext(
         thread.projectId,
         [{ role: "user", content: query }],
-        actor.id,
+        sharedAudienceActor(actor.id),
         undefined,
         capture,
       );

@@ -188,7 +188,7 @@ export function createArmA(model: string): DocArm {
     id: "A",
     label: "A — today's document agent over 10 retrieved chunks, then structured extraction",
     configuration: {
-      conversion: "parseDocument (mammoth + htmlToMarkdown)",
+      conversion: "parseDocument (docx-to-markdown, #2232)",
       chunker: "chunkMarkdown (rag/chunker.ts), default options",
       retrieval:
         "buildRetrievalQueries(document) + runGroundedRetrieval (RRF), document title as the project name",
@@ -304,7 +304,7 @@ export function createArmB(model: string): DocArm {
     id: "B",
     label: "B — the whole document in one call",
     configuration: {
-      conversion: "parseDocument (mammoth + htmlToMarkdown)",
+      conversion: "parseDocument (docx-to-markdown, #2232)",
       context: "the whole converted document, fenced",
       calls: "1 (plus one re-prompt on an unreadable reply)",
       model,
@@ -345,7 +345,7 @@ export function createArmC(model: string): DocArm {
     id: "C",
     label: "C — section by section with a document summary, glossary and actors, then a reduce",
     configuration: {
-      conversion: "parseDocument (mammoth + htmlToMarkdown)",
+      conversion: "parseDocument (docx-to-markdown, #2232)",
       context: "one call over the whole document: summary, glossary, actors",
       sections: "splitSections (governing/rule-extraction.ts): every heading, long sections split",
       reduce: "one call: drop repeated requirements, settle and add cross-section questions",
