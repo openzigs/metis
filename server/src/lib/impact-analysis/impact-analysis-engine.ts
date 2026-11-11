@@ -70,6 +70,16 @@ import {
   type AgentCitationDeps,
 } from "./agent-seeder.js";
 import { requestGateText, shapeAwareChangeExtractor } from "./change-request.js";
+import {
+  changesFromReading,
+  documentReadingNotice,
+  loadImpactDocumentText,
+  readerFailedNotice,
+  shouldReadWithModel,
+  type ReadStoredFile,
+} from "./document-source.js";
+import type { DocumentReading } from "../document-reader/reader.js";
+import { getDocumentStorage } from "../documents/storage.js";
 import { resolveStructuralTwins, type CalleeNameSource } from "./structural-twins.js";
 import {
   createDefaultCodeSearcher,
@@ -1299,6 +1309,17 @@ export interface ImpactServiceDeps {
    * change is ranked on its own in each project, as before.
    */
   requestEditRanking?: boolean;
+  /**
+   * #2231 — the document reader (`ANALYSIS_DOCUMENT_READER`, wired by the route
+   * through the impact LLM runtime). When set, a document source, and pasted
+   * text long enough to be one (`shouldReadWithModel`), is read by the model and
+   * each requirement, constraint or business rule it finds is one change. If
+   * the reading fails, the run splits the text heuristically and says so.
+   * Absent: every source goes through `extractor`, as before.
+   */
+  documentReader?: (input: { title: string; text: string }) => Promise<DocumentReading>;
+  /** #2231 — where a document source's stored file is read from; default the document storage. */
+  documentStorage?: ReadStoredFile;
   extractor?: ChangeExtractor;
   mapRequirement?: MapRequirementFn;
   /**
@@ -1685,30 +1706,60 @@ export function editRerankNotice(t: { moved: number; promoted: number; dropped: 
     : `${head} ${t.dropped} suggestion${t.dropped === 1 ? " was" : "s were"} dropped because ${t.dropped === 1 ? "it" : "they"} could not be checked: a line outside every function or type of that file, a file not in the list, an unreadable entry, or more than ${MAX_RERANK_PICKS} suggestions.`;
 }
 
-/** Resolve the change source text from the row (inline text or document chunks). */
-async function resolveSourceText(
+/**
+ * #2231 — the changes a run's own source holds (pasted text or a document),
+ * and the sentence the run's summary gains about how they were read.
+ *
+ * A document is read from its stored file, never from its chunks re-joined
+ * (`loadImpactDocumentText`). With the document reader wired, a document, and
+ * pasted text long enough to be one, is read by the model: one change per
+ * requirement, constraint or business rule. Pasted short text and an issue
+ * keep the heuristic splitter, and so does every source when the reader is
+ * off.
+ */
+async function changesFromSource(
   prisma: ImpactPrisma,
   row: { sourceText: string | null; documentId: string | null },
-): Promise<string> {
-  if (row.sourceText && row.sourceText.trim().length > 0) return row.sourceText;
-  if (row.documentId) {
-    const chunks = await prisma.knowledgeChunk.findMany({
-      where: { documentId: row.documentId },
-      orderBy: { position: "asc" },
-      select: { text: true },
-    });
-    if (chunks.length > 0) return chunks.map((c) => c.text).join("\n\n");
-    // Fall back to quarantined chunks: a user-selected document drives impact
-    // analysis regardless of RAG approval state (quarantine governs knowledge-
-    // base searchability, not whether the user may analyze a chosen document).
-    const quarantined = await prisma.quarantineChunk.findMany({
-      where: { documentId: row.documentId, ord: { gte: 0 } },
-      orderBy: { ord: "asc" },
-      select: { text: true },
-    });
-    return quarantined.map((c) => c.text).join("\n\n");
+  extractor: ChangeExtractor,
+  deps: ImpactServiceDeps,
+  /** #1754 — the run also asks about stored requirements: an empty source then adds nothing. */
+  hasRequirements: boolean,
+): Promise<{ changes: ChangedRequirement[]; notice: string | null }> {
+  let text = "";
+  let title = "Pasted text";
+  let fromDocument = false;
+  if (row.sourceText && row.sourceText.trim().length > 0) {
+    text = row.sourceText;
+  } else if (row.documentId) {
+    const doc = await loadImpactDocumentText(
+      prisma,
+      row.documentId,
+      deps.documentStorage ?? { read: (path) => getDocumentStorage().read(path) },
+    );
+    text = doc.text;
+    title = doc.title;
+    fromDocument = true;
   }
-  return "";
+  const hasSource = text.trim().length > 0;
+  if (!hasSource && hasRequirements) return { changes: [], notice: null };
+  if (hasSource && deps.documentReader && shouldReadWithModel({ fromDocument, text })) {
+    try {
+      const reading = await deps.documentReader({ title, text });
+      return {
+        changes: changesFromReading(reading),
+        notice: documentReadingNotice(reading, fromDocument),
+      };
+    } catch (err) {
+      log.warn("impact document reading failed; splitting the source heuristically", {
+        error: String(err),
+      });
+      return {
+        changes: await extractor.extract(text),
+        notice: readerFailedNotice(fromDocument),
+      };
+    }
+  }
+  return { changes: await extractor.extract(text), notice: null };
 }
 
 /**
@@ -1866,16 +1917,11 @@ async function runImpactAnalysis(
   let currentProjectId: string | null = null;
 
   try {
-    const text = await resolveSourceText(prisma, row);
     // #1754 — a run about stored requirements: one change per requirement, after
     // any pasted text's or document's own changes.
     const requirementIds = parseRequirementIds(row.requirementIds);
-    const changes = [
-      ...(requirementIds.length === 0 || text.trim().length > 0
-        ? await extractor.extract(text)
-        : []),
-      ...(await loadRequirementChanges(prisma, requirementIds)),
-    ];
+    const source = await changesFromSource(prisma, row, extractor, deps, requirementIds.length > 0);
+    const changes = [...source.changes, ...(await loadRequirementChanges(prisma, requirementIds))];
 
     // #1776 — seed every change in every accessible project first, and rank the
     // edit candidates once over all of them; the loop below reads these seeds.
@@ -2358,6 +2404,11 @@ async function runImpactAnalysis(
     // project's symbols are not embedded yet (or the vector search faults), which
     // is a sound fallback and a different result: say so on the run, where the
     // page and the export both show it.
+    // #2231 — how the source was read: what the model found in every section,
+    // or that it could not read it and the splitter's changes were analysed.
+    if (source.notice) {
+      summary = `${summary}\n\n${source.notice}`;
+    }
     if (bm25OnlyProjects.size > 0) {
       summary = `${summary}\n\n${bm25OnlyNotice(bm25OnlyProjects.size, projectIds.length)}`;
     }

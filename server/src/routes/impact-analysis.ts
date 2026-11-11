@@ -97,6 +97,8 @@ import {
   type ImpactStageUnavailableReason,
 } from "../lib/impact-analysis/impact-llm-runtime.js";
 import { buildProvider, loadAIConfig } from "../lib/ai/index.js";
+import { isDocumentReaderEnabled } from "../lib/document-reader/flag.js";
+import { readDocument } from "../lib/document-reader/reader.js";
 import type { AIProvider } from "../lib/ai/types.js";
 import { createChildLogger } from "../lib/logger.js";
 import { listImpactAnalyses } from "../lib/impact-analysis/impact-analysis-read.js";
@@ -149,7 +151,7 @@ function ok<T>(data: T): ApiResponse<T> {
  * reason on the run's degradation ledger, so the end-of-run notice can name the
  * stages a BA did not get.
  */
-type BuiltImpactProvider =
+export type BuiltImpactProvider =
   { provider: AIProvider } | { provider: null; reason: ImpactStageUnavailableReason };
 
 function buildImpactStageProvider(): BuiltImpactProvider {
@@ -457,6 +459,26 @@ function impactSummarizerDep(
 }
 
 /**
+ * #2231 — the document reader for a run's own source, behind the same flag as
+ * Requirements Analysis's (`ANALYSIS_DOCUMENT_READER`, off by default): one
+ * reader, measured once, turned on once. Its calls go through the run's LLM
+ * runtime as the `document-read` stage, so they are metered, bounded by
+ * `IMPACT_DOCUMENT_READ_TIMEOUT_MS`, and named in the run's notice when no
+ * provider could be built. Off or unavailable ⇒ `undefined`: the engine splits
+ * every source heuristically, as before.
+ */
+export function documentReaderDep(
+  runtime: ImpactLlmRuntime,
+  enabled: () => boolean = isDocumentReaderEnabled,
+  build: () => BuiltImpactProvider = buildImpactStageProvider,
+): ImpactServiceDeps["documentReader"] | undefined {
+  if (!enabled()) return undefined;
+  const provider = instrumentStage(runtime, "document-read", build());
+  if (!provider) return undefined;
+  return ({ title, text }) => readDocument({ title, text, provider });
+}
+
+/**
  * Issue #965 — assemble the flag-gated LLM run deps (seeder, table filter,
  * summarizer) + the per-project live-schema introspector for a run started by
  * `actorId`. Shared by the initial-run (`POST /`) and the drift re-run
@@ -491,7 +513,10 @@ export function impactRunDeps(actorId: string, projectIds: readonly string[]): I
   const agentSeeds = impactAgentSeedsEnabled();
   // #1939 — #1832's demotion of stale citations: OFF by default.
   const demoteStaleCitations = agentSeeds && impactDemoteStaleCitationsEnabled();
+  // #2231 — off by default, with Requirements Analysis's reader.
+  const documentReader = documentReaderDep(runtime);
   return {
+    ...(documentReader ? { documentReader } : {}),
     ...(storedLinkSeeds ? { storedLinkSeeds } : {}),
     ...(agentSeeds ? { agentSeeds } : {}),
     ...(demoteStaleCitations ? { demoteStaleCitations } : {}),

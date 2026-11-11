@@ -16,6 +16,8 @@ import { attachPartialUsage } from "../ai/partial-usage.js";
 import {
   createImpactLlmRuntime,
   impactLlmTimeoutMs,
+  impactDocumentReadTimeoutMs,
+  DEFAULT_IMPACT_DOCUMENT_READ_TIMEOUT_MS,
   DEFAULT_IMPACT_LLM_TIMEOUT_MS,
   ImpactLlmTimeoutError,
   IMPACT_LLM_AGENT_STEP,
@@ -98,6 +100,19 @@ describe("impactLlmTimeoutMs", () => {
 
   it("honours a positive override", () => {
     expect(impactLlmTimeoutMs({ IMPACT_LLM_TIMEOUT_MS: "2500" })).toBe(2500);
+  });
+});
+
+describe("impactDocumentReadTimeoutMs (#2231)", () => {
+  it("defaults to five minutes, never unbounded, and honours a positive override", () => {
+    expect(DEFAULT_IMPACT_DOCUMENT_READ_TIMEOUT_MS).toBe(300_000);
+    expect(impactDocumentReadTimeoutMs({})).toBe(DEFAULT_IMPACT_DOCUMENT_READ_TIMEOUT_MS);
+    for (const v of ["abc", "0", "-5"]) {
+      expect(impactDocumentReadTimeoutMs({ IMPACT_DOCUMENT_READ_TIMEOUT_MS: v })).toBe(
+        DEFAULT_IMPACT_DOCUMENT_READ_TIMEOUT_MS,
+      );
+    }
+    expect(impactDocumentReadTimeoutMs({ IMPACT_DOCUMENT_READ_TIMEOUT_MS: "90000" })).toBe(90_000);
   });
 });
 
@@ -422,6 +437,39 @@ describe("createImpactLlmRuntime — degradation (#1024)", () => {
 
     await expect(provider.chat([])).rejects.toBeInstanceOf(ImpactLlmTimeoutError);
     expect(runtime.degradationNotice()).toContain("the AI provider timed out");
+  });
+
+  it("#2231 — bounds a document-reading call by its own, longer deadline", async () => {
+    const { runtime } = runtimeWith({ timeoutMs: 20, documentReadTimeoutMs: 2_000 });
+    const slow = () =>
+      fakeProvider({
+        chat: () =>
+          new Promise<ChatResponse>((resolve) =>
+            setTimeout(
+              () =>
+                resolve({
+                  content: "{}",
+                  usage: USAGE,
+                  model: "claude-sonnet-5",
+                  provider: "anthropic",
+                }),
+              60,
+            ),
+          ),
+      });
+    // 60 ms is past the judging stages' deadline, inside the reading one's.
+    await expect(runtime.instrument(slow(), "table-filter").chat([])).rejects.toBeInstanceOf(
+      ImpactLlmTimeoutError,
+    );
+    await expect(runtime.instrument(slow(), "document-read").chat([])).resolves.toMatchObject({
+      content: "{}",
+    });
+
+    const tight = runtimeWith({ timeoutMs: 2_000, documentReadTimeoutMs: 20 }).runtime;
+    await expect(tight.instrument(slow(), "document-read").chat([])).rejects.toBeInstanceOf(
+      ImpactLlmTimeoutError,
+    );
+    expect(tight.degradationNotice()).toContain("Not applied: document reading.");
   });
 
   it("propagates a provider error unchanged and counts it as a failure", async () => {

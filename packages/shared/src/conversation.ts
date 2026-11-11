@@ -13,6 +13,12 @@ export const DEFAULT_SESSION_TITLE = "New Chat";
 /** The title of a Workbench session created before its first question was known. */
 export const WORKBENCH_SESSION_TITLE = "Workbench";
 const AUTO_TITLE_MAX_CHARS = 80;
+/**
+ * #2240 — the most documents one chat question can attach (the Workbench's
+ * context chips). The server refuses a longer list, so the UI caps the list at
+ * this and never sends more.
+ */
+export const MAX_ATTACHED_DOCUMENTS = 50;
 
 /**
  * #980 — a session title from its first question: whitespace collapsed, cut at

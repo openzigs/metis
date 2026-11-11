@@ -8,6 +8,7 @@ import { render, screen, waitFor, fireEvent, within } from "@testing-library/rea
 import userEvent from "@testing-library/user-event";
 import { makeWrapper } from "./test-utils";
 import type { StreamEvent } from "@/lib/ai-client";
+import { MAX_ATTACHED_DOCUMENTS } from "@metis/shared";
 
 // #526 — the document list is virtualised; jsdom has no layout (see the stub).
 vi.mock("@tanstack/react-virtual", async () => (await import("./virtualizer-stub")).module);
@@ -99,8 +100,8 @@ beforeEach(() => {
   documentsListMock.mockResolvedValue({ items: [] });
 });
 
-describe("WorkbenchPage — composeWithContext branches", () => {
-  it("sends message with attached context docs (non-empty attachments branch)", async () => {
+describe("WorkbenchPage — context attachments", () => {
+  it("sends attached documents as documents to search, not as names in the question (#2240)", async () => {
     const user = userEvent.setup();
     // Setup docs
     documentsListMock.mockResolvedValueOnce({
@@ -129,14 +130,64 @@ describe("WorkbenchPage — composeWithContext branches", () => {
     await user.type(screen.getByTestId("workbench-input"), "analyze this");
     await user.click(screen.getByTestId("workbench-send"));
 
-    // streamChat should have been called with composed message (including context)
     await waitFor(() => expect(streamChatMock).toHaveBeenCalled());
     const call = streamChatMock.mock.calls[0];
-    // #136 — only the new (composed) message is sent; the server keeps history.
-    const message = call[1] as string;
-    expect(message).toContain("analyze this");
-    // With context, the message should include "Context attachments"
-    expect(message).toContain("Context attachments");
+    // #136 — only the new message is sent; the server keeps history. #2240 —
+    // it is the question as typed: no file names for the search to match on.
+    expect(call[1]).toBe("analyze this");
+    expect(call[5]).toEqual(["d1"]);
+    // The transcript shows the question as asked; the chips still show the attachment.
+    expect(await screen.findByText("analyze this")).toBeInTheDocument();
+    expect(screen.queryByText(/Context attachments \(/)).not.toBeInTheDocument();
+  });
+
+  // PR #2266 review — the server refuses more than MAX_ATTACHED_DOCUMENTS ids,
+  // and with them the whole question; the Workbench never builds such a list.
+  it("does not attach past the limit, says so, and still sends the question (#2240)", async () => {
+    const user = userEvent.setup();
+    const docs = Array.from({ length: MAX_ATTACHED_DOCUMENTS + 1 }, (_, i) => ({
+      id: `d${i}`,
+      filename: `doc-${i}.md`,
+      status: "ready",
+    }));
+    documentsListMock.mockResolvedValueOnce({ items: docs });
+    window.localStorage.setItem(
+      "metis.workbench.layout",
+      JSON.stringify({ contextIds: docs.slice(0, MAX_ATTACHED_DOCUMENTS).map((d) => d.id) }),
+    );
+    async function* simpleStream(): AsyncGenerator<StreamEvent> {
+      yield { type: "delta", content: "ok" };
+      yield { type: "done" };
+    }
+    streamChatMock.mockReturnValue(simpleStream());
+
+    const Wrapper = makeWrapper({ withAuth: false });
+    render(<WorkbenchPage />, { wrapper: Wrapper });
+
+    const last = `workbench-doc-attach-d${MAX_ATTACHED_DOCUMENTS}`;
+    await waitFor(() => expect(screen.getByTestId(last)).toBeInTheDocument());
+    expect(screen.queryByTestId("workbench-attach-limit")).not.toBeInTheDocument();
+    await user.click(screen.getByTestId(last));
+    expect(await screen.findByTestId("workbench-attach-limit")).toHaveTextContent(
+      `at most ${MAX_ATTACHED_DOCUMENTS} documents`,
+    );
+    expect(
+      within(screen.getByTestId("workbench-context-chips")).getAllByRole("listitem"),
+    ).toHaveLength(MAX_ATTACHED_DOCUMENTS);
+
+    await waitFor(() => expect(screen.getByTestId("workbench-input")).not.toBeDisabled());
+    await user.type(screen.getByTestId("workbench-input"), "compare them");
+    await user.click(screen.getByTestId("workbench-send"));
+    await waitFor(() => expect(streamChatMock).toHaveBeenCalled());
+    const sent = streamChatMock.mock.calls[0]![5] as string[];
+    expect(sent).toHaveLength(MAX_ATTACHED_DOCUMENTS);
+    expect(sent).not.toContain(`d${MAX_ATTACHED_DOCUMENTS}`);
+
+    // Removing a chip clears the note.
+    await user.click(screen.getByRole("listitem", { name: /Remove doc-0\.md from context/ }));
+    await waitFor(() =>
+      expect(screen.queryByTestId("workbench-attach-limit")).not.toBeInTheDocument(),
+    );
   });
 
   it("sends message without context docs (empty attachments branch)", async () => {
@@ -161,6 +212,7 @@ describe("WorkbenchPage — composeWithContext branches", () => {
     const call = streamChatMock.mock.calls[0];
     // Without context, the message should be just the raw input
     expect(call[1]).toBe("hello");
+    expect(call[5]).toEqual([]);
   });
 
   // #526 — attaching and detaching re-filter the parsed entries; only a new
