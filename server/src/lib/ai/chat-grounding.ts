@@ -7,7 +7,13 @@
  * the retrieval outcome of a turn into a {@link ChatGrounding} that is streamed
  * to the client and recorded on the assistant row.
  */
-import { parseChatGrounding, type ChatGrounding } from "@metis/shared";
+import {
+  MAX_GROUNDING_SOURCES,
+  parseChatGrounding,
+  type ChatGrounding,
+  type GroundingCoverage,
+  type GroundingSource,
+} from "@metis/shared";
 import { prisma } from "../prisma.js";
 import type { ToolSource } from "./tool-runtime/types.js";
 
@@ -25,18 +31,57 @@ const lookupProjectName: ProjectNameLookup = async (projectId) => {
 };
 
 /**
+ * #2241 — what one turn's automatic retrieval did, as `RagContextCapture`
+ * records it: how many excerpts reached the prompt, which ones, how many the
+ * relevance floor set aside, whether the search failed, and whether only part
+ * of the project could be searched.
+ */
+export interface RetrievalOutcome {
+  sources: number;
+  excerpts?: readonly { name: string; relevance?: number }[];
+  belowFloor?: number;
+  failed?: boolean;
+  coverage?: GroundingCoverage;
+}
+
+/**
+ * #2241 — the files and documents a turn's excerpts came from, in the order
+ * the model was shown them: one entry per name, with how many excerpts it gave
+ * and the best relevance among them.
+ */
+export function groundingSources(
+  excerpts: readonly { name: string; relevance?: number }[],
+): GroundingSource[] {
+  const byName = new Map<string, GroundingSource>();
+  for (const e of excerpts) {
+    const entry = byName.get(e.name) ?? { name: e.name, excerpts: 0 };
+    entry.excerpts++;
+    if (e.relevance !== undefined) {
+      const r = Number(e.relevance.toFixed(3));
+      if (entry.relevance === undefined || r > entry.relevance) entry.relevance = r;
+    }
+    byName.set(e.name, entry);
+  }
+  return [...byName.values()].slice(0, MAX_GROUNDING_SOURCES);
+}
+
+/**
  * The grounding of one turn's automatic retrieval. `sources` is how many
  * excerpts reached the prompt (`RagContextCapture.sources`: one per
  * knowledge-base chunk plus one per fused code symbol), so a reply is
  * `grounded` only when something actually reached the prompt. What the tools
  * read later in the turn is folded in by {@link withToolReads}.
+ *
+ * #2241 — given the whole {@link RetrievalOutcome}, the label also lists the
+ * sources, says why nothing was supplied, and says when coverage was partial.
  */
 export async function describeGrounding(
   projectId: string | null,
-  sources: number,
+  retrieval: number | RetrievalOutcome,
   lookup: ProjectNameLookup = lookupProjectName,
 ): Promise<ChatGrounding> {
   if (!projectId) return { status: "unscoped" };
+  const r: RetrievalOutcome = typeof retrieval === "number" ? { sources: retrieval } : retrieval;
   let projectName: string | null = null;
   try {
     projectName = await lookup(projectId);
@@ -44,9 +89,32 @@ export async function describeGrounding(
     /* the name is a label; the grounding status does not depend on it */
   }
   const name = projectName ?? "this project";
-  return sources > 0
-    ? { status: "grounded", projectId, projectName: name, sources }
-    : { status: "no-context", projectId, projectName: name };
+  const coverage = r.coverage ? { coverage: r.coverage } : {};
+  if (r.sources > 0) {
+    const sourcesUsed = groundingSources(r.excerpts ?? []);
+    return {
+      status: "grounded",
+      projectId,
+      projectName: name,
+      sources: r.sources,
+      ...(sourcesUsed.length > 0 ? { sourcesUsed } : {}),
+      ...coverage,
+    };
+  }
+  if (typeof retrieval === "number") return { status: "no-context", projectId, projectName: name };
+  const belowFloor = r.belowFloor ?? 0;
+  return {
+    status: "no-context",
+    projectId,
+    projectName: name,
+    reason: r.failed
+      ? "retrieval-failed"
+      : belowFloor > 0
+        ? "insufficient-evidence"
+        : "nothing-found",
+    ...(!r.failed && belowFloor > 0 ? { belowFloor } : {}),
+    ...coverage,
+  };
 }
 
 /** What {@link countProjectToolReads} needs to know about one tool call. */
@@ -126,6 +194,11 @@ export function withToolReads(grounding: ChatGrounding, toolReads: number): Chat
     projectName: grounding.projectName,
     sources,
     toolReads,
+    // #2241 — what auto-retrieval listed, and a partial coverage, still stand.
+    ...(grounding.status === "grounded" && grounding.sourcesUsed
+      ? { sourcesUsed: grounding.sourcesUsed }
+      : {}),
+    ...(grounding.coverage ? { coverage: grounding.coverage } : {}),
   };
 }
 

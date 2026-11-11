@@ -56,6 +56,7 @@ import {
   getTokenTracker,
   getToolRegistry,
   assembleChatSystem,
+  ANSWER_POLICY_INSTRUCTION,
   CITATION_INSTRUCTION,
 } from "../lib/ai/index.js";
 import type {
@@ -144,6 +145,7 @@ import {
   retrievalConversation,
   type CitableExcerpt,
 } from "../lib/ai/conversation/retrieval-query.js";
+import { applyRelevanceFloor, denseCosine, readRelevanceFloor } from "../lib/ai/relevance-floor.js";
 import {
   countProjectToolReads,
   describeGrounding,
@@ -558,7 +560,13 @@ function aiErrorToAppError(err: unknown): AppError {
 /** * Auto-RAG: retrieve relevant knowledge chunks for the user's query — read
  * with the conversation since #2240, see {@link conversationRagContext} — and
  * return a system message with the context. Returns empty string when no
- * knowledge is available or retrieval fails.
+ * knowledge is available.
+ *
+ * #2241 — a retrieved chunk below chat's relevance floor never reaches the
+ * prompt. When the floor sets aside everything the search found, or the search
+ * fails, the block says so instead of being empty, so the model is told that
+ * the project's sources were searched and do not support an answer (or could
+ * not be read), and the capture records why for the grounding label.
  *
  * The instruction is deliberately explicit about which project "the project"
  * refers to. Chat history is resent in full on every turn (the client has no
@@ -592,6 +600,15 @@ export interface RagContextCapture {
    * the answer cited and carry them into the next turn.
    */
   excerpts?: CitableExcerpt[];
+  /** #2241 — retrieved excerpts the relevance floor kept out of the prompt. */
+  belowFloor?: number;
+  /** #2241 — the knowledge search failed, so the turn has no excerpts. */
+  failed?: boolean;
+  /**
+   * #2241 — only part of the project's knowledge could be searched: chunks
+   * embedded with another model are invisible to the current one.
+   */
+  coverage?: { matchingChunks: number; totalChunks: number };
 }
 
 /** #2240 — what the conversation adds to a turn's retrieval. */
@@ -676,6 +693,8 @@ export async function buildAutoRagContext(
   // byte-identical to the original doc-RAG-only block.
   const cfg = getConfigService();
   const fusedEnabled = cfg.getBool("CHAT_FUSED_CODE_RETRIEVAL", false);
+  // #2241 — calibrated on the Phase 0 set; 0 turns the floor off.
+  const floor = readRelevanceFloor();
 
   try {
     // #2225 — inside the try: a failed role read retrieves nothing (fail
@@ -683,25 +702,36 @@ export async function buildAutoRagContext(
     const actor = typeof requester === "string" ? await resolveAclActor(requester) : requester;
     const service = getKnowledgeService();
     const queries = [...searches.user, ...(searches.contextual ? [searches.contextual] : [])];
-    const lists = await Promise.all(
-      queries.map(
-        async (q) =>
-          (
-            await service.search(projectId, q, {
-              k: AUTO_RAG_K,
-              actor,
-              ...(documentIds ? { documentIds } : {}),
-            })
-          ).hits,
+    const results = await Promise.all(
+      queries.map((q) =>
+        service.search(projectId, q, {
+          k: AUTO_RAG_K,
+          actor,
+          ...(documentIds ? { documentIds } : {}),
+        }),
       ),
     );
+    const lists = results.map((r) => r.hits);
     // The user's own searches weigh more than the conversational one, whose
     // own finds never fill a majority of the slots.
-    const hits = fuseRetrievalHits(
+    const fusedHits = fuseRetrievalHits(
       lists.slice(0, searches.user.length),
       searches.contextual ? lists[searches.user.length]! : null,
       AUTO_RAG_K,
     );
+    // #2241 — a chunk too weak to bear on the question never reaches the prompt.
+    const { kept: hits, belowFloor } = applyRelevanceFloor(fusedHits, floor);
+    // #2241 — a partial coverage is reported, not just logged.
+    const coverage = results.find((r) => r.coverageWarning)?.coverageWarning;
+    if (capture) {
+      if (belowFloor > 0) capture.belowFloor = belowFloor;
+      if (coverage) {
+        capture.coverage = {
+          matchingChunks: coverage.matchingChunks,
+          totalChunks: coverage.totalChunks,
+        };
+      }
+    }
     // #2240 — the excerpts the previous answer cited, read back as the project
     // holds them now. Losing them costs this turn its carry-over, never its
     // fresh retrieval.
@@ -747,12 +777,17 @@ export async function buildAutoRagContext(
       if (capture) {
         capture.contexts.push(...chunkList);
         capture.sources += chunkList.length;
-        capture.excerpts = listed.map((h, i) => ({
-          n: i + 1,
-          chunkId: h.chunkId,
-          name: h.path ?? h.filename,
-          locator: formatHitLocator(h),
-        }));
+        capture.excerpts = listed.map((h, i) => {
+          // #2241 — a fresh hit's dense cosine; a carried excerpt has none.
+          const relevance = i < hits.length ? denseCosine(hits[i]!) : null;
+          return {
+            n: i + 1,
+            chunkId: h.chunkId,
+            name: h.path ?? h.filename,
+            locator: formatHitLocator(h),
+            ...(relevance !== null ? { relevance } : {}),
+          };
+        });
       }
       const chunks = chunkList.join("\n\n---\n\n");
       // #2240 — said only when it applies, so an ordinary turn's block is unchanged.
@@ -798,7 +833,16 @@ export async function buildAutoRagContext(
       capture.contexts.push(fused.block);
       capture.sources += fused.usedSymbols;
     }
-    if (!ragBlock && !fused.block) return "";
+    if (!ragBlock && !fused.block) {
+      // #2241 — the search found matches, all too weak to use: tell the model
+      // the sources were searched and do not support an answer.
+      if (belowFloor === 0) return "";
+      const project = await prisma.project.findUnique({
+        where: { id: projectId },
+        select: { name: true },
+      });
+      return insufficientEvidenceBlock(project?.name?.trim() || "this project", belowFloor);
+    }
     if (!fused.block) return ragBlock;
     if (!ragBlock) return fused.block;
     return `${ragBlock}\n\n${fused.block}`;
@@ -808,14 +852,41 @@ export async function buildAutoRagContext(
       capture.contexts.length = 0;
       capture.sources = 0;
       delete capture.excerpts;
+      delete capture.belowFloor;
+      delete capture.coverage;
+      // #2241 — recorded, so the reply's label says the search failed.
+      capture.failed = true;
     }
-    log.debug("Auto-RAG retrieval failed, continuing without context", {
+    log.warn("Auto-RAG retrieval failed, continuing without context", {
       projectId,
       error: (err as Error).message,
     });
-    return "";
+    return RETRIEVAL_FAILED_BLOCK;
   }
 }
+
+/**
+ * #2241 — the block a turn gets when the relevance floor set aside every match:
+ * no excerpt, and a plain statement that the project's sources were searched.
+ */
+export function insufficientEvidenceBlock(projectName: string, belowFloor: number): string {
+  return (
+    `## Retrieved Knowledge (project-scoped RAG)\n` +
+    `This chat session is scoped to the project "${projectName}". Its knowledge base was ` +
+    `searched for this question and nothing in it was relevant enough to use: the ` +
+    `${belowFloor} closest ${belowFloor === 1 ? "match was" : "matches were"} too weak, so no ` +
+    `excerpt is shown. Unless your tools find support in the project, do not answer from ` +
+    `general knowledge: say that "${projectName}"'s sources don't show this, and say what is ` +
+    `missing (which document, rule or code would answer it).`
+  );
+}
+
+/** #2241 — the block a turn gets when the knowledge search failed. */
+export const RETRIEVAL_FAILED_BLOCK =
+  `## Retrieved Knowledge (project-scoped RAG)\n` +
+  `The search of this project's knowledge base failed for this turn, so no excerpt is shown. ` +
+  `Unless your tools can read the project, say that you could not check its sources; do not ` +
+  `answer as if you had.`;
 
 /** * Phase 10 / #700 \u2014 build the library-injected system messages for a chat
  * call from the agent persona + currently-loaded skills + per-project Chronicle
@@ -928,6 +999,9 @@ export async function buildLibrarySystemMessages(
     skillBlocks,
     toolSchemas,
     citationInstruction: CITATION_INSTRUCTION,
+    // #2241 — the answering policy applies where there are project sources to
+    // answer from; an unscoped chat answers from general knowledge, and says so.
+    answerPolicy: session.projectId ? ANSWER_POLICY_INSTRUCTION : null,
     chronicle,
   });
 }
@@ -1693,7 +1767,7 @@ export function aiRouter(): Router {
       );
       // #18 — what this reply is grounded in, recorded on the reply row. #439 —
       // what the code tools read of the project is folded in after the loop.
-      let grounding = await describeGrounding(session.projectId, ragCapture.sources);
+      let grounding = await describeGrounding(session.projectId, ragCapture);
 
       // #136/#138 — persist the question, load the server-owned history, and
       // compact it first if the prompt has reached the watermark.
@@ -2120,7 +2194,7 @@ export function aiRouter(): Router {
     // #18 — what this reply is grounded in: streamed before the answer and
     // recorded on the reply row, so the client can say so live and on reload.
     // #439 — re-sent after the tool loop when the tools read the project.
-    let grounding = await describeGrounding(session.projectId, ragCapture.sources);
+    let grounding = await describeGrounding(session.projectId, ragCapture);
 
     res.status(200);
     res.setHeader("Content-Type", "text/event-stream");

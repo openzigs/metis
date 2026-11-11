@@ -538,6 +538,15 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
       "Output cap (max_tokens) for one chat-compaction summary call (#138). Default 2048. A summary that hits the cap is kept and flagged as truncated in the transcript.",
     sensitive: false,
   },
+  // ── Issue #2241 — chat's relevance floor on automatic retrieval ─────────
+  CHAT_RETRIEVAL_MIN_SCORE: {
+    tier: "tunable",
+    valueType: "string",
+    schema: z.coerce.number().min(0).max(1),
+    description:
+      "Relevance floor (0–1) on the dense cosine of a chunk chat's auto-RAG retrieves (#2241): a chunk below it never reaches the prompt, and when every match is below it the reply is labelled 'insufficient evidence' and the model is told the sources don't support an answer. A keyword-only match is kept only when some dense match cleared the floor. Default 0.55, calibrated on the BA question set with the default embedder (gte-modernbert-base): the highest floor that loses no expected excerpt. 0 turns it off. Re-calibrate (`pnpm eval:ba-qa --floor-sweep`) after changing EMBED_MODEL.",
+    sensitive: false,
+  },
   CHAT_FUSED_CODE_TOKEN_BUDGET: {
     tier: "tunable",
     valueType: "int",

@@ -6,6 +6,7 @@
  *   pnpm eval:ba-qa --arm off --budget 5                  # today's chat, flags off
  *   pnpm eval:ba-qa --arm on --budget 5 --include <off>.json   # flags on, reported beside off
  *   pnpm eval:ba-qa --arm off --budget 1 --questions S1,A1     # a smoke run
+ *   pnpm eval:ba-qa --floor-sweep                         # #2241: calibrate the relevance floor ($0)
  *
  * Over the two materialized products of `eval-data/corpus/baqa-01-acme-reader/`
  * it asks every question as its own one-turn chat session, on the configured
@@ -27,6 +28,11 @@
  * judge apart, and held under `--budget` (USD): the run stops before a question
  * once the cap is reached, or on an unpriced call.
  * Results: `eval-results/ba-qa/<runId>.{json,md}`.
+ *
+ * #2241 — `--floor-sweep` asks no model: after the knowledge step it runs chat's
+ * knowledge search (k 8, as the asking user, flags off) for every question over
+ * each product in its scope, and reports what each candidate relevance floor
+ * would drop (`relevance-floor.ts`). Results: `eval-results/ba-qa/<runId>-floor.{json,md}`.
  */
 /* eslint-disable no-console -- a local CLI whose output is the report */
 import "./eval-ba-qa-env.js";
@@ -54,6 +60,13 @@ import {
 import { extractCitations, type CitableProduct } from "../src/lib/eval/ba-qa/citations.js";
 import { buildJudgeMessages, parseJudgeVerdict } from "../src/lib/eval/ba-qa/judge.js";
 import { scoreQuestion, summarizeArm, type ArmSummary } from "../src/lib/eval/ba-qa/metrics.js";
+import {
+  formatFloorSweep,
+  OFF_TOPIC_PROBES,
+  safestFloor,
+  sweepFloors,
+  type RetrievalSample,
+} from "../src/lib/eval/ba-qa/relevance-floor.js";
 import { formatBaQaReport, type ReportSession } from "../src/lib/eval/ba-qa/report.js";
 import {
   applyArmEnv,
@@ -106,12 +119,15 @@ async function main(): Promise<void> {
       out: { type: "string" },
       include: { type: "string", multiple: true },
       "judge-model": { type: "string" },
+      "floor-sweep": { type: "boolean" },
     },
   });
-  if (!values.arm) throw new Error("--arm off|on is required");
-  const arm = parseArm(values.arm);
+  const floorSweep = values["floor-sweep"] === true;
+  if (!values.arm && !floorSweep) throw new Error("--arm off|on is required");
+  // #2241 — the sweep measures the default search: the flags off.
+  const arm = floorSweep ? "off" : parseArm(values.arm!);
   const budget = Number(values.budget);
-  if (!values.budget || !Number.isFinite(budget) || budget <= 0) {
+  if (!floorSweep && (!values.budget || !Number.isFinite(budget) || budget <= 0)) {
     throw new Error("--budget <usd> is required: the run's hard spend cap");
   }
   // Before any module reads a flag.
@@ -164,14 +180,6 @@ async function main(): Promise<void> {
   const { getDocumentStorage } = await import("../src/lib/documents/storage.js");
   const { getKnowledgeService } = await import("../src/lib/rag/knowledge-service.js");
   const { approveDocument } = await import("../src/lib/rag/quarantine.js");
-
-  const provider = buildProvider({ config: loadAIConfig() });
-  if (provider.offline) throw new Error("a live provider is required, not the offline stub");
-  const model = provider.model;
-  const judgeModel = values["judge-model"] ?? model;
-  const meter = new LedgerCostMeter();
-  const judgeMeter = new LedgerCostMeter();
-  const answerMeter = new LedgerCostMeter();
 
   const user = await prisma.user.upsert({
     where: { email: EVAL_USER_EMAIL },
@@ -270,6 +278,20 @@ async function main(): Promise<void> {
     );
   }
   for (const p of fixture.products) await ensureKnowledge(p, repos.get(p.name)!);
+
+  if (floorSweep) {
+    await runFloorSweep({ fixture, questions, repos, userId: user.id });
+    await prisma.$disconnect();
+    return;
+  }
+
+  const provider = buildProvider({ config: loadAIConfig() });
+  if (provider.offline) throw new Error("a live provider is required, not the offline stub");
+  const model = provider.model;
+  const judgeModel = values["judge-model"] ?? model;
+  const meter = new LedgerCostMeter();
+  const judgeMeter = new LedgerCostMeter();
+  const answerMeter = new LedgerCostMeter();
 
   // What each product's answer can cite: its repository files and its uploads.
   const citable = new Map<string, CitableProduct>(
@@ -506,6 +528,101 @@ async function main(): Promise<void> {
   console.log(`results: ${path.join(outDir, runId)}.{json,md}`);
   if (stoppedEarly) console.log(`STOPPED EARLY: ${stoppedEarly}`);
   await prisma.$disconnect();
+}
+
+/**
+ * #2241 — chat's knowledge search for every question over each product in its
+ * scope, and what each candidate floor would drop. No model is called.
+ */
+async function runFloorSweep(input: {
+  fixture: Awaited<ReturnType<typeof loadBaQaFixture>>;
+  questions: readonly BaQaQuestion[];
+  repos: ReadonlyMap<string, MaterializedRepo>;
+  userId: string;
+}): Promise<void> {
+  const { getKnowledgeService } = await import("../src/lib/rag/knowledge-service.js");
+  const { resolveAclActor } = await import("../src/lib/rag/acl.js");
+  const { denseCosine } = await import("../src/lib/ai/relevance-floor.js");
+  const actor = await resolveAclActor(input.userId);
+  const samples: RetrievalSample[] = [];
+  for (const q of input.questions) {
+    for (const name of q.scope) {
+      const product = input.fixture.products.find((p) => p.name === name)!;
+      // An upload is cited by the logical path its source names (`miniflux.1`).
+      const logical = new Map(
+        product.documents.map((d) => [d.uploadAs, d.fromCorpus ? d.uploadAs : d.file] as const),
+      );
+      const expected = new Set(
+        (q.sources ?? []).filter((s) => s.product === name).map((s) => s.path),
+      );
+      const { hits } = await getKnowledgeService().search(
+        input.repos.get(name)!.projectId,
+        q.text,
+        { k: 8, actor },
+      );
+      samples.push({
+        questionId: q.id,
+        expect: q.expect,
+        product: name,
+        hits: hits.map((h) => {
+          const shown = h.path ?? h.filename;
+          const file = logical.get(shown) ?? shown;
+          return { name: file, cosine: denseCosine(h), expected: expected.has(file) };
+        }),
+      });
+    }
+  }
+  // Off-topic probes: what the floor is for, searched over each product alone.
+  for (const [i, text] of OFF_TOPIC_PROBES.entries()) {
+    for (const p of input.fixture.products) {
+      const { hits } = await getKnowledgeService().search(
+        input.repos.get(p.name)!.projectId,
+        text,
+        { k: 8, actor },
+      );
+      samples.push({
+        questionId: `P${i + 1}`,
+        expect: "off-topic",
+        product: p.name,
+        hits: hits.map((h) => ({
+          name: h.path ?? h.filename,
+          cosine: denseCosine(h),
+          expected: false,
+        })),
+      });
+    }
+  }
+  const floors = Array.from({ length: 31 }, (_, i) => Number((0.45 + i * 0.01).toFixed(2)));
+  const rows = sweepFloors(samples, floors);
+  const best = safestFloor(rows);
+  const perQuestion = samples.map((s) => {
+    const cos = s.hits.map((h) => h.cosine).filter((c): c is number => c !== null);
+    const top = cos.length > 0 ? Math.max(...cos).toFixed(3) : "-";
+    const exp = s.hits.filter((h) => h.expected && h.cosine !== null).map((h) => h.cosine!);
+    const minExp = exp.length > 0 ? Math.min(...exp).toFixed(3) : "-";
+    const n = s.hits.filter((h) => h.expected).length;
+    return `| ${s.questionId} | ${s.expect} | ${s.product} | ${top} | ${minExp} | ${n}/${s.hits.length} |`;
+  });
+  const markdown = [
+    "# Relevance floor sweep (#2241)",
+    "",
+    formatFloorSweep(rows),
+    "",
+    `Highest floor that empties no answerable question and keeps every expected excerpt: ${best ?? "none"}`,
+    "",
+    "| Question | Expect | Product | Top cosine | Lowest expected cosine | Expected hits |",
+    "|---|---|---|---:|---:|---:|",
+    ...perQuestion,
+  ].join("\n");
+  const runId = `${new Date().toISOString().replace(/[:.]/g, "-")}-floor`;
+  const outDir = path.join(REPO_ROOT, "eval-results", "ba-qa");
+  await fs.mkdir(outDir, { recursive: true });
+  await fs.writeFile(
+    path.join(outDir, `${runId}.json`),
+    `${JSON.stringify({ kind: "ba-qa-floor", issue: 2241, samples, rows, best }, null, 2)}\n`,
+  );
+  await fs.writeFile(path.join(outDir, `${runId}.md`), `${markdown}\n`);
+  console.log(markdown);
 }
 
 main()

@@ -467,6 +467,12 @@ describe("streamAIReply — #739 grounding", () => {
     expect(DISCUSSION_SYSTEM_PROMPT).toMatch(/file:line/);
   });
 
+  it("#2241 — carries chat's answering policy: abstain when unsupported, ask when ambiguous", async () => {
+    const { ANSWER_POLICY_SENTENCES } = await import("../ai/chat-system-prompt.js");
+    expect(DISCUSSION_SYSTEM_PROMPT).toContain(ANSWER_POLICY_SENTENCES);
+    expect(DISCUSSION_SYSTEM_PROMPT).toContain("ask ONE specific follow-up question");
+  });
+
   it("puts the project's retrieved excerpts right before the question, after the fixed prompt", async () => {
     const streamSpy = vi.fn(async function* (_m: ChatMessage[]) {
       yield { type: "delta", content: "ok" } as ChatChunk;

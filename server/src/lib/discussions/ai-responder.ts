@@ -48,6 +48,7 @@ import {
   type TokenUsage,
 } from "../ai/index.js";
 import { runChatToolTurn } from "../ai/tool-runtime/chat-turn.js";
+import { ANSWER_POLICY_SENTENCES } from "../ai/chat-system-prompt.js";
 import { recordUsage as recordProjectUsage } from "../finops/token-tracker.js";
 import { ledgerRequests } from "../finops/summed-requests.js";
 import { assertWithinBudget, BudgetExceededError } from "../finops/budget-enforcer.js";
@@ -152,6 +153,8 @@ export const DISCUSSION_SYSTEM_PROMPT = [
   "file:line each claim about the code comes from. Never invent file paths,",
   "packages, functions, configuration options or default values; if nothing you",
   "were given shows something, say that you could not verify it.",
+  // #2241 — the same answering policy as project chat: abstain, or ask.
+  ANSWER_POLICY_SENTENCES,
 ].join(" ");
 
 const EXCERPTS_LINE =
