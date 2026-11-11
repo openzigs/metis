@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { RetrievedChunk } from "@metis/shared";
 import {
   __resetSearchKnowledgeRegistration,
@@ -7,6 +7,12 @@ import {
 } from "./search-knowledge-tool.js";
 import { getToolRegistry } from "../ai/tool-registry.js";
 import type { KnowledgeService } from "./knowledge-service.js";
+
+// #2225 — the caller's role read is covered in tests/rag-acl-user-retrieval-2225.test.ts.
+vi.mock("./acl.js", async (original) => ({
+  ...(await original<typeof import("./acl.js")>()),
+  resolveAclActor: async (userId: string) => ({ userId, role: "reader" }),
+}));
 
 function hit(over: Partial<RetrievedChunk>): RetrievedChunk {
   return {

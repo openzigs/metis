@@ -658,11 +658,14 @@ export function discussionsRouter(): Router {
     // #739 — ground the reply in the thread's project, as chat does: its
     // auto-RAG excerpts, and its read-only tools (bounded; see grounding.ts).
     const provider = discussionProvider();
+    // #2225 — for the member who asked: a chunk whose ACL excludes them never
+    // grounds the reply they triggered.
     const retrieve = async (query: string): Promise<RetrievedContext> => {
       const capture: RagContextCapture = { contexts: [], sources: 0 };
       const block = await buildAutoRagContext(
         thread.projectId,
         [{ role: "user", content: query }],
+        actor.id,
         undefined,
         capture,
       );

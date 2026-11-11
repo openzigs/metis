@@ -246,6 +246,7 @@ import { getDocumentStorage } from "../src/lib/documents/storage.js";
 import { prisma } from "../src/lib/prisma.js";
 import { ConnectorError } from "../src/lib/connectors/types.js";
 import { __resetArchiveHooks } from "../src/lib/projects/project-service.js";
+import { getKnowledgeService } from "../src/lib/rag/knowledge-service.js";
 
 let app: ReturnType<typeof createApp>;
 let token: string;
@@ -670,6 +671,29 @@ describe("/api/projects/:id/retrieve", () => {
       .send({ query: "fox", k: 3 });
     expect(res.status).toBe(200);
     expect(Array.isArray(res.body.data.hits)).toBe(true);
+  });
+
+  // #2225 — the knowledge search enforces chunk ACLs only for an actor: the
+  // route hands it the caller, with the role read from durable state.
+  it("POST searches as the caller, so their chunk ACLs apply", async () => {
+    const id = await newProject("ret-acl");
+    const search = vi
+      .spyOn(getKnowledgeService(), "search")
+      .mockResolvedValue({ hits: [], mode: "hybrid" });
+    try {
+      const res = await request(app)
+        .post(`/api/projects/${id}/retrieve`)
+        .set("Authorization", `Bearer ${token}`)
+        .send({ query: "fox" });
+      expect(res.status).toBe(200);
+      expect(search).toHaveBeenCalledWith(
+        id,
+        "fox",
+        expect.objectContaining({ actor: { userId: "user_admin", role: "admin" } }),
+      );
+    } finally {
+      search.mockRestore();
+    }
   });
 
   it("POST 404s for unknown project", async () => {
