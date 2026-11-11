@@ -24,8 +24,9 @@ vi.mock("../lib/rag/knowledge-service.js", () => ({
 vi.mock("../lib/prisma.js", () => ({
   prisma: {
     project: { findUnique },
-    // #2225 — the requester's durable role read (`resolveAclActor`).
-    user: { findFirst: async () => null },
+    // #2225 — the requester's durable role read (`resolveAclActor`); #2248 —
+    // and its live-user check, so the requester is an active user.
+    user: { findFirst: async ({ where }: { where: { id: string } }) => ({ id: where.id }) },
     userRole: { findMany: async () => [] },
   },
 }));

@@ -81,8 +81,9 @@ vi.mock("../src/lib/logger.js", () => ({
 
 vi.mock("../src/lib/prisma.js", () => ({
   prisma: {
-    // #2225 — the search-knowledge tool reads its caller's durable role.
-    user: { findFirst: vi.fn(async () => null) },
+    // #2225 — the search-knowledge tool reads its caller's durable role; #2248
+    // — and checks they are live, so the caller is an active user.
+    user: { findFirst: vi.fn(async ({ where }: { where: { id: string } }) => ({ id: where.id })) },
     userRole: { findMany: vi.fn(async () => []) },
     document: {
       updateMany: vi.fn(

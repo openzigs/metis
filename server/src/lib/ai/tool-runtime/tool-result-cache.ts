@@ -56,6 +56,12 @@ export const CACHEABLE_TOOLS: ReadonlySet<string> = new Set([
   "search-knowledge",
 ]);
 
+/**
+ * #2248 — the cache scope of a shared-audience call. A NUL byte cannot occur in
+ * a user id, so no user's scope can equal it.
+ */
+const SHARED_AUDIENCE_SCOPE = "\u0000shared-audience";
+
 export const TOOL_RESULT_CACHE_DEFAULTS = {
   maxEntries: 500,
   maxBytes: 32 * 1024 * 1024,
@@ -249,8 +255,10 @@ export function withToolResultCache(
         projectId: ctx.projectId,
         versionKey: version.key,
         // The caller's access scope: per user, so no entry crosses users even
-        // if a read tool starts filtering on the caller.
-        scope: ctx.userId,
+        // if a read tool starts filtering on the caller. #2248 — a shared
+        // audience is a scope of its own: a user's own result (which may hold
+        // chunks restricted to them) never answers a shared reply's call.
+        scope: ctx.aclAudience === "shared" ? SHARED_AUDIENCE_SCOPE : ctx.userId,
       });
       const hit = cache.get(key);
       if (hit) {
