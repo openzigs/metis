@@ -17,7 +17,7 @@
  *     lifted, read exactly as the tools read them with no filter at all;
  *   - the tool-result cache never hands Alice's read to Bob.
  */
-import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
@@ -71,6 +71,15 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     let sqlite: MigratedSqlite;
     let db: PrismaClient;
     let clone: string;
+    let caseSensitive = false;
+    /** Extra searcher hits — a symbol whose row is gone (a stale index entry). */
+    let ghostHits: Array<{
+      symbolId: string;
+      filePath: string;
+      name: string;
+      kind: string;
+      score: number;
+    }> = [];
     let raw: { graph: AgentTool; symbols: AgentTool; slice: AgentTool };
     let tools: { graph: RuntimeTool; symbols: RuntimeTool; slice: RuntimeTool };
 
@@ -202,6 +211,11 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       );
       writeFileSync(path.join(clone, "src", "public.ts"), "export function computeFee() {}\n");
       symlinkSync("secret.ts", path.join(clone, "src", "alias.ts"));
+      // On a case-sensitive filesystem, a file whose name differs from the
+      // restricted one only by case is a different, unrestricted file.
+      caseSensitive = !existsSync(path.join(clone, "src", "SECRET.TS"));
+      if (caseSensitive)
+        writeFileSync(path.join(clone, "src", "Secret.ts"), "export const OPEN = 1;\n");
 
       raw = {
         graph: searchCodeGraphTool,
@@ -223,6 +237,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
                 kind: "function",
                 score: 0.8,
               },
+              ...ghostHits,
             ],
           },
           lineLookup: {
@@ -251,6 +266,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     }, MIGRATED_SQLITE_HOOK_TIMEOUT_MS);
 
     afterEach(async () => {
+      ghostHits = [];
       process.env.CHAT_TOOL_RESULT_CACHE_ENABLED = "0";
       __resetToolResultCacheForTests();
       await restrict([{ kind: "user", value: ALICE }]);
@@ -270,6 +286,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           "./src/secret.ts",
           "src/../src/secret.ts",
           "src/alias.ts",
+          // A case-insensitive filesystem reads this as src/secret.ts; on a
+          // case-sensitive one it does not exist. Refused either way.
+          "SRC/Secret.TS",
         ]) {
           const r = await run(tools.slice, { filePath }, ctx(BOB));
           expect(r, filePath).toEqual({
@@ -282,6 +301,12 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           text: "Error: File not found or not accessible: src/nope.ts",
           isError: true,
         });
+      });
+
+      it("still reads a different file whose name differs only by case (case-sensitive filesystems)", async (t) => {
+        if (!caseSensitive) t.skip();
+        const r = await run(tools.slice, { filePath: "src/Secret.ts" }, ctx(BOB));
+        expect(r.text).toContain("OPEN = 1");
       });
 
       it("gets no symbol hit from it", async () => {
@@ -371,6 +396,23 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           expect((await run(rt, args, ctx(BOB))).text, JSON.stringify(args)).toBe(want.content);
         }
       });
+    });
+
+    it("a symbol hit whose row is gone is dropped once anything is hidden, and kept otherwise", async () => {
+      ghostHits = [
+        {
+          symbolId: "s-gone",
+          filePath: "src/secret.ts",
+          name: "ghostFee",
+          kind: "function",
+          score: 0.7,
+        },
+      ];
+      // It cannot be placed in a repository, so a restricted caller does not see it...
+      expect((await run(tools.symbols, { query: "fee" }, ctx(BOB))).text).not.toContain("ghostFee");
+      // ...while with nothing restricted the tool answers as it always did.
+      await restrict([]);
+      expect((await run(tools.symbols, { query: "fee" }, ctx(BOB))).text).toContain("ghostFee");
     });
 
     it("the tool-result cache never hands the owner's read to a restricted user", async () => {

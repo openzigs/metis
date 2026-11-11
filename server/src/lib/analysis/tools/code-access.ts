@@ -47,9 +47,12 @@ export interface CodeAccessFilter {
    */
   hiddenPaths(repoConnectionId: string | null): string[];
   /**
-   * Whether `filePath` is hidden in `repoConnectionId`. Normalised and compared
-   * case-insensitively: a case-insensitive filesystem reads `SRC/A.ts` as
-   * `src/a.ts`, so a restriction must not be stepped around by changing case.
+   * Whether `filePath` is hidden in `repoConnectionId`. Normalised, then
+   * compared exactly, as the code graph is: on a case-sensitive clone
+   * `src/Config.ts` and `src/config.ts` are different files. A case variant
+   * read on a case-insensitive filesystem is caught by `read_file_slice`
+   * checking the path the read really resolves to, which carries the on-disk
+   * case.
    */
   isHidden(repoConnectionId: string | null, filePath: string): boolean;
 }
@@ -91,25 +94,20 @@ export function codeAccessFilterOf(
   hidden: ReadonlyArray<{ connectorId: string; path: string }>,
 ): CodeAccessFilter {
   if (hidden.length === 0) return UNRESTRICTED_CODE_ACCESS;
-  const exact = new Map<string, Set<string>>();
-  const folded = new Map<string, Set<string>>();
-  const add = (m: Map<string, Set<string>>, k: string, v: string) => {
-    let s = m.get(k);
-    if (!s) m.set(k, (s = new Set()));
-    s.add(v);
-  };
+  const byRepo = new Map<string, Set<string>>();
   for (const h of hidden) {
-    add(exact, h.connectorId, h.path);
-    add(folded, h.connectorId, h.path.toLowerCase());
+    let paths = byRepo.get(h.connectorId);
+    if (!paths) byRepo.set(h.connectorId, (paths = new Set()));
+    paths.add(h.path);
   }
-  const pick = (m: Map<string, Set<string>>, repo: string | null): Set<string> => {
-    if (repo !== null) return m.get(repo) ?? new Set();
-    return new Set([...m.values()].flatMap((s) => [...s]));
+  const pick = (repo: string | null): Set<string> => {
+    if (repo !== null) return byRepo.get(repo) ?? new Set();
+    return new Set([...byRepo.values()].flatMap((s) => [...s]));
   };
   return {
     unrestricted: false,
-    hiddenPaths: (repo) => [...pick(exact, repo)],
-    isHidden: (repo, filePath) => pick(folded, repo).has(normalizeRepoPath(filePath).toLowerCase()),
+    hiddenPaths: (repo) => [...pick(repo)],
+    isHidden: (repo, filePath) => pick(repo).has(normalizeRepoPath(filePath)),
   };
 }
 

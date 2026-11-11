@@ -84,9 +84,11 @@ describe("codeAccessFilterOf", () => {
     expect(f.isHidden(null, "src/b.ts")).toBe(true);
   });
 
-  it("is not stepped around by another spelling or case", () => {
-    const f = codeAccessFilterOf([{ connectorId: "rc1", path: "src/Secret.ts" }]);
-    expect(f.isHidden("rc1", "./SRC/secret.TS")).toBe(true);
+  it("matches another spelling of a path, and a different case as a different file", () => {
+    const f = codeAccessFilterOf([{ connectorId: "rc1", path: "src/Config.ts" }]);
+    expect(f.isHidden("rc1", "./src//Config.ts")).toBe(true);
+    // On a case-sensitive clone `src/config.ts` is another, unrestricted file.
+    expect(f.isHidden("rc1", "src/config.ts")).toBe(false);
   });
 });
 
