@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   MAX_QUESTIONS_PER_ROUND,
   citationFor,
+  holdsWord,
   selectQuestionsToAsk,
   type GeneratedQuestion,
 } from "./question-selection.js";
@@ -89,6 +90,28 @@ describe("selectQuestionsToAsk (#2235)", () => {
       `f${MAX_QUESTIONS_PER_ROUND + 1}`,
     ]);
     expect(selectQuestionsToAsk(all, { cap: 1 }).ask).toHaveLength(1);
+  });
+});
+
+describe("holdsWord (#2235)", () => {
+  it("matches a whole word, in any script, and not inside another word", () => {
+    expect(holdsWord("pages load fast.", "fast")).toBe(true);
+    expect(holdsWord("fast", "fast")).toBe(true);
+    expect(holdsWord("served at breakfast.", "fast")).toBe(false);
+    expect(holdsWord("fastest route", "fast")).toBe(false);
+    expect(holdsWord("breakfast, then fast", "fast")).toBe(true);
+    expect(holdsWord("schnellste schnell", "schnell")).toBe(true);
+    expect(holdsWord("éfast", "fast")).toBe(false);
+    expect(holdsWord("\u{1F600}fast", "fast")).toBe(true);
+    expect(holdsWord("\u{1D400}fast", "fast")).toBe(false);
+    expect(holdsWord("fast2", "fast")).toBe(false);
+    expect(holdsWord("anything", "")).toBe(false);
+  });
+
+  it("treats the term as text, not a pattern", () => {
+    expect(holdsWord("costs 5 (approx.) now", "(approx.)")).toBe(true);
+    expect(holdsWord("costs 5 xapproxy now", "(approx.)")).toBe(false);
+    expect(holdsWord("a".repeat(50_000) + "!", "a*a*a*b")).toBe(false);
   });
 });
 

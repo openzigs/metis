@@ -107,10 +107,23 @@ export function selectQuestionsToAsk(
 }
 
 /** Whole-word match: "fast" is not in "breakfast". */
-function holdsWord(text: string, term: string): boolean {
-  const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, "u").test(text);
+export function holdsWord(text: string, term: string): boolean {
+  // A plain search with boundary checks, not a RegExp built from the term
+  // (Semgrep: a pattern built from data risks ReDoS).
+  if (term.length === 0) return false;
+  for (let at = text.indexOf(term); at !== -1; at = text.indexOf(term, at + 1)) {
+    // Two code units either side cover a character outside the BMP.
+    const before = text.slice(Math.max(0, at - 2), at);
+    const after = text.slice(at + term.length, at + term.length + 2);
+    if (!ENDS_IN_WORD_CHAR.test(before) && !STARTS_WITH_WORD_CHAR.test(after)) return true;
+  }
+  return false;
 }
+
+/** Text that ends with a letter or digit, in any script. */
+const ENDS_IN_WORD_CHAR = /[\p{L}\p{N}]$/u;
+/** Text that begins with a letter or digit, in any script. */
+const STARTS_WITH_WORD_CHAR = /^[\p{L}\p{N}]/u;
 
 /**
  * The paragraph a question about `ambiguityField` cites: for a GtWR hit, the
