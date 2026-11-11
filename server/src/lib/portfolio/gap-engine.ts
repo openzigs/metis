@@ -37,12 +37,22 @@
  *   spend can pass it by at most the calls already running; the call cap is
  *   counted as each call starts, so it is never passed.
  * - **A gap needs a search for it** (#1657). A criterion is `gap-confirmed` only
- *   when the query actually sent carried it: the query is cut to 4,000
- *   characters, so a long requirement's later criteria may never be searched for.
+ *   when the query actually sent carried it. #2272 — criteria that do not fit
+ *   one query (4,000 characters) or one model call (`maxCriteria`) are checked
+ *   in groups ({@link criteriaGroups}), each searched and judged on its own, so
+ *   every criterion is searched for: a document's hundredth requirement as much
+ *   as its first.
+ * - **Nothing cut silently** (#2272). What the run did not check (a criterion
+ *   past {@link PORTFOLIO_MAX_REQUIREMENTS}, a repo the budget ran out before)
+ *   is listed in `notChecked`, which is stored with the assessment.
  */
 import { z } from "zod";
 import {
+  PORTFOLIO_ASSESSMENT_MAX_PRODUCTS,
   PORTFOLIO_ASSESSMENT_SCOPES,
+  PORTFOLIO_MAX_REQUIREMENTS,
+  PORTFOLIO_REQUIREMENT_MAX_CHARS,
+  PORTFOLIO_STATEMENT_MAX_CHARS,
   portfolioModelErrorText,
   portfolioNamedInProse,
   portfolioNeverAnalysedText,
@@ -54,6 +64,7 @@ import {
   type PortfolioAssessmentProductInput,
   type PortfolioAssessmentScope,
   type PortfolioCoverage,
+  type PortfolioNotChecked,
   type RequirementVerdict,
 } from "@metis/shared";
 import { prisma } from "../prisma.js";
@@ -101,13 +112,15 @@ import {
 const log = createChildLogger("portfolio-gap");
 
 /**
- * Ids an input may carry. A "product" scope names exactly one (#1622's "one product or
- * all products I can access", enforced again by the stored schema, #1647); the list is
- * ignored for "all-accessible". One, as the HTTP contract (#1657).
+ * Ids an input may carry. A "product" scope names the products chosen (#2272: one or
+ * several; exactly one before, #1622), enforced again by the stored schema (#1647); the
+ * list is ignored for "all-accessible". As many as the HTTP contract takes (#1657).
  */
-export const MAX_SCOPE_PRODUCTS = 1;
+export const MAX_SCOPE_PRODUCTS = PORTFOLIO_ASSESSMENT_MAX_PRODUCTS;
 /** Characters of the federated search query. */
-const MAX_QUERY_CHARS = 4_000;
+export const MAX_QUERY_CHARS = 4_000;
+/** #2272 — characters of the statement a grouped query opens with (its first line). */
+const GROUP_QUERY_HEAD_CHARS = 200;
 /** The prefix of a repository source document's filename: `connector:repo:<id>:src/<path>`. */
 const REPO_DOC_PREFIX = "connector:repo:";
 
@@ -115,18 +128,24 @@ const REPO_DOC_PREFIX = "connector:repo:";
 
 export const portfolioGapInputSchema = z
   .object({
-    statement: z.string().trim().min(1).max(8_000),
-    /** The requirement's acceptance criteria; decomposed from the statement when empty. */
-    criteria: z.array(z.string().trim().min(1).max(2_000)).max(50).default([]),
+    statement: z.string().trim().min(1).max(PORTFOLIO_STATEMENT_MAX_CHARS),
+    /**
+     * The requirement's acceptance criteria, or (#2272) a document's
+     * requirements, each checked; decomposed from the statement when empty.
+     */
+    criteria: z
+      .array(z.string().trim().min(1).max(PORTFOLIO_REQUIREMENT_MAX_CHARS))
+      .max(PORTFOLIO_MAX_REQUIREMENTS)
+      .default([]),
     sourceRequirementId: z.string().min(1).max(64).nullable().default(null),
     sourceProjectId: z.string().min(1).max(64).nullable().default(null),
     scope: z.enum(PORTFOLIO_ASSESSMENT_SCOPES),
-    /** The one product a "product" scope names; ignored for "all-accessible". */
+    /** The products a "product" scope names; ignored for "all-accessible". */
     productIds: z.array(z.string().min(1).max(64)).max(MAX_SCOPE_PRODUCTS).default([]),
   })
   .strict()
-  .refine((v) => v.scope !== "product" || v.productIds.length === 1, {
-    message: 'A "product" scope names exactly one product',
+  .refine((v) => v.scope !== "product" || v.productIds.length >= 1, {
+    message: 'A "product" scope names at least one product',
     path: ["productIds"],
   });
 export type PortfolioGapInput = z.input<typeof portfolioGapInputSchema>;
@@ -153,7 +172,10 @@ export interface PortfolioGapLimits {
    * sibling took them all. Off: one shared search per product.
    */
   perRepoSearch: boolean;
-  /** Criteria a statement is split into, at most. */
+  /**
+   * Criteria a statement is asked to be split into, at most; and (#2272) the
+   * criteria one repo verdict call judges at once ({@link criteriaGroups}).
+   */
   maxCriteria: number;
   /** Model calls the whole run may make (#1657). */
   maxModelCalls: number;
@@ -238,6 +260,12 @@ export interface PortfolioGapResult {
    * (`scopeOfChange`): kept in the verdict, and named after it.
    */
   neverAnalysed?: string[];
+  /**
+   * #2272 — what the run did not check: criteria the model split the statement
+   * into past {@link PORTFOLIO_MAX_REQUIREMENTS}, and criteria some repos were
+   * not checked for because the budget ran out.
+   */
+  notChecked: PortfolioNotChecked[];
 }
 
 export interface PortfolioGapDeps {
@@ -425,26 +453,85 @@ function citationFromHit(hit: FederatedHit, repoConnectionId: string): CodeCitat
 
 // ─── Engine ─────────────────────────────────────────────────────────────────
 
+/**
+ * #2272 — criteria searched for and judged together: one federated search per
+ * product and one model call per repo. `start` is the index of its first
+ * criterion in the run's criteria.
+ */
+export interface CriteriaGroup {
+  start: number;
+  criteria: string[];
+  query: string;
+  /** Per criterion of the group, whether its query searched for it (#1657). */
+  searched: boolean[];
+}
+
+/**
+ * #2272 — the run's criteria in groups. A statement and criteria that fit one
+ * query and one call are one group, its query the statement and every
+ * criterion, as before. Otherwise each group holds at most `perCall` criteria
+ * and its query is the statement's first line and the group's criteria whole,
+ * within {@link MAX_QUERY_CHARS}: every criterion is searched for, where one
+ * query cut to that length left a long requirement's later criteria unsearched
+ * and so never confirmable as a gap (#1657).
+ */
+export function criteriaGroups(
+  statement: string,
+  criteria: readonly string[],
+  perCall: number,
+): CriteriaGroup[] {
+  const group = (start: number, list: string[], query: string): CriteriaGroup => ({
+    start,
+    criteria: list,
+    query,
+    searched: list.map((c) => querySearchedFor(query, c)),
+  });
+  const whole = [statement, ...criteria].join("\n");
+  const size = Math.max(1, perCall);
+  if (criteria.length <= size && whole.length <= MAX_QUERY_CHARS) {
+    return [group(0, [...criteria], whole)];
+  }
+  const head = statement.split("\n", 1)[0].trim().slice(0, GROUP_QUERY_HEAD_CHARS);
+  const queryOf = (list: readonly string[]) =>
+    [head, ...list].filter(Boolean).join("\n").slice(0, MAX_QUERY_CHARS);
+  const out: CriteriaGroup[] = [];
+  let current: string[] = [];
+  let start = 0;
+  criteria.forEach((c, i) => {
+    const longer = [head, ...current, c].join("\n").length > MAX_QUERY_CHARS;
+    if (current.length > 0 && (current.length >= size || longer)) {
+      out.push(group(start, current, queryOf(current)));
+      current = [];
+      start = i;
+    }
+    current.push(c);
+  });
+  if (current.length > 0) out.push(group(start, current, queryOf(current)));
+  return out;
+}
+
 interface RunContext {
   user: AuthPayload;
   statement: string;
   criteria: string[];
-  query: string;
+  /** #2272 — the criteria in the groups each search and repo call takes. */
+  groups: CriteriaGroup[];
   provider: AIProvider;
   search: (opts: FederatedSearchOptions) => Promise<FederatedSearchResult>;
   limits: PortfolioGapLimits;
   costOf: (response: ChatResponse) => number;
   budget: Budget;
-  /** Per criterion, whether the query sent searched for it (#1657). */
-  searched: boolean[];
   signal?: AbortSignal;
   /** #1726 — the OUTPUT cap of each model call (`resolvePortfolioMaxOutputTokens`). */
   maxTokens: number;
   /**
-   * #1726 — each repo's model verdict, by connection id: a repo in several
-   * products is assessed once per run, and every product holding it reuses it.
+   * #1726 — each repo's model verdict, by connection id and (#2272) criteria
+   * group: a repo in several products is assessed once per run, and every
+   * product holding it reuses it.
    */
   repoVerdicts: Map<string, Promise<PortfolioRepoResult>>;
+  /** #2272 — per criteria group, the repos not checked for it because the budget ran out. */
+  budgetSkipped: Map<number, Set<string>>;
 }
 
 function notVerified(
@@ -470,14 +557,24 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
   if (signal?.aborted) throw signal.reason ?? new Error("Portfolio gap analysis aborted");
 }
 
+/**
+ * The criteria to judge. #2272 — every one the model split the statement into,
+ * up to {@link PORTFOLIO_MAX_REQUIREMENTS} (it is asked for `maxCriteria`; more
+ * are checked in groups, not dropped); any past that are returned as
+ * `overflow`, listed not checked.
+ */
 async function decompose(
-  ctx: Omit<RunContext, "criteria" | "query" | "searched" | "repoVerdicts">,
+  ctx: Omit<RunContext, "criteria" | "groups" | "repoVerdicts" | "budgetSkipped">,
   given: string[],
-): Promise<string[]> {
+): Promise<{ criteria: string[]; overflow: string[] }> {
+  const capped = (all: string[]) => ({
+    criteria: all.slice(0, PORTFOLIO_MAX_REQUIREMENTS),
+    overflow: all.slice(PORTFOLIO_MAX_REQUIREMENTS),
+  });
   // Every supplied criterion is judged (the schema bounds the count): dropping the tail would let
   // a product read as covering a requirement whose remaining criteria were never checked.
-  if (given.length > 0) return given;
-  if (!ctx.budget.allows(null)) return [ctx.statement];
+  if (given.length > 0) return capped(given);
+  if (!ctx.budget.allows(null)) return capped([ctx.statement]);
   try {
     ctx.budget.startCall();
     const { parsed } = await callJsonLlmRetryingCutOff(
@@ -491,18 +588,20 @@ async function decompose(
       },
       () => retryAllowed(ctx.budget, null),
     );
-    return parseDecomposition(parsed, ctx.limits.maxCriteria) ?? [ctx.statement];
+    return capped(parseDecomposition(parsed, Number.POSITIVE_INFINITY) ?? [ctx.statement]);
   } catch (err) {
     throwIfAborted(ctx.signal);
     log.warn("Criteria decomposition failed; assessing the statement whole", {
       error: err instanceof Error ? err.message : String(err),
     });
-    return [ctx.statement];
+    return capped([ctx.statement]);
   }
 }
 
+/** One repo's verdict on one criteria group's criteria (#2272). */
 async function evaluateRepo(
   ctx: RunContext,
+  group: CriteriaGroup,
   productId: string,
   repo: RepoTarget,
   hits: FederatedHit[],
@@ -517,7 +616,7 @@ async function evaluateRepo(
         systemPrompt: REPO_VERDICT_SYSTEM_PROMPT,
         userPrompt: buildRepoVerdictPrompt({
           statement: ctx.statement,
-          criteria: ctx.criteria,
+          criteria: group.criteria,
           repoLabel: repo.label,
           hits: hits.map((h) => ({ path: h.path!, text: h.text })),
         }),
@@ -531,7 +630,7 @@ async function evaluateRepo(
       },
       () => retryAllowed(ctx.budget, productId),
     );
-    claims = parseRepoVerdict(parsed, ctx.criteria.length, hits.length);
+    claims = parseRepoVerdict(parsed, group.criteria.length, hits.length);
   } catch (err) {
     throwIfAborted(ctx.signal);
     log.warn("Repo verdict call failed", {
@@ -540,7 +639,7 @@ async function evaluateRepo(
       error: err instanceof Error ? err.message : String(err),
     });
   }
-  if (!claims) return notVerified(productId, repo, ctx.criteria.length, "model-error", cost);
+  if (!claims) return notVerified(productId, repo, group.criteria.length, "model-error", cost);
 
   const citations = new Map<string, CodeCitation>();
   const criteria = claims.map((claim, i): FindingVerdict => {
@@ -553,8 +652,8 @@ async function evaluateRepo(
       gateFindingVerdict({
         modelVerdict: claim.verdict,
         groundedCitations: cited,
-        finding: { title: ctx.criteria[i], body: claim.reason },
-        absenceConfirmable: ctx.searched[i] === true,
+        finding: { title: group.criteria[i], body: claim.reason },
+        absenceConfirmable: group.searched[i] === true,
         retrievalHealthy: true,
       }) ?? "could-not-verify";
     if (gated === "implemented") for (const c of cited) citations.set(c.filePath, c);
@@ -598,6 +697,7 @@ function fileHits(
 /** One search across all of a product's projects, split by repo afterwards. */
 async function retrieveShared(
   ctx: RunContext,
+  group: CriteriaGroup,
   productId: string,
   repos: readonly RepoTarget[],
 ): Promise<Retrieval> {
@@ -606,7 +706,7 @@ async function retrieveShared(
     const result = await ctx.search({
       userId: ctx.user.userId,
       projectIds: [...new Set(repos.map((r) => r.projectId))],
-      query: ctx.query,
+      query: group.query,
       k: ctx.limits.hitsPerProduct,
       // #2238 — every project's evidence decides its repos' coverage, so none
       // is left out for being less relevant than another: the rank-fusion
@@ -655,6 +755,7 @@ export function perRepoHitQuota(
  */
 async function retrievePerRepo(
   ctx: RunContext,
+  group: CriteriaGroup,
   productId: string,
   repos: readonly RepoTarget[],
 ): Promise<Retrieval> {
@@ -672,7 +773,7 @@ async function retrievePerRepo(
       result = await ctx.search({
         userId: ctx.user.userId,
         projectIds: [projectId],
-        query: ctx.query,
+        query: group.query,
         k: quota * held * PER_REPO_OVERFETCH,
       });
     } catch (err) {
@@ -703,6 +804,66 @@ function restrictedProduct(productId: string, criteriaCount: number): PortfolioP
   };
 }
 
+/**
+ * #2272 — one repo's verdicts on each criteria group, as one result over every
+ * criterion: the groups' criteria in order, their citations once each, their
+ * cost summed. A group the model judged leaves no reason; the first group's
+ * reason it could not be verified is kept otherwise, a failed model call before
+ * any other (it is named to the reader, #1726). One group is returned as it is.
+ */
+export function mergeRepoGroups(parts: readonly PortfolioRepoResult[]): PortfolioRepoResult {
+  if (parts.length === 1) return parts[0];
+  const criteria = parts.flatMap((p) => p.criteria);
+  const citations = new Map<string, CodeCitation>();
+  for (const p of parts) for (const c of p.citations) citations.set(c.filePath, c);
+  const reasons = parts.map((p) => p.reason).filter((r): r is RepoNotVerifiedReason => r !== null);
+  return {
+    productId: parts[0].productId,
+    repoConnectionId: parts[0].repoConnectionId,
+    label: parts[0].label,
+    verdict: rollUpCriterionVerdicts(criteria),
+    criteria,
+    citations: [...citations.values()],
+    reason: reasons.includes("model-error") ? "model-error" : (reasons[0] ?? null),
+    costUsd: parts.reduce((sum, p) => sum + p.costUsd, 0),
+  };
+}
+
+/** One repo's verdict on one criteria group, from the retrieval that group's query made. */
+async function evaluateRepoGroup(
+  ctx: RunContext,
+  group: CriteriaGroup,
+  groupIndex: number,
+  productId: string,
+  repo: RepoTarget,
+  retrieval: Retrieval,
+): Promise<PortfolioRepoResult> {
+  const n = group.criteria.length;
+  const key = `${repo.repoConnectionId}\u0000${groupIndex}`;
+  const hits = retrieval.hitsByRepo.get(repo.repoConnectionId) ?? [];
+  if (ctx.repoVerdicts.has(key)) {
+    // #1726 — assessed already for another product in this run: reused (checked before this
+    // product's own search result, so the same repo does not read "no evidence" here and a
+    // verdict there), and its cost is not counted twice.
+    const assessed = await ctx.repoVerdicts.get(key)!;
+    return { ...assessed, productId, costUsd: 0 };
+  }
+  if (!retrieval.searched.has(repo.projectId)) {
+    return notVerified(productId, repo, n, "retrieval-failed");
+  }
+  if (hits.length === 0) return notVerified(productId, repo, n, "no-evidence-retrieved");
+  if (!ctx.budget.allows(productId)) {
+    // #2272 — listed not checked: this repo was never judged on these criteria.
+    const skipped = ctx.budgetSkipped.get(groupIndex) ?? new Set<string>();
+    skipped.add(repo.repoConnectionId);
+    ctx.budgetSkipped.set(groupIndex, skipped);
+    return notVerified(productId, repo, n, "budget");
+  }
+  const verdict = evaluateRepo(ctx, group, productId, repo, hits);
+  ctx.repoVerdicts.set(key, verdict);
+  return verdict;
+}
+
 async function evaluateProduct(
   ctx: RunContext,
   product: ScopedProduct,
@@ -711,33 +872,21 @@ async function evaluateProduct(
   const n = ctx.criteria.length;
   if (!product.readable) return restrictedProduct(product.id, n);
 
-  const repos: PortfolioRepoResult[] = [];
+  // #2272 — per repo, its verdict on each criteria group, in group order.
+  const parts: PortfolioRepoResult[][] = targets.repos.map(() => []);
   if (targets.repos.length > 0) {
-    const { hitsByRepo, searched } = ctx.limits.perRepoSearch
-      ? await retrievePerRepo(ctx, product.id, targets.repos)
-      : await retrieveShared(ctx, product.id, targets.repos);
-    for (const repo of targets.repos) {
+    for (const [gi, group] of ctx.groups.entries()) {
       throwIfAborted(ctx.signal);
-      const hits = hitsByRepo.get(repo.repoConnectionId) ?? [];
-      if (ctx.repoVerdicts.has(repo.repoConnectionId)) {
-        // #1726 — assessed already for another product in this run: reused (checked before this
-        // product's own search result, so the same repo does not read "no evidence" here and a
-        // verdict there), and its cost is not counted twice.
-        const assessed = await ctx.repoVerdicts.get(repo.repoConnectionId)!;
-        repos.push({ ...assessed, productId: product.id, costUsd: 0 });
-      } else if (!searched.has(repo.projectId)) {
-        repos.push(notVerified(product.id, repo, n, "retrieval-failed"));
-      } else if (hits.length === 0) {
-        repos.push(notVerified(product.id, repo, n, "no-evidence-retrieved"));
-      } else if (!ctx.budget.allows(product.id)) {
-        repos.push(notVerified(product.id, repo, n, "budget"));
-      } else {
-        const verdict = evaluateRepo(ctx, product.id, repo, hits);
-        ctx.repoVerdicts.set(repo.repoConnectionId, verdict);
-        repos.push(await verdict);
+      const retrieval = ctx.limits.perRepoSearch
+        ? await retrievePerRepo(ctx, group, product.id, targets.repos)
+        : await retrieveShared(ctx, group, product.id, targets.repos);
+      for (const [k, repo] of targets.repos.entries()) {
+        throwIfAborted(ctx.signal);
+        parts[k].push(await evaluateRepoGroup(ctx, group, gi, product.id, repo, retrieval));
       }
     }
   }
+  const repos = parts.map(mergeRepoGroups);
 
   const { coverage, reason } = rollUpProductCoverage(repos, n, targets.hidden);
   return {
@@ -980,18 +1129,15 @@ async function evaluateParsed(
 
   const scoped = await resolveScope(user, input.scope, input.productIds);
   // Nothing readable to check: no model call is worth making.
-  const criteria = scoped.some((p) => p.readable)
+  const { criteria, overflow } = scoped.some((p) => p.readable)
     ? await decompose(base, input.criteria)
-    : input.criteria.length > 0
-      ? input.criteria
-      : [input.statement];
-  const query = [input.statement, ...criteria].join("\n").slice(0, MAX_QUERY_CHARS);
+    : { criteria: input.criteria.length > 0 ? input.criteria : [input.statement], overflow: [] };
   const ctx: RunContext = {
     ...base,
     criteria,
-    query,
-    searched: criteria.map((c) => querySearchedFor(query, c)),
+    groups: criteriaGroups(input.statement, criteria, limits.maxCriteria),
     repoVerdicts: new Map(),
+    budgetSkipped: new Map(),
   };
   const repos = await loadRepos(
     user,
@@ -1014,7 +1160,33 @@ async function evaluateParsed(
     verdict,
     summary: portfolioSummary(verdict, products),
     costUsd: ctx.budget.total,
+    notChecked: notCheckedOf(ctx, overflow),
   };
+}
+
+/**
+ * #2272 — what the run did not check: each criterion past the cap, and each
+ * criterion some repos were not judged on because the budget ran out (with how
+ * many repos).
+ */
+function notCheckedOf(ctx: RunContext, overflow: readonly string[]): PortfolioNotChecked[] {
+  const out: PortfolioNotChecked[] = [];
+  for (const [gi, group] of ctx.groups.entries()) {
+    const skipped = ctx.budgetSkipped.get(gi)?.size ?? 0;
+    if (skipped === 0) continue;
+    for (const c of group.criteria) {
+      out.push({ text: clipText(c), reason: "budget", count: skipped });
+    }
+  }
+  for (const c of overflow) out.push({ text: clipText(c), reason: "over-limit", count: null });
+  return out;
+}
+
+/** A not-checked entry's text: whole when it fits, else its opening and an ellipsis. */
+export function clipText(text: string): string {
+  return text.length <= PORTFOLIO_REQUIREMENT_MAX_CHARS
+    ? text
+    : `${text.slice(0, PORTFOLIO_REQUIREMENT_MAX_CHARS - 1)}…`;
 }
 
 /**
@@ -1102,6 +1274,8 @@ export function toAssessmentInput(
     costUsd: result.costUsd,
     createdById: meta.createdById,
     products: result.products.map((p) => toProductRecord(p, result.criteria)),
+    // #2272 — what the run did not check, stored with what it did.
+    notChecked: result.notChecked,
     repos: result.products.flatMap((p) =>
       p.repos.map((r) => ({
         productId: p.productId,

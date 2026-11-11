@@ -16,6 +16,7 @@ import {
   PORTFOLIO_IMPACT_KINDS,
   REQUIREMENT_VERDICTS,
   portfolioAssessmentInputSchema,
+  portfolioNotCheckedSchema,
   portfolioReportSchema,
   type PortfolioAssessment,
   type PortfolioAssessmentInput,
@@ -97,6 +98,7 @@ export async function createPortfolioAssessment(raw: PortfolioAssessmentInput): 
         statement: input.statement,
         sourceRequirementId: input.sourceRequirementId,
         sourceProjectId: input.sourceProjectId,
+        sourceDocumentId: input.sourceDocumentId,
         scope: input.scope,
         productIds: JSON.stringify(input.productIds),
         status: input.status,
@@ -104,6 +106,7 @@ export async function createPortfolioAssessment(raw: PortfolioAssessmentInput): 
         summary: input.summary,
         report: JSON.stringify(input.report ?? {}),
         hostProductId: input.hostProductId,
+        notChecked: JSON.stringify(input.notChecked),
         costUsd: input.costUsd,
         createdById: input.createdById,
       },
@@ -145,6 +148,8 @@ export async function completePortfolioAssessment(
           portfolioVerdict: input.portfolioVerdict,
           summary: input.summary,
           report: JSON.stringify(input.report ?? {}),
+          // #2272 — what the run did not check, written with what it did.
+          notChecked: JSON.stringify(input.notChecked),
           costUsd: input.costUsd,
         },
       }),
@@ -295,6 +300,7 @@ export async function getPortfolioAssessment(id: string): Promise<PortfolioAsses
     statement: row.statement,
     sourceRequirementId: row.sourceRequirementId,
     sourceProjectId: row.sourceProjectId,
+    sourceDocumentId: row.sourceDocumentId,
     scope: oneOf(PORTFOLIO_ASSESSMENT_SCOPES, row.scope, "product"),
     productIds: parseJson<string[]>(row.productIds, []),
     status: oneOf(PORTFOLIO_ASSESSMENT_STATUSES, row.status, "failed"),
@@ -303,6 +309,11 @@ export async function getPortfolioAssessment(id: string): Promise<PortfolioAsses
     // `{}` (no report yet, or a row from before #1624) and anything unreadable read as none.
     report: portfolioReportSchema.safeParse(parseJson<unknown>(row.report, null)).data ?? null,
     hostProductId: row.hostProductId,
+    // #2272 — an entry that does not read as one is dropped, never shown in part.
+    notChecked: parseJson<unknown[]>(row.notChecked, []).flatMap((n) => {
+      const parsed = portfolioNotCheckedSchema.safeParse(n);
+      return parsed.success ? [parsed.data] : [];
+    }),
     costUsd: row.costUsd,
     createdById: row.createdById,
     createdAt: row.createdAt.toISOString(),
