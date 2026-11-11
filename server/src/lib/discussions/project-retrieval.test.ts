@@ -9,6 +9,7 @@ const rag = vi.hoisted(() => ({
     async (
       _projectId: string | null,
       _messages: Array<{ role: string; content: string }>,
+      _requesterId: string,
       _deps: unknown,
       capture?: { contexts: string[]; sources: number },
     ) => {
@@ -23,11 +24,12 @@ const { projectRetriever } = await import("./project-retrieval.js");
 
 describe("projectRetriever", () => {
   it("runs chat's auto-RAG for the given project with the question as the user turn", async () => {
-    const out = await projectRetriever("proj-1")("where is the scheduler?");
+    const out = await projectRetriever("proj-1", "u-7")("where is the scheduler?");
 
     expect(rag.buildAutoRagContext).toHaveBeenCalledWith(
       "proj-1",
       [{ role: "user", content: "where is the scheduler?" }],
+      "u-7",
       undefined,
       expect.objectContaining({ sources: 2 }),
     );

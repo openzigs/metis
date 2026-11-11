@@ -292,7 +292,11 @@ async function main(): Promise<void> {
         { mode: tools.skillMode, catalog: tools.skillCatalog },
       );
       const prefix = [...library.stable, ...library.volatile];
-      const rag = await buildAutoRagContext(repo!.projectId, [{ role: "user", content: q.text }]);
+      const rag = await buildAutoRagContext(
+        repo!.projectId,
+        [{ role: "user", content: q.text }],
+        user.id,
+      );
       const turn = await prepareTurn({
         session: { id: row.id, snapshot: null },
         userText: q.text,

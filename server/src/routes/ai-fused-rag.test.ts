@@ -22,7 +22,12 @@ vi.mock("../lib/rag/knowledge-service.js", () => ({
   getKnowledgeService: () => ({ search }),
 }));
 vi.mock("../lib/prisma.js", () => ({
-  prisma: { project: { findUnique } },
+  prisma: {
+    project: { findUnique },
+    // #2225 — the requester's durable role read (`resolveAclActor`).
+    user: { findFirst: async () => null },
+    userRole: { findMany: async () => [] },
+  },
 }));
 
 import type { ChatMessage } from "../lib/ai/types.js";
@@ -92,7 +97,7 @@ describe("buildAutoRagContext — flag OFF (byte-identical, no code-graph query)
       { s1: { filePath: "src/main/java/Sym.java", startLine: 1, endLine: 9 } },
     );
 
-    const out = await buildAutoRagContext("p1", [userTurn], deps);
+    const out = await buildAutoRagContext("p1", [userTurn], "u1", deps);
 
     expect(out).toContain("## Retrieved Knowledge (project-scoped RAG)");
     expect(out).not.toContain("## Retrieved Code Symbols");
@@ -108,8 +113,8 @@ describe("buildAutoRagContext — flag OFF (byte-identical, no code-graph query)
     );
     const withoutHits = fusedDeps([], {});
 
-    const a = await buildAutoRagContext("p1", [userTurn], withHits);
-    const b = await buildAutoRagContext("p1", [userTurn], withoutHits);
+    const a = await buildAutoRagContext("p1", [userTurn], "u1", withHits);
+    const b = await buildAutoRagContext("p1", [userTurn], "u1", withoutHits);
     expect(a).toBe(b);
   });
 });
@@ -134,7 +139,7 @@ describe("buildAutoRagContext — flag ON (fused merge)", () => {
       },
     );
 
-    const out = await buildAutoRagContext("p1", [userTurn], deps);
+    const out = await buildAutoRagContext("p1", [userTurn], "u1", deps);
 
     expect(out).toContain("## Retrieved Knowledge (project-scoped RAG)");
     expect(out).toContain("## Retrieved Code Symbols (project-scoped code graph)");
@@ -155,7 +160,7 @@ describe("buildAutoRagContext — flag ON (fused merge)", () => {
       { s1: { filePath: "main/java/Doc.java", startLine: 1, endLine: 9 } },
     );
 
-    const out = await buildAutoRagContext("p1", [userTurn], deps);
+    const out = await buildAutoRagContext("p1", [userTurn], "u1", deps);
 
     expect(out).toContain("## Retrieved Code Symbols (project-scoped code graph)");
     expect(out).toContain("main/java/Doc.java:1-9");
@@ -167,7 +172,7 @@ describe("buildAutoRagContext — flag ON (fused merge)", () => {
       [{ symbolId: "s2", filePath: "y", name: "Validator", kind: "class", score: 1 }],
       { s2: { filePath: "src/Validator.java", startLine: 20, endLine: 55 } },
     );
-    const out = await buildAutoRagContext("p1", [userTurn], deps);
+    const out = await buildAutoRagContext("p1", [userTurn], "u1", deps);
     expect(out).toContain("## Retrieved Code Symbols");
     expect(out).toContain("src/Validator.java:20-55");
     expect(out).not.toContain("## Retrieved Knowledge (project-scoped RAG)");
@@ -195,7 +200,7 @@ describe("caching placement — fused block lands in the volatile tail (#700/#69
     });
     const messages: ChatMessage[] = [...librarySystem.stable, ...librarySystem.volatile, userTurn];
 
-    const ragContext = await buildAutoRagContext("p1", messages, deps);
+    const ragContext = await buildAutoRagContext("p1", messages, "u1", deps);
     expect(ragContext).toContain("## Retrieved Code Symbols");
     // Route splices the RAG+fused system message just before the last user turn.
     messages.splice(messages.length - 1, 0, { role: "system", content: ragContext });
@@ -268,7 +273,7 @@ describe("buildAutoRagContext — #1321 context capture", () => {
       hits: [docHit, { ...docHit, chunkId: "c2", filename: "B.java", position: 1, score: 0.8 }],
     });
     const capture = { contexts: [] as string[], sources: 0 };
-    const out = await buildAutoRagContext("p1", [userTurn], fusedDeps([], {}), capture);
+    const out = await buildAutoRagContext("p1", [userTurn], "u1", fusedDeps([], {}), capture);
 
     expect(capture.contexts).toHaveLength(2);
     expect(capture.sources).toBe(2);
@@ -285,7 +290,7 @@ describe("buildAutoRagContext — #1321 context capture", () => {
     const ruled = { ...docHit, text: "before the rule\n\n---\n\nafter the rule" };
     search.mockResolvedValue({ hits: [ruled] });
     const capture = { contexts: [] as string[], sources: 0 };
-    await buildAutoRagContext("p1", [userTurn], fusedDeps([], {}), capture);
+    await buildAutoRagContext("p1", [userTurn], "u1", fusedDeps([], {}), capture);
 
     expect(capture.contexts).toHaveLength(1);
     expect(capture.contexts[0]).toContain("before the rule");
@@ -301,7 +306,7 @@ describe("buildAutoRagContext — #1321 context capture", () => {
       { s2: { filePath: "src/main/java/Validator.java", startLine: 3, endLine: 40 } },
     );
     const capture = { contexts: [] as string[], sources: 0 };
-    await buildAutoRagContext("p1", [userTurn], deps, capture);
+    await buildAutoRagContext("p1", [userTurn], "u1", deps, capture);
 
     expect(capture.contexts).toHaveLength(2);
     expect(capture.contexts[0]).toContain("public class Doc {}");
@@ -326,7 +331,7 @@ describe("buildAutoRagContext — #1321 context capture", () => {
       },
     );
     const capture = { contexts: [] as string[], sources: 0 };
-    await buildAutoRagContext("p1", [userTurn], deps, capture);
+    await buildAutoRagContext("p1", [userTurn], "u1", deps, capture);
 
     // One doc chunk + one fused block holding three symbols = four sources.
     expect(capture.contexts).toHaveLength(2);
@@ -337,7 +342,7 @@ describe("buildAutoRagContext — #1321 context capture", () => {
     __resetConfigSingleton();
     search.mockRejectedValue(new Error("lancedb down"));
     const capture = { contexts: ["stale"], sources: 3 };
-    const out = await buildAutoRagContext("p1", [userTurn], fusedDeps([], {}), capture);
+    const out = await buildAutoRagContext("p1", [userTurn], "u1", fusedDeps([], {}), capture);
 
     expect(out).toBe("");
     expect(capture.contexts).toEqual([]);
@@ -348,7 +353,7 @@ describe("buildAutoRagContext — #1321 context capture", () => {
     __resetConfigSingleton();
     search.mockResolvedValue({ hits: [] });
     const capture = { contexts: [] as string[], sources: 0 };
-    expect(await buildAutoRagContext("p1", [userTurn], fusedDeps([], {}), capture)).toBe("");
+    expect(await buildAutoRagContext("p1", [userTurn], "u1", fusedDeps([], {}), capture)).toBe("");
     expect(capture.contexts).toEqual([]);
   });
 });
@@ -363,7 +368,7 @@ describe("buildAutoRagContext — derived label for generated documents (#199)",
 
   it("labels a generated-document excerpt as derived, with degraded status and module scope", async () => {
     search.mockResolvedValue({ hits: [genHit({ status: "degraded", scope: "module" })] });
-    const out = await buildAutoRagContext("p1", [userTurn], fusedDeps([], {}));
+    const out = await buildAutoRagContext("p1", [userTurn], "u1", fusedDeps([], {}));
     expect(out).toContain("[1] generated-doc-abc.md#0 [DERIVED: generated documentation");
     expect(out).toContain("status=degraded");
     expect(out).toContain("scope=module");
@@ -371,7 +376,7 @@ describe("buildAutoRagContext — derived label for generated documents (#199)",
 
   it("omits status and scope for a ready, full-scope generated document", async () => {
     search.mockResolvedValue({ hits: [genHit({ status: "ready", scope: "full" })] });
-    const out = await buildAutoRagContext("p1", [userTurn], fusedDeps([], {}));
+    const out = await buildAutoRagContext("p1", [userTurn], "u1", fusedDeps([], {}));
     expect(out).toContain("DERIVED");
     expect(out).not.toContain("status=");
     expect(out).not.toContain("scope=");
@@ -379,13 +384,13 @@ describe("buildAutoRagContext — derived label for generated documents (#199)",
 
   it("leaves a primary excerpt unlabelled", async () => {
     search.mockResolvedValue({ hits: [docHit] });
-    const out = await buildAutoRagContext("p1", [userTurn], fusedDeps([], {}));
+    const out = await buildAutoRagContext("p1", [userTurn], "u1", fusedDeps([], {}));
     expect(out).not.toContain("DERIVED:");
   });
 
   it("never calls generated-document excerpts authoritative", async () => {
     search.mockResolvedValue({ hits: [genHit({})] });
-    const out = await buildAutoRagContext("p1", [userTurn], fusedDeps([], {}));
+    const out = await buildAutoRagContext("p1", [userTurn], "u1", fusedDeps([], {}));
     expect(out).not.toContain("authoritative");
     expect(out).toContain("not a primary source");
   });
@@ -408,7 +413,7 @@ describe("buildAutoRagContext — hit naming and scores (#717)", () => {
         },
       ],
     });
-    const out = await buildAutoRagContext("p1", [userTurn], fusedDeps([], {}));
+    const out = await buildAutoRagContext("p1", [userTurn], "u1", fusedDeps([], {}));
     expect(out).toContain("[1] internal/model/feed.go#0 (score=0.500, keyword match)");
     expect(out).not.toContain("connector:repo:cid1:src/internal");
   });

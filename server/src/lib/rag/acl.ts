@@ -32,6 +32,7 @@
 import { aclSubjectSchema, type AclSubject } from "@metis/shared";
 import { prisma } from "../prisma.js";
 import { createChildLogger } from "../logger.js";
+import { resolveDurableRole } from "../auth/durable-roles.js";
 
 const log = createChildLogger("rag-acl");
 
@@ -45,6 +46,17 @@ export interface AclActor {
   role: string;
   /** Optional group membership (Phase 11 user-mgmt or future SSO). */
   groups?: string[];
+}
+
+/**
+ * #2225 — the ACL actor for a retrieval a user started, read from durable state
+ * (the same role `requireAuth` re-reads for every request), for a caller that
+ * holds only the requester's id: the chat `search-knowledge` tool, the Teams
+ * `@AI` reply, federated search. A lookup failure rejects; the caller must
+ * fail closed (retrieve nothing), never search without an actor.
+ */
+export async function resolveAclActor(userId: string): Promise<AclActor> {
+  return { userId, role: await resolveDurableRole(userId) };
 }
 
 /** Parse a JSON-encoded ACL string from Prisma into a normalized list. */
