@@ -1,0 +1,320 @@
+/**
+ * Issue #2230 — Requirements Analysis's document step through the document
+ * reader, driven through the REAL pipeline (`runPipeline`) with a fake
+ * provider. What is asserted is what a later step reads back: the document
+ * agent's persisted output, read by `extractRequirementsFromDocAgent` the way
+ * the code agent's requirement set is built, and the finalized capability the
+ * results page renders.
+ */
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { AnalysisCapability } from "@metis/shared";
+import { __resetConfigSingleton } from "../config/config-service.js";
+import type { AffectedCodeDeps } from "./affected-code-context.js";
+import type { CodeGraphDataSource } from "../code-graph/query-service.js";
+import type { ReaderDocumentLoader } from "./document-reader-agent.js";
+
+const ANALYSIS_ID = "an_2230";
+const PROJECT_ID = "pr_2230";
+
+/** What the service layer was asked to persist, by agent. */
+const persisted = {
+  capability: [] as AnalysisCapability[],
+  outputs: new Map<string, unknown>(),
+};
+
+vi.mock("../prisma.js", () => ({
+  prisma: {
+    codeGraph: { findFirst: vi.fn(async () => ({ id: "cg_1" })) },
+    databaseConnection: { count: vi.fn(async () => 0) },
+    codeSymbol: { count: vi.fn(async () => 0) },
+    codeEdge: { count: vi.fn(async () => 0) },
+    agentResult: {
+      // Reads back what `persistAgentResult` stored, as the real table would.
+      findFirst: vi.fn(async ({ where }: { where: { agentKey: string } }) => {
+        const output = persisted.outputs.get(where.agentKey);
+        return output
+          ? { output: JSON.stringify(output), status: "completed" }
+          : { status: "completed" };
+      }),
+    },
+    document: {
+      findFirst: vi.fn(async () => null),
+      findMany: vi.fn(async () => []),
+    },
+    repoConnection: { findMany: vi.fn(async () => []) },
+  },
+}));
+
+vi.mock("./analysis-service.js", () => ({
+  createAnalysis: vi.fn(async () => ({ id: ANALYSIS_ID })),
+  finalizeAnalysisDelta: vi.fn(async () => undefined),
+  getAnalysisCapability: vi.fn(async () => null),
+  getStructuredRequirements: vi.fn(async () => null),
+  markAnalysisCancelled: vi.fn(async () => undefined),
+  markAnalysisCompleted: vi.fn(async () => undefined),
+  markAnalysisFailed: vi.fn(async () => undefined),
+  persistAgentResult: vi.fn(async (input: { agentKey: string; output: unknown }) => {
+    persisted.outputs.set(input.agentKey, input.output);
+  }),
+  persistAnalysisEnhancement: vi.fn(async () => undefined),
+  persistAnalysisCapability: vi.fn(async (_id: string, capability: AnalysisCapability) => {
+    persisted.capability.push(capability);
+  }),
+  persistAnalysisAffectedCode: vi.fn(async () => undefined),
+  persistAnalysisDatabaseAware: vi.fn(async () => undefined),
+  persistAnalysisEscalation: vi.fn(async () => undefined),
+  persistRequirements: vi.fn(async () => []),
+  persistCrossDocFindings: vi.fn(async () => undefined),
+  readFlattenedFindings: vi.fn(async () => []),
+}));
+
+vi.mock("./cost-cap.js", () => ({ assertCanStartAnalysis: vi.fn(async () => undefined) }));
+vi.mock("../audit/audit-service.js", () => ({ audit: vi.fn() }));
+vi.mock("./synthesis.js", () => ({
+  runSynthesis: vi.fn(async () => ({
+    output: { summary: "s", requirements: [], risks: [], recommendations: [] },
+    usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+  })),
+}));
+vi.mock("./cross-doc-detection.js", () => ({ runCrossDocDetection: vi.fn(async () => null) }));
+vi.mock("./custom-agent-phase.js", () => ({
+  runEnabledCustomAgents: vi.fn(async () => ({
+    results: [],
+    usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+  })),
+}));
+vi.mock("../teams/notification-hooks.js", () => ({
+  notifyAnalysisComplete: vi.fn(async () => undefined),
+}));
+vi.mock("../traceability/seed-code-links-from-findings.js", () => ({
+  seedRequirementCodeLinksFromFindings: vi.fn(async () => undefined),
+}));
+vi.mock("./approval-checkpoint.js", () => ({
+  createApprovalRequests: vi.fn(async () => undefined),
+  canCreateTickets: vi.fn(async () => false),
+}));
+
+const { AnalysisOrchestrator } = await import("./orchestrator.js");
+
+const DOC_TEXT = [
+  "# Booking FRD",
+  "",
+  "## 1 Access",
+  "",
+  "The portal shall lock an account after five failed attempts.",
+  "",
+  "## 2 Background",
+  "",
+  "The clinic opened its first site in 1998 and grew from there.",
+  "",
+].join("\n");
+
+const AGENT_ANSWER = JSON.stringify({ summary: "ok", findings: [], notes: [] });
+const READER_REPLY = JSON.stringify({
+  statements: [
+    {
+      section: "S2",
+      kind: "requirement",
+      statement: "Lock an account after five failed logins.",
+      quote: "The portal shall lock an account after five failed attempts.",
+    },
+    {
+      section: "S3",
+      kind: "background",
+      statement: "The clinic dates from 1998.",
+      quote: "The clinic opened its first site in 1998",
+    },
+  ],
+});
+
+interface CapturedCall {
+  systemMessage?: string;
+  userMessage: string;
+}
+
+function makeProvider(calls: CapturedCall[]) {
+  return {
+    key: "anthropic",
+    model: "claude-sonnet-5-5",
+    offline: false,
+    chat: vi.fn(
+      async (
+        messages: Array<{ role: string; content: string }>,
+        opts?: { systemMessage?: string },
+      ) => {
+        const systemMessage = opts?.systemMessage ?? "";
+        calls.push({ systemMessage, userMessage: messages.map((m) => m.content).join("\n") });
+        const content = systemMessage.includes("from beginning to end")
+          ? READER_REPLY
+          : systemMessage.includes("combining the statements")
+            ? JSON.stringify({ duplicates: [], crossReferences: [] })
+            : AGENT_ANSWER;
+        return {
+          content,
+          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+          model: "claude-sonnet-5-5",
+          provider: "anthropic" as const,
+        };
+      },
+    ),
+  };
+}
+
+const mapEveryRequirement: AffectedCodeDeps["mapRequirement"] = async () => [];
+const emptyGraphSource: AffectedCodeDeps["dataSourceFor"] = () =>
+  ({
+    getSymbol: async () => null,
+    getEdgesFrom: async () => [],
+    getEdgesTo: async () => [],
+    getSymbolsByFile: async () => [],
+    getSymbolsByIds: async () => [],
+  }) as unknown as CodeGraphDataSource;
+
+const loader = vi.fn<ReaderDocumentLoader>(async (_projectId, ids) =>
+  ids.map((documentId) =>
+    documentId === "doc_1"
+      ? {
+          ok: true as const,
+          document: {
+            documentId,
+            filename: "booking.docx",
+            title: "Booking FRD",
+            text: DOC_TEXT,
+            chunks: [{ index: 0, text: DOC_TEXT }],
+          },
+        }
+      : { ok: false as const, documentId, filename: "gone.docx", reason: "It is not ready." },
+  ),
+);
+
+async function runPipeline(): Promise<{
+  calls: CapturedCall[];
+  capability: AnalysisCapability;
+  retrieve: ReturnType<typeof vi.fn>;
+}> {
+  const calls: CapturedCall[] = [];
+  const retrieve = vi.fn(async () => []);
+  const orch = new AnalysisOrchestrator({
+    provider: makeProvider(calls) as never,
+    retrieve,
+    knowledge: {} as never,
+    affectedCode: { mapRequirement: mapEveryRequirement, dataSourceFor: emptyGraphSource },
+    readerDocuments: loader,
+  });
+  await (
+    orch as unknown as {
+      runPipeline: (
+        analysisId: string,
+        projectName: string,
+        projectDescription: string,
+        agentKeys: string[],
+        opts: Record<string, unknown>,
+      ) => Promise<void>;
+    }
+  ).runPipeline(ANALYSIS_ID, "Clinic", "", ["document", "code"], {
+    projectId: PROJECT_ID,
+    startedById: "u1",
+    documentIds: ["doc_1", "doc_gone"],
+  });
+  const capability = persisted.capability.at(-1);
+  if (!capability) throw new Error("capability was never persisted");
+  return { calls, capability, retrieve };
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  persisted.capability = [];
+  persisted.outputs.clear();
+  __resetConfigSingleton();
+});
+
+afterEach(() => {
+  delete process.env.ANALYSIS_DOCUMENT_READER;
+  __resetConfigSingleton();
+});
+
+describe("#2230 — the document agent through the document reader", () => {
+  it("reads the selected documents in full instead of retrieving chunks for the document agent", async () => {
+    process.env.ANALYSIS_DOCUMENT_READER = "true";
+    const { calls, retrieve } = await runPipeline();
+    expect(loader).toHaveBeenCalledWith(PROJECT_ID, ["doc_1", "doc_gone"]);
+    const reads = calls.filter((c) => c.systemMessage?.includes("from beginning to end"));
+    expect(reads).toHaveLength(1);
+    expect(reads[0]!.userMessage).toContain("The clinic opened its first site in 1998");
+    // Retrieval stays for the code agent, and the document agent no longer asks for it.
+    const retrievedFor = retrieve.mock.calls.map(
+      (c) => (c as unknown[])[0] as { agentKey: string },
+    );
+    expect(retrievedFor.map((r) => r.agentKey)).not.toContain("document");
+  });
+
+  it("hands the code agent the reader's requirements, read back from the persisted output", async () => {
+    process.env.ANALYSIS_DOCUMENT_READER = "true";
+    const { calls } = await runPipeline();
+    const output = persisted.outputs.get("document") as {
+      requirements: Array<{ id: string; text: string; source: unknown }>;
+      findings: Array<{ requirementId: string; citations: Array<{ snippet: string }> }>;
+    };
+    // The background statement is not a requirement.
+    expect(output.requirements).toEqual([
+      {
+        id: "REQ-001",
+        text: "Lock an account after five failed logins.",
+        source: { documentId: "doc_1", chunkIndex: 0 },
+      },
+    ]);
+    expect(output.findings[0]!.citations[0]!.snippet).toBe(
+      "The portal shall lock an account after five failed attempts.",
+    );
+    const codePrompts = calls.filter((c) => c.userMessage.includes("REQ-001"));
+    expect(codePrompts.length).toBeGreaterThan(0);
+    expect(
+      codePrompts.some((c) => c.userMessage.includes("Lock an account after five failed logins.")),
+    ).toBe(true);
+  });
+
+  it("records the coverage report on the capability, the unread document with its reason", async () => {
+    process.env.ANALYSIS_DOCUMENT_READER = "true";
+    const { capability } = await runPipeline();
+    expect(capability.documentReading?.documents).toEqual([
+      expect.objectContaining({
+        documentId: "doc_1",
+        status: "read",
+        mode: "whole",
+        statements: 2,
+        requirements: 1,
+        sections: [
+          { heading: "Booking FRD", status: "read", statements: 0, kinds: {} },
+          {
+            heading: "Booking FRD › 1 Access",
+            status: "read",
+            statements: 1,
+            kinds: { requirement: 1 },
+          },
+          {
+            heading: "Booking FRD › 2 Background",
+            status: "read",
+            statements: 1,
+            kinds: { background: 1 },
+          },
+        ],
+      }),
+      expect.objectContaining({
+        documentId: "doc_gone",
+        status: "unread",
+        reason: "It is not ready.",
+      }),
+    ]);
+  });
+
+  it("is off by default: the document agent retrieves as before and no coverage is recorded", async () => {
+    const { calls, capability, retrieve } = await runPipeline();
+    expect(loader).not.toHaveBeenCalled();
+    expect(calls.some((c) => c.systemMessage?.includes("from beginning to end"))).toBe(false);
+    const retrievedFor = retrieve.mock.calls.map(
+      (c) => (c as unknown[])[0] as { agentKey: string },
+    );
+    expect(retrievedFor.map((r) => r.agentKey)).toContain("document");
+    expect(capability.documentReading).toBeUndefined();
+  });
+});

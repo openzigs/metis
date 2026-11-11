@@ -50,6 +50,7 @@
     "eval:answer-correctness": "tsx --env-file-if-exists=../.env scripts/eval-answer-correctness.ts",
     "eval:docs-gen": "tsx --env-file-if-exists=../.env scripts/eval-docs-gen.ts",
     "eval:chat-cache": "tsx --env-file-if-exists=../.env scripts/eval-chat-cache.ts",
+    "eval:ba-qa": "tsx --env-file-if-exists=../.env scripts/eval-ba-qa.ts",
     "eval:analysis-tools": "tsx --env-file-if-exists=../.env scripts/eval-analysis-tool-protocol.ts",
     "prefetch:embeddings": "tsx scripts/prefetch-embeddings-model.ts",
     "embeddings:smoke": "tsx --env-file-if-exists=../.env scripts/embed-smoke.ts",

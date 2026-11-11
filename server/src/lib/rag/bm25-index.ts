@@ -14,6 +14,7 @@
 import MiniSearch from "minisearch";
 import { repoDocumentPath } from "@metis/shared";
 import { prisma } from "../prisma.js";
+import { indexedTextOf } from "./contextual-chunks.js";
 
 export interface BM25Doc {
   id: string;
@@ -219,7 +220,8 @@ export class BM25Index {
     if (!state.loaded) {
       const rows = await prisma.knowledgeChunk.findMany({
         where: { projectId },
-        select: { id: true, documentId: true, position: true, text: true },
+        // #2234 — `metadata` carries the context prefix ingest indexed the chunk with.
+        select: { id: true, documentId: true, position: true, text: true, metadata: true },
       });
       const docs = await prisma.document.findMany({
         where: { projectId, deletedAt: null },
@@ -230,7 +232,7 @@ export class BM25Index {
         id: r.id,
         documentId: r.documentId,
         position: r.position,
-        text: r.text,
+        text: indexedTextOf(r.text, r.metadata),
         filename: filenames.get(r.documentId) ?? "",
       }));
       if (bulk.length > 0) state.index.addAll(bulk.map(toIndexedDoc));

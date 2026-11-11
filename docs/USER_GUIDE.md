@@ -1257,7 +1257,7 @@ When you upload a document to a project, METIS processes it through several stag
 
 1. **Uploading** — the file is transferred to the server
 2. **Processing** — the file is:
-   - **Converted** to Markdown (PDF → Markdown with heading detection, DOCX → Markdown preserving structure, XLSX → Markdown tables, PPTX → Markdown with slide headings)
+   - **Converted** to Markdown (PDF → Markdown with heading detection, DOCX → Markdown keeping Word's heading and list numbers (such as `3.2.1`), nested lists, tables and footnotes; each image is described when the project's model can read images and otherwise listed as "image not read", and reviewer comments, tracked changes and anything not carried are listed under *Conversion notes* at the end of the text, XLSX → Markdown tables, PPTX → Markdown with slide headings)
    - **Chunked** into small, overlapping pieces (about 512 tokens each)
    - **Embedded** — each chunk is converted into a mathematical representation that captures its meaning
 3. **Indexed** — the chunks are stored in the knowledge base, ready for the AI to search
@@ -3248,6 +3248,7 @@ can use tools to look things up or act for you:
 | Tool | What It Does |
 |---|---|
 | **Search Knowledge Base** | Searches the project's uploaded documents |
+| **METIS results** | Reads what METIS has already worked out for the project: its analysis runs and their findings, the impact analyses and portfolio checks that include it, your answers to clarifying questions, and governing findings. Each answer can name the run, finding or check it came from. You see only what you could open on the matching page: a product or project you cannot read is shown as restricted, or not at all |
 | **Inspect Database** | Examines a connected database's schema |
 | **Query Database** | Runs read-only SQL against a connected database |
 | **MCP tools** | Tools from MCP servers this project is allowed to use (see §20.7) |

@@ -5,7 +5,7 @@
  *   - text/plain, text/markdown, application/json
  *   - text/html (script/style/event handlers stripped)
  *   - application/pdf via `pdf-parse` (with heading detection)
- *   - application/vnd.openxmlformats-officedocument.wordprocessingml.document via `mammoth` (Markdown output)
+ *   - application/vnd.openxmlformats-officedocument.wordprocessingml.document via `docx-to-markdown.ts` (#2232)
  *   - application/vnd.openxmlformats-officedocument.spreadsheetml.sheet via `exceljs` (Markdown tables)
  *   - application/vnd.openxmlformats-officedocument.presentationml.presentation via `officeparser` (Markdown)
  *
@@ -23,9 +23,9 @@ import { MAX_DOCUMENT_PARSE_BYTES, UPLOAD_MIME_ALLOWLIST } from "@metis/shared";
 import { createChildLogger } from "../logger.js";
 import { contentMatchesDeclaredMime, detectContentFamily } from "./content-signature.js";
 import { exceedsPdfPageCap } from "./pdf-page-bound.js";
+import type { ImageDescriber } from "./docx-to-markdown.js";
 import {
   cleanPdfText,
-  htmlToMarkdown,
   rowsToMarkdownTable,
   expandMergedCells,
   type MergeRange,
@@ -53,6 +53,11 @@ export interface ParseInput {
   mimeType: string;
   /** Original filename (used as a tie-breaker for `application/octet-stream`). */
   filename: string;
+  /**
+   * #2232 — describes images embedded in a Word document. Absent, or answering `null`, the
+   * images are listed in the text as "image not read".
+   */
+  describeImage?: ImageDescriber;
 }
 
 /** Parse a document into normalised UTF-8 text. */
@@ -94,7 +99,7 @@ async function parseByMime(mime: string, input: ParseInput): Promise<ParseResult
     case "application/pdf":
       return parsePdf(input.buffer);
     case "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-      return parseDocx(input.buffer);
+      return parseDocx(input.buffer, input.describeImage);
     case "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
       return parseXlsx(input.buffer);
     case "application/vnd.openxmlformats-officedocument.presentationml.presentation":
@@ -139,18 +144,19 @@ async function parsePdf(buffer: Buffer): Promise<ParseResult> {
   }
 }
 
-async function parseDocx(buffer: Buffer): Promise<ParseResult> {
+/**
+ * #2232 — read the package directly rather than through mammoth's HTML, which carries no list
+ * numbers, so a BRD keeps its `3.2.1` numbering, nesting, tables and image references.
+ */
+async function parseDocx(buffer: Buffer, describeImage?: ImageDescriber): Promise<ParseResult> {
   try {
-    const moduleName = "mammoth";
-    const mammoth = (await import(moduleName)) as {
-      convertToHtml(input: { buffer: Buffer }): Promise<{ value: string }>;
-    };
-    const result = await mammoth.convertToHtml({ buffer });
-    const md = htmlToMarkdown(result.value ?? "");
-    if (md.length === 0) {
+    const { docxToMarkdown } = await import("./docx-to-markdown.js");
+    const { markdown, notes } = await docxToMarkdown(buffer, { describeImage });
+    if (markdown.length === 0) {
       return { ok: false, reason: "DOCX_EMPTY_TEXT" };
     }
-    return { ok: true, text: md };
+    if (notes.length > 0) log.info("docx converted with notes", { notes });
+    return { ok: true, text: markdown };
   } catch (err) {
     log.warn("docx parse failed", { error: (err as Error).message });
     return { ok: false, reason: `DOCX_PARSE_FAILED: ${(err as Error).message}` };

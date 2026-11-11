@@ -131,7 +131,7 @@ import {
 } from "../lib/ai/semantic-cache.js";
 import { CHAT_PROMPT_CACHING, chatToolLoopPromptCaching } from "../lib/ai/chat-prompt-caching.js";
 import { getKnowledgeService } from "../lib/rag/knowledge-service.js";
-import { resolveAclActor } from "../lib/rag/acl.js";
+import { resolveAclActor, type SharedAudienceActor } from "../lib/rag/acl.js";
 import { formatDerivedLabel } from "../lib/rag/derived-label.js";
 import { formatHitLocator, formatHitScore } from "../lib/rag/hit-locator.js";
 import { loadChunksById } from "../lib/rag/chunk-lookup.js";
@@ -653,8 +653,11 @@ export async function buildAutoRagContext(
    * ACL excludes them must never reach their prompt, and the knowledge search
    * enforces chunk ACLs only when it is handed an actor. Their role is read
    * from durable state (`resolveAclActor`), not from the token's claim.
+   *
+   * #2248 — or a `sharedAudienceActor` for a reply a whole thread or channel
+   * reads: then only unrestricted chunks are retrieved.
    */
-  requesterId: string,
+  requester: string | SharedAudienceActor,
   fusedDeps: FusedCodeDeps = defaultFusedCodeDeps(),
   capture?: RagContextCapture,
   opts: AutoRagOptions = {},
@@ -677,7 +680,7 @@ export async function buildAutoRagContext(
   try {
     // #2225 — inside the try: a failed role read retrieves nothing (fail
     // closed) and the turn goes on ungrounded, as any retrieval failure does.
-    const actor = await resolveAclActor(requesterId);
+    const actor = typeof requester === "string" ? await resolveAclActor(requester) : requester;
     const service = getKnowledgeService();
     const queries = [...searches.user, ...(searches.contextual ? [searches.contextual] : [])];
     const lists = await Promise.all(
