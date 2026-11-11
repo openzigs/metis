@@ -190,7 +190,7 @@ function citableText(answer: string): string {
   const blank = (m: string) => m.replace(/[^\n]/g, " ");
   return answer
     .replace(/```[\s\S]*?(?:```|$)/g, blank)
-    .replace(/\b[a-z][a-z0-9+.-]*:\/\/\S+/gi, blank);
+    .replace(/(?<![a-z0-9+.-])[a-z][a-z0-9+.-]*:\/\/\S+/gi, blank);
 }
 
 /**

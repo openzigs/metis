@@ -205,6 +205,23 @@ describe("bounded work on hostile input", () => {
   });
 });
 
+describe("URL blanking on hostile input", () => {
+  it.each(["a-", "a."])("blanks URLs without a quadratic scan over a run of %s", (unit) => {
+    const run = unit.repeat(100_000);
+    const t0 = performance.now();
+    expect(verifyCitations(run, collectCitationEvidence({ contexts: [] }, []))).toEqual([]);
+    // Quadratic took ~9 s at this size; linear takes milliseconds. The bound is wide on purpose.
+    expect(performance.now() - t0).toBeLessThan(3000);
+  });
+
+  it("still ignores a citation inside a URL", () => {
+    const ev = collectCitationEvidence({ contexts: [] }, [
+      tool({ result: "src/a.ts (lines 1-9 of 9)" }),
+    ]);
+    expect(verifyCitations("see https://x.test/src/a.ts:3 here", ev)).toEqual([]);
+  });
+});
+
 describe("normalizePath and citationsMeta", () => {
   it("normalises a path to repository-relative", () => {
     expect(normalizePath(" ./src\\a.ts ")).toBe("src/a.ts");
