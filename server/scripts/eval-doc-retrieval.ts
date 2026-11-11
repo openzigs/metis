@@ -10,6 +10,13 @@
  *
  *   EMBEDDINGS_MODEL_DOWNLOAD_TESTS=1 pnpm eval:doc-retrieval
  *   EMBEDDINGS_MODEL_DOWNLOAD_TESTS=1 pnpm eval:doc-retrieval --corpus docretrieval-01-metis-docs
+ *   EMBEDDINGS_MODEL_DOWNLOAD_TESTS=1 pnpm eval:doc-retrieval --contextual headings
+ *   EMBEDDINGS_MODEL_DOWNLOAD_TESTS=1 pnpm eval:doc-retrieval --contextual headings,model
+ *
+ * `--contextual` (#2234) runs the contextual-chunks comparison instead of the size
+ * sweep: the shipped 2048/256 index with contextual chunks `off`, against one arm
+ * per listed mode. `model` calls the configured AI provider (`loadAIConfig()`) once
+ * per chunk, with the document as a cached system prefix.
  *
  * Outputs a markdown table and a JSON artefact under `eval-results/`. Note that
  * directory is gitignored (`.gitignore:152`) and the committed files were
@@ -37,13 +44,31 @@ function log(msg: string): void {
   console.log(msg);
 }
 
-/** `--corpus <id>` / `--corpus=<id>`. */
-function parseCorpusId(argv: readonly string[]): string | undefined {
-  const inline = argv.find((a) => a.startsWith("--corpus="));
-  if (inline) return inline.slice("--corpus=".length);
-  const idx = argv.indexOf("--corpus");
+/** `--<name> <value>` / `--<name>=<value>`. */
+function parseFlag(argv: readonly string[], name: string): string | undefined {
+  const inline = argv.find((a) => a.startsWith(`--${name}=`));
+  if (inline) return inline.slice(`--${name}=`.length);
+  const idx = argv.indexOf(`--${name}`);
   if (idx !== -1 && argv[idx + 1]) return argv[idx + 1];
   return undefined;
+}
+
+/** `--corpus <id>` / `--corpus=<id>`. */
+function parseCorpusId(argv: readonly string[]): string | undefined {
+  return parseFlag(argv, "corpus");
+}
+
+/** #2234 — `--contextual headings,model`: the modes to compare against `off`. */
+function parseContextualModes(argv: readonly string[]): ("headings" | "model")[] | undefined {
+  const raw = parseFlag(argv, "contextual");
+  if (raw === undefined) return undefined;
+  const modes = raw.split(",").map((m) => m.trim());
+  for (const m of modes) {
+    if (m !== "headings" && m !== "model") {
+      throw new Error(`--contextual takes headings and/or model, not "${m}"`);
+    }
+  }
+  return modes as ("headings" | "model")[];
 }
 
 async function main(): Promise<void> {
@@ -83,6 +108,54 @@ async function main(): Promise<void> {
     const embedder = new Embedder();
     await embedder.warm();
     log(`Embedder ready: ${embedder.model}`);
+
+    const contextualModes = parseContextualModes(argv);
+    if (contextualModes) {
+      let generator;
+      if (contextualModes.includes("model")) {
+        const { buildProvider, loadAIConfig } = await import("../src/lib/ai/index.js");
+        const { modelChunkContextGenerator } = await import("../src/lib/rag/contextual-chunks.js");
+        const provider = buildProvider({ config: loadAIConfig() });
+        log(`Chunk-context model: ${provider.key} ${provider.model}`);
+        const live = modelChunkContextGenerator({
+          provider: () => provider,
+          // An eval ingests a whole corpus in one sitting; production keeps the default.
+          concurrency: 12,
+          onUsage: (u) => log(`  model context: ${JSON.stringify(u)}`),
+        });
+        // `--context-cache <file>` records every context and replays it on the next
+        // run, so the arm can be finished across runs and re-scored for free.
+        const cacheFile = parseFlag(argv, "context-cache");
+        if (cacheFile) {
+          const cache = await import("../src/lib/eval/doc-retrieval/context-cache.js");
+          const recorded = await cache.readContextCache(cacheFile);
+          log(`Context cache: ${Object.keys(recorded).length} recorded in ${cacheFile}`);
+          generator = cache.cachedChunkContextGenerator(live, recorded, (c) =>
+            writeFile(cacheFile, `${JSON.stringify(c)}\n`, "utf8"),
+          );
+        } else {
+          generator = live;
+        }
+      }
+      const report = await harness.runContextualComparison({
+        corpusId: parseCorpusId(argv),
+        embedder,
+        tmpRoot,
+        log,
+        modes: contextualModes,
+        generator,
+      });
+      const runId = new Date().toISOString().replace(/[:.]/g, "-");
+      const resultsDir = path.join(REPO_ROOT, "eval-results");
+      await mkdir(resultsDir, { recursive: true });
+      const base = path.join(resultsDir, `doc-retrieval-contextual-${report.corpusId}-${runId}`);
+      await writeFile(`${base}.md`, harness.renderContextualReport(report), "utf8");
+      await writeFile(`${base}.json`, `${JSON.stringify(report, null, 2)}\n`, "utf8");
+      log("");
+      log(harness.renderContextualReport(report));
+      log(`\nWrote ${base}.md`);
+      return;
+    }
 
     const report = await harness.runChunkSweep({
       corpusId: parseCorpusId(argv),
