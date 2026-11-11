@@ -807,7 +807,7 @@ describe("discussions routes", () => {
       });
       messageFindMany.mockResolvedValue([]);
       buildAutoRagContext.mockImplementation(
-        async (_p: string, _m: unknown, _d: unknown, capture: { sources: number }) => {
+        async (_p: string, _m: unknown, _u: string, _d: unknown, capture: { sources: number }) => {
           capture.sources = 2;
           return "## Retrieved Knowledge";
         },
@@ -835,9 +835,11 @@ describe("discussions routes", () => {
 
       await request(app).post("/discussions/threads/t1/ai-respond").send({ messageId: "m1" });
 
+      // #2225 — retrieved for the member who asked (u1), so their ACLs apply.
       expect(buildAutoRagContext).toHaveBeenCalledWith(
         "p1",
         [{ role: "user", content: "q?" }],
+        "u1",
         undefined,
         expect.objectContaining({ contexts: expect.any(Array) }),
       );

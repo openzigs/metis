@@ -1,0 +1,1302 @@
+{
+  "generatedAt": "2026-11-11T02:35:52.102Z",
+  "model": "anthropic/deepseek-flash",
+  "judgeModel": "anthropic/deepseek-flash",
+  "runsRequested": 1,
+  "budgetUsd": 3,
+  "spentUsd": 0.290423628,
+  "judgeSpentUsd": 0.016561284,
+  "unpricedCalls": 0,
+  "stopped": null,
+  "provenance": {
+    "commit": "8a0601902972f33ebde129dce9a15d7e467e01c2",
+    "dirty": false
+  },
+  "corpus": [
+    {
+      "id": "docunderstanding-01-clinic-booking",
+      "title": "Riverside Community Clinics: Online Appointment Booking, Functional Requirements Document",
+      "docxBytes": 17994,
+      "chars": 22129,
+      "sections": 26,
+      "chunks": 26,
+      "requirements": 46,
+      "labelledSections": 12,
+      "ambiguities": 11
+    },
+    {
+      "id": "docunderstanding-02-freight-claims",
+      "title": "Northgate Freight: Cargo Loss and Damage Claims Handling, Business Requirements Document",
+      "docxBytes": 17918,
+      "chars": 23478,
+      "sections": 36,
+      "chunks": 36,
+      "requirements": 58,
+      "labelledSections": 16,
+      "ambiguities": 12
+    },
+    {
+      "id": "docunderstanding-03-community-grants",
+      "title": "Harbour City Council: Community Grants Management System, Functional Requirements Document",
+      "docxBytes": 21643,
+      "chars": 35075,
+      "sections": 53,
+      "chunks": 54,
+      "requirements": 102,
+      "labelledSections": 30,
+      "ambiguities": 14
+    }
+  ],
+  "arms": [
+    {
+      "id": "B",
+      "label": "B — the whole document in one call",
+      "configuration": {
+        "conversion": "parseDocument (mammoth + htmlToMarkdown)",
+        "context": "the whole converted document, fenced",
+        "calls": "1 (plus one re-prompt on an unreadable reply)",
+        "model": "anthropic/deepseek-flash"
+      },
+      "records": [
+        {
+          "itemId": "docunderstanding-01-clinic-booking",
+          "armId": "B",
+          "run": 1,
+          "output": {
+            "requirements": [
+              {
+                "text": "A confirmed online booking must appear immediately in the PMS and in the same appointment book that receptionists use for telephone bookings.",
+                "section": "1.4 How booking will work",
+                "quote": "The booking appears in the PMS immediately and the receptionist sees it in the same appointment book as a telephone booking."
+              },
+              {
+                "text": "Telephone booking must continue for patients who prefer it, for urgent and same-day appointments, and for appointment types not offered online.",
+                "section": "1.4 How booking will work",
+                "quote": "Telephone booking will continue for patients who prefer it, for urgent and same-day appointments, and for appointment types that are not offered online."
+              },
+              {
+                "text": "Receptionists must be able to see, for any patient, whether the patient has a portal account and whether it is locked.",
+                "section": "1.4 How booking will work",
+                "quote": "Receptionists shall be able to see, for any patient, whether the patient has a portal account and whether it is locked, so that they can direct the patient appropriately."
+              },
+              {
+                "text": "The portal must not keep its own copy of the appointment book; every availability search and booking must be made against the PMS.",
+                "section": "1.4 How booking will work",
+                "quote": "The portal shall not keep its own copy of the appointment book; every availability search and booking shall be made against the PMS."
+              },
+              {
+                "text": "Patients must already be registered at one of the six clinics to use the portal.",
+                "section": "4. Patient access and identity",
+                "quote": "Patients must already be registered at one of the six clinics to use the portal."
+              },
+              {
+                "text": "A registered patient must be able to create a portal account by verifying identity against PMS details using date of birth, surname, postcode and a one-time code sent to the mobile number held in the PMS.",
+                "section": "4. Patient access and identity",
+                "quote": "A registered patient shall be able to create a portal account by verifying their identity against the details held in the PMS, using their date of birth, surname, postcode and a one-time code sent to the mobile number held in the PMS."
+              },
+              {
+                "text": "If a patient has no mobile number recorded in the PMS, the portal must tell the patient to contact their clinic and must not offer any other online identity verification.",
+                "section": "4. Patient access and identity",
+                "quote": "If a patient has no mobile number recorded in the PMS, the portal shall tell the patient to contact their clinic and shall not offer any other way to verify their identity online."
+              },
+              {
+                "text": "A patient must sign in with an email address and password, and the portal must require a second factor on every sign-in from a device it has not seen before.",
+                "section": "4. Patient access and identity",
+                "quote": "A patient shall sign in with an email address and password, and the portal shall require a second factor on every sign-in from a device it has not seen before."
+              },
+              {
+                "text": "The portal must lock an account after five consecutive failed sign-in attempts and unlock it automatically after thirty minutes.",
+                "section": "4. Patient access and identity",
+                "quote": "The portal shall lock an account after five consecutive failed sign-in attempts and shall unlock it automatically after thirty minutes."
+              },
+              {
+                "text": "Front-desk staff must not be able to unlock portal accounts manually in the first release.",
+                "section": "4. Patient access and identity",
+                "quote": "Front-desk staff will not be able to unlock accounts manually in the first release; this was discussed and deliberately left out to avoid creating a social engineering route."
+              },
+              {
+                "text": "A signed-in session must end after a period of inactivity, and the patient must be warned before it ends.",
+                "section": "4. Patient access and identity",
+                "quote": "A signed-in session shall end after a period of inactivity, and the patient shall be warned before it ends."
+              },
+              {
+                "text": "A carer must be able to book, reschedule and cancel appointments for any dependant linked to their account.",
+                "section": "4.1 Carers and dependants",
+                "quote": "A carer shall be able to book, reschedule and cancel appointments for any dependant linked to their account."
+              },
+              {
+                "text": "A carer-dependant link must only be created by front-desk staff after checking the carer's authority, and the portal must not let a patient create such a link themselves.",
+                "section": "4.1 Carers and dependants",
+                "quote": "A link between a carer and a dependant shall only be created by front-desk staff after they have checked the carer's authority, and the portal shall not let a patient create such a link themselves."
+              },
+              {
+                "text": "A carer link for a dependant under sixteen must end automatically on the dependant's sixteenth birthday, and the portal must notify the carer thirty days beforehand.",
+                "section": "4.1 Carers and dependants",
+                "quote": "A carer link for a dependant under the age of sixteen shall end automatically on the dependant's sixteenth birthday, and the portal shall notify the carer thirty days beforehand."
+              },
+              {
+                "text": "Links for adult dependants must be reviewed periodically.",
+                "section": "4.1 Carers and dependants",
+                "quote": "Links for adult dependants, for example a patient with a lasting power of attorney in place, are reviewed periodically."
+              },
+              {
+                "text": "The portal must show a patient only the appointment types marked as bookable online at the patient's registered site.",
+                "section": "5.1 Finding a slot",
+                "quote": "The portal shall show a patient only the appointment types that are marked as bookable online at the patient's registered site."
+              },
+              {
+                "text": "For physiotherapy follow-ups and travel health consultations, the portal must also offer slots at the other sites that deliver those services.",
+                "section": "5.1 Finding a slot",
+                "quote": "For physiotherapy follow-ups and travel health consultations, the portal shall also offer slots at the other sites that deliver those services."
+              },
+              {
+                "text": "The portal must show availability for the next four weeks and let the patient filter by site, clinician, day of the week and time of day.",
+                "section": "5.1 Finding a slot",
+                "quote": "The portal shall show availability for the next four weeks and shall let the patient filter by site, clinician, day of the week and time of day."
+              },
+              {
+                "text": "Availability shown in the portal must reflect the PMS appointment book in near real time.",
+                "section": "5.1 Finding a slot",
+                "quote": "Availability shown in the portal shall reflect the PMS appointment book in near real time."
+              },
+              {
+                "text": "When a patient selects a slot, the portal must hold it for five minutes so no other patient or staff member can book it while the patient completes the booking; if the patient does not confirm within the hold period, the slot must be released.",
+                "section": "5.1 Finding a slot",
+                "quote": "When a patient selects a slot, the portal shall place a hold on it for five minutes so that no other patient or staff member can book it while the patient completes the booking. If the patient does not confirm within the hold period the slot is released."
+              },
+              {
+                "text": "A patient must not hold more than two future routine GP appointments at the same time across all sites; this limit does not apply to nurse reviews, immunisations or physiotherapy.",
+                "section": "5.2 Booking rules",
+                "quote": "A patient shall not hold more than two future routine GP appointments at the same time across all sites. This limit does not apply to nurse reviews, immunisations or physiotherapy, which are often booked as a series."
+              },
+              {
+                "text": "The portal must not allow a booking that starts less than two hours from the current time.",
+                "section": "5.2 Booking rules",
+                "quote": "The portal shall not allow a booking that starts less than two hours from the current time."
+              },
+              {
+                "text": "Childhood immunisation appointments must only be bookable by a carer for a dependant whose age is within the range set for that immunisation type in the PMS.",
+                "section": "5.2 Booking rules",
+                "quote": "Childhood immunisation appointments shall only be bookable by a carer for a dependant whose age is within the range set for that immunisation type in the PMS."
+              },
+              {
+                "text": "Before confirming a booking, the portal must ask the patient to state the reason in a free-text field of up to 200 characters and pass it to the PMS with the booking.",
+                "section": "5.2 Booking rules",
+                "quote": "Before confirming a booking, the portal shall ask the patient to state the reason for the appointment in a free-text field of up to 200 characters, which shall be passed to the PMS with the booking."
+              },
+              {
+                "text": "Patients must be told that the reason field is not monitored and that urgent problems must be telephoned in.",
+                "section": "5.2 Booking rules",
+                "quote": "Patients will be told that the field is not monitored and that urgent problems must be telephoned in."
+              },
+              {
+                "text": "The portal must show a clear warning on every booking screen that it must not be used for urgent medical problems, with the clinic telephone number and the national urgent care number.",
+                "section": "5.2 Booking rules",
+                "quote": "The portal shall show a clear warning on every booking screen that it must not be used for urgent medical problems, with the telephone number of the clinic and the national urgent care number."
+              },
+              {
+                "text": "When a booking is confirmed, the portal must write it to the PMS and show the patient a confirmation only after the PMS has accepted it.",
+                "section": "5.2 Booking rules",
+                "quote": "When a booking is confirmed, the portal shall write it to the PMS and shall show the patient a confirmation only after the PMS has accepted it."
+              },
+              {
+                "text": "If the PMS is unavailable, the booking should be handled appropriately.",
+                "section": "5.2 Booking rules",
+                "quote": "If the PMS is unavailable, the booking should be handled appropriately."
+              },
+              {
+                "text": "A patient must be able to cancel an appointment through the portal up to two hours before its start time.",
+                "section": "5.3 Rescheduling and cancelling",
+                "quote": "A patient shall be able to cancel an appointment through the portal up to two hours before its start time."
+              },
+              {
+                "text": "A patient must be able to move an appointment to another slot of the same appointment type, and the original slot must only be released once the new booking has been accepted by the PMS.",
+                "section": "5.3 Rescheduling and cancelling",
+                "quote": "A patient shall be able to move an appointment to another slot of the same appointment type, and the original slot shall only be released once the new booking has been accepted by the PMS."
+              },
+              {
+                "text": "The portal must ask a patient who cancels to choose a reason from a list maintained by the practice managers.",
+                "section": "5.3 Rescheduling and cancelling",
+                "quote": "The portal shall ask a patient who cancels to choose a reason from a list maintained by the practice managers."
+              },
+              {
+                "text": "Appointments booked by telephone must be visible in the portal and cancellable by the patient in the same way as appointments booked online.",
+                "section": "5.3 Rescheduling and cancelling",
+                "quote": "Appointments booked by telephone shall be visible in the portal and shall be cancellable by the patient in the same way as appointments booked online."
+              },
+              {
+                "text": "The portal must send each patient a text reminder 48 hours before every appointment, whether booked online or by telephone.",
+                "section": "6. Reminders and notifications",
+                "quote": "The portal shall send each patient a reminder by text message 48 hours before every appointment, whether it was booked online or by telephone."
+              },
+              {
+                "text": "A reminder must let the patient cancel by replying to the message or following a link without signing in, and cancelling through a reminder must release the slot in the same way as cancelling in the portal.",
+                "section": "6. Reminders and notifications",
+                "quote": "A reminder shall let the patient cancel the appointment by replying to the message or by following a link, without signing in. Cancelling through a reminder releases the slot in the same way as cancelling in the portal."
+              },
+              {
+                "text": "The portal must send an email confirmation when an appointment is booked, moved or cancelled, to the email address on the account that made the change; where a carer makes the change, the confirmation goes to the carer.",
+                "section": "6. Reminders and notifications",
+                "quote": "The portal shall send a confirmation by email when an appointment is booked, moved or cancelled, to the email address on the account that made the change. Where a carer makes the change, the confirmation goes to the carer."
+              },
+              {
+                "text": "Patients must be able to choose not to receive text reminders, and that choice must be recorded in the PMS so it also applies to reminders the PMS sends.",
+                "section": "6. Reminders and notifications",
+                "quote": "Patients shall be able to choose not to receive text reminders, and the choice shall be recorded in the PMS so that it also applies to reminders the PMS sends."
+              },
+              {
+                "text": "The notification table states that the upcoming-appointment text message is sent 24 hours before the appointment to the patient or the carer for a dependant.",
+                "section": "6. Reminders and notifications",
+                "quote": "| Upcoming appointment | Text message | 24 hours before the appointment | The patient, or the carer for a dependant |"
+              },
+              {
+                "text": "For physiotherapy appointments starting after 10am, a same-day text reminder must be sent at 7am to the patient.",
+                "section": "6. Reminders and notifications",
+                "quote": "| Physiotherapy follow-up on the day | Text message | A same-day text reminder is sent at 7am for physiotherapy appointments starting after 10am. | The patient |"
+              },
+              {
+                "text": "A waiting-list offer must be sent by text message and email when a matching slot is released to the patient on the waiting list.",
+                "section": "6. Reminders and notifications",
+                "quote": "| Waiting list offer | Text message and email | When a matching slot is released | The patient on the waiting list |"
+              },
+              {
+                "text": "A patient who cannot find a suitable slot must be able to join a waiting list for a chosen appointment type and site, stating the days of the week and times of day they could attend.",
+                "section": "7. Waiting list",
+                "quote": "A patient who cannot find a suitable slot shall be able to join a waiting list for a chosen appointment type and site, stating the days of the week and times of day they could attend."
+              },
+              {
+                "text": "When a slot of the chosen appointment type is released at that site within the patient's stated availability, the portal must offer it to patients on the waiting list in the order in which they joined.",
+                "section": "7. Waiting list",
+                "quote": "When a slot of that appointment type is released at that site within the patient's stated availability, the portal shall offer it to patients on the waiting list in the order in which they joined."
+              },
+              {
+                "text": "A waiting-list offer must expire if it is not accepted within a short period, and the slot must then be offered to the next patient on the list.",
+                "section": "7. Waiting list",
+                "quote": "An offer shall expire if it is not accepted within a short period, and the slot shall then be offered to the next patient on the list."
+              },
+              {
+                "text": "A patient must be removed from a waiting list once they accept an offer, book a matching appointment themselves, or after 60 days, whichever comes first.",
+                "section": "7. Waiting list",
+                "quote": "A patient shall be removed from a waiting list once they accept an offer, book a matching appointment themselves, or after 60 days, whichever comes first."
+              },
+              {
+                "text": "Practice managers must be able to mark or unmark each appointment type at their own site as bookable online, and the change must take effect in the portal within fifteen minutes.",
+                "section": "8. Staff functions and reporting",
+                "quote": "Practice managers shall be able to mark or unmark each appointment type at their own site as bookable online, and the change shall take effect in the portal within fifteen minutes."
+              },
+              {
+                "text": "Front-desk staff must be able to see a list of the day's online bookings, cancellations and waiting-list offers for their site, with each patient's reason for appointment.",
+                "section": "8. Staff functions and reporting",
+                "quote": "Front-desk staff shall be able to see a list of the day's online bookings, cancellations and waiting list offers for their site, with the reason for appointment given by each patient."
+              },
+              {
+                "text": "Front-desk staff must be able to suspend online booking for a single clinician for a date range without changing the PMS rota.",
+                "section": "8. Staff functions and reporting",
+                "quote": "Front-desk staff shall be able to suspend online booking for a single clinician for a date range, for example during unplanned leave, without changing the PMS rota."
+              },
+              {
+                "text": "The portal must provide a monthly report for each site showing the number of appointments booked, moved and cancelled online, the number of reminders sent, and missed appointments for online and telephone bookings separately.",
+                "section": "8. Staff functions and reporting",
+                "quote": "The portal shall provide a monthly report for each site showing the number of appointments booked, moved and cancelled online, the number of reminders sent, and the number of missed appointments for online and telephone bookings separately."
+              },
+              {
+                "text": "The portal must be available at least 99.5% of the time in each calendar month, excluding planned maintenance announced at least five days in advance.",
+                "section": "9.1 Availability and performance",
+                "quote": "The portal shall be available at least 99.5% of the time in each calendar month, excluding planned maintenance announced at least five days in advance."
+              },
+              {
+                "text": "Availability searches must return results within three seconds for 95% of requests at peak load.",
+                "section": "9.1 Availability and performance",
+                "quote": "Availability searches shall return results within three seconds for 95% of requests at peak load."
+              },
+              {
+                "text": "The patient-facing portal must meet the WCAG 2.2 AA accessibility standard.",
+                "section": "9.2 Accessibility and language",
+                "quote": "The patient-facing portal shall meet the WCAG 2.2 AA accessibility standard."
+              },
+              {
+                "text": "The portal must be available in English and in the other languages most commonly spoken by registered patients, where possible.",
+                "section": "9.2 Accessibility and language",
+                "quote": "The portal shall be available in English and in the other languages most commonly spoken by registered patients, where possible."
+              },
+              {
+                "text": "The portal must store only the personal data needed to sign patients in and send reminders, and must read all other patient details from the PMS when needed.",
+                "section": "9.3 Privacy, security and data retention",
+                "quote": "The portal shall store only the personal data needed to sign patients in and to send reminders, and shall read all other patient details from the PMS when they are needed."
+              },
+              {
+                "text": "Every booking, change and cancellation made through the portal must be recorded in an audit log showing who made it, on whose behalf, and when.",
+                "section": "9.3 Privacy, security and data retention",
+                "quote": "Every booking, change and cancellation made through the portal shall be recorded in an audit log showing who made it, on whose behalf, and when."
+              },
+              {
+                "text": "Audit log entries must be kept for eight years and must not be editable by any user, including system administrators.",
+                "section": "9.3 Privacy, security and data retention",
+                "quote": "Audit log entries shall be kept for eight years and shall not be editable by any user, including system administrators."
+              },
+              {
+                "text": "Portal accounts that have not been used for two years must be deleted, and the patient must be warned by email thirty days before deletion.",
+                "section": "9.3 Privacy, security and data retention",
+                "quote": "Portal accounts that have not been used for two years shall be deleted, and the patient shall be warned by email thirty days before deletion."
+              },
+              {
+                "text": "Deleting a portal account must not affect the patient's record in the PMS.",
+                "section": "9.3 Privacy, security and data retention",
+                "quote": "Deleting a portal account does not affect the patient's record in the PMS."
+              }
+            ],
+            "questions": [
+              {
+                "text": "What inactivity period must end a signed-in session, and how far in advance must the warning be shown so the requirement can be built and tested?",
+                "section": "4. Patient access and identity",
+                "quote": "A signed-in session shall end after a period of inactivity, and the patient shall be warned before it ends. The workshop did not reach a conclusion on how long the period should be."
+              },
+              {
+                "text": "How must the portal identify a device it has seen before for the second-factor rule, for example by cookie, device fingerprint, or a user trust setting?",
+                "section": "4. Patient access and identity",
+                "quote": "A patient shall sign in with an email address and password, and the portal shall require a second factor on every sign-in from a device it has not seen before."
+              },
+              {
+                "text": "What evidence or process must front-desk staff use to check a carer's authority before creating a carer-dependant link?",
+                "section": "4.1 Carers and dependants",
+                "quote": "A link between a carer and a dependant shall only be created by front-desk staff after they have checked the carer's authority, and the portal shall not let a patient create such a link themselves."
+              },
+              {
+                "text": "What does 'periodically' mean for reviewing adult dependant carer links: how often, by whom, and what action is taken if the link is no longer valid?",
+                "section": "4.1 Carers and dependants",
+                "quote": "Links for adult dependants, for example a patient with a lasting power of attorney in place, are reviewed periodically."
+              },
+              {
+                "text": "What maximum delay is acceptable for 'near real time' so that availability-refresh behaviour can be tested?",
+                "section": "5.1 Finding a slot",
+                "quote": "Availability shown in the portal shall reflect the PMS appointment book in near real time."
+              },
+              {
+                "text": "Should the portal allow routine GP bookings at a site other than the patient's registered site, and if so under what rules, given section 5.1 currently limits non-registered-site booking to physiotherapy and travel health?",
+                "section": "11. Open issues",
+                "quote": "Whether patients registered at one site may book routine GP appointments at another site has been discussed but not decided. Two practice managers were in favour and four were against."
+              },
+              {
+                "text": "What must the portal do when the PMS is unavailable during a booking, such as block confirmation, queue the booking, or show a retry message, and what message must the patient see?",
+                "section": "5.2 Booking rules",
+                "quote": "If the PMS is unavailable, the booking should be handled appropriately."
+              },
+              {
+                "text": "Section 6 says a text reminder is sent 48 hours before every appointment, but the notification table says the upcoming-appointment text is sent 24 hours before. Which timing is required?",
+                "section": "6. Reminders and notifications",
+                "quote": "| Upcoming appointment | Text message | 24 hours before the appointment | The patient, or the carer for a dependant |"
+              },
+              {
+                "text": "What exact period should a waiting-list offer remain open before it expires and passes to the next patient?",
+                "section": "7. Waiting list",
+                "quote": "An offer shall expire if it is not accepted within a short period, and the slot shall then be offered to the next patient on the list. The workshop agreed that the period should be short enough that the slot can still be filled."
+              },
+              {
+                "text": "Which languages must be supported at launch, and what does 'where possible' permit the team to exclude?",
+                "section": "9.2 Accessibility and language",
+                "quote": "The portal shall be available in English and in the other languages most commonly spoken by registered patients, where possible. The practice managers believe Polish, Urdu and Somali are the most common, but this has not been confirmed from registration data."
+              },
+              {
+                "text": "What counts as account use for the two-year deletion rule: sign-in only, any booking activity, or any access?",
+                "section": "9.3 Privacy, security and data retention",
+                "quote": "Portal accounts that have not been used for two years shall be deleted, and the patient shall be warned by email thirty days before deletion."
+              },
+              {
+                "text": "Should the appointment reason be visible to front-desk staff in the staff view, as section 8 currently requires?",
+                "section": "11. Open issues",
+                "quote": "The clinical leads have asked whether the reason for appointment should be visible to front-desk staff at all. The staff list described in section 8 assumes that it is."
+              }
+            ]
+          },
+          "diagnostics": {
+            "documentChars": 22129,
+            "calls": 1
+          },
+          "score": {
+            "labelled": 46,
+            "extracted": 56,
+            "matched": 46,
+            "repeats": 0,
+            "requirementRecall": 1,
+            "requirementPrecision": 0.8214285714285714,
+            "labelledSections": 12,
+            "coveredSections": 12,
+            "sectionCoverage": 1,
+            "missedSections": [],
+            "questions": 12,
+            "worthAsking": 12,
+            "questionPrecision": 1,
+            "ambiguities": 11,
+            "ambiguitiesRaised": 9,
+            "ambiguityRecall": 0.8181818181818182,
+            "missedRequirements": [],
+            "missedAmbiguities": ["A8", "A9"],
+            "quoted": 56,
+            "quotesVerified": 56,
+            "quoteAccuracy": 1
+          },
+          "judge": {
+            "invalid": 0,
+            "ungraded": 0
+          },
+          "costUsd": 0.049175328,
+          "judgeCostUsd": 0.008614403999999999,
+          "inputTokens": 9544,
+          "completionTokens": 40820,
+          "seconds": 195.447
+        },
+        {
+          "itemId": "docunderstanding-02-freight-claims",
+          "armId": "B",
+          "run": 1,
+          "output": {
+            "requirements": [
+              {
+                "text": "A handler must be able to register a claim from an email, a telephone note passed on by customer service, or a completed claim form, and the application must record the channel and the date and time the claim was first notified.",
+                "section": "5.1 Notification",
+                "quote": "A handler shall be able to register a claim from an email, a telephone note passed on by customer service, or a completed claim form, and the application shall record the channel and the date and time the claim was first notified."
+              },
+              {
+                "text": "The application must require the consignment note number at registration and retrieve the consignment's details from the operational tracking system, including collection and delivery dates, depots passed through, exceptions recorded and proof of delivery.",
+                "section": "5.1 Notification",
+                "quote": "The application shall require the consignment note number when a claim is registered and shall retrieve the consignment's details from the operational tracking system, including the collection and delivery dates, the depots it passed through, any exceptions recorded and the proof of delivery."
+              },
+              {
+                "text": "If the consignment note number cannot be found, the handler must be able to register the claim with the consignment marked unverified, and the application must prevent any payment until the consignment is verified.",
+                "section": "5.1 Notification",
+                "quote": "If the consignment note number cannot be found in the tracking system, the handler shall be able to register the claim with the consignment marked as unverified, and the application shall prevent any payment on the claim until the consignment has been verified."
+              },
+              {
+                "text": "One claim must be able to cover several consignments for the same claimant, with the loss type and amount claimed recorded separately for each consignment.",
+                "section": "5.1 Notification",
+                "quote": "A single claim shall be able to cover several consignments for the same claimant, and the application shall record the loss type and amount claimed separately for each consignment."
+              },
+              {
+                "text": "The application must warn the handler when a new claim is registered for a consignment that already has an open or closed claim, and show the existing claim.",
+                "section": "5.1 Notification",
+                "quote": "The application shall warn the handler when a new claim is registered for a consignment that already has an open or closed claim, and shall show the existing claim."
+              },
+              {
+                "text": "The application must calculate for each consignment whether the claim was notified within the time limit in the claimant's terms and flag any claim notified late.",
+                "section": "5.2 Time limits for notification",
+                "quote": "The application shall calculate, for each consignment on a claim, whether the claim was notified within the time limit in the claimant's terms, and shall flag any claim notified late."
+              },
+              {
+                "text": "Under the standard conditions, notice of damage or shortage must be given within 7 days of delivery and notice of loss within 28 days of the expected delivery date; special terms may set different periods.",
+                "section": "5.2 Time limits for notification",
+                "quote": "Under the standard conditions, damage and shortage must be notified within 7 days of delivery and loss within 28 days of the expected delivery date. Special terms may set different periods, and some large customers have negotiated longer periods."
+              },
+              {
+                "text": "A late-notified claim must not be rejected automatically; the handler must record whether the time limit is being enforced and, where it is waived, the reason for the waiver.",
+                "section": "5.2 Time limits for notification",
+                "quote": "A late-notified claim shall not be rejected automatically; the handler shall record whether the time limit is being enforced and, if it is waived, the reason for the waiver."
+              },
+              {
+                "text": "The application must maintain the list of documents required for each loss type, and the claims operations manager must be able to change that list without a software release.",
+                "section": "6.1 Required documents",
+                "quote": "The application shall maintain the list of documents required for each loss type, and the claims operations manager shall be able to change the list without a software release."
+              },
+              {
+                "text": "On registration the application must generate a document request to the claimant listing the documents required for each consignment on the claim.",
+                "section": "6.1 Required documents",
+                "quote": "When a claim is registered, the application shall generate a request to the claimant listing the documents required for each consignment on the claim."
+              },
+              {
+                "text": "A handler must be able to attach documents to a claim from email, from a file, or by forwarding an email to a claim-specific address, and the application must record who attached each document and when.",
+                "section": "6.1 Required documents",
+                "quote": "A handler shall be able to attach documents to a claim from email, from a file, or by forwarding an email to a claim-specific address, and the application shall record who attached each document and when."
+              },
+              {
+                "text": "The application must not allow a claim to proceed to approval until every required document is received or the handler has recorded why it is not needed.",
+                "section": "6.1 Required documents",
+                "quote": "The application shall not allow a claim to proceed to approval until every required document has been received or the handler has recorded why it is not needed."
+              },
+              {
+                "text": "If required documents are not received 21 days after the request the application must send a reminder; if still not received 21 days after the reminder the claim must be closed as abandoned, and an abandoned claim can be reopened if the documents arrive later.",
+                "section": "6.1 Required documents",
+                "quote": "If the required documents have not been received 21 days after the request, the application shall send a reminder to the claimant, and if they have still not been received 21 days after the reminder, the claim shall be closed as abandoned. An abandoned claim can be reopened if the documents arrive later."
+              },
+              {
+                "text": "The handler must be able to request an independent inspection for a damage claim, record the surveyor appointed, and attach the surveyor's report.",
+                "section": "6.2 Photographs and inspection",
+                "quote": "The handler shall be able to request an independent inspection for a damage claim, record the surveyor appointed, and attach the surveyor's report."
+              },
+              {
+                "text": "An inspection must be requested for every damage claim on a high-value consignment before liability is decided.",
+                "section": "6.2 Photographs and inspection",
+                "quote": "An inspection shall be requested for every damage claim on a high-value consignment before liability is decided."
+              },
+              {
+                "text": "The handler must record a liability decision for each consignment, chosen from accepted, partly accepted or declined, with a reason from a list maintained by the claims operations manager.",
+                "section": "7.1 Determining liability",
+                "quote": "The handler shall record a liability decision for each consignment on a claim, chosen from accepted, partly accepted or declined, with a reason chosen from a list maintained by the claims operations manager."
+              },
+              {
+                "text": "Where liability is declined or partly accepted on the grounds of inadequate packaging, the handler must attach the supporting evidence before the decision can be saved.",
+                "section": "7.1 Determining liability",
+                "quote": "Where the liability decision is declined or partly accepted on the grounds of inadequate packaging, the handler shall attach the evidence supporting that decision before the decision can be saved."
+              },
+              {
+                "text": "The application must show the handler the depot exceptions recorded for the consignment.",
+                "section": "7.1 Determining liability",
+                "quote": "The application shall show the handler the depot exceptions recorded for the consignment, so that the handler can see where in the network the loss or damage was first recorded."
+              },
+              {
+                "text": "Where a subcontracted haulier carried the consignment on any leg, the application must identify the haulier and leg from the tracking system and record them on the claim.",
+                "section": "7.1 Determining liability",
+                "quote": "Where the consignment was carried by a subcontracted haulier on any leg, the application shall identify the haulier and the leg from the tracking system and shall record them on the claim."
+              },
+              {
+                "text": "The application must calculate the limit of liability for each consignment from the weight of the goods lost or damaged and the per-kilogram limit in the claimant's terms.",
+                "section": "7.2 Limitation of liability",
+                "quote": "The application shall calculate the limit of liability for each consignment from the weight of the goods lost or damaged and the per-kilogram limit in the claimant's terms."
+              },
+              {
+                "text": "Where the claimant declared a value and paid the declared value charge, the limit of liability must be the declared value instead of the per-kilogram limit.",
+                "section": "7.2 Limitation of liability",
+                "quote": "Where the claimant declared a value for the consignment and paid the declared value charge, the limit of liability shall be the declared value instead of the per-kilogram limit."
+              },
+              {
+                "text": "Where special terms apply the application must use the limits in the special terms, and the handler must not override the calculated limit without approval of the claims operations manager.",
+                "section": "7.2 Limitation of liability",
+                "quote": "Where special terms apply, the application shall use the limits in the special terms, and the handler shall not be able to override the calculated limit without the approval of the claims operations manager."
+              },
+              {
+                "text": "The amount payable for a consignment must be the lower of the proven value of the loss and the limit of liability, less any salvage value recovered from damaged goods.",
+                "section": "7.2 Limitation of liability",
+                "quote": "The amount payable for a consignment shall be the lower of the proven value of the loss and the limit of liability, less any salvage value recovered from damaged goods."
+              },
+              {
+                "text": "The application must show the handler the step-by-step calculation of the amount payable, and the same explanation must appear in the settlement letter to the claimant.",
+                "section": "7.2 Limitation of liability",
+                "quote": "The application shall show the handler how the amount payable was calculated, step by step, and the same explanation shall be included in the settlement letter to the claimant."
+              },
+              {
+                "text": "Consequential losses must not be payable under the standard conditions, and the application must prevent a handler from including them unless special terms allow them.",
+                "section": "7.2 Limitation of liability",
+                "quote": "Consequential losses, such as lost profit or the cost of a missed production run, shall not be payable under the standard conditions, and the application shall prevent a handler from including them in the amount payable unless special terms allow them."
+              },
+              {
+                "text": "A delay claim must only be payable where the claimant had a guaranteed delivery service, and the amount payable must not exceed the carriage charge for the consignment.",
+                "section": "7.3 Delay claims",
+                "quote": "A delay claim shall only be payable where the claimant had a guaranteed delivery service, and the amount payable shall not exceed the carriage charge for the consignment."
+              },
+              {
+                "text": "Settlements must be approved at the level set by the approval matrix: the handler up to 1,000; a team leader from 1,000 to 10,000; the claims operations manager from 10,000 to 50,000; the finance director above 50,000 after legal department review.",
+                "section": "8.1 Approval matrix",
+                "quote": "| **Total amount payable on the claim** | **Who can approve** |\n| --- | --- |\n| Up to 1,000 | The handler managing the claim can approve a settlement of up to 1,000. |\n| From 1,000 to 10,000 | A team leader on the regional desk must approve a settlement from 1,000 to 10,000. |\n| From 10,000 to 50,000 | The claims operations manager must approve a settlement from 10,000 to 50,000. |\n| Above 50,000 | The finance director must approve a settlement above 50,000, after review by the legal department. |"
+              },
+              {
+                "text": "The application must route each settlement to the approver required by the matrix and must not allow a person to approve a settlement on a claim they registered or handled.",
+                "section": "8.1 Approval matrix",
+                "quote": "The application shall route each settlement to the approver required by the matrix and shall not allow a person to approve a settlement on a claim they registered or handled."
+              },
+              {
+                "text": "The approval limits must be configurable by the claims operations manager, with every change recorded with the name of the person making it and the date.",
+                "section": "8.1 Approval matrix",
+                "quote": "The approval limits in the matrix shall be configurable by the claims operations manager, and every change shall be recorded with the name of the person who made it and the date."
+              },
+              {
+                "text": "Once a settlement is approved, the application must generate a settlement letter to the claimant showing the amount payable for each consignment and how it was calculated.",
+                "section": "8.2 Settlement and payment",
+                "quote": "Once a settlement is approved, the application shall generate a settlement letter to the claimant showing the amount payable for each consignment and how it was calculated."
+              },
+              {
+                "text": "The application must send an approved payment to the finance ledger as a payment instruction with the claimant's account details and record the payment reference when finance confirms payment.",
+                "section": "8.2 Settlement and payment",
+                "quote": "The application shall send an approved payment to the finance ledger as a payment instruction with the claimant's account details, and shall record the payment reference when finance confirms the payment."
+              },
+              {
+                "text": "A claimant must be able to accept or dispute the settlement, and a disputed settlement must return to the handler with the claimant's reasons.",
+                "section": "8.2 Settlement and payment",
+                "quote": "A claimant shall be able to accept the settlement or dispute it, and a disputed settlement shall return to the handler with the claimant's reasons."
+              },
+              {
+                "text": "A claim must be closed when every consignment on it has been paid, declined or withdrawn, and the application must record the closing date and the outcome for each consignment.",
+                "section": "8.2 Settlement and payment",
+                "quote": "A claim shall be closed when every consignment on it has been paid, declined or withdrawn, and the application shall record the closing date and the outcome for each consignment."
+              },
+              {
+                "text": "When a claim is settled for a consignment carried by a subcontracted haulier, the application must create a recovery case linked to the claim if the amount paid exceeds the recovery threshold.",
+                "section": "9.1 Recovery from subcontracted hauliers",
+                "quote": "When a claim is settled for a consignment carried by a subcontracted haulier, the application shall create a recovery case linked to the claim if the amount paid exceeds the recovery threshold."
+              },
+              {
+                "text": "The recovery case must show the subcontract time limit for making the recovery claim and alert the recovery team 14 days before it expires.",
+                "section": "9.1 Recovery from subcontracted hauliers",
+                "quote": "The recovery case shall show the time limit for making the recovery claim under the haulier's subcontract and shall alert the recovery team 14 days before it expires."
+              },
+              {
+                "text": "The recovery team must be able to record the amount claimed from the haulier, the haulier's response and the amount recovered, and the application must show the net cost of the original claim after recovery.",
+                "section": "9.1 Recovery from subcontracted hauliers",
+                "quote": "The recovery team shall be able to record the amount claimed from the haulier, the haulier's response, and the amount recovered, and the application shall show the net cost of the original claim after recovery."
+              },
+              {
+                "text": "The recovery team must be able to deduct an agreed recovery amount from the next payment to the haulier, and the application must send the deduction to the finance ledger as an instruction.",
+                "section": "9.1 Recovery from subcontracted hauliers",
+                "quote": "The recovery team shall be able to deduct an agreed recovery amount from the next payment to the haulier, and the application shall send the deduction to the finance ledger as an instruction."
+              },
+              {
+                "text": "The application must identify every settled claim whose amount paid exceeds the insurance policy excess and produce, for any period, the schedule of those claims in the insurer's required format.",
+                "section": "9.2 Insurance",
+                "quote": "The application shall identify every settled claim whose amount paid exceeds the insurance policy excess and shall produce, for any period, the schedule of those claims in the format the insurer requires."
+              },
+              {
+                "text": "The application must record the amount recovered from the insurer against each claim in the schedule.",
+                "section": "9.2 Insurance",
+                "quote": "The application shall record the amount recovered from the insurer against each claim in the schedule."
+              },
+              {
+                "text": "The application must send the claimant an email when the claim is registered, when documents are requested, when liability is decided, when a settlement is approved and when the claim is closed.",
+                "section": "10. Customer communication",
+                "quote": "The application shall send the claimant an email when their claim is registered, when documents are requested, when liability is decided, when a settlement is approved and when the claim is closed."
+              },
+              {
+                "text": "Every message to the claimant must quote the claim reference and the handler's name and be sent from an address the claimant can reply to.",
+                "section": "10. Customer communication",
+                "quote": "Every message to the claimant shall quote the claim reference and the name of the handler managing the claim, and shall be sent from an address to which the claimant can reply."
+              },
+              {
+                "text": "Replies from claimants must be attached to the claim automatically and the handler must be notified.",
+                "section": "10. Customer communication",
+                "quote": "Replies from claimants shall be attached to the claim automatically and the handler shall be notified."
+              },
+              {
+                "text": "Customer service staff must be able to see the status and message history of any claim but must not be able to change a claim.",
+                "section": "10. Customer communication",
+                "quote": "Customer service staff shall be able to see the status of any claim and its history of messages, but shall not be able to change a claim."
+              },
+              {
+                "text": "The application must provide management reporting directly rather than by hand from regional spreadsheets.",
+                "section": "11. Reporting",
+                "quote": "Management reporting today is assembled by hand from the regional spreadsheets. The application must provide it directly."
+              },
+              {
+                "text": "The application must report, for any period and by region, the number of claims notified, the number settled, the average time from notification to settlement, the total amount claimed, the total amount paid and the total amount recovered.",
+                "section": "11. Reporting",
+                "quote": "The application shall report, for any period and by region, the number of claims notified, the number settled, the average time from notification to settlement, the total amount claimed, the total amount paid and the total amount recovered."
+              },
+              {
+                "text": "The application must report claims open for more than 30 days, with the stage each is at and how long it has been at that stage.",
+                "section": "11. Reporting",
+                "quote": "The application shall report the claims that have been open for more than 30 days, with the stage each one is at and how long it has been at that stage."
+              },
+              {
+                "text": "The application must report recovery cases whose time limit expires in the next 30 days and that have not yet been submitted to the haulier.",
+                "section": "11. Reporting",
+                "quote": "The application shall report recovery cases whose time limit expires in the next 30 days and have not yet been submitted to the haulier."
+              },
+              {
+                "text": "Finance must be able to reconcile the payments recorded in the ledger against the settlements approved in the application for any period.",
+                "section": "11. Reporting",
+                "quote": "Finance shall be able to reconcile the payments recorded in the ledger against the settlements approved in the application for any period."
+              },
+              {
+                "text": "Access to claims must be restricted by role, and handlers must be able to see the claims of every region so work can be moved between desks.",
+                "section": "12. Data, security and audit",
+                "quote": "Access to claims shall be restricted by role, and handlers shall see the claims of every region so that work can be moved between desks when one is busy."
+              },
+              {
+                "text": "Every change to a claim, including changes to amounts, liability decisions and approvals, must be recorded with the person, date and time, and the record must not be editable.",
+                "section": "12. Data, security and audit",
+                "quote": "Every change to a claim, including changes to amounts, liability decisions and approvals, shall be recorded with the person who made it and the date and time, and the record shall not be editable."
+              },
+              {
+                "text": "Claim records and their documents must be retained for seven years after the claim is closed and then deleted, unless the claim is subject to litigation.",
+                "section": "12. Data, security and audit",
+                "quote": "Claim records and their documents shall be retained for seven years after the claim is closed and then deleted, unless the claim is subject to litigation."
+              },
+              {
+                "text": "Access to documents attached to claims must be no wider than access to the claims themselves.",
+                "section": "12. Data, security and audit",
+                "quote": "The legal department has asked that access to documents be no wider than access to claims."
+              },
+              {
+                "text": "All claims open on the regional spreadsheets at go-live must be migrated into the application with their status, amounts and the documents held in the mailbox.",
+                "section": "13. Migration",
+                "quote": "All claims open on the regional spreadsheets at go-live shall be migrated into the application with their status, amounts and the documents held in the mailbox."
+              },
+              {
+                "text": "Claims closed in the twelve months before go-live must be migrated so that duplicate claim warnings and reporting cover them.",
+                "section": "13. Migration",
+                "quote": "Claims closed in the twelve months before go-live shall be migrated so that duplicate claim warnings and reporting cover them."
+              },
+              {
+                "text": "The application must be available during the claims desks' working hours, 7am to 7pm on working days, at least 99.5% of the time.",
+                "section": "14. Non-functional requirements",
+                "quote": "The application shall be available during the claims desks' working hours, from 7am to 7pm on working days, at least 99.5% of the time."
+              },
+              {
+                "text": "The application must support at least 40 concurrent users without any page taking more than three seconds to load.",
+                "section": "14. Non-functional requirements",
+                "quote": "The application shall support at least 40 concurrent users without any page taking more than three seconds to load."
+              },
+              {
+                "text": "The application must be usable by handlers working from home through the company's standard remote access arrangements.",
+                "section": "14. Non-functional requirements",
+                "quote": "The application shall be usable by handlers working from home through the company's standard remote access arrangements."
+              }
+            ],
+            "questions": [
+              {
+                "text": "This section sets the notice period for damage and shortage at 7 days, but the business rules summary in section 15 gives 14 days. Which period should the application apply for damage and shortage, and should the section 15 table be corrected before build?",
+                "section": "5.2 Time limits for notification",
+                "quote": "Under the standard conditions, damage and shortage must be notified within 7 days of delivery and loss within 28 days of the expected delivery date."
+              },
+              {
+                "text": "The recovery threshold is not defined anywhere in the document, so the rule that creates a recovery case cannot be built or tested. What is the threshold value, and who sets or maintains it?",
+                "section": "9.1 Recovery from subcontracted hauliers",
+                "quote": "The recovery threshold below which a recovery is not worth pursuing has not been agreed between finance and the recovery team."
+              },
+              {
+                "text": "The mandatory inspection rule depends on a category that is not defined. What is the value (or the rule for determining it) that makes a consignment 'high-value' for this purpose, and should it be configurable?",
+                "section": "6.2 Photographs and inspection",
+                "quote": "The definition of a high-value consignment for the purpose of mandatory inspection is still to be agreed with the legal department."
+              },
+              {
+                "text": "The document records this as undecided, but the registration requirement allows a claim to be registered from 'a telephone note passed on by customer service'. Should customer service staff be given a registration capability in the first release, or must all claims still arrive via the mailbox?",
+                "section": "5.1 Notification",
+                "quote": "Whether customer service may register claims directly, rather than passing them to the mailbox, has been raised but not decided."
+              },
+              {
+                "text": "The approval tiers overlap at their boundaries: the team leader row covers 'from 1,000 to 10,000' and the next row also starts at 10,000. Who approves a settlement of exactly 1,000, 10,000 or 50,000?",
+                "section": "8.1 Approval matrix",
+                "quote": "| From 1,000 to 10,000 | A team leader on the regional desk must approve a settlement from 1,000 to 10,000. |\n| From 10,000 to 50,000 | The claims operations manager must approve a settlement from 10,000 to 50,000. |"
+              },
+              {
+                "text": "'Promptly' gives no buildable or testable expectation. What maximum time should an approver have to act on a routed settlement, and what should the application do when that time passes (for example, escalate to the next approver)?",
+                "section": "8.1 Approval matrix",
+                "quote": "Approvers are expected to deal with approvals promptly so that settlement times can be met."
+              },
+              {
+                "text": "The insurance rule depends on the policy excess, but the document gives no amount and no source for it. What is the excess, and should it be held as a configurable value in the application?",
+                "section": "9.2 Insurance",
+                "quote": "The application shall identify every settled claim whose amount paid exceeds the insurance policy excess and shall produce, for any period, the schedule of those claims in the format the insurer requires."
+              },
+              {
+                "text": "The application must apply special terms (per-kilogram limits, notification periods, whether consequential losses are allowed), but no requirement says where those terms are held or who maintains them per customer. How should special terms be captured and kept up to date in the application?",
+                "section": "7.2 Limitation of liability",
+                "quote": "Where special terms apply, the application shall use the limits in the special terms, and the handler shall not be able to override the calculated limit without the approval of the claims operations manager."
+              },
+              {
+                "text": "The payable amount is reduced by salvage value, but no requirement lets a user record salvage. Where and by whom is salvage value captured, and how is it evidenced on the claim?",
+                "section": "7.2 Limitation of liability",
+                "quote": "The amount payable for a consignment shall be the lower of the proven value of the loss and the limit of liability, less any salvage value recovered from damaged goods."
+              },
+              {
+                "text": "The introduction says required documents depend on the loss type and the amount claimed, but the maintainable list is only per loss type. How should the amount-claimed dependency be expressed so the document checklist and the block on proceeding to approval work correctly?",
+                "section": "6.1 Required documents",
+                "quote": "The application shall maintain the list of documents required for each loss type, and the claims operations manager shall be able to change the list without a software release."
+              },
+              {
+                "text": "No period is given for the claimant to accept or dispute a settlement, and the closure rule depends on every consignment being paid, declined or withdrawn. How long may a settlement sit awaiting the claimant's response, and what should happen if the claimant never responds?",
+                "section": "8.2 Settlement and payment",
+                "quote": "A claimant shall be able to accept the settlement or dispute it, and a disputed settlement shall return to the handler with the claimant's reasons."
+              },
+              {
+                "text": "99.5% availability needs a measurement basis. Over what period is availability measured (for example per calendar month), and are 'working days' the same for all three regional desks?",
+                "section": "14. Non-functional requirements",
+                "quote": "The application shall be available during the claims desks' working hours, from 7am to 7pm on working days, at least 99.5% of the time."
+              },
+              {
+                "text": "The application must establish that the claimant had a guaranteed delivery service, but the only data source described supplies consignment details, depot exceptions and proof of delivery. Where does the guaranteed-service indicator come from so a delay claim can be assessed?",
+                "section": "7.3 Delay claims",
+                "quote": "A delay claim shall only be payable where the claimant had a guaranteed delivery service, and the amount payable shall not exceed the carriage charge for the consignment."
+              },
+              {
+                "text": "The rule allows a deduction from the haulier's next payment but does not say who agrees the amount or what authorisation is needed before an instruction is sent to the finance ledger. Who must approve a deduction, and what should the application record as evidence of that agreement?",
+                "section": "9.1 Recovery from subcontracted hauliers",
+                "quote": "The recovery team shall be able to deduct an agreed recovery amount from the next payment to the haulier, and the application shall send the deduction to the finance ledger as an instruction."
+              }
+            ]
+          },
+          "diagnostics": {
+            "documentChars": 23478,
+            "calls": 1
+          },
+          "score": {
+            "labelled": 58,
+            "extracted": 57,
+            "matched": 55,
+            "repeats": 0,
+            "requirementRecall": 0.9482758620689655,
+            "requirementPrecision": 0.9649122807017544,
+            "labelledSections": 16,
+            "coveredSections": 16,
+            "sectionCoverage": 1,
+            "missedSections": [],
+            "questions": 14,
+            "worthAsking": 14,
+            "questionPrecision": 1,
+            "ambiguities": 12,
+            "ambiguitiesRaised": 6,
+            "ambiguityRecall": 0.5,
+            "missedRequirements": ["R28", "R29", "R30"],
+            "missedAmbiguities": ["A6", "A7", "A8", "A9", "A10", "A12"],
+            "quoted": 57,
+            "quotesVerified": 57,
+            "quoteAccuracy": 1
+          },
+          "judge": {
+            "invalid": 0,
+            "ungraded": 0
+          },
+          "costUsd": 0.0411906,
+          "judgeCostUsd": 0.00794688,
+          "inputTokens": 10466,
+          "completionTokens": 34061,
+          "seconds": 153.432
+        },
+        {
+          "itemId": "docunderstanding-03-community-grants",
+          "armId": "B",
+          "run": 1,
+          "output": null,
+          "diagnostics": {},
+          "score": null,
+          "judge": null,
+          "error": "reader: doc-understanding-whole: no usable reply (empty-response)",
+          "costUsd": 0.051390648,
+          "judgeCostUsd": 0,
+          "inputTokens": 14562,
+          "completionTokens": 42666,
+          "seconds": 211.572
+        }
+      ],
+      "summary": {
+        "metrics": {
+          "requirementRecall": {
+            "mean": 0.9741379310344828,
+            "min": 0.9482758620689655,
+            "max": 1,
+            "n": 2
+          },
+          "requirementPrecision": {
+            "mean": 0.893170426065163,
+            "min": 0.8214285714285714,
+            "max": 0.9649122807017544,
+            "n": 2
+          },
+          "sectionCoverage": {
+            "mean": 1,
+            "min": 1,
+            "max": 1,
+            "n": 2
+          },
+          "questionPrecision": {
+            "mean": 1,
+            "min": 1,
+            "max": 1,
+            "n": 2
+          },
+          "ambiguityRecall": {
+            "mean": 0.6590909090909092,
+            "min": 0.5,
+            "max": 0.8181818181818182,
+            "n": 2
+          },
+          "quoteAccuracy": {
+            "mean": 1,
+            "min": 1,
+            "max": 1,
+            "n": 2
+          }
+        },
+        "extractedPerDocument": 56.5,
+        "questionsPerDocument": 13,
+        "usdPerDocument": 0.047252192,
+        "inputTokensPerDocument": 11524,
+        "completionTokensPerDocument": 39182.333333333336,
+        "secondsPerDocument": 186.817,
+        "failures": 1,
+        "readings": 3
+      },
+      "byItem": [
+        {
+          "itemId": "docunderstanding-01-clinic-booking",
+          "summary": {
+            "metrics": {
+              "requirementRecall": {
+                "mean": 1,
+                "min": 1,
+                "max": 1,
+                "n": 1
+              },
+              "requirementPrecision": {
+                "mean": 0.8214285714285714,
+                "min": 0.8214285714285714,
+                "max": 0.8214285714285714,
+                "n": 1
+              },
+              "sectionCoverage": {
+                "mean": 1,
+                "min": 1,
+                "max": 1,
+                "n": 1
+              },
+              "questionPrecision": {
+                "mean": 1,
+                "min": 1,
+                "max": 1,
+                "n": 1
+              },
+              "ambiguityRecall": {
+                "mean": 0.8181818181818182,
+                "min": 0.8181818181818182,
+                "max": 0.8181818181818182,
+                "n": 1
+              },
+              "quoteAccuracy": {
+                "mean": 1,
+                "min": 1,
+                "max": 1,
+                "n": 1
+              }
+            },
+            "extractedPerDocument": 56,
+            "questionsPerDocument": 12,
+            "usdPerDocument": 0.049175328,
+            "inputTokensPerDocument": 9544,
+            "completionTokensPerDocument": 40820,
+            "secondsPerDocument": 195.447,
+            "failures": 0,
+            "readings": 1
+          }
+        },
+        {
+          "itemId": "docunderstanding-02-freight-claims",
+          "summary": {
+            "metrics": {
+              "requirementRecall": {
+                "mean": 0.9482758620689655,
+                "min": 0.9482758620689655,
+                "max": 0.9482758620689655,
+                "n": 1
+              },
+              "requirementPrecision": {
+                "mean": 0.9649122807017544,
+                "min": 0.9649122807017544,
+                "max": 0.9649122807017544,
+                "n": 1
+              },
+              "sectionCoverage": {
+                "mean": 1,
+                "min": 1,
+                "max": 1,
+                "n": 1
+              },
+              "questionPrecision": {
+                "mean": 1,
+                "min": 1,
+                "max": 1,
+                "n": 1
+              },
+              "ambiguityRecall": {
+                "mean": 0.5,
+                "min": 0.5,
+                "max": 0.5,
+                "n": 1
+              },
+              "quoteAccuracy": {
+                "mean": 1,
+                "min": 1,
+                "max": 1,
+                "n": 1
+              }
+            },
+            "extractedPerDocument": 57,
+            "questionsPerDocument": 14,
+            "usdPerDocument": 0.0411906,
+            "inputTokensPerDocument": 10466,
+            "completionTokensPerDocument": 34061,
+            "secondsPerDocument": 153.432,
+            "failures": 0,
+            "readings": 1
+          }
+        },
+        {
+          "itemId": "docunderstanding-03-community-grants",
+          "summary": {
+            "metrics": {
+              "requirementRecall": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "requirementPrecision": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "sectionCoverage": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "questionPrecision": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "ambiguityRecall": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "quoteAccuracy": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              }
+            },
+            "extractedPerDocument": null,
+            "questionsPerDocument": null,
+            "usdPerDocument": 0.051390648,
+            "inputTokensPerDocument": 14562,
+            "completionTokensPerDocument": 42666,
+            "secondsPerDocument": 211.572,
+            "failures": 1,
+            "readings": 1
+          }
+        }
+      ]
+    },
+    {
+      "id": "C",
+      "label": "C — section by section with a document summary, glossary and actors, then a reduce",
+      "configuration": {
+        "conversion": "parseDocument (mammoth + htmlToMarkdown)",
+        "context": "one call over the whole document: summary, glossary, actors",
+        "sections": "splitSections (governing/rule-extraction.ts): every heading, long sections split",
+        "reduce": "one call: drop repeated requirements, settle and add cross-section questions",
+        "model": "anthropic/deepseek-flash"
+      },
+      "records": [
+        {
+          "itemId": "docunderstanding-01-clinic-booking",
+          "armId": "C",
+          "run": 1,
+          "output": null,
+          "diagnostics": {},
+          "score": null,
+          "judge": null,
+          "error": "reader: doc-understanding-reduce: no usable reply (unparseable)",
+          "costUsd": 0.132105768,
+          "judgeCostUsd": 0,
+          "inputTokens": 53258,
+          "completionTokens": 103861,
+          "seconds": 304.557
+        }
+      ],
+      "summary": {
+        "metrics": {
+          "requirementRecall": {
+            "mean": null,
+            "min": null,
+            "max": null,
+            "n": 0
+          },
+          "requirementPrecision": {
+            "mean": null,
+            "min": null,
+            "max": null,
+            "n": 0
+          },
+          "sectionCoverage": {
+            "mean": null,
+            "min": null,
+            "max": null,
+            "n": 0
+          },
+          "questionPrecision": {
+            "mean": null,
+            "min": null,
+            "max": null,
+            "n": 0
+          },
+          "ambiguityRecall": {
+            "mean": null,
+            "min": null,
+            "max": null,
+            "n": 0
+          },
+          "quoteAccuracy": {
+            "mean": null,
+            "min": null,
+            "max": null,
+            "n": 0
+          }
+        },
+        "extractedPerDocument": null,
+        "questionsPerDocument": null,
+        "usdPerDocument": 0.132105768,
+        "inputTokensPerDocument": 53258,
+        "completionTokensPerDocument": 103861,
+        "secondsPerDocument": 304.557,
+        "failures": 1,
+        "readings": 1
+      },
+      "byItem": [
+        {
+          "itemId": "docunderstanding-01-clinic-booking",
+          "summary": {
+            "metrics": {
+              "requirementRecall": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "requirementPrecision": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "sectionCoverage": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "questionPrecision": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "ambiguityRecall": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "quoteAccuracy": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              }
+            },
+            "extractedPerDocument": null,
+            "questionsPerDocument": null,
+            "usdPerDocument": 0.132105768,
+            "inputTokensPerDocument": 53258,
+            "completionTokensPerDocument": 103861,
+            "secondsPerDocument": 304.557,
+            "failures": 1,
+            "readings": 1
+          }
+        },
+        {
+          "itemId": "docunderstanding-02-freight-claims",
+          "summary": {
+            "metrics": {
+              "requirementRecall": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "requirementPrecision": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "sectionCoverage": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "questionPrecision": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "ambiguityRecall": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "quoteAccuracy": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              }
+            },
+            "extractedPerDocument": null,
+            "questionsPerDocument": null,
+            "usdPerDocument": null,
+            "inputTokensPerDocument": null,
+            "completionTokensPerDocument": null,
+            "secondsPerDocument": null,
+            "failures": 0,
+            "readings": 0
+          }
+        },
+        {
+          "itemId": "docunderstanding-03-community-grants",
+          "summary": {
+            "metrics": {
+              "requirementRecall": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "requirementPrecision": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "sectionCoverage": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "questionPrecision": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "ambiguityRecall": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "quoteAccuracy": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              }
+            },
+            "extractedPerDocument": null,
+            "questionsPerDocument": null,
+            "usdPerDocument": null,
+            "inputTokensPerDocument": null,
+            "completionTokensPerDocument": null,
+            "secondsPerDocument": null,
+            "failures": 0,
+            "readings": 0
+          }
+        }
+      ]
+    }
+  ]
+}

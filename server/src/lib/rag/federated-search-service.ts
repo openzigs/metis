@@ -13,9 +13,13 @@
  * yields no hits rather than an error (cross-tenant projects are invisible, not
  * forbidden). If that helper is ever loosened again, this fan-out has no second
  * line of defence.
+ *
+ * #2225 — and within a project, chunk ACLs hold: every per-project search runs
+ * with the caller as the ACL actor, resolved once from durable state.
  */
 import { getUserAccessibleProjects } from "../auth/accessible-projects.js";
 import { getKnowledgeService, type KnowledgeService } from "./knowledge-service.js";
+import { resolveAclActor, type AclActor } from "./acl.js";
 import { createChildLogger } from "../logger.js";
 
 const log = createChildLogger("federated-search");
@@ -93,6 +97,9 @@ export class FederatedSearchService {
       return { hits: [], projectsSearched: [], projectsFailed: [], totalHits: 0 };
     }
 
+    // #2225 — before any search: a failed role read rejects the whole call.
+    const actor = await resolveAclActor(userId);
+
     // 3. Fan out per-project searches with timeout
     const projectsSearched: string[] = [];
     const projectsFailed: string[] = [];
@@ -113,7 +120,7 @@ export class FederatedSearchService {
     > = new Map();
 
     const results = await Promise.allSettled(
-      targetIds.map((projectId) => this.searchWithTimeout(projectId, query, k, timeoutMs)),
+      targetIds.map((projectId) => this.searchWithTimeout(projectId, query, k, timeoutMs, actor)),
     );
 
     for (let i = 0; i < results.length; i++) {
@@ -159,7 +166,13 @@ export class FederatedSearchService {
    * Search a single project with a timeout. Rejects if the search exceeds
    * the configured timeout.
    */
-  private async searchWithTimeout(projectId: string, query: string, k: number, timeoutMs: number) {
+  private async searchWithTimeout(
+    projectId: string,
+    query: string,
+    k: number,
+    timeoutMs: number,
+    actor: AclActor,
+  ) {
     return new Promise<{
       hits: {
         chunkId: string;
@@ -177,7 +190,7 @@ export class FederatedSearchService {
       }, timeoutMs);
 
       this.knowledgeService
-        .search(projectId, query, { k: Math.max(k * 2, 20) })
+        .search(projectId, query, { k: Math.max(k * 2, 20), actor })
         .then((result) => {
           clearTimeout(timer);
           resolve({ hits: result.hits });
