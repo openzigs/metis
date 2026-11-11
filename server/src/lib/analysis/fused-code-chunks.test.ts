@@ -15,6 +15,7 @@
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { __resetConfigSingleton } from "../config/config-service.js";
+import { MAX_REQUIREMENT_QUERY_CHARS } from "./requirement-query.js";
 import { RETRIEVAL_QUERIES } from "./retrieval.js";
 import type {
   FusedCodeSearcher,
@@ -465,6 +466,20 @@ describe("retrieveFusedCodeContext (#729) — shared agentic/req-grounded helper
     expect(ctx.block).toContain("src/lib/auth/login.ts:12-48");
     expect(ctx.tokens).toBe(estimateFusedBlockTokens(ctx.block));
     expect(ctx.tokens).toBeGreaterThan(0);
+  });
+
+  it("#2233 — a requirement's long text joins the query bounded, not its whole body", async () => {
+    const searcher = makeSearcher([rawHit()]);
+    const text = `users can log in\n${"x".repeat(40_000)}`;
+    await retrieveFusedCodeContext({
+      projectId: "proj-1",
+      requirements: [{ id: "NR-1", text }],
+      ragChunks: [],
+      enabled: true,
+      deps: { searcher, lineLookup: makeLineLookup(spans) },
+    });
+    const query = vi.mocked(searcher.search).mock.calls[0]![0] as string;
+    expect(query).toBe(text.slice(0, MAX_REQUIREMENT_QUERY_CHARS));
   });
 });
 

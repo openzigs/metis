@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, it, expect } from "vitest";
 import { computeRequirementEscalations, readEscalationPolicy } from "./escalation-context.js";
+import { scoreAmbiguity } from "./escalation-policy.js";
+import { MAX_REQUIREMENT_QUERY_CHARS } from "./requirement-query.js";
 import { __resetConfigSingleton } from "../config/config-service.js";
 import type { AffectedCodeDeps } from "./affected-code-context.js";
 import type { CodeGraphDataSource } from "../code-graph/query-service.js";
@@ -170,5 +172,32 @@ describe("computeRequirementEscalations", () => {
     expect(out).not.toBeNull();
     expect(out!.escalation.requirements[0].blastRadiusSize).toBe(0);
     expect(out!.escalation.requirements[0].depth).toBe("standard");
+  });
+
+  it("#2233 — maps and scores an imported item's long text bounded, not its whole body", async () => {
+    process.env.ANALYSIS_ESCALATION_POLICY = "true";
+    __resetConfigSingleton();
+    const bodies: string[] = [];
+    // Vague wording only past the bound: the score must not read it.
+    const text = `Terminate all sessions\n${"Every device and every token. ".repeat(200)}${"etc appropriate reasonable ".repeat(10)}`;
+    expect(text.length).toBeGreaterThan(MAX_REQUIREMENT_QUERY_CHARS);
+    expect(scoreAmbiguity(text)).not.toBe(
+      scoreAmbiguity(text.slice(0, MAX_REQUIREMENT_QUERY_CHARS)),
+    );
+    const out = await computeRequirementEscalations({
+      projectId: "p",
+      requirements: [{ id: "NR-1", text }],
+      deps: {
+        mapRequirement: async (req) => {
+          bodies.push(req.body);
+          return [];
+        },
+        dataSourceFor: emptyGraph,
+      },
+    });
+    expect(bodies).toEqual([text.slice(0, MAX_REQUIREMENT_QUERY_CHARS)]);
+    expect(out!.escalation.requirements[0]!.ambiguityScore).toBe(
+      scoreAmbiguity(text.slice(0, MAX_REQUIREMENT_QUERY_CHARS)),
+    );
   });
 });

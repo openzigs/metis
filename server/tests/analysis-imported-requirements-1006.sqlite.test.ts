@@ -53,13 +53,16 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         externalId?: string | null;
         deleted?: boolean;
         minutes?: number;
+        body?: string;
+        acceptanceCriteria?: string[];
       } = {},
     ) => ({
       id,
       projectId: opts.projectId ?? PROJECT,
       analysisId: (opts.projectId ?? PROJECT) === PROJECT ? ANALYSIS : OTHER_ANALYSIS,
       title,
-      body: "",
+      body: opts.body ?? "",
+      acceptanceCriteria: JSON.stringify(opts.acceptanceCriteria ?? []),
       externalSource: opts.externalSource === undefined ? "github" : opts.externalSource,
       externalId: opts.externalId === undefined ? id.replace(/\D/g, "") : opts.externalId,
       createdAt: new Date(T0 + (opts.minutes ?? 0) * 60_000),
@@ -85,7 +88,11 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       await db.requirement.createMany({
         data: [
           // The oldest imported row: pushed past the cap by the bulk rows below.
-          row("req-3401", "Mark all entries as read", { minutes: 0 }),
+          row("req-3401", "Mark all entries as read", {
+            minutes: 0,
+            body: "Every entry in the category is marked read.",
+            acceptanceCriteria: ["The unread count drops to zero."],
+          }),
           row("req-synth-1", "A synthesized requirement", {
             externalSource: null,
             externalId: null,
@@ -135,6 +142,11 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     it("loads a selected imported row past the cap", async () => {
       const [item] = await loadSelectedImportedRequirements(PROJECT, ["req-3401"]);
       expect(item).toMatchObject({ id: "req-3401", externalSource: "github", externalId: "3401" });
+      // #2233 — the body and acceptance criteria travel with the item.
+      expect(item).toMatchObject({
+        body: "Every entry in the category is marked read.",
+        acceptanceCriteria: ["The unread count drops to zero."],
+      });
     });
 
     it.each([

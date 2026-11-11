@@ -9,12 +9,17 @@
  * gives it exactly one `NR-*` id, in selection order, and the run records which
  * imported item each id was.
  *
- * Only the TITLE is used. An imported body is an issue template (headings,
- * checklists, steps to reproduce) that the splitter would cut into many
- * candidates, losing the one-item-one-requirement mapping.
+ * Only the TITLE goes to the splitter. An imported body is an issue template
+ * (headings, checklists, steps to reproduce) that the splitter would cut into
+ * many candidates, losing the one-item-one-requirement mapping.
+ *
+ * Issue #2233 — the body and acceptance criteria still reach the analysis: they
+ * are recorded on the item's link as `detail`, and the code agent reads them
+ * beside the title under the item's one `NR-*` id (`codeAgentRequirementSet`).
  */
 import {
   MAX_EXTRA_INSTRUCTIONS,
+  parseAcceptanceCriteria,
   type AnalysisSourceRequirement,
   type ImportedRequirementOption,
 } from "@metis/shared";
@@ -27,6 +32,34 @@ export const IMPORTED_REQUIREMENT_LIST_LIMIT = 500;
 
 /** The longest search term the listing uses; longer input is cut, not refused. */
 export const IMPORTED_REQUIREMENT_QUERY_MAX = 200;
+
+/**
+ * #2233 — an imported item's selected row: the listing's fields plus the body
+ * and acceptance criteria the analysis reads beside the title.
+ */
+export interface SelectedImportedRequirement extends ImportedRequirementOption {
+  body?: string;
+  acceptanceCriteria?: readonly string[];
+}
+
+/**
+ * #2233 — an imported item's body and acceptance criteria as one block of text,
+ * or `undefined` when it has neither. Neither is shortened: a cut here would be
+ * the silent cap this issue removes.
+ */
+export function importedRequirementDetail(
+  body: string | null | undefined,
+  acceptanceCriteria: readonly string[] = [],
+): string | undefined {
+  const parts: string[] = [];
+  const text = body?.trim() ?? "";
+  if (text.length > 0) parts.push(text);
+  const criteria = acceptanceCriteria.map((c) => c.trim()).filter((c) => c.length > 0);
+  if (criteria.length > 0) {
+    parts.push(["Acceptance criteria:", ...criteria.map((c) => `- ${c}`)].join("\n"));
+  }
+  return parts.length > 0 ? parts.join("\n\n") : undefined;
+}
 
 /** Collapse a title onto one line so it stays one bullet (one candidate). */
 function oneLine(title: string): string {
@@ -49,7 +82,7 @@ function startsWithBulletList(text: string): boolean {
  * free-text limit, at which point the splitter would treat it as truncated.
  */
 export function composeImportedRequirementInput(
-  items: ReadonlyArray<ImportedRequirementOption>,
+  items: ReadonlyArray<SelectedImportedRequirement>,
   extraInstructions?: string,
 ): { extraInstructions: string; sourceRequirements: AnalysisSourceRequirement[] } {
   const bullets = items.map((item) => `- ${oneLine(item.title)}`).join("\n");
@@ -75,14 +108,18 @@ export function composeImportedRequirementInput(
   }
   return {
     extraInstructions: text,
-    sourceRequirements: items.map((item, i) => ({
-      candidateId: newRequirementId(i),
-      requirementId: item.id,
-      title: oneLine(item.title),
-      externalSource: item.externalSource,
-      externalId: item.externalId,
-      externalUrl: item.externalUrl,
-    })),
+    sourceRequirements: items.map((item, i) => {
+      const detail = importedRequirementDetail(item.body, item.acceptanceCriteria);
+      return {
+        candidateId: newRequirementId(i),
+        requirementId: item.id,
+        title: oneLine(item.title),
+        externalSource: item.externalSource,
+        externalId: item.externalId,
+        externalUrl: item.externalUrl,
+        ...(detail ? { detail } : {}),
+      };
+    }),
   };
 }
 
@@ -162,13 +199,22 @@ export async function listImportedRequirements(
 export async function loadSelectedImportedRequirements(
   projectId: string,
   ids: ReadonlyArray<string>,
-): Promise<ImportedRequirementOption[]> {
+): Promise<SelectedImportedRequirement[]> {
   const unique = [...new Set(ids)];
   const rows = await prisma.requirement.findMany({
     where: { id: { in: unique }, projectId, deletedAt: null, externalSource: { not: null } },
-    select: IMPORTED_SELECT,
+    // #2233 — the body and acceptance criteria travel with the item to the analysis.
+    select: { ...IMPORTED_SELECT, body: true, acceptanceCriteria: true },
   });
-  const byId = new Map(rows.map((r) => [r.id, toOption(r)] as const));
+  const byId = new Map(
+    rows.map(
+      ({ body, acceptanceCriteria, ...r }) =>
+        [
+          r.id,
+          { ...toOption(r), body, acceptanceCriteria: parseAcceptanceCriteria(acceptanceCriteria) },
+        ] as const,
+    ),
+  );
   const missing = unique.filter((id) => !byId.has(id));
   if (missing.length > 0) {
     throw new AppError(

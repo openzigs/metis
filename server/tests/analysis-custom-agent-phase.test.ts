@@ -103,6 +103,36 @@ describe("runEnabledCustomAgents (#81)", () => {
     expect((p.chat as any).mock.calls.length).toBe(2);
   });
 
+  it("#2233 — names the findings an agent's answer lost at the 50-finding cap, under the agent's ref", async () => {
+    enabledAgents.push(agent({ id: "a1", name: "Verbose" }));
+    const answer = JSON.stringify({
+      summary: "many",
+      findings: Array.from({ length: 51 }, (_, i) => ({
+        category: "security",
+        severity: "low",
+        title: `Finding ${i + 1}`,
+        body: "b",
+        tags: [],
+        citations: [],
+      })),
+      notes: [],
+    });
+    const res = await runEnabledCustomAgents({
+      provider: provider(answer),
+      projectId: "p1",
+      projectName: "Proj",
+      projectDescription: "desc",
+    });
+    const [r] = res.results;
+    expect(r.output?.findings).toHaveLength(50);
+    expect(r.findingsLeftOut).toEqual({
+      agentKey: r.agentRef,
+      producedCount: 51,
+      keptCount: 50,
+      leftOutTitles: ["Finding 51"],
+    });
+  });
+
   it("isolates a failing agent — others still run", async () => {
     enabledAgents.push(agent({ id: "a1", name: "Bad" }), agent({ id: "a2", name: "Good" }));
     const p: AIProvider = {

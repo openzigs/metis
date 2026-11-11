@@ -2795,7 +2795,9 @@ function toSnapshot(
 function extractSourceRequirements(metadata: Record<string, unknown> | null): {
   sourceRequirements?: AnalysisSourceRequirement[];
 } {
-  const items = readSourceRequirements(metadata);
+  // #2233 — `detail` is the code agent's input, not the page's: the panel
+  // links to the item itself, so the snapshot does not carry every body.
+  const items = readSourceRequirements(metadata).map(({ detail: _detail, ...item }) => item);
   return items.length > 0 ? { sourceRequirements: items } : {};
 }
 
