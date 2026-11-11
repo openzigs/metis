@@ -380,7 +380,14 @@ export async function streamAIReply(input: StreamAIReplyInput): Promise<StreamAI
           messages,
           toolset: tools.toolset,
           native: tools.native,
-          ctx: { sessionId: session.id, userId: actor.id, projectId: thread.projectId },
+          // #2248 — the reply is read by the whole thread: a knowledge search
+          // sees unrestricted chunks only, never ones restricted to the asker.
+          ctx: {
+            sessionId: session.id,
+            userId: actor.id,
+            projectId: thread.projectId,
+            aclAudience: "shared",
+          },
           gate: tools.gate,
         },
         {

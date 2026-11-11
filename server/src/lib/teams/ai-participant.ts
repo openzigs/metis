@@ -217,7 +217,9 @@ export async function maybeRespondAsAI(
       actor: { id: trigger.authorUserId },
       provider: deps.provider,
       // #739 — the thread's project excerpts, as in-app. No `resolveTools`.
-      // #2225 — retrieved for the Teams author, so their ACLs apply.
+      // #2248 — the reply is posted to the whole channel, so `projectRetriever`
+      // grounds it for a shared audience (unrestricted chunks only); the
+      // author's id only attributes the audit row.
       retrieve: deps.buildRetriever(trigger.projectId, trigger.authorUserId),
     });
 

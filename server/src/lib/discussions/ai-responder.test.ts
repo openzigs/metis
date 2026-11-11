@@ -555,7 +555,13 @@ describe("streamAIReply — #739 grounding", () => {
     expect(resolveTools).toHaveBeenCalledWith({ id: "sess-1" });
     expect(tool.execute).toHaveBeenCalledWith(
       CALL.args,
-      expect.objectContaining({ sessionId: "sess-1", userId: "u1", projectId: "p1" }),
+      // #2248 — the reply is read by the whole thread: a shared audience.
+      expect.objectContaining({
+        sessionId: "sess-1",
+        userId: "u1",
+        projectId: "p1",
+        aclAudience: "shared",
+      }),
     );
     expect(stream).not.toHaveBeenCalled();
     // Offered natively, tagged as the discussion workload, tools NOT disabled.
