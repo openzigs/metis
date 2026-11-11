@@ -275,7 +275,6 @@ describe("#2231 — the route wires the document reader into an impact run", () 
     vi.stubEnv("ANALYSIS_DOCUMENT_READER", "true");
     providerFactory = () => null;
     const deps = impactRunDeps("user-1", ["proj-1"]);
-    expect(deps.documentReader).toBeUndefined();
     const { prisma, analyses, items } = servicePrismaMock();
 
     await executeImpactAnalysis("ia-doc", ["proj-1"], {
@@ -291,6 +290,31 @@ describe("#2231 — the route wires the document reader into an impact run", () 
       "AI enrichment did not run for this analysis (no AI provider is configured).",
     );
     expect(summary).toContain("Not applied: document reading.");
+    expect(summary).toContain(
+      "The model could not read the document, so its changes were split by paragraph and bullet instead",
+    );
+  });
+
+  it("#2276 — with no provider, a run that never reads names no document reading among what did not run", async () => {
+    vi.stubEnv("ANALYSIS_DOCUMENT_READER", "true");
+    providerFactory = () => null;
+    const { prisma, analyses } = servicePrismaMock();
+    analyses.set("ia-doc", {
+      id: "ia-doc",
+      sourceText: "Lock accounts after five failed attempts.",
+      documentId: null,
+    });
+
+    await executeImpactAnalysis("ia-doc", ["proj-1"], {
+      ...impactRunDeps("user-1", ["proj-1"]),
+      ...RUN_DEPS,
+      prisma: prisma as never,
+    });
+
+    expect(analyses.get("ia-doc")?.status).toBe("completed");
+    const summary = String(analyses.get("ia-doc")?.summary);
+    expect(summary).not.toContain("document reading");
+    expect(summary).not.toContain("The model could not read");
   });
 });
 
@@ -363,15 +387,22 @@ describe("documentReaderDep", () => {
     expect(runtime.markUnavailable).not.toHaveBeenCalled();
   });
 
-  it("records the stage unavailable, with the reason, when no provider can be built", () => {
+  it("#2276 — builds nothing and records nothing until it is asked to read", () => {
     const runtime = fakeRuntime();
-    expect(
-      documentReaderDep(
-        runtime,
-        () => true,
-        () => ({ provider: null, reason: "provider-offline" }),
-      ),
-    ).toBeUndefined();
+    const build = vi.fn(() => ({ provider: null, reason: "provider-offline" as const }));
+    expect(documentReaderDep(runtime, () => true, build)).toBeTypeOf("function");
+    expect(build).not.toHaveBeenCalled();
+    expect(runtime.markUnavailable).not.toHaveBeenCalled();
+  });
+
+  it("records the stage unavailable, with the reason, when a read finds no provider, and builds once", async () => {
+    const runtime = fakeRuntime();
+    const build = vi.fn(() => ({ provider: null, reason: "provider-offline" as const }));
+    const reader = documentReaderDep(runtime, () => true, build);
+    await expect(reader!({ title: "t", text: FRD })).rejects.toThrow("no AI provider");
+    await expect(reader!({ title: "t", text: FRD })).rejects.toThrow("no AI provider");
+    expect(build).toHaveBeenCalledTimes(1);
+    expect(runtime.markUnavailable).toHaveBeenCalledTimes(1);
     expect(runtime.markUnavailable).toHaveBeenCalledWith("document-read", "provider-offline");
   });
 
@@ -383,8 +414,9 @@ describe("documentReaderDep", () => {
       () => true,
       () => ({ provider }),
     );
-    expect(runtime.instrument).toHaveBeenCalledWith(provider, "document-read");
+    expect(runtime.instrument).not.toHaveBeenCalled();
     const reading = await reader!({ title: "Clinic booking FRD", text: FRD });
+    expect(runtime.instrument).toHaveBeenCalledWith(provider, "document-read");
     expect(reading.statements.map((s) => s.kind)).toEqual([
       "background",
       "requirement",

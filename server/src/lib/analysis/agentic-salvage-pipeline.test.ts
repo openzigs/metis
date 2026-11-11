@@ -143,7 +143,7 @@ const REPAIRED = JSON.stringify({
 
 type Recorded = { messages: ChatMessage[]; opts: ChatOptions };
 
-function makeProvider() {
+function makeProvider(repaired: string = REPAIRED) {
   const recorded: Recorded[] = [];
   let turns = 0;
   const chat = vi.fn(async (messages: ChatMessage[], opts: ChatOptions = {}) => {
@@ -156,7 +156,7 @@ function makeProvider() {
       model: "test-model",
       provider: "bedrock" as const,
     });
-    if (opts.systemMessage === REPAIR_SYSTEM) return text(REPAIRED);
+    if (opts.systemMessage === REPAIR_SYSTEM) return text(repaired);
     const askedToStop = messages.some(
       (m) => typeof m.content === "string" && m.content.includes("STOP INVESTIGATING"),
     );
@@ -168,8 +168,8 @@ function makeProvider() {
   return { provider: { chat } as never, recorded };
 }
 
-async function runPipeline(): Promise<Recorded[]> {
-  const { provider, recorded } = makeProvider();
+async function runPipeline(repaired?: string): Promise<Recorded[]> {
+  const { provider, recorded } = makeProvider(repaired);
   const orch = new AnalysisOrchestrator({
     provider,
     retrieve: async () => [],
@@ -256,6 +256,42 @@ describe("#1218 — the orchestrator salvages from the PRESERVED source", () => 
       .messages.map((m) => String(m.content))
       .join("\n");
     expect(body).toContain(TRUNCATED_RETRY);
+  });
+});
+
+describe("#2276 — a salvage that keeps 50 findings names the rest on the run", () => {
+  it("records the valid findings past the 50th as left out by the code agent", async () => {
+    const finding = (i: number) => ({
+      category: "architecture",
+      severity: "medium",
+      title: `Code finding ${i}`,
+      body: "body",
+      tags: [],
+      citations: [],
+    });
+    const repaired = JSON.stringify({
+      agentKey: "code",
+      summary: "code summary",
+      findings: Array.from({ length: 52 }, (_, i) => finding(i + 1)),
+      notes: [],
+    });
+    await runPipeline(repaired);
+    const { persistAnalysisCapability } = await import("./analysis-service.js");
+    const calls = vi.mocked(persistAnalysisCapability).mock.calls;
+    expect(calls.length).toBeGreaterThan(0);
+    const capability = calls.at(-1)![1] as {
+      findingsLeftOut?: unknown;
+      reasons: string[];
+    };
+    expect(capability.findingsLeftOut).toEqual([
+      {
+        agentKey: "code",
+        producedCount: 52,
+        keptCount: 50,
+        leftOutTitles: ["Code finding 51", "Code finding 52"],
+      },
+    ]);
+    expect(capability.reasons).toContain("findings-left-out");
   });
 });
 

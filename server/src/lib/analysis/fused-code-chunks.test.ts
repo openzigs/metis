@@ -380,6 +380,16 @@ describe("buildCodeAgentFusedQuery (#729)", () => {
   it("falls back to the static code bag when everything is empty", () => {
     expect(buildCodeAgentFusedQuery({ requirementTexts: [] })).toBe(RETRIEVAL_QUERIES.code);
   });
+
+  it("#2276 — 24 requirements each at the per-requirement bound still make a bounded query, metadata first", () => {
+    const long = "x".repeat(MAX_REQUIREMENT_QUERY_CHARS);
+    const query = buildCodeAgentFusedQuery({
+      projectName: "Acme",
+      requirementTexts: Array.from({ length: 24 }, () => long),
+    });
+    expect(query).toHaveLength(MAX_REQUIREMENT_QUERY_CHARS);
+    expect(query.startsWith("Acme. x")).toBe(true);
+  });
 });
 
 describe("renderFusedCodeContextBlock + estimateFusedBlockTokens (#729)", () => {

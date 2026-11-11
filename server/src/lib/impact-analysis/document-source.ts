@@ -28,6 +28,7 @@
  * (`document-reader/reading-cache.ts`); the notice then says whose.
  */
 import type { PrismaClient } from "@prisma/client";
+import { createChildLogger } from "../logger.js";
 import { parseDocument } from "../documents/parsers.js";
 import type { StorageBackend } from "../documents/storage.js";
 import type { DocumentReading } from "../document-reader/reader.js";
@@ -48,6 +49,8 @@ export const READER_MIN_PASTED_CHARS = 2_000;
 export const MIN_CHUNK_OVERLAP_CHARS = 8;
 
 const TITLE_MAX = 120;
+
+const log = createChildLogger("impact-document-source");
 
 /** Reads a stored document file (the storage backend's `read`). */
 export type ReadStoredFile = Pick<StorageBackend, "read">;
@@ -124,6 +127,8 @@ export async function loadImpactDocumentText(
 ): Promise<ImpactDocumentText> {
   let title = documentId;
   let saved: SavedDocumentKey | undefined;
+  // #2276 — why the run reads the chunks instead of the file, logged below.
+  let fallback = "no-document-row";
   try {
     const doc = await prisma.document.findUnique({
       where: { id: documentId },
@@ -157,14 +162,28 @@ export async function loadImpactDocumentText(
         }
         const fromChunks = await storedChunkText(prisma, documentId);
         if (fromChunks.trim().length > 0) {
+          log.info("impact run reads the document's chunks instead of its file", {
+            documentId,
+            reason: "images-not-described",
+          });
           return { text: fromChunks, from: "chunks", title, ...(saved ? { saved } : {}) };
         }
         return { text: parsed.text, from: "file", title, ...(saved ? { saved } : {}) };
       }
+      fallback = parsed.ok ? "parsed-empty" : "parse-failed";
     }
-  } catch {
+  } catch (err) {
     // The file is gone or unreadable: the stored chunks below are what is left.
+    fallback = "file-unreadable";
+    log.warn("impact run could not read the document's file", {
+      documentId,
+      error: (err as Error).message,
+    });
   }
+  log.info("impact run reads the document's chunks instead of its file", {
+    documentId,
+    reason: fallback,
+  });
   return {
     text: await storedChunkText(prisma, documentId),
     from: "chunks",
@@ -206,6 +225,14 @@ export function shouldReadWithModel(source: { fromDocument: boolean; text: strin
   return parseChangeRequest(source.text) === null;
 }
 
+/** #2276 — every line of a quote marked `> `, so a multi-line quote stays one quote. */
+function quoteLines(quote: string): string {
+  return quote
+    .split(/\r?\n/)
+    .map((line) => `> ${line}`.trimEnd())
+    .join("\n");
+}
+
 function clipTitle(s: string): string {
   const one = s.replace(/\s+/g, " ").trim();
   return one.length > TITLE_MAX ? `${one.slice(0, TITLE_MAX - 3)}...` : one;
@@ -222,12 +249,16 @@ export function changesFromReading(reading: DocumentReading): ChangedRequirement
     .filter((s) => REQUIREMENT_STATEMENT_KINDS.has(s.kind))
     .map((s) => {
       const where = formatHeadingPath(s.headingPath);
-      const body = `${s.statement}\n\nSection: ${where}\n> ${s.quote}`;
+      const body = `${s.statement}\n\nSection: ${where}\n${quoteLines(s.quote)}`;
       return {
         requirementId: null,
         title: clipTitle(s.statement),
         body,
-        changeType: detectChangeType(`${s.statement} ${s.quote}`),
+        // #2276 — typed from the source's own words under its heading, as the
+        // splitter types a paragraph (`extract-changes.ts`), never from the
+        // model's paraphrase: "kept for 30 days" restated as "removed after
+        // 30 days" read as a high-severity removal.
+        changeType: detectChangeType(`${s.headingPath.at(-1) ?? ""} ${s.quote}`),
         bodyDelta: body.length,
       };
     });

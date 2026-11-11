@@ -159,7 +159,9 @@ export function buildCodeAgentFusedQuery(input: {
     .filter((t) => t.length > 0)
     .join(". ");
   const composed = [metadata, reqText].filter((s) => s.length > 0).join(". ");
-  return composed.length > 0 ? composed : RETRIEVAL_QUERIES.code;
+  // #2276 — each requirement is bounded, but 24 long ones joined can still pass
+  // the embeddings sidecar's 32,768-character limit; the query is bounded too.
+  return composed.length > 0 ? requirementQueryText(composed) : RETRIEVAL_QUERIES.code;
 }
 
 /** 4 chars ≈ 1 token, matching `estTokens` in `../rag/fused-code-context.ts`. */

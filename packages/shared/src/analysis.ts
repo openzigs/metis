@@ -3390,6 +3390,61 @@ export function readDroppedCitations(value: unknown): AnalysisDroppedCitations[]
   return out;
 }
 
+function isCount(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
+/**
+ * Issue #2276 — a stored `requirementsLeftOut` value, shape-checked on read as
+ * {@link readDroppedCitations} is. Keeps a notice only when its stage is known,
+ * its counts are whole numbers and `leftOut` is a list; within it, only entries
+ * with a string `id` and `excerpt`. A notice left with nothing left out is dropped.
+ */
+export function readRequirementsLeftOut(value: unknown): RequirementsLeftOutNotice[] {
+  if (!Array.isArray(value)) return [];
+  const out: RequirementsLeftOutNotice[] = [];
+  for (const entry of value) {
+    if (entry === null || typeof entry !== "object") continue;
+    const { stage, analysedCount, totalCount, leftOut } = entry as Record<string, unknown>;
+    if (!(REQUIREMENT_LIMIT_STAGES as readonly unknown[]).includes(stage)) continue;
+    if (!isCount(analysedCount) || !isCount(totalCount) || !Array.isArray(leftOut)) continue;
+    const kept: RequirementLeftOut[] = [];
+    for (const r of leftOut) {
+      if (r === null || typeof r !== "object") continue;
+      const { id, excerpt } = r as Record<string, unknown>;
+      if (typeof id === "string" && typeof excerpt === "string") kept.push({ id, excerpt });
+    }
+    if (kept.length === 0) continue;
+    out.push({ stage: stage as RequirementLimitStage, analysedCount, totalCount, leftOut: kept });
+  }
+  return out;
+}
+
+/**
+ * Issue #2276 — a stored `findingsLeftOut` value, shape-checked on read. Keeps
+ * a notice only when `agentKey` is a non-empty string, both counts are whole
+ * numbers with more produced than kept, and `leftOutTitles` is a list; within
+ * it, only the string titles.
+ */
+export function readFindingsLeftOut(value: unknown): FindingsLeftOutNotice[] {
+  if (!Array.isArray(value)) return [];
+  const out: FindingsLeftOutNotice[] = [];
+  for (const entry of value) {
+    if (entry === null || typeof entry !== "object") continue;
+    const { agentKey, producedCount, keptCount, leftOutTitles } = entry as Record<string, unknown>;
+    if (typeof agentKey !== "string" || agentKey.length === 0) continue;
+    if (!isCount(producedCount) || !isCount(keptCount) || producedCount <= keptCount) continue;
+    if (!Array.isArray(leftOutTitles)) continue;
+    out.push({
+      agentKey,
+      producedCount,
+      keptCount,
+      leftOutTitles: leftOutTitles.filter((t): t is string => typeof t === "string"),
+    });
+  }
+  return out;
+}
+
 /**
  * PURE derivation of the enumerated degradation reasons from the capability
  * booleans/mode. Shared by the server (persisting the run's reasons) and the UI

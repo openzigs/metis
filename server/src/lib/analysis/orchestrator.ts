@@ -41,6 +41,8 @@ import {
   codeInvestigationContinueLimitReached,
   type CodeInvestigationGap,
   deriveCapabilityReasons,
+  type FindingsLeftOutNotice,
+  readFindingsLeftOut,
   isCodeCitation,
   MAX_REQUIREMENTS_FOR_RETRIEVAL,
   REQUIREMENT_RETRIEVAL_CONCURRENCY,
@@ -221,6 +223,7 @@ import {
   collectRecoveryAttempts,
   isJsonFinalAnswer,
   isSchemaValidFinalAnswer,
+  salvagedFindingsLeftOut,
   salvageWithRepair,
   selectSalvageSource,
   type AgenticDegradationReason,
@@ -958,6 +961,13 @@ export class AnalysisOrchestrator {
   private readonly retrievalHealths = new Map<string, AnalysisRetrievalHealth[]>();
   /** #1131 — per-run record of what each agentic code pass reached. */
   private readonly passReaches = new Map<string, CodePassReach[]>();
+  /**
+   * #2276 — the findings a single-agent regenerate's answer lost at the
+   * 50-finding cap. A regenerate has no capability tracker, so without this
+   * {@link noteFindingsLeftOut} recorded nothing and the stored notice for
+   * the regenerated agent went stale.
+   */
+  private readonly regenFindingsLeftOut = new Map<string, FindingsLeftOutNotice[]>();
 
   constructor(deps: OrchestratorDeps) {
     // #724 — every model call the analysis family makes through this provider
@@ -1228,6 +1238,8 @@ export class AnalysisOrchestrator {
     // #766 — the agent's card reads the re-run as running (with the code
     // agent's tool calls so far) instead of its stale `completed` result.
     beginLiveAgent(opts.analysisId, opts.agentKey, { rerun: true });
+    const findingsLeftOut: FindingsLeftOutNotice[] = [];
+    this.regenFindingsLeftOut.set(opts.analysisId, findingsLeftOut);
     try {
       reopened = await reopenForFollowUp(opts.analysisId);
       // #1145 — resolved inside the try, so a failure here is recorded and the
@@ -1330,6 +1342,12 @@ export class AnalysisOrchestrator {
               : {}),
           });
         }
+        await this.refreshFindingsLeftOut(
+          opts.analysisId,
+          opts.agentKey,
+          findingsLeftOut,
+          continuation !== null,
+        );
       }
       this.emitCompleted(opts.analysisId);
     } catch (err) {
@@ -1353,6 +1371,7 @@ export class AnalysisOrchestrator {
         // A failed regenerate leaves no tracker to finalize its pass health.
         this.retrievalHealths.delete(opts.analysisId);
         this.passReaches.delete(opts.analysisId);
+        this.regenFindingsLeftOut.delete(opts.analysisId);
         await closeFollowUpRun(opts.analysisId, reopened, outcome, delta);
         // Atomic write — increments columns server-side so two concurrent
         // regenerates can't lose tokens to a read/modify/write race.
@@ -3975,6 +3994,7 @@ export class AnalysisOrchestrator {
             );
             let salvaged = salvage.findings;
             fieldRepairs = salvage.fieldRepairs;
+            let leftOutTitles = salvage.leftOutTitles;
             // #766 — nothing recovered from the transcript path (the retry failed
             // outright, or answered in prose): ONE tool-free call over the task and
             // the untruncated evidence, without the transcript. 64 tool calls had
@@ -3996,8 +4016,14 @@ export class AnalysisOrchestrator {
               });
               salvaged = evidenceSalvage.findings;
               fieldRepairs = evidenceSalvage.fieldRepairs;
+              leftOutTitles = evidenceSalvage.leftOutTitles;
               extraUsage = evidenceSalvage.usage;
             }
+            // #2276 — the salvage keeps 50 findings; the valid ones past them are named.
+            this.noteFindingsLeftOut(
+              input.analysisId,
+              salvagedFindingsLeftOut(agentKey, salvaged.length, leftOutTitles),
+            );
             log.warn("Agentic code pass degraded; salvaging investigation", {
               analysisId: input.analysisId,
               reason,
@@ -5977,7 +6003,48 @@ export class AnalysisOrchestrator {
   ): void {
     if (!analysisId || !notice) return;
     const tracker = this.capabilities.get(analysisId);
-    if (tracker) recordFindingsLeftOut(tracker, notice);
+    if (tracker) {
+      recordFindingsLeftOut(tracker, notice);
+      return;
+    }
+    // #2276 — a regenerate collects its pass's notices for refreshFindingsLeftOut.
+    if (notice.producedCount > notice.keptCount)
+      this.regenFindingsLeftOut.get(analysisId)?.push(notice);
+  }
+
+  /**
+   * #2276 — after a single-agent regenerate, the stored `findingsLeftOut`
+   * describes the regenerated agent's new answer: its earlier notices are
+   * replaced by what this pass cut (or removed, when it cut nothing). A
+   * continuation added to the code findings instead of replacing them, so it
+   * keeps the earlier notices and adds its own. Reasons are re-derived. No
+   * write when nothing changed; best-effort, like every capability write.
+   */
+  private async refreshFindingsLeftOut(
+    analysisId: string,
+    agentKey: string,
+    notices: readonly FindingsLeftOutNotice[],
+    continued: boolean,
+  ): Promise<void> {
+    let capability: AnalysisCapability | null;
+    try {
+      capability = await getAnalysisCapability(analysisId);
+    } catch (err) {
+      log.warn("Capability read failed", { analysisId, error: (err as Error).message });
+      return;
+    }
+    if (!capability) return;
+    const prev = readFindingsLeftOut(capability.findingsLeftOut);
+    const kept = continued ? prev : prev.filter((n) => n.agentKey !== agentKey);
+    if (kept.length === prev.length && notices.length === 0) return;
+    const next: AnalysisCapability = { ...capability };
+    const findingsLeftOut = [...kept, ...notices];
+    if (findingsLeftOut.length > 0) next.findingsLeftOut = findingsLeftOut;
+    else delete next.findingsLeftOut;
+    await this.persistAndEmitCapability(analysisId, {
+      ...next,
+      reasons: deriveCapabilityReasons(next),
+    });
   }
 
   /**

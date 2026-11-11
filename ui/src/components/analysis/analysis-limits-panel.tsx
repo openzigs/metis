@@ -11,11 +11,11 @@
  * names every requirement and finding that was left out. It renders nothing on
  * a run where no limit was reached.
  */
-import type {
-  AnalysisCapability,
-  FindingsLeftOutNotice,
-  RequirementLimitStage,
-  RequirementsLeftOutNotice,
+import {
+  readFindingsLeftOut,
+  readRequirementsLeftOut,
+  type AnalysisCapability,
+  type RequirementLimitStage,
 } from "@metis/shared";
 
 interface Props {
@@ -33,12 +33,9 @@ function plural(n: number, one: string, many: string): string {
 }
 
 export function AnalysisLimitsPanel({ capability }: Props): React.ReactElement | null {
-  const requirements: RequirementsLeftOutNotice[] = Array.isArray(capability?.requirementsLeftOut)
-    ? capability.requirementsLeftOut.filter((n) => n.leftOut.length > 0)
-    : [];
-  const findings: FindingsLeftOutNotice[] = Array.isArray(capability?.findingsLeftOut)
-    ? capability.findingsLeftOut.filter((n) => n.producedCount > n.keptCount)
-    : [];
+  // #2276 — the stored record is unchecked JSON: a malformed entry is skipped, not rendered.
+  const requirements = readRequirementsLeftOut(capability?.requirementsLeftOut);
+  const findings = readFindingsLeftOut(capability?.findingsLeftOut);
   if (requirements.length === 0 && findings.length === 0) return null;
 
   return (
