@@ -11,7 +11,8 @@ import { MAX_PDF_PAGES } from "@metis/shared";
 import { createChildLogger } from "../../logger.js";
 import { exceedsPdfPageCap } from "../../documents/pdf-page-bound.js";
 import type { JiraClient } from "./jira-client.js";
-import type { AIProvider, ChatMessage } from "../../ai/types.js";
+import type { AIProvider } from "../../ai/types.js";
+import { buildImageDescriptionMessages } from "../../documents/image-description.js";
 
 const log = createChildLogger("jira-attachment-extractor");
 
@@ -119,28 +120,8 @@ async function extractImageDescription(
   const base64 = buffer.toString("base64");
   const mimeType = meta.mimeType.toLowerCase();
 
-  const messages: ChatMessage[] = [
-    {
-      role: "system",
-      content:
-        "You are an assistant that describes images found in software requirements documents. " +
-        "Extract any visible text, diagrams, tables, flowcharts, wireframes, or specifications. " +
-        "Be concise but thorough.",
-    },
-    {
-      role: "user",
-      content: [
-        {
-          type: "text",
-          text: "Describe this image in the context of a software requirements document. Extract any visible text, diagrams, tables, or specifications.",
-        },
-        {
-          type: "image_url",
-          image_url: { url: `data:${mimeType};base64,${base64}` },
-        },
-      ],
-    },
-  ];
+  // #2232 — the same prompt Word-document images are described with.
+  const messages = buildImageDescriptionMessages(mimeType, base64);
 
   const response = await aiProvider.chat(messages, { disableTools: true });
   return response.content;

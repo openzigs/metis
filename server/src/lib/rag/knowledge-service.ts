@@ -52,6 +52,8 @@ import {
   type VectorStore,
 } from "./vector-store.js";
 import { CONTENT_TYPE_MISMATCH, parseDocument } from "../documents/parsers.js";
+import type { ImageDescriber } from "../documents/docx-to-markdown.js";
+import { projectImageDescriber } from "../documents/image-description.js";
 import { asDocumentSource, type DocumentSource } from "../documents/document-source.js";
 import { embedInBoundedBatches } from "./embed-batched.js";
 import { getDocumentStorage, type StorageBackend } from "../documents/storage.js";
@@ -155,6 +157,12 @@ export interface KnowledgeServiceDeps {
    * `contextual-chunks.ts`.
    */
   contextualChunks?: { mode: ContextualChunksMode; generator?: ChunkContextGenerator };
+  /**
+   * #2232 — describes the images embedded in an ingested Word document. Defaults to the
+   * project's own provider when its model reports `vision`; the provider is resolved only if
+   * the document has an image. Tests inject a fake.
+   */
+  imageDescriber?: (projectId: string) => ImageDescriber;
 }
 
 export type KnowledgeEvent = {
@@ -430,9 +438,12 @@ export class KnowledgeService {
   /** Issue #2234 — the contextual-chunks mode and its model generator (lazily built). */
   private readonly contextualMode: ContextualChunksMode;
   private contextGenerator: ChunkContextGenerator | undefined;
+  /** #2232 — see {@link KnowledgeServiceDeps.imageDescriber}. */
+  private readonly imageDescriber: (projectId: string) => ImageDescriber;
 
   constructor(deps: KnowledgeServiceDeps = {}) {
     this.leaseBackend = deps.reindexLeaseBackend;
+    this.imageDescriber = deps.imageDescriber ?? ((projectId) => projectImageDescriber(projectId));
     this.embedder = deps.embedder ?? getEmbedder();
     this.store = deps.vectorStore ?? getVectorStore();
     this.storage = deps.storage ?? getDocumentStorage();
@@ -516,6 +527,7 @@ export class KnowledgeService {
       buffer,
       mimeType: doc.mimeType,
       filename: doc.filename,
+      describeImage: this.imageDescriber(doc.projectId),
     });
     if (!parsed.ok) {
       // Leave document in `pending` so a follow-up ingest can pick it up once the parser
