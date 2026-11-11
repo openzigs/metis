@@ -165,7 +165,16 @@ function recordingSearch(byProject: Record<string, FederatedHit[]>, failing: str
     if (ids.some((id) => failing.includes(id))) throw new Error("index offline");
     // One shared ranking: the first project's excerpts fill every slot.
     const hits = ids.flatMap((id) => byProject[id] ?? []).slice(0, opts.k);
-    return { hits, projectsSearched: ids, projectsFailed: [], totalHits: hits.length };
+    return {
+      hits,
+      projectsSearched: ids,
+      projectsFailed: [],
+      totalHits: hits.length,
+      projectsWithoutHits: [],
+      failures: [],
+      projectsRejected: 0,
+      projectNames: {},
+    };
   };
   return { search, calls };
 }
@@ -250,6 +259,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const off = recordingSearch(P4_HITS);
       const before = await run(reset(P4), { search: off.search });
       expect(off.calls).toHaveLength(1);
+      // #2238 — the shared search keeps every project's evidence: no relevance floor.
+      expect(off.calls[0]!.relevanceFloor).toBe(0);
       expect(reasonOf(before, P4, RC_P4_MAIL)).toBe("no-evidence-retrieved");
 
       const on = recordingSearch(P4_HITS);
@@ -302,6 +313,14 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         projectsSearched: [],
         projectsFailed: opts.projectIds ?? [],
         totalHits: 0,
+        projectsWithoutHits: [],
+        failures: (opts.projectIds ?? []).map((projectId) => ({
+          projectId,
+          projectName: projectId,
+          reason: "timeout" as const,
+        })),
+        projectsRejected: 0,
+        projectNames: {},
       });
       const a = await run(reset(P4), { search, limits: perRepo });
       expect(reasonOf(a, P4, RC_P4_CORE)).toBe("retrieval-failed");

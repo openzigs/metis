@@ -145,3 +145,71 @@ describe("parseChatGrounding — sources, reasons and coverage (#2241)", () => {
     expect(parseChatGrounding({ ...grounded, sourcesUsed: "a.md" })).toEqual(grounded);
   });
 });
+
+describe("parseChatGrounding — multi-product (#2238)", () => {
+  const projects = [
+    { projectId: "a", projectName: "Alpha", sources: 3 },
+    { projectId: "b", projectName: "Beta", sources: 0 },
+  ];
+
+  it("accepts a multi-product grounding, with and without the projects it could not search", () => {
+    for (const g of [
+      { status: "multi", projects },
+      { status: "multi", projects: [] },
+      {
+        status: "multi",
+        projects,
+        unsearched: [{ projectId: "c", projectName: "Gamma", reason: "timeout" }],
+        unavailable: 2,
+      },
+      {
+        status: "multi",
+        projects,
+        unsearched: [{ projectId: "c", projectName: "Gamma", reason: "error" }],
+      },
+    ]) {
+      expect(parseChatGrounding(g)).toEqual(g);
+    }
+  });
+
+  it("drops extra keys and an empty unsearched list", () => {
+    expect(
+      parseChatGrounding({
+        status: "multi",
+        projects: [{ projectId: "a", projectName: "Alpha", sources: 1, x: 1 }],
+        unsearched: [],
+        y: 2,
+      }),
+    ).toEqual({
+      status: "multi",
+      projects: [{ projectId: "a", projectName: "Alpha", sources: 1 }],
+    });
+  });
+
+  it.each([
+    ["no projects list", { status: "multi" }],
+    ["a project without a name", { status: "multi", projects: [{ projectId: "a", sources: 1 }] }],
+    [
+      "a project with a negative count",
+      { status: "multi", projects: [{ projectId: "a", projectName: "A", sources: -1 }] },
+    ],
+    ["a project that is not an object", { status: "multi", projects: [7] }],
+    ["unsearched that is not a list", { status: "multi", projects: [], unsearched: "c" }],
+    [
+      "an unsearched project with an unknown reason",
+      {
+        status: "multi",
+        projects: [],
+        unsearched: [{ projectId: "c", projectName: "C", reason: "slow" }],
+      },
+    ],
+    [
+      "an unsearched project without an id",
+      { status: "multi", projects: [], unsearched: [{ projectName: "C", reason: "timeout" }] },
+    ],
+    ["a zero unavailable count", { status: "multi", projects: [], unavailable: 0 }],
+    ["a fractional unavailable count", { status: "multi", projects: [], unavailable: 1.5 }],
+  ])("rejects %s", (_label, value) => {
+    expect(parseChatGrounding(value)).toBeNull();
+  });
+});

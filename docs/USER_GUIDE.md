@@ -3554,13 +3554,15 @@ Both fields persist on the `Project` row and are read at session-create time. Th
 
 ### 14.6 Project Scope and Grounding
 
-Chat answers from a project's knowledge base only when the chat is scoped to **one project**. With the scope on **All projects**, no project is searched: the model answers from its own general knowledge, which can sound confident while naming files or functions that do not exist in your code. [#18]
+Chat answers from your projects' knowledge bases when the chat is scoped to **one project**, to **several projects**, or to **every project in your workspace** (#2238). With the scope on **All projects**, no project is searched: the model answers from its own general knowledge, which can sound confident while naming files or functions that do not exist in your code. [#18]
 
 **Choosing the scope:**
 
 1. In the Chat page, find the scope pill in the header.
-2. Click it and pick one project, or **All my projects** for an unscoped chat.
-3. Your choice is remembered in your browser. If you have never picked one and can reach exactly one project, chat starts scoped to it; otherwise it starts on **All projects**.
+2. Click it and tick one or more projects, or pick **Every project in _Workspace_** (the workspace shown in the top bar), or **All my projects** for an unscoped chat. Tick several projects to ask one question about all of them — for example "what does this FRD change in A and B?".
+3. Your choice is remembered in your browser. Chat opens on the project active in the top bar; a remembered selection of several projects that includes it, or the top bar's workspace, is kept. If you have never picked one, chat starts scoped to the active project, or to **All projects** if you have none.
+
+A new scope starts a new chat on your next message; the conversation you had open stays in Sessions.
 
 Opening Chat from a project (`/chat?projectId=…`) scopes it to that project.
 
@@ -3576,16 +3578,19 @@ Opening Chat from a project (`/chat?projectId=…`) scopes it to that project.
   - A reply that failed or was stopped early shows no label; its error says what happened.
   - The label keeps the project's name from when the reply was written, so it still reads correctly after a rename or deletion.
   - **Not grounded — no project selected** — the chat is unscoped.
+  - In a chat over several projects (or a workspace): **Grounded in _A_ (N sources), _B_ (M sources)** names each project the answer drew on. **nothing relevant in _C_** names a project that was searched but had nothing close enough to the question; **_D_ not searched (timed out)** names one whose search did not finish this turn — the answer is told to say so rather than answer for it; **N products no longer available to you** counts projects in the chat's scope you can no longer open. The label is shown as a warning whenever a project could not be searched, or nothing matched.
 
   Replies written before this label existed show none.
 
+**How a question over several projects is answered (#2238):** every turn searches each project in the scope, again checking that you can still open it. Each project's matches are compared on how close they are to the question, and a project whose best match is well below the best project's contributes nothing, so a project that has nothing to do with the question does not slip its top excerpt into the answer (`CHAT_MULTI_PROJECT_RELEVANCE_FLOOR_PCT`, default 75). The projects that remain share the excerpts. Every excerpt is labelled with its project, and the model is told to say which project each statement comes from, and never to carry a fact from one project over to another.
+
 **Follow-up questions.** A scoped chat searches the project with the conversation, not just your last message. When you answer a question the model asked ("Which product do you mean?" — "Server"), or ask a short follow-up ("and for annual plans?"), the search reads your message together with the question before it. Your own words always run as a search of their own as well, and they count for more: excerpts found only through the earlier question take at most 3 of the 8 places. A question that names its own subject ("Are there any GDPR requirements in the onboarding spec?") is searched on its own, even right after the model asked you something. A question with several parts (a numbered list, or several questions in one message) searches each part, and the results are merged. The excerpts an answer cited (by its `[n]` number, its file name or its location) are given to the model again on your next message, marked as cited in the previous answer, so it can build on them. They are read again when you send it: an excerpt you can no longer see, or whose document was deleted, is not brought back. Each excerpt brought back counts toward the **N sources** in the label. [#2240]
 
-**When the sources don't answer, or the question is unclear.** A scoped chat, and the AI in a discussion, answers from the project's sources. When they don't support an answer, the reply says so ("the sources don't show this") and names what is missing, such as the document, rule or code that would answer it, instead of guessing from general knowledge. When only part of a question is supported, it answers that part and says which part is not. When a question could mean more than one thing (which product, which rule, which version), it asks you one specific question listing the options it found, and waits for your answer. An unscoped chat ("All projects") has no project sources, so this does not apply there. [#2241]
+**When the sources don't answer, or the question is unclear.** A chat scoped to one project or several, and the AI in a discussion, answers from the project's sources. When they don't support an answer, the reply says so ("the sources don't show this") and names what is missing, such as the document, rule or code that would answer it, instead of guessing from general knowledge. When only part of a question is supported, it answers that part and says which part is not. When a question could mean more than one thing (which product, which rule, which version), it asks you one specific question listing the options it found, and waits for your answer. An unscoped chat ("All projects") has no project sources, so this does not apply there. [#2241]
 
-**Relevance floor.** Automatic retrieval sets aside any excerpt whose relevance to the question is below a floor, so an unrelated excerpt is never presented to the model as evidence. A keyword-only match is kept only when some other excerpt cleared the floor. The floor is `CHAT_RETRIEVAL_MIN_SCORE` (default 0.55; 0 turns it off). The default was measured with the default embedding model: it was the highest floor that set aside none of the excerpts a correct answer needed on the BA question set. An administrator who changes the embedding model should measure it again (`pnpm eval:ba-qa --floor-sweep`). [#2241]
+**Relevance floor.** In a chat scoped to one project, automatic retrieval sets aside any excerpt whose relevance to the question is below a floor, so an unrelated excerpt is never presented to the model as evidence. A keyword-only match is kept only when some other excerpt cleared the floor. The floor is `CHAT_RETRIEVAL_MIN_SCORE` (default 0.55; 0 turns it off). The default was measured with the default embedding model: it was the highest floor that set aside none of the excerpts a correct answer needed on the BA question set. An administrator who changes the embedding model should measure it again (`pnpm eval:ba-qa --floor-sweep`). [#2241]
 
-**Access control:** you can only scope a chat to a project you have been granted access to.
+**Access control:** you can only scope a chat to a project you have been granted access to, or to a workspace you are a member of. Access is checked again on every turn, and chunks restricted to other people are never searched for you.
 
 ---
 

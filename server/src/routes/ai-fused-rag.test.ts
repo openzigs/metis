@@ -267,6 +267,21 @@ describe("caching placement — fused block lands in the volatile tail (#700/#69
       projectId: null,
     });
     expect(unscoped.all.map((m) => m.content)).not.toContain(ANSWER_POLICY_INSTRUCTION);
+    // #2238 — a chat scoped to several products answers from their sources too.
+    const multi = await buildLibrarySystemMessages({
+      agentId: null,
+      loadedSkillIds: "[]",
+      projectId: null,
+      scopeProjectIds: JSON.stringify(["p1", "p2"]),
+    });
+    expect(multi.stable.map((m) => m.content)).toContain(ANSWER_POLICY_INSTRUCTION);
+    const workspace = await buildLibrarySystemMessages({
+      agentId: null,
+      loadedSkillIds: "[]",
+      projectId: null,
+      scopeWorkspaceId: "w1",
+    });
+    expect(workspace.stable.map((m) => m.content)).toContain(ANSWER_POLICY_INSTRUCTION);
   });
 
   it("keeps the citation-bearing lead byte-identical across two same-config requests", async () => {

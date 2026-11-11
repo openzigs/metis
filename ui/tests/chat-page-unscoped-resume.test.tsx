@@ -169,3 +169,40 @@ describe("<ChatPage /> — reloading an 'All projects' conversation (PR #1234 P1
     await waitFor(() => expect(selectorLabel()).toContain("Beta"));
   });
 });
+
+describe("<ChatPage /> — reloading a multi-product conversation (#2238)", () => {
+  it("resumes it in its scope when that scope includes the active project", async () => {
+    lastPicked({ mode: "selected", projectIds: ["p-1", "p-2"] });
+    aiClient.storeActiveSessionId("sess-stored");
+    resumeMock.mockResolvedValue({
+      session: storedSession({ scopeProjectIds: ["p-1", "p-2"] }),
+      messages: [{ role: "user", content: "a two-product question", ordinal: 1 }],
+    } as never);
+
+    render(<ChatPage />, { wrapper: makeWrapper({ withAuth: false }) });
+
+    await waitFor(() => expect(screen.getByText(/a two-product question/)).toBeInTheDocument());
+    await waitFor(() => expect(selectorLabel()).toContain("Alpha + Beta"));
+    expect(aiClient.loadActiveSessionId()).toBe("sess-stored");
+    expect(screen.queryByTestId("chat-ungrounded-notice")).not.toBeInTheDocument();
+  });
+
+  it("does not resume it into 'All projects' as if it were unscoped", async () => {
+    lastPicked({ mode: "all", projectIds: [] });
+    localStorage.removeItem("metis.activeProjectId");
+    vi.mocked(apiFetch).mockImplementation(
+      async (path: string) => (path === "/projects" ? { items: [] } : PROJECTS) as never,
+    );
+    aiClient.storeActiveSessionId("sess-stored");
+    resumeMock.mockResolvedValue({
+      session: storedSession({ scopeProjectIds: ["p-1", "p-2"] }),
+      messages: [{ role: "user", content: "a two-product question", ordinal: 1 }],
+    } as never);
+
+    render(<ChatPage />, { wrapper: makeWrapper({ withAuth: false }) });
+
+    await waitFor(() => expect(resumeMock).toHaveBeenCalled());
+    await waitFor(() => expect(aiClient.loadActiveSessionId()).toBeNull());
+    expect(screen.queryByText(/a two-product question/)).not.toBeInTheDocument();
+  });
+});

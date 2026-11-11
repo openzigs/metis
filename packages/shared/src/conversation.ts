@@ -73,7 +73,13 @@ export type TranscriptRole = "user" | "assistant" | "system";
  *   failed, or no tool found anything). This does NOT mean the answer came from
  *   general knowledge: the model may still have called other tools, such as an
  *   MCP server, whose content is not known to be the project's (PR #437 review);
- * - `unscoped`: the session has no project ("All projects") and no retrieval ran.
+ * - `unscoped`: the session has no project ("All projects") and no retrieval ran;
+ * - `multi` (#2238): the session is scoped to several projects (or a
+ *   workspace) and retrieval searched each of them. `projects` lists every
+ *   project searched with how many of its excerpts reached the prompt (`0`:
+ *   searched, nothing included); `unsearched` the ones that timed out or
+ *   failed, by name; `unavailable` how many in the scope the caller can no
+ *   longer reach (a count: their names are not disclosed).
  *
  * Recorded on the assistant row as the turn is answered and streamed to the
  * client as a `grounding` event, so a reply says what it was based on both
@@ -118,7 +124,27 @@ export type ChatGrounding =
       belowFloor?: number;
       coverage?: GroundingCoverage;
     }
-  | { status: "unscoped" };
+  | { status: "unscoped" }
+  | {
+      status: "multi";
+      projects: ChatGroundingProject[];
+      unsearched?: ChatGroundingUnsearched[];
+      unavailable?: number;
+    };
+
+/** #2238 — one project a multi-product turn searched. */
+export interface ChatGroundingProject {
+  projectId: string;
+  projectName: string;
+  sources: number;
+}
+
+/** #2238 — one project a multi-product turn could not search, and why. */
+export interface ChatGroundingUnsearched {
+  projectId: string;
+  projectName: string;
+  reason: "timeout" | "error";
+}
 
 /** #2241 — one file or document a reply's excerpts came from. */
 export interface GroundingSource {
@@ -238,9 +264,40 @@ export function parseChatGrounding(value: unknown): ChatGrounding | null {
         ...(coverage ? { coverage } : {}),
       };
     }
+    case "multi":
+      return parseMultiGrounding(g);
     default:
       return null;
   }
+}
+
+/** #2238 — the `multi` shape, or `null` when any part of it is malformed. */
+function parseMultiGrounding(g: Record<string, unknown>): ChatGrounding | null {
+  if (!Array.isArray(g.projects)) return null;
+  const projects: ChatGroundingProject[] = [];
+  for (const raw of g.projects as unknown[]) {
+    const p = (raw ?? {}) as Record<string, unknown>;
+    if (!nonEmpty(p.projectId) || !nonEmpty(p.projectName) || !count(p.sources)) return null;
+    projects.push({ projectId: p.projectId, projectName: p.projectName, sources: p.sources });
+  }
+  let unsearched: ChatGroundingUnsearched[] | undefined;
+  if (g.unsearched !== undefined) {
+    if (!Array.isArray(g.unsearched)) return null;
+    unsearched = [];
+    for (const raw of g.unsearched as unknown[]) {
+      const u = (raw ?? {}) as Record<string, unknown>;
+      if (!nonEmpty(u.projectId) || !nonEmpty(u.projectName)) return null;
+      if (u.reason !== "timeout" && u.reason !== "error") return null;
+      unsearched.push({ projectId: u.projectId, projectName: u.projectName, reason: u.reason });
+    }
+  }
+  if (g.unavailable !== undefined && !(count(g.unavailable) && g.unavailable > 0)) return null;
+  return {
+    status: "multi",
+    projects,
+    ...(unsearched && unsearched.length > 0 ? { unsearched } : {}),
+    ...(g.unavailable !== undefined ? { unavailable: g.unavailable as number } : {}),
+  };
 }
 
 /** `summary` rows are written by compaction and stand in for the rows they fold. */
@@ -368,6 +425,10 @@ export interface ResumeSessionResponse {
     status: string;
     forkedFromSessionId: string | null;
     forkedFromOrdinal: number | null;
+    /** #2238 — the 2+ projects a multi-product session searches (`projectId` is null). */
+    scopeProjectIds: string[] | null;
+    /** #2238 — the workspace a workspace-scoped session searches (`projectId` is null). */
+    scopeWorkspaceId: string | null;
     updatedAt: string;
     /**
      * #149 — non-null when the session can be read but can no longer take a

@@ -7,6 +7,10 @@
  * Falsifiable against `main`: `toggleProject` accumulated ids into a Set, so
  * clicking two projects produced `projectIds.length === 2`; `normaliseScope`
  * did not exist; and the button read "2 projects" rather than naming one.
+ *
+ * #2238 — chat now searches every project of a multi-product scope, so the
+ * multi-select is back on purpose: the tests that pinned "never two at once"
+ * now pin that two are kept and named, and still that the label names projects.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
@@ -47,10 +51,10 @@ afterEach(() => {
 });
 
 describe("normaliseScope (#1368)", () => {
-  it("collapses a persisted multi-project selection to a single project", () => {
-    expect(normaliseScope({ mode: "selected", projectIds: ["p1", "p2", "p3"] })).toEqual({
+  it("keeps a persisted multi-project selection, de-duplicated (#2238)", () => {
+    expect(normaliseScope({ mode: "selected", projectIds: ["p1", "p2", "p1"] })).toEqual({
       mode: "selected",
-      projectIds: ["p1"],
+      projectIds: ["p1", "p2"],
     });
   });
 
@@ -90,24 +94,27 @@ describe("ProjectScopeSelector (#1368)", () => {
     });
   });
 
-  it("selecting a second project REPLACES the first — never two at once", async () => {
+  it("selecting a second project ADDS it to the scope (#2238)", async () => {
     const onChange = vi.fn();
     renderSelector({ mode: "selected", projectIds: ["p1"] }, onChange);
     await openDropdown();
-    const invoicing = await screen.findByRole("radio", { name: /Invoicing/ });
+    const invoicing = await screen.findByRole("checkbox", { name: /Invoicing/ });
     fireEvent.click(invoicing);
-    expect(onChange).toHaveBeenCalledWith({ mode: "selected", projectIds: ["p2"] });
-    const scopes = onChange.mock.calls.map((c) => c[0] as ProjectScope);
-    expect(scopes.every((s) => s.projectIds.length <= 1)).toBe(true);
+    expect(onChange).toHaveBeenCalledWith({ mode: "selected", projectIds: ["p1", "p2"] });
   });
 
-  it("offers radios, not checkboxes, so the multi state is unreachable in the DOM", async () => {
-    renderSelector({ mode: "all", projectIds: [] });
+  it("offers a checkbox per project, ticked for each in the scope (#2238)", async () => {
+    renderSelector({ mode: "selected", projectIds: ["p1", "p2"] });
     await openDropdown();
     await waitFor(() => {
-      expect(screen.getAllByRole("radio")).toHaveLength(PROJECTS.length);
+      expect(screen.getAllByRole("checkbox")).toHaveLength(PROJECTS.length);
     });
-    expect(screen.queryAllByRole("checkbox")).toHaveLength(0);
+    for (const box of screen.getAllByRole("checkbox")) expect(box).toBeChecked();
+    expect(screen.queryAllByRole("radio")).toHaveLength(0);
+    // Two projects are named, never counted.
+    expect(screen.getByTestId("project-scope-selector").textContent).toContain(
+      "OrderBatch + Invoicing",
+    );
   });
 
   it("clears back to 'all projects' via the All my projects option", async () => {
