@@ -113,6 +113,49 @@ export interface ClarificationRerunInput {
   model?: string;
   /** The records whose answer is new or changed. */
   records: readonly StoredClarification[];
+  /**
+   * Every answer the analysis holds for a requirement's wording, in the
+   * dialog's order. A re-decided requirement's text carries all of them, not
+   * only this round's, so an answer from an earlier round is not lost.
+   */
+  settled?: readonly SettledRequirementAnswer[];
+}
+
+/**
+ * One answer the analysis holds for a requirement's wording, whether or not it
+ * changed this round: what the requirement body carries
+ * (`applyClarificationsToRequirements`), so a re-decision judges the same text.
+ */
+export interface SettledRequirementAnswer {
+  /** The question key, or `record:<id>` for an answer reused from a record. */
+  key: string;
+  question: string;
+  answer: string;
+  requirementIds: readonly string[];
+}
+
+/**
+ * The answers requirement `requirementId`'s text carries: every settled answer
+ * for it, in order, with each changed record in place of the earlier version
+ * of the same question (matched by question key or record id); a changed
+ * record not among them is appended.
+ */
+export function answersForRequirement(
+  requirementId: string,
+  settled: readonly SettledRequirementAnswer[],
+  changed: readonly StoredClarification[],
+): Array<{ key: string; question: string; answer: string }> {
+  const out = settled
+    .filter((a) => a.requirementIds.includes(requirementId))
+    .map(({ key, question, answer }) => ({ key, question, answer }));
+  for (const r of changed) {
+    if (r.ambiguityField === null || !r.requirementIds.includes(requirementId)) continue;
+    const next = { key: r.questionKey, question: r.question, answer: r.answer };
+    const at = out.findIndex((a) => a.key === r.questionKey || a.key === `record:${r.id}`);
+    if (at === -1) out.push(next);
+    else out[at] = next;
+  }
+  return out;
 }
 
 export interface ClarificationRerunDeps {
@@ -254,15 +297,20 @@ async function rerunGoverning(
       r.title,
     ]),
   );
-  // Applicability entry id → every answer that applies to it.
-  const targets = new Map<string, StoredClarification[]>();
-  for (const [id, answers] of byRequirement) {
+  // Applicability entry id → every answer its requirement now carries: the
+  // settled ones from earlier rounds as well as this round's.
+  const targets = new Map<string, Array<{ key: string; question: string; answer: string }>>();
+  for (const id of byRequirement.keys()) {
     const entry = applicabilityEntryFor(stored, { id, title: titles.get(id) });
     if (!entry) {
       result.governingUnmatched.push(id);
       continue;
     }
-    targets.set(entry, [...(targets.get(entry) ?? []), ...answers]);
+    const answers = targets.get(entry) ?? [];
+    for (const a of answersForRequirement(id, input.settled ?? [], input.records)) {
+      if (!answers.some((b) => b.key === a.key)) answers.push(a);
+    }
+    targets.set(entry, answers);
   }
   if (targets.size === 0) return;
 

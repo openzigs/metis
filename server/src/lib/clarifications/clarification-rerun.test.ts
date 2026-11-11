@@ -27,6 +27,7 @@ vi.mock("../analysis/analysis-service.js", () => ({
 
 const {
   CLARIFIED_TEXT_MARKER,
+  answersForRequirement,
   applicabilityEntryFor,
   baseRequirementText,
   clarifiedRequirementText,
@@ -406,5 +407,98 @@ describe("#2236 — rerunAfterClarification", () => {
     );
     expect(result.codeMapped).toBe(0);
     expect(result.governingRequirements).toEqual([]);
+  });
+});
+
+describe("#2236 — a later round keeps the answers of earlier rounds", () => {
+  const Q1 = {
+    key: "k1",
+    question: "How long must a password be?",
+    answer: "At least 12 characters.",
+    requirementIds: ["R-1"],
+  };
+  const Q2 = {
+    key: "k2",
+    question: "Must a password contain a digit?",
+    answer: "Yes, at least one digit.",
+    requirementIds: ["R-1"],
+  };
+  const round2 = record({
+    id: "rec-2",
+    questionKey: "k2",
+    questionId: "q2",
+    question: Q2.question,
+    answer: Q2.answer,
+    ambiguityField: "complexity",
+  });
+
+  it("answersForRequirement keeps every settled answer, replacing a changed one in place", () => {
+    expect(answersForRequirement("R-1", [Q1, Q2], [round2]).map((a) => a.answer)).toEqual([
+      Q1.answer,
+      Q2.answer,
+    ]);
+    // A changed answer to the same question replaces the old one, not duplicated.
+    const changedQ1 = record({ answer: "At least 15 characters." });
+    expect(answersForRequirement("R-1", [Q1, Q2], [changedQ1]).map((a) => a.answer)).toEqual([
+      "At least 15 characters.",
+      Q2.answer,
+    ]);
+    // A reused answer is matched by its record id.
+    const reused = { ...Q1, key: "record:rec-1" };
+    expect(answersForRequirement("R-1", [reused], [changedQ1]).map((a) => a.answer)).toEqual([
+      "At least 15 characters.",
+    ]);
+    // A changed answer with no settled counterpart is appended.
+    expect(answersForRequirement("R-1", [], [round2]).map((a) => a.answer)).toEqual([Q2.answer]);
+    // Another requirement's answers, and governing answers, are not carried.
+    expect(answersForRequirement("R-2", [Q1], [round2])).toEqual([]);
+    expect(answersForRequirement("R-1", [], [record({ ambiguityField: null })])).toEqual([]);
+  });
+
+  async function rerunRound(input: {
+    records: StoredClarification[];
+    settled: Array<typeof Q1>;
+  }): Promise<string[]> {
+    const texts: string[] = [];
+    const decide = vi.fn(async (r: { id: string; text: string }) => {
+      texts.push(r.text);
+      return decided(r.id, "applies");
+    });
+    const produceFindings = vi.fn(async (run: ProduceInput) => {
+      await run.prepare?.();
+      await run.afterProduce?.(RUN_OK);
+      return RUN_OK;
+    });
+    await rerunAfterClarification(
+      { analysisId: "a1", projectId: "p1", provider, ...input },
+      { mapToCode: vi.fn(), applicabilityHookFor: async () => ({ decide }), produceFindings },
+    );
+    return texts;
+  }
+
+  it("round 2's re-decision judges, and stores, both rounds' answers", async () => {
+    // Round 1 answers Q1.
+    await rerunRound({ records: [record()], settled: [Q1] });
+    // Round 2 answers Q2 for the same requirement; Q1 is unchanged and settled.
+    const [text] = await rerunRound({ records: [round2], settled: [Q1, Q2] });
+    expect(text).toContain(`A: ${Q1.answer}`);
+    expect(text).toContain(`A: ${Q2.answer}`);
+    expect(text!.indexOf(Q1.answer)).toBeLessThan(text!.indexOf(Q2.answer));
+    const stored = applicability.stored!.requirements.find((r) => r.requirementId === "AC-1")!;
+    expect(stored.text).toBe(text);
+    expect(baseRequirementText(stored.text)).toBe(STORED.requirements[0]!.text);
+  });
+
+  it("a changed answer to the same question replaces the earlier one in the decided text", async () => {
+    await rerunRound({ records: [record()], settled: [Q1, Q2] });
+    const changed = record({ answer: "At least 15 characters." });
+    const [text] = await rerunRound({
+      records: [changed],
+      settled: [{ ...Q1, answer: changed.answer }, Q2],
+    });
+    expect(text).toContain("A: At least 15 characters.");
+    expect(text).not.toContain(Q1.answer);
+    expect(text!.match(/- Q: How long must a password be\?/g)).toHaveLength(1);
+    expect(text).toContain(`A: ${Q2.answer}`);
   });
 });

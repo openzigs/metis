@@ -48,6 +48,8 @@ const { writeDialogState } = await import("../src/lib/analysis/clarification-dia
 const { persistClarificationKnowledge, priorAnswerSourceFor, recordAnalysisClarifications } =
   await import("../src/lib/clarifications/analysis-clarifications.js");
 const { indexClarification } = await import("../src/lib/clarifications/clarification-knowledge.js");
+const { rerunAfterClarification } =
+  await import("../src/lib/clarifications/clarification-rerun.js");
 const { listClarifications } = await import("../src/lib/clarifications/clarification-records.js");
 const { recordSpecKitClarification } =
   await import("../src/lib/clarifications/spec-kit-clarifications.js");
@@ -60,6 +62,7 @@ const PRODUCT = "prod-2236";
 const A1 = "ana-2236-1";
 const A2 = "ana-2236-2";
 const A3 = "ana-2236-3";
+const A4 = "ana-2236-4";
 const B1 = "ana-2236-b";
 
 const PARAGRAPH = "Passwords must be long enough.";
@@ -188,6 +191,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         [A1, PA],
         [A2, PA],
         [A3, PA],
+        [A4, PA],
         [B1, PB],
       ] as const) {
         await db.analysis.create({
@@ -426,6 +430,125 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(await persistClarificationKnowledge(input, { index, rerun })).toEqual([]);
       expect(index).toHaveBeenCalledTimes(1);
       expect(rerun).toHaveBeenCalledTimes(1);
+    });
+
+    it("a later round's re-decision judges, and stores, every round's answers to the requirement", async () => {
+      await db.analysis.update({
+        where: { id: A4 },
+        data: {
+          metadata: JSON.stringify({
+            structuredRequirements: requirements("R-1"),
+            governingApplicability: {
+              decidedAt: "2026-11-01T00:00:00.000Z",
+              requirements: [{ requirementId: "R-1", text: PARAGRAPH, decisions: [] }],
+            },
+          }),
+        },
+      });
+      const q = (id: string, field: string, question: string, answer: string) => ({
+        id,
+        requirementId: "R-1",
+        ambiguityField: field,
+        question,
+        context: "",
+        answer,
+      });
+      const round1 = {
+        round: 1,
+        questions: [q("q1", "minimumLength", "How long must a password be?", "12 characters.")],
+        answers: [{ questionId: "q1", answer: "12 characters." }],
+      };
+      const round2 = (answer: string) => ({
+        round: 2,
+        questions: [q("q2", "complexity", "Must a password contain a digit?", answer)],
+        answers: [{ questionId: "q2", answer }],
+      });
+      const dialog = (rounds: ClarificationState["rounds"]): ClarificationState => ({
+        analysisId: A4,
+        currentRound: rounds.length,
+        maxRounds: 3,
+        rounds,
+        resolvedAmbiguities: [],
+        answeredAmbiguities: [],
+        escalatedToSonnet: false,
+        completed: false,
+      });
+      const texts: string[] = [];
+      const decide = vi.fn(async (r: { id: string; text: string }) => {
+        texts.push(r.text);
+        return {
+          requirementId: r.id,
+          decisions: [],
+          rulesScreened: 0,
+          screenBatches: 0,
+          candidates: 0,
+          reasked: 0,
+          screenReasked: 0,
+        };
+      });
+      const run = {
+        requirements: 1,
+        written: 0,
+        removed: 0,
+        decisionsCleared: 0,
+        unverifiedCitations: 0,
+        noEvidenceDemoted: 0,
+        failed: 0,
+      };
+      const rerun: typeof rerunAfterClarification = (input) =>
+        rerunAfterClarification(input, {
+          mapToCode: async () => [],
+          applicabilityHookFor: async () => ({ decide }),
+          produceFindings: async (p) => {
+            await p.prepare?.();
+            await p.afterProduce?.(run);
+            return run;
+          },
+        });
+      const index = vi.fn(async () => null);
+      const input = {
+        projectId: PA,
+        analysisId: A4,
+        answeredById: USER,
+        provider: questionModel(),
+      };
+      const storedText = async () =>
+        (
+          JSON.parse((await db.analysis.findUnique({ where: { id: A4 } }))!.metadata!) as {
+            governingApplicability: { requirements: Array<{ text: string }> };
+          }
+        ).governingApplicability.requirements[0]!.text;
+      const bodyAnswers = (s: ClarificationState) =>
+        collectAnsweredQuestions(s)
+          .filter((a) => a.requirementId === "R-1")
+          .map((a) => a.answer);
+
+      // Round 1 answers Q1.
+      await writeDialogState(A4, dialog([round1]));
+      await persistClarificationKnowledge(input, { index, rerun });
+      expect(texts[0]).toContain("A: 12 characters.");
+
+      // Round 2 answers Q2 for the same requirement; Q1's answer is unchanged and settled.
+      const two = dialog([round1, round2("Yes, one digit.")]);
+      await writeDialogState(A4, two);
+      const changed = await persistClarificationKnowledge(input, { index, rerun });
+      expect(changed.map((r) => r.answer)).toEqual(["Yes, one digit."]);
+      const decided = texts[1]!;
+      expect(decided).toContain("A: 12 characters.");
+      expect(decided).toContain("A: Yes, one digit.");
+      // The decided text carries what the requirement body carries.
+      for (const answer of bodyAnswers(two)) expect(decided).toContain(`A: ${answer}`);
+      expect(await storedText()).toBe(decided);
+
+      // Q2's answer changes: it replaces the earlier one, and Q1's stays.
+      await writeDialogState(A4, dialog([round1, round2("Yes, two digits.")]));
+      await persistClarificationKnowledge(input, { index, rerun });
+      const third = texts[2]!;
+      expect(third).toContain("A: 12 characters.");
+      expect(third).toContain("A: Yes, two digits.");
+      expect(third).not.toContain("one digit");
+      expect(third.match(/- Q: Must a password contain a digit\?/g)).toHaveLength(1);
+      expect(await storedText()).toBe(third);
     });
 
     it("a Spec Kit /clarify answer is a record of the project, keyed by its feature", async () => {

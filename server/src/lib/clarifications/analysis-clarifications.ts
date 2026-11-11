@@ -20,7 +20,7 @@ import {
   withdrawClarification,
   type ClarificationIndexDeps,
 } from "./clarification-knowledge.js";
-import { rerunAfterClarification } from "./clarification-rerun.js";
+import { rerunAfterClarification, type SettledRequirementAnswer } from "./clarification-rerun.js";
 import {
   findSettledClarifications,
   projectProductIds,
@@ -94,6 +94,44 @@ export function answeredClarificationInputs(
     }
   }
   return [...out.values()];
+}
+
+/**
+ * Every answer the dialog holds for a requirement's wording, in the dialog's
+ * order: each question's latest answer (a later round's answer to the same
+ * question replaces the earlier one in place), then each answer reused from a
+ * project record. Governing answers settle rules, not wording, and are left
+ * out. These are the answers `applyClarificationsToRequirements` writes into
+ * the requirement body, so a re-decision judges what the body says.
+ */
+export function settledRequirementAnswers(
+  state: ClarificationState,
+  requirements: StructuredRequirements | undefined,
+): SettledRequirementAnswer[] {
+  const out: SettledRequirementAnswer[] = [];
+  const inputs = answeredClarificationInputs(state, requirements, {
+    analysisId: "",
+    answeredById: null,
+    productIds: [],
+    now: new Date(0),
+  });
+  for (const i of inputs) {
+    if (i.ambiguityField == null) continue;
+    out.push({
+      key: i.questionKey,
+      question: i.question,
+      answer: i.answer,
+      requirementIds: i.requirementIds,
+    });
+  }
+  for (const r of state.reused ?? []) {
+    const answer = r.answer.trim();
+    if (r.governing || answer.length === 0) continue;
+    const key = `record:${r.recordId}`;
+    if (out.some((a) => a.key === key)) continue;
+    out.push({ key, question: r.question, answer, requirementIds: [r.requirementId] });
+  }
+  return out;
 }
 
 export interface RecordAnalysisClarificationsInput {
@@ -209,12 +247,13 @@ export async function persistClarificationKnowledge(
   try {
     const state = await readDialogState(input.analysisId);
     if (!state) return [];
+    const requirements = (await getStructuredRequirements(input.analysisId)) ?? undefined;
     const changed = await recordAnalysisClarifications({
       projectId: input.projectId,
       analysisId: input.analysisId,
       answeredById: input.answeredById,
       state,
-      requirements: (await getStructuredRequirements(input.analysisId)) ?? undefined,
+      requirements,
     });
     if (changed.length === 0) return [];
     const index = deps.index ?? indexClarification;
@@ -225,6 +264,7 @@ export async function persistClarificationKnowledge(
       provider: input.provider,
       ...(input.model ? { model: input.model } : {}),
       records: changed,
+      settled: settledRequirementAnswers(state, requirements),
     });
     return changed;
   } catch (err) {
