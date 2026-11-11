@@ -97,18 +97,16 @@ export function clip(text: string, max: number): string {
 }
 
 /**
- * Markdown inline syntax a summary line should not carry: links, emphasis, code
- * ticks and inline HTML. The text is index input, never rendered, so the angle
- * brackets are simply dropped once the tags are gone: a nested `<<b>x>` cannot
- * leave a tag behind.
+ * Markdown inline syntax a summary line should not carry: images, link targets,
+ * emphasis and code ticks. Inline HTML is left as written: the line is index
+ * input, never rendered, and a tag-stripping pass is a sanitiser that would only
+ * invite being trusted as one.
  */
 function plainInline(line: string): string {
   return line
     .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
     .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
     .replace(/[*_`]+/g, "")
-    .replace(/<[^<>]*>/g, "")
-    .replace(/[<>]/g, "")
     .trim();
 }
 

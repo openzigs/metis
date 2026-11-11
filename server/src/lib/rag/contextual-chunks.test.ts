@@ -74,11 +74,6 @@ describe("documentSummaryLine", () => {
       "T: See the guide now.",
     );
   });
-  it("drops inline HTML, leaving no angle bracket even from a nested tag", () => {
-    expect(documentSummaryLine("# T\n\nUse <b>bold</b> and <<b>script> now.", "t.md")).toBe(
-      "T: Use bold and script now.",
-    );
-  });
   it("is clipped to its maximum", () => {
     const line = documentSummaryLine(`# T\n\n${"word ".repeat(200)}`, "t.md");
     expect(line.length).toBeLessThanOrEqual(200);
