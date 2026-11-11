@@ -8,12 +8,17 @@
  * the project ledger, passes the alt text as delimited data and the deadline's abort signal.
  * The ledger round trip through a real database is pinned in
  * `image-description-ledger-2263.sqlite.test.ts`.
+ *
+ * #2292 — a document's concurrent descriptions cannot all pass a budget check made before any
+ * of them was metered; each call's ledger write lands before it settles; and a call cut off
+ * by its deadline is metered on what the provider reported before it stopped.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const finops = vi.hoisted(() => ({
-  assertWithinBudget: vi.fn(async (_projectId: string) => ({})),
-  recordUsage: vi.fn((_input: unknown) => ({ persisted: Promise.resolve() })),
+  assertWithinBudget: vi.fn(async (_projectId: string): Promise<unknown> => ({ budget: null })),
+  recordUsage: vi.fn((_input: unknown) => ({ totalTokens: 1280, persisted: Promise.resolve() })),
+  noteUnmeteredAttempt: vi.fn(),
 }));
 vi.mock("../src/lib/finops/budget-enforcer.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/lib/finops/budget-enforcer.js")>()),
@@ -23,8 +28,13 @@ vi.mock("../src/lib/finops/token-tracker.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/lib/finops/token-tracker.js")>()),
   recordUsage: finops.recordUsage,
 }));
+vi.mock("../src/lib/ai/retried-attempts.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/ai/retried-attempts.js")>()),
+  noteUnmeteredAttempt: finops.noteUnmeteredAttempt,
+}));
 
-import type { AIProvider, ChatMessage, ChatOptions } from "../src/lib/ai/types.js";
+import type { AIProvider, ChatChunk, ChatMessage, ChatOptions } from "../src/lib/ai/types.js";
+import { attachPartialUsage } from "../src/lib/ai/partial-usage.js";
 import { BudgetExceededError } from "../src/lib/finops/budget-enforcer.js";
 import {
   BUDGET_SPENT_REASON,
@@ -49,13 +59,38 @@ const IMAGE: DocxImage = {
 
 const USAGE = { promptTokens: 1200, completionTokens: 80, totalTokens: 1280, cacheReadTokens: 7 };
 
-function fakeProvider(opts: { vision?: boolean; offline?: boolean; reply?: string } = {}) {
-  const chat = vi.fn(async (_m: ChatMessage[], _o?: ChatOptions) => ({
-    content: opts.reply ?? "a description",
-    usage: { ...USAGE },
-    model: "claude-sonnet-5-5",
-    provider: "anthropic",
-  }));
+interface FakeOptions {
+  vision?: boolean;
+  offline?: boolean;
+  reply?: string;
+  /** Runs inside the call, after its first delta; a throw here fails the stream. */
+  during?: (signal: AbortSignal | undefined) => Promise<void>;
+  /** Yield the usage chunk (true by default). */
+  reportUsage?: boolean;
+}
+
+/** A vision provider whose `stream` replies in two deltas, then its usage. */
+function fakeProvider(opts: FakeOptions = {}) {
+  const live = { now: 0, max: 0 };
+  const stream = vi.fn(async function* (
+    _m: ChatMessage[],
+    o?: ChatOptions,
+  ): AsyncGenerator<ChatChunk> {
+    live.now += 1;
+    live.max = Math.max(live.max, live.now);
+    try {
+      const reply = opts.reply ?? "a description";
+      yield { type: "delta", content: reply.slice(0, 2) };
+      await (opts.during ?? (() => new Promise((r) => setTimeout(r, 5))))(o?.signal);
+      yield { type: "delta", content: reply.slice(2) };
+      if (opts.reportUsage ?? true) {
+        yield { type: "usage", usage: { ...USAGE }, model: "claude-sonnet-5-5-20261101" };
+      }
+      yield { type: "done" };
+    } finally {
+      live.now -= 1;
+    }
+  });
   const provider = {
     key: "anthropic",
     model: "claude-sonnet-5-5",
@@ -66,14 +101,43 @@ function fakeProvider(opts: { vision?: boolean; offline?: boolean; reply?: strin
       nativeToolCalls: false,
       vision: model === "claude-sonnet-5-5" && (opts.vision ?? true),
     }),
-    chat,
+    stream,
   } as unknown as AIProvider;
-  return { provider, chat };
+  return { provider, chat: stream, live };
+}
+
+/** A month's ledger the budget check reads and the usage writes add to. */
+function ledger(budget: number | null) {
+  const state = { used: 0 };
+  finops.assertWithinBudget.mockImplementation(async () => {
+    if (budget !== null && state.used >= budget) throw new BudgetExceededError(state.used, budget);
+    return { budget, remainingTokens: budget === null ? 0 : budget - state.used };
+  });
+  finops.recordUsage.mockImplementation((input: unknown) => {
+    const { inputTokens, outputTokens } = input as { inputTokens: number; outputTokens: number };
+    const totalTokens = inputTokens + outputTokens;
+    return {
+      totalTokens,
+      persisted: new Promise<void>((r) => setTimeout(r, 1)).then(() => {
+        state.used += totalTokens;
+      }),
+    };
+  });
+  return state;
+}
+
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((r) => (resolve = r));
+  return { promise, resolve };
 }
 
 beforeEach(() => {
-  finops.assertWithinBudget.mockReset().mockResolvedValue({});
-  finops.recordUsage.mockReset().mockReturnValue({ persisted: Promise.resolve() });
+  finops.assertWithinBudget.mockReset().mockResolvedValue({ budget: null });
+  finops.recordUsage
+    .mockReset()
+    .mockReturnValue({ totalTokens: 1280, persisted: Promise.resolve() });
+  finops.noteUnmeteredAttempt.mockReset();
 });
 
 describe("buildImageDescriptionMessages", () => {
@@ -172,7 +236,7 @@ describe("projectImageDescriber", () => {
       sessionId: "document:d1",
       agentStep: IMAGE_DESCRIPTION_AGENT_STEP,
       provider: "anthropic",
-      model: "claude-sonnet-5-5",
+      model: "claude-sonnet-5-5-20261101",
       inputTokens: 1200,
       outputTokens: 80,
       cacheReadTokens: 7,
@@ -211,5 +275,189 @@ describe("projectImageDescriber", () => {
       throw new Error("ledger down");
     });
     expect(await projectImageDescriber(SCOPE, async () => provider)(IMAGE)).toBe("a description");
+  });
+});
+
+describe("#2292 — a call cut off by its deadline is metered on what was reported", () => {
+  const PARTIAL = { promptTokens: 1500, completionTokens: 12, totalTokens: 1512 };
+
+  /** A call the deadline aborts after the provider reported the prompt's tokens. */
+  function cutOff(report: boolean) {
+    const controller = new AbortController();
+    const { provider } = fakeProvider({
+      during: async () => {
+        controller.abort();
+        const err = new DOMException("The operation was aborted", "AbortError");
+        throw report ? attachPartialUsage(err, PARTIAL) : err;
+      },
+    });
+    return { provider, signal: controller.signal };
+  }
+
+  it("hands the provider's partial usage to the meter, then rethrows", async () => {
+    const { provider, signal } = cutOff(true);
+    const onUsage = vi.fn(async () => {});
+    const onUnmetered = vi.fn(async () => {});
+    const err = await providerImageDescriber(provider, { onUsage, onUnmetered })(
+      IMAGE,
+      signal,
+    ).catch((e: unknown) => e);
+    expect((err as Error).name).toBe("AbortError");
+    expect(onUsage).toHaveBeenCalledWith(PARTIAL, undefined);
+    expect(onUnmetered).not.toHaveBeenCalled();
+  });
+
+  it("writes the partial usage to the project ledger under the document", async () => {
+    const { provider, signal } = cutOff(true);
+    await projectImageDescriber(SCOPE, async () => provider)(IMAGE, signal).catch(() => {});
+    expect(finops.recordUsage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: "document:d1",
+        agentStep: IMAGE_DESCRIPTION_AGENT_STEP,
+        inputTokens: 1500,
+        outputTokens: 12,
+      }),
+    );
+    expect(finops.noteUnmeteredAttempt).not.toHaveBeenCalled();
+  });
+
+  it("records an aborted call that reported nothing as unmetered", async () => {
+    const { provider, signal } = cutOff(false);
+    await projectImageDescriber(SCOPE, async () => provider)(IMAGE, signal).catch(() => {});
+    expect(finops.recordUsage).not.toHaveBeenCalled();
+    expect(finops.noteUnmeteredAttempt).toHaveBeenCalledTimes(1);
+    expect(finops.noteUnmeteredAttempt).toHaveBeenCalledWith(
+      expect.objectContaining({ projectId: "p1", target: { type: "document", id: "d1" } }),
+      expect.objectContaining({ errorClass: "AbortError", callType: IMAGE_DESCRIPTION_AGENT_STEP }),
+    );
+  });
+
+  it("meters a usage chunk that arrived before the stream failed", async () => {
+    const provider = {
+      ...fakeProvider().provider,
+      stream: async function* (): AsyncGenerator<ChatChunk> {
+        yield { type: "usage", usage: { ...USAGE } };
+        throw new Error("socket closed");
+      },
+    } as unknown as AIProvider;
+    const onUsage = vi.fn(async () => {});
+    await providerImageDescriber(provider, { onUsage })(IMAGE).catch(() => {});
+    expect(onUsage).toHaveBeenCalledWith(USAGE, undefined);
+  });
+
+  it("a failure that was not an abort and reported nothing is neither metered nor noted", async () => {
+    const { provider } = fakeProvider({
+      during: async () => {
+        throw new Error("401 unauthorised");
+      },
+    });
+    const onUsage = vi.fn(async () => {});
+    const onUnmetered = vi.fn(async () => {});
+    await providerImageDescriber(provider, { onUsage, onUnmetered })(IMAGE).catch(() => {});
+    expect(onUsage).not.toHaveBeenCalled();
+    expect(onUnmetered).not.toHaveBeenCalled();
+  });
+});
+
+describe("#2292 — the ledger write lands before the description settles", () => {
+  it("does not answer until the usage row has persisted", async () => {
+    const { provider } = fakeProvider();
+    const write = deferred();
+    finops.recordUsage.mockReturnValue({ totalTokens: 1280, persisted: write.promise });
+    let settled = false;
+    const done = projectImageDescriber(
+      SCOPE,
+      async () => provider,
+    )(IMAGE).then((text) => {
+      settled = true;
+      return text;
+    });
+    await vi.waitFor(() => expect(finops.recordUsage).toHaveBeenCalledTimes(1));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(settled).toBe(false);
+    write.resolve();
+    expect(await done).toBe("a description");
+  });
+});
+
+describe("#2292 — concurrent descriptions and the project's budget", () => {
+  /** Describe `n` images of one document at once, as `docxToMarkdown` does. */
+  function describeAll(provider: AIProvider, n: number, signal?: AbortSignal) {
+    const describer = projectImageDescriber(SCOPE, async () => provider);
+    return Promise.allSettled(
+      Array.from({ length: n }, (_, i) => describer({ ...IMAGE, index: i + 1 }, signal)),
+    );
+  }
+
+  it("refuses the rest once the first call spends the budget, instead of sending all four", async () => {
+    ledger(1000);
+    const { provider, chat } = fakeProvider();
+    const results = await describeAll(provider, 4);
+    expect(chat).toHaveBeenCalledTimes(1);
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    const refused = results.filter((r) => r.status === "rejected");
+    expect(refused).toHaveLength(3);
+    for (const r of refused) {
+      expect((r as PromiseRejectedResult).reason).toBeInstanceOf(ImageNotRead);
+    }
+  });
+
+  it("runs only as many at once as the remaining budget covers", async () => {
+    // One call counts 1,280; 4,000 left covers the first, then two more at once.
+    const state = ledger(4000);
+    const { provider, chat, live } = fakeProvider();
+    const results = await describeAll(provider, 4);
+    expect(live.max).toBe(2);
+    expect(chat).toHaveBeenCalledTimes(4);
+    expect(results.every((r) => r.status === "fulfilled")).toBe(true);
+    expect(state.used).toBe(4 * 1280);
+  });
+
+  it("runs the rest at once when the budget is far from spent", async () => {
+    ledger(1_000_000);
+    const { provider, live } = fakeProvider();
+    await describeAll(provider, 4);
+    // The first runs alone, until its cost is known; the other three then run together.
+    expect(live.max).toBe(3);
+  });
+
+  it("never holds back a project with no budget", async () => {
+    ledger(null);
+    const { provider, live } = fakeProvider();
+    await describeAll(provider, 4);
+    expect(live.max).toBe(4);
+  });
+
+  it("a call waiting for the budget stops when its deadline aborts it, and sends nothing", async () => {
+    ledger(1000);
+    const first = deferred();
+    const { provider, chat } = fakeProvider({ during: () => first.promise });
+    const describer = projectImageDescriber(SCOPE, async () => provider);
+    const running = describer(IMAGE);
+    await vi.waitFor(() => expect(chat).toHaveBeenCalledTimes(1));
+    const controller = new AbortController();
+    const waiting = describer({ ...IMAGE, index: 2 }, controller.signal).catch((e: unknown) => e);
+    await new Promise((r) => setTimeout(r, 5));
+    controller.abort();
+    expect(String(await waiting)).toContain("stopped while waiting for the budget");
+    first.resolve();
+    expect(await running).toBe("a description");
+    expect(chat).toHaveBeenCalledTimes(1);
+  });
+
+  it("a call whose signal has already aborted is not admitted", async () => {
+    ledger(1000);
+    const first = deferred();
+    const { provider, chat } = fakeProvider({ during: () => first.promise });
+    const describer = projectImageDescriber(SCOPE, async () => provider);
+    const running = describer(IMAGE);
+    await vi.waitFor(() => expect(chat).toHaveBeenCalledTimes(1));
+    const err = await describer({ ...IMAGE, index: 2 }, AbortSignal.abort()).catch(
+      (e: unknown) => e,
+    );
+    expect(String(err)).toContain("stopped while waiting for the budget");
+    first.resolve();
+    await running;
+    expect(chat).toHaveBeenCalledTimes(1);
   });
 });

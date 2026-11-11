@@ -918,8 +918,14 @@ function plain(text: string): Segment {
   return { text, bold: false, italic: false };
 }
 
+/**
+ * Every whitespace run that holds a line break becomes one space; other runs are kept.
+ * #2292 — matched a run at a time, in linear time. The previous pattern (optional whitespace,
+ * a line break, optional whitespace) rescanned a long run of spaces from each of its
+ * positions, so 60,000 spaces in an uploaded heading took seconds.
+ */
 function oneLine(text: string): string {
-  return text.replace(/\s*\n\s*/g, " ");
+  return text.replace(/\s+/g, (run) => (run.includes("\n") ? " " : run));
 }
 
 /**
@@ -964,14 +970,20 @@ function renderSegments(segs: Segment[]): string {
   return out;
 }
 
+/**
+ * Wrap the run's text, outside its leading and trailing whitespace, in its formatting.
+ * #2292 — split with `trim`, in linear time: a lazy-core regex took seconds on a run holding
+ * 60,000 spaces before its last word, and every paragraph's text passes through here.
+ */
 function wrap(text: string, s: Segment): string {
-  const m = /^(\s*)([\s\S]*?)(\s*)$/.exec(text)!;
-  let core = m[2];
+  let core = text.trim();
   if (core.length === 0) return text;
+  const lead = text.slice(0, text.length - text.trimStart().length);
+  const trail = text.slice(text.trimEnd().length);
   if (s.italic) core = `*${core}*`;
   if (s.bold) core = `**${core}**`;
   if (s.href) core = `[${core}](${s.href})`;
-  return `${m[1]}${core}${m[3]}`;
+  return `${lead}${core}${trail}`;
 }
 
 function quote(text: string): string {

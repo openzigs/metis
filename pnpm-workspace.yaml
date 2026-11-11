@@ -590,7 +590,7 @@ overrides:
   # OSV records a separate band per minor; the tree carries only 0.8.2, whose
   # band is `introduced 0.8.0, fixed 0.8.3`. Sole consumer is officeparser@6.1.1,
   # and it IS reachable: server/src/lib/documents/parsers.ts:290-294 routes the
-  # `pptx` branch to parseOffice (`.docx` goes to mammoth and `.xlsx` to exceljs,
+  # `pptx` branch to parseOffice (`.docx` goes to JSZip, #2292, and `.xlsx` to exceljs,
   # so those two do NOT reach fflate). A .pptx is a ZIP, which is what fflate
   # inflates. 0.8.3 published 2026-05-16, is the latest release, and returns ZERO
   # vulns (2026-09-20).

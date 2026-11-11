@@ -13,9 +13,14 @@
  * #2263 — a project's descriptions are project spend: each call is refused once the project's
  * monthly token budget is spent (`assertWithinBudget`) and its usage is written to the token
  * ledger (`recordUsage`), so it shows on the usage page and counts against that budget.
+ *
+ * #2292 — the check holds across a document's concurrent descriptions (`BudgetGate`), and a
+ * call cut off by its deadline is metered on what the provider reported before it stopped.
  */
-import type { AIProvider, ChatMessage, ChatResponse } from "../ai/types.js";
+import type { AIProvider, ChatMessage, TokenUsage } from "../ai/types.js";
+import { partialUsageOf } from "../ai/partial-usage.js";
 import { providerSupports } from "../ai/capabilities.js";
+import type { BudgetSnapshot } from "../finops/budget-enforcer.js";
 import { createChildLogger } from "../logger.js";
 import { ImageNotRead, type ImageDescriber } from "./docx-to-markdown.js";
 
@@ -74,25 +79,56 @@ export function canDescribeImages(provider: AIProvider): boolean {
   return !provider.offline && providerSupports(provider, "vision", provider.model);
 }
 
+/**
+ * What a description call reports to whoever meters it.
+ *
+ * #2292 — a call cut off by the image's deadline was billed for the prompt the provider had
+ * already read, yet it never returned a response to meter. The call is streamed, so the usage
+ * the provider reported before it stopped (`partialUsageOf`, #1238) reaches `onUsage` too; a
+ * cut-off call that reported nothing reaches `onUnmetered`.
+ */
+export interface DescriptionMetering {
+  /**
+   * The usage a call was billed for: its final usage, or what the provider reported before
+   * the call failed. Awaited before the call settles, so the write lands first.
+   */
+  onUsage(usage: TokenUsage, model: string | undefined): Promise<void>;
+  /** A call aborted before the provider reported any usage: its spend is in no store. */
+  onUnmetered?(err: unknown): Promise<void>;
+}
+
 /** An {@link ImageDescriber} on `provider`, or one that always answers `null` without vision. */
 export function providerImageDescriber(
   provider: AIProvider,
-  onResponse?: (response: ChatResponse) => Promise<void>,
-  beforeCall?: () => Promise<void>,
+  metering?: DescriptionMetering,
 ): ImageDescriber {
   if (!canDescribeImages(provider)) return async () => null;
   return async (image, signal) => {
-    await beforeCall?.();
-    const response = await provider.chat(
-      buildImageDescriptionMessages(
-        image.contentType,
-        image.data.toString("base64"),
-        image.altText,
-      ),
-      { disableTools: true, ...(signal ? { signal } : {}) },
+    const messages = buildImageDescriptionMessages(
+      image.contentType,
+      image.data.toString("base64"),
+      image.altText,
     );
-    await onResponse?.(response);
-    return response.content;
+    let content = "";
+    let usage: TokenUsage | undefined;
+    let model: string | undefined;
+    try {
+      for await (const chunk of provider.stream(messages, {
+        disableTools: true,
+        ...(signal ? { signal } : {}),
+      })) {
+        if (chunk.type === "delta") content += chunk.content;
+        else if (chunk.type === "usage") ({ usage, model } = chunk);
+      }
+    } catch (err) {
+      // #2292 — the provider billed what it reported before the call stopped.
+      const reported = usage ?? partialUsageOf(err);
+      if (reported) await metering?.onUsage(reported, model);
+      else if (signal?.aborted) await metering?.onUnmetered?.(err);
+      throw err;
+    }
+    if (usage) await metering?.onUsage(usage, model);
+    return content;
   };
 }
 
@@ -103,11 +139,34 @@ export interface ImageDescriptionScope {
   documentId: string;
 }
 
-/** Refuse the call, with a reason the analyst reads, once the project's budget is spent. */
-async function assertBudget(projectId: string): Promise<void> {
-  const { assertWithinBudget, BudgetExceededError } = await import("../finops/budget-enforcer.js");
+type BudgetEnforcer = typeof import("../finops/budget-enforcer.js");
+type TokenTracker = typeof import("../finops/token-tracker.js");
+let finopsModules: Promise<[BudgetEnforcer, TokenTracker]> | undefined;
+
+/**
+ * The budget and ledger modules, imported once, on the first image: they load Prisma, which a
+ * text-only ingest never needs. One shared import, not one per call, since a document's calls
+ * run concurrently.
+ */
+function finops(): Promise<[BudgetEnforcer, TokenTracker]> {
+  finopsModules ??= Promise.all([
+    import("../finops/budget-enforcer.js"),
+    import("../finops/token-tracker.js"),
+  ]).catch((err: unknown) => {
+    finopsModules = undefined;
+    throw err;
+  });
+  return finopsModules;
+}
+
+/**
+ * The project's budget snapshot. Refuses the call, with a reason the analyst reads, once the
+ * project's budget is spent.
+ */
+async function checkBudget(projectId: string): Promise<BudgetSnapshot> {
+  const [{ assertWithinBudget, BudgetExceededError }] = await finops();
   try {
-    await assertWithinBudget(projectId);
+    return await assertWithinBudget(projectId);
   } catch (err) {
     if (err instanceof BudgetExceededError) throw new ImageNotRead(BUDGET_SPENT_REASON);
     throw err;
@@ -115,32 +174,152 @@ async function assertBudget(projectId: string): Promise<void> {
 }
 
 /**
- * Write one description's usage to the project ledger. Accounting never fails the ingest: a
- * recording error is logged and dropped. The write is awaited so the next image's budget check
- * sees it.
+ * Write one description's usage to the project ledger, and answer the tokens it counts
+ * against the budget. Accounting never fails the ingest: a recording error is logged and
+ * dropped. The write is awaited so the next image's budget check sees it.
  */
-async function meter(scope: ImageDescriptionScope, provider: AIProvider, res: ChatResponse) {
-  if (!res.usage) return;
+async function meter(
+  scope: ImageDescriptionScope,
+  provider: AIProvider,
+  usage: TokenUsage,
+  model: string | undefined,
+): Promise<number> {
   try {
-    const { recordUsage } = await import("../finops/token-tracker.js");
+    const [, { recordUsage }] = await finops();
     const result = recordUsage({
       projectId: scope.projectId,
       sessionId: `document:${scope.documentId}`,
       agentStep: IMAGE_DESCRIPTION_AGENT_STEP,
-      provider: res.provider ?? provider.key,
-      model: res.model ?? provider.model,
-      inputTokens: res.usage.promptTokens,
-      outputTokens: res.usage.completionTokens,
-      cacheReadTokens: res.usage.cacheReadTokens,
-      cacheWriteTokens: res.usage.cacheWriteTokens,
+      provider: provider.key,
+      model: model ?? provider.model,
+      inputTokens: usage.promptTokens,
+      outputTokens: usage.completionTokens,
+      cacheReadTokens: usage.cacheReadTokens,
+      cacheWriteTokens: usage.cacheWriteTokens,
     });
     await result.persisted;
+    return result.totalTokens;
   } catch (err) {
     log.warn("image description usage could not be recorded", {
       projectId: scope.projectId,
       error: (err as Error).message,
     });
+    return usage.totalTokens;
   }
+}
+
+/** #2292 — an aborted call that reported no usage is recorded as unmetered (#1238). */
+async function noteUnmetered(
+  scope: ImageDescriptionScope,
+  provider: AIProvider,
+  err: unknown,
+): Promise<void> {
+  try {
+    const { noteUnmeteredAttempt } = await import("../ai/retried-attempts.js");
+    noteUnmeteredAttempt(
+      {
+        actorId: null,
+        target: { type: "document", id: scope.documentId },
+        projectId: scope.projectId,
+        provider: provider.key,
+        model: provider.model,
+      },
+      {
+        attempt: 1,
+        errorClass: err instanceof Error ? err.name : "aborted",
+        callType: IMAGE_DESCRIPTION_AGENT_STEP,
+      },
+    );
+  } catch (noteErr) {
+    log.warn("an aborted image description could not be noted as unmetered", {
+      projectId: scope.projectId,
+      error: (noteErr as Error).message,
+    });
+  }
+}
+
+/**
+ * #2292 — admits one document's description calls against the project's budget.
+ *
+ * `docxToMarkdown` describes several images at once, and a budget check reads only usage
+ * already metered, so every concurrent call would pass a check made before any of them was
+ * written. Each call admitted here therefore reserves what one call of this document costs:
+ * a call starts alongside others only while the project's remaining budget covers it and
+ * every call in flight. Until a call has been metered that cost is unknown, so the first call
+ * runs alone. A call that does not fit waits for one in flight to finish and be metered, then
+ * checks again; the wait counts against the image's deadline. A project with no budget is
+ * never held back.
+ */
+class BudgetGate {
+  private inFlight = 0;
+  /** The most tokens one call of this document has counted against the budget. */
+  private perCall: number | undefined;
+  private readonly waiting = new Set<() => void>();
+
+  constructor(private readonly projectId: string) {}
+
+  async admit(signal?: AbortSignal): Promise<void> {
+    for (;;) {
+      const snapshot = await checkBudget(this.projectId);
+      if (this.fits(snapshot)) {
+        this.inFlight += 1;
+        return;
+      }
+      await this.nextRelease(signal);
+    }
+  }
+
+  /** Record what a call counted against the budget; called before its {@link release}. */
+  spent(tokens: number): void {
+    this.perCall = Math.max(this.perCall ?? 0, tokens);
+  }
+
+  release(): void {
+    this.inFlight -= 1;
+    const wake = [...this.waiting];
+    this.waiting.clear();
+    for (const w of wake) w();
+  }
+
+  private fits({ budget, remainingTokens }: BudgetSnapshot): boolean {
+    if (budget == null || this.inFlight === 0) return true;
+    return this.perCall !== undefined && remainingTokens >= (this.inFlight + 1) * this.perCall;
+  }
+
+  private nextRelease(signal?: AbortSignal): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const stopped = () => new Error("image description stopped while waiting for the budget");
+      if (signal?.aborted) return reject(stopped());
+      const onAbort = () => {
+        this.waiting.delete(wake);
+        reject(stopped());
+      };
+      const wake = () => {
+        signal?.removeEventListener("abort", onAbort);
+        resolve();
+      };
+      this.waiting.add(wake);
+      signal?.addEventListener("abort", onAbort, { once: true });
+    });
+  }
+}
+
+/** The project's metered, budget-gated describer on `provider`. */
+function budgetedDescriber(scope: ImageDescriptionScope, provider: AIProvider): ImageDescriber {
+  if (!canDescribeImages(provider)) return async () => null;
+  const gate = new BudgetGate(scope.projectId);
+  const call = providerImageDescriber(provider, {
+    onUsage: async (usage, model) => gate.spent(await meter(scope, provider, usage, model)),
+    onUnmetered: (err) => noteUnmetered(scope, provider, err),
+  });
+  return async (image, signal) => {
+    await gate.admit(signal);
+    try {
+      return await call(image, signal);
+    } finally {
+      gate.release();
+    }
+  };
 }
 
 /**
@@ -158,12 +337,7 @@ export function projectImageDescriber(
   let describer: Promise<ImageDescriber> | undefined;
   return async (image, signal) => {
     describer ??= resolve(scope.projectId).then(
-      (provider) =>
-        providerImageDescriber(
-          provider,
-          (res) => meter(scope, provider, res),
-          () => assertBudget(scope.projectId),
-        ),
+      (provider) => budgetedDescriber(scope, provider),
       (err: unknown) => {
         log.warn("no provider for image description; images are listed as not read", {
           projectId: scope.projectId,
