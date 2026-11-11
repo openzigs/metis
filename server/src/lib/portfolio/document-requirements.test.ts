@@ -30,6 +30,8 @@ function deps(over: Partial<DocumentRequirementsDeps> = {}, text = FRD): Documen
     prisma: {
       document: {
         findUnique: vi.fn(async () => ({
+          projectId: "proj-1",
+          checksum: "sha-frd",
           filename: "frd.md",
           title: "Payments FRD",
           mimeType: "text/markdown",
@@ -127,9 +129,11 @@ describe("requirementsFromDocument (#2272)", () => {
     }));
     const d = deps({ reader });
     const read = await requirementsFromDocument("doc-1", d);
+    // #2280 — with the stored document's key, so a saved reading of it can be reused.
     expect(reader).toHaveBeenCalledWith({
       title: "Payments FRD",
       text: expect.stringContaining("ledger"),
+      document: { projectId: "proj-1", documentId: "doc-1", checksum: "sha-frd" },
     });
     expect(read.criteria).toEqual([
       "A refund posts a ledger entry (section: Payments FRD › Refunds)",
@@ -159,6 +163,21 @@ describe("requirementsFromDocument (#2272)", () => {
     expect(read.statement).toContain(
       "the splitter (one per paragraph or bullet; the document reader is off) found 2 requirements",
     );
+  });
+
+  it("#2280 — a saved reading reused says whose it is", async () => {
+    const reader = vi.fn(async () => ({
+      reading: reading({
+        statements: [statement({ headingPath: [] })],
+        reused: { readAt: new Date("2026-11-10T09:00:00Z"), model: "claude-sonnet-5-5" },
+      }),
+      costUsd: 0,
+    }));
+    const read = await requirementsFromDocument("doc-1", deps({ reader }));
+    expect(read.statement).toBe(
+      'Requirements read from "Payments FRD": the model\'s saved reading of it (claude-sonnet-5-5, 2026-11-10) found 1 requirement. It is checked on its own.',
+    );
+    expect(read.costUsd).toBe(0);
   });
 
   it("a failed reading falls back to the splitter, and the statement says so", async () => {

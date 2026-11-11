@@ -270,7 +270,12 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       ]);
       // The reading's cost is the run's too.
       expect(view.costUsd).toBeGreaterThanOrEqual(0.05);
-      expect(reader).toHaveBeenCalledWith({ title: "Accounts FRD", text: FRD });
+      // #2280 — with the stored document's key, so a saved reading of it is reused.
+      expect(reader).toHaveBeenCalledWith({
+        title: "Accounts FRD",
+        text: FRD,
+        document: { projectId: PROJECTS[0].id, documentId: DOC_A, checksum: DOC_A },
+      });
 
       const md = await get("ana", `/${id}/export`);
       expect(md.status).toBe(200);

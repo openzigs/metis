@@ -85,7 +85,7 @@ import { prisma } from "../lib/prisma.js";
 import { canAccessProjectDiscussions } from "../lib/discussions/access.js";
 import { getDocumentStorage } from "../lib/documents/storage.js";
 import { isDocumentReaderEnabled } from "../lib/document-reader/flag.js";
-import { readDocument } from "../lib/document-reader/reader.js";
+import { readDocumentOnce } from "../lib/document-reader/reading-cache.js";
 import { shapeAwareChangeExtractor } from "../lib/impact-analysis/change-request.js";
 import type { ReadStoredFile } from "../lib/impact-analysis/document-source.js";
 import { buildProvider } from "../lib/ai/providers/factory.js";
@@ -145,8 +145,15 @@ export interface PortfolioAssessmentsRouterDeps {
 
 /** #2272 — the document reader on `provider`, priced from its usage. */
 function documentReaderOn(provider: AIProvider, signal?: AbortSignal): PortfolioDocumentReader {
-  return async ({ title, text }) => {
-    const reading = await readDocument({ title, text, provider, ...(signal ? { signal } : {}) });
+  return async ({ title, text, document }) => {
+    // #2280 — a saved reading of the same file, reader and model is reused (usage 0).
+    const reading = await readDocumentOnce({
+      title,
+      text,
+      provider,
+      ...(signal ? { signal } : {}),
+      ...(document ? { document } : {}),
+    });
     return {
       reading,
       costUsd: estimateUsageCostUsd(provider.model, reading.usage, provider.key) ?? 0,

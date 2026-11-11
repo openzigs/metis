@@ -30,15 +30,20 @@ import {
 import type { ChangeExtractor } from "../impact-analysis/extract-changes.js";
 import { loadImpactDocumentText, type ReadStoredFile } from "../impact-analysis/document-source.js";
 import type { DocumentReading } from "../document-reader/reader.js";
+import type { SavedDocumentKey } from "../document-reader/reading-cache.js";
 import { REQUIREMENT_STATEMENT_KINDS } from "../document-reader/prompts.js";
 import { formatHeadingPath } from "../document-reader/sections.js";
 
 type DocumentPrisma = Parameters<typeof loadImpactDocumentText>[0];
 
-/** The model reading a document, and what the reading cost. */
+/**
+ * The model reading a document, and what the reading cost. #2280 — `document`
+ * is the stored document's key, so a saved reading of the same file is reused.
+ */
 export type PortfolioDocumentReader = (input: {
   title: string;
   text: string;
+  document?: SavedDocumentKey;
 }) => Promise<{ reading: DocumentReading; costUsd: number }>;
 
 export interface DocumentRequirementsDeps {
@@ -194,10 +199,17 @@ export async function requirementsFromDocument(
   let how = "the splitter (one per paragraph or bullet; the document reader is off)";
   if (deps.reader) {
     try {
-      const { reading, costUsd: cost } = await deps.reader({ title: doc.title, text: doc.text });
+      const { reading, costUsd: cost } = await deps.reader({
+        title: doc.title,
+        text: doc.text,
+        ...(doc.saved ? { document: doc.saved } : {}),
+      });
       costUsd = cost;
       ({ texts, notChecked: readNotChecked } = fromReading(reading));
-      how = "the model read it in full and";
+      // #2280 — a saved reading of the same file was reused: say whose.
+      how = reading.reused
+        ? `the model's saved reading of it (${reading.reused.model}, ${reading.reused.readAt.toISOString().slice(0, 10)})`
+        : "the model read it in full and";
     } catch {
       how =
         "the model could not read it, so the splitter (one per paragraph or bullet; one requirement may be several)";

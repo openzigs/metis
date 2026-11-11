@@ -1384,8 +1384,8 @@ project-scoped traceability spine (#229) — it never rewrites it. Two reads:
 also takes `documentId` (a live document in a project the caller can read, else 404); the
 check reads it as it starts (`lib/portfolio/document-requirements.ts`: the parsed file, else
 its de-overlapped chunks, through `loadImpactDocumentText`; with `ANALYSIS_DOCUMENT_READER`
-on, `readDocument`, else the shape-aware splitter) and checks each requirement it finds as one
-criterion. Criteria that do not fit one 4,000-character query or one model call
+on, `readDocumentOnce`, which reuses a saved reading of the same file (#2280), else the
+shape-aware splitter) and checks each requirement it finds as one criterion. Criteria that do not fit one 4,000-character query or one model call
 (`maxCriteria`) are judged in groups (`criteriaGroups`), each with its own search and repo
 call, and merged per repo (`mergeRepoGroups`), so no criterion is left unsearched. A `product`
 scope names up to `PORTFOLIO_ASSESSMENT_MAX_PRODUCTS` (50). Nothing is cut silently: what was
