@@ -61,6 +61,15 @@ import { onArchive } from "../projects/project-service.js";
 import { createChildLogger } from "../logger.js";
 import { requirementVectorsId } from "../requirements/requirement-embeddings.js";
 import { BM25Index, getBM25Index, RRF_K, reciprocalRankFusion } from "./bm25-index.js";
+import {
+  contextPrefixesFor,
+  defaultModelChunkContextGenerator,
+  indexedTextOf,
+  prefixedText,
+  resolveContextualChunksMode,
+  type ChunkContextGenerator,
+  type ContextualChunksMode,
+} from "./contextual-chunks.js";
 import { getReranker, type Reranker } from "./reranker.js";
 import { type AclActor, filterAccessible, parseAclSubjects } from "./acl.js";
 import { assertEvidencePolicy, type EvidencePolicy } from "../docs-gen/evidence-policy.js";
@@ -140,6 +149,14 @@ export interface KnowledgeServiceDeps {
    * sharing one database.
    */
   reindexLeaseBackend?: ReindexLeaseBackend;
+  /**
+   * Issue #2234 — contextual chunks: whether ingest prefixes each chunk's INDEXED
+   * text with its document summary line and heading path (`headings`), plus a
+   * model-written sentence (`model`). Defaults to `RAG_CONTEXTUAL_CHUNKS`; the
+   * generator defaults to the project's configured provider. See
+   * `contextual-chunks.ts`.
+   */
+  contextualChunks?: { mode: ContextualChunksMode; generator?: ChunkContextGenerator };
   /**
    * #2232 — describes the images embedded in an ingested Word document. Defaults to the
    * project's own provider when its model reports `vision`; the provider is resolved only if
@@ -418,6 +435,9 @@ export class KnowledgeService {
    * call site" (the production path); tests inject a shared in-memory fake.
    */
   private readonly leaseBackend: ReindexLeaseBackend | undefined;
+  /** Issue #2234 — the contextual-chunks mode and its model generator (lazily built). */
+  private readonly contextualMode: ContextualChunksMode;
+  private contextGenerator: ChunkContextGenerator | undefined;
   /** #2232 — see {@link KnowledgeServiceDeps.imageDescriber}. */
   private readonly imageDescriber: (projectId: string) => ImageDescriber;
 
@@ -432,6 +452,15 @@ export class KnowledgeService {
     this.bm25 = deps.bm25 ?? getBM25Index();
     this.reranker = deps.reranker ?? getReranker();
     this.symbols = deps.symbolEmbeddings ?? getSymbolEmbeddingsPort();
+    this.contextualMode = deps.contextualChunks?.mode ?? resolveContextualChunksMode();
+    this.contextGenerator = deps.contextualChunks?.generator;
+  }
+
+  /** Issue #2234 — the generator `model` mode uses, built on first use. */
+  private chunkContextGenerator(): ChunkContextGenerator | undefined {
+    if (this.contextualMode !== "model") return undefined;
+    this.contextGenerator ??= defaultModelChunkContextGenerator();
+    return this.contextGenerator;
   }
 
   /**
@@ -537,13 +566,25 @@ export class KnowledgeService {
       return { documentId, status: "ready", chunkCount: 0 };
     }
 
+    // Issue #2234 — the context each chunk is INDEXED with (embedding and BM25); its
+    // stored display text stays the chunker's. All "" when the mode is off. Never
+    // throws: a model failure leaves that chunk its deterministic prefix.
+    const contextPrefixes = await contextPrefixesFor({
+      mode: this.contextualMode,
+      projectId: doc.projectId,
+      filename: doc.filename,
+      documentText: parsed.text,
+      chunks,
+      generator: this.chunkContextGenerator(),
+    });
+
     let embeddings;
     try {
       // #182 — bounded batches (the #189 bulk path): a repository file up to
       // REPO_SOURCE_MAX_FILE_BYTES is hundreds of chunks, never one embed call.
       embeddings = await embedInBoundedBatches(
         this.embedder,
-        chunks.map((c) => c.text),
+        chunks.map((c, i) => prefixedText(c.text, contextPrefixes[i])),
       );
     } catch (err) {
       return this.markFailed(
@@ -575,6 +616,9 @@ export class KnowledgeService {
         md5: c.md5,
         embedding: embeddings.vectors[i],
         headings: c.headings,
+        // #2234 — persisted so the lazy BM25 load and a reindex rebuild the same
+        // indexed text; absent (not "") when there is none.
+        ...(contextPrefixes[i] ? { metadata: { contextPrefix: contextPrefixes[i] } } : {}),
       })),
       // #792 — persist the composite IDENTITY (model|pooling|dtype, or bare model
       // at built-in defaults), not the model id, so a later pooling/dtype flip is
@@ -1299,6 +1343,8 @@ export class KnowledgeService {
         documentId: true,
         position: true,
         text: true,
+        // #2234 — the persisted context prefix: a reindex embeds what ingest did.
+        metadata: true,
         embeddingModel: true,
         document: { select: { filename: true } },
       },
@@ -1354,7 +1400,9 @@ export class KnowledgeService {
     try {
       for (let i = 0; i < pending.length; i += batchSize) {
         const batch = pending.slice(i, i + batchSize);
-        const embedResult = await this.embedder.embed(batch.map((c) => c.text));
+        const embedResult = await this.embedder.embed(
+          batch.map((c) => indexedTextOf(c.text, c.metadata)),
+        );
         const { vectors } = embedResult;
         // #792 — tag rows with the composite identity, not the bare model id.
         const tag = embedResult.identity ?? embedResult.model;
@@ -1439,6 +1487,7 @@ export class KnowledgeService {
             documentId: true,
             position: true,
             text: true,
+            metadata: true,
             document: { select: { filename: true } },
           },
           orderBy: [{ documentId: "asc" }, { position: "asc" }],
@@ -1451,7 +1500,9 @@ export class KnowledgeService {
         const missing = live.filter((chunk) => !covered.has(chunk.id));
         for (let i = 0; i < missing.length; i += batchSize) {
           const batch = missing.slice(i, i + batchSize);
-          const result = await this.embedder.embed(batch.map((chunk) => chunk.text));
+          const result = await this.embedder.embed(
+            batch.map((chunk) => indexedTextOf(chunk.text, chunk.metadata)),
+          );
           const tag = result.identity ?? result.model;
           if (
             tag !== currentModel ||

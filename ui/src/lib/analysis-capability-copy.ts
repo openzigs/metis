@@ -138,4 +138,18 @@ export const CAPABILITY_REASON_COPY: Record<AnalysisCapabilityReason, Capability
     action:
       "Check the evidence on this run's findings before relying on it. The run status names the agent and how many citations it lost; re-running usually produces readable citations.",
   },
+  // Issue #2233 — a per-run limit left requirements out of a stage; the
+  // "Analysis limits" section names every one.
+  "requirements-left-out": {
+    title:
+      "This run had more requirements than one of its steps analyzes, so some requirements were not analyzed in that step.",
+    action:
+      "See “Analysis limits” below for exactly which requirements were left out and where. Start a separate analysis for those requirements so each one is analyzed.",
+  },
+  // Issue #2233 — an agent wrote more findings than one answer keeps.
+  "findings-left-out": {
+    title: "An agent wrote more findings than one answer keeps, so the rest were not saved.",
+    action:
+      "See “Analysis limits” below for the agent and the titles of the findings that were not saved. Re-run with fewer documents or requirements to get them.",
+  },
 };

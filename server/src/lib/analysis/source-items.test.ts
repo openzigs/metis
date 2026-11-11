@@ -65,6 +65,20 @@ describe("readSourceRequirements", () => {
     expect(item).toMatchObject({ externalId: null, externalUrl: null });
   });
 
+  it("#2233 — keeps an item's detail, and drops one that is not text", () => {
+    const [kept, dropped] = readSourceRequirements({
+      sourceRequirements: [
+        source(1, { detail: "Body\n\nAcceptance criteria:\n- A" }),
+        {
+          ...source(2),
+          detail: 7,
+        },
+      ],
+    });
+    expect(kept.detail).toBe("Body\n\nAcceptance criteria:\n- A");
+    expect(dropped).not.toHaveProperty("detail");
+  });
+
   it("keeps an empty title: it is still a known item", () => {
     expect(readSourceRequirements({ sourceRequirements: [source(1, { title: "" })] })).toHaveLength(
       1,

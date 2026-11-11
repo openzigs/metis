@@ -156,6 +156,8 @@ import {
   detectStaticCapability,
   finalizeCapability,
   recordDroppedCitations,
+  recordFindingsLeftOut,
+  recordRequirementsLeftOut,
 } from "./analysis-capability.js";
 // #777 — the file tools are gated on the clone EXISTING, not on a path string.
 import { cloneDirPath, resolveExistingCloneDir } from "./clone-availability.js";
@@ -258,6 +260,7 @@ import {
   CODE_REQUIREMENTS_QUERY,
   deriveRetrievalQuery,
   RETRIEVAL_QUERIES,
+  requirementsLeftOutAtLimit,
   retrievePerRequirement,
   runGroundedRetrieval,
   type RequirementEvidence,
@@ -308,6 +311,7 @@ import {
   extractNewRequirementCandidates,
   extractNewRequirementCandidatesWithAccount,
   codeAgentRequirementSet,
+  type ImportedItemRef,
   type RequirementRef,
 } from "./new-requirements.js";
 import { computeRequirementEscalations } from "./escalation-context.js";
@@ -839,12 +843,19 @@ function importedCandidateIds(
 
 /**
  * #1098 — every imported item as a requirement (`NR-*` id, tracker title), so
- * items past the candidate cap still reach the code agent.
+ * items past the candidate cap still reach the code agent. #2233 — with the
+ * item's body and acceptance criteria as `detail`, which the code agent reads
+ * beside the title.
  */
 function importedItemRefs(
-  sources: ReadonlyArray<Pick<AnalysisSourceRequirement, "candidateId" | "title">> | undefined,
-): RequirementRef[] {
-  return (sources ?? []).map((s) => ({ id: s.candidateId, text: s.title }));
+  sources:
+    ReadonlyArray<Pick<AnalysisSourceRequirement, "candidateId" | "title" | "detail">> | undefined,
+): ImportedItemRef[] {
+  return (sources ?? []).map((s) => ({
+    id: s.candidateId,
+    text: s.title,
+    ...(s.detail ? { detail: s.detail } : {}),
+  }));
 }
 
 /** #1027 — the run's stored plan context, or undefined. */
@@ -2661,6 +2672,14 @@ export class AnalysisOrchestrator {
               signal: applicabilityController.signal,
             })
           )?.work;
+          // #2233 — applicability decides at most MAX_REQUIREMENTS_FOR_RETRIEVAL
+          // requirements; the run names the rest. Only when it runs at all.
+          if (governingWork) {
+            this.noteRequirementsLeftOut(
+              analysisId,
+              requirementsLeftOutAtLimit("governing-applicability", codeRequirements),
+            );
+          }
           // Find ALL connectors for the project (multi-repo support, epic #663/#668)
           // #1974 — primary first, so the budget cap never drops it.
           const connectors = orderConnectorsForBudgetCap(
@@ -2890,6 +2909,8 @@ export class AnalysisOrchestrator {
             });
           }
           for (const r of customPhase.results) {
+            // #2233 — findings cut at the 50-finding cap are named on the run.
+            this.noteFindingsLeftOut(analysisId, r.findingsLeftOut);
             for (const warning of r.warnings ?? []) {
               log.warn("Custom agent warning during analysis", {
                 analysisId,
@@ -3324,6 +3345,8 @@ export class AnalysisOrchestrator {
             : null;
         const result = read ?? (await this.retrieveAndRunAgent(input));
         this.noteCitationSalvage(input.analysisId, input.agentKey, result.citationSalvage);
+        // #2233 — findings cut at the 50-finding cap are named on the run.
+        this.noteFindingsLeftOut(input.analysisId, result.findingsLeftOut);
         // #1027 — the single-shot code prompt lists no requirement ids and does
         // not ask for the field, so an id here is one the model lifted from the
         // text it read (a task id, a `[NR-9]` line). Only a requirement of the
@@ -4635,6 +4658,19 @@ export class AnalysisOrchestrator {
           maxRequirements: MAX_REQUIREMENTS_FOR_RETRIEVAL,
           concurrency: REQUIREMENT_RETRIEVAL_CONCURRENCY,
         });
+        // #2233 — retrieval, the code agent's prompt and (when it runs)
+        // governing applicability read only the first MAX_REQUIREMENTS_FOR_RETRIEVAL
+        // requirements; the run names the rest, stage by stage.
+        this.noteRequirementsLeftOut(
+          input.analysisId,
+          requirementsLeftOutAtLimit("requirement-grounded-code", input.requirements),
+        );
+        if (governing) {
+          this.noteRequirementsLeftOut(
+            input.analysisId,
+            requirementsLeftOutAtLimit("governing-applicability", input.requirements),
+          );
+        }
         // #1997 — applicability is STARTED here and not awaited: it runs beside
         // the code agent (and the phases after it) and is joined where it is
         // consumed (`joinGoverningApplicability`). Awaiting it here put every
@@ -5873,6 +5909,38 @@ export class AnalysisOrchestrator {
     if (!analysisId) return;
     const tracker = this.capabilities.get(analysisId);
     if (tracker) recordDroppedCitations(tracker, agentKey, salvage.dropped);
+  }
+
+  /**
+   * #2233 — record what a requirement-limited stage left out on the run's
+   * capability (`requirements-left-out`). No-op without a tracker.
+   */
+  private noteRequirementsLeftOut(
+    analysisId: string,
+    notice: ReturnType<typeof requirementsLeftOutAtLimit>,
+  ): void {
+    if (!notice) return;
+    log.warn("Requirements left out at an analysis stage's limit", {
+      analysisId,
+      stage: notice.stage,
+      analysedCount: notice.analysedCount,
+      totalCount: notice.totalCount,
+    });
+    const tracker = this.capabilities.get(analysisId);
+    if (tracker) recordRequirementsLeftOut(tracker, notice);
+  }
+
+  /**
+   * #2233 — record the findings an agent's answer lost at the 50-finding cap on
+   * the run's capability (`findings-left-out`). No-op without a tracker.
+   */
+  private noteFindingsLeftOut(
+    analysisId: string | undefined,
+    notice: AgentRunResult["findingsLeftOut"],
+  ): void {
+    if (!analysisId || !notice) return;
+    const tracker = this.capabilities.get(analysisId);
+    if (tracker) recordFindingsLeftOut(tracker, notice);
   }
 
   /**
