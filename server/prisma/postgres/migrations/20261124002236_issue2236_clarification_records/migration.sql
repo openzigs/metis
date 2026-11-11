@@ -1,10 +1,10 @@
 -- Issue #2236 (epic #2227) — clarification answers become project knowledge.
--- Postgres twin of server/prisma/migrations/20261123002236_issue2236_clarification_records;
+-- Postgres twin of server/prisma/migrations/20261124002236_issue2236_clarification_records;
 -- see that file for the rationale. One new table, cascading with the project.
 --
 -- Structural DDL is idempotent (#556), so the full history applies from empty.
 --
--- Rollback: server/prisma/postgres/rollbacks/20261123002236_issue2236_clarification_records.sql
+-- Rollback: server/prisma/postgres/rollbacks/20261124002236_issue2236_clarification_records.sql
 
 -- CreateTable
 CREATE TABLE IF NOT EXISTS "clarification_records" (

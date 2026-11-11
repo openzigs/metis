@@ -131,8 +131,11 @@ async function workspaceOf(projectId: string): Promise<string | null> {
   return project?.workspaceId ?? null;
 }
 
-function rowData(f: EvaluatedFinding) {
+function rowData(f: EvaluatedFinding, versions: Readonly<Record<string, number>> | undefined) {
   return {
+    // #2222 — the requirement versions the judged text stands for, when a
+    // re-check recorded them; null for the analysed wording.
+    requirementVersions: versions ? JSON.stringify(versions) : null,
     revisionId: f.rule.revisionId,
     revisionLabel: f.rule.revisionLabel,
     documentTitle: f.rule.documentTitle,
@@ -287,7 +290,14 @@ async function produceNow(input: ProduceGoverningFindingsInput): Promise<Governi
   const { rules, revisionText } = await citableWorkspaceRules(workspaceId, [...new Set(ids)]);
   const byId = new Map<string, FindingRule>(rules.map((r) => [r.id, r]));
 
-  const evaluated = new Map<string, { findings: EvaluatedFinding[]; ruleGone: Set<string> }>();
+  const evaluated = new Map<
+    string,
+    {
+      findings: EvaluatedFinding[];
+      ruleGone: Set<string>;
+      versions: Readonly<Record<string, number>> | undefined;
+    }
+  >();
   let cursor = 0;
   const worker = async () => {
     for (;;) {
@@ -304,7 +314,11 @@ async function produceNow(input: ProduceGoverningFindingsInput): Promise<Governi
           ...(input.model ? { model: input.model } : {}),
           ...(input.signal ? { signal: input.signal } : {}),
         });
-        evaluated.set(r.requirementId, { findings: report.findings, ruleGone });
+        evaluated.set(r.requirementId, {
+          findings: report.findings,
+          ruleGone,
+          versions: r.versions,
+        });
         run.unverifiedCitations += report.unverifiedCitations;
         run.noEvidenceDemoted += report.noEvidenceDemoted;
       } catch (err) {
@@ -325,7 +339,7 @@ async function produceNow(input: ProduceGoverningFindingsInput): Promise<Governi
 
   await prisma.$transaction(
     async (tx) => {
-      for (const [requirementId, { findings, ruleGone }] of evaluated) {
+      for (const [requirementId, { findings, ruleGone, versions }] of evaluated) {
         const existing = await tx.governingFinding.findMany({
           where: { analysisId: input.analysisId, requirementId },
         });
@@ -349,7 +363,7 @@ async function produceNow(input: ProduceGoverningFindingsInput): Promise<Governi
           run.removed += stale.length;
         }
         for (const f of findings) {
-          const data = rowData(f);
+          const data = rowData(f, versions);
           const prior = existing.find((e) => e.ruleId === f.rule.id);
           const unchanged =
             prior !== undefined &&
@@ -393,6 +407,24 @@ async function produceNow(input: ProduceGoverningFindingsInput): Promise<Governi
 }
 
 type Row = Awaited<ReturnType<typeof prisma.governingFinding.findMany>>[number];
+
+/**
+ * #2222 — the stored `requirementVersions` JSON, or null when absent or not a
+ * map of non-negative integer versions (read as the analysed wording).
+ */
+export function parseRequirementVersions(raw: string | null): Record<string, number> | null {
+  if (!raw) return null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
+    const entries = Object.entries(parsed);
+    return entries.every(([, v]) => Number.isInteger(v) && (v as number) >= 0)
+      ? (Object.fromEntries(entries) as Record<string, number>)
+      : null;
+  } catch {
+    return null;
+  }
+}
 
 function oneOf<T extends string>(list: readonly T[], v: string | null): T | null {
   return v !== null && (list as readonly string[]).includes(v) ? (v as T) : null;
@@ -442,6 +474,7 @@ function toWire(row: Row, names: ReadonlyMap<string, string>): GoverningFinding 
     citationDropped: row.citationDropped,
     modelStatus: oneOf(GOVERNING_FINDING_STATUSES, row.modelStatus),
     businessQuestion: row.businessQuestion,
+    requirementVersions: parseRequirementVersions(row.requirementVersions),
     decision: oneOf(GOVERNING_FINDING_DECISIONS, row.decision),
     decisionNote: row.decisionNote,
     decidedById: row.decidedById,

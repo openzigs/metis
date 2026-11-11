@@ -12,6 +12,7 @@
 import { SYSTEM_ACTOR_ID } from "../audit/system-actor.js";
 import { CHECKPOINT_SIGN_OFF_KEY } from "./checkpoint-sign-off.js";
 import { mergeHiddenRequirementLabels, parseRequirementLabels } from "./requirement-labels.js";
+import { analysedVersions } from "../governing/requirement-staleness.js";
 import { ELICITED_NFRS_AWAITING_PROMOTION_KEY } from "./elicited-nfr-requirements.js";
 import {
   analysisFailedAgents,
@@ -2142,8 +2143,15 @@ export async function getAnalysisSnapshot(id: string): Promise<AnalysisSnapshot 
   );
   const sourceById = new Map([...cited].map(([docId, d]) => [docId, d.source]));
   const snapshot = toSnapshot(row, crossDocFindings, sourceById);
+  // #2222 — the version each requirement was analysed at, so the findings it
+  // was synthesised from are marked stale once a person edits it.
+  const analysed = await analysedVersions(row.requirements);
   return {
     ...snapshot,
+    requirements: snapshot.requirements.map((r) => ({
+      ...r,
+      analysedVersion: analysed.get(r.id) ?? r.version,
+    })),
     // #1143 — a completed run in which an agent failed completed with errors;
     // one in which an agent lost malformed citations completed with warnings.
     // The page reads both from here, the same fields the run list carries.

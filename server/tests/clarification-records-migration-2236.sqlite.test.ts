@@ -17,7 +17,7 @@ import {
   MIGRATED_SQLITE_HOOK_TIMEOUT_MS,
 } from "./helpers/sqlite-migrated-db.js";
 
-const MIGRATION = "20261123002236_issue2236_clarification_records";
+const MIGRATION = "20261124002236_issue2236_clarification_records";
 const SERVER_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 describe.skipIf(readGeneratedClientProvider() !== "sqlite")(

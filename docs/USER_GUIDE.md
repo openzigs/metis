@@ -1142,7 +1142,7 @@ The AI answers from **this project's own sources**, as the project chat does: it
 
 **Configuring the thread.** Click **Settings** (top of the thread) to open the thread settings panel:
 - **AI participation** — a 3-way control to set the thread's mode (**Off**, **On mention**, or **Auto**). Your choice takes effect immediately.
-- **Anchor (optional)** — attach the discussion to a specific Requirement, Analysis, or Spec Kit feature so it carries that context. For a **Requirement**, search the project's requirements by title and pick one; an Analysis or Spec Kit feature still takes its id. (Both controls are available to thread members only.)
+- **Anchor (optional)** — attach the discussion to a specific Requirement, Analysis, or Spec Kit feature so it carries that context. For a **Requirement**, search the project's requirements by title and pick one; an Analysis or Spec Kit feature still takes its id. (Both controls are available to thread members only.) When the AI replies, it reads each anchor as it is at that moment: a requirement's title, body and acceptance criteria; an analysis's status and its requirements' titles; a Spec Kit feature's name, status and the summary paragraph at the top of its `spec.md`. Setting an anchor of one kind does not clear an anchor of another kind, so a thread can carry several, and the AI reads every one that still exists. [#2226, #2249]
 
 **Discussing a requirement.** When you start a discussion, **About requirement (optional)** under the title lets you pick the requirement it is about: click the box to see the project's newest requirements, or type part of a title to narrow them; typing searches every requirement in the project, however old its run. The date beside each one tells apart requirements with the same title from different runs. The discussions list then shows *About: …* under the thread's title, and the thread page links to the requirement. [#2187]
 
@@ -3554,13 +3554,15 @@ Both fields persist on the `Project` row and are read at session-create time. Th
 
 ### 14.6 Project Scope and Grounding
 
-Chat answers from a project's knowledge base only when the chat is scoped to **one project**. With the scope on **All projects**, no project is searched: the model answers from its own general knowledge, which can sound confident while naming files or functions that do not exist in your code. [#18]
+Chat answers from your projects' knowledge bases when the chat is scoped to **one project**, to **several projects**, or to **every project in your workspace** (#2238). With the scope on **All projects**, no project is searched: the model answers from its own general knowledge, which can sound confident while naming files or functions that do not exist in your code. [#18]
 
 **Choosing the scope:**
 
 1. In the Chat page, find the scope pill in the header.
-2. Click it and pick one project, or **All my projects** for an unscoped chat.
-3. Your choice is remembered in your browser. If you have never picked one and can reach exactly one project, chat starts scoped to it; otherwise it starts on **All projects**.
+2. Click it and tick one or more projects, or pick **Every project in _Workspace_** (the workspace shown in the top bar), or **All my projects** for an unscoped chat. Tick several projects to ask one question about all of them — for example "what does this FRD change in A and B?".
+3. Your choice is remembered in your browser. Chat opens on the project active in the top bar; a remembered selection of several projects that includes it, or the top bar's workspace, is kept. If you have never picked one, chat starts scoped to the active project, or to **All projects** if you have none.
+
+A new scope starts a new chat on your next message; the conversation you had open stays in Sessions.
 
 Opening Chat from a project (`/chat?projectId=…`) scopes it to that project.
 
@@ -3573,12 +3575,15 @@ Opening Chat from a project (`/chat?projectId=…`) scopes it to that project.
   - A reply that failed or was stopped early shows no label; its error says what happened.
   - The label keeps the project's name from when the reply was written, so it still reads correctly after a rename or deletion.
   - **Not grounded — no project selected** — the chat is unscoped.
+  - In a chat over several projects (or a workspace): **Grounded in _A_ (N sources), _B_ (M sources)** names each project the answer drew on. **nothing relevant in _C_** names a project that was searched but had nothing close enough to the question; **_D_ not searched (timed out)** names one whose search did not finish this turn — the answer is told to say so rather than answer for it; **N products no longer available to you** counts projects in the chat's scope you can no longer open. The label is shown as a warning whenever a project could not be searched, or nothing matched.
 
   Replies written before this label existed show none.
 
+**How a question over several projects is answered (#2238):** every turn searches each project in the scope, again checking that you can still open it. Each project's matches are compared on how close they are to the question, and a project whose best match is well below the best project's contributes nothing, so a project that has nothing to do with the question does not slip its top excerpt into the answer (`CHAT_MULTI_PROJECT_RELEVANCE_FLOOR_PCT`, default 75). The projects that remain share the excerpts. Every excerpt is labelled with its project, and the model is told to say which project each statement comes from, and never to carry a fact from one project over to another.
+
 **Follow-up questions.** A scoped chat searches the project with the conversation, not just your last message. When you answer a question the model asked ("Which product do you mean?" — "Server"), or ask a short follow-up ("and for annual plans?"), the search reads your message together with the question before it. Your own words always run as a search of their own as well, and they count for more: excerpts found only through the earlier question take at most 3 of the 8 places. A question that names its own subject ("Are there any GDPR requirements in the onboarding spec?") is searched on its own, even right after the model asked you something. A question with several parts (a numbered list, or several questions in one message) searches each part, and the results are merged. The excerpts an answer cited (by its `[n]` number, its file name or its location) are given to the model again on your next message, marked as cited in the previous answer, so it can build on them. They are read again when you send it: an excerpt you can no longer see, or whose document was deleted, is not brought back. Each excerpt brought back counts toward the **N sources** in the label. [#2240]
 
-**Access control:** you can only scope a chat to a project you have been granted access to.
+**Access control:** you can only scope a chat to a project you have been granted access to, or to a workspace you are a member of. Access is checked again on every turn, and chunks restricted to other people are never searched for you.
 
 ---
 
@@ -6134,6 +6139,22 @@ An approval is of a wording, so editing that wording reopens it:
   notification, on the first edit after the approval (not on every
   save), linking to the review. The person who made the edit is not
   notified.
+- **The analysis results say they judged the old wording (#2222).**
+  Once a requirement is edited, the governing findings that checked its
+  earlier wording are marked **Stale** in the Governing rules panel,
+  for example: "Stale: "Minimum password length is 12 characters" was
+  checked at v0 and is now v2." The BRD's governing section and the
+  chat say the same. The analysis findings the requirement was written
+  from are marked too, in the findings list and the traceability matrix
+  ("Stale: the analysis judged v0; the requirement is now v2.").
+- **Re-check this requirement.** In the Governing rules panel, a stale
+  result has a **Re-check this requirement** button (you need
+  permission to run analyses). It checks the governing rules again
+  against the requirement's current wording only, not the whole
+  analysis, and shows the results under the requirement's title. The
+  older results stop being marked stale for it. Editing it again marks
+  both stale until the next re-check. The analysis findings (the code
+  and document evidence) are not re-run: a new analysis does that.
 
 **One requirement in two open reviews (#1016).** You can request a
 second review of requirements that are already in review, for example

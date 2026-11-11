@@ -1721,6 +1721,13 @@ export interface AnalysisSnapshot {
      */
     version: number;
     /**
+     * #2222 — the version the analysis judged: the one it wrote, before the
+     * first edit by a person. The findings the requirement was synthesised
+     * from judge that wording, so they are stale while `version` differs.
+     * Absent on snapshots that predate the field.
+     */
+    analysedVersion?: number;
+    /**
      * Epic #1107 (#1110) — the #1109 panel's confidence for this requirement,
      * rolled up from the panels of the findings it was synthesised from, WITH
      * the dissenting lenses' own reasons and `file:line` locators.
@@ -2313,8 +2320,38 @@ export interface TraceabilityRow {
    */
   verdict: RequirementVerdict | null;
   findings: TraceabilityFindingRef[];
+  /**
+   * #2222 — set when the requirement was edited after the analysis judged it:
+   * its `findings` judge the wording at `judgedVersion`. Null or absent: current.
+   */
+  findingsStale?: RequirementFindingsStale | null;
   codeLocations: TraceabilityCodeLocation[];
   tests: TraceabilityTestLink[];
+}
+
+/** #2222 — a requirement edited since the analysis whose findings it shows judged it. */
+export interface RequirementFindingsStale {
+  judgedVersion: number;
+  currentVersion: number;
+}
+
+/**
+ * #2222 — whether a requirement's analysis findings judge an earlier wording:
+ * null when `analysedVersion` is unknown or is the current version.
+ */
+export function requirementFindingsStale(req: {
+  version: number;
+  analysedVersion?: number | null;
+}): RequirementFindingsStale | null {
+  if (req.analysedVersion === undefined || req.analysedVersion === null) return null;
+  return req.analysedVersion === req.version
+    ? null
+    : { judgedVersion: req.analysedVersion, currentVersion: req.version };
+}
+
+/** #2222 — "Stale: the analysis judged v0; the requirement is now v2." */
+export function requirementFindingsStaleNote(stale: RequirementFindingsStale): string {
+  return `Stale: the analysis judged v${stale.judgedVersion}; the requirement is now v${stale.currentVersion}.`;
 }
 
 /**

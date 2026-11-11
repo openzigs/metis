@@ -172,6 +172,14 @@ describe("withToolReads (#439)", () => {
     expect(withToolReads({ status: "unscoped" }, 2)).toEqual({ status: "unscoped" });
   });
 
+  it("keeps a multi-product turn as it was (#2238)", () => {
+    const multi: Parameters<typeof withToolReads>[0] = {
+      status: "multi",
+      projects: [{ projectId: "a", projectName: "A", sources: 0 }],
+    };
+    expect(withToolReads(multi, 2)).toBe(multi);
+  });
+
   it("produces a grounding the shared validator accepts", () => {
     expect(readGrounding({ grounding: withToolReads(noContext, 1) })).toEqual(
       withToolReads(noContext, 1),

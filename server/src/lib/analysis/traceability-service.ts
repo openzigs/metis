@@ -79,6 +79,9 @@ export async function getTraceabilityMatrix(
     // coverage cell is never silently read as a confirmed gap.
     verdict: r.verdict ?? null,
     evidenceFindingIds: r.evidenceFindingIds,
+    // #2222 — so a row edited since the analysis marks its findings stale.
+    version: r.version,
+    ...(r.analysedVersion !== undefined ? { analysedVersion: r.analysedVersion } : {}),
   }));
 
   const findingsById = new Map<string, MatrixFindingInput>();

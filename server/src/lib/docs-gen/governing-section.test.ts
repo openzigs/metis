@@ -29,6 +29,7 @@ const db = vi.hoisted(() => ({
   evidenceFindMany: vi.fn(),
   userFindMany: vi.fn(),
   ruleCount: vi.fn(),
+  versionGroupBy: vi.fn(),
 }));
 vi.mock("../prisma.js", () => ({
   prisma: {
@@ -38,6 +39,7 @@ vi.mock("../prisma.js", () => ({
     finding: { findMany: db.evidenceFindMany },
     user: { findMany: db.userFindMany },
     governingRule: { count: db.ruleCount },
+    requirementVersion: { groupBy: db.versionGroupBy },
     reviewRequest: { findFirst: vi.fn() },
   },
 }));
@@ -193,6 +195,8 @@ beforeEach(() => {
   ]);
   db.ruleCount.mockResolvedValue(12);
   db.analysisFindFirst.mockResolvedValue(null);
+  // #2222 — no requirement has a version by a person: none is stale.
+  db.versionGroupBy.mockResolvedValue([]);
 });
 afterEach(() => {
   delete process.env.GOVERNING_DOCS_ENABLED;
@@ -459,9 +463,10 @@ describe("the governing-rules section in a requirements BRD — #1877", () => {
     withFindings(THREE);
     await synthesizeRequirementsDocument("p1", { requirementIds: ["req-1"] }, "BRD");
     // #2042 — one read of the selected requirements serves the document and the section.
+    // (#2222's staleness read selects titles too, but no body.)
     expect(
       db.requirementFindMany.mock.calls.filter(
-        ([args]) => (args as { select: { title?: true } }).select.title,
+        ([args]) => (args as { select: { title?: true; body?: true } }).select.body,
       ),
     ).toHaveLength(1);
     expect(db.requirementFindMany).toHaveBeenCalledWith({
@@ -532,6 +537,30 @@ describe("a BRD covering some of a run's requirements lists only their findings 
     expect(markdown).not.toContain("so every finding of the run is listed");
     // The rule count is read for the listed findings' revision only.
     expect(db.ruleCount).toHaveBeenCalledTimes(1);
+  });
+
+  it("#2222 — marks the findings on a requirement a person edited since the analysis stale, and only those", async () => {
+    withFindings(THREE, APPLICABILITY, {
+      scoped: [CARD, STATEMENT],
+      live: LIVE,
+      evidence: EVIDENCE,
+    });
+    // req-1 (cards) is at v1 and its v1 is a person's edit; req-2 was never edited by one.
+    db.versionGroupBy.mockResolvedValue([{ requirementId: "req-1", _min: { version: 1 } }]);
+    const { markdown } = await synthesizeRequirementsDocument("p1", { analysisId: "run-1" }, "BRD");
+
+    const rows = tableRows(markdown);
+    expect(rows.get("EN-03")?.[2]).toBe("Compliant (stale)");
+    expect(rows.get("RT-01")?.[2]).not.toContain("stale");
+    expect(markdown).toContain(
+      '- **Stale: "Save a card" was checked at v0 and is now v1. This result judges the earlier wording.**',
+    );
+    expect(markdown).not.toContain('"Monthly statement" was checked');
+    expect(db.versionGroupBy).toHaveBeenCalledWith({
+      by: ["requirementId"],
+      where: { requirementId: { in: ["req-1", "req-2"] }, actorId: { not: null } },
+      _min: { version: true },
+    });
   });
 
   it("reads the evidence findings by id, within the project and the partly covered run", async () => {

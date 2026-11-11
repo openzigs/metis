@@ -17,6 +17,8 @@
  */
 import {
   isCodeCitation,
+  requirementFindingsStale,
+  requirementFindingsStaleNote,
   type Citation,
   type FindingSeverity,
   type RequirementCoverage,
@@ -43,6 +45,9 @@ export interface MatrixRequirementInput {
   verdict: RequirementVerdict | null;
   /** Finding row ids this requirement was grounded in (snapshot `evidenceFindingIds`). */
   evidenceFindingIds: string[];
+  /** #2222 — the requirement's version now, and the one the analysis judged. */
+  version?: number;
+  analysedVersion?: number;
 }
 
 /** Minimal finding projection the builder needs (from the analysis snapshot). */
@@ -134,12 +139,18 @@ export function buildTraceabilityMatrix(input: BuildTraceabilityMatrixInput): Tr
       addCodeLocation(codeByKey, loc);
     }
 
+    // #2222 — the findings judge an earlier wording once a person edited it.
+    const findingsStale =
+      findings.length > 0 && req.version !== undefined
+        ? requirementFindingsStale({ version: req.version, analysedVersion: req.analysedVersion })
+        : null;
     return {
       requirementId: req.id,
       title: req.title,
       coverage: req.coverage,
       verdict: req.verdict,
       findings,
+      ...(findingsStale ? { findingsStale } : {}),
       codeLocations: [...codeByKey.values()],
       tests: [...(input.testsByRequirement?.get(req.id) ?? [])],
     };
@@ -232,7 +243,11 @@ function rowCells(row: TraceabilityRow): string[] {
     formatVerdictCell(row.verdict),
     formatCoverageCell(row.coverage),
     joinCell(
-      row.findings.map((f) => `${f.title} (${f.severity})`),
+      [
+        ...row.findings.map((f) => `${f.title} (${f.severity})`),
+        // #2222 — said once, after the findings it qualifies.
+        ...(row.findingsStale ? [requirementFindingsStaleNote(row.findingsStale)] : []),
+      ],
       "none",
     ),
     joinCell(row.codeLocations.map(formatCodeLocationCell), "none"),

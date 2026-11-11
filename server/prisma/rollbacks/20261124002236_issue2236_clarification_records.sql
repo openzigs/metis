@@ -1,7 +1,7 @@
--- Reverse of server/prisma/migrations/20261123002236_issue2236_clarification_records
+-- Reverse of server/prisma/migrations/20261124002236_issue2236_clarification_records
 -- (SQLite). Prisma Migrate has no down migrations, so this is applied by hand:
 --
---   sqlite3 <db file> < server/prisma/rollbacks/20261123002236_issue2236_clarification_records.sql
+--   sqlite3 <db file> < server/prisma/rollbacks/20261124002236_issue2236_clarification_records.sql
 --
 -- It drops the clarification records table and forgets the migration, so a
 -- later `prisma migrate deploy` applies it again. No other table is touched.
@@ -15,5 +15,5 @@
 -- migration still read as applied, and `migrate deploy` would not recreate it.
 BEGIN;
 DROP TABLE "clarification_records";
-DELETE FROM "_prisma_migrations" WHERE "migration_name" = '20261123002236_issue2236_clarification_records';
+DELETE FROM "_prisma_migrations" WHERE "migration_name" = '20261124002236_issue2236_clarification_records';
 COMMIT;

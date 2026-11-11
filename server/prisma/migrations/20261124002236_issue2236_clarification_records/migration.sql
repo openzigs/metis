@@ -11,7 +11,7 @@
 --
 -- One new, empty table.
 --
--- Rollback: server/prisma/rollbacks/20261123002236_issue2236_clarification_records.sql
+-- Rollback: server/prisma/rollbacks/20261124002236_issue2236_clarification_records.sql
 -- (exercised by server/tests/clarification-records-migration-2236.sqlite.test.ts).
 
 -- CreateTable
