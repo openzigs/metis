@@ -34,7 +34,12 @@ vi.mock("@/lib/enterprise-api", () => {
 import { ConnectorsSection } from "@/components/library/connectors-section";
 import { ProjectsV2SettingsCard } from "@/components/projects/projects-v2-settings-card";
 import AcpSettingsPage from "@/app/(authed)/settings/acp/page";
-import { atlassianApi, acpApi, projectsV2Api } from "@/lib/enterprise-api";
+import {
+  atlassianApi,
+  acpApi,
+  projectsV2Api,
+  type AtlassianIngestSummary,
+} from "@/lib/enterprise-api";
 
 const atlassian = vi.mocked(atlassianApi);
 const acp = vi.mocked(acpApi);
@@ -43,6 +48,21 @@ const pv2 = vi.mocked(projectsV2Api);
 beforeEach(() => {
   vi.clearAllMocks();
 });
+
+/** The server's ingest summary shape (`server/src/lib/connectors/atlassian.ts`). */
+function summary(over: Partial<AtlassianIngestSummary>): AtlassianIngestSummary {
+  return {
+    documentsCreated: 0,
+    documentsUpdated: 0,
+    chunkCount: 0,
+    failures: 0,
+    skipped: 0,
+    found: 0,
+    omitted: 0,
+    limit: 200,
+    ...over,
+  };
+}
 
 describe("ConnectorsSection (#96)", () => {
   it("the ingest modal is an accessible dialog (#268)", async () => {
@@ -65,12 +85,9 @@ describe("ConnectorsSection (#96)", () => {
 
   it("submits a Confluence ingest with space + query", async () => {
     atlassian.status.mockResolvedValue({ configured: true, serverId: "srv-1" });
-    atlassian.ingestConfluence.mockResolvedValue({
-      ingested: 3,
-      skipped: 0,
-      failed: 0,
-      documentIds: ["d1", "d2", "d3"],
-    });
+    atlassian.ingestConfluence.mockResolvedValue(
+      summary({ documentsCreated: 3, found: 3, limit: 200 }),
+    );
     render(<ConnectorsSection projectId="p1" />, { wrapper: makeWrapper() });
     await waitFor(() => expect(screen.getByTestId("add-from-confluence")).not.toBeDisabled());
     fireEvent.click(screen.getByTestId("add-from-confluence"));
@@ -87,17 +104,47 @@ describe("ConnectorsSection (#96)", () => {
         query: "label = api",
       }),
     );
-    expect(await screen.findByTestId("connectors-last-summary")).toHaveTextContent(/Ingested 3/);
+    expect(await screen.findByTestId("connectors-last-summary")).toHaveTextContent(
+      "Ingested 3 new · updated 0 · unchanged 0 · failed 0",
+    );
+    expect(screen.queryByTestId("connectors-last-omitted")).not.toBeInTheDocument();
+  });
+
+  it("#2244: tells the analyst how many pages the per-run cap left out", async () => {
+    atlassian.status.mockResolvedValue({ configured: true, serverId: "srv-1" });
+    atlassian.ingestConfluence.mockResolvedValue(
+      summary({ documentsCreated: 200, found: 260, omitted: 60, limit: 200 }),
+    );
+    render(<ConnectorsSection projectId="p1" />, { wrapper: makeWrapper() });
+    await waitFor(() => expect(screen.getByTestId("add-from-confluence")).not.toBeDisabled());
+    fireEvent.click(screen.getByTestId("add-from-confluence"));
+    fireEvent.change(screen.getByTestId("confluence-space-key"), { target: { value: "ENG" } });
+    fireEvent.click(screen.getByTestId("connector-submit"));
+    expect(await screen.findByTestId("connectors-last-omitted")).toHaveTextContent(
+      "60 of 260 matching pages were not ingested. One run ingests at most 200 pages.",
+    );
+  });
+
+  it("#2244: names a search that returned fewer issues than it matched", async () => {
+    atlassian.status.mockResolvedValue({ configured: true, serverId: "srv-1" });
+    atlassian.ingestJira.mockResolvedValue(
+      summary({ documentsCreated: 50, found: 640, omitted: 590, limit: 500 }),
+    );
+    render(<ConnectorsSection projectId="p1" />, { wrapper: makeWrapper() });
+    await waitFor(() => expect(screen.getByTestId("add-from-jira")).not.toBeDisabled());
+    fireEvent.click(screen.getByTestId("add-from-jira"));
+    fireEvent.change(screen.getByTestId("jira-jql"), { target: { value: "project = ENG" } });
+    fireEvent.click(screen.getByTestId("connector-submit"));
+    const note = await screen.findByTestId("connectors-last-omitted");
+    expect(note).toHaveTextContent(
+      "590 of 640 matching issues were not ingested. The search returned only 50.",
+    );
+    expect(note).toHaveAttribute("role", "status");
   });
 
   it("submits a Jira ingest with the provided JQL", async () => {
     atlassian.status.mockResolvedValue({ configured: true, serverId: "srv-1" });
-    atlassian.ingestJira.mockResolvedValue({
-      ingested: 1,
-      skipped: 0,
-      failed: 0,
-      documentIds: ["d1"],
-    });
+    atlassian.ingestJira.mockResolvedValue(summary({ documentsCreated: 1, found: 1, limit: 500 }));
     render(<ConnectorsSection projectId="p1" />, { wrapper: makeWrapper() });
     await waitFor(() => expect(screen.getByTestId("add-from-jira")).not.toBeDisabled());
     fireEvent.click(screen.getByTestId("add-from-jira"));
