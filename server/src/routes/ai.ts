@@ -19,6 +19,7 @@
 import { Router, type Request, type Response } from "express";
 import { z } from "zod";
 import {
+  MAX_ATTACHED_DOCUMENTS,
   patchSchemaOf,
   sessionRoom,
   type ApiResponse,
@@ -133,6 +134,16 @@ import { getKnowledgeService } from "../lib/rag/knowledge-service.js";
 import { resolveAclActor, type SharedAudienceActor } from "../lib/rag/acl.js";
 import { formatDerivedLabel } from "../lib/rag/derived-label.js";
 import { formatHitLocator, formatHitScore } from "../lib/rag/hit-locator.js";
+import { loadChunksById } from "../lib/rag/chunk-lookup.js";
+import { listActiveMessages } from "../lib/ai/conversation/transcript-store.js";
+import {
+  citedExcerptsMeta,
+  fuseRetrievalHits,
+  planRetrievalQueries,
+  planSearches,
+  retrievalConversation,
+  type CitableExcerpt,
+} from "../lib/ai/conversation/retrieval-query.js";
 import {
   countProjectToolReads,
   describeGrounding,
@@ -383,6 +394,12 @@ const chatBodySchema = z.object({
    * response's `toolsWithheld` names them.
    */
   awaitToolApproval: z.boolean().optional(),
+  /**
+   * #2240 — documents the user attached to this question (the Workbench's
+   * context chips). Retrieval searches only these; an id outside the session's
+   * project matches nothing, as the search is scoped to that project.
+   */
+  documentIds: z.array(z.string().min(1).max(120)).max(MAX_ATTACHED_DOCUMENTS).optional(),
 });
 
 type ChatBody = z.infer<typeof chatBodySchema>;
@@ -538,7 +555,8 @@ function aiErrorToAppError(err: unknown): AppError {
   return new AppError(500, "AI_PROVIDER_ERROR", message);
 }
 
-/** * Auto-RAG: retrieve relevant knowledge chunks for the user's query and
+/** * Auto-RAG: retrieve relevant knowledge chunks for the user's query — read
+ * with the conversation since #2240, see {@link conversationRagContext} — and
  * return a system message with the context. Returns empty string when no
  * knowledge is available or retrieval fails.
  *
@@ -569,6 +587,62 @@ export interface RagContextCapture {
    * The chat's grounding label counts this, not `contexts.length`.
    */
   sources: number;
+  /**
+   * #2240 — the block's numbered excerpts, so the route can record which ones
+   * the answer cited and carry them into the next turn.
+   */
+  excerpts?: CitableExcerpt[];
+}
+
+/** #2240 — what the conversation adds to a turn's retrieval. */
+export interface AutoRagOptions {
+  /**
+   * Chunk ids the previous answer cited. They are read back (scoped to the
+   * project and ACL-checked for the requester) and kept in the block.
+   */
+  carryForward?: readonly string[];
+  /** The documents the user attached to the question: the search covers only these. */
+  documentIds?: readonly string[];
+}
+
+/** Excerpts the retrieved-knowledge block lists from search (carried ones are extra). */
+const AUTO_RAG_K = 8;
+
+/**
+ * #2240 — a chat turn's auto-RAG, read with the conversation: the session's
+ * earlier turns shape the searches, and the excerpts its last answer cited are
+ * carried into this one. A session with no project retrieves nothing, so its
+ * transcript is not read.
+ */
+export async function conversationRagContext(
+  session: { id: string; projectId: string | null },
+  userText: string,
+  userId: string,
+  capture: RagContextCapture,
+  documentIds?: readonly string[],
+): Promise<string> {
+  if (!session.projectId) return "";
+  let conversation = retrievalConversation([]);
+  try {
+    conversation = retrievalConversation(await listActiveMessages(session.id));
+  } catch (err) {
+    // An unreadable transcript costs the search its context, never the turn.
+    log.debug("Transcript unreadable for retrieval; searching the new message alone", {
+      sessionId: session.id,
+      error: (err as Error).message,
+    });
+  }
+  return buildAutoRagContext(
+    session.projectId,
+    [...conversation.messages, { role: "user", content: userText }],
+    userId,
+    undefined,
+    capture,
+    {
+      carryForward: conversation.carryForward,
+      ...(documentIds && documentIds.length > 0 ? { documentIds } : {}),
+    },
+  );
 }
 
 export async function buildAutoRagContext(
@@ -586,12 +660,16 @@ export async function buildAutoRagContext(
   requester: string | SharedAudienceActor,
   fusedDeps: FusedCodeDeps = defaultFusedCodeDeps(),
   capture?: RagContextCapture,
+  opts: AutoRagOptions = {},
 ): Promise<string> {
-  // Extract the last user message as the retrieval query.
-  const lastUser = [...messages].reverse().find((m) => m.role === "user");
-  if (!lastUser || !projectId) return "";
-  const query = messageText(lastUser).slice(0, 2048);
-  if (!query.trim()) return "";
+  // #2240 — the searches come from the conversation: the user's latest words
+  // first, then each part of a multi-part question, then — for a follow-up —
+  // the latest message read with the turn before it.
+  const plan = planRetrievalQueries(messages);
+  if (!plan || !projectId) return "";
+  const searches = planSearches(plan);
+  const documentIds =
+    opts.documentIds && opts.documentIds.length > 0 ? [...opts.documentIds] : undefined;
 
   // #714 — fused code-graph retrieval is env-gated and OFF by default. Read the
   // flag once so the disabled path issues no code-graph query and is
@@ -604,27 +682,88 @@ export async function buildAutoRagContext(
     // closed) and the turn goes on ungrounded, as any retrieval failure does.
     const actor = typeof requester === "string" ? await resolveAclActor(requester) : requester;
     const service = getKnowledgeService();
-    const { hits } = await service.search(projectId, query, { k: 8, actor });
+    const queries = [...searches.user, ...(searches.contextual ? [searches.contextual] : [])];
+    const lists = await Promise.all(
+      queries.map(
+        async (q) =>
+          (
+            await service.search(projectId, q, {
+              k: AUTO_RAG_K,
+              actor,
+              ...(documentIds ? { documentIds } : {}),
+            })
+          ).hits,
+      ),
+    );
+    // The user's own searches weigh more than the conversational one, whose
+    // own finds never fill a majority of the slots.
+    const hits = fuseRetrievalHits(
+      lists.slice(0, searches.user.length),
+      searches.contextual ? lists[searches.user.length]! : null,
+      AUTO_RAG_K,
+    );
+    // #2240 — the excerpts the previous answer cited, read back as the project
+    // holds them now. Losing them costs this turn its carry-over, never its
+    // fresh retrieval.
+    const found = new Set(hits.map((h) => h.chunkId));
+    let carried: Awaited<ReturnType<typeof loadChunksById>> = [];
+    if (opts.carryForward && opts.carryForward.length > 0) {
+      try {
+        carried = (await loadChunksById(projectId, opts.carryForward, actor)).filter(
+          // Attached documents limit the whole block: a carried excerpt from
+          // any other document would break that limit and the note below.
+          (c) => !found.has(c.chunkId) && (!documentIds || documentIds.includes(c.documentId)),
+        );
+      } catch (err) {
+        log.debug("Cited excerpts could not be carried forward", {
+          projectId,
+          error: (err as Error).message,
+        });
+      }
+    }
 
     // Build the doc-level RAG block (unchanged wording) when there are hits.
     let ragBlock = "";
     let ragChunks: FusedRagChunkRef[] = [];
-    if (hits.length > 0) {
+    const listed = [...hits, ...carried];
+    if (listed.length > 0) {
       const project = await prisma.project.findUnique({
         where: { id: projectId },
         select: { name: true },
       });
       const projectName = project?.name?.trim() || "this project";
-      const chunkList = hits.map(
-        (h, i) =>
-          `[${i + 1}] ${formatHitLocator(h)}${formatDerivedLabel(h.derived)} ` +
-          `(${formatHitScore(h, 3)})\n${h.text}`,
-      );
+      const chunkList = [
+        ...hits.map(
+          (h, i) =>
+            `[${i + 1}] ${formatHitLocator(h)}${formatDerivedLabel(h.derived)} ` +
+            `(${formatHitScore(h, 3)})\n${h.text}`,
+        ),
+        ...carried.map(
+          (h, j) =>
+            `[${hits.length + j + 1}] ${formatHitLocator(h)}${formatDerivedLabel(h.derived)} ` +
+            `(cited in your previous answer)\n${h.text}`,
+        ),
+      ];
       if (capture) {
         capture.contexts.push(...chunkList);
         capture.sources += chunkList.length;
+        capture.excerpts = listed.map((h, i) => ({
+          n: i + 1,
+          chunkId: h.chunkId,
+          name: h.path ?? h.filename,
+          locator: formatHitLocator(h),
+        }));
       }
       const chunks = chunkList.join("\n\n---\n\n");
+      // #2240 — said only when it applies, so an ordinary turn's block is unchanged.
+      const notes =
+        (documentIds
+          ? ". The user attached documents to this question, so every excerpt below comes from them"
+          : "") +
+        (carried.length > 0
+          ? '. An excerpt marked "cited in your previous answer" is one your last answer drew on, ' +
+            "kept so you can build on it"
+          : "");
       ragBlock =
         `## Retrieved Knowledge (project-scoped RAG)\n` +
         `This chat session is scoped to the project "${projectName}". The excerpts below were ` +
@@ -633,10 +772,10 @@ export async function buildAutoRagContext(
         `never METIS (the platform this chat runs on) and never any other topic raised earlier in this ` +
         `conversation. Prefer these excerpts over your own background knowledge or earlier chat history. ` +
         `An excerpt marked DERIVED is generated documentation about the project, not a primary source: ` +
-        `use it as a pointer, prefer an unmarked excerpt when they disagree, and say so when you rely on one:\n\n${chunks}`;
+        `use it as a pointer, prefer an unmarked excerpt when they disagree, and say so when you rely on one${notes}:\n\n${chunks}`;
       // #547/#573 — only a repo-sourced chunk can stand in for a code symbol;
       // `fuseCodeContext` enforces that on the `source` carried here.
-      ragChunks = hits.map((h) => ({ filename: h.filename, source: h.source }));
+      ragChunks = listed.map((h) => ({ filename: h.filename, source: h.source }));
     }
 
     // #714 — passively merge deduped, budgeted code-graph symbol hits. A no-op
@@ -644,9 +783,11 @@ export async function buildAutoRagContext(
     // exists, so `ragBlock` is returned exactly as before in that case.
     const fused = await buildFusedCodeBlock({
       projectId,
-      query,
+      // #2240 — a follow-up's code search reads the conversation too.
+      query: plan.contextual ?? plan.primary,
       ragChunks,
-      enabled: fusedEnabled,
+      // Attachments limit the search to their documents; the code graph is not one.
+      enabled: fusedEnabled && !documentIds,
       tokenBudget: cfg.getNumber("CHAT_FUSED_CODE_TOKEN_BUDGET", 1500),
       maxSymbols: cfg.getNumber("CHAT_FUSED_CODE_MAX_SYMBOLS", 12),
       searcher: fusedDeps.searcher,
@@ -666,6 +807,7 @@ export async function buildAutoRagContext(
     if (capture) {
       capture.contexts.length = 0;
       capture.sources = 0;
+      delete capture.excerpts;
     }
     log.debug("Auto-RAG retrieval failed, continuing without context", {
       projectId,
@@ -1542,12 +1684,12 @@ export function aiRouter(): Router {
       // Issue #1321 — the observer needs the retrieved contexts as the model saw
       // them; the builder hands them over directly (no re-parsing of its block).
       const ragCapture: RagContextCapture = { contexts: [], sources: 0 };
-      const ragContext = await buildAutoRagContext(
-        session.projectId,
-        [{ role: "user", content: userText }],
+      const ragContext = await conversationRagContext(
+        session,
+        userText,
         userId,
-        undefined,
         ragCapture,
+        parsed.data.documentIds,
       );
       // #18 — what this reply is grounded in, recorded on the reply row. #439 —
       // what the code tools read of the project is folded in after the loop.
@@ -1794,6 +1936,8 @@ export function aiRouter(): Router {
         ratio: turn.ratio,
         meta: {
           grounding,
+          // #2240 — what the answer cited, so the next turn keeps those excerpts.
+          ...citedExcerptsMeta(outContent, ragCapture.excerpts),
           ...(response.model && response.model !== model ? { servedModel: response.model } : {}),
         },
       });
@@ -1966,12 +2110,12 @@ export function aiRouter(): Router {
     // Auto-RAG: inject relevant knowledge context for project-scoped sessions.
     // Issue #1321 — see the /chat route: contexts come from the builder.
     const ragCapture: RagContextCapture = { contexts: [], sources: 0 };
-    const ragContext = await buildAutoRagContext(
-      session.projectId,
-      [{ role: "user", content: userText }],
+    const ragContext = await conversationRagContext(
+      session,
+      userText,
       userId,
-      undefined,
       ragCapture,
+      parsed.data.documentIds,
     );
     // #18 — what this reply is grounded in: streamed before the answer and
     // recorded on the reply row, so the client can say so live and on reload.
@@ -2490,7 +2634,8 @@ export function aiRouter(): Router {
           finishReason,
           promptChars: calibrationPromptChars(turn, toolCalls, resentPrompt),
           ratio: turn.ratio,
-          meta: { grounding },
+          // #2240 — what the answer cited, so the next turn keeps those excerpts.
+          meta: { grounding, ...citedExcerptsMeta(finalAnswer, ragCapture.excerpts) },
         });
         replyRecorded = true;
         await writeDerivedSnapshot(session);
