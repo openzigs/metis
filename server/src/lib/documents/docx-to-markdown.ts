@@ -24,8 +24,10 @@
  * itself, so a model reading the document, and the analyst reading a chunk, both see it.
  *
  * OWASP: xmldom resolves no external entities and expands no DTD-declared ones (see
- * `auth/saml-provider.ts`), and each package part's declared inflated size is capped before
- * it is read, so a small zip cannot inflate into an unbounded string.
+ * `auth/saml-provider.ts`), and each package part is inflated as a stream with a running byte
+ * cap (#2263), so a small zip cannot inflate into an unbounded string whatever size its
+ * headers declare. Body text that would read as Markdown structure (`# not a heading`) is
+ * escaped, so the document's own words cannot create a heading the chunker splits on.
  */
 import JSZip from "jszip";
 import { DOMParser, type Element as XmlElement, type Node as XmlNode } from "@xmldom/xmldom";
@@ -49,11 +51,26 @@ export interface DocxImage {
 /**
  * Describe one image, or answer `null` when no vision-capable model is available. A throw is
  * reported as a failed description for that image; the rest of the document still converts.
+ * `signal` aborts when the image's deadline passes ({@link IMAGE_DESCRIPTION_TIMEOUT_MS}).
  */
-export type ImageDescriber = (image: DocxImage) => Promise<string | null>;
+export type ImageDescriber = (image: DocxImage, signal?: AbortSignal) => Promise<string | null>;
+
+/**
+ * #2263 — thrown by a describer that declined to describe an image for a reason the analyst
+ * should read (the project's budget is spent). Unlike any other throw, `reason` is written
+ * into the converted text, so it must be text this codebase wrote, never a provider's.
+ */
+export class ImageNotRead extends Error {
+  constructor(readonly reason: string) {
+    super(reason);
+    this.name = "ImageNotRead";
+  }
+}
 
 export interface DocxToMarkdownOptions {
   describeImage?: ImageDescriber;
+  /** Deadline per image description, in ms; defaults to {@link IMAGE_DESCRIPTION_TIMEOUT_MS}. */
+  imageTimeoutMs?: number;
 }
 
 export interface DocxConversion {
@@ -68,6 +85,15 @@ export const MAX_DESCRIBED_IMAGES = 20;
 export const MAX_DESCRIBED_IMAGE_BYTES = 5 * 1024 * 1024;
 /** Declared inflated size above which a package part is refused rather than read. */
 export const MAX_DOCX_PART_BYTES = 64 * 1024 * 1024;
+/**
+ * #2263 — images described at once. Descriptions run inside the upload request when no ingest
+ * queue is configured, so one at a time made 20 images 20 sequential model calls.
+ */
+export const IMAGE_DESCRIPTION_CONCURRENCY = 4;
+/** #2263 — how long one image description may take before it is abandoned as not read. */
+export const IMAGE_DESCRIPTION_TIMEOUT_MS = 45_000;
+/** The reason shown when the caller passed no describer at all (governing documents, Jira). */
+const NO_DESCRIBER = "images are not described for this kind of document";
 /** Deleted (tracked) text quoted per deletion in the notes. */
 const MAX_DELETION_QUOTE_CHARS = 200;
 
@@ -161,6 +187,23 @@ interface Relationship {
   external: boolean;
 }
 
+/** The slice of JSZip's `StreamHelper` (untyped in its declarations) that `inflate` uses. */
+interface ChunkStream {
+  on(event: "data", fn: (chunk: Buffer) => void): ChunkStream;
+  on(event: "error", fn: (err: Error) => void): ChunkStream;
+  on(event: "end", fn: () => void): ChunkStream;
+  resume(): ChunkStream;
+  pause(): ChunkStream;
+}
+
+/** A package part that inflated past the cap it was read under. */
+class PartTooLargeError extends Error {
+  constructor(path: string, cap: number) {
+    super(`part ${path} is larger than ${cap} bytes`);
+    this.name = "PartTooLargeError";
+  }
+}
+
 class Package {
   constructor(private readonly zip: JSZip) {}
 
@@ -168,19 +211,10 @@ class Package {
     return this.zip.file(path.replace(/^\//, ""));
   }
 
-  private checkSize(path: string, entry: JSZip.JSZipObject): void {
-    const declared = (entry as unknown as { _data?: { uncompressedSize?: number } })._data
-      ?.uncompressedSize;
-    if (typeof declared === "number" && declared > MAX_DOCX_PART_BYTES) {
-      throw new Error(`part ${path} is larger than ${MAX_DOCX_PART_BYTES} bytes`);
-    }
-  }
-
   async xml(path: string): Promise<XmlElement | undefined> {
     const entry = this.file(path);
     if (!entry) return undefined;
-    this.checkSize(path, entry);
-    return parseXml(await entry.async("string"));
+    return parseXml((await this.inflate(path, entry, MAX_DOCX_PART_BYTES)).toString("utf8"));
   }
 
   declaredSize(path: string): number | undefined {
@@ -189,11 +223,50 @@ class Package {
       ?.uncompressedSize;
   }
 
-  async bytes(path: string): Promise<Buffer> {
+  async bytes(path: string, cap = MAX_DOCX_PART_BYTES): Promise<Buffer> {
     const entry = this.file(path);
     if (!entry) throw new Error(`missing part ${path}`);
-    this.checkSize(path, entry);
-    return entry.async("nodebuffer");
+    return this.inflate(path, entry, cap);
+  }
+
+  /**
+   * #2263 — inflate `entry`, counting the bytes as they come and stopping at `cap`. The size
+   * a zip header declares is the producer's claim: a forged-small header used to pass the
+   * declared-size check and `entry.async()` then inflated the whole part into memory. The
+   * declared size still refuses an honest oversized part before a byte is inflated.
+   */
+  private async inflate(path: string, entry: JSZip.JSZipObject, cap: number): Promise<Buffer> {
+    const declared = this.declaredSize(path);
+    if (typeof declared === "number" && declared > cap) throw new PartTooLargeError(path, cap);
+    // JSZip's own chunk stream (its `nodeStream` is a `readable-stream` v2 adapter, which is
+    // not async-iterable). Pausing it stops the inflate worker where it stands.
+    const helper = (
+      entry as unknown as { internalStream(type: "nodebuffer"): ChunkStream }
+    ).internalStream("nodebuffer");
+    return new Promise<Buffer>((resolve, reject) => {
+      const chunks: Buffer[] = [];
+      let total = 0;
+      let settled = false;
+      const settle = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        fn();
+      };
+      helper
+        .on("data", (chunk: Buffer) => {
+          if (settled) return;
+          total += chunk.length;
+          if (total > cap) {
+            helper.pause();
+            settle(() => reject(new PartTooLargeError(path, cap)));
+            return;
+          }
+          chunks.push(chunk);
+        })
+        .on("error", (err: Error) => settle(() => reject(err)))
+        .on("end", () => settle(() => resolve(Buffer.concat(chunks, total))))
+        .resume();
+    });
   }
 
   /** The relationships of `partPath`, keyed by id, with targets resolved to package paths. */
@@ -613,7 +686,7 @@ class Converter {
         });
       } else {
         this.listDepth = -1;
-        out.push({ kind: "text", text });
+        out.push({ kind: "text", text: escapeBlockStarts(text) });
       }
     }
     if (images.length > 0 || boxes.length > 0) {
@@ -788,11 +861,14 @@ class Converter {
     const rows: string[][] = [];
     const trailing: Block[] = [];
     let above: string[] = [];
-    for (const tr of childElements(tbl)) {
-      if (localName(tr) !== "tr") continue;
+    for (const tr of wrapped(tbl, "tr")) {
       const row: string[] = [];
-      for (const tc of childElements(tr)) {
-        if (localName(tc) !== "tc") continue;
+      // #2263 — a row that starts after the first grid column (`w:gridBefore`) keeps its
+      // cells under the columns they sit in. One that ends early (`w:gridAfter`) needs
+      // nothing: `rowsToMarkdownTable` pads a short row with empty cells.
+      const before = Math.max(0, intAttr(child(child(tr, "trPr"), "gridBefore"), "val") ?? 0);
+      for (let i = 0; i < before; i++) row.push("");
+      for (const tc of wrapped(tr, "tc")) {
         const tcPr = child(tc, "tcPr");
         const span = Math.max(1, intAttr(child(tcPr, "gridSpan"), "val") ?? 1);
         const vMerge = child(tcPr, "vMerge");
@@ -806,7 +882,7 @@ class Converter {
         row.push(continued && own.length === 0 ? (above[row.length] ?? "") : own);
         for (let i = 1; i < span; i++) row.push("");
       }
-      if (row.length > 0) {
+      if (row.length > before) {
         rows.push(row);
         above = row;
       }
@@ -819,12 +895,50 @@ class Converter {
   }
 }
 
+/**
+ * #2263 — the `name` children of a table or row, looking through the content controls
+ * (`w:sdt` > `w:sdtContent`) and custom XML a row or cell may be wrapped in. Reading direct
+ * children only dropped every row a repeating-section control held.
+ */
+function wrapped(el: XmlElement, name: string): XmlElement[] {
+  const out: XmlElement[] = [];
+  for (const c of childElements(el)) {
+    const n = localName(c);
+    if (n === name) out.push(c);
+    else if (n === "customXml") out.push(...wrapped(c, name));
+    else if (n === "sdt") {
+      const content = child(c, "sdtContent");
+      if (content) out.push(...wrapped(content, name));
+    }
+  }
+  return out;
+}
+
 function plain(text: string): Segment {
   return { text, bold: false, italic: false };
 }
 
 function oneLine(text: string): string {
   return text.replace(/\s*\n\s*/g, " ");
+}
+
+/**
+ * #2263 — escape the line starts that would turn a body paragraph's own words into Markdown
+ * structure: an ATX heading (`# not a heading`, which the chunker splits on), a setext
+ * underline (`===` / `---`, which makes the line above a heading) and a code fence (which
+ * would swallow the rest of the document). Lists, quotes and inline emphasis are left alone:
+ * an analyst who typed `1. ` or `- ` meant a list.
+ */
+function escapeBlockStarts(text: string): string {
+  return text
+    .split("\n")
+    .map((line) =>
+      line.replace(
+        /^( {0,3})(#{1,6}(?=\s|$)|=+\s*$|-+\s*$|`{3,}|~{3,})/,
+        (_m, indent: string, marker: string) => `${indent}\\${marker}`,
+      ),
+    )
+    .join("\n");
 }
 
 /** Join runs, wrapping bold/italic/link spans once per run of equal formatting. */
@@ -874,66 +988,132 @@ async function readNotes(
   item: "comment" | "footnote" | "endnote",
   styles: Styles,
   numbering: Numbering,
-  rels: Map<string, Relationship>,
 ): Promise<Map<string, Note>> {
   const out = new Map<string, Note>();
   const root = path ? await pkg.xml(path) : undefined;
-  if (!root) return out;
+  if (!root || !path) return out;
+  // #2263 — a notes part has its own relationships (`footnotes.xml.rels`): a hyperlink in a
+  // footnote names an id there, which the main document's relationships do not hold.
+  const rels = await pkg.relationships(path);
   for (const el of childElements(root)) {
     if (localName(el) !== item) continue;
     const id = attr(el, "id");
     const type = attr(el, "type");
     if (id === undefined || (type !== undefined && type !== "normal")) continue;
-    const text = new Converter(styles, numbering, rels)
-      .blocks(el, true)
-      .filter((b): b is Extract<Block, { kind: "text" }> => b.kind === "text")
-      .map((b) => b.text)
-      .join(" ")
-      .trim();
+    // One line: a note is written after a `[^1]:` or `- [comment 1]` label, where a line
+    // break would start a new block (`# x` there would be a heading).
+    const text = oneLine(
+      new Converter(styles, numbering, rels)
+        .blocks(el, true)
+        .filter((b): b is Extract<Block, { kind: "text" }> => b.kind === "text")
+        .map((b) => b.text)
+        .join(" ")
+        .trim(),
+    );
     out.set(id, { id, author: attr(el, "author"), text });
   }
   return out;
+}
+
+class DescriptionTimeout extends Error {
+  constructor() {
+    super("image description timed out");
+    this.name = "DescriptionTimeout";
+  }
+}
+
+/**
+ * Run `describeImage` under a deadline: the signal it is handed aborts when the deadline
+ * passes, and the result is abandoned then whether or not the describer honours the signal.
+ */
+async function withDeadline(
+  describeImage: ImageDescriber,
+  image: DocxImage,
+  timeoutMs: number,
+): Promise<string | null> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      reject(new DescriptionTimeout());
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([describeImage(image, controller.signal), deadline]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function describe(
   pkg: Package,
   slot: ImageSlot,
   describeImage: ImageDescriber | undefined,
+  timeoutMs: number,
 ): Promise<{ described: boolean; text: string }> {
   const unread = (why: string) => ({ described: false, text: `image not read: ${why}.` });
+  const tooLarge = () =>
+    unread(`it is larger than ${MAX_DESCRIBED_IMAGE_BYTES / (1024 * 1024)} MB`);
   if (slot.unreadable) return unread(slot.unreadable);
-  if (!describeImage) return unread("no vision-capable model is configured");
+  if (!describeImage) return unread(NO_DESCRIBER);
   if (slot.index > MAX_DESCRIBED_IMAGES) {
     return unread(`only the first ${MAX_DESCRIBED_IMAGES} images in a document are described`);
   }
   if (!DESCRIBABLE_IMAGE_TYPES.has(slot.contentType)) {
     return unread(`its format (${slot.name}) cannot be sent to a model`);
   }
-  if ((pkg.declaredSize(slot.path!) ?? 0) > MAX_DESCRIBED_IMAGE_BYTES) {
-    return unread(`it is larger than ${MAX_DESCRIBED_IMAGE_BYTES / (1024 * 1024)} MB`);
+  let data: Buffer;
+  try {
+    // Refused on its declared size before any inflating, else stopped mid-stream at the cap.
+    data = await pkg.bytes(slot.path!, MAX_DESCRIBED_IMAGE_BYTES);
+  } catch (err) {
+    if (err instanceof PartTooLargeError) return tooLarge();
+    log.warn("Word image could not be read", { image: slot.index, err: (err as Error).name });
+    return unread("its bytes could not be read from the package");
   }
   try {
-    const data = await pkg.bytes(slot.path!);
-    if (data.length > MAX_DESCRIBED_IMAGE_BYTES) {
-      return unread(`it is larger than ${MAX_DESCRIBED_IMAGE_BYTES / (1024 * 1024)} MB`);
-    }
-    const description = await describeImage({
-      index: slot.index,
-      name: slot.name,
-      contentType: slot.contentType,
-      altText: slot.altText,
-      data,
-    });
+    const description = await withDeadline(
+      describeImage,
+      {
+        index: slot.index,
+        name: slot.name,
+        contentType: slot.contentType,
+        altText: slot.altText,
+        data,
+      },
+      timeoutMs,
+    );
     if (description === null) return unread("no vision-capable model is configured");
     if (description.trim().length === 0) return unread("the model returned no description");
     return { described: true, text: description.trim() };
   } catch (err) {
+    if (err instanceof ImageNotRead) return unread(err.reason);
+    if (err instanceof DescriptionTimeout) return unread("the description timed out");
     // The provider's raw message is not written into the converted text: that
     // text is stored as knowledge, shown to every project member and fed to
     // models (#1059). The cause is logged instead.
     log.warn("Word image description failed", { image: slot.index, err: (err as Error).name });
     return unread("the description failed");
   }
+}
+
+/** Run `task` over `items` with at most `limit` in flight; results keep the items' order. */
+async function mapBounded<T, R>(
+  items: readonly T[],
+  limit: number,
+  task: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await task(items[i]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
 }
 
 /** Convert a `.docx` package to Markdown. Throws when the bytes are not a Word package. */
@@ -956,8 +1136,15 @@ export async function docxToMarkdown(
   const conv = new Converter(styles, numbering, rels);
   const blocks = conv.blocks(body);
 
+  // #2263 — every image is described before the text is assembled, a few at a time, each
+  // under its own deadline; the results are placed back in reading order.
+  const timeoutMs = opts.imageTimeoutMs ?? IMAGE_DESCRIPTION_TIMEOUT_MS;
+  const results = await mapBounded(conv.images, IMAGE_DESCRIPTION_CONCURRENCY, (slot) =>
+    describe(pkg, slot, opts.describeImage, timeoutMs),
+  );
+  const described = results.filter((r) => r.described).length;
+
   const parts: string[] = [];
-  let described = 0;
   for (let i = 0; i < blocks.length; i++) {
     const block = blocks[i];
     if (block.kind === "text") {
@@ -969,8 +1156,7 @@ export async function docxToMarkdown(
       continue;
     }
     const { slot } = block;
-    const result = await describe(pkg, slot, opts.describeImage);
-    if (result.described) described++;
+    const result = results[slot.index - 1];
     const about = [slot.name, slot.altText ? `alt text "${slot.altText}"` : ""]
       .filter(Boolean)
       .join(", ");
@@ -986,7 +1172,6 @@ export async function docxToMarkdown(
       "footnote",
       styles,
       numbering,
-      rels,
     );
     const endnotes = await readNotes(
       pkg,
@@ -994,7 +1179,6 @@ export async function docxToMarkdown(
       "endnote",
       styles,
       numbering,
-      rels,
     );
     const lines = conv.footnoteRefs.map((ref) => {
       const note = (ref.kind === "footnote" ? footnotes : endnotes).get(ref.id);
@@ -1004,7 +1188,7 @@ export async function docxToMarkdown(
   }
 
   const commentsPath = relOfType(rels, "/comments");
-  const comments = await readNotes(pkg, commentsPath, "comment", styles, numbering, rels);
+  const comments = await readNotes(pkg, commentsPath, "comment", styles, numbering);
   if (conv.commentRefs.length > 0 || comments.size > 0) {
     const referenced = new Set(conv.commentRefs);
     const ordered = [

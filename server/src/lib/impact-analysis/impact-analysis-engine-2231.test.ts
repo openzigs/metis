@@ -70,6 +70,8 @@ function prismaMock(run: { sourceText: string | null; documentId: string | null 
     impactAffectedTable: { createMany: vi.fn(async () => ({ count: 0 })) },
     document: {
       findUnique: vi.fn(async () => ({
+        projectId: "proj-docs",
+        checksum: "sum-frd",
         filename: "frd.md",
         title: "Clinic booking FRD",
         mimeType: "text/markdown",
@@ -217,7 +219,12 @@ describe("impact analysis on a document (#2231)", () => {
     const extract = vi.fn(async (): Promise<ChangedRequirement[]> => []);
     await run(prisma, { documentReader, extractor: { extract } });
 
-    expect(documentReader).toHaveBeenCalledWith({ title: "Clinic booking FRD", text: FRD });
+    // #2280 — with the stored document's key, so a saved reading of it can be reused.
+    expect(documentReader).toHaveBeenCalledWith({
+      title: "Clinic booking FRD",
+      text: FRD,
+      document: { projectId: "proj-docs", documentId: "doc-1", checksum: "sum-frd" },
+    });
     expect(extract).not.toHaveBeenCalled();
     expect(items.map((i) => i.requirementTitle)).toEqual([
       "Lock an account after five failed sign-in attempts.",

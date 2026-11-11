@@ -12,6 +12,7 @@ interface DocRow {
   mimeType: string;
   storagePath: string;
   aclSubjects?: string;
+  checksum?: string;
   source?: string;
   uploadedAt?: number;
 }
@@ -73,6 +74,7 @@ const {
   createReaderDocumentLoader,
   implicitReaderSelection,
   readerSourceOf,
+  reusedReadingsSentence,
   runDocumentReaderAgent,
 } = await import("./document-reader-agent.js");
 const { spentUsageOf } = await import("../document-reader/reader.js");
@@ -182,6 +184,7 @@ describe("createReaderDocumentLoader", () => {
         title: "Grants FRD",
         mimeType: "text/markdown",
         storagePath: "p1/a",
+        checksum: "sum-a",
       },
       {
         id: "d3",
@@ -217,7 +220,13 @@ describe("createReaderDocumentLoader", () => {
     const [a, b] = loads;
     expect(a).toMatchObject({
       ok: true,
-      document: { title: "Grants FRD", text: TEXT, chunks: [{ index: 0, text: "approved chunk" }] },
+      document: {
+        title: "Grants FRD",
+        text: TEXT,
+        chunks: [{ index: 0, text: "approved chunk" }],
+        // #2280 — the key its reading is saved under.
+        checksum: "sum-a",
+      },
     });
     expect(b).toMatchObject({
       ok: true,
@@ -414,6 +423,190 @@ describe("chunkIndexer", () => {
     expect(at(0)).toBe(0);
     expect(at(text.indexOf("gamma"))).toBe(1);
     expect(at(text.indexOf("delta"))).toBeUndefined();
+  });
+});
+
+describe("#2280 — runDocumentReaderAgent reuses a saved reading", () => {
+  type Row = Record<string, unknown>;
+  function store() {
+    const rows: Row[] = [];
+    const same = (r: Row, w: Row) => Object.entries(w).every(([k, v]) => r[k] === v);
+    return {
+      rows,
+      db: {
+        savedDocumentReading: {
+          findFirst: vi.fn(
+            async ({ where }: { where: Row }) => rows.find((r) => same(r, where)) ?? null,
+          ),
+          upsert: vi.fn(
+            async (a: {
+              where: { documentId_checksum_readerVersion_model_textHash: Row };
+              create: Row;
+              update: Row;
+            }) => {
+              const row = rows.find((r) =>
+                same(r, a.where.documentId_checksum_readerVersion_model_textHash),
+              );
+              if (row) return Object.assign(row, a.update);
+              const created = { ...a.create, createdAt: new Date("2026-11-03T10:00:00Z") };
+              rows.push(created);
+              return created;
+            },
+          ),
+        },
+      } as never,
+    };
+  }
+  const saved = (documentId: string, checksum: string | null = `sum-${documentId}`) => ({
+    ok: true as const,
+    document: {
+      documentId,
+      filename: `${documentId}.docx`,
+      title: "Grants FRD",
+      text: TEXT,
+      chunks: [],
+      ...(checksum ? { checksum } : {}),
+    },
+  });
+  function counting() {
+    let calls = 0;
+    const p = provider((system) => {
+      calls++;
+      return system.includes("combining the statements") ? NO_MERGE : READ_REPLY;
+    });
+    return { provider: p, calls: () => calls };
+  }
+  type Out = {
+    summary: string;
+    requirements: Array<{ id: string; text: string; source: unknown }>;
+  };
+
+  it("reads once; the second run calls no model, finds the same requirements and says it reused the reading", async () => {
+    const cache = store();
+    const model = counting();
+    const run = (reread?: boolean) =>
+      runDocumentReaderAgent({
+        provider: model.provider,
+        projectId: "p1",
+        documentIds: ["d1"],
+        actor: MEMBER,
+        load: async () => [saved("d1")],
+        cache,
+        ...(reread ? { reread } : {}),
+      });
+    const first = await run();
+    expect(model.calls()).toBe(2);
+    expect(cache.rows).toHaveLength(1);
+    expect(cache.rows[0]).toMatchObject({ projectId: "p1", documentId: "d1", checksum: "sum-d1" });
+    expect(first!.coverage.documents[0]!.reused).toBeUndefined();
+
+    const second = await run();
+    expect(model.calls()).toBe(2);
+    expect(second!.result.usage.totalTokens).toBe(0);
+    const a = first!.result.output as unknown as Out;
+    const b = second!.result.output as unknown as Out;
+    expect(b.requirements).toEqual(a.requirements);
+    expect(second!.coverage.documents[0]).toMatchObject({
+      status: "read",
+      reused: { readAt: "2026-11-03T10:00:00.000Z", model: "claude-sonnet-5-5" },
+    });
+    expect(b.summary).toContain(
+      'The saved reading of "d1.docx" (read 2026-11-03 with claude-sonnet-5-5) was reused: that document was not read again',
+    );
+
+    // "Read the documents again" reads it, and says nothing about a reuse.
+    const third = await run(true);
+    expect(model.calls()).toBe(4);
+    expect(third!.coverage.documents[0]!.reused).toBeUndefined();
+    expect((third!.result.output as unknown as Out).summary).not.toContain("reused");
+  });
+
+  it("saves nothing for a document loaded without a checksum", async () => {
+    const cache = store();
+    const model = counting();
+    for (let i = 0; i < 2; i++) {
+      await runDocumentReaderAgent({
+        provider: model.provider,
+        projectId: "p1",
+        documentIds: ["d1"],
+        actor: MEMBER,
+        load: async () => [saved("d1", null)],
+        cache,
+      });
+    }
+    expect(model.calls()).toBe(4);
+    expect(cache.rows).toHaveLength(0);
+  });
+
+  it("#2262 — a reading made with other operator notes, or none, is never reused", async () => {
+    const cache = store();
+    const model = counting();
+    const run = (operatorNotes?: string) =>
+      runDocumentReaderAgent({
+        provider: model.provider,
+        projectId: "p1",
+        documentIds: ["d1"],
+        actor: MEMBER,
+        load: async () => [saved("d1")],
+        cache,
+        ...(operatorNotes ? { operatorNotes } : {}),
+      });
+    await run("Only the payment rules matter.");
+    expect(model.calls()).toBe(2);
+    // The same notes reuse it; other notes, and none, read again.
+    const same = await run("Only the payment rules matter.");
+    expect(model.calls()).toBe(2);
+    expect(same!.coverage.documents[0]!.reused).toBeDefined();
+    const other = await run("Only eligibility matters.");
+    expect(model.calls()).toBe(4);
+    expect(other!.coverage.documents[0]!.reused).toBeUndefined();
+    const none = await run();
+    expect(model.calls()).toBe(6);
+    expect(none!.coverage.documents[0]!.reused).toBeUndefined();
+    expect(cache.rows).toHaveLength(3);
+  });
+
+  it("#2262 — a read through the saved-reading store that fails still counts what it spent", async () => {
+    const cache = store();
+    const spent = { promptTokens: 70, completionTokens: 40, totalTokens: 110 };
+    const failing = new AIProviderError("upstream down", 503);
+    const { withSpentUsage } = await import("../document-reader/reader.js");
+    const err = await runDocumentReaderAgent({
+      provider: counting().provider,
+      projectId: "p1",
+      documentIds: ["d1"],
+      actor: MEMBER,
+      load: async () => [saved("d1")],
+      cache: {
+        ...cache,
+        read: async () => {
+          throw withSpentUsage(failing, spent);
+        },
+      },
+    }).catch((e: unknown) => e);
+    expect(err).toBe(failing);
+    expect(spentUsageOf(err)?.totalTokens).toBe(110);
+    expect(cache.rows).toHaveLength(0);
+  });
+});
+
+describe("reusedReadingsSentence", () => {
+  const at = new Date("2026-11-03T10:00:00Z");
+  it("is empty when nothing was reused", () => {
+    expect(reusedReadingsSentence([])).toBe("");
+  });
+  it("names up to three documents, then how many more", () => {
+    const many = ["a", "b", "c", "d", "e"].map((f) => ({
+      filename: `${f}.md`,
+      readAt: at,
+      model: "m",
+    }));
+    const s = reusedReadingsSentence(many);
+    expect(s).toContain('"a.md" (read 2026-11-03 with m), "b.md" (read 2026-11-03 with m), "c.md"');
+    expect(s).toContain(
+      "and 2 more was reused: those documents were not read again, as their files have not changed.",
+    );
+    expect(s).not.toContain("d.md");
   });
 });
 

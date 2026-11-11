@@ -1982,7 +1982,7 @@ The Phase 5 implementation grounds the conceptual pipeline above in concrete mod
 | `documents/upload.ts` | `validateUpload` enforces size (`MAX_DOCUMENT_BYTES` = 10 MB), MIME allowlist, magic-byte sniffing for PDF/OOXML/text, and extension fallback for `application/octet-stream`. `sanitiseFilename` strips path components and control chars. |
 | `documents/content-signature.ts` | **The single magic-byte predicate (#1279),** shared by upload admission and the parser router so they cannot drift. Recognises two families — `pdf` (`%PDF` at offset 0) and `zip` (`PK` + the local-header/EOCD/spanned signatures) — deliberately congruent with `file-type`'s own detectors, which is what `officeparser` sniffs with. |
 | `documents/pdf-page-bound.ts` | **The `MAX_PDF_PAGES` bound, in one place (#1279).** `exceedsPdfPageCap` is called by `parsers.ts` `parsePdf` and by `connectors/jira/attachment-extractor.ts` `extractPdf`, which previously had no page bound at all — only Jira's self-reported `meta.size`. Mutating the comparison fails tests on both routes. |
-| `documents/parsers.ts` | `parseDocument` router for all supported formats. **Routes on evidence, once:** a declared type that carries magic bytes must be backed by them or the document is refused with `CONTENT_TYPE_MISMATCH`, because `officeparser` re-dispatches a Buffer on *sniffed* bytes and would otherwise parse a `.pptx`-labelled PDF as a PDF, skipping `MAX_PDF_PAGES` (#1279). Text/Markdown/JSON pass through; HTML is sanitised. PDF via `pdf-parse` with ALL CAPS heading detection (`cleanPdfText`). DOCX via `docx-to-markdown.ts` (#2232), which reads the OOXML package itself (JSZip + xmldom) because mammoth's HTML carries no list numbers: headings at their level with Word's heading numbers, list numbers computed from `numbering.xml` (multi-level `%1.%2.%3`, letters, roman, literal prefixes such as `REQ-%1`, `startOverride`, `lvlRestart`, `isLgl`) with nesting by level, tables (a vertical merge repeats the value above), bold/italic, http(s) links, footnotes, reviewer comments as notes, tracked changes shown accepted with the deleted text listed, and each image as a numbered block that `ParseInput.describeImage` describes when the project's model reports `vision` (`documents/image-description.ts`; at most 20 images, 5 MB each), otherwise "image not read" with the reason. What it could not carry is listed in a trailing *Conversion notes* section of the text. Each package part's declared inflated size is capped at 64 MiB before it is read. XLSX via `exceljs` with merged-cell expansion → Markdown tables per worksheet. PPTX via `officeparser` AST → Markdown with slide headings. All parsers output Markdown so the RAG chunker's heading-respecting split produces optimal chunks. |
+| `documents/parsers.ts` | `parseDocument` router for all supported formats. **Routes on evidence, once:** a declared type that carries magic bytes must be backed by them or the document is refused with `CONTENT_TYPE_MISMATCH`, because `officeparser` re-dispatches a Buffer on *sniffed* bytes and would otherwise parse a `.pptx`-labelled PDF as a PDF, skipping `MAX_PDF_PAGES` (#1279). Text/Markdown/JSON pass through; HTML is sanitised. PDF via `pdf-parse` with ALL CAPS heading detection (`cleanPdfText`). DOCX via `docx-to-markdown.ts` (#2232), which reads the OOXML package itself (JSZip + xmldom) because mammoth's HTML carries no list numbers: headings at their level with Word's heading numbers, list numbers computed from `numbering.xml` (multi-level `%1.%2.%3`, letters, roman, literal prefixes such as `REQ-%1`, `startOverride`, `lvlRestart`, `isLgl`) with nesting by level, tables (a vertical merge repeats the value above), bold/italic, http(s) links, footnotes, reviewer comments as notes, tracked changes shown accepted with the deleted text listed, and each image as a numbered block that `ParseInput.describeImage` describes when the project's model reports `vision` (`documents/image-description.ts`; at most 20 images, 5 MB each, four at a time, 45 s each; each call is checked against the project's monthly token budget and recorded on the token ledger under `agentStep` `document-images`, #2263), otherwise "image not read" with the reason. What it could not carry is listed in a trailing *Conversion notes* section of the text. Each package part is inflated as a stream with a running 64 MiB cap (5 MB for an image), so a zip header that declares a small size cannot inflate an unbounded part (#2263). Body text that would read as a heading, setext underline or code fence is escaped. Jira `.docx` attachments use the same converter, without image descriptions. XLSX via `exceljs` with merged-cell expansion → Markdown tables per worksheet. PPTX via `officeparser` AST → Markdown with slide headings. All parsers output Markdown so the RAG chunker's heading-respecting split produces optimal chunks. |
 | `documents/markdown-utils.ts` | Shared `htmlToMarkdown()` (regex-based HTML→Markdown converter, no longer on the DOCX path since #2232) and `rowsToMarkdownTable()` (2D array → Markdown table with header separator). Used by the DOCX, XLSX and PPTX parsers. |
 | `rag/chunker.ts` | Heading-respecting markdown chunker (`chunkMarkdown`). Default 2048 chars, 256 overlap. Sentence/paragraph boundary preference, deterministic md5 keys. **`overlap` is capped at a quarter of `chunkSize`** (`maxOverlapFor`, #1185) — see below. |
 | `rag/embedder.ts` | Wrapper over the deterministic 384-dim hash-projection model with single-flight `load()` so concurrent first calls don't double-init. |
@@ -4980,6 +4980,33 @@ section and the source's quote. The reading is the `document-read` stage of the 
 `IMPACT_DOCUMENT_READ_TIMEOUT_MS`). The run's summary says what was read from every section,
 which held nothing and which could not be read; a failed reading falls back to the heuristic
 splitter and says so. Pasted short text and an issue keep the splitter.
+
+#### Saved document readings (#2280, epic #2227)
+
+Both callers read a stored document through `readDocumentOnce`
+(`document-reader/reading-cache.ts`), not `readDocument` directly. A whole reading is saved in
+`SavedDocumentReading` (`saved_document_readings`), and the next read with the same key
+returns it with no model call: `reused` (when, which model) is set and its `calls` and `usage`
+are zero, so a second run adds no `impact.document-read` (or document-agent) ledger row. The key
+is the document id, `Document.checksum`, `READER_VERSION` (bump it when the reader's prompts,
+schemas, batching or verification change), the model, and the SHA-256 of the exact text read —
+which changes when the image describer's descriptions are in that text (impact reads the chunks
+then) and when the parser changes, and keeps the saved offsets pointing into the caller's text.
+Requirements Analysis's operator notes (#2262) are folded into that hash (`readingTextHash`),
+so a reading made with other notes, or none, is never reused; without notes it is the text's
+own hash. A read that throws reaches the caller unchanged, with its spent usage attached
+(`spentUsageOf`), so the document agent still counts it. A failed, partial (a batch `unread`, or the cross-section pass `failed`) or empty reading is
+never saved, and pasted text is never saved. Every lookup filters on the document's own
+`projectId` as well as its id, and runs only after the caller's existing access check (impact:
+`assertDocumentReadable`; Requirements Analysis loads only its own project's documents). Rows
+cascade with a hard-deleted document; `KnowledgeService.deleteDocument` (a soft delete) deletes
+them in its transaction. A store error is logged and the document is read as before.
+
+"Read the document again" bypasses the saved reading and replaces it: `rereadDocuments` on
+`POST /projects/:id/analyses`, `rereadDocument` on `POST /impact-analyses` and on
+`POST /impact-analyses/:id/rerun`. A regenerate of the document agent always reads again. A
+reused reading is named on the run: the document agent's summary and the coverage panel
+(`DocumentReadingDocument.reused`), and the impact run's summary.
 
 #### Clarifying questions from the source document (#2235, epic #2227)
 
