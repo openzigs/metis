@@ -1904,6 +1904,14 @@ export interface AnalysisSourceRequirement {
   externalSource: string;
   externalId: string | null;
   externalUrl: string | null;
+  /**
+   * Issue #2233 — the imported item's body and acceptance criteria, which the
+   * code agent reads beside the title. Persisted with the run so a regenerate
+   * or a resume reads the same text; never split into requirements (the
+   * splitter still sees only the title, one `NR-*` each). Absent when the item
+   * has neither, and on runs started before #2233 (which read the title alone).
+   */
+  detail?: string;
 }
 
 // ---- Database-aware analysis run decision (Epic #852 Phase 2b, #855) --------
@@ -2818,6 +2826,19 @@ export const ANALYSIS_CAPABILITY_REASONS = [
    * Outside every agent gate: any agent can write one.
    */
   "citations-dropped",
+  /**
+   * Issue #2233 — a stage that reads at most `MAX_REQUIREMENTS_FOR_RETRIEVAL`
+   * requirements (requirement-grounded code retrieval, governing-rule
+   * applicability) was given more, so the rest were not analysed there.
+   * {@link AnalysisCapability.requirementsLeftOut} names each one.
+   */
+  "requirements-left-out",
+  /**
+   * Issue #2233 — an agent wrote more findings than one answer keeps (50), so
+   * the rest were cut. {@link AnalysisCapability.findingsLeftOut} names the
+   * agent, the counts and the titles that were cut.
+   */
+  "findings-left-out",
 ] as const;
 export type AnalysisCapabilityReason = (typeof ANALYSIS_CAPABILITY_REASONS)[number];
 
@@ -2910,6 +2931,54 @@ export function hasDiscardedRequirementInputs(
   account: RequirementInputAccount | null | undefined,
 ): boolean {
   return !!account && (account.dropped.length > 0 || account.inputTruncated);
+}
+
+/**
+ * Issue #2233 — the analysis stages that read at most
+ * `MAX_REQUIREMENTS_FOR_RETRIEVAL` requirements.
+ *
+ * `requirement-grounded-code` — evidence retrieval and the code agent's prompt
+ *                               when the project has no code graph.
+ * `governing-applicability`   — deciding which governing rules apply.
+ */
+export const REQUIREMENT_LIMIT_STAGES = [
+  "requirement-grounded-code",
+  "governing-applicability",
+] as const;
+export type RequirementLimitStage = (typeof REQUIREMENT_LIMIT_STAGES)[number];
+
+/** Issue #2233 — one requirement a stage did not analyse, recognisable by id and excerpt. */
+export interface RequirementLeftOut {
+  id: string;
+  /** See {@link REQUIREMENT_INPUT_EXCERPT_MAX}. */
+  excerpt: string;
+}
+
+/**
+ * Issue #2233 — "analysed 24 of 41 requirements": what one stage left out.
+ * `analysedCount + leftOut.length === totalCount`, and `leftOut` is never
+ * capped (capping the report of a cap is the same bug one level up).
+ */
+export interface RequirementsLeftOutNotice {
+  stage: RequirementLimitStage;
+  /** Requirements the stage analysed. */
+  analysedCount: number;
+  /** Requirements with text the stage was given. */
+  totalCount: number;
+  /** The ones past the limit, in the order the stage was given them. */
+  leftOut: RequirementLeftOut[];
+}
+
+/**
+ * Issue #2233 — one agent's answer held more findings than an answer keeps,
+ * so `producedCount - keptCount` were cut. `leftOutTitles` are their titles,
+ * excerpted, in the order the agent wrote them.
+ */
+export interface FindingsLeftOutNotice {
+  agentKey: string;
+  producedCount: number;
+  keptCount: number;
+  leftOutTitles: string[];
 }
 
 /** A repository skipped from a multi-repo run because the per-repo token budget was too low. */
@@ -3028,6 +3097,13 @@ export interface AnalysisCapability {
    * Absent when none were (and on every run persisted before #1143).
    */
   droppedCitations?: AnalysisDroppedCitations[];
+  /**
+   * Issue #2233 — per stage, the requirements past `MAX_REQUIREMENTS_FOR_RETRIEVAL`
+   * it did not analyse. Absent when no stage left one out.
+   */
+  requirementsLeftOut?: RequirementsLeftOutNotice[];
+  /** Issue #2233 — per agent, the findings cut from its answer. Absent when none were. */
+  findingsLeftOut?: FindingsLeftOutNotice[];
   /** Derived, enumerated degradation reasons. Empty ⇒ fully capable run. */
   reasons: AnalysisCapabilityReason[];
 }
@@ -3167,6 +3243,10 @@ export interface CapabilityReasonInput {
   codeInvestigationUnreached?: CodeInvestigationGap;
   /** #1143 — citations an agent wrote that were dropped as malformed. */
   droppedCitations?: readonly AnalysisDroppedCitations[];
+  /** #2233 — requirements a stage left out at its limit. */
+  requirementsLeftOut?: readonly RequirementsLeftOutNotice[];
+  /** #2233 — findings cut from an agent's answer. */
+  findingsLeftOut?: readonly FindingsLeftOutNotice[];
 }
 
 /** Issue #1143 — how many malformed citations one agent's answer lost. */
@@ -3275,6 +3355,14 @@ export function deriveCapabilityReasons(input: CapabilityReasonInput): AnalysisC
   // #1143 — any agent can write a citation no shape matches; dropping it keeps
   // the findings, and this keeps the loss from being silent.
   if (input.droppedCitations?.some((d) => d.count > 0)) reasons.push("citations-dropped");
+  // #2233 — outside every agent gate, like the two above: a limit that left
+  // requirements or findings out is reported whichever agents ran.
+  if (input.requirementsLeftOut?.some((n) => n.leftOut.length > 0)) {
+    reasons.push("requirements-left-out");
+  }
+  if (input.findingsLeftOut?.some((n) => n.producedCount > n.keptCount)) {
+    reasons.push("findings-left-out");
+  }
   return reasons;
 }
 

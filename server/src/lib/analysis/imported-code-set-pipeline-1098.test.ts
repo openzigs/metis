@@ -297,6 +297,25 @@ describe("#1098 — the code agent's requirement set on a run from imported item
     );
   });
 
+  it("#2233 — gives the code agent each imported item's body and acceptance criteria, not only its title", async () => {
+    const body = "Sessions on every device end, including the one making the request.";
+    const criterion = "A terminated session cannot call the API again.";
+    const recorded = await runPipeline("claude-sonnet-4-6", {
+      extraInstructions: TITLES.map((t) => `- ${t}`).join("\n"),
+      sourceRequirements: sourceRequirements.map((s, i) =>
+        i === 4 ? { ...s, detail: `${body}\n\nAcceptance criteria:\n- ${criterion}` } : s,
+      ),
+    });
+    const first = recorded.find((c) => c.opts.callType === "agent-loop")!;
+    const text = first.messages
+      .map((m) => (typeof m.content === "string" ? m.content : ""))
+      .join("\n");
+    expect(text).toContain(body);
+    expect(text).toContain(criterion);
+    // The restatement match still reads titles: the set is unchanged.
+    expect(codeAgentRequirementIds(recorded)).toEqual(["NR-1", "NR-2", "NR-3", "NR-4", "NR-5"]);
+  });
+
   it("still gives the document requirements to the code agent on an ordinary run", async () => {
     docState.requirements = docState.requirements.slice(0, 3);
     const recorded = await runPipeline("claude-sonnet-4-6");

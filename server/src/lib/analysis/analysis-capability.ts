@@ -22,7 +22,9 @@ import {
   type AnalysisDroppedCitations,
   type AnalysisSkippedRepo,
   type CodeInvestigationGap,
+  type FindingsLeftOutNotice,
   type RequirementInputAccount,
+  type RequirementsLeftOutNotice,
   deriveCapabilityReasons,
 } from "@metis/shared";
 import { prisma } from "../prisma.js";
@@ -153,6 +155,35 @@ export interface CapabilityTracker {
    * tracker built without it (older call sites and fixtures) stays valid.
    */
   droppedCitations?: AnalysisDroppedCitations[];
+  /** #2233 — per stage, the requirements it left out at its limit. Optional, as above. */
+  requirementsLeftOut?: RequirementsLeftOutNotice[];
+  /** #2233 — per agent answer, the findings cut from it. Optional, as above. */
+  findingsLeftOut?: FindingsLeftOutNotice[];
+}
+
+/**
+ * #2233 — record what a requirement-limited stage left out. A stage that runs
+ * again in the same run (a second repository) replaces its notice rather than
+ * repeating it; `null` (nothing left out) records nothing.
+ */
+export function recordRequirementsLeftOut(
+  tracker: CapabilityTracker,
+  notice: RequirementsLeftOutNotice | null,
+): void {
+  if (!notice || notice.leftOut.length === 0) return;
+  const list = (tracker.requirementsLeftOut ??= []);
+  const at = list.findIndex((n) => n.stage === notice.stage);
+  if (at >= 0) list[at] = notice;
+  else list.push(notice);
+}
+
+/** #2233 — record the findings cut from one agent's answer; none cut records nothing. */
+export function recordFindingsLeftOut(
+  tracker: CapabilityTracker,
+  notice: FindingsLeftOutNotice | undefined,
+): void {
+  if (!notice || notice.producedCount <= notice.keptCount) return;
+  (tracker.findingsLeftOut ??= []).push(notice);
 }
 
 /**
@@ -262,6 +293,13 @@ export function finalizeCapability(tracker: CapabilityTracker): AnalysisCapabili
     ...(tracker.droppedCitations && tracker.droppedCitations.length > 0
       ? { droppedCitations: tracker.droppedCitations.map((d) => ({ ...d })) }
       : {}),
+    // #2233 — omitted when no limit left anything out.
+    ...(tracker.requirementsLeftOut && tracker.requirementsLeftOut.length > 0
+      ? { requirementsLeftOut: structuredClone(tracker.requirementsLeftOut) }
+      : {}),
+    ...(tracker.findingsLeftOut && tracker.findingsLeftOut.length > 0
+      ? { findingsLeftOut: structuredClone(tracker.findingsLeftOut) }
+      : {}),
     reasons: deriveCapabilityReasons({
       codeAnalysisRequested: tracker.codeAnalysisRequested,
       databaseAnalysisRequested: tracker.databaseAnalysisRequested,
@@ -284,6 +322,8 @@ export function finalizeCapability(tracker: CapabilityTracker): AnalysisCapabili
         : undefined,
       codeAgentStoppedEarly,
       droppedCitations: tracker.droppedCitations,
+      requirementsLeftOut: tracker.requirementsLeftOut,
+      findingsLeftOut: tracker.findingsLeftOut,
     }),
   };
 }

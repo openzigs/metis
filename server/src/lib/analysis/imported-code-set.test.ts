@@ -164,6 +164,26 @@ describe("codeAgentRequirementSet — #1098", () => {
     expect(result.leftOut).toHaveLength(23);
   });
 
+  it("#2233 — gives each imported item its detail after the title, and still matches restatements on the title", () => {
+    const detail =
+      "Every device, every browser, every API token issued to the account and its delegates. " +
+      "Acceptance criteria:\n- A terminated session cannot call the API again.";
+    const items = IMPORTED.map((r) => (r.id === "NR-5" ? { ...r, detail } : r));
+    const result = codeAgentRequirementSet(
+      [...UNRELATED, ...RESTATEMENTS],
+      IMPORTED,
+      IMPORTED_IDS,
+      items,
+    );
+    expect(result.requirements.find((r) => r.id === "NR-5")?.text).toBe(
+      `Terminate all sessions button\n\n${detail}`,
+    );
+    expect(result.requirements.find((r) => r.id === "NR-1")?.text).toBe(IMPORTED[0].text);
+    // A long body would dilute the match: REQ-028 still restates NR-5.
+    expect(result.restated).toContainEqual({ id: "REQ-028", restatesId: "NR-5" });
+    expect(result.leftOut).toHaveLength(23);
+  });
+
   it("keeps an imported item past the candidate cap and folds its restatement into it", () => {
     const titles = Array.from({ length: 10 }, (_, i) => `Widget number${i + 1} export option`);
     const all = titles.map((text, i) => ({ id: `NR-${i + 1}`, text }));

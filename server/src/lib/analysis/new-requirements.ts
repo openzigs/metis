@@ -36,6 +36,14 @@ export interface RequirementRef {
   text: string;
 }
 
+/**
+ * #2233 — an imported item as a requirement: `text` is its title (what the
+ * restatement match compares), `detail` its body and acceptance criteria.
+ */
+export interface ImportedItemRef extends RequirementRef {
+  detail?: string;
+}
+
 /** Max candidates parsed out of the free-text box (shared with #735's mapping). */
 export const DEFAULT_NEW_REQUIREMENT_MAX_CANDIDATES = 8;
 
@@ -479,21 +487,41 @@ export function codeAgentRequirementSet(
   documentRequirements: readonly RequirementRef[],
   newRequirements: readonly RequirementRef[],
   importedIds: ReadonlySet<string>,
-  importedItems: readonly RequirementRef[] = [],
+  importedItems: readonly ImportedItemRef[] = [],
 ): ImportedScopeResult {
   if (importedIds.size > 0) {
-    return scopeRequirementsToImported(
+    const scoped = scopeRequirementsToImported(
       documentRequirements,
       newRequirements,
       importedIds,
       importedItems,
     );
+    return { ...scoped, requirements: withImportedDetail(scoped.requirements, importedItems) };
   }
   return {
     ...mergeRequirementSetsWithAccount(documentRequirements, newRequirements),
     restated: [],
     leftOut: [],
   };
+}
+
+/**
+ * Issue #2233 — an imported item reaches the code agent with its body and
+ * acceptance criteria, not only its title. Applied AFTER the restatement match,
+ * which compares titles: a long body would dilute the match and leave out
+ * document requirements that restate the item.
+ */
+function withImportedDetail(
+  requirements: readonly RequirementRef[],
+  importedItems: readonly ImportedItemRef[],
+): RequirementRef[] {
+  const detailById = new Map(
+    importedItems.flatMap((item) => (item.detail ? [[item.id, item.detail] as const] : [])),
+  );
+  return requirements.map((r) => {
+    const detail = detailById.get(r.id);
+    return detail ? { id: r.id, text: `${r.text}\n\n${detail}` } : r;
+  });
 }
 
 /**

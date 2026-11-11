@@ -20,10 +20,12 @@ import {
   documentAgentOutputSchema,
   isDocumentCitation,
   matchFindingCategory,
+  requirementInputExcerpt,
   type AgentOutput,
   type AnalysisAgentKey,
   type AnalysisSpecialistAgentKey,
   type Citation,
+  type FindingsLeftOutNotice,
 } from "@metis/shared";
 import { supportsResponseFormat } from "../ai/capabilities.js";
 // #1221 owns the single table of model output ceilings. The clamp lives there
@@ -111,6 +113,11 @@ export interface AgentRunResult {
    * `dropped` on the run, so a lost citation is never silent.
    */
   citationSalvage?: { dropped: number; repaired: number };
+  /**
+   * #2233 — the answer held more findings than an answer keeps, and these were
+   * cut. The caller records it on the run. Absent when nothing was cut.
+   */
+  findingsLeftOut?: FindingsLeftOutNotice;
 }
 
 const DEFAULT_USAGE: TokenUsage = {
@@ -460,6 +467,34 @@ const OUTPUT_CAPS = {
   requirementId: 128,
 } as const;
 
+/**
+ * #2233 — what {@link clampAgentOutputStrings} will cut from `parsed.findings`
+ * at the 50-finding cap: the counts and each cut finding's title (excerpted),
+ * so the run can say which findings it does not show. Read BEFORE the clamp,
+ * which erases them. `undefined` when the answer is within the cap or has no
+ * findings list.
+ */
+export function collectFindingsLeftOut(
+  parsed: unknown,
+  agentKey: string,
+): FindingsLeftOutNotice | undefined {
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+  const findings = (parsed as Record<string, unknown>).findings;
+  if (!Array.isArray(findings) || findings.length <= OUTPUT_CAPS.findings) return undefined;
+  return {
+    agentKey,
+    producedCount: findings.length,
+    keptCount: OUTPUT_CAPS.findings,
+    leftOutTitles: findings.slice(OUTPUT_CAPS.findings).map((f) => {
+      const title =
+        f !== null && typeof f === "object" ? (f as Record<string, unknown>).title : undefined;
+      return typeof title === "string" && title.trim().length > 0
+        ? requirementInputExcerpt(title)
+        : "(untitled finding)";
+    }),
+  };
+}
+
 /** Truncate to `max`; leave non-strings alone so Zod still reports the type error. */
 function clampString(value: unknown, max: number): unknown {
   return typeof value === "string" && value.length > max ? value.slice(0, max) : value;
@@ -737,6 +772,15 @@ export async function runAgent(
   // #1143 — like the categories above: the schema salvages citations, and the
   // counts are read here, before the parse erases what it dropped. #1155 —
   // read after the clamp, so findings it cut past the 50th are not counted.
+  // #2233 — read before the clamp cuts the findings past the 50th.
+  const findingsLeftOut = collectFindingsLeftOut(parsed, input.agentKey);
+  if (findingsLeftOut) {
+    log.warn("Agent answer held more findings than an answer keeps; the rest were cut", {
+      agentKey: input.agentKey,
+      producedCount: findingsLeftOut.producedCount,
+      keptCount: findingsLeftOut.keptCount,
+    });
+  }
   const clamped = clampAgentOutputStrings(parsed);
   const citationSalvage = collectSalvagedCitations(clamped);
   const validated = schema.parse(clamped);
@@ -753,5 +797,6 @@ export async function runAgent(
     usage: response.usage ?? DEFAULT_USAGE,
     durationMs: Date.now() - start,
     citationSalvage,
+    ...(findingsLeftOut ? { findingsLeftOut } : {}),
   };
 }
