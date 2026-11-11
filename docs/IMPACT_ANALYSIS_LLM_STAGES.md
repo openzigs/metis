@@ -37,6 +37,7 @@ rather than a degraded mode.
 
 | Stage | File | Flag | Default | Grounded against | On failure |
 |---|---|---|---|---|---|
+| Document reading (#2231) | `document-reader/reader.ts` via `impact-analysis/document-source.ts` | `ANALYSIS_DOCUMENT_READER` (shared with Requirements Analysis) | **off** | every quote must be in the parsed source verbatim (`clauseLocator`); the stored quote and offsets are the source's own. Runs once per run, before any project, on a document source and on pasted text of `READER_MIN_PASTED_CHARS` (2,000) or more that is not one issue; each requirement, constraint or business rule is one change, with its section and quote in the body. Its own deadline, `IMPACT_DOCUMENT_READ_TIMEOUT_MS` (default 300,000) | the heuristic splitter over the parsed text, and the run's summary says so |
 | Code-symbol seeder/reranker (#931) | `traceability/requirement-code-mapping.ts` (`LlmCodeSymbolSearcher`) | `IMPACT_LLM_SEEDING` | **off** | the BM25 wide pool (union, never a replacement) | deterministic BM25 top-K |
 | Entity-seed recall union (#1002) | `traceability/requirement-entity-seeds.ts` | `IMPACT_LLM_ENTITY_SEEDS` | **off** | the project's code-graph entity vocabulary (exact name match) | base searcher unchanged |
 | Edit-candidate check (#1756) | `impact-analysis/edit-candidate-verifier.ts` | `IMPACT_LLM_EDIT_VERIFY` | **off** | integer index into the hybrid FILE pool (about 30 files: the deterministic edit candidates, then the next files of the same ranking); a promotion's line must fall inside a named symbol of that file in the code graph (never the file's whole-file `module` symbol, #1781), checked without a model. Additive only (the #931 rule below): it may append a verified file and mark a candidate doubtful, never remove, move or re-score one; a promoted file carries its own hybrid score. The pool (code identifiers and signatures, which can carry comments) is fenced as untrusted data like the requirement | deterministic edit candidates unchanged |
@@ -781,7 +782,7 @@ decorator records one `AITokenUsage` row per completed call:
 
 | Column | Value |
 |---|---|
-| `agentStep` | `impact.<stage>` — `impact.table-filter`, `impact.additive-ddl`, `impact.clause-reconcile`, `impact.summary-item`, `impact.summary-run`, `impact.entity-seeds`, `impact.seeding` |
+| `agentStep` | `impact.<stage>` — `impact.document-read`, `impact.table-filter`, `impact.additive-ddl`, `impact.clause-reconcile`, `impact.summary-item`, `impact.summary-run`, `impact.entity-seeds`, `impact.seeding` |
 | `projectId` | the project the engine was working on when the call was made |
 | `sessionId` | one lazily-created `AISession` per run (no LLM call ⇒ no session row) |
 | `userId` | the actor who started the run |

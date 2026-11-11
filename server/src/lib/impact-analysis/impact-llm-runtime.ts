@@ -65,6 +65,7 @@ const log = createChildLogger("impact-llm-runtime");
 
 /** The LLM stages of an impact run. One `agentStep` label each. */
 export type ImpactLlmStage =
+  | "document-read"
   | "seeding"
   | "entity-seeds"
   | "edit-verify"
@@ -78,6 +79,7 @@ export type ImpactLlmStage =
 
 /** Every stage, in pipeline order. Used to keep the notice's wording stable. */
 export const IMPACT_LLM_STAGES: readonly ImpactLlmStage[] = [
+  "document-read",
   "seeding",
   "entity-seeds",
   "edit-verify",
@@ -95,6 +97,7 @@ export const IMPACT_LLM_STAGES: readonly ImpactLlmStage[] = [
  * can isolate the whole feature (`agentStep LIKE 'impact.%'`) or one stage.
  */
 export const IMPACT_LLM_AGENT_STEP: Record<ImpactLlmStage, string> = {
+  "document-read": "impact.document-read",
   seeding: "impact.seeding",
   "entity-seeds": "impact.entity-seeds",
   "edit-verify": "impact.edit-verify",
@@ -109,6 +112,7 @@ export const IMPACT_LLM_AGENT_STEP: Record<ImpactLlmStage, string> = {
 
 /** BA-readable stage names used in the user-visible degradation notice. */
 const STAGE_LABEL: Record<ImpactLlmStage, string> = {
+  "document-read": "document reading",
   seeding: "requirement-to-code seeding",
   "entity-seeds": "entity seed recall",
   "edit-verify": "edit-candidate check",
@@ -180,6 +184,24 @@ export function impactLlmTimeoutMs(env: NodeJS.ProcessEnv = process.env): number
   return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_IMPACT_LLM_TIMEOUT_MS;
 }
 
+/**
+ * #2231 — the deadline of ONE document-reading call. A reading call carries
+ * the whole document and writes the statements of a batch of its sections
+ * (`document-reader/reader.ts`), so it runs far longer than the short judging
+ * calls {@link DEFAULT_IMPACT_LLM_TIMEOUT_MS} bounds.
+ */
+export const DEFAULT_IMPACT_DOCUMENT_READ_TIMEOUT_MS = 300_000;
+
+/**
+ * Per-call deadline of the `document-read` stage, from
+ * `IMPACT_DOCUMENT_READ_TIMEOUT_MS`; as {@link impactLlmTimeoutMs}, a value
+ * that is not a positive number falls back to the default and never unbounds it.
+ */
+export function impactDocumentReadTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = Number(env.IMPACT_DOCUMENT_READ_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_IMPACT_DOCUMENT_READ_TIMEOUT_MS;
+}
+
 /** Thrown when a stage's call blows the deadline. Stages catch it and degrade. */
 export class ImpactLlmTimeoutError extends Error {
   constructor(
@@ -200,6 +222,8 @@ export interface ImpactLlmRuntimeOptions {
   projectIds: readonly string[];
   /** Per-call deadline override (tests). */
   timeoutMs?: number;
+  /** #2231 — the `document-read` stage's per-call deadline override (tests). */
+  documentReadTimeoutMs?: number;
   /** Token recorder seam (tests). */
   tracker?: TokenRecorder;
   /** Project-ledger (`token_usages`) recorder seam (tests). */
@@ -242,7 +266,10 @@ function defaultCreateSession(input: {
  * and the run's degradation ledger.
  */
 export function createImpactLlmRuntime(opts: ImpactLlmRuntimeOptions): ImpactLlmRuntime {
-  const timeoutMs = opts.timeoutMs ?? impactLlmTimeoutMs();
+  const defaultTimeoutMs = opts.timeoutMs ?? impactLlmTimeoutMs();
+  const documentReadTimeoutMs = opts.documentReadTimeoutMs ?? impactDocumentReadTimeoutMs();
+  const timeoutFor = (stage: ImpactLlmStage): number =>
+    stage === "document-read" ? documentReadTimeoutMs : defaultTimeoutMs;
   const tracker = opts.tracker ?? getTokenTracker();
   const recordProjectUsage = opts.recordProjectUsage ?? recordUsage;
   const createSession = opts.createSession ?? defaultCreateSession;
@@ -344,6 +371,7 @@ export function createImpactLlmRuntime(opts: ImpactLlmRuntimeOptions): ImpactLlm
     callerSignal: AbortSignal | undefined,
     call: (signal: AbortSignal) => Promise<T>,
   ): Promise<T> => {
+    const timeoutMs = timeoutFor(stage);
     const controller = new AbortController();
     let timedOut = false;
     const onCallerAbort = () => controller.abort();
