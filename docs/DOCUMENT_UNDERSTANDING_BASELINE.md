@@ -184,6 +184,10 @@ documents 02 and 03 once its reduce had failed on the smallest one.
   that the conversion flattens; these carry one table each.
 - **Arm A is generous.** Its retrieval is padded to ten chunks even when lexical search
   finds fewer, and its document title is given as the project name.
+- **Two model-written strings were reworded after the run.** In
+  `baseline-deepseek-flash-A.json`, one extracted requirement and one question used wording
+  the repository's private-vocabulary check refuses; each was rewritten to say the same thing
+  in the document's own words. Scores were computed before the edit and are unchanged.
 
 ## Spend
 

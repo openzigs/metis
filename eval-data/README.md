@@ -787,3 +787,8 @@ out (a span not found verbatim, a section that is not a heading) and a `labels.j
 that is not what its `frd.src.md` builds. Readings are written to
 `eval-data/readings/doc-understanding/`; the result and what follows from it are in
 [docs/DOCUMENT_UNDERSTANDING_BASELINE.md](../docs/DOCUMENT_UNDERSTANDING_BASELINE.md).
+
+A reading's JSON holds every arm's model-written output. The lint step's
+private-vocabulary check reads CI's term list, which can be longer than a local one, so a
+reading that passes `pnpm lint` locally can still fail in CI: reword the flagged string and
+say so in the write-up (#2229 did this for two strings).

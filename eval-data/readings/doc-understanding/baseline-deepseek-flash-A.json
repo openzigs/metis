@@ -756,7 +756,7 @@
                 "text": "Grants system instructs but does not make payments: The grants system shall instruct payments but shall not make them; the finance system remains the system of record for payments and the council's bank account."
               },
               {
-                "text": "Council website CMS hosts public programme pages: The council's website content management system shall continue to host the public pages about each programme."
+                "text": "Council website hosts the public pages: The council's website content management system shall continue to host the public pages about each programme."
               }
             ],
             "questions": [
@@ -839,7 +839,7 @@
                 "text": "How should the grants system send payment instructions to the finance system?"
               },
               {
-                "text": "Should the grants system link to CMS programme pages, and who owns the content?"
+                "text": "Should the grants system link to the council website's public pages about each programme, and who owns the content?"
               }
             ]
           },
