@@ -217,7 +217,8 @@ export async function maybeRespondAsAI(
       actor: { id: trigger.authorUserId },
       provider: deps.provider,
       // #739 — the thread's project excerpts, as in-app. No `resolveTools`.
-      retrieve: deps.buildRetriever(trigger.projectId),
+      // #2225 — retrieved for the Teams author, so their ACLs apply.
+      retrieve: deps.buildRetriever(trigger.projectId, trigger.authorUserId),
     });
 
     // 4a. Fan the persisted AI reply out to the in-app `thread:{id}` room so

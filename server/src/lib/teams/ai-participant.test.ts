@@ -235,7 +235,8 @@ describe("maybeRespondAsAI", () => {
     const h = harness();
     await maybeRespondAsAI(fakeContext({ text: "@AI where is the scheduler?" }), trigger(), h.opts);
 
-    expect(h.buildRetriever).toHaveBeenCalledWith(PROJECT);
+    // #2225 — retrieved for the Teams author, so their chunk ACLs apply.
+    expect(h.buildRetriever).toHaveBeenCalledWith(PROJECT, USER);
     const call = h.streamReply.mock.calls[0][0];
     expect(call.retrieve).toBe(h.retrieve);
     expect(call).not.toHaveProperty("resolveTools");

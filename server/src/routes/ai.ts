@@ -130,6 +130,7 @@ import {
 } from "../lib/ai/semantic-cache.js";
 import { CHAT_PROMPT_CACHING, chatToolLoopPromptCaching } from "../lib/ai/chat-prompt-caching.js";
 import { getKnowledgeService } from "../lib/rag/knowledge-service.js";
+import { resolveAclActor } from "../lib/rag/acl.js";
 import { formatDerivedLabel } from "../lib/rag/derived-label.js";
 import { formatHitLocator, formatHitScore } from "../lib/rag/hit-locator.js";
 import {
@@ -578,6 +579,13 @@ export interface RagContextCapture {
 export async function buildAutoRagContext(
   projectId: string | null,
   messages: ChatMessage[],
+  /**
+   * #2225 — the id of the user the retrieval is for. Required: a chunk whose
+   * ACL excludes them must never reach their prompt, and the knowledge search
+   * enforces chunk ACLs only when it is handed an actor. Their role is read
+   * from durable state (`resolveAclActor`), not from the token's claim.
+   */
+  requesterId: string,
   fusedDeps: FusedCodeDeps = defaultFusedCodeDeps(),
   capture?: RagContextCapture,
 ): Promise<string> {
@@ -594,8 +602,11 @@ export async function buildAutoRagContext(
   const fusedEnabled = cfg.getBool("CHAT_FUSED_CODE_RETRIEVAL", false);
 
   try {
+    // #2225 — inside the try: a failed role read retrieves nothing (fail
+    // closed) and the turn goes on ungrounded, as any retrieval failure does.
+    const actor = await resolveAclActor(requesterId);
     const service = getKnowledgeService();
-    const { hits } = await service.search(projectId, query, { k: 8 });
+    const { hits } = await service.search(projectId, query, { k: 8, actor });
 
     // Build the doc-level RAG block (unchanged wording) when there are hits.
     let ragBlock = "";
@@ -1589,6 +1600,7 @@ export function aiRouter(): Router {
         : await buildAutoRagContext(
             session.projectId,
             [{ role: "user", content: userText }],
+            userId,
             undefined,
             ragCapture,
           );
@@ -2026,6 +2038,7 @@ export function aiRouter(): Router {
       : await buildAutoRagContext(
           session.projectId,
           [{ role: "user", content: userText }],
+          userId,
           undefined,
           ragCapture,
         );

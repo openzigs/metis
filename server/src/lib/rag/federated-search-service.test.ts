@@ -21,9 +21,10 @@ vi.mock("./knowledge-service.js", () => ({
   })),
 }));
 
-// #2225 — the caller's ACL actor, read from durable state in production.
-vi.mock("./acl.js", () => ({
-  resolveAclActor: vi.fn(async (userId: string) => ({ userId, role: "reader" })),
+// #2225 — the caller's role read is covered in tests/rag-acl-user-retrieval-2225.test.ts.
+vi.mock("./acl.js", async (original) => ({
+  ...(await original<typeof import("./acl.js")>()),
+  resolveAclActor: async (userId: string) => ({ userId, role: "reader" }),
 }));
 
 vi.mock("../logger.js", () => ({
