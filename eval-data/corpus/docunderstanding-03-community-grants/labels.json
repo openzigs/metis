@@ -1,0 +1,748 @@
+{
+  "corpusId": "docunderstanding-03-community-grants",
+  "title": "Harbour City Council: Community Grants Management System, Functional Requirements Document",
+  "license": "CC0-1.0",
+  "labelStatus": "author-labelled while writing the synthetic document; not yet reviewed by a second person",
+  "sourceSha256": "c358fc86fbb3f37d8fb01faed87a9a937c3b711779628ae5282bda4f6141b596",
+  "sections": [
+    "Harbour City Council: Community Grants Management System, Functional Requirements Document",
+    "About this document",
+    "1. Introduction",
+    "1.1 The council's grant programmes",
+    "1.2 Why a new system is needed",
+    "1.3 Objectives",
+    "2. Scope",
+    "2.1 In scope",
+    "2.2 Out of scope",
+    "2.3 Users",
+    "3. Glossary",
+    "4. Programme and round set-up",
+    "5. Applicant registration and organisation records",
+    "5.1 Registering an organisation",
+    "5.2 Organisation documents",
+    "5.3 Bank details",
+    "6. Eligibility and application",
+    "6.1 Eligibility check",
+    "6.2 Completing an application",
+    "6.3 Accessibility of the application process",
+    "7. Assessment",
+    "7.1 Allocating assessors",
+    "7.2 Scoring and moderation",
+    "8. Decisions",
+    "8.1 Decision-making authority",
+    "8.2 Recording decisions",
+    "8.3 Ward Member Grants",
+    "9. Grant agreements",
+    "9.1 Issuing an agreement",
+    "9.2 Payment schedules",
+    "10. Payments",
+    "11. Variations",
+    "12. Monitoring and closure",
+    "12.1 Monitoring reports",
+    "12.2 Clawback and closure",
+    "13. Reporting",
+    "14. Non-functional requirements",
+    "14.1 Accessibility and usability",
+    "14.2 Availability and performance",
+    "14.3 Security and data protection",
+    "14.4 Audit",
+    "15. Data migration",
+    "16. Assumptions and open questions",
+    "16.1 Assumptions",
+    "16.2 Open questions",
+    "Appendix A. Programme-specific rules",
+    "A.1 Neighbourhood Fund",
+    "A.2 Strategic Partnerships",
+    "A.3 Small Sparks",
+    "A.4 Youth Voice",
+    "A.5 Arts in the Open",
+    "A.6 Winter Warmth",
+    "Appendix B. Worked examples"
+  ],
+  "requirements": [
+    {
+      "id": "R1",
+      "section": "4. Programme and round set-up",
+      "span": "A grants officer shall be able to create a round for a programme, recording its opening and closing date and time, its budget, the minimum and maximum grant that can be requested, the eligibility questions, the application questions and the assessment criteria with their weightings."
+    },
+    {
+      "id": "R2",
+      "section": "4. Programme and round set-up",
+      "span": "A round shall only be opened once its programme manager has approved its set-up, and the system shall record who approved it and when."
+    },
+    {
+      "id": "R3",
+      "section": "4. Programme and round set-up",
+      "span": "The system shall not allow the budget of the rounds in a programme in one financial year to exceed the programme's budget for that year."
+    },
+    {
+      "id": "R4",
+      "section": "4. Programme and round set-up",
+      "span": "A grants officer shall be able to copy a previous round as the starting point for a new one."
+    },
+    {
+      "id": "R5",
+      "section": "4. Programme and round set-up",
+      "span": "A round may be open to all eligible applicants or by invitation only; for an invitation-only round, the system shall only let invited organisations start an application."
+    },
+    {
+      "id": "R6",
+      "section": "4. Programme and round set-up",
+      "span": "Applications shall not be accepted after a round's closing date and time, and an application that is being completed when the round closes shall not be submittable."
+    },
+    {
+      "id": "R7",
+      "section": "4. Programme and round set-up",
+      "span": "The programme manager shall be able to extend the closing date for a single applicant, recording the reason, and the extension shall be shown in the round's audit history."
+    },
+    {
+      "id": "R8",
+      "section": "5.1 Registering an organisation",
+      "span": "A person shall be able to register an organisation in the system by giving its name, address, legal form, charity or company number if it has one, and the details of at least two people connected with it who are not related to each other."
+    },
+    {
+      "id": "R9",
+      "section": "5.1 Registering an organisation",
+      "span": "Where a charity or company number is given, the system shall check it against the public register and shall show the officer any difference between the registered name and address and those entered."
+    },
+    {
+      "id": "R10",
+      "section": "5.1 Registering an organisation",
+      "span": "The system shall prevent the registration of an organisation whose charity or company number is already held on another organisation record, and shall direct the person to request access to the existing record."
+    },
+    {
+      "id": "R11",
+      "section": "5.1 Registering an organisation",
+      "span": "An organisation record shall be able to have several users, and the organisation's existing users shall approve any request by a new user to join it."
+    },
+    {
+      "id": "R12",
+      "section": "5.1 Registering an organisation",
+      "span": "If an organisation has no remaining users who can approve a request, a grants officer shall be able to add a user after verifying the person's connection with the organisation."
+    },
+    {
+      "id": "R13",
+      "section": "5.2 Organisation documents",
+      "span": "An organisation shall be able to upload its governing document, latest accounts, safeguarding policy and equality policy to its organisation record once, and the system shall attach the current versions to each application automatically."
+    },
+    {
+      "id": "R14",
+      "section": "5.2 Organisation documents",
+      "span": "The system shall record an expiry date for each organisation document and shall ask the organisation to upload a new version when one expires."
+    },
+    {
+      "id": "R15",
+      "section": "5.2 Organisation documents",
+      "span": "Accounts shall be treated as expired 18 months after the end of the financial year they cover."
+    },
+    {
+      "id": "R16",
+      "section": "5.3 Bank details",
+      "span": "An organisation shall enter its bank details in the system, and the system shall verify that the account name matches the organisation's name using the council's bank account verification service before the details can be used for a payment."
+    },
+    {
+      "id": "R17",
+      "section": "5.3 Bank details",
+      "span": "A change to an organisation's bank details shall only take effect after a grants officer has confirmed it by telephone with a person connected with the organisation, using a telephone number already held on the record, and the system shall record who made the call and when."
+    },
+    {
+      "id": "R18",
+      "section": "5.3 Bank details",
+      "span": "No payment shall be released to bank details that were changed in the previous 10 working days until a finance officer has reviewed the change."
+    },
+    {
+      "id": "R19",
+      "section": "6.1 Eligibility check",
+      "span": "Before starting an application, an applicant shall answer the round's eligibility questions, and the system shall tell them immediately whether they are eligible, and if not, which answer made them ineligible."
+    },
+    {
+      "id": "R20",
+      "section": "6.1 Eligibility check",
+      "span": "An applicant who is not eligible shall be shown the contact details of the grants team and of the local umbrella body that can offer advice."
+    },
+    {
+      "id": "R21",
+      "section": "6.1 Eligibility check",
+      "span": "The system shall prevent an organisation from applying to a round if it has an overdue monitoring report on any previous grant."
+    },
+    {
+      "id": "R22",
+      "section": "6.1 Eligibility check",
+      "span": "An organisation shall not hold more than one open application to the same round."
+    },
+    {
+      "id": "R23",
+      "section": "6.2 Completing an application",
+      "span": "The application form shall save the applicant's answers automatically as they are entered, and the applicant shall be able to leave and return to the application at any time before the round closes."
+    },
+    {
+      "id": "R24",
+      "section": "6.2 Completing an application",
+      "span": "Several users of the same organisation shall be able to work on an application, but only one shall be able to edit it at a time, and the system shall show who is editing."
+    },
+    {
+      "id": "R25",
+      "section": "6.2 Completing an application",
+      "span": "The application shall include a budget table in which the applicant lists each item of expenditure, its cost and whether it is capital or revenue, and the system shall calculate the total and check that it equals the amount requested."
+    },
+    {
+      "id": "R26",
+      "section": "6.2 Completing an application",
+      "span": "The system shall not allow an application to request less than the round's minimum or more than its maximum grant."
+    },
+    {
+      "id": "R27",
+      "section": "6.2 Completing an application",
+      "span": "Before submitting, the applicant shall confirm a declaration that the information given is true, and the system shall record the name of the person who confirmed it and the date and time."
+    },
+    {
+      "id": "R28",
+      "section": "6.2 Completing an application",
+      "span": "When an application is submitted the system shall send the applicant an acknowledgement by email with a reference number and the date by which a decision is expected."
+    },
+    {
+      "id": "R29",
+      "section": "6.3 Accessibility of the application process",
+      "span": "A grants officer shall be able to complete and submit an application on behalf of an applicant who cannot apply online, recording that they did so and the applicant's confirmation of the declaration."
+    },
+    {
+      "id": "R30",
+      "section": "6.3 Accessibility of the application process",
+      "span": "The Youth Voice fund application form shall use plain language suitable for applicants aged 13 to 25, and shall allow a group of young people to apply with the support of a named adult."
+    },
+    {
+      "id": "R31",
+      "section": "7.1 Allocating assessors",
+      "span": "A grants officer shall be able to allocate applications to assessors, and the system shall require two independent assessors for any application requesting more than 10,000."
+    },
+    {
+      "id": "R32",
+      "section": "7.1 Allocating assessors",
+      "span": "Before an assessor can see an application, they shall declare whether they have any interest in the applicant organisation, and an assessor who declares an interest shall not be able to see or score the application."
+    },
+    {
+      "id": "R33",
+      "section": "7.1 Allocating assessors",
+      "span": "The system shall record every declaration of interest, including declarations of no interest, with the date and the person who made it."
+    },
+    {
+      "id": "R34",
+      "section": "7.1 Allocating assessors",
+      "span": "External volunteer assessors shall only see the applications allocated to them and shall not see the organisation's bank details or the scores of other assessors."
+    },
+    {
+      "id": "R35",
+      "section": "7.2 Scoring and moderation",
+      "span": "An assessor shall score each criterion on a scale defined for the round and shall write a comment for each score, and the system shall calculate the weighted total."
+    },
+    {
+      "id": "R36",
+      "section": "7.2 Scoring and moderation",
+      "span": "Where the weighted totals given by two assessors differ by more than 20% of the maximum score, the system shall flag the application for moderation."
+    },
+    {
+      "id": "R37",
+      "section": "7.2 Scoring and moderation",
+      "span": "The moderated score and the reason for any change from the assessors' scores shall be recorded, and the assessors' original scores shall be kept."
+    },
+    {
+      "id": "R38",
+      "section": "7.2 Scoring and moderation",
+      "span": "A grants officer shall carry out due diligence on every application recommended for funding before it goes to the decision-maker, recording the checks made and their outcome."
+    },
+    {
+      "id": "R39",
+      "section": "8.1 Decision-making authority",
+      "span": "A grants officer can decide on grants of up to 5,000 under delegated authority."
+    },
+    {
+      "id": "R40",
+      "section": "8.1 Decision-making authority",
+      "span": "The programme's grant panel decides on grants from 5,001 to 25,000."
+    },
+    {
+      "id": "R41",
+      "section": "8.1 Decision-making authority",
+      "span": "The Cabinet member for communities decides on grants from 25,001 to 100,000."
+    },
+    {
+      "id": "R42",
+      "section": "8.1 Decision-making authority",
+      "span": "Cabinet decides on grants over 100,000."
+    },
+    {
+      "id": "R43",
+      "section": "8.1 Decision-making authority",
+      "span": "The system shall route each recommended application to the decision-maker required by the scheme of delegation, based on the total value of the grant over its whole term."
+    },
+    {
+      "id": "R44",
+      "section": "8.1 Decision-making authority",
+      "span": "A grant panel member who has an interest in an application shall declare it before the panel meets, and the system shall exclude them from the decision on that application."
+    },
+    {
+      "id": "R45",
+      "section": "8.2 Recording decisions",
+      "span": "The system shall record each decision as approved, approved with conditions, or declined, with the decision-maker, the date, the amount approved and the reasons."
+    },
+    {
+      "id": "R46",
+      "section": "8.2 Recording decisions",
+      "span": "The total approved in a round shall not exceed the round's budget, and the system shall show the decision-maker the remaining budget before each decision."
+    },
+    {
+      "id": "R47",
+      "section": "8.2 Recording decisions",
+      "span": "Every applicant shall be told the decision on their application by email within five working days of the decision, and declined applicants shall be given the assessors' comments as feedback."
+    },
+    {
+      "id": "R48",
+      "section": "8.2 Recording decisions",
+      "span": "Decisions on grants over 25,000 shall be published on the council's website, showing the organisation, the amount and the purpose."
+    },
+    {
+      "id": "R49",
+      "section": "8.3 Ward Member Grants",
+      "span": "Each ward member shall be able to see their remaining allocation for the year and recommend a grant to an eligible organisation for a project in their ward."
+    },
+    {
+      "id": "R50",
+      "section": "8.3 Ward Member Grants",
+      "span": "A ward member shall not be able to recommend a grant to an organisation in which they have declared an interest in the council's register of members' interests."
+    },
+    {
+      "id": "R51",
+      "section": "8.3 Ward Member Grants",
+      "span": "A grants officer shall check every Ward Member Grant recommendation for eligibility and shall approve or reject it, and a rejected recommendation shall return the amount to the member's allocation."
+    },
+    {
+      "id": "R52",
+      "section": "8.3 Ward Member Grants",
+      "span": "Ward Member Grants shall not be recommended in the six weeks before a local election."
+    },
+    {
+      "id": "R53",
+      "section": "9.1 Issuing an agreement",
+      "span": "When a grant is approved, the system shall generate a grant agreement from the template for the programme, including the amount, the purpose, any conditions set by the decision-maker, the payment schedule and the monitoring requirements."
+    },
+    {
+      "id": "R54",
+      "section": "9.1 Issuing an agreement",
+      "span": "The grant recipient shall sign the grant agreement electronically through the system, and the agreement shall be signed by two people connected with the organisation for grants over 5,000."
+    },
+    {
+      "id": "R55",
+      "section": "9.1 Issuing an agreement",
+      "span": "No payment shall be made on a grant until the grant agreement has been signed by the recipient and countersigned by the council."
+    },
+    {
+      "id": "R56",
+      "section": "9.1 Issuing an agreement",
+      "span": "An offer of a grant shall lapse if the agreement is not signed within a reasonable time, and the amount shall be returned to the round's budget."
+    },
+    {
+      "id": "R57",
+      "section": "9.2 Payment schedules",
+      "span": "Grants up to 10,000 shall be paid in a single payment after the agreement is signed, and grants over 10,000 shall be paid in instalments set out in the payment schedule."
+    },
+    {
+      "id": "R58",
+      "section": "9.2 Payment schedules",
+      "span": "For Strategic Partnerships grants, instalments after the first shall only be released once the previous quarter's monitoring report has been accepted."
+    },
+    {
+      "id": "R59",
+      "section": "10. Payments",
+      "span": "When a payment is due under the payment schedule and its conditions have been met, the system shall create a payment request containing the grant reference, the amount, the cost centre and the recipient's verified bank details."
+    },
+    {
+      "id": "R60",
+      "section": "10. Payments",
+      "span": "A finance officer shall review each payment request and release it to the finance system, and the system shall prevent the officer who approved the grant from releasing its payment."
+    },
+    {
+      "id": "R61",
+      "section": "10. Payments",
+      "span": "The system shall record the payment date and the finance system reference when Finance confirms that a payment has been made."
+    },
+    {
+      "id": "R62",
+      "section": "10. Payments",
+      "span": "The system shall stop a payment request automatically if the recipient organisation's charity or company registration shows it as removed, dissolved or in insolvency."
+    },
+    {
+      "id": "R63",
+      "section": "11. Variations",
+      "span": "A recipient shall be able to request a variation to their grant through the system, explaining what they want to change and why."
+    },
+    {
+      "id": "R64",
+      "section": "11. Variations",
+      "span": "A variation that changes the amount of the grant shall be decided by the decision-maker who would be required for the new total amount."
+    },
+    {
+      "id": "R65",
+      "section": "11. Variations",
+      "span": "A variation that moves less than 10% of the grant between budget items, without changing the total, shall be decided by a grants officer."
+    },
+    {
+      "id": "R66",
+      "section": "11. Variations",
+      "span": "Every variation shall be recorded against the grant agreement, and the system shall keep the agreement as originally signed as well as the agreement as varied."
+    },
+    {
+      "id": "R67",
+      "section": "12.1 Monitoring reports",
+      "span": "Recipients of grants up to 5,000 submit a single end-of-grant report."
+    },
+    {
+      "id": "R68",
+      "section": "12.1 Monitoring reports",
+      "span": "Recipients of grants from 5,001 to 25,000 submit a mid-point report and an end-of-grant report."
+    },
+    {
+      "id": "R69",
+      "section": "12.1 Monitoring reports",
+      "span": "Recipients of grants over 25,000 submit quarterly reports and an end-of-grant report with evidence of expenditure."
+    },
+    {
+      "id": "R70",
+      "section": "12.1 Monitoring reports",
+      "span": "The system shall remind the recipient of each monitoring report 14 days before it is due and again on the due date, and shall mark the report as overdue if it is not submitted within 14 days after the due date."
+    },
+    {
+      "id": "R71",
+      "section": "12.1 Monitoring reports",
+      "span": "A grants officer shall review each monitoring report and record whether it is accepted, and may ask the recipient for more information."
+    },
+    {
+      "id": "R72",
+      "section": "12.1 Monitoring reports",
+      "span": "Monitoring reports shall collect the outcome measures set for the round, so that the council can report the outcomes achieved across all grants in a programme."
+    },
+    {
+      "id": "R73",
+      "section": "12.2 Clawback and closure",
+      "span": "Where a grant has not been used for its agreed purpose, a grants officer shall be able to start a clawback, recording the amount to be recovered and the reason, and the system shall send a request for repayment to the recipient."
+    },
+    {
+      "id": "R74",
+      "section": "12.2 Clawback and closure",
+      "span": "A clawback over 5,000 shall be approved by the programme manager before the request for repayment is sent."
+    },
+    {
+      "id": "R75",
+      "section": "12.2 Clawback and closure",
+      "span": "A grant shall be closed when the end-of-grant report has been accepted and every payment and any clawback has been completed."
+    },
+    {
+      "id": "R76",
+      "section": "13. Reporting",
+      "span": "The system shall report, for any period, the grants awarded and paid by programme, round, ward and organisation."
+    },
+    {
+      "id": "R77",
+      "section": "13. Reporting",
+      "span": "The system shall show, for any organisation, every application it has made and every grant it has received from the council across all programmes."
+    },
+    {
+      "id": "R78",
+      "section": "13. Reporting",
+      "span": "The system shall report the applications received, approved and declined in each round, with the reasons for declining, by ward and by the equality information applicants provided."
+    },
+    {
+      "id": "R79",
+      "section": "13. Reporting",
+      "span": "Each ward member shall be able to see the grants awarded in their ward under all programmes."
+    },
+    {
+      "id": "R80",
+      "section": "13. Reporting",
+      "span": "Auditors shall be able to see every record in the system, including declarations of interest, decisions, bank detail changes and their verification, without being able to change anything."
+    },
+    {
+      "id": "R81",
+      "section": "14.1 Accessibility and usability",
+      "span": "The applicant-facing parts of the system shall meet the WCAG 2.2 AA standard and shall work on mobile phones as well as on computers."
+    },
+    {
+      "id": "R82",
+      "section": "14.1 Accessibility and usability",
+      "span": "The application process for a grant under 1,000 shall be completable in no more than 30 minutes by a first-time applicant who has their organisation documents to hand."
+    },
+    {
+      "id": "R83",
+      "section": "14.2 Availability and performance",
+      "span": "The system shall be available at least 99.5% of the time, and in the last 48 hours before a round closes it shall have no planned maintenance."
+    },
+    {
+      "id": "R84",
+      "section": "14.2 Availability and performance",
+      "span": "The system shall support at least 500 applicants working on applications at the same time without a page taking more than three seconds to load."
+    },
+    {
+      "id": "R85",
+      "section": "14.3 Security and data protection",
+      "span": "Council users shall sign in with the council's single sign-on, and applicants and external assessors shall sign in with an email address, a password and a second factor."
+    },
+    {
+      "id": "R86",
+      "section": "14.3 Security and data protection",
+      "span": "Personal data about applicants' service users, if any is included in an application by mistake, shall be removable by a grants officer without deleting the rest of the application."
+    },
+    {
+      "id": "R87",
+      "section": "14.3 Security and data protection",
+      "span": "The system shall retain records of approved grants for seven years after the grant is closed and records of declined applications for two years after the decision, and shall then delete them."
+    },
+    {
+      "id": "R88",
+      "section": "14.3 Security and data protection",
+      "span": "Equality information given by applicants shall be optional, shall be kept separately from the application, and shall not be visible to assessors or decision-makers."
+    },
+    {
+      "id": "R89",
+      "section": "14.4 Audit",
+      "span": "Every action that changes a record in the system shall be recorded with the user, the date and time, and the value before and after the change, and the audit record shall not be editable or deletable by any user."
+    },
+    {
+      "id": "R90",
+      "section": "15. Data migration",
+      "span": "Grants made in the three financial years before go-live shall be migrated into the system with their organisation, amount, programme and status, so that reports of funding to an organisation are complete."
+    },
+    {
+      "id": "R91",
+      "section": "15. Data migration",
+      "span": "Before migration, organisation records that appear to refer to the same organisation shall be presented to a grants officer for a decision on whether to merge them."
+    },
+    {
+      "id": "R92",
+      "section": "15. Data migration",
+      "span": "Strategic Partnerships grants that are in progress at go-live shall be migrated with their agreements, payment schedules and monitoring reports, so that they can be managed in the system from go-live."
+    },
+    {
+      "id": "R93",
+      "section": "A.1 Neighbourhood Fund",
+      "span": "A Neighbourhood Fund application shall record the neighbourhood the project serves, chosen from the council's list of neighbourhoods, and the system shall add the priority weighting set for the round to the weighted score of applications from priority neighbourhoods."
+    },
+    {
+      "id": "R94",
+      "section": "A.1 Neighbourhood Fund",
+      "span": "An organisation shall not receive more than one Neighbourhood Fund grant in the same financial year."
+    },
+    {
+      "id": "R95",
+      "section": "A.2 Strategic Partnerships",
+      "span": "A Strategic Partnerships grant agreement shall state that the second and third years' funding is subject to the council's annual budget, and the system shall require the programme manager to confirm each year's funding before its first instalment is released."
+    },
+    {
+      "id": "R96",
+      "section": "A.2 Strategic Partnerships",
+      "span": "Each Strategic Partnerships grant shall have a named relationship manager, and the system shall record a note of each quarterly meeting against the grant."
+    },
+    {
+      "id": "R97",
+      "section": "A.3 Small Sparks",
+      "span": "Where a Small Sparks grant is paid through a sponsoring organisation, the system shall record the sponsor, verify the sponsor's bank details in the same way as a recipient's, and require the sponsor to sign the grant agreement as well as the group."
+    },
+    {
+      "id": "R98",
+      "section": "A.3 Small Sparks",
+      "span": "A decision on a Small Sparks application shall be made within ten working days of submission, and the system shall alert the programme manager about any application still undecided after eight working days."
+    },
+    {
+      "id": "R99",
+      "section": "A.4 Youth Voice",
+      "span": "Assessors for the Youth Voice fund may be members of the youth council aged 16 or over, and the system shall record that an assessor is a youth panel member and the name of the supporting youth worker."
+    },
+    {
+      "id": "R100",
+      "section": "A.5 Arts in the Open",
+      "span": "An Arts in the Open grant shall not be paid until the applicant has uploaded the event permission from the council's events team, and the system shall record the permission reference."
+    },
+    {
+      "id": "R101",
+      "section": "A.5 Arts in the Open",
+      "span": "If an Arts in the Open event is cancelled because of bad weather, the recipient may keep costs already incurred, and the system shall allow a grants officer to record a partial clawback of the remainder."
+    },
+    {
+      "id": "R102",
+      "section": "A.6 Winter Warmth",
+      "span": "Winter Warmth grants shall only be approved for activities that take place between 1 November and 31 March, and the end-of-grant report shall be due by 30 April."
+    }
+  ],
+  "ambiguities": [
+    {
+      "id": "A1",
+      "kind": "tbd",
+      "description": "a grant offer lapses after \"a reasonable time\", and Legal Services have not yet advised on the period",
+      "question": "How long may a grant offer remain unsigned before it lapses and the money returns to the round budget?",
+      "requirements": ["R56"],
+      "spans": [
+        "Legal Services have been asked to advise how long a grant offer may stay open before it lapses.",
+        "An offer of a grant shall lapse if the agreement is not signed within a reasonable time, and the amount shall be returned to the round's budget."
+      ],
+      "sections": ["16.2 Open questions", "9.1 Issuing an agreement"]
+    },
+    {
+      "id": "A2",
+      "kind": "tbd",
+      "description": "an income threshold below which accounts are not required has been suggested but not set, and R13 and R38 assume accounts always exist",
+      "question": "Is there an income threshold below which an organisation need not provide accounts, and what is it?",
+      "requirements": ["R13", "R38"],
+      "spans": [
+        "Programme managers have suggested that small organisations with an annual income below a threshold should not have to provide accounts, but the threshold has not been set.",
+        "An organisation shall be able to upload its governing document, latest accounts, safeguarding policy and equality policy to its organisation record once, and the system shall attach the current versions to each application automatically.",
+        "A grants officer shall carry out due diligence on every application recommended for funding before it goes to the decision-maker, recording the checks made and their outcome."
+      ],
+      "sections": [
+        "16.2 Open questions",
+        "5.2 Organisation documents",
+        "7.2 Scoring and moderation"
+      ]
+    },
+    {
+      "id": "A3",
+      "kind": "tbd",
+      "description": "whether ward members are notified of applications from their ward is undecided, and R79 shows them only awarded grants",
+      "question": "Should ward members be told when an organisation in their ward applies, and at what stage?",
+      "requirements": ["R79"],
+      "spans": [
+        "Some ward members have asked to be told when an organisation in their ward applies to any programme; no decision has been made.",
+        "Each ward member shall be able to see the grants awarded in their ward under all programmes."
+      ],
+      "sections": ["16.2 Open questions", "13. Reporting"]
+    },
+    {
+      "id": "A4",
+      "kind": "conflict",
+      "description": "the decision table bands are \"up to 5,000\" and \"5,001 to 25,000\", but monitoring and signature rules use \"over 5,000\", so a grant of 5,000.50 or a multi-year total near a boundary is unclear",
+      "question": "How are amounts between band boundaries, such as 5,000.50, treated for decision-making?",
+      "requirements": ["R39", "R40"],
+      "spans": [
+        "A grants officer can decide on grants of up to 5,000 under delegated authority.",
+        "The programme's grant panel decides on grants from 5,001 to 25,000."
+      ],
+      "sections": ["8.1 Decision-making authority"]
+    },
+    {
+      "id": "A5",
+      "kind": "conflict",
+      "description": "decision-making uses the whole-term total for multi-year grants, but the document does not say whether the monitoring and payment tables use the annual or the total amount",
+      "question": "For multi-year grants, do the monitoring, signature and instalment rules use the annual amount or the total over the term?",
+      "requirements": ["R43", "R40"],
+      "spans": [
+        "The system shall route each recommended application to the decision-maker required by the scheme of delegation, based on the total value of the grant over its whole term.",
+        "The programme's grant panel decides on grants from 5,001 to 25,000."
+      ],
+      "sections": ["8.1 Decision-making authority"]
+    },
+    {
+      "id": "A6",
+      "kind": "vague-term",
+      "description": "\"the application process should be quick to complete for small grants\" adds nothing measurable beyond the 30-minute target, and \"small\" is undefined",
+      "question": "Which grants count as small for the quicker application process: under 1,000, Small Sparks only, or something else?",
+      "requirements": ["R82"],
+      "spans": [
+        "The application process for a grant under 1,000 shall be completable in no more than 30 minutes by a first-time applicant who has their organisation documents to hand."
+      ],
+      "sections": ["14.1 Accessibility and usability"]
+    },
+    {
+      "id": "A7",
+      "kind": "missing",
+      "description": "an extension can be granted to a single applicant, but nothing says how long it may be or whether it is allowed after assessment has begun",
+      "question": "What is the longest extension the programme manager may grant, and may it be granted once the round has closed?",
+      "requirements": ["R6", "R7"],
+      "spans": [
+        "Applications shall not be accepted after a round's closing date and time, and an application that is being completed when the round closes shall not be submittable.",
+        "The programme manager shall be able to extend the closing date for a single applicant, recording the reason, and the extension shall be shown in the round's audit history."
+      ],
+      "sections": ["4. Programme and round set-up"]
+    },
+    {
+      "id": "A8",
+      "kind": "conflict",
+      "description": "grants over 10,000 are paid in instalments, while Strategic Partnerships instalments depend on quarterly monitoring; for a 12,000 Neighbourhood grant, the monitoring rules require only a mid-point report, so the release condition for later instalments is unstated",
+      "question": "What condition releases the second and later instalments of a non-Strategic grant over 10,000?",
+      "requirements": ["R57", "R58"],
+      "spans": [
+        "Grants up to 10,000 shall be paid in a single payment after the agreement is signed, and grants over 10,000 shall be paid in instalments set out in the payment schedule.",
+        "For Strategic Partnerships grants, instalments after the first shall only be released once the previous quarter's monitoring report has been accepted."
+      ],
+      "sections": ["9.2 Payment schedules"]
+    },
+    {
+      "id": "A9",
+      "kind": "missing",
+      "description": "an overdue report blocks new applications, but the document does not say whether a report submitted late but not yet accepted still blocks",
+      "question": "Does an organisation remain blocked from applying while a late monitoring report awaits review?",
+      "requirements": ["R21", "R70"],
+      "spans": [
+        "The system shall prevent an organisation from applying to a round if it has an overdue monitoring report on any previous grant.",
+        "The system shall remind the recipient of each monitoring report 14 days before it is due and again on the due date, and shall mark the report as overdue if it is not submitted within 14 days after the due date."
+      ],
+      "sections": ["6.1 Eligibility check", "12.1 Monitoring reports"]
+    },
+    {
+      "id": "A10",
+      "kind": "conflict",
+      "description": "two assessors are needed above 10,000, and a grants officer can decide alone up to 5,000; the document does not say whether the officer who decides may also be the assessor",
+      "question": "May a grants officer assess an application and then decide it under delegated authority?",
+      "requirements": ["R31", "R39"],
+      "spans": [
+        "A grants officer shall be able to allocate applications to assessors, and the system shall require two independent assessors for any application requesting more than 10,000.",
+        "A grants officer can decide on grants of up to 5,000 under delegated authority."
+      ],
+      "sections": ["7.1 Allocating assessors", "8.1 Decision-making authority"]
+    },
+    {
+      "id": "A11",
+      "kind": "missing",
+      "description": "young people under 18 sit on the Youth Voice panel, and Legal Services have not decided whether they can record decisions in the system",
+      "question": "Can panel members under 18 record decisions in the system, or must an adult record the decision for them?",
+      "requirements": ["R30", "R45"],
+      "spans": [
+        "The Youth Voice fund application form shall use plain language suitable for applicants aged 13 to 25, and shall allow a group of young people to apply with the support of a named adult.",
+        "The system shall record each decision as approved, approved with conditions, or declined, with the decision-maker, the date, the amount approved and the reasons."
+      ],
+      "sections": ["6.3 Accessibility of the application process", "8.2 Recording decisions"]
+    },
+    {
+      "id": "A12",
+      "kind": "vague-term",
+      "description": "a grants officer adds a user \"after verifying the person's connection with the organisation\", with no stated evidence required",
+      "question": "What evidence must a grants officer see before adding a user to an organisation that has no other active users?",
+      "requirements": ["R12"],
+      "spans": [
+        "If an organisation has no remaining users who can approve a request, a grants officer shall be able to add a user after verifying the person's connection with the organisation."
+      ],
+      "sections": ["5.1 Registering an organisation"]
+    },
+    {
+      "id": "A13",
+      "kind": "missing",
+      "description": "the six weeks before a local election block recommendations, but nothing says what happens to recommendations already made and not yet approved in that period",
+      "question": "Can a Ward Member Grant recommended before the pre-election period be approved and paid during it?",
+      "requirements": ["R52", "R49"],
+      "spans": [
+        "Ward Member Grants shall not be recommended in the six weeks before a local election.",
+        "Each ward member shall be able to see their remaining allocation for the year and recommend a grant to an eligible organisation for a project in their ward."
+      ],
+      "sections": ["8.3 Ward Member Grants"]
+    },
+    {
+      "id": "A14",
+      "kind": "conflict",
+      "description": "Appendix A gives Small Sparks grants of 100 to 1,500, while section 1.1 says Small Sparks is for grants up to 1,000; and paying through a sponsor sits awkwardly with R16's check that the account name matches the organisation",
+      "question": "Is the Small Sparks maximum 1,000 or 1,500, and whose name must a sponsored group's bank account match?",
+      "requirements": ["R97", "R16"],
+      "spans": [
+        "Small Sparks grants range from 100 to 1,500, and groups without a bank account in their own name may be paid through a sponsoring organisation.",
+        "Where a Small Sparks grant is paid through a sponsoring organisation, the system shall record the sponsor, verify the sponsor's bank details in the same way as a recipient's, and require the sponsor to sign the grant agreement as well as the group.",
+        "An organisation shall enter its bank details in the system, and the system shall verify that the account name matches the organisation's name using the council's bank account verification service before the details can be used for a payment."
+      ],
+      "sections": ["A.3 Small Sparks", "5.3 Bank details"]
+    }
+  ]
+}

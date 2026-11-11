@@ -746,3 +746,44 @@ pnpm exec tsx scripts/build-localization-corpus.ts ground-truth \
 
 The symbol rows were built with SQL lineage off (no sidecar), so they carry no
 lineage writer: the read-path rule of #1135 (`writesData`) is inert on them.
+
+## Document-understanding corpora (#2229)
+
+Three synthetic Word business documents, each larger than the 10 chunks (about 20 KB)
+today's document agent reads, with every requirement and every ambiguity a business
+analyst would want raised labelled against a source span. They are the Phase 0
+baseline of epic #2227: do not change a reader's default until this corpus shows the
+change is a gain.
+
+| Corpus | Kind | Word file | Converted text | Sections | Requirements | Ambiguities |
+|---|---|---|---|---|---|---|
+| `docunderstanding-01-clinic-booking` | FRD | 18 KB | 22,129 chars | 26 | 46 | 11 |
+| `docunderstanding-02-freight-claims` | BRD | 18 KB | 23,478 chars | 36 | 58 | 12 |
+| `docunderstanding-03-community-grants` | FRD | 22 KB | 35,075 chars | 53 | 102 | 14 |
+
+Each item holds `frd.src.md` (the authored document, labels marked inline as
+`[[R12 ...]]` and `[[A3 ...]]` with an ambiguity trailer; see
+`server/src/lib/eval/doc-understanding/corpus-source.ts`), `source.docx` (built from
+it: what every arm reads, through production's `parseDocument`) and `labels.json`
+(built from it). The ambiguities are of six kinds: vague terms, undefined terms,
+escape clauses, contradictions (several of them between distant sections, and one
+between a summary table and the body), gaps the document is silent on, and decisions
+it leaves open.
+
+**Labels are author-labelled and not yet reviewed by a second person**
+(`labelStatus` in each `labels.json`): the same author wrote the document and its
+labels. A reviewer who disagrees with a label edits `frd.src.md` and rebuilds.
+
+```bash
+pnpm --filter server eval:doc-understanding:build            # after editing a frd.src.md; commit all three files
+pnpm --filter server eval:doc-understanding:build --check    # labels.json up to date?
+pnpm --filter server eval:doc-understanding                  # arms A,B,C over all three, 1 run, $10 cap
+pnpm --filter server eval:doc-understanding --corpus docunderstanding-01-clinic-booking --arms B
+pnpm --filter server eval:doc-understanding --combine a.json,b.json,c.json --reading baseline-sonnet
+```
+
+`corpus.test.ts` refuses an item whose labels the converted Word text does not bear
+out (a span not found verbatim, a section that is not a heading) and a `labels.json`
+that is not what its `frd.src.md` builds. Readings are written to
+`eval-data/readings/doc-understanding/`; the result and what follows from it are in
+[docs/DOCUMENT_UNDERSTANDING_BASELINE.md](../docs/DOCUMENT_UNDERSTANDING_BASELINE.md).
