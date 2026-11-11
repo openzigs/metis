@@ -299,6 +299,8 @@ describe("reindexProject — #99 pre-swap SQL membership catch-up", () => {
         documentId: "doc2",
         position: 0,
         text: "Banana",
+        // #2234 — a contextual chunk: the catch-up must embed what ingest indexed.
+        metadata: JSON.stringify({ contextPrefix: "Section: Fruit" }),
         embeddingModel: "old-model",
         document: { filename: "b.md" },
       },
@@ -314,7 +316,7 @@ describe("reindexProject — #99 pre-swap SQL membership catch-up", () => {
     await store.upsert(PROJECT, [storedRow("old-live")]);
     const realEmbed = embedder.embed.bind(embedder);
     const embed = vi.spyOn(embedder, "embed").mockImplementation(async (texts) => {
-      if (texts.includes("Banana")) {
+      if (texts.some((t) => t.endsWith("Banana"))) {
         expect(inTransaction).toBe(true);
         expect(swap).not.toHaveBeenCalled();
         expect((await store.listChunkRefs(PROJECT)).map((ref) => ref.chunkId)).toEqual([
@@ -343,7 +345,10 @@ describe("reindexProject — #99 pre-swap SQL membership catch-up", () => {
     expect(result.totalChunks).toBe(1);
     expect(result.embeddedChunks).toBe(2);
     expect(result.reindexedChunks).toBe(2);
-    expect(embed.mock.calls.map(([texts]) => texts)).toEqual([["Apple"], ["Banana"]]);
+    expect(embed.mock.calls.map(([texts]) => texts)).toEqual([
+      ["Apple"],
+      ["Section: Fruit\n\nBanana"],
+    ]);
     expect(swap).toHaveBeenCalledOnce();
 
     // The new live table must contain BOTH the snapshot chunk and the delta.
@@ -361,6 +366,8 @@ describe("reindexProject — #99 pre-swap SQL membership catch-up", () => {
         documentId: true,
         position: true,
         text: true,
+        // #2234 — the persisted context prefix, so the catch-up embeds the indexed text.
+        metadata: true,
         document: { select: { filename: true } },
       },
       orderBy: [{ documentId: "asc" }, { position: "asc" }],
