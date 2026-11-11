@@ -119,6 +119,30 @@ describe("countProjectToolReads (#439)", () => {
       },
     );
   });
+
+  describe("#2239 — the project-scoped result tools", () => {
+    it.each([
+      "list_analyses",
+      "get_analysis",
+      "list_clarification_answers",
+      "get_governing_findings",
+    ])("counts a %s call that returned results", (tool) => {
+      const call = { tool, source: "metis" as const, executed: true, resultCount: 2 };
+      expect(countProjectToolReads([call])).toBe(1);
+      expect(countProjectToolReads([{ ...call, resultCount: 0 }])).toBe(0);
+    });
+
+    // A run that includes this project also reports on other projects and products.
+    it.each([
+      "list_impact_analyses",
+      "get_impact_analysis",
+      "list_portfolio_checks",
+      "get_portfolio_check",
+    ])("does not count %s", (tool) => {
+      const call = { tool, source: "metis" as const, executed: true, resultCount: 2 };
+      expect(countProjectToolReads([call])).toBe(0);
+    });
+  });
 });
 
 describe("withToolReads (#439)", () => {
