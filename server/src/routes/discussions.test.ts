@@ -765,6 +765,38 @@ describe("discussions routes", () => {
       expect(call.actor).toMatchObject({ id: "u1" });
     });
 
+    it("#2226 — hands the responder the thread's most recent 20 messages, oldest first", async () => {
+      canAccessThread.mockResolvedValue({ ok: true, projectId: "p1" });
+      threadFindFirst.mockResolvedValue({ id: "t1", projectId: "p1", aiResponseMode: "auto" });
+      messageFindFirst.mockResolvedValue({ id: "m26", body: "@AI and now?", authorKind: "human" });
+      // A 25-message thread, read the way Prisma would answer the route's query.
+      const thread = Array.from({ length: 25 }, (_, i) => ({
+        id: `m${String(i + 1).padStart(2, "0")}`,
+        authorKind: "human",
+        body: `message ${i + 1}`,
+        authorUserId: "u1",
+        aiModel: null,
+      }));
+      messageFindMany.mockImplementation(
+        async (args: { orderBy: Array<Record<string, string>>; take: number }) => {
+          const newestFirst = args.orderBy[0]?.createdAt === "desc";
+          const ordered = newestFirst ? [...thread].reverse() : thread;
+          return ordered.slice(0, args.take);
+        },
+      );
+      streamAIReply.mockResolvedValue({
+        message: { id: "ai-1", body: "x", aiModel: "m", aiProvider: "p", aiSessionId: "s" },
+        usage: { totalTokens: 1 },
+      });
+
+      await request(app).post("/discussions/threads/t1/ai-respond").send({ messageId: "m26" });
+
+      const history = (streamAIReply.mock.calls[0][0] as { history: { body: string }[] }).history;
+      expect(history.map((h) => h.body)).toEqual(
+        Array.from({ length: 20 }, (_, i) => `message ${i + 6}`),
+      );
+    });
+
     it("#739 — grounds the reply in the THREAD's project: its retrieval and its read-only tools", async () => {
       canAccessThread.mockResolvedValue({ ok: true, projectId: "p1" });
       threadFindFirst.mockResolvedValue({ id: "t1", projectId: "p1", aiResponseMode: "auto" });
