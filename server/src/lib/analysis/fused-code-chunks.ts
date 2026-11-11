@@ -40,7 +40,7 @@ import {
   type SymbolLineLookup,
 } from "../rag/fused-code-context.js";
 import type { RetrievalContextChunk } from "./agent-runner.js";
-import { requirementQueryText } from "./requirement-query.js";
+import { MAX_FUSED_QUERY_CHARS, requirementQueryText } from "./requirement-query.js";
 import { deriveRetrievalQuery, RETRIEVAL_QUERIES } from "./retrieval.js";
 
 /**
@@ -160,8 +160,12 @@ export function buildCodeAgentFusedQuery(input: {
     .join(". ");
   const composed = [metadata, reqText].filter((s) => s.length > 0).join(". ");
   // #2276 — each requirement is bounded, but 24 long ones joined can still pass
-  // the embeddings sidecar's 32,768-character limit; the query is bounded too.
-  return composed.length > 0 ? requirementQueryText(composed) : RETRIEVAL_QUERIES.code;
+  // the embeddings sidecar's 32,768-character limit; the query is bounded too,
+  // at its own larger bound so ordinary runs lose nothing.
+  if (composed.length === 0) return RETRIEVAL_QUERIES.code;
+  return composed.length <= MAX_FUSED_QUERY_CHARS
+    ? composed
+    : composed.slice(0, MAX_FUSED_QUERY_CHARS);
 }
 
 /** 4 chars ≈ 1 token, matching `estTokens` in `../rag/fused-code-context.ts`. */

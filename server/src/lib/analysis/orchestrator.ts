@@ -43,6 +43,7 @@ import {
   deriveCapabilityReasons,
   type FindingsLeftOutNotice,
   readFindingsLeftOut,
+  readRequirementsLeftOut,
   isCodeCitation,
   MAX_REQUIREMENTS_FOR_RETRIEVAL,
   REQUIREMENT_RETRIEVAL_CONCURRENCY,
@@ -6038,6 +6039,11 @@ export class AnalysisOrchestrator {
     const kept = continued ? prev : prev.filter((n) => n.agentKey !== agentKey);
     if (kept.length === prev.length && notices.length === 0) return;
     const next: AnalysisCapability = { ...capability };
+    // A stored entry of the wrong shape must not throw in deriveCapabilityReasons
+    // after synthesis has persisted: read it through the same reader as the panel.
+    const requirementsLeftOut = readRequirementsLeftOut(capability.requirementsLeftOut);
+    if (requirementsLeftOut.length > 0) next.requirementsLeftOut = requirementsLeftOut;
+    else delete next.requirementsLeftOut;
     const findingsLeftOut = [...kept, ...notices];
     if (findingsLeftOut.length > 0) next.findingsLeftOut = findingsLeftOut;
     else delete next.findingsLeftOut;

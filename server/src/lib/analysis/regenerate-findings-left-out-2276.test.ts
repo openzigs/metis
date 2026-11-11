@@ -149,6 +149,17 @@ describe("#2276 — a regenerated agent's findings cut is recorded on the run", 
     expect(persisted()?.reasons).not.toContain("findings-left-out");
   });
 
+  it("a malformed stored requirementsLeftOut entry does not fail the regenerate", async () => {
+    const stored = {
+      ...capability([cut("document", ["Old 51"])]),
+      requirementsLeftOut: [{ agentKey: "code" }],
+    } as unknown as AnalysisCapability;
+    serviceMock.getAnalysisCapability.mockResolvedValue(stored);
+    await regenerate(makeOrchestrator(cut("document", ["New 51"])));
+    expect(persisted()?.findingsLeftOut).toEqual([cut("document", ["New 51"])]);
+    expect(persisted()).not.toHaveProperty("requirementsLeftOut");
+  });
+
   it("writes nothing when neither the old nor the new answer cut anything", async () => {
     serviceMock.getAnalysisCapability.mockResolvedValue(capability([cut("web", ["Web 51"])]));
     await regenerate(makeOrchestrator());

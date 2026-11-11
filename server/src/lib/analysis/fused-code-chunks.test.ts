@@ -15,7 +15,7 @@
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { __resetConfigSingleton } from "../config/config-service.js";
-import { MAX_REQUIREMENT_QUERY_CHARS } from "./requirement-query.js";
+import { MAX_FUSED_QUERY_CHARS, MAX_REQUIREMENT_QUERY_CHARS } from "./requirement-query.js";
 import { RETRIEVAL_QUERIES } from "./retrieval.js";
 import type {
   FusedCodeSearcher,
@@ -387,8 +387,14 @@ describe("buildCodeAgentFusedQuery (#729)", () => {
       projectName: "Acme",
       requirementTexts: Array.from({ length: 24 }, () => long),
     });
-    expect(query).toHaveLength(MAX_REQUIREMENT_QUERY_CHARS);
+    expect(query).toHaveLength(MAX_FUSED_QUERY_CHARS);
     expect(query.startsWith("Acme. x")).toBe(true);
+  });
+
+  it("#2276 — an ordinary run (24 requirements of ~300 characters) keeps every requirement", () => {
+    const texts = Array.from({ length: 24 }, (_, i) => `REQ-${i} ${"y".repeat(290)}`);
+    const query = buildCodeAgentFusedQuery({ projectName: "Acme", requirementTexts: texts });
+    for (let i = 0; i < 24; i++) expect(query).toContain(`REQ-${i} `);
   });
 });
 

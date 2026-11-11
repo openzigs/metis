@@ -26,3 +26,11 @@ export function requirementQueryText(text: string): string {
     ? text
     : text.slice(0, MAX_REQUIREMENT_QUERY_CHARS);
 }
+
+/**
+ * #2276 — the bound on the whole fused code query (metadata plus every
+ * requirement). It exists for the embeddings sidecar's 32,768-character limit,
+ * so it is far above one requirement's {@link MAX_REQUIREMENT_QUERY_CHARS}: a
+ * run of two dozen ordinary requirements must reach the symbol search whole.
+ */
+export const MAX_FUSED_QUERY_CHARS = 8_000;
