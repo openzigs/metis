@@ -259,6 +259,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const off = recordingSearch(P4_HITS);
       const before = await run(reset(P4), { search: off.search });
       expect(off.calls).toHaveLength(1);
+      // #2238 — the shared search keeps every project's evidence: no relevance floor.
+      expect(off.calls[0]!.relevanceFloor).toBe(0);
       expect(reasonOf(before, P4, RC_P4_MAIL)).toBe("no-evidence-retrieved");
 
       const on = recordingSearch(P4_HITS);

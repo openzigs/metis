@@ -140,13 +140,19 @@ interface ProjectRanking {
  * 1. A project's relevance is its best hit's. A project below `floor` × the
  *    best project's relevance is left out: under rank fusion its first hit
  *    scored as high as the relevant project's first hit.
- * 2. The projects that remain take turns, most relevant first, each giving its
- *    next hit in its own order, until `topK` hits are taken. Within a project
- *    its own ranking stands, so a hit only the keyword retriever found keeps
- *    its place there.
+ * 2. The projects that remain take turns, in the order they were asked for,
+ *    each giving its next hit in its own order, until `topK` hits are taken.
+ *    Within a project its own ranking stands, so a hit only the keyword
+ *    retriever found keeps its place there.
  *
  * When no hit anywhere carries a relevance (every hit lexical-only), nothing
  * can be compared and every project with a hit takes part.
+ *
+ * With `floor` 0 the result is exactly what rank fusion gave for distinct
+ * chunks (each project's n-th hit tied at 1/(60+n), ties in project order), so
+ * a caller that opts out of the floor — the portfolio gap engine, whose
+ * coverage verdicts and replayed prompts depend on every project's evidence —
+ * keeps its previous result.
  */
 export function fuseByRelevance(
   rankings: readonly ProjectRanking[],
@@ -155,9 +161,7 @@ export function fuseByRelevance(
 ): FederatedHit[] {
   const withHits = rankings.filter((r) => r.hits.length > 0);
   const best = Math.max(0, ...withHits.map((r) => r.relevance));
-  const kept = withHits
-    .filter((r) => best <= 0 || r.relevance >= floor * best)
-    .sort((a, b) => b.relevance - a.relevance);
+  const kept = withHits.filter((r) => best <= 0 || r.relevance >= floor * best);
   const out: FederatedHit[] = [];
   const seen = new Set<string>();
   for (let depth = 0; out.length < topK; depth += 1) {

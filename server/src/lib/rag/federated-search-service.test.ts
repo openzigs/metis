@@ -169,7 +169,7 @@ describe("FederatedSearchService", () => {
       expect(result.hits[0].score).toBeCloseTo(0.82);
     });
 
-    it("shares k between the relevant projects, most relevant first, each in its own order", async () => {
+    it("shares k between the relevant projects, in the order asked for, each in its own order", async () => {
       mockGetAccessible.mockResolvedValue([
         { id: "proj-a", name: "A" },
         { id: "proj-b", name: "B" },
@@ -186,7 +186,7 @@ describe("FederatedSearchService", () => {
       const svc = new FederatedSearchService({ knowledgeService: mockKS as never });
       const result = await svc.searchAcrossProjects({ userId: "user-1", query: "q", k: 3 });
 
-      expect(result.hits.map((h) => h.chunkId)).toEqual(["b1", "a1", "b2"]);
+      expect(result.hits.map((h) => h.chunkId)).toEqual(["a1", "b1", "a2"]);
       expect(result.totalHits).toBe(3);
     });
 
