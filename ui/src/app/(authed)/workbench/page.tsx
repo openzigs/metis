@@ -18,7 +18,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { projectsApi, type DocumentRow, type Project } from "@/lib/projects-api";
+import { projectsApi, type Project } from "@/lib/projects-api";
 import { listAllDocuments } from "@/lib/list-all-documents";
 import { DocumentPanel } from "@/components/workbench/document-panel";
 import { PaneSeparator } from "@/components/workbench/pane-separator";
@@ -45,7 +45,7 @@ import {
 } from "@/lib/workbench-storage";
 import { recentTracker } from "@/lib/recent-tracker";
 import { useRecentEntries } from "@/hooks/use-recent-entries";
-import { WORKBENCH_SESSION_TITLE, titleFromQuestion } from "@metis/shared";
+import { MAX_ATTACHED_DOCUMENTS, WORKBENCH_SESSION_TITLE, titleFromQuestion } from "@metis/shared";
 import { readStoredActiveProjectId, resolveActiveProjectId } from "@/lib/active-project";
 import { LoadedSkillsPanel } from "@/components/chat/loaded-skills-panel";
 import { AgentPicker } from "@/components/chat/agent-picker";
@@ -190,13 +190,24 @@ export default function WorkbenchPage() {
   const contextDocs = useMemo(() => contextEntries.map((e) => e.doc), [contextEntries]);
   const gridRef = useRef<HTMLDivElement>(null);
 
+  // #2240 — a question can attach at most MAX_ATTACHED_DOCUMENTS (the server
+  // refuses a longer list, and with it the whole question): one more is not
+  // added, and the chips say why.
+  const [attachLimitHit, setAttachLimitHit] = useState(false);
+
   function attachToContext(docId: string) {
+    if (layout.contextIds.includes(docId)) return;
+    if (layout.contextIds.length >= MAX_ATTACHED_DOCUMENTS) {
+      setAttachLimitHit(true);
+      return;
+    }
     setLayout((prev) =>
       prev.contextIds.includes(docId) ? prev : { ...prev, contextIds: [...prev.contextIds, docId] },
     );
   }
 
   function detachFromContext(docId: string) {
+    setAttachLimitHit(false);
     setLayout((prev) => ({
       ...prev,
       contextIds: prev.contextIds.filter((id) => id !== docId),
@@ -204,6 +215,7 @@ export default function WorkbenchPage() {
   }
 
   function clearContext() {
+    setAttachLimitHit(false);
     setLayout((prev) => ({ ...prev, contextIds: [] }));
   }
 
@@ -266,11 +278,14 @@ export default function WorkbenchPage() {
       setStreaming(false);
       return;
     }
-    const composed = composeWithContext(input, contextDocs);
+    // #2240 — attachments go up as documents to search, not as file names
+    // pasted into the question (which the server would search for).
+    const question = input;
+    const attachedDocIds = contextDocs.map((d) => d.id);
     const userMsg: DisplayMessage = {
       id: crypto.randomUUID(),
       role: "user",
-      content: composed,
+      content: question,
     };
     const assistantMsg: DisplayMessage = {
       id: crypto.randomUUID(),
@@ -292,9 +307,16 @@ export default function WorkbenchPage() {
     let accepted = false;
     try {
       // #136 — only the new message goes up; the server holds the history.
-      for await (const ev of streamChat(active.id, composed, controller.signal, undefined, () => {
-        accepted = true;
-      })) {
+      for await (const ev of streamChat(
+        active.id,
+        question,
+        controller.signal,
+        undefined,
+        () => {
+          accepted = true;
+        },
+        attachedDocIds,
+      )) {
         handleStream(ev, assistantMsg.id);
       }
     } catch (err) {
@@ -527,6 +549,15 @@ export default function WorkbenchPage() {
               </button>
             </div>
           ) : null}
+          {attachLimitHit ? (
+            <p
+              role="status"
+              data-testid="workbench-attach-limit"
+              className="mb-2 text-xs text-muted-foreground"
+            >
+              {`A question can attach at most ${MAX_ATTACHED_DOCUMENTS} documents. Remove one to attach another.`}
+            </p>
+          ) : null}
           <div className="flex-1 min-h-0 overflow-y-auto rounded border p-2">
             {messages.length === 0 ? (
               <p className="text-sm text-muted-foreground">
@@ -678,17 +709,6 @@ export default function WorkbenchPage() {
       </div>
     </div>
   );
-}
-
-function composeWithContext(input: string, attachments: DocumentRow[]): string {
-  if (attachments.length === 0) return input;
-  const lines = [
-    `Context attachments (${attachments.length}):`,
-    ...attachments.map((d) => `  - ${d.filename} (${d.id})`),
-    "",
-    input,
-  ];
-  return lines.join("\n");
 }
 
 interface EmptyStateProps {
