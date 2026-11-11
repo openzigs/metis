@@ -27,6 +27,26 @@ import { atlassianApi, type AtlassianIngestSummary } from "@/lib/enterprise-api"
 
 type Mode = "confluence" | "jira" | null;
 
+interface LastRun {
+  source: "confluence" | "jira";
+  summary: AtlassianIngestSummary;
+}
+
+/**
+ * #2244 — what a run left out, in the analyst's words, or null when it took
+ * everything the search matched.
+ */
+export function omittedMessage({ source, summary }: LastRun): string | null {
+  if (!(summary.omitted > 0)) return null;
+  const noun = source === "confluence" ? "pages" : "issues";
+  const processed = summary.found - summary.omitted;
+  const why =
+    processed >= summary.limit
+      ? `One run ingests at most ${summary.limit} ${noun}.`
+      : `The search returned only ${processed}.`;
+  return `${summary.omitted} of ${summary.found} matching ${noun} were not ingested. ${why} Narrow the query and run it again to bring in the rest.`;
+}
+
 export interface ConnectorsSectionProps {
   projectId: string | null;
 }
@@ -36,7 +56,7 @@ export function ConnectorsSection({ projectId }: ConnectorsSectionProps) {
   const [spaceKey, setSpaceKey] = useState("");
   const [query, setQuery] = useState("");
   const [jql, setJql] = useState("");
-  const [lastSummary, setLastSummary] = useState<AtlassianIngestSummary | null>(null);
+  const [lastRun, setLastRun] = useState<LastRun | null>(null);
 
   const status = useQuery({
     queryKey: ["atlassian-status", projectId],
@@ -45,18 +65,19 @@ export function ConnectorsSection({ projectId }: ConnectorsSectionProps) {
   });
 
   const ingest = useMutation({
-    mutationFn: () => {
+    mutationFn: async (): Promise<LastRun> => {
       if (!projectId) throw new Error("project required");
       if (mode === "confluence") {
-        return atlassianApi.ingestConfluence(projectId, {
+        const summary = await atlassianApi.ingestConfluence(projectId, {
           spaceKey,
           query: query.trim() || undefined,
         });
+        return { source: "confluence", summary };
       }
-      return atlassianApi.ingestJira(projectId, { jql });
+      return { source: "jira", summary: await atlassianApi.ingestJira(projectId, { jql }) };
     },
     onSuccess: (data) => {
-      setLastSummary(data);
+      setLastRun(data);
       setMode(null);
       setSpaceKey("");
       setQuery("");
@@ -115,10 +136,20 @@ export function ConnectorsSection({ projectId }: ConnectorsSectionProps) {
             </Button>
           </div>
         </div>
-        {lastSummary && (
+        {lastRun && (
           <p className="mt-3 text-xs text-success" data-testid="connectors-last-summary">
-            Ingested {lastSummary.ingested} · skipped {lastSummary.skipped} · failed{" "}
-            {lastSummary.failed}
+            Ingested {lastRun.summary.documentsCreated} new · updated{" "}
+            {lastRun.summary.documentsUpdated} · unchanged {lastRun.summary.skipped} · failed{" "}
+            {lastRun.summary.failures}
+          </p>
+        )}
+        {lastRun && omittedMessage(lastRun) && (
+          <p
+            className="mt-1 text-xs text-warning"
+            role="status"
+            data-testid="connectors-last-omitted"
+          >
+            {omittedMessage(lastRun)}
           </p>
         )}
       </Card>

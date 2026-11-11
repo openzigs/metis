@@ -49,6 +49,7 @@ import {
   type RetrievedContext,
 } from "../lib/discussions/ai-responder.js";
 import { resolveDiscussionTools } from "../lib/discussions/grounding.js";
+import { loadRecentHistory } from "../lib/discussions/thread-context.js";
 import { buildAutoRagContext, type RagContextCapture } from "./ai.js";
 import {
   checkThreadAIRateLimit,
@@ -647,13 +648,9 @@ export function discussionsRouter(): Router {
       }
     };
 
-    // Prior history (excluding the trigger) for conversational context.
-    const history = await prisma.discussionMessage.findMany({
-      where: { threadId, deletedAt: null, id: { not: trigger.id } },
-      orderBy: { createdAt: "asc" },
-      take: 20,
-      select: { authorKind: true, body: true, authorUserId: true, aiModel: true },
-    });
+    // Prior history (excluding the trigger) for conversational context —
+    // #2226: the MOST RECENT messages, oldest→newest.
+    const history = await loadRecentHistory(threadId, trigger.id);
 
     // #739 — ground the reply in the thread's project, as chat does: its
     // auto-RAG excerpts, and its read-only tools (bounded; see grounding.ts).
