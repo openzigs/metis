@@ -56,7 +56,8 @@ import type { StorageBackend, StoredBlob } from "../../documents/storage-backend
 import { BM25Index } from "../../rag/bm25-index.js";
 import { chunkMarkdown } from "../../rag/chunker.js";
 import type { Embedder } from "../../rag/embedder.js";
-import { KnowledgeService } from "../../rag/knowledge-service.js";
+import { KnowledgeService, type KnowledgeServiceDeps } from "../../rag/knowledge-service.js";
+import type { ChunkContextGenerator, ContextualChunksMode } from "../../rag/contextual-chunks.js";
 import { LocalVectorStore } from "../../rag/vector-store.js";
 import { boundDatabaseUrl, prisma, redactDatabaseUrl } from "../../prisma.js";
 import { aggregate, scoreQuery, type QueryScore } from "../embed-retrieval/metrics.js";
@@ -64,6 +65,7 @@ import { alignChunksToSource, bestCoveringChunk, realisedOverlapChars } from "./
 import {
   armOverlap,
   CHUNK_SIZE_ARMS,
+  type ChunkArmComparison,
   describeOverlapPlan,
   compareChunkArm,
   CONTROL_CHUNK_SIZE,
@@ -364,6 +366,7 @@ function defaultArmService(
   storeRoot: string,
   bytes: Map<string, Buffer>,
   embedder: Embedder,
+  contextualChunks: KnowledgeServiceDeps["contextualChunks"] = { mode: "off" },
 ): ArmRetrieval {
   return new KnowledgeService({
     // The CLI's warmed instance, NOT `getEmbedder()`'s separate singleton — passing
@@ -377,6 +380,10 @@ function defaultArmService(
     // the first against the FIRST arm's chunks — silently reporting no effect.
     bm25: new BM25Index(),
     chunkOptions: { chunkSize: spec.chunkSize, overlap: spec.overlap },
+    // #2234 — pinned, never read from the environment: an operator's
+    // RAG_CONTEXTUAL_CHUNKS must not silently turn the size sweep's control into
+    // a contextual arm.
+    contextualChunks,
   }) as unknown as ArmRetrieval;
 }
 
@@ -891,6 +898,113 @@ export async function runChunkSweep(opts: ChunkSweepOptions): Promise<ChunkSweep
     overlapPlan,
     generatedAt: new Date().toISOString(),
   };
+}
+
+/** What {@link runContextualComparison} reports: the control and one comparison per mode. */
+export interface ContextualReport {
+  corpusId: string;
+  snapshotCommit: string;
+  queryCount: number;
+  docCount: number;
+  embeddingModel: string;
+  control: ChunkArmResult;
+  arms: { mode: ContextualChunksMode; comparison: ChunkArmComparison }[];
+  generatedAt: string;
+}
+
+export interface ContextualComparisonOptions extends ChunkSweepOptions {
+  /** The contextual modes to compare against the `off` control, in order. */
+  modes: readonly Exclude<ContextualChunksMode, "off">[];
+  /** The `model` mode's generator; the CLI builds it from the configured provider. */
+  generator?: ChunkContextGenerator;
+}
+
+/**
+ * Issue #2234 — contextual chunks against the shipped index, at the CONTROL chunk
+ * size: the `off` control, then one arm per mode, each through the production
+ * ingest and search with ONLY `contextualChunks` changed.
+ *
+ * The chunk boundaries are identical across these arms (the prefix is index input,
+ * not a cut), so every span's coverage is the control's and the comparison is a
+ * pure ranking change; the "arm-sensitive" stratum is therefore every query.
+ */
+export async function runContextualComparison(
+  opts: ContextualComparisonOptions,
+): Promise<ContextualReport> {
+  const log = opts.log ?? ((): void => {});
+  const corpus = await loadDocRetrievalCorpus(opts.corpusId);
+  log(
+    `Corpus ${corpus.id}: ${corpus.docs.length} documents, ${corpus.queries.length} queries, ` +
+      `contextual modes ${opts.modes.join(", ")}`,
+  );
+  const storagePaths = new Map(corpus.docs.map((d) => [d.id, `mem://${d.id}`]));
+  const docIds = await (opts.seedDocuments ?? seedDocuments)(corpus, storagePaths);
+  const controlSpec = CHUNK_SIZE_ARMS.find((a) => a.control);
+  if (!controlSpec) throw new Error("CHUNK_SIZE_ARMS declares no control arm");
+
+  const withMode =
+    (contextual: KnowledgeServiceDeps["contextualChunks"]): ArmDeps["makeService"] =>
+    (spec, storeRoot, bytes, embedder) =>
+      defaultArmService(spec, storeRoot, bytes, embedder, contextual);
+  const shared = { ...opts, storagePaths, docIds };
+
+  const control = await runChunkArm(corpus, controlSpec, {
+    ...shared,
+    makeService: opts.makeService ?? withMode({ mode: "off" }),
+  });
+  const arms: ContextualReport["arms"] = [];
+  for (const mode of opts.modes) {
+    const spec: ChunkArmSpec = {
+      ...controlSpec,
+      id: `contextual-${mode}`,
+      control: false,
+      rationale: `#2234 — chunks indexed with their ${mode} context prefix.`,
+    };
+    const arm = await runChunkArm(corpus, spec, {
+      ...shared,
+      makeService: opts.makeService ?? withMode({ mode, generator: opts.generator }),
+    });
+    arm.sensitiveQueryIds = corpus.queries.map((q) => q.id);
+    arms.push({ mode, comparison: compareChunkArm(control, arm, opts) });
+  }
+  return {
+    corpusId: corpus.id,
+    snapshotCommit: corpus.snapshotCommit,
+    queryCount: corpus.queries.length,
+    docCount: corpus.docs.length,
+    embeddingModel: opts.embedder.model,
+    control,
+    arms,
+    generatedAt: new Date().toISOString(),
+  };
+}
+
+/** {@link runContextualComparison}'s report as markdown. */
+export function renderContextualReport(report: ContextualReport): string {
+  const f3 = (n: number): string => n.toFixed(3);
+  const k = DOC_EVAL_K;
+  const lines = [
+    `# Contextual chunks (#2234) — ${report.corpusId}`,
+    "",
+    `- Generated: ${report.generatedAt}`,
+    `- Corpus: ${report.docCount} documents, ${report.queryCount} queries; snapshot \`${report.snapshotCommit}\``,
+    `- Embedding model / identity: \`${report.embeddingModel}\``,
+    `- Chunking: ${report.control.spec.chunkSize}/${report.control.spec.overlap} in every arm; only the indexed text differs`,
+    "",
+    `| arm | nDCG@${k} | recall@${k} | MRR | Δ nDCG@${k} | 95% CI | sign p | W/L/T | verdict |`,
+    "|---|---:|---:|---:|---:|---|---:|---|---|",
+    `| \`off\` (control) | ${f3(report.control.metrics.ndcgAtK[k] ?? 0)} | ` +
+      `${f3(report.control.metrics.recallAtK[k] ?? 0)} | ${f3(report.control.metrics.mrr)} | | | | | |`,
+  ];
+  for (const { mode, comparison: c } of report.arms) {
+    const p = c.all.paired;
+    lines.push(
+      `| \`${mode}\` | ${f3(c.ndcgAt10)} | ${f3(c.recallAt10)} | ${f3(c.mrr)} | ` +
+        `${p.meanDelta >= 0 ? "+" : ""}${f3(p.meanDelta)} | [${f3(p.ciLow)}, ${f3(p.ciHigh)}] | ` +
+        `${p.signTestP.toFixed(3)} | ${p.wins}/${p.losses}/${p.ties} | ${c.all.verdict} |`,
+    );
+  }
+  return `${lines.join("\n")}\n`;
 }
 
 /** The control chunk size the sweep is defined against, re-exported for the CLI. */
