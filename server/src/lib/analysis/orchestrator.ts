@@ -232,7 +232,12 @@ import {
 import { createRunDocumentLookup, projectDocumentQueries } from "./run-document-lookup.js";
 import { seedRequirementCodeLinksFromFindings } from "../traceability/seed-code-links-from-findings.js";
 import { persistAgentPhaseResults, runEnabledCustomAgents } from "./custom-agent-phase.js";
-import { RequirementsExtractionError, RequirementsExtractor } from "./requirements-extractor.js";
+import {
+  RequirementsExtractionError,
+  RequirementsExtractor,
+  buildSourceExtractionInput,
+  type SourceStatement,
+} from "./requirements-extractor.js";
 import {
   NO_WEB_SEARCH_PROVIDER_NOTICE,
   WebResearchAugmenter,
@@ -269,7 +274,12 @@ import {
 } from "../governing/applicability-store.js";
 import { produceGoverningFindingsForAnalysis } from "../governing/findings-store.js";
 import { isDocumentReaderEnabled } from "../document-reader/flag.js";
-import { runDocumentReaderAgent, type ReaderDocumentLoader } from "./document-reader-agent.js";
+import {
+  readerSourceOf,
+  runDocumentReaderAgent,
+  type ExtractedRequirement,
+  type ReaderDocumentLoader,
+} from "./document-reader-agent.js";
 import {
   retrieveFusedCodeChunks,
   retrieveFusedCodeContext,
@@ -2430,7 +2440,7 @@ export class AnalysisOrchestrator {
       });
       this.capabilities.set(analysisId, capability);
 
-      let extractedRequirements: Array<{ id: string; text: string }> = [];
+      let extractedRequirements: ExtractedRequirement[] = [];
       // #824 — the run's AFFECTED SCHEMA block, hoisted so the Phase-2 synthesis
       // call (below the sequenced/non-sequenced branches) can reconcile code +
       // schema findings. Undefined ⇒ the synthesis prompt is byte-identical.
@@ -3147,7 +3157,7 @@ export class AnalysisOrchestrator {
    */
   private async runEnhancementPipeline(input: {
     analysisId: string;
-    extractedRequirements: Array<{ id: string; text: string }>;
+    extractedRequirements: ExtractedRequirement[];
     extraInstructions?: string;
     enableWebResearch: boolean;
     enableClarification: boolean;
@@ -3189,15 +3199,29 @@ export class AnalysisOrchestrator {
         .filter((t) => t.trim().length > 0);
     }
 
-    const rawInput = [input.extraInstructions?.trim() ?? "", ...seedTexts]
-      .filter((s) => s.length > 0)
-      .join("\n\n");
+    // #2235 — when the document reader read the source (#2230), the
+    // extraction reads its verified statements with their paragraphs, so each
+    // requirement cites the paragraph its clarifying questions are about and
+    // the GtWR rules run over the document's own words.
+    const sources: SourceStatement[] = input.extractedRequirements.flatMap((r) =>
+      r.source ? [{ ...r.source, statement: r.text }] : [],
+    );
+    const rawInput =
+      sources.length > 0
+        ? buildSourceExtractionInput(sources, input.extraInstructions)
+        : [input.extraInstructions?.trim() ?? "", ...seedTexts]
+            .filter((s) => s.length > 0)
+            .join("\n\n");
     if (rawInput.trim().length === 0) return;
 
     const extractor = new RequirementsExtractor({ provider, model: input.model });
     let structured: Awaited<ReturnType<RequirementsExtractor["extract"]>>;
     try {
-      structured = await extractor.extract(rawInput, input.signal);
+      structured = await extractor.extract(
+        rawInput,
+        input.signal,
+        sources.length > 0 ? sources : undefined,
+      );
     } catch (err) {
       // #1058 — a failed extraction is NOT an empty one. The caller treats the
       // enhancement as best-effort and only logs, so without a durable marker
@@ -4935,9 +4959,7 @@ export class AnalysisOrchestrator {
    * and #733's capability record surfaces the `agentic-unavailable-no-requirements`
    * reason — the degradation is never silent.
    */
-  private extractRequirementsFromDocAgent(
-    analysisId: string,
-  ): Promise<Array<{ id: string; text: string }>> {
+  private extractRequirementsFromDocAgent(analysisId: string): Promise<ExtractedRequirement[]> {
     return prisma.agentResult
       .findFirst({
         where: { analysisId, agentKey: "document", status: "completed" },
@@ -4949,10 +4971,11 @@ export class AnalysisOrchestrator {
           const parsed = typeof row.output === "string" ? JSON.parse(row.output) : row.output;
           if (Array.isArray(parsed.requirements)) {
             return parsed.requirements
-              .map((r: { id?: string; text?: string }, i: number) => ({
-                id: r.id ?? `REQ-${String(i + 1).padStart(3, "0")}`,
-                text: r.text ?? "",
-              }))
+              .map((r: { id?: string; text?: string; source?: unknown }, i: number) => {
+                const id = r.id ?? `REQ-${String(i + 1).padStart(3, "0")}`;
+                const source = readerSourceOf(id, r.source);
+                return { id, text: r.text ?? "", ...(source ? { source } : {}) };
+              })
               .filter((r: { text: string }) => r.text.length > 0);
           }
         } catch {

@@ -4925,6 +4925,37 @@ and the full `reading`. The coverage report goes on the capability record
 (`DocumentCoveragePanel`). Retrieval stays for the code agent and the other specialists; if no
 selected document can be loaded, the document agent retrieves as before.
 
+#### Clarifying questions from the source document (#2235, epic #2227)
+
+With the reader on, each of the document agent's requirements carries its verified paragraph
+(`DocumentRequirement.source`: `quote`, `headingPath`, `filename`). The enhancement pipeline
+(`runEnhancementPipeline`) then extracts structured requirements from those statements, not
+from paraphrases: `buildSourceExtractionInput` labels each `[REQ-nnn]` with its section and
+fences the quote (`<<<SOURCE … SOURCE>>>`, treated as data in every prompt), and the extractor
+asks for `sourceIds`, so each `StructuredRequirement` keeps `sources` (a label the input did not
+list is ignored). It is also asked for ISO/IEC/IEEE 29148 §5.2.5 / §5.2.6 gaps, silence
+included. Before any model judges it, `requirement-quality-rules.ts` runs the INCOSE GtWR
+lexical rules over each source quote: R7 vague terms, R8 escape clauses, R9 open-ended clauses,
+plus TBD/TBC placeholders (29148 "complete"). Each hit becomes an ambiguity (`field` `R7:fast`,
+with `rule` and `term`), so it is asked, credited and counted like any other.
+
+The question prompt (`QUESTION_SYSTEM_PROMPT`) shows each requirement's paragraphs and asks the
+model, per question, for `uncertainty` (`missing-knowledge` | `ambiguity` | `silence` |
+`unanswerable`), `options` (two to four readings), `divergent` (whether the readings build
+different things) and `impact`. `question-selection.ts` decides deterministically. An
+unanswerable question is set aside as an open item. `divergent: false` is set aside as
+`same-outcome`. The rest are ranked: ticked items first (#1129), then impact, then the
+requirement's priority. The first `MAX_QUESTIONS_PER_ROUND` (8) are asked, and the rest are
+counted on the round (`notAsked`) for the next one. Set-aside questions are kept on
+`ClarificationState.setAside` and listed by the panel. Only real ambiguities of their
+requirement count as addressed (`setAsideAmbiguities`, inside `addressedAmbiguities`).
+Only missing knowledge (and an unclassified or governing question) goes through the grounding
+search; an ambiguity or a silence is the author's intent and is asked directly. A question's
+`citation` is copied from its requirement's source (the paragraph holding a flagged term),
+never from the model. A reply without the new fields is asked and grounded as before #2235.
+Impact Analysis and the portfolio check do not yet raise questions in this dialog: they wait
+on #2231, which has them analyse the reader's extracted requirements.
+
 #### Online eval — scoring sampled live production runs (#1321, epic #1316)
 
 Every other suite above scores **fixtures**. `server/src/lib/eval/online/` scores a

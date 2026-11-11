@@ -42,6 +42,7 @@ import { REQUIREMENT_STATEMENT_KINDS, type StatementKind } from "../document-rea
 import { formatHeadingPath } from "../document-reader/sections.js";
 import { prisma } from "../prisma.js";
 import type { AgentRunResult } from "./agent-runner.js";
+import type { SourceStatement } from "./requirements-extractor.js";
 
 /** A selected document, parsed. `chunks` are its stored chunks, to cite by index. */
 export interface ReaderDocument {
@@ -303,7 +304,14 @@ export async function runDocumentReaderAgent(input: {
       requirements.push({
         id,
         text: clip(s.statement, MAX_REQUIREMENT_TEXT),
-        source: { documentId: doc.documentId, ...(chunkIndex !== undefined ? { chunkIndex } : {}) },
+        source: {
+          documentId: doc.documentId,
+          ...(chunkIndex !== undefined ? { chunkIndex } : {}),
+          // #2235 — the verified paragraph, so its questions can quote it.
+          filename: doc.filename,
+          headingPath: s.headingPath.slice(0, 16).map((h) => clip(h, 512)),
+          quote: clip(s.quote, MAX_SNIPPET),
+        },
       });
       findings.push({
         category: "other",
@@ -362,5 +370,38 @@ export async function runDocumentReaderAgent(input: {
   return {
     result: { agentKey: "document", output, usage, durationMs: Date.now() - started },
     coverage: { documents: coverage },
+  };
+}
+
+/**
+ * A requirement of the document agent's output. #2235 — `source` is set when
+ * the document reader (#2230) read it: the verified paragraph it came from.
+ */
+export interface ExtractedRequirement {
+  id: string;
+  text: string;
+  source?: Omit<SourceStatement, "statement">;
+}
+
+/**
+ * #2235 — the reader's paragraph on a stored requirement, or undefined when
+ * the requirement carries none (the retrieval path, or output from before
+ * #2235). Read defensively: the row is JSON a model helped write.
+ */
+export function readerSourceOf(
+  ref: string,
+  raw: unknown,
+): ExtractedRequirement["source"] | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.quote !== "string" || r.quote.trim().length === 0) return undefined;
+  return {
+    ref,
+    ...(typeof r.documentId === "string" ? { documentId: r.documentId } : {}),
+    ...(typeof r.filename === "string" ? { filename: r.filename } : {}),
+    headingPath: Array.isArray(r.headingPath)
+      ? r.headingPath.filter((h): h is string => typeof h === "string")
+      : [],
+    quote: r.quote,
   };
 }

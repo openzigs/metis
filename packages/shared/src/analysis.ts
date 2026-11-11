@@ -807,6 +807,14 @@ export const documentRequirementSchema = z.object({
     .object({
       documentId: z.string().max(256).optional(),
       chunkIndex: z.number().int().min(0).optional(),
+      /**
+       * #2235 — set by the document reader (#2230): the paragraph's own text,
+       * its file and its section headings, so a clarifying question about the
+       * requirement can quote and cite it.
+       */
+      filename: z.string().max(512).optional(),
+      headingPath: z.array(z.string().max(512)).max(16).optional(),
+      quote: z.string().max(2048).optional(),
     })
     .optional(),
 });

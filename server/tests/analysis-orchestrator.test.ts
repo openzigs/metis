@@ -3584,7 +3584,11 @@ describe("runEnhancementPipeline (Epic #922)", () => {
 
   const runPipeline = async (
     provider: AIProvider,
-    opts: { enableWebResearch: boolean; enableClarification: boolean },
+    opts: {
+      enableWebResearch: boolean;
+      enableClarification: boolean;
+      extractedRequirements?: unknown[];
+    },
   ): Promise<string> => {
     const analysisId = nid("ana");
     analyses.set(analysisId, {
@@ -3613,7 +3617,9 @@ describe("runEnhancementPipeline (Epic #922)", () => {
       }
     ).runEnhancementPipeline({
       analysisId,
-      extractedRequirements: [{ id: "r1", text: "System must retain audit logs." }],
+      extractedRequirements: opts.extractedRequirements ?? [
+        { id: "r1", text: "System must retain audit logs." },
+      ],
       extraInstructions: undefined,
       enableWebResearch: opts.enableWebResearch,
       enableClarification: opts.enableClarification,
@@ -3661,6 +3667,72 @@ describe("runEnhancementPipeline (Epic #922)", () => {
     // says so once instead of persisting one empty digest per evidence need.
     expect(meta.webResearch.digests).toEqual([]);
     expect(meta.webResearch.notice).toBe(NO_WEB_SEARCH_PROVIDER_NOTICE);
+  });
+
+  /**
+   * #2235 — when the document reader read the source, the extraction reads its
+   * verified statements, each requirement keeps the paragraph it cites, and the
+   * GtWR rules' hits on that paragraph are persisted as its ambiguities: read
+   * back from the analysis metadata the clarification route reads.
+   */
+  it("extracts from the reader's verified paragraphs and persists their citations and rule hits", async () => {
+    const seen: string[] = [];
+    const provider = {
+      key: "anthropic" as const,
+      model: "stub",
+      offline: false,
+      async chat(messages: ChatMessage[]): Promise<ChatResponse> {
+        seen.push(messages.map((m) => messageText(m)).join("\n"));
+        return stubResponse(
+          JSON.stringify({
+            requirements: [
+              {
+                title: "Fast search",
+                description: "Search is quick",
+                priority: "must-have",
+                sourceIds: ["REQ-001"],
+                ambiguities: [],
+              },
+            ],
+          }),
+        );
+      },
+    } as unknown as AIProvider;
+    const analysisId = await runPipeline(provider, {
+      enableWebResearch: false,
+      enableClarification: true,
+      extractedRequirements: [
+        {
+          id: "REQ-001",
+          text: "Search is quick.",
+          source: {
+            ref: "REQ-001",
+            documentId: "doc-1",
+            filename: "frd.docx",
+            headingPath: ["4 Search"],
+            quote: "Search shall be fast, if possible.",
+          },
+        },
+      ],
+    });
+    expect(seen[0]).toContain("[REQ-001] Section: frd.docx › 4 Search");
+    expect(seen[0]).toContain("<<<SOURCE\nSearch shall be fast, if possible.\nSOURCE>>>");
+    const meta = JSON.parse(analyses.get(analysisId)!.metadata!);
+    const [req] = meta.structuredRequirements.requirements;
+    expect(req.sources).toEqual([
+      {
+        ref: "REQ-001",
+        documentId: "doc-1",
+        filename: "frd.docx",
+        headingPath: ["4 Search"],
+        quote: "Search shall be fast, if possible.",
+      },
+    ]);
+    expect(req.ambiguities.map((a: { field: string }) => a.field)).toEqual([
+      "R7:fast",
+      "R8:if possible",
+    ]);
+    expect(meta.structuredRequirements.totalAmbiguities).toBe(2);
   });
 });
 
