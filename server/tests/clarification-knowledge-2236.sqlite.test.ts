@@ -335,6 +335,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         write: vi.fn(async ({ buffer }: { buffer: Buffer }) => {
           written.push(buffer.toString("utf8"));
           return {
+            absolutePath: `/blobs/p/${written.length}`,
             storagePath: `p/${written.length}`,
             checksum: `c${written.length}`,
             sizeBytes: buffer.length,
