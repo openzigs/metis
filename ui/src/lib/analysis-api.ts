@@ -1006,6 +1006,40 @@ export interface ClarifyingQuestion {
    * have been answered.
    */
   answer?: string;
+  /**
+   * #2235 — what kind of uncertainty it is: missing project knowledge (searched
+   * for first), an ambiguity or a silence in the document (the author's to
+   * settle). Absent on questions from before #2235.
+   */
+  uncertainty?: "missing-knowledge" | "ambiguity" | "silence" | "unanswerable";
+  /** #2235 — the plausible readings the analyst can pick from. */
+  options?: string[];
+  impact?: "high" | "medium" | "low";
+  /** #2235 — the paragraph of the source document the question is about. */
+  citation?: ClarifyingQuestionCitation;
+}
+
+/** #2235 — a verified paragraph of the uploaded document. */
+export interface ClarifyingQuestionCitation {
+  documentId?: string;
+  filename?: string;
+  headingPath: string[];
+  quote: string;
+}
+
+/**
+ * #2235 — a question METIS did not ask: no one can answer it yet (an open
+ * item), or every plausible reading builds the same thing.
+ */
+export interface SetAsideClarifyingQuestion {
+  requirementId: string;
+  ambiguityField: string;
+  question: string;
+  context: string;
+  reason: "unanswerable" | "same-outcome";
+  round: number;
+  options?: string[];
+  citation?: ClarifyingQuestionCitation;
 }
 
 export interface ClarificationRound {
@@ -1018,6 +1052,8 @@ export interface ClarificationRound {
    * themselves still count.
    */
   unreadResolutions?: string[];
+  /** #2235 — questions worth asking that did not fit this round's cap. */
+  notAsked?: number;
 }
 
 export interface ClarificationStatePayload {
@@ -1033,6 +1069,10 @@ export interface ClarificationStatePayload {
    * server-side. Absent on dialogs persisted before #1117.
    */
   answeredAmbiguities?: string[];
+  /** #2235 — the questions not asked, and why. Absent on dialogs from before #2235. */
+  setAside?: SetAsideClarifyingQuestion[];
+  /** #2235 — `reqId:field` keys of the real ambiguities set aside. */
+  setAsideAmbiguities?: string[];
   escalatedToSonnet: boolean;
   completed: boolean;
 }
