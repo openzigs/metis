@@ -594,7 +594,7 @@ describe("KnowledgeService.ingestDocument", () => {
     const r = await svc.ingestDocument("d-docx");
 
     expect(r.status).toBe("ready");
-    expect(describerFor).toHaveBeenCalledWith("p7");
+    expect(describerFor).toHaveBeenCalledWith("p7", "d-docx");
     expect(describe).toHaveBeenCalledTimes(1);
     // Read back through the indexed chunks, the rows retrieval serves.
     const text = [...chunks.values()]
