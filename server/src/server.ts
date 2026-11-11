@@ -50,6 +50,7 @@ import { registerQueryDatabase } from "./lib/ai/tools/query-database.js";
 import { registerSearchKnowledgeGlobalTool } from "./lib/rag/search-knowledge-global-tool.js";
 import { registerSearchKnowledgeTool } from "./lib/rag/search-knowledge-tool.js";
 import { registerRequirementTools } from "./lib/requirements/requirements-chat-tools.js";
+import { registerResultTools } from "./lib/analysis/results-chat-tools.js";
 import { createChildLogger } from "./lib/logger.js";
 import { getConfigService } from "./lib/config/config-service.js";
 import { applyHttpKeepAliveTimeout } from "./lib/config/http-keep-alive.js";
@@ -454,6 +455,9 @@ export function createServer(opts: CreateServerOptions = {}): MetisServer {
   registerSearchKnowledgeTool();
   // #1030 — read-only, project-scoped requirement tools for chat.
   registerRequirementTools(getToolRegistry());
+  // #2239 — read-only chat tools for METIS's own results: analyses, findings,
+  // impact analyses, portfolio checks, clarification answers, governing findings.
+  registerResultTools(getToolRegistry());
   // #238 — seeded AFTER the boot tools are registered: the seed refuses a
   // built-in agent that names a tool the registry does not carry.
   if (process.env.NODE_ENV !== "test") {
