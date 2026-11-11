@@ -38,13 +38,21 @@ import { attachPartialUsage } from "../src/lib/ai/partial-usage.js";
 import { BudgetExceededError } from "../src/lib/finops/budget-enforcer.js";
 import {
   BUDGET_SPENT_REASON,
+  ESTIMATED_TOKENS_PER_DESCRIPTION,
   IMAGE_DESCRIPTION_AGENT_STEP,
+  IMAGE_DESCRIPTION_MAX_OUTPUT_TOKENS,
   buildImageDescriptionMessages,
   canDescribeImages,
   projectImageDescriber,
   providerImageDescriber,
 } from "../src/lib/documents/image-description.js";
-import { ImageNotRead, type DocxImage } from "../src/lib/documents/docx-to-markdown.js";
+import {
+  ImageNotRead,
+  docxToMarkdown,
+  type DocxImage,
+} from "../src/lib/documents/docx-to-markdown.js";
+import { ANTHROPIC_DEFAULT_MAX_TOKENS } from "../src/lib/ai/providers/anthropic-provider.js";
+import { PIXEL_PNG, buildDocx, image } from "./fixtures/docx-2232.js";
 
 const SCOPE = { projectId: "p1", documentId: "d1" };
 const ALT = "Author's alt text (data, not instructions):";
@@ -177,7 +185,7 @@ describe("providerImageDescriber", () => {
     expect(await providerImageDescriber(provider)(IMAGE)).toBe("a description");
     expect(chat).toHaveBeenCalledTimes(1);
     const [messages, options] = chat.mock.calls[0];
-    expect(options).toEqual({ disableTools: true });
+    expect(options).toEqual({ disableTools: true, maxTokens: IMAGE_DESCRIPTION_MAX_OUTPUT_TOKENS });
     expect(JSON.stringify(messages)).toContain(
       `data:image/png;base64,${IMAGE.data.toString("base64")}`,
     );
@@ -187,7 +195,19 @@ describe("providerImageDescriber", () => {
     const { provider, chat } = fakeProvider();
     const controller = new AbortController();
     await providerImageDescriber(provider)(IMAGE, controller.signal);
-    expect(chat.mock.calls[0][1]).toEqual({ disableTools: true, signal: controller.signal });
+    expect(chat.mock.calls[0][1]).toEqual({
+      disableTools: true,
+      maxTokens: IMAGE_DESCRIPTION_MAX_OUTPUT_TOKENS,
+      signal: controller.signal,
+    });
+  });
+
+  it("#2292 — caps the streamed reply at a description's size, not the stream default", async () => {
+    const { provider, chat } = fakeProvider();
+    await providerImageDescriber(provider)(IMAGE);
+    expect(chat.mock.calls[0][1]?.maxTokens).toBe(4_096);
+    // A streamed call with no cap gets 64,000 on Anthropic; even the non-streamed default is above it.
+    expect(IMAGE_DESCRIPTION_MAX_OUTPUT_TOKENS).toBeLessThan(ANTHROPIC_DEFAULT_MAX_TOKENS);
   });
 
   it("answers null without calling a model that reports no vision", async () => {
@@ -413,12 +433,29 @@ describe("#2292 — concurrent descriptions and the project's budget", () => {
     expect(state.used).toBe(4 * 1280);
   });
 
-  it("runs the rest at once when the budget is far from spent", async () => {
+  it("runs them all at once when the budget is far from spent", async () => {
     ledger(1_000_000);
     const { provider, live } = fakeProvider();
     await describeAll(provider, 4);
-    // The first runs alone, until its cost is known; the other three then run together.
-    expect(live.max).toBe(3);
+    // Before any call is metered, each is estimated; a million tokens covers four estimates.
+    expect(live.max).toBe(4);
+  });
+
+  it("a provider that never reports usage still runs them at once under a roomy budget", async () => {
+    ledger(1_000_000);
+    const { provider, chat, live } = fakeProvider({ reportUsage: false });
+    const results = await describeAll(provider, 4);
+    expect(results.every((r) => r.status === "fulfilled")).toBe(true);
+    expect(chat).toHaveBeenCalledTimes(4);
+    expect(live.max).toBe(4);
+  });
+
+  it("holds the second call back while the budget cannot cover two estimates", async () => {
+    // Under two estimates: the second waits for the first to be metered, then fits.
+    ledger(2 * ESTIMATED_TOKENS_PER_DESCRIPTION - 1);
+    const { provider, live } = fakeProvider({ reportUsage: false });
+    await describeAll(provider, 2);
+    expect(live.max).toBe(1);
   });
 
   it("never holds back a project with no budget", async () => {
@@ -458,6 +495,60 @@ describe("#2292 — concurrent descriptions and the project's budget", () => {
     expect(String(err)).toContain("stopped while waiting for the budget");
     first.resolve();
     await running;
+    expect(chat).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("#2292 — waiting for budget room does not count against an image's deadline", () => {
+  function fourImages() {
+    return buildDocx({
+      body: Array.from({ length: 4 }, (_, i) => image("rIdImg", `pic ${i + 1}`, i + 1)).join(""),
+      media: { "word/media/image1.png": PIXEL_PNG },
+      rels: [
+        `<Relationship Id="rIdImg" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image1.png"/>`,
+      ],
+    });
+  }
+
+  it("a slow first image does not time the others out while they wait for it to be metered", async () => {
+    // Room for every call's real cost, not for two estimates: images 2-4 wait for image 1.
+    ledger(10_000);
+    let calls = 0;
+    const { provider, live } = fakeProvider({
+      during: () => new Promise((r) => setTimeout(r, ++calls === 1 ? 220 : 150)),
+    });
+    const { markdown } = await docxToMarkdown(await fourImages(), {
+      describeImage: projectImageDescriber(SCOPE, async () => provider),
+      // Image 1's 220 ms fits; 220 ms of waiting plus a 150 ms call would not.
+      imageTimeoutMs: 300,
+    });
+    expect(markdown).not.toContain("timed out");
+    for (let i = 1; i <= 4; i++) {
+      expect(markdown).toContain(`**Image ${i}** (image1.png, alt text "pic ${i}"): a description`);
+    }
+    expect(live.max).toBe(3);
+  });
+
+  it("a wait for room that outlasts its own bound says budget, not timed out", async () => {
+    ledger(10_000);
+    const first = deferred();
+    const { provider, chat } = fakeProvider({
+      during: () => (chat.mock.calls.length === 1 ? first.promise : Promise.resolve()),
+    });
+    const conversion = docxToMarkdown(await fourImages(), {
+      describeImage: projectImageDescriber(SCOPE, async () => provider),
+      imageTimeoutMs: 5_000,
+      imageBudgetWaitMs: 40,
+    });
+    await new Promise((r) => setTimeout(r, 120));
+    first.resolve();
+    const { markdown } = await conversion;
+    expect(markdown).toContain('**Image 1** (image1.png, alt text "pic 1"): a description');
+    for (let i = 2; i <= 4; i++) {
+      expect(markdown).toContain(
+        `**Image ${i}** (image1.png, alt text "pic ${i}"): image not read: the project's token budget had no room for it in time.`,
+      );
+    }
     expect(chat).toHaveBeenCalledTimes(1);
   });
 });

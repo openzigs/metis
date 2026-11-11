@@ -556,9 +556,9 @@ overrides:
   # DoS. OSV splits them into two bands, and BOTH are in this tree, so both need
   # a selector:
   #
-  #   0.8.13 (fixed 0.8.15) — @node-saml/node-saml, xml-crypto, xml-encryption,
-  #                           mammoth, and server/package.json's own devDep
-  #   0.9.10 (fixed 0.9.12) — officeparser@6.1.1
+  #   0.8.13 (fixed 0.8.15) — @node-saml/node-saml, xml-crypto, xml-encryption
+  #   0.9.10 (fixed 0.9.12) — officeparser@6.1.1 (server/package.json's own
+  #                           dependency, the Word converter's, is ^0.9.12)
   #
   # Two advisories name 0.8.14 / 0.9.11 as their fix (GHSA-4w3w-2rp5-g8jm,
   # GHSA-w2rr-34g9-rvrj, and GHSA-g53g-w8rj-fmg7 on the 0.9 line). Taking those
@@ -571,7 +571,7 @@ overrides:
   # 0.9.10, so there is no upstream bump to wait for — hence an override rather
   # than a dependency bump. Both targets stay inside their own 0.x minor, which
   # `^` already enforces for a 0.x range (^0.8.15 := >=0.8.15 <0.9.0), so the
-  # SAML/mammoth consumers are not dragged across the 0.8 -> 0.9 rewrite.
+  # SAML consumers are not dragged across the 0.8 -> 0.9 rewrite.
   #
   # Each selector's low bound is the advisories' own `introduced` event and each
   # upper bound is the `fixed` event, so the band is exactly the vulnerable one
