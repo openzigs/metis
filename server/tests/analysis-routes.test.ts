@@ -513,6 +513,18 @@ describe("POST /api/projects/:projectId/analyses", () => {
     expect(orch.startCalls).toHaveLength(1);
   });
 
+  it("#2280 — forwards 'Read the documents again', and only when asked", async () => {
+    const send = (body: object) =>
+      request(app)
+        .post("/api/projects/proj-abcdefghij/analyses")
+        .set("Authorization", `Bearer ${adminToken}`)
+        .send({ agentKeys: ["document"], ...body });
+    expect((await send({ rereadDocuments: true })).status).toBe(202);
+    expect((await send({})).status).toBe(202);
+    expect((await send({ rereadDocuments: "yes" })).status).toBe(400);
+    expect(orch.startCalls.map((c) => c.rereadDocuments)).toEqual([true, undefined]);
+  });
+
   it("defaults the enhancement flags to false when omitted (Epic #922)", async () => {
     const res = await request(app)
       .post("/api/projects/proj-abcdefghij/analyses")

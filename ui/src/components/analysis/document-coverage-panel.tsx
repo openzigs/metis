@@ -11,6 +11,9 @@
  * section that could not be read says so in amber, with the reason.
  *
  * Renders nothing when the reader did not run (no `documentReading`).
+ *
+ * #2280 — a document whose saved reading was reused (its file, the reader and
+ * the model unchanged) says so, with when and with which model it was read.
  */
 import {
   DOCUMENT_STATEMENT_KINDS,
@@ -43,6 +46,11 @@ export function describeKinds(kinds: DocumentReadingSection["kinds"]): string {
   return DOCUMENT_STATEMENT_KINDS.filter((k) => (kinds[k] ?? 0) > 0)
     .map((k) => plural(kinds[k]!, ...KIND_TEXT[k]))
     .join(", ");
+}
+
+/** #2280 — the line under a document whose saved reading was reused. */
+export function reusedText(reused: NonNullable<DocumentReadingDocument["reused"]>): string {
+  return `Not read again: the reading saved on ${reused.readAt.slice(0, 10)} (read with ${reused.model}) was reused, because the file has not changed. Start a new analysis with "Read the documents again" for a fresh reading.`;
 }
 
 function SectionLine({ section }: { section: DocumentReadingSection }): React.ReactElement {
@@ -84,6 +92,11 @@ function DocumentEntry({ doc }: { doc: DocumentReadingDocument }): React.ReactEl
         {doc.mode === "sectioned" ? ", read section by section (too long to read at once)" : ""}.
         {empty > 0 ? ` ${plural(empty, "section", "sections")} produced nothing.` : ""}
       </p>
+      {doc.reused ? (
+        <p className="text-xs text-muted-foreground" data-testid="document-coverage-reused">
+          {reusedText(doc.reused)}
+        </p>
+      ) : null}
       {unreadSections > 0 ? (
         <p className="text-xs text-warning">
           {plural(unreadSections, "section was", "sections were")} not read: the model&apos;s reply

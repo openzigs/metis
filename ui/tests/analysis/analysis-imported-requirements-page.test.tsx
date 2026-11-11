@@ -210,6 +210,25 @@ describe("Analysis page — imported requirements (#1006)", () => {
     });
   });
 
+  it("#2280 — sends 'Read the documents again' only when it is ticked", async () => {
+    listForProject.mockResolvedValue({ items: [] });
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: "Run analysis" }));
+    await waitFor(() => expect(analysisApi.start).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(analysisApi.start).mock.calls[0][1].rereadDocuments).toBeUndefined();
+  });
+
+  it("#2280 — sends 'Read the documents again' when it is ticked", async () => {
+    listForProject.mockResolvedValue({ items: [] });
+    renderPage();
+    fireEvent.click(await screen.findByTestId("analysis-reread-documents"));
+    fireEvent.click(screen.getByRole("button", { name: "Run analysis" }));
+    await waitFor(() => expect(analysisApi.start).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(analysisApi.start).mock.calls[0][1]).toMatchObject({
+      rereadDocuments: true,
+    });
+  });
+
   it("shows the imported requirement a run was started from, with its NR id", async () => {
     listForProject.mockResolvedValue({
       items: [{ id: "an-1", status: "completed", startedAt: new Date().toISOString() }],

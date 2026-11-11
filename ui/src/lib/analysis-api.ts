@@ -448,6 +448,8 @@ export interface StartAnalysisInput {
   specKitHandoff?: SpecKitHandoffRecord;
   /** Issue #1027 — background for the code agent, apart from the requirements (1..4096). */
   agentContext?: string;
+  /** #2280 — read the documents again instead of reusing a saved reading. */
+  rereadDocuments?: boolean;
 }
 
 export interface UpdateRequirementInput {
