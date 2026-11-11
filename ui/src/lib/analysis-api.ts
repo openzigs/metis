@@ -1042,6 +1042,22 @@ export interface SetAsideClarifyingQuestion {
   citation?: ClarifyingQuestionCitation;
 }
 
+/**
+ * #2236 — a question METIS did not ask because the project had already
+ * answered it (in an earlier analysis or a /clarify), and the answer reused.
+ */
+export interface ReusedClarifyingAnswer {
+  requirementId: string;
+  ambiguityField: string;
+  question: string;
+  answer: string;
+  recordId: string;
+  answeredAt: string;
+  fromAnalysisId?: string;
+  round: number;
+  citation?: ClarifyingQuestionCitation;
+}
+
 export interface ClarificationRound {
   round: number;
   questions: ClarifyingQuestion[];
@@ -1073,6 +1089,8 @@ export interface ClarificationStatePayload {
   setAside?: SetAsideClarifyingQuestion[];
   /** #2235 — `reqId:field` keys of the real ambiguities set aside. */
   setAsideAmbiguities?: string[];
+  /** #2236 — questions answered from the project's earlier answers. Absent before #2236. */
+  reused?: ReusedClarifyingAnswer[];
   escalatedToSonnet: boolean;
   completed: boolean;
 }
@@ -1251,7 +1269,7 @@ export interface EnhancementMetadata {
        * unchanged, METIS's suggestion edited, or typed by the requester.
        * Absent on analyses clarified before #1000.
        */
-      provenance?: "suggested" | "edited" | "typed";
+      provenance?: "suggested" | "edited" | "typed" | "reused";
       /**
        * #1162 — matched to `requirementTitle` but not written: that
        * requirement's clarifications block was edited out of shape.

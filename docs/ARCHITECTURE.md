@@ -4972,6 +4972,43 @@ search; an ambiguity or a silence is the author's intent and is asked directly. 
 never from the model. A reply without the new fields is asked and grounded as before #2235.
 Impact Analysis and the portfolio check do not yet raise questions in this dialog (#2270).
 
+#### Clarification answers as project knowledge (#2236, epic #2227)
+
+Every answered clarifying question is a `ClarificationRecord` row (`clarification_records`,
+`server/src/lib/clarifications/`): question, answer, `answeredById`, `answeredAt`, the cited
+source paragraph (document, heading path, quote), the requirement ids and the project's product.
+One row per `(projectId, questionKey)`. `clarification-key.ts` makes the key without a model:
+the cited paragraph plus the ambiguous field, else the governing rule ids plus the question,
+else the requirement title plus the field. A Spec Kit `/clarify` answer is keyed by its feature
+slug and question. The route records the round once it is committed
+(`persistClarificationKnowledge`, off the request path, metered to the project). New or changed
+answers are then:
+
+- **indexed** as a Markdown document in the project's RAG store (`clarification-knowledge.ts`:
+  `documents` row by the person who answered, queued for ingest like an uploaded text, so the
+  quarantine policy and ACLs apply). A changed answer deletes its earlier document;
+- **reused**: the dialog takes a `PriorAnswerSource` (`priorAnswerSourceFor`). Before a round
+  is grounded, each selected question is looked up by key among the project's `settled` records.
+  A hit is not asked: it lands on `ClarificationState.reused`, counts as answered (the #1104
+  real-field guard applies), reaches the requirement body with provenance `reused`, and a
+  governing one is settled onto its rules by `governing.settle`. A record asked about the same
+  document, section and field under another key (its paragraph changed) is marked `reopened`
+  first, so the changed paragraph is asked about again;
+- **re-run** (`clarification-rerun.ts`): stored requirements whose clarifications block holds a
+  changed answer are mapped to code again (`mapRequirementToCode`, persisted). Each answered
+  requirement's governing applicability entry (by id, else the one entry its title matches) is
+  re-decided on its text with the answers appended. The fresh findings are produced in the same
+  findings run, through the run's new `prepare` step. So the findings response reads
+  `refreshing` (the panel's "Re-checking" note) from the answer until the new findings are
+  stored. Re-extraction is the dialog's own resolution call. The persisted per-finding stale
+  marker and **Re-check this requirement** are #2222's.
+
+Answers are untrusted text in every later prompt. The resolution prompt fences the Q&A
+(`<<<ANSWERS … ANSWERS>>>`, markers stripped from the text). `/specify`, `/plan` (both forms) and
+`/tasks` read the set's `clarify.md` (`spec-kit/clarifications.ts`) into a
+`<<<CLARIFICATIONS … CLARIFICATIONS>>>` block that says it is data. The indexed document reaches
+prompts only as a retrieved chunk.
+
 #### Online eval — scoring sampled live production runs (#1321, epic #1316)
 
 Every other suite above scores **fixtures**. `server/src/lib/eval/online/` scores a

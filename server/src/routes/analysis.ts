@@ -167,6 +167,10 @@ import { meterAnalysisProvider, runInAnalysisUsageScope } from "../lib/analysis/
 // (and therefore into the drafts/issues they become), not just the metadata the
 // approval view reads.
 import { applyClarificationsToRequirements } from "../lib/analysis/clarification-enrichment.js";
+import {
+  persistClarificationKnowledge,
+  priorAnswerSourceFor,
+} from "../lib/clarifications/analysis-clarifications.js";
 import { readSourceRequirements } from "../lib/analysis/source-items.js";
 import { latestRequirementApprovals } from "../lib/analysis/approved-requirement-set.js";
 import {
@@ -1101,6 +1105,8 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
         // #1873 — the business questions for uncertain governing rules, and
         // where their answers go. Undefined (no read) with the flag off.
         governingQuestions: governingQuestionSourceFor({ analysisId, projectId, provider }),
+        // #2236 — a question the project has already settled is not asked again.
+        priorAnswers: priorAnswerSourceFor(projectId),
       });
 
       // Epic #922 — prefer the server-sourced structured requirements that the
@@ -1152,6 +1158,17 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
         // approval gate is still withholding those rows this is a no-op and
         // `promoteApprovedRequirements` applies the answers instead.
         await applyClarificationsToRequirements(analysisId);
+        // #2236 — the answers become project knowledge: recorded, indexed and
+        // re-running what they change. After the response's work is
+        // committed and off its path, metered to the project like the round.
+        void runInAnalysisUsageScope(usageScope, () =>
+          persistClarificationKnowledge({
+            projectId,
+            analysisId,
+            answeredById: req.user?.userId ?? null,
+            provider,
+          }),
+        );
         res.json(ok(result));
       } else {
         // Start or continue dialog
@@ -1165,6 +1182,11 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
         const state = await runInAnalysisUsageScope(usageScope, () =>
           dialog.startOrContinue(analysisId, requirements),
         );
+        // #2236 — answers reused from the project's records this round reach
+        // the stored requirements as typed ones do.
+        if (state.reused?.some((r) => r.round === state.currentRound)) {
+          await applyClarificationsToRequirements(analysisId);
+        }
         res.json(ok(state));
       }
     },
@@ -1570,6 +1592,15 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
         // Issue #1116 — the CSV round-trip is the same submit path, so it must
         // reach the artifact the same way.
         await applyClarificationsToRequirements(analysisId);
+        // #2236 — and become project knowledge the same way.
+        void runInAnalysisUsageScope({ projectId, sessionId: analysisId }, () =>
+          persistClarificationKnowledge({
+            projectId,
+            analysisId,
+            answeredById: req.user?.userId ?? null,
+            provider,
+          }),
+        );
       }
 
       res.json(ok({ applied: applied.length, skipped, unmatched, state: written }));

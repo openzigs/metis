@@ -74,6 +74,14 @@ export interface ProduceGoverningFindingsInput {
   requirementIds?: readonly string[];
   /** The stored applicability, when the caller already has it. */
   applicability?: GoverningAnalysisApplicability | null;
+  /**
+   * #2236 — work that must land before the findings are evaluated, run in
+   * this run's turn: a clarification answer re-decides its requirements'
+   * applicability here, so the findings read `refreshing` (their re-check
+   * marker) from the moment the answer is in until the new findings are
+   * stored. When it throws, the run rejects and the earlier findings stand.
+   */
+  prepare?: () => Promise<void>;
 }
 
 /**
@@ -239,7 +247,10 @@ export function produceGoverningFindingsForAnalysis(
   input: ProduceGoverningFindingsInput,
 ): Promise<GoverningFindingsRun> {
   const previous = findingsRuns.get(input.analysisId) ?? Promise.resolve();
-  const result = turnOf(previous, input.signal).then(() => produceNow(input));
+  const result = turnOf(previous, input.signal).then(async () => {
+    await input.prepare?.();
+    return produceNow(input);
+  });
   const tail = Promise.allSettled([previous, result]).then(() => undefined);
   findingsRuns.set(input.analysisId, tail);
   void tail.then(() => {

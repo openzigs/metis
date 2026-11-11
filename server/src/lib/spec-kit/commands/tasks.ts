@@ -14,6 +14,7 @@ import { runSpecKitAgent, loadProjectContext, truncationWarning, type RunDeps } 
 import { findTestsAfterImplementation } from "../grounding.js";
 import { stampPlanSource } from "../plan-provenance.js";
 import { fenceSourceRequirementsInSpec } from "../requirements-seed.js";
+import { scopeClarificationsSection } from "../clarifications.js";
 
 /**
  * Exported for the structural-contract tests (#376) — see specify.ts.
@@ -94,6 +95,8 @@ export async function runTasks(input: TasksInput): Promise<TasksResult> {
     );
   }
   const project = await loadProjectContext(input.projectId);
+  // #2236 — the set's /clarify answers bind the tasks too.
+  const clarifications = await scopeClarificationsSection(scope);
   const userPrompt = [
     `Project: ${project.name}`,
     "",
@@ -107,6 +110,7 @@ export async function runTasks(input: TasksInput): Promise<TasksResult> {
     plan.content,
     "```",
     "",
+    ...(clarifications ? [clarifications, ""] : []),
     "Produce tasks.md per the system instructions.",
   ].join("\n");
 

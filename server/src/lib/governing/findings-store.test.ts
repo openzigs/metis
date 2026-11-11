@@ -595,6 +595,47 @@ describe("produceGoverningFindingsForAnalysis — edges", () => {
     await vi.waitFor(() => expect(governingFindingsRefreshing("a_fail")).toBe(false));
   });
 
+  it("#2236 — `prepare` runs in the run's turn, before the stored applicability is read, with refreshing true throughout", async () => {
+    evaluateRequirementFindings.mockResolvedValue({
+      findings: [],
+      unverifiedCitations: 0,
+      noEvidenceDemoted: 0,
+    });
+    readGoverningApplicability.mockResolvedValue(STORED);
+    const order: string[] = [];
+    readGoverningApplicability.mockImplementationOnce(async () => {
+      order.push("read");
+      return STORED;
+    });
+    const run = produceGoverningFindingsForAnalysis({
+      analysisId: "a_prepare",
+      projectId: "p",
+      provider,
+      prepare: async () => {
+        order.push("prepare");
+        expect(governingFindingsRefreshing("a_prepare")).toBe(true);
+      },
+    });
+    expect(governingFindingsRefreshing("a_prepare")).toBe(true);
+    await expect(run).resolves.toMatchObject({ requirements: 2 });
+    expect(order).toEqual(["prepare", "read"]);
+
+    // A prepare that fails rejects the run, and nothing is evaluated.
+    evaluateRequirementFindings.mockClear();
+    await expect(
+      produceGoverningFindingsForAnalysis({
+        analysisId: "a_prepare",
+        projectId: "p",
+        provider,
+        prepare: async () => {
+          throw new Error("could not decide");
+        },
+      }),
+    ).rejects.toThrow("could not decide");
+    expect(evaluateRequirementFindings).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(governingFindingsRefreshing("a_prepare")).toBe(false));
+  });
+
   it("#2010 — a cancelled run stops: it throws, counts nothing as failed, and writes nothing", async () => {
     const controller = new AbortController();
     evaluateRequirementFindings.mockImplementation(async () => {

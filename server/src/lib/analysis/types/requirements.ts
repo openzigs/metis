@@ -322,8 +322,37 @@ export interface ClarificationState {
    * complete the dialog early.
    */
   setAsideAmbiguities?: string[];
+  /**
+   * #2236 — questions not asked because the project had already settled them:
+   * an answer given in an earlier analysis (or an earlier round) of the same
+   * project, read from its clarification record. Each counts as answered.
+   * Optional so states persisted before #2236 still load.
+   */
+  reused?: ReusedAnswer[];
   escalatedToSonnet: boolean;
   completed: boolean;
+}
+
+/**
+ * #2236 — a question this dialog did not ask because a clarification record of
+ * the project already answers it ({@link ClarificationState.reused}).
+ */
+export interface ReusedAnswer {
+  requirementId: string;
+  ambiguityField: string;
+  question: string;
+  answer: string;
+  /** The clarification record the answer was read from. */
+  recordId: string;
+  /** When the answer was given, ISO 8601. */
+  answeredAt: string;
+  /** The analysis it was given in; absent for a Spec Kit answer. */
+  fromAnalysisId?: string;
+  /** The round it was reused in. */
+  round: number;
+  citation?: QuestionCitation;
+  /** Set when it settles governing rules rather than a requirement's wording. */
+  governing?: GoverningQuestionLink;
 }
 
 /**
@@ -463,7 +492,8 @@ export interface ClarificationAnswerOutcome {
  *   - `edited`:    METIS's suggestion, changed by the requester before submitting;
  *   - `typed`:     no suggestion was offered; the requester wrote it.
  */
-export type AnswerProvenance = "suggested" | "edited" | "typed";
+/** #2236 — `reused`: an answer the project had already given, read from its clarification record. */
+export type AnswerProvenance = "suggested" | "edited" | "typed" | "reused";
 
 // ── Approval Checkpoint (#626) ─────────────────────────────────────────
 

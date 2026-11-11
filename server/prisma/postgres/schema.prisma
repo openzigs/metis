@@ -655,6 +655,8 @@ model Project {
   chronicleEntries           ChronicleEntry[]
   analyses                   Analysis[]
   requirements               Requirement[]
+  /// Issue #2236 — clarification answers kept as project knowledge.
+  clarificationRecords       ClarificationRecord[]
   drafts                     IssueDraft[]
   batches                    PublishBatch[]
   repoConnections            RepoConnection[]
@@ -1521,6 +1523,57 @@ model ClarificationDialogState {
   analysis Analysis @relation(fields: [analysisId], references: [id], onDelete: Cascade)
 
   @@map("clarification_dialog_states")
+}
+
+/// Issue #2236 (epic #2227) — one answered clarifying question, kept as
+/// project knowledge rather than only inside one analysis's dialog state: the
+/// question, the answer, who gave it and when, the source paragraph it was
+/// asked about, and the requirements and products it applies to. Indexed in
+/// the project's RAG store as a document (`knowledgeDocumentId`), so chat and
+/// analyses can cite it, and reused by later analyses of the same project
+/// (keyed by `questionKey`, `clarifications/clarification-key.ts`) instead of
+/// asking a settled question again. `status` turns `reopened` when the source
+/// paragraph it was asked about changed. No foreign key to the analysis or the
+/// user: the answer outlives both. Cascades with the project.
+model ClarificationRecord {
+  id                  String    @id @default(cuid())
+  projectId           String
+  /// `analysis` (a requirements analysis's clarifying question) or `spec-kit` (`/clarify`).
+  origin              String
+  /// What makes two questions the same question across analyses.
+  questionKey         String
+  analysisId          String?
+  /// The Spec Kit feature slug of a `/clarify` answer; null for the project's `.specify/`.
+  specKitFeature      String?
+  questionId          String?
+  question            String
+  answer              String
+  answeredById        String?
+  answeredAt          DateTime
+  ambiguityField      String?
+  sourceDocumentId    String?
+  sourceFilename      String?
+  /// JSON array of the section headings above the source paragraph.
+  sourceHeadingPath   String    @default("[]")
+  sourceQuote         String?
+  /// JSON array of the requirement ids the answer applies to.
+  requirementIds      String    @default("[]")
+  /// JSON array of the product ids the answer applies to.
+  productIds          String    @default("[]")
+  /// `settled`, or `reopened` when the paragraph it was asked about changed.
+  status              String    @default("settled")
+  reopenedAt          DateTime?
+  /// The `documents` row the answer is indexed as; null until indexed.
+  knowledgeDocumentId String?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, questionKey])
+  @@index([analysisId])
+  @@index([projectId, status])
+  @@map("clarification_records")
 }
 
 model AgentResult {
