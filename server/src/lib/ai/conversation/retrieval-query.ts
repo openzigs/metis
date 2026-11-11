@@ -265,6 +265,8 @@ export interface CitableExcerpt {
   name: string;
   /** `name#position`, as the block printed it. */
   locator: string;
+  /** #2242 — the hit's `documents.source` (`repo`, `upload`, …), so a citation of it can link. */
+  source?: string;
 }
 
 /**

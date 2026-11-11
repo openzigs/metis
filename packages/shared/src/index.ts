@@ -62,6 +62,8 @@ export * from "./source-offer.js";
 export * from "./model-catalog.js";
 // Epic #127 — the server-owned chat transcript (`/api/ai/sessions/:id/messages`, resume, fork).
 export * from "./conversation.js";
+// #2242 — a chat reply's citations, each checked against what the turn read.
+export * from "./chat-citations.js";
 // Epic #129 — one agent definition, progressive skills and sub-agents.
 export * from "./agents.js";
 // #346 — PATCH schemas whose omitted fields stay omitted under zod 4.

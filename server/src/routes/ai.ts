@@ -145,6 +145,12 @@ import {
   type CitableExcerpt,
 } from "../lib/ai/conversation/retrieval-query.js";
 import {
+  citationsMeta,
+  collectCitationEvidence,
+  verifyCitations,
+  type ToolEvidence,
+} from "../lib/ai/citation-verification.js";
+import {
   countProjectToolReads,
   describeGrounding,
   withToolReads,
@@ -757,6 +763,7 @@ export async function buildAutoRagContext(
           chunkId: h.chunkId,
           name: h.path ?? h.filename,
           locator: formatHitLocator(h),
+          source: h.source,
         }));
       }
       const chunks = chunkList.join("\n\n---\n\n");
@@ -1743,12 +1750,12 @@ export function aiRouter(): Router {
       const ragContext = multi
         ? multi.block
         : await conversationRagContext(
-          session,
-          userText,
-          userId,
-          ragCapture,
-          parsed.data.documentIds,
-        );
+            session,
+            userText,
+            userId,
+            ragCapture,
+            parsed.data.documentIds,
+          );
       // #18 — what this reply is grounded in, recorded on the reply row. #439 —
       // what the code tools read of the project is folded in after the loop.
       let grounding = multi
@@ -1857,6 +1864,8 @@ export function aiRouter(): Router {
       // runs; prompts reach the owner over the session's socket room. Otherwise,
       // the single non-loop provider call as before.
       let response: ChatResponse;
+      // #2242 — what the tools returned, which the citations are checked against.
+      let chatToolRecords: ToolEvidence[] = [];
       // #1238 — a dropped attempt's usage is in the turn's (see calibrationPromptChars).
       let resentPrompt = false;
       // #146 — an unscoped session may run the loop too: its only tool is
@@ -1907,6 +1916,7 @@ export function aiRouter(): Router {
           },
         );
         resentPrompt = loop.droppedUsage !== undefined;
+        chatToolRecords = loop.toolResults;
         // #439 — a reply that read the project through its tools is grounded.
         grounding = withToolReads(grounding, countProjectToolReads(loop.toolResults));
         response = {
@@ -1981,6 +1991,13 @@ export function aiRouter(): Router {
         turnMeter.markProjectRecorded();
       }
 
+      // #2242 — every citation in the answer, checked against what the turn
+      // retrieved and what its project-reading tools returned.
+      const citations = verifyCitations(
+        outContent,
+        collectCitationEvidence(ragCapture, chatToolRecords),
+      );
+
       // #136/#137 — the reply, with the provider-reported usage, into the transcript.
       const replyRow = await recordReply({
         sessionId: session.id,
@@ -1998,6 +2015,7 @@ export function aiRouter(): Router {
           grounding,
           // #2240 — what the answer cited, so the next turn keeps those excerpts.
           ...citedExcerptsMeta(outContent, ragCapture.excerpts),
+          ...citationsMeta(citations),
           ...(response.model && response.model !== model ? { servedModel: response.model } : {}),
         },
       });
@@ -2081,6 +2099,7 @@ export function aiRouter(): Router {
           response: { ...response, content: outContent },
           transcript: { userOrdinal: turn.userRow.ordinal, replyOrdinal: replyRow.ordinal },
           grounding,
+          citations,
           ...(turn.compaction ? { compaction: compactionEvent(turn.compaction) } : {}),
           ...(toolApprovals.length > 0 ? { toolApprovals } : {}),
           ...(toolsWithheld.length > 0 ? { toolsWithheld } : {}),
@@ -2183,12 +2202,12 @@ export function aiRouter(): Router {
     const ragContext = multi
       ? multi.block
       : await conversationRagContext(
-        session,
-        userText,
-        userId,
-        ragCapture,
-        parsed.data.documentIds,
-      );
+          session,
+          userText,
+          userId,
+          ragCapture,
+          parsed.data.documentIds,
+        );
     // #18 — what this reply is grounded in: streamed before the answer and
     // recorded on the reply row, so the client can say so live and on reload.
     // #439 — re-sent after the tool loop when the tools read the project.
@@ -2428,6 +2447,18 @@ export function aiRouter(): Router {
     const toolCalls: ReplyToolCall[] = [];
     // #439 — how many of them read the project (see `countProjectToolReads`).
     let projectToolReads = 0;
+    // #2242 — what they returned, which the answer's citations are checked against.
+    const streamToolRecords: ToolEvidence[] = [];
+    // #2242 — the answer's checked citations: sent before `done`, recorded on the row.
+    const streamCitations = (answer: string) => {
+      const checked = verifyCitations(
+        answer,
+        collectCitationEvidence(ragCapture, streamToolRecords),
+      );
+      if (checked.length > 0) send("citations", { type: "citations", citations: checked });
+      return checked;
+    };
+    let citations: ReturnType<typeof verifyCitations> = [];
     let prepared: PreparedTurn | null = null;
     const providerKey: string = streamProvider.key;
     // #243 — what this turn has spent, metered even if it fails.
@@ -2574,6 +2605,7 @@ export function aiRouter(): Router {
             onToolRecord: (rec) => {
               toolCalls.push(replyToolCall(rec));
               projectToolReads += countProjectToolReads([rec]);
+              streamToolRecords.push(rec);
               // #713's frame, kept for existing clients: one per call, after it
               // was handled. `tool_event` (#143) is the full lifecycle.
               send("tool_call", { type: "tool_call", name: rec.tool, arguments: rec.args });
@@ -2658,6 +2690,7 @@ export function aiRouter(): Router {
         resentPrompt = loop.droppedUsage !== undefined;
         finishReason = loop.finishReason ?? null;
         send("usage", { type: "usage", usage: loop.usage });
+        citations = streamCitations(finalAnswer);
         send("done", {
           type: "done",
           ...(loop.finishReason ? { finishReason: loop.finishReason } : {}),
@@ -2681,7 +2714,10 @@ export function aiRouter(): Router {
           }
           if (observeOnline && c.type === "delta") observedAnswer += c.content;
           if (c.type === "delta") finalAnswer += c.content;
-          if (c.type === "done") finishReason = c.finishReason ?? null;
+          if (c.type === "done") {
+            finishReason = c.finishReason ?? null;
+            citations = streamCitations(finalAnswer);
+          }
           send(c.type, c);
           if (c.type === "done") break;
         }
@@ -2709,7 +2745,11 @@ export function aiRouter(): Router {
           promptChars: calibrationPromptChars(turn, toolCalls, resentPrompt),
           ratio: turn.ratio,
           // #2240 — what the answer cited, so the next turn keeps those excerpts.
-          meta: { grounding, ...citedExcerptsMeta(finalAnswer, ragCapture.excerpts) },
+          meta: {
+            grounding,
+            ...citedExcerptsMeta(finalAnswer, ragCapture.excerpts),
+            ...citationsMeta(citations),
+          },
         });
         replyRecorded = true;
         await writeDerivedSnapshot(session);

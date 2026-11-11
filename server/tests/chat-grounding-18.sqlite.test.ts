@@ -24,7 +24,14 @@ const state = vi.hoisted(() => {
   process.env.AI_RATE_LIMIT_MAX = "10000";
   return {
     db: null as unknown,
-    hits: [] as Array<{ filename: string; position: number; score: number; text: string }>,
+    hits: [] as Array<{
+      filename: string;
+      position: number;
+      score: number;
+      text: string;
+      path?: string;
+      source?: string;
+    }>,
     searched: [] as string[],
     /** #2225 — the ACL actor each search ran for, in order. */
     actors: [] as unknown[],
@@ -78,6 +85,8 @@ class ScriptedProvider implements AIProvider {
   failMidStream = false;
   /** #439 — scripted `chat()` replies, in order (the text tool protocol uses chat()). */
   chatReplies: string[] = [];
+  /** #2242 — what `stream()` answers. */
+  streamText = "stream answer";
   async chat(messages: ChatMessage[]) {
     this.prompts.push(messages);
     const next = this.chatReplies.shift();
@@ -91,7 +100,7 @@ class ScriptedProvider implements AIProvider {
   }
   async *stream(messages: ChatMessage[]): AsyncGenerator<ChatChunk> {
     this.prompts.push(messages);
-    yield { type: "delta", content: "stream answer" };
+    yield { type: "delta", content: this.streamText };
     if (this.failMidStream) throw new Error("provider dropped the stream");
     yield { type: "done", finishReason: "stop" };
   }
@@ -146,6 +155,14 @@ class NativeToolProvider extends ScriptedProvider {
     }
     yield { type: "done", finishReason: call ? "tool_use" : "stop" };
   }
+}
+
+/** #2242 — the `citations` frames of an SSE body, in order. */
+function citationFrames(text: string): unknown[] {
+  return text
+    .split("\n\n")
+    .filter((block) => block.startsWith("event: citations\n"))
+    .map((block) => (JSON.parse(block.split("\ndata: ")[1]!) as { citations: unknown }).citations);
 }
 
 /** The `grounding` frames of an SSE body, in order. */
@@ -331,6 +348,86 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         { status: "no-context", projectId: PROJECT, projectName: "Payments" },
         { status: "grounded", projectId: PROJECT, projectName: "Payments", sources: 1 },
       ]);
+    });
+
+    describe("#2242 — a reply's citations are checked against what the turn read", () => {
+      async function replyCitations(sessionId: string): Promise<unknown[]> {
+        const res = await request(app())
+          .get(`/api/ai/sessions/${sessionId}/messages`)
+          .set("Authorization", `Bearer ${alice}`);
+        expect(res.status, res.text).toBe(200);
+        const rows = res.body.data.messages as Array<{ role: string; citations?: unknown }>;
+        return rows.filter((r) => r.role === "assistant").map((r) => r.citations);
+      }
+
+      it("marks a retrieved file verified and a fabricated one not read, live and on reload", async () => {
+        state.hits = [
+          {
+            filename: "connector:repo:c1:src/net/ssrf.ts",
+            path: "src/net/ssrf.ts",
+            source: "repo",
+            position: 0,
+            score: 0.9,
+            text: "assertPublicHost()",
+          },
+        ];
+        model.streamText =
+          "Rebinding is blocked in `src/net/ssrf.ts`, and pinned in `src/net/pin.ts:10-20`.";
+        const sessionId = await newSession(PROJECT);
+        const res = await post("/api/ai/stream", {
+          sessionId,
+          message: "How is DNS rebinding handled?",
+        });
+        const expected = [
+          { text: "src/net/ssrf.ts", path: "src/net/ssrf.ts", status: "verified", source: "repo" },
+          {
+            text: "src/net/pin.ts:10-20",
+            path: "src/net/pin.ts",
+            lines: [10, 20],
+            status: "not-read",
+          },
+        ];
+        expect(citationFrames(res.text)).toEqual([expected]);
+        // Sent before the turn is done, so the client has it when the answer ends.
+        expect(res.text.indexOf("event: citations")).toBeLessThan(res.text.indexOf("event: done"));
+        expect(await replyCitations(sessionId)).toEqual([expected]);
+      });
+
+      it("sends no citations frame, and records none, for an answer that cites nothing", async () => {
+        const sessionId = await newSession(PROJECT);
+        const res = await post("/api/ai/stream", { sessionId, message: "hello" });
+        expect(citationFrames(res.text)).toEqual([]);
+        expect(await replyCitations(sessionId)).toEqual([undefined]);
+      });
+
+      it("the /chat turn checks a cited line range against the lines a code tool returned", async () => {
+        process.env.CHAT_CODE_SEARCH_TOOLS = "true";
+        model.chatReplies = [
+          JSON.stringify({ tool: "search_code_graph", args: { query: "Validator" } }),
+          "It is `src/validator.ts:5-12`, not `src/validator.ts:50-60`.",
+        ];
+        const sessionId = await newSession(PROJECT);
+        const res = await post("/api/ai/chat", { sessionId, message: "where is validation?" });
+        expect(res.status, res.text).toBe(200);
+        const expected = [
+          {
+            text: "src/validator.ts:5-12",
+            path: "src/validator.ts",
+            lines: [5, 12],
+            status: "verified",
+            source: "repo",
+          },
+          {
+            text: "src/validator.ts:50-60",
+            path: "src/validator.ts",
+            lines: [50, 60],
+            status: "span-unverified",
+            source: "repo",
+          },
+        ];
+        expect(res.body.data.citations).toEqual(expected);
+        expect(await replyCitations(sessionId)).toEqual([expected]);
+      });
     });
 
     describe("#439 — what the tools read of the project counts as grounding", () => {

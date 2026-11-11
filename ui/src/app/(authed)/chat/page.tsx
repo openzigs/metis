@@ -43,6 +43,7 @@ import {
 import { ScopeDegradationNotice } from "@/components/chat/scope-degradation-notice";
 import { scopeKeyOf, scopeOfSession, scopeSearches } from "@/lib/chat-scope";
 import { GroundingBadge, UngroundedScopeNotice } from "@/components/chat/grounding";
+import { CitationList } from "@/components/chat/citation-list";
 import { ChatMarkdown } from "@/components/chat/chat-markdown";
 import { sanitizeAssistantText } from "@/lib/sanitize-assistant-text";
 import { recentTracker, sessionTitleAfterTurn } from "@/lib/recent-tracker";
@@ -628,6 +629,12 @@ export default function ChatPage() {
           prev.map((m) => (m.id === assistantMsgId ? { ...m, grounding: ev.grounding } : m)),
         );
         break;
+      case "citations":
+        // #2242 — the answer's citations, checked against what the turn read.
+        setMessages((prev) =>
+          prev.map((m) => (m.id === assistantMsgId ? { ...m, citations: ev.citations } : m)),
+        );
+        break;
       case "tool_event":
         toolApprovals.apply(ev);
         break;
@@ -864,6 +871,9 @@ export default function ChatPage() {
                     {/* #439 — no grounding claim under a reply that failed or stopped early. */}
                     {m.role === "assistant" && !m.incomplete && !m.isError ? (
                       <GroundingBadge grounding={m.grounding} />
+                    ) : null}
+                    {m.role === "assistant" && !m.isError ? (
+                      <CitationList citations={m.citations} projectId={session?.projectId} />
                     ) : null}
                     {m.role === "assistant" && m.toolCalls ? (
                       <TranscriptToolCalls calls={m.toolCalls} sessionId={session?.id ?? null} />

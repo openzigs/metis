@@ -3583,6 +3583,14 @@ Opening Chat from a project (`/chat?projectId=…`) scopes it to that project.
 
 **Follow-up questions.** A scoped chat searches the project with the conversation, not just your last message. When you answer a question the model asked ("Which product do you mean?" — "Server"), or ask a short follow-up ("and for annual plans?"), the search reads your message together with the question before it. Your own words always run as a search of their own as well, and they count for more: excerpts found only through the earlier question take at most 3 of the 8 places. A question that names its own subject ("Are there any GDPR requirements in the onboarding spec?") is searched on its own, even right after the model asked you something. A question with several parts (a numbered list, or several questions in one message) searches each part, and the results are merged. The excerpts an answer cited (by its `[n]` number, its file name or its location) are given to the model again on your next message, marked as cited in the previous answer, so it can build on them. They are read again when you send it: an excerpt you can no longer see, or whose document was deleted, is not brought back. Each excerpt brought back counts toward the **N sources** in the label. [#2240]
 
+**Checked citations.** When an answer cites a file (`internal/model/feed.go:120-150`, a path, or an excerpt number such as `[2]`), METIS checks each citation against what that turn actually retrieved or read. That means the excerpts it was given and the files and line ranges its code and knowledge tools returned. A **Citations** line under the reply counts them, and opens to list each one:
+
+- **✓ verified**: the file or document is one the turn read, and so are the cited lines. A verified citation of the project's code links to the file on GitHub at those lines, when the project has exactly one GitHub repository connected.
+- **⚠ the file was read, but not these lines**: the turn read that file, but not the lines cited. It also shows when a document excerpt, which has no line numbers, is cited by line.
+- **✗ not in anything this reply retrieved or read**: no source the turn used is that file. Treat the claim as unsupported.
+
+The list opens by itself when any citation did not check out. A file name mentioned with no path and no line, such as "add a `config.yaml`", is a mention, not a citation, and is not listed. Paths in code blocks and links are not checked. The Workbench shows the same list. Discussion replies are not checked yet. [#2242]
+
 **Access control:** you can only scope a chat to a project you have been granted access to, or to a workspace you are a member of. Access is checked again on every turn, and chunks restricted to other people are never searched for you.
 
 ---
