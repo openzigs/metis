@@ -276,8 +276,12 @@ const MAX_CHUNK_RANGE = 10;
 const CHUNK_REF =
   /^[`'"\s(,:]{0,8}chunks?\s+(#?\d+(?:\s*(?:,\s*(?:and\s+)?|and\s+|-|–|to\s+)\s*#?\d+)*)/i;
 
-function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+/** Whether `answer` names `locator` whole: `f.py#1` is not read inside `f.py#18`. */
+function mentionsLocator(answer: string, locator: string): boolean {
+  for (let at = answer.indexOf(locator); at >= 0; at = answer.indexOf(locator, at + 1)) {
+    if (!/\d/.test(answer.charAt(at + locator.length))) return true;
+  }
+  return false;
 }
 
 /** The chunk positions `answer` names after each mention of `name`. */
@@ -334,8 +338,7 @@ export function citedExcerptIds(answer: string, excerpts: readonly CitableExcerp
     if (named && !refs.has(e.name)) refs.set(e.name, chunkRefs(answer, e.name));
     const position = Number.parseInt(e.locator.slice(e.locator.lastIndexOf("#") + 1), 10);
     const located =
-      new RegExp(`${escapeRegExp(e.locator)}(?!\\d)`).test(answer) ||
-      (named && refs.get(e.name)!.has(position));
+      mentionsLocator(answer, e.locator) || (named && refs.get(e.name)!.has(position));
     if (numbers.has(e.n) || located) exact.push(e.chunkId);
     else if (named) byFile.push(e.chunkId);
   }
