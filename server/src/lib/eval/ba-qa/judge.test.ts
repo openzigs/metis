@@ -35,6 +35,22 @@ describe("buildJudgeMessages", () => {
     expect(text).toContain("x := 60");
   });
 
+  it("shows a multi-turn question's earlier turns before the one graded (#2269)", () => {
+    const one = String(buildJudgeMessages(q, "Hourly.", spans)[1].content);
+    expect(one).not.toContain("Earlier in this conversation");
+    const text = String(
+      buildJudgeMessages(
+        { ...q, before: ["When are old articles deleted?"], refersBack: true },
+        "Daily.",
+        spans,
+      )[1].content,
+    );
+    expect(text).toContain(
+      "Earlier in this conversation the analyst asked:\n- When are old articles deleted?\n\n" +
+        "Question (the reply answers this one): How often?",
+    );
+  });
+
   it("says when there are no facts or spans", () => {
     const text = String(
       buildJudgeMessages({ ...q, facts: undefined, expect: "follow-up" }, "Which?", [])[1].content,

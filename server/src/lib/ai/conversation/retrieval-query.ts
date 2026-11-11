@@ -267,11 +267,58 @@ export interface CitableExcerpt {
   locator: string;
 }
 
+/** The widest `#a-#b` chunk range read as citing every chunk in it. */
+const MAX_CHUNK_RANGE = 10;
 /**
- * The chunk ids of the excerpts `answer` cites, in excerpt order, at most
+ * The chunk numbers written right after a file name: "`f.py` (chunk #17)",
+ * "(`f.py`, chunks #6, #5 and #8)", "`f.py` (chunks #19-#20)".
+ */
+const CHUNK_REF =
+  /^[`'"\s(,:]{0,8}chunks?\s+(#?\d+(?:\s*(?:,\s*(?:and\s+)?|and\s+|-|–|to\s+)\s*#?\d+)*)/i;
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** The chunk positions `answer` names after each mention of `name`. */
+function chunkRefs(answer: string, name: string): Set<number> {
+  const out = new Set<number>();
+  for (let at = answer.indexOf(name); at >= 0; at = answer.indexOf(name, at + 1)) {
+    const list = CHUNK_REF.exec(answer.slice(at + name.length, at + name.length + 80))?.[1];
+    if (!list) continue;
+    let prev: number | null = null;
+    let range = false;
+    for (const t of list.matchAll(/(\d+)|(-|–|to)/g)) {
+      if (t[2]) {
+        range = true;
+        continue;
+      }
+      const n = Number.parseInt(t[1]!, 10);
+      if (range && prev !== null && n > prev && n - prev <= MAX_CHUNK_RANGE) {
+        for (let k = prev + 1; k < n; k++) out.add(k);
+      }
+      out.add(n);
+      prev = n;
+      range = false;
+    }
+  }
+  return out;
+}
+
+/**
+ * The chunk ids of the excerpts `answer` cites, at most
  * {@link MAX_CARRIED_EXCERPTS}. An excerpt is cited when the answer names its
- * number (`[2]`, `[1, 3]`), its locator, or its file (every excerpt of that
- * file then counts, as the answer does not say which part it drew on).
+ * number (`[2]`, `[1, 3]`), its locator (`file#4`, or the file followed by
+ * "chunk #4"), or its file (every excerpt of that file then counts, as the
+ * answer does not say which part it drew on).
+ *
+ * #2269 — the excerpts named exactly (by number or locator) fill the cap first,
+ * in excerpt order, and only then the ones matched by file name: a long file
+ * the answer names in passing would otherwise carry four of its excerpts and
+ * push out the ones the answer actually pointed at. Measured on the multi-turn
+ * BA questions, answers name excerpts as "`file` (chunk #N)" far more often
+ * than `[n]`, so that form counts as a locator; and `file#1` is not read inside
+ * `file#18`.
  */
 export function citedExcerptIds(answer: string, excerpts: readonly CitableExcerpt[]): string[] {
   if (!answer || excerpts.length === 0) return [];
@@ -279,15 +326,20 @@ export function citedExcerptIds(answer: string, excerpts: readonly CitableExcerp
   for (const m of answer.matchAll(/\[(\d+(?:\s*,\s*\d+)*)\]/g)) {
     for (const n of m[1]!.split(",")) numbers.add(Number.parseInt(n.trim(), 10));
   }
-  const cited: string[] = [];
+  const refs = new Map<string, Set<number>>();
+  const exact: string[] = [];
+  const byFile: string[] = [];
   for (const e of excerpts) {
-    const named =
-      numbers.has(e.n) ||
-      answer.includes(e.locator) ||
-      (e.name.length >= 4 && answer.includes(e.name));
-    if (named && !cited.includes(e.chunkId)) cited.push(e.chunkId);
+    const named = e.name.length >= 4 && answer.includes(e.name);
+    if (named && !refs.has(e.name)) refs.set(e.name, chunkRefs(answer, e.name));
+    const position = Number.parseInt(e.locator.slice(e.locator.lastIndexOf("#") + 1), 10);
+    const located =
+      new RegExp(`${escapeRegExp(e.locator)}(?!\\d)`).test(answer) ||
+      (named && refs.get(e.name)!.has(position));
+    if (numbers.has(e.n) || located) exact.push(e.chunkId);
+    else if (named) byFile.push(e.chunkId);
   }
-  return cited.slice(0, MAX_CARRIED_EXCERPTS);
+  return [...new Set([...exact, ...byFile])].slice(0, MAX_CARRIED_EXCERPTS);
 }
 
 /** The cited chunk ids a reply row's `meta` carries; anything malformed is ignored. */

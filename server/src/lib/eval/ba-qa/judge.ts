@@ -83,8 +83,17 @@ export function buildJudgeMessages(
   const spanText = spans
     .map((s) => `[${s.n}] ${s.label}\n\`\`\`\n${clipSpan(s.text)}\n\`\`\``)
     .join("\n\n");
+  // #2269 — a follow-up ("How often does that run?") is graded with what it refers to.
+  const earlier = q.before?.length
+    ? [
+        "Earlier in this conversation the analyst asked:",
+        ...q.before.map((t) => `- ${t}`),
+        "",
+        `Question (the reply answers this one): ${q.text}`,
+      ]
+    : [`Question: ${q.text}`];
   const user = [
-    `Question: ${q.text}`,
+    ...earlier,
     "",
     "Expected facts:",
     facts || "(none — grade behaviour only)",

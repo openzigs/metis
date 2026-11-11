@@ -1,7 +1,7 @@
 /**
  * #2237 — the run's Markdown report: one column per arm, then each question.
  */
-import type { ArmSummary, QuestionScore, Rate } from "./metrics.js";
+import type { ArmSummary, QuestionScore, Rate, RetrievalSummary } from "./metrics.js";
 
 export interface ReportSession {
   arm: string;
@@ -25,6 +25,8 @@ export function formatBaQaReport(input: {
   arms: readonly ArmSummary[];
   armFlags: Readonly<Record<string, Readonly<Record<string, string>>>>;
   sessions: readonly ReportSession[];
+  /** #2269 — each arm's multi-turn retrieval, by arm label; absent for a one-turn run. */
+  retrieval?: Readonly<Record<string, RetrievalSummary>>;
   spentUsd: number;
   stoppedEarly: string | null;
 }): string {
@@ -33,6 +35,35 @@ export function formatBaQaReport(input: {
   const sep = `|---|${arms.map(() => "---").join("|")}|`;
   const row = (label: string, f: (a: ArmSummary) => string): string =>
     `| ${label} | ${arms.map(f).join(" | ")} |`;
+  const retrieval = input.retrieval ?? {};
+  const multiTurn = Object.values(retrieval).some((x) => x.turns > 0);
+  const rrow = (label: string, f: (x: RetrievalSummary) => string): string =>
+    row(label, (a) => {
+      const x = retrieval[a.arm];
+      return x ? f(x) : "-";
+    });
+  const ids = (xs: readonly string[]): string => (xs.length ? xs.join(", ") : "-");
+  const retrievalSection = multiTurn
+    ? [
+        "",
+        "## Multi-turn retrieval (#2269)",
+        "",
+        "The scored turn of each multi-turn question, searched both ways: production's",
+        "conversation-aware retrieval (#2240) and the new message alone. Only the arm's own",
+        "mode reached the model; the other was searched locally, at no model cost.",
+        "",
+        head,
+        sep,
+        rrow("Multi-turn questions", (x) => String(x.turns)),
+        rrow("Expected files in the excerpts: conversation-aware", (x) => r(x.conversation)),
+        rrow("… new message alone", (x) => r(x.lastMessage)),
+        rrow("Follow-ups the planner caught", (x) => r(x.followUpsDetected)),
+        rrow("Controls read as follow-ups", (x) => r(x.controlsReadAsFollowUps)),
+        rrow("Better with the conversation", (x) => ids(x.better)),
+        rrow("Worse with the conversation", (x) => ids(x.worse)),
+        rrow("Cited excerpts carried forward", (x) => String(x.carried)),
+      ]
+    : [];
   const lines = [
     `# ${input.title}`,
     "",
@@ -75,6 +106,7 @@ export function formatBaQaReport(input: {
     "",
     `Run total, every model call: $${input.spentUsd.toFixed(6)}.`,
     ...(input.stoppedEarly ? ["", `**Stopped early:** ${input.stoppedEarly}.`] : []),
+    ...retrievalSection,
     "",
     "## Per question",
     "",

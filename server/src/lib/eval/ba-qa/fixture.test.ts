@@ -6,6 +6,7 @@ import {
   BAQA_CORPUS,
   baQaCorpusDir,
   expectedSourceFiles,
+  isMultiTurn,
   loadBaQaFixture,
   parseBaQaFixture,
   requiredCodeFiles,
@@ -134,8 +135,36 @@ describe("parseBaQaFixture", () => {
       /carries no facts/,
     ],
     ["a follow-up with no reason", (f) => delete (f.questions[2] as { why?: string }).why, /why/],
+    [
+      "earlier turns without saying whether the last refers back",
+      (f) => Object.assign(f.questions[0], { before: ["First?"] }),
+      /S1 has earlier turns but no refersBack/,
+    ],
+    [
+      "refersBack on a one-turn question",
+      (f) => Object.assign(f.questions[0], { refersBack: true }),
+      /S1 has refersBack but no earlier turns/,
+    ],
+    [
+      "an empty earlier turn",
+      (f) => Object.assign(f.questions[0], { before: [""], refersBack: true }),
+      /before/,
+    ],
   ])("rejects %s", (_label, edit, message) => {
     expect(() => parseBaQaFixture(broken(edit))).toThrow(message);
+  });
+});
+
+describe("multi-turn questions (#2269)", () => {
+  it("accepts earlier turns with a refersBack label, and tells the sets apart", () => {
+    const f = parseBaQaFixture(
+      broken((raw) =>
+        Object.assign(raw.questions[0], { before: ["How is it scheduled?"], refersBack: true }),
+      ),
+    );
+    expect(f.questions[0].before).toEqual(["How is it scheduled?"]);
+    expect(isMultiTurn(f.questions[0])).toBe(true);
+    expect(isMultiTurn(f.questions[1])).toBe(false);
   });
 });
 
@@ -172,5 +201,14 @@ describe("the committed question set", () => {
       f.questions.filter((q) => q.category === "single-product").map((q) => q.scope[0]),
     );
     expect([...singles].sort()).toEqual(["miniflux", "python-client"]);
+  });
+
+  it("holds a multi-turn set: follow-ups that refer back, and self-contained controls", async () => {
+    const f = await loadBaQaFixture(baQaCorpusDir(REPO_ROOT, BAQA_CORPUS));
+    const multi = f.questions.filter(isMultiTurn);
+    expect(multi.filter((q) => q.refersBack).length).toBeGreaterThanOrEqual(4);
+    expect(multi.filter((q) => q.refersBack === false).length).toBeGreaterThanOrEqual(2);
+    // Each is asked in a session bound to one product, so retrieval runs.
+    expect(multi.every((q) => q.category === "single-product")).toBe(true);
   });
 });

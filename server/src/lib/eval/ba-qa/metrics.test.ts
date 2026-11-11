@@ -2,7 +2,13 @@ import { describe, expect, it } from "vitest";
 import type { Citation } from "./citations.js";
 import type { BaQaQuestion } from "./fixture.js";
 import type { JudgeVerdict } from "./judge.js";
-import { scoreQuestion, summarizeArm, type QuestionScore } from "./metrics.js";
+import {
+  scoreQuestion,
+  summarizeArm,
+  summarizeRetrieval,
+  type QuestionScore,
+  type TurnRetrieval,
+} from "./metrics.js";
 
 const answerQ: BaQaQuestion = {
   id: "S1",
@@ -166,5 +172,52 @@ describe("summarizeArm", () => {
     expect(s.cost.totalUsd).toBeNull();
     expect(s.cost.perQuestionUsd).toBeNull();
     expect(summarizeArm("on", [], { answerUsd: 0, judgeUsd: 0 }).correctness).toBeNull();
+  });
+});
+
+describe("summarizeRetrieval (#2269)", () => {
+  const turn = (over: Partial<TurnRetrieval>): TurnRetrieval => ({
+    questionId: "F1",
+    refersBack: true,
+    followUpDetected: true,
+    expected: ["srv:a.go", "srv:b.go"],
+    conversation: [],
+    lastMessage: [],
+    carried: 0,
+    ...over,
+  });
+
+  it("micro-averages each mode's recall and counts the heuristic against the labels", () => {
+    const s = summarizeRetrieval([
+      // A follow-up the planner caught: the conversation found both, the message alone neither.
+      turn({ conversation: ["srv:a.go", "srv:b.go"], lastMessage: [], carried: 2 }),
+      // A follow-up the planner missed: both modes searched the same words.
+      turn({ questionId: "F2", followUpDetected: false, expected: ["srv:c.go"] }),
+      // A control read as self-contained, which the conversation found less of.
+      turn({
+        questionId: "F3",
+        refersBack: false,
+        followUpDetected: false,
+        expected: ["srv:d.go"],
+        lastMessage: ["srv:d.go"],
+      }),
+      // A control wrongly read as a follow-up.
+      turn({ questionId: "F4", refersBack: false, expected: ["srv:e.go"] }),
+    ]);
+    expect(s.turns).toBe(4);
+    expect(s.conversation).toEqual({ n: 2, of: 5, rate: 0.4 });
+    expect(s.lastMessage).toEqual({ n: 1, of: 5, rate: 0.2 });
+    expect(s.followUpsDetected).toEqual({ n: 1, of: 2, rate: 0.5 });
+    expect(s.controlsReadAsFollowUps).toEqual({ n: 1, of: 2, rate: 0.5 });
+    expect(s.better).toEqual(["F1"]);
+    expect(s.worse).toEqual(["F3"]);
+    expect(s.carried).toBe(2);
+  });
+
+  it("is empty for a run with no multi-turn question", () => {
+    const s = summarizeRetrieval([]);
+    expect(s.turns).toBe(0);
+    expect(s.conversation.rate).toBeNull();
+    expect(s.followUpsDetected.rate).toBeNull();
   });
 });

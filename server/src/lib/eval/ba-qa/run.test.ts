@@ -1,12 +1,17 @@
 import { describe, expect, it } from "vitest";
+import type { BaQaQuestion } from "./fixture.js";
 import {
   applyArmEnv,
   armArgument,
+  armLabel,
   ARM_FLAGS,
   buildJudgedSpans,
   chatSessionScope,
   embedRuntimeFor,
   parseArm,
+  parseRetrievalMode,
+  retrievedExpectedFiles,
+  selectQuestions,
   sliceLines,
 } from "./run.js";
 
@@ -91,5 +96,48 @@ describe("spans", () => {
       [3, 0],
       [4, 2],
     ]);
+  });
+});
+
+describe("multi-turn runs (#2269)", () => {
+  const q = (id: string, before?: string[]): BaQaQuestion => ({
+    id,
+    category: "single-product",
+    scope: ["srv"],
+    text: "t",
+    expect: "answer",
+    ...(before ? { before, refersBack: true } : {}),
+  });
+  const all = [q("S1"), q("F1", ["first"]), q("S2"), q("F2", ["first"])];
+
+  it("parses the retrieval mode, and labels the arm by it", () => {
+    expect(parseRetrievalMode("conversation")).toBe("conversation");
+    expect(parseRetrievalMode("last-message")).toBe("last-message");
+    expect(() => parseRetrievalMode("history")).toThrow(/conversation or last-message/);
+    expect(armLabel("off", "conversation")).toBe("off");
+    expect(armLabel("on", "last-message")).toBe("on+last-message");
+  });
+
+  it("runs the one-turn set by default, the multi-turn set on request, then filters", () => {
+    expect(selectQuestions(all, {}).map((x) => x.id)).toEqual(["S1", "S2"]);
+    expect(selectQuestions(all, { multiTurn: true }).map((x) => x.id)).toEqual(["F1", "F2"]);
+    // Named questions are taken from either set.
+    expect(selectQuestions(all, { ids: ["S2", "F2"] }).map((x) => x.id)).toEqual(["S2", "F2"]);
+    expect(selectQuestions(all, { multiTurn: true, limit: 1 }).map((x) => x.id)).toEqual(["F1"]);
+  });
+
+  it("finds the expected files among the retrieved excerpts, uploads by their source path", () => {
+    const product = { name: "srv", documents: new Map([["srv.1.txt", "srv.1"]]) };
+    expect(
+      retrievedExpectedFiles(["srv:a.go", "srv:srv.1", "srv:b.go"], product, [
+        "a.go",
+        "srv.1.txt",
+        "c.go",
+        "a.go",
+      ]),
+    ).toEqual(["srv:a.go", "srv:srv.1"]);
+    expect(retrievedExpectedFiles(["srv:a.go"], product, [])).toEqual([]);
+    // Another product's file of the same path is not this product's.
+    expect(retrievedExpectedFiles(["cli:a.go"], product, ["a.go"])).toEqual([]);
   });
 });
