@@ -91,7 +91,9 @@ describe("the BRD fixture (numbering, nesting, a table, an image, comments, trac
   it("lists an image it cannot describe as not read, with its alt text, in place", async () => {
     const text = await parse(await buildBrdDocx());
     expect(text).toContain(
-      '| REQ-1 | Unlock by email |  |\n\n> **Image 1** (image1.png, alt text "Login wireframe"): image not read: no vision-capable model is configured.\n\nLockout is',
+      // #2263 — with no describer at all (a governing-document upload) the reason says so,
+      // rather than blaming a model configuration that route never consults.
+      '| REQ-1 | Unlock by email |  |\n\n> **Image 1** (image1.png, alt text "Login wireframe"): image not read: images are not described for this kind of document.\n\nLockout is',
     );
     expect(text).not.toContain("[Image 1]\n");
   });
