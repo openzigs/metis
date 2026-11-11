@@ -2929,6 +2929,31 @@ decision on that row is audited the same way before the delete (#2017).
 - A finding is looked up **with** its analysis id, so another analysis's finding is a 404.
 - An `AuditLog` row (`governing.finding.decision`, target `governing_finding`) is written in the
   same transaction as the decision.
+- `POST …/governing-findings/recheck` (#2222) takes `{ requirementId }`
+  (`governingRecheckInputSchema`, strict; a **stored** requirement id), needs `analysis.run`, and
+  runs the governing check again on that requirement's current wording only (title, body and
+  acceptance criteria): applicability through `governingApplicabilityHookFor`, then the findings
+  run, both stored under the stored requirement's own id with the version judged (`versions` on
+  the applicability entry, `governing_findings.requirementVersions` on each row). The findings are
+  produced from the new entry in memory first and the entry is stored only once they are, so a
+  failed evaluation stores nothing (502). 404 for a requirement that is not a live one of this
+  analysis **and** project; 409 when the workspace has no current rule. Audited
+  `governing.requirement.recheck`, metered to the project (`lib/governing/recheck.ts`).
+
+**Stale findings (#2222).** A governing finding is keyed by the requirement as the run analysed it
+(`AC-2`), and the stored requirements an analyst edits join to it only through their
+`finding:<id>` evidence labels (each evidence finding records its analysed requirement); on the dev
+sample the join is many-to-many. A stored requirement's **analysed version** is its version before
+the first `RequirementVersion` row with an actor (its current version when a person never edited
+it). A finding is stale for each stored requirement whose current version is not the one it judged:
+`requirementVersions[id]` on a re-checked row, else the analysed version. An analysed finding stops
+being stale for a requirement re-checked at its current version, whose own findings now stand for it
+(`withGoverningStaleness`, `lib/governing/requirement-staleness.ts`). The findings route, the BRD's
+governing section and the `get_governing_findings` chat tool set `stale` on each finding; the route
+also returns `requirementTitles` for the groups keyed by a stored id. The analysis snapshot carries
+`analysedVersion` on each requirement, so the traceability matrix (`findingsStale` on a row, a note
+in the CSV / markdown findings cell) and the analysis view's findings list mark the findings a
+requirement edited since the analysis was synthesised from.
 
 **Analysis view** (#1876): `GoverningFindingsPanel`
 (`ui/src/components/analysis/governing-findings-panel.tsx`), at the foot of the Findings tab,
@@ -4943,6 +4968,36 @@ section and the source's quote. The reading is the `document-read` stage of the 
 `IMPACT_DOCUMENT_READ_TIMEOUT_MS`). The run's summary says what was read from every section,
 which held nothing and which could not be read; a failed reading falls back to the heuristic
 splitter and says so. Pasted short text and an issue keep the splitter.
+
+#### Clarifying questions from the source document (#2235, epic #2227)
+
+With the reader on, each of the document agent's requirements carries its verified paragraph
+(`DocumentRequirement.source`: `quote`, `headingPath`, `filename`). The enhancement pipeline
+(`runEnhancementPipeline`) then extracts structured requirements from those statements, not
+from paraphrases: `buildSourceExtractionInput` labels each `[REQ-nnn]` with its section and
+fences the quote (`<<<SOURCE … SOURCE>>>`, treated as data in every prompt), and the extractor
+asks for `sourceIds`, so each `StructuredRequirement` keeps `sources` (a label the input did not
+list is ignored). It is also asked for ISO/IEC/IEEE 29148 §5.2.5 / §5.2.6 gaps, silence
+included. Before any model judges it, `requirement-quality-rules.ts` runs the INCOSE GtWR
+lexical rules over each source quote: R7 vague terms, R8 escape clauses, R9 open-ended clauses,
+plus TBD/TBC placeholders (29148 "complete"). Each hit becomes an ambiguity (`field` `R7:fast`,
+with `rule` and `term`), so it is asked, credited and counted like any other.
+
+The question prompt (`QUESTION_SYSTEM_PROMPT`) shows each requirement's paragraphs and asks the
+model, per question, for `uncertainty` (`missing-knowledge` | `ambiguity` | `silence` |
+`unanswerable`), `options` (two to four readings), `divergent` (whether the readings build
+different things) and `impact`. `question-selection.ts` decides deterministically. An
+unanswerable question is set aside as an open item. `divergent: false` is set aside as
+`same-outcome`. The rest are ranked: ticked items first (#1129), then impact, then the
+requirement's priority. The first `MAX_QUESTIONS_PER_ROUND` (8) are asked, and the rest are
+counted on the round (`notAsked`) for the next one. Set-aside questions are kept on
+`ClarificationState.setAside` and listed by the panel. Only real ambiguities of their
+requirement count as addressed (`setAsideAmbiguities`, inside `addressedAmbiguities`).
+Only missing knowledge (and an unclassified or governing question) goes through the grounding
+search; an ambiguity or a silence is the author's intent and is asked directly. A question's
+`citation` is copied from its requirement's source (the paragraph holding a flagged term),
+never from the model. A reply without the new fields is asked and grounded as before #2235.
+Impact Analysis and the portfolio check do not yet raise questions in this dialog (#2270).
 
 #### Online eval — scoring sampled live production runs (#1321, epic #1316)
 

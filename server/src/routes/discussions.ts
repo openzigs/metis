@@ -649,8 +649,8 @@ export function discussionsRouter(): Router {
       }
     };
 
-    // Prior history (excluding the trigger) for conversational context —
-    // #2226: the MOST RECENT messages, oldest→newest.
+    // Prior history for conversational context — #2226: the MOST RECENT
+    // messages, oldest→newest; #2249: only those before the trigger.
     const history = await loadRecentHistory(threadId, trigger.id);
 
     // #739 — ground the reply in the thread's project, as chat does: its

@@ -1142,7 +1142,7 @@ The AI answers from **this project's own sources**, as the project chat does: it
 
 **Configuring the thread.** Click **Settings** (top of the thread) to open the thread settings panel:
 - **AI participation** — a 3-way control to set the thread's mode (**Off**, **On mention**, or **Auto**). Your choice takes effect immediately.
-- **Anchor (optional)** — attach the discussion to a specific Requirement, Analysis, or Spec Kit feature so it carries that context. For a **Requirement**, search the project's requirements by title and pick one; an Analysis or Spec Kit feature still takes its id. (Both controls are available to thread members only.)
+- **Anchor (optional)** — attach the discussion to a specific Requirement, Analysis, or Spec Kit feature so it carries that context. For a **Requirement**, search the project's requirements by title and pick one; an Analysis or Spec Kit feature still takes its id. (Both controls are available to thread members only.) When the AI replies, it reads each anchor as it is at that moment: a requirement's title, body and acceptance criteria; an analysis's status and its requirements' titles; a Spec Kit feature's name, status and the summary paragraph at the top of its `spec.md`. Setting an anchor of one kind does not clear an anchor of another kind, so a thread can carry several, and the AI reads every one that still exists. [#2226, #2249]
 
 **Discussing a requirement.** When you start a discussion, **About requirement (optional)** under the title lets you pick the requirement it is about: click the box to see the project's newest requirements, or type part of a title to narrow them; typing searches every requirement in the project, however old its run. The date beside each one tells apart requirements with the same title from different runs. The discussions list then shows *About: …* under the thread's title, and the thread page links to the requirement. [#2187]
 
@@ -6131,6 +6131,22 @@ An approval is of a wording, so editing that wording reopens it:
   notification, on the first edit after the approval (not on every
   save), linking to the review. The person who made the edit is not
   notified.
+- **The analysis results say they judged the old wording (#2222).**
+  Once a requirement is edited, the governing findings that checked its
+  earlier wording are marked **Stale** in the Governing rules panel,
+  for example: "Stale: "Minimum password length is 12 characters" was
+  checked at v0 and is now v2." The BRD's governing section and the
+  chat say the same. The analysis findings the requirement was written
+  from are marked too, in the findings list and the traceability matrix
+  ("Stale: the analysis judged v0; the requirement is now v2.").
+- **Re-check this requirement.** In the Governing rules panel, a stale
+  result has a **Re-check this requirement** button (you need
+  permission to run analyses). It checks the governing rules again
+  against the requirement's current wording only, not the whole
+  analysis, and shows the results under the requirement's title. The
+  older results stop being marked stale for it. Editing it again marks
+  both stale until the next re-check. The analysis findings (the code
+  and document evidence) are not re-run: a new analysis does that.
 
 **One requirement in two open reviews (#1016).** You can request a
 second review of requirements that are already in review, for example

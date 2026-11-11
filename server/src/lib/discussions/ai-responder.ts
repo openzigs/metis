@@ -18,9 +18,10 @@
  *      tool call passes the discussion gate: project-scoped reads only, never a
  *      tool that would need someone to approve it. A reply that ran no tools
  *      streams token by token as before.
- *   3b. #2226 — the requirement or analysis the thread is anchored to, as it
- *      reads now (`thread-context.ts`), goes in as a USER turn ahead of the
- *      thread: it is user-editable text, so it never enters a system message.
+ *   3b. #2226 — the requirement, analysis or (#2249) Spec Kit feature the
+ *      thread is anchored to, as it reads now (`thread-context.ts`), goes in as
+ *      a USER turn ahead of the thread: it is user-editable text, so it never
+ *      enters a system message.
  *   4. Persist an `authorKind=ai` `DiscussionMessage` (via `buildAiMessageData`,
  *      which nulls `authorUserId` and asserts the author invariant), record ONE
  *      `AITokenUsage` row and ONE project-ledger `TokenUsage` row for the whole

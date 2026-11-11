@@ -110,6 +110,8 @@ vi.mock("../src/lib/prisma.js", () => ({
           return data;
         },
       ),
+      // #2222 — the snapshot reads each requirement's analysed version; none was edited by a person.
+      groupBy: vi.fn(async () => []),
     },
     analysis: {
       create: vi.fn(async ({ data }: { data: Partial<AnalysisRow> }) => {
