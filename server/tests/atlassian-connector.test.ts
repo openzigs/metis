@@ -92,10 +92,15 @@ vi.mock("../src/lib/mcp/mcp-service.js", () => ({
   }),
 }));
 
+import { audit } from "../src/lib/audit/audit-service.js";
 import {
   ATLASSIAN_MCP_LABEL,
+  MAX_CONFLUENCE_PAGES,
+  MAX_JIRA_ISSUES,
+  capSearchResults,
   ingestConfluenceSpace,
   ingestJiraQuery,
+  parseSearchTotal,
   parseConfluencePage,
   parseConfluenceSearch,
   parseJiraIssue,
@@ -382,6 +387,94 @@ describe("ingestConfluenceSpace", () => {
     const second = await ingestConfluenceSpace(args);
     expect(second.skipped).toBe(1);
     expect(second.documentsCreated).toBe(0);
+  });
+});
+
+describe("#2244: ingest says what the cap or the search left out", () => {
+  it("parseSearchTotal reads total / totalSize and ignores anything else", () => {
+    expect(parseSearchTotal({ issues: [], total: 812 })).toBe(812);
+    expect(parseSearchTotal({ results: [], totalSize: 40 })).toBe(40);
+    expect(parseSearchTotal({ content: [{ type: "text", text: '{"total":9}' }] })).toBe(9);
+    expect(parseSearchTotal({ total: "9" })).toBeNull();
+    expect(parseSearchTotal({ total: -1 })).toBeNull();
+    expect(parseSearchTotal([{ key: "X-1" }])).toBeNull();
+    expect(parseSearchTotal(null)).toBeNull();
+  });
+
+  it("capSearchResults cuts at the limit and counts the rest", () => {
+    expect(capSearchResults([1, 2, 3], null, 2)).toEqual({ refs: [1, 2], found: 3, omitted: 1 });
+    expect(capSearchResults([1, 2], 10, 5)).toEqual({ refs: [1, 2], found: 10, omitted: 8 });
+    expect(capSearchResults([1, 2], 1, 5)).toEqual({ refs: [1, 2], found: 2, omitted: 0 });
+  });
+
+  it("Confluence: a space over the page cap reports found / omitted / limit", async () => {
+    const results = Array.from({ length: MAX_CONFLUENCE_PAGES + 3 }, (_, i) => ({
+      id: `p${i}`,
+      title: `T${i}`,
+      url: "",
+    }));
+    const invoke = vi
+      .fn()
+      .mockResolvedValueOnce({ content: { results }, isError: false })
+      .mockResolvedValue({ content: { body: "b" }, isError: false });
+    const summary = await ingestConfluenceSpace({
+      projectId: "p",
+      spaceKey: "S",
+      actorId: "u",
+      invokeTool: invoke,
+      resolveServer: async () => ({ id: "srv" }),
+    });
+    expect(summary).toMatchObject({
+      found: MAX_CONFLUENCE_PAGES + 3,
+      omitted: 3,
+      limit: MAX_CONFLUENCE_PAGES,
+    });
+    // One search plus one page fetch per page under the cap — the 3 over it are never fetched.
+    expect(invoke).toHaveBeenCalledTimes(1 + MAX_CONFLUENCE_PAGES);
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({ metadata: expect.objectContaining({ omitted: 3 }) }),
+    );
+  });
+
+  it("Jira: a search whose total exceeds what it returned reports the gap", async () => {
+    const invoke = vi
+      .fn()
+      .mockResolvedValueOnce({
+        content: { issues: [{ key: "X-1", fields: { summary: "s" } }], total: 640 },
+        isError: false,
+      })
+      .mockResolvedValueOnce({ content: { description: "d" }, isError: false });
+    const summary = await ingestJiraQuery({
+      projectId: "p",
+      jql: "project=X",
+      actorId: "u",
+      invokeTool: invoke,
+      resolveServer: async () => ({ id: "srv" }),
+    });
+    expect(summary).toMatchObject({
+      found: 640,
+      omitted: 639,
+      limit: MAX_JIRA_ISSUES,
+      documentsCreated: 1,
+    });
+  });
+
+  it("a run under the cap reports nothing omitted", async () => {
+    const invoke = vi
+      .fn()
+      .mockResolvedValueOnce({
+        content: { issues: [{ key: "X-1", fields: { summary: "s" } }], total: 1 },
+        isError: false,
+      })
+      .mockResolvedValueOnce({ content: { description: "d" }, isError: false });
+    const summary = await ingestJiraQuery({
+      projectId: "p",
+      jql: "x",
+      actorId: "u",
+      invokeTool: invoke,
+      resolveServer: async () => ({ id: "srv" }),
+    });
+    expect(summary).toMatchObject({ found: 1, omitted: 0 });
   });
 });
 

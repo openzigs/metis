@@ -43,7 +43,9 @@ export const ATLASSIAN_MCP_LABEL = "mcp-atlassian";
 
 /** Hard caps to prevent a runaway ingest from hammering Atlassian or
  * exhausting LanceDB. The MCP server is also expected to enforce its own
- * pagination, but defence-in-depth applies. */
+ * pagination, but defence-in-depth applies. A run that hits a cap — or a
+ * search whose reported total exceeds what it returned — says so in the
+ * summary (`found` / `omitted` / `limit`, #2244), so nothing is cut silently. */
 export const MAX_CONFLUENCE_PAGES = 200;
 export const MAX_JIRA_ISSUES = 500;
 
@@ -55,6 +57,14 @@ export interface AtlassianIngestSummary {
   /** URLs/keys we skipped because they already existed and the body hash
    * matched (e.g. running the same JQL twice in a row). */
   skipped: number;
+  /** #2244 — pages/issues the search matched: the larger of what it returned
+   * and the total it reported. */
+  found: number;
+  /** #2244 — matched but not ingested this run: cut by `limit`, or never
+   * returned by the search. Zero when everything matched was processed. */
+  omitted: number;
+  /** #2244 — the per-run cap that applied (MAX_CONFLUENCE_PAGES / MAX_JIRA_ISSUES). */
+  limit: number;
 }
 
 export interface IngestConfluenceInput {
@@ -171,6 +181,32 @@ interface JiraIssueContent extends JiraIssueSummary {
 }
 
 // ---- Parsers --------------------------------------------------------------
+
+/**
+ * #2244 — the match count a search result reports beyond the page it
+ * returned (`total` for Jira, `totalSize` / `size` for Confluence), or null.
+ */
+export function parseSearchTotal(raw: unknown): number | null {
+  const data = unwrapMCPContent(raw);
+  if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+  const obj = data as Record<string, unknown>;
+  for (const key of ["total", "totalSize", "size"]) {
+    const v = obj[key];
+    if (typeof v === "number" && Number.isInteger(v) && v >= 0) return v;
+  }
+  return null;
+}
+
+/** #2244 — apply the per-run cap and count what it, or the search, left out. */
+export function capSearchResults<T>(
+  all: T[],
+  reportedTotal: number | null,
+  limit: number,
+): { refs: T[]; found: number; omitted: number } {
+  const refs = all.slice(0, limit);
+  const found = Math.max(all.length, reportedTotal ?? 0);
+  return { refs, found, omitted: found - refs.length };
+}
 
 export function parseConfluenceSearch(raw: unknown): ConfluencePageRef[] {
   const data = unwrapMCPContent(raw);
@@ -296,7 +332,19 @@ export async function ingestConfluenceSpace(
       `confluence_search failed for space ${input.spaceKey}`,
     );
   }
-  const refs = parseConfluenceSearch(searchRaw.content).slice(0, MAX_CONFLUENCE_PAGES);
+  const { refs, found, omitted } = capSearchResults(
+    parseConfluenceSearch(searchRaw.content),
+    parseSearchTotal(searchRaw.content),
+    MAX_CONFLUENCE_PAGES,
+  );
+  if (omitted > 0) {
+    log.warn("confluence ingest left pages out", {
+      spaceKey: input.spaceKey,
+      found,
+      omitted,
+      limit: MAX_CONFLUENCE_PAGES,
+    });
+  }
 
   const summary: AtlassianIngestSummary = {
     documentsCreated: 0,
@@ -304,6 +352,9 @@ export async function ingestConfluenceSpace(
     chunkCount: 0,
     failures: 0,
     skipped: 0,
+    found,
+    omitted,
+    limit: MAX_CONFLUENCE_PAGES,
   };
 
   for (const ref of refs) {
@@ -370,7 +421,14 @@ export async function ingestJiraQuery(input: IngestJiraInput): Promise<Atlassian
   if (searchRaw.isError) {
     throw new ConnectorError(502, "MCP_TOOL_ERROR", `jira_search failed for jql`);
   }
-  const refs = parseJiraSearch(searchRaw.content).slice(0, MAX_JIRA_ISSUES);
+  const { refs, found, omitted } = capSearchResults(
+    parseJiraSearch(searchRaw.content),
+    parseSearchTotal(searchRaw.content),
+    MAX_JIRA_ISSUES,
+  );
+  if (omitted > 0) {
+    log.warn("jira ingest left issues out", { found, omitted, limit: MAX_JIRA_ISSUES });
+  }
 
   const summary: AtlassianIngestSummary = {
     documentsCreated: 0,
@@ -378,6 +436,9 @@ export async function ingestJiraQuery(input: IngestJiraInput): Promise<Atlassian
     chunkCount: 0,
     failures: 0,
     skipped: 0,
+    found,
+    omitted,
+    limit: MAX_JIRA_ISSUES,
   };
 
   // Build a JiraClient for attachment downloading if connectionId is provided
