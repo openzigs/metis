@@ -23,6 +23,9 @@ import {
   MAX_ANALYSIS_RETRIEVAL_QUERIES,
   MAX_REQUIREMENTS_FOR_RETRIEVAL,
   REQUIREMENT_RETRIEVAL_CONCURRENCY,
+  requirementInputExcerpt,
+  type RequirementLimitStage,
+  type RequirementsLeftOutNotice,
 } from "@metis/shared";
 import type { AIProvider } from "../ai/types.js";
 import type { DocumentSource } from "../documents/document-source.js";
@@ -36,6 +39,7 @@ import { reciprocalRankFusion } from "../rag/bm25-index.js";
 import type { KnowledgeService } from "../rag/knowledge-service.js";
 import { getReranker, isRerankEnabled, type Reranker } from "../rag/reranker.js";
 import type { RetrievalContextChunk } from "./agent-runner.js";
+import { requirementQueryText } from "./requirement-query.js";
 
 /**
  * Static keyword bags per specialist agent. Used as a *fallback* when project
@@ -301,7 +305,8 @@ export async function retrievePerRequirement(
       const i = cursor++;
       if (i >= reqs.length) return;
       const req = reqs[i];
-      const res = await knowledge.search(input.projectId, req.text, {
+      // #2233 — the query is bounded; the evidence keeps the full text for the prompt.
+      const res = await knowledge.search(input.projectId, requirementQueryText(req.text), {
         k,
         documentIds: input.documentIds,
         fusionPoolSize: poolSize,
@@ -323,6 +328,30 @@ export async function retrievePerRequirement(
 
   await Promise.all(Array.from({ length: Math.min(concurrency, reqs.length) }, () => worker()));
   return results;
+}
+
+/**
+ * #2233 — what a stage that takes requirements as {@link retrievePerRequirement}
+ * does (blank text dropped, the first `max` kept) leaves out: "analysed 24 of
+ * 41 requirements", naming the 17. `null` when it leaves none out, so a run
+ * under the limit records nothing.
+ */
+export function requirementsLeftOutAtLimit(
+  stage: RequirementLimitStage,
+  requirements: ReadonlyArray<{ id: string; text: string }>,
+  max: number = MAX_REQUIREMENTS_FOR_RETRIEVAL,
+): RequirementsLeftOutNotice | null {
+  const withText = requirements.filter((r) => r.text.trim().length > 0);
+  const analysedCount = Math.min(withText.length, Math.max(0, max));
+  if (analysedCount === withText.length) return null;
+  return {
+    stage,
+    analysedCount,
+    totalCount: withText.length,
+    leftOut: withText
+      .slice(analysedCount)
+      .map((r) => ({ id: r.id, excerpt: requirementInputExcerpt(r.text) })),
+  };
 }
 
 /** What a requirement's set says when deciding its applicability threw. */

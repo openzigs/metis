@@ -103,6 +103,41 @@ describe("composeImportedRequirementInput (#1006)", () => {
   });
 });
 
+describe("#2233 — an imported item's body and acceptance criteria reach the analysis", () => {
+  it("records them on the item's link as detail, while the splitter still sees only the title", async () => {
+    const { extraInstructions, sourceRequirements } = composeImportedRequirementInput([
+      {
+        ...MINIFLUX[0],
+        body: "## Steps\n\n- Open a category\n- Click mark all read",
+        acceptanceCriteria: ["The unread count drops to zero.", "  "],
+      },
+      MINIFLUX[1],
+    ]);
+    const { candidates } = await extractNewRequirementCandidatesWithAccount(extraInstructions, 25);
+
+    expect(candidates.map((c) => c.text)).toEqual([MINIFLUX[0].title, MINIFLUX[1].title]);
+    expect(sourceRequirements[0].detail).toBe(
+      "## Steps\n\n- Open a category\n- Click mark all read\n\n" +
+        "Acceptance criteria:\n- The unread count drops to zero.",
+    );
+    expect(sourceRequirements[1]).not.toHaveProperty("detail");
+  });
+
+  it("detail is the criteria alone, the body alone, or nothing", async () => {
+    const { importedRequirementDetail } = await import("./imported-requirement-input.js");
+    expect(importedRequirementDetail("", ["A"])).toBe("Acceptance criteria:\n- A");
+    expect(importedRequirementDetail(" Body ", [])).toBe("Body");
+    expect(importedRequirementDetail(null)).toBeUndefined();
+    expect(importedRequirementDetail("  ", [" "])).toBeUndefined();
+  });
+
+  it("does not shorten a long body", async () => {
+    const { importedRequirementDetail } = await import("./imported-requirement-input.js");
+    const body = "word ".repeat(5_000).trim();
+    expect(importedRequirementDetail(body)).toBe(body);
+  });
+});
+
 describe("normaliseImportedRequirementQuery (#1006)", () => {
   it("trims, drops a leading #, and bounds the term", async () => {
     const { normaliseImportedRequirementQuery, IMPORTED_REQUIREMENT_QUERY_MAX } =

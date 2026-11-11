@@ -32,13 +32,18 @@ import {
   type AgentDefinitionDto,
   type AgentFindingPayload,
   type AnalysisPromptOnlyAgent,
+  type FindingsLeftOutNotice,
 } from "@metis/shared";
 import { listEnabledAgentsForProject } from "../custom-agents/index.js";
 import { invokeAgentDefinition } from "../custom-agents/invoke.js";
 import { customDtoDefinition, listProjectLibraryAgents } from "../agent-runtime/definition.js";
 import type { AIProvider, TokenUsage } from "../ai/types.js";
 import { createChildLogger } from "../logger.js";
-import { clampAgentOutputStrings, extractJsonObject } from "./agent-runner.js";
+import {
+  clampAgentOutputStrings,
+  collectFindingsLeftOut,
+  extractJsonObject,
+} from "./agent-runner.js";
 import {
   persistAgentResult,
   type AgentPhaseOutput,
@@ -80,6 +85,8 @@ export interface CustomAgentResult {
   aborted?: boolean;
   /** #289 — did the one bounded final-answer retry fire / succeed? */
   finalAnswerRetry?: { attempted: boolean; succeeded: boolean };
+  /** #2233 — findings cut from the answer at the 50-finding cap, keyed by `agentRef`. */
+  findingsLeftOut?: FindingsLeftOutNotice;
   startedAt: Date;
   completedAt: Date;
 }
@@ -138,6 +145,8 @@ export function parseAgentFindingsAnswer(text: string):
       ok: true;
       output: AgentPhaseFindings;
       repairs: ReturnType<typeof repairFindingsAnswer>["repairs"];
+      /** #2233 — findings the clamp cut; `agentKey` is filled in by the caller. */
+      findingsLeftOut?: FindingsLeftOutNotice;
     }
   | { ok: false; invalid: AgentFindingsInvalid } {
   let parsed: unknown;
@@ -150,6 +159,8 @@ export function parseAgentFindingsAnswer(text: string):
     return { ok: false, invalid: { reason: "non-json-response", issues: [] } };
   }
   const repaired = repairFindingsAnswer(parsed);
+  // #2233 — read before the clamp cuts the findings past the 50th.
+  const findingsLeftOut = collectFindingsLeftOut(repaired.value, "");
   // `agentKey` is specialist-only: stamp a valid one so the SAME schema judges
   // the rest of the answer, then drop it — the row is keyed by the agent ref.
   const candidate = clampAgentOutputStrings({
@@ -173,6 +184,7 @@ export function parseAgentFindingsAnswer(text: string):
     ok: true,
     output: { summary, findings: findings.map(stripServerOwnedFields), notes },
     repairs: repaired.repairs,
+    ...(findingsLeftOut ? { findingsLeftOut } : {}),
   };
 }
 
@@ -296,8 +308,12 @@ export async function runEnabledCustomAgents(
         });
         const parsed = parseAgentFindingsAnswer(res.content);
         let output: AgentPhaseFindings | undefined;
+        let findingsLeftOut: FindingsLeftOutNotice | undefined;
         if (parsed.ok) {
           output = parsed.output;
+          if (parsed.findingsLeftOut) {
+            findingsLeftOut = { ...parsed.findingsLeftOut, agentKey: agent.ref };
+          }
           if (parsed.repairs.length > 0) {
             // #298 — no repair is silent: counts and paths, never the text.
             log.warn("Agent findings answer repaired instead of rejected", {
@@ -322,6 +338,7 @@ export async function runEnabledCustomAgents(
           ...(output ? { output } : {}),
           ...(parsed.ok ? {} : { invalid: parsed.invalid }),
           ...(res.finalAnswerRetry ? { finalAnswerRetry: res.finalAnswerRetry } : {}),
+          ...(findingsLeftOut ? { findingsLeftOut } : {}),
           startedAt,
           completedAt: new Date(),
         };
