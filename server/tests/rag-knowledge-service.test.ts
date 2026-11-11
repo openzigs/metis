@@ -287,6 +287,7 @@ import { approveDocument } from "../src/lib/rag/quarantine.js";
 import { Embedder } from "../src/lib/rag/embedder.js";
 import { EMBED_INPUT_MAX_BYTES } from "../src/lib/rag/embed-input-budget.js";
 import { buildSearchKnowledgeTool } from "../src/lib/rag/search-knowledge-tool.js";
+import { buildBrdDocx } from "./fixtures/docx-2232.js";
 
 let storageRoot: string;
 let vectorRoot: string;
@@ -559,6 +560,49 @@ describe("KnowledgeService.ingestDocument", () => {
 
   it("throws when documentId does not exist", async () => {
     await expect(svc.ingestDocument("missing")).rejects.toThrow();
+  });
+
+  it("#2232 — describes a Word document's images with the document's project describer", async () => {
+    const describe = vi.fn(async () => "Wireframe: email field, password field, Sign in button.");
+    const describerFor = vi.fn(() => describe);
+    svc = new KnowledgeService({
+      storage,
+      vectorStore: store,
+      embedder: new Embedder(),
+      chunkOptions: { chunkSize: 400, overlap: 8 },
+      imageDescriber: describerFor,
+    });
+    const blob = await storage.write({ projectId: "p7", buffer: await buildBrdDocx() });
+    documents.set("d-docx", {
+      id: "d-docx",
+      projectId: "p7",
+      filename: "brd.docx",
+      mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      storagePath: blob.storagePath,
+      status: "pending",
+      errorMessage: null,
+      chunkCount: 0,
+      processedAt: null,
+      deletedAt: null,
+      indexState: "pending",
+      autoApproveTrusted: true,
+      aclSubjects: "[]",
+      uploadedById: "u1",
+    });
+
+    const r = await svc.ingestDocument("d-docx");
+
+    expect(r.status).toBe("ready");
+    expect(describerFor).toHaveBeenCalledWith("p7");
+    expect(describe).toHaveBeenCalledTimes(1);
+    // Read back through the indexed chunks, the rows retrieval serves.
+    const text = [...chunks.values()]
+      .filter((c) => c.documentId === "d-docx")
+      .sort((a, b) => a.position - b.position)
+      .map((c) => c.text)
+      .join("\n");
+    expect(text).toContain("Wireframe: email field, password field, Sign in button.");
+    expect(text).toContain("1.1.1 Email is validated.");
   });
 });
 
