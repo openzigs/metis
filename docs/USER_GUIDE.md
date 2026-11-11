@@ -1255,7 +1255,7 @@ When you upload a document to a project, METIS processes it through several stag
 
 1. **Uploading** — the file is transferred to the server
 2. **Processing** — the file is:
-   - **Converted** to Markdown (PDF → Markdown with heading detection, DOCX → Markdown preserving structure, XLSX → Markdown tables, PPTX → Markdown with slide headings)
+   - **Converted** to Markdown (PDF → Markdown with heading detection, DOCX → Markdown keeping Word's heading and list numbers (such as `3.2.1`), nested lists, tables and footnotes; each image is described when the project's model can read images and otherwise listed as "image not read", and reviewer comments, tracked changes and anything not carried are listed under *Conversion notes* at the end of the text, XLSX → Markdown tables, PPTX → Markdown with slide headings)
    - **Chunked** into small, overlapping pieces (about 512 tokens each)
    - **Embedded** — each chunk is converted into a mathematical representation that captures its meaning
 3. **Indexed** — the chunks are stored in the knowledge base, ready for the AI to search

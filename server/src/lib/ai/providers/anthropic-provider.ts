@@ -182,7 +182,15 @@ interface AnthropicToolResultBlock {
 }
 
 /** Any content block this adapter emits. */
-type AnthropicBlock = AnthropicTextBlock | AnthropicToolUseBlock | AnthropicToolResultBlock;
+/** #2232 — an image block, from a `ChatContentPartImage` part. */
+interface AnthropicImageBlock {
+  type: "image";
+  source: { type: "base64"; media_type: string; data: string } | { type: "url"; url: string };
+  cache_control?: CacheControl;
+}
+
+type AnthropicBlock =
+  AnthropicTextBlock | AnthropicImageBlock | AnthropicToolUseBlock | AnthropicToolResultBlock;
 
 /** One Messages API turn as this adapter builds it. */
 interface AnthropicApiMessage {
@@ -715,13 +723,13 @@ export class AnthropicProvider implements AIProvider {
       // Preserve a MULTI-BLOCK text message as distinct text blocks (the
       // faithfulness judge sends [claims, evidence] so the stable evidence can
       // be the cached trailing block). Single-string content stays a string —
-      // back-compat. Messages containing non-text parts (e.g. images) fall back
-      // to the flattened text form, since this provider's synthesis paths are
-      // text-only and the Messages API would need image blocks handled here.
-      const textBlocks = toTextBlocks(msg.content);
+      // back-compat. A message with an image part keeps its blocks, the image
+      // included (#2232), however many there are.
+      const blocks = toContentBlocks(msg.content);
+      const keepBlocks = blocks && (blocks.length > 1 || blocks.some((b) => b.type === "image"));
       apiMessages.push({
         role,
-        content: textBlocks && textBlocks.length > 1 ? textBlocks : messageText(msg),
+        content: keepBlocks ? blocks : messageText(msg),
       });
     }
 
@@ -1074,21 +1082,34 @@ function logOutputBudget(
 }
 
 /**
- * Convert a {@link ChatMessage.content} value into an array of Anthropic text
- * blocks when (and only when) it is an array consisting ENTIRELY of text parts.
- * Returns `null` for a plain string (caller keeps the string form) or when any
- * non-text part is present (caller falls back to the flattened text form). This
+ * Convert a {@link ChatMessage.content} value into an array of Anthropic content
+ * blocks. Returns `null` for a plain string (caller keeps the string form). This
  * lets a caller that pre-splits its message into blocks (e.g. the faithfulness
  * judge: [claims, evidence]) preserve that split so a cache breakpoint can land
  * on a specific block.
+ *
+ * #2232 — an `image_url` part becomes an `image` block (a `data:` URI as base64,
+ * anything else as a URL source). It used to send the whole message flattened to
+ * its text, so a "describe this image" request reached the model with no image
+ * and the reply was made up.
  */
-function toTextBlocks(content: ChatMessage["content"]): AnthropicTextBlock[] | null {
+function toContentBlocks(
+  content: ChatMessage["content"],
+): Array<AnthropicTextBlock | AnthropicImageBlock> | null {
   if (typeof content === "string") return null;
   if (!Array.isArray(content) || content.length === 0) return null;
-  const blocks: AnthropicTextBlock[] = [];
+  const blocks: Array<AnthropicTextBlock | AnthropicImageBlock> = [];
   for (const part of content) {
-    if (part.type !== "text") return null; // non-text part → fall back to flatten
-    blocks.push({ type: "text", text: part.text });
+    if (part.type === "text") {
+      blocks.push({ type: "text", text: part.text });
+      continue;
+    }
+    const url = part.image_url.url;
+    const data = /^data:([^;,]+);base64,(.*)$/s.exec(url);
+    blocks.push({
+      type: "image",
+      source: data ? { type: "base64", media_type: data[1], data: data[2] } : { type: "url", url },
+    });
   }
   return blocks;
 }
