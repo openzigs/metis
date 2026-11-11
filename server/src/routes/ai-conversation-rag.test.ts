@@ -151,6 +151,20 @@ describe("buildAutoRagContext — cited excerpts carry forward (#2240)", () => {
     ]);
   });
 
+  it("carries only excerpts of the attached documents when documents are attached", async () => {
+    search.mockResolvedValue({ hits: [hit("fresh")] });
+    loadChunksById.mockResolvedValue([hit("other-doc"), hit("attached-doc")]);
+    const cap = capture();
+    const out = await buildAutoRagContext("p1", followUp, "u1", deps(), cap, {
+      carryForward: ["other-doc", "attached-doc"],
+      documentIds: ["d-attached-doc"],
+    });
+    expect(out).toContain("every excerpt below comes from them");
+    expect(out).toContain("attached-doc.md#0 (cited in your previous answer)");
+    expect(out).not.toContain("other-doc.md");
+    expect(cap.excerpts!.map((e) => e.chunkId)).toEqual(["fresh", "attached-doc"]);
+  });
+
   it("lists an excerpt once when the fresh search found it again", async () => {
     search.mockResolvedValue({ hits: [hit("cited")] });
     loadChunksById.mockResolvedValue([hit("cited")]);

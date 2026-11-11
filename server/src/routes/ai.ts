@@ -711,7 +711,9 @@ export async function buildAutoRagContext(
     if (opts.carryForward && opts.carryForward.length > 0) {
       try {
         carried = (await loadChunksById(projectId, opts.carryForward, actor)).filter(
-          (c) => !found.has(c.chunkId),
+          // Attached documents limit the whole block: a carried excerpt from
+          // any other document would break that limit and the note below.
+          (c) => !found.has(c.chunkId) && (!documentIds || documentIds.includes(c.documentId)),
         );
       } catch (err) {
         log.debug("Cited excerpts could not be carried forward", {
