@@ -4925,6 +4925,18 @@ and the full `reading`. The coverage report goes on the capability record
 (`DocumentCoveragePanel`). Retrieval stays for the code agent and the other specialists; if no
 selected document can be loaded, the document agent retrieves as before.
 
+Impact Analysis (#2231) reads a document source from its stored file, parsed as ingest parses
+it (`impact-analysis/document-source.ts` `loadImpactDocumentText`); only when the file cannot
+be read does it fall back to the stored chunks, joined with each chunk's overlap kept once
+(`joinChunksWithoutOverlap`), never concatenated. Behind the same flag, the run reads that text
+with `readDocument` (and pasted text of 2,000 characters or more that is not one issue), once,
+before any project: each requirement, constraint or business rule is one change, carrying its
+section and the source's quote. The reading is the `document-read` stage of the run's
+`ImpactLlmRuntime` (metered as `impact.document-read`, bounded by
+`IMPACT_DOCUMENT_READ_TIMEOUT_MS`). The run's summary says what was read from every section,
+which held nothing and which could not be read; a failed reading falls back to the heuristic
+splitter and says so. Pasted short text and an issue keep the splitter.
+
 #### Online eval — scoring sampled live production runs (#1321, epic #1316)
 
 Every other suite above scores **fixtures**. `server/src/lib/eval/online/` scores a
