@@ -108,6 +108,72 @@ describe("JiraImporter", () => {
     expect(issues).toHaveLength(0);
   });
 
+  it("#2244: converts a Jira Cloud ADF description to Markdown, not raw JSON", async () => {
+    const description = {
+      type: "doc",
+      version: 1,
+      content: [
+        { type: "heading", attrs: { level: 3 }, content: [{ type: "text", text: "Goal" }] },
+        {
+          type: "paragraph",
+          content: [
+            { type: "text", text: "Export " },
+            { type: "text", text: "all", marks: [{ type: "strong" }] },
+            { type: "text", text: " rows" },
+          ],
+        },
+        {
+          type: "bulletList",
+          content: [
+            {
+              type: "listItem",
+              content: [{ type: "paragraph", content: [{ type: "text", text: "CSV" }] }],
+            },
+          ],
+        },
+      ],
+    };
+    const searchIssues = vi.fn(async () =>
+      result([{ key: "X-1", fields: { summary: "Export", description } }], 1),
+    );
+    const imp = new JiraImporter({ client: { searchIssues }, baseUrl: "https://jira.example.com" });
+    const issues = [];
+    for await (const i of imp.fetchAll({ connectionId: "c", jql: "x" })) issues.push(i);
+    expect(issues[0].body).toBe("### Goal\n\nExport **all** rows\n\n- CSV");
+    // The requirement body the importer hands on is the Markdown, through its own map().
+    expect(imp.map(issues[0]).body).toContain("Export **all** rows");
+    expect(imp.map(issues[0]).body).not.toContain('"type"');
+  });
+
+  it("#2244: converts an ADF custom field mapped to the body", async () => {
+    const searchIssues = vi.fn(async () =>
+      result(
+        [
+          {
+            key: "X-2",
+            fields: {
+              summary: "S",
+              customfield_10050: {
+                type: "doc",
+                version: 1,
+                content: [{ type: "paragraph", content: [{ type: "text", text: "From custom" }] }],
+              },
+            },
+          },
+        ],
+        1,
+      ),
+    );
+    const imp = new JiraImporter({
+      client: { searchIssues },
+      baseUrl: "https://jira.example.com",
+      customFieldMap: { body: "customfield_10050" },
+    });
+    const issues = [];
+    for await (const i of imp.fetchAll({ connectionId: "c", jql: "x" })) issues.push(i);
+    expect(issues[0].body).toBe("From custom");
+  });
+
   it("serialises {name} objects and falls back to JSON for opaque fields", async () => {
     const searchIssues = vi.fn(async () =>
       result([{ key: "X-1", fields: { summary: { name: "Named" }, description: { foo: 1 } } }], 1),
