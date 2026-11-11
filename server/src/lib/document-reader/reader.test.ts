@@ -1,0 +1,511 @@
+import { describe, expect, it } from "vitest";
+import type { AIProvider, ChatMessage, ChatOptions, ChatResponse } from "../ai/types.js";
+import { AIProviderError } from "../ai/errors.js";
+import { normaliseStatementKind } from "./prompts.js";
+import {
+  DocumentReaderError,
+  READER_BATCH_CHARS,
+  chooseReadingMode,
+  readDocument,
+} from "./reader.js";
+import { batchSections, formatHeadingPath, outlineSections, sectionAt } from "./sections.js";
+
+const TEXT = [
+  "# Booking FRD",
+  "",
+  "## 1 Purpose",
+  "",
+  "This document describes the clinic booking portal for patients.",
+  "",
+  "## 2 Access",
+  "",
+  "### 2.1 Login",
+  "",
+  "The portal shall lock an account after five failed attempts.",
+  "",
+  "## 3 Booking",
+  "",
+  "A patient shall hold at most two future appointments at any time.",
+  "For example, a patient with two bookings must cancel one first.",
+  "",
+  "## 4 Glossary",
+  "",
+  "A clinic means any site run by the trust.",
+  "",
+].join("\n");
+
+interface Call {
+  system: string;
+  user: string;
+  opts?: ChatOptions;
+}
+
+type Reply = string | ((call: Call) => string);
+
+/** A provider that answers by the first system-message phrase it recognises. */
+function routedProvider(
+  routes: Array<[string, Reply]>,
+  identity: { key: string; model: string } = { key: "anthropic", model: "claude-sonnet-5-5" },
+): { provider: AIProvider; calls: Call[] } {
+  const calls: Call[] = [];
+  const provider = {
+    ...identity,
+    offline: false,
+    async chat(messages: ChatMessage[], opts?: ChatOptions): Promise<ChatResponse> {
+      const system = opts?.systemMessage ?? "";
+      const user = messages.map((m) => m.content as string).join("\n");
+      const call = { system, user, opts };
+      calls.push(call);
+      const route = routes.find(([needle]) => system.includes(needle));
+      if (!route) throw new Error(`no route for: ${system.slice(0, 80)}`);
+      const content = typeof route[1] === "function" ? route[1](call) : route[1];
+      return {
+        content,
+        model: identity.model,
+        provider: identity.key,
+        usage: { promptTokens: 100, completionTokens: 10, totalTokens: 110 },
+      } as ChatResponse;
+    },
+  } as unknown as AIProvider;
+  return { provider, calls };
+}
+
+const WHOLE = "from beginning to end";
+const SECTIONED = "reading part of a long business requirements document";
+const CONTEXT = "preparing to read a long business requirements document";
+const MERGE = "combining the statements";
+
+/** The section ids a statements call asks for. */
+function askedSections(call: Call): string[] {
+  const line = call.system.split("\n").find((l) => l.includes("these sections")) ?? "";
+  return [...line.matchAll(/\bS\d+\b/g)].map((m) => m[0]);
+}
+
+const statements = (...items: unknown[]) => JSON.stringify({ statements: items });
+const noMerge = JSON.stringify({ duplicates: [], crossReferences: [] });
+
+describe("outlineSections", () => {
+  it("cuts at every heading and keeps the heading path, outermost first", () => {
+    const sections = outlineSections(TEXT);
+    expect(sections.map((s) => s.id)).toEqual(["S1", "S2", "S3", "S4", "S5", "S6"]);
+    expect(sections.map((s) => formatHeadingPath(s.headingPath))).toEqual([
+      "Booking FRD",
+      "Booking FRD › 1 Purpose",
+      "Booking FRD › 2 Access",
+      "Booking FRD › 2 Access › 2.1 Login",
+      "Booking FRD › 3 Booking",
+      "Booking FRD › 4 Glossary",
+    ]);
+    for (const s of sections) expect(TEXT.slice(s.start, s.end)).toBe(s.text);
+  });
+
+  it("closes a deeper heading's path when a shallower one follows", () => {
+    const text = "# A\n\n## B\n\nb text\n\n### C\n\nc text\n\n## D\n\nd text\n";
+    expect(outlineSections(text).map((s) => s.headingPath)).toEqual([
+      ["A"],
+      ["A", "B"],
+      ["A", "B", "C"],
+      ["A", "D"],
+    ]);
+  });
+
+  it("names text before the first heading (start)", () => {
+    const [first] = outlineSections("Preamble text here.\n\n# Title\n\nBody.\n");
+    expect(first!.headingPath).toEqual(["(start)"]);
+  });
+
+  it("finds the section holding an offset", () => {
+    const sections = outlineSections(TEXT);
+    const at = TEXT.indexOf("lock an account");
+    expect(sectionAt(sections, at)?.id).toBe("S4");
+    expect(sectionAt(sections, TEXT.length + 10)).toBeUndefined();
+  });
+});
+
+describe("batchSections", () => {
+  it("groups consecutive sections until a group reaches the limit", () => {
+    const sections = outlineSections(TEXT);
+    expect(batchSections(sections, 100_000)).toHaveLength(1);
+    const one = batchSections(sections, 1);
+    expect(one.map((b) => b.map((s) => s.id))).toEqual(sections.map((s) => [s.id]));
+    const sizes = sections.map((s) => s.end - s.start);
+    const two = batchSections(sections, sizes[0]! + sizes[1]!);
+    expect(two[0]!.map((s) => s.id)).toEqual(["S1", "S2"]);
+  });
+});
+
+describe("chooseReadingMode", () => {
+  it("reads whole only when the document, the prompt and a full reply fit 80% of the window", () => {
+    // 0.8 × 100,000 = 80,000 usable; 2,000 prompt; 16,000 reply.
+    const at = { windowTokens: 100_000, outputTokenCap: 16_000 };
+    expect(chooseReadingMode({ ...at, documentTokens: 62_000 })).toBe("whole");
+    expect(chooseReadingMode({ ...at, documentTokens: 62_001 })).toBe("sectioned");
+  });
+});
+
+describe("normaliseStatementKind", () => {
+  it("reads spacing, case, underscores and plurals as one kind", () => {
+    expect(normaliseStatementKind("Business rule")).toBe("business-rule");
+    expect(normaliseStatementKind("BUSINESS_RULES")).toBe("business-rule");
+    expect(normaliseStatementKind(" definition ")).toBe("definition");
+    expect(normaliseStatementKind("Examples")).toBe("example");
+  });
+
+  it("reads an unknown label as a requirement, so it is analysed rather than hidden", () => {
+    expect(normaliseStatementKind("obligation")).toBe("requirement");
+    expect(normaliseStatementKind(undefined)).toBe("requirement");
+  });
+});
+
+describe("readDocument — whole mode", () => {
+  const reply = statements(
+    {
+      section: "S2",
+      kind: "background",
+      statement: "The document describes the booking portal.",
+      quote: "This document describes the clinic booking portal for patients.",
+    },
+    {
+      section: "S4",
+      kind: "requirement",
+      statement: "Lock an account after five failed logins.",
+      // Copied across a line break and with extra spaces: still the source's text.
+      quote: "The portal shall lock   an account\nafter five failed attempts.",
+    },
+    {
+      section: "S5",
+      kind: "Business rule",
+      statement: "A patient holds at most two future appointments.",
+      quote: "A patient shall hold at most two future appointments at any time.",
+    },
+    {
+      section: "S5",
+      kind: "example",
+      statement: "A patient with two bookings cancels one first.",
+      quote: "For example, a patient with two bookings must cancel one first.",
+    },
+    {
+      section: "S6",
+      kind: "definition",
+      statement: "A clinic is a trust site.",
+      quote: "A clinic means any site run by the trust.",
+    },
+    // Not in the document: dropped, never kept with an invented citation.
+    {
+      section: "S5",
+      kind: "requirement",
+      statement: "Patients get an SMS reminder.",
+      quote: "The portal shall send an SMS reminder a day before.",
+    },
+    // Malformed: no statement.
+    { section: "S5", kind: "requirement", quote: "A patient shall hold at most two" },
+  );
+
+  it("labels every statement and cites the source's own text and offsets", async () => {
+    const { provider } = routedProvider([
+      [WHOLE, reply],
+      [MERGE, noMerge],
+    ]);
+    const reading = await readDocument({ title: "Booking FRD", text: TEXT, provider });
+    expect(reading.mode).toBe("whole");
+    expect(reading.statements.map((s) => [s.id, s.kind, s.sectionId])).toEqual([
+      ["T1", "background", "S2"],
+      ["T2", "requirement", "S4"],
+      ["T3", "business-rule", "S5"],
+      ["T4", "example", "S5"],
+      ["T5", "definition", "S6"],
+    ]);
+    for (const s of reading.statements) {
+      expect(TEXT.slice(s.start, s.end)).toBe(s.quote);
+    }
+    expect(reading.statements[1]!.quote).toBe(
+      "The portal shall lock an account after five failed attempts.",
+    );
+    expect(reading.statements[1]!.headingPath).toEqual(["Booking FRD", "2 Access", "2.1 Login"]);
+    expect(reading.droppedUnverified).toBe(2);
+    expect(reading.merge).toBe("done");
+  });
+
+  it("reports every section, and says so when one produced nothing", async () => {
+    const { provider } = routedProvider([
+      [WHOLE, reply],
+      [MERGE, noMerge],
+    ]);
+    const reading = await readDocument({ title: "Booking FRD", text: TEXT, provider });
+    const byId = new Map(reading.sections.map((s) => [s.sectionId, s]));
+    expect(reading.sections).toHaveLength(6);
+    expect(byId.get("S1")).toMatchObject({ status: "read", statements: 0 });
+    expect(byId.get("S3")).toMatchObject({ status: "read", statements: 0 });
+    expect(byId.get("S5")).toMatchObject({
+      statements: 2,
+      kinds: { "business-rule": 1, example: 1 },
+      unverified: 1,
+    });
+  });
+
+  it("gives every call the whole document and the model's output cap", async () => {
+    const { provider, calls } = routedProvider([
+      [WHOLE, reply],
+      [MERGE, noMerge],
+    ]);
+    const reading = await readDocument({ title: "Booking FRD", text: TEXT, provider });
+    const reads = calls.filter((c) => c.system.includes(WHOLE));
+    expect(reads).toHaveLength(1);
+    expect(reads[0]!.user).toContain("A clinic means any site run by the trust.");
+    expect(reads[0]!.user).toContain("=== S4 · Booking FRD › 2 Access › 2.1 Login ===");
+    expect(reads[0]!.opts?.maxTokens).toBe(reading.outputTokenCap);
+    expect(reads[0]!.opts?.disableTools).toBe(true);
+    expect(reading.calls).toBe(2);
+    expect(reading.usage.totalTokens).toBe(220);
+  });
+
+  it("drops a repeat the cross-section pass names and keeps cross-references", async () => {
+    const repeated = statements(
+      {
+        section: "S4",
+        kind: "requirement",
+        statement: "Lock an account after five failed logins.",
+        quote: "The portal shall lock an account after five failed attempts.",
+      },
+      {
+        section: "S5",
+        kind: "requirement",
+        statement: "Two future appointments at most.",
+        quote: "A patient shall hold at most two future appointments at any time.",
+      },
+      {
+        section: "S5",
+        kind: "requirement",
+        statement: "A patient may not hold three future appointments.",
+        quote: "hold at most two future appointments at any time.",
+      },
+      {
+        section: "S6",
+        kind: "definition",
+        statement: "A clinic is a trust site.",
+        quote: "A clinic means any site run by the trust.",
+      },
+    );
+    const merge = JSON.stringify({
+      // T3 repeats T2; a claim that T2 repeats a LATER one is ignored.
+      duplicates: [
+        { id: "T3", of: "T2" },
+        { id: "T1", of: "T4" },
+      ],
+      crossReferences: [
+        { from: "T4", to: "T2", note: "the clinic the patient books at" },
+        { from: "T4", to: "T3", note: "points at a dropped repeat" },
+        { from: "T9", to: "T1", note: "no such statement" },
+      ],
+    });
+    const { provider } = routedProvider([
+      [WHOLE, repeated],
+      [MERGE, merge],
+    ]);
+    const reading = await readDocument({ title: "Booking FRD", text: TEXT, provider });
+    expect(reading.statements.map((s) => [s.id, s.statement])).toEqual([
+      ["T1", "Lock an account after five failed logins."],
+      ["T2", "Two future appointments at most."],
+      ["T3", "A clinic is a trust site."],
+    ]);
+    expect(reading.statements[2]!.refersTo).toEqual(["T2"]);
+    expect(reading.sections.find((s) => s.sectionId === "S5")).toMatchObject({
+      statements: 1,
+      repeats: 1,
+    });
+  });
+
+  it("keeps every statement when the cross-section pass fails", async () => {
+    const { provider } = routedProvider([
+      [WHOLE, reply],
+      [MERGE, "not json at all"],
+    ]);
+    const reading = await readDocument({ title: "Booking FRD", text: TEXT, provider });
+    expect(reading.merge).toBe("failed");
+    expect(reading.statements).toHaveLength(5);
+  });
+
+  it("skips the cross-section pass with fewer than two statements", async () => {
+    const one = statements({
+      section: "S4",
+      kind: "requirement",
+      statement: "Lock an account.",
+      quote: "The portal shall lock an account after five failed attempts.",
+    });
+    const { provider, calls } = routedProvider([[WHOLE, one]]);
+    const reading = await readDocument({ title: "Booking FRD", text: TEXT, provider });
+    expect(reading.merge).toBe("skipped");
+    expect(calls).toHaveLength(1);
+  });
+
+  it("keeps a statement returned twice once", async () => {
+    const twice = statements(
+      {
+        section: "S4",
+        kind: "requirement",
+        statement: "Lock an account.",
+        quote: "The portal shall lock an account after five failed attempts.",
+      },
+      {
+        section: "S4",
+        kind: "requirement",
+        statement: "Lock  an account.",
+        quote: "The portal shall lock an account after five failed attempts.",
+      },
+    );
+    const { provider } = routedProvider([[WHOLE, twice]]);
+    const reading = await readDocument({ title: "Booking FRD", text: TEXT, provider });
+    expect(reading.statements).toHaveLength(1);
+  });
+});
+
+describe("readDocument — a document longer than one batch", () => {
+  const filler = (n: number) =>
+    Array.from({ length: 120 }, (_, i) => `Paragraph ${n}.${i} of the background text.`).join(
+      "\n\n",
+    );
+  const LONG = [1, 2, 3, 4]
+    .map(
+      (n) =>
+        `## Part ${n}\n\nThe system shall do thing number ${n} for every user.\n\n${filler(n)}\n`,
+    )
+    .join("\n");
+
+  const perBatch = (call: Call) =>
+    statements(
+      ...askedSections(call).map((id) => {
+        const n = Number(id.slice(1));
+        return {
+          section: id,
+          kind: "requirement",
+          statement: `Thing ${n}.`,
+          quote: `The system shall do thing number ${n} for every user.`,
+        };
+      }),
+    );
+
+  it("asks for each batch of sections in its own call, every call with the whole document", async () => {
+    expect(LONG.length).toBeGreaterThan(READER_BATCH_CHARS * 1.5);
+    const { provider, calls } = routedProvider([
+      [WHOLE, perBatch],
+      [MERGE, noMerge],
+    ]);
+    const reading = await readDocument({ title: "Long", text: LONG, provider });
+    const reads = calls.filter((c) => c.system.includes(WHOLE));
+    expect(reads.length).toBeGreaterThan(1);
+    expect(reads.flatMap(askedSections)).toEqual(["S1", "S2", "S3", "S4"]);
+    for (const r of reads) expect(r.user).toContain("Paragraph 4.59 of the background text.");
+    expect(reading.statements.map((s) => s.statement)).toEqual([
+      "Thing 1.",
+      "Thing 2.",
+      "Thing 3.",
+      "Thing 4.",
+    ]);
+  });
+
+  it("reports the sections of a batch whose reply could not be read, and reads the rest", async () => {
+    const { provider } = routedProvider([
+      [WHOLE, (call) => (askedSections(call).includes("S1") ? "garbage" : perBatch(call))],
+      [MERGE, noMerge],
+    ]);
+    const reading = await readDocument({ title: "Long", text: LONG, provider });
+    const unread = reading.sections.filter((s) => s.status === "unread").map((s) => s.sectionId);
+    expect(unread).toContain("S1");
+    expect(unread).not.toContain("S4");
+    expect(reading.statements.map((s) => s.statement)).toContain("Thing 4.");
+    expect(reading.statements.map((s) => s.statement)).not.toContain("Thing 1.");
+  });
+
+  it("throws when no batch could be read", async () => {
+    const { provider } = routedProvider([[WHOLE, "garbage"]]);
+    await expect(readDocument({ title: "Long", text: LONG, provider })).rejects.toBeInstanceOf(
+      DocumentReaderError,
+    );
+  });
+
+  it("fails on a provider error instead of reporting the sections unread", async () => {
+    const provider = {
+      key: "anthropic",
+      model: "claude-sonnet-5-5",
+      offline: false,
+      async chat(): Promise<ChatResponse> {
+        throw new AIProviderError("upstream down", 503);
+      },
+    } as unknown as AIProvider;
+    await expect(readDocument({ title: "Long", text: LONG, provider })).rejects.toBeInstanceOf(
+      AIProviderError,
+    );
+  });
+});
+
+describe("readDocument — sectioned mode", () => {
+  const context = JSON.stringify({
+    purpose: "Booking portal for clinic patients.",
+    scope: "Booking and access.",
+    actors: ["patient", "portal"],
+    glossary: [{ term: "clinic", meaning: "a trust site" }],
+  });
+  const perSection = (call: Call) =>
+    statements(
+      ...askedSections(call)
+        .filter((id) => id === "S4")
+        .map(() => ({
+          section: "S4",
+          kind: "requirement",
+          statement: "Lock an account after five failed logins.",
+          quote: "The portal shall lock an account after five failed attempts.",
+        })),
+    );
+
+  it("builds the document context once and reads each batch with it, not the whole document", async () => {
+    const { provider, calls } = routedProvider([
+      [CONTEXT, context],
+      [SECTIONED, perSection],
+    ]);
+    const reading = await readDocument({
+      title: "Booking FRD",
+      text: TEXT,
+      provider,
+      mode: "sectioned",
+    });
+    expect(reading.mode).toBe("sectioned");
+    expect(calls.filter((c) => c.system.includes(CONTEXT))).toHaveLength(1);
+    const reads = calls.filter((c) => c.system.includes(SECTIONED));
+    expect(reads.length).toBeGreaterThan(0);
+    expect(reads[0]!.user).toContain("Purpose: Booking portal for clinic patients.");
+    expect(reads[0]!.user).toContain("- clinic: a trust site");
+    expect(reading.statements.map((s) => s.sectionId)).toEqual(["S4"]);
+  });
+
+  it("is chosen for a document too long for the model's window", async () => {
+    const big = `# Big\n\n${"The system shall record every booking in the audit log.\n\n".repeat(900)}`;
+    const { provider, calls } = routedProvider(
+      [
+        [CONTEXT, context],
+        [SECTIONED, statements()],
+      ],
+      // Not in the model catalog: the 32,768-token fallback window.
+      { key: "ollama", model: "tiny-local-model" },
+    );
+    const reading = await readDocument({ title: "Big", text: big, provider });
+    expect(reading.mode).toBe("sectioned");
+    const [ctx] = calls.filter((c) => c.system.includes(CONTEXT));
+    expect(ctx!.system).toContain("the rest of the text follows in later calls");
+    // Every read section is reported, each producing nothing.
+    expect(reading.sections.every((s) => s.status === "read" && s.statements === 0)).toBe(true);
+  });
+
+  it("still reads the sections when the context reply cannot be read", async () => {
+    const { provider } = routedProvider([
+      [CONTEXT, "garbage"],
+      [SECTIONED, perSection],
+    ]);
+    const reading = await readDocument({
+      title: "Booking FRD",
+      text: TEXT,
+      provider,
+      mode: "sectioned",
+    });
+    expect(reading.statements).toHaveLength(1);
+  });
+});
