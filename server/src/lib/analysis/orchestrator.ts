@@ -268,6 +268,8 @@ import {
   toStoredApplicability,
 } from "../governing/applicability-store.js";
 import { produceGoverningFindingsForAnalysis } from "../governing/findings-store.js";
+import { isDocumentReaderEnabled } from "../document-reader/flag.js";
+import { runDocumentReaderAgent, type ReaderDocumentLoader } from "./document-reader-agent.js";
 import {
   retrieveFusedCodeChunks,
   retrieveFusedCodeContext,
@@ -534,6 +536,12 @@ export interface OrchestratorDeps {
    * header as "evidence".
    */
   webSearchConfigured?: () => boolean;
+  /**
+   * #2230 — loads the selected documents for the document reader
+   * (`ANALYSIS_DOCUMENT_READER`). Defaults to the project's ready documents
+   * from storage, parsed as ingest parses them.
+   */
+  readerDocuments?: ReaderDocumentLoader;
 }
 /** Agent execution mode for the analysis pipeline. */
 export type AgentMode = "single-shot" | "agentic" | "requirement-grounded";
@@ -3306,46 +3314,15 @@ export class AnalysisOrchestrator {
     }
     return withInvokeAgentSpan(input.agentKey, async () => {
       try {
-        const context = await this.retrieveContext({
-          analysisId: input.analysisId,
-          projectId: input.projectId,
-          agentKey: input.agentKey,
-          documentIds: input.documentIds,
-          projectName: input.projectName,
-          projectDescription: input.projectDescription,
-          extraInstructions: input.extraInstructions,
-          actorId: input.actorId,
-        });
-        // #864 — the web specialist grounds only on ranked, non-connector
-        // document chunks, so it cannot cite a repository file or an unranked
-        // fallback chunk as evidence.
-        const retrieved = input.agentKey === "web" ? selectWebAgentEvidence(context) : context;
-        if (input.replayRunId) {
-          await recordReplayStep({
-            runId: input.replayRunId,
-            kind: "agent_phase",
-            content: { agentKey: input.agentKey, retrievedCount: retrieved.length },
-          }).catch(() => undefined);
-        }
-        const result = await runAgent(this.deps.provider, {
-          agentKey: input.agentKey,
-          projectName: input.projectName,
-          projectDescription: input.projectDescription,
-          retrieved,
-          signal: input.signal,
-          extraInstructions: input.extraInstructions,
-          // #824 — only the database agent (Sally) renders the AFFECTED SCHEMA
-          // block; the builder ignores it for every other specialist.
-          affectedSchema: input.agentKey === "database" ? input.affectedSchema : undefined,
-          // #1027 — the document agent must not read it: what it extracts as
-          // requirements feeds the code pass.
-          ...(input.agentKey === "code" && input.agentContext
-            ? { agentContext: input.agentContext }
-            : {}),
-          model:
-            input.model ??
-            (await this.selectModelForAgent(input.projectId, input.agentKey, retrieved)),
-        });
+        // #2230 — with the document reader on, the document specialist reads
+        // the selected documents in full instead of ten retrieved chunks. It
+        // falls back to retrieval only when no selected document could be
+        // loaded; every other specialist retrieves as before.
+        const read =
+          input.agentKey === "document" && isDocumentReaderEnabled()
+            ? await this.readSelectedDocuments(input)
+            : null;
+        const result = read ?? (await this.retrieveAndRunAgent(input));
         this.noteCitationSalvage(input.analysisId, input.agentKey, result.citationSalvage);
         // #1027 — the single-shot code prompt lists no requirement ids and does
         // not ask for the field, so an id here is one the model lifted from the
@@ -3423,6 +3400,96 @@ export class AnalysisOrchestrator {
 
   private isWebSearchAvailable(): boolean {
     return (this.deps.webSearchConfigured ?? isWebSearchConfigured)();
+  }
+
+  /** A specialist over its retrieved context: every agent's path, and the document agent's without the reader. */
+  private async retrieveAndRunAgent(
+    input: Parameters<AnalysisOrchestrator["runOneAgent"]>[0],
+  ): Promise<AgentRunResult> {
+    const context = await this.retrieveContext({
+      analysisId: input.analysisId,
+      projectId: input.projectId,
+      agentKey: input.agentKey,
+      documentIds: input.documentIds,
+      projectName: input.projectName,
+      projectDescription: input.projectDescription,
+      extraInstructions: input.extraInstructions,
+      actorId: input.actorId,
+    });
+    // #864 — the web specialist grounds only on ranked, non-connector
+    // document chunks, so it cannot cite a repository file or an unranked
+    // fallback chunk as evidence.
+    const retrieved = input.agentKey === "web" ? selectWebAgentEvidence(context) : context;
+    if (input.replayRunId) {
+      await recordReplayStep({
+        runId: input.replayRunId,
+        kind: "agent_phase",
+        content: { agentKey: input.agentKey, retrievedCount: retrieved.length },
+      }).catch(() => undefined);
+    }
+    return runAgent(this.deps.provider, {
+      agentKey: input.agentKey,
+      projectName: input.projectName,
+      projectDescription: input.projectDescription,
+      retrieved,
+      signal: input.signal,
+      extraInstructions: input.extraInstructions,
+      // #824 — only the database agent (Sally) renders the AFFECTED SCHEMA
+      // block; the builder ignores it for every other specialist.
+      affectedSchema: input.agentKey === "database" ? input.affectedSchema : undefined,
+      // #1027 — the document agent must not read it: what it extracts as
+      // requirements feeds the code pass.
+      ...(input.agentKey === "code" && input.agentContext
+        ? { agentContext: input.agentContext }
+        : {}),
+      model:
+        input.model ?? (await this.selectModelForAgent(input.projectId, input.agentKey, retrieved)),
+    });
+  }
+
+  /**
+   * #2230 — the document agent through the document reader: the selected
+   * documents (all ready uploads when none is selected, as the code agent's
+   * requirements half chooses them) read in full. Records the coverage report
+   * on the run's capability. `null` when no document could be loaded, so the
+   * caller retrieves instead.
+   */
+  private async readSelectedDocuments(
+    input: Parameters<AnalysisOrchestrator["runOneAgent"]>[0],
+  ): Promise<AgentRunResult | null> {
+    const documentIds =
+      input.documentIds && input.documentIds.length > 0
+        ? input.documentIds
+        : await defaultAnalysisDocumentIds(input.projectId);
+    if (documentIds.length === 0) return null;
+    const read = await runDocumentReaderAgent({
+      provider: this.deps.provider,
+      projectId: input.projectId,
+      documentIds,
+      signal: input.signal,
+      ...(input.model ? { model: input.model } : {}),
+      ...(this.deps.readerDocuments ? { load: this.deps.readerDocuments } : {}),
+    });
+    if (!read) {
+      log.warn("Document reader could load none of the selected documents; retrieving instead", {
+        analysisId: input.analysisId,
+        documentCount: documentIds.length,
+      });
+      return null;
+    }
+    const tracker = this.capabilities.get(input.analysisId);
+    if (tracker) tracker.documentReading = read.coverage;
+    if (input.replayRunId) {
+      await recordReplayStep({
+        runId: input.replayRunId,
+        kind: "agent_phase",
+        content: {
+          agentKey: input.agentKey,
+          documentsRead: read.coverage.documents.filter((d) => d.status === "read").length,
+        },
+      }).catch(() => undefined);
+    }
+    return read.result;
   }
 
   /**

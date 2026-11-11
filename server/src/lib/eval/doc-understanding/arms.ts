@@ -44,6 +44,8 @@ import {
   type GroundedSearchSource,
 } from "../../analysis/retrieval.js";
 import { hasVerdict, requestStructuredVerdict } from "../../analysis/structured-verdict.js";
+import { REQUIREMENT_STATEMENT_KINDS } from "../../document-reader/prompts.js";
+import { readDocument } from "../../document-reader/reader.js";
 import { createInMemoryBM25 } from "../../rag/bm25-index.js";
 import { chunkMarkdown } from "../../rag/chunker.js";
 import type { DocUnderstandingItem } from "./corpus.js";
@@ -88,8 +90,14 @@ export interface ReadContext {
   concurrency: number;
 }
 
-export const DOC_ARM_IDS = ["A", "B", "C"] as const;
+/**
+ * #2230 — `R` is the production document reader (`readDocument`), the
+ * candidate default; selected with `--arms R`. The default run stays the three
+ * arms #2229 measured.
+ */
+export const DOC_ARM_IDS = ["A", "B", "C", "R"] as const;
 export type DocArmId = (typeof DOC_ARM_IDS)[number];
+const DEFAULT_DOC_ARM_IDS: readonly DocArmId[] = ["A", "B", "C"];
 
 export interface DocArm {
   id: DocArmId;
@@ -420,14 +428,61 @@ export function createArmC(model: string): DocArm {
   };
 }
 
+/**
+ * #2230 — the production document reader: the whole document in every call,
+ * the statements written a batch of sections at a time, each quote verified
+ * against the source, then the cross-section pass. Its requirements are the
+ * statements labelled requirement, constraint or business rule. It asks no
+ * questions (the question loop is Phase 2 of the epic), so its question
+ * metrics read empty.
+ */
+export function createArmR(model: string): DocArm {
+  return {
+    id: "R",
+    label: "R — the document reader (readDocument): whole document, statements by section batch",
+    configuration: {
+      conversion: "parseDocument (mammoth + htmlToMarkdown)",
+      reader: "readDocument (document-reader/reader.ts), mode chosen by the model's window",
+      requirements: "statements labelled requirement, constraint or business-rule",
+      questions: "none (Phase 2)",
+      model,
+    },
+    async read(item, { provider }) {
+      const reading = await readDocument({ title: item.title, text: item.text, provider });
+      return {
+        requirements: reading.statements
+          .filter((s) => REQUIREMENT_STATEMENT_KINDS.has(s.kind))
+          .map((s) => ({
+            text: s.statement,
+            section: s.headingPath[s.headingPath.length - 1] ?? "",
+            quote: s.quote,
+          })),
+        questions: [],
+        diagnostics: {
+          documentChars: item.text.length,
+          sections: reading.sections.length,
+          statements: reading.statements.length,
+          droppedUnverified: reading.droppedUnverified,
+          unreadSections: reading.sections.filter((s) => s.status === "unread").length,
+          mergeDone: reading.merge === "done" ? 1 : 0,
+          wholeMode: reading.mode === "whole" ? 1 : 0,
+          outputTokenCap: reading.outputTokenCap,
+          calls: reading.calls,
+        },
+      };
+    },
+  };
+}
+
 const FACTORIES: Record<DocArmId, (model: string) => DocArm> = {
   A: createArmA,
   B: createArmB,
   C: createArmC,
+  R: createArmR,
 };
 
 export function parseDocArmIds(raw: string | undefined): DocArmId[] {
-  const ids = (raw ?? DOC_ARM_IDS.join(","))
+  const ids = (raw ?? DEFAULT_DOC_ARM_IDS.join(","))
     .split(",")
     .map((s) => s.trim().toUpperCase())
     .filter(Boolean);

@@ -4892,7 +4892,38 @@ recall and verbatim-quote accuracy are computed in code (`scorer.ts`), and spend
 ledger-priced with the judge's metered apart (`runner.ts`). The first readings
 (`eval-data/readings/doc-understanding/`) and what follows from them are in
 [DOCUMENT_UNDERSTANDING_BASELINE.md](DOCUMENT_UNDERSTANDING_BASELINE.md): A finds 0.26 of
-the requirements on Sonnet 5.5, B finds all of them.
+the requirements on Sonnet 5.5, B finds all of them. Arm **R** (`--arms R`) runs the
+production document reader below, so its re-measurement is one command.
+
+#### Document reader (#2230, epic #2227) — the model reads a whole document
+
+`server/src/lib/document-reader/` is the shared reader: `readDocument({ title, text, provider })`
+reads a parsed document in order and returns its **statements**, each labelled
+(`DOCUMENT_STATEMENT_KINDS`: requirement, constraint, business rule, assumption, definition,
+background, example) and cited to its exact source span, plus a **coverage report** with
+every section. Sections are the governing rule reader's `splitSections`, with the heading
+path added (`sections.ts`). Two modes, chosen from the model's window (`resolveContextWindow`)
+and output cap (`resolveFinalAnswerMaxOutputTokens`): **whole** (the document fits) sends the
+whole document in every call and asks for one batch of sections' statements at a time
+(`READER_BATCH_CHARS`, 8,000 source characters), which keeps #2229's whole-document recall
+without one reply having to hold every requirement; **sectioned** (it does not fit) builds the
+document context once (purpose, scope, actors, glossary) from the full outline and as much text
+as fits, then reads each batch with it. A cross-section pass over the statements names repeats
+(dropped) and cross-references (kept); if it fails, every statement is kept and the report says
+so. Every quote is checked with the governing `clauseLocator` and the stored quote and offsets
+are the source's own; a quote not in the source is dropped and counted. A batch whose reply
+cannot be read is reported `unread`; a provider error fails the read.
+
+Requirements Analysis uses it behind `ANALYSIS_DOCUMENT_READER` (off by default):
+`runOneAgent("document")` calls `readSelectedDocuments` instead of `retrieveContext`
+(`analysis/document-reader-agent.ts`). It loads the selected documents (or every ready
+upload) of the run's project from storage, parses them as ingest does, and writes the reading
+as the document agent's output: `requirements` (`REQ-001`, ... for requirements, constraints and
+business rules, each with its document and stored chunk), one cited finding per requirement,
+and the full `reading`. The coverage report goes on the capability record
+(`AnalysisCapability.documentReading`) and the results page renders it
+(`DocumentCoveragePanel`). Retrieval stays for the code agent and the other specialists; if no
+selected document can be loaded, the document agent retrieves as before.
 
 #### Online eval — scoring sampled live production runs (#1321, epic #1316)
 
