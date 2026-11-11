@@ -18,7 +18,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { projectsApi, type DocumentRow, type Project } from "@/lib/projects-api";
+import { projectsApi, type Project } from "@/lib/projects-api";
 import { listAllDocuments } from "@/lib/list-all-documents";
 import { DocumentPanel } from "@/components/workbench/document-panel";
 import { PaneSeparator } from "@/components/workbench/pane-separator";
@@ -266,11 +266,14 @@ export default function WorkbenchPage() {
       setStreaming(false);
       return;
     }
-    const composed = composeWithContext(input, contextDocs);
+    // #2240 — attachments go up as documents to search, not as file names
+    // pasted into the question (which the server would search for).
+    const question = input;
+    const attachedDocIds = contextDocs.map((d) => d.id);
     const userMsg: DisplayMessage = {
       id: crypto.randomUUID(),
       role: "user",
-      content: composed,
+      content: question,
     };
     const assistantMsg: DisplayMessage = {
       id: crypto.randomUUID(),
@@ -292,9 +295,16 @@ export default function WorkbenchPage() {
     let accepted = false;
     try {
       // #136 — only the new message goes up; the server holds the history.
-      for await (const ev of streamChat(active.id, composed, controller.signal, undefined, () => {
-        accepted = true;
-      })) {
+      for await (const ev of streamChat(
+        active.id,
+        question,
+        controller.signal,
+        undefined,
+        () => {
+          accepted = true;
+        },
+        attachedDocIds,
+      )) {
         handleStream(ev, assistantMsg.id);
       }
     } catch (err) {
@@ -678,17 +688,6 @@ export default function WorkbenchPage() {
       </div>
     </div>
   );
-}
-
-function composeWithContext(input: string, attachments: DocumentRow[]): string {
-  if (attachments.length === 0) return input;
-  const lines = [
-    `Context attachments (${attachments.length}):`,
-    ...attachments.map((d) => `  - ${d.filename} (${d.id})`),
-    "",
-    input,
-  ];
-  return lines.join("\n");
 }
 
 interface EmptyStateProps {

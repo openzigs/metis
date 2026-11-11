@@ -642,12 +642,18 @@ export async function* streamChat(
   signal?: AbortSignal,
   idleTimeoutMs: number = STREAM_IDLE_TIMEOUT_MS,
   onAccepted?: () => void,
+  /** #2240 — documents attached to this question: the server searches only these. */
+  documentIds?: readonly string[],
 ): AsyncGenerator<StreamEvent> {
   // #136 — only the new user message goes up; the server owns the history.
   const res = await streamFetch("/ai/stream", {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
-    body: JSON.stringify({ sessionId, message }),
+    body: JSON.stringify({
+      sessionId,
+      message,
+      ...(documentIds && documentIds.length > 0 ? { documentIds } : {}),
+    }),
     signal,
   });
   if (!res.ok || !res.body) {

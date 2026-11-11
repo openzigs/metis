@@ -99,8 +99,8 @@ beforeEach(() => {
   documentsListMock.mockResolvedValue({ items: [] });
 });
 
-describe("WorkbenchPage — composeWithContext branches", () => {
-  it("sends message with attached context docs (non-empty attachments branch)", async () => {
+describe("WorkbenchPage — context attachments", () => {
+  it("sends attached documents as documents to search, not as names in the question (#2240)", async () => {
     const user = userEvent.setup();
     // Setup docs
     documentsListMock.mockResolvedValueOnce({
@@ -129,14 +129,15 @@ describe("WorkbenchPage — composeWithContext branches", () => {
     await user.type(screen.getByTestId("workbench-input"), "analyze this");
     await user.click(screen.getByTestId("workbench-send"));
 
-    // streamChat should have been called with composed message (including context)
     await waitFor(() => expect(streamChatMock).toHaveBeenCalled());
     const call = streamChatMock.mock.calls[0];
-    // #136 — only the new (composed) message is sent; the server keeps history.
-    const message = call[1] as string;
-    expect(message).toContain("analyze this");
-    // With context, the message should include "Context attachments"
-    expect(message).toContain("Context attachments");
+    // #136 — only the new message is sent; the server keeps history. #2240 —
+    // it is the question as typed: no file names for the search to match on.
+    expect(call[1]).toBe("analyze this");
+    expect(call[5]).toEqual(["d1"]);
+    // The transcript shows the question as asked; the chips still show the attachment.
+    expect(await screen.findByText("analyze this")).toBeInTheDocument();
+    expect(screen.queryByText(/Context attachments \(/)).not.toBeInTheDocument();
   });
 
   it("sends message without context docs (empty attachments branch)", async () => {
@@ -161,6 +162,7 @@ describe("WorkbenchPage — composeWithContext branches", () => {
     const call = streamChatMock.mock.calls[0];
     // Without context, the message should be just the raw input
     expect(call[1]).toBe("hello");
+    expect(call[5]).toEqual([]);
   });
 
   // #526 — attaching and detaching re-filter the parsed entries; only a new
