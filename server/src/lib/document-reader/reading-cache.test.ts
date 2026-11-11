@@ -39,7 +39,9 @@ type Row = {
 function memoryStore() {
   const rows: Row[] = [];
   /** #2293 — the documents the store's tidy-up checks: live and in project `p-1` unless changed. */
-  const documents = [{ id: "d-1", projectId: "p-1", deletedAt: null as Date | null }];
+  const documents = [
+    { id: "d-1", projectId: "p-1", checksum: "sum-1", deletedAt: null as Date | null },
+  ];
   // Every field, and `NOT` (none of its fields all equal), as the database applies them.
   const matches = (row: Record<string, unknown>, where: Record<string, unknown>): boolean =>
     Object.entries(where).every(([k, v]) =>
@@ -327,7 +329,7 @@ describe("readDocumentOnce", () => {
   });
 
   it("#2293 — a save deletes the document's readings of an earlier file or reader, and keeps other models'", async () => {
-    const { rows, db } = memoryStore();
+    const { rows, documents, db } = memoryStore();
     const read = reader(() => reading());
     await readDocumentOnce({ title: "FRD", text: TEXT, provider, document: DOC }, { db, read });
     await readDocumentOnce(
@@ -338,6 +340,7 @@ describe("readDocumentOnce", () => {
     rows.push({ ...rows[1]!, id: "other-doc", documentId: "d-2" });
     expect(rows).toHaveLength(3);
 
+    documents[0]!.checksum = "sum-2";
     await readDocumentOnce(
       { title: "FRD", text: TEXT, provider, document: { ...DOC, checksum: "sum-2" } },
       { db, read },
@@ -348,6 +351,28 @@ describe("readDocumentOnce", () => {
       ["d-2", "sum-1", READER_VERSION, "claude-opus-5"],
       ["d-1", "sum-2", READER_VERSION, "claude-sonnet-5-5"],
     ]);
+  });
+
+  it("#2293 — a run that read an earlier file finishing late does not prune the current file's reading", async () => {
+    const { rows, documents, db } = memoryStore();
+    const read = reader(() => reading());
+    // The newer run read the file as it is now (sum-2) and saved first.
+    documents[0]!.checksum = "sum-2";
+    await readDocumentOnce(
+      { title: "FRD", text: TEXT, provider, document: { ...DOC, checksum: "sum-2" } },
+      { db, read },
+    );
+    // The older run, which read sum-1, finishes afterwards.
+    await readDocumentOnce(
+      { title: "FRD", text: TEXT + " ", provider, document: DOC },
+      { db, read },
+    );
+    expect(rows.some((r) => r.checksum === "sum-2")).toBe(true);
+    const back = await readDocumentOnce(
+      { title: "FRD", text: TEXT, provider, document: { ...DOC, checksum: "sum-2" } },
+      { db, read },
+    );
+    expect(back.reused).toBeDefined();
   });
 
   it("#2293 — a reading of another model of the same file stays, and is reused when that model reads again", async () => {

@@ -250,12 +250,12 @@ export async function readDocumentOnce(
 async function tidyAfterSave(db: ReadingStore, document: SavedDocumentKey): Promise<void> {
   const scope = { projectId: document.projectId, documentId: document.documentId };
   try {
-    await db.savedDocumentReading.deleteMany({
-      where: { ...scope, NOT: { checksum: document.checksum, readerVersion: READER_VERSION } },
-    });
+    // The liveness check runs first and names the file this run read: a run
+    // that read an earlier file (the checksum changes in place on a connector
+    // re-sync) must not prune the newer run's reading.
     const live = await db.document.findFirst({
       where: { id: document.documentId, projectId: document.projectId, deletedAt: null },
-      select: { id: true },
+      select: { id: true, checksum: true },
     });
     if (!live) {
       await db.savedDocumentReading.deleteMany({ where: scope });
@@ -265,7 +265,12 @@ async function tidyAfterSave(db: ReadingStore, document: SavedDocumentKey): Prom
           documentId: document.documentId,
         },
       );
+      return;
     }
+    if (live.checksum !== document.checksum) return;
+    await db.savedDocumentReading.deleteMany({
+      where: { ...scope, NOT: { checksum: document.checksum, readerVersion: READER_VERSION } },
+    });
   } catch (err) {
     log.warn("saved document readings could not be tidied", {
       documentId: document.documentId,
