@@ -12,11 +12,20 @@ export interface AtlassianStatus {
   serverId: string | null;
 }
 
+/** Mirrors `AtlassianIngestSummary` in `server/src/lib/connectors/atlassian.ts`. */
 export interface AtlassianIngestSummary {
-  ingested: number;
+  documentsCreated: number;
+  documentsUpdated: number;
+  chunkCount: number;
+  failures: number;
+  /** Unchanged since the last run, so not re-ingested. */
   skipped: number;
-  failed: number;
-  documentIds: string[];
+  /** #2244 — pages/issues the search matched. */
+  found: number;
+  /** #2244 — matched but not ingested: over the per-run cap, or never returned by the search. */
+  omitted: number;
+  /** #2244 — the per-run cap that applied. */
+  limit: number;
 }
 
 export const atlassianApi = {

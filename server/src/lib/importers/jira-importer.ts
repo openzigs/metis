@@ -7,6 +7,7 @@
  * requirement title/body/type/priority.
  */
 import type { JiraFilter, JiraSearchResult } from "@metis/shared";
+import { adfToMarkdown, isAdfDocument } from "../connectors/jira/adf-to-markdown.js";
 import { defaultMap, normalizePriority, normalizeType } from "./base-importer.js";
 import type { ExternalIssue, Importer, ImporterFetchContext, MappedRequirement } from "./types.js";
 
@@ -30,7 +31,9 @@ const BASE_FIELDS = ["summary", "description", "labels", "issuetype", "priority"
 function fieldToString(value: unknown): string {
   if (value == null) return "";
   if (typeof value === "string") return value;
-  // Atlassian Document Format / nested objects — serialise readable text.
+  // #2244 — Jira Cloud (API v3) returns rich text as an Atlassian Document
+  // Format tree; store it as Markdown, never as the raw JSON.
+  if (isAdfDocument(value)) return adfToMarkdown(value);
   if (typeof value === "object") {
     const obj = value as { content?: unknown; text?: string; name?: string };
     if (typeof obj.text === "string") return obj.text;
