@@ -306,6 +306,19 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(state.searches[0]!.opts.documentIds).toEqual(["d-rules"]);
     });
 
+    it("limits the search to the documents attached to the question (/chat)", async () => {
+      const sessionId = await newSession();
+      const res = await post("/api/ai/chat", {
+        sessionId,
+        message: "Summarise the refund rules",
+        documentIds: ["d-rules", "d-faq"],
+      });
+      expect(res.status, res.text).toBe(200);
+      expect(state.searches).toHaveLength(1);
+      expect(state.searches[0]!.query).toBe("Summarise the refund rules");
+      expect(state.searches[0]!.opts.documentIds).toEqual(["d-rules", "d-faq"]);
+    });
+
     it("refuses an oversized attachment list before any retrieval", async () => {
       const sessionId = await newSession();
       const res = await post("/api/ai/stream", {

@@ -7,6 +7,7 @@
  * a dedicated EventSource polyfill.
  */
 import {
+  MAX_ATTACHED_DOCUMENTS,
   parseChatGrounding,
   type AiToolEvent,
   type ChatGrounding,
@@ -652,7 +653,11 @@ export async function* streamChat(
     body: JSON.stringify({
       sessionId,
       message,
-      ...(documentIds && documentIds.length > 0 ? { documentIds } : {}),
+      // #2240 — never more than the server accepts: a longer list would get
+      // the whole question refused.
+      ...(documentIds && documentIds.length > 0
+        ? { documentIds: documentIds.slice(0, MAX_ATTACHED_DOCUMENTS) }
+        : {}),
     }),
     signal,
   });

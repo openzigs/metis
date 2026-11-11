@@ -7,15 +7,19 @@ import type { ChatMessage } from "../types.js";
 import type { StoredMessage } from "./transcript-store.js";
 import {
   CITED_EXCERPTS_META_KEY,
+  CONTEXTUAL_WEIGHT,
   MAX_CARRIED_EXCERPTS,
   MAX_QUERY_CHARS,
   MAX_QUESTION_PARTS,
   assistantQuestion,
   citedExcerptIds,
   citedExcerptsMeta,
+  contentWords,
+  fuseRetrievalHits,
   isFollowUp,
   planQueries,
   planRetrievalQueries,
+  planSearches,
   retrievalConversation,
   splitQuestionParts,
   type CitableExcerpt,
@@ -56,6 +60,22 @@ describe("planRetrievalQueries", () => {
       user("Describe the password reset flow for administrators in the server product."),
     ])!;
     expect(plan.contextual).toBeNull();
+  });
+
+  // PR #2266 panel — an answer ending on a question, and a new question that
+  // uses "there"/"its", made every second turn search the earlier topic too.
+  it.each([
+    "Describe the password reset flow for administrators",
+    "Which teams own the payment reconciliation service and its alerts?",
+    "Are there any GDPR requirements in the onboarding spec?",
+  ])("searches a self-contained question on its own after a closing question: %s", (q) => {
+    const plan = planRetrievalQueries([
+      user("How does the refund rule work?"),
+      assistant("Refunds are issued within 30 days [1]. Would you like more detail?"),
+      user(q),
+    ])!;
+    expect(plan.contextual).toBeNull();
+    expect(planQueries(plan)).toEqual([q]);
   });
 
   it("splits a multi-part question into one search per part, plus the whole", () => {
@@ -120,26 +140,104 @@ describe("assistantQuestion / isFollowUp", () => {
     expect(assistantQuestion("Why? Because the rule says so.")).toBeNull();
   });
 
-  it("treats a short, continuing or referring message as a follow-up", () => {
-    expect(isFollowUp("product B", null)).toBe(true);
-    expect(isFollowUp("And how are the fees calculated for enterprise customers then", null)).toBe(
-      true,
-    );
-    expect(isFollowUp("Does that rule apply to enterprise customers in every region", null)).toBe(
-      true,
-    );
-    expect(
-      isFollowUp("Describe the password reset flow for administrators in the server", null),
-    ).toBe(false);
+  it("treats a short, continuing, or referring-without-a-subject message as a follow-up", () => {
+    expect(isFollowUp("product B")).toBe(true);
+    expect(isFollowUp("And how are the fees calculated for enterprise customers then")).toBe(true);
+    expect(isFollowUp("What about the customers who signed up last year?")).toBe(true);
+    expect(isFollowUp("Does that also apply to customers in each region?")).toBe(true);
+    expect(isFollowUp("Can you tell me more about how that is handled?")).toBe(true);
   });
 
-  it("treats any reply to a question the model asked as a follow-up", () => {
-    expect(
-      isFollowUp(
-        "Describe the password reset flow for administrators in the server",
-        "Which flow do you mean?",
-      ),
-    ).toBe(true);
+  it("does not treat a question that names its own subject as a follow-up", () => {
+    expect(isFollowUp("Describe the password reset flow for administrators in the server")).toBe(
+      false,
+    );
+    // Referring words alone ("there", "its") do not make a follow-up.
+    expect(isFollowUp("Which teams own the payment reconciliation service and its alerts?")).toBe(
+      false,
+    );
+    expect(isFollowUp("Are there any GDPR requirements in the onboarding spec?")).toBe(false);
+    // "Why" opens a new question as often as it continues one.
+    expect(isFollowUp("Why does the payment service retry failed card charges twice?")).toBe(false);
+  });
+
+  it("counts only the words that name a subject", () => {
+    expect(contentWords("Are there any GDPR requirements in the onboarding spec?")).toEqual([
+      "gdpr",
+      "requirements",
+      "onboarding",
+      "spec",
+    ]);
+    expect(contentWords("Does that also apply to them?")).toEqual([]);
+  });
+});
+
+describe("planSearches", () => {
+  it("separates the user's own searches from the conversational one", () => {
+    const plan = { primary: "q", parts: ["a part?", "b part?"], contextual: "q\nbefore" };
+    expect(planSearches(plan)).toEqual({
+      user: ["q", "a part?", "b part?"],
+      contextual: "q\nbefore",
+    });
+  });
+
+  it("drops a conversational search that repeats the user's own", () => {
+    expect(planSearches({ primary: "q", parts: [], contextual: " q " })).toEqual({
+      user: ["q"],
+      contextual: null,
+    });
+    expect(planSearches({ primary: "q", parts: [], contextual: null }).contextual).toBeNull();
+  });
+});
+
+describe("fuseRetrievalHits", () => {
+  const ids = (prefix: string, n: number) =>
+    Array.from({ length: n }, (_, i) => ({ chunkId: `${prefix}${i + 1}` }));
+
+  it("returns a single search as it ranked, cut to k", () => {
+    expect(fuseRetrievalHits([ids("u", 10)], null, 8).map((h) => h.chunkId)).toEqual(
+      ids("u", 8).map((h) => h.chunkId),
+    );
+  });
+
+  it("never lets the conversational search's own finds fill a majority of the slots", () => {
+    const fused = fuseRetrievalHits([ids("u", 8)], ids("c", 8), 8);
+    expect(fused).toHaveLength(8);
+    const earlier = fused.filter((h) => h.chunkId.startsWith("c"));
+    expect(earlier.length).toBeLessThanOrEqual(3);
+    // ...and with an equal weight they would have taken half.
+    expect(earlier.length).toBeGreaterThan(0);
+  });
+
+  it("holds the earlier topic to a minority even when the user's searches found little", () => {
+    const fused = fuseRetrievalHits([ids("u", 1)], ids("c", 8), 8);
+    expect(fused.map((h) => h.chunkId)).toEqual(["u1", "c1", "c2", "c3"]);
+  });
+
+  it("ranks the user's own hit above the conversational one at the same rank", () => {
+    expect(CONTEXTUAL_WEIGHT).toBeLessThan(1);
+    const fused = fuseRetrievalHits([[{ chunkId: "u" }]], [{ chunkId: "c" }], 8);
+    expect(fused.map((h) => h.chunkId)).toEqual(["u", "c"]);
+    // Reversed insertion cannot win on order alone: the weight decides.
+    const parts = fuseRetrievalHits(
+      [[{ chunkId: "x" }], [{ chunkId: "u" }]],
+      [{ chunkId: "c" }, { chunkId: "u" }],
+      8,
+    );
+    expect(parts.map((h) => h.chunkId)).toEqual(["u", "x", "c"]);
+  });
+
+  it("lifts a hit both searches found, and keeps it whatever the cap", () => {
+    const fused = fuseRetrievalHits(
+      [[{ chunkId: "noise" }, { chunkId: "both" }]],
+      [{ chunkId: "refund" }, { chunkId: "both" }],
+      8,
+    );
+    expect(fused.map((h) => h.chunkId)).toEqual(["both", "noise", "refund"]);
+  });
+
+  it("returns nothing from no searches", () => {
+    expect(fuseRetrievalHits([], null, 8)).toEqual([]);
   });
 });
 

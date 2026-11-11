@@ -3,6 +3,7 @@
  * server to search only them; a question with none sends the body as before.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { MAX_ATTACHED_DOCUMENTS } from "@metis/shared";
 
 const streamFetch = vi.fn();
 
@@ -51,6 +52,12 @@ describe("streamChat attachments (#2240)", () => {
       message: "the question",
       documentIds: ["d1", "d2"],
     });
+  });
+
+  it("never sends more ids than the server accepts, so the question is not refused", async () => {
+    const many = Array.from({ length: MAX_ATTACHED_DOCUMENTS + 5 }, (_, i) => `d${i}`);
+    const body = (await sentBody(many)) as { documentIds: string[] };
+    expect(body.documentIds).toEqual(many.slice(0, MAX_ATTACHED_DOCUMENTS));
   });
 
   it("sends no documentIds when nothing is attached", async () => {

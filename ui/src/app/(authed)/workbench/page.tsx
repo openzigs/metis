@@ -45,7 +45,7 @@ import {
 } from "@/lib/workbench-storage";
 import { recentTracker } from "@/lib/recent-tracker";
 import { useRecentEntries } from "@/hooks/use-recent-entries";
-import { WORKBENCH_SESSION_TITLE, titleFromQuestion } from "@metis/shared";
+import { MAX_ATTACHED_DOCUMENTS, WORKBENCH_SESSION_TITLE, titleFromQuestion } from "@metis/shared";
 import { readStoredActiveProjectId, resolveActiveProjectId } from "@/lib/active-project";
 import { LoadedSkillsPanel } from "@/components/chat/loaded-skills-panel";
 import { AgentPicker } from "@/components/chat/agent-picker";
@@ -190,13 +190,24 @@ export default function WorkbenchPage() {
   const contextDocs = useMemo(() => contextEntries.map((e) => e.doc), [contextEntries]);
   const gridRef = useRef<HTMLDivElement>(null);
 
+  // #2240 — a question can attach at most MAX_ATTACHED_DOCUMENTS (the server
+  // refuses a longer list, and with it the whole question): one more is not
+  // added, and the chips say why.
+  const [attachLimitHit, setAttachLimitHit] = useState(false);
+
   function attachToContext(docId: string) {
+    if (layout.contextIds.includes(docId)) return;
+    if (layout.contextIds.length >= MAX_ATTACHED_DOCUMENTS) {
+      setAttachLimitHit(true);
+      return;
+    }
     setLayout((prev) =>
       prev.contextIds.includes(docId) ? prev : { ...prev, contextIds: [...prev.contextIds, docId] },
     );
   }
 
   function detachFromContext(docId: string) {
+    setAttachLimitHit(false);
     setLayout((prev) => ({
       ...prev,
       contextIds: prev.contextIds.filter((id) => id !== docId),
@@ -204,6 +215,7 @@ export default function WorkbenchPage() {
   }
 
   function clearContext() {
+    setAttachLimitHit(false);
     setLayout((prev) => ({ ...prev, contextIds: [] }));
   }
 
@@ -536,6 +548,15 @@ export default function WorkbenchPage() {
                 clear all
               </button>
             </div>
+          ) : null}
+          {attachLimitHit ? (
+            <p
+              role="status"
+              data-testid="workbench-attach-limit"
+              className="mb-2 text-xs text-muted-foreground"
+            >
+              {`A question can attach at most ${MAX_ATTACHED_DOCUMENTS} documents. Remove one to attach another.`}
+            </p>
           ) : null}
           <div className="flex-1 min-h-0 overflow-y-auto rounded border p-2">
             {messages.length === 0 ? (

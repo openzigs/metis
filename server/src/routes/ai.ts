@@ -19,6 +19,7 @@
 import { Router, type Request, type Response } from "express";
 import { z } from "zod";
 import {
+  MAX_ATTACHED_DOCUMENTS,
   patchSchemaOf,
   sessionRoom,
   type ApiResponse,
@@ -134,12 +135,12 @@ import { resolveAclActor } from "../lib/rag/acl.js";
 import { formatDerivedLabel } from "../lib/rag/derived-label.js";
 import { formatHitLocator, formatHitScore } from "../lib/rag/hit-locator.js";
 import { loadChunksById } from "../lib/rag/chunk-lookup.js";
-import { reciprocalRankFusion } from "../lib/rag/bm25-index.js";
 import { listActiveMessages } from "../lib/ai/conversation/transcript-store.js";
 import {
   citedExcerptsMeta,
-  planQueries,
+  fuseRetrievalHits,
   planRetrievalQueries,
+  planSearches,
   retrievalConversation,
   type CitableExcerpt,
 } from "../lib/ai/conversation/retrieval-query.js";
@@ -398,7 +399,7 @@ const chatBodySchema = z.object({
    * context chips). Retrieval searches only these; an id outside the session's
    * project matches nothing, as the search is scoped to that project.
    */
-  documentIds: z.array(z.string().min(1).max(120)).max(50).optional(),
+  documentIds: z.array(z.string().min(1).max(120)).max(MAX_ATTACHED_DOCUMENTS).optional(),
 });
 
 type ChatBody = z.infer<typeof chatBodySchema>;
@@ -608,18 +609,6 @@ export interface AutoRagOptions {
 const AUTO_RAG_K = 8;
 
 /**
- * #2240 — one ranked hit list from the searches of a turn. A single search is
- * returned as it ranked; several are merged by reciprocal rank fusion, ties
- * going to the earlier list (the user's own words come first).
- */
-function fuseHitLists<T extends { chunkId: string }>(lists: T[][], k: number): T[] {
-  if (lists.length === 1) return lists[0]!.slice(0, k);
-  const byId = new Map<string, T>();
-  for (const list of lists) for (const h of list) if (!byId.has(h.chunkId)) byId.set(h.chunkId, h);
-  return reciprocalRankFusion(lists, { topK: k }).map((f) => byId.get(f.chunkId)!);
-}
-
-/**
  * #2240 — a chat turn's auto-RAG, read with the conversation: the session's
  * earlier turns shape the searches, and the excerpts its last answer cited are
  * carried into this one. A session with no project retrieves nothing, so its
@@ -675,7 +664,7 @@ export async function buildAutoRagContext(
   // the latest message read with the turn before it.
   const plan = planRetrievalQueries(messages);
   if (!plan || !projectId) return "";
-  const queries = planQueries(plan);
+  const searches = planSearches(plan);
   const documentIds =
     opts.documentIds && opts.documentIds.length > 0 ? [...opts.documentIds] : undefined;
 
@@ -690,6 +679,7 @@ export async function buildAutoRagContext(
     // closed) and the turn goes on ungrounded, as any retrieval failure does.
     const actor = await resolveAclActor(requesterId);
     const service = getKnowledgeService();
+    const queries = [...searches.user, ...(searches.contextual ? [searches.contextual] : [])];
     const lists = await Promise.all(
       queries.map(
         async (q) =>
@@ -702,7 +692,13 @@ export async function buildAutoRagContext(
           ).hits,
       ),
     );
-    const hits = fuseHitLists(lists, AUTO_RAG_K);
+    // The user's own searches weigh more than the conversational one, whose
+    // own finds never fill a majority of the slots.
+    const hits = fuseRetrievalHits(
+      lists.slice(0, searches.user.length),
+      searches.contextual ? lists[searches.user.length]! : null,
+      AUTO_RAG_K,
+    );
     // #2240 — the excerpts the previous answer cited, read back as the project
     // holds them now. Losing them costs this turn its carry-over, never its
     // fresh retrieval.

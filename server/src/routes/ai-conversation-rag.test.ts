@@ -104,6 +104,47 @@ describe("buildAutoRagContext — conversation-aware searches (#2240)", () => {
     expect(cap.sources).toBe(8);
   });
 
+  // PR #2266 panel — after a refund answer that ended on a question, a new
+  // question about password resets retrieved refund excerpts.
+  it("searches a new, self-contained question alone after an answer that asked something", async () => {
+    search.mockImplementation(async (_p: string, q: string) => ({
+      hits: q.includes("refund") ? [hit("refund-1"), hit("refund-2")] : [hit("reset-1")],
+    }));
+    const cap = capture();
+    await buildAutoRagContext(
+      "p1",
+      [
+        { role: "user", content: "How does the refund rule work?" },
+        {
+          role: "assistant",
+          content: "Refunds are issued within 30 days [1]. Would you like more detail?",
+        },
+        { role: "user", content: "Describe the password reset flow for administrators" },
+      ],
+      "u1",
+      deps(),
+      cap,
+    );
+    expect(search.mock.calls.map((c) => c[1])).toEqual([
+      "Describe the password reset flow for administrators",
+    ]);
+    expect(cap.excerpts!.map((e) => e.chunkId)).toEqual(["reset-1"]);
+  });
+
+  it("gives the earlier topic at most 3 of the 8 slots on a follow-up", async () => {
+    search.mockImplementation(async (_p: string, q: string) => ({
+      hits: Array.from({ length: 8 }, (_, i) =>
+        hit(q === "product B" ? `own-${i}` : `earlier-${i}`),
+      ),
+    }));
+    const cap = capture();
+    await buildAutoRagContext("p1", followUp, "u1", deps(), cap);
+    const ids = cap.excerpts!.map((e) => e.chunkId);
+    expect(ids).toHaveLength(8);
+    expect(ids.filter((id) => id.startsWith("earlier-")).length).toBeLessThanOrEqual(3);
+    expect(ids[0]).toBe("own-0");
+  });
+
   it("searches each part of a multi-part question", async () => {
     search.mockResolvedValue({ hits: [] });
     await buildAutoRagContext(
