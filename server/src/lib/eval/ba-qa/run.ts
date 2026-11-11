@@ -11,16 +11,34 @@ export const ARM_FLAGS = [
   "CHAT_FUSED_CODE_RETRIEVAL",
   "RAG_RERANK",
 ] as const;
+type ArmFlag = (typeof ARM_FLAGS)[number];
 
+/**
+ * #2243 — every arm names each flag's value outright except `default`, which
+ * unsets all three so each reads the server's own default. `off` is therefore
+ * "all three off" whatever the defaults are, and each `no-*` arm takes one flag
+ * away from `on`, so a flag's gain is measured on its own. `tools-only` sets
+ * only the code-search tools.
+ */
 export const ARMS = {
-  /** Today's chat: every flag unset, so each reads its default (off). */
-  off: {},
+  /** The server's defaults: every flag unset. */
+  default: {},
+  off: { CHAT_CODE_SEARCH_TOOLS: "0", CHAT_FUSED_CODE_RETRIEVAL: "0", RAG_RERANK: "0" },
   on: { CHAT_CODE_SEARCH_TOOLS: "1", CHAT_FUSED_CODE_RETRIEVAL: "1", RAG_RERANK: "1" },
-} as const satisfies Record<string, Partial<Record<(typeof ARM_FLAGS)[number], string>>>;
+  "no-tools": { CHAT_CODE_SEARCH_TOOLS: "0", CHAT_FUSED_CODE_RETRIEVAL: "1", RAG_RERANK: "1" },
+  "no-fused": { CHAT_CODE_SEARCH_TOOLS: "1", CHAT_FUSED_CODE_RETRIEVAL: "0", RAG_RERANK: "1" },
+  "no-rerank": { CHAT_CODE_SEARCH_TOOLS: "1", CHAT_FUSED_CODE_RETRIEVAL: "1", RAG_RERANK: "0" },
+  /** Fused retrieval's gain over the tools alone, with the reranker off as it ships. */
+  "tools-only": { CHAT_CODE_SEARCH_TOOLS: "1", CHAT_FUSED_CODE_RETRIEVAL: "0", RAG_RERANK: "0" },
+} as const satisfies Record<string, Partial<Record<ArmFlag, string>>>;
 export type BaQaArm = keyof typeof ARMS;
 
+function isArm(raw: string): raw is BaQaArm {
+  return Object.hasOwn(ARMS, raw);
+}
+
 export function parseArm(raw: string): BaQaArm {
-  if (raw !== "off" && raw !== "on") throw new Error(`--arm takes off or on, not ${raw}`);
+  if (!isArm(raw)) throw new Error(`--arm takes ${Object.keys(ARMS).join(", ")}, not ${raw}`);
   return raw;
 }
 
@@ -37,26 +55,29 @@ export function armArgument(argv: readonly string[]): string | null {
 }
 
 /**
- * The in-process embedder's runtime for an arm. The `on` arm's cross-encoder
- * reranker cannot share the process with a worker-thread embedder (#222), so it
- * runs both inline; `off` keeps the default worker, as a deployment does.
+ * The in-process embedder's runtime for an arm. A cross-encoder reranker cannot
+ * share the process with a worker-thread embedder (#222), so an arm that turns
+ * `RAG_RERANK` on runs both inline; every other arm, and an unknown or absent
+ * one, keeps the default worker, as a deployment does.
  */
 export function embedRuntimeFor(arm: string | null): "inline" | "worker" {
-  return arm === "on" ? "inline" : "worker";
+  if (arm === null || !isArm(arm)) return "worker";
+  const flags: Partial<Record<ArmFlag, string>> = ARMS[arm];
+  return flags.RAG_RERANK === "1" ? "inline" : "worker";
 }
 
 /**
- * Set the arm's flags on `env`, and unset the rest: an `off` run inherits no
- * flag from the caller's shell. Returns the flags as the arm ran them.
+ * Set the arm's flags on `env`, and unset the rest: no arm inherits a flag
+ * from the caller's shell or `.env`. Returns the flags as the arm ran them.
  */
 export function applyArmEnv(env: NodeJS.ProcessEnv, arm: BaQaArm): Record<string, string> {
-  const flags: Partial<Record<string, string>> = ARMS[arm];
+  const flags: Partial<Record<ArmFlag, string>> = ARMS[arm];
   const applied: Record<string, string> = {};
   for (const key of ARM_FLAGS) {
     const value = flags[key];
     if (value === undefined) {
       delete env[key];
-      applied[key] = "(unset: off)";
+      applied[key] = "(unset: default)";
     } else {
       env[key] = value;
       applied[key] = value;

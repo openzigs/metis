@@ -19,8 +19,10 @@
  * documents (the connector's own ingest), and the corpus's uploaded documents
  * (the man page, FRD-12). Idempotent: a product that already holds them is left.
  *
- * Arms: `off` unsets `CHAT_CODE_SEARCH_TOOLS`, `CHAT_FUSED_CODE_RETRIEVAL` and
- * `RAG_RERANK`, whatever the shell or `.env` set; `on` sets all three.
+ * Arms (#2243): `off` sets `CHAT_CODE_SEARCH_TOOLS`, `CHAT_FUSED_CODE_RETRIEVAL`
+ * and `RAG_RERANK` off and `on` sets all three, whatever the shell or `.env` set;
+ * `no-tools`, `no-fused` and `no-rerank` take one flag away from `on`; `default`
+ * unsets all three, so each reads the server's default.
  *
  * Each answer is graded by one judge call (`judge.ts`); every rate is computed
  * from its verdicts in code (`metrics.ts`). Spend is ledger-priced, answers and
@@ -108,7 +110,7 @@ async function main(): Promise<void> {
       "judge-model": { type: "string" },
     },
   });
-  if (!values.arm) throw new Error("--arm off|on is required");
+  if (!values.arm) throw new Error("--arm is required (default, off, on, no-tools, …)");
   const arm = parseArm(values.arm);
   const budget = Number(values.budget);
   if (!values.budget || !Number.isFinite(budget) || budget <= 0) {
@@ -419,6 +421,8 @@ async function main(): Promise<void> {
       projectId: scope.projectId,
       ragChars: rag.length,
       toolCalls,
+      turnsExhausted: loop.loop.turnsExhausted,
+      truncatedToolResults: loop.toolResults.filter((t) => t.truncated).length,
       sessionId: row.id,
       seconds: Number(((performance.now() - t0) / 1000).toFixed(1)),
       turnsUsed: loop.turnsUsed,
@@ -431,7 +435,10 @@ async function main(): Promise<void> {
     console.log(
       `${arm} ${q.id} [${i + 1}/${questions.length}]: ${score.behaviour ?? "UNSCORED"} ` +
         `(expect ${q.expect}), facts ${score.facts ? `${score.facts.stated}/${score.facts.total}` : "-"}, ` +
-        `${citations.length} cites, ${toolCalls} tools, rag ${rag.length} chars, ` +
+        `${citations.length} cites, ${toolCalls} tools ` +
+        `(${loop.toolResults.filter((t) => t.truncated).length} cut, ` +
+        `${loop.turnsUsed} turns${loop.loop.turnsExhausted ? ", OUT OF TURNS" : ""}), ` +
+        `rag ${rag.length} chars, ` +
         `$${(costUsd ?? Number.NaN).toFixed(4)} — total $${meter.spentUsd().toFixed(4)}`,
     );
   }
