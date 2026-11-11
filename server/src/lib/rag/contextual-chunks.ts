@@ -96,13 +96,19 @@ export function clip(text: string, max: number): string {
   return `${(space > max / 2 ? head.slice(0, space) : head).trimEnd()}…`;
 }
 
-/** Markdown inline syntax a summary line should not carry: links, emphasis, code ticks. */
+/**
+ * Markdown inline syntax a summary line should not carry: links, emphasis, code
+ * ticks and inline HTML. The text is index input, never rendered, so the angle
+ * brackets are simply dropped once the tags are gone: a nested `<<b>x>` cannot
+ * leave a tag behind.
+ */
 function plainInline(line: string): string {
   return line
     .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
     .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
     .replace(/[*_`]+/g, "")
-    .replace(/<[^>]+>/g, "")
+    .replace(/<[^<>]*>/g, "")
+    .replace(/[<>]/g, "")
     .trim();
 }
 
