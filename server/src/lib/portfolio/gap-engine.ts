@@ -108,6 +108,7 @@ import {
   parseDecomposition,
   parseRepoVerdict,
 } from "./gap-prompts.js";
+import { listedNotChecked } from "./document-requirements.js";
 
 const log = createChildLogger("portfolio-gap");
 
@@ -1178,7 +1179,11 @@ function notCheckedOf(ctx: RunContext, overflow: readonly string[]): PortfolioNo
       out.push({ text: clipText(c), reason: "budget", count: skipped });
     }
   }
-  for (const c of overflow) out.push({ text: clipText(c), reason: "over-limit", count: null });
+  // A statement the model split into more than the cap: listed up to a bound, the rest counted,
+  // so a huge reply cannot overrun the stored list's cap and fail the write.
+  out.push(
+    ...listedNotChecked(overflow.map(clipText), "over-limit", (n) => `${n} more requirements`),
+  );
   return out;
 }
 

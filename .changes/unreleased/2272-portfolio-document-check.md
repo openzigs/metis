@@ -8,4 +8,5 @@ section: Added
   cut at 8,000 characters. A check can also look at several chosen products (up to 50).
 - Nothing is cut silently: **Not checked**, on the page and in the export, lists what the check
   did not check and why. Each product the change reaches says how sure the impact is:
-  **Verified by graph path**, **Likely**, **Possible** or **Needs review**.
+  **Found in code** (a product that must change), **Verified by graph path** (downstream),
+  **Likely**, **Possible** or **Needs review**.

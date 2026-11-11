@@ -99,7 +99,7 @@ export function boundedRequirements(texts: readonly string[]): {
   });
   const over = kept.slice(PORTFOLIO_MAX_REQUIREMENTS);
   notChecked.push(
-    ...listed(
+    ...listedNotChecked(
       over.map((t) => oneLine(t, PORTFOLIO_REQUIREMENT_MAX_CHARS)),
       "over-limit",
       (n) => `${n} more requirements`,
@@ -123,8 +123,12 @@ export function cutText(
   };
 }
 
-/** One entry per text up to {@link NOT_CHECKED_LISTED_PER_REASON}, then one counting the rest. */
-function listed(
+/**
+ * One entry per text up to {@link NOT_CHECKED_LISTED_PER_REASON}, then one
+ * counting the rest: so no reason can overrun the stored list's cap
+ * (`PORTFOLIO_NOT_CHECKED_MAX`), however long a model's reply.
+ */
+export function listedNotChecked(
   texts: readonly string[],
   reason: PortfolioNotChecked["reason"],
   more: (n: number) => string,
@@ -148,7 +152,7 @@ function fromReading(reading: DocumentReading): {
       const where = formatHeadingPath(s.headingPath).trim();
       return where ? `${s.statement} (section: ${where})` : s.statement;
     });
-  const notChecked = listed(
+  const notChecked = listedNotChecked(
     reading.sections
       .filter((s) => s.status === "unread")
       .map((s) => oneLine(formatHeadingPath(s.headingPath), PORTFOLIO_REQUIREMENT_MAX_CHARS)),
@@ -181,14 +185,24 @@ function statementFor(title: string, how: string, found: number): string {
 
 /**
  * The requirements of document `documentId` for a portfolio check. Throws
- * {@link NoDocumentRequirementsError} when the document has no text, or none
- * of its text reads as a requirement. A provider error or a cancellation of
+ * {@link NoDocumentRequirementsError} when the document was deleted since the
+ * check started, has no text, or none of its text reads as a requirement. A provider error or a cancellation of
  * the model reading falls back to the splitter; the statement says so.
  */
 export async function requirementsFromDocument(
   documentId: string,
   deps: DocumentRequirementsDeps,
 ): Promise<DocumentRequirements> {
+  // The start request checked it was live; it may have been deleted since, while the run waited.
+  const live = await deps.prisma.document.findFirst({
+    where: { id: documentId, deletedAt: null },
+    select: { id: true },
+  });
+  if (!live) {
+    throw new NoDocumentRequirementsError(
+      "The document was deleted before the check could read it.",
+    );
+  }
   const doc = await loadImpactDocumentText(deps.prisma, documentId, deps.storage);
   if (doc.text.trim().length === 0) {
     throw new NoDocumentRequirementsError("The document has no text to read.");

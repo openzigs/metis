@@ -42,6 +42,8 @@ import {
 
 const state = vi.hoisted(() => {
   process.env.AI_OFFLINE = "1";
+  // More starts than the default per-user window allows (read per request).
+  process.env.PORTFOLIO_ASSESSMENT_START_RATE_LIMIT_MAX = "1000";
   return { db: null as unknown };
 });
 vi.mock("../src/lib/prisma.js", async (importOriginal) => {
@@ -80,6 +82,10 @@ const bearer = (who: Who) => `Bearer ${issueTokens(payload(who)).accessToken}`;
 const DOC_A = "doc-frd-a-2272";
 const DOC_B = "doc-frd-b-2272";
 const DOC_DELETED = "doc-frd-deleted-2272";
+/** A repository's file, one still ingesting, and one with no text (all in ws-a). */
+const DOC_REPO = "doc-repo-file-2272";
+const DOC_PROCESSING = "doc-processing-2272";
+const DOC_EMPTY = "doc-empty-2272";
 const REQ_LONG = "req-long-2272";
 const FRD = [
   "# Accounts FRD",
@@ -158,7 +164,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
             costOf: () => 0.01,
           },
           document: {
-            storage: { read: async () => Buffer.from(FRD, "utf-8") },
+            storage: {
+              read: async (path: string) =>
+                Buffer.from(path.includes(DOC_EMPTY) ? "   " : FRD, "utf-8"),
+            },
             readerEnabled: () => readerEnabled,
             get reader() {
               return injectReader ? reader : undefined;
@@ -200,10 +209,13 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       db = new PrismaClient({ adapter: new PrismaBetterSqlite3({ url: sqlite.url }) });
       state.db = db;
       await seedPortfolio(db, USERS);
-      for (const [id, projectId, deletedAt] of [
-        [DOC_A, PROJECTS[0].id, null],
-        [DOC_B, PROJECTS[2].id, null],
-        [DOC_DELETED, PROJECTS[0].id, new Date("2026-11-01T00:00:00Z")],
+      for (const [id, projectId, deletedAt, source, status] of [
+        [DOC_A, PROJECTS[0].id, null, "upload", "ready"],
+        [DOC_B, PROJECTS[2].id, null, "upload", "ready"],
+        [DOC_DELETED, PROJECTS[0].id, new Date("2026-11-01T00:00:00Z"), "upload", "ready"],
+        [DOC_REPO, PROJECTS[0].id, null, "repo", "ready"],
+        [DOC_PROCESSING, PROJECTS[0].id, null, "upload", "processing"],
+        [DOC_EMPTY, PROJECTS[0].id, null, "upload", "ready"],
       ] as const) {
         await db.document.create({
           data: {
@@ -215,7 +227,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
             sizeBytes: FRD.length,
             storagePath: `docs/${id}.md`,
             checksum: id,
-            status: "ready",
+            status,
+            source,
             uploadedById: "mia",
             deletedAt,
           },
@@ -330,6 +343,58 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const res = await post("ana", { documentId, scope: "all-accessible" });
       expect(res.status).toBe(404);
       expect(await db.portfolioAssessment.count({ where: { createdById: "ana" } })).toBe(before);
+    });
+
+    it.each([
+      ["a repository's file", DOC_REPO, "DOCUMENT_NOT_CHECKABLE"],
+      ["a document still processing", DOC_PROCESSING, "DOCUMENT_NOT_READY"],
+    ])("400 for %s the caller can read, and nothing is started", async (_l, documentId, code) => {
+      const before = await db.portfolioAssessment.count({ where: { createdById: "ana" } });
+      const res = await post("ana", { documentId, scope: "all-accessible" });
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe(code);
+      expect(await db.portfolioAssessment.count({ where: { createdById: "ana" } })).toBe(before);
+      // Who cannot read the project still gets the 404: no existence oracle.
+      expect((await post("ola", { documentId, scope: "all-accessible" })).status).toBe(404);
+    });
+
+    it("a document with no requirement fails the check and says why, on the page and in the export", async () => {
+      const id = await start("ana", { documentId: DOC_EMPTY, scope: "product", productIds: [P1] });
+      const view = await settled(id, "ana");
+      expect(view.status).toBe("failed");
+      expect(view.statement).toBe(
+        'Requirements read from "Accounts FRD": The document has no text to read.',
+      );
+      const md = await get("ana", `/${id}/export`);
+      expect(md.text).toContain("The document has no text to read.");
+    });
+
+    it("a stored not-checked entry that does not read as one is dropped, never shown in part", async () => {
+      const id = await start("ana", {
+        statement: "Password reset by email",
+        scope: "product",
+        productIds: [P1],
+      });
+      await settled(id, "ana");
+      const good = { text: "Appendix", reason: "section-unread", count: null };
+      await db.portfolioAssessment.update({
+        where: { id },
+        data: {
+          notChecked: JSON.stringify([
+            good,
+            { text: "Bogus", reason: "not-a-reason", count: null },
+            { text: "Extra key", reason: "budget", count: 1, secret: "x" },
+            { text: "Negative", reason: "budget", count: -1 },
+            "just a string",
+          ]),
+        },
+      });
+      const view = await settled(id, "ana");
+      expect(view.notChecked).toEqual([good]);
+      const md = await get("ana", `/${id}/export`);
+      expect(md.text).toContain("Appendix");
+      expect(md.text).not.toContain("Bogus");
+      expect(md.text).not.toContain("Extra key");
     });
 
     it("a requirement's text past what one check reads is listed as cut, not cut silently", async () => {

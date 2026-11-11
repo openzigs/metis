@@ -90,9 +90,13 @@ describe("#2272 — impact tiers", () => {
     expect(portfolioImpactTier(row("downstream-consumer", path(hop("high"))))).toBe("needs-review");
   });
 
-  it("a product that must change is verified when its code was found, else likely", () => {
-    expect(portfolioImpactTier(row("direct-change", {}, "covers"))).toBe("verified");
-    expect(portfolioImpactTier(row("direct-change", {}, "partial"))).toBe("verified");
+  it("a product that must change is found in code when its code was found, else likely — never graph-verified", () => {
+    expect(portfolioImpactTier(row("direct-change", {}, "covers"))).toBe("found-in-code");
+    expect(portfolioImpactTier(row("direct-change", {}, "partial"))).toBe("found-in-code");
+    // Even with a stored path of sure hops, no graph verified a product that must change.
+    expect(portfolioImpactTier(row("direct-change", path(hop(0.99)), "covers"))).toBe(
+      "found-in-code",
+    );
     expect(portfolioImpactTier(row("direct-change", {}, "not-covered"))).toBe("likely");
     expect(portfolioImpactTier(row("direct-change", {}, "not-checked"))).toBe("likely");
   });
@@ -111,6 +115,7 @@ describe("#2272 — impact tiers", () => {
 
   it("labels every tier", () => {
     expect(PORTFOLIO_IMPACT_TIERS.map((t) => PORTFOLIO_IMPACT_TIER_LABEL[t])).toEqual([
+      "Found in code",
       "Verified by graph path",
       "Likely",
       "Possible",

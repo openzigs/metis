@@ -17,7 +17,7 @@ Refunds are only partly delivered today. Orders must change, and Reporting is hi
 
 ### Affected products
 
-#### Orders: Must change (verified by graph path)
+#### Orders: Must change (found in code)
 
 - **Functional impact:** Orders posts a ledger entry for every refund.
 - **Business impact:** Refunds settle the same day.
@@ -55,7 +55,7 @@ Refunds are only partly delivered today. Orders must change, and Reporting is hi
 
 | Product | Coverage | Summary | Impact | Severity | Impact tier |
 | --- | --- | --- | --- | --- | --- |
-| Orders | Covers part of it | Orders (acme/orders-api). Not found: It posts within 2 seconds. | Must change |  | Verified by graph path |
+| Orders | Covers part of it | Orders (acme/orders-api). Not found: It posts within 2 seconds. | Must change |  | Found in code |
 | p-partner | Restricted |  |  |  | Needs review |
 | Reporting | Does not cover it |  | Downstream consumer via database | medium | Possible |
 | Storefront | Does not cover it |  | Downstream consumer via api | medium | Verified by graph path |
@@ -65,7 +65,7 @@ Refunds are only partly delivered today. Orders must change, and Reporting is hi
 
 ### Orders
 
-**Coverage:** Covers part of it · **Impact:** Must change (verified by graph path)
+**Coverage:** Covers part of it · **Impact:** Must change (found in code)
 
 **Repos**
 

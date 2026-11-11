@@ -205,7 +205,7 @@ export interface AffectedProduct {
   /** #1963 — the other edge kinds the change reaches it by, beyond `via`'s path. */
   otherVia: string[];
   severity: string | null;
-  /** #2272 — how sure the impact is (`portfolioImpactTier`): verified, likely, possible, needs review. */
+  /** #2272 — how sure the impact is (`portfolioImpactTier`): found in code, verified by graph path, likely, possible, needs review. */
   tier: PortfolioImpactTier;
   /** The product's one-paragraph summary: the report's, else the stored sentence. */
   summary: string;
@@ -419,9 +419,14 @@ export function impactNeedsHost(view: PortfolioAssessmentView): boolean {
 /** #1725 — a statement longer than this is not carried in the link (URL length). */
 export const HOST_LINK_STATEMENT_MAX = 2_000;
 
-/** #2272 — the document title a document check's statement quotes (`Requirements read from "…"`). */
+/**
+ * #2272 — the document title a document check's statement quotes
+ * (`Requirements read from "…": …`, or no tail before the run read it). The
+ * quote closes at the last `"` before `: ` or the end, so a title that itself
+ * holds a quote is read whole: what follows the title holds none.
+ */
 function documentTitleOf(statement: string): string {
-  return /^Requirements read from "(.*?)"/.exec(statement)?.[1] ?? "Selected document";
+  return /^Requirements read from "(.*)"(?=: |$)/.exec(statement)?.[1] ?? "Selected document";
 }
 
 /**

@@ -29,6 +29,7 @@ function deps(over: Partial<DocumentRequirementsDeps> = {}, text = FRD): Documen
   return {
     prisma: {
       document: {
+        findFirst: vi.fn(async () => ({ id: "doc-1" })),
         findUnique: vi.fn(async () => ({
           projectId: "proj-1",
           checksum: "sha-frd",
@@ -206,6 +207,19 @@ describe("requirementsFromDocument (#2272)", () => {
     expect(read.statement).toContain(
       `found ${PORTFOLIO_MAX_REQUIREMENTS + 3} requirements. The first ${PORTFOLIO_MAX_REQUIREMENTS} are each checked on their own; the other 3 are listed as not checked.`,
     );
+  });
+
+  it("refuses a document deleted since the check started, before reading it", async () => {
+    const d = deps();
+    (d.prisma.document.findFirst as ReturnType<typeof vi.fn>).mockResolvedValueOnce(null);
+    await expect(requirementsFromDocument("doc-1", d)).rejects.toThrow(
+      new NoDocumentRequirementsError("The document was deleted before the check could read it."),
+    );
+    expect(d.prisma.document.findFirst).toHaveBeenCalledWith({
+      where: { id: "doc-1", deletedAt: null },
+      select: { id: true },
+    });
+    expect(d.storage.read).not.toHaveBeenCalled();
   });
 
   it("refuses a document with no text, or none that reads as a requirement", async () => {

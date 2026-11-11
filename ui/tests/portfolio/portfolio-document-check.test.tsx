@@ -11,10 +11,11 @@ import userEvent from "@testing-library/user-event";
 import { PORTFOLIO_ASSESSMENT_MAX_PRODUCTS, createPortfolioAssessmentSchema } from "@metis/shared";
 import { PortfolioAssessmentForm } from "@/components/portfolio/portfolio-assessment-form";
 import { PortfolioRequirementsChecked } from "@/components/portfolio/portfolio-requirements-checked";
-import { ImpactTierBadge } from "@/components/portfolio/portfolio-impact-view";
+import { ImpactTierBadge, PortfolioImpactView } from "@/components/portfolio/portfolio-impact-view";
 import { portfolioCheckHref } from "@/components/portfolio/portfolio-check-link";
 import { hostPickerHref, impactGroups } from "@/lib/portfolio-impact";
 import { view } from "./fixtures";
+import { impactView } from "./impact-fixtures";
 import { axeViolations } from "./axe";
 
 const products = [
@@ -235,14 +236,38 @@ describe("#2272 — impact tiers", () => {
   it("labels each tier", () => {
     render(
       <>
+        <ImpactTierBadge tier="found-in-code" />
         <ImpactTierBadge tier="verified" />
         <ImpactTierBadge tier="needs-review" />
       </>,
     );
     expect(screen.getAllByTestId("portfolio-impact-tier").map((b) => b.textContent)).toEqual([
+      "Found in code",
       "Verified by graph path",
       "Needs review",
     ]);
+  });
+
+  it("each affected product's card on the page shows its tier: found in code is never graph-verified", () => {
+    const groups = impactGroups(impactView());
+    render(<PortfolioImpactView affected={groups.affected} notAffected={groups.notAffected} />);
+    const tierOf = (name: string) =>
+      within(
+        screen
+          .getAllByTestId("portfolio-affected-product")
+          .find((c) => within(c).queryByRole("heading", { name }))!,
+      ).getByTestId("portfolio-impact-tier").textContent;
+    // Billing must change, and the check found its code: no graph path was walked to it.
+    expect(tierOf("Billing")).toBe("Found in code");
+    // Ledger is reached by one detected hop at 0.9: verified by graph path.
+    expect(tierOf("Ledger")).toBe("Verified by graph path");
+    // Warehouse's path has a hop at 0.4.
+    expect(tierOf("Warehouse")).toBe("Possible");
+    expect(
+      screen
+        .getAllByTestId("portfolio-affected-product")
+        .map((c) => within(c).queryAllByTestId("portfolio-impact-tier").length),
+    ).toEqual(groups.affected.map(() => 1));
   });
 
   it("gives every affected product a tier", () => {
@@ -274,7 +299,7 @@ describe("#2272 — impact tiers", () => {
       }),
     );
     expect(affected.map((a) => [a.productId, a.tier])).toEqual([
-      ["p-billing", "verified"],
+      ["p-billing", "found-in-code"],
       ["p-x", "needs-review"],
     ]);
   });
@@ -307,6 +332,20 @@ describe("#2272 — links carry a document and every chosen product", () => {
     expect(url.searchParams.get("title")).toBe("Payments FRD");
     expect(url.searchParams.has("statement")).toBe(false);
     expect(url.searchParams.getAll("productId")).toEqual(["p-billing", "p-crm"]);
+  });
+
+  it("reads a document title that holds a quote whole, with or without the reading's tail", () => {
+    for (const statement of [
+      'Requirements read from "The "Pay" FRD": the model read it in full and found 2 requirements. Each is checked on its own.',
+      'Requirements read from "The "Pay" FRD"',
+      'Requirements read from "The "Pay" FRD": No requirement was found in the document.',
+    ]) {
+      const url = new URL(
+        hostPickerHref(view({ sourceDocumentId: "doc-1", statement })),
+        "http://x",
+      );
+      expect(url.searchParams.get("title")).toBe('The "Pay" FRD');
+    }
   });
 
   it("names a document it cannot read the title of plainly", () => {

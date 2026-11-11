@@ -6,7 +6,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   PORTFOLIO_MAX_REQUIREMENTS,
+  PORTFOLIO_NOT_CHECKED_MAX,
   PORTFOLIO_REQUIREMENT_MAX_CHARS,
+  portfolioAssessmentInputSchema,
   type AuthPayload,
 } from "@metis/shared";
 import type { AIProvider, ChatResponse } from "../ai/types.js";
@@ -59,6 +61,7 @@ const {
   toAssessmentInput,
 } = await import("./gap-engine.js");
 const { AppError } = await import("../../middleware/error-handler.js");
+const { NOT_CHECKED_LISTED_PER_REASON } = await import("./document-requirements.js");
 
 const USER: AuthPayload = {
   userId: "u",
@@ -765,6 +768,43 @@ describe("evaluatePortfolioGap", () => {
       { text: `k${PORTFOLIO_MAX_REQUIREMENTS + 1}`, reason: "over-limit", count: null },
       { text: `k${PORTFOLIO_MAX_REQUIREMENTS + 2}`, reason: "over-limit", count: null },
     ]);
+  });
+
+  it("#2272 — a huge split is listed up to a bound and the rest counted, so the record still stores", async () => {
+    const extra = PORTFOLIO_NOT_CHECKED_MAX + 500;
+    const split = Array.from({ length: PORTFOLIO_MAX_REQUIREMENTS + extra }, (_, i) => `k${i + 1}`);
+    const result = await evaluatePortfolioGap(
+      USER,
+      { statement: "A huge requirement", ...PRODUCT_P1 },
+      {
+        provider: provider((prompt) =>
+          prompt.includes("<<<CODE>>>")
+            ? JSON.stringify({ criteria: [] })
+            : JSON.stringify({ criteria: split }),
+        ),
+        search: async () => found([]),
+        limits,
+      },
+    );
+    const overLimit = result.notChecked.filter((n) => n.reason === "over-limit");
+    expect(overLimit).toHaveLength(NOT_CHECKED_LISTED_PER_REASON + 1);
+    expect(overLimit[0]).toEqual({
+      text: `k${PORTFOLIO_MAX_REQUIREMENTS + 1}`,
+      reason: "over-limit",
+      count: null,
+    });
+    const rest = extra - NOT_CHECKED_LISTED_PER_REASON;
+    expect(overLimit.at(-1)).toEqual({
+      text: `${rest} more requirements`,
+      reason: "over-limit",
+      count: rest,
+    });
+    const record = toAssessmentInput(result, {
+      createdById: "u",
+      sourceRequirementId: null,
+      sourceProjectId: null,
+    });
+    expect(portfolioAssessmentInputSchema.safeParse(record).success).toBe(true);
   });
 
   it("uses the deployment provider, the federated search and the price table by default", async () => {

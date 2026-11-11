@@ -47,13 +47,14 @@ const SEVERITY_VARIANT: Record<string, "destructive" | "warning" | "info"> = {
 };
 
 const TIER_VARIANT: Record<PortfolioImpactTier, "success" | "info" | "warning" | "outline"> = {
+  "found-in-code": "success",
   verified: "success",
   likely: "info",
   possible: "warning",
   "needs-review": "outline",
 };
 
-/** #2272 — how sure the impact is: verified by graph path, likely, possible or needs review. */
+/** #2272 — how sure the impact is: found in code, verified by graph path, likely, possible or needs review. */
 export function ImpactTierBadge({ tier }: { tier: PortfolioImpactTier }) {
   return (
     <Badge variant={TIER_VARIANT[tier]} data-testid="portfolio-impact-tier" data-tier={tier}>

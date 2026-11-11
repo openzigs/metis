@@ -1396,6 +1396,10 @@ dropped statements, repos the budget ran out before) is stored in
 in the export. A document check's `sourceProjectId` is the document's project, so only its
 readers may read the check. Each product the change reaches has an impact tier
 (`portfolioImpactTier` in `@metis/shared`, computed at read time from the stored path).
+A product that must change is never `verified`: no graph path is walked to it, so when
+the code verdict found it covers or partly covers the requirement its tier is
+`found-in-code`, and "Verified by graph path" is kept for a downstream product whose every
+hop is declared, overridden or detected at confidence 0.8 or more.
 
 **Portfolio gap and impact analysis (epic #1608): the model.** One requirement is checked
 against a set of products in one run. The run finds which products already cover it

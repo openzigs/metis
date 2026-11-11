@@ -95,6 +95,7 @@ import { estimateUsageCostUsd } from "../lib/ai/token-tracker.js";
 import {
   boundedRequirements,
   cutText,
+  NoDocumentRequirementsError,
   requirementsFromDocument,
   type PortfolioDocumentReader,
 } from "../lib/portfolio/document-requirements.js";
@@ -165,7 +166,8 @@ function documentReaderOn(provider: AIProvider, signal?: AbortSignal): Portfolio
  * #2272 — the document a check is started from, or 404: it must be live (not
  * soft-deleted) and in a project the caller can read, like a requirement
  * (`loadReadableSourceRequirement`). Unknown, deleted and unreadable answer
- * alike (no existence oracle).
+ * alike (no existence oracle). A readable one that is a repository's file, or
+ * not yet `ready`, is a 400.
  */
 async function loadReadableSourceDocument(
   user: AuthPayload,
@@ -173,13 +175,37 @@ async function loadReadableSourceDocument(
 ): Promise<{ id: string; projectId: string; title: string }> {
   const doc = await prisma.document.findFirst({
     where: { id: documentId, deletedAt: null },
-    select: { id: true, projectId: true, title: true, filename: true },
+    select: {
+      id: true,
+      projectId: true,
+      title: true,
+      filename: true,
+      source: true,
+      status: true,
+    },
   });
   if (
     !doc ||
     !(await canAccessProjectDiscussions({ id: user.userId, role: user.role }, doc.projectId))
   ) {
     throw new AppError(404, "NOT_FOUND", "Document not found");
+  }
+  // Only after the read check, so neither answer is an existence oracle. The page offers
+  // neither; the API refuses them too: a repository's file is code, not requirements, and a
+  // document still ingesting (or failed) has no text the check can rely on.
+  if (doc.source === "repo") {
+    throw new AppError(
+      400,
+      "DOCUMENT_NOT_CHECKABLE",
+      "A repository file cannot be checked across the portfolio: choose an uploaded or imported document.",
+    );
+  }
+  if (doc.status !== "ready") {
+    throw new AppError(
+      400,
+      "DOCUMENT_NOT_READY",
+      "This document is not ready yet: check it once it has finished processing.",
+    );
   }
   return { id: doc.id, projectId: doc.projectId, title: doc.title ?? doc.filename };
 }
@@ -401,15 +427,23 @@ async function runAssessment(
       id,
       error: err instanceof Error ? err.message : String(err),
     });
-    const moved = await setPortfolioAssessmentStatus(id, "failed").catch((e: unknown) => {
-      log.error("Could not record a failed portfolio assessment", {
-        id,
-        error: e instanceof Error ? e.message : String(e),
-      });
-      return true;
-    });
+    // #2272 — a document with no requirement to check says so, on the page and in the export:
+    // its message is METIS's own (never a provider's), so it is safe to show.
+    const reason = err instanceof NoDocumentRequirementsError ? err.message : null;
+    const statement = reason
+      ? cutText(`${source.input.statement}: ${reason}`, PORTFOLIO_STATEMENT_MAX_CHARS).text
+      : undefined;
+    const moved = await setPortfolioAssessmentStatus(id, "failed", statement).catch(
+      (e: unknown) => {
+        log.error("Could not record a failed portfolio assessment", {
+          id,
+          error: e instanceof Error ? e.message : String(e),
+        });
+        return true;
+      },
+    );
     // #1668 — a row the sweep failed already had its failed event.
-    if (moved) jobEvents.failed(KIND, id, null, genericFailureMessage(KIND));
+    if (moved) jobEvents.failed(KIND, id, null, reason ?? genericFailureMessage(KIND));
   } finally {
     clearInterval(heartbeat);
   }

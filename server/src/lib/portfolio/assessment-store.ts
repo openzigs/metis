@@ -174,11 +174,13 @@ export async function completePortfolioAssessment(
 export async function setPortfolioAssessmentStatus(
   id: string,
   status: "running" | "failed",
+  /** #2272 — a failed run's statement, saying why it failed (METIS's own words only). */
+  statement?: string,
 ): Promise<boolean> {
   const from = status === "running" ? ["pending"] : [...LIVE_STATUSES];
   const { count } = await prisma.portfolioAssessment.updateMany({
     where: { id, status: { in: from } },
-    data: { status },
+    data: { status, ...(statement !== undefined ? { statement } : {}) },
   });
   return count > 0;
 }

@@ -444,12 +444,14 @@ export interface PortfolioAssessmentListItem {
 // ─── #2272 — impact tiers ───────────────────────────────────────────────────
 
 /**
- * #2272 — how sure a product's impact is, in four tiers:
+ * #2272 — how sure a product's impact is, in five tiers:
  *
- * - `verified` — by graph path: every hop of the path to it is an edge a
- *   person declared (or overrode), or one detected with confidence at least
- *   {@link PORTFOLIO_VERIFIED_CONFIDENCE}. For a product that must change: the
- *   check found its code (it covers or partly covers the requirement).
+ * - `found-in-code` — a product that must change, whose code the check found
+ *   covers or partly covers the requirement. The evidence is the code verdict,
+ *   not a graph path: no path is walked to a product that must change.
+ * - `verified` — by graph path, for a downstream product only: every hop of
+ *   the path to it is an edge a person declared (or overrode), or one detected
+ *   with confidence at least {@link PORTFOLIO_VERIFIED_CONFIDENCE}.
  * - `likely` — every hop at least {@link PORTFOLIO_LIKELY_CONFIDENCE}. For a
  *   product that must change: it was chosen to build it (or holds that
  *   product's repository), and no code of it was found yet.
@@ -458,10 +460,17 @@ export interface PortfolioAssessmentListItem {
  *   product through one its reader cannot read, the path was withheld from
  *   them, or no stored path reads.
  */
-export const PORTFOLIO_IMPACT_TIERS = ["verified", "likely", "possible", "needs-review"] as const;
+export const PORTFOLIO_IMPACT_TIERS = [
+  "found-in-code",
+  "verified",
+  "likely",
+  "possible",
+  "needs-review",
+] as const;
 export type PortfolioImpactTier = (typeof PORTFOLIO_IMPACT_TIERS)[number];
 
 export const PORTFOLIO_IMPACT_TIER_LABEL: Readonly<Record<PortfolioImpactTier, string>> = {
+  "found-in-code": "Found in code",
   verified: "Verified by graph path",
   likely: "Likely",
   possible: "Possible",
@@ -487,7 +496,8 @@ export function portfolioImpactTier(row: {
   const detail = row.technicalDetail as { impactWithheld?: unknown; impact?: { hops?: unknown } };
   if (detail.impactWithheld === true) return "needs-review";
   if (row.impactKind === "direct-change") {
-    return row.coverage === "covers" || row.coverage === "partial" ? "verified" : "likely";
+    // No graph path is walked to a product that must change: its evidence is the code verdict.
+    return row.coverage === "covers" || row.coverage === "partial" ? "found-in-code" : "likely";
   }
   const hops = detail.impact?.hops;
   if (!Array.isArray(hops) || hops.length === 0) return "needs-review";
