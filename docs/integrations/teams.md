@@ -535,6 +535,15 @@ call. An over-limit Teams message gets **no reply and incurs no LLM cost** — a
 chatty channel cannot blow the AI budget beyond the existing cap. `AITokenUsage`
 is recorded exactly **once** per reply (by `streamAIReply`, unchanged).
 
+### What the reply reads (#2226, #2249)
+
+The same context as an in-app reply: `loadRecentHistory` (`thread-context.ts`)
+gives the last 20 live messages that **precede the trigger**, oldest first, so a
+reply sees the answer a BA just gave and never a message posted after the
+question. `streamAIReply` adds the thread's anchors itself (requirement,
+analysis, Spec Kit feature spec summary) as a user turn, and the project's
+excerpts come from `projectRetriever`. A Teams reply gets no tools.
+
 ### No token streaming in Teams (final reply only)
 
 Teams has **no SSE surface**, so `maybeRespondAsAI` passes **no `onChunk`

@@ -3,17 +3,18 @@
 /**
  * Issue #537 — Project Scope Selector for the Chat page.
  *
- * #1368 — this was a multi-select with checkboxes, but chat only ever supported
- * ONE project. Selecting two did not block the turn: the server degraded to an
- * UNSCOPED session with zero RAG grounding and disclosed it only afterwards, at
- * which point the model reached for the filesystem and shell-grepped METIS's own
- * source tree instead of the user's project. The invalid state is now
- * unreachable rather than merely reported — picking a project REPLACES the
- * selection, so `projectIds` can never hold more than one id.
+ * #1368 — this was a multi-select, but chat then supported ONE project: two
+ * selected projects silently became an UNSCOPED session with no retrieval, so
+ * it was made single-select.
+ *
+ * #2238 — chat now searches every project in a multi-product scope (and every
+ * project of a workspace), so the multi-select is back: ticking projects adds
+ * them to the scope, and the server keeps the whole scope on the session.
  *
  * Options:
- * - "All my projects" (default, deliberately unscoped)
- * - Exactly one project
+ * - "All my projects" (default, deliberately unscoped: no retrieval)
+ * - "Every project in <workspace>" (the active workspace, searched each turn)
+ * - One or more projects
  */
 import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -23,14 +24,23 @@ import {
   readStoredActiveProjectId,
   resolveActiveProjectId,
 } from "@/lib/active-project";
-import { useActiveWorkspaceId } from "@/lib/active-workspace";
+import {
+  useActiveWorkspaceId,
+  useValidatedActiveWorkspaceId,
+  workspaceListQuery,
+} from "@/lib/active-workspace";
 
 const STORAGE_KEY = "metis.chat.projectScope";
 
 export type ProjectScope = {
-  mode: "all" | "selected";
-  /** At most one id — see the single-select note above. */
+  /**
+   * `all`: unscoped. `selected`: the projects in `projectIds` (one binds the
+   * session to that project; 2+ make a multi-product session, #2238).
+   * `workspace` (#2238): every project of `workspaceId`.
+   */
+  mode: "all" | "selected" | "workspace";
   projectIds: string[];
+  workspaceId?: string;
 };
 
 interface AccessibleProject {
@@ -39,17 +49,19 @@ interface AccessibleProject {
 }
 
 /**
- * Coerce any scope — including one persisted by the pre-#1368 multi-select —
- * into the single-project invariant. Exported for test; a stored two-project
- * selection would otherwise silently reproduce the unscoped-turn bug on the
- * next visit.
+ * Coerce any scope — including one persisted by an older build — into a shape
+ * the session API takes. Exported for test.
  */
 export function normaliseScope(scope: ProjectScope): ProjectScope {
+  if (scope.mode === "workspace") {
+    return scope.workspaceId
+      ? { mode: "workspace", projectIds: [], workspaceId: scope.workspaceId }
+      : { mode: "all", projectIds: [] };
+  }
   if (scope.mode !== "selected" || scope.projectIds.length === 0) {
     return { mode: "all", projectIds: [] };
   }
-  if (scope.projectIds.length === 1) return scope;
-  return { mode: "selected", projectIds: [scope.projectIds[0]] };
+  return { mode: "selected", projectIds: [...new Set(scope.projectIds)] };
 }
 
 /** The scope last picked in this selector, or `null` when the user has never picked one. */
@@ -77,12 +89,21 @@ export function loadStoredScope(): ProjectScope | null {
  * last picked HERE — in the walkthrough, a different project from the one the
  * top bar showed. (#18's "start grounded in your only project" still holds: a
  * user with one project has it active.)
+ *
+ * #2238 — a stored multi-product scope that includes the active project, or a
+ * stored workspace scope on the active workspace, agrees with the top bar, so
+ * chat reopens on it (and a reload resumes that conversation).
  */
 export function initialChatScope(
   activeProjectId: string | null,
   stored: ProjectScope | null,
+  activeWorkspaceId: string | null = null,
 ): ProjectScope {
-  if (activeProjectId) return { mode: "selected", projectIds: [activeProjectId] };
+  if (activeProjectId) {
+    if (stored?.mode === "selected" && stored.projectIds.includes(activeProjectId)) return stored;
+    if (stored?.mode === "workspace" && stored.workspaceId === activeWorkspaceId) return stored;
+    return { mode: "selected", projectIds: [activeProjectId] };
+  }
   return stored ?? { mode: "all", projectIds: [] };
 }
 
@@ -125,6 +146,10 @@ export function ProjectScopeSelector({ value, onChange, disabled }: Props) {
     queryKey: ["search", "accessible-projects"],
     queryFn: fetchAccessibleProjects,
   });
+  // #2238 — the workspace the top bar is on, offered as a scope of its own.
+  const { workspaceId: activeWorkspaceId } = useValidatedActiveWorkspaceId();
+  const { data: workspaces = [] } = useQuery(workspaceListQuery);
+  const activeWorkspace = workspaces.find((w) => w.id === activeWorkspaceId) ?? null;
 
   // Self-heal a stale persisted scope: once the accessible-projects list has
   // loaded, drop any selected id that is no longer accessible (e.g. the project
@@ -141,31 +166,37 @@ export function ProjectScopeSelector({ value, onChange, disabled }: Props) {
     storeScope(next);
   }, [isLoading, projects, value, onChange]);
 
-  function selectProject(projectId: string) {
-    // Single-select: picking a project REPLACES the selection; picking the
-    // already-selected one clears back to "all".
-    const next: ProjectScope = value.projectIds.includes(projectId)
-      ? { mode: "all", projectIds: [] }
-      : { mode: "selected", projectIds: [projectId] };
+  function pick(next: ProjectScope, close: boolean) {
     onChange(next);
     storeScope(next);
-    setOpen(false);
+    if (close) setOpen(false);
   }
 
-  function selectAll() {
-    const next: ProjectScope = { mode: "all", projectIds: [] };
-    onChange(next);
-    storeScope(next);
-    setOpen(false);
+  function toggleProject(projectId: string) {
+    // #2238 — ticking adds the project to the scope, unticking removes it; an
+    // emptied selection is "all". From "all" or a workspace, it starts afresh.
+    const current = value.mode === "selected" ? value.projectIds : [];
+    const ids = current.includes(projectId)
+      ? current.filter((id) => id !== projectId)
+      : [...current, projectId];
+    pick(normaliseScope({ mode: "selected", projectIds: ids }), false);
   }
 
-  // #1368 AC — name the project instead of counting it, so the active scope is
-  // visible without reopening the dropdown.
-  const selectedProject = projects.find((p) => p.id === value.projectIds[0]);
-  const label =
-    value.mode === "all"
-      ? "All projects"
-      : (selectedProject?.name ?? (isLoading ? "Loading…" : "1 project"));
+  const nameOf = (id: string) => projects.find((p) => p.id === id)?.name;
+  const label = (() => {
+    if (value.mode === "all") return "All projects";
+    if (value.mode === "workspace") {
+      const ws = workspaces.find((w) => w.id === value.workspaceId);
+      return ws ? `All of ${ws.name}` : "Workspace";
+    }
+    // #1368 AC — name the project instead of counting it, so the active scope
+    // is visible without reopening the dropdown.
+    const first = nameOf(value.projectIds[0]) ?? (isLoading ? "Loading…" : "1 project");
+    const more = value.projectIds.length - 1;
+    if (more === 0) return first;
+    if (more === 1) return `${first} + ${nameOf(value.projectIds[1]) ?? "1 more"}`;
+    return `${first} + ${more} more`;
+  })();
 
   return (
     <div className="relative" ref={containerRef}>
@@ -196,7 +227,7 @@ export function ProjectScopeSelector({ value, onChange, disabled }: Props) {
       {open && (
         <div
           className="absolute left-0 top-full z-50 mt-1 w-64 rounded-md border bg-popover p-2 shadow-md"
-          role="listbox"
+          role="dialog"
           aria-label="Select projects to search"
         >
           <button
@@ -204,23 +235,38 @@ export function ProjectScopeSelector({ value, onChange, disabled }: Props) {
             className={`w-full rounded px-2 py-1.5 text-left text-sm hover:bg-accent ${
               value.mode === "all" ? "bg-accent font-medium" : ""
             }`}
-            onClick={selectAll}
+            onClick={() => pick({ mode: "all", projectIds: [] }, true)}
           >
             All my projects
           </button>
+          {activeWorkspace ? (
+            <button
+              type="button"
+              data-testid="project-scope-workspace"
+              className={`w-full rounded px-2 py-1.5 text-left text-sm hover:bg-accent ${
+                value.mode === "workspace" && value.workspaceId === activeWorkspace.id
+                  ? "bg-accent font-medium"
+                  : ""
+              }`}
+              onClick={() =>
+                pick({ mode: "workspace", projectIds: [], workspaceId: activeWorkspace.id }, true)
+              }
+            >
+              Every project in {activeWorkspace.name}
+            </button>
+          ) : null}
           <hr className="my-1 border-border" />
-          <div className="max-h-48 overflow-y-auto" role="radiogroup" aria-label="Project scope">
+          <div className="max-h-48 overflow-y-auto" role="group" aria-label="Projects to search">
             {projects.map((p) => (
               <label
                 key={p.id}
                 className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-accent"
               >
                 <input
-                  type="radio"
-                  name="metis-chat-project-scope"
-                  className="border-input"
-                  checked={value.projectIds.includes(p.id)}
-                  onChange={() => selectProject(p.id)}
+                  type="checkbox"
+                  className="rounded border-input"
+                  checked={value.mode === "selected" && value.projectIds.includes(p.id)}
+                  onChange={() => toggleProject(p.id)}
                 />
                 <span className="truncate">{p.name}</span>
               </label>
@@ -229,6 +275,9 @@ export function ProjectScopeSelector({ value, onChange, disabled }: Props) {
               <p className="px-2 py-1.5 text-xs text-muted-foreground">No projects found</p>
             )}
           </div>
+          <p className="mt-1 px-2 text-xs text-muted-foreground">
+            Tick several projects to ask about all of them at once.
+          </p>
         </div>
       )}
     </div>
@@ -246,19 +295,20 @@ export function useProjectScope() {
   // default and again on the real value. `hydrated` lets it wait for the real one.
   const [hydrated, setHydrated] = useState(false);
   // #1139 — the top bar's own list, so the active project is the one it shows.
-  const projects = useQuery(projectSwitcherQuery(useActiveWorkspaceId()));
+  const activeWorkspaceId = useActiveWorkspaceId();
+  const projects = useQuery(projectSwitcherQuery(activeWorkspaceId));
 
   useEffect(() => {
     if (hydrated) return;
     if (projects.isSuccess) {
       const active = resolveActiveProjectId(readStoredActiveProjectId(), projects.data.items);
-      setScope(initialChatScope(active, loadStoredScope()));
+      setScope(initialChatScope(active, loadStoredScope(), activeWorkspaceId));
       setHydrated(true);
     } else if (projects.isError) {
       setScope(initialChatScope(null, loadStoredScope()));
       setHydrated(true);
     }
-  }, [hydrated, projects.isSuccess, projects.isError, projects.data]);
+  }, [hydrated, projects.isSuccess, projects.isError, projects.data, activeWorkspaceId]);
 
   return { scope, setScope, hydrated };
 }

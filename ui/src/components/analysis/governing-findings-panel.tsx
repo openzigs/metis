@@ -22,12 +22,14 @@ import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   GOVERNING_FINDING_NOTE_MAX,
+  governingStaleNote,
   governingSummarySentence,
   neutraliseComplianceClaims,
   type GoverningAnalysisApplicability,
   type GoverningFinding,
   type GoverningFindingDecision,
   type GoverningFindingStatus,
+  type GoverningStaleRequirement,
 } from "@metis/shared";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -102,25 +104,42 @@ export function governingSummarySentences(
 
 export interface RequirementFindings {
   requirementId: string;
+  /**
+   * #2222 — the title of a stored requirement re-checked on its own wording;
+   * null for a requirement as the analysis analysed it (named by its id).
+   */
+  title: string | null;
   /** The requirement text applicability was judged on; null when not stored. */
   text: string | null;
   findings: GoverningFinding[];
+  /** #2222 — the stored requirements edited since any of these findings judged them, once each. */
+  stale: GoverningStaleRequirement[];
 }
 
 /** The findings grouped by requirement, in the order the route returned them. */
 export function groupFindingsByRequirement(
   findings: readonly GoverningFinding[],
   applicability: GoverningAnalysisApplicability | null,
+  titles: Readonly<Record<string, string>> = {},
 ): RequirementFindings[] {
   const groups = new Map<string, RequirementFindings>();
   for (const f of findings) {
     let group = groups.get(f.requirementId);
     if (!group) {
       const stored = applicability?.requirements.find((r) => r.requirementId === f.requirementId);
-      group = { requirementId: f.requirementId, text: stored?.text ?? null, findings: [] };
+      group = {
+        requirementId: f.requirementId,
+        title: titles[f.requirementId] ?? null,
+        text: stored?.text ?? null,
+        findings: [],
+        stale: [],
+      };
       groups.set(f.requirementId, group);
     }
     group.findings.push(f);
+    for (const s of f.stale ?? []) {
+      if (!group.stale.some((x) => x.requirementId === s.requirementId)) group.stale.push(s);
+    }
   }
   return [...groups.values()];
 }
@@ -286,7 +305,11 @@ export function GoverningFindingsPanel({
   }
 
   const sentences = governingSummarySentences(findings, findingsQuery.data.revisions ?? []);
-  const groups = groupFindingsByRequirement(findings, applicabilityQuery.data ?? null);
+  const groups = groupFindingsByRequirement(
+    findings,
+    applicabilityQuery.data ?? null,
+    findingsQuery.data.requirementTitles ?? {},
+  );
 
   return (
     <section
@@ -321,12 +344,22 @@ export function GoverningFindingsPanel({
         <div
           key={group.requirementId}
           role="group"
-          aria-label={`Governing rules for ${group.requirementId}`}
+          aria-label={`Governing rules for ${group.title ?? group.requirementId}`}
           className="rounded border border-border bg-muted/30 p-3"
         >
-          <h5 className="text-sm font-medium text-foreground">{group.requirementId}</h5>
+          <h5 className="text-sm font-medium text-foreground">
+            {group.title ?? group.requirementId}
+          </h5>
           {group.text ? (
             <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">{group.text}</p>
+          ) : null}
+          {group.stale.length > 0 ? (
+            <StaleRequirementsNotice
+              projectId={projectId}
+              analysisId={analysisId}
+              stale={group.stale}
+              canRecheck={canDecide}
+            />
           ) : null}
           <ul className="mt-2 space-y-2">
             {group.findings.map((finding) => (
@@ -349,6 +382,64 @@ export function GoverningFindingsPanel({
         </div>
       ))}
     </section>
+  );
+}
+
+/**
+ * #2222 — the requirements edited since these findings judged them, and a
+ * **Re-check this requirement** for each: the governing check on its current
+ * wording only. The findings and the applicability are read again once the
+ * server has stored the new result; nothing is shown optimistically.
+ */
+function StaleRequirementsNotice({
+  projectId,
+  analysisId,
+  stale,
+  canRecheck,
+}: {
+  projectId: string;
+  analysisId: string;
+  stale: readonly GoverningStaleRequirement[];
+  /** The user holds `analysis.run`, which the re-check route requires. */
+  canRecheck: boolean;
+}): React.ReactElement {
+  const recheck = useAppMutation({
+    mutationFn: (requirementId: string) =>
+      governingFindingsApi.recheck(projectId, analysisId, { requirementId }),
+    successMessage: (result) =>
+      `Re-checked at v${result.version}: ${result.findings} governing ${result.findings === 1 ? "rule applies" : "rules apply"}`,
+    errorMessage: "Could not re-check the requirement",
+    invalidateKeys: [governingFindingsKeys.all(analysisId)],
+  });
+  return (
+    <div
+      role="note"
+      className="mt-2 rounded border border-warning/40 bg-warning/10 p-2 text-xs text-foreground"
+      data-testid="governing-stale"
+    >
+      <p>{governingStaleNote(stale)}</p>
+      {canRecheck ? (
+        <div className="mt-2 flex flex-wrap gap-2">
+          {stale.map((s) => (
+            <Button
+              key={s.requirementId}
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={recheck.isPending}
+              aria-label={`Re-check this requirement: ${s.title}`}
+              onClick={() => recheck.mutate(s.requirementId)}
+            >
+              {recheck.isPending && recheck.variables === s.requirementId
+                ? "Re-checking…"
+                : stale.length === 1
+                  ? "Re-check this requirement"
+                  : `Re-check “${s.title}”`}
+            </Button>
+          ))}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -407,6 +498,11 @@ function GoverningFindingItem({
           <span className="sr-only">Status: </span>
           {label}
         </Badge>
+        {finding.stale?.length ? (
+          <Badge variant="outline" data-testid="governing-finding-stale">
+            Stale
+          </Badge>
+        ) : null}
         <span className="font-mono text-xs text-foreground">{finding.controlId}</span>
         {finding.clauseRef ? (
           <span className="text-xs text-muted-foreground">{finding.clauseRef}</span>

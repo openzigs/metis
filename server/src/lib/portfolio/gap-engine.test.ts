@@ -96,6 +96,11 @@ const found = (hits: ReturnType<typeof hit>[]): FederatedSearchResult => ({
   projectsSearched: ["proj"],
   projectsFailed: [],
   totalHits: hits.length,
+  // #2238 — the result's newer fields, empty: every project answered.
+  projectsWithoutHits: [],
+  failures: [],
+  projectsRejected: 0,
+  projectNames: {},
 });
 
 const ALL = { scope: "all-accessible" as const };

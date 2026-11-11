@@ -20,6 +20,8 @@ type Session = {
   policy: string;
   status: string;
   providerSecretRef: string | null;
+  scopeProjectIds: string | null;
+  scopeWorkspaceId: string | null;
   createdAt: Date;
   updatedAt: Date;
   deletedAt: Date | null;
@@ -31,6 +33,8 @@ type ProjectRow = {
   aiProviderId: string | null;
   aiModel: string | null;
   deletedAt: Date | null;
+  /** #2238 — a project in a workspace the caller is not in cannot be reached. */
+  workspaceId?: string | null;
 };
 const projectsById = new Map<string, ProjectRow>();
 
@@ -48,6 +52,8 @@ vi.mock("../src/lib/prisma.js", () => ({
           policy: data.policy ?? "{}",
           status: "active",
           providerSecretRef: data.providerSecretRef ?? null,
+          scopeProjectIds: data.scopeProjectIds ?? null,
+          scopeWorkspaceId: data.scopeWorkspaceId ?? null,
           createdAt: new Date(),
           updatedAt: new Date(),
           deletedAt: null,
@@ -67,14 +73,35 @@ vi.mock("../src/lib/prisma.js", () => ({
       // carry none (a pre-workspace project), so every caller may reach them.
       findUnique: vi.fn(async ({ where }: { where: { id: string } }) => {
         const p = projectsById.get(where.id);
-        return p ? { workspaceId: null } : null;
+        if (!p) return null;
+        return p.workspaceId
+          ? { workspaceId: p.workspaceId, workspace: { deletedAt: null, members: [] } }
+          : { workspaceId: null };
       }),
+      // #2238 — the live-row read of a multi-product scope.
+      findMany: vi.fn(async ({ where }: { where: { id: { in: string[] } } }) =>
+        where.id.in
+          .map((id) => projectsById.get(id))
+          .filter((p): p is ProjectRow => Boolean(p && !p.deletedAt))
+          .map((p) => ({ id: p.id })),
+      ),
     },
     aITokenUsage: { create: vi.fn(async () => ({})) },
     aIToolApproval: { create: vi.fn(async () => ({})) },
     auditLog: { create: vi.fn(async () => ({})) },
   },
 }));
+
+// #2238 — the caller's workspaces: "w-mine" only.
+vi.mock("../src/lib/cross-project/cross-project-access.js", async () => {
+  const { AppError } = await import("../src/middleware/error-handler.js");
+  return {
+    listMemberProjectsInWorkspace: vi.fn(async (_actor: unknown, workspaceId: string) => {
+      if (workspaceId !== "w-mine") throw new AppError(404, "NOT_FOUND", "Workspace not found");
+      return ["proj_a"];
+    }),
+  };
+});
 
 vi.mock("../src/lib/vault/vault-service.js", () => ({
   getVaultService: () => ({ read: vi.fn() }),
@@ -250,22 +277,83 @@ describe("POST /api/ai/sessions scope metadata (#607)", () => {
   const seed = (id: string) =>
     projectsById.set(id, { id, aiProviderId: null, aiModel: null, deletedAt: null });
 
-  it("degrades a 2+ projectIds scope to unscoped WITH explicit degradation metadata", async () => {
+  // #2238 — a 2+ projectIds scope is no longer degraded: the session keeps it.
+  it("keeps a 2+ projectIds scope as a multi-product session", async () => {
     seed("proj_a");
     seed("proj_b");
     const res = await auth(
       request(makeApp())
         .post("/api/ai/sessions")
-        .send({ title: "Demo", projectIds: ["proj_a", "proj_b"] }),
+        .send({ title: "Demo", projectIds: ["proj_a", "proj_b", "proj_a"] }),
     );
     expect(res.status).toBe(201);
     expect(res.body.data.session.projectId).toBeNull();
+    expect(JSON.parse(sessions[0].scopeProjectIds!)).toEqual(["proj_a", "proj_b"]);
+    // The client reads the scope as a list, as the resume read returns it.
+    expect(res.body.data.session.scopeProjectIds).toEqual(["proj_a", "proj_b"]);
+    expect(sessions[0].scopeWorkspaceId).toBeNull();
     expect(res.body.data.scope).toEqual({
       requestedProjectIds: ["proj_a", "proj_b"],
       appliedProjectId: null,
-      degraded: true,
-      reason: "multi-project-unsupported",
+      appliedProjectIds: ["proj_a", "proj_b"],
+      appliedWorkspaceId: null,
+      degraded: false,
     });
+  });
+
+  it("refuses (404) a multi-product scope naming a project the caller cannot reach, creating nothing", async () => {
+    seed("proj_a");
+    projectsById.set("proj_x", {
+      id: "proj_x",
+      aiProviderId: null,
+      aiModel: null,
+      deletedAt: null,
+      workspaceId: "w-other",
+    });
+    const res = await auth(
+      request(makeApp())
+        .post("/api/ai/sessions")
+        .send({ title: "Demo", projectIds: ["proj_a", "proj_x"] }),
+    );
+    expect(res.status).toBe(404);
+    expect(sessions).toHaveLength(0);
+  });
+
+  it("scopes a session to a workspace the caller is in", async () => {
+    const res = await auth(
+      request(makeApp()).post("/api/ai/sessions").send({ title: "Demo", workspaceId: "w-mine" }),
+    );
+    expect(res.status).toBe(201);
+    expect(res.body.data.session.projectId).toBeNull();
+    expect(sessions[0].scopeWorkspaceId).toBe("w-mine");
+    expect(sessions[0].scopeProjectIds).toBeNull();
+    expect(res.body.data.scope).toEqual({
+      requestedProjectIds: [],
+      appliedProjectId: null,
+      appliedProjectIds: [],
+      appliedWorkspaceId: "w-mine",
+      degraded: false,
+    });
+  });
+
+  it("refuses (404) a workspace the caller is not in, creating nothing", async () => {
+    const res = await auth(
+      request(makeApp()).post("/api/ai/sessions").send({ title: "Demo", workspaceId: "w-other" }),
+    );
+    expect(res.status).toBe(404);
+    expect(sessions).toHaveLength(0);
+  });
+
+  it("refuses (400) a scope naming both projects and a workspace", async () => {
+    seed("proj_a");
+    const res = await auth(
+      request(makeApp())
+        .post("/api/ai/sessions")
+        .send({ title: "Demo", projectId: "proj_a", workspaceId: "w-mine" }),
+    );
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe("SCOPE_CONFLICT");
+    expect(sessions).toHaveLength(0);
   });
 
   it("returns non-degraded scope metadata when exactly one valid id is sent", async () => {
@@ -280,11 +368,13 @@ describe("POST /api/ai/sessions scope metadata (#607)", () => {
     expect(res.body.data.scope).toEqual({
       requestedProjectIds: ["proj_a"],
       appliedProjectId: "proj_a",
+      appliedProjectIds: ["proj_a"],
+      appliedWorkspaceId: null,
       degraded: false,
     });
   });
 
-  it("degrades a mixed valid + stale multi-id scope as multi-project-unsupported", async () => {
+  it("degrades a mixed valid + stale multi-id scope as stale-project (#2238)", async () => {
     seed("proj_a"); // valid — proj_gone is never seeded
     const res = await auth(
       request(makeApp())
@@ -293,11 +383,14 @@ describe("POST /api/ai/sessions scope metadata (#607)", () => {
     );
     expect(res.status).toBe(201);
     expect(res.body.data.session.projectId).toBeNull();
+    expect(sessions[0].scopeProjectIds).toBeNull();
     expect(res.body.data.scope).toEqual({
       requestedProjectIds: ["proj_a", "proj_gone"],
       appliedProjectId: null,
+      appliedProjectIds: [],
+      appliedWorkspaceId: null,
       degraded: true,
-      reason: "multi-project-unsupported",
+      reason: "stale-project",
     });
   });
 
@@ -312,6 +405,8 @@ describe("POST /api/ai/sessions scope metadata (#607)", () => {
     expect(res.body.data.scope).toEqual({
       requestedProjectIds: ["proj_gone"],
       appliedProjectId: null,
+      appliedProjectIds: [],
+      appliedWorkspaceId: null,
       degraded: true,
       reason: "stale-project",
     });
@@ -325,6 +420,8 @@ describe("POST /api/ai/sessions scope metadata (#607)", () => {
     expect(res.body.data.scope).toEqual({
       requestedProjectIds: ["proj_gone"],
       appliedProjectId: null,
+      appliedProjectIds: [],
+      appliedWorkspaceId: null,
       degraded: true,
       reason: "stale-project",
     });
@@ -336,6 +433,8 @@ describe("POST /api/ai/sessions scope metadata (#607)", () => {
     expect(res.body.data.scope).toEqual({
       requestedProjectIds: [],
       appliedProjectId: null,
+      appliedProjectIds: [],
+      appliedWorkspaceId: null,
       degraded: false,
     });
   });
