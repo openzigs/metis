@@ -24,7 +24,14 @@ const state = vi.hoisted(() => {
   process.env.AI_RATE_LIMIT_MAX = "10000";
   return {
     db: null as unknown,
-    hits: [] as Array<{ filename: string; position: number; score: number; text: string }>,
+    hits: [] as Array<{
+      filename: string;
+      position: number;
+      score: number;
+      text: string;
+      /** #2241 — the relevance floor's default applies only to a calibrated embedder. */
+      embeddingModel?: string;
+    }>,
     searched: [] as string[],
     /** #2225 — the ACL actor each search ran for, in order. */
     actors: [] as unknown[],
@@ -304,8 +311,18 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(await replyGroundings(sessionId)).toEqual([expected]);
     });
 
+    // #2241 — embedded by the model the default floor was calibrated on, and
+    // well under that floor.
+    const weakCalibratedHit = {
+      filename: "weak.md",
+      position: 0,
+      score: 0.2,
+      text: "unrelated-text",
+      embeddingModel: "Alibaba-NLP/gte-modernbert-base",
+    };
+
     it("#2241 — a reply whose matches were all too weak says the evidence was insufficient, live and on reload", async () => {
-      state.hits = [{ filename: "weak.md", position: 0, score: 0.2, text: "unrelated-text" }];
+      state.hits = [weakCalibratedHit];
       const sessionId = await newSession(PROJECT);
       const res = await post("/api/ai/stream", { sessionId, message: "What is the SLA?" });
       const expected = {
@@ -321,6 +338,23 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const prompt = JSON.stringify(model.prompts[0]);
       expect(prompt).not.toContain("unrelated-text");
       expect(prompt).toContain("sources don't show this");
+    });
+
+    it("#2241 — an attached document's weak matches still reach the model: the user chose it", async () => {
+      state.hits = [weakCalibratedHit];
+      const sessionId = await newSession(PROJECT);
+      const res = await post("/api/ai/stream", {
+        sessionId,
+        message: "Summarise this",
+        documentIds: ["doc-frd"],
+      });
+      const [frame] = groundingFrames(res.text) as Array<Record<string, unknown>>;
+      expect(frame).toMatchObject({ status: "grounded", sources: 1 });
+      expect(frame).not.toHaveProperty("belowFloor");
+      const prompt = JSON.stringify(model.prompts[0]);
+      expect(prompt).toContain("unrelated-text");
+      expect(prompt).toContain("The user attached documents to this question");
+      expect(prompt).not.toContain("nothing in it was relevant enough to use");
     });
 
     it("the non-streaming /chat turn records and returns its grounding too", async () => {

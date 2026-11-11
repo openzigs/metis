@@ -360,6 +360,30 @@ describe("buildAutoRagContext — relevance floor (#2241)", () => {
     expect(cap.coverage).toEqual({ matchingChunks: 6, totalChunks: 10 });
   });
 
+  it("keeps an attached document's weak matches: the user chose the source", async () => {
+    search.mockResolvedValue({ hits: [scored("frd", 0.3), scored("frd-2", 0.2)] });
+    const cap = capture();
+    const out = await buildAutoRagContext("p1", question, "u1", deps(), cap, {
+      documentIds: ["d-frd", "d-frd-2"],
+    });
+    expect(out).toContain("text of frd");
+    expect(out).toContain("text of frd-2");
+    expect(out).toContain("The user attached documents to this question");
+    expect(out).not.toContain("too weak");
+    expect(cap.sources).toBe(2);
+    expect(cap.belowFloor).toBeUndefined();
+  });
+
+  it("keeps an attached document's weak matches under an operator-set floor too", async () => {
+    process.env.CHAT_RETRIEVAL_MIN_SCORE = "0.6";
+    __resetConfigSingleton();
+    search.mockResolvedValue({ hits: [scored("frd", 0.3)] });
+    const out = await buildAutoRagContext("p1", question, "u1", deps(), capture(), {
+      documentIds: ["d-frd"],
+    });
+    expect(out).toContain("text of frd");
+  });
+
   it("keeps every match when the floor is configured off", async () => {
     process.env.CHAT_RETRIEVAL_MIN_SCORE = "0";
     __resetConfigSingleton();

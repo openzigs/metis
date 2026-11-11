@@ -724,7 +724,10 @@ export async function buildAutoRagContext(
     );
     // #2241 — a chunk too weak to bear on the question never reaches the prompt.
     // The default floor applies only to the embedder it was calibrated on.
-    const floor = readRelevanceFloor(fusedHits.map((h) => h.embeddingModel));
+    // Not when the user attached documents: they chose the source, so a
+    // question like "summarise this" must reach that document's best excerpts
+    // however weakly the words match, never an "insufficient evidence" block.
+    const floor = documentIds ? 0 : readRelevanceFloor(fusedHits.map((h) => h.embeddingModel));
     const { kept: hits, belowFloor } = applyRelevanceFloor(fusedHits, floor);
     // #2241 — a partial coverage is reported, not just logged.
     const coverage = results.find((r) => r.coverageWarning)?.coverageWarning;
