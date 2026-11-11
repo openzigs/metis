@@ -144,9 +144,12 @@ async function extractPdf(client: JiraClient, meta: AttachmentMeta): Promise<str
 
 async function extractDocx(client: JiraClient, meta: AttachmentMeta): Promise<string> {
   const buffer = await downloadBuffer(client, meta.content);
-  const mammoth = await import("mammoth");
-  const result = await mammoth.default.extractRawText({ buffer });
-  return result.value;
+  // #2263 — the converter uploads use, so a Word attachment keeps its requirement numbers,
+  // nesting and tables (raw text dropped them). Its images are listed, not described: this
+  // extractor knows no project to meter up to 20 vision calls per document against.
+  const { docxToMarkdown } = await import("../../documents/docx-to-markdown.js");
+  const { markdown } = await docxToMarkdown(buffer);
+  return markdown;
 }
 
 async function extractXlsx(client: JiraClient, meta: AttachmentMeta): Promise<string> {
