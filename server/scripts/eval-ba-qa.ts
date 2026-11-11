@@ -342,7 +342,12 @@ async function main(): Promise<void> {
       tools.mode === "native" ? NATIVE_CHAT_TOOL_NOTE : tools.schemaBlock,
       { mode: tools.skillMode, catalog: tools.skillCatalog },
     );
-    const rag = await buildAutoRagContext(scope.projectId, [{ role: "user", content: q.text }]);
+    // #2225 — retrieval runs as the asking user, so chunk ACLs apply as in /chat.
+    const rag = await buildAutoRagContext(
+      scope.projectId,
+      [{ role: "user", content: q.text }],
+      user.id,
+    );
     const turn = await prepareTurn({
       session: { id: row.id, snapshot: null },
       userText: q.text,

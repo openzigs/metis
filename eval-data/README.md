@@ -850,34 +850,37 @@ Every number below is computed from those verdicts in code (`server/src/lib/eval
 
 A judge reply that cannot be parsed leaves the question unscored, never scored as zero.
 
-### Baseline, 2026-11-10 (Sonnet 5.5 answers and judge, 18 questions per arm)
+### Baseline, 2026-11-11 (Sonnet 5.5 answers and judge, 18 questions per arm)
+
+Run 2 was run on the code that merged (after #2225's ACL actor). Run 1 was run the day
+before and differs only where shown.
 
 | | off (today) | on (three flags) |
 |---|---:|---:|
 | Sessions chat left unscoped (no retrieval) | 9/18 | 9/18 |
-| Correctness: mean facts stated | 27% | 48% |
+| Correctness: mean facts stated | 29% (run 1: 27%) | 49% (48%) |
 | Fully correct answers | 0/10 | 2/10 |
-| Citation precision | 33% (6/18) | 89% (42/47) |
-| … checked against the span | 0/18 | 44/47 |
-| Citation recall | 19% (6/32) | 28% (9/32) |
+| Citation precision | 30% (6/20) (run 1: 33%) | 83% (34/41) (89%) |
+| … checked against the span | 0/20 | 35/41 (44/47) |
+| Citation recall | 19% (6/32) | 31% (10/32) (28%) |
 | Abstention on unanswerable | 4/4 | 4/4 |
 | Follow-up on ambiguous | 3/4 | 3/4 |
-| False abstention on answerable | 6/10 | 4/10 |
-| Right behaviour, single-product | 4/6 | 6/6 |
+| False abstention on answerable | 5/10 (run 1: 6/10) | 4/10 |
+| Right behaviour, single-product | 5/6 (run 1: 4/6) | 6/6 |
 | Right behaviour, multi-product | 0/4 | 0/4 |
-| Spend (answers + judge) | $0.303841 | $0.492134 |
+| Spend (answers + judge) | $0.309360 (run 1: $0.303841) | $0.488667 ($0.492134) |
 
-- **Every multi-product question abstained in both arms.** Chat drops a two-product scope to
-  an unscoped session, so it retrieved nothing and offered no project tools. M1 to M4 scored
-  0 facts.
+- **Every multi-product question abstained in both arms and both runs.** Chat drops a
+  two-product scope to an unscoped session, so it retrieved nothing and offered no project
+  tools. M1 to M4 scored 0 facts.
 - **The `off` arm never cites a line.** The auto-RAG excerpts carry no line numbers, so the
   model cites files by name only, and no citation could be checked against a span. With
-  fused code retrieval on, 44 of 47 citations carried lines that could be checked, and 42
-  supported their claim.
-- **Two single-product rule questions abstained with the flags off** (S3, S4): the 8 chunks
-  retrieved held no default value or validation rule. With the code-search tools on, both
-  were answered in full.
+  fused code retrieval on, most citations carried lines that could be checked, and most of
+  those supported their claim.
+- **Rule questions abstain when the 8 retrieved chunks miss the rule.** S4 (user
+  validation) abstained with the flags off in both runs, and S3 (the parsing-error limit)
+  abstained in run 1. With the code-search tools on, both were answered every time.
 - **Several follow-ups and abstentions came from having nothing.** Three of the four
   follow-ups, and two of the four abstentions on unanswerable questions, came in unscoped
   sessions with no retrieval. A3, the one ambiguous question with retrieval, was answered on
-  a stated assumption in both arms instead of asked about.
+  a stated assumption in every run instead of asked about.

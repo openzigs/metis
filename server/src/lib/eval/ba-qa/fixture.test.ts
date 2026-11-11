@@ -122,7 +122,11 @@ describe("parseBaQaFixture", () => {
       (f) => (f.questions[0].sources![0].product = "cli"),
       /outside its scope/,
     ],
-    ["a backwards range", (f) => (f.questions[0].sources![0].lines = [9, 2]), /backwards/],
+    [
+      "a backwards range",
+      (f) => ((f.questions[0].sources![0] as { lines?: number[] }).lines = [9, 2]),
+      /backwards/,
+    ],
     ["a path escaping the clone", (f) => (f.questions[0].sources![0].path = "../x.go"), /path/],
     [
       "a follow-up carrying facts",
