@@ -180,6 +180,8 @@ function renderTable(rows: AdfNode[], depth: number): string {
       childrenOf(row).map((cell) =>
         renderBlocks(childrenOf(cell), depth, " ")
           .replace(/\s*\n\s*/g, " ")
+          // Backslashes first, so a cell's own `\` cannot un-escape the `\|` after it.
+          .replace(/\\/g, "\\\\")
           .replace(/\|/g, "\\|")
           .trim(),
       ),

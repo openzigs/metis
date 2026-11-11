@@ -94,6 +94,21 @@ describe("adfToMarkdown", () => {
     );
   });
 
+  it("escapes a cell's own backslash so it cannot un-escape the pipe after it", () => {
+    const cell = (text: string) => ({ type: "tableCell", content: [p(t(text))] });
+    const md = adfToMarkdown(
+      doc({
+        type: "table",
+        content: [
+          { type: "tableRow", content: [cell("Path"), cell("Note")] },
+          { type: "tableRow", content: [cell("C:\\dir\\|x"), cell("ok")] },
+        ],
+      }),
+    );
+    // `C:\dir\|x` → `C:\\dir\\\|x`: two literal backslashes and an escaped pipe, still two columns.
+    expect(md.split("\n")[2]).toBe("| C:\\\\dir\\\\\\|x | ok |");
+  });
+
   it("applies em, strike and inline code marks, keeping edge spaces outside the markers", () => {
     const md = adfToMarkdown(
       doc(
