@@ -1,0 +1,400 @@
+{
+  "corpusId": "docunderstanding-01-clinic-booking",
+  "title": "Riverside Community Clinics: Online Appointment Booking, Functional Requirements Document",
+  "license": "CC0-1.0",
+  "labelStatus": "author-labelled while writing the synthetic document; not yet reviewed by a second person",
+  "sourceSha256": "965f85d67420a00d507cb0a6c69d5a2a3b3a64e354e07a8c7dc0c5d2264ec98d",
+  "sections": [
+    "Riverside Community Clinics: Online Appointment Booking, Functional Requirements Document",
+    "Document control",
+    "1. Background and business context",
+    "1.1 Business objectives",
+    "1.2 Stakeholders",
+    "1.3 How booking works today",
+    "1.4 How booking will work",
+    "2. Scope",
+    "2.1 In scope",
+    "2.2 Out of scope",
+    "3. Glossary",
+    "4. Patient access and identity",
+    "4.1 Carers and dependants",
+    "5. Viewing availability and booking",
+    "5.1 Finding a slot",
+    "5.2 Booking rules",
+    "5.3 Rescheduling and cancelling",
+    "6. Reminders and notifications",
+    "7. Waiting list",
+    "8. Staff functions and reporting",
+    "9. Non-functional requirements",
+    "9.1 Availability and performance",
+    "9.2 Accessibility and language",
+    "9.3 Privacy, security and data retention",
+    "10. Assumptions and dependencies",
+    "11. Open issues"
+  ],
+  "requirements": [
+    {
+      "id": "R45",
+      "section": "1.4 How booking will work",
+      "span": "Receptionists shall be able to see, for any patient, whether the patient has a portal account and whether it is locked, so that they can direct the patient appropriately."
+    },
+    {
+      "id": "R46",
+      "section": "1.4 How booking will work",
+      "span": "The portal shall not keep its own copy of the appointment book; every availability search and booking shall be made against the PMS."
+    },
+    {
+      "id": "R1",
+      "section": "4. Patient access and identity",
+      "span": "A registered patient shall be able to create a portal account by verifying their identity against the details held in the PMS, using their date of birth, surname, postcode and a one-time code sent to the mobile number held in the PMS."
+    },
+    {
+      "id": "R2",
+      "section": "4. Patient access and identity",
+      "span": "If a patient has no mobile number recorded in the PMS, the portal shall tell the patient to contact their clinic and shall not offer any other way to verify their identity online."
+    },
+    {
+      "id": "R3",
+      "section": "4. Patient access and identity",
+      "span": "A patient shall sign in with an email address and password, and the portal shall require a second factor on every sign-in from a device it has not seen before."
+    },
+    {
+      "id": "R4",
+      "section": "4. Patient access and identity",
+      "span": "The portal shall lock an account after five consecutive failed sign-in attempts and shall unlock it automatically after thirty minutes."
+    },
+    {
+      "id": "R5",
+      "section": "4. Patient access and identity",
+      "span": "A signed-in session shall end after a period of inactivity, and the patient shall be warned before it ends."
+    },
+    {
+      "id": "R6",
+      "section": "4.1 Carers and dependants",
+      "span": "A carer shall be able to book, reschedule and cancel appointments for any dependant linked to their account."
+    },
+    {
+      "id": "R7",
+      "section": "4.1 Carers and dependants",
+      "span": "A link between a carer and a dependant shall only be created by front-desk staff after they have checked the carer's authority, and the portal shall not let a patient create such a link themselves."
+    },
+    {
+      "id": "R8",
+      "section": "4.1 Carers and dependants",
+      "span": "A carer link for a dependant under the age of sixteen shall end automatically on the dependant's sixteenth birthday, and the portal shall notify the carer thirty days beforehand."
+    },
+    {
+      "id": "R9",
+      "section": "5.1 Finding a slot",
+      "span": "The portal shall show a patient only the appointment types that are marked as bookable online at the patient's registered site."
+    },
+    {
+      "id": "R10",
+      "section": "5.1 Finding a slot",
+      "span": "For physiotherapy follow-ups and travel health consultations, the portal shall also offer slots at the other sites that deliver those services."
+    },
+    {
+      "id": "R11",
+      "section": "5.1 Finding a slot",
+      "span": "The portal shall show availability for the next four weeks and shall let the patient filter by site, clinician, day of the week and time of day."
+    },
+    {
+      "id": "R12",
+      "section": "5.1 Finding a slot",
+      "span": "Availability shown in the portal shall reflect the PMS appointment book in near real time."
+    },
+    {
+      "id": "R13",
+      "section": "5.1 Finding a slot",
+      "span": "When a patient selects a slot, the portal shall place a hold on it for five minutes so that no other patient or staff member can book it while the patient completes the booking."
+    },
+    {
+      "id": "R14",
+      "section": "5.2 Booking rules",
+      "span": "A patient shall not hold more than two future routine GP appointments at the same time across all sites."
+    },
+    {
+      "id": "R15",
+      "section": "5.2 Booking rules",
+      "span": "The portal shall not allow a booking that starts less than two hours from the current time."
+    },
+    {
+      "id": "R16",
+      "section": "5.2 Booking rules",
+      "span": "Childhood immunisation appointments shall only be bookable by a carer for a dependant whose age is within the range set for that immunisation type in the PMS."
+    },
+    {
+      "id": "R17",
+      "section": "5.2 Booking rules",
+      "span": "Before confirming a booking, the portal shall ask the patient to state the reason for the appointment in a free-text field of up to 200 characters, which shall be passed to the PMS with the booking."
+    },
+    {
+      "id": "R18",
+      "section": "5.2 Booking rules",
+      "span": "The portal shall show a clear warning on every booking screen that it must not be used for urgent medical problems, with the telephone number of the clinic and the national urgent care number."
+    },
+    {
+      "id": "R19",
+      "section": "5.2 Booking rules",
+      "span": "When a booking is confirmed, the portal shall write it to the PMS and shall show the patient a confirmation only after the PMS has accepted it."
+    },
+    {
+      "id": "R20",
+      "section": "5.3 Rescheduling and cancelling",
+      "span": "A patient shall be able to cancel an appointment through the portal up to two hours before its start time."
+    },
+    {
+      "id": "R21",
+      "section": "5.3 Rescheduling and cancelling",
+      "span": "A patient shall be able to move an appointment to another slot of the same appointment type, and the original slot shall only be released once the new booking has been accepted by the PMS."
+    },
+    {
+      "id": "R22",
+      "section": "5.3 Rescheduling and cancelling",
+      "span": "The portal shall ask a patient who cancels to choose a reason from a list maintained by the practice managers."
+    },
+    {
+      "id": "R23",
+      "section": "5.3 Rescheduling and cancelling",
+      "span": "Appointments booked by telephone shall be visible in the portal and shall be cancellable by the patient in the same way as appointments booked online."
+    },
+    {
+      "id": "R24",
+      "section": "6. Reminders and notifications",
+      "span": "The portal shall send each patient a reminder by text message 48 hours before every appointment, whether it was booked online or by telephone."
+    },
+    {
+      "id": "R25",
+      "section": "6. Reminders and notifications",
+      "span": "A reminder shall let the patient cancel the appointment by replying to the message or by following a link, without signing in."
+    },
+    {
+      "id": "R26",
+      "section": "6. Reminders and notifications",
+      "span": "The portal shall send a confirmation by email when an appointment is booked, moved or cancelled, to the email address on the account that made the change."
+    },
+    {
+      "id": "R27",
+      "section": "6. Reminders and notifications",
+      "span": "Patients shall be able to choose not to receive text reminders, and the choice shall be recorded in the PMS so that it also applies to reminders the PMS sends."
+    },
+    {
+      "id": "R28",
+      "section": "6. Reminders and notifications",
+      "span": "A same-day text reminder is sent at 7am for physiotherapy appointments starting after 10am."
+    },
+    {
+      "id": "R29",
+      "section": "7. Waiting list",
+      "span": "A patient who cannot find a suitable slot shall be able to join a waiting list for a chosen appointment type and site, stating the days of the week and times of day they could attend."
+    },
+    {
+      "id": "R30",
+      "section": "7. Waiting list",
+      "span": "When a slot of that appointment type is released at that site within the patient's stated availability, the portal shall offer it to patients on the waiting list in the order in which they joined."
+    },
+    {
+      "id": "R31",
+      "section": "7. Waiting list",
+      "span": "An offer shall expire if it is not accepted within a short period, and the slot shall then be offered to the next patient on the list."
+    },
+    {
+      "id": "R32",
+      "section": "7. Waiting list",
+      "span": "A patient shall be removed from a waiting list once they accept an offer, book a matching appointment themselves, or after 60 days, whichever comes first."
+    },
+    {
+      "id": "R33",
+      "section": "8. Staff functions and reporting",
+      "span": "Practice managers shall be able to mark or unmark each appointment type at their own site as bookable online, and the change shall take effect in the portal within fifteen minutes."
+    },
+    {
+      "id": "R34",
+      "section": "8. Staff functions and reporting",
+      "span": "Front-desk staff shall be able to see a list of the day's online bookings, cancellations and waiting list offers for their site, with the reason for appointment given by each patient."
+    },
+    {
+      "id": "R35",
+      "section": "8. Staff functions and reporting",
+      "span": "Front-desk staff shall be able to suspend online booking for a single clinician for a date range, for example during unplanned leave, without changing the PMS rota."
+    },
+    {
+      "id": "R36",
+      "section": "8. Staff functions and reporting",
+      "span": "The portal shall provide a monthly report for each site showing the number of appointments booked, moved and cancelled online, the number of reminders sent, and the number of missed appointments for online and telephone bookings separately."
+    },
+    {
+      "id": "R37",
+      "section": "9.1 Availability and performance",
+      "span": "The portal shall be available at least 99.5% of the time in each calendar month, excluding planned maintenance announced at least five days in advance."
+    },
+    {
+      "id": "R38",
+      "section": "9.1 Availability and performance",
+      "span": "Availability searches shall return results within three seconds for 95% of requests at peak load."
+    },
+    {
+      "id": "R39",
+      "section": "9.2 Accessibility and language",
+      "span": "The patient-facing portal shall meet the WCAG 2.2 AA accessibility standard."
+    },
+    {
+      "id": "R40",
+      "section": "9.2 Accessibility and language",
+      "span": "The portal shall be available in English and in the other languages most commonly spoken by registered patients, where possible."
+    },
+    {
+      "id": "R41",
+      "section": "9.3 Privacy, security and data retention",
+      "span": "The portal shall store only the personal data needed to sign patients in and to send reminders, and shall read all other patient details from the PMS when they are needed."
+    },
+    {
+      "id": "R42",
+      "section": "9.3 Privacy, security and data retention",
+      "span": "Every booking, change and cancellation made through the portal shall be recorded in an audit log showing who made it, on whose behalf, and when."
+    },
+    {
+      "id": "R43",
+      "section": "9.3 Privacy, security and data retention",
+      "span": "Audit log entries shall be kept for eight years and shall not be editable by any user, including system administrators."
+    },
+    {
+      "id": "R44",
+      "section": "9.3 Privacy, security and data retention",
+      "span": "Portal accounts that have not been used for two years shall be deleted, and the patient shall be warned by email thirty days before deletion."
+    }
+  ],
+  "ambiguities": [
+    {
+      "id": "A1",
+      "kind": "missing",
+      "description": "the document says adult carer links are reviewed periodically but never says how often, by whom, or what happens to the link when a review is not done",
+      "question": "How often are carer links for adult dependants reviewed, who reviews them, and does the link lapse if the review is missed?",
+      "requirements": ["R7"],
+      "spans": [
+        "Links for adult dependants, for example a patient with a lasting power of attorney in place, are reviewed periodically.",
+        "A link between a carer and a dependant shall only be created by front-desk staff after they have checked the carer's authority, and the portal shall not let a patient create such a link themselves."
+      ],
+      "sections": ["4.1 Carers and dependants"]
+    },
+    {
+      "id": "A2",
+      "kind": "vague-term",
+      "description": "the behaviour when the PMS is unavailable is left as \"handled appropriately\", so it is unclear whether the portal refuses the booking, queues it or shows a slot it cannot confirm",
+      "question": "When the PMS is unavailable, should the portal refuse new bookings, queue them for later, or stop showing availability?",
+      "requirements": ["R19"],
+      "spans": [
+        "If the PMS is unavailable, the booking should be handled appropriately.",
+        "When a booking is confirmed, the portal shall write it to the PMS and shall show the patient a confirmation only after the PMS has accepted it."
+      ],
+      "sections": ["5.2 Booking rules"]
+    },
+    {
+      "id": "A3",
+      "kind": "tbd",
+      "description": "the waiting list offer expiry period is undefined; R31 says only \"a short period\"",
+      "question": "How long does a patient have to accept a waiting list offer before it passes to the next person?",
+      "requirements": ["R31"],
+      "spans": [
+        "The expiry period for waiting list offers is to be confirmed by the practice managers.",
+        "An offer shall expire if it is not accepted within a short period, and the slot shall then be offered to the next patient on the list."
+      ],
+      "sections": ["11. Open issues", "7. Waiting list"]
+    },
+    {
+      "id": "A4",
+      "kind": "conflict",
+      "description": "R24 says the text reminder is sent 48 hours before every appointment, while the notification table says 24 hours",
+      "question": "Is the standard text reminder sent 48 hours or 24 hours before the appointment, or both?",
+      "requirements": ["R24"],
+      "spans": [
+        "24 hours before the appointment",
+        "The portal shall send each patient a reminder by text message 48 hours before every appointment, whether it was booked online or by telephone."
+      ],
+      "sections": ["6. Reminders and notifications"]
+    },
+    {
+      "id": "A5",
+      "kind": "vague-term",
+      "description": "\"near real time\" is not quantified, and staff are worried about double booking",
+      "question": "What is the longest acceptable delay between a telephone booking in the PMS and the slot disappearing from the portal?",
+      "requirements": ["R12"],
+      "spans": [
+        "Availability shown in the portal shall reflect the PMS appointment book in near real time."
+      ],
+      "sections": ["5.1 Finding a slot"]
+    },
+    {
+      "id": "A6",
+      "kind": "tbd",
+      "description": "the inactivity timeout is not agreed (ten minutes was suggested and disputed)",
+      "question": "How long can a signed-in session stay inactive before it ends, and how far in advance is the warning shown?",
+      "requirements": ["R5"],
+      "spans": [
+        "A signed-in session shall end after a period of inactivity, and the patient shall be warned before it ends."
+      ],
+      "sections": ["4. Patient access and identity"]
+    },
+    {
+      "id": "A7",
+      "kind": "escape-clause",
+      "description": "\"where possible\" makes the language requirement unverifiable and the language list is unconfirmed",
+      "question": "Which languages must the portal support at launch, and is that a firm requirement or an aspiration?",
+      "requirements": ["R40"],
+      "spans": [
+        "The portal shall be available in English and in the other languages most commonly spoken by registered patients, where possible."
+      ],
+      "sections": ["9.2 Accessibility and language"]
+    },
+    {
+      "id": "A8",
+      "kind": "conflict",
+      "description": "cancelling in the portal stops two hours before the start, but a reminder reply or link can cancel without any stated cut-off",
+      "question": "Does the two-hour cancellation cut-off also apply to cancellations made by replying to a reminder?",
+      "requirements": ["R20", "R25"],
+      "spans": [
+        "A patient shall be able to cancel an appointment through the portal up to two hours before its start time.",
+        "A reminder shall let the patient cancel the appointment by replying to the message or by following a link, without signing in."
+      ],
+      "sections": ["5.3 Rescheduling and cancelling", "6. Reminders and notifications"]
+    },
+    {
+      "id": "A9",
+      "kind": "missing",
+      "description": "the two-appointment GP limit is stated for portal bookings, but the document is silent on whether telephone bookings count towards it",
+      "question": "Do routine GP appointments booked by telephone count towards the limit of two future appointments?",
+      "requirements": ["R14", "R23"],
+      "spans": [
+        "A patient shall not hold more than two future routine GP appointments at the same time across all sites.",
+        "Appointments booked by telephone shall be visible in the portal and shall be cancellable by the patient in the same way as appointments booked online."
+      ],
+      "sections": ["5.2 Booking rules", "5.3 Rescheduling and cancelling"]
+    },
+    {
+      "id": "A10",
+      "kind": "tbd",
+      "description": "the document does not decide whether a patient may book routine GP appointments at a site other than their registered one; R9 implies not, and the open issue says it is undecided",
+      "question": "May a patient book a routine GP appointment at a site other than the one they are registered at?",
+      "requirements": ["R9", "R10"],
+      "spans": [
+        "Whether patients registered at one site may book routine GP appointments at another site has been discussed but not decided.",
+        "The portal shall show a patient only the appointment types that are marked as bookable online at the patient's registered site.",
+        "For physiotherapy follow-ups and travel health consultations, the portal shall also offer slots at the other sites that deliver those services."
+      ],
+      "sections": ["11. Open issues", "5.1 Finding a slot"]
+    },
+    {
+      "id": "A11",
+      "kind": "conflict",
+      "description": "R34 shows the reason for appointment to front-desk staff, while the clinical leads question whether staff should see it at all, and patients are told it is for clinicians",
+      "question": "Should front-desk staff see the reason for appointment a patient enters, or only clinicians?",
+      "requirements": ["R17", "R34"],
+      "spans": [
+        "The clinical leads have asked whether the reason for appointment should be visible to front-desk staff at all.",
+        "Before confirming a booking, the portal shall ask the patient to state the reason for the appointment in a free-text field of up to 200 characters, which shall be passed to the PMS with the booking.",
+        "Front-desk staff shall be able to see a list of the day's online bookings, cancellations and waiting list offers for their site, with the reason for appointment given by each patient."
+      ],
+      "sections": ["11. Open issues", "5.2 Booking rules", "8. Staff functions and reporting"]
+    }
+  ]
+}

@@ -1,0 +1,480 @@
+{
+  "corpusId": "docunderstanding-02-freight-claims",
+  "title": "Northgate Freight: Cargo Loss and Damage Claims Handling, Business Requirements Document",
+  "license": "CC0-1.0",
+  "labelStatus": "author-labelled while writing the synthetic document; not yet reviewed by a second person",
+  "sourceSha256": "d629e85e3a47ae75b57191c52084be77996696dec8dde95a9169768d31acf91b",
+  "sections": [
+    "Northgate Freight: Cargo Loss and Damage Claims Handling, Business Requirements Document",
+    "Purpose of this document",
+    "1. Executive summary",
+    "2. Background",
+    "2.1 The claims process today",
+    "2.2 Problems with the current process",
+    "2.3 Goals",
+    "3. Scope",
+    "3.1 In scope for the first release",
+    "3.2 Out of scope for the first release",
+    "4. Definitions",
+    "5. Claim registration",
+    "5.1 Notification",
+    "5.2 Time limits for notification",
+    "6. Documents and evidence",
+    "6.1 Required documents",
+    "6.2 Photographs and inspection",
+    "7. Liability assessment",
+    "7.1 Determining liability",
+    "7.2 Limitation of liability",
+    "7.3 Delay claims",
+    "8. Approval and settlement",
+    "8.1 Approval matrix",
+    "8.2 Settlement and payment",
+    "9. Recovery and insurance",
+    "9.1 Recovery from subcontracted hauliers",
+    "9.2 Insurance",
+    "10. Customer communication",
+    "11. Reporting",
+    "12. Data, security and audit",
+    "13. Migration",
+    "14. Non-functional requirements",
+    "15. Business rules summary",
+    "16. Assumptions, dependencies and open questions",
+    "16.1 Assumptions",
+    "16.2 Open questions"
+  ],
+  "requirements": [
+    {
+      "id": "R1",
+      "section": "5.1 Notification",
+      "span": "A handler shall be able to register a claim from an email, a telephone note passed on by customer service, or a completed claim form, and the application shall record the channel and the date and time the claim was first notified."
+    },
+    {
+      "id": "R2",
+      "section": "5.1 Notification",
+      "span": "The application shall require the consignment note number when a claim is registered and shall retrieve the consignment's details from the operational tracking system, including the collection and delivery dates, the depots it passed through, any exceptions recorded and the proof of delivery."
+    },
+    {
+      "id": "R3",
+      "section": "5.1 Notification",
+      "span": "If the consignment note number cannot be found in the tracking system, the handler shall be able to register the claim with the consignment marked as unverified, and the application shall prevent any payment on the claim until the consignment has been verified."
+    },
+    {
+      "id": "R4",
+      "section": "5.1 Notification",
+      "span": "A single claim shall be able to cover several consignments for the same claimant, and the application shall record the loss type and amount claimed separately for each consignment."
+    },
+    {
+      "id": "R5",
+      "section": "5.1 Notification",
+      "span": "The application shall warn the handler when a new claim is registered for a consignment that already has an open or closed claim, and shall show the existing claim."
+    },
+    {
+      "id": "R6",
+      "section": "5.2 Time limits for notification",
+      "span": "The application shall calculate, for each consignment on a claim, whether the claim was notified within the time limit in the claimant's terms, and shall flag any claim notified late."
+    },
+    {
+      "id": "R7",
+      "section": "5.2 Time limits for notification",
+      "span": "Under the standard conditions, damage and shortage must be notified within 7 days of delivery and loss within 28 days of the expected delivery date."
+    },
+    {
+      "id": "R8",
+      "section": "5.2 Time limits for notification",
+      "span": "A late-notified claim shall not be rejected automatically; the handler shall record whether the time limit is being enforced and, if it is waived, the reason for the waiver."
+    },
+    {
+      "id": "R9",
+      "section": "6.1 Required documents",
+      "span": "The application shall maintain the list of documents required for each loss type, and the claims operations manager shall be able to change the list without a software release."
+    },
+    {
+      "id": "R10",
+      "section": "6.1 Required documents",
+      "span": "When a claim is registered, the application shall generate a request to the claimant listing the documents required for each consignment on the claim."
+    },
+    {
+      "id": "R11",
+      "section": "6.1 Required documents",
+      "span": "A handler shall be able to attach documents to a claim from email, from a file, or by forwarding an email to a claim-specific address, and the application shall record who attached each document and when."
+    },
+    {
+      "id": "R12",
+      "section": "6.1 Required documents",
+      "span": "The application shall not allow a claim to proceed to approval until every required document has been received or the handler has recorded why it is not needed."
+    },
+    {
+      "id": "R13",
+      "section": "6.1 Required documents",
+      "span": "If the required documents have not been received 21 days after the request, the application shall send a reminder to the claimant, and if they have still not been received 21 days after the reminder, the claim shall be closed as abandoned."
+    },
+    {
+      "id": "R14",
+      "section": "6.2 Photographs and inspection",
+      "span": "The handler shall be able to request an independent inspection for a damage claim, record the surveyor appointed, and attach the surveyor's report."
+    },
+    {
+      "id": "R15",
+      "section": "6.2 Photographs and inspection",
+      "span": "An inspection shall be requested for every damage claim on a high-value consignment before liability is decided."
+    },
+    {
+      "id": "R16",
+      "section": "7.1 Determining liability",
+      "span": "The handler shall record a liability decision for each consignment on a claim, chosen from accepted, partly accepted or declined, with a reason chosen from a list maintained by the claims operations manager."
+    },
+    {
+      "id": "R17",
+      "section": "7.1 Determining liability",
+      "span": "Where the liability decision is declined or partly accepted on the grounds of inadequate packaging, the handler shall attach the evidence supporting that decision before the decision can be saved."
+    },
+    {
+      "id": "R18",
+      "section": "7.1 Determining liability",
+      "span": "The application shall show the handler the depot exceptions recorded for the consignment, so that the handler can see where in the network the loss or damage was first recorded."
+    },
+    {
+      "id": "R19",
+      "section": "7.1 Determining liability",
+      "span": "Where the consignment was carried by a subcontracted haulier on any leg, the application shall identify the haulier and the leg from the tracking system and shall record them on the claim."
+    },
+    {
+      "id": "R20",
+      "section": "7.2 Limitation of liability",
+      "span": "The application shall calculate the limit of liability for each consignment from the weight of the goods lost or damaged and the per-kilogram limit in the claimant's terms."
+    },
+    {
+      "id": "R21",
+      "section": "7.2 Limitation of liability",
+      "span": "Where the claimant declared a value for the consignment and paid the declared value charge, the limit of liability shall be the declared value instead of the per-kilogram limit."
+    },
+    {
+      "id": "R22",
+      "section": "7.2 Limitation of liability",
+      "span": "Where special terms apply, the application shall use the limits in the special terms, and the handler shall not be able to override the calculated limit without the approval of the claims operations manager."
+    },
+    {
+      "id": "R23",
+      "section": "7.2 Limitation of liability",
+      "span": "The amount payable for a consignment shall be the lower of the proven value of the loss and the limit of liability, less any salvage value recovered from damaged goods."
+    },
+    {
+      "id": "R24",
+      "section": "7.2 Limitation of liability",
+      "span": "The application shall show the handler how the amount payable was calculated, step by step, and the same explanation shall be included in the settlement letter to the claimant."
+    },
+    {
+      "id": "R25",
+      "section": "7.2 Limitation of liability",
+      "span": "Consequential losses, such as lost profit or the cost of a missed production run, shall not be payable under the standard conditions, and the application shall prevent a handler from including them in the amount payable unless special terms allow them."
+    },
+    {
+      "id": "R26",
+      "section": "7.3 Delay claims",
+      "span": "A delay claim shall only be payable where the claimant had a guaranteed delivery service, and the amount payable shall not exceed the carriage charge for the consignment."
+    },
+    {
+      "id": "R27",
+      "section": "8.1 Approval matrix",
+      "span": "The handler managing the claim can approve a settlement of up to 1,000."
+    },
+    {
+      "id": "R28",
+      "section": "8.1 Approval matrix",
+      "span": "A team leader on the regional desk must approve a settlement from 1,000 to 10,000."
+    },
+    {
+      "id": "R29",
+      "section": "8.1 Approval matrix",
+      "span": "The claims operations manager must approve a settlement from 10,000 to 50,000."
+    },
+    {
+      "id": "R30",
+      "section": "8.1 Approval matrix",
+      "span": "The finance director must approve a settlement above 50,000, after review by the legal department."
+    },
+    {
+      "id": "R31",
+      "section": "8.1 Approval matrix",
+      "span": "The application shall route each settlement to the approver required by the matrix and shall not allow a person to approve a settlement on a claim they registered or handled."
+    },
+    {
+      "id": "R32",
+      "section": "8.1 Approval matrix",
+      "span": "The approval limits in the matrix shall be configurable by the claims operations manager, and every change shall be recorded with the name of the person who made it and the date."
+    },
+    {
+      "id": "R33",
+      "section": "8.2 Settlement and payment",
+      "span": "Once a settlement is approved, the application shall generate a settlement letter to the claimant showing the amount payable for each consignment and how it was calculated."
+    },
+    {
+      "id": "R34",
+      "section": "8.2 Settlement and payment",
+      "span": "The application shall send an approved payment to the finance ledger as a payment instruction with the claimant's account details, and shall record the payment reference when finance confirms the payment."
+    },
+    {
+      "id": "R35",
+      "section": "8.2 Settlement and payment",
+      "span": "A claimant shall be able to accept the settlement or dispute it, and a disputed settlement shall return to the handler with the claimant's reasons."
+    },
+    {
+      "id": "R36",
+      "section": "8.2 Settlement and payment",
+      "span": "A claim shall be closed when every consignment on it has been paid, declined or withdrawn, and the application shall record the closing date and the outcome for each consignment."
+    },
+    {
+      "id": "R37",
+      "section": "9.1 Recovery from subcontracted hauliers",
+      "span": "When a claim is settled for a consignment carried by a subcontracted haulier, the application shall create a recovery case linked to the claim if the amount paid exceeds the recovery threshold."
+    },
+    {
+      "id": "R38",
+      "section": "9.1 Recovery from subcontracted hauliers",
+      "span": "The recovery case shall show the time limit for making the recovery claim under the haulier's subcontract and shall alert the recovery team 14 days before it expires."
+    },
+    {
+      "id": "R39",
+      "section": "9.1 Recovery from subcontracted hauliers",
+      "span": "The recovery team shall be able to record the amount claimed from the haulier, the haulier's response, and the amount recovered, and the application shall show the net cost of the original claim after recovery."
+    },
+    {
+      "id": "R40",
+      "section": "9.1 Recovery from subcontracted hauliers",
+      "span": "The recovery team shall be able to deduct an agreed recovery amount from the next payment to the haulier, and the application shall send the deduction to the finance ledger as an instruction."
+    },
+    {
+      "id": "R41",
+      "section": "9.2 Insurance",
+      "span": "The application shall identify every settled claim whose amount paid exceeds the insurance policy excess and shall produce, for any period, the schedule of those claims in the format the insurer requires."
+    },
+    {
+      "id": "R42",
+      "section": "9.2 Insurance",
+      "span": "The application shall record the amount recovered from the insurer against each claim in the schedule."
+    },
+    {
+      "id": "R43",
+      "section": "10. Customer communication",
+      "span": "The application shall send the claimant an email when their claim is registered, when documents are requested, when liability is decided, when a settlement is approved and when the claim is closed."
+    },
+    {
+      "id": "R44",
+      "section": "10. Customer communication",
+      "span": "Every message to the claimant shall quote the claim reference and the name of the handler managing the claim, and shall be sent from an address to which the claimant can reply."
+    },
+    {
+      "id": "R45",
+      "section": "10. Customer communication",
+      "span": "Replies from claimants shall be attached to the claim automatically and the handler shall be notified."
+    },
+    {
+      "id": "R46",
+      "section": "10. Customer communication",
+      "span": "Customer service staff shall be able to see the status of any claim and its history of messages, but shall not be able to change a claim."
+    },
+    {
+      "id": "R47",
+      "section": "11. Reporting",
+      "span": "The application shall report, for any period and by region, the number of claims notified, the number settled, the average time from notification to settlement, the total amount claimed, the total amount paid and the total amount recovered."
+    },
+    {
+      "id": "R48",
+      "section": "11. Reporting",
+      "span": "The application shall report the claims that have been open for more than 30 days, with the stage each one is at and how long it has been at that stage."
+    },
+    {
+      "id": "R49",
+      "section": "11. Reporting",
+      "span": "The application shall report recovery cases whose time limit expires in the next 30 days and have not yet been submitted to the haulier."
+    },
+    {
+      "id": "R50",
+      "section": "11. Reporting",
+      "span": "Finance shall be able to reconcile the payments recorded in the ledger against the settlements approved in the application for any period."
+    },
+    {
+      "id": "R51",
+      "section": "12. Data, security and audit",
+      "span": "Access to claims shall be restricted by role, and handlers shall see the claims of every region so that work can be moved between desks when one is busy."
+    },
+    {
+      "id": "R52",
+      "section": "12. Data, security and audit",
+      "span": "Every change to a claim, including changes to amounts, liability decisions and approvals, shall be recorded with the person who made it and the date and time, and the record shall not be editable."
+    },
+    {
+      "id": "R53",
+      "section": "12. Data, security and audit",
+      "span": "Claim records and their documents shall be retained for seven years after the claim is closed and then deleted, unless the claim is subject to litigation."
+    },
+    {
+      "id": "R54",
+      "section": "13. Migration",
+      "span": "All claims open on the regional spreadsheets at go-live shall be migrated into the application with their status, amounts and the documents held in the mailbox."
+    },
+    {
+      "id": "R55",
+      "section": "13. Migration",
+      "span": "Claims closed in the twelve months before go-live shall be migrated so that duplicate claim warnings and reporting cover them."
+    },
+    {
+      "id": "R56",
+      "section": "14. Non-functional requirements",
+      "span": "The application shall be available during the claims desks' working hours, from 7am to 7pm on working days, at least 99.5% of the time."
+    },
+    {
+      "id": "R57",
+      "section": "14. Non-functional requirements",
+      "span": "The application shall support at least 40 concurrent users without any page taking more than three seconds to load."
+    },
+    {
+      "id": "R58",
+      "section": "14. Non-functional requirements",
+      "span": "The application shall be usable by handlers working from home through the company's standard remote access arrangements."
+    }
+  ],
+  "ambiguities": [
+    {
+      "id": "A1",
+      "kind": "conflict",
+      "description": "the business rules summary gives 14 days for notice of damage and shortage while R7 gives 7 days; the summary says the capability sections take precedence but also that it predates legal review",
+      "question": "Is the notice period for damage and shortage 7 days or 14 days after delivery?",
+      "requirements": ["R7"],
+      "spans": [
+        "Within 14 days of delivery",
+        "Under the standard conditions, damage and shortage must be notified within 7 days of delivery and loss within 28 days of the expected delivery date."
+      ],
+      "sections": ["15. Business rules summary", "5.2 Time limits for notification"]
+    },
+    {
+      "id": "A2",
+      "kind": "tbd",
+      "description": "the recovery threshold that triggers a recovery case is not defined",
+      "question": "What claim amount must be exceeded before a recovery case is created against a haulier?",
+      "requirements": ["R37"],
+      "spans": [
+        "The recovery threshold below which a recovery is not worth pursuing has not been agreed between finance and the recovery team.",
+        "When a claim is settled for a consignment carried by a subcontracted haulier, the application shall create a recovery case linked to the claim if the amount paid exceeds the recovery threshold."
+      ],
+      "sections": ["16.2 Open questions", "9.1 Recovery from subcontracted hauliers"]
+    },
+    {
+      "id": "A3",
+      "kind": "undefined-term",
+      "description": "\"high-value consignment\" is used as the trigger for mandatory inspection but is never defined",
+      "question": "What makes a consignment high-value for mandatory inspection: the amount claimed, a declared value, the goods type, or something else?",
+      "requirements": ["R15"],
+      "spans": [
+        "The definition of a high-value consignment for the purpose of mandatory inspection is still to be agreed with the legal department.",
+        "An inspection shall be requested for every damage claim on a high-value consignment before liability is decided."
+      ],
+      "sections": ["16.2 Open questions", "6.2 Photographs and inspection"]
+    },
+    {
+      "id": "A4",
+      "kind": "vague-term",
+      "description": "approvers are to deal with approvals \"promptly\", with no target time and no escalation when they do not",
+      "question": "How quickly must an approver act on a settlement, and what happens when they do not?",
+      "requirements": ["R31"],
+      "spans": [
+        "The application shall route each settlement to the approver required by the matrix and shall not allow a person to approve a settlement on a claim they registered or handled."
+      ],
+      "sections": ["8.1 Approval matrix"]
+    },
+    {
+      "id": "A5",
+      "kind": "conflict",
+      "description": "the approval bands overlap at exactly 1,000, 10,000 and 50,000, so it is unclear who approves a settlement of exactly those amounts",
+      "question": "Who approves a settlement of exactly 1,000, 10,000 or 50,000?",
+      "requirements": ["R27", "R28"],
+      "spans": [
+        "The handler managing the claim can approve a settlement of up to 1,000.",
+        "A team leader on the regional desk must approve a settlement from 1,000 to 10,000."
+      ],
+      "sections": ["8.1 Approval matrix"]
+    },
+    {
+      "id": "A6",
+      "kind": "missing",
+      "description": "a disputed settlement returns to the handler, but nothing says whether it needs re-approval, how many times it can be disputed, or when a dispute ends",
+      "question": "After a claimant disputes a settlement, does a revised offer need approval again, and is there a limit on disputes or a final position?",
+      "requirements": ["R35"],
+      "spans": [
+        "A claimant shall be able to accept the settlement or dispute it, and a disputed settlement shall return to the handler with the claimant's reasons."
+      ],
+      "sections": ["8.2 Settlement and payment"]
+    },
+    {
+      "id": "A7",
+      "kind": "missing",
+      "description": "a claim closed as abandoned can be reopened, but there is no rule on how late it can be reopened or whether the notification time limits still apply",
+      "question": "Is there a deadline after which an abandoned claim can no longer be reopened?",
+      "requirements": ["R13", "R36"],
+      "spans": [
+        "If the required documents have not been received 21 days after the request, the application shall send a reminder to the claimant, and if they have still not been received 21 days after the reminder, the claim shall be closed as abandoned.",
+        "A claim shall be closed when every consignment on it has been paid, declined or withdrawn, and the application shall record the closing date and the outcome for each consignment."
+      ],
+      "sections": ["6.1 Required documents", "8.2 Settlement and payment"]
+    },
+    {
+      "id": "A8",
+      "kind": "conflict",
+      "description": "handlers see every region's claims, while legal asks that document access be no wider than claim access and the role model is not described; it is unclear whether customer service sees documents",
+      "question": "Which roles may see the documents attached to a claim, including invoices and photographs of people?",
+      "requirements": ["R51", "R46"],
+      "spans": [
+        "Access to claims shall be restricted by role, and handlers shall see the claims of every region so that work can be moved between desks when one is busy.",
+        "Customer service staff shall be able to see the status of any claim and its history of messages, but shall not be able to change a claim."
+      ],
+      "sections": ["12. Data, security and audit", "10. Customer communication"]
+    },
+    {
+      "id": "A9",
+      "kind": "missing",
+      "description": "a claim covers several consignments but the approval matrix uses the total amount on the claim; it is not said whether splitting consignments across claims is prevented",
+      "question": "Should the approval level be based on the claim total, and how is a claim split into several claims to stay under a limit prevented?",
+      "requirements": ["R4", "R31"],
+      "spans": [
+        "A single claim shall be able to cover several consignments for the same claimant, and the application shall record the loss type and amount claimed separately for each consignment.",
+        "The application shall route each settlement to the approver required by the matrix and shall not allow a person to approve a settlement on a claim they registered or handled."
+      ],
+      "sections": ["5.1 Notification", "8.1 Approval matrix"]
+    },
+    {
+      "id": "A10",
+      "kind": "missing",
+      "description": "deducting a recovery from a haulier's next payment has no stated rule for a disputed recovery or a haulier with no further payments due",
+      "question": "Can a recovery be deducted from a haulier's payment while the haulier disputes it, and what happens when no further payment is due?",
+      "requirements": ["R40", "R39"],
+      "spans": [
+        "The recovery team shall be able to deduct an agreed recovery amount from the next payment to the haulier, and the application shall send the deduction to the finance ledger as an instruction.",
+        "The recovery team shall be able to record the amount claimed from the haulier, the haulier's response, and the amount recovered, and the application shall show the net cost of the original claim after recovery."
+      ],
+      "sections": ["9.1 Recovery from subcontracted hauliers"]
+    },
+    {
+      "id": "A11",
+      "kind": "tbd",
+      "description": "whether customer service may register claims directly is undecided, which changes who can perform R1",
+      "question": "May customer service staff register claims themselves, or must they continue to pass them to the claims mailbox?",
+      "requirements": ["R1"],
+      "spans": [
+        "A handler shall be able to register a claim from an email, a telephone note passed on by customer service, or a completed claim form, and the application shall record the channel and the date and time the claim was first notified."
+      ],
+      "sections": ["5.1 Notification"]
+    },
+    {
+      "id": "A12",
+      "kind": "conflict",
+      "description": "delay claims are payable up to the carriage charge with a guaranteed service, while consequential losses are excluded; the document does not say whether delay compensation counts as a consequential loss under special terms",
+      "question": "For a delay claim under special terms, is compensation still capped at the carriage charge, and is any delay loss treated as consequential?",
+      "requirements": ["R26", "R25"],
+      "spans": [
+        "A delay claim shall only be payable where the claimant had a guaranteed delivery service, and the amount payable shall not exceed the carriage charge for the consignment.",
+        "Consequential losses, such as lost profit or the cost of a missed production run, shall not be payable under the standard conditions, and the application shall prevent a handler from including them in the amount payable unless special terms allow them."
+      ],
+      "sections": ["7.3 Delay claims", "7.2 Limitation of liability"]
+    }
+  ]
+}
