@@ -293,6 +293,7 @@ describe("buildAutoRagContext — relevance floor (#2241)", () => {
     ...hit(id),
     score,
     matchedBy: ["dense"],
+    embeddingModel: "Alibaba-NLP/gte-modernbert-base",
   });
 
   afterEach(() => {
@@ -311,6 +312,19 @@ describe("buildAutoRagContext — relevance floor (#2241)", () => {
     expect(cap.excerpts).toEqual([
       { n: 1, chunkId: "strong", name: "strong.md", locator: "strong.md#0", relevance: 0.72 },
     ]);
+  });
+
+  it("leaves the floor off for an embedder it was not calibrated on", async () => {
+    search.mockResolvedValue({
+      hits: [
+        { ...scored("a", 0.05), embeddingModel: "hash-stub" },
+        { ...scored("b", 0.02), embeddingModel: "hash-stub" },
+      ],
+    });
+    const cap = capture();
+    const out = await buildAutoRagContext("p1", question, "u1", deps(), cap);
+    expect(out).toContain("text of a");
+    expect(cap.belowFloor).toBeUndefined();
   });
 
   it("tells the model the sources don't support an answer when every match is too weak", async () => {

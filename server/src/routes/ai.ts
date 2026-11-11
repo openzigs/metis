@@ -698,8 +698,6 @@ export async function buildAutoRagContext(
   // byte-identical to the original doc-RAG-only block.
   const cfg = getConfigService();
   const fusedEnabled = cfg.getBool("CHAT_FUSED_CODE_RETRIEVAL", false);
-  // #2241 — calibrated on the Phase 0 set; 0 turns the floor off.
-  const floor = readRelevanceFloor();
 
   try {
     // #2225 — inside the try: a failed role read retrieves nothing (fail
@@ -725,6 +723,8 @@ export async function buildAutoRagContext(
       AUTO_RAG_K,
     );
     // #2241 — a chunk too weak to bear on the question never reaches the prompt.
+    // The default floor applies only to the embedder it was calibrated on.
+    const floor = readRelevanceFloor(fusedHits.map((h) => h.embeddingModel));
     const { kept: hits, belowFloor } = applyRelevanceFloor(fusedHits, floor);
     // #2241 — a partial coverage is reported, not just logged.
     const coverage = results.find((r) => r.coverageWarning)?.coverageWarning;

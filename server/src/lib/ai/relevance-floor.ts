@@ -21,6 +21,7 @@
  */
 import type { RetrievedChunk } from "@metis/shared";
 import { getConfigService } from "../config/config-service.js";
+import { COSINE_CALIBRATED_MODELS } from "../traceability/requirement-code-mapping.js";
 
 /** The config key; `0` turns the floor off. */
 export const CHAT_RELEVANCE_FLOOR_KEY = "CHAT_RETRIEVAL_MIN_SCORE";
@@ -32,16 +33,23 @@ export const CHAT_RELEVANCE_FLOOR_KEY = "CHAT_RETRIEVAL_MIN_SCORE";
 export const DEFAULT_CHAT_RELEVANCE_FLOOR = 0.55;
 
 /**
- * The configured floor, read as a decimal (`getNumber` reads integers, which
- * would turn 0.55 into 0). An unset or unreadable value is the default; the
- * value is held to 0..1.
+ * The floor for hits embedded by `models`, read as a decimal (`getNumber` reads
+ * integers, which would turn 0.55 into 0). An operator-set value is used as
+ * given, held to 0..1. When unset or unreadable the default applies only if
+ * every model is one whose cosines the default was calibrated on
+ * ({@link COSINE_CALIBRATED_MODELS}); another model's cosines are on another
+ * scale (the offline hash stub's sit near 0), so the floor is off (0) there
+ * rather than abstaining on answerable questions.
  */
-export function readRelevanceFloor(): number {
+export function readRelevanceFloor(models: Iterable<string>): number {
   const raw = getConfigService().get(CHAT_RELEVANCE_FLOOR_KEY);
-  if (raw === undefined || raw.trim() === "") return DEFAULT_CHAT_RELEVANCE_FLOOR;
-  const n = Number(raw);
-  if (!Number.isFinite(n)) return DEFAULT_CHAT_RELEVANCE_FLOOR;
-  return Math.min(1, Math.max(0, n));
+  if (raw !== undefined && raw.trim() !== "") {
+    const n = Number(raw);
+    if (Number.isFinite(n)) return Math.min(1, Math.max(0, n));
+  }
+  const used = [...models];
+  const calibrated = used.length > 0 && used.every((m) => COSINE_CALIBRATED_MODELS.has(m));
+  return calibrated ? DEFAULT_CHAT_RELEVANCE_FLOOR : 0;
 }
 
 type FloorableHit = Pick<RetrievedChunk, "score" | "denseScore" | "matchedBy">;

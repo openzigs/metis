@@ -67,11 +67,12 @@ describe("readRelevanceFloor", () => {
     __resetConfigSingleton();
   });
 
-  const read = (value?: string) => {
+  const GTE = "Alibaba-NLP/gte-modernbert-base";
+  const read = (value?: string, models: string[] = [GTE]) => {
     if (value === undefined) delete process.env[CHAT_RELEVANCE_FLOOR_KEY];
     else process.env[CHAT_RELEVANCE_FLOOR_KEY] = value;
     __resetConfigSingleton();
-    return readRelevanceFloor();
+    return readRelevanceFloor(models);
   };
 
   it("is the calibrated default when unset or blank", () => {
@@ -86,6 +87,13 @@ describe("readRelevanceFloor", () => {
   it("turns off at 0, and falls back to the default on a value that is not a number", () => {
     expect(read("0")).toBe(0);
     expect(read("abc")).toBe(DEFAULT_CHAT_RELEVANCE_FLOOR);
+  });
+
+  it("is off for an uncalibrated embedder unless the operator set the key", () => {
+    expect(read(undefined, ["text-embedding-3-small"])).toBe(0);
+    expect(read(undefined, [GTE, "hash-stub"])).toBe(0);
+    expect(read(undefined, [])).toBe(0);
+    expect(read("0.3", ["text-embedding-3-small"])).toBe(0.3);
   });
 
   it("holds the value to 0..1", () => {
