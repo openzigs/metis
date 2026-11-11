@@ -37,7 +37,7 @@ import { getKnowledgeService, type KnowledgeService } from "../lib/rag/knowledge
 import { getIngestQueue, type IngestQueue } from "../lib/rag/ingest-queue.js";
 import { getProject } from "../lib/projects/project-service.js";
 import { approveDocument, rejectDocument } from "../lib/rag/quarantine.js";
-import { propagateAcl } from "../lib/rag/acl.js";
+import { propagateAcl, resolveAclActor } from "../lib/rag/acl.js";
 import { createChildLogger } from "../lib/logger.js";
 import {
   approvalFailureMessage,
@@ -604,6 +604,9 @@ export function knowledgeRouter(deps: KnowledgeRouterDeps = {}): Router {
           k: parsed.data.k,
           documentIds: parsed.data.documentIds,
           mode: parsed.data.mode,
+          // #2225 — the caller's chunk ACLs apply; `requireAuth` has no live
+          // re-read here, so the role comes from durable state.
+          actor: await resolveAclActor(actor.id),
         },
       );
       audit({
