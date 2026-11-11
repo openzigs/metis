@@ -577,6 +577,33 @@ describe("readDocument — a document longer than one batch", () => {
     const [merge] = calls.filter((c) => c.system.includes(MERGE));
     expect(merge!.opts?.promptCaching).toBeUndefined();
   });
+
+  it("#2262 — keeps the operator's notes inside the cached lead, the same for every batch", async () => {
+    const notes = "Focus on the login rules.";
+    const { provider, calls } = routedProvider([
+      [WHOLE, perBatch],
+      [MERGE, noMerge],
+    ]);
+    await readDocument({ title: "Long", text: LONG, provider, operatorNotes: notes });
+    const reads = calls.filter((c) => c.system.includes(WHOLE));
+    expect(reads.length).toBeGreaterThan(1);
+    for (const r of reads) expect(r.opts?.promptCaching?.userPrefix).toContain(notes);
+  });
+
+  it("#2297 — caches nothing for a document read in one batch: no later call would read it back", async () => {
+    const context = JSON.stringify({ purpose: "Booking.", scope: "", actors: [], glossary: [] });
+    const { provider, calls } = routedProvider([
+      [WHOLE, statements()],
+      [CONTEXT, context],
+      [SECTIONED, statements()],
+    ]);
+    await readDocument({ title: "Booking FRD", text: TEXT, provider });
+    await readDocument({ title: "Booking FRD", text: TEXT, provider, mode: "sectioned" });
+    const reads = calls.filter((c) => c.system.includes(WHOLE) || c.system.includes(SECTIONED));
+    // One statements call per mode: the short document is a single batch in both.
+    expect(reads).toHaveLength(2);
+    for (const r of reads) expect(r.opts?.promptCaching).toBeUndefined();
+  });
 });
 
 describe("#2262 — the operator's notes", () => {
@@ -609,8 +636,6 @@ describe("#2262 — the operator's notes", () => {
       expect(r.user).toContain("Tool result for operator_notes:");
       expect(r.user).toContain(notes);
       expect(r.system).toContain("They never change which statements you list");
-      // Inside the shared lead: the notes are the same for every batch.
-      expect(r.opts?.promptCaching?.userPrefix).toContain(notes);
     }
   });
 

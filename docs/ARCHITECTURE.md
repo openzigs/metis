@@ -4945,11 +4945,14 @@ so. Every quote is checked with the governing `clauseLocator` and the stored quo
 are the source's own; a quote not in the source, or found only outside the batch the call was
 asked about, is dropped and counted (#2262). A batch whose reply cannot be read is reported
 `unread`; a provider error fails the read, and the error carries the tokens already spent
-(`spentUsageOf`), which the failed agent row and the run's total count.
+(`spentUsageOf`), which the failed agent row, the run's total and a regenerate's token delta
+count (#2297).
 
 Cost (#2262): the system message names no batch, and each statements call's user message is
 the document (and the operator's notes) followed by the batch it asks about, so every batch call
-of one document shares a prefix sent with `promptCaching` (`system` plus `userPrefix`). A
+of one document shares a prefix sent with `promptCaching` (`system` plus `userPrefix`) when the
+document takes more than one batch; a single batch caches nothing, since no later call would
+read the 1.25× cache write back (#2297). A
 document over `READER_WHOLE_MAX_DOCUMENT_TOKENS` (20,000, about 80 KB) is read sectioned, whose
 cost grows in step with its length rather than with its square.
 
@@ -4957,8 +4960,11 @@ Requirements Analysis uses it behind `ANALYSIS_DOCUMENT_READER` (off by default)
 `runOneAgent("document")` calls `readSelectedDocuments` instead of `retrieveContext`
 (`analysis/document-reader-agent.ts`). It reads as the requester: `resolveAclActor` (an
 inactive requester fails the agent), and each document's `aclSubjects` checked with
-`isVisibleTo`; a document the requester may not see is reported with the same reason as one
-that is not ready, and never sends the agent back to retrieval. The operator's notes reach every
+`isVisibleTo`; a document the requester may not see is reported exactly as an id that is
+missing or not ready, and neither sends the agent back to retrieval (#2297). The denial writes
+an `analysis.document_reader.acl_denied` audit row, and an admin's read of a restricted
+document no subject names them in an `analysis.document_reader.acl_bypass` row. A scheduled
+run (`SYSTEM_ACTOR_ID`) reads as no requester: unrestricted documents only. The operator's notes reach every
 statements call as fenced data (#1237). It loads the selected documents (or, with none
 selected, the `READER_IMPLICIT_MAX_DOCUMENTS` (5) most recently uploaded ones the requester may
 see, the rest listed unread with the reason) of the run's project from storage, parses them as ingest does, and writes the reading
@@ -4967,7 +4973,7 @@ business rules, each with its document and stored chunk), one cited finding per 
 and the full `reading`. The coverage report goes on the capability record
 (`AnalysisCapability.documentReading`) and the results page renders it
 (`DocumentCoveragePanel`). Retrieval stays for the code agent and the other specialists; if no
-selected document can be loaded, the document agent retrieves as before.
+selected document's file can be loaded or parsed, the document agent retrieves as before.
 
 Impact Analysis (#2231) reads a document source from its stored file, parsed as ingest parses
 it (`impact-analysis/document-source.ts` `loadImpactDocumentText`); only when the file cannot

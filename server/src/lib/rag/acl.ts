@@ -144,15 +144,30 @@ export function isVisibleTo(acl: ChunkAcl, actor: AclActor): boolean {
   if (actor.sharedAudience) return acl.subjects.length === 0;
   if (actor.role === "admin") return true;
   if (acl.subjects.length === 0) return true;
-  for (const subj of acl.subjects) {
-    if (subj.kind === "user" && subj.value === actor.userId) return true;
-    if (subj.kind === "role" && subj.value === actor.role) return true;
-    if (subj.kind === "group") {
-      const groups = actor.groups ?? [];
-      if (groups.includes(subj.value)) return true;
-    }
-  }
-  return false;
+  return namesActor(acl, actor);
+}
+
+/**
+ * #2297 — the actor sees a restricted `acl` only through the admin bypass: no
+ * user, role or group subject names them. The caller audits it.
+ */
+export function isAdminBypass(acl: ChunkAcl, actor: AclActor): boolean {
+  return (
+    !actor.sharedAudience &&
+    actor.role === "admin" &&
+    acl.subjects.length > 0 &&
+    !namesActor(acl, actor)
+  );
+}
+
+function namesActor(acl: ChunkAcl, actor: AclActor): boolean {
+  const groups = actor.groups ?? [];
+  return acl.subjects.some(
+    (subj) =>
+      (subj.kind === "user" && subj.value === actor.userId) ||
+      (subj.kind === "role" && subj.value === actor.role) ||
+      (subj.kind === "group" && groups.includes(subj.value)),
+  );
 }
 
 /**
