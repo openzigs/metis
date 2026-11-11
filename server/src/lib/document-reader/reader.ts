@@ -61,6 +61,13 @@ import {
 } from "./prompts.js";
 import { batchSections, outlineSections, sectionAt, type ReaderSection } from "./sections.js";
 
+/**
+ * #2280 — the reader's version, part of a saved reading's key
+ * (`reading-cache.ts`). Bump it when the reader's prompts, reply schemas,
+ * batching or verification change: every saved reading is then read again.
+ */
+export const READER_VERSION = "2230.1";
+
 /** Source characters whose statements one reply is asked to write. */
 export const READER_BATCH_CHARS = 8000;
 /** The share of the model's window a reading call may fill, reply included. */
@@ -119,6 +126,20 @@ export interface DocumentReading {
   /** The output-token cap every call was given (#2229 finding 4 and 6). */
   outputTokenCap: number;
   usage: TokenUsage;
+  /**
+   * #2280 — set when this reading was not made now but reused from a saved one
+   * (`reading-cache.ts`): when it was read and with which model. A reused
+   * reading made no model call, so its `calls` and `usage` are zero.
+   */
+  reused?: ReadingReuse;
+}
+
+/** #2280 — the saved reading a run reused instead of reading the document again. */
+export interface ReadingReuse {
+  /** When the saved reading was made. */
+  readAt: Date;
+  /** The model that made it. */
+  model: string;
 }
 
 export interface ReadDocumentInput {

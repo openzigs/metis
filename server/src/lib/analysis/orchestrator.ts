@@ -828,6 +828,12 @@ export interface StartAnalysisOptions {
    */
   enableClarification?: boolean;
   /**
+   * #2280 — read the selected documents again instead of reusing a saved
+   * reading (the document reader only). Not persisted: a regenerate of the
+   * document agent always reads again.
+   */
+  rereadDocuments?: boolean;
+  /**
    * Issue #1006 — the imported requirements the run was started from (their
    * titles already lead `extraInstructions`, one `NR-*` each). Persisted to the
    * analysis metadata so the run keeps the link back to each imported item.
@@ -1238,6 +1244,8 @@ export class AnalysisOrchestrator {
         projectDescription: analysis.project.description,
         agentKey: opts.agentKey,
         documentIds,
+        // #2280 — regenerating the document agent asks for a new reading, not the saved one.
+        rereadDocuments: true,
         model,
         extraInstructions,
         ...(agentContext ? { agentContext } : {}),
@@ -2469,6 +2477,7 @@ export class AnalysisOrchestrator {
             projectDescription,
             agentKey: "document",
             documentIds: opts.documentIds,
+            ...(opts.rereadDocuments ? { rereadDocuments: true } : {}),
             model: opts.model,
             extraInstructions: opts.extraInstructions,
             signal: docController.signal,
@@ -2643,6 +2652,7 @@ export class AnalysisOrchestrator {
               projectDescription,
               agentKey,
               documentIds: opts.documentIds,
+              ...(opts.rereadDocuments ? { rereadDocuments: true } : {}),
               model: opts.model,
               extraInstructions: opts.extraInstructions,
               ...(opts.agentContext ? { agentContext: opts.agentContext } : {}),
@@ -2870,6 +2880,7 @@ export class AnalysisOrchestrator {
                 projectDescription,
                 agentKey,
                 documentIds: opts.documentIds,
+                ...(opts.rereadDocuments ? { rereadDocuments: true } : {}),
                 model: opts.model,
                 extraInstructions: opts.extraInstructions,
                 signal: controller.signal,
@@ -3320,6 +3331,8 @@ export class AnalysisOrchestrator {
     projectDescription: string;
     agentKey: AnalysisSpecialistAgentKey;
     documentIds?: string[];
+    /** #2280 — the document reader reads every document again, reusing no saved reading. */
+    rereadDocuments?: boolean;
     model?: string;
     extraInstructions?: string;
     signal: AbortSignal;
@@ -3515,6 +3528,7 @@ export class AnalysisOrchestrator {
       documentIds,
       signal: input.signal,
       ...(input.model ? { model: input.model } : {}),
+      ...(input.rereadDocuments ? { reread: true } : {}),
       ...(this.deps.readerDocuments ? { load: this.deps.readerDocuments } : {}),
     });
     if (!read) {

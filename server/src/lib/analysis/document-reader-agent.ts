@@ -16,6 +16,11 @@
  *
  * Retrieval stays for the code agent and for every other specialist.
  *
+ * #2280 — a document is read through `readDocumentOnce`: an unchanged file
+ * already read by the same reader and model is not read again, and the
+ * summary and coverage report say whose reading was reused. `reread` reads
+ * every selected document afresh ("Read the documents again").
+ *
  * Only documents of the analysis's own project are read (`projectId` and `id`
  * both filter the query), and only ones that are ready and not rejected: the
  * documents retrieval could serve today, through the approved index or its
@@ -33,11 +38,8 @@ import type {
 import type { AIProvider, TokenUsage } from "../ai/types.js";
 import { parseDocument } from "../documents/parsers.js";
 import { getDocumentStorage, type StorageBackend } from "../documents/storage.js";
-import {
-  DocumentReaderError,
-  readDocument,
-  type DocumentReading,
-} from "../document-reader/reader.js";
+import { DocumentReaderError, type DocumentReading } from "../document-reader/reader.js";
+import { readDocumentOnce, type ReadingCacheDeps } from "../document-reader/reading-cache.js";
 import { REQUIREMENT_STATEMENT_KINDS, type StatementKind } from "../document-reader/prompts.js";
 import { formatHeadingPath } from "../document-reader/sections.js";
 import { prisma } from "../prisma.js";
@@ -51,6 +53,8 @@ export interface ReaderDocument {
   title: string;
   text: string;
   chunks: Array<{ index: number; text: string }>;
+  /** #2280 — `Document.checksum`; absent, the reading is not saved. */
+  checksum?: string;
 }
 
 export type ReaderDocumentLoad =
@@ -79,7 +83,14 @@ export function createReaderDocumentLoader(
         status: "ready",
         indexState: { not: "rejected" },
       },
-      select: { id: true, filename: true, title: true, mimeType: true, storagePath: true },
+      select: {
+        id: true,
+        filename: true,
+        title: true,
+        mimeType: true,
+        storagePath: true,
+        checksum: true,
+      },
     });
     const byId = new Map(rows.map((r) => [r.id, r]));
     const out: ReaderDocumentLoad[] = [];
@@ -123,6 +134,7 @@ export function createReaderDocumentLoader(
           title: row.title ?? row.filename,
           text: parsed.text,
           chunks: await storedChunks(projectId, documentId),
+          checksum: row.checksum,
         },
       });
     }
@@ -211,7 +223,26 @@ function coverageOf(
     droppedUnverified: reading.droppedUnverified,
     merge: reading.merge,
     outputTokenCap: reading.outputTokenCap,
+    ...(reading.reused
+      ? { reused: { readAt: reading.reused.readAt.toISOString(), model: reading.reused.model } }
+      : {}),
   };
+}
+
+/** #2280 — the summary's sentence about the readings reused instead of read again. */
+export function reusedReadingsSentence(
+  reused: ReadonlyArray<{ filename: string; readAt: Date; model: string }>,
+): string {
+  if (reused.length === 0) return "";
+  const each = reused
+    .slice(0, 3)
+    .map((r) => `"${r.filename}" (read ${r.readAt.toISOString().slice(0, 10)} with ${r.model})`);
+  const more = reused.length > 3 ? ` and ${reused.length - 3} more` : "";
+  const one = reused.length === 1;
+  return (
+    ` The saved reading of ${each.join(", ")}${more} was reused: ${one ? "that document was" : "those documents were"} not read again, ` +
+    `as ${one ? "its file has" : "their files have"} not changed. Start the analysis with "Read the documents again" for a fresh reading.`
+  );
 }
 
 export interface DocumentReaderAgentResult {
@@ -231,6 +262,10 @@ export async function runDocumentReaderAgent(input: {
   model?: string;
   signal?: AbortSignal;
   load?: ReaderDocumentLoader;
+  /** #2280 — read every document again instead of reusing a saved reading. */
+  reread?: boolean;
+  /** #2280 — test seam for the saved-reading store and the reader. */
+  cache?: ReadingCacheDeps;
 }): Promise<DocumentReaderAgentResult | null> {
   const started = Date.now();
   const loads = await (input.load ?? createReaderDocumentLoader())(
@@ -245,6 +280,7 @@ export async function runDocumentReaderAgent(input: {
   const readings: Array<{ documentId: string; reading: DocumentReading }> = [];
   let usage: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
   let lastError: DocumentReaderError | null = null;
+  const reused: Array<{ filename: string; readAt: Date; model: string }> = [];
 
   for (const load of loads) {
     if (!load.ok) {
@@ -263,13 +299,21 @@ export async function runDocumentReaderAgent(input: {
     const doc = load.document;
     let reading: DocumentReading;
     try {
-      reading = await readDocument({
-        title: doc.title,
-        text: doc.text,
-        provider: input.provider,
-        ...(input.model ? { model: input.model } : {}),
-        ...(input.signal ? { signal: input.signal } : {}),
-      });
+      reading = await readDocumentOnce(
+        {
+          title: doc.title,
+          text: doc.text,
+          provider: input.provider,
+          ...(input.model ? { model: input.model } : {}),
+          ...(input.signal ? { signal: input.signal } : {}),
+          // The loader read only this project's documents, so the reading is saved under it.
+          document: doc.checksum
+            ? { projectId: input.projectId, documentId: doc.documentId, checksum: doc.checksum }
+            : null,
+          ...(input.reread ? { reread: true } : {}),
+        },
+        input.cache,
+      );
     } catch (err) {
       if (!(err instanceof DocumentReaderError)) throw err;
       lastError = err;
@@ -293,6 +337,7 @@ export async function runDocumentReaderAgent(input: {
       cacheWriteTokens: (usage.cacheWriteTokens ?? 0) + (reading.usage.cacheWriteTokens ?? 0),
     };
     readings.push({ documentId: doc.documentId, reading });
+    if (reading.reused) reused.push({ filename: doc.filename, ...reading.reused });
     coverage.push(coverageOf(doc, reading));
 
     const chunkAt = chunkIndexer(doc.text, doc.chunks);
@@ -345,7 +390,8 @@ export async function runDocumentReaderAgent(input: {
     `Read ${read.length} of ${coverage.length} selected document${coverage.length === 1 ? "" : "s"} in full ` +
       `(${sections} section${sections === 1 ? "" : "s"}): ${requirements.length} requirement${requirements.length === 1 ? "" : "s"}, ` +
       `constraint${requirements.length === 1 ? "" : "s"} and business rule${requirements.length === 1 ? "" : "s"}, each with its source.` +
-      (unread > 0 ? ` ${unread} could not be read; the coverage report says why.` : ""),
+      (unread > 0 ? ` ${unread} could not be read; the coverage report says why.` : "") +
+      reusedReadingsSentence(reused),
     MAX_SUMMARY,
   );
 
