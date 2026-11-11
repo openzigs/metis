@@ -12,8 +12,13 @@ const db = vi.hoisted(() => ({
 }));
 vi.mock("../prisma.js", () => ({ prisma: db }));
 
-const { clarificationTitle, indexClarification, inertLine, renderClarificationDocument } =
-  await import("./clarification-knowledge.js");
+const {
+  clarificationTitle,
+  indexClarification,
+  inertLine,
+  renderClarificationDocument,
+  withdrawClarification,
+} = await import("./clarification-knowledge.js");
 
 function record(over: Partial<StoredClarification> = {}): StoredClarification {
   return {
@@ -111,5 +116,33 @@ describe("#2236 — indexClarification edges", () => {
       select: { aclSubjects: true },
     });
     expect(db.document.create.mock.calls.at(-1)![0].data.aclSubjects).toBe(acl);
+  });
+});
+
+describe("#2236 — withdrawClarification", () => {
+  it("deletes a reopened record's document and unlinks it, scoped to the project", async () => {
+    db.clarificationRecord.updateMany.mockClear();
+    const deleteDocument = vi.fn(async () => undefined);
+    expect(
+      await withdrawClarification(record({ knowledgeDocumentId: "doc-9" }), { deleteDocument }),
+    ).toBe(true);
+    expect(deleteDocument).toHaveBeenCalledWith("doc-9");
+    expect(db.clarificationRecord.updateMany).toHaveBeenCalledWith({
+      where: { projectId: "p1", id: "rec-1" },
+      data: { knowledgeDocumentId: null },
+    });
+  });
+
+  it("does nothing for a record never indexed, and never throws: a failed delete keeps the link", async () => {
+    db.clarificationRecord.updateMany.mockClear();
+    const deleteDocument = vi.fn(async () => {
+      throw new Error("store down");
+    });
+    expect(await withdrawClarification(record(), { deleteDocument })).toBe(false);
+    expect(deleteDocument).not.toHaveBeenCalled();
+    expect(
+      await withdrawClarification(record({ knowledgeDocumentId: "doc-9" }), { deleteDocument }),
+    ).toBe(false);
+    expect(db.clarificationRecord.updateMany).not.toHaveBeenCalled();
   });
 });

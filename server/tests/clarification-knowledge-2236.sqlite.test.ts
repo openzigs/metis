@@ -10,8 +10,9 @@
  *     the dialog reuses the answer (state `reused`, counted as answered, its
  *     text reaching the requirement body as a `reused` answer), and another
  *     project never sees it;
- *   - a changed paragraph in the same place reopens the old answer and the
- *     question is asked again;
+ *   - a changed paragraph in the same place reopens the old answer, withdraws
+ *     its document, and the question is asked again; a sibling paragraph of
+ *     the same section reopens nothing;
  *   - a record is indexed as a project document attributed to the person who
  *     answered, and a changed answer replaces the earlier document;
  *   - `persistClarificationKnowledge` records from the stored dialog state,
@@ -301,17 +302,22 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(asked.rounds[0]!.questions.map((q) => q.ambiguityField)).toEqual(["minimumLength"]);
     });
 
-    it("a changed paragraph in the same place reopens the old answer and asks again", async () => {
-      await recordAnalysisClarifications({
+    it("a changed paragraph in the same place reopens the old answer, withdraws its document, and asks again", async () => {
+      const [answered] = await recordAnalysisClarifications({
         projectId: PA,
         analysisId: A1,
         answeredById: USER,
         state: answeredState(A1, "R-1", "At least 12 characters."),
         requirements: requirements("R-1"),
       });
+      await db.clarificationRecord.update({
+        where: { id: answered!.id },
+        data: { knowledgeDocumentId: "doc-answer-1" },
+      });
+      const deleteDocument = vi.fn(async () => undefined);
       const dialog = new ClarificationDialog({
         provider: questionModel(),
-        priorAnswers: priorAnswerSourceFor(PA),
+        priorAnswers: priorAnswerSourceFor(PA, { deleteDocument }),
       });
       const changedParagraph = "Passwords must be long enough, or use a passkey.";
       const started = await dialog.startOrContinue(A3, requirements("R-5", changedParagraph));
@@ -320,6 +326,33 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const [record] = await listClarifications(PA);
       expect(record).toMatchObject({ status: "reopened" });
       expect(record!.reopenedAt).toBeInstanceOf(Date);
+      // The reopened answer is no longer project knowledge: it cannot be cited.
+      expect(deleteDocument).toHaveBeenCalledWith("doc-answer-1");
+      expect(record!.knowledgeDocumentId).toBeNull();
+    });
+
+    it("a question about a sibling paragraph of the same section and field leaves a settled answer settled", async () => {
+      await recordAnalysisClarifications({
+        projectId: PA,
+        analysisId: A1,
+        answeredById: USER,
+        state: answeredState(A1, "R-1", "At least 12 characters."),
+        requirements: requirements("R-1"),
+      });
+      const deleteDocument = vi.fn(async () => undefined);
+      const dialog = new ClarificationDialog({
+        provider: questionModel(),
+        priorAnswers: priorAnswerSourceFor(PA, { deleteDocument }),
+      });
+      // Same document, heading and field; another paragraph of the section.
+      const sibling = "Service accounts rotate their credentials every quarter.";
+      const started = await dialog.startOrContinue(A3, requirements("R-6", sibling));
+      // The sibling is asked about (it has no answer of its own) ...
+      expect(started.rounds[0]!.questions).toHaveLength(1);
+      // ... and the first paragraph's answer still stands.
+      const [record] = await listClarifications(PA);
+      expect(record).toMatchObject({ status: "settled", reopenedAt: null });
+      expect(deleteDocument).not.toHaveBeenCalled();
     });
 
     it("indexes a record as a project document by the person who answered, replacing it when the answer changes", async () => {

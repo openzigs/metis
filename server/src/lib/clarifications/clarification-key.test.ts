@@ -6,6 +6,8 @@ import { describe, expect, it } from "vitest";
 import {
   clarificationKey,
   normaliseForKey,
+  paragraphSimilarity,
+  SAME_PARAGRAPH_THRESHOLD,
   sourceSlot,
   specKitClarificationKey,
 } from "./clarification-key.js";
@@ -113,5 +115,22 @@ describe("#2236 — sourceSlot", () => {
       sourceSlot({ citation: { ...citation, documentId: undefined }, ambiguityField: "x" }),
     ).toBeNull();
     expect(sourceSlot({ ambiguityField: "x" })).toBeNull();
+  });
+});
+
+describe("#2236 — paragraphSimilarity", () => {
+  it("reads an edited paragraph as the same one and a sibling paragraph as another", () => {
+    const original = "Passwords must be long enough for customer accounts.";
+    expect(
+      paragraphSimilarity(
+        original,
+        "Passwords must be long enough for customer accounts, or use a passkey.",
+      ),
+    ).toBeGreaterThanOrEqual(SAME_PARAGRAPH_THRESHOLD);
+    expect(
+      paragraphSimilarity(original, "Service accounts rotate their credentials every quarter."),
+    ).toBeLessThan(SAME_PARAGRAPH_THRESHOLD);
+    expect(paragraphSimilarity("", original)).toBe(0);
+    expect(paragraphSimilarity(original, original)).toBe(1);
   });
 });

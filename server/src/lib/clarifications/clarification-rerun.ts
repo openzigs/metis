@@ -16,7 +16,10 @@
  *     produced again. The old findings are marked as being re-checked (the
  *     findings response's `refreshing`, shown on the analysis view) from the
  *     moment the answer is in until the new ones are stored: the re-decision
- *     runs as the `prepare` step of one findings run.
+ *     runs as the `prepare` step of one findings run. As #2222's re-check
+ *     (`recheck.ts`), the findings are produced from the new entry in memory
+ *     and the entry is stored only once they are; every pair the BA already
+ *     settled keeps its settlement.
  *
  * Everything here runs after the answer is committed, off the request path,
  * and never throws: a failure is logged and the earlier results stand.
@@ -42,7 +45,10 @@ import {
 } from "../governing/applicability.js";
 import { produceGoverningFindingsForAnalysis } from "../governing/findings-store.js";
 import { mapRequirementToCode } from "../traceability/requirement-code-mapping.js";
-import type { GoverningAnalysisApplicability } from "@metis/shared";
+import type {
+  GoverningAnalysisApplicability,
+  GoverningRequirementApplicability,
+} from "@metis/shared";
 import type { StoredClarification } from "./clarification-records.js";
 
 const log = createChildLogger("clarification-rerun");
@@ -262,6 +268,9 @@ async function rerunGoverning(
 
   const requirementIds = [...targets.keys()];
   const produce = deps.produceFindings ?? produceGoverningFindingsForAnalysis;
+  // The re-decided entries, in memory until the findings made from them are stored.
+  let decided: GoverningRequirementApplicability[] = [];
+  let committed = false;
   await produce({
     analysisId: input.analysisId,
     projectId: input.projectId,
@@ -272,25 +281,78 @@ async function rerunGoverning(
     // findings from now until the new ones are stored.
     prepare: async () => {
       const current = (await readGoverningApplicability(input.analysisId)) ?? stored;
-      const decided = await Promise.all(
+      const fresh = await Promise.all(
         requirementIds.map(async (requirementId) => {
           const entry = current.requirements.find((r) => r.requirementId === requirementId);
           const text = clarifiedRequirementText(entry?.text ?? "", targets.get(requirementId)!);
           const set = await hook.decide({ id: requirementId, text });
-          return toStoredApplicability([{ requirementId, text, chunks: [], governing: set }])
+          if (set.error) {
+            // As #2222's re-check: an entry that could not be decided stores
+            // nothing, and the earlier entry and findings stand.
+            log.warn("governing applicability could not be re-decided after a clarification", {
+              analysisId: input.analysisId,
+              requirementId,
+              error: set.error,
+            });
+            return null;
+          }
+          const next = toStoredApplicability([{ requirementId, text, chunks: [], governing: set }])
             .requirements[0]!;
+          // The BA's governing answers on this requirement's pairs stand.
+          return withSettlementsFrom(next, entry);
         }),
       );
-      const fresh = new Map(decided.map((d) => [d.requirementId, d]));
+      decided = fresh.filter((e): e is GoverningRequirementApplicability => e !== null);
+      return { decidedAt: new Date().toISOString(), requirements: decided };
+    },
+    // #2222's order: the entries are stored only once their findings are, so
+    // a failed evaluation leaves no stored applicability that no findings match.
+    afterProduce: async (run) => {
+      if (run.failed > 0) {
+        log.warn("governing findings could not be re-produced after a clarification", {
+          analysisId: input.analysisId,
+          failed: run.failed,
+        });
+        return;
+      }
+      if (decided.length === 0) return;
+      const byId = new Map(decided.map((d) => [d.requirementId, d]));
       await updateGoverningApplicabilityMetadata(input.analysisId, (raw) => {
         const now = raw as GoverningAnalysisApplicability | undefined;
         if (!now?.requirements) return undefined;
         return {
           ...now,
-          requirements: now.requirements.map((r) => fresh.get(r.requirementId) ?? r),
+          requirements: now.requirements.map((r) => {
+            const next = byId.get(r.requirementId);
+            // Carried again from what is stored now, so nothing settled since
+            // the decision is lost.
+            return next ? withSettlementsFrom(next, r) : r;
+          }),
         };
       });
+      committed = true;
     },
   });
-  result.governingRequirements = requirementIds;
+  if (committed) result.governingRequirements = decided.map((d) => d.requirementId);
+}
+
+/**
+ * `fresh` with every decision the BA settled on `previous` carried across
+ * whole (#1873/#2059/#2068): a settled pair keeps the verdict, reason and
+ * answers the BA's answer gave it, so the findings re-run reads them
+ * (`findingPairsOf`) and the pair is not asked again. A settled rule the new
+ * decision no longer names is kept too.
+ */
+export function withSettlementsFrom(
+  fresh: GoverningRequirementApplicability,
+  previous: GoverningRequirementApplicability | undefined,
+): GoverningRequirementApplicability {
+  const settled = (previous?.decisions ?? []).filter((d) => d.settled);
+  if (settled.length === 0) return fresh;
+  const byRule = new Map(settled.map((d) => [d.ruleId, d]));
+  const decisions = fresh.decisions.map((d) => byRule.get(d.ruleId) ?? d);
+  for (const d of settled) {
+    if (!fresh.decisions.some((f) => f.ruleId === d.ruleId)) decisions.push(d);
+  }
+  return { ...fresh, decisions };
 }

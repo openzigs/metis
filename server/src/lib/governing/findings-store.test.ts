@@ -636,6 +636,29 @@ describe("produceGoverningFindingsForAnalysis — edges", () => {
     await vi.waitFor(() => expect(governingFindingsRefreshing("a_prepare")).toBe(false));
   });
 
+  it("#2236 — an applicability `prepare` returns is what the run evaluates, unread from the store, and `afterProduce` gets the run in its turn", async () => {
+    evaluateRequirementFindings.mockResolvedValue({
+      findings: [],
+      unverifiedCitations: 0,
+      noEvidenceDemoted: 0,
+    });
+    readGoverningApplicability.mockClear();
+    const only = { ...STORED, requirements: [STORED.requirements[0]!] };
+    const after = vi.fn(async () => {
+      expect(governingFindingsRefreshing("a_prepared")).toBe(true);
+    });
+    const run = await produceGoverningFindingsForAnalysis({
+      analysisId: "a_prepared",
+      projectId: "p",
+      provider,
+      prepare: async () => only,
+      afterProduce: after,
+    });
+    expect(run).toMatchObject({ requirements: 1, failed: 0 });
+    expect(readGoverningApplicability).not.toHaveBeenCalled();
+    expect(after).toHaveBeenCalledWith(run);
+  });
+
   it("#2010 — a cancelled run stops: it throws, counts nothing as failed, and writes nothing", async () => {
     const controller = new AbortController();
     evaluateRequirementFindings.mockImplementation(async () => {

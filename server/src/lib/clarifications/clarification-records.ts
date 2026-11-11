@@ -15,7 +15,12 @@
 import { prisma } from "../prisma.js";
 import { createChildLogger } from "../logger.js";
 import { isUniqueViolation } from "../db/prisma-errors.js";
-import { sourceSlot, type KeyableQuestion } from "./clarification-key.js";
+import {
+  paragraphSimilarity,
+  SAME_PARAGRAPH_THRESHOLD,
+  sourceSlot,
+  type KeyableQuestion,
+} from "./clarification-key.js";
 
 const log = createChildLogger("clarification-records");
 
@@ -199,44 +204,81 @@ export async function findSettledClarifications(
 }
 
 /**
- * The settled records of `projectId` asked about the same place in a document
- * as one of `questions` — same document, section and field — under another
- * key: the paragraph they were asked about has changed since, so they are
- * marked `reopened` and the question is asked again. Returns what was reopened.
+ * The settled records of `projectId` whose paragraph has changed since they
+ * were answered: each is marked `reopened` and its question is asked again.
+ * Returns what was reopened.
+ *
+ * A record is reopened by a question of `questions` about its own paragraph,
+ * edited: the same document, section and field ({@link sourceSlot}), another
+ * key, and a quote that reads as the record's quote edited
+ * ({@link paragraphSimilarity} at least {@link SAME_PARAGRAPH_THRESHOLD}). A
+ * question about a sibling paragraph of the section — different words — never
+ * reopens it. A question whose key a record already has is about an unchanged
+ * paragraph and reopens nothing; and a question reopens at most the one record
+ * its quote is most like (none on a tie), so two answers are never reopened by
+ * one edit.
  */
 export async function reopenChangedSources(
   projectId: string,
   questions: ReadonlyArray<{ key: string; question: KeyableQuestion }>,
   now: Date = new Date(),
 ): Promise<StoredClarification[]> {
-  const bySlot = new Map<string, Set<string>>();
+  const bySlot = new Map<string, Array<{ key: string; quote: string }>>();
   const documentIds = new Set<string>();
   for (const { key, question } of questions) {
     const slot = sourceSlot(question);
     if (!slot) continue;
     documentIds.add(question.citation!.documentId!);
-    bySlot.set(slot, (bySlot.get(slot) ?? new Set()).add(key));
+    bySlot.set(slot, [...(bySlot.get(slot) ?? []), { key, quote: question.citation!.quote }]);
   }
   if (bySlot.size === 0) return [];
   const rows = await prisma.clarificationRecord.findMany({
     where: { projectId, status: "settled", sourceDocumentId: { in: [...documentIds] } },
   });
-  const changed = rows.map(toStored).filter((r) => {
-    if (!r.source) return false;
+  const records = rows.map(toStored);
+  const known = new Set(records.map((r) => r.questionKey));
+  const recordsBySlot = new Map<string, StoredClarification[]>();
+  for (const r of records) {
+    if (!r.source) continue;
     const slot = sourceSlot({ citation: r.source, ambiguityField: r.ambiguityField ?? undefined });
-    const keys = slot ? bySlot.get(slot) : undefined;
-    return keys !== undefined && !keys.has(r.questionKey);
-  });
-  if (changed.length === 0) return [];
+    if (!slot || !bySlot.has(slot)) continue;
+    recordsBySlot.set(slot, [...(recordsBySlot.get(slot) ?? []), r]);
+  }
+  const changed = new Map<string, StoredClarification>();
+  for (const [slot, candidates] of recordsBySlot) {
+    const asked = bySlot.get(slot)!;
+    const askedKeys = new Set(asked.map((q) => q.key));
+    // A record asked about again under its own key: its paragraph is unchanged.
+    const open = candidates.filter((r) => !askedKeys.has(r.questionKey));
+    for (const q of asked) {
+      // A question with a record of its own is about an unchanged paragraph.
+      if (known.has(q.key)) continue;
+      let best: { record: StoredClarification; score: number } | null = null;
+      let tied = false;
+      for (const r of open) {
+        const score = paragraphSimilarity(q.quote, r.source!.quote);
+        if (score < SAME_PARAGRAPH_THRESHOLD) continue;
+        if (!best || score > best.score) {
+          best = { record: r, score };
+          tied = false;
+        } else if (score === best.score) {
+          tied = true;
+        }
+      }
+      if (best && !tied) changed.set(best.record.id, best.record);
+    }
+  }
+  if (changed.size === 0) return [];
+  const reopened = [...changed.values()];
   await prisma.clarificationRecord.updateMany({
-    where: { projectId, status: "settled", id: { in: changed.map((r) => r.id) } },
+    where: { projectId, status: "settled", id: { in: reopened.map((r) => r.id) } },
     data: { status: "reopened", reopenedAt: now },
   });
   log.info("clarification answers reopened: the paragraph they were asked about changed", {
     projectId,
-    reopened: changed.length,
+    reopened: reopened.length,
   });
-  return changed.map((r) => ({ ...r, status: "reopened" as const, reopenedAt: now }));
+  return reopened.map((r) => ({ ...r, status: "reopened" as const, reopenedAt: now }));
 }
 
 /** Record which `documents` row a record is indexed as. */

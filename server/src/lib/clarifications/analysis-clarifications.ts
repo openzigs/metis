@@ -15,7 +15,11 @@ import { readDialogState } from "../analysis/clarification-dialog-store.js";
 import { getStructuredRequirements } from "../analysis/analysis-service.js";
 import { createChildLogger } from "../logger.js";
 import { clarificationKey } from "./clarification-key.js";
-import { indexClarification } from "./clarification-knowledge.js";
+import {
+  indexClarification,
+  withdrawClarification,
+  type ClarificationIndexDeps,
+} from "./clarification-knowledge.js";
 import { rerunAfterClarification } from "./clarification-rerun.js";
 import {
   findSettledClarifications,
@@ -136,10 +140,14 @@ export async function recordAnalysisClarifications(
 /**
  * The dialog's {@link PriorAnswerSource} for one project: a question is
  * answered by the settled record under its key. Before reading, a record asked
- * about the same place in a document whose paragraph has since changed is
- * reopened, so the changed paragraph is asked about again.
+ * about a paragraph that has since changed is reopened, so the changed
+ * paragraph is asked about again, and its document is withdrawn from the
+ * project's knowledge so the old answer is no longer cited.
  */
-export function priorAnswerSourceFor(projectId: string): PriorAnswerSource {
+export function priorAnswerSourceFor(
+  projectId: string,
+  deps: Pick<ClarificationIndexDeps, "deleteDocument"> = {},
+): PriorAnswerSource {
   return {
     async find(questions, titleOf) {
       const keyed = questions.map((q) => ({
@@ -151,7 +159,9 @@ export function priorAnswerSourceFor(projectId: string): PriorAnswerSource {
           ...(q.citation ? { citation: q.citation } : {}),
         },
       }));
-      await reopenChangedSources(projectId, keyed);
+      for (const reopened of await reopenChangedSources(projectId, keyed)) {
+        await withdrawClarification(reopened, deps);
+      }
       const settled = await findSettledClarifications(
         projectId,
         keyed.map((k) => k.key),

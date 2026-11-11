@@ -79,9 +79,17 @@ export interface ProduceGoverningFindingsInput {
    * this run's turn: a clarification answer re-decides its requirements'
    * applicability here, so the findings read `refreshing` (their re-check
    * marker) from the moment the answer is in until the new findings are
-   * stored. When it throws, the run rejects and the earlier findings stand.
+   * stored. An applicability it returns (or `null`, for none) is what the run
+   * evaluates, in place of `applicability`; it is not stored by the run. When
+   * it throws, the run rejects and the earlier findings stand.
    */
-  prepare?: () => Promise<void>;
+  prepare?: () => Promise<GoverningAnalysisApplicability | null | void>;
+  /**
+   * #2236 — run in this run's turn once the findings are stored, with what the
+   * run did: the caller stores the applicability `prepare` decided only now,
+   * and only when no evaluation failed (#2222's order, `recheck.ts`).
+   */
+  afterProduce?: (run: GoverningFindingsRun) => Promise<void>;
 }
 
 /**
@@ -251,8 +259,12 @@ export function produceGoverningFindingsForAnalysis(
 ): Promise<GoverningFindingsRun> {
   const previous = findingsRuns.get(input.analysisId) ?? Promise.resolve();
   const result = turnOf(previous, input.signal).then(async () => {
-    await input.prepare?.();
-    return produceNow(input);
+    const prepared = await input.prepare?.();
+    const run = await produceNow(
+      prepared === undefined ? input : { ...input, applicability: prepared },
+    );
+    await input.afterProduce?.(run);
+    return run;
   });
   const tail = Promise.allSettled([previous, result]).then(() => undefined);
   findingsRuns.set(input.analysisId, tail);

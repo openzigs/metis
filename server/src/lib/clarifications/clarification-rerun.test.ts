@@ -68,6 +68,59 @@ const STORED: GoverningAnalysisApplicability = {
 
 const provider = { key: "anthropic", model: "m", offline: false, chat: vi.fn() } as never;
 
+type ProduceInput = import("../governing/findings-store.js").ProduceGoverningFindingsInput;
+type FindingsRun = import("../governing/findings-store.js").GoverningFindingsRun;
+const RUN_OK: FindingsRun = {
+  requirements: 1,
+  written: 1,
+  removed: 0,
+  decisionsCleared: 0,
+  unverifiedCitations: 0,
+  noEvidenceDemoted: 0,
+  failed: 0,
+};
+
+/** An applicability set deciding `rule-1` with `verdict`. */
+function decided(id: string, verdict: "applies" | "uncertain", error?: string) {
+  return {
+    requirementId: id,
+    decisions: error
+      ? []
+      : [
+          {
+            ruleId: "rule-1",
+            controlId: "PW-1",
+            verdict,
+            reason: "model reason",
+            ...(verdict === "uncertain" ? { businessFact: "is it internal?" } : {}),
+            foundBy: ["screen" as const],
+          },
+        ],
+    rulesScreened: 1,
+    screenBatches: 1,
+    candidates: 1,
+    reasked: 0,
+    screenReasked: 0,
+    ...(error ? { error } : {}),
+  };
+}
+
+/** AC-1 with a governing pair the BA already settled (#1873). */
+const SETTLED_DECISION = {
+  ruleId: "rule-1",
+  controlId: "PW-1",
+  verdict: "applies" as const,
+  reason: "The BA said it is customer-facing.",
+  foundBy: ["screen" as const],
+  settled: {
+    questionId: "gq-1",
+    question: "Is the sign-in customer-facing?",
+    answer: "Yes, customers sign in.",
+    previousVerdict: "uncertain" as const,
+    at: "2026-11-09T00:00:00.000Z",
+  },
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
   applicability.stored = structuredClone(STORED);
@@ -153,10 +206,11 @@ describe("#2236 — rerunAfterClarification", () => {
       screenReasked: 0,
     }));
     let preparedBeforeProduce = false;
-    const produceFindings = vi.fn(async (input: { prepare?: () => Promise<void> }) => {
+    const produceFindings = vi.fn(async (input: ProduceInput) => {
       await input.prepare?.();
       preparedBeforeProduce = decide.mock.calls.length === 1;
-      return {} as never;
+      await input.afterProduce?.(RUN_OK);
+      return RUN_OK;
     });
     const result = await rerunAfterClarification(
       { analysisId: "a1", projectId: "p1", provider, records: [record()] },
@@ -178,6 +232,123 @@ describe("#2236 — rerunAfterClarification", () => {
     expect(applicability.stored!.requirements.find((r) => r.requirementId === "AC-2")).toEqual(
       STORED.requirements[1],
     );
+  });
+
+  it("keeps the BA's settled governing answers through the re-run (#1873/#2059/#2068)", async () => {
+    applicability.stored!.requirements[0]!.decisions = [structuredClone(SETTLED_DECISION)];
+    const { findingPairsOf } = await import("../governing/findings-store.js");
+    let evaluated: GoverningAnalysisApplicability | null | void = undefined;
+    const produceFindings = vi.fn(async (input: ProduceInput) => {
+      evaluated = await input.prepare?.();
+      await input.afterProduce?.(RUN_OK);
+      return RUN_OK;
+    });
+    await rerunAfterClarification(
+      { analysisId: "a1", projectId: "p1", provider, records: [record()] },
+      {
+        mapToCode: vi.fn(),
+        // The model, on the clarified text, finds the pair uncertain again.
+        applicabilityHookFor: async () => ({
+          decide: async (r: { id: string }) => decided(r.id, "uncertain"),
+        }),
+        produceFindings,
+      },
+    );
+    // What the findings run evaluates carries the BA's answer ...
+    const entry = (evaluated as unknown as GoverningAnalysisApplicability).requirements[0]!;
+    expect(entry.decisions).toEqual([SETTLED_DECISION]);
+    const rules = new Map([["rule-1", { id: "rule-1" } as never]]);
+    expect(findingPairsOf(entry, rules).answers).toEqual([
+      { answer: "Yes, customers sign in.", question: "Is the sign-in customer-facing?" },
+    ]);
+    // ... and so does what is stored after it.
+    const ac1 = applicability.stored!.requirements.find((r) => r.requirementId === "AC-1")!;
+    expect(ac1.text).toContain(CLARIFIED_TEXT_MARKER);
+    expect(ac1.decisions).toEqual([SETTLED_DECISION]);
+  });
+
+  it("keeps a governing answer the BA settled while the findings were being produced", async () => {
+    await rerunAfterClarification(
+      { analysisId: "a1", projectId: "p1", provider, records: [record()] },
+      {
+        mapToCode: vi.fn(),
+        applicabilityHookFor: async () => ({
+          decide: async (r: { id: string }) => decided(r.id, "uncertain"),
+        }),
+        produceFindings: async (input: ProduceInput) => {
+          await input.prepare?.();
+          // A settle commits on AC-1 between the decision and the store.
+          applicability.stored!.requirements[0]!.decisions = [structuredClone(SETTLED_DECISION)];
+          await input.afterProduce?.(RUN_OK);
+          return RUN_OK;
+        },
+      },
+    );
+    const ac1 = applicability.stored!.requirements.find((r) => r.requirementId === "AC-1")!;
+    expect(ac1.decisions).toEqual([SETTLED_DECISION]);
+  });
+
+  it("stores the re-decided entry only once its findings are stored, and never on a failed run or an undecided entry", async () => {
+    const before = structuredClone(applicability.stored);
+    const hook = async () => ({
+      decide: async (r: { id: string }) => decided(r.id, "applies"),
+    });
+    let storedDuringRun: GoverningAnalysisApplicability | null = null;
+    const ok = await rerunAfterClarification(
+      { analysisId: "a1", projectId: "p1", provider, records: [record()] },
+      {
+        mapToCode: vi.fn(),
+        applicabilityHookFor: hook,
+        produceFindings: async (input: ProduceInput) => {
+          await input.prepare?.();
+          // The findings are evaluated from the decision in memory: nothing stored yet.
+          storedDuringRun = structuredClone(applicability.stored);
+          await input.afterProduce?.(RUN_OK);
+          return RUN_OK;
+        },
+      },
+    );
+    expect(storedDuringRun).toEqual(before);
+    expect(ok.governingRequirements).toEqual(["AC-1"]);
+    expect(applicability.stored).not.toEqual(before);
+
+    // A run whose evaluation failed stores nothing.
+    applicability.stored = structuredClone(before);
+    const failed = await rerunAfterClarification(
+      { analysisId: "a1", projectId: "p1", provider, records: [record()] },
+      {
+        mapToCode: vi.fn(),
+        applicabilityHookFor: hook,
+        produceFindings: async (input: ProduceInput) => {
+          await input.prepare?.();
+          const run = { ...RUN_OK, written: 0, failed: 1 };
+          await input.afterProduce?.(run);
+          return run;
+        },
+      },
+    );
+    expect(applicability.stored).toEqual(before);
+    expect(failed.governingRequirements).toEqual([]);
+
+    // An entry that could not be decided is neither evaluated nor stored.
+    let evaluated: GoverningAnalysisApplicability | null | void = undefined;
+    const errored = await rerunAfterClarification(
+      { analysisId: "a1", projectId: "p1", provider, records: [record()] },
+      {
+        mapToCode: vi.fn(),
+        applicabilityHookFor: async () => ({
+          decide: async (r: { id: string }) => decided(r.id, "applies", "rules unavailable"),
+        }),
+        produceFindings: async (input: ProduceInput) => {
+          evaluated = await input.prepare?.();
+          await input.afterProduce?.(RUN_OK);
+          return RUN_OK;
+        },
+      },
+    );
+    expect((evaluated as unknown as GoverningAnalysisApplicability).requirements).toEqual([]);
+    expect(applicability.stored).toEqual(before);
+    expect(errored.governingRequirements).toEqual([]);
   });
 
   it("re-runs nothing for a governing answer (its own settle refreshes those findings)", async () => {

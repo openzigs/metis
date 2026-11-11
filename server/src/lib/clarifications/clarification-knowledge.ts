@@ -8,7 +8,8 @@
  * like an uploaded text: the same chunking, quarantine policy, ACL and
  * retrieval as the rest of the project's knowledge. When the answer changes,
  * the earlier document is deleted and the new one indexed, so a superseded
- * answer is never cited.
+ * answer is never cited; when it is reopened (its paragraph changed), the
+ * document is withdrawn ({@link withdrawClarification}).
  *
  * The answer and the quoted paragraph are user- and document-authored text.
  * They are written as text, never executed or interpolated into a query, and
@@ -147,5 +148,33 @@ export async function indexClarification(
       error: (err as Error).message,
     });
     return null;
+  }
+}
+
+/**
+ * Withdraw a reopened record's document from the project's knowledge: its
+ * paragraph changed, so the answer no longer stands and must not be retrieved
+ * or cited. The record keeps its answer (shown as reopened); it is indexed
+ * again only when the question is answered again. Never throws: a failed
+ * withdrawal is logged, and the link kept so a later index replaces it.
+ */
+export async function withdrawClarification(
+  record: Pick<StoredClarification, "id" | "projectId" | "knowledgeDocumentId">,
+  deps: Pick<ClarificationIndexDeps, "deleteDocument"> = {},
+): Promise<boolean> {
+  if (!record.knowledgeDocumentId) return false;
+  const deleteDocument =
+    deps.deleteDocument ?? ((id: string) => getKnowledgeService().deleteDocument(id));
+  try {
+    await deleteDocument(record.knowledgeDocumentId);
+    await setClarificationKnowledgeDocument(record.projectId, record.id, null);
+    return true;
+  } catch (err) {
+    log.warn("a reopened clarification's document could not be withdrawn", {
+      recordId: record.id,
+      projectId: record.projectId,
+      error: (err as Error).message,
+    });
+    return false;
   }
 }

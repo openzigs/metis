@@ -22,6 +22,7 @@
  * so a reuse can always be explained by the text it was keyed on.
  */
 import { createHash } from "node:crypto";
+import { significantTokens } from "../analysis/clarification-enrichment.js";
 
 /** The parts of a question its key is made from. */
 export interface KeyableQuestion {
@@ -76,9 +77,10 @@ export function clarificationKey(q: KeyableQuestion): string {
 
 /**
  * Where in a document a question was asked: the document, the section and the
- * field, without the paragraph's text. Two questions in the same slot with
- * different keys are the same question about a paragraph that changed, so the
- * earlier answer is reopened. `null` for a question with no cited document.
+ * field, without the paragraph's text. A slot holds every paragraph of the
+ * section, so it only narrows the search: which paragraph of the slot a
+ * question is about is decided by {@link paragraphSimilarity}. `null` for a
+ * question with no cited document.
  */
 export function sourceSlot(q: Pick<KeyableQuestion, "citation" | "ambiguityField">): string | null {
   const documentId = q.citation?.documentId;
@@ -89,4 +91,27 @@ export function sourceSlot(q: Pick<KeyableQuestion, "citation" | "ambiguityField
     (q.citation?.headingPath ?? []).map(normaliseForKey).join("/"),
     normaliseForKey(q.ambiguityField),
   ]);
+}
+
+/**
+ * How much of two quotes' significant words they must share — |A ∩ B| / |A ∪ B|
+ * — to be one paragraph, edited, rather than two paragraphs of a section. An
+ * edit keeps most of a paragraph's words; a sibling paragraph about another
+ * subject shares few.
+ */
+export const SAME_PARAGRAPH_THRESHOLD = 0.5;
+
+/**
+ * How alike two quotes are as paragraphs, 0 to 1: at least
+ * {@link SAME_PARAGRAPH_THRESHOLD} reads as one paragraph, edited
+ * (#2236's paragraph identity: the documents carry no stable paragraph id, so
+ * it is the paragraph's own words). Deterministic and model-free.
+ */
+export function paragraphSimilarity(a: string, b: string): number {
+  const x = significantTokens(a);
+  const y = significantTokens(b);
+  if (x.size === 0 || y.size === 0) return 0;
+  let shared = 0;
+  for (const t of x) if (y.has(t)) shared++;
+  return shared / (x.size + y.size - shared);
 }
