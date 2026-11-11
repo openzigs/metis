@@ -41,7 +41,7 @@ vi.mock("../prisma.js", () => ({
   },
 }));
 
-const { chunkIndexer, createReaderDocumentLoader, runDocumentReaderAgent } =
+const { chunkIndexer, createReaderDocumentLoader, readerSourceOf, runDocumentReaderAgent } =
   await import("./document-reader-agent.js");
 
 const TEXT = [
@@ -277,11 +277,20 @@ describe("runDocumentReaderAgent", () => {
     };
     // Numbering runs on across documents.
     expect(output.requirements.map((r) => [r.id, r.source])).toEqual([
-      ["REQ-001", { documentId: "d1", chunkIndex: 0 }],
-      ["REQ-002", { documentId: "d1", chunkIndex: 1 }],
-      ["REQ-003", { documentId: "d2", chunkIndex: 0 }],
-      ["REQ-004", { documentId: "d2", chunkIndex: 1 }],
+      ["REQ-001", expect.objectContaining({ documentId: "d1", chunkIndex: 0 })],
+      ["REQ-002", expect.objectContaining({ documentId: "d1", chunkIndex: 1 })],
+      ["REQ-003", expect.objectContaining({ documentId: "d2", chunkIndex: 0 })],
+      ["REQ-004", expect.objectContaining({ documentId: "d2", chunkIndex: 1 })],
     ]);
+    // #2235 — the verified paragraph travels with the requirement, so its
+    // clarifying questions can quote and cite it.
+    expect(output.requirements[1]!.source).toEqual({
+      documentId: "d1",
+      chunkIndex: 1,
+      filename: "d1.docx",
+      headingPath: ["Grants FRD", "2 Payment"],
+      quote: "Grants over 5,000 pounds shall be paid in two instalments.",
+    });
     expect(output.findings[1]).toMatchObject({
       title: "Business rule: Large grants are paid in two instalments.",
       requirementId: "REQ-002",
@@ -319,7 +328,12 @@ describe("runDocumentReaderAgent", () => {
       requirements: Array<{ source: unknown }>;
       findings: Array<{ citations: unknown[]; body: string }>;
     };
-    expect(output.requirements[0]!.source).toEqual({ documentId: "d1" });
+    expect(output.requirements[0]!.source).toEqual({
+      documentId: "d1",
+      filename: "d1.docx",
+      headingPath: expect.any(Array),
+      quote: "An applicant must be a registered charity in the county.",
+    });
     expect(output.findings[0]!.citations).toEqual([]);
     expect(output.findings[0]!.body).toContain(
       "> An applicant must be a registered charity in the county.",
@@ -384,5 +398,37 @@ describe("runDocumentReaderAgent", () => {
         load: async () => [doc("d1")],
       }),
     ).rejects.toBeInstanceOf(AIProviderError);
+  });
+});
+
+describe("readerSourceOf (#2235)", () => {
+  it("reads the verified paragraph off a stored requirement, labelled with its id", () => {
+    expect(
+      readerSourceOf("REQ-002", {
+        documentId: "d1",
+        chunkIndex: 1,
+        filename: "d1.docx",
+        headingPath: ["Grants FRD", 7, "2 Payment"],
+        quote: "Paid in two instalments.",
+      }),
+    ).toEqual({
+      ref: "REQ-002",
+      documentId: "d1",
+      filename: "d1.docx",
+      headingPath: ["Grants FRD", "2 Payment"],
+      quote: "Paid in two instalments.",
+    });
+  });
+
+  it("reads nothing from a requirement with no quote (the retrieval path, or output from before #2235)", () => {
+    expect(readerSourceOf("REQ-001", { documentId: "d1", chunkIndex: 0 })).toBeUndefined();
+    expect(readerSourceOf("REQ-001", { quote: "   " })).toBeUndefined();
+    expect(readerSourceOf("REQ-001", undefined)).toBeUndefined();
+    expect(readerSourceOf("REQ-001", "d1")).toBeUndefined();
+    expect(readerSourceOf("REQ-001", { quote: "Q", headingPath: "x" })).toEqual({
+      ref: "REQ-001",
+      headingPath: [],
+      quote: "Q",
+    });
   });
 });

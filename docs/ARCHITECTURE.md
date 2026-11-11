@@ -736,6 +736,8 @@ Each policy supports `auto | prompt-once | always-prompt | deny`. Decisions are 
 
 **Grounding (#18).** Auto-RAG (`buildAutoRagContext`) runs only for a session bound to one project, so an "All projects" chat is answered from the model's own knowledge. Each turn's retrieval outcome becomes a `ChatGrounding` (`@metis/shared` `conversation.ts`: `grounded` with the project and source count, `no-context`, or `unscoped`) built by `describeGrounding` (`server/src/lib/ai/chat-grounding.ts`) from the capture's `sources` — what actually reached the prompt: one per knowledge chunk plus one per symbol in the #714 fused code block (#439; excerpts supplied, with no relevance threshold). After the tool loop, `withToolReads` folds in `countProjectToolReads` — curated code-tool calls (`source: "code"`) and project-scoped `search-knowledge`, `list_requirements` and `get_requirement` calls (#464, #1030; the registry tool searches only the session's project, ignoring a `projectId` argument naming another (#736), and `registryRuntimeTool` forwards its `resultCount`) that ran, succeeded and returned results; MCP, sub-agent and all other METIS tools (including `search-knowledge-global`) are not counted — so a turn that read the project only through tools is `grounded` with `sources: 0` and `toolReads`. `/stream` sends it as an `event: grounding` frame before the answer, and a second, replacing frame after the loop when tools read the project; both `/stream` and `/chat` record it in the assistant row's `meta.grounding` (a semantic-cache hit records none), and `GET /api/ai/sessions/:id/messages` returns it as the row's `grounding`, validated by the shared `parseChatGrounding` on both sides. `projectName` is snapshotted at answer time by design (a deleted project has no current name). The chat page labels every reply from it — except one that failed or stopped early (#439) — and shows a notice while the session has no project; a user with no stored scope and exactly one accessible project starts scoped to it (`useProjectScope`).
 
+**Conversation-aware retrieval (#2240).** Both chat routes call `conversationRagContext` (`routes/ai.ts`), which reads the session's active transcript (`listActiveMessages`) before the turn is prepared and hands `buildAutoRagContext` the prior user/assistant turns plus the new message. `planRetrievalQueries` (`lib/ai/conversation/retrieval-query.ts`, deterministic: no model call) plans the searches: the user's latest words, cut to 2,048 characters, always first; one per part of a multi-part question (two or more list items, else two or more `?` sentences; at most `MAX_QUESTION_PARTS` = 3); and, for a follow-up, one search of the latest message, then the model's closing question, then the previous user question. A message is a follow-up when it has at most 6 words, opens with a continuation cue (`and`, `but`, `so`, `what about`, `yes`, `no`, …), or uses a referring word (`it`, `that`, `there`, `also`, …) while naming at most 3 content words of its own (`contentWords`: not a function, referring or generic question word). A question that names its own subject ("Which teams own the payment reconciliation service and its alerts?") is not a follow-up, and a previous answer ending on a question does not make it one. A single search keeps its own ranking (a first or self-contained question's block is byte-identical to before); several are merged by `fuseRetrievalHits`: weighted reciprocal rank fusion (the user's own searches weigh 1, the conversational one `CONTEXTUAL_WEIGHT` = 0.95, ties to the user's), and excerpts only the conversational search found are held to at most 3 of the 8 slots, so the earlier topic can never fill a majority. The fused code block (#714) searches the follow-up's conversational query. **Carry-forward:** the capture lists the block's numbered excerpts (`RagContextCapture.excerpts`); when the reply is recorded, `citedExcerptsMeta` stores the chunk ids the answer cited (by `[n]`, locator or file name; at most 4) in the assistant row's `meta.citedExcerpts`. The next turn reads only the most recent answer's ids and re-reads them through `loadChunksById` (`lib/rag/chunk-lookup.ts`): a `knowledge_chunks` read filtered on the session's `projectId` as well as the ids, skipping soft-deleted documents and applying the requester's chunk ACL (`filterAccessible`, as search does, #2225). They are appended after the fresh hits, labelled `(cited in your previous answer)`, and counted in `sources`; failing to read them leaves the fresh retrieval intact. **Attachments:** the chat body's optional `documentIds` (at most `MAX_ATTACHED_DOCUMENTS` = 50, `@metis/shared`; the Workbench refuses a 51st chip with a visible note and never sends more) becomes `SearchOptions.documentIds` on every search, the block says the excerpts come from the attached documents, and the fused code block is skipped. The Workbench sends its context chips this way instead of pasting their file names into the question. The discussion and Teams `@AI` retriever still searches the triggering message alone.
+
 **No provider-side tools.** #149 removed the Copilot SDK and, with it, the only provider that carried tools of its own (shell, file write, URL fetch) outside this gate, and the `withholdSdkBuiltinTools` flag that withheld them. `disableTools` still means "send no tools" on every provider. (History: the Copilot SDK carried its own tools (shell, file write, URL fetch, …) that would run under the provider's `onPermissionRequest`, never this gate. Every chat call asks for them withheld with `withholdSdkBuiltinTools` (set by `buildSdkSkillRuntime`), a flag only the Copilot provider reads: it maps to `availableTools: []`, and its permission handler refuses every request (`rejectSdkPermission`). It is deliberately **not** `disableTools`, which means "send no tools" on every provider — the Anthropic and OpenAI-compatible clients drop `tools` from the request when it is set, so using it here would strip METIS's own tools from every chat. `disableTools` stays on the pure-text callers that offer no tools (discussion replies, custom-agent playground runs, analysis/docs-gen synthesis), and on Copilot it withholds the built-ins too. The SDK hands the handler the full request (a shell request's `fullCommandText`, a write's `fileName` and `diff`), so routing it through the gate would be possible; refusing everything is the least-risk interim because the Copilot provider is removed in P4 (#130). Non-chat text-synthesis callers that set neither flag keep the earlier behaviour until then. The Copilot provider declares `nativeToolCalls: false` — it never reads `ChatOptions.tools` — so a Copilot chat got the code tools on the text protocol.)
 
 **Local provider.** The loop asks for approval and runs tools only between provider calls, so the per-base-URL concurrency slot (#127) is never held across a human decision or a tool run. That depends on every reader that stops at `done` returning the provider stream: `withIdleTimeout` (`stream-idle.ts`) passes an early stop (`break`, `collectStream`, a throw in the consumer) on to the source, whose `finally` releases the slot — without it the next local call on that base URL waited forever.
@@ -4927,6 +4929,48 @@ and the full `reading`. The coverage report goes on the capability record
 (`AnalysisCapability.documentReading`) and the results page renders it
 (`DocumentCoveragePanel`). Retrieval stays for the code agent and the other specialists; if no
 selected document can be loaded, the document agent retrieves as before.
+
+Impact Analysis (#2231) reads a document source from its stored file, parsed as ingest parses
+it (`impact-analysis/document-source.ts` `loadImpactDocumentText`); only when the file cannot
+be read does it fall back to the stored chunks, joined with each chunk's overlap kept once
+(`joinChunksWithoutOverlap`), never concatenated. Behind the same flag, the run reads that text
+with `readDocument` (and pasted text of 2,000 characters or more that is not one issue), once,
+before any project: each requirement, constraint or business rule is one change, carrying its
+section and the source's quote. The reading is the `document-read` stage of the run's
+`ImpactLlmRuntime` (metered as `impact.document-read`, bounded by
+`IMPACT_DOCUMENT_READ_TIMEOUT_MS`). The run's summary says what was read from every section,
+which held nothing and which could not be read; a failed reading falls back to the heuristic
+splitter and says so. Pasted short text and an issue keep the splitter.
+
+#### Clarifying questions from the source document (#2235, epic #2227)
+
+With the reader on, each of the document agent's requirements carries its verified paragraph
+(`DocumentRequirement.source`: `quote`, `headingPath`, `filename`). The enhancement pipeline
+(`runEnhancementPipeline`) then extracts structured requirements from those statements, not
+from paraphrases: `buildSourceExtractionInput` labels each `[REQ-nnn]` with its section and
+fences the quote (`<<<SOURCE … SOURCE>>>`, treated as data in every prompt), and the extractor
+asks for `sourceIds`, so each `StructuredRequirement` keeps `sources` (a label the input did not
+list is ignored). It is also asked for ISO/IEC/IEEE 29148 §5.2.5 / §5.2.6 gaps, silence
+included. Before any model judges it, `requirement-quality-rules.ts` runs the INCOSE GtWR
+lexical rules over each source quote: R7 vague terms, R8 escape clauses, R9 open-ended clauses,
+plus TBD/TBC placeholders (29148 "complete"). Each hit becomes an ambiguity (`field` `R7:fast`,
+with `rule` and `term`), so it is asked, credited and counted like any other.
+
+The question prompt (`QUESTION_SYSTEM_PROMPT`) shows each requirement's paragraphs and asks the
+model, per question, for `uncertainty` (`missing-knowledge` | `ambiguity` | `silence` |
+`unanswerable`), `options` (two to four readings), `divergent` (whether the readings build
+different things) and `impact`. `question-selection.ts` decides deterministically. An
+unanswerable question is set aside as an open item. `divergent: false` is set aside as
+`same-outcome`. The rest are ranked: ticked items first (#1129), then impact, then the
+requirement's priority. The first `MAX_QUESTIONS_PER_ROUND` (8) are asked, and the rest are
+counted on the round (`notAsked`) for the next one. Set-aside questions are kept on
+`ClarificationState.setAside` and listed by the panel. Only real ambiguities of their
+requirement count as addressed (`setAsideAmbiguities`, inside `addressedAmbiguities`).
+Only missing knowledge (and an unclassified or governing question) goes through the grounding
+search; an ambiguity or a silence is the author's intent and is asked directly. A question's
+`citation` is copied from its requirement's source (the paragraph holding a flagged term),
+never from the model. A reply without the new fields is asked and grounded as before #2235.
+Impact Analysis and the portfolio check do not yet raise questions in this dialog (#2270).
 
 #### Online eval — scoring sampled live production runs (#1321, epic #1316)
 

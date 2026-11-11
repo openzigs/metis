@@ -98,8 +98,11 @@ function session(id: string, projectId: string | null = "p1"): aiClient.AISessio
   };
 }
 
-/** The trailing `streamChat` arguments: signal, default idle budget, `onAccepted`. */
-const STREAM_ARGS = [expect.anything(), undefined, expect.any(Function)] as const;
+/**
+ * The trailing `streamChat` arguments: signal, default idle budget, `onAccepted`,
+ * and (#2240) the attached document ids — none here.
+ */
+const STREAM_ARGS = [expect.anything(), undefined, expect.any(Function), []] as const;
 
 /** An accepted turn (#422): the server's 2xx, then the reply. */
 async function* reply(text: string, onAccepted?: () => void): AsyncGenerator<StreamEvent> {
