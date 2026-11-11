@@ -38,8 +38,13 @@ type Row = {
 
 function memoryStore() {
   const rows: Row[] = [];
-  const matches = (row: Row, where: Record<string, unknown>) =>
-    Object.entries(where).every(([k, v]) => row[k as keyof Row] === v);
+  /** #2293 — the documents the store's tidy-up checks: live and in project `p-1` unless changed. */
+  const documents = [{ id: "d-1", projectId: "p-1", deletedAt: null as Date | null }];
+  // Every field, and `NOT` (none of its fields all equal), as the database applies them.
+  const matches = (row: Record<string, unknown>, where: Record<string, unknown>): boolean =>
+    Object.entries(where).every(([k, v]) =>
+      k === "NOT" ? !matches(row, v as Record<string, unknown>) : row[k] === v,
+    );
   const db = {
     savedDocumentReading: {
       findFirst: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
@@ -47,25 +52,39 @@ function memoryStore() {
       }),
       upsert: vi.fn(
         async (args: {
-          where: { documentId_checksum_readerVersion_model_textHash: Record<string, unknown> };
+          where: {
+            documentId_checksum_readerVersion_model_textHash: Record<string, unknown>;
+            projectId?: string;
+          };
           create: Omit<Row, "id" | "createdAt">;
           update: Partial<Row>;
         }) => {
-          const existing = rows.find((r) =>
-            matches(r, args.where.documentId_checksum_readerVersion_model_textHash),
-          );
-          if (existing) {
+          const { documentId_checksum_readerVersion_model_textHash: key, ...extra } = args.where;
+          const existing = rows.find((r) => matches(r, key));
+          if (existing && matches(existing, extra)) {
             Object.assign(existing, args.update);
             return existing;
           }
+          // As the database does: the where missed, so the create hits the unique key.
+          if (existing) throw new Error("Unique constraint failed: saved_document_readings_key");
           const row = { id: `r${rows.length + 1}`, createdAt: new Date(), ...args.create };
           rows.push(row);
           return row;
         },
       ),
+      deleteMany: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
+        const before = rows.length;
+        for (let i = rows.length - 1; i >= 0; i--) if (matches(rows[i]!, where)) rows.splice(i, 1);
+        return { count: before - rows.length };
+      }),
+    },
+    document: {
+      findFirst: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
+        return documents.find((d) => matches(d, where)) ?? null;
+      }),
     },
   };
-  return { rows, db: db as unknown as NonNullable<ReadingCacheDeps["db"]> };
+  return { rows, documents, db: db as unknown as NonNullable<ReadingCacheDeps["db"]> };
 }
 
 const provider = { key: "anthropic", model: "claude-sonnet-5-5" } as unknown as AIProvider;
@@ -266,7 +285,20 @@ describe("readDocumentOnce", () => {
     const { rows, db } = memoryStore();
     const read = reader(() => reading());
     await readDocumentOnce({ title: "FRD", text: TEXT, provider, document: DOC }, { db, read });
-    for (const bad of ["not json", "null", JSON.stringify({ ...reading(), statements: [] })]) {
+    const good = reading();
+    for (const bad of [
+      "not json",
+      "null",
+      JSON.stringify({ ...good, statements: [] }),
+      // #2293 — each element is checked, not only the lists.
+      JSON.stringify({ ...good, statements: [null] }),
+      JSON.stringify({ ...good, statements: [{ ...good.statements[0], quote: 7 }] }),
+      JSON.stringify({ ...good, statements: [{ ...good.statements[0], kind: "made-up" }] }),
+      JSON.stringify({ ...good, statements: [{ ...good.statements[0], headingPath: "x" }] }),
+      JSON.stringify({ ...good, sections: ["x"] }),
+      JSON.stringify({ ...good, sections: [{ ...good.sections[0], status: "maybe" }] }),
+      JSON.stringify({ ...good, sections: [{ ...good.sections[0], kinds: null }] }),
+    ]) {
       rows[0]!.reading = bad;
       const r = await readDocumentOnce(
         { title: "FRD", text: TEXT, provider, document: DOC },
@@ -274,7 +306,103 @@ describe("readDocumentOnce", () => {
       );
       expect(r.reused).toBeUndefined();
     }
-    expect(read).toHaveBeenCalledTimes(4);
+    expect(read).toHaveBeenCalledTimes(11);
+  });
+
+  it("#2293 — never overwrites another project's reading of the same key", async () => {
+    const { rows, db } = memoryStore();
+    const read = reader(() => reading({ outputTokenCap: 1111 }));
+    await readDocumentOnce({ title: "FRD", text: TEXT, provider, document: DOC }, { db, read });
+    expect(rows).toHaveLength(1);
+    const wrong = reader(() => reading({ outputTokenCap: 2222 }));
+    const r = await readDocumentOnce(
+      { title: "FRD", text: TEXT, provider, document: { ...DOC, projectId: "p-2" }, reread: true },
+      { db, read: wrong },
+    );
+    // The read still reaches the caller; the store keeps p-1's row as it was.
+    expect(r.outputTokenCap).toBe(2222);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ projectId: "p-1" });
+    expect(JSON.parse(rows[0]!.reading).outputTokenCap).toBe(1111);
+  });
+
+  it("#2293 — a save deletes the document's readings of an earlier file or reader, and keeps other models'", async () => {
+    const { rows, db } = memoryStore();
+    const read = reader(() => reading());
+    await readDocumentOnce({ title: "FRD", text: TEXT, provider, document: DOC }, { db, read });
+    await readDocumentOnce(
+      { title: "FRD", text: TEXT, provider, document: DOC, model: "claude-opus-5" },
+      { db, read },
+    );
+    rows[0]!.readerVersion = "older";
+    rows.push({ ...rows[1]!, id: "other-doc", documentId: "d-2" });
+    expect(rows).toHaveLength(3);
+
+    await readDocumentOnce(
+      { title: "FRD", text: TEXT, provider, document: { ...DOC, checksum: "sum-2" } },
+      { db, read },
+    );
+    // The older reader's row and the old file's row are gone; the new file's
+    // row and the other document's row stay.
+    expect(rows.map((r) => [r.documentId, r.checksum, r.readerVersion, r.model])).toEqual([
+      ["d-2", "sum-1", READER_VERSION, "claude-opus-5"],
+      ["d-1", "sum-2", READER_VERSION, "claude-sonnet-5-5"],
+    ]);
+  });
+
+  it("#2293 — a reading of another model of the same file stays, and is reused when that model reads again", async () => {
+    const { rows, db } = memoryStore();
+    const read = reader(() => reading());
+    await readDocumentOnce({ title: "FRD", text: TEXT, provider, document: DOC }, { db, read });
+    await readDocumentOnce(
+      { title: "FRD", text: TEXT, provider, document: DOC, model: "claude-opus-5" },
+      { db, read },
+    );
+    expect(rows).toHaveLength(2);
+    const back = await readDocumentOnce(
+      { title: "FRD", text: TEXT, provider, document: DOC },
+      { db, read },
+    );
+    expect(back.reused).toBeDefined();
+    expect(read).toHaveBeenCalledTimes(2);
+  });
+
+  it("#2293 — a document deleted while it was read keeps no reading", async () => {
+    const { rows, documents, db } = memoryStore();
+    const read = reader(() => {
+      // `deleteDocument` ran during the read: it deleted what existed then.
+      documents[0]!.deletedAt = new Date();
+      return reading();
+    });
+    const r = await readDocumentOnce(
+      { title: "FRD", text: TEXT, provider, document: DOC },
+      { db, read },
+    );
+    expect(r.statements).toHaveLength(1);
+    expect(rows).toEqual([]);
+  });
+
+  it("#2293 — a reading saved under a project the document is not in is dropped", async () => {
+    const { rows, db } = memoryStore();
+    const read = reader(() => reading());
+    await readDocumentOnce(
+      { title: "FRD", text: TEXT, provider, document: { ...DOC, projectId: "p-2" } },
+      { db, read },
+    );
+    expect(rows).toEqual([]);
+  });
+
+  it("#2293 — a tidy-up that fails never fails the read, and the saved reading stays", async () => {
+    const { rows, db } = memoryStore();
+    (db.savedDocumentReading.deleteMany as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error("database is locked"),
+    );
+    const r = await readDocumentOnce(
+      { title: "FRD", text: TEXT, provider, document: DOC },
+      { db, read: reader(() => reading()) },
+    );
+    expect(r.statements).toHaveLength(1);
+    expect(rows).toHaveLength(1);
   });
 
   it("a store that fails to look up or save never fails the read", async () => {

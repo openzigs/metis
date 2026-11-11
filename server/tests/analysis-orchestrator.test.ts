@@ -2279,6 +2279,36 @@ describe("AnalysisOrchestrator.regenerateAgent", () => {
     });
     expect(inputs()[0]).toMatchObject({ agentKey: "document", rereadDocuments: true });
   });
+
+  it("#2293 — a run with no code agent forwards 'Read the documents again' to the document agent", async () => {
+    const orch = new AnalysisOrchestrator({ provider: makeProvider({}), retrieve: async () => [] });
+    const runOneAgent = vi.spyOn(
+      orch as unknown as { runOneAgent: (input: Record<string, unknown>) => Promise<unknown> },
+      "runOneAgent",
+    );
+    const documentInput = () =>
+      runOneAgent.mock.calls
+        .map((c) => c[0] as Record<string, unknown>)
+        .find((i) => i.agentKey === "document");
+    const runToEnd = async (rereadDocuments?: boolean) => {
+      runOneAgent.mockClear();
+      const { id } = await orch.start({
+        projectId: "proj-abcdefghij",
+        startedById: "user-1234567890",
+        agentKeys: ["document", "web"],
+        ...(rereadDocuments ? { rereadDocuments } : {}),
+      });
+      for (let i = 0; i < 200 && analyses.get(id)!.status === "running"; i += 1) {
+        await new Promise((r) => setTimeout(r, 5));
+      }
+    };
+
+    await runToEnd(true);
+    expect(documentInput()).toMatchObject({ agentKey: "document", rereadDocuments: true });
+    await runToEnd();
+    expect(documentInput()).toBeDefined();
+    expect(documentInput()!.rereadDocuments).toBeUndefined();
+  });
 });
 
 describe("AnalysisOrchestrator.regenerateAgent guards", () => {
