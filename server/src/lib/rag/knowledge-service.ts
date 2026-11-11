@@ -27,6 +27,7 @@ import { prisma } from "../prisma.js";
 import { readDerivedLabel } from "./derived-label.js";
 import { withVectorSql, type ProjectVectorWrite } from "./project-vector-write.js";
 import {
+  CHUNK_CONTEXT_NONE,
   chunkMarkdown,
   chunkerIdentity,
   classifyChunkerIdentity,
@@ -65,8 +66,10 @@ import {
   contextPrefixesFor,
   defaultModelChunkContextGenerator,
   indexedTextOf,
+  isContextualDocument,
   prefixedText,
   resolveContextualChunksMode,
+  savedChunkContexts,
   type ChunkContextGenerator,
   type ContextualChunksMode,
 } from "./contextual-chunks.js";
@@ -483,7 +486,22 @@ export class KnowledgeService {
 
     this.emitStatus(doc.projectId, documentId, "processing");
     const ingestGeneration = randomUUID();
+    // #2268 — the model contexts the outgoing chunks carry, read before they are
+    // deleted, so re-ingesting an unchanged document reuses them instead of paying
+    // for every chunk again (and indexes sooner, with no calls to wait on).
+    let savedContexts: Map<string, string> | undefined;
     const obsolete = await prisma.$transaction(async (tx) => {
+      if (this.contextualMode === "model") {
+        const approved = await tx.knowledgeChunk.findMany({
+          where: { documentId },
+          select: { metadata: true },
+        });
+        const quarantined = await tx.quarantineChunk.findMany({
+          where: { documentId, ord: { gte: 0 } },
+          select: { metadata: true },
+        });
+        savedContexts = savedChunkContexts([...approved, ...quarantined].map((r) => r.metadata));
+      }
       await tx.document.update({
         where: { id: documentId },
         data: { indexState: "pending", status: "processing", errorMessage: null },
@@ -571,15 +589,21 @@ export class KnowledgeService {
 
     // Issue #2234 — the context each chunk is INDEXED with (embedding and BM25); its
     // stored display text stays the chunker's. All "" when the mode is off. Never
-    // throws: a model failure leaves that chunk its deterministic prefix.
-    const contextPrefixes = await contextPrefixesFor({
+    // throws: a model failure leaves that chunk its deterministic prefix. #2268 — a
+    // saved context is reused, calls are billed to this document, and they stop once
+    // the document is deleted or a newer ingest supersedes this one.
+    const contextual = await contextPrefixesFor({
       mode: this.contextualMode,
       projectId: doc.projectId,
       filename: doc.filename,
       documentText: parsed.text,
       chunks,
       generator: this.chunkContextGenerator(),
+      documentId,
+      ...(savedContexts ? { saved: savedContexts } : {}),
+      shouldContinue: () => this.ingestIsCurrent(documentId, ingestGeneration),
     });
+    const contextPrefixes = contextual.map((c) => c.prefix);
 
     let embeddings;
     try {
@@ -620,8 +644,16 @@ export class KnowledgeService {
         embedding: embeddings.vectors[i],
         headings: c.headings,
         // #2234 — persisted so the lazy BM25 load and a reindex rebuild the same
-        // indexed text; absent (not "") when there is none.
-        ...(contextPrefixes[i] ? { metadata: { contextPrefix: contextPrefixes[i] } } : {}),
+        // indexed text; absent (not "") when there is none. #2268 — the model
+        // context is saved by key, for the next ingest of this document to reuse.
+        ...(contextPrefixes[i]
+          ? {
+              metadata: {
+                contextPrefix: contextPrefixes[i],
+                ...(contextual[i].context ? { chunkContext: contextual[i].context } : {}),
+              },
+            }
+          : {}),
       })),
       // #792 — persist the composite IDENTITY (model|pooling|dtype, or bare model
       // at built-in defaults), not the model id, so a later pooling/dtype flip is
@@ -634,7 +666,15 @@ export class KnowledgeService {
       // `chunkMarkdown`, so it is the only place that can honestly answer it —
       // `reindexProject` re-embeds stored chunk TEXT and never re-chunks, which is
       // exactly why chunker drift needs a re-ingest rather than a reindex.
-      chunkerIdentity: chunkerIdentity(this.chunkOptions),
+      // #2268 — with the contextual mode the rows were indexed under, so a flag change
+      // reads as drift; a repository file is never prefixed and matches every mode.
+      // With the flag off, nothing is appended: the identity is what it was before.
+      chunkerIdentity: chunkerIdentity(
+        this.chunkOptions,
+        this.contextualMode === "off" || isContextualDocument(doc.filename)
+          ? this.contextualMode
+          : CHUNK_CONTEXT_NONE,
+      ),
       aclSubjects: docAcl,
     });
 
@@ -1202,7 +1242,19 @@ export class KnowledgeService {
    * reports the value that would actually be used rather than the one requested.
    */
   private currentChunkerIdentity(): string {
-    return chunkerIdentity(this.chunkOptions);
+    // #2268 — and the contextual mode in force, so a flag change is drift.
+    return chunkerIdentity(this.chunkOptions, this.contextualMode);
+  }
+
+  /**
+   * #2268 — whether this ingest still owns the document: its generation marker is
+   * revoked (`ord` -4 → -1) when the document is deleted or a newer ingest starts.
+   */
+  private async ingestIsCurrent(documentId: string, ingestGeneration: string): Promise<boolean> {
+    const held = await prisma.quarantineChunk.count({
+      where: { id: ingestGeneration, documentId, ord: -4 },
+    });
+    return held > 0;
   }
 
   /**

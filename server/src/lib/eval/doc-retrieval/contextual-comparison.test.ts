@@ -17,10 +17,15 @@ vi.mock("../../prisma.js", () => ({
   redactDatabaseUrl: (u: string) => u,
 }));
 
+import type { AIProvider, ChatMessage, ChatResponse } from "../../ai/types.js";
 import { chunkMarkdown } from "../../rag/chunker.js";
-import type { ChunkContextGenerator } from "../../rag/contextual-chunks.js";
+import {
+  chunkContextKey,
+  modelChunkContextGenerator,
+  type ChunkContextGenerator,
+} from "../../rag/contextual-chunks.js";
 import type { ChunkArmSpec } from "./chunk-sweep.js";
-import { cachedChunkContextGenerator, contextCacheKey, readContextCache } from "./context-cache.js";
+import { cachedChunkContextGenerator, readContextCache } from "./context-cache.js";
 import { loadDocRetrievalCorpus } from "./corpus.js";
 import {
   relevantChunksForArm,
@@ -97,37 +102,93 @@ describe("runContextualComparison", () => {
 });
 
 describe("cachedChunkContextGenerator", () => {
-  const input = (chunks: string[]) => ({ projectId: "p", document: "D", title: "T", chunks });
+  const input = (chunks: string[]) => ({
+    projectId: "p",
+    document: "D",
+    title: "T",
+    chunks,
+  });
+
+  /** The real `model` generator over a scripted provider that records what it was sent. */
+  function live(model = "m", fail: (chunk: string) => boolean = () => false) {
+    const sent: string[] = [];
+    const provider = {
+      key: "anthropic",
+      model,
+      chat: async (messages: ChatMessage[]) => {
+        const chunk = /\n(.*)\n<\/excerpt-/.exec(String(messages[1].content))?.[1] ?? "";
+        sent.push(chunk);
+        if (fail(chunk)) throw new Error("rate limited");
+        return {
+          content: `new ${chunk}`,
+          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        } as ChatResponse;
+      },
+    } as unknown as AIProvider;
+    return {
+      sent,
+      generator: modelChunkContextGenerator({ provider: () => provider }),
+    };
+  }
+
+  const keyOf = (chunk: string, model = "m") =>
+    chunkContextKey({
+      provider: "anthropic",
+      model,
+      document: "D",
+      title: "T",
+      chunk,
+    });
 
   it("calls the model only for unrecorded chunks, records successes and persists", async () => {
-    const cache: Record<string, string> = { [contextCacheKey("D", "a")]: "recorded a" };
-    const inner = vi.fn<ChunkContextGenerator>(async ({ chunks }) =>
-      chunks.map((c) => (c === "c" ? null : `new ${c}`)),
-    );
+    const cache: Record<string, string> = { [keyOf("a")]: "recorded a" };
+    const { sent, generator } = live("m", (c) => c === "c");
     const persist = vi.fn(async () => {});
-    const gen = cachedChunkContextGenerator(inner, cache, persist);
+    const gen = cachedChunkContextGenerator(generator, cache, persist);
 
-    expect(await gen(input(["a", "b", "c"]))).toEqual(["recorded a", "new b", null]);
-    expect(inner).toHaveBeenCalledWith(input(["b", "c"]));
+    expect((await gen(input(["a", "b", "c"]))).map((c) => c?.text ?? null)).toEqual([
+      "recorded a",
+      "new b",
+      null,
+    ]);
+    expect(sent.sort()).toEqual(["b", "c"]);
     expect(persist).toHaveBeenCalledTimes(1);
-    expect(cache[contextCacheKey("D", "b")]).toBe("new b");
+    expect(cache[keyOf("b")]).toBe("new b");
     // A failed chunk is not recorded, so the next run retries only it.
-    expect(contextCacheKey("D", "c") in cache).toBe(false);
+    expect(keyOf("c") in cache).toBe(false);
+    sent.length = 0;
     await gen(input(["a", "b", "c"]));
-    expect(inner).toHaveBeenLastCalledWith(input(["c"]));
+    expect(sent).toEqual(["c"]);
   });
 
   it("does not call the model or persist when everything is recorded", async () => {
-    const cache = { [contextCacheKey("D", "a")]: "x" };
-    const inner = vi.fn<ChunkContextGenerator>();
+    const cache = { [keyOf("a")]: "x" };
+    const { sent, generator } = live();
     const persist = vi.fn(async () => {});
-    expect(await cachedChunkContextGenerator(inner, cache, persist)(input(["a"]))).toEqual(["x"]);
-    expect(inner).not.toHaveBeenCalled();
+    const out = await cachedChunkContextGenerator(generator, cache, persist)(input(["a"]));
+    expect(out.map((c) => c?.text)).toEqual(["x"]);
+    expect(sent).toEqual([]);
     expect(persist).not.toHaveBeenCalled();
   });
 
-  it("keys on the document as well as the chunk", () => {
-    expect(contextCacheKey("D1", "a")).not.toBe(contextCacheKey("D2", "a"));
+  it("does not replay a context another model wrote (#2268)", async () => {
+    const cache = { [keyOf("a", "older-model")]: "stale" };
+    const { sent, generator } = live("m");
+    const out = await cachedChunkContextGenerator(generator, cache)(input(["a"]));
+    expect(out.map((c) => c?.text)).toEqual(["new a"]);
+    expect(sent).toEqual(["a"]);
+    expect(cache[keyOf("a")]).toBe("new a");
+    expect(cache[keyOf("a", "older-model")]).toBe("stale");
+  });
+
+  it("hands the recorded contexts to the inner generator as its saved contexts", async () => {
+    const cache = { k: "v" };
+    const inner = vi.fn<ChunkContextGenerator>(async () => [null]);
+    await cachedChunkContextGenerator(inner, cache)(input(["a"]));
+    expect(inner).toHaveBeenCalledWith({
+      ...input(["a"]),
+      saved: new Map([["k", "v"]]),
+    });
   });
 
   it("reads a missing cache file as empty and a written one back", async () => {

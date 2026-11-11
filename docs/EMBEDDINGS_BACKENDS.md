@@ -812,6 +812,16 @@ Projects needing re-ingest: 1/2 (chunker drift — a reindex does NOT fix this)
   hiding necessary work: rows ingested in the few days between #1178 and #1182, and
   generated-doc chunks written before this release. The latter clear on the next
   regeneration.
+- **The contextual-chunks mode is part of the identity (#2268).** With
+  `RAG_CONTEXTUAL_CHUNKS` on, a document's rows are tagged with the mode they were
+  indexed under — `doc:v3:2048/256;ctx=headings` or `;ctx=model` — because the text
+  the indexes see differs by mode and only a re-ingest changes it. Turning the flag
+  on, off, or between modes therefore lists the affected projects under
+  `Projects needing re-ingest`. With the flag `off` nothing is appended, so the
+  identity is exactly what it was before. A repository file is never prefixed and is
+  tagged `;ctx=none`, which counts as current under every mode. One known
+  over-report: repository files ingested while the flag was off carry the plain
+  identity and are listed once when the flag is first turned on.
 - Nothing is excluded from retrieval on this signal, ever. See
   [ADR 0006](decisions/0006-chunker-drift-serve-degraded-but-observable.md) for why
   excluding would be strictly worse than the gaps.
