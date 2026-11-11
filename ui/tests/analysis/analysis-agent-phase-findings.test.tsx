@@ -450,4 +450,66 @@ describe("#289 — agent-phase findings in the results view", () => {
     expect(legacy).toHaveAttribute("title", legacyName);
     expect(screen.queryByText("NOTES.md — wms-core")).toBeNull();
   });
+
+  // #2281 — deleting the page's stale note left every analysis UI test green.
+  it("#2222 — notes on a finding that a requirement drawn from it was edited since the analysis", async () => {
+    const snapshot = structuredClone(SNAPSHOT);
+    snapshot.requirements = [
+      {
+        ...snapshot.requirements[0]!,
+        id: "req-edited",
+        title: "Login screen",
+        version: 2,
+        analysedVersion: 0,
+        evidenceFindingIds: ["f-1"],
+      },
+      // At its analysed version: says nothing.
+      {
+        ...snapshot.requirements[0]!,
+        id: "req-current",
+        title: "Logout button",
+        version: 1,
+        analysedVersion: 1,
+        evidenceFindingIds: ["f-custom"],
+      },
+    ] as never;
+    apiMock.get.mockResolvedValue(snapshot);
+    renderPage();
+    await waitForResults();
+
+    const findings = screen.getByTestId("findings-section");
+    const card = within(findings)
+      .getByText("Reconciliation manager lacks XDOCK support")
+      .closest("[data-confidence]") as HTMLElement;
+    expect(within(card).getByTestId("finding-stale")).toHaveTextContent(
+      "Stale: judged v0 of “Login screen”, which is now v2.",
+    );
+    expect(within(findings).getAllByTestId("finding-stale")).toHaveLength(1);
+  });
+
+  it("#2281 — two requirements with the same title each get their note, with no key collision", async () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    const snapshot = structuredClone(SNAPSHOT);
+    const twin = {
+      ...snapshot.requirements[0]!,
+      title: "Login screen",
+      version: 1,
+      analysedVersion: 0,
+      evidenceFindingIds: ["f-1"],
+    };
+    snapshot.requirements = [
+      { ...twin, id: "req-a" },
+      { ...twin, id: "req-b" },
+    ] as never;
+    apiMock.get.mockResolvedValue(snapshot);
+    renderPage();
+    await waitForResults();
+
+    const findings = screen.getByTestId("findings-section");
+    expect(within(findings).getAllByTestId("finding-stale")).toHaveLength(2);
+    expect(errors.mock.calls.some((args) => args.some((a) => /same key/.test(String(a))))).toBe(
+      false,
+    );
+    errors.mockRestore();
+  });
 });

@@ -6145,6 +6145,15 @@ An approval is of a wording, so editing that wording reopens it:
   older results stop being marked stale for it. Editing it again marks
   both stale until the next re-check. The analysis findings (the code
   and document evidence) are not re-run: a new analysis does that.
+- **An edited requirement with no governing result (#2281).** If no
+  governing rule applied to a requirement's earlier wording, there is
+  no result to mark stale. The Governing rules panel names it instead
+  ("Not checked since an edit: … was checked at v0 and is now v1") with
+  the same **Re-check this requirement** button, so its new wording can
+  be checked too. Re-checks are limited to 30 per user every 15
+  minutes; closing the page while one runs cancels it and changes
+  nothing. Deleting a re-checked requirement removes its re-check
+  results from the panel, the BRD and the clarifying questions.
 
 **One requirement in two open reviews (#1016).** You can request a
 second review of requirements that are already in review, for example

@@ -2937,7 +2937,12 @@ decision on that row is audited the same way before the delete (#2017).
   produced from the new entry in memory first and the entry is stored only once they are, so a
   failed evaluation stores nothing (502). 404 for a requirement that is not a live one of this
   analysis **and** project; 409 when the workspace has no current rule. Audited
-  `governing.requirement.recheck`, metered to the project (`lib/governing/recheck.ts`).
+  `governing.requirement.recheck`, metered to the project (`lib/governing/recheck.ts`). #2281 —
+  rate limited (`middleware/governing-recheck-rate-limit.ts`: a pre-auth limiter, then a per-user
+  one after the permission check, `GOVERNING_RECHECK_LIMIT_MAX` default 30 per 15 minutes,
+  `GOVERNING_RECHECK_PREAUTH_LIMIT_MAX` default 20000, `GOVERNING_RECHECK_LIMIT_WINDOW_MS`;
+  `GOVERNING_RECHECK_RATE_LIMITED`), and the request's `close` aborts the model calls: a re-check
+  aborted before its findings are written stores nothing and writes no answer.
 
 **Stale findings (#2222).** A governing finding is keyed by the requirement as the run analysed it
 (`AC-2`), and the stored requirements an analyst edits join to it only through their
@@ -2953,6 +2958,17 @@ also returns `requirementTitles` for the groups keyed by a stored id. The analys
 `analysedVersion` on each requirement, so the traceability matrix (`findingsStale` on a row, a note
 in the CSV / markdown findings cell) and the analysis view's findings list mark the findings a
 requirement edited since the analysis was synthesised from.
+
+#2281 — a requirement edited since the check whose analysed requirement produced **no** finding has
+nothing to go stale, so the findings route also returns `editedWithoutFindings`
+(`editedWithoutFindings()`: drawn from an analysed requirement, or re-checked before, at a version
+other than the one judged, with no finding of its own or stale for it), and the panel offers each a
+re-check. A re-check's findings and applicability entry are keyed by the stored requirement's id
+(`isRecheckEntry`: the entry records its own id's version); once that requirement is deleted they
+are left out of the route, the BRD (and its "left out" count) and the chat tool
+(`withGoverningStaleness`), and the clarify flow asks no question about its entry
+(`withoutDeletedRechecks`). They are kept, so a restored requirement brings them back. The BRD
+labels a re-checked wording **As re-checked**, without the title its heading already gives.
 
 **Analysis view** (#1876): `GoverningFindingsPanel`
 (`ui/src/components/analysis/governing-findings-panel.tsx`), at the foot of the Findings tab,
