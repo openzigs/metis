@@ -90,7 +90,7 @@ export function readJudgement(
   const seenQ = new Set<number>();
   let invalid = 0;
   const index = (raw: string, prefix: "E" | "Q", size: number): number | null => {
-    const m = new RegExp(`^${prefix}(\\d+)$`).exec(raw.trim());
+    const m = (prefix === "E" ? /^E(\d+)$/ : /^Q(\d+)$/).exec(raw.trim());
     if (!m) return null;
     const i = Number(m[1]) - 1;
     return i >= 0 && i < size ? i : null;
