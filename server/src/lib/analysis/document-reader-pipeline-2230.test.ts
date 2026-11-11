@@ -260,7 +260,14 @@ describe("#2230 — the document agent through the document reader", () => {
       {
         id: "REQ-001",
         text: "Lock an account after five failed logins.",
-        source: { documentId: "doc_1", chunkIndex: 0 },
+        // #2235 — with the verified paragraph its clarifying questions cite.
+        source: {
+          documentId: "doc_1",
+          chunkIndex: 0,
+          filename: "booking.docx",
+          headingPath: ["Booking FRD", "1 Access"],
+          quote: "The portal shall lock an account after five failed attempts.",
+        },
       },
     ]);
     expect(output.findings[0]!.citations[0]!.snippet).toBe(
