@@ -37,7 +37,7 @@ import { repoDocumentPath } from "@metis/shared";
 
 import type { AIProvider, ChatResponse } from "../ai/types.js";
 import { createChildLogger } from "../logger.js";
-import { exceedsEmbedInputBudget } from "./embed-input-budget.js";
+import { EMBED_INPUT_MAX_BYTES, utf8ByteLength } from "./embed-input-budget.js";
 
 const log = createChildLogger("rag-contextual-chunks");
 
@@ -204,17 +204,88 @@ export function prefixedText(text: string, prefix: string | null | undefined): s
 }
 
 /**
- * The prefix to persist for a chunk, or `""` when adding it would push a chunk the
- * embedder can take whole past its token input (#201): truncation would then cut the
- * chunk's own TAIL, trading content for context. A chunk already over budget is not
- * made worse by a prefix and keeps it.
+ * Tokens charged per ASCII character by {@link estimateEmbedTokens}. Measured with
+ * the real gte-modernbert tokenizer on the committed doc-retrieval corpora: the
+ * densest ASCII text came to 0.399 tokens per character, prose to about 0.22. Half a
+ * token per character keeps a margin over both.
+ */
+export const ASCII_TOKENS_PER_CHAR = 0.5;
+
+/**
+ * An upper estimate of the tokens `text` costs the embedder: half a token per ASCII
+ * character, plus the UTF-8 byte length (2, 3 or 4) of every other code point — the
+ * byte-level BPE bound of `embed-input-budget.ts`, applied only where it is needed.
+ * Measuring a near-full ASCII chunk in bytes because of one em-dash would read it
+ * as several times its real size.
+ */
+export function estimateEmbedTokens(text: string): number {
+  let ascii = 0;
+  let other = 0;
+  for (const ch of text) {
+    const code = ch.codePointAt(0) ?? 0;
+    if (code < 0x80) ascii += 1;
+    else other += code < 0x800 ? 2 : code < 0x10000 ? 3 : 4;
+  }
+  return Math.ceil(ascii * ASCII_TOKENS_PER_CHAR) + other;
+}
+
+function fitsEmbedInput(text: string): boolean {
+  return estimateEmbedTokens(text) <= EMBED_INPUT_MAX_BYTES;
+}
+
+/** A clipped prefix line still worth indexing: its label and some of its value. */
+const LABELLED_LINE = /^[A-Za-z]+: \S/;
+
+/**
+ * The longest `clip(line, n)` that fits behind the `kept` lines in front of `text`,
+ * or `""` when no clip that keeps the line's label and some of its value fits.
+ */
+function longestFittingClip(text: string, kept: readonly string[], line: string): string {
+  const fits = (candidate: string) =>
+    fitsEmbedInput(prefixedText(text, [...kept, candidate].join("\n")));
+  let best = "";
+  let lo = 2;
+  let hi = line.length - 1;
+  while (lo <= hi) {
+    const n = Math.floor((lo + hi) / 2);
+    const candidate = clip(line, n);
+    if (fits(candidate)) {
+      best = candidate;
+      lo = n + 1;
+    } else {
+      hi = n - 1;
+    }
+  }
+  return LABELLED_LINE.test(best) ? best : "";
+}
+
+/**
+ * The prefix to persist for a chunk, shortened so the prefixed text stays under the
+ * embedder's token input (#201): truncation would otherwise cut the chunk's own
+ * TAIL, trading content for context. The fit is judged on
+ * {@link estimateEmbedTokens}. Pure-ASCII text is bounded by the chunker's character
+ * window and keeps the whole prefix, as does a chunk already over budget (a prefix
+ * does not make its truncation worse). Otherwise the prefix's lines are kept in
+ * order while they fit, the first line that does not is clipped to fit (or dropped
+ * when no labelled clip does), and the lines after it are dropped.
  */
 export function fittingPrefix(text: string, prefix: string): string {
   if (!prefix) return "";
-  if (exceedsEmbedInputBudget(prefixedText(text, prefix)) && !exceedsEmbedInputBudget(text)) {
-    return "";
+  const full = prefixedText(text, prefix);
+  if (utf8ByteLength(full) === full.length || fitsEmbedInput(full) || !fitsEmbedInput(text)) {
+    return prefix;
   }
-  return prefix;
+  const kept: string[] = [];
+  for (const line of prefix.split("\n")) {
+    if (fitsEmbedInput(prefixedText(text, [...kept, line].join("\n")))) {
+      kept.push(line);
+      continue;
+    }
+    const clipped = longestFittingClip(text, kept, line);
+    if (clipped) kept.push(clipped);
+    break;
+  }
+  return kept.join("\n");
 }
 
 /** The persisted prefix from a chunk's JSON metadata (string or parsed), else `""`. */

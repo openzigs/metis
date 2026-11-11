@@ -14,6 +14,7 @@ import {
   contextPrefixOf,
   contextSystemPrompt,
   documentSummaryLine,
+  estimateEmbedTokens,
   fittingPrefix,
   headingPathLine,
   indexedTextOf,
@@ -111,12 +112,67 @@ describe("prefixedText / fittingPrefix", () => {
   it("keeps the prefix for an ASCII chunk", () => {
     expect(fittingPrefix("a".repeat(2000), "Document: T")).toBe("Document: T");
   });
-  it("withholds the prefix when it would push a non-ASCII chunk past the embedder's input", () => {
+  it("withholds the prefix when no part of it fits behind a non-ASCII chunk", () => {
     // 680 three-byte characters = 2,040 bytes: fits alone, not with a prefix.
     const cjk = "漢".repeat(680);
     expect(Buffer.byteLength(cjk)).toBeLessThanOrEqual(EMBED_INPUT_MAX_BYTES);
     expect(fittingPrefix(cjk, "Document: 規程")).toBe("");
     expect(fittingPrefix("漢".repeat(10), "Document: 規程")).toBe("Document: 規程");
+  });
+  it.each(["—", "’", "…"])(
+    "keeps the whole prefix on a near-full ASCII chunk holding one %s",
+    (mark) => {
+      // 2,039 characters, all ASCII but one: real tokens are a fraction of the budget,
+      // though the UTF-8 byte length of chunk + prefix exceeds it.
+      const chunk = `${"word ".repeat(407)}${mark}end`;
+      const prefix = "Document: Metis Architecture: How it works…\nSection: Ingest > Chunking";
+      expect(Buffer.byteLength(prefixedText(chunk, prefix))).toBeGreaterThan(EMBED_INPUT_MAX_BYTES);
+      expect(fittingPrefix(chunk, prefix)).toBe(prefix);
+    },
+  );
+  it("shortens a prefix line to fit behind a non-ASCII chunk instead of dropping it", () => {
+    const chunk = "漢".repeat(650);
+    const document = "Document: Escalation policy";
+    const section = `Section: Escalation ${"procedure for overnight paging ".repeat(10)}`.trim();
+    const kept = fittingPrefix(chunk, `${document}\n${section}`);
+    expect(kept.startsWith(`${document}\n`)).toBe(true);
+    expect(kept).toMatch(/^Document: .+\nSection: Escalation .*…$/);
+    expect(kept.length).toBeLessThan(`${document}\n${section}`.length);
+    expect(estimateEmbedTokens(prefixedText(chunk, kept))).toBeLessThanOrEqual(
+      EMBED_INPUT_MAX_BYTES,
+    );
+  });
+  it("drops the lines after the first that does not fit even when clipped", () => {
+    // 678 × 3 = 2,034 tokens; "Document: Short title" plus the separator costs 12 more
+    // (2,046, the budget). The shortest labelled clip, "Section: A…", would make 2,054.
+    const chunk = "漢".repeat(678);
+    expect(estimateEmbedTokens(prefixedText(chunk, "Document: Short title"))).toBe(
+      EMBED_INPUT_MAX_BYTES,
+    );
+    expect(estimateEmbedTokens(prefixedText(chunk, "Document: Short title\nSection: A…"))).toBe(
+      2054,
+    );
+    expect(fittingPrefix(chunk, "Document: Short title\nSection: A much longer path")).toBe(
+      "Document: Short title",
+    );
+  });
+});
+
+describe("estimateEmbedTokens", () => {
+  it("charges half a token per ASCII character, rounded up", () => {
+    expect(estimateEmbedTokens("")).toBe(0);
+    expect(estimateEmbedTokens("a")).toBe(1);
+    expect(estimateEmbedTokens("a".repeat(2000))).toBe(1000);
+  });
+  it("charges every other code point its UTF-8 byte length", () => {
+    expect(estimateEmbedTokens("é")).toBe(2);
+    expect(estimateEmbedTokens("—")).toBe(3);
+    expect(estimateEmbedTokens("😀")).toBe(4);
+    expect(estimateEmbedTokens("漢".repeat(682))).toBe(EMBED_INPUT_MAX_BYTES);
+  });
+  it("adds only the mark's bytes when one em-dash joins ASCII text", () => {
+    const ascii = "a".repeat(2040);
+    expect(estimateEmbedTokens(`${ascii}—`) - estimateEmbedTokens(ascii)).toBe(3);
   });
   it("keeps the prefix on a chunk already over budget — truncation is not made worse", () => {
     expect(fittingPrefix("漢".repeat(900), "P")).toBe("P");
