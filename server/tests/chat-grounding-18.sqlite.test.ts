@@ -26,6 +26,8 @@ const state = vi.hoisted(() => {
     db: null as unknown,
     hits: [] as Array<{ filename: string; position: number; score: number; text: string }>,
     searched: [] as string[],
+    /** #2225 — the ACL actor each search ran for, in order. */
+    actors: [] as unknown[],
     /** #464 — hits for one query only (what the search-knowledge tool asks). */
     toolQuery: null as string | null,
     toolHits: [] as Array<{ filename: string; position: number; score: number; text: string }>,
@@ -45,8 +47,9 @@ vi.mock("../src/lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
 vi.mock("../src/lib/rag/knowledge-service.js", async (original) => ({
   ...(await original<typeof import("../src/lib/rag/knowledge-service.js")>()),
   getKnowledgeService: () => ({
-    search: async (projectId: string, query: string) => {
+    search: async (projectId: string, query: string, opts?: { actor?: unknown }) => {
       state.searched.push(projectId);
+      state.actors.push(opts?.actor);
       return { hits: query === state.toolQuery ? state.toolHits : state.hits };
     },
   }),
@@ -238,6 +241,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       setAIProviderForTests(model);
       state.hits = [];
       state.searched = [];
+      state.actors = [];
       state.toolQuery = null;
       state.toolHits = [];
     });
@@ -274,6 +278,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       };
       expect(groundingFrames(res.text)).toEqual([expected]);
       expect(state.searched).toEqual([PROJECT]);
+      // #2225 — retrieved for the requester, on their DURABLE role: alice has
+      // no role rows (reader), whatever her token's `developer` claim says.
+      expect(state.actors).toEqual([{ userId: ALICE, role: "reader" }]);
       // The excerpts really reached the model — the label is not a guess.
       expect(JSON.stringify(model.prompts[0])).toContain("resolveAndPin()");
       expect(await replyGroundings(sessionId)).toEqual([expected]);
@@ -300,6 +307,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       };
       expect(res.body.data.grounding).toEqual(expected);
       expect(await replyGroundings(sessionId)).toEqual([expected]);
+      expect(state.actors).toEqual([{ userId: ALICE, role: "reader" }]);
     });
 
     it("a reply that fails mid-stream keeps its grounding on reload", async () => {
@@ -445,6 +453,11 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(JSON.stringify(native.prompts[1])).toContain("resolveAndPin() pins the IP");
         expect(res.body.data.grounding).toEqual(grounded);
         expect(await replyGroundings(sessionId)).toEqual([grounded]);
+        // #2225 — auto-RAG and the search-knowledge tool both search as alice.
+        expect(state.actors).toEqual([
+          { userId: ALICE, role: "reader" },
+          { userId: ALICE, role: "reader" },
+        ]);
       });
 
       it("a search naming another project never reaches it: the session's own project is searched (#736)", async () => {
