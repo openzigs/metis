@@ -71,6 +71,14 @@ const PROJECT_READ_METIS_TOOLS: ReadonlySet<string> = new Set([
   // #1030 — read the session project's requirements (refused when unscoped).
   "list_requirements",
   "get_requirement",
+  // #2239 — the session project's analyses, findings, clarification answers and
+  // governing findings (refused when unscoped; every query filters on the
+  // project). The impact-analysis and portfolio-check tools are left out: a run
+  // that includes this project also reports on other projects and products.
+  "list_analyses",
+  "get_analysis",
+  "list_clarification_answers",
+  "get_governing_findings",
 ]);
 
 function readsProject(c: GroundingToolCall): boolean {

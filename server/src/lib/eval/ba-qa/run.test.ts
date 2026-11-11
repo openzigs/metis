@@ -1,0 +1,95 @@
+import { describe, expect, it } from "vitest";
+import {
+  applyArmEnv,
+  armArgument,
+  ARM_FLAGS,
+  buildJudgedSpans,
+  chatSessionScope,
+  embedRuntimeFor,
+  parseArm,
+  sliceLines,
+} from "./run.js";
+
+describe("arms", () => {
+  it("parses off and on only", () => {
+    expect(parseArm("off")).toBe("off");
+    expect(parseArm("on")).toBe("on");
+    expect(() => parseArm("both")).toThrow(/off or on/);
+  });
+
+  it("reads --arm before parseArgs runs, and picks the embedder runtime from it", () => {
+    expect(armArgument(["--budget", "1", "--arm", "on"])).toBe("on");
+    expect(armArgument(["--arm=off"])).toBe("off");
+    expect(armArgument(["--arm"])).toBeNull();
+    expect(armArgument(["--budget", "1"])).toBeNull();
+    expect(embedRuntimeFor("on")).toBe("inline");
+    expect(embedRuntimeFor("off")).toBe("worker");
+    expect(embedRuntimeFor(null)).toBe("worker");
+  });
+
+  it("off unsets every flag a shell or .env set, on sets all three", () => {
+    const env: NodeJS.ProcessEnv = {
+      CHAT_CODE_SEARCH_TOOLS: "true",
+      CHAT_FUSED_CODE_RETRIEVAL: "true",
+      RAG_RERANK: "1",
+      OTHER: "kept",
+    };
+    const off = applyArmEnv(env, "off");
+    for (const k of ARM_FLAGS) {
+      expect(env[k]).toBeUndefined();
+      expect(off[k]).toBe("(unset: off)");
+    }
+    expect(env.OTHER).toBe("kept");
+    const on = applyArmEnv(env, "on");
+    for (const k of ARM_FLAGS) {
+      expect(env[k]).toBe("1");
+      expect(on[k]).toBe("1");
+    }
+  });
+});
+
+describe("chatSessionScope", () => {
+  it("binds one project, and degrades two to unscoped as chat does", () => {
+    expect(chatSessionScope(["p1"])).toEqual({ projectId: "p1", degraded: null });
+    expect(chatSessionScope(["p1", "p2"])).toEqual({
+      projectId: null,
+      degraded: "multi-project-unsupported",
+    });
+    expect(chatSessionScope([])).toEqual({ projectId: null, degraded: null });
+  });
+});
+
+describe("spans", () => {
+  const text = ["one", "two", "three", "four"].join("\n");
+
+  it("slices 1-based inclusive lines, clamps the end and refuses a start past the file", () => {
+    expect(sliceLines(text, [2, 3])).toBe("two\nthree");
+    expect(sliceLines(text, [3, 99])).toBe("three\nfour");
+    expect(sliceLines(text, [5, 6])).toBeNull();
+  });
+
+  it("numbers readable spans, marks unreadable ranges 0 and skips citations without lines", async () => {
+    const read = async (product: string, file: string): Promise<string | null> =>
+      product === "srv" && file === "a.go" ? text : null;
+    const { spans, index } = await buildJudgedSpans(
+      [
+        { path: "a.go", products: ["srv"], lines: [1, 2] },
+        { path: "a.go", products: ["srv"], lines: null },
+        { path: "a.go", products: ["srv"], lines: [40, 41] },
+        { path: "gone.go", products: ["srv"], lines: [1, 1] },
+        { path: "a.go", products: ["srv"], lines: [4, 4] },
+      ],
+      read,
+    );
+    expect(spans).toEqual([
+      { n: 1, label: "srv:a.go:1-2", text: "one\ntwo" },
+      { n: 2, label: "srv:a.go:4-4", text: "four" },
+    ]);
+    expect([...index]).toEqual([
+      [0, 1],
+      [2, 0],
+      [3, 0],
+      [4, 2],
+    ]);
+  });
+});

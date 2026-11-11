@@ -3246,6 +3246,7 @@ can use tools to look things up or act for you:
 | Tool | What It Does |
 |---|---|
 | **Search Knowledge Base** | Searches the project's uploaded documents |
+| **METIS results** | Reads what METIS has already worked out for the project: its analysis runs and their findings, the impact analyses and portfolio checks that include it, your answers to clarifying questions, and governing findings. Each answer can name the run, finding or check it came from. You see only what you could open on the matching page: a product or project you cannot read is shown as restricted, or not at all |
 | **Inspect Database** | Examines a connected database's schema |
 | **Query Database** | Runs read-only SQL against a connected database |
 | **MCP tools** | Tools from MCP servers this project is allowed to use (see §20.7) |

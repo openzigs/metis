@@ -792,3 +792,95 @@ A reading's JSON holds every arm's model-written output. The lint step's
 private-vocabulary check reads CI's term list, which can be longer than a local one, so a
 reading that passes `pnpm lint` locally can still fail in CI: reword the flagged string and
 say so in the write-up (#2229 did this for two strings).
+
+## BA question answering (#2237)
+
+`corpus/baqa-01-acme-reader/` is Phase 0 of #2228: the questions a business analyst asks
+chat, over a two-product sample called Acme Reader. The two products are the Miniflux server
+(`miniflux/v2` at 2.3.3, Apache-2.0) and its Python client (`miniflux/python-client` at
+1.1.6, MIT). `questions.json` holds 18 questions in four categories, and the category fixes
+what a good reply does:
+
+| Category | Questions | A good reply |
+|---|---:|---|
+| `single-product`: "how does rule X work in product Y" | 6 | answers; carries facts and expected code and doc sources |
+| `multi-product`: "what does FRD-12 change in A and B" | 4 | answers from both products and `frd-12.md`; carries facts, expected requirements and the files an impact analysis should name |
+| `ambiguous` | 4 | asks a follow-up question |
+| `unanswerable` | 4 | says the sources don't show this |
+
+Every fact and line range was read from the pinned commits by the agent that wrote the
+set. No person has reviewed them yet (`authoredBy`). `frd-12.md` is a synthetic CC0
+FRD with two requirements, uploaded to both products.
+
+```bash
+pnpm eval:materialize baqa-01-acme-reader     # clones, projects, code graph, symbol vectors ($0)
+pnpm eval:ba-qa --arm off --budget 5          # today's chat: the three flags unset
+pnpm eval:ba-qa --arm on --budget 5 --include eval-results/ba-qa/<off run>.json
+```
+
+Before its first question, `eval:ba-qa` gives each product what an analyst's project holds.
+It runs the connector's README and manifest ingest and its repository-source ingest, then
+uploads the corpus documents (the man page and FRD-12) and approves them out of quarantine.
+The step can be re-run: an unchanged, indexed file is skipped. The first run embeds about
+2,800 chunks on the local embedder, which takes several minutes on an idle machine.
+
+Each question is its own one-turn chat session, run through production's chat pieces as in
+`eval:chat-cache`. A question scoped to both products is asked the way chat takes it today,
+as an unscoped session with no retrieval (`chatSessionScope`, mirroring
+`server/src/routes/ai.ts`). The `off` arm unsets `CHAT_CODE_SEARCH_TOOLS`,
+`CHAT_FUSED_CODE_RETRIEVAL` and `RAG_RERANK` even when the shell or `.env` sets them. The `on`
+arm sets all three, and runs the embedder inline so the reranker can share the main thread
+(#222). On macOS the `on` arm can abort with `libc++abi: … mutex lock failed` as it exits.
+That is onnxruntime-node shutting down after the results are written, and the files are
+complete.
+
+One judge call per answer returns verdicts only. It gives the reply's behaviour, whether each
+fact is stated, contradicted or missing, and whether each cited span supports its claim.
+Every number below is computed from those verdicts in code (`server/src/lib/eval/ba-qa/`):
+
+- **Correctness**: the mean share of facts stated, and "fully correct" when every fact is
+  stated and none is contradicted.
+- **Citation precision**: supporting citations over all citations. A citation with lines is
+  judged against that span's text. One without lines is counted as supporting only when its
+  file is an expected source. Lines that are not in the file support nothing.
+- **Citation recall**: the expected source files an answer cites.
+- **Abstention, follow-up and confident-guess rates**, plus false abstention and unneeded
+  follow-ups on answerable questions.
+- **Spend**: the answers and the judge, apart, priced by the ledger.
+
+A judge reply that cannot be parsed leaves the question unscored, never scored as zero.
+
+### Baseline, 2026-11-11 (Sonnet 5.5 answers and judge, 18 questions per arm)
+
+Run 2 was run on the code that merged (after #2225's ACL actor). Run 1 was run the day
+before and differs only where shown.
+
+| | off (today) | on (three flags) |
+|---|---:|---:|
+| Sessions chat left unscoped (no retrieval) | 9/18 | 9/18 |
+| Correctness: mean facts stated | 29% (run 1: 27%) | 49% (48%) |
+| Fully correct answers | 0/10 | 2/10 |
+| Citation precision | 30% (6/20) (run 1: 33%) | 83% (34/41) (89%) |
+| … checked against the span | 0/20 | 35/41 (44/47) |
+| Citation recall | 19% (6/32) | 31% (10/32) (28%) |
+| Abstention on unanswerable | 4/4 | 4/4 |
+| Follow-up on ambiguous | 3/4 | 3/4 |
+| False abstention on answerable | 5/10 (run 1: 6/10) | 4/10 |
+| Right behaviour, single-product | 5/6 (run 1: 4/6) | 6/6 |
+| Right behaviour, multi-product | 0/4 | 0/4 |
+| Spend (answers + judge) | $0.309360 (run 1: $0.303841) | $0.488667 ($0.492134) |
+
+- **Every multi-product question abstained in both arms and both runs.** Chat drops a
+  two-product scope to an unscoped session, so it retrieved nothing and offered no project
+  tools. M1 to M4 scored 0 facts.
+- **The `off` arm never cites a line.** The auto-RAG excerpts carry no line numbers, so the
+  model cites files by name only, and no citation could be checked against a span. With
+  fused code retrieval on, most citations carried lines that could be checked, and most of
+  those supported their claim.
+- **Rule questions abstain when the 8 retrieved chunks miss the rule.** S4 (user
+  validation) abstained with the flags off in both runs, and S3 (the parsing-error limit)
+  abstained in run 1. With the code-search tools on, both were answered every time.
+- **Several follow-ups and abstentions came from having nothing.** Three of the four
+  follow-ups, and two of the four abstentions on unanswerable questions, came in unscoped
+  sessions with no retrieval. A3, the one ambiguous question with retrieval, was answered on
+  a stated assumption in every run instead of asked about.
