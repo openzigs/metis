@@ -113,6 +113,17 @@ describe("citationFor (#2235)", () => {
     });
   });
 
+  it("matches the flagged term as a whole word, not inside another word", () => {
+    const r = {
+      sources: [
+        { ref: "A", headingPath: ["1"], quote: "Served at breakfast." },
+        { ref: "B", headingPath: ["2"], quote: "Pages load fast." },
+      ],
+      ambiguities: [{ field: "R7:fast", description: "", suggestedQuestion: "", term: "fast" }],
+    };
+    expect(citationFor(r, "R7:fast")?.quote).toBe("Pages load fast.");
+  });
+
   it("cites the first paragraph for any other ambiguity", () => {
     expect(citationFor(req, "scope")).toEqual({ headingPath: ["1"], quote: "Orders are listed." });
   });

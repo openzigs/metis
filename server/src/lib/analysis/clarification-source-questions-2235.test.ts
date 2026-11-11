@@ -253,15 +253,36 @@ describe("#2235 — ask only when it matters", () => {
     expect(state.setAsideAmbiguities).toEqual([]);
   });
 
-  it("completes without a round when everything raised was set aside", async () => {
+  it("keeps the dialog open when everything raised was set aside but other ambiguities remain", async () => {
     const { provider } = makeProvider([
       q("r2", "limit", { divergent: false }),
       q("r2", "budget", { uncertainty: "unanswerable" }),
     ]);
     const state = await new ClarificationDialog({ provider }).startOrContinue("a1", REQUIREMENTS);
+    // r1's ambiguities were never raised, so they are still open.
+    expect(state.completed).toBe(false);
+    expect(state.rounds).toHaveLength(1);
+    expect(state.rounds[0]!.questions).toEqual([]);
+    expect(state.setAside).toHaveLength(2);
+  });
+
+  it("does not complete on a set-aside field that is not a real ambiguity", async () => {
+    const { provider } = makeProvider([q("r2", "fabricated", { divergent: false })]);
+    const state = await new ClarificationDialog({ provider }).startOrContinue("a1", REQUIREMENTS);
+    expect(state.setAsideAmbiguities).toEqual([]);
+    expect(state.completed).toBe(false);
+  });
+
+  it("completes without a round when everything raised was set aside and nothing else is open", async () => {
+    const only = {
+      requirements: [requirement("r9", ["limit"])],
+      totalAmbiguities: 1,
+      totalEvidenceNeeds: 0,
+    };
+    const { provider } = makeProvider([q("r9", "limit", { divergent: false })]);
+    const state = await new ClarificationDialog({ provider }).startOrContinue("a1", only);
     expect(state.completed).toBe(true);
     expect(state.rounds).toEqual([]);
-    expect(state.setAside).toHaveLength(2);
   });
 
   it("caps a round and counts what it left for the next one", async () => {

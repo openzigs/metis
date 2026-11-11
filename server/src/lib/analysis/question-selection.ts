@@ -106,6 +106,12 @@ export function selectQuestionsToAsk(
   return { ask: ranked.slice(0, cap), setAside, notAsked: ranked.slice(cap) };
 }
 
+/** Whole-word match: "fast" is not in "breakfast". */
+function holdsWord(text: string, term: string): boolean {
+  const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, "u").test(text);
+}
+
 /**
  * The paragraph a question about `ambiguityField` cites: for a GtWR hit, the
  * source paragraph that holds its term; otherwise the requirement's first.
@@ -121,7 +127,7 @@ export function citationFor(
     ?.find((a) => a.field === ambiguityField)
     ?.term?.toLowerCase();
   const held = term
-    ? sources.find((s) => s.quote.replace(/\s+/g, " ").toLowerCase().includes(term))
+    ? sources.find((s) => holdsWord(s.quote.replace(/\s+/g, " ").toLowerCase(), term))
     : undefined;
   const { ref: _ref, ...citation } = held ?? sources[0]!;
   return citation;

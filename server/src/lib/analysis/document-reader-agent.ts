@@ -308,7 +308,7 @@ export async function runDocumentReaderAgent(input: {
           documentId: doc.documentId,
           ...(chunkIndex !== undefined ? { chunkIndex } : {}),
           // #2235 — the verified paragraph, so its questions can quote it.
-          filename: doc.filename,
+          filename: clip(doc.filename, 512),
           headingPath: s.headingPath.slice(0, 16).map((h) => clip(h, 512)),
           quote: clip(s.quote, MAX_SNIPPET),
         },

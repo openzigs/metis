@@ -516,10 +516,19 @@ export class ClarificationDialog {
     });
     recordSetAside(state, selection.setAside, requirements);
     if (generated.length > 0 && selection.ask.length === 0 && governingQuestions.length === 0) {
-      // Everything raised was set aside: there is nothing worth asking. (A
-      // reply that raised nothing keeps its empty round, as #1081 left it.)
-      state.completed = true;
-      return this.writeStart(analysisId, revision, state);
+      // Everything raised was set aside: there is nothing worth asking — but
+      // only when no ambiguity is left open. A set-aside field the model made
+      // up, or an ambiguity it never raised a question about (a deterministic
+      // GtWR hit), is still open, so the round is kept (empty, as #1081 left a
+      // reply that raised nothing) and a later round asks again (#1104 guard).
+      const stillOpen = addressedAmbiguities(state);
+      const leftOpen = requirements.requirements.some((r) =>
+        r.ambiguities.some((a) => !stillOpen.has(`${r.id}:${a.field}`)),
+      );
+      if (!leftOpen) {
+        state.completed = true;
+        return this.writeStart(analysisId, revision, state);
+      }
     }
 
     // Self-resolution pass (clarify-self-resolve): before surfacing questions,
