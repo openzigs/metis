@@ -1,0 +1,1219 @@
+{
+  "generatedAt": "2026-11-11T02:35:51.171Z",
+  "model": "anthropic/deepseek-flash",
+  "judgeModel": "anthropic/deepseek-flash",
+  "runsRequested": 1,
+  "budgetUsd": 2,
+  "spentUsd": 0.139832568,
+  "judgeSpentUsd": 0.071933796,
+  "unpricedCalls": 0,
+  "stopped": null,
+  "provenance": {
+    "commit": "8a0601902972f33ebde129dce9a15d7e467e01c2",
+    "dirty": false
+  },
+  "corpus": [
+    {
+      "id": "docunderstanding-01-clinic-booking",
+      "title": "Riverside Community Clinics: Online Appointment Booking, Functional Requirements Document",
+      "docxBytes": 17994,
+      "chars": 22129,
+      "sections": 26,
+      "chunks": 26,
+      "requirements": 46,
+      "labelledSections": 12,
+      "ambiguities": 11
+    },
+    {
+      "id": "docunderstanding-02-freight-claims",
+      "title": "Northgate Freight: Cargo Loss and Damage Claims Handling, Business Requirements Document",
+      "docxBytes": 17918,
+      "chars": 23478,
+      "sections": 36,
+      "chunks": 36,
+      "requirements": 58,
+      "labelledSections": 16,
+      "ambiguities": 12
+    },
+    {
+      "id": "docunderstanding-03-community-grants",
+      "title": "Harbour City Council: Community Grants Management System, Functional Requirements Document",
+      "docxBytes": 21643,
+      "chars": 35075,
+      "sections": 53,
+      "chunks": 54,
+      "requirements": 102,
+      "labelledSections": 30,
+      "ambiguities": 14
+    }
+  ],
+  "arms": [
+    {
+      "id": "A",
+      "label": "A — today's document agent over 10 retrieved chunks, then structured extraction",
+      "configuration": {
+        "conversion": "parseDocument (mammoth + htmlToMarkdown)",
+        "chunker": "chunkMarkdown (rag/chunker.ts), default options",
+        "retrieval": "buildRetrievalQueries(document) + runGroundedRetrieval (RRF), document title as the project name",
+        "searcher": "production BM25 options (createInMemoryBM25), no vectors; padded to k with unmatched chunks in document order",
+        "k": 10,
+        "rerank": false,
+        "agent": "runAgent document (analysis/agent-runner.ts)",
+        "requirements": "RequirementsExtractor over the agent's requirement texts, else its findings (runEnhancementPipeline)",
+        "questions": "the extracted requirements' ambiguities, suggestedQuestion",
+        "model": "anthropic/deepseek-flash"
+      },
+      "records": [
+        {
+          "itemId": "docunderstanding-01-clinic-booking",
+          "armId": "A",
+          "run": 1,
+          "output": {
+            "requirements": [
+              {
+                "text": "Limit of two future routine GP appointments per patient: The portal shall not permit a patient to hold more than two future routine GP appointments at the same time across all sites."
+              },
+              {
+                "text": "Exemptions from the two-appointment limit: The two-appointment limit shall not apply to nurse reviews, immunisations or physiotherapy."
+              },
+              {
+                "text": "Minimum two-hour lead time for bookings: The portal shall not allow a booking that starts less than two hours from the current time."
+              },
+              {
+                "text": "Carer booking of childhood immunisations within age range: Childhood immunisation appointments shall only be bookable by a carer for a dependant whose age is within the range set for that immunisation type in the PMS."
+              },
+              {
+                "text": "Reason-for-appointment free-text field: Before confirming a booking the portal shall ask the patient to state the reason for the appointment in a free-text field of up to 200 characters and shall pass it to the PMS with the booking."
+              },
+              {
+                "text": "Notice that reason field is not monitored: The portal shall tell patients that the reason-for-appointment field is not monitored and that urgent problems must be telephoned in."
+              },
+              {
+                "text": "Urgent-problem warning on every booking screen: The portal shall show a clear warning on every booking screen that it must not be used for urgent medical problems, including the clinic telephone number and the national urgent care number."
+              },
+              {
+                "text": "Confirmation only after PMS accepts booking: When a booking is confirmed the portal shall write it to the PMS and shall show the patient a confirmation only after the PMS has accepted it."
+              },
+              {
+                "text": "Handling PMS unavailability during booking: If the PMS is unavailable, the booking shall be handled appropriately."
+              },
+              {
+                "text": "Patient cancellation up to two hours before appointment: A patient shall be able to cancel an appointment through the portal up to two hours before its start time."
+              },
+              {
+                "text": "Moving appointment to another slot of same type: A patient shall be able to move an appointment to another slot of the same appointment type, and the original slot shall be released only once the new booking has been accepted by the PMS."
+              },
+              {
+                "text": "Cancellation reason selection: The portal shall ask a patient who cancels to choose a reason from a list maintained by the practice managers."
+              },
+              {
+                "text": "Telephone-booked appointments visible and cancellable in portal: Appointments booked by telephone shall be visible in the portal and shall be cancellable by the patient in the same way as appointments booked online."
+              },
+              {
+                "text": "Receptionist view of portal account status: Receptionists shall be able to see, for any patient, whether the patient has a portal account and whether it is locked."
+              },
+              {
+                "text": "No local appointment book copy in portal: The portal shall not keep its own copy of the appointment book; every availability search and booking shall be made against the PMS."
+              },
+              {
+                "text": "Automatic waiting-list offer for cancelled slots: A cancelled slot shall be offered automatically to patients on the waiting list who said they could attend at that time."
+              },
+              {
+                "text": "Practice manager control of online-bookable appointment types: Practice managers shall be able to mark or unmark each appointment type at their own site as bookable online."
+              },
+              {
+                "text": "Online-bookable setting propagation within fifteen minutes: The change to an appointment type's online-bookable status shall take effect in the portal within fifteen minutes."
+              },
+              {
+                "text": "Front-desk daily online activity list: Front-desk staff shall be able to see a list of the day's online bookings, cancellations and waiting list offers for their site, including the reason for appointment given by each patient."
+              },
+              {
+                "text": "Suspend online booking for one clinician by date range: Front-desk staff shall be able to suspend online booking for a single clinician for a date range without changing the PMS rota."
+              },
+              {
+                "text": "Monthly site reporting of online and telephone activity: The portal shall provide a monthly report for each site showing the number of appointments booked, moved and cancelled online, the number of reminders sent, and the number of missed appointments for online and telephone bookings separately."
+              },
+              {
+                "text": "PMS as system of record for appointments: The PMS shall remain the system of record for appointments; the portal shall read availability from the PMS and write bookings back to it."
+              },
+              {
+                "text": "First-release scope exclusions: The first release shall exclude video consultations, repeat prescription requests, access to medical records or test results, online payment for travel vaccines, and booking with external providers such as hospital outpatient departments."
+              },
+              {
+                "text": "Urgent and same-day appointments telephone-only in first release: Urgent and same-day appointments shall remain telephone-only in the first release."
+              },
+              {
+                "text": "No symptom checker or clinical advice in portal: The portal shall not offer a symptom checker or any form of clinical advice."
+              }
+            ],
+            "questions": [
+              {
+                "text": "Should the two-appointment limit count appointments booked by telephone and across all sites, and what appointment types are considered 'routine GP'?"
+              },
+              {
+                "text": "How will patients be uniquely identified across sites (e.g., NHS number) to enforce the cross-site limit?"
+              },
+              {
+                "text": "Which appointment types count as 'nurse reviews' for the exemption?"
+              },
+              {
+                "text": "Should the two-hour rule be calculated using server time or PMS time, and does it apply to appointment moves as well as new bookings?"
+              },
+              {
+                "text": "How should the portal verify a carer relationship before allowing a childhood immunisation booking?"
+              },
+              {
+                "text": "What should happen if no age range is configured in the PMS for a childhood immunisation type?"
+              },
+              {
+                "text": "Is the reason-for-appointment field mandatory, or can the patient skip it?"
+              },
+              {
+                "text": "Should the 200-character limit be enforced before submission, and how should character counting handle special characters?"
+              },
+              {
+                "text": "Where and when should the notice that the reason field is not monitored be shown?"
+              },
+              {
+                "text": "Which national urgent care number should be displayed (e.g., NHS 111 in England)?"
+              },
+              {
+                "text": "Which pages count as booking screens for the warning requirement?"
+              },
+              {
+                "text": "What timeout and retry behavior should apply when waiting for PMS acceptance?"
+              },
+              {
+                "text": "What exact behavior is required when the PMS is unavailable during a booking attempt (e.g., message, retry, queue, no booking)?"
+              },
+              {
+                "text": "Should the two-hour cancellation cutoff be calculated using server time or PMS time, and does it apply to all appointment types?"
+              },
+              {
+                "text": "What should happen if the new slot becomes unavailable before the PMS accepts the move?"
+              },
+              {
+                "text": "How should 'same appointment type' be defined for moves?"
+              },
+              {
+                "text": "Should cancellation reason lists be maintained per site, and must a reason always be selected?"
+              },
+              {
+                "text": "How should telephone bookings be matched to a patient's portal account so they appear in the portal?"
+              },
+              {
+                "text": "What does 'locked' mean for a portal account, and who can lock or unlock it?"
+              },
+              {
+                "text": "Which staff roles may view portal account status, and should access be audited?"
+              },
+              {
+                "text": "Is any caching of PMS availability permitted, and if so, for how long?"
+              },
+              {
+                "text": "How should cancelled slots be offered to waiting-list patients (e.g., SMS, email, portal), in what order, and with what response deadline?"
+              },
+              {
+                "text": "What data source records waiting-list patients' availability preferences?"
+              },
+              {
+                "text": "Should online-bookable appointment type settings be strictly per site, or can they be inherited?"
+              },
+              {
+                "text": "Does the fifteen-minute propagation period start when the practice manager saves the change, and does it include PMS processing time?"
+              },
+              {
+                "text": "Should the daily list update in real time, and what retention rules apply to patient-entered reason text?"
+              },
+              {
+                "text": "When online booking is suspended for a clinician, should existing online bookings remain or be cancelled/moved?"
+              },
+              {
+                "text": "Which staff roles can suspend online booking for a clinician, and should the action be audited?"
+              },
+              {
+                "text": "How should 'missed appointment' and 'reminder sent' be defined for the monthly report?"
+              },
+              {
+                "text": "In what format and by what channel should the monthly report be provided?"
+              },
+              {
+                "text": "What maximum latency is acceptable when reading availability from the PMS?"
+              },
+              {
+                "text": "What defines the first release boundary, and are the excluded items planned for later releases?"
+              },
+              {
+                "text": "Which appointment types must be classified as urgent or same-day and therefore excluded from online booking?"
+              },
+              {
+                "text": "What content is permitted without being considered clinical advice (e.g., service information, signposting)?"
+              }
+            ]
+          },
+          "diagnostics": {
+            "documentChunks": 26,
+            "retrievedChunks": 10,
+            "documentChars": 22129,
+            "retrievedChars": 9463,
+            "agentRequirements": 24,
+            "agentFindings": 6,
+            "calls": 2
+          },
+          "score": {
+            "labelled": 46,
+            "extracted": 25,
+            "matched": 17,
+            "repeats": 2,
+            "requirementRecall": 0.3695652173913043,
+            "requirementPrecision": 0.68,
+            "labelledSections": 12,
+            "coveredSections": 5,
+            "sectionCoverage": 0.4166666666666667,
+            "missedSections": [
+              "4. Patient access and identity",
+              "4.1 Carers and dependants",
+              "5.1 Finding a slot",
+              "6. Reminders and notifications",
+              "9.1 Availability and performance",
+              "9.2 Accessibility and language",
+              "9.3 Privacy, security and data retention"
+            ],
+            "questions": 34,
+            "worthAsking": 16,
+            "questionPrecision": 0.47058823529411764,
+            "ambiguities": 11,
+            "ambiguitiesRaised": 4,
+            "ambiguityRecall": 0.36363636363636365,
+            "missedRequirements": [
+              "R1",
+              "R2",
+              "R3",
+              "R4",
+              "R5",
+              "R6",
+              "R7",
+              "R8",
+              "R9",
+              "R10",
+              "R11",
+              "R12",
+              "R13",
+              "R24",
+              "R25",
+              "R26",
+              "R27",
+              "R28",
+              "R29",
+              "R31",
+              "R32",
+              "R37",
+              "R38",
+              "R39",
+              "R40",
+              "R41",
+              "R42",
+              "R43",
+              "R44"
+            ],
+            "missedAmbiguities": ["A1", "A4", "A6", "A7", "A8", "A10", "A11"],
+            "quoted": 0,
+            "quotesVerified": 0,
+            "quoteAccuracy": null
+          },
+          "judge": {
+            "invalid": 0,
+            "ungraded": 0
+          },
+          "costUsd": 0.025389684,
+          "judgeCostUsd": 0.03361506,
+          "inputTokens": 4159,
+          "completionTokens": 20526,
+          "seconds": 102.886
+        },
+        {
+          "itemId": "docunderstanding-02-freight-claims",
+          "armId": "A",
+          "run": 1,
+          "output": {
+            "requirements": [
+              {
+                "text": "Calculate liability limit from lost/damaged weight: The application shall calculate the limit of liability for each consignment from the weight of the goods lost or damaged and the per-kilogram limit in the claimant's terms."
+              },
+              {
+                "text": "Use declared value as liability limit when charge paid: Where the claimant declared a value for the consignment and paid the declared value charge, the limit of liability shall be the declared value instead of the per-kilogram limit."
+              },
+              {
+                "text": "Apply special terms liability limits: Where special terms apply, the application shall use the limits in the special terms."
+              },
+              {
+                "text": "Restrict liability limit overrides: A handler shall not be able to override the calculated limit of liability without the approval of the claims operations manager."
+              },
+              {
+                "text": "Calculate amount payable as lower of loss value and limit less salvage: The amount payable for a consignment shall be the lower of the proven value of the loss and the limit of liability, less any salvage value recovered from damaged goods."
+              },
+              {
+                "text": "Show step-by-step payable calculation to handler: The application shall show the handler how the amount payable was calculated, step by step."
+              },
+              {
+                "text": "Include calculation explanation in settlement letter: The same step-by-step calculation explanation shall be included in the settlement letter to the claimant."
+              },
+              {
+                "text": "Exclude consequential losses under standard conditions: Consequential losses, such as lost profit or the cost of a missed production run, shall not be payable under the standard conditions."
+              },
+              {
+                "text": "Prevent consequential loss inclusion unless special terms allow: The application shall prevent a handler from including consequential losses in the amount payable unless the special terms allow them."
+              },
+              {
+                "text": "Register claims from multiple intake channels: A handler shall be able to register a claim from an email, a telephone note passed on by customer service, or a completed claim form."
+              },
+              {
+                "text": "Record claim notification channel and timestamp: The application shall record the channel and the date and time the claim was first notified."
+              },
+              {
+                "text": "Require consignment note number at registration: The application shall require the consignment note number when a claim is registered."
+              },
+              {
+                "text": "Retrieve consignment details from tracking system: The application shall retrieve the consignment's details from the operational tracking system, including collection and delivery dates, depots passed through, recorded exceptions and proof of delivery."
+              },
+              {
+                "text": "Register claim with unverified consignment when number not found: If the consignment note number cannot be found in the tracking system, the handler shall be able to register the claim with the consignment marked as unverified."
+              },
+              {
+                "text": "Prevent payment on unverified consignments: The application shall prevent any payment on a claim whose consignment has not been verified."
+              },
+              {
+                "text": "Allow one claim to cover multiple consignments: A single claim shall be able to cover several consignments for the same claimant."
+              },
+              {
+                "text": "Record loss type and claimed amount per consignment: The application shall record the loss type and the amount claimed separately for each consignment on a claim."
+              },
+              {
+                "text": "Warn about existing claims for a consignment: The application shall warn the handler when a new claim is registered for a consignment that already has an open or closed claim, and shall show the existing claim."
+              },
+              {
+                "text": "Meet claims desk availability target: The application shall be available during the claims desks' working hours, 7am to 7pm on working days, at least 99.5% of the time."
+              },
+              {
+                "text": "Support 40 concurrent users within three-second page load: The application shall support at least 40 concurrent users without any page taking more than three seconds to load."
+              },
+              {
+                "text": "Support home working via standard remote access: The application shall be usable by handlers working from home through the company's standard remote access arrangements."
+              },
+              {
+                "text": "Apply 14-day damage or shortage notice period: Notice of damage or shortage must be given within 14 days of delivery."
+              },
+              {
+                "text": "Apply 28-day loss notice period: Notice of loss must be given within 28 days of the expected delivery date."
+              },
+              {
+                "text": "Issue documents reminder after 21 days: A documents reminder is issued 21 days after the document request."
+              },
+              {
+                "text": "Close claim as abandoned after reminder: A claim is closed as abandoned 21 days after the documents reminder."
+              },
+              {
+                "text": "Raise recovery time-limit alert before expiry: A recovery time-limit alert is raised 14 days before expiry."
+              },
+              {
+                "text": "Define first release claim scope and exclusions: The first release shall cover claims for loss, damage, shortage and delay from business customers on the domestic road network, and shall exclude international shipments and the consumer parcel service."
+              },
+              {
+                "text": "Provide first release end-to-end claims capabilities: The first release shall cover registration of claims, document collection, liability assessment, calculation of the amount payable, approval, payment instruction, closure, recovery from subcontracted hauliers, preparation of insurance claims, customer notifications and management reporting."
+              }
+            ],
+            "questions": [
+              {
+                "text": "How should the weight of goods lost or damaged be determined and evidenced for partial consignment claims?"
+              },
+              {
+                "text": "Which version of the claimant's terms applies: the version at collection, delivery, claim notification, or another date?"
+              },
+              {
+                "text": "What currency and rounding rules should be applied to the liability limit calculation?"
+              },
+              {
+                "text": "What system or document should be used to verify that the declared value charge was paid?"
+              },
+              {
+                "text": "Should declared value be applied per consignment or across multiple consignments on one claim?"
+              },
+              {
+                "text": "How should special terms be identified and linked to a claim or consignment?"
+              },
+              {
+                "text": "Which limit prevails when special terms and declared value both apply?"
+              },
+              {
+                "text": "What approval workflow and audit record are required for a liability limit override?"
+              },
+              {
+                "text": "What evidence is required to prove the value of loss for different claim types?"
+              },
+              {
+                "text": "How should salvage value be assessed and recorded before calculating the amount payable?"
+              },
+              {
+                "text": "What should happen if salvage value exceeds the calculated liability amount?"
+              },
+              {
+                "text": "What calculation steps and level of detail must be displayed to the handler?"
+              },
+              {
+                "text": "What approved template and wording should be used for the settlement letter explanation?"
+              },
+              {
+                "text": "Which loss categories are considered consequential losses under the standard conditions?"
+              },
+              {
+                "text": "How should the application identify claims where special terms allow consequential losses?"
+              },
+              {
+                "text": "What information and source documents must be captured for email, telephone note, and claim form registrations?"
+              },
+              {
+                "text": "What event defines the claim first notified date and time?"
+              },
+              {
+                "text": "Which timezone should be used when recording claim notification timestamps?"
+              },
+              {
+                "text": "What validation rules apply to consignment note numbers during claim registration?"
+              },
+              {
+                "text": "How should the application integrate with the operational tracking system and what should happen if it is unavailable?"
+              },
+              {
+                "text": "Which tracking-system fields map to the required consignment details?"
+              },
+              {
+                "text": "How and by whom can an unverified consignment be verified after registration?"
+              },
+              {
+                "text": "What conditions must be met for a consignment to be considered verified for payment?"
+              },
+              {
+                "text": "Should partial payment be allowed for verified consignments on a multi-consignment claim?"
+              },
+              {
+                "text": "How should the application confirm that multiple consignments belong to the same claimant?"
+              },
+              {
+                "text": "Should limits be calculated per consignment when a single claim covers multiple consignments?"
+              },
+              {
+                "text": "What loss type codes or categories should be available for selection?"
+              },
+              {
+                "text": "How should the amount claimed be captured for each consignment?"
+              },
+              {
+                "text": "Should the duplicate claim warning prevent registration or allow the handler to continue with a recorded reason?"
+              },
+              {
+                "text": "What information from a closed claim should be displayed in the duplicate warning?"
+              },
+              {
+                "text": "Which calendar defines working days and public holidays for availability measurement?"
+              },
+              {
+                "text": "How should availability be measured and are planned maintenance windows excluded?"
+              },
+              {
+                "text": "How should page load time be measured and under what network conditions?"
+              },
+              {
+                "text": "What user activity mix should be used to test 40 concurrent users?"
+              },
+              {
+                "text": "What standard remote access methods and devices must the application support?"
+              },
+              {
+                "text": "Should the 14-day notice period be counted in calendar days or working days, and what proves delivery date?"
+              },
+              {
+                "text": "How should the expected delivery date be determined for the 28-day notice period?"
+              },
+              {
+                "text": "What constitutes the document request date for starting the 21-day reminder period?"
+              },
+              {
+                "text": "How should the documents reminder be issued and what should it contain?"
+              },
+              {
+                "text": "Can an abandoned claim be reopened, and what notifications are required before closure?"
+              },
+              {
+                "text": "Which recovery time limits should trigger the 14-day alert?"
+              },
+              {
+                "text": "Who should receive the recovery time-limit alert and through which channel?"
+              },
+              {
+                "text": "Which routes, regions, and operating units are included in the domestic road network?"
+              },
+              {
+                "text": "What customer attributes identify a business customer for first-release eligibility?"
+              },
+              {
+                "text": "What liability and calculation rules apply to delay claims in the first release?"
+              },
+              {
+                "text": "What detailed workflows and acceptance criteria apply to each first-release claims capability?"
+              },
+              {
+                "text": "Which payment system receives payment instructions and in what format?"
+              },
+              {
+                "text": "What information must be prepared for insurance claims?"
+              },
+              {
+                "text": "Which management reports and metrics are required in the first release?"
+              }
+            ]
+          },
+          "diagnostics": {
+            "documentChunks": 36,
+            "retrievedChunks": 10,
+            "documentChars": 23478,
+            "retrievedChars": 9611,
+            "agentRequirements": 28,
+            "agentFindings": 4,
+            "calls": 2
+          },
+          "score": {
+            "labelled": 58,
+            "extracted": 28,
+            "matched": 17,
+            "repeats": 8,
+            "requirementRecall": 0.29310344827586204,
+            "requirementPrecision": 0.6071428571428571,
+            "labelledSections": 16,
+            "coveredSections": 6,
+            "sectionCoverage": 0.375,
+            "missedSections": [
+              "6.2 Photographs and inspection",
+              "7.1 Determining liability",
+              "7.3 Delay claims",
+              "8.1 Approval matrix",
+              "8.2 Settlement and payment",
+              "9.2 Insurance",
+              "10. Customer communication",
+              "11. Reporting",
+              "12. Data, security and audit",
+              "13. Migration"
+            ],
+            "questions": 49,
+            "worthAsking": 32,
+            "questionPrecision": 0.6530612244897959,
+            "ambiguities": 12,
+            "ambiguitiesRaised": 0,
+            "ambiguityRecall": 0,
+            "missedRequirements": [
+              "R6",
+              "R8",
+              "R9",
+              "R10",
+              "R11",
+              "R12",
+              "R14",
+              "R15",
+              "R16",
+              "R17",
+              "R18",
+              "R19",
+              "R26",
+              "R27",
+              "R28",
+              "R29",
+              "R30",
+              "R31",
+              "R32",
+              "R33",
+              "R34",
+              "R35",
+              "R36",
+              "R37",
+              "R39",
+              "R40",
+              "R41",
+              "R42",
+              "R43",
+              "R44",
+              "R45",
+              "R46",
+              "R47",
+              "R48",
+              "R49",
+              "R50",
+              "R51",
+              "R52",
+              "R53",
+              "R54",
+              "R55"
+            ],
+            "missedAmbiguities": [
+              "A1",
+              "A2",
+              "A3",
+              "A4",
+              "A5",
+              "A6",
+              "A7",
+              "A8",
+              "A9",
+              "A10",
+              "A11",
+              "A12"
+            ],
+            "quoted": 0,
+            "quotesVerified": 0,
+            "quoteAccuracy": null
+          },
+          "judge": {
+            "invalid": 0,
+            "ungraded": 0
+          },
+          "costUsd": 0.023519243999999998,
+          "judgeCostUsd": 0.019593167999999998,
+          "inputTokens": 4249,
+          "completionTokens": 18788,
+          "seconds": 90.251
+        },
+        {
+          "itemId": "docunderstanding-03-community-grants",
+          "armId": "A",
+          "run": 1,
+          "output": {
+            "requirements": [
+              {
+                "text": "Support seven grant programmes: The system shall support all seven grant programmes, each with its own purpose, budget and eligibility rules."
+              },
+              {
+                "text": "Record funding rounds: The system shall record each funding round with an opening date, a closing date, a budget and a set of assessment criteria."
+              },
+              {
+                "text": "Support invitation-only and open rounds: The system shall support rounds that are by invitation only as well as rounds open to any eligible organisation."
+              },
+              {
+                "text": "Ward Member Grants open all year: Ward Member Grants shall be open all year rather than run as rounds, until each elected member's allocation is spent."
+              },
+              {
+                "text": "Support full grant lifecycle: The system shall support the full grant lifecycle: programme and round set-up, applicant registration, eligibility checking, application, assessment, decision, grant agreement, payment, variation, monitoring and closure."
+              },
+              {
+                "text": "Auditor read-only access: Auditors (internal and external) shall have read-only access to the system."
+              },
+              {
+                "text": "Programme-specific rules isolated by programme: The system shall allow programme-specific rules (Appendix A) to be applied for the programme concerned without affecting other programmes."
+              },
+              {
+                "text": "Register an organisation: A person shall be able to register an organisation by giving its name, address, legal form, charity or company number if it has one, and details of at least two people connected with it who are not related to each other."
+              },
+              {
+                "text": "Check charity or company number against public register: Where a charity or company number is given, the system shall check it against the public register and show the officer any difference between the registered name and address and those entered."
+              },
+              {
+                "text": "Prevent duplicate organisation registration by charity or company number: The system shall prevent registration of an organisation whose charity or company number is already held on another organisation record, and shall direct the person to request access to the existing record."
+              },
+              {
+                "text": "Multiple users per organisation with peer approval: An organisation record shall be able to have several users, and the organisation's existing users shall approve any request by a new user to join it."
+              },
+              {
+                "text": "Grants officer can add user when no approvers remain: Where an organisation has no remaining users able to approve a join request, a grants officer shall be able to add a user after verifying that person's connection with the organisation."
+              },
+              {
+                "text": "Authentication by user type: Council users shall sign in with the council's single sign-on; applicants and external assessors shall sign in with an email address, a password and a second factor."
+              },
+              {
+                "text": "Remove mistaken personal data from an application: Personal data about applicants' service users included in an application by mistake shall be removable by a grants officer without deleting the rest of the application."
+              },
+              {
+                "text": "Retention and deletion of grant records: The system shall retain records of approved grants for seven years after the grant is closed and records of declined applications for two years after the decision, and shall then delete them."
+              },
+              {
+                "text": "Equality information optional and segregated: Equality information given by applicants shall be optional, kept separately from the application, and not visible to assessors or decision-makers."
+              },
+              {
+                "text": "Prevent payment before grant agreement signed: The system shall prevent any payment on a grant being made before the grant agreement is signed."
+              },
+              {
+                "text": "Generate grant agreement on approval: When a grant is approved, the system shall generate a grant agreement from the programme template including the amount, the purpose, any conditions set by the decision-maker, the payment schedule and the monitoring requirements."
+              },
+              {
+                "text": "Electronic signature by grant recipient: The grant recipient shall sign the grant agreement electronically through the system."
+              },
+              {
+                "text": "Two signatories for grants over 5,000: For grants over 5,000, the grant agreement shall be signed by two people connected with the organisation."
+              },
+              {
+                "text": "No payment until recipient signs and council countersigns: No payment shall be made on a grant until the agreement has been signed by the recipient and countersigned by the council."
+              },
+              {
+                "text": "Lapse unsigned grant offers: An offer of a grant shall lapse if the agreement is not signed within a reasonable time, and the amount shall be returned to the round's budget."
+              },
+              {
+                "text": "Grants system instructs but does not make payments: The grants system shall instruct payments but shall not make them; the finance system remains the system of record for payments and the council's bank account."
+              },
+              {
+                "text": "Council website CMS hosts public programme pages: The council's website content management system shall continue to host the public pages about each programme."
+              }
+            ],
+            "questions": [
+              {
+                "text": "What are the seven grant programmes, and where are their purpose, budget and eligibility rules defined?"
+              },
+              {
+                "text": "What format should assessment criteria take, and are they weighted or scored?"
+              },
+              {
+                "text": "How should invitation-only rounds identify and authenticate invited organisations?"
+              },
+              {
+                "text": "How are Ward Member Grant allocations defined, monitored and marked as spent?"
+              },
+              {
+                "text": "What workflows and outputs are required for grant variation, monitoring and closure?"
+              },
+              {
+                "text": "What data should internal and external auditors be able to view, and should access be time-limited?"
+              },
+              {
+                "text": "Can you provide Appendix A and confirm how programme rules should be isolated and maintained?"
+              },
+              {
+                "text": "What controlled list of legal forms should the registration form use?"
+              },
+              {
+                "text": "How should 'related' be defined and verified for the two connected people?"
+              },
+              {
+                "text": "Which registers should be integrated (Charity Commission, Companies House, both), and what should happen when a mismatch is found?"
+              },
+              {
+                "text": "How should a user request access to an existing organisation record, and who approves it?"
+              },
+              {
+                "text": "How many existing users must approve a join request, and what happens if approval is declined?"
+              },
+              {
+                "text": "What checks should a grants officer perform before adding a user to an organisation with no approvers?"
+              },
+              {
+                "text": "Which second-factor methods are acceptable for applicants and external assessors?"
+              },
+              {
+                "text": "Should removal of mistaken personal data be audit-logged, and what should the audit record contain?"
+              },
+              {
+                "text": "What event marks a grant as closed for retention purposes?"
+              },
+              {
+                "text": "Should the system support legal holds that override scheduled deletion?"
+              },
+              {
+                "text": "Which roles may view equality information, and should it be available for anonymised reporting?"
+              },
+              {
+                "text": "Where should the payment block be enforced, and how should exceptions be handled?"
+              },
+              {
+                "text": "Who maintains grant agreement templates, and how should template versions be controlled?"
+              },
+              {
+                "text": "What electronic signature standard or provider must be used for grant agreements?"
+              },
+              {
+                "text": "Is the 5,000 threshold in GBP, and does 'over' mean strictly greater than 5,000?"
+              },
+              {
+                "text": "What criteria determine whether a person is eligible to sign on behalf of the organisation?"
+              },
+              {
+                "text": "Which council role or roles are authorised to countersign grant agreements?"
+              },
+              {
+                "text": "What exact period should define when an unsigned grant offer lapses?"
+              },
+              {
+                "text": "How should the grants system send payment instructions to the finance system?"
+              },
+              {
+                "text": "Should the grants system link to CMS programme pages, and who owns the content?"
+              }
+            ]
+          },
+          "diagnostics": {
+            "documentChunks": 54,
+            "retrievedChunks": 10,
+            "documentChars": 35075,
+            "retrievedChars": 8170,
+            "agentRequirements": 24,
+            "agentFindings": 7,
+            "calls": 2
+          },
+          "score": {
+            "labelled": 102,
+            "extracted": 24,
+            "matched": 16,
+            "repeats": 2,
+            "requirementRecall": 0.1568627450980392,
+            "requirementPrecision": 0.6666666666666666,
+            "labelledSections": 30,
+            "coveredSections": 5,
+            "sectionCoverage": 0.16666666666666666,
+            "missedSections": [
+              "5.2 Organisation documents",
+              "5.3 Bank details",
+              "6.1 Eligibility check",
+              "6.2 Completing an application",
+              "6.3 Accessibility of the application process",
+              "7.1 Allocating assessors",
+              "7.2 Scoring and moderation",
+              "8.1 Decision-making authority",
+              "8.2 Recording decisions",
+              "8.3 Ward Member Grants",
+              "9.2 Payment schedules",
+              "10. Payments",
+              "11. Variations",
+              "12.1 Monitoring reports",
+              "12.2 Clawback and closure",
+              "14.1 Accessibility and usability",
+              "14.2 Availability and performance",
+              "14.4 Audit",
+              "15. Data migration",
+              "A.1 Neighbourhood Fund",
+              "A.2 Strategic Partnerships",
+              "A.3 Small Sparks",
+              "A.4 Youth Voice",
+              "A.5 Arts in the Open",
+              "A.6 Winter Warmth"
+            ],
+            "questions": 27,
+            "worthAsking": 10,
+            "questionPrecision": 0.37037037037037035,
+            "ambiguities": 14,
+            "ambiguitiesRaised": 3,
+            "ambiguityRecall": 0.21428571428571427,
+            "missedRequirements": [
+              "R2",
+              "R3",
+              "R4",
+              "R6",
+              "R7",
+              "R13",
+              "R14",
+              "R15",
+              "R16",
+              "R17",
+              "R18",
+              "R19",
+              "R20",
+              "R21",
+              "R22",
+              "R23",
+              "R24",
+              "R25",
+              "R26",
+              "R27",
+              "R28",
+              "R29",
+              "R30",
+              "R31",
+              "R32",
+              "R33",
+              "R34",
+              "R35",
+              "R36",
+              "R37",
+              "R38",
+              "R39",
+              "R40",
+              "R41",
+              "R42",
+              "R43",
+              "R44",
+              "R45",
+              "R46",
+              "R47",
+              "R48",
+              "R49",
+              "R50",
+              "R51",
+              "R52",
+              "R57",
+              "R58",
+              "R59",
+              "R60",
+              "R61",
+              "R62",
+              "R63",
+              "R64",
+              "R65",
+              "R66",
+              "R67",
+              "R68",
+              "R69",
+              "R70",
+              "R71",
+              "R72",
+              "R73",
+              "R74",
+              "R75",
+              "R76",
+              "R77",
+              "R78",
+              "R79",
+              "R81",
+              "R82",
+              "R83",
+              "R84",
+              "R89",
+              "R90",
+              "R91",
+              "R92",
+              "R93",
+              "R94",
+              "R95",
+              "R96",
+              "R97",
+              "R98",
+              "R99",
+              "R100",
+              "R101",
+              "R102"
+            ],
+            "missedAmbiguities": [
+              "A2",
+              "A3",
+              "A5",
+              "A6",
+              "A7",
+              "A8",
+              "A9",
+              "A10",
+              "A11",
+              "A13",
+              "A14"
+            ],
+            "quoted": 0,
+            "quotesVerified": 0,
+            "quoteAccuracy": null
+          },
+          "judge": {
+            "invalid": 0,
+            "ungraded": 0
+          },
+          "costUsd": 0.018989844,
+          "judgeCostUsd": 0.018725567999999998,
+          "inputTokens": 3919,
+          "completionTokens": 15096,
+          "seconds": 81.117
+        }
+      ],
+      "summary": {
+        "metrics": {
+          "requirementRecall": {
+            "mean": 0.2731771369217352,
+            "min": 0.1568627450980392,
+            "max": 0.3695652173913043,
+            "n": 3
+          },
+          "requirementPrecision": {
+            "mean": 0.6512698412698413,
+            "min": 0.6071428571428571,
+            "max": 0.68,
+            "n": 3
+          },
+          "sectionCoverage": {
+            "mean": 0.3194444444444445,
+            "min": 0.16666666666666666,
+            "max": 0.4166666666666667,
+            "n": 3
+          },
+          "questionPrecision": {
+            "mean": 0.49800661005142793,
+            "min": 0.37037037037037035,
+            "max": 0.6530612244897959,
+            "n": 3
+          },
+          "ambiguityRecall": {
+            "mean": 0.19264069264069264,
+            "min": 0,
+            "max": 0.36363636363636365,
+            "n": 3
+          },
+          "quoteAccuracy": {
+            "mean": null,
+            "min": null,
+            "max": null,
+            "n": 0
+          }
+        },
+        "extractedPerDocument": 25.666666666666668,
+        "questionsPerDocument": 36.666666666666664,
+        "usdPerDocument": 0.022632924,
+        "inputTokensPerDocument": 4109,
+        "completionTokensPerDocument": 18136.666666666668,
+        "secondsPerDocument": 91.418,
+        "failures": 0,
+        "readings": 3
+      },
+      "byItem": [
+        {
+          "itemId": "docunderstanding-01-clinic-booking",
+          "summary": {
+            "metrics": {
+              "requirementRecall": {
+                "mean": 0.3695652173913043,
+                "min": 0.3695652173913043,
+                "max": 0.3695652173913043,
+                "n": 1
+              },
+              "requirementPrecision": {
+                "mean": 0.68,
+                "min": 0.68,
+                "max": 0.68,
+                "n": 1
+              },
+              "sectionCoverage": {
+                "mean": 0.4166666666666667,
+                "min": 0.4166666666666667,
+                "max": 0.4166666666666667,
+                "n": 1
+              },
+              "questionPrecision": {
+                "mean": 0.47058823529411764,
+                "min": 0.47058823529411764,
+                "max": 0.47058823529411764,
+                "n": 1
+              },
+              "ambiguityRecall": {
+                "mean": 0.36363636363636365,
+                "min": 0.36363636363636365,
+                "max": 0.36363636363636365,
+                "n": 1
+              },
+              "quoteAccuracy": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              }
+            },
+            "extractedPerDocument": 25,
+            "questionsPerDocument": 34,
+            "usdPerDocument": 0.025389684,
+            "inputTokensPerDocument": 4159,
+            "completionTokensPerDocument": 20526,
+            "secondsPerDocument": 102.886,
+            "failures": 0,
+            "readings": 1
+          }
+        },
+        {
+          "itemId": "docunderstanding-02-freight-claims",
+          "summary": {
+            "metrics": {
+              "requirementRecall": {
+                "mean": 0.29310344827586204,
+                "min": 0.29310344827586204,
+                "max": 0.29310344827586204,
+                "n": 1
+              },
+              "requirementPrecision": {
+                "mean": 0.6071428571428571,
+                "min": 0.6071428571428571,
+                "max": 0.6071428571428571,
+                "n": 1
+              },
+              "sectionCoverage": {
+                "mean": 0.375,
+                "min": 0.375,
+                "max": 0.375,
+                "n": 1
+              },
+              "questionPrecision": {
+                "mean": 0.6530612244897959,
+                "min": 0.6530612244897959,
+                "max": 0.6530612244897959,
+                "n": 1
+              },
+              "ambiguityRecall": {
+                "mean": 0,
+                "min": 0,
+                "max": 0,
+                "n": 1
+              },
+              "quoteAccuracy": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              }
+            },
+            "extractedPerDocument": 28,
+            "questionsPerDocument": 49,
+            "usdPerDocument": 0.023519243999999998,
+            "inputTokensPerDocument": 4249,
+            "completionTokensPerDocument": 18788,
+            "secondsPerDocument": 90.251,
+            "failures": 0,
+            "readings": 1
+          }
+        },
+        {
+          "itemId": "docunderstanding-03-community-grants",
+          "summary": {
+            "metrics": {
+              "requirementRecall": {
+                "mean": 0.1568627450980392,
+                "min": 0.1568627450980392,
+                "max": 0.1568627450980392,
+                "n": 1
+              },
+              "requirementPrecision": {
+                "mean": 0.6666666666666666,
+                "min": 0.6666666666666666,
+                "max": 0.6666666666666666,
+                "n": 1
+              },
+              "sectionCoverage": {
+                "mean": 0.16666666666666666,
+                "min": 0.16666666666666666,
+                "max": 0.16666666666666666,
+                "n": 1
+              },
+              "questionPrecision": {
+                "mean": 0.37037037037037035,
+                "min": 0.37037037037037035,
+                "max": 0.37037037037037035,
+                "n": 1
+              },
+              "ambiguityRecall": {
+                "mean": 0.21428571428571427,
+                "min": 0.21428571428571427,
+                "max": 0.21428571428571427,
+                "n": 1
+              },
+              "quoteAccuracy": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              }
+            },
+            "extractedPerDocument": 24,
+            "questionsPerDocument": 27,
+            "usdPerDocument": 0.018989844,
+            "inputTokensPerDocument": 3919,
+            "completionTokensPerDocument": 15096,
+            "secondsPerDocument": 81.117,
+            "failures": 0,
+            "readings": 1
+          }
+        }
+      ]
+    }
+  ]
+}

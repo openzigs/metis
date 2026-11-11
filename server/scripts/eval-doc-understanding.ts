@@ -96,7 +96,14 @@ async function main(): Promise<void> {
     if (reading && saved.some((r) => r.provenance.dirty !== false)) {
       throw new Error("--reading needs every combined run to come from a clean tree");
     }
-    await writeOut(combineReports(saved), reading, argv.includes("--md"));
+    // `--arms` keeps only those arms of each report (one setting per arm in a reading).
+    const keep = new Set(
+      flagValue(argv, "arms") || flagValue(argv, "arm")
+        ? armIds
+        : saved.flatMap((r) => r.arms.map((a) => a.id)),
+    );
+    const kept = saved.map((r) => ({ ...r, arms: r.arms.filter((a) => keep.has(a.id as never)) }));
+    await writeOut(combineReports(kept), reading, argv.includes("--md"));
     return;
   }
   const items = await loadDocUnderstandingCorpus(names);

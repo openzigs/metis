@@ -63,6 +63,11 @@ export interface DocScore {
   missedRequirements: string[];
   /** Labelled ambiguities no question asked about. */
   missedAmbiguities: string[];
+  /**
+   * Extracted requirements the judge matched to no label: noise, or a label
+   * the corpus is missing. What a reviewer of the labels reads first.
+   */
+  unmatchedExtracted: string[];
   quoted: number;
   quotesVerified: number;
   quoteAccuracy: number | null;
@@ -167,6 +172,9 @@ export function scoreReading(
     ambiguityRecall: ratio(raised.size, labels.ambiguities.length),
     missedRequirements: labels.requirements.filter((r) => !claimed.has(r.id)).map((r) => r.id),
     missedAmbiguities: labels.ambiguities.filter((a) => !raised.has(a.id)).map((a) => a.id),
+    unmatchedExtracted: output.requirements
+      .filter((_r, i) => (judgement.requirements[i] ?? null) === null)
+      .map((r) => r.text),
     quoted: quotes.length,
     quotesVerified: verified,
     quoteAccuracy: ratio(verified, quotes.length),

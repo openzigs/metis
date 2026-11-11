@@ -225,7 +225,14 @@ describe("combineReports and rendering", () => {
       ["B", 1],
     ]);
     expect(c.arms[0]!.byItem.map((x) => x.itemId)).toEqual(["d1", "d2"]);
+    // B never read d2: its row says so rather than printing a cost of "unpriced".
+    expect(c.arms[1]!.byItem[1]!.summary.readings).toBe(0);
+    expect(toMarkdownReport(c)).toContain("| B | not run |");
     expect(c.spentUsd).toBeCloseTo(a.spentUsd + b.spentUsd);
+    expect(c.judgeSpentUsd).toBeCloseTo(a.judgeSpentUsd + b.judgeSpentUsd);
+    // An arm dropped from a report takes its spend with it.
+    const onlyA = combineReports([{ ...a, arms: a.arms.filter((x) => x.id === "A") }, b]);
+    expect(onlyA.spentUsd).toBeCloseTo(a.spentUsd / 2 + b.spentUsd);
     expect(c.budgetUsd).toBe(200);
     expect(c.provenance).toEqual({ commit: "abc", dirty: false });
   });

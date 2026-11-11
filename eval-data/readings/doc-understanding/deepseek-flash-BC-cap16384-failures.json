@@ -1,0 +1,543 @@
+{
+  "generatedAt": "2026-11-11T02:35:53.015Z",
+  "model": "anthropic/deepseek-flash",
+  "judgeModel": "anthropic/deepseek-flash",
+  "runsRequested": 1,
+  "budgetUsd": 3,
+  "spentUsd": 0.23067127199999998,
+  "judgeSpentUsd": 0,
+  "unpricedCalls": 0,
+  "stopped": null,
+  "provenance": {
+    "commit": "8a0601902972f33ebde129dce9a15d7e467e01c2",
+    "dirty": false
+  },
+  "corpus": [
+    {
+      "id": "docunderstanding-03-community-grants",
+      "title": "Harbour City Council: Community Grants Management System, Functional Requirements Document",
+      "docxBytes": 21643,
+      "chars": 35075,
+      "sections": 53,
+      "chunks": 54,
+      "requirements": 102,
+      "labelledSections": 30,
+      "ambiguities": 14
+    },
+    {
+      "id": "docunderstanding-01-clinic-booking",
+      "title": "Riverside Community Clinics: Online Appointment Booking, Functional Requirements Document",
+      "docxBytes": 17994,
+      "chars": 22129,
+      "sections": 26,
+      "chunks": 26,
+      "requirements": 46,
+      "labelledSections": 12,
+      "ambiguities": 11
+    },
+    {
+      "id": "docunderstanding-02-freight-claims",
+      "title": "Northgate Freight: Cargo Loss and Damage Claims Handling, Business Requirements Document",
+      "docxBytes": 17918,
+      "chars": 23478,
+      "sections": 36,
+      "chunks": 36,
+      "requirements": 58,
+      "labelledSections": 16,
+      "ambiguities": 12
+    }
+  ],
+  "arms": [
+    {
+      "id": "B",
+      "label": "B — the whole document in one call",
+      "configuration": {
+        "conversion": "parseDocument (mammoth + htmlToMarkdown)",
+        "context": "the whole converted document, fenced",
+        "calls": "1 (plus one re-prompt on an unreadable reply)",
+        "model": "anthropic/deepseek-flash"
+      },
+      "records": [
+        {
+          "itemId": "docunderstanding-03-community-grants",
+          "armId": "B",
+          "run": 1,
+          "output": null,
+          "diagnostics": {},
+          "score": null,
+          "judge": null,
+          "error": "reader: doc-understanding-whole: no usable reply (empty-response)",
+          "costUsd": 0.04150754399999999,
+          "judgeCostUsd": 0,
+          "inputTokens": 14562,
+          "completionTokens": 32768,
+          "seconds": 169.595
+        },
+        {
+          "itemId": "docunderstanding-01-clinic-booking",
+          "armId": "B",
+          "run": 1,
+          "output": null,
+          "diagnostics": {},
+          "score": null,
+          "judge": null,
+          "error": "reader: doc-understanding-whole: no usable reply (empty-response)",
+          "costUsd": 0.039512927999999996,
+          "judgeCostUsd": 0,
+          "inputTokens": 9544,
+          "completionTokens": 32768,
+          "seconds": 169.533
+        },
+        {
+          "itemId": "docunderstanding-02-freight-claims",
+          "armId": "B",
+          "run": 1,
+          "output": null,
+          "diagnostics": {},
+          "score": null,
+          "judge": null,
+          "error": "reader: doc-understanding-whole: no usable reply (empty-response)",
+          "costUsd": 0.04083012,
+          "judgeCostUsd": 0,
+          "inputTokens": 10046,
+          "completionTokens": 32768,
+          "seconds": 166.615
+        }
+      ],
+      "summary": {
+        "metrics": {
+          "requirementRecall": {
+            "mean": null,
+            "min": null,
+            "max": null,
+            "n": 0
+          },
+          "requirementPrecision": {
+            "mean": null,
+            "min": null,
+            "max": null,
+            "n": 0
+          },
+          "sectionCoverage": {
+            "mean": null,
+            "min": null,
+            "max": null,
+            "n": 0
+          },
+          "questionPrecision": {
+            "mean": null,
+            "min": null,
+            "max": null,
+            "n": 0
+          },
+          "ambiguityRecall": {
+            "mean": null,
+            "min": null,
+            "max": null,
+            "n": 0
+          },
+          "quoteAccuracy": {
+            "mean": null,
+            "min": null,
+            "max": null,
+            "n": 0
+          }
+        },
+        "extractedPerDocument": null,
+        "questionsPerDocument": null,
+        "usdPerDocument": 0.040616863999999996,
+        "inputTokensPerDocument": 11384,
+        "completionTokensPerDocument": 32768,
+        "secondsPerDocument": 168.581,
+        "failures": 3,
+        "readings": 3
+      },
+      "byItem": [
+        {
+          "itemId": "docunderstanding-03-community-grants",
+          "summary": {
+            "metrics": {
+              "requirementRecall": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "requirementPrecision": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "sectionCoverage": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "questionPrecision": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "ambiguityRecall": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "quoteAccuracy": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              }
+            },
+            "extractedPerDocument": null,
+            "questionsPerDocument": null,
+            "usdPerDocument": 0.04150754399999999,
+            "inputTokensPerDocument": 14562,
+            "completionTokensPerDocument": 32768,
+            "secondsPerDocument": 169.595,
+            "failures": 1,
+            "readings": 1
+          }
+        },
+        {
+          "itemId": "docunderstanding-01-clinic-booking",
+          "summary": {
+            "metrics": {
+              "requirementRecall": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "requirementPrecision": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "sectionCoverage": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "questionPrecision": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "ambiguityRecall": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "quoteAccuracy": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              }
+            },
+            "extractedPerDocument": null,
+            "questionsPerDocument": null,
+            "usdPerDocument": 0.039512927999999996,
+            "inputTokensPerDocument": 9544,
+            "completionTokensPerDocument": 32768,
+            "secondsPerDocument": 169.533,
+            "failures": 1,
+            "readings": 1
+          }
+        },
+        {
+          "itemId": "docunderstanding-02-freight-claims",
+          "summary": {
+            "metrics": {
+              "requirementRecall": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "requirementPrecision": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "sectionCoverage": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "questionPrecision": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "ambiguityRecall": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "quoteAccuracy": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              }
+            },
+            "extractedPerDocument": null,
+            "questionsPerDocument": null,
+            "usdPerDocument": 0.04083012,
+            "inputTokensPerDocument": 10046,
+            "completionTokensPerDocument": 32768,
+            "secondsPerDocument": 166.615,
+            "failures": 1,
+            "readings": 1
+          }
+        }
+      ]
+    },
+    {
+      "id": "C",
+      "label": "C — section by section with a document summary, glossary and actors, then a reduce",
+      "configuration": {
+        "conversion": "parseDocument (mammoth + htmlToMarkdown)",
+        "context": "one call over the whole document: summary, glossary, actors",
+        "sections": "splitSections (governing/rule-extraction.ts): every heading, long sections split",
+        "reduce": "one call: drop repeated requirements, settle and add cross-section questions",
+        "model": "anthropic/deepseek-flash"
+      },
+      "records": [
+        {
+          "itemId": "docunderstanding-01-clinic-booking",
+          "armId": "C",
+          "run": 1,
+          "output": null,
+          "diagnostics": {},
+          "score": null,
+          "judge": null,
+          "error": "reader: doc-understanding-reduce: no usable reply (empty-response)",
+          "costUsd": 0.10882068,
+          "judgeCostUsd": 0,
+          "inputTokens": 53362,
+          "completionTokens": 83929,
+          "seconds": 267.58
+        }
+      ],
+      "summary": {
+        "metrics": {
+          "requirementRecall": {
+            "mean": null,
+            "min": null,
+            "max": null,
+            "n": 0
+          },
+          "requirementPrecision": {
+            "mean": null,
+            "min": null,
+            "max": null,
+            "n": 0
+          },
+          "sectionCoverage": {
+            "mean": null,
+            "min": null,
+            "max": null,
+            "n": 0
+          },
+          "questionPrecision": {
+            "mean": null,
+            "min": null,
+            "max": null,
+            "n": 0
+          },
+          "ambiguityRecall": {
+            "mean": null,
+            "min": null,
+            "max": null,
+            "n": 0
+          },
+          "quoteAccuracy": {
+            "mean": null,
+            "min": null,
+            "max": null,
+            "n": 0
+          }
+        },
+        "extractedPerDocument": null,
+        "questionsPerDocument": null,
+        "usdPerDocument": 0.10882068,
+        "inputTokensPerDocument": 53362,
+        "completionTokensPerDocument": 83929,
+        "secondsPerDocument": 267.58,
+        "failures": 1,
+        "readings": 1
+      },
+      "byItem": [
+        {
+          "itemId": "docunderstanding-03-community-grants",
+          "summary": {
+            "metrics": {
+              "requirementRecall": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "requirementPrecision": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "sectionCoverage": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "questionPrecision": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "ambiguityRecall": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "quoteAccuracy": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              }
+            },
+            "extractedPerDocument": null,
+            "questionsPerDocument": null,
+            "usdPerDocument": null,
+            "inputTokensPerDocument": null,
+            "completionTokensPerDocument": null,
+            "secondsPerDocument": null,
+            "failures": 0,
+            "readings": 0
+          }
+        },
+        {
+          "itemId": "docunderstanding-01-clinic-booking",
+          "summary": {
+            "metrics": {
+              "requirementRecall": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "requirementPrecision": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "sectionCoverage": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "questionPrecision": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "ambiguityRecall": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "quoteAccuracy": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              }
+            },
+            "extractedPerDocument": null,
+            "questionsPerDocument": null,
+            "usdPerDocument": 0.10882068,
+            "inputTokensPerDocument": 53362,
+            "completionTokensPerDocument": 83929,
+            "secondsPerDocument": 267.58,
+            "failures": 1,
+            "readings": 1
+          }
+        },
+        {
+          "itemId": "docunderstanding-02-freight-claims",
+          "summary": {
+            "metrics": {
+              "requirementRecall": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "requirementPrecision": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "sectionCoverage": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "questionPrecision": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "ambiguityRecall": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "quoteAccuracy": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              }
+            },
+            "extractedPerDocument": null,
+            "questionsPerDocument": null,
+            "usdPerDocument": null,
+            "inputTokensPerDocument": null,
+            "completionTokensPerDocument": null,
+            "secondsPerDocument": null,
+            "failures": 0,
+            "readings": 0
+          }
+        }
+      ]
+    }
+  ]
+}

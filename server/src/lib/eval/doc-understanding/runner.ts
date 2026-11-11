@@ -68,6 +68,8 @@ export interface ArmSummary {
   completionTokensPerDocument: number | null;
   secondsPerDocument: number | null;
   failures: number;
+  /** Readings attempted, failed ones included. */
+  readings: number;
 }
 
 export interface DocArmReport {
@@ -150,6 +152,7 @@ export function summariseRecords(records: readonly ReadingRecord[]): ArmSummary 
     completionTokensPerDocument: mean(records.map((r) => r.completionTokens)),
     secondsPerDocument: mean(records.map((r) => r.seconds)),
     failures: records.length - ok.length,
+    readings: records.length,
   };
 }
 
@@ -317,13 +320,17 @@ export function combineReports(reports: readonly DocUnderstandingReport[]): DocU
     }
   }
   const items = [...corpus.keys()];
+  // Every call belongs to a reading's reader or its judge, so the spend is the
+  // records' own: it stays right when a caller has dropped arms from a report.
+  const records = [...arms.values()].flatMap((a) => a.records);
+  const judgeSpentUsd = records.reduce((s, r) => s + (r.judgeCostUsd ?? 0), 0);
   return {
     model: first.model,
     judgeModel: first.judgeModel,
     runsRequested: Math.max(...reports.map((r) => r.runsRequested)),
     budgetUsd: reports.reduce((s, r) => s + r.budgetUsd, 0),
-    spentUsd: reports.reduce((s, r) => s + r.spentUsd, 0),
-    judgeSpentUsd: reports.reduce((s, r) => s + r.judgeSpentUsd, 0),
+    spentUsd: records.reduce((s, r) => s + (r.costUsd ?? 0), 0) + judgeSpentUsd,
+    judgeSpentUsd,
     unpricedCalls: reports.reduce((s, r) => s + r.unpricedCalls, 0),
     stopped: reports.find((r) => r.stopped)?.stopped ?? null,
     provenance: {
@@ -356,6 +363,7 @@ const usd = (v: number | null): string => (v === null ? "unpriced" : `$${v.toFix
 const num = (v: number | null, digits = 1): string => (v === null ? "n/a" : v.toFixed(digits));
 
 function metricRow(label: string, s: ArmSummary): string {
+  if (s.readings === 0) return `| ${label} | not run |${" |".repeat(11)}`;
   const m = s.metrics;
   return (
     `| ${label} | ${pct(m.requirementRecall)} | ${pct(m.requirementPrecision)} | ${pct(m.sectionCoverage)} | ` +

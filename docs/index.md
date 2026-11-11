@@ -18,3 +18,8 @@ to find a page.
   real browser through every feature for QA and UAT, and what that costs
   ([standalone version](walkthroughs/ai-e2e-walkthrough.html))
 - [Walkthrough test plan](walkthroughs/TEST_PLAN.md)
+
+## Measurements
+
+- [Document understanding baseline](DOCUMENT_UNDERSTANDING_BASELINE.md): how much of a Word
+  FRD Requirements Analysis reads today, against reading the whole document (#2229)

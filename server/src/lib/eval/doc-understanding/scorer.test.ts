@@ -160,6 +160,7 @@ describe("scoreReading", () => {
       ambiguities: 2,
       ambiguitiesRaised: 1,
       missedAmbiguities: ["A2"],
+      unmatchedExtracted: ["background mistaken for a requirement"],
       quoted: 2,
       quotesVerified: 1,
     });
