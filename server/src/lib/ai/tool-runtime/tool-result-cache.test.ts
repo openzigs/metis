@@ -153,6 +153,28 @@ describe("withToolResultCache", () => {
     expect(execute).toHaveBeenCalledTimes(2);
   });
 
+  // #2248 — a user's own search may hold chunks restricted to them; it must
+  // never answer the same call made for a reply the whole thread reads.
+  it("never serves a user's own result to a shared-audience call, nor the reverse", async () => {
+    let n = 0;
+    const { t, execute } = tool("search-knowledge", () => ({ text: `run-${++n}` }));
+    const cache = new ToolResultCache();
+    const cached = withToolResultCache(t, {
+      cache: () => cache,
+      version: async () => version("v1"),
+    });
+    const shared = (userId: string): RuntimeToolContext => ({
+      ...ctx("p1", userId),
+      aclAudience: "shared",
+    });
+    expect((await cached.execute({ q: "a" }, ctx("p1", "alice"))).text).toBe("run-1");
+    expect((await cached.execute({ q: "a" }, shared("alice"))).text).toBe("run-2");
+    expect((await cached.execute({ q: "a" }, ctx("p1", "alice"))).text).toBe("run-1");
+    // One shared audience, whoever triggered it: the second trigger is a hit.
+    expect((await cached.execute({ q: "a" }, shared("bob"))).text).toBe("run-2");
+    expect(execute).toHaveBeenCalledTimes(2);
+  });
+
   it("an incomplete content version bypasses the cache", async () => {
     const { t, execute } = tool();
     const cache = new ToolResultCache();

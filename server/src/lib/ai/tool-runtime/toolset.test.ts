@@ -175,6 +175,17 @@ describe("buildSessionToolset", () => {
         gateDecided: true,
       }),
     );
+    expect(vi.mocked(d.exec).mock.calls[0]![1]).not.toHaveProperty("aclAudience");
+  });
+
+  it("#2248 — registry execution forwards a shared ACL audience to the tool", async () => {
+    const d = def("inspect_schema");
+    const set = await buildSessionToolset({ ctx: CTX, registry: registryWith(d) });
+    await set.tools[0]!.execute({ q: "x" }, { ...CTX, aclAudience: "shared" });
+    expect(d.exec).toHaveBeenCalledWith(
+      { q: "x" },
+      expect.objectContaining({ userId: "u1", aclAudience: "shared" }),
+    );
   });
 
   it("#464 — registry execution forwards the tool's result count", async () => {

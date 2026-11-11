@@ -9,7 +9,7 @@ const rag = vi.hoisted(() => ({
     async (
       _projectId: string | null,
       _messages: Array<{ role: string; content: string }>,
-      _requesterId: string,
+      _requester: unknown,
       _deps: unknown,
       capture?: { contexts: string[]; sources: number },
     ) => {
@@ -29,7 +29,8 @@ describe("projectRetriever", () => {
     expect(rag.buildAutoRagContext).toHaveBeenCalledWith(
       "proj-1",
       [{ role: "user", content: "where is the scheduler?" }],
-      "u-7",
+      // #2248 — a shared audience, not the trigger's own ACLs.
+      { userId: "u-7", role: "shared-audience", sharedAudience: true },
       undefined,
       expect.objectContaining({ sources: 2 }),
     );

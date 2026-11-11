@@ -65,6 +65,27 @@ describe("AclEditor", () => {
     expect(screen.queryByTestId("acl-subjects")).not.toBeInTheDocument();
   });
 
+  // #2248 — METIS stores no group membership, so a group subject matches no one.
+  it("offers user and role subjects, not group", () => {
+    renderEditor();
+    const options = Array.from(
+      (screen.getByTestId("acl-kind-select") as HTMLSelectElement).options,
+    ).map((o) => o.value);
+    expect(options).toEqual(["user", "role"]);
+  });
+
+  it("warns that an existing group subject matches no one, and lets it be removed", () => {
+    renderEditor([
+      { kind: "group", value: "eng-team" },
+      { kind: "user", value: "u1" },
+    ]);
+    expect(screen.getAllByTestId("acl-group-warning")).toHaveLength(1);
+    expect(screen.getByTestId("acl-group-warning")).toHaveTextContent(/grants no access/i);
+    fireEvent.click(screen.getByRole("button", { name: /Remove group eng-team/i }));
+    expect(screen.queryByTestId("acl-group-warning")).not.toBeInTheDocument();
+    expect(screen.getByTestId("acl-subjects")).toHaveTextContent("u1");
+  });
+
   it("ignores empty draft values", () => {
     renderEditor();
     fireEvent.click(screen.getByTestId("acl-add"));

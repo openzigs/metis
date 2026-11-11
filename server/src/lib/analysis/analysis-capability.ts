@@ -23,6 +23,7 @@ import {
   type AnalysisSkippedRepo,
   type CodeInvestigationGap,
   type FindingsLeftOutNotice,
+  type DocumentReadingCoverage,
   type RequirementInputAccount,
   type RequirementsLeftOutNotice,
   deriveCapabilityReasons,
@@ -124,6 +125,11 @@ export interface CapabilityTracker {
    * the question #1101 showed nothing was asking.
    */
   requirementInputAccount: RequirementInputAccount | null;
+  /**
+   * #2230 — the document reader's coverage report, set when the document
+   * agent read the selected documents in full. Absent otherwise.
+   */
+  documentReading?: DocumentReadingCoverage;
   /**
    * #1001 — an agentic code pass ran out of its turn/token budget before it
    * reached every requirement. Set by the orchestrator from the pass's
@@ -276,6 +282,10 @@ export function finalizeCapability(tracker: CapabilityTracker): AnalysisCapabili
     // no free text, so a plain run's persisted record is unchanged.
     ...(tracker.requirementInputAccount
       ? { requirementInputAccount: tracker.requirementInputAccount }
+      : {}),
+    // #2230 — omitted unless the reader ran, so a retrieval run's record is unchanged.
+    ...(tracker.documentReading
+      ? { documentReading: structuredClone(tracker.documentReading) }
       : {}),
     codeInvestigationCutShort: tracker.codeInvestigationCutShort,
     // #1131 — omitted unless a cut-short pass counted, so other records are unchanged.

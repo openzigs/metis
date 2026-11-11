@@ -44,6 +44,7 @@
     "eval:doc-retrieval": "pnpm --filter @metis/server eval:doc-retrieval",
     "eval:answer-correctness": "pnpm --filter @metis/server eval:answer-correctness",
     "eval:chat-cache": "pnpm --filter @metis/server eval:chat-cache",
+    "eval:ba-qa": "pnpm --filter @metis/server eval:ba-qa",
     "eval:analysis-tools": "pnpm --filter @metis/server eval:analysis-tools",
     "eval:restore-corpus": "node scripts/restore-corpus-doc-snapshots.mjs",
     "red-team": "pnpm --filter @metis/server red-team",

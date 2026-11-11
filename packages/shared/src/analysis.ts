@@ -2988,6 +2988,59 @@ export interface AnalysisSkippedRepo {
 }
 
 /**
+ * Issue #2230 — what a statement of a business document is, as the document
+ * reader labels it. Only `requirement`, `constraint` and `business-rule` are
+ * analysed as requirements; background and examples are not requirements.
+ */
+export const DOCUMENT_STATEMENT_KINDS = [
+  "requirement",
+  "constraint",
+  "business-rule",
+  "assumption",
+  "definition",
+  "background",
+  "example",
+] as const;
+export type DocumentStatementKind = (typeof DOCUMENT_STATEMENT_KINDS)[number];
+
+/** Issue #2230 — what the document reader read from one section of a document. */
+export interface DocumentReadingSection {
+  /** The section's heading path, `3 Booking › 3.2 Cancellation`. */
+  heading: string;
+  /** `unread`: the model's reply for this section could not be read. */
+  status: "read" | "unread";
+  /** Statements kept from it; 0 on a read section means it produced nothing. */
+  statements: number;
+  kinds: Partial<Record<DocumentStatementKind, number>>;
+}
+
+/** Issue #2230 — the document reader's account of one selected document. */
+export interface DocumentReadingDocument {
+  documentId: string;
+  filename: string;
+  /** `unread`: the document could not be loaded or read at all; `reason` says why. */
+  status: "read" | "unread";
+  reason?: string;
+  /** `whole`: every call had the whole document; `sectioned`: too long for the window. */
+  mode?: "whole" | "sectioned";
+  sections: DocumentReadingSection[];
+  statements: number;
+  /** Statements analysed as requirements (requirement, constraint, business rule). */
+  requirements: number;
+  /** Statements dropped because their quote was not in the document, or malformed. */
+  droppedUnverified: number;
+  /** Whether the cross-section pass (repeats, cross-references) ran. */
+  merge?: "done" | "failed" | "skipped";
+  /** The output-token cap each reading call had (#2229). */
+  outputTokenCap?: number;
+}
+
+/** Issue #2230 — the coverage report of the documents an analysis read in full. */
+export interface DocumentReadingCoverage {
+  documents: DocumentReadingDocument[];
+}
+
+/**
  * Structured capability record persisted on the analysis (`metadata.capability`)
  * and surfaced on the GET snapshot + Socket.IO stream. `reasons` is derived from
  * the boolean/mode fields via {@link deriveCapabilityReasons}.
@@ -3061,6 +3114,12 @@ export interface AnalysisCapability {
    * on every run persisted before #1112).
    */
   requirementInputAccount?: RequirementInputAccount;
+  /**
+   * Issue #2230 — the document reader's coverage report: every selected
+   * document and section, and what was read from each. Absent when the reader
+   * did not run (flag off, or no document could be loaded).
+   */
+  documentReading?: DocumentReadingCoverage;
   /**
    * Issue #1001 — the agentic code pass exhausted its turn/token budget (the run's
    * merged retrieval health is `exhausted`). Optional so records persisted before

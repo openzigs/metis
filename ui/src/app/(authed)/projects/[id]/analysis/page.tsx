@@ -86,6 +86,7 @@ import { AnalysisRunSummary } from "@/components/analysis/analysis-run-summary";
 import { AnalysisCapabilityBanner } from "@/components/analysis/analysis-capability-banner";
 import { RequirementInputAccountPanel } from "@/components/analysis/requirement-input-account-panel";
 import { AnalysisLimitsPanel } from "@/components/analysis/analysis-limits-panel";
+import { DocumentCoveragePanel } from "@/components/analysis/document-coverage-panel";
 import { AnalysisCapabilityHint } from "@/components/analysis/analysis-capability-hint";
 import { AffectedCodePanel } from "@/components/analysis/affected-code-panel";
 import { AnalysisDepthPanel } from "@/components/analysis/analysis-depth-panel";
@@ -1145,6 +1146,10 @@ export default function AnalysisPage(): React.ReactElement {
 
                   {/* Issue #2233 — the requirements and findings a limit left out. */}
                   <AnalysisLimitsPanel capability={detail.data.capability} />
+
+                  {/* Issue #2230 — what the document reader read from every selected
+                  document and section. Renders nothing when the reader did not run. */}
+                  <DocumentCoveragePanel capability={detail.data.capability} />
 
                   {/* Issue #735 — deterministic requirement→code mapping for new requirements. */}
                   <AffectedCodePanel affectedCode={detail.data.affectedCode} />
