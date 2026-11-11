@@ -749,17 +749,27 @@ lineage writer: the read-path rule of #1135 (`writesData`) is inert on them.
 
 ## Document-understanding corpora (#2229)
 
-Three synthetic Word business documents, each larger than the 10 chunks (about 20 KB)
+Four synthetic Word business documents, each larger than the 10 chunks (about 20 KB)
 today's document agent reads, with every requirement and every ambiguity a business
-analyst would want raised labelled against a source span. They are the Phase 0
+analyst would want raised labelled against a source span. The first three are the Phase 0
 baseline of epic #2227: do not change a reader's default until this corpus shows the
-change is a gain.
+change is a gain. The fourth (#2255) is the 60 KB size the epic's definition of done names.
 
 | Corpus | Kind | Word file | Converted text | Sections | Requirements | Ambiguities |
 |---|---|---|---|---|---|---|
 | `docunderstanding-01-clinic-booking` | FRD | 18 KB | 22,129 chars | 26 | 46 | 11 |
 | `docunderstanding-02-freight-claims` | BRD | 18 KB | 23,478 chars | 36 | 58 | 12 |
 | `docunderstanding-03-community-grants` | FRD | 22 KB | 35,075 chars | 53 | 102 | 14 |
+| `docunderstanding-04-library-lending` | FRD | 31 KB | 60,624 chars | 81 | 214 | 28 |
+
+Document 04 does not write its requirements only as "shall" statements. Most of what a member
+experiences is written to the member, as in the library's own leaflets ("You can renew…",
+"You will receive…"), and many rules are plain or passive statements ("Overdue notices are
+sent…"). Of its 214 requirements, 74 are in the second person, 66 use neither "shall" nor
+"must", and 74 use "shall" or "must". All of them are labelled, so a reader that only
+picks out "shall" sentences loses recall. Its 28 ambiguities cover all six kinds (eight
+contradictions, four of each other kind). Three of the contradictions are between a table and
+the body, and several are between distant sections. It has no results yet.
 
 Each item holds `frd.src.md` (the authored document, labels marked inline as
 `[[R12 ...]]` and `[[A3 ...]]` with an ambiguity trailer; see
@@ -777,7 +787,7 @@ labels. A reviewer who disagrees with a label edits `frd.src.md` and rebuilds.
 ```bash
 pnpm --filter server eval:doc-understanding:build            # after editing a frd.src.md; commit all three files
 pnpm --filter server eval:doc-understanding:build --check    # labels.json up to date?
-pnpm --filter server eval:doc-understanding                  # arms A,B,C over all three, 1 run, $10 cap
+pnpm --filter server eval:doc-understanding                  # arms A,B,C over all four, 1 run, $10 cap
 pnpm --filter server eval:doc-understanding --corpus docunderstanding-01-clinic-booking --arms B
 pnpm --filter server eval:doc-understanding --combine a.json,b.json,c.json --reading baseline-sonnet
 ```
