@@ -39,6 +39,7 @@ import { reciprocalRankFusion } from "../rag/bm25-index.js";
 import type { KnowledgeService } from "../rag/knowledge-service.js";
 import { getReranker, isRerankEnabled, type Reranker } from "../rag/reranker.js";
 import type { RetrievalContextChunk } from "./agent-runner.js";
+import { requirementQueryText } from "./requirement-query.js";
 
 /**
  * Static keyword bags per specialist agent. Used as a *fallback* when project
@@ -304,7 +305,8 @@ export async function retrievePerRequirement(
       const i = cursor++;
       if (i >= reqs.length) return;
       const req = reqs[i];
-      const res = await knowledge.search(input.projectId, req.text, {
+      // #2233 — the query is bounded; the evidence keeps the full text for the prompt.
+      const res = await knowledge.search(input.projectId, requirementQueryText(req.text), {
         k,
         documentIds: input.documentIds,
         fusionPoolSize: poolSize,

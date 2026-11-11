@@ -12,4 +12,4 @@ section: Fixed
   names the agent, how many findings it wrote and kept, and the title of each finding that was not
   saved.
 - An analysis started from imported tracker items now gives the code agent each item's description
-  and acceptance criteria, not only its title.
+  and acceptance criteria, not only its title; searches read the first 4,000 characters of it.

@@ -40,6 +40,7 @@ import {
   type SymbolLineLookup,
 } from "../rag/fused-code-context.js";
 import type { RetrievalContextChunk } from "./agent-runner.js";
+import { requirementQueryText } from "./requirement-query.js";
 import { deriveRetrievalQuery, RETRIEVAL_QUERIES } from "./retrieval.js";
 
 /**
@@ -219,7 +220,8 @@ export async function retrieveFusedCodeContext(opts: {
       projectName: opts.projectName,
       projectDescription: opts.projectDescription,
       extraInstructions: opts.extraInstructions,
-      requirementTexts: opts.requirements.map((r) => r.text),
+      // #2233 — each requirement's bounded text, not an imported item's whole body.
+      requirementTexts: opts.requirements.map((r) => requirementQueryText(r.text)),
     }),
     ragChunks: opts.ragChunks,
     enabled: opts.enabled,

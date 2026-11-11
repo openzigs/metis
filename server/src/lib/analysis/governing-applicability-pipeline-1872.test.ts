@@ -17,6 +17,7 @@ import {
   type AnalysisCapability,
 } from "@metis/shared";
 import { __resetConfigSingleton } from "../config/config-service.js";
+import { MAX_REQUIREMENT_QUERY_CHARS } from "./requirement-query.js";
 
 const ANALYSIS_ID = "an_1872";
 const PROJECT_ID = "pr_1872";
@@ -30,6 +31,10 @@ const state = vi.hoisted(() => ({
   requirements: null as Array<{ id: string; text: string }> | null,
   /** #2233 — how many findings the non-code specialists write. */
   otherFindings: 0,
+  /** #2233 — every query the knowledge search was given. */
+  searchQueries: [] as string[],
+  /** #2233 — what the custom-agent phase returns. */
+  customResults: [] as Array<Record<string, unknown>>,
 }));
 /** #2022 — every requirement the applicability hook was asked to decide. */
 const decided = vi.hoisted(() => ({ ids: [] as string[] }));
@@ -140,7 +145,7 @@ vi.mock("./synthesis.js", () => ({
 vi.mock("./cross-doc-detection.js", () => ({ runCrossDocDetection: vi.fn(async () => null) }));
 vi.mock("./custom-agent-phase.js", () => ({
   runEnabledCustomAgents: vi.fn(async () => ({
-    results: [],
+    results: state.customResults,
     usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
   })),
   // #1997 — the orchestrator persists the phase's results; without this every
@@ -266,26 +271,41 @@ function makeProvider() {
   return { provider: { key: "bedrock", model: "test-model", chat } as never, calls, timeline };
 }
 
-async function runPipeline(made: ReturnType<typeof makeProvider> = makeProvider()) {
+/** #2233 — the embeddings sidecar's input limit (`embeddings-svc/src/app.ts`). */
+const SIDECAR_MAX_INPUT_CHARS = 32_768;
+
+async function runPipeline(
+  made: ReturnType<typeof makeProvider> = makeProvider(),
+  extra: Record<string, unknown> = {},
+) {
   const { provider, calls, timeline } = made;
   const orch = new AnalysisOrchestrator({
     provider,
     retrieve: async () => [],
     knowledge: {
-      search: async (_projectId: string, query: string) => ({
-        hits: [
-          {
-            chunkId: "doc_1#0",
-            documentId: "doc_1",
-            filename: "brief.md",
-            position: 0,
-            text: `Brief: ${query.slice(0, 40)}`,
-            score: 1,
-            embeddingModel: "test",
-            source: "upload",
-          },
-        ],
-      }),
+      search: async (_projectId: string, query: string) => {
+        state.searchQueries.push(query);
+        // #2233 — as the sidecar embedder does: a non-retryable 400 past its limit.
+        if (query.length > SIDECAR_MAX_INPUT_CHARS) {
+          throw new Error(
+            `embeddings sidecar 400: input over ${SIDECAR_MAX_INPUT_CHARS} characters`,
+          );
+        }
+        return {
+          hits: [
+            {
+              chunkId: "doc_1#0",
+              documentId: "doc_1",
+              filename: "brief.md",
+              position: 0,
+              text: `Brief: ${query.slice(0, 40)}`,
+              score: 1,
+              embeddingModel: "test",
+              source: "upload",
+            },
+          ],
+        };
+      },
     } as never,
   });
   orchestrator.current = orch;
@@ -303,6 +323,7 @@ async function runPipeline(made: ReturnType<typeof makeProvider> = makeProvider(
     projectId: PROJECT_ID,
     startedById: "u1",
     model: "test-model",
+    ...extra,
   });
   const persisted = (
     vi.mocked(analysisService.persistAgentResult).mock.calls as unknown as Array<
@@ -340,6 +361,8 @@ beforeEach(() => {
   state.governingDoneAtCompletion = -1;
   state.requirements = null;
   state.otherFindings = 0;
+  state.searchQueries = [];
+  state.customResults = [];
   decided.ids = [];
   progress.governingDone = 0;
   process.env.GOVERNING_DOCS_ENABLED = "0";
@@ -830,6 +853,59 @@ describe("#2113 — the agentic path (a project with ingested code)", () => {
     await runPipeline();
     expect(persistedCapability()).not.toHaveProperty("requirementsLeftOut");
     expect(persistedCapability().reasons).not.toContain("requirements-left-out");
+  });
+
+  it("#2233 — an imported item whose body is over 32,768 characters: the search query is bounded and the code agent still runs", async () => {
+    const title = "Export the order history as a CSV";
+    const body = "Every column of every order goes into the file. ".repeat(800);
+    expect(body.length).toBeGreaterThan(SIDECAR_MAX_INPUT_CHARS);
+    const run = await runPipeline(makeProvider(), {
+      extraInstructions: `- ${title}`,
+      sourceRequirements: [
+        {
+          candidateId: "NR-1",
+          requirementId: "imp-1",
+          title,
+          externalSource: "github",
+          externalId: "4100",
+          externalUrl: null,
+          detail: body,
+        },
+      ],
+    });
+    expect(state.searchQueries.length).toBeGreaterThan(0);
+    for (const q of state.searchQueries) {
+      expect(q.length).toBeLessThanOrEqual(MAX_REQUIREMENT_QUERY_CHARS);
+    }
+    expect(state.searchQueries).toContainEqual(expect.stringMatching(new RegExp(`^${title}\\n`)));
+    // The code agent ran, read the whole body, and its result was persisted.
+    const code = run.calls.find((c) => c.system.includes("requirementId"));
+    expect(code, "the requirement-grounded code agent ran").toBeDefined();
+    expect(userOf(code!)).toContain(body.trim());
+    expect(run.persisted.length).toBeGreaterThan(0);
+    expect(run.persisted.every((o) => o !== null)).toBe(true);
+  });
+
+  it("#2233 — the custom-agent phase: findings an agent lost at the 50-finding cap are named on the persisted capability", async () => {
+    const leftOut = {
+      agentKey: "custom:ag_1",
+      producedCount: 52,
+      keptCount: 50,
+      leftOutTitles: ["Finding 51", "Finding 52"],
+    };
+    state.customResults = [
+      {
+        agentId: "ag_1",
+        agentRef: "custom:ag_1",
+        agentName: "Verbose",
+        content: "{}",
+        usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+        findingsLeftOut: leftOut,
+      },
+    ];
+    await runPipeline();
+    expect(persistedCapability().findingsLeftOut).toEqual([leftOut]);
+    expect(persistedCapability().reasons).toContain("findings-left-out");
   });
 
   it("flag off: the agentic path reads no workspace or rule, and stores nothing", async () => {
