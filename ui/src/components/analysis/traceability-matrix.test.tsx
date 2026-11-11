@@ -89,6 +89,22 @@ describe("TraceabilityMatrix", () => {
     expect(screen.getByTestId("coverage-badge-no_evidence")).toBeInTheDocument();
   });
 
+  it("#2222 — says a row's findings are stale when its requirement was edited since the analysis", async () => {
+    getTraceability.mockResolvedValue({
+      ...MATRIX,
+      rows: [
+        { ...MATRIX.rows[0]!, findingsStale: { judgedVersion: 0, currentVersion: 2 } },
+        MATRIX.rows[1]!,
+      ],
+    });
+    renderMatrix();
+    const row = await screen.findByTestId("traceability-row-req-1");
+    expect(within(row).getByTestId("traceability-findings-stale")).toHaveTextContent(
+      "Stale: the analysis judged v0; the requirement is now v2.",
+    );
+    expect(screen.getAllByTestId("traceability-findings-stale")).toHaveLength(1);
+  });
+
   it("suffixes each test with its relation when the resolver supplied one (#816)", async () => {
     getTraceability.mockResolvedValue({
       ...MATRIX,

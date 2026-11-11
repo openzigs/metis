@@ -566,3 +566,48 @@ describe("isDocumentationFilePath", () => {
     expect(isDocumentationFilePath(p)).toBe(false);
   });
 });
+
+describe("#2222 — findings of a requirement edited since the analysis", () => {
+  const finding: MatrixFindingInput = {
+    id: "f-1",
+    title: "Raise minimum password length from 6 to 8",
+    severity: "medium",
+    citations: [],
+  };
+  const req = (overrides: Partial<MatrixRequirementInput>): MatrixRequirementInput => ({
+    id: "req-1",
+    title: "Minimum password length",
+    coverage: null,
+    verdict: null,
+    evidenceFindingIds: ["f-1"],
+    ...overrides,
+  });
+  const build = (requirements: MatrixRequirementInput[]) =>
+    buildTraceabilityMatrix({
+      analysisId: "an-1",
+      projectId: "proj-1",
+      requirements,
+      findingsById: findingsMap([finding]),
+    });
+
+  it("marks the row's findings stale when the requirement moved past its analysed version", () => {
+    const matrix = build([req({ version: 2, analysedVersion: 0 })]);
+    expect(matrix.rows[0]!.findingsStale).toEqual({ judgedVersion: 0, currentVersion: 2 });
+    expect(serializeTraceabilityCsv(matrix)).toContain(
+      "Raise minimum password length from 6 to 8 (medium); Stale: the analysis judged v0; the requirement is now v2.",
+    );
+    expect(serializeTraceabilityMarkdown(matrix)).toContain(
+      "Stale: the analysis judged v0; the requirement is now v2.",
+    );
+  });
+
+  it("leaves a current row, a row with no findings and a row without versions unmarked", () => {
+    const matrix = build([
+      req({ version: 2, analysedVersion: 2 }),
+      req({ id: "req-2", evidenceFindingIds: [], version: 3, analysedVersion: 0 }),
+      req({ id: "req-3" }),
+    ]);
+    for (const row of matrix.rows) expect(row).not.toHaveProperty("findingsStale");
+    expect(serializeTraceabilityCsv(matrix)).not.toContain("Stale");
+  });
+});
