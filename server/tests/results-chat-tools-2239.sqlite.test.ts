@@ -521,6 +521,12 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       // A run that also covers a project the caller cannot open names only theirs.
       expect(r.text).toContain("[ia-cross]");
       expect(r.text).not.toContain("Secret project");
+      // …and without its summary, which describes the project they cannot open.
+      expect(r.text).not.toContain("CROSS SECRET");
+      expect(JSON.stringify(r.data)).not.toContain("CROSS SECRET");
+      // An admin, who may open every project of ia-cross, sees it.
+      const admin = await run(tools.createListImpactAnalysesTool(), {}, ctx(ADMIN));
+      expect(admin.text).toContain("CROSS SECRET");
     });
 
     it("reads one impact analysis per project", async () => {

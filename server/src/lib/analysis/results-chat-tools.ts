@@ -432,8 +432,16 @@ export function createListImpactAnalysesTool(
           resultCount: 0,
         };
       }
-      const names = await projectNames(rows.flatMap((r) => r.projectIds));
-      const lines = rows.map(
+      // A run's summary describes every project it covered, so it is shown only
+      // when the reader can open all of them — as get_impact_analysis requires
+      // (loadAccessibleImpactDetail). Otherwise the row lists without it.
+      // `projectIds` is already narrowed to the reader's projects; `projectCount`
+      // is the run's full count, so a shorter list means a project they can't open.
+      const readable = (r: (typeof rows)[number]): boolean =>
+        accessibleProjectIds === null || r.projectIds.length === r.projectCount;
+      const visibleRows = rows.map((r) => (readable(r) ? r : { ...r, summary: null }));
+      const names = await projectNames(visibleRows.flatMap((r) => r.projectIds));
+      const lines = visibleRows.map(
         (r) =>
           `- [${r.id}] ${r.status}, started ${day(r.startedAt)}; ${r.projectCount} project(s)` +
           (r.projectIds.length
@@ -445,7 +453,7 @@ export function createListImpactAnalysesTool(
       );
       return {
         text: `${rows.length} impact analys${rows.length === 1 ? "is" : "es"}.\n${lines.join("\n")}`,
-        data: { impactAnalyses: rows },
+        data: { impactAnalyses: visibleRows },
         resultCount: rows.length,
       };
     },
