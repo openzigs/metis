@@ -13,6 +13,7 @@ import {
   type AttachmentMeta,
   type AttachmentExtraction,
 } from "../src/lib/connectors/jira/attachment-extractor.js";
+import { buildDocx, p } from "./fixtures/docx-2232.js";
 
 // ---- Mocks -----------------------------------------------------------------
 
@@ -40,15 +41,6 @@ vi.mock("pdf-parse", () => {
   }
   return { PDFParse: MockPDFParse };
 });
-
-vi.mock("mammoth", () => ({
-  default: {
-    extractRawText: vi.fn(async () => ({
-      value: "DOCX extracted raw text content",
-      messages: [],
-    })),
-  },
-}));
 
 vi.mock("exceljs", () => {
   const mockWorksheet = {
@@ -340,8 +332,10 @@ describe("attachment-extractor", () => {
       }
     });
 
-    it("extracts markdown from DOCX", async () => {
-      const docxBuffer = Buffer.from("fake-docx-content");
+    it("extracts markdown from DOCX with the upload converter, numbering and all (#2263)", async () => {
+      const docxBuffer = await buildDocx({
+        body: p("Login", { style: "Heading1" }) + p("Users sign in.", { numId: "2", ilvl: 0 }),
+      });
       const client = createMockClient({
         "https://jira.example.com/attachment/doc1": docxBuffer,
       });
@@ -357,7 +351,8 @@ describe("attachment-extractor", () => {
       const results = await extractAttachments({ client, attachments });
 
       expect(results[0].method).toBe("docx");
-      expect(results[0].text).toContain("DOCX extracted raw text content");
+      // Raw text (mammoth.extractRawText) kept neither the heading nor the requirement number.
+      expect(results[0].text).toBe("# 1 Login\n\n1. Users sign in.");
     });
 
     it("extracts tables from XLSX", async () => {

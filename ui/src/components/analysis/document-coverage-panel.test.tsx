@@ -114,6 +114,31 @@ describe("DocumentCoveragePanel", () => {
   });
 });
 
+describe("#2280 — a reused reading", () => {
+  it("says the document was not read again, when and with which model its reading was made", () => {
+    render(
+      <DocumentCoveragePanel
+        capability={capability({
+          documents: [
+            {
+              ...READ.documents[0]!,
+              reused: { readAt: "2026-11-03T10:00:00.000Z", model: "claude-sonnet-5-5" },
+            },
+          ],
+        })}
+      />,
+    );
+    expect(screen.getByTestId("document-coverage-reused")).toHaveTextContent(
+      'Not read again: the reading saved on 2026-11-03 (read with claude-sonnet-5-5) was reused, because the file has not changed. Start a new analysis with "Read the documents again" for a fresh reading.',
+    );
+  });
+
+  it("says nothing about a reuse for a document read now", () => {
+    render(<DocumentCoveragePanel capability={capability(READ)} />);
+    expect(screen.queryByTestId("document-coverage-reused")).toBeNull();
+  });
+});
+
 describe("describeKinds", () => {
   it("lists the kinds in their order, singular and plural", () => {
     expect(describeKinds({ example: 2, requirement: 1 })).toBe("1 requirement, 2 examples");
