@@ -2238,6 +2238,47 @@ describe("AnalysisOrchestrator.regenerateAgent", () => {
     // Document + synthesis got replaced; total agentResults still 5.
     expect(agentResults.size).toBe(5);
   });
+
+  it("#2280 — 'Read the documents again' reaches every agent run, and a regenerate always reads again", async () => {
+    const orch = new AnalysisOrchestrator({ provider: makeProvider({}), retrieve: async () => [] });
+    const runOneAgent = vi.spyOn(
+      orch as unknown as { runOneAgent: (input: Record<string, unknown>) => Promise<unknown> },
+      "runOneAgent",
+    );
+    const wait = async (id: string) => {
+      for (let i = 0; i < 200 && analyses.get(id)!.status === "running"; i += 1) {
+        await new Promise((r) => setTimeout(r, 5));
+      }
+    };
+    const inputs = () => runOneAgent.mock.calls.map((c) => c[0] as Record<string, unknown>);
+
+    const { id: plain } = await orch.start({
+      projectId: "proj-abcdefghij",
+      startedById: "user-1234567890",
+    });
+    await wait(plain);
+    expect(inputs().length).toBeGreaterThan(0);
+    expect(inputs().every((i) => i.rereadDocuments === undefined)).toBe(true);
+
+    runOneAgent.mockClear();
+    const { id: reread } = await orch.start({
+      projectId: "proj-abcdefghij",
+      startedById: "user-1234567890",
+      rereadDocuments: true,
+    });
+    await wait(reread);
+    expect(inputs().find((i) => i.agentKey === "document")).toMatchObject({
+      rereadDocuments: true,
+    });
+
+    runOneAgent.mockClear();
+    await orch.regenerateAgent({
+      analysisId: plain,
+      agentKey: "document",
+      actorId: "user-1234567890",
+    });
+    expect(inputs()[0]).toMatchObject({ agentKey: "document", rereadDocuments: true });
+  });
 });
 
 describe("AnalysisOrchestrator.regenerateAgent guards", () => {

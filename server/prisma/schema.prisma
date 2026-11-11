@@ -1075,6 +1075,8 @@ model Document {
   quarantineChunks QuarantineChunk[]
   /// Epic #159 — impact-analysis runs sourced from this document.
   impactAnalyses   ImpactAnalysis[]
+  /// #2280 — the model's saved readings of this document's file.
+  savedReadings    SavedDocumentReading[]
 
   @@index([projectId])
   @@index([projectId, status])
@@ -1082,6 +1084,43 @@ model Document {
   @@index([projectId, updatedAt])
   @@index([checksum])
   @@map("documents")
+}
+
+/// #2280 (Epic #2227) — a successful reading of a document by the document
+/// reader (`lib/document-reader/reader.ts`), saved so the next Requirements
+/// Analysis or Impact Analysis of the same file makes no model call. Read and
+/// written only by `lib/document-reader/reading-cache.ts`.
+///
+/// One row per key: the document, its file (`checksum`), the reader
+/// (`readerVersion`, bumped when its prompt, schema or batching changes), the
+/// model that read it, and `textHash` — the SHA-256 of the exact text the model
+/// read, which changes when ingest's image descriptions are in it and when the
+/// parser changes. A different value of any of them reads again.
+///
+/// Only a whole reading is saved: no failed, partial (a batch unread, or the
+/// cross-section pass failed) or empty one. Scoped by `projectId`, the
+/// document's own project, which every lookup filters on with the document id.
+/// Goes with its document: a hard delete cascades, and the soft delete
+/// (`KnowledgeService.deleteDocument`) deletes the rows itself.
+model SavedDocumentReading {
+  id            String   @id @default(cuid())
+  projectId     String
+  documentId    String
+  checksum      String
+  readerVersion String
+  model         String
+  textHash      String
+  /// JSON: the reading (statements, section coverage, mode, merge, counts).
+  reading       String
+  /// JSON: the `TokenUsage` the reading cost when it was read.
+  usage         String
+  createdAt     DateTime @default(now())
+
+  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@unique([documentId, checksum, readerVersion, model, textHash], map: "saved_document_readings_key")
+  @@index([projectId, documentId])
+  @@map("saved_document_readings")
 }
 
 model KnowledgeChunk {

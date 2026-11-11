@@ -475,11 +475,26 @@ export const createImpactAnalysisSchema = z
      * the "who is impacted by this change" signal, so they are opt-in.
      */
     includeDependencies: z.boolean().optional().default(false),
+    /**
+     * #2280 — read the source document again instead of reusing a saved
+     * reading of its unchanged file (the document reader,
+     * `ANALYSIS_DOCUMENT_READER`). The fresh reading replaces the saved one.
+     */
+    rereadDocument: z.boolean().optional(),
   })
   .refine((v) => Boolean(v.documentId) || Boolean(v.text) || (v.requirementIds?.length ?? 0) > 0, {
     message: "one of documentId, text or requirementIds is required",
     path: ["documentId"],
   });
+/** #2280 — the optional body of `POST /impact-analyses/:id/rerun`. */
+export const rerunImpactAnalysisSchema = z
+  .object({
+    /** Read the source document again instead of reusing its saved reading. */
+    rereadDocument: z.boolean().optional(),
+  })
+  .strict();
+export type RerunImpactAnalysisInput = z.input<typeof rerunImpactAnalysisSchema>;
+
 /**
  * Request payload type for callers. Uses `z.input` so optional-with-default
  * fields (e.g. `includeSchemaImpact`) remain optional for the client — the
