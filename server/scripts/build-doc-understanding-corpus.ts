@@ -10,6 +10,7 @@
 /* eslint-disable no-console -- a CLI whose output is its report */
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { parseFrdSource } from "../src/lib/eval/doc-understanding/corpus-source.js";
 import {
   DOC_UNDERSTANDING_CORPORA,
@@ -38,8 +39,11 @@ async function main(): Promise<void> {
     const json = `${JSON.stringify(labels, null, 2)}\n`;
     const labelsPath = path.join(dir, "labels.json");
     if (check) {
-      const held = await readFile(labelsPath, "utf8").catch(() => "");
-      if (held !== json) {
+      // Compared as values: the repository's formatter may lay the JSON out differently.
+      const held = await readFile(labelsPath, "utf8")
+        .then((t) => JSON.parse(t) as unknown)
+        .catch(() => null);
+      if (!isDeepStrictEqual(held, labels)) {
         stale++;
         console.log(`${name}: labels.json is stale; run without --check`);
       }
