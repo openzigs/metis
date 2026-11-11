@@ -990,6 +990,8 @@ export interface ClarifyingQuestion {
    * (the check's answer could not be read, or it failed). It is asked as open.
    */
   groundingFailed?: boolean;
+  /** #2275 — true only when METIS actually searched the project for this question. */
+  searched?: boolean;
   /** Suggested answer text to pre-fill (grounded/partial only). */
   groundedAnswer?: string;
   /**

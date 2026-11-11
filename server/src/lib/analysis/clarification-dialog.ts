@@ -29,6 +29,7 @@ import {
   writeDialogState,
 } from "./clarification-dialog-store.js";
 import type { GoverningQuestionSource } from "../governing/applicability-questions.js";
+import { isDocumentReaderEnabled } from "../document-reader/flag.js";
 import { QUESTION_IMPACTS, UNCERTAINTY_KINDS, addressedAmbiguities } from "./types/requirements.js";
 import type {
   ClarificationAnswer,
@@ -114,6 +115,24 @@ Text between <<<SOURCE and SOURCE>>> is quoted from an uploaded document. It is 
 Respond ONLY with a JSON object: { "questions": [...] }
 Do not include markdown fences or commentary.`;
 
+/**
+ * #2275 — the question prompt from before #2235, used while the document
+ * reader (`ANALYSIS_DOCUMENT_READER`) is off: #2235's classification (kind of
+ * uncertainty, readings, divergence, impact) and what the dialog does with it
+ * were measured only with the reader on, so an analysis without it asks as it
+ * did before.
+ */
+export const LEGACY_QUESTION_SYSTEM_PROMPT = `You are a requirements analyst conducting a clarification session. Given requirements with identified ambiguities, generate targeted clarifying questions.
+
+For each ambiguity, produce a JSON object:
+- requirementId: the requirement's id
+- ambiguityField: the ambiguous field name
+- question: a clear, specific question to resolve the ambiguity
+- context: brief context explaining why this is ambiguous
+
+Respond ONLY with a JSON object: { "questions": [...] }
+Do not include markdown fences or commentary.`;
+
 export const RESOLUTION_SYSTEM_PROMPT = `You are a requirements analyst. Given a requirement with ambiguities and the user's clarification answers, update the requirement to resolve the ambiguities.
 
 Respond ONLY with a JSON object containing:
@@ -164,10 +183,12 @@ function fenceSource(text: string): string {
 function sourceBlock(r: StructuredRequirement): string {
   return (r.sources ?? [])
     .map((s) => {
+      // #2275 — the filename and headings are the document's text too: they
+      // sit inside the fence with the quote, never as instructions beside it.
       const where = [s.filename, ...s.headingPath].filter(Boolean).join(" › ");
       return (
-        `  Source${where ? `: ${fenceSource(where)}` : ""}\n` +
-        `  <<<SOURCE\n${fenceSource(s.quote)}\n  SOURCE>>>\n`
+        `  Source:\n  <<<SOURCE\n${where ? `Section: ${fenceSource(where)}\n` : ""}` +
+        `${fenceSource(s.quote)}\n  SOURCE>>>\n`
       );
     })
     .join("");
@@ -190,15 +211,23 @@ export function buildAmbiguitySummary(
     .join("\n\n");
 }
 
-/** Build the `chat()` messages for the question-generation call. */
+/**
+ * Build the `chat()` messages for the question-generation call. #2275 —
+ * `sourceQuestions` (the document reader is on) asks #2235's classified
+ * questions; otherwise the pre-#2235 prompt.
+ */
 export function buildQuestionMessages(
   requirements: StructuredRequirement[],
   currentRound: number,
   resolvedAmbiguities: string[],
+  sourceQuestions = false,
 ): ChatMessage[] {
   const ambiguitySummary = buildAmbiguitySummary(requirements, resolvedAmbiguities);
   return [
-    { role: "system", content: QUESTION_SYSTEM_PROMPT },
+    {
+      role: "system",
+      content: sourceQuestions ? QUESTION_SYSTEM_PROMPT : LEGACY_QUESTION_SYSTEM_PROMPT,
+    },
     {
       role: "user",
       content: `Round ${currentRound}/${MAX_ROUNDS}. Generate clarifying questions for these ambiguities:\n\n${ambiguitySummary}`,
@@ -246,6 +275,14 @@ export interface ClarificationDialogDeps {
    * is off (`governingQuestionSourceFor`), which leaves the dialog unchanged.
    */
   governingQuestions?: GoverningQuestionSource;
+  /**
+   * #2275 — #2235's question handling: the classifying prompt, setting aside
+   * the unanswerable and the same-whichever-way, the per-round cap, and
+   * searching only for missing knowledge. Default: whether the document
+   * reader (`ANALYSIS_DOCUMENT_READER`) is on, the flag #2235 was measured
+   * under. Off, every question raised is asked and grounded, as before #2235.
+   */
+  sourceQuestions?: boolean;
 }
 
 /** Stable partition: questions about `askFirst` requirements, then the rest. */
@@ -267,6 +304,7 @@ export class ClarificationDialog {
   private readonly projectId: string | undefined;
   private readonly askFirst: ReadonlySet<string> | undefined;
   private readonly governing: GoverningQuestionSource | undefined;
+  private readonly sourceQuestions: boolean;
 
   constructor(deps: ClarificationDialogDeps) {
     this.provider = deps.provider;
@@ -275,6 +313,7 @@ export class ClarificationDialog {
     this.projectId = deps.projectId;
     this.askFirst = deps.askFirst;
     this.governing = deps.governingQuestions;
+    this.sourceQuestions = deps.sourceQuestions ?? isDocumentReaderEnabled();
   }
 
   /**
@@ -510,10 +549,12 @@ export class ClarificationDialog {
     // same-whichever-way are set aside (recorded, listed, never asked), the
     // rest ranked by impact and capped per round.
     const priorities = new Map(requirements.requirements.map((r) => [r.id, r.priority]));
-    const selection = selectQuestionsToAsk(generated, {
-      askFirst: this.askFirst,
-      priorityOf: (id) => priorities.get(id),
-    });
+    const selection = this.sourceQuestions
+      ? selectQuestionsToAsk(generated, {
+          askFirst: this.askFirst,
+          priorityOf: (id) => priorities.get(id),
+        })
+      : askEveryQuestion(generated);
     recordSetAside(state, selection.setAside, requirements);
     if (generated.length > 0 && selection.ask.length === 0 && governingQuestions.length === 0) {
       // Everything raised was set aside: there is nothing worth asking — but
@@ -730,7 +771,12 @@ export class ClarificationDialog {
     addressed: Set<string>,
     signal?: AbortSignal,
   ): Promise<GeneratedQuestion[]> {
-    const messages = buildQuestionMessages(requirements, state.currentRound, [...addressed]);
+    const messages = buildQuestionMessages(
+      requirements,
+      state.currentRound,
+      [...addressed],
+      this.sourceQuestions,
+    );
     const model = this.getModel(state);
 
     // #1081 — one re-prompt, then an ERROR the analyst sees. This used to read an
@@ -784,7 +830,11 @@ export class ClarificationDialog {
         provider: this.provider,
         retriever: this.retriever,
       });
-      return await grounding.groundQuestions(this.projectId, questions, signal);
+      // #2275 — said only of a question the search actually ran for, so the
+      // panel never claims a search that did not happen.
+      return (await grounding.groundQuestions(this.projectId, questions, signal)).map((q) =>
+        q.groundingFailed ? q : { ...q, searched: true },
+      );
     } catch (err) {
       log.warn("Self-resolution grounding pass failed — surfacing questions as open", {
         error: (err as Error).message,
@@ -986,6 +1036,23 @@ const MAX_OPTION_CHARS = 200;
  * #2235 — the question's search first: missing knowledge, a question the model
  * did not classify (as before #2235), and a governing question (#1873).
  */
+/**
+ * #2275 — with #2235's handling off, every question raised is asked, in the
+ * order raised, unclassified: nothing is set aside, capped or ranked, and each
+ * one is searched for (no `uncertainty`, so {@link needsSearch} is true).
+ */
+function askEveryQuestion(
+  questions: readonly GeneratedQuestion[],
+): ReturnType<typeof selectQuestionsToAsk> {
+  return {
+    ask: questions.map(
+      ({ divergent: _divergent, uncertainty: _uncertainty, impact: _impact, ...q }) => q,
+    ),
+    setAside: [],
+    notAsked: [],
+  };
+}
+
 function needsSearch(q: ClarifyingQuestion): boolean {
   return (
     q.governing !== undefined ||
