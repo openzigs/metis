@@ -41,6 +41,7 @@ import {
   useProjectScope,
 } from "@/components/chat/project-scope-selector";
 import { ScopeDegradationNotice } from "@/components/chat/scope-degradation-notice";
+import { scopeKeyOf, scopeOfSession, scopeSearches } from "@/lib/chat-scope";
 import { GroundingBadge, UngroundedScopeNotice } from "@/components/chat/grounding";
 import { ChatMarkdown } from "@/components/chat/chat-markdown";
 import { sanitizeAssistantText } from "@/lib/sanitize-assistant-text";
@@ -207,7 +208,8 @@ export default function ChatPage() {
   }
 
   // Serialize scope for stable deps comparison (avoids infinite re-renders).
-  const scopeKey = scope.mode === "all" ? "all" : `selected:${scope.projectIds.sort().join(",")}`;
+  // #2238 — a workspace scope, and a multi-product one, key on what they search.
+  const scopeKey = scopeKeyOf(scope);
 
   useEffect(() => {
     // #1367 — agent and scope both arrive one tick after mount. Running before
@@ -279,16 +281,18 @@ export default function ChatPage() {
         // #1139 — the session last open here is resumed only when it belongs
         // to the scope the page opened on: chat opens on the project active in
         // the top bar, not on whichever project the previous chat was in.
-        const opened = pickerProjectId ?? null;
-        const resumedProject = restored.session.projectId ?? null;
-        if (!resumeSessionId && resumedProject !== opened) {
+        // #2238 — compared on what each searches, so a multi-product or
+        // workspace chat resumes only into the same scope.
+        const opened = effectiveProjectId ? `selected:${effectiveProjectId}` : scopeKey;
+        const resumedKey = scopeKeyOf(scopeOfSession(restored.session));
+        if (!resumeSessionId && resumedKey !== opened) {
           // PR #1234 review (P1) — except an "All projects" conversation the
           // user was last in: a reload resumes it (#1367) and the scope
           // follows it back to "All projects" rather than losing the thread.
           // Only when "All projects" is what they last picked here, and no
           // `?projectId=` asks for a project.
           const resumeUnscoped =
-            resumedProject === null && !effectiveProjectId && loadStoredScope()?.mode === "all";
+            resumedKey === "all" && !effectiveProjectId && loadStoredScope()?.mode === "all";
           if (!resumeUnscoped) {
             storeActiveSessionId(null);
             return;
@@ -360,12 +364,15 @@ export default function ChatPage() {
       const created = await createSessionWithScope({
         title: "New Chat",
         ...sessionAgentInput(agent.selection, pickerProjectId),
-        // A single projectId in the URL wins; otherwise the scope selector's.
+        // A single projectId in the URL wins; otherwise the scope selector's:
+        // #2238 — one project, several, or a whole workspace.
         ...(effectiveProjectId
           ? { projectId: effectiveProjectId }
-          : scope.mode === "selected" && scope.projectIds.length > 0
-            ? { projectIds: scope.projectIds }
-            : {}),
+          : scope.mode === "workspace" && scope.workspaceId
+            ? { workspaceId: scope.workspaceId }
+            : scope.mode === "selected" && scope.projectIds.length > 0
+              ? { projectIds: scope.projectIds }
+              : {}),
       });
       if (scopeGenRef.current !== gen) return null;
       setSessionScope(created.scope);
@@ -714,7 +721,10 @@ export default function ChatPage() {
           show={
             ready &&
             // #1139 — before the first send, the scope the session will get.
-            !(session ? session.projectId : pickerProjectId) &&
+            // #2238 — a multi-product or workspace scope runs retrieval too.
+            !(session
+              ? scopeSearches(scopeOfSession(session))
+              : effectiveProjectId || scopeSearches(scope)) &&
             !scopeBlocked &&
             readOnlyReason === null
           }

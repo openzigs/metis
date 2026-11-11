@@ -51,6 +51,7 @@ import {
 import { assertWithinBudget } from "../../finops/budget-enforcer.js";
 import { sessionAgentNotice } from "../../agent-runtime/session-agent.js";
 import { createChildLogger } from "../../logger.js";
+import { parseScopeProjectIds } from "../chat-search-scope.js";
 
 const log = createChildLogger("conversation-service");
 
@@ -85,6 +86,9 @@ export function sessionStateDto(s: AISession): ResumeSessionResponse["session"] 
     status: s.status,
     forkedFromSessionId: s.forkedFromSessionId,
     forkedFromOrdinal: s.forkedFromOrdinal,
+    // #2238 — a multi-product (or workspace) session's scope, for the chat page.
+    scopeProjectIds: parseScopeProjectIds(s.scopeProjectIds),
+    scopeWorkspaceId: s.scopeWorkspaceId ?? null,
     updatedAt: s.updatedAt.toISOString(),
     // #149 — set when the session can be read but no longer take a turn.
     readOnlyReason: sessionReadOnlyReason(s),
@@ -213,6 +217,9 @@ export async function forkSession(
         planModeActive: source.planModeActive,
         forkedFromSessionId: source.id,
         forkedFromOrdinal: fromOrdinal,
+        // #2238 — a fork searches what its source searched.
+        scopeProjectIds: source.scopeProjectIds,
+        scopeWorkspaceId: source.scopeWorkspaceId,
       },
     });
     const n = await copyTranscriptPrefix(source.id, created.id, fromOrdinal, tx);

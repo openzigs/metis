@@ -71,3 +71,66 @@ describe("UngroundedScopeNotice (#18)", () => {
     expect(container).toBeEmptyDOMElement();
   });
 });
+
+describe("groundingText — multi-product (#2238)", () => {
+  const alpha = { projectId: "a", projectName: "Alpha", sources: 3 };
+  const beta = { projectId: "b", projectName: "Beta", sources: 1 };
+  const gamma = { projectId: "c", projectName: "Gamma", sources: 0 };
+
+  it("names each product the answer drew on, with its source count", () => {
+    expect(groundingText({ status: "multi", projects: [alpha, beta] })).toBe(
+      "Grounded in Alpha (3 sources), Beta (1 source)",
+    );
+  });
+
+  it("names a product searched without a match, and one that could not be searched", () => {
+    expect(
+      groundingText({
+        status: "multi",
+        projects: [alpha, gamma],
+        unsearched: [{ projectId: "d", projectName: "Delta", reason: "timeout" }],
+        unavailable: 2,
+      }),
+    ).toBe(
+      "Grounded in Alpha (3 sources) · nothing relevant in Gamma · Delta not searched (timed out) · 2 products no longer available to you",
+    );
+    expect(
+      groundingText({
+        status: "multi",
+        projects: [alpha],
+        unsearched: [{ projectId: "d", projectName: "Delta", reason: "error" }],
+      }),
+    ).toBe("Grounded in Alpha (3 sources) · Delta not searched (failed)");
+  });
+
+  it("says so when nothing matched, or nothing could be searched", () => {
+    expect(groundingText({ status: "multi", projects: [gamma] })).toBe(
+      "No excerpts matched in any product searched",
+    );
+    expect(groundingText({ status: "multi", projects: [] })).toMatch(
+      /^Not grounded — none of this chat's products could be searched/,
+    );
+  });
+
+  it("is muted only when every product was searched and one contributed", () => {
+    const { rerender } = render(
+      <GroundingBadge grounding={{ status: "multi", projects: [alpha, gamma] }} />,
+    );
+    expect(screen.getByTestId("chat-grounding").className).toContain("text-muted-foreground");
+    expect(screen.getByTestId("chat-grounding")).toHaveAttribute("data-grounding", "multi");
+    rerender(
+      <GroundingBadge
+        grounding={{
+          status: "multi",
+          projects: [alpha],
+          unsearched: [{ projectId: "d", projectName: "Delta", reason: "timeout" }],
+        }}
+      />,
+    );
+    expect(screen.getByTestId("chat-grounding").className).toContain("text-warning");
+    rerender(<GroundingBadge grounding={{ status: "multi", projects: [gamma] }} />);
+    expect(screen.getByTestId("chat-grounding").className).toContain("text-warning");
+    rerender(<GroundingBadge grounding={{ status: "multi", projects: [alpha], unavailable: 1 }} />);
+    expect(screen.getByTestId("chat-grounding").className).toContain("text-warning");
+  });
+});

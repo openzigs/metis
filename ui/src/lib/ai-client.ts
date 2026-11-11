@@ -39,6 +39,10 @@ export interface AISession {
   status: string;
   projectId: string | null;
   agentId?: string | null;
+  /** #2238 — the 2+ projects a multi-product session searches (`projectId` is null). */
+  scopeProjectIds?: string[] | null;
+  /** #2238 — the workspace a workspace-scoped session searches. */
+  scopeWorkspaceId?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -87,15 +91,20 @@ export type StreamQueueEvent =
 
 /**
  * Issue #607 — scope metadata echoed by POST /ai/sessions. When the applied
- * scope differs from what the client requested (multi-project selection, or
- * a stale project id), `degraded` is true and `reason` says why, so the UI
- * can tell the user instead of silently chatting unscoped.
+ * scope differs from what the client requested (a stale project id), `degraded`
+ * is true and `reason` says why, so the UI can tell the user instead of
+ * silently chatting unscoped. #2238 — a server since then keeps a 2+ project
+ * scope; `multi-project-unsupported` is what an older one answers.
  */
 export type SessionScopeDegradationReason = "multi-project-unsupported" | "stale-project";
 
 export interface SessionScope {
   requestedProjectIds: string[];
   appliedProjectId: string | null;
+  /** #2238 — every project the session searches (one, several or none). */
+  appliedProjectIds?: string[];
+  /** #2238 — the workspace the session searches, when scoped to one. */
+  appliedWorkspaceId?: string | null;
   degraded: boolean;
   reason?: SessionScopeDegradationReason;
 }
@@ -104,6 +113,8 @@ export interface CreateSessionInput {
   title?: string;
   projectId?: string;
   projectIds?: string[];
+  /** #2238 — scope the chat to every project of a workspace the caller can reach. */
+  workspaceId?: string;
   policy?: Partial<ApprovalPolicy>;
   agentId?: string;
   agentKey?: string;
@@ -500,7 +511,12 @@ async function openChatSession(
       messages = mergeTranscriptDelta(messages, rest, (row) => row);
     }
     return {
-      session,
+      // #2238 — the scope as the resume read states it.
+      session: {
+        ...session,
+        scopeProjectIds: res.session?.scopeProjectIds ?? null,
+        scopeWorkspaceId: res.session?.scopeWorkspaceId ?? null,
+      },
       messages,
       readOnlyReason: res.session?.readOnlyReason ?? null,
       agentNotice: res.agentNotice ?? null,

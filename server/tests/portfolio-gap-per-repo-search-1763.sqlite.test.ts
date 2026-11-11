@@ -165,7 +165,16 @@ function recordingSearch(byProject: Record<string, FederatedHit[]>, failing: str
     if (ids.some((id) => failing.includes(id))) throw new Error("index offline");
     // One shared ranking: the first project's excerpts fill every slot.
     const hits = ids.flatMap((id) => byProject[id] ?? []).slice(0, opts.k);
-    return { hits, projectsSearched: ids, projectsFailed: [], totalHits: hits.length };
+    return {
+      hits,
+      projectsSearched: ids,
+      projectsFailed: [],
+      totalHits: hits.length,
+      projectsWithoutHits: [],
+      failures: [],
+      projectsRejected: 0,
+      projectNames: {},
+    };
   };
   return { search, calls };
 }
@@ -302,6 +311,14 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         projectsSearched: [],
         projectsFailed: opts.projectIds ?? [],
         totalHits: 0,
+        projectsWithoutHits: [],
+        failures: (opts.projectIds ?? []).map((projectId) => ({
+          projectId,
+          projectName: projectId,
+          reason: "timeout" as const,
+        })),
+        projectsRejected: 0,
+        projectNames: {},
       });
       const a = await run(reset(P4), { search, limits: perRepo });
       expect(reasonOf(a, P4, RC_P4_CORE)).toBe("retrieval-failed");

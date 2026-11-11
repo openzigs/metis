@@ -110,7 +110,11 @@ export function countProjectToolReads(calls: readonly GroundingToolCall[]): numb
  * chat is not scoped to. Pinned by "keeps an unscoped turn unscoped".
  */
 export function withToolReads(grounding: ChatGrounding, toolReads: number): ChatGrounding {
-  if (toolReads <= 0 || grounding.status === "unscoped") return grounding;
+  // #2238 — a multi-product session is offered no project-bound tool (it has
+  // no `projectId`), so no call there read one of its projects.
+  if (toolReads <= 0 || grounding.status === "unscoped" || grounding.status === "multi") {
+    return grounding;
+  }
   const sources = grounding.status === "grounded" ? grounding.sources : 0;
   return {
     status: "grounded",
