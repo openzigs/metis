@@ -18,8 +18,13 @@ import type { ResponderChunk } from "./ai-responder.js";
 const sessionCreate = vi.fn();
 const messageCreate = vi.fn();
 const approvalCreate = vi.fn();
+// #2226 — the thread's anchor (`thread-context.ts`); none unless a test sets one.
+const threadFindFirst = vi.fn();
+const requirementFindFirst = vi.fn();
 vi.mock("../prisma.js", () => ({
   prisma: {
+    discussionThread: { findFirst: (...a: unknown[]) => threadFindFirst(...a) },
+    requirement: { findFirst: (...a: unknown[]) => requirementFindFirst(...a) },
     aISession: { create: (...a: unknown[]) => sessionCreate(...a) },
     discussionMessage: { create: (...a: unknown[]) => messageCreate(...a) },
     // #739 — the tool gate records every decision.
@@ -103,6 +108,65 @@ describe("streamAIReply", () => {
     }));
     recordAndFlush.mockResolvedValue({});
     recordProjectUsage.mockReturnValue({ totalTokens: 0, costCents: 0 });
+    threadFindFirst.mockResolvedValue({ requirementId: null, analysisId: null });
+  });
+
+  describe("#2226 — the thread's anchored requirement", () => {
+    function capture() {
+      const streamSpy = vi.fn(async function* (_messages: ChatMessage[]) {
+        yield { type: "done" } as ChatChunk;
+      });
+      const provider = {
+        key: "offline-stub",
+        model: "offline-stub",
+        offline: true,
+        stream: streamSpy,
+      } as unknown as AIProvider;
+      return { provider, sent: () => streamSpy.mock.calls[0][0] as ChatMessage[] };
+    }
+
+    it("puts it in as a user turn after the system prompt and before the thread", async () => {
+      threadFindFirst.mockResolvedValue({ requirementId: "r-1", analysisId: null });
+      requirementFindFirst.mockResolvedValue({
+        title: "Refresh feeds",
+        body: "Every 15 minutes.",
+        acceptanceCriteria: JSON.stringify(["Refreshed within 15 minutes"]),
+      });
+      const { provider, sent } = capture();
+
+      await streamAIReply({
+        thread,
+        triggerMessage,
+        actor,
+        provider,
+        history: [{ authorKind: "human", body: "earlier question" }],
+      });
+
+      const messages = sent();
+      expect(messages.map((m) => m.role)).toEqual(["system", "user", "user", "user"]);
+      expect(messages[1]!.content).toContain("Requirement: Refresh feeds");
+      expect(messages[1]!.content).toContain("- Refreshed within 15 minutes");
+      expect(messages[2]!.content).toBe("earlier question");
+      // The anchor read is scoped to the thread's project.
+      expect(threadFindFirst).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: "t1", projectId: "p1", deletedAt: null } }),
+      );
+      expect(requirementFindFirst.mock.calls[0][0].where).toMatchObject({
+        id: "r-1",
+        projectId: "p1",
+        deletedAt: null,
+      });
+    });
+
+    it("answers without it when the anchor cannot be read", async () => {
+      threadFindFirst.mockRejectedValue(new Error("db down"));
+      const { provider, sent } = capture();
+
+      await streamAIReply({ thread, triggerMessage, actor, provider });
+
+      expect(sent().map((m) => m.role)).toEqual(["system", "user"]);
+      expect(messageCreate).toHaveBeenCalledTimes(1);
+    });
   });
 
   it("streams deltas via onChunk and aggregates the body", async () => {

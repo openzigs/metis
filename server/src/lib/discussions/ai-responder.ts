@@ -18,6 +18,9 @@
  *      tool call passes the discussion gate: project-scoped reads only, never a
  *      tool that would need someone to approve it. A reply that ran no tools
  *      streams token by token as before.
+ *   3b. #2226 — the requirement or analysis the thread is anchored to, as it
+ *      reads now (`thread-context.ts`), goes in as a USER turn ahead of the
+ *      thread: it is user-editable text, so it never enters a system message.
  *   4. Persist an `authorKind=ai` `DiscussionMessage` (via `buildAiMessageData`,
  *      which nulls `authorUserId` and asserts the author invariant), record ONE
  *      `AITokenUsage` row and ONE project-ledger `TokenUsage` row for the whole
@@ -54,6 +57,7 @@ import {
   DISCUSSION_TOOL_RESULT_MAX_CHARS,
   type DiscussionToolRuntime,
 } from "./grounding.js";
+import { loadAnchorContext } from "./thread-context.js";
 import { createChildLogger } from "../logger.js";
 
 const log = createChildLogger("discussion-ai-responder");
@@ -171,12 +175,12 @@ function toChatTurn(m: { authorKind: string; body: string }): ChatMessage {
 
 /**
  * Build the injection-isolated message array sent to the provider: the fixed
- * prompt first (byte-stable, so it caches), then the tool note, the thread, the
- * retrieved excerpts, and the question last — where chat puts its own.
+ * prompt first (byte-stable, so it caches), then the tool note, the thread's
+ * anchor (#2226), the thread, the retrieved excerpts, and the question last — where chat puts its own.
  */
 function buildMessages(
   input: StreamAIReplyInput,
-  extra: { toolNote?: string; retrieved?: string },
+  extra: { toolNote?: string; retrieved?: string; anchor?: string },
 ): ChatMessage[] {
   const system = discussionSystemPrompt({
     excerpts: Boolean(extra.retrieved),
@@ -184,6 +188,7 @@ function buildMessages(
   });
   const messages: ChatMessage[] = [{ role: "system", content: system }];
   if (extra.toolNote) messages.push({ role: "system", content: extra.toolNote });
+  if (extra.anchor) messages.push({ role: "user", content: extra.anchor });
   for (const h of input.history ?? []) messages.push(toChatTurn(h));
   if (extra.retrieved) messages.push({ role: "system", content: extra.retrieved });
   messages.push(toChatTurn({ authorKind: "human", body: input.triggerMessage.body }));
@@ -270,6 +275,19 @@ async function retrieveSafely(input: StreamAIReplyInput): Promise<string> {
   }
 }
 
+/** #2226 — the thread's anchor block, or `""` when it has none or cannot be read. */
+async function anchorSafely(input: StreamAIReplyInput): Promise<string> {
+  try {
+    return await loadAnchorContext(input.thread);
+  } catch (err) {
+    log.warn("Discussion anchor unavailable; answering without it", {
+      threadId: input.thread.id,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return "";
+  }
+}
+
 /** The reply's tools, or `null` (a plain streamed reply) when they cannot be built. */
 async function resolveToolsSafely(
   input: StreamAIReplyInput,
@@ -327,14 +345,17 @@ export async function streamAIReply(input: StreamAIReplyInput): Promise<StreamAI
     model: provider.model,
   };
 
-  // 2. Ground: the project's excerpts, and its read-only tools when offered.
-  const [retrieved, tools] = await Promise.all([
+  // 2. Ground: the project's excerpts, its read-only tools when offered, and
+  //    (#2226) the requirement or analysis the thread is anchored to.
+  const [retrieved, tools, anchor] = await Promise.all([
     retrieveSafely(input),
     resolveToolsSafely(input, session.id),
+    anchorSafely(input),
   ]);
   const messages = buildMessages(input, {
     ...(tools ? { toolNote: tools.note } : {}),
     retrieved,
+    anchor,
   });
 
   // #700 — attribute cache-hit telemetry to the discussion workload and cache
