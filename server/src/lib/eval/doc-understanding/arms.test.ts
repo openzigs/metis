@@ -307,8 +307,57 @@ describe("helpers", () => {
     expect(await mapLimited([], 4, async () => 1)).toEqual([]);
   });
 
+  it("R reads through the production document reader and keeps only requirement-like statements", async () => {
+    const { provider, calls } = routedProvider([
+      [
+        "from beginning to end",
+        JSON.stringify({
+          statements: [
+            {
+              section: "S2",
+              kind: "requirement",
+              statement: "Lock after five failures.",
+              quote: "The portal shall lock an account after five failed attempts.",
+            },
+            {
+              section: "S3",
+              kind: "business-rule",
+              statement: "Two future appointments at most.",
+              quote: "A patient shall hold at most two future appointments.",
+            },
+            {
+              section: "S1",
+              kind: "background",
+              statement: "It is a booking FRD.",
+              quote: "Booking FRD heading only here",
+            },
+          ],
+        }),
+      ],
+      ["combining the statements", JSON.stringify({ duplicates: [], crossReferences: [] })],
+    ]);
+    const [arm] = buildDocArms(["R"], "claude-sonnet-5-5");
+    const out = await arm!.read(ITEM, { provider, concurrency: 1 });
+    expect(out.requirements).toEqual([
+      {
+        text: "Lock after five failures.",
+        section: "1. Access",
+        quote: "The portal shall lock an account after five failed attempts.",
+      },
+      {
+        text: "Two future appointments at most.",
+        section: "2. Booking",
+        quote: "A patient shall hold at most two future appointments.",
+      },
+    ]);
+    expect(out.questions).toEqual([]);
+    expect(out.diagnostics).toMatchObject({ droppedUnverified: 1, wholeMode: 1, calls: 2 });
+    expect(calls).toHaveLength(2);
+  });
+
   it("parses arm ids and refuses unknown ones", () => {
     expect(parseDocArmIds(undefined)).toEqual(["A", "B", "C"]);
+    expect(parseDocArmIds("r")).toEqual(["R"]);
     expect(parseDocArmIds("b, a,b")).toEqual(["B", "A"]);
     expect(() => parseDocArmIds("A,Z")).toThrow(/unknown arm/);
     expect(() => parseDocArmIds(" , ")).toThrow(/at least one/);

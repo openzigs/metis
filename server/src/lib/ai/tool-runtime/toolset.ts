@@ -234,6 +234,7 @@ function registryRuntimeTool(
           sessionId: ctx.sessionId,
           userId: ctx.userId,
           ...(ctx.projectId ? { projectId: ctx.projectId } : {}),
+          ...(ctx.aclAudience ? { aclAudience: ctx.aclAudience } : {}),
           gateDecided: true,
         },
         decided,

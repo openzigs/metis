@@ -572,6 +572,14 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
       "Master enable for fused passive code-graph retrieval in the analysis code agent (all three modes — single-shot retrieveContext, agentic seed, requirement-grounded fold) (#729, Epic #725 — parity with chat/Spec-Kit #714). ON by default (flipped on in #752 now that #750 restored the agentic/requirement-grounded modes this seeds); operators can still disable it. When on, the code agent queries the code graph / symbol index (HybridCodeSearch) and appends deduped, token-budgeted symbol chunks — each carrying filePath:startLine-endLine provenance for Epic #726 citations — after the requirements-half + source-code-half chunks. When off, no code-graph query is issued and the retrieved context is byte-identical to the pre-#729 behaviour.",
     sensitive: false,
   },
+  ANALYSIS_DOCUMENT_READER: {
+    tier: "tunable",
+    valueType: "bool",
+    schema: z.coerce.boolean(),
+    description:
+      "Requirements Analysis reads the selected documents in full instead of ten retrieved chunks (#2230, Epic #2227). The model reads the whole document (section by section when it is too long for the model's window), labels every statement (requirement, constraint, business rule, assumption, definition, background, example) with its verified source span, and the run reports what was read from every section. OFF by default until it is measured on a 60 KB document (docs/DOCUMENT_UNDERSTANDING_BASELINE.md). Retrieval stays for the code agent and the other specialists.",
+    sensitive: false,
+  },
   ANALYSIS_FUSED_CODE_TOKEN_BUDGET: {
     tier: "tunable",
     valueType: "int",

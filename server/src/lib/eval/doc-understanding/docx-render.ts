@@ -1,7 +1,7 @@
 /**
  * #2229 — writes a corpus item's blocks as a Word document, so every arm reads
  * the document the way an analyst's upload is read: through production's
- * `parseDocument` (mammoth, then `htmlToMarkdown`), with whatever that
+ * `parseDocument` (`docx-to-markdown.ts` since #2232), with whatever that
  * conversion keeps and loses.
  *
  * The bytes are not reproducible (the library stamps the build time), so the

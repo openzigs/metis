@@ -578,6 +578,12 @@ export interface ToolContext {
    * approval prompt instead of asking twice.
    */
   gateDecided?: boolean;
+  /**
+   * #2248 — `"shared"` when the result grounds a reply a whole audience reads
+   * (a discussion thread): a knowledge search then sees unrestricted chunks
+   * only, never ones restricted to `userId`. Omitted: the result is for `userId`.
+   */
+  aclAudience?: "shared";
   /** Logger child — agents/tests inject one. */
   log?: {
     info: (msg: string, meta?: unknown) => void;

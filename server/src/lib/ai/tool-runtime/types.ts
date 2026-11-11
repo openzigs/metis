@@ -31,6 +31,11 @@ export interface RuntimeToolContext {
   userId: string;
   projectId: string | null;
   /**
+   * #2248 — `"shared"` for a reply a whole audience reads (a discussion
+   * thread): see `ToolContext.aclAudience`. Omitted: the result is for `userId`.
+   */
+  aclAudience?: "shared";
+  /**
    * #147 — the model's id for THIS call, set by the executor when it runs the
    * tool, so a sub-agent run can be linked to the call that started it.
    */

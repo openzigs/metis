@@ -29,6 +29,7 @@ import { createChildLogger } from "../logger.js";
 import { getKnowledgeService } from "./knowledge-service.js";
 import { getVectorStore, type VectorRow } from "./vector-store.js";
 import { getBM25Index } from "./bm25-index.js";
+import { indexedTextOf } from "./contextual-chunks.js";
 import {
   assertApprovalGeneration,
   withVectorSql,
@@ -233,7 +234,14 @@ export async function approveDocument(
   // writes are additive and compensation always addresses immutable chunk IDs.
   const attemptId = randomUUID();
   let attemptChunkIds: string[] = [];
-  const created: { id: string; vector: number[]; text: string; position: number }[] = [];
+  const created: {
+    id: string;
+    vector: number[];
+    text: string;
+    /** #2234 — what BM25 indexes: `text` behind its persisted context prefix. */
+    indexedText: string;
+    position: number;
+  }[] = [];
   const sqlRows: (Parameters<typeof prisma.knowledgeChunk.create>[0]["data"] & {
     embeddingModel: string;
   })[] = [];
@@ -308,6 +316,7 @@ export async function approveDocument(
           id: data.id,
           vector: vector as number[],
           text: r.text,
+          indexedText: indexedTextOf(r.text, meta),
           position: r.ord,
         });
       }
@@ -343,7 +352,7 @@ export async function approveDocument(
       doc.projectId,
       documentId,
       doc.filename,
-      created.map((c) => ({ id: c.id, position: c.position, text: c.text })),
+      created.map((c) => ({ id: c.id, position: c.position, text: c.indexedText })),
       false,
     );
 
