@@ -913,6 +913,7 @@ describe("#1963 — the verdict over the products in scope of the change", () =>
       verdict,
       summary: portfolioSummary(verdict, rows),
       costUsd: 0,
+      notChecked: [],
     };
   };
   const issueImpact = impactOf([
