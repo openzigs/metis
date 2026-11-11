@@ -31,10 +31,20 @@ vi.mock("@/components/chat/loaded-skills-panel", () => ({
   LoadedSkillsPanel: () => null,
 }));
 
+// #2238 — the scope the selector holds; a test may switch it to a workspace.
+const scopeState = vi.hoisted(() => ({
+  scope: { mode: "selected", projectIds: ["proj-1", "proj-2"] } as {
+    mode: "all" | "selected" | "workspace";
+    projectIds: string[];
+    workspaceId?: string;
+  },
+}));
+
 vi.mock("@/components/chat/project-scope-selector", () => ({
   ProjectScopeSelector: () => <div data-testid="project-scope-selector" />,
+  loadStoredScope: () => null,
   useProjectScope: () => ({
-    scope: { mode: "selected", projectIds: ["proj-1", "proj-2"] },
+    scope: scopeState.scope,
     setScope: () => {},
     // #1367 — the page waits for this before creating a session.
     hydrated: true,
@@ -58,6 +68,7 @@ const fakeSession: aiClient.AISession = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  scopeState.scope = { mode: "selected", projectIds: ["proj-1", "proj-2"] };
   useSearchParamsMock.mockReturnValue(new URLSearchParams() as ReturnType<typeof useSearchParams>);
   vi.mocked(aiClient.streamChat).mockImplementation(acceptedTurn as typeof aiClient.streamChat);
 });
@@ -119,5 +130,56 @@ describe("<ChatPage /> — multi-project scope degradation (#607)", () => {
 
     expect(await screen.findByText(/offline-stub/)).toBeInTheDocument();
     expect(screen.queryByTestId("scope-degradation-notice")).not.toBeInTheDocument();
+  });
+});
+
+describe("<ChatPage /> — multi-product chat (#2238)", () => {
+  it("sends the turn of a multi-product session, which is grounded, not unscoped", async () => {
+    createSessionWithScopeMock.mockResolvedValue({
+      session: { ...fakeSession, scopeProjectIds: ["proj-1", "proj-2"] },
+      scope: {
+        requestedProjectIds: ["proj-1", "proj-2"],
+        appliedProjectId: null,
+        appliedProjectIds: ["proj-1", "proj-2"],
+        appliedWorkspaceId: null,
+        degraded: false,
+      },
+    });
+    render(<ChatPage />, { wrapper: makeWrapper({ withAuth: false }) });
+    // Before the first send: the scope will search, so no "not grounded" notice.
+    expect(screen.queryByTestId("chat-ungrounded-notice")).not.toBeInTheDocument();
+    await sendChatMessage("what changes in A and B?");
+
+    await waitFor(() => expect(aiClient.streamChat).toHaveBeenCalledTimes(1));
+    expect(createSessionWithScopeMock.mock.calls[0]![0].projectIds).toEqual(["proj-1", "proj-2"]);
+    expect(screen.queryByTestId("scope-degradation-notice")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("chat-ungrounded-notice")).not.toBeInTheDocument();
+  });
+
+  it("creates a workspace-scoped session from a workspace scope", async () => {
+    scopeState.scope = { mode: "workspace", projectIds: [], workspaceId: "w-1" };
+    createSessionWithScopeMock.mockResolvedValue({
+      session: { ...fakeSession, scopeWorkspaceId: "w-1" },
+      scope: {
+        requestedProjectIds: [],
+        appliedProjectId: null,
+        appliedProjectIds: [],
+        appliedWorkspaceId: "w-1",
+        degraded: false,
+      },
+    });
+    render(<ChatPage />, { wrapper: makeWrapper({ withAuth: false }) });
+    await sendChatMessage("q");
+    await waitFor(() => expect(aiClient.streamChat).toHaveBeenCalledTimes(1));
+    const arg = createSessionWithScopeMock.mock.calls[0]![0];
+    expect(arg.workspaceId).toBe("w-1");
+    expect(arg.projectIds).toBeUndefined();
+    expect(screen.queryByTestId("chat-ungrounded-notice")).not.toBeInTheDocument();
+  });
+
+  it("still warns before the first send when the scope is 'All projects'", async () => {
+    scopeState.scope = { mode: "all", projectIds: [] };
+    render(<ChatPage />, { wrapper: makeWrapper({ withAuth: false }) });
+    expect(await screen.findByTestId("chat-ungrounded-notice")).toBeInTheDocument();
   });
 });

@@ -175,6 +175,9 @@ import {
 import { listBindableAgents, loadBoundCustomAgent } from "../lib/agent-runtime/session-agent.js";
 import { agentSelectableTools } from "../lib/agent-runtime/tool-refs.js";
 import { assertLiveProjectAccess } from "../lib/custom-agents/authz.js";
+import { listMemberProjectsInWorkspace } from "../lib/cross-project/cross-project-access.js";
+import { buildMultiProjectRagContext, readChatSearchScope } from "../lib/ai/multi-project-rag.js";
+import { parseScopeProjectIds } from "../lib/ai/chat-search-scope.js";
 import { assertSecretUsable, canUseSecret } from "../lib/vault/secret-access.js";
 import { resolveDurableRole } from "../lib/auth/durable-roles.js";
 import { getSubAgentRun } from "../lib/agent-runtime/subagents.js";
@@ -498,6 +501,8 @@ const createSessionSchema = z.object({
   title: z.string().min(1).max(200).optional(),
   projectId: z.string().min(1).max(120).optional(),
   projectIds: z.array(z.string().min(1).max(120)).max(50).optional(),
+  /// #2238 — scope the chat to a workspace: every project of it the caller can reach.
+  workspaceId: z.string().min(1).max(120).optional(),
   model: z.string().max(120).optional(),
   policy: patchSchemaOf(policySchema).optional(),
   providerSecretRef: z.string().max(200).optional(),
@@ -1118,31 +1123,54 @@ export function aiRouter(): Router {
 
     // Resolve the effective project scope up-front. Ids may arrive as
     // `projectId` or via the `projectIds` scope selector — both are
-    // client-supplied hints persisted in the browser. Two degradation paths
-    // exist, and BOTH must be reported back to the client explicitly
-    // (issue #607 — never silently drop a requested scope):
-    //  - 2+ ids: sessions bind at most one project (the per-project provider /
-    //    model override below reads exactly one row), so a multi-project
-    //    request degrades to an unscoped session with
-    //    reason "multi-project-unsupported".
-    //  - a stale id that no longer resolves (deleted project, reset local DB)
-    //    degrades to an unscoped session with reason "stale-project" rather
-    //    than being handed to Prisma and surfacing as a raw foreign-key
-    //    error (HTTP 500).
-    // Validate existence once here and reuse the row for the per-project
-    // provider / model override below.
+    // client-supplied hints persisted in the browser — or as a `workspaceId`.
+    //  - one id: the session binds that project (`projectId`), as before;
+    //  - #2238 — 2+ ids: a multi-product session. It binds no single project
+    //    (the per-project provider / model override below reads exactly one
+    //    row), keeps the ids in `scopeProjectIds`, and every turn searches each
+    //    of them. The caller must reach every one: no access reads as 404
+    //    NOT_FOUND and nothing is created (#304);
+    //  - #2238 — a `workspaceId`: a session scoped to that workspace's projects,
+    //    resolved every turn. A non-member gets 404 and nothing is created.
+    // A stale id that no longer resolves (deleted project, reset local DB)
+    // degrades to an unscoped session with reason "stale-project" rather than
+    // being handed to Prisma and surfacing as a raw foreign-key error (HTTP
+    // 500) — reported back to the client explicitly (issue #607: never
+    // silently drop a requested scope).
     const requestedProjectIds: string[] = parsed.data.projectId
       ? [parsed.data.projectId]
-      : (parsed.data.projectIds ?? []);
-    let scopeDegradationReason: "multi-project-unsupported" | "stale-project" | null = null;
+      : [...new Set(parsed.data.projectIds ?? [])];
+    if (parsed.data.workspaceId && requestedProjectIds.length > 0) {
+      throw new AppError(
+        400,
+        "SCOPE_CONFLICT",
+        "Scope a chat to projects or to a workspace, not both",
+      );
+    }
+    let scopeDegradationReason: "stale-project" | null = null;
     let effectiveProjectId: string | null =
       requestedProjectIds.length === 1 ? requestedProjectIds[0] : null;
+    let scopeProjectIds: string[] | null = null;
     if (requestedProjectIds.length > 1) {
-      scopeDegradationReason = "multi-project-unsupported";
-      log.warn("Multi-project session scope unsupported; creating unscoped session", {
-        userId,
-        requestedProjectIds,
+      const live = await prisma.project.findMany({
+        where: { id: { in: requestedProjectIds }, deletedAt: null },
+        select: { id: true },
       });
+      if (live.length !== requestedProjectIds.length) {
+        log.warn("Session project scope not found; creating unscoped session", {
+          userId,
+          requestedProjectIds,
+        });
+        scopeDegradationReason = "stale-project";
+      } else {
+        for (const id of requestedProjectIds) await assertLiveProjectAccess(req.user!, id);
+        scopeProjectIds = requestedProjectIds;
+      }
+    }
+    const scopeWorkspaceId = parsed.data.workspaceId ?? null;
+    if (scopeWorkspaceId) {
+      // Throws the audited 404 for a non-member (or a workspace that is gone).
+      await listMemberProjectsInWorkspace({ id: userId, role: req.user!.role }, scopeWorkspaceId);
     }
     if (effectiveProjectId) {
       const project = await prisma.project.findFirst({
@@ -1317,6 +1345,8 @@ export function aiRouter(): Router {
         agentRef: resolvedAgentRef,
         agentSnapshot,
         loadedSkillIds: JSON.stringify(initialSkillIds),
+        scopeProjectIds: scopeProjectIds ? JSON.stringify(scopeProjectIds) : null,
+        scopeWorkspaceId,
       },
     });
     audit({
@@ -1329,16 +1359,23 @@ export function aiRouter(): Router {
         agentId: resolvedAgentId,
         agentRef: resolvedAgentRef,
         skillCount: initialSkillIds.length,
+        ...(scopeProjectIds ? { scopeProjectIds } : {}),
+        ...(scopeWorkspaceId ? { scopeWorkspaceId } : {}),
       },
     });
     // #607 — echo the applied scope so the client can surface a degraded
     // (requested ≠ applied) scope instead of silently chatting unscoped.
     res.status(201).json(
       ok({
-        session: { ...session, policy },
+        // #2238 — the scope as a list, as the resume read returns it.
+        session: { ...session, policy, scopeProjectIds },
         scope: {
           requestedProjectIds,
           appliedProjectId: session.projectId,
+          // #2238 — every project the session searches (one, several or none),
+          // and the workspace when it is scoped to one.
+          appliedProjectIds: scopeProjectIds ?? (session.projectId ? [session.projectId] : []),
+          appliedWorkspaceId: scopeWorkspaceId,
           degraded: scopeDegradationReason !== null,
           ...(scopeDegradationReason ? { reason: scopeDegradationReason } : {}),
         },
@@ -1371,7 +1408,16 @@ export function aiRouter(): Router {
     conversationRateLimiter,
     async (req: Request, res: Response) => {
       const session = await loadAuthorizedSession(req.user, String(req.params.id));
-      res.json(ok({ session: { ...session, policy: parsePolicyJson(session.policy) } }));
+      res.json(
+        ok({
+          session: {
+            ...session,
+            policy: parsePolicyJson(session.policy),
+            // #2238 — the scope as a list, as the resume read returns it.
+            scopeProjectIds: parseScopeProjectIds(session.scopeProjectIds),
+          },
+        }),
+      );
     },
   );
 
@@ -1684,16 +1730,30 @@ export function aiRouter(): Router {
       // Issue #1321 — the observer needs the retrieved contexts as the model saw
       // them; the builder hands them over directly (no re-parsing of its block).
       const ragCapture: RagContextCapture = { contexts: [], sources: 0 };
-      const ragContext = await conversationRagContext(
-        session,
-        userText,
-        userId,
-        ragCapture,
-        parsed.data.documentIds,
-      );
+      // #2238 — a chat scoped to several products searches each of them.
+      const multiScope = readChatSearchScope(session);
+      const multi = multiScope
+        ? await buildMultiProjectRagContext({
+            userId,
+            scope: multiScope,
+            query: userText,
+            capture: ragCapture,
+          })
+        : null;
+      const ragContext = multi
+        ? multi.block
+        : await conversationRagContext(
+          session,
+          userText,
+          userId,
+          ragCapture,
+          parsed.data.documentIds,
+        );
       // #18 — what this reply is grounded in, recorded on the reply row. #439 —
       // what the code tools read of the project is folded in after the loop.
-      let grounding = await describeGrounding(session.projectId, ragCapture.sources);
+      let grounding = multi
+        ? multi.grounding
+        : await describeGrounding(session.projectId, ragCapture.sources);
 
       // #136/#138 — persist the question, load the server-owned history, and
       // compact it first if the prompt has reached the watermark.
@@ -2110,17 +2170,31 @@ export function aiRouter(): Router {
     // Auto-RAG: inject relevant knowledge context for project-scoped sessions.
     // Issue #1321 — see the /chat route: contexts come from the builder.
     const ragCapture: RagContextCapture = { contexts: [], sources: 0 };
-    const ragContext = await conversationRagContext(
-      session,
-      userText,
-      userId,
-      ragCapture,
-      parsed.data.documentIds,
-    );
+    // #2238 — a chat scoped to several products searches each of them.
+    const multiScope = readChatSearchScope(session);
+    const multi = multiScope
+      ? await buildMultiProjectRagContext({
+          userId,
+          scope: multiScope,
+          query: userText,
+          capture: ragCapture,
+        })
+      : null;
+    const ragContext = multi
+      ? multi.block
+      : await conversationRagContext(
+        session,
+        userText,
+        userId,
+        ragCapture,
+        parsed.data.documentIds,
+      );
     // #18 — what this reply is grounded in: streamed before the answer and
     // recorded on the reply row, so the client can say so live and on reload.
     // #439 — re-sent after the tool loop when the tools read the project.
-    let grounding = await describeGrounding(session.projectId, ragCapture.sources);
+    let grounding = multi
+      ? multi.grounding
+      : await describeGrounding(session.projectId, ragCapture.sources);
 
     res.status(200);
     res.setHeader("Content-Type", "text/event-stream");

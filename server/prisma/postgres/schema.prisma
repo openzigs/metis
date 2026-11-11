@@ -3423,6 +3423,15 @@ model AISession {
   /// columns, not a relation, so deleting the source never touches the fork.
   forkedFromSessionId    String?
   forkedFromOrdinal      Int?
+  /// #2238 — a multi-product chat: a JSON array of the 2+ project ids the
+  /// session searches every turn (`projectId` stays null). Access to each is
+  /// checked at create and again on every turn. Null for a session bound to
+  /// one project or none.
+  scopeProjectIds        String?
+  /// #2238 — a chat scoped to a workspace: every project of it the caller can
+  /// reach, resolved on every turn. Not a foreign key, like `agentRef`: a
+  /// deleted workspace, or one the caller left, searches nothing.
+  scopeWorkspaceId       String?
   createdAt              DateTime  @default(now())
   updatedAt              DateTime  @updatedAt
   deletedAt              DateTime?

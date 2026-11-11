@@ -3,10 +3,11 @@
 /**
  * #18 — say plainly what a chat answer is based on.
  *
- * Retrieval runs only for a chat bound to one project. With the scope on "All
- * projects" the model answers from its own knowledge — and before #18 nothing
- * on screen said so, so a confident answer naming files that do not exist read
- * like one drawn from the user's code.
+ * Retrieval runs for a chat bound to one project, or (#2238) scoped to several
+ * products or a workspace. With the scope on "All projects" the model answers
+ * from its own knowledge — and before #18 nothing on screen said so, so a
+ * confident answer naming files that do not exist read like one drawn from the
+ * user's code.
  */
 import type { ChatGrounding } from "@/lib/ai-client";
 
@@ -34,13 +35,55 @@ export function groundingText(g: ChatGrounding): string {
       return `No excerpts from ${g.projectName} were retrieved automatically — check any file or code it names`;
     case "unscoped":
       return "Not grounded — no project selected; answered from the model's general knowledge";
+    case "multi":
+      return multiText(g);
   }
+}
+
+/**
+ * #2238 — a multi-product reply: each product it searched, with how many of
+ * its excerpts the answer drew on; the ones searched without a match; and,
+ * by name, the ones that could not be searched this turn.
+ */
+function multiText(g: Extract<ChatGrounding, { status: "multi" }>): string {
+  const parts: string[] = [];
+  const used = g.projects.filter((p) => p.sources > 0);
+  const unused = g.projects.filter((p) => p.sources === 0);
+  if (used.length > 0) {
+    parts.push(
+      `Grounded in ${used
+        .map((p) => `${p.projectName} (${plural(p.sources, "source", "sources")})`)
+        .join(", ")}`,
+    );
+  } else if (g.projects.length > 0) {
+    parts.push("No excerpts matched in any product searched");
+  } else {
+    parts.push("Not grounded — none of this chat's products could be searched");
+  }
+  if (used.length > 0 && unused.length > 0) {
+    parts.push(`nothing relevant in ${unused.map((p) => p.projectName).join(", ")}`);
+  }
+  for (const u of g.unsearched ?? []) {
+    parts.push(
+      `${u.projectName} not searched (${u.reason === "timeout" ? "timed out" : "failed"})`,
+    );
+  }
+  if (g.unavailable) {
+    parts.push(`${plural(g.unavailable, "product", "products")} no longer available to you`);
+  }
+  return parts.join(" · ");
+}
+
+/** #2238 — whether every product of a multi-product reply was searched and one contributed. */
+function multiGrounded(g: Extract<ChatGrounding, { status: "multi" }>): boolean {
+  return g.projects.some((p) => p.sources > 0) && !g.unsearched?.length && !g.unavailable;
 }
 
 /** Under each assistant reply: what that reply was grounded in. */
 export function GroundingBadge({ grounding }: { grounding: ChatGrounding | undefined }) {
   if (!grounding) return null;
-  const grounded = grounding.status === "grounded";
+  const grounded =
+    grounding.status === "grounded" || (grounding.status === "multi" && multiGrounded(grounding));
   return (
     <p
       data-testid="chat-grounding"
@@ -67,7 +110,8 @@ export function UngroundedScopeNotice({ show }: { show: boolean }) {
       className="rounded border border-warning/40 bg-warning-muted px-3 py-2 text-sm text-warning"
     >
       &ldquo;All projects&rdquo; does not search your projects — answers come from the model&apos;s
-      general knowledge, not your code or documents. Pick a project to ground answers in it.
+      general knowledge, not your code or documents. Pick one or more projects, or your workspace,
+      to ground answers in them.
     </p>
   );
 }

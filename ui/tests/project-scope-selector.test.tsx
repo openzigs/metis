@@ -7,6 +7,7 @@ import userEvent from "@testing-library/user-event";
 import {
   ProjectScopeSelector,
   initialChatScope,
+  normaliseScope,
   useProjectScope,
 } from "@/components/chat/project-scope-selector";
 import { makeWrapper } from "./test-utils";
@@ -51,18 +52,63 @@ describe("ProjectScopeSelector", () => {
     expect(screen.queryByText("1 project")).not.toBeInTheDocument();
   });
 
-  it("collapses a legacy multi-project selection to the first project (#1368)", async () => {
-    render(
+  // #2238 — chat searches every project of a multi-product scope, so the
+  // selector names them instead of collapsing to one (#1368's workaround).
+  it("names a multi-product selection (#2238)", async () => {
+    const { rerender } = render(
       <ProjectScopeSelector
         value={{ mode: "selected", projectIds: ["p-1", "p-2"] }}
         onChange={vi.fn()}
       />,
       { wrapper: makeWrapper() },
     );
-    // Chat supports one project; two can no longer be represented, so the label
-    // never reads "2 projects" and the turn can never run silently unscoped.
+    await waitFor(() => expect(screen.getByText("Alpha + Beta")).toBeInTheDocument());
+    rerender(
+      <ProjectScopeSelector
+        value={{ mode: "selected", projectIds: ["p-1", "p-2", "p-3"] }}
+        onChange={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("Alpha + 2 more")).toBeInTheDocument();
+  });
+
+  it("adds a ticked project to the selection and removes an unticked one (#2238)", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    const { rerender } = render(
+      <ProjectScopeSelector
+        value={{ mode: "selected", projectIds: ["p-1"] }}
+        onChange={onChange}
+      />,
+      { wrapper: makeWrapper() },
+    );
     await waitFor(() => expect(screen.getByText("Alpha")).toBeInTheDocument());
-    expect(screen.queryByText("2 projects")).not.toBeInTheDocument();
+    await user.click(screen.getByTestId("project-scope-selector"));
+    await user.click(await screen.findByLabelText("Beta"));
+    expect(onChange).toHaveBeenLastCalledWith({ mode: "selected", projectIds: ["p-1", "p-2"] });
+    // The list stays open, so several can be ticked in a row.
+    expect(screen.getByLabelText("Gamma")).toBeInTheDocument();
+    expect(JSON.parse(localStorage.getItem("metis.chat.projectScope")!)).toEqual({
+      mode: "selected",
+      projectIds: ["p-1", "p-2"],
+    });
+
+    rerender(
+      <ProjectScopeSelector
+        value={{ mode: "selected", projectIds: ["p-1", "p-2"] }}
+        onChange={onChange}
+      />,
+    );
+    await user.click(screen.getByLabelText("Alpha"));
+    expect(onChange).toHaveBeenLastCalledWith({ mode: "selected", projectIds: ["p-2"] });
+    rerender(
+      <ProjectScopeSelector
+        value={{ mode: "selected", projectIds: ["p-2"] }}
+        onChange={onChange}
+      />,
+    );
+    await user.click(screen.getByLabelText("Beta"));
+    expect(onChange).toHaveBeenLastCalledWith({ mode: "all", projectIds: [] });
   });
 
   it("opens dropdown on click and shows project list", async () => {
@@ -165,6 +211,15 @@ describe("initialChatScope (#1139)", () => {
     });
   });
 
+  it("#2238 — keeps a stored scope that agrees with the top bar", () => {
+    const multi = { mode: "selected" as const, projectIds: ["p-1", "p-2"] };
+    expect(initialChatScope("p-2", multi)).toEqual(multi);
+    expect(initialChatScope("p-3", multi)).toEqual({ mode: "selected", projectIds: ["p-3"] });
+    const ws = { mode: "workspace" as const, projectIds: [], workspaceId: "w-1" };
+    expect(initialChatScope("p-2", ws, "w-1")).toEqual(ws);
+    expect(initialChatScope("p-2", ws, "w-2")).toEqual({ mode: "selected", projectIds: ["p-2"] });
+  });
+
   it("uses the stored scope only when no project is active", () => {
     expect(initialChatScope(null, { mode: "selected", projectIds: ["p-1"] })).toEqual({
       mode: "selected",
@@ -232,15 +287,26 @@ describe("useProjectScope (#1139 — the scope chat opens on)", () => {
     expect(result.current.scope).toEqual({ mode: "all", projectIds: [] });
   });
 
-  it("collapses a stored multi-project scope it falls back to (#1368)", async () => {
+  it("keeps a stored multi-product scope it falls back to (#2238)", async () => {
     serve(new Error("offline"));
+    localStorage.setItem(
+      "metis.chat.projectScope",
+      JSON.stringify({ mode: "selected", projectIds: ["p-1", "p-2", "p-1"] }),
+    );
+    const { result } = hook();
+    await waitFor(() => expect(result.current.hydrated).toBe(true));
+    expect(result.current.scope).toEqual({ mode: "selected", projectIds: ["p-1", "p-2"] });
+  });
+
+  it("reopens on a stored multi-product scope that includes the active project (#2238)", async () => {
+    localStorage.setItem("metis.activeProjectId", "p-2");
     localStorage.setItem(
       "metis.chat.projectScope",
       JSON.stringify({ mode: "selected", projectIds: ["p-1", "p-2"] }),
     );
     const { result } = hook();
     await waitFor(() => expect(result.current.hydrated).toBe(true));
-    expect(result.current.scope).toEqual({ mode: "selected", projectIds: ["p-1"] });
+    expect(result.current.scope).toEqual({ mode: "selected", projectIds: ["p-1", "p-2"] });
   });
 
   it("still hydrates on 'all' when the list cannot be read and nothing is stored", async () => {
@@ -255,5 +321,85 @@ describe("useProjectScope (#1139 — the scope chat opens on)", () => {
     const { result } = hook();
     await waitFor(() => expect(result.current.hydrated).toBe(true));
     expect(localStorage.getItem("metis.chat.projectScope")).toBeNull();
+  });
+});
+
+describe("normaliseScope (#2238)", () => {
+  it("keeps a workspace scope only with its workspace, and de-duplicates projects", () => {
+    expect(normaliseScope({ mode: "workspace", projectIds: ["x"], workspaceId: "w" })).toEqual({
+      mode: "workspace",
+      projectIds: [],
+      workspaceId: "w",
+    });
+    expect(normaliseScope({ mode: "workspace", projectIds: [] })).toEqual({
+      mode: "all",
+      projectIds: [],
+    });
+    expect(normaliseScope({ mode: "selected", projectIds: ["a", "b", "a"] })).toEqual({
+      mode: "selected",
+      projectIds: ["a", "b"],
+    });
+    expect(normaliseScope({ mode: "selected", projectIds: [] })).toEqual({
+      mode: "all",
+      projectIds: [],
+    });
+  });
+});
+
+describe("ProjectScopeSelector — workspace scope (#2238)", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    localStorage.setItem("metis.activeWorkspaceId", "w-1");
+    vi.mocked(apiFetch).mockReset();
+    vi.mocked(apiFetch).mockImplementation(
+      async (path: string) =>
+        (path === "/workspaces"
+          ? [{ id: "w-1", name: "Payments", slug: "payments", logoUrl: null, role: "member" }]
+          : [
+              { id: "p-1", name: "Alpha" },
+              { id: "p-2", name: "Beta" },
+            ]) as never,
+    );
+  });
+
+  it("offers every project of the active workspace as one scope, and names it", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    const { rerender } = render(
+      <ProjectScopeSelector value={{ mode: "all", projectIds: [] }} onChange={onChange} />,
+      { wrapper: makeWrapper() },
+    );
+    await waitFor(() => expect(screen.getByTestId("project-scope-selector")).toBeEnabled());
+    await user.click(screen.getByTestId("project-scope-selector"));
+    await user.click(await screen.findByText("Every project in Payments"));
+    expect(onChange).toHaveBeenCalledWith({
+      mode: "workspace",
+      projectIds: [],
+      workspaceId: "w-1",
+    });
+    rerender(
+      <ProjectScopeSelector
+        value={{ mode: "workspace", projectIds: [], workspaceId: "w-1" }}
+        onChange={onChange}
+      />,
+    );
+    expect(screen.getByText("All of Payments")).toBeInTheDocument();
+  });
+
+  it("a project ticked while the workspace is the scope starts a project selection", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(
+      <ProjectScopeSelector
+        value={{ mode: "workspace", projectIds: [], workspaceId: "w-1" }}
+        onChange={onChange}
+      />,
+      { wrapper: makeWrapper() },
+    );
+    await waitFor(() => expect(screen.getByTestId("project-scope-selector")).toBeEnabled());
+    await user.click(screen.getByTestId("project-scope-selector"));
+    expect(screen.getByLabelText("Alpha")).not.toBeChecked();
+    await user.click(screen.getByLabelText("Alpha"));
+    expect(onChange).toHaveBeenCalledWith({ mode: "selected", projectIds: ["p-1"] });
   });
 });
