@@ -6124,6 +6124,22 @@ An approval is of a wording, so editing that wording reopens it:
   notification, on the first edit after the approval (not on every
   save), linking to the review. The person who made the edit is not
   notified.
+- **The analysis results say they judged the old wording (#2222).**
+  Once a requirement is edited, the governing findings that checked its
+  earlier wording are marked **Stale** in the Governing rules panel,
+  for example: "Stale: "Minimum password length is 12 characters" was
+  checked at v0 and is now v2." The BRD's governing section and the
+  chat say the same. The analysis findings the requirement was written
+  from are marked too, in the findings list and the traceability matrix
+  ("Stale: the analysis judged v0; the requirement is now v2.").
+- **Re-check this requirement.** In the Governing rules panel, a stale
+  result has a **Re-check this requirement** button (you need
+  permission to run analyses). It checks the governing rules again
+  against the requirement's current wording only, not the whole
+  analysis, and shows the results under the requirement's title. The
+  older results stop being marked stale for it. Editing it again marks
+  both stale until the next re-check. The analysis findings (the code
+  and document evidence) are not re-run: a new analysis does that.
 
 **One requirement in two open reviews (#1016).** You can request a
 second review of requirements that are already in review, for example

@@ -119,6 +119,7 @@ import {
 import { SpecKitHandoffNotice } from "@/components/analysis/spec-kit-handoff-notice";
 import { AgentContextDisclosure } from "@/components/analysis/agent-context-disclosure";
 import { FindingBody } from "@/components/analysis/FindingBody";
+import { staleFindingNotes } from "@/components/analysis/stale-findings";
 import { RequirementBody } from "@/components/analysis/RequirementBody";
 import { RequirementSourceItems } from "@/components/analysis/RequirementSourceItems";
 import { TraceabilityMatrix } from "@/components/analysis/traceability-matrix";
@@ -780,6 +781,8 @@ export default function AnalysisPage(): React.ReactElement {
     const titles = new Map((snapshot?.requirements ?? []).map((r) => [r.id, r.title] as const));
     return (id: string) => titles.get(id);
   }, [snapshot]);
+  // #2222 — findings a requirement edited since the analysis was synthesised from.
+  const staleNotesOf = useMemo(() => staleFindingNotes(snapshot?.requirements ?? []), [snapshot]);
   useEffect(() => {
     if (!requestedRequirementId || !snapshot) return;
     const key = `${snapshot.id}:${requestedRequirementId}`;
@@ -1606,6 +1609,15 @@ export default function AnalysisPage(): React.ReactElement {
                               paragraphs with no newlines; clamp + expand is what
                               makes the list scannable. */}
                             <FindingBody body={f.body} />
+                            {(staleNotesOf.get(f.id) ?? []).map((note) => (
+                              <p
+                                key={note}
+                                className="mt-1 text-xs text-warning"
+                                data-testid="finding-stale"
+                              >
+                                {note}
+                              </p>
+                            ))}
                             {f.citations.length > 0 ? (
                               <ul className="mt-2 space-y-1 text-xs text-muted-foreground">
                                 {f.citations.map((c, idx) => {

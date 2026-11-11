@@ -653,6 +653,38 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       );
     });
 
+    it("#2222 — says a finding judged an earlier version of an edited requirement", async () => {
+      const req = await db.requirement.create({
+        data: {
+          analysisId: A1,
+          projectId: P,
+          title: "Store card tokens only",
+          body: "b",
+          version: 2,
+        },
+      });
+      const row = await db.governingFinding.create({
+        data: {
+          ...governing(req.id, "r7", "gap", "PCI-3.5"),
+          analysisId: A1,
+          requirementVersions: JSON.stringify({ [req.id]: 1 }),
+        },
+      });
+      try {
+        const r = await run(tools.createGetGoverningFindingsTool(), {
+          analysisId: A1,
+          requirementId: req.id,
+        });
+        expect(r.resultCount).toBe(1);
+        expect(r.text).toContain(
+          'Stale: "Store card tokens only" was checked at v1 and is now v2. This result judges the earlier wording.',
+        );
+      } finally {
+        await db.governingFinding.delete({ where: { id: row.id } });
+        await db.requirement.delete({ where: { id: req.id } });
+      }
+    });
+
     it("says when the governing check never ran", async () => {
       const r = await run(tools.createGetGoverningFindingsTool(), { analysisId: A_BG });
       expect(r.resultCount).toBe(0);

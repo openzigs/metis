@@ -1463,6 +1463,11 @@ model GoverningFinding {
   modelStatus      String?
   /// For needs-ba-input: the business fact that would settle it.
   businessQuestion String?
+  /// #2222 — JSON `{ "<stored requirement id>": <version> }`: the requirement
+  /// versions whose wording was judged (a Re-check this requirement run). NULL:
+  /// produced from the analysed wording, which judged each stored requirement
+  /// drawn from it at its analysed version.
+  requirementVersions String?
   /// accepted|rejected; null until a BA decides (`GOVERNING_FINDING_DECISIONS`).
   decision         String?
   decisionNote     String?

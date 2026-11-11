@@ -12,6 +12,8 @@ import type {
   GoverningAnalysisApplicability,
   GoverningFinding,
   GoverningFindingDecisionInput,
+  GoverningRecheckInput,
+  GoverningRecheckResult,
 } from "@metis/shared";
 import { apiFetch } from "@/lib/api-client";
 import { isGoverningUnavailable } from "@/lib/governing-api";
@@ -36,6 +38,11 @@ export interface GoverningFindingsPayload {
    * "checked, no rule applied".
    */
   checked: boolean;
+  /**
+   * #2222 — the title of each stored requirement re-checked on its own
+   * wording, by the id its findings are keyed by. Absent from older servers.
+   */
+  requirementTitles?: Record<string, string>;
 }
 
 const base = (projectId: string, analysisId: string) =>
@@ -77,6 +84,13 @@ export const governingFindingsApi = {
       `${base(projectId, analysisId)}/governing-findings/${encodeURIComponent(findingId)}/decision`,
       { method: "POST", body },
     ),
+
+  /** #2222 — Re-check this requirement: the governing check on its current wording only. */
+  recheck: (projectId: string, analysisId: string, body: GoverningRecheckInput) =>
+    apiFetch<GoverningRecheckResult>(`${base(projectId, analysisId)}/governing-findings/recheck`, {
+      method: "POST",
+      body,
+    }),
 };
 
 export const governingFindingsKeys = {

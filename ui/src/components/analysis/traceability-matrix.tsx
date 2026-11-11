@@ -14,6 +14,7 @@
  * downloadable attachment. The table scrolls horizontally within its own
  * container so a wide matrix never breaks the page layout.
  */
+import { requirementFindingsStaleNote } from "@metis/shared";
 import { usePageFor } from "@/components/analysis/use-page-for";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { analysisApi, type TraceabilityRow } from "@/lib/analysis-api";
@@ -169,13 +170,25 @@ export function TraceabilityMatrix({
                     {row.findings.length === 0 ? (
                       <span className="text-muted-foreground">none</span>
                     ) : (
-                      <ul className="space-y-1">
-                        {row.findings.map((f) => (
-                          <li key={f.id} className="text-foreground">
-                            {f.title} <span className="text-muted-foreground">({f.severity})</span>
-                          </li>
-                        ))}
-                      </ul>
+                      <>
+                        <ul className="space-y-1">
+                          {row.findings.map((f) => (
+                            <li key={f.id} className="text-foreground">
+                              {f.title}{" "}
+                              <span className="text-muted-foreground">({f.severity})</span>
+                            </li>
+                          ))}
+                        </ul>
+                        {/* #2222 — the requirement was edited after these findings judged it. */}
+                        {row.findingsStale ? (
+                          <p
+                            className="mt-1 text-xs text-warning"
+                            data-testid="traceability-findings-stale"
+                          >
+                            {requirementFindingsStaleNote(row.findingsStale)}
+                          </p>
+                        ) : null}
+                      </>
                     )}
                   </td>
                   <td className="p-2">
