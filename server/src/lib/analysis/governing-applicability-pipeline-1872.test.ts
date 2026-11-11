@@ -11,8 +11,13 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatMessage, ChatOptions } from "../ai/types.js";
-import { MAX_REQUIREMENTS_FOR_RETRIEVAL, REQUIREMENT_RETRIEVAL_CONCURRENCY } from "@metis/shared";
+import {
+  MAX_REQUIREMENTS_FOR_RETRIEVAL,
+  REQUIREMENT_RETRIEVAL_CONCURRENCY,
+  type AnalysisCapability,
+} from "@metis/shared";
 import { __resetConfigSingleton } from "../config/config-service.js";
+import { MAX_REQUIREMENT_QUERY_CHARS } from "./requirement-query.js";
 
 const ANALYSIS_ID = "an_1872";
 const PROJECT_ID = "pr_1872";
@@ -24,6 +29,12 @@ const state = vi.hoisted(() => ({
   governingDoneAtCompletion: -1,
   /** #2022 — the document agent's requirements; two unless a test sets more. */
   requirements: null as Array<{ id: string; text: string }> | null,
+  /** #2233 — how many findings the non-code specialists write. */
+  otherFindings: 0,
+  /** #2233 — every query the knowledge search was given. */
+  searchQueries: [] as string[],
+  /** #2233 — what the custom-agent phase returns. */
+  customResults: [] as Array<Record<string, unknown>>,
 }));
 /** #2022 — every requirement the applicability hook was asked to decide. */
 const decided = vi.hoisted(() => ({ ids: [] as string[] }));
@@ -134,7 +145,7 @@ vi.mock("./synthesis.js", () => ({
 vi.mock("./cross-doc-detection.js", () => ({ runCrossDocDetection: vi.fn(async () => null) }));
 vi.mock("./custom-agent-phase.js", () => ({
   runEnabledCustomAgents: vi.fn(async () => ({
-    results: [],
+    results: state.customResults,
     usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
   })),
   // #1997 — the orchestrator persists the phase's results; without this every
@@ -241,31 +252,60 @@ function makeProvider() {
       );
     }
     if (call.system.includes("requirementId")) return text(CODE_ANSWER);
-    return text(JSON.stringify({ summary: "ok", findings: [], notes: [] }));
+    // #2233 — the other specialists answer with `otherFindings` findings.
+    return text(
+      JSON.stringify({
+        summary: "ok",
+        findings: Array.from({ length: state.otherFindings }, (_, i) => ({
+          category: "other",
+          severity: "low",
+          title: `Document finding ${i + 1}`,
+          body: "b",
+          tags: [],
+          citations: [],
+        })),
+        notes: [],
+      }),
+    );
   });
   return { provider: { key: "bedrock", model: "test-model", chat } as never, calls, timeline };
 }
 
-async function runPipeline(made: ReturnType<typeof makeProvider> = makeProvider()) {
+/** #2233 — the embeddings sidecar's input limit (`embeddings-svc/src/app.ts`). */
+const SIDECAR_MAX_INPUT_CHARS = 32_768;
+
+async function runPipeline(
+  made: ReturnType<typeof makeProvider> = makeProvider(),
+  extra: Record<string, unknown> = {},
+) {
   const { provider, calls, timeline } = made;
   const orch = new AnalysisOrchestrator({
     provider,
     retrieve: async () => [],
     knowledge: {
-      search: async (_projectId: string, query: string) => ({
-        hits: [
-          {
-            chunkId: "doc_1#0",
-            documentId: "doc_1",
-            filename: "brief.md",
-            position: 0,
-            text: `Brief: ${query.slice(0, 40)}`,
-            score: 1,
-            embeddingModel: "test",
-            source: "upload",
-          },
-        ],
-      }),
+      search: async (_projectId: string, query: string) => {
+        state.searchQueries.push(query);
+        // #2233 — as the sidecar embedder does: a non-retryable 400 past its limit.
+        if (query.length > SIDECAR_MAX_INPUT_CHARS) {
+          throw new Error(
+            `embeddings sidecar 400: input over ${SIDECAR_MAX_INPUT_CHARS} characters`,
+          );
+        }
+        return {
+          hits: [
+            {
+              chunkId: "doc_1#0",
+              documentId: "doc_1",
+              filename: "brief.md",
+              position: 0,
+              text: `Brief: ${query.slice(0, 40)}`,
+              score: 1,
+              embeddingModel: "test",
+              source: "upload",
+            },
+          ],
+        };
+      },
     } as never,
   });
   orchestrator.current = orch;
@@ -283,6 +323,7 @@ async function runPipeline(made: ReturnType<typeof makeProvider> = makeProvider(
     projectId: PROJECT_ID,
     startedById: "u1",
     model: "test-model",
+    ...extra,
   });
   const persisted = (
     vi.mocked(analysisService.persistAgentResult).mock.calls as unknown as Array<
@@ -293,6 +334,15 @@ async function runPipeline(made: ReturnType<typeof makeProvider> = makeProvider(
     .filter((a) => a.agentKey === "code")
     .map((a) => a.output);
   return { calls, persisted, timeline };
+}
+
+/** #2233 — the capability record the run persisted last. */
+function persistedCapability(): AnalysisCapability {
+  const calls = vi.mocked(analysisService.persistAnalysisCapability).mock.calls as unknown as Array<
+    [string, AnalysisCapability]
+  >;
+  expect(calls.length, "the run persisted its capability").toBeGreaterThan(0);
+  return calls.at(-1)![1];
 }
 
 /** What the analysis produced: every model call and the persisted code result. */
@@ -310,6 +360,9 @@ beforeEach(() => {
   state.rules = [];
   state.governingDoneAtCompletion = -1;
   state.requirements = null;
+  state.otherFindings = 0;
+  state.searchQueries = [];
+  state.customResults = [];
   decided.ids = [];
   progress.governingDone = 0;
   process.env.GOVERNING_DOCS_ENABLED = "0";
@@ -742,6 +795,117 @@ describe("#2113 — the agentic path (a project with ingested code)", () => {
     await runAgentic();
     expect(decided.ids).not.toContain("REQ-BLANK");
     expect(decided.ids).toHaveLength(MAX_REQUIREMENTS_FOR_RETRIEVAL);
+    // #2233 — and the run names the three it did not decide.
+    expect(persistedCapability().requirementsLeftOut).toEqual([
+      expect.objectContaining({
+        stage: "governing-applicability",
+        analysedCount: MAX_REQUIREMENTS_FOR_RETRIEVAL,
+        totalCount: MAX_REQUIREMENTS_FOR_RETRIEVAL + 3,
+        leftOut: ["REQ-025", "REQ-026", "REQ-027"].map((id) => expect.objectContaining({ id })),
+      }),
+    ]);
+    expect(persistedCapability().reasons).toContain("requirements-left-out");
+  });
+
+  it("#2233 — no code graph: the run names the requirements past the limit for code retrieval and governing rules", async () => {
+    process.env.GOVERNING_DOCS_ENABLED = "1";
+    state.workspaceId = "ws_1872";
+    state.rules = [AUDIT_RULE];
+    state.requirements = Array.from({ length: MAX_REQUIREMENTS_FOR_RETRIEVAL + 2 }, (_, i) => ({
+      id: `REQ-${String(i + 1).padStart(3, "0")}`,
+      text: `Export dataset ${i + 1} as a CSV.`,
+    }));
+    await runPipeline();
+    const notices = persistedCapability().requirementsLeftOut ?? [];
+    expect(notices.map((n) => [n.stage, n.leftOut.map((r) => r.id)])).toEqual([
+      ["requirement-grounded-code", ["REQ-025", "REQ-026"]],
+      ["governing-applicability", ["REQ-025", "REQ-026"]],
+    ]);
+    expect(notices[0]!.leftOut[0]!.excerpt).toBe("Export dataset 25 as a CSV.");
+  });
+
+  it("#2233 — a specialist that writes more than 50 findings: the run names the ones not saved", async () => {
+    state.otherFindings = 52;
+    await runPipeline();
+    expect(persistedCapability().findingsLeftOut).toEqual([
+      {
+        agentKey: "document",
+        producedCount: 52,
+        keptCount: 50,
+        leftOutTitles: ["Document finding 51", "Document finding 52"],
+      },
+    ]);
+    expect(persistedCapability().reasons).toContain("findings-left-out");
+  });
+
+  it("#2233 — flag off: only the code-retrieval limit is reported, and a run under it reports none", async () => {
+    state.requirements = Array.from({ length: MAX_REQUIREMENTS_FOR_RETRIEVAL + 1 }, (_, i) => ({
+      id: `REQ-${String(i + 1).padStart(3, "0")}`,
+      text: `Export dataset ${i + 1} as a CSV.`,
+    }));
+    await runPipeline();
+    expect(persistedCapability().requirementsLeftOut?.map((n) => n.stage)).toEqual([
+      "requirement-grounded-code",
+    ]);
+
+    vi.clearAllMocks();
+    state.requirements = null;
+    await runPipeline();
+    expect(persistedCapability()).not.toHaveProperty("requirementsLeftOut");
+    expect(persistedCapability().reasons).not.toContain("requirements-left-out");
+  });
+
+  it("#2233 — an imported item whose body is over 32,768 characters: the search query is bounded and the code agent still runs", async () => {
+    const title = "Export the order history as a CSV";
+    const body = "Every column of every order goes into the file. ".repeat(800);
+    expect(body.length).toBeGreaterThan(SIDECAR_MAX_INPUT_CHARS);
+    const run = await runPipeline(makeProvider(), {
+      extraInstructions: `- ${title}`,
+      sourceRequirements: [
+        {
+          candidateId: "NR-1",
+          requirementId: "imp-1",
+          title,
+          externalSource: "github",
+          externalId: "4100",
+          externalUrl: null,
+          detail: body,
+        },
+      ],
+    });
+    expect(state.searchQueries.length).toBeGreaterThan(0);
+    for (const q of state.searchQueries) {
+      expect(q.length).toBeLessThanOrEqual(MAX_REQUIREMENT_QUERY_CHARS);
+    }
+    expect(state.searchQueries).toContainEqual(expect.stringMatching(new RegExp(`^${title}\\n`)));
+    // The code agent ran, read the whole body, and its result was persisted.
+    const code = run.calls.find((c) => c.system.includes("requirementId"));
+    expect(code, "the requirement-grounded code agent ran").toBeDefined();
+    expect(userOf(code!)).toContain(body.trim());
+    expect(run.persisted.length).toBeGreaterThan(0);
+    expect(run.persisted.every((o) => o !== null)).toBe(true);
+  });
+
+  it("#2233 — the custom-agent phase: findings an agent lost at the 50-finding cap are named on the persisted capability", async () => {
+    const leftOut = {
+      agentKey: "custom:ag_1",
+      producedCount: 52,
+      keptCount: 50,
+      leftOutTitles: ["Finding 51", "Finding 52"],
+    };
+    state.customResults = [
+      {
+        agentId: "ag_1",
+        agentRef: "custom:ag_1",
+        agentName: "Verbose",
+        content: "{}",
+        usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+        findingsLeftOut: leftOut,
+      },
+    ];
+    await runPipeline();
+    expect(persistedCapability().findingsLeftOut).toEqual([leftOut]);
+    expect(persistedCapability().reasons).toContain("findings-left-out");
   });
 
   it("flag off: the agentic path reads no workspace or rule, and stores nothing", async () => {

@@ -28,6 +28,7 @@ import { mapRequirementToCode } from "../traceability/requirement-code-mapping.j
 import { createRequirementCodeSearcher } from "../traceability/requirement-code-searcher.js";
 import { prisma as defaultPrisma } from "../prisma.js";
 import type { AffectedCodeDeps } from "./affected-code-context.js";
+import { requirementQueryText } from "./requirement-query.js";
 import {
   DEFAULT_DEEP_MAX_TURNS,
   DEFAULT_ESCALATION_THRESHOLD,
@@ -98,7 +99,12 @@ async function blastRadiusSizeFor(
 ): Promise<number> {
   try {
     const matches = await deps.mapRequirement(
-      { id: requirement.id, title: requirement.text.slice(0, 120), body: requirement.text },
+      // #2233 — the code search reads the bounded text, not an imported item's whole body.
+      {
+        id: requirement.id,
+        title: requirement.text.slice(0, 120),
+        body: requirementQueryText(requirement.text),
+      },
       projectId,
     );
     const seedIds = matches.map((m) => m.codeSymbolId).filter((id): id is string => Boolean(id));
@@ -149,7 +155,8 @@ export async function computeRequirementEscalations(opts: {
       mapRequirement,
       dataSourceFor,
     });
-    inputs.push({ id: r.id, text: r.text, blastRadiusSize });
+    // #2233 — ambiguity is scored on the same bounded text the search read.
+    inputs.push({ id: r.id, text: requirementQueryText(r.text), blastRadiusSize });
   }
 
   const requirements = decideEscalations(inputs, config);

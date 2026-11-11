@@ -85,6 +85,7 @@ import { stakeholderApi } from "@/lib/stakeholder-api";
 import { AnalysisRunSummary } from "@/components/analysis/analysis-run-summary";
 import { AnalysisCapabilityBanner } from "@/components/analysis/analysis-capability-banner";
 import { RequirementInputAccountPanel } from "@/components/analysis/requirement-input-account-panel";
+import { AnalysisLimitsPanel } from "@/components/analysis/analysis-limits-panel";
 import { DocumentCoveragePanel } from "@/components/analysis/document-coverage-panel";
 import { AnalysisCapabilityHint } from "@/components/analysis/analysis-capability-hint";
 import { AffectedCodePanel } from "@/components/analysis/affected-code-panel";
@@ -1142,6 +1143,9 @@ export default function AnalysisPage(): React.ReactElement {
                   typed: analyzed, merged into another, or dropped with a reason.
                   Renders nothing on runs with no free-text requirements. */}
                   <RequirementInputAccountPanel capability={detail.data.capability} />
+
+                  {/* Issue #2233 — the requirements and findings a limit left out. */}
+                  <AnalysisLimitsPanel capability={detail.data.capability} />
 
                   {/* Issue #2230 — what the document reader read from every selected
                   document and section. Renders nothing when the reader did not run. */}

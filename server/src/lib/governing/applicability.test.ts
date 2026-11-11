@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AIProvider, ChatMessage, ChatOptions } from "../ai/types.js";
 import { TOOL_RESULT_FENCE } from "../ai/tool-runtime/fence.js";
 import { estimateTokens } from "../analysis/context-window-manager.js";
+import { MAX_REQUIREMENT_QUERY_CHARS } from "../analysis/requirement-query.js";
 
 const db = vi.hoisted(() => ({
   project: { findFirst: vi.fn() },
@@ -195,6 +196,23 @@ describe("decideApplicability — the screen is the recall safety net", () => {
     expect(set.decisions).toHaveLength(1);
     expect(set.decisions[0]!.foundBy).toEqual(["screen", "top-k"]);
     expect(handlesIn(sent[1]!.user)).toEqual(["R2"]);
+  });
+
+  it("#2233 — searches the index with a long requirement's text bounded, and the judge still reads it all", async () => {
+    const queries: string[] = [];
+    const { provider, sent } = stubModel({ screen: () => ["R1"], judge });
+    const text = `${REQUIREMENT.text}\n${"The export must keep every column. ".repeat(1_200)}`;
+    await decideApplicability({
+      requirement: { ...REQUIREMENT, text },
+      rules: [AUDIT],
+      provider,
+      retrieve: async (query) => {
+        queries.push(query);
+        return [];
+      },
+    });
+    expect(queries).toEqual([text.slice(0, MAX_REQUIREMENT_QUERY_CHARS)]);
+    expect(sent.some((s) => s.user.includes(text.slice(-200)))).toBe(true);
   });
 
   it("judges nothing when neither pass finds a rule", async () => {

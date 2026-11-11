@@ -55,6 +55,8 @@ export function readSourceRequirements(metadata: unknown): AnalysisSourceRequire
     const title = str(r.title);
     const externalSource = str(r.externalSource);
     if (!candidateId || !requirementId || title === null || !externalSource) return [];
+    // #2233 — the body and acceptance criteria the code agent reads beside the title.
+    const detail = str(r.detail);
     return [
       {
         candidateId,
@@ -63,6 +65,7 @@ export function readSourceRequirements(metadata: unknown): AnalysisSourceRequire
         externalSource,
         externalId: str(r.externalId),
         externalUrl: str(r.externalUrl),
+        ...(detail ? { detail } : {}),
       },
     ];
   });
