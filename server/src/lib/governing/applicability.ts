@@ -39,6 +39,7 @@ import type { AIProvider, ChatResponse } from "../ai/types.js";
 import { extractJsonObject, resolveFinalAnswerMaxOutputTokens } from "../analysis/agent-runner.js";
 import { resolveContextWindow } from "../analysis/context-watermark.js";
 import { estimateTokens } from "../analysis/context-window-manager.js";
+import { requirementQueryText } from "../analysis/requirement-query.js";
 import { createChildLogger } from "../logger.js";
 import { prisma } from "../prisma.js";
 import { isGoverningDocsEnabled } from "./flag.js";
@@ -761,7 +762,8 @@ export async function decideApplicability(
   const screen = input.screen !== false && entries.length > 0;
   let topKIds: string[] = [];
   try {
-    topKIds = await input.retrieve(requirement.text, topK);
+    // #2233 — the index search embeds the query: bounded, while the judge reads it all.
+    topKIds = await input.retrieve(requirementQueryText(requirement.text), topK);
   } catch (err) {
     if (!screen) throw err;
     log.warn("governing top-k search failed; the screen alone finds candidates", {
