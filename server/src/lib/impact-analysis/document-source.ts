@@ -130,12 +130,30 @@ export async function loadImpactDocumentText(
         filename: doc.filename,
       });
       if (parsed.ok && parsed.text.trim().length > 0) {
+        // Ingest described a Word document's images with the project's vision
+        // model and stored those descriptions in the chunks; this re-parse has no
+        // describer, so it would turn each one into "image not read". When the
+        // re-parse lost images and the chunks exist, read the chunks instead —
+        // they hold what ingest saw, and describing again would be paid twice.
+        if (!IMAGE_NOT_DESCRIBED.test(parsed.text)) {
+          return { text: parsed.text, from: "file", title };
+        }
+        const fromChunks = await storedChunkText(prisma, documentId);
+        if (fromChunks.trim().length > 0) return { text: fromChunks, from: "chunks", title };
         return { text: parsed.text, from: "file", title };
       }
     }
   } catch {
     // The file is gone or unreadable: the stored chunks below are what is left.
   }
+  return { text: await storedChunkText(prisma, documentId), from: "chunks", title };
+}
+
+/** The placeholder a re-parse without an image describer writes for each image. */
+const IMAGE_NOT_DESCRIBED = /image not read: no vision-capable model is configured/;
+
+/** The document's stored chunks (approved, else quarantined), overlap removed. */
+async function storedChunkText(prisma: DocumentSourcePrisma, documentId: string): Promise<string> {
   const approved = await prisma.knowledgeChunk.findMany({
     where: { documentId },
     orderBy: { position: "asc" },
@@ -149,7 +167,7 @@ export async function loadImpactDocumentText(
           orderBy: { ord: "asc" },
           select: { text: true },
         });
-  return { text: joinChunksWithoutOverlap(chunks.map((c) => c.text)), from: "chunks", title };
+  return joinChunksWithoutOverlap(chunks.map((c) => c.text));
 }
 
 /**

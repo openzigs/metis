@@ -154,6 +154,29 @@ describe("loadImpactDocumentText", () => {
     );
   });
 
+  // #2273 panel: a re-parse has no image describer, so a Word document's images
+  // come back "not read" although ingest described them into the chunks.
+  it("reads the described chunks when the re-parse lost the images ingest described", async () => {
+    const reparsed = `${FRD}\n\n> Image 1 (wireframe.png): image not read: no vision-capable model is configured.`;
+    const prisma = prismaWith({
+      approved: ["Booking screen. Image 1 (wireframe.png): a calendar with a Book button"],
+    });
+    const read = vi.fn(async () => Buffer.from(reparsed, "utf8"));
+    const doc = await loadImpactDocumentText(prisma as never, "doc-1", { read });
+    expect(doc.from).toBe("chunks");
+    expect(doc.text).toContain("a calendar with a Book button");
+    expect(doc.text).not.toContain("image not read");
+  });
+
+  it("keeps the re-parsed file when it lost images but there are no chunks to read", async () => {
+    const reparsed = `${FRD}\n\nImage 1: image not read: no vision-capable model is configured.`;
+    const prisma = prismaWith({ approved: [], quarantined: [] });
+    const read = vi.fn(async () => Buffer.from(reparsed, "utf8"));
+    const doc = await loadImpactDocumentText(prisma as never, "doc-1", { read });
+    expect(doc.from).toBe("file");
+    for (const p of paragraphs) expect(occurrences(doc.text, p)).toBe(1);
+  });
+
   it("falls back to the approved chunks, de-overlapped, when the file cannot be read", async () => {
     const prisma = prismaWith({ approved: ["one two three four", "three four five six"] });
     const read = vi.fn(async () => {
