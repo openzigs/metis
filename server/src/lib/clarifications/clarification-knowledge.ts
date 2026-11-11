@@ -113,9 +113,18 @@ export async function indexClarification(
       projectId: record.projectId,
       buffer: Buffer.from(renderClarificationDocument(record), "utf8"),
     });
+    // The document quotes the source paragraph, so it carries the source's
+    // ACL: a restricted source must not be republished as an unrestricted chunk.
+    const sourceAcl = record.source?.documentId
+      ? await prisma.document.findFirst({
+          where: { id: record.source.documentId, projectId: record.projectId },
+          select: { aclSubjects: true },
+        })
+      : null;
     const document = await prisma.document.create({
       data: {
         projectId: record.projectId,
+        ...(sourceAcl ? { aclSubjects: sourceAcl.aclSubjects } : {}),
         filename: clarificationFilename(record.id),
         title: clarificationTitle(record),
         mimeType: "text/markdown",

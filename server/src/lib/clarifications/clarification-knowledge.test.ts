@@ -7,7 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { StoredClarification } from "./clarification-records.js";
 
 const db = vi.hoisted(() => ({
-  document: { create: vi.fn() },
+  document: { create: vi.fn(), findFirst: vi.fn() },
   clarificationRecord: { updateMany: vi.fn() },
 }));
 vi.mock("../prisma.js", () => ({ prisma: db }));
@@ -90,5 +90,26 @@ describe("#2236 — indexClarification edges", () => {
     expect(await indexClarification(record(), { storage, enqueue })).toBeNull();
     expect(enqueue).not.toHaveBeenCalled();
     expect(db.document.create).not.toHaveBeenCalled();
+  });
+
+  it("copies the source document's ACL onto the clarification document, scoped to the project", async () => {
+    const acl = JSON.stringify([{ kind: "role", value: "legal" }]);
+    db.document.findFirst.mockResolvedValueOnce({ aclSubjects: acl });
+    db.document.create.mockResolvedValueOnce({ id: "doc-new" });
+    const storage = {
+      write: vi.fn(async () => ({ sizeBytes: 1, storagePath: "p", checksum: "c" })),
+    };
+    const id = await indexClarification(
+      record({
+        source: { documentId: "doc-src", filename: "f.docx", headingPath: [], quote: "q" },
+      }),
+      { storage: storage as never, enqueue: vi.fn() },
+    );
+    expect(id).toBe("doc-new");
+    expect(db.document.findFirst).toHaveBeenCalledWith({
+      where: { id: "doc-src", projectId: "p1" },
+      select: { aclSubjects: true },
+    });
+    expect(db.document.create.mock.calls.at(-1)![0].data.aclSubjects).toBe(acl);
   });
 });
