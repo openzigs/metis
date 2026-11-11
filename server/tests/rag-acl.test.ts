@@ -21,6 +21,7 @@ import {
   parseAclSubjects,
   propagateAcl,
   serializeAclSubjects,
+  sharedAudienceActor,
 } from "../src/lib/rag/acl.js";
 
 describe("parseAclSubjects", () => {
@@ -109,6 +110,27 @@ describe("isVisibleTo", () => {
     expect(isVisibleTo(restricted, { userId: "u9", role: "viewer", groups: ["other"] })).toBe(
       false,
     );
+  });
+  // #2248 — a reply the whole thread reads sees unrestricted chunks only.
+  it("a shared audience sees an unrestricted chunk", () => {
+    expect(isVisibleTo(empty, sharedAudienceActor("u1"))).toBe(true);
+  });
+
+  it("a shared audience matches no subject, even the trigger's own", () => {
+    expect(
+      isVisibleTo({ subjects: [{ kind: "user", value: "u1" }] }, sharedAudienceActor("u1")),
+    ).toBe(false);
+    expect(
+      isVisibleTo(
+        { subjects: [{ kind: "role", value: "shared-audience" }] },
+        sharedAudienceActor("u1"),
+      ),
+    ).toBe(false);
+  });
+
+  it("a shared audience has no admin bypass and no groups", () => {
+    const actor = { ...sharedAudienceActor("root"), role: "admin", groups: ["alpha"] };
+    expect(isVisibleTo(restricted, actor)).toBe(false);
   });
 });
 

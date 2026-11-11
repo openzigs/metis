@@ -7,7 +7,9 @@
  * cross-project lookups by construction — see `vector-store.ts`).
  *
  * #2225 — every search runs for the session's user (`ctx.userId`) as the ACL
- * actor, so a chunk whose ACL excludes them never reaches the model.
+ * actor, so a chunk whose ACL excludes them never reaches the model. #2248 — a
+ * call that grounds a shared reply (`ctx.aclAudience: "shared"`, a discussion
+ * thread) sees unrestricted chunks only.
  */
 import { z } from "zod";
 import { DEFAULT_RETRIEVE_K, MAX_RETRIEVE_K } from "@metis/shared";
@@ -16,7 +18,7 @@ import { getToolRegistry } from "../ai/tool-registry.js";
 import { getKnowledgeService, type KnowledgeService } from "./knowledge-service.js";
 import { formatDerivedLabel } from "./derived-label.js";
 import { formatHitLocator, formatHitScore } from "./hit-locator.js";
-import { resolveAclActor } from "./acl.js";
+import { resolveAclActor, sharedAudienceActor } from "./acl.js";
 
 const argsSchema = z.object({
   // #736 — optional: a project-scoped chat session is already bound to its
@@ -59,8 +61,12 @@ export function buildSearchKnowledgeTool(
       const ignoredArg =
         Boolean(ctx.projectId) && args.projectId !== undefined && args.projectId !== ctx.projectId;
       // #2225 — a failed role read rejects, and the call fails as a tool
-      // error: it never searches without the caller's ACLs.
-      const actor = await resolveAclActor(ctx.userId);
+      // error: it never searches without the caller's ACLs. #2248 — a shared
+      // reply (a discussion thread) searches for a shared audience instead.
+      const actor =
+        ctx.aclAudience === "shared"
+          ? sharedAudienceActor(ctx.userId)
+          : await resolveAclActor(ctx.userId);
       const { hits, coverageWarning } = await service.search(projectId, args.query, {
         k: args.k ?? DEFAULT_RETRIEVE_K,
         documentIds: args.documentIds,
