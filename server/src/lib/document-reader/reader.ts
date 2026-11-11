@@ -13,6 +13,9 @@
  *     call carries the whole document and asks for the statements of one
  *     batch of sections ({@link READER_BATCH_CHARS} of source), and the reply
  *     stays small however long the document is.
+ *     The document and the system message are cached across those calls
+ *     (#2262), and a document over {@link READER_WHOLE_MAX_DOCUMENT_TOKENS} is
+ *     read sectioned instead, so the cost stops growing with its square.
  *   - **sectioned** — a document too long for the window. One call builds the
  *     document context (purpose, scope, actors, glossary) from the outline of
  *     every section and as much of the text as fits; every batch of sections
@@ -69,6 +72,14 @@ export const READER_WINDOW_SHARE = 0.8;
 export const READER_PROMPT_OVERHEAD_TOKENS = 2000;
 /** The least opening text the sectioned mode's context call is given. */
 const MIN_CONTEXT_OPENING_CHARS = 4000;
+/**
+ * #2262 — the longest document read in whole mode (about 80 KB of text). Every
+ * whole-mode call carries the whole document and there is one call per
+ * {@link READER_BATCH_CHARS}, so its prompt tokens grow with the square of the
+ * document's length; above this a document is read sectioned, whose cost grows
+ * in step with it. 80 KB keeps the epic's 60 KB reading in whole mode.
+ */
+export const READER_WHOLE_MAX_DOCUMENT_TOKENS = 20_000;
 
 export type ReadingMode = "whole" | "sectioned";
 
@@ -131,6 +142,11 @@ export interface ReadDocumentInput {
   signal?: AbortSignal;
   /** Force a mode (the eval harness, tests); default {@link chooseReadingMode}. */
   mode?: ReadingMode;
+  /**
+   * #2262 (#1237) — the operator's notes for the analysis, given to every
+   * statements call as fenced data. They frame the reading, never narrow it.
+   */
+  operatorNotes?: string;
 }
 
 /** No section of the document could be read. Its message is METIS's own, so safe to show. */
@@ -138,21 +154,45 @@ export class DocumentReaderError extends Error {
   override name = "DocumentReaderError";
 }
 
-/** `whole` when the document, the prompt and a full reply fit the window's usable share. */
+const SPENT_USAGE = Symbol.for("metis.documentReader.spentUsage");
+
+/**
+ * #2262 — record on a failure the tokens spent before it, so a read that fails
+ * on its fifth batch still counts the first four against the monthly cap. The
+ * error itself is returned unchanged (an `AbortError` stays one).
+ */
+export function withSpentUsage<E>(err: E, usage: TokenUsage): E {
+  if (typeof err === "object" && err !== null && Object.isExtensible(err)) {
+    (err as Record<symbol, unknown>)[SPENT_USAGE] = usage;
+  }
+  return err;
+}
+
+/** The tokens a failed read had spent ({@link withSpentUsage}), or `undefined`. */
+export function spentUsageOf(err: unknown): TokenUsage | undefined {
+  if (typeof err !== "object" || err === null) return undefined;
+  return (err as Record<symbol, TokenUsage | undefined>)[SPENT_USAGE];
+}
+
+/**
+ * `whole` when the document is at most {@link READER_WHOLE_MAX_DOCUMENT_TOKENS}
+ * and it, the prompt and a full reply fit the window's usable share.
+ */
 export function chooseReadingMode(input: {
   documentTokens: number;
   windowTokens: number;
   outputTokenCap: number;
 }): ReadingMode {
   const usable = Math.floor(input.windowTokens * READER_WINDOW_SHARE);
-  return input.documentTokens + READER_PROMPT_OVERHEAD_TOKENS + input.outputTokenCap <= usable
+  return input.documentTokens <= READER_WHOLE_MAX_DOCUMENT_TOKENS &&
+    input.documentTokens + READER_PROMPT_OVERHEAD_TOKENS + input.outputTokenCap <= usable
     ? "whole"
     : "sectioned";
 }
 
 const ZERO_USAGE: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
-function addUsage(a: TokenUsage, b: TokenUsage): TokenUsage {
+export function addUsage(a: TokenUsage, b: TokenUsage): TokenUsage {
   return {
     promptTokens: a.promptTokens + b.promptTokens,
     completionTokens: a.completionTokens + b.completionTokens,
@@ -171,8 +211,23 @@ interface Kept {
   section: ReaderSection;
 }
 
-/** Read `input.text` and list its labelled, verified statements with a coverage report. */
+/**
+ * Read `input.text` and list its labelled, verified statements with a coverage
+ * report. A failure carries the tokens already spent ({@link spentUsageOf}).
+ */
 export async function readDocument(input: ReadDocumentInput): Promise<DocumentReading> {
+  const meter = { usage: ZERO_USAGE, calls: 0 };
+  try {
+    return await read(input, meter);
+  } catch (err) {
+    throw withSpentUsage(err, meter.usage);
+  }
+}
+
+async function read(
+  input: ReadDocumentInput,
+  meter: { usage: TokenUsage; calls: number },
+): Promise<DocumentReading> {
   const { provider, text } = input;
   const model = input.model ?? provider.model;
   const outputTokenCap = resolveFinalAnswerMaxOutputTokens(model, provider.key);
@@ -182,11 +237,9 @@ export async function readDocument(input: ReadDocumentInput): Promise<DocumentRe
     input.mode ??
     chooseReadingMode({ documentTokens: estimateTokens(text), windowTokens, outputTokenCap });
 
-  let usage = ZERO_USAGE;
-  let calls = 0;
   const ask = async <T>(
     label: string,
-    prompt: { systemMessage: string; userMessage: string },
+    prompt: { systemMessage: string; userMessage: string; cachePrefix?: string },
     schema: Parameters<typeof requestStructuredVerdict<T>>[1]["schema"],
     expectedShape: string,
   ): Promise<StructuredVerdictOutcome<T>> => {
@@ -199,11 +252,16 @@ export async function readDocument(input: ReadDocumentInput): Promise<DocumentRe
       messages: [{ role: "user", content: prompt.userMessage }],
       disableTools: true,
       maxTokens: outputTokenCap,
+      // #2262 — every batch call of one document shares the system message and
+      // the user message's lead (the whole document, in whole mode): cache them.
+      ...(prompt.cachePrefix
+        ? { promptCaching: { system: true, userPrefix: prompt.cachePrefix } }
+        : {}),
       ...(input.model ? { model: input.model } : {}),
       ...(input.signal ? { signal: input.signal } : {}),
     });
-    usage = addUsage(usage, outcome.usage);
-    calls += outcome.attempts;
+    meter.usage = addUsage(meter.usage, outcome.usage);
+    meter.calls += outcome.attempts;
     return outcome;
   };
   /** A provider failure fails the read; any other unreadable reply is the caller's to report. */
@@ -269,8 +327,18 @@ export async function readDocument(input: ReadDocumentInput): Promise<DocumentRe
     const outcome = await ask(
       "document-reader-statements",
       context
-        ? buildSectionBatchPrompt({ title: input.title, context, batch })
-        : buildWholeDocumentBatchPrompt({ title: input.title, sections, batch }),
+        ? buildSectionBatchPrompt({
+            title: input.title,
+            context,
+            batch,
+            operatorNotes: input.operatorNotes,
+          })
+        : buildWholeDocumentBatchPrompt({
+            title: input.title,
+            sections,
+            batch,
+            operatorNotes: input.operatorNotes,
+          }),
       statementsReplySchema,
       STATEMENTS_REPLY_SHAPE,
     );
@@ -289,8 +357,15 @@ export async function readDocument(input: ReadDocumentInput): Promise<DocumentRe
         continue;
       }
       const named = inBatch.get(parsed.data.section.trim().toUpperCase());
-      const clause = locate(parsed.data.quote, named ?? batchSpan);
-      if (!clause) {
+      // #2262 — `clauseLocator`'s span is a preference: with no occurrence in it,
+      // it returns the first in the whole text. A quote from outside the batch
+      // would be attributed to a section this call was not asked about, so it
+      // counts as unverified. One the named section lacks but another section of
+      // the batch holds is kept.
+      let clause = locate(parsed.data.quote, named ?? batchSpan);
+      if (named && clause && !startsIn(clause, named))
+        clause = locate(parsed.data.quote, batchSpan);
+      if (!clause || !startsIn(clause, batchSpan)) {
         droppedUnverified++;
         coverage.get((named ?? batch[0]!).id)!.unverified++;
         continue;
@@ -394,8 +469,12 @@ export async function readDocument(input: ReadDocumentInput): Promise<DocumentRe
     sections: [...coverage.values()],
     droppedUnverified,
     merge,
-    calls,
+    calls: meter.calls,
     outputTokenCap,
-    usage,
+    usage: meter.usage,
   };
+}
+
+function startsIn(clause: { clauseStart: number }, span: { start: number; end: number }): boolean {
+  return clause.clauseStart >= span.start && clause.clauseStart < span.end;
 }

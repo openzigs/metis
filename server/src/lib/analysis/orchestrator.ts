@@ -277,6 +277,8 @@ import {
 } from "../governing/applicability-store.js";
 import { produceGoverningFindingsForAnalysis } from "../governing/findings-store.js";
 import { isDocumentReaderEnabled } from "../document-reader/flag.js";
+import { spentUsageOf } from "../document-reader/reader.js";
+import { resolveAclActor, sharedAudienceActor } from "../rag/acl.js";
 import {
   readerSourceOf,
   runDocumentReaderAgent,
@@ -2371,6 +2373,14 @@ export class AnalysisOrchestrator {
         if ((r.value as Partial<AgentRunResult> | undefined)?.skipped === true) return;
         specialistSucceeded += 1;
       } else {
+        // #2262 — a failed (or cancelled) document read still spent what it
+        // spent before failing; the monthly cap reads these totals.
+        const spent = spentUsageOf(r.reason);
+        if (spent) {
+          totals.promptTokens += spent.promptTokens;
+          totals.completionTokens += spent.completionTokens;
+          totals.totalTokens += spent.totalTokens;
+        }
         // Aborts are handled by the dedicated cancellation path; don't count
         // them as failures here.
         const reason = r.reason as { name?: string; message?: string } | undefined;
@@ -3430,7 +3440,8 @@ export class AnalysisOrchestrator {
           startedAt,
           completedAt: new Date(),
           errorMessage: aborted ? "cancelled" : (err as Error).message,
-          usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+          // #2262 — a document read that failed part-way spent tokens; record them.
+          usage: spentUsageOf(err) ?? { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
         });
         this.emit({
           analysisId: input.analysisId,
@@ -3496,23 +3507,27 @@ export class AnalysisOrchestrator {
 
   /**
    * #2230 — the document agent through the document reader: the selected
-   * documents (all ready uploads when none is selected, as the code agent's
-   * requirements half chooses them) read in full. Records the coverage report
-   * on the run's capability. `null` when no document could be loaded, so the
-   * caller retrieves instead.
+   * documents (with none selected, the most recent ready uploads, at most
+   * `READER_IMPLICIT_MAX_DOCUMENTS`, #2262) read in full. Records the coverage
+   * report on the run's capability. `null` when no document could be loaded,
+   * so the caller retrieves instead.
+   *
+   * #2262 — only documents the requester may see are read. A requester who is
+   * no longer active fails the agent (`InactiveAclActorError`): never read
+   * without an actor. With no requester at all, only unrestricted documents.
    */
   private async readSelectedDocuments(
     input: Parameters<AnalysisOrchestrator["runOneAgent"]>[0],
   ): Promise<AgentRunResult | null> {
-    const documentIds =
-      input.documentIds && input.documentIds.length > 0
-        ? input.documentIds
-        : await defaultAnalysisDocumentIds(input.projectId);
-    if (documentIds.length === 0) return null;
+    const actor = input.actorId
+      ? await resolveAclActor(input.actorId)
+      : sharedAudienceActor("analysis");
     const read = await runDocumentReaderAgent({
       provider: this.deps.provider,
       projectId: input.projectId,
-      documentIds,
+      documentIds: input.documentIds ?? [],
+      actor,
+      ...(input.extraInstructions ? { operatorNotes: input.extraInstructions } : {}),
       signal: input.signal,
       ...(input.model ? { model: input.model } : {}),
       ...(this.deps.readerDocuments ? { load: this.deps.readerDocuments } : {}),
@@ -3520,7 +3535,7 @@ export class AnalysisOrchestrator {
     if (!read) {
       log.warn("Document reader could load none of the selected documents; retrieving instead", {
         analysisId: input.analysisId,
-        documentCount: documentIds.length,
+        documentCount: input.documentIds?.length ?? 0,
       });
       return null;
     }
