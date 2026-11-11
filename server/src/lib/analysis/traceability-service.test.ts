@@ -198,6 +198,24 @@ describe("getTraceabilityMatrix", () => {
     expect(matrix!.rows.map((r) => r.tests.length)).toEqual([0, 1]);
   });
 
+  it("#2222 — a requirement edited since the analysis marks its row's findings stale", async () => {
+    const snap = snapshot();
+    snap.requirements[0] = { ...snap.requirements[0]!, version: 3, analysedVersion: 1 };
+    snap.requirements.push({
+      ...snap.requirements[0]!,
+      id: "req-2",
+      version: 2,
+      analysedVersion: 2,
+    });
+    const matrix = await getTraceabilityMatrix("an-1", {
+      prisma: mockPrisma(),
+      resolveTests: resolver(),
+      loadSnapshot: vi.fn().mockResolvedValue(snap),
+    });
+    expect(matrix!.rows[0]!.findingsStale).toEqual({ judgedVersion: 1, currentVersion: 3 });
+    expect(matrix!.rows[1]).not.toHaveProperty("findingsStale");
+  });
+
   it("coerces an unknown finding severity to 'info' and a missing coverage to null", async () => {
     const snap = snapshot();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

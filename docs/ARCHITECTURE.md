@@ -2928,6 +2928,31 @@ decision on that row is audited the same way before the delete (#2017).
 - A finding is looked up **with** its analysis id, so another analysis's finding is a 404.
 - An `AuditLog` row (`governing.finding.decision`, target `governing_finding`) is written in the
   same transaction as the decision.
+- `POST …/governing-findings/recheck` (#2222) takes `{ requirementId }`
+  (`governingRecheckInputSchema`, strict; a **stored** requirement id), needs `analysis.run`, and
+  runs the governing check again on that requirement's current wording only (title, body and
+  acceptance criteria): applicability through `governingApplicabilityHookFor`, then the findings
+  run, both stored under the stored requirement's own id with the version judged (`versions` on
+  the applicability entry, `governing_findings.requirementVersions` on each row). The findings are
+  produced from the new entry in memory first and the entry is stored only once they are, so a
+  failed evaluation stores nothing (502). 404 for a requirement that is not a live one of this
+  analysis **and** project; 409 when the workspace has no current rule. Audited
+  `governing.requirement.recheck`, metered to the project (`lib/governing/recheck.ts`).
+
+**Stale findings (#2222).** A governing finding is keyed by the requirement as the run analysed it
+(`AC-2`), and the stored requirements an analyst edits join to it only through their
+`finding:<id>` evidence labels (each evidence finding records its analysed requirement); on the dev
+sample the join is many-to-many. A stored requirement's **analysed version** is its version before
+the first `RequirementVersion` row with an actor (its current version when a person never edited
+it). A finding is stale for each stored requirement whose current version is not the one it judged:
+`requirementVersions[id]` on a re-checked row, else the analysed version. An analysed finding stops
+being stale for a requirement re-checked at its current version, whose own findings now stand for it
+(`withGoverningStaleness`, `lib/governing/requirement-staleness.ts`). The findings route, the BRD's
+governing section and the `get_governing_findings` chat tool set `stale` on each finding; the route
+also returns `requirementTitles` for the groups keyed by a stored id. The analysis snapshot carries
+`analysedVersion` on each requirement, so the traceability matrix (`findingsStale` on a row, a note
+in the CSV / markdown findings cell) and the analysis view's findings list mark the findings a
+requirement edited since the analysis was synthesised from.
 
 **Analysis view** (#1876): `GoverningFindingsPanel`
 (`ui/src/components/analysis/governing-findings-panel.tsx`), at the foot of the Findings tab,

@@ -12,6 +12,11 @@
  *   requirement, or one whose analysis is soft-deleted, adds nothing;
  * - a thread anchored to an analysis shows its status and requirement titles.
  *
+ * #2249 adds: the history window ends at the trigger (a later message is not
+ * history, a createdAt tie is broken by id); a thread anchored to a Spec Kit
+ * feature shows its spec summary as a user turn; and a thread with several
+ * anchors shows every live one.
+ *
  * The provider is a capturing double: nothing calls a model. SQLite-only (a
  * Postgres-generated client rejects the better-sqlite3 adapter); the `api` CI
  * job builds the SQLite client, so this runs on every PR.
@@ -46,7 +51,7 @@ vi.mock("../src/lib/finops/budget-enforcer.js", async (original) => ({
 vi.mock("../src/lib/finops/token-tracker.js", () => ({ recordUsage: vi.fn() }));
 
 const { streamAIReply } = await import("../src/lib/discussions/ai-responder.js");
-const { loadRecentHistory, loadThreadAnchor } =
+const { loadRecentHistory, loadThreadAnchors } =
   await import("../src/lib/discussions/thread-context.js");
 
 const ALICE = "u-alice";
@@ -154,6 +159,64 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       await thread("t-analysis", { analysisId: "a-p-1" });
       await thread("t-other-analysis", { analysisId: "a-p-2" });
 
+      // #2249 — Spec Kit features: one with a spec, one without, one elsewhere.
+      await db.specKitFeature.create({
+        data: {
+          id: "f-1",
+          projectId: "p-1",
+          slug: "004-csv-export",
+          title: "CSV export",
+          status: "specified",
+        },
+      });
+      await db.specKitFeatureArtifact.create({
+        data: {
+          featureId: "f-1",
+          key: "spec.md",
+          content: [
+            "# Spec",
+            "Analysts export requirements as CSV.",
+            "## Stakeholders",
+            "- Business analysts",
+          ].join("\n"),
+        },
+      });
+      await db.specKitFeature.create({
+        data: { id: "f-bare", projectId: "p-1", slug: "005-bare", title: "Bare" },
+      });
+      await db.specKitFeature.create({
+        data: { id: "f-other", projectId: "p-2", slug: "001-secret", title: "SECRET feature" },
+      });
+      await thread("t-feature", { specKitFeatureId: "f-1" });
+      await thread("t-feature-bare", { specKitFeatureId: "f-bare" });
+      await thread("t-other-feature", { specKitFeatureId: "f-other" });
+      await thread("t-both", {
+        requirementId: "r-2",
+        analysisId: "a-p-1",
+        specKitFeatureId: "f-1",
+      });
+      await thread("t-deleted-and-analysis", { requirementId: "r-deleted", analysisId: "a-p-1" });
+
+      // A createdAt tie with the trigger, broken by id either side of it.
+      await thread("t-tie");
+      const tieAt = new Date(Date.UTC(2026, 0, 2));
+      for (const [id, body] of [
+        ["m-tie-a", "tie a"],
+        ["trigger-tie", "@AI tie?"],
+        ["z-tie", "tie z"],
+      ] as const) {
+        await db.discussionMessage.create({
+          data: {
+            id,
+            threadId: "t-tie",
+            authorKind: "human",
+            authorUserId: ALICE,
+            body,
+            createdAt: tieAt,
+          },
+        });
+      }
+
       // Inserted in REVERSE so insertion order disagrees with createdAt order.
       const base = Date.UTC(2026, 0, 1);
       for (let n = THREAD_LENGTH; n >= 1; n--) {
@@ -182,6 +245,17 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       await db.discussionMessage.update({
         where: { id: msgId(24) },
         data: { deletedAt: new Date() },
+      });
+      // #2249 — posted after the trigger (a concurrent @AI, a retry): not history.
+      await db.discussionMessage.create({
+        data: {
+          id: "after",
+          threadId: "t-long",
+          authorKind: "human",
+          authorUserId: ALICE,
+          body: "after trigger",
+          createdAt: new Date(base + 200_000),
+        },
       });
     }, MIGRATED_SQLITE_HOOK_TIMEOUT_MS);
 
@@ -236,31 +310,87 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     });
 
     it("an anchor outside the thread's project, or a deleted one, adds nothing", async () => {
-      for (const t of ["t-cross", "t-deleted", "t-gone-analysis", "t-other-analysis"]) {
-        expect(await loadThreadAnchor({ id: t, projectId: "p-1" }), t).toBeNull();
+      for (const t of [
+        "t-cross",
+        "t-deleted",
+        "t-gone-analysis",
+        "t-other-analysis",
+        "t-other-feature",
+      ]) {
+        expect(await loadThreadAnchors({ id: t, projectId: "p-1" }), t).toEqual([]);
       }
       const text = (await reply("t-cross")).map((m) => m.content).join("\n");
       expect(text).not.toContain("SECRET other-project requirement");
       expect(text).not.toContain("Context: this discussion is about");
       // A thread read under the wrong project is no anchor either.
-      expect(await loadThreadAnchor({ id: "t-req", projectId: "p-2" })).toBeNull();
+      expect(await loadThreadAnchors({ id: "t-req", projectId: "p-2" })).toEqual([]);
     });
 
     it("an anchored analysis shows its status and its live requirements' titles", async () => {
       // r-1 first (oldest), whatever the requirement test above renamed it to;
       // the deleted requirement and the other project's are not counted.
       const r1 = await db.requirement.findUniqueOrThrow({ where: { id: "r-1" } });
-      const anchor = await loadThreadAnchor({ id: "t-analysis", projectId: "p-1" });
-      expect(anchor).toEqual({
-        kind: "analysis",
-        status: "completed",
-        completedAt: null,
-        requirementCount: 2,
-        requirementTitles: [r1.title, "title of r-2"],
-      });
+      const anchors = await loadThreadAnchors({ id: "t-analysis", projectId: "p-1" });
+      expect(anchors).toEqual([
+        {
+          kind: "analysis",
+          status: "completed",
+          completedAt: null,
+          requirementCount: 2,
+          requirementTitles: [r1.title, "title of r-2"],
+        },
+      ]);
       const text = (await reply("t-analysis")).map((m) => m.content).join("\n");
       expect(text).toContain("Analysis status: completed");
       expect(text).toContain("- title of r-2");
+    });
+
+    it("#2249 — a message posted after the trigger is not in the reply's history", async () => {
+      // On t-long, "after trigger" is the newest message of all, but the reply
+      // answers the trigger: the window ends there.
+      const history = await loadRecentHistory("t-long", "trigger");
+      expect(history.map((h) => h.body)).not.toContain("after trigger");
+      expect(history.at(-1)?.body).toBe("message 25");
+      // A tie on createdAt is decided by id, as the ordering is: "m-tie-a"
+      // sorts before "trigger-tie", "z-tie" after it.
+      const tied = await loadRecentHistory("t-tie", "trigger-tie");
+      expect(tied.map((h) => h.body)).toEqual(["tie a"]);
+      // A trigger from another thread has no history here.
+      expect(await loadRecentHistory("t-long", "trigger-tie")).toEqual([]);
+    });
+
+    it("#2249 — an anchored Spec Kit feature's spec summary reaches the prompt as a user turn", async () => {
+      const sent = await reply("t-feature");
+      const turn = sent.find((m) => String(m.content).includes("Spec Kit feature:"));
+      expect(turn?.role).toBe("user");
+      expect(turn?.content).toContain("Spec Kit feature: 004-csv-export — CSV export");
+      expect(turn?.content).toContain("Status: specified");
+      expect(turn?.content).toContain("Spec summary:\nAnalysts export requirements as CSV.");
+      expect(turn?.content).not.toContain("Business analysts");
+      const systemText = sent
+        .filter((m) => m.role === "system")
+        .map((m) => m.content)
+        .join("\n");
+      expect(systemText).not.toContain("CSV export");
+
+      // A feature with no spec.md yet still names itself.
+      const bare = (await reply("t-feature-bare")).map((m) => m.content).join("\n");
+      expect(bare).toContain("Spec Kit feature: 005-bare — Bare");
+      expect(bare).toContain("Spec summary: no spec written yet.");
+    });
+
+    it("#2249 — every live anchor is shown, in order; a gone one is left out", async () => {
+      const both = await loadThreadAnchors({ id: "t-both", projectId: "p-1" });
+      expect(both.map((a) => a.kind)).toEqual(["requirement", "analysis", "specKitFeature"]);
+      const text = (await reply("t-both")).map((m) => m.content).join("\n");
+      expect(text).toContain("Requirement: title of r-2");
+      expect(text).toContain("Analysis status: completed");
+      expect(text).toContain("Spec Kit feature: 004-csv-export");
+
+      // The requirement is deleted: the analysis is shown as it always was,
+      // and nothing stands in for the requirement.
+      const partial = await loadThreadAnchors({ id: "t-deleted-and-analysis", projectId: "p-1" });
+      expect(partial.map((a) => a.kind)).toEqual(["analysis"]);
     });
   },
 );

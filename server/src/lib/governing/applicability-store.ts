@@ -15,6 +15,7 @@ import {
   type GoverningAnalysisApplicability,
   type GoverningApplicabilityDecision,
   type GoverningApplicabilityVerdict,
+  type GoverningRequirementApplicability,
 } from "@metis/shared";
 import {
   readGoverningApplicabilityMetadata,
@@ -182,6 +183,26 @@ export function applySettlements(
     })),
   };
   return { next, applied };
+}
+
+/**
+ * #2222 — store one requirement's applicability (a re-check's), replacing the
+ * entry with the same requirement id or adding it, under the row lock. An
+ * analysis with none stored gets one holding just this entry.
+ */
+export async function upsertGoverningRequirementApplicability(
+  analysisId: string,
+  entry: GoverningRequirementApplicability,
+  decidedAt: Date = new Date(),
+): Promise<void> {
+  await updateGoverningApplicabilityMetadata(analysisId, (raw) => {
+    const stored = parseStoredApplicability(raw) ?? {
+      decidedAt: decidedAt.toISOString(),
+      requirements: [],
+    };
+    const others = stored.requirements.filter((r) => r.requirementId !== entry.requirementId);
+    return { ...stored, requirements: [...others, entry] };
+  });
 }
 
 /** Write `settlements` onto the analysis's stored applicability, under the row lock. */

@@ -836,3 +836,25 @@ describe("summariseFindings", () => {
     });
   });
 });
+
+describe("#2222 — parseRequirementVersions", () => {
+  it("reads a map of non-negative integer versions", async () => {
+    const { parseRequirementVersions } = await import("./findings-store.js");
+    expect(parseRequirementVersions(JSON.stringify({ r1: 2, r2: 0 }))).toEqual({ r1: 2, r2: 0 });
+  });
+
+  it("reads anything else as the analysed wording (null)", async () => {
+    const { parseRequirementVersions } = await import("./findings-store.js");
+    const bad = [
+      null,
+      "",
+      "nope",
+      "[]",
+      "3",
+      JSON.stringify({ r1: -1 }),
+      JSON.stringify({ r1: 1.5 }),
+      JSON.stringify({ r1: "2" }),
+    ];
+    for (const raw of bad) expect(parseRequirementVersions(raw)).toBeNull();
+  });
+});

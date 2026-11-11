@@ -1,0 +1,185 @@
+/**
+ * #2222 — which governing findings judge an older wording of a requirement.
+ *
+ * #2219 made an edit of an approved requirement reopen its approval, but the
+ * analysis' governing findings kept judging the old wording with nothing to say
+ * so. A finding row is keyed by the requirement AS THE RUN ANALYSED IT
+ * (`AC-2`, the code agent's id), and the stored requirements an analyst edits
+ * are not joined to it by id: each stored requirement's `finding:<id>` labels
+ * name the analysis findings it was written from, and each of those records the
+ * analysed requirement it was produced for (see `docs-gen/governing-section.ts`,
+ * "FINDINGS ARE PER ANALYSED REQUIREMENT"). Measured on the dev sample, the
+ * join is many-to-many: one analysed requirement fed three stored ones, and a
+ * stored one drew on two analysed ones.
+ *
+ * VERSIONS. A stored requirement's ANALYSED version is the one the analysis
+ * wrote: its version before the first edit by a person (a `RequirementVersion`
+ * row with an actor), or its current version when no person has edited it.
+ * System versions (kept approved criteria, clarification enrichment) are the
+ * analysis's own writing. A finding judged on the analysed wording judged every
+ * stored requirement drawn from it at that version. **Re-check this
+ * requirement** (`recheck.ts`) judges one stored requirement's current wording
+ * under its own id, and its rows record the version judged
+ * (`governing_findings.requirementVersions`).
+ *
+ * STALE. A finding is stale for a stored requirement whose version is not the
+ * one judged. A finding on an analysed requirement stops being stale for a
+ * stored requirement re-checked at its current version: that requirement's
+ * current wording has its own result, so the older one no longer stands for it.
+ *
+ * TENANCY. Requirements are read with the analysis AND project ids, and the
+ * evidence findings with the analysis and project of their agent result, so a
+ * label naming another run's finding never joins.
+ */
+import {
+  type GoverningAnalysisApplicability,
+  type GoverningFinding,
+  type GoverningStaleRequirement,
+} from "@metis/shared";
+import { parseRequirementLabels } from "../analysis/requirement-labels.js";
+import { prisma } from "../prisma.js";
+
+/** One live stored requirement of an analysis, as staleness reads it. */
+export interface StoredRequirementState {
+  id: string;
+  title: string;
+  version: number;
+  /** The version the analysis wrote (see VERSIONS). */
+  analysedVersion: number;
+  /** The analysed requirement ids (`AC-2`) its evidence findings were produced for. */
+  analysedIds: ReadonlySet<string>;
+}
+
+/**
+ * The analysed version of a requirement at `version` whose first version by a
+ * person is `firstPersonVersion` (undefined: no person has edited it).
+ */
+export function analysedVersionOf(version: number, firstPersonVersion: number | undefined): number {
+  return firstPersonVersion === undefined ? version : Math.max(0, firstPersonVersion - 1);
+}
+
+/**
+ * The first version a person wrote, by requirement id, for those of `ids` that
+ * have one. A requirement at version 0 has no history, so callers pass only the
+ * ids above 0.
+ */
+export async function firstPersonVersions(ids: readonly string[]): Promise<Map<string, number>> {
+  if (ids.length === 0) return new Map();
+  const rows = await prisma.requirementVersion.groupBy({
+    by: ["requirementId"],
+    where: { requirementId: { in: [...ids] }, actorId: { not: null } },
+    _min: { version: true },
+  });
+  const out = new Map<string, number>();
+  for (const r of rows) if (r._min.version !== null) out.set(r.requirementId, r._min.version);
+  return out;
+}
+
+/** The analysed version of each of `rows`, by id. */
+export async function analysedVersions(
+  rows: ReadonlyArray<{ id: string; version: number }>,
+): Promise<Map<string, number>> {
+  const first = await firstPersonVersions(rows.filter((r) => r.version > 0).map((r) => r.id));
+  return new Map(rows.map((r) => [r.id, analysedVersionOf(r.version, first.get(r.id))]));
+}
+
+/** The analysed requirement a stored analysis finding was produced for, from its evidence blob. */
+export function evidenceRequirementId(evidence: string | null): string | null {
+  if (!evidence) return null;
+  try {
+    const parsed: unknown = JSON.parse(evidence);
+    const id = (parsed as { requirementId?: unknown } | null)?.requirementId;
+    return typeof id === "string" && id ? id : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The `finding:<id>` evidence ids of a stored requirement's labels JSON. */
+export function evidenceFindingIdsOf(labels: string): string[] {
+  return parseRequirementLabels(labels)
+    .filter((l) => l.startsWith("finding:"))
+    .map((l) => l.slice("finding:".length));
+}
+
+/** Every live stored requirement of the analysis, with its versions and analysed ids. */
+export async function storedRequirementStates(
+  analysisId: string,
+  projectId: string,
+): Promise<StoredRequirementState[]> {
+  const rows = await prisma.requirement.findMany({
+    where: { analysisId, projectId, deletedAt: null },
+    select: { id: true, title: true, version: true, labels: true },
+  });
+  if (rows.length === 0) return [];
+  const evidence = new Map(rows.map((r) => [r.id, evidenceFindingIdsOf(r.labels)]));
+  const findingIds = [...new Set([...evidence.values()].flat())];
+  const findings =
+    findingIds.length === 0
+      ? []
+      : await prisma.finding.findMany({
+          where: { id: { in: findingIds }, agentResult: { analysisId, analysis: { projectId } } },
+          select: { id: true, evidence: true },
+        });
+  const analysedOf = new Map(findings.map((f) => [f.id, evidenceRequirementId(f.evidence)]));
+  const versions = await analysedVersions(rows);
+  return rows.map((r) => ({
+    id: r.id,
+    title: r.title,
+    version: r.version,
+    analysedVersion: versions.get(r.id) ?? r.version,
+    analysedIds: new Set(
+      (evidence.get(r.id) ?? []).flatMap((id) => {
+        const analysed = analysedOf.get(id);
+        return analysed ? [analysed] : [];
+      }),
+    ),
+  }));
+}
+
+/**
+ * `findings` with `stale` set (see STALE). Pure: `states` are the analysis's
+ * stored requirements, `applicability` its stored applicability (the re-check
+ * entries carry the versions they judged).
+ */
+export function withGoverningStaleness(
+  findings: readonly GoverningFinding[],
+  states: readonly StoredRequirementState[],
+  applicability: GoverningAnalysisApplicability | null,
+): GoverningFinding[] {
+  const byId = new Map(states.map((s) => [s.id, s]));
+  const byAnalysed = new Map<string, StoredRequirementState[]>();
+  for (const s of states) {
+    for (const a of s.analysedIds) byAnalysed.set(a, [...(byAnalysed.get(a) ?? []), s]);
+  }
+  const recheckedNow = new Set(
+    (applicability?.requirements ?? [])
+      .filter((e) => {
+        const s = byId.get(e.requirementId);
+        return !e.error && s !== undefined && e.versions?.[s.id] === s.version;
+      })
+      .map((e) => e.requirementId),
+  );
+  return findings.map((f) => {
+    const own = byId.get(f.requirementId);
+    const members = own ? [own] : (byAnalysed.get(f.requirementId) ?? []);
+    const stale: GoverningStaleRequirement[] = members.flatMap((s) => {
+      const judged = f.requirementVersions?.[s.id] ?? s.analysedVersion;
+      if (judged === s.version) return [];
+      if (!own && recheckedNow.has(s.id)) return [];
+      return [
+        { requirementId: s.id, title: s.title, judgedVersion: judged, currentVersion: s.version },
+      ];
+    });
+    return { ...f, stale };
+  });
+}
+
+/** The titles of the stored requirements `findings` are keyed by (re-checked ones). */
+export function recheckedRequirementTitles(
+  findings: readonly GoverningFinding[],
+  states: readonly StoredRequirementState[],
+): Record<string, string> {
+  const keys = new Set(findings.map((f) => f.requirementId));
+  return Object.fromEntries(states.filter((s) => keys.has(s.id)).map((s) => [s.id, s.title]));
+}
