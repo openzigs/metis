@@ -157,7 +157,9 @@ describe("image description", () => {
     const text = await parse(await buildBrdDocx(), async () => {
       throw new Error("rate limited");
     });
-    expect(text).toContain("image not read: the description failed (rate limited).");
+    expect(text).toContain("image not read: the description failed.");
+    // The provider's raw message never reaches the stored text (#1059).
+    expect(text).not.toContain("rate limited");
     expect(text).toContain("Session timeout is 15 minutes.");
   });
 
@@ -347,6 +349,16 @@ describe("headings and inline content", () => {
     ];
     const text = await parse(await buildDocx({ body, rels }));
     expect(text).toBe("[Spec](https://example.com/spec) and bad and internal");
+  });
+
+  it("encodes a link target that would close the Markdown link early (#2253 review)", async () => {
+    const body = `<w:p><w:hyperlink r:id="rIdL1"><w:r><w:t>Spec</w:t></w:r></w:hyperlink></w:p>`;
+    const rels = [
+      `<Relationship Id="rIdL1" Type="${REL}/hyperlink" Target="https://a.example/x)[click](javascript:alert(1))" TargetMode="External"/>`,
+    ];
+    const text = await parse(await buildDocx({ body, rels }));
+    expect(text).toBe("[Spec](https://a.example/x%29[click]%28javascript:alert%281%29%29)");
+    expect(text).not.toContain("](javascript:");
   });
 
   it("merges adjacent runs of one format, keeps spaces outside markers, and reads italics", async () => {

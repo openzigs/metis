@@ -30,6 +30,9 @@
 import JSZip from "jszip";
 import { DOMParser, type Element as XmlElement, type Node as XmlNode } from "@xmldom/xmldom";
 import { rowsToMarkdownTable } from "./markdown-utils.js";
+import { createChildLogger } from "../logger.js";
+
+const log = createChildLogger("docx-to-markdown");
 
 /** One image found in the document, handed to an {@link ImageDescriber}. */
 export interface DocxImage {
@@ -631,8 +634,9 @@ class Converter {
           const id = attr(c, "id");
           const rel = id ? this.rels.get(id) : undefined;
           const inner = this.inline(c, trailing);
-          if (rel?.external && /^(https?|mailto):/i.test(rel.target)) {
-            for (const s of inner) s.href = rel.target;
+          const href = rel?.external ? safeLinkTarget(rel.target) : undefined;
+          if (href) {
+            for (const s of inner) s.href = href;
           }
           segs.push(...inner);
           break;
@@ -924,7 +928,11 @@ async function describe(
     if (description.trim().length === 0) return unread("the model returned no description");
     return { described: true, text: description.trim() };
   } catch (err) {
-    return unread(`the description failed (${(err as Error).message})`);
+    // The provider's raw message is not written into the converted text: that
+    // text is stored as knowledge, shown to every project member and fed to
+    // models (#1059). The cause is logged instead.
+    log.warn("Word image description failed", { image: slot.index, err: (err as Error).name });
+    return unread("the description failed");
   }
 }
 
@@ -1039,4 +1047,24 @@ export async function docxToMarkdown(
 
   const hasContent = blocks.length > 0;
   return { markdown: hasContent ? parts.join("\n\n").trim() : "", notes };
+}
+
+/**
+ * A hyperlink target safe to write inside Markdown `(...)`: only http(s) and
+ * mailto, parsed as a URL (so `javascript:` hidden behind another scheme cannot
+ * pass), with the characters that would end or split the link destination
+ * percent-encoded. Anything else is dropped and the text stays plain.
+ */
+export function safeLinkTarget(target: string): string | undefined {
+  let url: URL;
+  try {
+    url = new URL(target.trim());
+  } catch {
+    return undefined;
+  }
+  if (!["http:", "https:", "mailto:"].includes(url.protocol)) return undefined;
+  return url.href.replace(
+    /[()<>\s\\]/g,
+    (c) => `%${c.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`,
+  );
 }
