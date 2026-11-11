@@ -5,6 +5,7 @@
  *   pnpm eval:materialize localization-01-miniflux-heldout
  *   pnpm eval:materialize localization-02-fixture-portfolio
  *   pnpm eval:materialize impact-recall-01-jpetstore   # #1823: the table guard's repository
+ *   pnpm eval:materialize baqa-01-acme-reader          # #2237: the BA question set's two products
  *
  * Per manifest repository: a shallow clone at the pinned commit, a project with a
  * GitHub repository connector, the normal code-graph ingest (SQL lineage off, as
@@ -29,6 +30,10 @@
  * #1823 — `impact-recall-01-jpetstore` is a hand-authored graph with no
  * committed rows: its schema-bearing repository (`TABLE_GUARD_REPO`) is
  * materialized instead, and checked for every file the fixture maps to it.
+ *
+ * #2237 — `baqa-01-acme-reader` has no committed rows either: its two products
+ * are checked for every code file its questions cite as an expected source.
+ * Its documents and repository-source chunks are added by `pnpm eval:ba-qa`.
  */
 /* eslint-disable no-console -- a local CLI whose output is what it did */
 import { execFileSync } from "node:child_process";
@@ -61,16 +66,22 @@ import {
   TABLE_GUARD_CORPUS,
   TABLE_GUARD_REPO,
 } from "../src/lib/eval/localization/table-guard-source.js";
+import {
+  BAQA_CORPUS,
+  baQaCorpusDir,
+  loadBaQaFixture,
+  requiredCodeFiles,
+} from "../src/lib/eval/ba-qa/fixture.js";
 
 const SERVER_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_EMBED_MODEL = "Alibaba-NLP/gte-modernbert-base";
 
-function corpusArg(): LocalizationCorpusName | typeof TABLE_GUARD_CORPUS {
+function corpusArg(): LocalizationCorpusName | typeof TABLE_GUARD_CORPUS | typeof BAQA_CORPUS {
   const [name] = process.argv.slice(2).filter((a) => a !== "--");
-  if (name === TABLE_GUARD_CORPUS) return name;
+  if (name === TABLE_GUARD_CORPUS || name === BAQA_CORPUS) return name;
   if (!name || !(LOCALIZATION_CORPORA as readonly string[]).includes(name)) {
     throw new Error(
-      `usage: pnpm eval:materialize <${[...LOCALIZATION_CORPORA, TABLE_GUARD_CORPUS].join("|")}>`,
+      `usage: pnpm eval:materialize <${[...LOCALIZATION_CORPORA, TABLE_GUARD_CORPUS, BAQA_CORPUS].join("|")}>`,
     );
   }
   return name as LocalizationCorpusName;
@@ -144,10 +155,23 @@ async function main(): Promise<void> {
             requiredFiles: requiredRepoFiles(fixture),
           };
         })()
-      : await (async () => {
-          const corpus = await loadLocalizationCorpus(corpusName);
-          return { manifest: corpus.manifest, committedRows: corpus.symbols };
-        })();
+      : corpusName === BAQA_CORPUS
+        ? await (async () => {
+            const fixture = await loadBaQaFixture(
+              baQaCorpusDir(path.resolve(SERVER_DIR, ".."), BAQA_CORPUS),
+            );
+            return {
+              manifest: {
+                id: BAQA_CORPUS,
+                repos: fixture.products.map(({ name, url, ref, sha }) => ({ name, url, ref, sha })),
+              },
+              requiredFiles: requiredCodeFiles(fixture),
+            };
+          })()
+        : await (async () => {
+            const corpus = await loadLocalizationCorpus(corpusName);
+            return { manifest: corpus.manifest, committedRows: corpus.symbols };
+          })();
 
   async function evalUserId(): Promise<string> {
     const user = await prisma.user.upsert({

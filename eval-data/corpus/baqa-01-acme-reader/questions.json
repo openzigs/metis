@@ -1,0 +1,565 @@
+{
+  "id": "baqa-01-acme-reader",
+  "version": 1,
+  "issue": 2237,
+  "description": "Phase 0 of #2228: business-analyst questions over the Acme Reader sample, two products (the Miniflux server and its Python client). Single-product rule questions and multi-product FRD impact questions carry the facts a correct answer states and the sources that support them; ambiguous questions expect a follow-up question and unanswerable ones expect 'the sources don't show this'.",
+  "license": "Questions, facts and frd-12.md: CC0-1.0 (written for METIS). Cited sources: miniflux/v2 (Apache-2.0) and miniflux/python-client (MIT) at the pinned commits.",
+  "authoredBy": "claude-opus-5-5 (an AI coding agent), dispatched on issue #2237, 2026-11-10. Every fact and line range was read from the pinned commits; none was reviewed by a person yet.",
+  "products": [
+    {
+      "name": "miniflux",
+      "title": "Acme Reader server (Miniflux)",
+      "url": "https://github.com/miniflux/v2",
+      "ref": "2.3.3",
+      "sha": "c4d54f87a81b30aa173fddf05d7ff83ae7da5796",
+      "documents": [
+        {
+          "file": "miniflux.1",
+          "uploadAs": "miniflux.1.txt"
+        },
+        {
+          "file": "frd-12.md",
+          "uploadAs": "FRD-12.md",
+          "fromCorpus": true
+        }
+      ]
+    },
+    {
+      "name": "python-client",
+      "title": "Acme Reader Python client (miniflux-python)",
+      "url": "https://github.com/miniflux/python-client",
+      "ref": "1.1.6",
+      "sha": "058897eb0ee6e203981134dec1e250879d2435c6",
+      "documents": [
+        {
+          "file": "frd-12.md",
+          "uploadAs": "FRD-12.md",
+          "fromCorpus": true
+        }
+      ]
+    }
+  ],
+  "questions": [
+    {
+      "id": "S1",
+      "category": "single-product",
+      "scope": ["miniflux"],
+      "text": "How does the Acme Reader server decide when to check a feed for new articles again?",
+      "expect": "answer",
+      "facts": [
+        {
+          "id": "S1.a",
+          "text": "The default scheduler is round robin."
+        },
+        {
+          "id": "S1.b",
+          "text": "Under round robin a feed is checked again after at least 60 minutes by default (SCHEDULER_ROUND_ROBIN_MIN_INTERVAL)."
+        },
+        {
+          "id": "S1.c",
+          "text": "Under the entry-frequency scheduler the wait is one week divided by the number of articles the feed published in the past week (times a factor, 1 by default)."
+        },
+        {
+          "id": "S1.d",
+          "text": "The entry-frequency wait is kept between 5 minutes and 24 hours by default."
+        },
+        {
+          "id": "S1.e",
+          "text": "A feed that published nothing in the past week is checked at the maximum interval under the entry-frequency scheduler."
+        },
+        {
+          "id": "S1.f",
+          "text": "A longer delay asked for by the feed itself (its TTL, or the Retry-After, Cache-Control or Expires headers) lengthens the wait."
+        }
+      ],
+      "sources": [
+        {
+          "product": "miniflux",
+          "path": "internal/model/feed.go",
+          "lines": [123, 150]
+        },
+        {
+          "product": "miniflux",
+          "path": "internal/config/options.go",
+          "lines": [511, 570]
+        },
+        {
+          "product": "miniflux",
+          "path": "miniflux.1",
+          "lines": [574, 626],
+          "kind": "doc"
+        }
+      ]
+    },
+    {
+      "id": "S2",
+      "category": "single-product",
+      "scope": ["miniflux"],
+      "text": "When does the Acme Reader server delete old articles, and which articles are never deleted?",
+      "expect": "answer",
+      "facts": [
+        {
+          "id": "S2.a",
+          "text": "Read articles are removed after 60 days by default."
+        },
+        {
+          "id": "S2.b",
+          "text": "Unread articles are removed after 180 days by default."
+        },
+        {
+          "id": "S2.c",
+          "text": "Starred (bookmarked) and shared articles are never removed by the cleanup."
+        },
+        {
+          "id": "S2.d",
+          "text": "A removed article leaves a tombstone so the same article is not imported again on a later refresh."
+        },
+        {
+          "id": "S2.e",
+          "text": "Setting either number of days to -1 turns that cleanup off."
+        }
+      ],
+      "sources": [
+        {
+          "product": "miniflux",
+          "path": "internal/storage/entry.go",
+          "lines": [368, 398]
+        },
+        {
+          "product": "miniflux",
+          "path": "internal/cli/cleanup_tasks.go",
+          "lines": [25, 46]
+        },
+        {
+          "product": "miniflux",
+          "path": "internal/config/options.go",
+          "lines": [134, 143]
+        },
+        {
+          "product": "miniflux",
+          "path": "miniflux.1",
+          "lines": [203, 224],
+          "kind": "doc"
+        }
+      ]
+    },
+    {
+      "id": "S3",
+      "category": "single-product",
+      "scope": ["miniflux"],
+      "text": "After how many failed refreshes does the Acme Reader server stop checking a feed, and what happens then?",
+      "expect": "answer",
+      "facts": [
+        {
+          "id": "S3.a",
+          "text": "By default the server stops polling a feed after 3 parsing errors (POLLING_PARSING_ERROR_LIMIT)."
+        },
+        {
+          "id": "S3.b",
+          "text": "Each failed refresh adds one to the feed's error count and a successful refresh resets it to zero."
+        },
+        {
+          "id": "S3.c",
+          "text": "Once the limit is reached the user has to refresh the feed manually."
+        },
+        {
+          "id": "S3.d",
+          "text": "Setting the limit to 0 removes it (unlimited retries)."
+        }
+      ],
+      "sources": [
+        {
+          "product": "miniflux",
+          "path": "internal/config/options.go",
+          "lines": [503, 510]
+        },
+        {
+          "product": "miniflux",
+          "path": "internal/storage/batch.go",
+          "lines": [48, 54]
+        },
+        {
+          "product": "miniflux",
+          "path": "internal/model/feed.go",
+          "lines": [100, 111]
+        },
+        {
+          "product": "miniflux",
+          "path": "miniflux.1",
+          "lines": [565, 573],
+          "kind": "doc"
+        }
+      ]
+    },
+    {
+      "id": "S4",
+      "category": "single-product",
+      "scope": ["miniflux"],
+      "text": "What rules does the Acme Reader server apply to a new user's username and password?",
+      "expect": "answer",
+      "facts": [
+        {
+          "id": "S4.a",
+          "text": "A username is required and must not already be taken."
+        },
+        {
+          "id": "S4.b",
+          "text": "A username may contain only letters, digits and the characters _ - @ and ."
+        },
+        {
+          "id": "S4.c",
+          "text": "A password must be at least 6 characters long."
+        }
+      ],
+      "sources": [
+        {
+          "product": "miniflux",
+          "path": "internal/validator/user.go",
+          "lines": [17, 190]
+        }
+      ]
+    },
+    {
+      "id": "S5",
+      "category": "single-product",
+      "scope": ["python-client"],
+      "text": "How does the Acme Reader Python client sign in to the server?",
+      "expect": "answer",
+      "facts": [
+        {
+          "id": "S5.a",
+          "text": "It signs in either with an API key, sent in the X-Auth-Token header, or with a username and password (HTTP basic authentication)."
+        },
+        {
+          "id": "S5.b",
+          "text": "When both an API key and a username and password are given, the API key is used."
+        },
+        {
+          "id": "S5.c",
+          "text": "Giving neither an API key nor both a username and password is an error (ValueError)."
+        },
+        {
+          "id": "S5.d",
+          "text": "The README recommends the API key as the preferred method."
+        }
+      ],
+      "sources": [
+        {
+          "product": "python-client",
+          "path": "miniflux.py",
+          "lines": [109, 153]
+        },
+        {
+          "product": "python-client",
+          "path": "README.md",
+          "lines": [35, 39],
+          "kind": "doc"
+        }
+      ]
+    },
+    {
+      "id": "S6",
+      "category": "single-product",
+      "scope": ["python-client"],
+      "text": "What does the Acme Reader Python client do when the server answers a request with an error?",
+      "expect": "answer",
+      "facts": [
+        {
+          "id": "S6.a",
+          "text": "A 404 raises ResourceNotFound and a 401 raises AccessUnauthorized."
+        },
+        {
+          "id": "S6.b",
+          "text": "A 403 raises AccessForbidden, a 400 raises BadRequest and a status of 500 or above raises ServerError."
+        },
+        {
+          "id": "S6.c",
+          "text": "Any other error status raises the base ClientError."
+        },
+        {
+          "id": "S6.d",
+          "text": "Requests time out after 30 seconds unless another timeout is given."
+        }
+      ],
+      "sources": [
+        {
+          "product": "python-client",
+          "path": "miniflux.py",
+          "lines": [171, 182]
+        },
+        {
+          "product": "python-client",
+          "path": "miniflux.py",
+          "lines": [33, 100]
+        },
+        {
+          "product": "python-client",
+          "path": "miniflux.py",
+          "lines": [109, 128]
+        }
+      ]
+    },
+    {
+      "id": "M1",
+      "category": "multi-product",
+      "scope": ["miniflux", "python-client"],
+      "text": "What does FRD-12 change in the Acme Reader server and in the Python client?",
+      "expect": "answer",
+      "facts": [
+        {
+          "id": "M1.a",
+          "text": "FRD-12 has two requirements: FRD-12.1 (API keys can expire) and FRD-12.2 (entries can be filtered by reading time)."
+        },
+        {
+          "id": "M1.b",
+          "text": "In the server, API keys gain an expiry date: the API key model, its storage (creation and listing) and the API key creation handler change."
+        },
+        {
+          "id": "M1.g",
+          "text": "The server needs a database migration to store the expiry date."
+        },
+        {
+          "id": "M1.c",
+          "text": "In the server, the API key sign-in lookup must refuse an expired key the way it refuses an unknown one."
+        },
+        {
+          "id": "M1.d",
+          "text": "In the server, the entries endpoint's filters and the entry query builder gain a reading-time filter."
+        },
+        {
+          "id": "M1.e",
+          "text": "In the Python client, create_api_key needs a way to pass the expiry date; it sends only a description today."
+        },
+        {
+          "id": "M1.f",
+          "text": "The Python client needs no code change for the reading-time filter, because get_entries passes its keyword arguments through as query parameters."
+        }
+      ],
+      "sources": [
+        {
+          "product": "miniflux",
+          "path": "FRD-12.md",
+          "kind": "doc"
+        },
+        {
+          "product": "miniflux",
+          "path": "internal/model/api_key.go",
+          "lines": [13, 28]
+        },
+        {
+          "product": "miniflux",
+          "path": "internal/storage/api_key.go",
+          "lines": [36, 103]
+        },
+        {
+          "product": "miniflux",
+          "path": "internal/storage/user.go",
+          "lines": [482, 524]
+        },
+        {
+          "product": "miniflux",
+          "path": "internal/api/api_key_handlers.go",
+          "lines": [18, 39]
+        },
+        {
+          "product": "miniflux",
+          "path": "internal/api/entry_handlers.go",
+          "lines": [560, 605]
+        },
+        {
+          "product": "miniflux",
+          "path": "internal/storage/entry_query_builder.go"
+        },
+        {
+          "product": "python-client",
+          "path": "miniflux.py",
+          "lines": [1096, 1116]
+        },
+        {
+          "product": "python-client",
+          "path": "miniflux.py",
+          "lines": [638, 656]
+        }
+      ]
+    },
+    {
+      "id": "M2",
+      "category": "multi-product",
+      "scope": ["miniflux", "python-client"],
+      "text": "Does the reading-time filter in FRD-12 need a change to the Python client, or only to the server?",
+      "expect": "answer",
+      "facts": [
+        {
+          "id": "M2.a",
+          "text": "Only the server needs a code change; the Python client's get_entries already forwards any keyword argument as a query parameter."
+        },
+        {
+          "id": "M2.b",
+          "text": "On the server the filter belongs with the entries list filters (configureFilters in the API entry handlers) and the entry query builder."
+        }
+      ],
+      "sources": [
+        {
+          "product": "python-client",
+          "path": "miniflux.py",
+          "lines": [638, 656]
+        },
+        {
+          "product": "python-client",
+          "path": "miniflux.py",
+          "lines": [164, 166]
+        },
+        {
+          "product": "miniflux",
+          "path": "internal/api/entry_handlers.go",
+          "lines": [560, 605]
+        },
+        {
+          "product": "miniflux",
+          "path": "internal/storage/entry_query_builder.go"
+        }
+      ]
+    },
+    {
+      "id": "M3",
+      "category": "multi-product",
+      "scope": ["miniflux", "python-client"],
+      "text": "Once FRD-12's expiring API keys are in place, what will a script using the Python client see when its key has expired?",
+      "expect": "answer",
+      "facts": [
+        {
+          "id": "M3.a",
+          "text": "FRD-12.1 says an expired key is refused exactly as an unknown key is refused."
+        },
+        {
+          "id": "M3.b",
+          "text": "The server refuses an unknown API key with HTTP 401 Unauthorized."
+        },
+        {
+          "id": "M3.c",
+          "text": "The Python client turns a 401 into an AccessUnauthorized exception."
+        }
+      ],
+      "sources": [
+        {
+          "product": "miniflux",
+          "path": "FRD-12.md",
+          "kind": "doc"
+        },
+        {
+          "product": "miniflux",
+          "path": "internal/api/middleware.go",
+          "lines": [37, 66]
+        },
+        {
+          "product": "python-client",
+          "path": "miniflux.py",
+          "lines": [171, 182]
+        }
+      ]
+    },
+    {
+      "id": "M4",
+      "category": "multi-product",
+      "scope": ["miniflux", "python-client"],
+      "text": "Which of our two products checks that a new API key has a description that is not already used, and what does the other product do about it?",
+      "expect": "answer",
+      "facts": [
+        {
+          "id": "M4.a",
+          "text": "The server checks it: a description is mandatory and must be unique for the user."
+        },
+        {
+          "id": "M4.b",
+          "text": "The Python client checks nothing; it sends the description and raises BadRequest when the server answers 400."
+        }
+      ],
+      "sources": [
+        {
+          "product": "miniflux",
+          "path": "internal/validator/api_key.go",
+          "lines": [12, 23]
+        },
+        {
+          "product": "miniflux",
+          "path": "internal/api/api_key_handlers.go",
+          "lines": [18, 39]
+        },
+        {
+          "product": "python-client",
+          "path": "miniflux.py",
+          "lines": [1096, 1116]
+        },
+        {
+          "product": "python-client",
+          "path": "miniflux.py",
+          "lines": [171, 182]
+        }
+      ]
+    },
+    {
+      "id": "A1",
+      "category": "ambiguous",
+      "scope": ["miniflux", "python-client"],
+      "text": "How does the refresh work?",
+      "expect": "follow-up",
+      "why": "Refresh means the server's scheduled feed polling, a manual refresh of one feed or category, or the Python client's refresh_feed / refresh_all_feeds calls."
+    },
+    {
+      "id": "A2",
+      "category": "ambiguous",
+      "scope": ["miniflux", "python-client"],
+      "text": "What is the limit?",
+      "expect": "follow-up",
+      "why": "No referent: the parsing-error limit, the batch size, the entries page limit, the password length or the per-host polling limit."
+    },
+    {
+      "id": "A3",
+      "category": "ambiguous",
+      "scope": ["miniflux"],
+      "text": "Can we make it expire sooner?",
+      "expect": "follow-up",
+      "why": "No referent: sessions, archived articles, or API keys (which do not expire today)."
+    },
+    {
+      "id": "A4",
+      "category": "ambiguous",
+      "scope": ["miniflux", "python-client"],
+      "text": "What happens when it fails?",
+      "expect": "follow-up",
+      "why": "No referent: a feed refresh, a sign-in, an integration call or a client request."
+    },
+    {
+      "id": "U1",
+      "category": "unanswerable",
+      "scope": ["miniflux", "python-client"],
+      "text": "How much does Acme charge per user per month for the hosted Acme Reader plan?",
+      "expect": "abstain",
+      "why": "No source mentions pricing; FRD-12 says pricing is out of scope."
+    },
+    {
+      "id": "U2",
+      "category": "unanswerable",
+      "scope": ["miniflux", "python-client"],
+      "text": "Which customers asked for the expiring API keys in FRD-12?",
+      "expect": "abstain",
+      "why": "FRD-12 names no customer, and no other source does."
+    },
+    {
+      "id": "U3",
+      "category": "unanswerable",
+      "scope": ["miniflux"],
+      "text": "What uptime does the Acme Reader server promise its customers?",
+      "expect": "abstain",
+      "why": "No source states a service level; FRD-12 says service levels are out of scope."
+    },
+    {
+      "id": "U4",
+      "category": "unanswerable",
+      "scope": ["python-client"],
+      "text": "How many people downloaded the Acme Reader Python client last month?",
+      "expect": "abstain",
+      "why": "Download counts are not in the repository or its documents."
+    }
+  ]
+}
