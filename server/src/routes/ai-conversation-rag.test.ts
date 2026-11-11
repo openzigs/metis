@@ -19,7 +19,8 @@ vi.mock("../lib/rag/chunk-lookup.js", () => ({ loadChunksById }));
 vi.mock("../lib/prisma.js", () => ({
   prisma: {
     project: { findUnique },
-    user: { findFirst: async () => null },
+    // #2248 — the requester must be a live user, or retrieval fails closed.
+    user: { findFirst: async () => ({ id: "u1", authRoleAuthority: null }) },
     userRole: { findMany: async () => [] },
   },
 }));
