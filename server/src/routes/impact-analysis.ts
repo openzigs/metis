@@ -19,6 +19,7 @@ import { Router, type Request } from "express";
 import { z, ZodError } from "zod";
 import {
   createImpactAnalysisSchema,
+  rerunImpactAnalysisSchema,
   type ApiResponse,
   type CreateImpactAnalysisResponse,
 } from "@metis/shared";
@@ -98,7 +99,7 @@ import {
 } from "../lib/impact-analysis/impact-llm-runtime.js";
 import { buildProvider, loadAIConfig } from "../lib/ai/index.js";
 import { isDocumentReaderEnabled } from "../lib/document-reader/flag.js";
-import { readDocument } from "../lib/document-reader/reader.js";
+import { readDocumentOnce, type ReadingCacheDeps } from "../lib/document-reader/reading-cache.js";
 import type { AIProvider } from "../lib/ai/types.js";
 import { createChildLogger } from "../lib/logger.js";
 import { listImpactAnalyses } from "../lib/impact-analysis/impact-analysis-read.js";
@@ -466,16 +467,31 @@ function impactSummarizerDep(
  * `IMPACT_DOCUMENT_READ_TIMEOUT_MS`, and named in the run's notice when no
  * provider could be built. Off or unavailable ⇒ `undefined`: the engine splits
  * every source heuristically, as before.
+ *
+ * #2280 — a document source is read through `readDocumentOnce`: a saved
+ * reading of the same file, reader and model is reused with no model call (so
+ * no `document-read` stage row); `reread` reads it again and replaces it.
  */
 export function documentReaderDep(
   runtime: ImpactLlmRuntime,
   enabled: () => boolean = isDocumentReaderEnabled,
   build: () => BuiltImpactProvider = buildImpactStageProvider,
+  options: { reread?: boolean; cache?: ReadingCacheDeps } = {},
 ): ImpactServiceDeps["documentReader"] | undefined {
   if (!enabled()) return undefined;
   const provider = instrumentStage(runtime, "document-read", build());
   if (!provider) return undefined;
-  return ({ title, text }) => readDocument({ title, text, provider });
+  return ({ title, text, document }) =>
+    readDocumentOnce(
+      {
+        title,
+        text,
+        provider,
+        ...(document ? { document } : {}),
+        ...(options.reread ? { reread: true } : {}),
+      },
+      options.cache,
+    );
 }
 
 /**
@@ -491,7 +507,12 @@ export function documentReaderDep(
  * `instrumentStage` is an unmetered stage, which is precisely the regression
  * `impact-llm-runtime.test.ts` and `impact-analysis-metering.test.ts` pin down.
  */
-export function impactRunDeps(actorId: string, projectIds: readonly string[]): ImpactServiceDeps {
+export function impactRunDeps(
+  actorId: string,
+  projectIds: readonly string[],
+  /** #2280 — "Read the document again": the run reuses no saved reading of its source. */
+  options: { rereadDocument?: boolean } = {},
+): ImpactServiceDeps {
   const runtime = createImpactLlmRuntime({ actorId, projectIds });
   const mapRequirement = llmSeedingMapRequirement(runtime);
   const tableRelevanceFilter = tableRelevanceFilterDep(runtime);
@@ -514,7 +535,12 @@ export function impactRunDeps(actorId: string, projectIds: readonly string[]): I
   // #1939 — #1832's demotion of stale citations: OFF by default.
   const demoteStaleCitations = agentSeeds && impactDemoteStaleCitationsEnabled();
   // #2231 — off by default, with Requirements Analysis's reader.
-  const documentReader = documentReaderDep(runtime);
+  const documentReader = documentReaderDep(
+    runtime,
+    isDocumentReaderEnabled,
+    buildImpactStageProvider,
+    options.rereadDocument ? { reread: true } : {},
+  );
   return {
     ...(documentReader ? { documentReader } : {}),
     ...(storedLinkSeeds ? { storedLinkSeeds } : {}),
@@ -1042,7 +1068,11 @@ export function impactAnalysisRouter(deps: UsageClassificationRouterDeps = {}): 
           includeDependencies: body.includeDependencies,
         },
         {
-          ...impactRunDeps(actor.id, projectIds),
+          ...impactRunDeps(
+            actor.id,
+            projectIds,
+            body.rereadDocument ? { rereadDocument: true } : {},
+          ),
           projectAccess: executionAccessCheck(actor, projectIds),
         },
       );
@@ -1109,6 +1139,8 @@ export function impactAnalysisRouter(deps: UsageClassificationRouterDeps = {}): 
     try {
       const actor = actorOf(req);
       const id = String(req.params.id);
+      // #2280 — an optional `{ rereadDocument }`; a bodiless re-run is unchanged.
+      const rerunBody = rerunImpactAnalysisSchema.parse(req.body ?? {});
       const original = await loadAccessibleImpactDetail(actor, id);
 
       if (original.status !== "completed") {
@@ -1167,7 +1199,11 @@ export function impactAnalysisRouter(deps: UsageClassificationRouterDeps = {}): 
           rerunOfId: id,
         },
         {
-          ...impactRunDeps(actor.id, projectIds),
+          ...impactRunDeps(
+            actor.id,
+            projectIds,
+            rerunBody.rereadDocument ? { rereadDocument: true } : {},
+          ),
           projectAccess: executionAccessCheck(actor, projectIds),
         },
       );

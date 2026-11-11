@@ -4968,6 +4968,30 @@ section and the source's quote. The reading is the `document-read` stage of the 
 which held nothing and which could not be read; a failed reading falls back to the heuristic
 splitter and says so. Pasted short text and an issue keep the splitter.
 
+#### Saved document readings (#2280, epic #2227)
+
+Both callers read a stored document through `readDocumentOnce`
+(`document-reader/reading-cache.ts`), not `readDocument` directly. A whole reading is saved in
+`SavedDocumentReading` (`saved_document_readings`), and the next read with the same key
+returns it with no model call: `reused` (when, which model) is set and its `calls` and `usage`
+are zero, so a second run adds no `impact.document-read` (or document-agent) ledger row. The key
+is the document id, `Document.checksum`, `READER_VERSION` (bump it when the reader's prompts,
+schemas, batching or verification change), the model, and the SHA-256 of the exact text read —
+which changes when the image describer's descriptions are in that text (impact reads the chunks
+then) and when the parser changes, and keeps the saved offsets pointing into the caller's text.
+A failed, partial (a batch `unread`, or the cross-section pass `failed`) or empty reading is
+never saved, and pasted text is never saved. Every lookup filters on the document's own
+`projectId` as well as its id, and runs only after the caller's existing access check (impact:
+`assertDocumentReadable`; Requirements Analysis loads only its own project's documents). Rows
+cascade with a hard-deleted document; `KnowledgeService.deleteDocument` (a soft delete) deletes
+them in its transaction. A store error is logged and the document is read as before.
+
+"Read the document again" bypasses the saved reading and replaces it: `rereadDocuments` on
+`POST /projects/:id/analyses`, `rereadDocument` on `POST /impact-analyses` and on
+`POST /impact-analyses/:id/rerun`. A regenerate of the document agent always reads again. A
+reused reading is named on the run: the document agent's summary and the coverage panel
+(`DocumentReadingDocument.reused`), and the impact run's summary.
+
 #### Clarifying questions from the source document (#2235, epic #2227)
 
 With the reader on, each of the document agent's requirements carries its verified paragraph
