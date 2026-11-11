@@ -67,7 +67,13 @@ interface Harness {
   scheduleMirror: ReturnType<typeof vi.fn>;
   buildRetriever: ReturnType<typeof vi.fn>;
   retrieve: ReturnType<typeof vi.fn>;
+  loadHistory: ReturnType<typeof vi.fn>;
 }
+
+const HISTORY = [
+  { authorKind: "ai", body: "Which feeds should refresh hourly?" },
+  { authorKind: "human", body: "Only the news feeds.", authorUserId: USER },
+];
 
 function harness(
   over: {
@@ -101,6 +107,7 @@ function harness(
   const loadRateLimitConfig = vi.fn().mockReturnValue({ max: 10, windowMs: 60_000 });
   const retrieve = vi.fn().mockResolvedValue({ block: "## Retrieved", sources: 1 });
   const buildRetriever = vi.fn().mockReturnValue(retrieve);
+  const loadHistory = vi.fn().mockResolvedValue(HISTORY);
 
   const opts: AIParticipantOptions = {
     provider: fakeProvider,
@@ -112,6 +119,7 @@ function harness(
     emit: emit as unknown as AIParticipantOptions["emit"],
     scheduleMirror: scheduleMirror as unknown as AIParticipantOptions["scheduleMirror"],
     buildRetriever: buildRetriever as unknown as AIParticipantOptions["buildRetriever"],
+    loadHistory: loadHistory as unknown as AIParticipantOptions["loadHistory"],
   };
   return {
     opts,
@@ -122,6 +130,7 @@ function harness(
     scheduleMirror,
     buildRetriever,
     retrieve,
+    loadHistory,
   };
 }
 
@@ -241,6 +250,26 @@ describe("maybeRespondAsAI", () => {
     const call = h.streamReply.mock.calls[0][0];
     expect(call.retrieve).toBe(h.retrieve);
     expect(call).not.toHaveProperty("resolveTools");
+  });
+
+  // #2249 — a Teams reply sees the thread's recent history, as in-app does, read
+  // up to the trigger it answers.
+  it("passes the thread's recent history, read up to the trigger", async () => {
+    const h = harness();
+    await maybeRespondAsAI(fakeContext({ text: "@AI so which feeds?" }), trigger(), h.opts);
+
+    expect(h.loadHistory).toHaveBeenCalledWith(THREAD, MSG);
+    expect(h.streamReply.mock.calls[0][0].history).toEqual(HISTORY);
+  });
+
+  it("a history read that fails is an error outcome, never thrown, and calls no provider", async () => {
+    const h = harness();
+    h.loadHistory.mockRejectedValue(new Error("db down"));
+    const res = await maybeRespondAsAI(fakeContext({ text: "@AI hi" }), trigger(), h.opts);
+
+    expect(res.outcome).toBe("error");
+    expect(h.streamReply).not.toHaveBeenCalled();
+    expect(h.scheduleMirror).not.toHaveBeenCalled();
   });
 
   it("does NOT call the provider when the gate declines (off mode)", async () => {

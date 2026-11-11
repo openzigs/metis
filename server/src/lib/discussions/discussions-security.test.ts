@@ -20,6 +20,8 @@
  *       enters the fixed `system` prompt, so it cannot steer replies to others.
  *       The system prompt is byte-for-byte identical regardless of message
  *       content.
+ *     - #2249 — the same holds for an ANCHORED thread: the anchored
+ *       requirement's and Spec Kit feature's user-editable text is a user turn.
  *     - Without tools the responder streams TEXT only: a tool-call-shaped
  *       chunk is ignored, never executed.
  *     - #739 — with tools, a model steered by thread content can still only
@@ -40,9 +42,15 @@ const projectFindFirst = vi.fn();
 const projectFindUnique = vi.fn();
 const sessionCreate = vi.fn();
 const messageCreate = vi.fn();
+const requirementFindFirst = vi.fn();
+const featureFindFirst = vi.fn();
+const featureArtifactFindFirst = vi.fn();
 vi.mock("../prisma.js", () => ({
   prisma: {
     discussionThread: { findFirst: (...a: unknown[]) => threadFindFirst(...a) },
+    requirement: { findFirst: (...a: unknown[]) => requirementFindFirst(...a) },
+    specKitFeature: { findFirst: (...a: unknown[]) => featureFindFirst(...a) },
+    specKitFeatureArtifact: { findFirst: (...a: unknown[]) => featureArtifactFindFirst(...a) },
     project: {
       findFirst: (...a: unknown[]) => projectFindFirst(...a),
       findUnique: (...a: unknown[]) => projectFindUnique(...a),
@@ -261,6 +269,63 @@ describe("A03 Injection — cross-user prompt-injection isolation in AI replies"
     expect(sys(benign.messagesOf())).toBe(sys(hostile.messagesOf()));
     // And the fixed prompt actually instructs the model to distrust thread text.
     expect(sys(hostile.messagesOf()).toLowerCase()).toContain("untrusted");
+  });
+
+  // #2249 — an anchored thread puts user-editable text in the prompt: the
+  // requirement's title, body and criteria, and the Spec Kit feature's title
+  // and spec. Each must ride a user turn and leave the system prompt unchanged.
+  it("carries an anchored requirement's and Spec Kit feature's text as a user turn — never as system", async () => {
+    threadFindFirst.mockResolvedValue({
+      requirementId: "r1",
+      analysisId: null,
+      specKitFeatureId: "f1",
+    });
+    requirementFindFirst.mockResolvedValue({
+      title: `Requirement ${INJECTION}`,
+      body: `Body ${INJECTION}`,
+      acceptanceCriteria: JSON.stringify([`Criterion ${INJECTION}`]),
+    });
+    featureFindFirst.mockResolvedValue({
+      id: "f1",
+      slug: "001-x",
+      title: `Feature ${INJECTION}`,
+      status: "specified",
+    });
+    featureArtifactFindFirst.mockResolvedValue({ content: `# Spec\nSummary ${INJECTION}` });
+    const anchored = capturingProvider();
+    await streamAIReply({
+      thread,
+      triggerMessage: { id: "m-trigger", body: "@AI is this requirement complete?" },
+      actor,
+      provider: anchored.provider,
+    });
+
+    const messages = anchored.messagesOf();
+    const systemText = messages
+      .filter((m) => m.role === "system")
+      .map((m) => m.content)
+      .join("\n");
+    const userText = messages
+      .filter((m) => m.role === "user")
+      .map((m) => m.content)
+      .join("\n");
+    // Every user-editable field reached the model — as user text.
+    for (const field of ["Requirement", "Body", "Criterion", "Feature", "Summary"]) {
+      expect(userText).toContain(`${field} ${INJECTION}`);
+    }
+    expect(systemText).not.toContain("SYSTEM OVERRIDE");
+
+    // The fixed system prompt is byte-identical to an unanchored reply's.
+    threadFindFirst.mockResolvedValue(null);
+    const plain = capturingProvider();
+    await streamAIReply({
+      thread,
+      triggerMessage: { id: "m-2", body: "@AI is this requirement complete?" },
+      actor,
+      provider: plain.provider,
+    });
+    const sys = (msgs: ChatMsg[]) => msgs.find((m) => m.role === "system")?.content;
+    expect(sys(messages)).toBe(sys(plain.messagesOf()));
   });
 
   it("streams TEXT only — message content cannot trigger tool execution", async () => {
