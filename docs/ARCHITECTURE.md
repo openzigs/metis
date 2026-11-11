@@ -4874,6 +4874,26 @@ flag is now on by default. Precision passed by 0.003 on the mean, one run was un
 and the 95% interval is [0.50, 0.73]. The short-answer row is 2/7, 3/7 and 3/7, for the routing
 reason given under arm A5. The labels are AI-written and no person has reviewed them.
 
+#### Document-understanding eval (#2229, epic #2227) — how much of a business document is read
+
+`pnpm --filter server eval:doc-understanding` measures how well a reader finds a Word
+document's requirements and the questions an analyst would want raised. The corpus
+(`eval-data/corpus/docunderstanding-0{1,2,3}-*/`) is three synthetic FRDs/BRDs of 22–35 KB of
+converted text, authored once as `frd.src.md` with labels marked inline and built into
+`source.docx` and `labels.json` (`eval:doc-understanding:build`); the loader reads the Word
+file through production's `parseDocument` and refuses labels whose spans the converted text
+does not hold. `server/src/lib/eval/doc-understanding/` holds the arms (`arms.ts`): **A** is
+today's path (production chunker, `runGroundedRetrieval` at `ANALYSIS_RETRIEVE_K`,
+`runAgent("document")`, then `RequirementsExtractor` as `runEnhancementPipeline` runs it);
+**B** reads the whole document in one call; **C** reads section by section with a summary,
+glossary and actors, then reduces. A judge call maps each extracted requirement to a label
+and grades each question; recall, precision, section coverage, question precision, ambiguity
+recall and verbatim-quote accuracy are computed in code (`scorer.ts`), and spend is
+ledger-priced with the judge's metered apart (`runner.ts`). The first readings
+(`eval-data/readings/doc-understanding/`) and what follows from them are in
+[DOCUMENT_UNDERSTANDING_BASELINE.md](DOCUMENT_UNDERSTANDING_BASELINE.md): A finds 0.26 of
+the requirements on Sonnet 5.5, B finds all of them.
+
 #### Online eval — scoring sampled live production runs (#1321, epic #1316)
 
 Every other suite above scores **fixtures**. `server/src/lib/eval/online/` scores a
