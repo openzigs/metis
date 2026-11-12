@@ -33,16 +33,32 @@
  * filters on the document's own project as well as its id, so a reading never
  * crosses projects. A failure to read or write the store never fails the run:
  * the document is read as it would have been without one.
+ *
+ * #2293 — the save keeps the store to the readings that can still be used:
+ *
+ *   - it overwrites only a row of the same project (the upsert's `where` names
+ *     `projectId`), so a caller that passes another project cannot replace
+ *     that project's reading: its create fails on the key and is logged;
+ *   - it deletes the document's readings of an earlier file (`checksum`) or
+ *     reader (`READER_VERSION`), which no later lookup can match. Readings by
+ *     another model or of another text stay: switching the model back, or the
+ *     image describer, matches them again;
+ *   - when the document was deleted while it was being read, or is not the
+ *     named project's, it deletes what it saved: `deleteDocument` removes the
+ *     readings that exist when it runs, not one saved after.
  */
 import { createHash } from "node:crypto";
 import type { PrismaClient } from "@prisma/client";
 import { createChildLogger } from "../logger.js";
 import { prisma } from "../prisma.js";
+import { STATEMENT_KINDS } from "./prompts.js";
 import {
   READER_VERSION,
   readDocument,
   type DocumentReading,
   type ReadDocumentInput,
+  type ReadStatement,
+  type SectionCoverage,
 } from "./reader.js";
 
 const log = createChildLogger("document-reading-cache");
@@ -63,7 +79,7 @@ export interface ReadDocumentOnceInput extends ReadDocumentInput {
   reread?: boolean;
 }
 
-type ReadingStore = Pick<PrismaClient, "savedDocumentReading">;
+type ReadingStore = Pick<PrismaClient, "savedDocumentReading" | "document">;
 
 export interface ReadingCacheDeps {
   db?: ReadingStore;
@@ -96,6 +112,46 @@ export function isSavableReading(reading: DocumentReading): boolean {
   );
 }
 
+function isStringList(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((v) => typeof v === "string");
+}
+
+/** #2293 — a saved statement, element by element: what the callers read from it. */
+function isSavedStatement(value: unknown): value is ReadStatement {
+  if (value === null || typeof value !== "object") return false;
+  const s = value as Record<string, unknown>;
+  return (
+    typeof s.id === "string" &&
+    (STATEMENT_KINDS as readonly unknown[]).includes(s.kind) &&
+    typeof s.statement === "string" &&
+    typeof s.quote === "string" &&
+    typeof s.start === "number" &&
+    typeof s.end === "number" &&
+    typeof s.sectionId === "string" &&
+    isStringList(s.headingPath) &&
+    isStringList(s.refersTo)
+  );
+}
+
+/** #2293 — a saved section's coverage, element by element. */
+function isSavedSection(value: unknown): value is SectionCoverage {
+  if (value === null || typeof value !== "object") return false;
+  const c = value as Record<string, unknown>;
+  return (
+    typeof c.sectionId === "string" &&
+    isStringList(c.headingPath) &&
+    typeof c.start === "number" &&
+    typeof c.end === "number" &&
+    (c.status === "read" || c.status === "unread") &&
+    c.kinds !== null &&
+    typeof c.kinds === "object" &&
+    !Array.isArray(c.kinds) &&
+    typeof c.statements === "number" &&
+    typeof c.unverified === "number" &&
+    typeof c.repeats === "number"
+  );
+}
+
 /** The saved row's reading, or null when it is not one this reader wrote. */
 function parseSaved(json: string): Omit<DocumentReading, "usage" | "reused"> | null {
   try {
@@ -105,7 +161,9 @@ function parseSaved(json: string): Omit<DocumentReading, "usage" | "reused"> | n
       (r.mode !== "whole" && r.mode !== "sectioned") ||
       !Array.isArray(r.statements) ||
       r.statements.length === 0 ||
+      !r.statements.every(isSavedStatement) ||
       !Array.isArray(r.sections) ||
+      !r.sections.every(isSavedSection) ||
       typeof r.droppedUnverified !== "number" ||
       typeof r.outputTokenCap !== "number" ||
       (r.merge !== "done" && r.merge !== "skipped")
@@ -179,7 +237,11 @@ export async function readDocumentOnce(
   const data = { reading: JSON.stringify(toSave), usage: JSON.stringify(usage) };
   try {
     await db.savedDocumentReading.upsert({
-      where: { documentId_checksum_readerVersion_model_textHash: key },
+      // #2293 — only this project's row is overwritten; another project's fails the create.
+      where: {
+        documentId_checksum_readerVersion_model_textHash: key,
+        projectId: document.projectId,
+      },
       create: { projectId: document.projectId, ...key, ...data },
       update: { ...data, createdAt: new Date() },
     });
@@ -188,6 +250,46 @@ export async function readDocumentOnce(
       documentId: document.documentId,
       error: String(err),
     });
+    return reading;
   }
+  await tidyAfterSave(db, document);
   return reading;
+}
+
+/**
+ * #2293 — after a save: drop the document's readings no lookup can match any
+ * more (an earlier file or reader), and drop every reading of it when it was
+ * deleted while being read, or is not the named project's. Best-effort, like
+ * every store write.
+ */
+async function tidyAfterSave(db: ReadingStore, document: SavedDocumentKey): Promise<void> {
+  const scope = { projectId: document.projectId, documentId: document.documentId };
+  try {
+    // The liveness check runs first and names the file this run read: a run
+    // that read an earlier file (the checksum changes in place on a connector
+    // re-sync) must not prune the newer run's reading.
+    const live = await db.document.findFirst({
+      where: { id: document.documentId, projectId: document.projectId, deletedAt: null },
+      select: { id: true, checksum: true },
+    });
+    if (!live) {
+      await db.savedDocumentReading.deleteMany({ where: scope });
+      log.info(
+        "document was deleted (or is not this project's) while it was read; reading dropped",
+        {
+          documentId: document.documentId,
+        },
+      );
+      return;
+    }
+    if (live.checksum !== document.checksum) return;
+    await db.savedDocumentReading.deleteMany({
+      where: { ...scope, NOT: { checksum: document.checksum, readerVersion: READER_VERSION } },
+    });
+  } catch (err) {
+    log.warn("saved document readings could not be tidied", {
+      documentId: document.documentId,
+      error: String(err),
+    });
+  }
 }
