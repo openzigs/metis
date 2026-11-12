@@ -233,6 +233,8 @@ vi.mock("../src/lib/prisma.js", async () => {
       update: vi.fn(async () => ({})),
       deleteMany: vi.fn(async () => ({ count: 0 })),
     },
+    // #2280 — a deleted document's saved readings go with it.
+    savedDocumentReading: { deleteMany: vi.fn(async () => ({ count: 0 })) },
     $transaction: vi.fn(async (ops: unknown[]) => Promise.all(ops as Promise<unknown>[])),
   });
   return { prisma };
@@ -627,6 +629,9 @@ describe("/api/projects/:id/documents", () => {
       ordinals.map((ord) => ({ id: `doc_other:${ord}`, documentId: "doc_other", ord })),
     );
     expect(prisma.knowledgeChunk.deleteMany).toHaveBeenCalledWith({
+      where: { documentId: docId },
+    });
+    expect(prisma.savedDocumentReading.deleteMany).toHaveBeenCalledWith({
       where: { documentId: docId },
     });
     expect(await getDocumentStorage().exists(sourcePath)).toBe(false);

@@ -157,6 +157,26 @@ describe("NewImpactAnalysisPage", () => {
     );
   });
 
+  it("#2280 — offers to read the document again only for a document source, and sends it when ticked", async () => {
+    render(<NewImpactAnalysisPage />, { wrapper: makeWrapper() });
+    await waitFor(() =>
+      expect(screen.getByTestId("project-checkbox-project-001")).toBeInTheDocument(),
+    );
+    expect(screen.queryByTestId("impact-new-reread-checkbox")).toBeNull();
+    fireEvent.click(screen.getByTestId("project-checkbox-project-001"));
+    fireEvent.click(screen.getByTestId("source-mode-document"));
+    await waitFor(() => expect(screen.getByTestId("source-document-select")).toBeInTheDocument());
+    fireEvent.change(screen.getByTestId("source-document-select"), {
+      target: { value: "doc-0000001" },
+    });
+    fireEvent.click(screen.getByTestId("impact-new-reread-checkbox"));
+    fireEvent.click(screen.getByTestId("run-impact-analysis"));
+    expect(mutate).toHaveBeenCalledWith(
+      { documentId: "doc-0000001", projectIds: ["project-001"], rereadDocument: true },
+      expect.any(Object),
+    );
+  });
+
   it("renders an API error message", async () => {
     mutationState = { mutate, isPending: false, error: new ApiError(400, "bad request") };
     render(<NewImpactAnalysisPage />, { wrapper: makeWrapper() });

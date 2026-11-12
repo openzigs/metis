@@ -94,6 +94,21 @@ vi.mock("../lib/impact-analysis/impact-analysis-engine.js", () => ({
   parseRequirementIds: () => [],
 }));
 
+// #2280 — the document reader, on, with a live provider, and its saved-reading
+// entry point spied on, so a test can see whether a run asked to read again.
+let readerOn = false;
+vi.mock("../lib/document-reader/flag.js", () => ({ isDocumentReaderEnabled: () => readerOn }));
+vi.mock("../lib/ai/index.js", async () => {
+  const actual = await vi.importActual<typeof import("../lib/ai/index.js")>("../lib/ai/index.js");
+  return {
+    ...actual,
+    loadAIConfig: () => ({}) as never,
+    buildProvider: () => ({ key: "anthropic", model: "claude-sonnet-5-5", offline: false }),
+  };
+});
+const readDocumentOnce = vi.hoisted(() => vi.fn(async () => ({ statements: [] })));
+vi.mock("../lib/document-reader/reading-cache.js", () => ({ readDocumentOnce }));
+
 const { impactAnalysisRouter } = await import("./impact-analysis.js");
 const { errorHandler } = await import("../middleware/error-handler.js");
 
@@ -156,6 +171,64 @@ function detail(over: Partial<ImpactAnalysisDetail> & { id: string }): ImpactAna
     rerunOfId: over.rerunOfId ?? null,
   };
 }
+
+describe("#2280 — 'Read the document again' reaches the run's document reader", () => {
+  let app: ReturnType<typeof createApp>;
+  beforeEach(() => {
+    vi.clearAllMocks();
+    currentUser = { userId: "user-1", username: "alice", role: "member" };
+    permitRun = true;
+    permitRead = true;
+    adminFlag = false;
+    accessibleIds = ["project-001"];
+    readerOn = true;
+    triggerImpactAnalysis.mockResolvedValue({ id: "run-1", status: "pending" });
+    getImpactAnalysisDetail.mockResolvedValue(
+      detail({ id: "orig-doc", documentId: "doc-1", sourceText: null }),
+    );
+    app = createApp();
+  });
+
+  /** Runs the document reader the route handed the engine, and returns what it asked of the cache. */
+  async function readerCall(): Promise<Record<string, unknown>> {
+    const deps = (triggerImpactAnalysis.mock.calls[0] as unknown[])[1] as {
+      documentReader?: (input: { title: string; text: string; document?: unknown }) => unknown;
+    };
+    expect(deps.documentReader).toBeTypeOf("function");
+    const document = { projectId: "project-001", documentId: "doc-1", checksum: "c" };
+    await deps.documentReader!({ title: "FRD", text: "x", document });
+    return (readDocumentOnce.mock.calls[0] as unknown[])[0] as Record<string, unknown>;
+  }
+
+  it("a re-run with `rereadDocument` reads the document again", async () => {
+    const res = await request(app)
+      .post("/impact-analyses/orig-doc/rerun")
+      .send({ rereadDocument: true });
+    expect(res.status).toBe(202);
+    expect(await readerCall()).toMatchObject({ reread: true, document: { documentId: "doc-1" } });
+  });
+
+  it("a re-run without it reuses the saved reading", async () => {
+    expect((await request(app).post("/impact-analyses/orig-doc/rerun").send({})).status).toBe(202);
+    expect(await readerCall()).not.toHaveProperty("reread");
+  });
+
+  it("a new run with `rereadDocument` reads the document again", async () => {
+    const res = await request(app)
+      .post("/impact-analyses")
+      .send({ documentId: "doc-0000001", projectIds: ["project-001"], rereadDocument: true });
+    expect(res.status).toBe(202);
+    expect(await readerCall()).toMatchObject({ reread: true });
+  });
+
+  it("refuses a re-run body that is not `{ rereadDocument?: boolean }`", async () => {
+    for (const body of [{ rereadDocument: "yes" }, { other: 1 }]) {
+      const res = await request(app).post("/impact-analyses/orig-doc/rerun").send(body);
+      expect(res.status).toBe(400);
+    }
+    expect(triggerImpactAnalysis).not.toHaveBeenCalled();
+  });
+});
 
 describe("POST /:id/rerun (#965)", () => {
   let app: ReturnType<typeof createApp>;

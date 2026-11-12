@@ -4695,3 +4695,28 @@ CREATE UNIQUE INDEX "governing_findings_analysisId_requirementId_ruleId_key" ON 
 
 -- AddForeignKey
 ALTER TABLE "governing_findings" ADD CONSTRAINT "governing_findings_analysisId_fkey" FOREIGN KEY ("analysisId") REFERENCES "analyses"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- CreateTable
+CREATE TABLE "saved_document_readings" (
+    "id" TEXT NOT NULL,
+    "projectId" TEXT NOT NULL,
+    "documentId" TEXT NOT NULL,
+    "checksum" TEXT NOT NULL,
+    "readerVersion" TEXT NOT NULL,
+    "model" TEXT NOT NULL,
+    "textHash" TEXT NOT NULL,
+    "reading" TEXT NOT NULL,
+    "usage" TEXT NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "saved_document_readings_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateIndex
+CREATE INDEX "saved_document_readings_projectId_documentId_idx" ON "saved_document_readings"("projectId", "documentId");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "saved_document_readings_key" ON "saved_document_readings"("documentId", "checksum", "readerVersion", "model", "textHash");
+
+-- AddForeignKey
+ALTER TABLE "saved_document_readings" ADD CONSTRAINT "saved_document_readings_documentId_fkey" FOREIGN KEY ("documentId") REFERENCES "documents"("id") ON DELETE CASCADE ON UPDATE CASCADE;
