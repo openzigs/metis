@@ -23,11 +23,14 @@ vi.mock("../prisma.js", () => ({
 const {
   analysedVersionOf,
   analysedVersions,
+  editedWithoutFindings,
   evidenceFindingIdsOf,
   evidenceRequirementId,
+  isRecheckEntry,
   recheckedRequirementTitles,
   storedRequirementStates,
   withGoverningStaleness,
+  withoutDeletedRechecks,
 } = await import("./requirement-staleness.js");
 type State = import("./requirement-staleness.js").StoredRequirementState;
 
@@ -247,5 +250,119 @@ describe("the reads", () => {
     await storedRequirementStates("ana-1", "p-1");
     expect(db.findingFindMany).not.toHaveBeenCalled();
     expect(db.versionGroupBy).not.toHaveBeenCalled();
+  });
+});
+
+describe("a deleted requirement's re-check (#2281)", () => {
+  const recheckOf = (id: string, version = 1) => ({
+    requirementId: id,
+    text: "t",
+    decisions: [],
+    versions: { [id]: version },
+  });
+
+  it("isRecheckEntry: an entry recording its own id's version, never an analysed one", () => {
+    expect(isRecheckEntry(recheckOf("r1"))).toBe(true);
+    expect(isRecheckEntry({ requirementId: "AC-2", text: "t", decisions: [] })).toBe(false);
+    expect(
+      isRecheckEntry({ requirementId: "AC-2", text: "t", decisions: [], versions: { r1: 0 } }),
+    ).toBe(false);
+  });
+
+  it("leaves out the findings of a re-checked requirement that is no longer live, and no other", () => {
+    const findings = [
+      finding(),
+      finding({ id: "gf-gone", requirementId: "r-gone", requirementVersions: { "r-gone": 1 } }),
+      finding({ id: "gf-live", requirementId: "r1", requirementVersions: { r1: 1 } }),
+    ];
+    const stored = applicability([
+      { requirementId: "AC-2", text: "t", decisions: [] },
+      recheckOf("r-gone"),
+      recheckOf("r1"),
+    ]);
+    const out = withGoverningStaleness(findings, [state({ id: "r1", version: 1 })], stored);
+    expect(out.map((f) => f.id)).toEqual(["gf-1", "gf-live"]);
+    // A finding keyed by an id no re-check stored (an analysed one) always stays.
+    expect(withGoverningStaleness(findings, [], null).map((f) => f.id)).toEqual([
+      "gf-1",
+      "gf-gone",
+      "gf-live",
+    ]);
+  });
+
+  it("withoutDeletedRechecks reads only the re-checked ids, within the analysis and project", async () => {
+    db.requirementFindMany.mockReset();
+    const stored = applicability([
+      { requirementId: "AC-2", text: "t", decisions: [] },
+      recheckOf("r-gone"),
+      recheckOf("r1"),
+    ]);
+    db.requirementFindMany.mockResolvedValue([{ id: "r1" }]);
+    const out = await withoutDeletedRechecks(stored, "ana-1", "p-1");
+    expect(db.requirementFindMany).toHaveBeenCalledWith({
+      where: {
+        id: { in: ["r-gone", "r1"] },
+        analysisId: "ana-1",
+        projectId: "p-1",
+        deletedAt: null,
+      },
+      select: { id: true },
+    });
+    expect(out.requirements.map((e) => e.requirementId)).toEqual(["AC-2", "r1"]);
+
+    // Nothing deleted: the same object. No re-check entry: no read at all.
+    db.requirementFindMany.mockResolvedValue([{ id: "r-gone" }, { id: "r1" }]);
+    expect(await withoutDeletedRechecks(stored, "ana-1", "p-1")).toBe(stored);
+    db.requirementFindMany.mockClear();
+    const analysed = applicability([{ requirementId: "AC-2", text: "t", decisions: [] }]);
+    expect(await withoutDeletedRechecks(analysed, "ana-1", "p-1")).toBe(analysed);
+    expect(db.requirementFindMany).not.toHaveBeenCalled();
+  });
+});
+
+describe("editedWithoutFindings (#2281)", () => {
+  const checked = applicability([{ requirementId: "AC-2", text: "t", decisions: [] }]);
+
+  it("lists a requirement edited since the check whose analysed requirement produced no finding", () => {
+    const states = [
+      state({ id: "r1", title: "Timeout", version: 2, analysedVersion: 0 }),
+      // Not edited since the analysis.
+      state({ id: "r2", version: 1, analysedVersion: 1 }),
+      // Drawn from no analysed requirement: the check never saw it.
+      state({ id: "r3", version: 1, analysedVersion: 0, analysedIds: new Set() }),
+    ];
+    expect(editedWithoutFindings([], states, checked)).toEqual([
+      { requirementId: "r1", title: "Timeout", judgedVersion: 0, currentVersion: 2 },
+    ]);
+    // The check never ran: nothing to re-check against.
+    expect(editedWithoutFindings([], states, null)).toEqual([]);
+  });
+
+  it("leaves out one a stale finding already offers, or one with findings of its own", () => {
+    const states = [state({ id: "r1", version: 2, analysedVersion: 0 })];
+    const stale = withGoverningStaleness([finding()], states, checked);
+    expect(stale[0]!.stale).toHaveLength(1);
+    expect(editedWithoutFindings(stale, states, checked)).toEqual([]);
+    const own = withGoverningStaleness(
+      [finding({ requirementId: "r1", requirementVersions: { r1: 1 } })],
+      states,
+      checked,
+    );
+    expect(editedWithoutFindings(own, states, checked)).toEqual([]);
+  });
+
+  it("a re-check that found nothing judges its version: listed again after the next edit only", () => {
+    const rechecked = (version: number) =>
+      applicability([
+        { requirementId: "AC-2", text: "t", decisions: [] },
+        { requirementId: "r1", text: "t", decisions: [], versions: { r1: version } },
+      ]);
+    const states = [
+      state({ id: "r1", title: "T", version: 3, analysedVersion: 0, analysedIds: new Set() }),
+    ];
+    expect(editedWithoutFindings([], states, rechecked(3))).toEqual([]);
+    expect(editedWithoutFindings([], states, rechecked(2))).toEqual([
+      { requirementId: "r1", title: "T", judgedVersion: 2, currentVersion: 3 },
+    ]);
   });
 });
