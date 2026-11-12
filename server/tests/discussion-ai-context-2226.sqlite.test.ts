@@ -359,6 +359,18 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(await loadRecentHistory("t-long", "trigger-tie")).toEqual([]);
     });
 
+    it("#2282 — a Teams reply's history starts at the link: nothing written before it", async () => {
+      // Linked between message 21 and 22 (message n is at base + n s).
+      const since = new Date(Date.UTC(2026, 0, 1) + 21_500);
+      const history = await loadRecentHistory("t-long", "trigger", { since });
+      expect(history.map((h) => h.body)).toEqual(["message 22", "message 23", "message 25"]);
+      // A message written at the link itself counts.
+      const atLink = await loadRecentHistory("t-long", "trigger", {
+        since: new Date(Date.UTC(2026, 0, 1) + 22_000),
+      });
+      expect(atLink.map((h) => h.body)).toEqual(["message 22", "message 23", "message 25"]);
+    });
+
     it("#2249 — an anchored Spec Kit feature's spec summary reaches the prompt as a user turn", async () => {
       const sent = await reply("t-feature");
       const turn = sent.find((m) => String(m.content).includes("Spec Kit feature:"));

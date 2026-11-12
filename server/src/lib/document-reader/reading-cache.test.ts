@@ -14,7 +14,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AIProvider } from "../ai/types.js";
 import type { DocumentReading } from "./reader.js";
-import { READER_VERSION } from "./reader.js";
+import { READER_VERSION, spentUsageOf, withSpentUsage } from "./reader.js";
 import {
   isSavableReading,
   readDocumentOnce,
@@ -154,6 +154,7 @@ describe("readDocumentOnce", () => {
     ["the file (checksum)", { document: { ...DOC, checksum: "sum-2" } }],
     ["the model", { model: "claude-opus-5" }],
     ["the text read (image descriptions, a parser change)", { text: `${TEXT}\n\n[Image: a flow]` }],
+    ["the operator's notes (#2262)", { operatorNotes: "Only the payment rules matter." }],
   ])("reads again when %s changes", async (_what, change) => {
     const { db } = memoryStore();
     const read = reader(() => reading());
@@ -313,5 +314,51 @@ describe("readingTextHash", () => {
       "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
     );
     expect(readingTextHash("abc ")).not.toBe(readingTextHash("abc"));
+  });
+
+  it("#2262 — folds the operator's notes in; blank notes are no notes", () => {
+    expect(readingTextHash("abc", "  ")).toBe(readingTextHash("abc"));
+    expect(readingTextHash("abc", "notes")).not.toBe(readingTextHash("abc"));
+    expect(readingTextHash("abc", "notes")).not.toBe(readingTextHash("abc", "other notes"));
+    expect(readingTextHash("abc", " notes ")).toBe(readingTextHash("abc", "notes"));
+  });
+});
+
+describe("readDocumentOnce — #2262 operator notes and spent usage", () => {
+  it("passes the notes to the reader, saves under them, and reuses only with the same notes", async () => {
+    const { rows, db } = memoryStore();
+    const read = reader(() => reading());
+    const notes = "Only the payment rules matter.";
+    await readDocumentOnce(
+      { title: "FRD", text: TEXT, provider, document: DOC, operatorNotes: notes },
+      { db, read },
+    );
+    expect(read).toHaveBeenLastCalledWith(expect.objectContaining({ operatorNotes: notes }));
+    expect(rows[0]!.textHash).toBe(readingTextHash(TEXT, notes));
+    const again = await readDocumentOnce(
+      { title: "FRD", text: TEXT, provider, document: DOC, operatorNotes: notes },
+      { db, read },
+    );
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(again.usage.totalTokens).toBe(0);
+  });
+
+  it("rethrows a failed read with the usage it spent still attached, and saves nothing", async () => {
+    const { rows, db } = memoryStore();
+    const failure = withSpentUsage(new Error("upstream down"), {
+      promptTokens: 60,
+      completionTokens: 40,
+      totalTokens: 100,
+    });
+    const read = vi.fn(async () => {
+      throw failure;
+    });
+    const err = await readDocumentOnce(
+      { title: "FRD", text: TEXT, provider, document: DOC },
+      { db, read },
+    ).catch((e: unknown) => e);
+    expect(err).toBe(failure);
+    expect(spentUsageOf(err)?.totalTokens).toBe(100);
+    expect(rows).toHaveLength(0);
   });
 });
