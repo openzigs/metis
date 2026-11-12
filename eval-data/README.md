@@ -870,28 +870,46 @@ Every number below is computed from those verdicts in code (`server/src/lib/eval
 
 - **Correctness**: the mean share of facts stated, and "fully correct" when every fact is
   stated and none is contradicted.
-- **Citation precision**: supporting citations over all citations. A citation with lines is
-  judged against that span's text. One without lines is counted as supporting only when its
-  file is an expected source. Lines that are not in the file support nothing.
+- **Citation precision**, reported as two rates because they are two different tests. A
+  citation with lines is judged against that span's text, and lines that are not in the file
+  support nothing. A citation without lines has no span to read, so it is counted as
+  supporting only when its file is an expected source. An arm that cites no lines is graded
+  only by the looser file test, so one rate over both would compare unlike things (#2265).
+  A path both products hold, such as a README, is read in each of them, and the citation
+  supports its claim when either product's lines do.
 - **Citation recall**: the expected source files an answer cites.
 - **Abstention, follow-up and confident-guess rates**, plus false abstention and unneeded
   follow-ups on answerable questions.
 - **Spend**: the answers and the judge, apart, priced by the ledger.
 
-A judge reply that cannot be parsed leaves the question unscored, never scored as zero.
+A judge reply that cannot be parsed leaves the question unscored, never scored as zero. The
+answer and the cited spans reach the judge fenced between markers that carry a random token
+per call, labelled as data to grade rather than instructions.
+
+`--budget` is checked between questions. The run stops before a question once the cap is
+reached, or once the costliest question so far would carry the spend past it. A question
+costlier than any before it can still cross the cap. `--include` refuses a run with another
+fixture, answer model or judge model, or an arm already in the report. The included run is
+re-summarized from its per-question scores, so both columns are computed by the same code.
 
 ### Baseline, 2026-11-11 (Sonnet 5.5 answers and judge, 18 questions per arm)
 
-Run 2 was run on the code that merged (after #2225's ACL actor). Run 1 was run the day
+Run 2 was run on #2256's branch after #2225's ACL actor had landed. Run 1 was run the day
 before and differs only where shown.
+
+These runs predate #2265 and report citation precision as one rate over both checks. The
+`off` arm cited no lines, so its 30% is the file test alone. The `on` arm's 83% is mostly
+span-judged. The two figures are different tests, not one rate rising from 30% to 83%.
+Their "checked against the span" count also includes cited lines that are not in the file.
+From the next run on, the report gives the two rates apart.
 
 | | off (today) | on (three flags) |
 |---|---:|---:|
 | Sessions chat left unscoped (no retrieval) | 9/18 | 9/18 |
 | Correctness: mean facts stated | 29% (run 1: 27%) | 49% (48%) |
 | Fully correct answers | 0/10 | 2/10 |
-| Citation precision | 30% (6/20) (run 1: 33%) | 83% (34/41) (89%) |
-| … checked against the span | 0/20 | 35/41 (44/47) |
+| Citation precision, both checks in one rate | 30% (6/20) (run 1: 33%) | 83% (34/41) (89%) |
+| … with lines (span-judged, or not in the file) | 0/20 | 35/41 (44/47) |
 | Citation recall | 19% (6/32) | 31% (10/32) (28%) |
 | Abstention on unanswerable | 4/4 | 4/4 |
 | Follow-up on ambiguous | 3/4 | 3/4 |
