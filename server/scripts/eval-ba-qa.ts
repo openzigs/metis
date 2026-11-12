@@ -20,6 +20,10 @@
  * documents (the connector's own ingest), and the corpus's uploaded documents
  * (the man page, FRD-12). Idempotent: a product that already holds them is left.
  *
+ * #2327 — `tools-primitives` is `tools-only` plus `CHAT_CODE_SEARCH_PRIMITIVES`
+ * (`grep_files`, `list_files`, the symbol filters); each session records the
+ * tools it called (`toolNames`).
+ *
  * Arms (#2243): `off` sets `CHAT_CODE_SEARCH_TOOLS`, `CHAT_FUSED_CODE_RETRIEVAL`
  * and `RAG_RERANK` off and `on` sets all three, whatever the shell or `.env` set;
  * `no-tools`, `no-fused` and `no-rerank` take one flag away from `on`; `default`
@@ -614,6 +618,7 @@ async function main(): Promise<void> {
     );
     const usage = { promptTokens: 0, completionTokens: 0, calls: 0 };
     let toolCalls = 0;
+    const toolNames: string[] = [];
     const loop = await runChatToolTurn(
       metered,
       {
@@ -637,8 +642,9 @@ async function main(): Promise<void> {
           usage.completionTokens += u.completionTokens;
           usage.calls++;
         },
-        onToolRecord: () => {
+        onToolRecord: (record) => {
           toolCalls++;
+          toolNames.push(record.tool);
         },
       },
     );
@@ -669,6 +675,7 @@ async function main(): Promise<void> {
       projectId: scope.projectId,
       ragChars: rag.length,
       toolCalls,
+      toolNames,
       turnsExhausted: loop.loop.turnsExhausted,
       truncatedToolResults: loop.toolResults.filter((t) => t.truncated).length,
       sessionId: row.id,

@@ -706,7 +706,8 @@ pnpm eval:localization --merge <dir> --md
 |---|---|---|
 | `A3` (A3-union) | production's (`search_code_graph`, `search_code_symbols`, `search_knowledge`, `read_file_slice`, `list_files`) and seeded blocks | A0's edit candidates, then the cited files through the stored-link channel (#1754) |
 | `A3A` (A3-alone) | the same pass as `A3` | the cited files alone, in first-cited order |
-| `A3N` (A3-nograph) | `list_files`, `read_file_slice` and the eval-only `grep_files`; no seeded blocks | the cited files alone |
+| `A3N` (A3-nograph) | `list_files`, `read_file_slice` and `grep_files`; no seeded blocks | the cited files alone |
+| `A3P` (A3-primitives, #2327) | `A3A`'s, with `search_code_symbols`'s filters and `grep_files` (chat's search primitives) | the cited files alone |
 
 - **One pass per item and repository.** The pass uses the orchestrator's own functions
   (`extractNewRequirementCandidates`, `assembleAgenticPassSeeds`, `buildAgenticPassPrompt`,
@@ -721,8 +722,11 @@ pnpm eval:localization --merge <dir> --md
   the per-repository passes. Each agent arm also gets a line with its passes, the passes
   with no schema-valid answer, and turns and tool calls per pass.
 - **`grep_files` is bounded.** It is a literal search, capped at 50 matching lines and
-  5,000 files. The file cap counts only files inside the `pathContains` scope, and it never
-  descends into a symlinked directory. A search the cap cut short says so.
+  5,000 files. Since #2327 it is production code (`analysis/tools/grep-files.ts`, offered to
+  chat behind `CHAT_CODE_SEARCH_PRIMITIVES`), so `A3N` runs the same implementation chat does,
+  with its #2327 caps (5,000 characters shown, totals when cut, secret files never read).
+  The file cap counts only files inside the `pathContains` scope, and it never descends into
+  a symlinked directory. A search the cap cut short says so.
 - **`A3N` needs the clone.** If a repository's clone is missing, `A3N` stops with an error
   telling you to run `pnpm eval:materialize`.
 - **The `--arms` list binds the run to the materialized database.** When it names an agent
@@ -859,17 +863,25 @@ Each question is its own one-turn chat session, run through production's chat pi
 `eval:chat-cache`. A question scoped to both products is asked the way chat takes it today,
 as an unscoped session with no retrieval (`chatSessionScope`, mirroring
 `server/src/routes/ai.ts`). Every arm sets `CHAT_CODE_SEARCH_TOOLS`,
-`CHAT_FUSED_CODE_RETRIEVAL` and `RAG_RERANK` itself, whatever the shell or `.env` says (#2243):
+`CHAT_FUSED_CODE_RETRIEVAL`, `RAG_RERANK` and `CHAT_CODE_SEARCH_PRIMITIVES` itself, whatever
+the shell or `.env` says (#2243, #2327):
 
-| Arm | Code-search tools | Fused code retrieval | Reranker |
-|---|---|---|---|
-| `off` | off | off | off |
-| `on` | on | on | on |
-| `no-tools` | off | on | on |
-| `no-fused` | on | off | on |
-| `no-rerank` | on | on | off |
-| `tools-only` | on | off | off |
-| `default` | unset: the server's default | unset | unset |
+| Arm | Code-search tools | Fused code retrieval | Reranker | Search primitives |
+|---|---|---|---|---|
+| `off` | off | off | off | off |
+| `on` | on | on | on | on |
+| `no-tools` | off | on | on | on |
+| `no-fused` | on | off | on | on |
+| `no-rerank` | on | on | off | on |
+| `tools-only` | on | off | off | off |
+| `tools-primitives` | on | off | off | on |
+| `default` | unset: the server's default | unset | unset | unset |
+
+Each session in the JSON records the tools it called, in order (`toolNames`, #2327).
+
+Since #2327 the `on` and `no-*` arms set `CHAT_CODE_SEARCH_PRIMITIVES=1`, so they offer
+`grep_files`, `list_files` and the symbol filters. They do not reproduce the #2243 numbers below,
+which were measured without them; `tools-only` is the arm that still matches #2243's tools-only run.
 
 An arm with the reranker on runs the embedder inline so the reranker can share the main
 thread (#222). On macOS such an arm can abort with `libc++abi: … mutex lock failed` as it
@@ -997,6 +1009,69 @@ The first "tools only" run and the `on` run each have one unscored judge reply (
   $0.0178 per question in answers, against $0.0331 for the first. The table gives input
   tokens instead. The nine runs, one of them a 1-question smoke run, cost **$2.764553**
   (answers and judge).
+
+### Search primitives, 2026-11-12 (#2327)
+
+`CHAT_CODE_SEARCH_PRIMITIVES` adds `grep_files` (a literal text search over the repository
+clones), `list_files` and `search_code_symbols`'s `fileGlob` / `symbolKind` / `language`
+filters to the code-search tools. The issue lets it default on only if it does not regress
+facts stated, citation precision, edit precision, turns or input tokens. It measured two ways,
+both paired against the same tools without it, Sonnet 5.5 throughout.
+
+**BA question set** (`tools-only` against `tools-primitives`, the nine single-product
+questions as in #2243, two runs of each arm, alternating):
+
+| | tools only | tools + primitives |
+|---|---:|---:|
+| Mean facts stated | 81%, 84% | 85%, 87% |
+| Fully correct | 2/5, 3/6 | 3/5, 3/6 |
+| Citation precision | 60% (25/42), 76% (37/49) | 63% (33/52), 76% (34/45) |
+| Citation recall | 10/15, 10/15 | 12/15, 11/15 |
+| Right behaviour | 8/9, 9/9 | 8/9, 9/9 |
+| Input tokens / question | 26,600, 25,600 | 32,800, 32,400 |
+| Model calls / question | 2.78, 2.67 | 3.22, 3.11 |
+| Tool results cut to the cap | 0, 0 | 2, 1 |
+| Tools called (both runs) | `search_code_graph` 26, `read_file_slice` 17, `search_code_symbols` 11 | `grep_files` 44, `read_file_slice` 28, `list_files` 5 |
+
+S5 went unscored in the first run of both arms (the judge reply could not be parsed).
+
+**Localization held-out corpus** (`localization-01-miniflux-heldout`, 24 items, one run):
+`A3P` is the Analysis agent's pass `A3A` with the primitives added (`grep_files` and the
+symbol filters), its citations scored alone, and is paired against `A3A` with
+`--reference A3A`:
+
+| | A3A | A3P | Δ (95% CI) |
+|---|---:|---:|---:|
+| Recall@5 | 0.68 | 0.70 | +0.015 [−0.14, +0.17] |
+| Recall@10 | 0.70 | 0.75 | +0.043 [−0.12, +0.20] |
+| Edit precision | 0.57 | 0.51 | −0.063 [−0.19, +0.05] |
+| MRR | 0.77 | 0.80 | +0.028 [−0.16, +0.22] |
+| Turns / tool calls per pass | 3.5 / 8.9 | 3.3 / 7.6 | |
+| Cost per item | $0.0838 | $0.1168 | |
+
+```bash
+pnpm eval:ba-qa --arm tools-only --budget 3 --questions S1,S2,S3,S4,S5,S6,A3,U3,U4
+pnpm eval:ba-qa --arm tools-primitives --budget 3 --questions S1,S2,S3,S4,S5,S6,A3,U3,U4
+pnpm eval:materialize localization-01-miniflux-heldout
+pnpm eval:localization --corpus localization-01-miniflux-heldout --arms A0,A3A,A3P --runs 1 --embed --items 0:4
+pnpm eval:localization --merge <dir> --reference A3A --md
+```
+
+- **Off by default.** On the BA set the primitives cost about 25% more input tokens and 0.45
+  more model calls per question; the facts and citation gains are within the run-to-run
+  spread. On localization no metric moved measurably, edit precision fell by a point
+  estimate of 0.06 and each item cost 39% more. Both are regressions the issue names.
+- **Given `grep_files`, chat stopped using the graph and symbol tools.** In 18 sessions it
+  never called `search_code_graph` or `search_code_symbols`, so the symbol filters were not
+  exercised on this set and cannot be measured apart from `grep_files` here.
+- **The cut results were not the new tools.** `grep_files` and `list_files` results on this
+  clone measured 3,300 to 4,400 characters at their own caps, under the 6,000-character tool
+  result cap; `read_file_slice` reads can exceed it.
+- **Spend:** $1.318 on the BA set (one 1-question smoke run and four runs) and $4.814 on
+  localization, answers and judge, $6.13 in all.
+- On this machine the materialize step's worker-thread embedder aborted with
+  `libc++abi: … Napi::Error` while embedding symbols (load average above 30);
+  `EMBED_INPROCESS_RUNTIME=inline pnpm eval:materialize …` completed.
 
 ### Relevance floor (#2241)
 

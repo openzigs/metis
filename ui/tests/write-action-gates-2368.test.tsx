@@ -148,11 +148,11 @@ describe("/projects New project is gated on project.create (#2368)", () => {
     );
   });
 
-  it("offers New project, and its form, to a role with project.create", async () => {
+  it("offers New project, and its wizard (#2349), to a role with project.create", async () => {
     const user = userEvent.setup();
     render(<ProjectsPage />, { wrapper: as("project.read", "project.create") });
     await user.click(screen.getByRole("button", { name: "New project" }));
-    expect(await screen.findByTestId("project-name-input")).toBeInTheDocument();
+    expect(await screen.findByTestId("wizard-name-input")).toBeInTheDocument();
     expect(screen.queryByTestId("new-project-forbidden")).not.toBeInTheDocument();
   });
 

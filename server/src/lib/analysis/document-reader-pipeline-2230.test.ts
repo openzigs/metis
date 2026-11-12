@@ -197,7 +197,21 @@ const loader = vi.fn<ReaderDocumentLoader>(async (_projectId, ids) =>
             chunks: [{ index: 0, text: DOC_TEXT }],
           },
         }
-      : { ok: false as const, documentId, filename: "gone.docx", reason: "It is not ready." },
+      : documentId === "doc_broken"
+        ? {
+            ok: false as const,
+            documentId,
+            filename: "broken.docx",
+            reason: "Its stored file could not be read.",
+          }
+        : // #2297 — as the production loader reports a missing or not-ready id.
+          {
+            ok: false as const,
+            documentId,
+            filename: documentId,
+            reason: "It is not ready.",
+            unavailable: true as const,
+          },
   ),
 );
 
@@ -389,7 +403,7 @@ describe("#2262 — the document reader before the flag goes on", () => {
         documentId,
         filename: documentId,
         reason: "It is not available.",
-        withheld: true as const,
+        unavailable: true as const,
       })),
     );
     const { retrieve, capability } = await runPipeline({ documentIds: ["doc_secret"] });
@@ -399,11 +413,31 @@ describe("#2262 — the document reader before the flag goes on", () => {
     ]);
   });
 
-  it("falls back to retrieval when no selected document could be loaded", async () => {
-    const { retrieve, capability } = await runPipeline({ documentIds: ["doc_gone"] });
-    expect(loader).toHaveBeenCalledWith(PROJECT_ID, ["doc_gone"], expect.anything());
+  it("falls back to retrieval when no selected document's file could be loaded", async () => {
+    const { retrieve, capability } = await runPipeline({ documentIds: ["doc_broken"] });
+    expect(loader).toHaveBeenCalledWith(PROJECT_ID, ["doc_broken"], expect.anything());
     expect(retrievedAgents(retrieve)).toContain("document");
     expect(capability.documentReading).toBeUndefined();
+  });
+
+  it("#2297 — does not fall back for a missing id either, so it reads as a withheld one does", async () => {
+    const { retrieve, capability } = await runPipeline({ documentIds: ["doc_gone"] });
+    expect(retrievedAgents(retrieve)).not.toContain("document");
+    expect(capability.documentReading?.documents).toEqual([
+      expect.objectContaining({ documentId: "doc_gone", status: "unread" }),
+    ]);
+  });
+
+  it("#2297 — a scheduled run reads as no requester, not as an inactive one", async () => {
+    const { retrieve } = await runPipeline({ startedById: "system" });
+    expect(resolveAclActor).not.toHaveBeenCalled();
+    expect(loader).toHaveBeenCalledWith(PROJECT_ID, ["doc_1", "doc_gone"], {
+      userId: "system",
+      role: "shared-audience",
+      sharedAudience: true,
+    });
+    expect(documentRow()?.status).toBe("completed");
+    expect(retrievedAgents(retrieve)).not.toContain("document");
   });
 
   it("with no document selected, reads the newest ready uploads the requester may see", async () => {

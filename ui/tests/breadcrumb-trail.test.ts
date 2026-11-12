@@ -17,7 +17,7 @@ describe("pageCrumbs (#271)", () => {
       "/projects/p1/baselines/abc123def456ghi789jkl0",
       "/runs/42",
     ]) {
-      const crumbs = pageCrumbs(path);
+      const crumbs = pageCrumbs(path, true);
       expect(crumbs.length, path).toBeGreaterThan(0);
       expect(crumbs[crumbs.length - 1].href, path).toBeUndefined();
       expect(
@@ -28,67 +28,86 @@ describe("pageCrumbs (#271)", () => {
   });
 
   it("Change requests › Requirements Analysis on the analysis page (#2334)", () => {
-    expect(pageCrumbs("/projects/p1/analysis/")).toEqual([
+    expect(pageCrumbs("/projects/p1/analysis/", true)).toEqual([
       { label: "Change requests", href: "/projects/p1/analysis" },
       { label: "Requirements Analysis" },
     ]);
   });
 
   it("names the moved pages by their new tab (#2334)", () => {
-    expect(pageCrumbs("/projects/p1/publish")).toEqual([
+    expect(pageCrumbs("/projects/p1/publish", true)).toEqual([
       { label: "Deliverables", href: "/projects/p1/documentation" },
       { label: "Publish" },
     ]);
-    expect(pageCrumbs("/projects/p1/changes")).toEqual([
+    expect(pageCrumbs("/projects/p1/changes", true)).toEqual([
       { label: "Requirements", href: "/projects/p1/requirements" },
       { label: "Compare analyses" },
     ]);
-    expect(pageCrumbs("/projects/p1/spec-kit")).toEqual([
+    expect(pageCrumbs("/projects/p1/spec-kit", true)).toEqual([
       { label: "Project settings", href: "/projects/p1/settings" },
       { label: "Spec Kit" },
     ]);
   });
 
   it("a route reached from inside a section (issue sync) ends at its own label", () => {
-    expect(pageCrumbs("/projects/p1/sync")).toEqual([
+    expect(pageCrumbs("/projects/p1/sync", true)).toEqual([
       { label: "Deliverables", href: "/projects/p1/documentation" },
       { label: "Issue updates" },
     ]);
   });
 
   it("an id-like detail segment is named by its parent", () => {
-    expect(pageCrumbs("/projects/p1/baselines/clx0123456789abcdefghijk")).toEqual([
+    expect(pageCrumbs("/projects/p1/baselines/clx0123456789abcdefghijk", true)).toEqual([
       { label: "Requirements", href: "/projects/p1/requirements" },
       { label: "Baselines", href: "/projects/p1/baselines" },
       { label: "Baseline" },
     ]);
-    expect(pageCrumbs("/runs/42")).toEqual([{ label: "Runs", href: "/runs" }, { label: "Run" }]);
+    expect(pageCrumbs("/runs/42", true)).toEqual([
+      { label: "Runs", href: "/runs" },
+      { label: "Run" },
+    ]);
   });
 
   it("a Settings section is named by the settings nav, not its URL segment (#545)", () => {
-    expect(pageCrumbs("/settings/mcp")).toEqual([
+    expect(pageCrumbs("/settings/mcp", true)).toEqual([
       { label: "Settings", href: "/settings" },
       { label: "MCP servers" },
     ]);
-    expect(pageCrumbs("/settings/api-keys/")).toEqual([
+    expect(pageCrumbs("/settings/api-keys/", true)).toEqual([
       { label: "Settings", href: "/settings" },
       { label: "Configuration" },
     ]);
-    expect(pageCrumbs("/settings")).toEqual([{ label: "Settings" }]);
+    expect(pageCrumbs("/settings", true)).toEqual([{ label: "Settings" }]);
     // Below a section, the leaf is still the page's own segment.
-    expect(pageCrumbs("/settings/integrations/teams")).toEqual([
+    expect(pageCrumbs("/settings/integrations/teams", true)).toEqual([
       { label: "Settings", href: "/settings" },
       { label: "Teams" },
     ]);
   });
 
+  it("names a page a non-admin is refused without linking to it (#2370)", () => {
+    // A non-admin may open a run's own page (a project's PR reviews link
+    // there), but not the Runs list its crumb leads to (#2332).
+    expect(pageCrumbs("/runs/42", false)).toEqual([{ label: "Runs" }, { label: "Run" }]);
+    // A crumb they may open keeps its link.
+    expect(pageCrumbs("/settings/integrations/teams", false)).toEqual([
+      { label: "Settings", href: "/settings" },
+      { label: "Teams" },
+    ]);
+    expect(pageCrumbs("/projects/p1/baselines/clx0123456789abcdefghijk", false)).toEqual([
+      { label: "Requirements", href: "/projects/p1/requirements" },
+      { label: "Baselines", href: "/projects/p1/baselines" },
+      { label: "Baseline" },
+    ]);
+  });
+
   it("is empty for a project route outside the project tabs", () => {
-    expect(pageCrumbs("/projects/p1/nowhere")).toEqual([]);
+    expect(pageCrumbs("/projects/p1/nowhere", true)).toEqual([]);
   });
 
   it("is empty for a route outside the navigation", () => {
-    expect(pageCrumbs("/somewhere-else")).toEqual([]);
-    expect(pageCrumbs("/")).toEqual([]);
+    expect(pageCrumbs("/somewhere-else", true)).toEqual([]);
+    expect(pageCrumbs("/", true)).toEqual([]);
   });
 });
 

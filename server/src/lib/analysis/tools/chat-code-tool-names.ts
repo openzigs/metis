@@ -34,6 +34,18 @@ export const CHAT_CODE_TOOL_DESCRIPTORS: ReadonlyArray<{
     description: "Read up to 200 numbered lines of a file in the project's repository.",
     risk: "low",
   },
+  {
+    // #2327 — offered when CHAT_CODE_SEARCH_PRIMITIVES is on.
+    name: "grep_files",
+    description: "Find a literal text in the project's repository files, as path:line matches.",
+    risk: "low",
+  },
+  {
+    // #2327 — offered when CHAT_CODE_SEARCH_PRIMITIVES is on.
+    name: "list_files",
+    description: "List the project's repository files matching a glob.",
+    risk: "low",
+  },
 ];
 
 export const CHAT_CODE_TOOL_NAMES: readonly string[] = CHAT_CODE_TOOL_DESCRIPTORS.map(

@@ -190,6 +190,86 @@ describe("search_code_symbols tool", () => {
   });
 });
 
+describe("search_code_symbols filters (#2327)", () => {
+  const hit: RawCodeSymbolHit = {
+    symbolId: "s1",
+    filePath: "internal/reader/feed.go",
+    name: "RefreshFeed",
+    kind: "function",
+    score: 1,
+  };
+  const make = (filters: boolean, hits: RawCodeSymbolHit[] = [hit]) => {
+    const searcher = mockSearcher(hits);
+    const tool = createSearchSymbolsTool({ searcher, lineLookup: mockLineLookup({}) }, { filters });
+    return { searcher, tool };
+  };
+
+  it("off (the default): the schema and the search are exactly the pre-#2327 ones", async () => {
+    const { searcher, tool } = make(false);
+    expect(Object.keys(tool.parameters.properties ?? {})).toEqual(["query", "limit"]);
+    expect(tool.description).not.toMatch(/fileGlob/);
+    // A filter the schema does not offer is not passed on.
+    await tool.execute({ query: "feed", fileGlob: "x/**", symbolKind: "nope" }, CTX);
+    expect(searcher.search).toHaveBeenCalledWith("feed", "proj-1", { limit: 15 });
+    expect(createSearchSymbolsTool({ searcher, lineLookup: mockLineLookup({}) }).parameters).toBe(
+      tool.parameters,
+    );
+  });
+
+  it("on: offers fileGlob, an enum symbolKind and an enum language, and passes them to the searcher", async () => {
+    const { searcher, tool } = make(true);
+    const props = tool.parameters.properties ?? {};
+    expect(Object.keys(props)).toEqual(["query", "limit", "fileGlob", "symbolKind", "language"]);
+    expect(props.symbolKind?.enum).toContain("method");
+    expect(props.language?.enum).toContain("go");
+    const res = await tool.execute(
+      { query: "feed", fileGlob: "./internal/**", symbolKind: "function", language: "go" },
+      CTX,
+    );
+    expect(searcher.search).toHaveBeenCalledWith("feed", "proj-1", {
+      limit: 15,
+      fileGlob: "internal/**",
+      symbolKind: "function",
+      language: "go",
+    });
+    expect(res.content).toContain("function RefreshFeed");
+    // Absent or null filters are simply not set.
+    await tool.execute({ query: "feed", fileGlob: null, language: undefined }, CTX);
+    expect(searcher.search).toHaveBeenLastCalledWith("feed", "proj-1", { limit: 15 });
+    // An empty or blank fileGlob is absent too, as grep_files reads pathContains.
+    for (const fileGlob of ["", "   "]) {
+      const r = await tool.execute({ query: "feed", fileGlob }, CTX);
+      expect(r.isError).toBeUndefined();
+      expect(searcher.search).toHaveBeenLastCalledWith("feed", "proj-1", { limit: 15 });
+    }
+  });
+
+  it.each([
+    [{ fileGlob: "../secrets/**" }, /refused "fileGlob" because it contains '\.\.'/],
+    [{ fileGlob: "/etc/**" }, /refused "fileGlob" because it is absolute/],
+    [{ fileGlob: 42 }, /refused "fileGlob" because it is not a string/],
+    [{ symbolKind: "Function" }, /"symbolKind" must be one of: function, method/],
+    [{ language: "typescript" }, /"language" must be one of: ts, js/],
+  ])("on: refuses %j without searching", async (filter, message) => {
+    const { searcher, tool } = make(true);
+    const res = await tool.execute({ query: "feed", ...filter }, CTX);
+    expect(res.isError).toBe(true);
+    expect(res.content).toMatch(message);
+    expect(searcher.search).not.toHaveBeenCalled();
+  });
+
+  it("on: says the filters found nothing, as a clean empty result", async () => {
+    const { tool } = make(true, []);
+    expect(await tool.execute({ query: "feed", language: "py" }, CTX)).toEqual({
+      content: "No matching code symbols found in this project's code graph with these filters.",
+      resultCount: 0,
+    });
+    expect((await tool.execute({ query: "feed" }, CTX)).content).toBe(
+      "No matching code symbols found in this project's code graph.",
+    );
+  });
+});
+
 describe("search_code_symbols — the citation contract (#2325)", () => {
   const SHA = "0123456789abcdef0123456789abcdef01234567";
   const OTHER = "fedcba9876543210fedcba9876543210fedcba98";

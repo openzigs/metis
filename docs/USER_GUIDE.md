@@ -923,12 +923,12 @@ Open the user menu in the top-right of the header and click **Sign out**. The au
 
 After logging in you land on the **Dashboard** inside the persistent app shell:
 
-- **Sidebar** (left, 16 rem) — seven destinations, one level deep: **Home** (the dashboard), **Projects**, **Chat**, **Activity**, **Reviews**, **Library** and **Settings**. Each one opens a row of page tabs above the content for the pages it groups: **Projects** → All projects, Products, Documents, Repositories, Databases, Impact analyses (the cross-project views, all in one place); **Chat** → Chat, Workbench (the same chat sessions, in a project-scoped layout); **Activity** → Tasks, Runs, Sessions, Scheduler; **Settings** → Settings, Vault, Eval. **Reviews** shows how many reviews are waiting on you (in review, with you as a reviewer); the number updates when you are assigned one or a review is decided, a screen reader announces each change, and no number shows when none are waiting. [#2332]
-- **What a non-admin sees** — the operations and developer pages are for system admins: **Tasks**, **Runs**, **Scheduler**, **Vault** and **Eval**, and the Settings sections **Configuration**, **MCP servers**, **ACP tokens**, **Hooks** and **Triggers**. Anyone else does not see them in the sidebar, the tab bars, the Settings pages or the command palette, and **Activity** opens on **Sessions**. A hub left with one page shows no tab bar. Opening one of those pages from an old link says *You don't have access to this page*, with a **Back to dashboard** button. A single run's page (`/runs/<id>`), linked from a project's PR reviews, still opens. [#2332] The sidebar entry stays highlighted on every page it groups, announced via `aria-current="page"`. Every page kept its address, so bookmarks and shared links still work; the command palette (⌘K / Ctrl+K) searches all of them by name. On viewports smaller than 768 px the sidebar collapses into a slide-in drawer; tap the menu button in the header to open it. [#27]
+- **Sidebar** (left, 16 rem) — seven destinations, one level deep: **Home** (the dashboard), **Projects**, **Chat**, **Activity**, **Reviews**, **Library** and **Settings**. Each one opens a row of page tabs above the content for the pages it groups: **Projects** → All projects, Products, Documents, Repositories, Databases, Impact analyses (the cross-project views, all in one place); **Chat** → Chat, Workbench (the same chat sessions, in a project-scoped layout); **Activity** → Tasks, Runs, Sessions, Scheduler; **Settings** → Settings, Vault, Eval. **Reviews** shows how many reviews are waiting on your decision: in review, with you as a reviewer who has not yet decided. A review you have decided leaves the count even while other reviewers have not, and Home's "Reviews assigned to me" counts the same reviews. The number updates when you are assigned one, and when a review you are a reviewer of is decided, withdrawn or closed, whichever page you are on; a screen reader announces each change, and no number shows when none are waiting or the count cannot be read. [#2332, #2370]
+- **What a non-admin sees** — the operations and developer pages are for system admins: **Tasks**, **Runs**, **Scheduler**, **Vault** and **Eval**, and the Settings sections **Configuration**, **MCP servers**, **ACP tokens**, **Hooks** and **Triggers**. Anyone else does not see them in the sidebar, the tab bars, the Settings pages or the command palette, and **Activity** opens on **Sessions**. A hub left with one page shows no tab bar. Opening one of those pages from an old link says *You don't have access to this page*, with a **Back to dashboard** button. A single run's page (`/runs/<id>`), linked from a project's PR reviews, still opens; its header names **Runs** in the breadcrumb without linking to it and offers no **All runs** link. [#2332, #2370] The sidebar entry stays highlighted on every page it groups, announced via `aria-current="page"`. Every page kept its address, so bookmarks and shared links still work; the command palette (⌘K / Ctrl+K) searches all of them by name. On viewports smaller than 768 px the sidebar collapses into a slide-in drawer; tap the menu button in the header to open it. [#27]
 - **Header** (top, sticky) — a **Workspace › Project breadcrumb** on the left (each crumb opens a switcher menu; degrades to workspace-only when no project is selected). The workspace menu's **Open workspace** opens the active workspace's own pages: **Overview**, **Traceability**, **Governing documents** (while that feature is on), **Usage & cost** and **New Agent**, as tabs under a line naming the workspace and a **Back to** link to the project you were in. [#2339] On the right, the **activity indicator**, theme toggle (light / dark / system), the **notifications bell** (with an unread-count badge), and the user menu.
 - **Activity indicator** — a small **"N jobs running"** control that appears in the header **only while something is actually running**, and disappears automatically when everything finishes. It reflects *any* long-running operation — documentation generation, analysis, PR reviews, imports/syncs, and more — not just one kind. Click it to open a drawer that lists each in-progress job with its type, project, and live progress bar. The count and announcements are accessible to screen readers (announced politely as jobs start and complete). For documentation specifically, you no longer have to open a document to watch it build: a doc that is generating now shows a live progress bar and an "N of M sections" counter **directly on its card in the documentation list**, and clicking **Generate Documentation** takes you straight to the new document's live progress (with a "View progress" toast) instead of leaving you on a static badge. [Epic #406] The **Import Requirements** page (`Projects › Import`) likewise streams live progress: after you click **Import** or **Run now** on a saved source, the page shows a live progress bar with the current step ("Fetched 5/10 issues") for the active run instead of going silent, and a toast announces the result when the run finishes ("Imported 5 new, 2 updated" on success, or a generic "The import sync failed. Please try again." on failure — raw error detail is never shown). The import history below still refreshes on its own as a fallback if the live connection drops, and the ongoing-sync toggle, interval, and **Run now** controls are unchanged. [Epic #406, #424]
 - **Consistent completion feedback** — every long-running operation now ends with a clear **success or failure toast**, and you get it **even when you are not on the operation's detail page**. Previously, if you started documentation generation or an analysis and then navigated to a list view (or simply looked away), a *failure* was recorded silently on the row but never announced — you had to notice the badge had changed. Now a single app-wide layer watches the realtime job bus and shows the terminal result wherever you are: a green toast on success (carrying the operation's own message, e.g. the Spec Kit "Generated spec.md (v3) … grounded on N retrieved chunks" line) and a red toast on failure with a **generic, non-revealing message** ("The … operation failed. Please try again.") — raw error detail and stack traces are never shown. Each operation toasts **exactly once**: the surfaces that already announce their own outcome (PR re-review, embeddings reindex, import/sync, Spec Kit, overview regenerate) are reconciled with this global layer so you never see a duplicate. [Epic #406, #425]
-- **Friendly form validation** — forms now guide you instead of dumping raw errors. The **New project** dialog (`Projects › New project`) keeps its **Create** button disabled until the required fields (**Name** and **Short name**) are filled in; leaving **Name** empty shows an inline "Name is required" message right under the field instead of silently doing nothing. The **Import Requirements** page behaves the same way: if a required filter field is missing (for example a GitHub import with no **Owner** or **Repository**), you get a clear inline message beside the offending field — never the previous wall of raw technical error text, and never a generic "something went wrong" page. Behind the scenes, validation problems now come back from the server as a friendly, structured message (a plain "X is required" per field); the application never exposes internal schema details, stack traces, or raw validation arrays to your browser. [Epic #407, #426 — OWASP A09]
+- **Friendly form validation** — forms now guide you instead of dumping raw errors. The **New project** wizard (`Projects › New project`) keeps **Next** disabled until the required fields (**Name** and **Short name**) are filled in, and says why when a name gives no usable short name. The **Import Requirements** page behaves the same way: if a required filter field is missing (for example a GitHub import with no **Owner** or **Repository**), you get a clear inline message beside the offending field — never the previous wall of raw technical error text, and never a generic "something went wrong" page. Behind the scenes, validation problems now come back from the server as a friendly, structured message (a plain "X is required" per field); the application never exposes internal schema details, stack traces, or raw validation arrays to your browser. [Epic #407, #426 — OWASP A09]
 - **Re-sync keeps your edits to imported requirements** — when you edit an imported requirement (title, body, type, priority or labels), the next import run or scheduled sync no longer puts the source's text back. If the source issue has not changed, your edit stays. If the source changed and you had not edited the requirement, the source's change is applied. If both changed, the requirement card shows a **Diverged from source** badge: **Compare** shows your version and the source's side by side, **Take the source version** replaces your text with the source's (recorded in History as a new version, so a review approved on the old text needs approving again), and **Keep mine** keeps your text; it creates no new version, so a review approved on your text stays approved, and History notes the choice. Either choice also protects the requirement from being replaced when the analysis is re-run, like any other review work. For requirements imported before this change, METIS checks History: one nobody edited in METIS simply takes the source's change; one that was edited and now differs from its source is flagged, with the card saying it was edited before METIS tracked its source, so compare and choose. After upgrading, the first sync may therefore flag some edited requirements for review; find them by the badge and by the run's "diverged from source" count. History shows your latest answer to a divergence on each requirement; every answer is kept in the audit log. The import run's badge now reads, for example, "0 new · 2 updated · kept 1 local edit · 1 diverged from source". [#1220]
 - **Import with a vault secret** — the **Import Requirements** page's credential defaults to **Vault secret**, the same `${vault:label}` picker the connector forms use, so you no longer paste a token into the form. **Paste a token** is still available; that token is vaulted for the import source alone. For a **public GitHub repository** you may leave the credential empty: the preview and import read GitHub anonymously and show a warning that anonymous reads are limited to 60 requests per hour. Azure DevOps and Linear still need a credential. You can only choose a vault secret you created unless you are an admin, and deleting an import source never deletes a vault secret it merely referred to. [#763]
 - **Main content** — the route's surface (Dashboard widgets by default). The shell owns the page gutter, so pages render with consistent spacing; pending data shows skeleton placeholders and errors show a retry/escape card.
@@ -940,7 +940,7 @@ A **skip-to-content** link is the first focusable element on every authenticated
 
 | Tab | Pages |
 |---|---|
-| Overview | Where each stage stands and what to do next; a numbered **Get started** checklist on a new project |
+| Overview | The numbered checklist of the analyst's job: where each step stands and what to do next |
 | Knowledge | Connections (including Deep Ingest), Documents: what METIS knows about the system |
 | Change requests | Requirements Analysis, Import, Jira (requirements brought in from another system), Impact Analysis (this project) |
 | Requirements | Review (what is awaiting review), Baselines, Discussions, Compare analyses |
@@ -1069,37 +1069,38 @@ Every project has:
 
 ### 9.2 Creating a Project
 
-1. Navigate to the **Projects** page (click "Projects" in the sidebar)
-2. Click the **"+ New Project"** button in the top-right corner
-3. Fill in the project details:
-   - **Name**: A clear name (e.g., "Grid Monitoring v3 Upgrade")
-   - **Description**: What this project aims to accomplish
-   - **GitHub Owner**: The GitHub organization or username (e.g., `openzigs`)
-   - **GitHub Repository**: The repo name (e.g., `grid-monitoring`)
-4. Click **"Create"**
+Every project is created with the same **New project** wizard, whether it is
+your first or your tenth. Open it from any of:
 
-The project starts in **Draft** status.
+- the **New project** button on the **Projects** page,
+- the **Projects** card on **Home** (in its empty state, or beside its title once you have projects),
+- the command palette (**⌘K** / **Ctrl+K**, then type "New project").
 
-**Your first project, from Home.** While you have no projects, the **Projects**
-card on **Home** has a **New project** button that opens a three-step wizard:
+The wizard has four steps:
 
-1. **Name** — the name (the slug fills itself in) and an optional description.
-2. **Source** — a GitHub repository (**Owner / Org**, **Repository**, and for
-   GitHub Enterprise or a private repository the **API base URL** and **Secret
-   ref**), or **Skip — add a source later**.
-3. **Ingest** — check the summary and click **Create and start ingest**.
+1. **Name** — the name (the short name fills itself in) and an optional description.
+2. **Source** — **Documents only** (the default) or **A GitHub repository**.
+   With documents only, nothing else is asked for: you upload the documents in
+   the last step. A repository asks for **Owner / Org** and **Repository**, and
+   for GitHub Enterprise or a private repository the **API base URL** and
+   **Access token (vault secret)**. A database or another repository can be connected later from
+   the project's Knowledge pages.
+3. **Create** — check the summary and click **Create project** (or **Create and
+   start ingest** for a repository, which also starts its Deep Ingest in the
+   background).
+4. **Change request** — click **New change request** to upload the documents
+   that describe the change and start its analysis, or **Skip — open the
+   Overview**. Closing the dialog at this step also opens the Overview.
 
 Creating a project needs `project.create` (coordinator or admin), and deleting one
 (**Projects** › **…** › **Delete**) needs `project.delete` (admin). A role without
 the permission is not offered the action: in place of **New project**, on
-**Projects** and on **Home**, it reads "Ask an admin or coordinator to create projects.", and the
-**…** menu on each project card is absent (#2368).
+**Projects** and on **Home**, it reads "Ask an admin or coordinator to create projects.", the command palette offers no
+**New project** action, and the **…** menu on each project card is absent (#2368).
 
-The wizard creates the project, connects the repository and starts its Deep
-Ingest, then opens the project's **Overview** with the **Ingest** stage reading
-"Ingesting…". If the repository cannot be linked or the ingest cannot start, a
-message says so and the project still opens — retry from its **Connections**
-page.
+The project starts in **Draft** status. If the repository cannot be linked or
+the ingest cannot start, a message says so and the project is still created —
+retry from its **Connections** page.
 
 ### 9.3 Viewing Projects
 
@@ -1116,7 +1117,7 @@ Click on any project card to view its details.
 
 ### 9.4 Project Detail View
 
-Opening a project lands on its **Overview**: one card per pipeline stage — sources connected, ingest status and counts, the last analysis, requirements awaiting review, generated docs, and the last publish — each with the one action that moves it forward ("Connect a source", "Ingest", "Run analysis", "Review 12 requirements", …). Status updates live while an ingest, analysis or doc generation runs. A brand-new project shows a numbered **Get started** checklist instead — connect a source → ingest → run an analysis → review → publish — and each step links straight to the page where it is done. Project settings are behind the **⚙** tab.
+Opening a project lands on its **Overview**, a numbered checklist of the analyst's job: **Add knowledge** → **Ready: ask a question** → **New change request** → **Review** → **Deliverable**, with **Publish** shown as optional. Each step says where it stands (documents and connections added, ingest counts, the last change request, requirements awaiting review, deliverables generated, the last publish) and has the one action that moves it forward ("Add knowledge", "Ask a question", "New change request", "Review 12 requirements", "Generate a deliverable", …), with the name of the project tab that action opens. The heading reads **Get started** until the five numbered steps are done, then **Every step done**; publishing is never required. An existing project shows the steps it has already done as done. Status updates live while an ingest, analysis or doc generation runs. Project settings are behind the **⚙** tab.
 
 The Ingest card reads the newest 100 documents: on a larger project it shows the project's document total, and any failed or processing count from that page reads "at least N". The Publish card shows the last batch only to roles that can preview issues; a read-only role sees that publish history is not available to it.
 
@@ -3330,7 +3331,7 @@ can use tools to look things up or act for you:
 | **Inspect Database** | Examines a connected database's schema |
 | **Query Database** | Runs read-only SQL against a connected database |
 | **MCP tools** | Tools from MCP servers this project is allowed to use (see §20.7) |
-| **Code search** | Searches the project's code graph and symbols, and reads up to 200 lines of a file from the project's repository so an answer can quote the code it cites. On unless your administrator has turned it off with `CHAT_CODE_SEARCH_TOOLS=false`. On a model that cannot call tools natively (some local runtimes) it is on only when the administrator sets `CHAT_CODE_SEARCH_TOOLS=true`, because there the answer does not stream while the tools run. A source file whose document is restricted to other people is not read or listed for you, and a discussion reply leaves out every restricted file |
+| **Code search** | Searches the project's code graph and symbols, and reads up to 200 lines of a file from the project's repository so an answer can quote the code it cites. On unless your administrator has turned it off with `CHAT_CODE_SEARCH_TOOLS=false`. On a model that cannot call tools natively (some local runtimes) it is on only when the administrator sets `CHAT_CODE_SEARCH_TOOLS=true`, because there the answer does not stream while the tools run. With `CHAT_CODE_SEARCH_PRIMITIVES=true` (off by default) it can also find an exact text in the repository's files (up to 50 matching lines, with the totals when there are more), list files matching a pattern such as `internal/**/*.go`, and narrow a symbol search to a path, a kind or a language. It never reads, lists or searches `.env` files (templates such as `.env.example` excepted), anything under `.git`, `.ssh`, `.gnupg`, `.aws`, `.azure`, `.kube` or `.docker`, common credential files (`.netrc`, `.npmrc`, `credentials`, …), or private keys (`id_rsa`, `*.pem`, `*.key`, …), not even through a link inside the repository that points at one; it answers as if such a file did not exist. It never reads a path outside the repository. A source file whose document is restricted to other people is not read, listed or found for you, and a discussion reply leaves out every restricted file |
 
 Administrators can turn on search guidance with `CHAT_SEARCH_GUIDANCE=true`.
 When the chat can search the project's code or knowledge base, the guidance
@@ -6232,8 +6233,9 @@ set of requirement-version pins) is created automatically.
 
 ### Finding your reviews
 
-Open **Reviews** in the sidebar; its number is how many reviews are in review with you as
-a reviewer [#2332]. The queue has two tabs:
+Open **Reviews** in the sidebar; its number is how many reviews are in review and still
+waiting on your own decision [#2332, #2370]. The **Assigned to me** tab below also lists
+the ones you have already decided. The queue has two tabs:
 
 - **Assigned to me** — reviews where you are a reviewer. Each row shows a
   status badge (`Draft`, `In review`, `Approved`, `Rejected`, `Closed`),
