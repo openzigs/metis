@@ -8,6 +8,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { NO_CODE_VERSIONS } from "../../code-graph/code-version.js";
 import { createChatReadFileSliceTool } from "./chat-read-file-slice.js";
 import { readFileSliceTool } from "./read-file-slice.js";
 
@@ -76,6 +77,8 @@ describe("#2333 — read_file_slice redacts secrets", () => {
     const tool = createChatReadFileSliceTool({
       listRepoIds: async () => ["r1"],
       resolveCloneDir: async () => clone,
+      // #2325 — no indexed version recorded, so the test reads no database.
+      loadVersions: async () => NO_CODE_VERSIONS,
     });
     const out = await tool.execute(
       { filePath: "settings.go", startLine: 7, endLine: 7 },
@@ -84,7 +87,12 @@ describe("#2333 — read_file_slice redacts secrets", () => {
       },
     );
     expect(out.content).toBe(
-      ["settings.go (lines 7-7 of 8)", '7| const apiKey = "[REDACTED:anthropic_key]"'].join("\n"),
+      [
+        "settings.go (lines 7-7 of 8)",
+        // #2325 — chat's copy states the indexed version after the header.
+        "Code version: unknown (the index records no commit).",
+        '7| const apiKey = "[REDACTED:anthropic_key]"',
+      ].join("\n"),
     );
   });
 });
