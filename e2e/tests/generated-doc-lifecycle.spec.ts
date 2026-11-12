@@ -191,4 +191,55 @@ test.describe("Generated document lifecycle (#1350, #1351-#1358)", () => {
       await expect(docPage.card("Lifecycle Generation Failed")).toHaveCount(0);
     });
   });
+
+  // #2369 — this project has no repository, so a Business Requirements document
+  // has no code to read. The form says so up front; a run anyway ends failed
+  // with an error toast that says why, never "Documentation ready" over a stub
+  // that is then indexed.
+  test("a documents-only project: BRD warns first, then fails with a reason", async ({ page }) => {
+    const docPage = new DocumentationPage(page);
+    await docPage.goto(projectId);
+
+    await test.step("the form warns that the document type needs source code", async () => {
+      await docPage.openGenerateForm();
+      await expect(docPage.noSourceCodeWarning).toBeVisible();
+      await expect(docPage.noSourceCodeWarning).toContainText(
+        "Business Requirements needs connected source code",
+      );
+    });
+
+    await test.step("generating anyway fails with an error toast, not a success", async () => {
+      await docPage.titleInput.fill("Lifecycle No Source Code");
+      await docPage.submitGenerate.click();
+      const failure = page
+        .locator("[data-sonner-toast]")
+        .filter({ hasText: "This document type needs connected source code" });
+      await expect(failure).toBeVisible({ timeout: 30_000 });
+      await expect(failure).toHaveAttribute("data-type", "error");
+      await expect(
+        page.locator("[data-sonner-toast]").filter({ hasText: "Documentation ready" }),
+      ).toHaveCount(0);
+    });
+
+    await test.step("the document reads failed, with no content and the reason", async () => {
+      const list = await apiCtx.get(`/api/projects/${projectId}/docs`);
+      expect(list.status()).toBe(200);
+      const docs = ((await list.json()) as { data: Array<{ id: string; title: string }> }).data;
+      const created = docs.find((d) => d.title === "Lifecycle No Source Code");
+      expect(created, "the generated document row").toBeDefined();
+      const detailUrl = `/api/projects/${projectId}/docs/${created!.id}`;
+      await expect
+        .poll(
+          async () =>
+            ((await (await apiCtx.get(detailUrl)).json()) as { data: { status: string } }).data
+              .status,
+        )
+        .toBe("failed");
+      const detail = (await (await apiCtx.get(detailUrl)).json()) as {
+        data: { content: string; errorMessage: string | null };
+      };
+      expect(detail.data.content).toBe("");
+      expect(detail.data.errorMessage).toContain("needs connected source code");
+    });
+  });
 });

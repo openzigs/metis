@@ -259,7 +259,10 @@ import {
   GENERATION_CANCELLED_MESSAGE,
   GENERATION_FAILED_MESSAGE,
   GENERATION_INPUTS_CHANGED_MESSAGE,
+  GENERATION_NO_DOCUMENTABLE_MODULES_MESSAGE,
+  GENERATION_NO_SOURCE_CODE_MESSAGE,
 } from "../src/lib/docs-gen/generation-failure-message.js";
+import { dispatchGeneratedDocTask } from "../src/lib/docs-gen/generated-doc-outbox.js";
 
 const GROUPS = sectionGroupsFor("architecture");
 const sectionCalls = () =>
@@ -1363,6 +1366,56 @@ describe("#857 — a resumed run says which stored sections were stale, and why"
 
     expect(state.versions[0].diffSummary).toBe(
       `Initial generation, resumed: Reused ${GROUPS.length - 1} finished sections; rewrote 1 whose inputs changed: ${GROUPS[1].label} (facts, flow)`,
+    );
+  });
+});
+
+describe("#2369 — a run with no documentable code fails, and nothing is published or indexed", () => {
+  it("a documents-only project's BRD ends failed with the 'connect source code' message", async () => {
+    state.symbols = [];
+    state.doc.scope = "full";
+    state.doc.title = "Business Requirements";
+    state.doc.scopeFilter = JSON.stringify({ docType: "business-requirements" });
+
+    await generateDocumentAsync("d", "p");
+
+    // Read back as the UI does: failed, never `ready`, and no stub as content.
+    expect(state.doc.status).toBe("failed");
+    expect(state.doc.errorMessage).toBe(GENERATION_NO_SOURCE_CODE_MESSAGE);
+    expect(state.doc.content).toBe("");
+    expect(cause()).toMatchObject({ errorClass: "NoDocumentableCodeError" });
+    expect(state.doc.codeGraphHash).toBeNull();
+    // No version, no publication task, nothing dispatched for indexing.
+    expect(state.versions).toHaveLength(0);
+    expect(prisma.task.upsert).not.toHaveBeenCalled();
+    expect(dispatchGeneratedDocTask).not.toHaveBeenCalled();
+    // The terminal event is a failure that says why, not "Documentation ready".
+    expect(jobEvents.completed).not.toHaveBeenCalled();
+    expect(jobEvents.failed).toHaveBeenCalledWith(
+      "doc-generation",
+      "d",
+      "p",
+      GENERATION_NO_SOURCE_CODE_MESSAGE,
+    );
+    // No model was called: there was nothing to read.
+    expect(state.stream).not.toHaveBeenCalled();
+  });
+
+  it("indexed code that forms no module fails with the 'nothing documentable' message", async () => {
+    // Only build output: indexed, never documented (module-grouping's EXCLUDED_DIR).
+    state.symbols = state.symbols.map((s) => ({ ...s, filePath: "app/build/out/api.js" }));
+
+    await generateDocumentAsync("d", "p");
+
+    expect(state.doc.status).toBe("failed");
+    expect(state.doc.errorMessage).toBe(GENERATION_NO_DOCUMENTABLE_MODULES_MESSAGE);
+    expect(state.versions).toHaveLength(0);
+    expect(prisma.task.upsert).not.toHaveBeenCalled();
+    expect(jobEvents.failed).toHaveBeenCalledWith(
+      "doc-generation",
+      "d",
+      "p",
+      GENERATION_NO_DOCUMENTABLE_MODULES_MESSAGE,
     );
   });
 });
