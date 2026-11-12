@@ -14,11 +14,13 @@
  *     {@link MAX_LINE_CHARS} characters, and at most {@link MAX_OUTPUT_CHARS}
  *     characters in all, are returned;
  *   - at most {@link MAX_FILES_SCANNED} files in scope, {@link MAX_FILE_BYTES}
- *     per file and {@link MAX_BYTES_SCANNED} in all are read;
+ *     per file and {@link MAX_BYTES_SCANNED} in all are read, and at most
+ *     {@link MAX_ENTRIES_VISITED} directory entries visited, over every clone
+ *     one search covers;
  *   - the walk never leaves the clone: hidden entries (`.git`, `.env*`, …) and
  *     `node_modules` are skipped, a symlinked directory is never descended into
- *     (#1810), a symlinked file is read only when it resolves inside the clone,
- *     and a file whose path — as listed or as resolved — names git internals or
+ *     (#1810), a symlinked file is read only when it resolves inside the clone
+ *     and outside every directory the walk skips, and a file whose path — as listed or as resolved — names git internals or
  *     a credential file is never read (#2327).
  *
  * #2327 — past the shown lines the walk keeps COUNTING, so a cut result says
@@ -31,12 +33,14 @@ import { promises as fs } from "node:fs";
 import * as path from "node:path";
 import type { AgentTool, JSONSchema, ToolContext, ToolResult } from "./types.js";
 import { missingParamError } from "./arg-errors.js";
-import { checkRepoGlob, isSensitiveRepoPath, repoPathError } from "./repo-paths.js";
+import { checkRepoPathFragment, isSensitiveRepoPath, repoPathError } from "./repo-paths.js";
 
 /** Matching lines returned per call, at most. */
 export const MAX_MATCHES = 50;
 /** Files read per call, at most. They count files IN SCOPE: with `pathContains` the walk is not bounded by it (#1819). */
 export const MAX_FILES_SCANNED = 5000;
+/** #2327 — directory entries the walk visits per call, at most (skipped hidden and `node_modules` entries are not counted). */
+export const MAX_ENTRIES_VISITED = 50_000;
 /** A larger file is skipped: generated or vendored, not something to grep. */
 export const MAX_FILE_BYTES = 512 * 1024;
 /** #2327 — bytes read per call, at most, counting continued past the shown lines. */
@@ -62,7 +66,8 @@ const parameters: JSONSchema = {
     },
     pathContains: {
       type: "string",
-      description: "Optional: only search files whose relative path contains this text.",
+      description:
+        "Optional: only search files whose relative path contains this text, e.g. `/handlers/` or `.go`.",
     },
   },
   required: ["text"],
@@ -106,7 +111,7 @@ export function parseGrepArgs(args: unknown): ParsedArgs {
   if (typeof a.pathContains !== "string" || a.pathContains.trim() === "") {
     return { ok: true, args: { text } };
   }
-  const scope = checkRepoGlob(a.pathContains);
+  const scope = checkRepoPathFragment(a.pathContains);
   if (!scope.ok) {
     return {
       ok: false,
@@ -128,6 +133,10 @@ export interface GrepTally {
   matchingFiles: number;
   /** Files read. */
   filesSearched: number;
+  /** Files in scope listed for reading, over every clone: what the file cap bounds. */
+  filesListed: number;
+  /** Directory entries visited, over every clone: what the entry cap bounds. */
+  entriesVisited: number;
   /** Bytes read. */
   bytesSearched: number;
   /** A file or byte cap stopped the walk with files left unread: the totals are lower bounds. */
@@ -141,13 +150,20 @@ export function emptyGrepTally(): GrepTally {
     totalMatches: 0,
     matchingFiles: 0,
     filesSearched: 0,
+    filesListed: 0,
+    entriesVisited: 0,
     bytesSearched: 0,
     cutShort: false,
   };
 }
 
 export interface GrepCloneOptions {
+  /** Files in scope read per call, over every clone the tally is summed over. */
   maxFilesScanned?: number;
+  /** Test seam: directory entries visited per call, over every clone. */
+  maxEntriesVisited?: number;
+  /** #2327 — put before each shown line; chat names the repository when it searched several. */
+  linePrefix?: string;
   /**
    * #2327 — a file the caller may not see, by its path as listed and the path
    * it resolves to (they differ for a symlink). Neither read nor counted.
@@ -163,13 +179,19 @@ interface ListedFile {
 
 const toPosix = (p: string): string => p.split(path.sep).join("/");
 
+/** A walk skips hidden entries and `node_modules`. */
+const isSkippedName = (name: string): boolean => name.startsWith(".") || name === "node_modules";
+
 /**
  * Every regular file under `root` whose relative path contains `scope` (all
- * when absent), relative, in a stable order, at most `limit`; never outside
- * `root`. The cap counts files IN SCOPE, so a scoped search on a large clone
- * still reaches the files it asked for (#1810). So with `pathContains` set the
- * cap does NOT bound the walk: every directory is still listed, and only the
- * files that match the scope are counted against it (#1819).
+ * when absent; a scope starting `/` matches at a directory boundary), relative,
+ * in a stable order; never outside `root`. The file cap counts files IN SCOPE,
+ * so a scoped search on a large clone still reaches the files it asked for
+ * (#1810). So with `pathContains` set the file cap does NOT bound the walk:
+ * every directory is still listed, and only the files that match the scope are
+ * counted against it (#1819). #2327 — the entry cap does bound it, counting only
+ * entries the walk does not skip. Both caps are read off `tally`, so they hold
+ * over every clone a search covers.
  *
  * A symlinked DIRECTORY is never descended into (#1810): a link such as
  * `x -> ..` or `x -> .` would otherwise walk the same tree forever, and the cap
@@ -177,18 +199,20 @@ const toPosix = (p: string): string => p.split(path.sep).join("/");
  * is followed only inside the clone, and the walk reaches a directory the link
  * points at by its real path, unless that directory is one the walk skips
  * (hidden, or `node_modules`): a link into one of those is no longer searched
- * at all (#1819). A symlinked FILE inside the clone is still read, unless what
- * it resolves to is a sensitive or excluded file (#2327).
+ * at all (#1819). A symlinked FILE inside the clone is still read, unless it
+ * resolves into a directory the walk skips, or to a sensitive or excluded file
+ * (#2327).
  */
 async function listFiles(
   root: string,
   realRoot: string,
-  limit: number,
   scope: string | undefined,
-  isExcluded: GrepCloneOptions["isExcluded"],
-): Promise<{ files: ListedFile[]; capped: boolean }> {
+  tally: GrepTally,
+  opts: GrepCloneOptions,
+): Promise<ListedFile[]> {
+  const maxFiles = opts.maxFilesScanned ?? MAX_FILES_SCANNED;
+  const maxEntries = opts.maxEntriesVisited ?? MAX_ENTRIES_VISITED;
   const files: ListedFile[] = [];
-  let capped = false;
   async function walk(dir: string): Promise<void> {
     let entries;
     try {
@@ -198,8 +222,13 @@ async function listFiles(
     }
     entries.sort((a, b) => a.name.localeCompare(b.name));
     for (const entry of entries) {
-      if (capped) return;
-      if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
+      if (tally.cutShort) return;
+      if (isSkippedName(entry.name)) continue;
+      if (tally.entriesVisited >= maxEntries) {
+        tally.cutShort = true;
+        return;
+      }
+      tally.entriesVisited++;
       const full = path.join(dir, entry.name);
       let isFile = entry.isFile();
       if (entry.isDirectory()) {
@@ -219,20 +248,23 @@ async function listFiles(
         const stat = await fs.stat(full).catch(() => null);
         isFile = stat?.isFile() ?? false;
         realRel = toPosix(path.relative(realRoot, real));
+        // A link into a directory the walk skips reads nothing there (#2327).
+        if (realRel.split("/").slice(0, -1).some(isSkippedName)) continue;
       }
       if (!isFile) continue;
-      if (scope && !rel.toLowerCase().includes(scope)) continue;
+      if (scope && !`/${rel}`.toLowerCase().includes(scope)) continue;
       if (isSensitiveRepoPath(rel) || isSensitiveRepoPath(realRel)) continue;
-      if (isExcluded?.(rel, realRel)) continue;
-      if (files.length >= limit) {
-        capped = true;
+      if (opts.isExcluded?.(rel, realRel)) continue;
+      if (tally.filesListed >= maxFiles) {
+        tally.cutShort = true;
         return;
       }
+      tally.filesListed++;
       files.push({ rel, realRel });
     }
   }
   await walk(root);
-  return { files, capped };
+  return files;
 }
 
 /**
@@ -253,14 +285,8 @@ export async function grepClone(
   }
   const needle = args.text.toLowerCase();
   const scope = args.pathContains?.toLowerCase();
-  const { files, capped } = await listFiles(
-    cloneDir,
-    realRoot,
-    opts.maxFilesScanned ?? MAX_FILES_SCANNED,
-    scope,
-    opts.isExcluded,
-  );
-  if (capped) tally.cutShort = true;
+  const prefix = opts.linePrefix ?? "";
+  const files = await listFiles(cloneDir, realRoot, scope, tally, opts);
   for (const { rel } of files) {
     if (tally.bytesSearched >= MAX_BYTES_SCANNED) {
       tally.cutShort = true;
@@ -280,7 +306,7 @@ export async function grepClone(
       if (!lines[i]!.toLowerCase().includes(needle)) continue;
       tally.totalMatches++;
       if (tally.shown.length >= MAX_MATCHES) continue;
-      const line = `${rel}:${i + 1}: ${lines[i]!.trim().slice(0, MAX_LINE_CHARS)}`;
+      const line = `${prefix}${rel}:${i + 1}: ${lines[i]!.trim().slice(0, MAX_LINE_CHARS)}`;
       const cost = line.length + (tally.shown.length > 0 ? 1 : 0);
       if (tally.shownChars + cost > MAX_OUTPUT_CHARS) continue;
       tally.shown.push(line);

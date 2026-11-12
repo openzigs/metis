@@ -35,7 +35,7 @@ afterAll(async () => {
 });
 
 const deps = {
-  listRepoIds: async () => ["rc-a", "rc-b", "rc-gone"],
+  listRepoIds: async () => [{ id: "rc-a", label: "app" }, "rc-b", "rc-gone"],
   resolveCloneDir: async (id: string) => clones[id],
 };
 const grep = createChatGrepFilesTool(deps);
@@ -44,13 +44,13 @@ const list = createChatListFilesTool(deps);
 const restricted = codeAccessFilterOf([{ connectorId: "rc-a", path: "src/secret.ts" }]);
 
 describe("chat grep_files (#2327)", () => {
-  it("searches every clone of the project, primary first", async () => {
+  it("searches every clone of the project, primary first, naming each line's repository", async () => {
     const r = await grep.execute({ text: "RATE" }, { projectId: "p" });
     expect(r.content.split("\n")).toEqual([
-      "src/alias.ts:1: export const RATE = 42;",
-      "src/fee.ts:1: export const RATE = 1;",
-      "src/secret.ts:1: export const RATE = 42;",
-      "src/secret.ts:1: export const RATE = 7;",
+      "[app] src/alias.ts:1: export const RATE = 42;",
+      "[app] src/fee.ts:1: export const RATE = 1;",
+      "[app] src/secret.ts:1: export const RATE = 42;",
+      "[rc-b] src/secret.ts:1: export const RATE = 7;",
     ]);
     expect(r.resultCount).toBe(4);
   });
@@ -58,8 +58,8 @@ describe("chat grep_files (#2327)", () => {
   it("neither shows nor counts a hidden file, under its name or through a symlink to it", async () => {
     const r = await grep.execute({ text: "RATE" }, { projectId: "p", codeAccess: restricted });
     expect(r.content.split("\n")).toEqual([
-      "src/fee.ts:1: export const RATE = 1;",
-      "src/secret.ts:1: export const RATE = 7;",
+      "[app] src/fee.ts:1: export const RATE = 1;",
+      "[rc-b] src/secret.ts:1: export const RATE = 7;",
     ]);
     expect(r.content).not.toContain("42");
     const only = await grep.execute({ text: "= 42" }, { projectId: "p", codeAccess: restricted });
@@ -93,13 +93,17 @@ describe("chat list_files (#2327)", () => {
       { pattern: "src/*.ts" },
       { projectId: "p", codeAccess: UNRESTRICTED_CODE_ACCESS },
     );
-    expect(all.content.split("\n")).toEqual(["src/fee.ts", "src/secret.ts", "src/secret.ts"]);
+    expect(all.content.split("\n")).toEqual([
+      "[app] src/fee.ts",
+      "[app] src/secret.ts",
+      "[rc-b] src/secret.ts",
+    ]);
     const r = await list.execute(
       { pattern: "src/*.ts" },
       { projectId: "p", codeAccess: restricted },
     );
     // rc-a's secret.ts is hidden; rc-b's file of the same name is not.
-    expect(r.content.split("\n")).toEqual(["src/fee.ts", "src/secret.ts"]);
+    expect(r.content.split("\n")).toEqual(["[app] src/fee.ts", "[rc-b] src/secret.ts"]);
     expect(r.resultCount).toBe(2);
   });
 
@@ -122,6 +126,35 @@ describe("chat list_files (#2327)", () => {
     expect(findMany).toHaveBeenCalledWith(
       expect.objectContaining({ where: { projectId: "p-9", deletedAt: null } }),
     );
+  });
+});
+
+describe("chat grep_files and list_files — sensitive paths (#2327)", () => {
+  let dir: string;
+  beforeAll(async () => {
+    dir = path.join(root, "rc-secret");
+    for (const d of [".ssh", ".git", "keys", "src"]) {
+      await mkdir(path.join(dir, d), { recursive: true });
+    }
+    await writeFile(path.join(dir, ".ssh", "id_rsa"), "SSHKEY hunter2\n");
+    await writeFile(path.join(dir, ".git", "config"), "GITCFG hunter2\n");
+    await writeFile(path.join(dir, ".env"), "ENVFILE hunter2\n");
+    await writeFile(path.join(dir, "keys", "id_rsa"), "DIRECTKEY hunter2\n");
+    await writeFile(path.join(dir, "src", "open.ts"), "OPEN hunter2\n");
+    await symlink(path.join(dir, ".ssh", "id_rsa"), path.join(dir, "src", "key.txt"));
+    await symlink(path.join(dir, ".env"), path.join(dir, "src", "settings.txt"));
+    await symlink(path.join(dir, ".git", "config"), path.join(dir, "src", "gitcfg.txt"));
+  });
+  const one = { listRepoIds: async () => ["rc-secret"], resolveCloneDir: async () => dir };
+
+  it("grep_files reads none of them, directly or through a symlink, and prefixes nothing for one clone", async () => {
+    const r = await createChatGrepFilesTool(one).execute({ text: "hunter2" }, { projectId: "p" });
+    expect(r.content).toBe("src/open.ts:1: OPEN hunter2");
+  });
+
+  it("list_files lists none of them", async () => {
+    const r = await createChatListFilesTool(one).execute({ pattern: "**" }, { projectId: "p" });
+    expect(r.content).toBe("src/open.ts");
   });
 });
 

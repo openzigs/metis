@@ -136,7 +136,9 @@ type FilterCheck =
 /** #2327 — the optional filters, each validated; an invalid one is refused, never ignored. */
 function checkFilters(a: Record<string, unknown>): FilterCheck {
   const filters: Pick<SearchSymbolsArgs, "fileGlob" | "symbolKind" | "language"> = {};
-  if (a.fileGlob !== undefined && a.fileGlob !== null) {
+  // An empty or blank fileGlob reads as absent, as grep_files reads pathContains.
+  const blank = typeof a.fileGlob === "string" && a.fileGlob.trim() === "";
+  if (a.fileGlob !== undefined && a.fileGlob !== null && !blank) {
     if (typeof a.fileGlob !== "string") {
       return { ok: false, error: repoPathError(TOOL, "fileGlob", "it is not a string") };
     }

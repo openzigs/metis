@@ -859,6 +859,10 @@ the shell or `.env` says (#2243, #2327):
 
 Each session in the JSON records the tools it called, in order (`toolNames`, #2327).
 
+Since #2327 the `on` and `no-*` arms set `CHAT_CODE_SEARCH_PRIMITIVES=1`, so they offer
+`grep_files`, `list_files` and the symbol filters. They do not reproduce the #2243 numbers below,
+which were measured without them; `tools-only` is the arm that still matches #2243's tools-only run.
+
 An arm with the reranker on runs the embedder inline so the reranker can share the main
 thread (#222). On macOS such an arm can abort with `libc++abi: … mutex lock failed` as it
 exits. That is onnxruntime-node shutting down after the results are written, and the files

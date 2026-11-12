@@ -225,6 +225,12 @@ describe("search_code_symbols filters (#2327)", () => {
     // Absent or null filters are simply not set.
     await tool.execute({ query: "feed", fileGlob: null, language: undefined }, CTX);
     expect(searcher.search).toHaveBeenLastCalledWith("feed", "proj-1", { limit: 15 });
+    // An empty or blank fileGlob is absent too, as grep_files reads pathContains.
+    for (const fileGlob of ["", "   "]) {
+      const r = await tool.execute({ query: "feed", fileGlob }, CTX);
+      expect(r.isError).toBeUndefined();
+      expect(searcher.search).toHaveBeenLastCalledWith("feed", "proj-1", { limit: 15 });
+    }
   });
 
   it.each([

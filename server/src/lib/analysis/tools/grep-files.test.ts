@@ -193,10 +193,49 @@ describe("grep_files bounds and path safety (#2327)", () => {
   });
 
   it("refuses a pathContains that is absolute or climbs out with ..", async () => {
-    for (const pathContains of ["../outside", "src/../../x", "/etc", "C:/x", "src\\x"]) {
+    for (const pathContains of ["../outside", "src/../../x", "/../x", "~/x", "C:/x", "src\\x"]) {
       const r = await grep({ text: "hunter2", pathContains });
       expect(r.isError, pathContains).toBe(true);
       expect(r.content).toMatch(/grep_files refused "pathContains"/);
+    }
+  });
+
+  it("#2327 — takes pathContains as a substring: a leading / scopes to a directory boundary", async () => {
+    const at = await grep({ text: "hunter2", pathContains: "/src/" });
+    expect(at.isError).toBeUndefined();
+    expect(at.content).toContain("src/open.ts:1:");
+    expect((await grep({ text: "hunter2", pathContains: "/open.ts" })).content).toBe(
+      "src/open.ts:1: export const hunter2 = 'public';",
+    );
+    // `/rc/` is not a directory boundary in `src/`.
+    expect(await grep({ text: "hunter2", pathContains: "/rc/" })).toEqual({
+      content: "No lines contain: hunter2",
+      resultCount: 0,
+    });
+  });
+
+  it("#2327 — never reads .ssh, a private key, .env or .git/config, directly or through an in-repo symlink", async () => {
+    const d = await mkdtemp(path.join(tmpdir(), "grep-files-2327-ssh-"));
+    try {
+      await mkdir(path.join(d, ".ssh"), { recursive: true });
+      await mkdir(path.join(d, ".cache"), { recursive: true });
+      await mkdir(path.join(d, ".git"), { recursive: true });
+      await mkdir(path.join(d, "keys"), { recursive: true });
+      await writeFile(path.join(d, ".ssh", "id_rsa"), "PRIVATE hunter2\n");
+      await writeFile(path.join(d, ".cache", "blob.txt"), "cached hunter2\n");
+      await writeFile(path.join(d, ".git", "config"), "gitcfg hunter2\n");
+      await writeFile(path.join(d, ".env"), "ENVFILE hunter2\n");
+      await writeFile(path.join(d, "keys", "id_rsa"), "DIRECTKEY hunter2\n");
+      await writeFile(path.join(d, "keys", "tls.pem"), "PEM hunter2\n");
+      await writeFile(path.join(d, "keys", "open.txt"), "public hunter2\n");
+      await symlink(path.join(d, ".ssh", "id_rsa"), path.join(d, "key.txt"));
+      await symlink(path.join(d, ".cache", "blob.txt"), path.join(d, "cache.txt"));
+      await symlink(path.join(d, ".env"), path.join(d, "settings.txt"));
+      await symlink(path.join(d, ".git", "config"), path.join(d, "gitcfg.txt"));
+      const r = await grepFilesTool.execute({ text: "hunter2" }, { projectId: "p", cloneDir: d });
+      expect(r.content).toBe("keys/open.txt:1: public hunter2");
+    } finally {
+      await rm(d, { recursive: true, force: true });
     }
   });
 
@@ -227,6 +266,33 @@ describe("grep_files bounds and path safety (#2327)", () => {
     expect(footer).toBe(
       `[truncated: showing ${lines.length} of 30 matching line(s) in 1 file(s); 1 file(s) searched]`,
     );
+  });
+
+  it("#2327 — skipped entries do not count toward the walk's entry cap; past it, the search says it was cut", async () => {
+    // Counted: src, then src/aaaa.txt, src/alias.ts, … — the skipped .env, .git and .netrc are not.
+    const tally = emptyGrepTally();
+    await grepClone(dir, { text: "hunter2" }, tally, { maxEntriesVisited: 3 });
+    expect(tally.entriesVisited).toBe(3);
+    expect(tally.cutShort).toBe(true);
+    expect(tally.shown).toEqual(["src/alias.ts:1: export const hunter2 = 'restricted';"]);
+    const whole = emptyGrepTally();
+    await grepClone(dir, { text: "hunter2" }, whole, { maxEntriesVisited: 100 });
+    expect(whole.cutShort).toBe(false);
+  });
+
+  it("#2327 — the file cap and the line prefix hold over every clone a tally covers", async () => {
+    const tally = emptyGrepTally();
+    await grepClone(dir, { text: "hunter2", pathContains: "open" }, tally, {
+      maxFilesScanned: 1,
+      linePrefix: "[one] ",
+    });
+    await grepClone(dir, { text: "hunter2", pathContains: "open" }, tally, {
+      maxFilesScanned: 1,
+      linePrefix: "[two] ",
+    });
+    expect(tally.shown).toEqual(["[one] src/open.ts:1: export const hunter2 = 'public';"]);
+    expect(tally.filesListed).toBe(1);
+    expect(tally.cutShort).toBe(true);
   });
 
   it("an excluded file is neither read nor counted, under its name or through a symlink", async () => {

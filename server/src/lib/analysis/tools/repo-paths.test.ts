@@ -1,9 +1,15 @@
 /**
  * #2327 — the globs and path fragments a model hands the code tools.
  */
-import { describe, expect, it } from "vitest";
+import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   checkRepoGlob,
+  checkRepoPathFragment,
+  isSensitiveInClone,
+  realRepoPath,
   MAX_REPO_GLOB_CHARS,
   MAX_REPO_GLOB_SEGMENTS,
   repoPathError,
@@ -47,5 +53,48 @@ describe("checkRepoGlob", () => {
     expect(repoPathError("list_files", "pattern", "it is absolute")).toBe(
       'Error: list_files refused "pattern" because it is absolute.',
     );
+  });
+});
+
+describe("checkRepoPathFragment (#2327)", () => {
+  it("takes a substring, so a leading / is kept, not refused", () => {
+    expect(checkRepoPathFragment("/handlers/")).toEqual({ ok: true, value: "/handlers/" });
+    expect(checkRepoPathFragment("//internal")).toEqual({ ok: true, value: "/internal" });
+    expect(checkRepoPathFragment(" reader/ ")).toEqual({ ok: true, value: "reader/" });
+  });
+
+  it.each([
+    ["/../etc", /'\.\.'/],
+    ["/handlers/../..", /'\.\.'/],
+    ["/", /empty/],
+    ["~/x", /absolute/],
+    ["/a\\b", /backslash/],
+  ])("refuses %j", (raw, reason) => {
+    const r = checkRepoPathFragment(raw);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toMatch(reason);
+  });
+});
+
+describe("isSensitiveInClone (#2327)", () => {
+  let dir: string;
+  beforeAll(async () => {
+    dir = await mkdtemp(path.join(tmpdir(), "repo-paths-2327-"));
+    await mkdir(path.join(dir, ".ssh"), { recursive: true });
+    await writeFile(path.join(dir, ".ssh", "id_rsa"), "");
+    await writeFile(path.join(dir, "plain.txt"), "");
+    await symlink(path.join(dir, ".ssh", "id_rsa"), path.join(dir, "key.txt"));
+  });
+  afterAll(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("refuses a path sensitive as asked or where it resolves, and nothing else", async () => {
+    expect(await isSensitiveInClone(dir, ".ssh/id_rsa")).toBe(true);
+    expect(await isSensitiveInClone(dir, "key.txt")).toBe(true);
+    expect(await isSensitiveInClone(dir, "plain.txt")).toBe(false);
+    expect(await isSensitiveInClone(dir, "absent.txt")).toBe(false);
+    expect(await realRepoPath(dir, "key.txt")).toBe(".ssh/id_rsa");
+    expect(await realRepoPath(dir, "absent.txt")).toBeNull();
   });
 });

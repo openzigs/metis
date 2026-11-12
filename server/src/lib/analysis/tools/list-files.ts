@@ -85,17 +85,21 @@ export interface ListTally {
   total: number;
   /** The walk's entry cap stopped it with entries left: {@link total} is a lower bound. */
   cutShort: boolean;
+  /** Entries visited over every clone, skipped hidden and `node_modules` entries not counted. */
+  visited: number;
 }
 
 export function emptyListTally(): ListTally {
-  return { shown: [], total: 0, cutShort: false };
+  return { shown: [], total: 0, cutShort: false, visited: 0 };
 }
 
 export interface ListCloneOptions {
   /** #2327 — a file the caller may not see (repository-relative). Neither listed nor counted. */
   isExcluded?: (rel: string) => boolean;
-  /** Test seam: the walk's entry cap. */
+  /** Test seam: the walk's entry cap, over every clone the tally is summed over. */
   maxEntriesVisited?: number;
+  /** #2327 — put before each listed path; chat names the repository when it listed several. */
+  linePrefix?: string;
 }
 
 /**
@@ -115,7 +119,6 @@ export async function listCloneFiles(
   }
   const matches = compileGlob(args.pattern);
   const maxVisited = opts.maxEntriesVisited ?? MAX_ENTRIES_VISITED;
-  let visited = 0;
   async function walk(dir: string): Promise<void> {
     let entries;
     try {
@@ -126,12 +129,14 @@ export async function listCloneFiles(
     entries.sort((a, b) => a.name.localeCompare(b.name));
     for (const entry of entries) {
       if (tally.cutShort) return;
-      if (++visited > maxVisited) {
+      // Skip hidden entries and common non-source directories. #2327 — before
+      // the cap, so a clone full of them is not cut short by what it skips.
+      if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
+      if (tally.visited >= maxVisited) {
         tally.cutShort = true;
         return;
       }
-      // Skip hidden entries and common non-source directories.
-      if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
+      tally.visited++;
       const full = path.join(dir, entry.name);
       // A symlink is neither a directory nor a file here: never followed, never listed.
       if (entry.isDirectory()) {
@@ -142,7 +147,7 @@ export async function listCloneFiles(
       const rel = path.relative(cloneDir, full).split(path.sep).join("/");
       if (!matches(rel) || isSensitiveRepoPath(rel) || opts.isExcluded?.(rel)) continue;
       tally.total++;
-      if (tally.shown.length < MAX_RESULTS) tally.shown.push(rel);
+      if (tally.shown.length < MAX_RESULTS) tally.shown.push(`${opts.linePrefix ?? ""}${rel}`);
     }
   }
   await walk(cloneDir);
@@ -155,7 +160,7 @@ export function listFilesResult(args: ListFilesArgs, tally: ListTally): ToolResu
     return tally.cutShort
       ? {
           content:
-            `No files matching pattern: ${args.pattern} among the first ${MAX_ENTRIES_VISITED} ` +
+            `No files matching pattern: ${args.pattern} among the first ${tally.visited} ` +
             "entries; more were not listed. Narrow the pattern to a directory.",
           truncated: true,
           resultCount: 0,
@@ -170,7 +175,9 @@ export function listFilesResult(args: ListFilesArgs, tally: ListTally): ToolResu
   return {
     content:
       `${tally.shown.join("\n")}\n[truncated: showing ${tally.shown.length} of ${atLeast}` +
-      `${tally.total} matching file(s); narrow the pattern to see the rest]`,
+      `${tally.total} matching file(s)` +
+      (tally.cutShort ? `; the listing stopped after ${tally.visited} entries` : "") +
+      "; narrow the pattern to see the rest]",
     truncated: true,
     resultCount: tally.shown.length,
   };

@@ -9,32 +9,42 @@ import { prisma } from "../../prisma.js";
 import { resolveExistingCloneDir } from "../clone-availability.js";
 
 export interface ChatCloneDeps {
-  /** The project's live repo connection ids, in search order. */
-  listRepoIds?: (projectId: string) => Promise<string[]>;
+  /**
+   * The project's live repo connections, in search order: an id, or an id
+   * with the label a multi-repository result names it by (the id when absent).
+   */
+  listRepoIds?: (projectId: string) => Promise<Array<string | { id: string; label: string }>>;
   /** A connector's clone dir, only when it exists and is readable. */
   resolveCloneDir?: (connectorId: string) => Promise<string | undefined>;
 }
 
-async function projectRepoIds(projectId: string): Promise<string[]> {
-  const rows = await prisma.repoConnection.findMany({
+async function projectRepoIds(projectId: string): Promise<Array<{ id: string; label: string }>> {
+  return prisma.repoConnection.findMany({
     where: { projectId, deletedAt: null },
-    select: { id: true },
+    select: { id: true, label: true },
     orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }],
   });
-  return rows.map((r) => r.id);
 }
 
-/** The clones on disk, as `{ id: repoConnectionId, dir }`, in search order. */
+/** A clone on disk: its repo connection id, its label, and its directory. */
+export interface ChatClone {
+  id: string;
+  label: string;
+  dir: string;
+}
+
+/** The clones on disk, in search order. */
 export async function resolveChatClones(
   projectId: string,
   deps: ChatCloneDeps = {},
-): Promise<Array<{ id: string; dir: string }>> {
+): Promise<ChatClone[]> {
   const listRepoIds = deps.listRepoIds ?? projectRepoIds;
   const resolveCloneDir = deps.resolveCloneDir ?? resolveExistingCloneDir;
-  const dirs: Array<{ id: string; dir: string }> = [];
-  for (const id of await listRepoIds(projectId)) {
+  const dirs: ChatClone[] = [];
+  for (const repo of await listRepoIds(projectId)) {
+    const { id, label } = typeof repo === "string" ? { id: repo, label: repo } : repo;
     const dir = await resolveCloneDir(id);
-    if (dir) dirs.push({ id, dir });
+    if (dir) dirs.push({ id, label, dir });
   }
   return dirs;
 }

@@ -6,13 +6,7 @@ import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import {
-  emptyListTally,
-  listCloneFiles,
-  listFilesTool,
-  MAX_ENTRIES_VISITED,
-  MAX_RESULTS,
-} from "./list-files.js";
+import { emptyListTally, listCloneFiles, listFilesTool, MAX_RESULTS } from "./list-files.js";
 
 let root: string;
 let clone: string;
@@ -90,11 +84,14 @@ describe("list_files (#2327)", () => {
     await listCloneFiles(clone, { pattern: "nothing/*" }, miss, { maxEntriesVisited: 3 });
     const { listFilesResult } = await import("./list-files.js");
     expect(listFilesResult({ pattern: "nothing/*" }, miss)).toEqual({
-      content: `No files matching pattern: nothing/* among the first ${MAX_ENTRIES_VISITED} entries; more were not listed. Narrow the pattern to a directory.`,
+      content:
+        "No files matching pattern: nothing/* among the first 3 entries; more were not listed. Narrow the pattern to a directory.",
       truncated: true,
       resultCount: 0,
     });
-    expect(listFilesResult({ pattern: "many/*" }, hit).content).toMatch(/of at least \d+ matching/);
+    expect(listFilesResult({ pattern: "many/*" }, hit).content).toMatch(
+      /of at least \d+ matching file\(s\); the listing stopped after 10 entries;/,
+    );
   });
 
   it("an excluded file is neither listed nor counted", async () => {
@@ -102,7 +99,66 @@ describe("list_files (#2327)", () => {
     await listCloneFiles(clone, { pattern: "src/*.ts" }, tally, {
       isExcluded: (rel) => rel === "src/secret.ts",
     });
-    expect(tally).toEqual({ shown: ["src/a.ts"], total: 1, cutShort: false });
+    expect(tally).toMatchObject({ shown: ["src/a.ts"], total: 1, cutShort: false });
+  });
+
+  it("#2327 — skipped hidden and node_modules entries do not count toward the entry cap", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "list-files-2327-skip-"));
+    try {
+      await mkdir(path.join(dir, "node_modules", "dep"), { recursive: true });
+      await mkdir(path.join(dir, "src"), { recursive: true });
+      for (let i = 0; i < 30; i++) {
+        await writeFile(path.join(dir, `.hidden${String(i).padStart(2, "0")}`), "");
+        await writeFile(path.join(dir, "node_modules", "dep", `m${i}.js`), "");
+      }
+      await writeFile(path.join(dir, "src", "a.ts"), "");
+      await writeFile(path.join(dir, "src", "b.ts"), "");
+      // src, src/a.ts, src/b.ts: three entries counted, whatever the 31 skipped ones.
+      const tally = emptyListTally();
+      await listCloneFiles(dir, { pattern: "src/*.ts" }, tally, { maxEntriesVisited: 3 });
+      expect(tally).toEqual({
+        shown: ["src/a.ts", "src/b.ts"],
+        total: 2,
+        cutShort: false,
+        visited: 3,
+      });
+      // One fewer: the matches found so far come back, marked truncated.
+      const cut = emptyListTally();
+      await listCloneFiles(dir, { pattern: "src/*.ts" }, cut, { maxEntriesVisited: 2 });
+      expect(cut).toMatchObject({ shown: ["src/a.ts"], total: 1, cutShort: true });
+      const { listFilesResult } = await import("./list-files.js");
+      expect(listFilesResult({ pattern: "src/*.ts" }, cut)).toEqual({
+        content:
+          "src/a.ts\n[truncated: showing 1 of at least 1 matching file(s); the listing stopped after 2 entries; narrow the pattern to see the rest]",
+        truncated: true,
+        resultCount: 1,
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("#2327 — never lists .ssh, .env, .git/config or a private key, directly or through a symlink", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "list-files-2327-secret-"));
+    try {
+      await mkdir(path.join(dir, ".ssh"), { recursive: true });
+      await mkdir(path.join(dir, ".git"), { recursive: true });
+      await mkdir(path.join(dir, "keys"), { recursive: true });
+      await writeFile(path.join(dir, ".ssh", "id_rsa"), "");
+      await writeFile(path.join(dir, ".git", "config"), "");
+      await writeFile(path.join(dir, ".env"), "");
+      await writeFile(path.join(dir, "keys", "id_rsa"), "");
+      await writeFile(path.join(dir, "keys", "deploy.pem"), "");
+      await writeFile(path.join(dir, "keys", "README.md"), "");
+      await symlink(path.join(dir, ".ssh", "id_rsa"), path.join(dir, "key.txt"));
+      await symlink(path.join(dir, ".ssh"), path.join(dir, "sshdir"));
+      await symlink(path.join(dir, ".env"), path.join(dir, "settings.txt"));
+      await symlink(path.join(dir, ".git", "config"), path.join(dir, "gitcfg.txt"));
+      const r = await listFilesTool.execute({ pattern: "**" }, { projectId: "p", cloneDir: dir });
+      expect(r.content).toBe("keys/README.md");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it("matches a catastrophic-backtracking pattern within a bound", async () => {

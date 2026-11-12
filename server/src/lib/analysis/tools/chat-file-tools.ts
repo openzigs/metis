@@ -7,7 +7,12 @@
  * (`chat-read-file-slice.ts`):
  *   - the clones are the session project's own live repo connections, primary
  *     first, each only when it is on disk (`chat-clones.ts`);
- *   - every clone is searched, and the caps and totals are over all of them;
+ *   - every clone is searched, and the caps (`maxFilesScanned`, the entry
+ *     caps) and the totals are over all of them, not per clone;
+ *   - when there is more than one clone, each line names its repository by
+ *     label (`[label] path…`), so two files of one path stay apart;
+ *   - git internals and credential files (`isSensitiveRepoPath`) are neither
+ *     read nor listed, on the path as listed or where a symlink resolves;
  *   - #2243 — a file whose document the caller may not see (its ACL, or a
  *     shared audience) is excluded: neither shown nor counted, so a result
  *     never confirms that a restricted file exists. For `grep_files` the check
@@ -40,6 +45,9 @@ const NEEDS_PROJECT: ToolResult = {
   isError: true,
 };
 
+/** How a multi-repository result names a line's repository. */
+const repoPrefix = (label: string): string => `[${label.replace(/[\r\n\]]/g, " ")}] `;
+
 export function createChatGrepFilesTool(deps: ChatCloneDeps = {}): AgentTool {
   return {
     name: "grep_files",
@@ -53,8 +61,10 @@ export function createChatGrepFilesTool(deps: ChatCloneDeps = {}): AgentTool {
       if (clones.length === 0) return { content: NO_WORKING_TREE, isError: true };
       const access = ctx.codeAccess ?? UNRESTRICTED_CODE_ACCESS;
       const tally = emptyGrepTally();
-      for (const { id, dir } of clones) {
+      for (const { id, label, dir } of clones) {
         await grepClone(dir, parsed.args, tally, {
+          maxFilesScanned: MAX_FILES_SCANNED,
+          ...(clones.length > 1 ? { linePrefix: repoPrefix(label) } : {}),
           ...(access.unrestricted
             ? {}
             : {
@@ -81,8 +91,9 @@ export function createChatListFilesTool(deps: ChatCloneDeps = {}): AgentTool {
       if (clones.length === 0) return { content: NO_WORKING_TREE, isError: true };
       const access = ctx.codeAccess ?? UNRESTRICTED_CODE_ACCESS;
       const tally = emptyListTally();
-      for (const { id, dir } of clones) {
+      for (const { id, label, dir } of clones) {
         await listCloneFiles(dir, parsed.args, tally, {
+          ...(clones.length > 1 ? { linePrefix: repoPrefix(label) } : {}),
           ...(access.unrestricted ? {} : { isExcluded: (rel: string) => access.isHidden(id, rel) }),
         });
       }
