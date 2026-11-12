@@ -27,11 +27,14 @@ import { getConfigService } from "../config/config-service.js";
 export const SEARCH_GUIDANCE_KEY = "CHAT_SEARCH_GUIDANCE";
 
 /**
- * #2324 — the guidance's default. Set from the paired measurement on the BA
- * question set (`tools-only` arm, with and without): see #2324 and
- * `eval-data/README.md`.
+ * #2324 — the guidance's default: OFF. On the BA question set (`tools-only`
+ * arm, two paired runs with and without, Sonnet 5.5) it left facts stated
+ * unchanged (83% / 83%, 76% / 76%), lowered citation precision (88% → 80%,
+ * 84% → 81%) and cost about 9,000 more input tokens and 0.55 more model calls
+ * per question. The issue ships it on only if facts or precision improve, so
+ * it waits behind the key: see `eval-data/README.md`.
  */
-export const SEARCH_GUIDANCE_DEFAULT = true;
+export const SEARCH_GUIDANCE_DEFAULT = false;
 
 /** Whether the search guidance is on for this turn. */
 export function searchGuidanceEnabled(): boolean {

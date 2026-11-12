@@ -221,8 +221,10 @@ describe("offersSearchGuidance / CHAT_SEARCH_GUIDANCE (#2324)", () => {
     ...(searchGuidance === undefined ? {} : { searchGuidance }),
   });
 
-  it("is on by default and an operator can turn it off", () => {
+  it("is off by default and an operator can turn it on", () => {
     delete process.env[SEARCH_GUIDANCE_KEY];
+    expect(loadSessionToolsFlags().searchGuidance).toBe(false);
+    process.env[SEARCH_GUIDANCE_KEY] = "1";
     expect(loadSessionToolsFlags().searchGuidance).toBe(true);
     process.env[SEARCH_GUIDANCE_KEY] = "0";
     expect(loadSessionToolsFlags().searchGuidance).toBe(false);

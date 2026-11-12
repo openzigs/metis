@@ -161,8 +161,10 @@ describe("offersGroundingTool / searchGuidanceEnabled (#2324)", () => {
     expect(offersGroundingTool([])).toBe(false);
   });
 
-  it("reads the key, on by default", () => {
+  it("reads the key, off by default (measured: no gain on the BA question set)", () => {
     delete process.env[SEARCH_GUIDANCE_KEY];
+    expect(searchGuidanceEnabled()).toBe(false);
+    process.env[SEARCH_GUIDANCE_KEY] = "true";
     expect(searchGuidanceEnabled()).toBe(true);
     process.env[SEARCH_GUIDANCE_KEY] = "false";
     expect(searchGuidanceEnabled()).toBe(false);
