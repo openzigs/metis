@@ -96,6 +96,34 @@ describe("resolveDiscussionTools", () => {
     expect(rt!.toolset.tools.map((t) => t.name)).toEqual(["search-knowledge"]);
   });
 
+  it("follows CHAT_INDEX_STATUS: no get_index_status when it is false (#2326)", async () => {
+    const saved = process.env.CHAT_INDEX_STATUS;
+    const names = async (flags?: typeof ON & { indexStatus?: boolean }) =>
+      (await resolveDiscussionTools({
+        session,
+        provider,
+        model: "m",
+        ...(flags ? { flags } : {}),
+        registry: FULL(),
+        native: true,
+      }))!.toolset.tools.map((t) => t.name);
+    try {
+      // Read from the key, as the discussion route does (no injected flags).
+      delete process.env.CHAT_INDEX_STATUS;
+      expect(await names()).toContain("get_index_status");
+      process.env.CHAT_INDEX_STATUS = "false";
+      const off = await names();
+      expect(off).not.toContain("get_index_status");
+      expect(off).toContain("search_code_symbols");
+      // And from injected flags.
+      delete process.env.CHAT_INDEX_STATUS;
+      expect(await names({ ...ON, indexStatus: false })).not.toContain("get_index_status");
+    } finally {
+      if (saved === undefined) delete process.env.CHAT_INDEX_STATUS;
+      else process.env.CHAT_INDEX_STATUS = saved;
+    }
+  });
+
   it("offers nothing when chat's tools are off and code tools are off", async () => {
     const rt = await resolveDiscussionTools({
       session,

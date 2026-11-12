@@ -330,20 +330,20 @@ async function main(): Promise<void> {
   // #2326 — the fault is written for this run only, and restored after it.
   const indexFault = values["index-fault"] ? parseIndexFault(values["index-fault"]) : null;
   const savedIngestStates = new Map<string, string | null>();
-  if (indexFault) {
-    const faulted = JSON.stringify(indexFaultState(indexFault, new Date()));
-    for (const repo of repos.values()) {
-      const row = await prisma.repoConnection.findUniqueOrThrow({
-        where: { id: repo.connectorId },
-        select: { sourceIngestState: true },
-      });
-      savedIngestStates.set(repo.connectorId, row.sourceIngestState);
-      await prisma.repoConnection.update({
-        where: { id: repo.connectorId },
-        data: { sourceIngestState: faulted },
-      });
+  /** Put back every state the fault replaced; each once, whatever ends the run. */
+  const restoreIngestStates = async (): Promise<void> => {
+    for (const [id, saved] of [...savedIngestStates]) {
+      savedIngestStates.delete(id);
+      await prisma.repoConnection.update({ where: { id }, data: { sourceIngestState: saved } });
     }
-    console.log(`index fault: every product's last indexing run is recorded as ${indexFault}`);
+  };
+  // An interrupted run (Ctrl-C) must not leave the products' index faulted.
+  const onSignal = (signal: NodeJS.Signals) => {
+    void restoreIngestStates().finally(() => process.exit(signal === "SIGINT" ? 130 : 143));
+  };
+  if (indexFault) {
+    process.once("SIGINT", onSignal);
+    process.once("SIGTERM", onSignal);
   }
   console.log(
     `ba-qa ${arm}: ${provider.key}/${model}, judge ${judgeModel}, ${questions.length} questions, cap $${budget}`,
@@ -353,6 +353,22 @@ async function main(): Promise<void> {
   const startedAt = new Date();
 
   try {
+    if (indexFault) {
+      const faulted = JSON.stringify(indexFaultState(indexFault, new Date()));
+      for (const repo of repos.values()) {
+        const row = await prisma.repoConnection.findUniqueOrThrow({
+          where: { id: repo.connectorId },
+          select: { sourceIngestState: true },
+        });
+        // Saved before the write, so a write that fails part-way is still undone.
+        savedIngestStates.set(repo.connectorId, row.sourceIngestState);
+        await prisma.repoConnection.update({
+          where: { id: repo.connectorId },
+          data: { sourceIngestState: faulted },
+        });
+      }
+      console.log(`index fault: every product's last indexing run is recorded as ${indexFault}`);
+    }
     for (const [i, q] of questions.entries()) {
       if (meter.unpricedCalls() > 0) {
         stoppedEarly = "an unpriced call: the cap cannot be enforced";
@@ -493,9 +509,9 @@ async function main(): Promise<void> {
       );
     }
   } finally {
-    for (const [id, saved] of savedIngestStates) {
-      await prisma.repoConnection.update({ where: { id }, data: { sourceIngestState: saved } });
-    }
+    await restoreIngestStates();
+    process.off("SIGINT", onSignal);
+    process.off("SIGTERM", onSignal);
   }
   const faultSummary = indexFault
     ? summarizeIndexFault(

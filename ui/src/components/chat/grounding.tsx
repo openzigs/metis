@@ -134,11 +134,35 @@ const INDEX_WARNINGS: Record<Exclude<GroundingIndexOf["state"], "healthy">, stri
   partial: "the index is partial",
 };
 
-/** #2326 — a warning when the index is failed, empty, partial or being built; `null` when healthy. */
+/**
+ * What is wrong with one repository's index, in the server's order
+ * (`repoState` in `index-status.ts`); `null` when nothing is.
+ */
+function repoIssue(r: GroundingIndexOf["repos"][number]): string | null {
+  if (r.lastRun === "running") return `${r.label} is still being indexed`;
+  if (r.lastRun === "failed" || r.error) {
+    return `the last indexing of ${r.label} failed${r.error ? ` (${r.error})` : ""}`;
+  }
+  if (r.lastRun === "partial") return `the index of ${r.label} is partial`;
+  if (r.lastRun === "interrupted") return `indexing of ${r.label} was interrupted`;
+  if (r.lastRun === "never") return `repository ${r.label} is not indexed yet`;
+  return null;
+}
+
+/**
+ * #2326 — a warning when the index is failed, empty, partial or being built;
+ * `null` when healthy. It names the part that is missing — one repository not
+ * indexed yet beside indexed documents is not "nothing indexed" (#2384).
+ */
 export function indexWarningText(g: ChatGrounding): string | null {
   const index = indexOf(g);
   if (!index || index.state === "healthy") return null;
-  return `Index warning — ${INDEX_WARNINGS[index.state]}, so this reply may miss code or documents that are not indexed`;
+  const issues = index.repos.map(repoIssue).filter((i): i is string => i !== null);
+  const what =
+    index.state === "never-indexed" || issues.length === 0
+      ? INDEX_WARNINGS[index.state]
+      : issues.join("; ");
+  return `Index warning — ${what}, so this reply may miss code or documents that are not indexed`;
 }
 
 function relevanceText(relevance: number | undefined): string {

@@ -41,6 +41,10 @@ import {
   type SourceIngestState,
 } from "../connectors/source-ingest-state.js";
 import { repoDocumentPath, type CodeAccessFilter } from "../analysis/tools/code-access.js";
+import { parseAclSubjects } from "../rag/acl.js";
+
+/** The filename prefix of a repository's documents (`connector-ingest.ts`). */
+const REPO_DOC_PREFIX = "connector:repo:";
 
 const log = createChildLogger("index-status");
 
@@ -70,6 +74,10 @@ export const MAX_INDEX_REPOS = MAX_GROUNDING_INDEX_REPOS;
 /**
  * Ordered: the first rule whose pattern matches wins. A classifier, not a
  * redaction list (#1268): it never strips text, it replaces all of it.
+ *
+ * "Repository not found" is last: a LanceDB "Table … was not found" or a
+ * Prisma "Record not found" names the vector index or the database, not a
+ * repository, so those rules must see the text first.
  */
 const ERROR_RULES: ReadonlyArray<{ cls: IndexErrorClass; pattern: RegExp }> = [
   { cls: "timed out", pattern: /\b(ETIMEDOUT|timed? ?out|timeout|AbortError|deadline)\b/i },
@@ -83,18 +91,25 @@ const ERROR_RULES: ReadonlyArray<{ cls: IndexErrorClass; pattern: RegExp }> = [
       /\b(401|403|unauthori[sz]ed|forbidden|authentication|bad credentials|invalid token|permission denied)\b/i,
   },
   {
-    cls: "repository not found",
-    pattern: /\b(404|not found|repository .*does not exist|no such repository)\b/i,
-  },
-  {
     cls: "network error",
     pattern:
       /\b(ECONNREFUSED|ECONNRESET|ENOTFOUND|EAI_AGAIN|EHOSTUNREACH|socket hang up|network|fetch failed)\b/i,
   },
   { cls: "access check failed", pattern: /\b(acl|actor|role)\b/i },
   { cls: "embedding model unavailable", pattern: /\b(embed\w*|onnx\w*|xenova|tokeni[sz]er)\b/i },
-  { cls: "vector index unavailable", pattern: /\b(lance\w*|vector|arrow)\b/i },
-  { cls: "database error", pattern: /\b(prisma|sqlite|postgres\w*|database|SQLITE_\w+|P\d{4})\b/i },
+  {
+    cls: "vector index unavailable",
+    pattern: /\b(lance\w*|vector|arrow)\b|\btable\b.*\bnot found\b/i,
+  },
+  {
+    cls: "database error",
+    pattern:
+      /\b(prisma\w*|sqlite|postgres\w*|database|SQLITE_\w+|P\d{4})\b|\brecords?\b.*\bnot found\b|\bno record\b/i,
+  },
+  {
+    cls: "repository not found",
+    pattern: /\b(404|not found|repository .*does not exist|no such repository)\b/i,
+  },
 ];
 
 /**
@@ -122,9 +137,15 @@ export interface RepoIndexStatus {
   lastRun: LastRunStatus;
   /** A classified summary of why the last run or the connector failed. */
   error?: IndexErrorClass;
-  /** Code-graph symbols. */
-  symbols: number;
-  /** Source files: eligible, indexed, and skipped by reason. `null` when not recorded. */
+  /**
+   * Code-graph symbols. `null` when withheld: the repository has a file under
+   * a document restriction (#2243), and the symbol count includes it.
+   */
+  symbols: number | null;
+  /**
+   * Source files: eligible, indexed, and skipped by reason. `null` when not
+   * recorded, or withheld as `symbols` is.
+   */
   coverage: {
     eligible: number;
     indexed: number;
@@ -132,6 +153,12 @@ export interface RepoIndexStatus {
     skipped: { limit: number; tooLarge: number; unreadable: number; policy: number };
   } | null;
   inProgress: boolean;
+  /**
+   * #2243 — the counts are withheld because a file in this repository is
+   * restricted: they would count it whoever asks, so a caller it is hidden
+   * from could learn of it.
+   */
+  countsWithheld?: true;
 }
 
 export interface ProjectIndexStatus {
@@ -202,7 +229,14 @@ export async function loadProjectIndexStatus(
     select: { name: true },
   });
   if (!project) return null;
-  const [connections, graphs, documents] = await Promise.all([
+  // Rows from before #157 never moved off `pending`, so "not rejected" rather
+  // than "indexed": an older project is not reported as empty.
+  const indexedDocs = {
+    projectId,
+    deletedAt: null,
+    indexState: { not: "rejected" },
+  } as const;
+  const [connections, graphs, documentCount, restrictedDocs] = await Promise.all([
     prisma.repoConnection.findMany({
       where: { projectId, deletedAt: null },
       select: {
@@ -220,13 +254,24 @@ export async function loadProjectIndexStatus(
       where: { projectId },
       select: { repoConnectionId: true, commitSha: true, lastIndexedAt: true, symbolCount: true },
     }),
+    // A count, not the rows: a project can hold thousands of documents.
+    prisma.document.count({ where: indexedDocs }),
+    // Only the restricted repository documents (#2243): which repositories'
+    // counts to withhold, and which documents the caller cannot see.
     prisma.document.findMany({
-      // Rows from before #157 never moved off `pending`, so "not rejected"
-      // rather than "indexed": an older project is not reported as empty.
-      where: { projectId, deletedAt: null, indexState: { not: "rejected" } },
-      select: { filename: true },
+      where: {
+        ...indexedDocs,
+        filename: { startsWith: REPO_DOC_PREFIX },
+        NOT: { aclSubjects: "[]" },
+      },
+      select: { filename: true, aclSubjects: true },
     }),
   ]);
+  const restricted = restrictedDocs
+    .filter((d) => parseAclSubjects(d.aclSubjects).length > 0)
+    .map((d) => repoDocumentPath(d.filename))
+    .filter((f): f is { connectorId: string; path: string } => f !== null);
+  const restrictedRepos = new Set(restricted.map((f) => f.connectorId));
   const graphByRepo = new Map(graphs.map((g) => [g.repoConnectionId, g]));
   const repos: RepoIndexStatus[] = connections.map((c) => {
     const state = parseSourceIngestState(c.sourceIngestState);
@@ -240,6 +285,7 @@ export async function loadProjectIndexStatus(
         : lastRun === "failed"
           ? state?.error
           : null;
+    const withheld = restrictedRepos.has(c.id);
     return {
       label: c.label,
       commitSha: graph?.commitSha ?? c.lastCommitSha ?? null,
@@ -248,24 +294,31 @@ export async function loadProjectIndexStatus(
       ...(rawError !== null && rawError !== undefined
         ? { error: classifyIndexError(rawError) }
         : {}),
-      symbols: graph?.symbolCount ?? 0,
-      coverage: coverageOf(state),
+      symbols: withheld ? null : (graph?.symbolCount ?? 0),
+      coverage: withheld ? null : coverageOf(state),
       inProgress: active(c.id) || lastRun === "running",
+      ...(withheld ? { countsWithheld: true as const } : {}),
     };
   });
   const access = opts.access;
-  const visibleDocs =
+  const hiddenDocs =
     access?.unrestricted === false
-      ? documents.filter((d) => !isHiddenRepoDocument(access, d.filename)).length
-      : documents.length;
-  const states = repos.map(repoState);
+      ? restricted.filter((f) => access.isHidden(f.connectorId, f.path)).length
+      : 0;
+  const visibleDocs = Math.max(0, documentCount - hiddenDocs);
+  // Something is indexed: a document (of any visibility — a hidden one is
+  // still indexed), a code graph, or a repository that has run at all.
+  const anyIndexed =
+    documentCount > 0 || graphs.length > 0 || repos.some((r) => r.lastRun !== "never");
+  const states = repos.map((r) => {
+    const s = repoState(r);
+    // One repository not indexed yet, beside documents or other repositories
+    // that are, makes the project partial — not "nothing indexed" (#2384).
+    return s === "never-indexed" && anyIndexed ? "partial" : s;
+  });
   let state: IndexState =
     INDEX_STATES.find((s) => s !== "healthy" && states.includes(s)) ?? "healthy";
-  // A project with nothing indexed at all: no document (of any visibility —
-  // a hidden one is still indexed) and no code graph.
-  if (documents.length === 0 && graphs.length === 0 && state === "healthy") {
-    state = "never-indexed";
-  }
+  if (!anyIndexed && state === "healthy") state = "never-indexed";
   return {
     projectId,
     projectName: project.name?.trim() || "this project",
@@ -274,11 +327,6 @@ export async function loadProjectIndexStatus(
     repos: repos.slice(0, MAX_INDEX_REPOS),
     moreRepos: Math.max(0, repos.length - MAX_INDEX_REPOS),
   };
-}
-
-function isHiddenRepoDocument(access: CodeAccessFilter, filename: string): boolean {
-  const file = repoDocumentPath(filename);
-  return file ? access.isHidden(file.connectorId, file.path) : false;
 }
 
 /** Best-effort {@link loadProjectIndexStatus}: a failed read is logged and yields `null`. */
@@ -297,8 +345,17 @@ export async function readProjectIndexStatus(
   }
 }
 
+/**
+ * A server-held name (a project's or a repository's) as a quoted, escaped
+ * string: an owner chose it, so a quote or a newline in it must not break out
+ * of the sentence it is placed in and read as an instruction (A03).
+ */
+export function quoteName(name: string): string {
+  return JSON.stringify(name.slice(0, 200));
+}
+
 function repoProblem(r: RepoIndexStatus): string | null {
-  const name = `repository "${r.label}"`;
+  const name = `repository ${quoteName(r.label)}`;
   const s = repoState(r);
   if (s === "in-progress") return `${name} is still being indexed`;
   if (s === "failed")
@@ -326,7 +383,7 @@ export function indexStatusLine(status: ProjectIndexStatus): string | null {
   }
   return (
     `## Index status\n` +
-    `The index of project "${status.projectName}" is not complete: ${problems.join("; ")}. ` +
+    `The index of project ${quoteName(status.projectName)} is not complete: ${problems.join("; ")}. ` +
     `Code and documents may be missing or out of date, so if a search finds nothing, say the ` +
     `index may be incomplete; do not conclude the project lacks it.`
   );
@@ -335,22 +392,24 @@ export function indexStatusLine(status: ProjectIndexStatus): string | null {
 /** The `get_index_status` tool's text: one block per repository. */
 export function formatIndexStatus(status: ProjectIndexStatus): string {
   const lines = [
-    `Project "${status.projectName}": index ${status.state}; ${status.documents} knowledge document(s).`,
+    `Project ${quoteName(status.projectName)}: index ${status.state}; ${status.documents} knowledge document(s).`,
   ];
   if (status.repos.length === 0) lines.push("No repository is connected.");
   for (const r of status.repos) {
     const c = r.coverage;
-    const coverage = c
-      ? `${c.indexed} of ${c.eligible} eligible source files indexed; ${c.failed} failed; skipped: ` +
-        `${c.skipped.limit} past the file limit, ${c.skipped.tooLarge} too large, ` +
-        `${c.skipped.unreadable} unreadable, ${c.skipped.policy} by policy (tests, generated)`
-      : "coverage not recorded";
+    const coverage = r.countsWithheld
+      ? "source-file counts not shown (the repository has access-restricted files)"
+      : c
+        ? `${c.indexed} of ${c.eligible} eligible source files indexed; ${c.failed} failed; skipped: ` +
+          `${c.skipped.limit} past the file limit, ${c.skipped.tooLarge} too large, ` +
+          `${c.skipped.unreadable} unreadable, ${c.skipped.policy} by policy (tests, generated)`
+        : "coverage not recorded";
     lines.push(
       [
-        `- Repository "${r.label}":`,
+        `- Repository ${quoteName(r.label)}:`,
         `  last indexed commit ${r.commitSha ?? "unknown"} at ${r.indexedAt ?? "never"}`,
         `  last run: ${r.lastRun}${r.error ? ` (${r.error})` : ""}${r.inProgress ? "; a run is in progress" : ""}`,
-        `  ${r.symbols} code symbol(s); ${coverage}`,
+        `  ${r.symbols === null ? "code symbol count not shown" : `${r.symbols} code symbol(s)`}; ${coverage}`,
       ].join("\n"),
     );
   }

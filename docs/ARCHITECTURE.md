@@ -744,13 +744,13 @@ Each policy supports `auto | prompt-once | always-prompt | deny`. Decisions are 
 
 - each live `RepoConnection`: `status` / `errorMessage`, `lastIngestAt`, `lastCommitSha`, and `sourceIngestState` (#182), read through `effectiveSourceIngestStatus`;
 - its `CodeGraph`: `commitSha`, `lastIndexedAt`, `symbolCount`;
-- the project's non-rejected `Document` rows. A repository document hidden from the caller (`code-access.ts`, #2243) is not counted.
+- the project's non-rejected `Document` rows, counted with a `count` query; only the restricted repository documents are read, to subtract the ones hidden from the caller (`code-access.ts`, #2243). A repository with any restricted file has its symbol and source-file counts withheld (`countsWithheld`): those counts include the file whoever asks.
 
-`loadProjectIndexStatus` reduces this to a worst-first `IndexState` (`failed` > `never-indexed` > `in-progress` > `partial` > `healthy`; an `interrupted` run counts as `partial`). Errors go through `classifyIndexError`, which maps the recorded text to one of the fixed `INDEX_ERROR_CLASSES` (`@metis/shared`). Error text never reaches the model or the UI; the full error is logged.
+`loadProjectIndexStatus` reduces this to a worst-first `IndexState` (`failed` > `never-indexed` > `in-progress` > `partial` > `healthy`; an `interrupted` run counts as `partial`, and so does a repository never indexed while anything else in the project is: `never-indexed` means nothing is). Errors go through `classifyIndexError`, which maps the recorded text to one of the fixed `INDEX_ERROR_CLASSES` (`@metis/shared`). Error text never reaches the model or the UI; the full error is logged.
 
 `buildAutoRagContext` reads the status alongside its search (best-effort: `readProjectIndexStatus` yields `null` on a failed read) and changes the block in four ways:
 
-- When the index is not healthy and `CHAT_INDEX_STATUS` is on, it leads the block with `indexStatusLine`.
+- When the index is not healthy and `CHAT_INDEX_STATUS` is on, it leads the block with `indexStatusLine` (names JSON-escaped, `quoteName`) and records it as `capture.indexStatusLine`, which a discussion reply with no excerpt still receives.
 - When `coverage` is partial, it appends `partialCoverageNote`.
 - When the search throws, it returns `retrievalFailedBlock(project, class)` instead of the bare `RETRIEVAL_FAILED_BLOCK`.
 - It records `index` (`toGroundingIndex`) and `failure` on the capture.

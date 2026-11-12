@@ -190,20 +190,56 @@ describe("index status on the label (#2326)", () => {
     ["partial", "the index is partial"],
     ["in-progress", "indexing is still in progress"],
     ["never-indexed", "nothing in this project has been indexed yet"],
-  ])("warns, visibly, when the index is %s", (state, words) => {
-    render(
-      <GroundingBadge
-        grounding={groundedWith({
-          state,
-          repos: [{ ...repo, lastRun: "failed", error: "authentication failed" }],
-        })}
-      />,
-    );
+  ])("warns, visibly, when the index is %s and no repository says why", (state, words) => {
+    render(<GroundingBadge grounding={groundedWith({ state, repos: [repo] })} />);
     const warning = screen.getByTestId("chat-grounding-index-warning");
     expect(warning.textContent).toBe(
       `Index warning — ${words}, so this reply may miss code or documents that are not indexed`,
     );
     expect(warning.className).toContain("text-warning");
+  });
+
+  it.each([
+    [
+      "failed",
+      { lastRun: "failed", error: "authentication failed" },
+      "the last indexing of acme-app failed (authentication failed)",
+    ],
+    [
+      "failed",
+      { lastRun: "completed", error: "network error" },
+      "the last indexing of acme-app failed (network error)",
+    ],
+    ["partial", { lastRun: "partial" }, "the index of acme-app is partial"],
+    ["partial", { lastRun: "interrupted" }, "indexing of acme-app was interrupted"],
+    ["in-progress", { lastRun: "running" }, "acme-app is still being indexed"],
+  ])("names the repository behind a %s index", (state, over, words) => {
+    render(<GroundingBadge grounding={groundedWith({ state, repos: [{ ...repo, ...over }] })} />);
+    expect(screen.getByTestId("chat-grounding-index-warning").textContent).toBe(
+      `Index warning — ${words}, so this reply may miss code or documents that are not indexed`,
+    );
+  });
+
+  it("one repository not indexed yet beside indexed sources is partial, and named (#2384)", () => {
+    const g = groundedWith({
+      state: "partial",
+      repos: [repo, { label: "billing-svc", lastRun: "never" }],
+    });
+    expect(indexWarningText(g)).toBe(
+      "Index warning — repository billing-svc is not indexed yet, so this reply may miss code or documents that are not indexed",
+    );
+    expect(indexWarningText(g)).not.toMatch(/nothing in this project/);
+  });
+
+  it("shows a failed run's class on the repository's line", () => {
+    render(
+      <GroundingBadge
+        grounding={groundedWith({
+          state: "failed",
+          repos: [{ ...repo, lastRun: "failed", error: "authentication failed" }],
+        })}
+      />,
+    );
     expect(screen.getByTestId("chat-grounding-index").textContent).toContain(
       "last run failed (authentication failed)",
     );

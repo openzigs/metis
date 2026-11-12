@@ -103,6 +103,12 @@ export interface RetrievedContext {
   block: string;
   /** How many excerpts reached the block. */
   sources: number;
+  /**
+   * #2326 — the index status line, when the project's index is not healthy.
+   * The reply gets it even with no excerpt: a failed or empty index is when
+   * the model most needs to be told.
+   */
+  indexStatus?: string;
 }
 
 export interface StreamAIReplyInput {
@@ -184,7 +190,7 @@ function toChatTurn(m: { authorKind: string; body: string }): ChatMessage {
  */
 function buildMessages(
   input: StreamAIReplyInput,
-  extra: { toolNote?: string; retrieved?: string; anchor?: string },
+  extra: { toolNote?: string; retrieved?: string; indexStatus?: string; anchor?: string },
 ): ChatMessage[] {
   const system = discussionSystemPrompt({
     excerpts: Boolean(extra.retrieved),
@@ -195,6 +201,7 @@ function buildMessages(
   if (extra.anchor) messages.push({ role: "user", content: extra.anchor });
   for (const h of input.history ?? []) messages.push(toChatTurn(h));
   if (extra.retrieved) messages.push({ role: "system", content: extra.retrieved });
+  if (extra.indexStatus) messages.push({ role: "system", content: extra.indexStatus });
   messages.push(toChatTurn({ authorKind: "human", body: input.triggerMessage.body }));
   return messages;
 }
@@ -265,17 +272,26 @@ function recordToProjectLedger(
   }
 }
 
-async function retrieveSafely(input: StreamAIReplyInput): Promise<string> {
-  if (!input.retrieve) return "";
+/**
+ * The excerpt block (`""` with no excerpt), and — #2326 — the index status
+ * line on its own when there is no excerpt to lead: the block already starts
+ * with it otherwise.
+ */
+async function retrieveSafely(
+  input: StreamAIReplyInput,
+): Promise<{ retrieved: string; indexStatus: string }> {
+  if (!input.retrieve) return { retrieved: "", indexStatus: "" };
   try {
     const r = await input.retrieve(input.triggerMessage.body);
-    return r.sources > 0 ? r.block : "";
+    return r.sources > 0
+      ? { retrieved: r.block, indexStatus: "" }
+      : { retrieved: "", indexStatus: r.indexStatus ?? "" };
   } catch (err) {
     log.warn("Discussion retrieval failed; answering without excerpts", {
       threadId: input.thread.id,
       error: err instanceof Error ? err.message : String(err),
     });
-    return "";
+    return { retrieved: "", indexStatus: "" };
   }
 }
 
@@ -351,7 +367,7 @@ export async function streamAIReply(input: StreamAIReplyInput): Promise<StreamAI
 
   // 2. Ground: the project's excerpts, its read-only tools when offered, and
   //    (#2226) the requirement or analysis the thread is anchored to.
-  const [retrieved, tools, anchor] = await Promise.all([
+  const [{ retrieved, indexStatus }, tools, anchor] = await Promise.all([
     retrieveSafely(input),
     resolveToolsSafely(input, session.id),
     anchorSafely(input),
@@ -359,6 +375,7 @@ export async function streamAIReply(input: StreamAIReplyInput): Promise<StreamAI
   const messages = buildMessages(input, {
     ...(tools ? { toolNote: tools.note } : {}),
     retrieved,
+    indexStatus,
     anchor,
   });
 

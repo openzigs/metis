@@ -33,6 +33,7 @@ import {
   classifyIndexError,
   indexStatusEnabled,
   indexStatusLine,
+  quoteName,
   readProjectIndexStatus,
   toGroundingIndex,
 } from "../lib/ai/index-status.js";
@@ -627,6 +628,8 @@ export interface RagContextCapture {
   failure?: IndexErrorClass;
   /** #2326 — the project's index when the turn retrieved. */
   index?: GroundingIndex;
+  /** #2326 — the status line the block led with, when the index is not healthy. */
+  indexStatusLine?: string;
 }
 
 /** #2240 — what the conversation adds to a turn's retrieval. */
@@ -713,8 +716,12 @@ export async function buildAutoRagContext(
   if (status && (status.repos.length > 0 || status.state !== "healthy")) {
     cap.index = toGroundingIndex(status);
   }
+  const line = status && indexStatusEnabled() ? indexStatusLine(status) : null;
+  // #2326 — kept apart too: a discussion reply drops an excerpt-less block,
+  // but not the status line (`ai-responder.ts`).
+  if (line) cap.indexStatusLine = line;
   return [
-    status && indexStatusEnabled() ? indexStatusLine(status) : null,
+    line,
     block,
     // #2326 — a partial coverage reaches the model too, not only the label.
     cap.coverage ? partialCoverageNote(cap.coverage) : null,
@@ -790,14 +797,12 @@ async function retrieveAutoRagBlock(
     const { kept: hits, belowFloor } = applyRelevanceFloor(fusedHits, floor);
     // #2241 — a partial coverage is reported, not just logged.
     const coverage = results.find((r) => r.coverageWarning)?.coverageWarning;
-    if (capture) {
-      if (belowFloor > 0) capture.belowFloor = belowFloor;
-      if (coverage) {
-        capture.coverage = {
-          matchingChunks: coverage.matchingChunks,
-          totalChunks: coverage.totalChunks,
-        };
-      }
+    if (belowFloor > 0) capture.belowFloor = belowFloor;
+    if (coverage) {
+      capture.coverage = {
+        matchingChunks: coverage.matchingChunks,
+        totalChunks: coverage.totalChunks,
+      };
     }
     // #2240 — the excerpts the previous answer cited, read back as the project
     // holds them now. Losing them costs this turn its carry-over, never its
@@ -841,21 +846,19 @@ async function retrieveAutoRagBlock(
             `(cited in your previous answer)\n${h.text}`,
         ),
       ];
-      if (capture) {
-        capture.contexts.push(...chunkList);
-        capture.sources += chunkList.length;
-        capture.excerpts = listed.map((h, i) => {
-          // #2241 — a fresh hit's dense cosine; a carried excerpt has none.
-          const relevance = i < hits.length ? denseCosine(hits[i]!) : null;
-          return {
-            n: i + 1,
-            chunkId: h.chunkId,
-            name: h.path ?? h.filename,
-            locator: formatHitLocator(h),
-            ...(relevance !== null ? { relevance } : {}),
-          };
-        });
-      }
+      capture.contexts.push(...chunkList);
+      capture.sources += chunkList.length;
+      capture.excerpts = listed.map((h, i) => {
+        // #2241 — a fresh hit's dense cosine; a carried excerpt has none.
+        const relevance = i < hits.length ? denseCosine(hits[i]!) : null;
+        return {
+          n: i + 1,
+          chunkId: h.chunkId,
+          name: h.path ?? h.filename,
+          locator: formatHitLocator(h),
+          ...(relevance !== null ? { relevance } : {}),
+        };
+      });
       const chunks = chunkList.join("\n\n---\n\n");
       // #2240 — said only when it applies, so an ordinary turn's block is unchanged.
       const notes =
@@ -896,7 +899,7 @@ async function retrieveAutoRagBlock(
       lineLookup: fusedDeps.lineLookup,
     });
 
-    if (capture && fused.block) {
+    if (fused.block) {
       capture.contexts.push(fused.block);
       capture.sources += fused.usedSymbols;
     }
@@ -915,15 +918,13 @@ async function retrieveAutoRagBlock(
     return `${ragBlock}\n\n${fused.block}`;
   } catch (err) {
     // A partially-filled capture would misrepresent what the model saw.
-    if (capture) {
-      capture.contexts.length = 0;
-      capture.sources = 0;
-      delete capture.excerpts;
-      delete capture.belowFloor;
-      delete capture.coverage;
-      // #2241 — recorded, so the reply's label says the search failed.
-      capture.failed = true;
-    }
+    capture.contexts.length = 0;
+    capture.sources = 0;
+    delete capture.excerpts;
+    delete capture.belowFloor;
+    delete capture.coverage;
+    // #2241 — recorded, so the reply's label says the search failed.
+    capture.failed = true;
     // #2326 — the model and the label get the class of failure; the log keeps
     // the full detail (A09).
     const failure = classifyIndexError(err);
@@ -956,7 +957,7 @@ async function retrieveAutoRagBlock(
 export function retrievalFailedBlock(projectName: string, failure: IndexErrorClass): string {
   return (
     `${RETRIEVAL_FAILED_BLOCK}\n` +
-    `Retrieval failed for "${projectName}": ${failure}. Do not conclude that the project's code ` +
+    `Retrieval failed for ${quoteName(projectName)}: ${failure}. Do not conclude that the project's code ` +
     `or documents lack what the question asks about.`
   );
 }

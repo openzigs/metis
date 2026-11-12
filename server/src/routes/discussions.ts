@@ -668,7 +668,11 @@ export function discussionsRouter(): Router {
         undefined,
         capture,
       );
-      return { block, sources: capture.sources };
+      return {
+        block,
+        sources: capture.sources,
+        ...(capture.indexStatusLine ? { indexStatus: capture.indexStatusLine } : {}),
+      };
     };
     const resolveTools = (session: { id: string }) =>
       resolveDiscussionTools({
