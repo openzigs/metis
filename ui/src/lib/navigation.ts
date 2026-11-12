@@ -12,6 +12,7 @@ import type { LucideIcon } from "lucide-react";
 import { isAdminOnlySettingsPath } from "@/lib/settings-nav";
 import {
   Activity,
+  ClipboardCheck,
   FolderKanban,
   House,
   MessageSquare,
@@ -27,8 +28,18 @@ export interface NavTab {
   exact?: boolean;
   /** Prefix that marks the tab active when it differs from `href` (e.g. `/eval`). */
   match?: string;
-  /** Shown only to system admins. */
+  /**
+   * Shown only to system admins, and refused to anyone else who opens it by
+   * URL (`isAdminOnlyTabPath`). Hiding is not authorization: the server
+   * enforces every route the page calls (#2332).
+   */
   adminOnly?: boolean;
+  /**
+   * With `adminOnly`, refuse only the tab's own page and leave the pages below
+   * it open, because other pages link a non-admin there (a project's PR
+   * reviews link to `/runs/<id>`).
+   */
+  openBelow?: boolean;
 }
 
 /** A top-level sidebar destination. */
@@ -75,13 +86,23 @@ export const NAV_ITEMS: readonly NavItem[] = [
     href: "/tasks",
     label: "Activity",
     icon: Activity,
+    // #2332 — operations pages, for admins. Sessions stays open to everyone
+    // until #2350 folds it into chat history, so a non-admin's Activity entry
+    // lands there.
     tabs: [
-      { href: "/tasks", label: "Tasks" },
-      { href: "/runs", label: "Runs" },
+      { href: "/tasks", label: "Tasks", adminOnly: true },
+      { href: "/runs", label: "Runs", adminOnly: true, openBelow: true },
       { href: "/sessions", label: "Sessions" },
-      { href: "/scheduler", label: "Scheduler" },
-      { href: "/reviews", label: "Reviews" },
+      { href: "/scheduler", label: "Scheduler", adminOnly: true },
     ],
+  },
+  {
+    // #2332 — an analyst's own work, so a sidebar entry of its own (it was the
+    // last Activity tab), placed right after Activity so an admin's order holds.
+    href: "/reviews",
+    label: "Reviews",
+    icon: ClipboardCheck,
+    tabs: [{ href: "/reviews", label: "Reviews" }],
   },
   {
     href: "/library",
@@ -95,8 +116,8 @@ export const NAV_ITEMS: readonly NavItem[] = [
     icon: Settings,
     tabs: [
       { href: "/settings", label: "Settings" },
-      { href: "/vault", label: "Vault" },
-      { href: "/eval/leaderboard", label: "Eval", match: "/eval" },
+      { href: "/vault", label: "Vault", adminOnly: true },
+      { href: "/eval/leaderboard", label: "Eval", match: "/eval", adminOnly: true },
     ],
   },
 ];
@@ -165,6 +186,38 @@ export function navItemCurrent(pathname: string, item: NavItem): "page" | "true"
 /** The tabs of `item` this user may see. */
 export function visibleTabs(item: NavItem, isAdmin: boolean): NavTab[] {
   return item.tabs.filter((t) => isAdmin || !t.adminOnly);
+}
+
+/**
+ * #2332 — the sidebar entries this user may see, each narrowed to its visible
+ * tabs and landing on the first of them. A hub with no visible tab is dropped,
+ * so no entry leads to a page the user is refused. An admin gets `NAV_ITEMS`
+ * unchanged.
+ */
+export function visibleNavItems(
+  isAdmin: boolean,
+  items: readonly NavItem[] = NAV_ITEMS,
+): NavItem[] {
+  return items.flatMap((item) => {
+    const tabs = visibleTabs(item, isAdmin);
+    return tabs.length === 0 ? [] : [{ ...item, href: tabs[0].href, tabs }];
+  });
+}
+
+/** #2332 — true if `pathname` is an admin-only hub page, which a non-admin is refused. */
+export function isAdminOnlyTabPath(pathname: string): boolean {
+  return NAV_DESTINATIONS.some(
+    (t) => t.adminOnly === true && (t.openBelow ? pathname === t.href : isTabActive(pathname, t)),
+  );
+}
+
+/**
+ * #2332 — true if a non-admin is refused `href`: an admin-only hub page or an
+ * admin-only Settings section. Pages use it to hide their links to those pages.
+ */
+export function isAdminOnlyPath(href: string): boolean {
+  const pathname = href.split(/[?#]/)[0];
+  return isAdminOnlyTabPath(pathname) || isAdminOnlySettingsPath(pathname);
 }
 
 /** The hub whose tab bar belongs on `pathname`, if any tab of it is active. */

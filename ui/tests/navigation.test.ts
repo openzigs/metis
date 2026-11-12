@@ -3,6 +3,8 @@ import {
   hubForPath,
   isActiveRoute,
   isNavItemActive,
+  isAdminOnlyPath,
+  isAdminOnlyTabPath,
   isTabActive,
   NAV_DESTINATIONS,
   NAV_ITEMS,
@@ -10,6 +12,7 @@ import {
   PALETTE_DESTINATIONS,
   paletteDestinations,
   PUBLIC_PATHS,
+  visibleNavItems,
   visibleTabs,
 } from "@/lib/navigation";
 
@@ -20,14 +23,41 @@ const item = (label: string) => {
 };
 
 describe("navigation registry (#27)", () => {
-  it("has six object-level sidebar destinations", () => {
+  it("has seven object-level sidebar destinations, Reviews where its Activity tab sat (#2332)", () => {
     expect(NAV_ITEMS.map((i) => i.label)).toEqual([
       "Home",
       "Projects",
       "Chat",
       "Activity",
+      "Reviews",
       "Library",
       "Settings",
+    ]);
+  });
+
+  // #2332 — an admin keeps the same pages in the same order: Reviews left the
+  // Activity tab bar for the sidebar, and nothing else moved.
+  it("lists every page in the order it had before Reviews moved (#2332)", () => {
+    expect(NAV_DESTINATIONS.map((t) => t.href)).toEqual([
+      "/dashboard",
+      "/projects",
+      "/products",
+      "/documents",
+      "/repositories",
+      "/databases",
+      "/impact-analyses",
+      "/portfolio",
+      "/chat",
+      "/workbench",
+      "/tasks",
+      "/runs",
+      "/sessions",
+      "/scheduler",
+      "/reviews",
+      "/library",
+      "/settings",
+      "/vault",
+      "/eval/leaderboard",
     ]);
   });
 
@@ -79,7 +109,21 @@ describe("navigation registry (#27)", () => {
       "/runs",
       "/sessions",
       "/scheduler",
-      "/reviews",
+    ]);
+  });
+
+  it("gives Reviews a sidebar entry of its own (#2332)", () => {
+    expect(item("Reviews").href).toBe("/reviews");
+    expect(item("Reviews").tabs.map((t) => t.href)).toEqual(["/reviews"]);
+  });
+
+  it("marks the operations and developer pages admin-only, and nothing else (#2332)", () => {
+    expect(NAV_DESTINATIONS.filter((t) => t.adminOnly).map((t) => t.href)).toEqual([
+      "/tasks",
+      "/runs",
+      "/scheduler",
+      "/vault",
+      "/eval/leaderboard",
     ]);
   });
 
@@ -207,7 +251,28 @@ describe("paletteDestinations (#368)", () => {
     expect(hrefs).not.toContain("/x-admin");
     expect(hrefs).not.toContain("/settings/auth");
     expect(hrefs).not.toContain("/settings/embeddings/models");
-    for (const t of PALETTE_DESTINATIONS) expect(hrefs).toContain(t.href);
+    for (const t of PALETTE_DESTINATIONS) {
+      if (!isAdminOnlyPath(t.href)) expect(hrefs).toContain(t.href);
+    }
+  });
+
+  // #2332 — the palette offers a non-admin none of the pages the shell hides.
+  it("offers a non-admin no operations or developer page", () => {
+    const hrefs = paletteDestinations(false).map((t) => t.href);
+    for (const hidden of [
+      "/tasks",
+      "/runs",
+      "/scheduler",
+      "/vault",
+      "/eval/leaderboard",
+      "/settings/mcp",
+    ]) {
+      expect(hrefs).not.toContain(hidden);
+    }
+    for (const kept of ["/reviews", "/sessions", "/settings", "/settings/usage", "/chat"]) {
+      expect(hrefs).toContain(kept);
+    }
+    expect(paletteDestinations(true).map((t) => t.href)).toContain("/settings/mcp");
   });
 
   it("shows every entry to admins", () => {
@@ -221,11 +286,17 @@ describe("paletteDestinations (#368)", () => {
 });
 
 describe("visibleTabs", () => {
-  it("hides admin-only tabs from non-admins", () => {
-    expect(visibleTabs(item("Settings"), false).map((t) => t.label)).toEqual([
-      "Settings",
-      "Vault",
-      "Eval",
+  it("hides admin-only tabs from non-admins (#2332)", () => {
+    expect(visibleTabs(item("Settings"), false).map((t) => t.label)).toEqual(["Settings"]);
+    expect(visibleTabs(item("Activity"), false).map((t) => t.label)).toEqual(["Sessions"]);
+  });
+
+  it("shows an admin every Activity tab", () => {
+    expect(visibleTabs(item("Activity"), true).map((t) => t.label)).toEqual([
+      "Tasks",
+      "Runs",
+      "Sessions",
+      "Scheduler",
     ]);
   });
 
@@ -244,6 +315,77 @@ describe("visibleTabs", () => {
       "Vault",
       "Eval",
     ]);
+  });
+});
+
+describe("visibleNavItems (#2332)", () => {
+  it("gives an admin every entry unchanged, in order", () => {
+    expect(visibleNavItems(true)).toEqual(NAV_ITEMS);
+  });
+
+  it("gives a non-admin every entry, each landing on a page they may open", () => {
+    const items = visibleNavItems(false);
+    expect(items.map((i) => i.label)).toEqual(NAV_ITEMS.map((i) => i.label));
+    for (const i of items) {
+      expect(i.href).toBe(i.tabs[0].href);
+      for (const t of i.tabs) expect(isAdminOnlyPath(t.href)).toBe(false);
+    }
+    // Activity lands on Sessions, the one page of it a non-admin keeps (#2350).
+    expect(items.find((i) => i.label === "Activity")?.href).toBe("/sessions");
+    expect(items.find((i) => i.label === "Settings")?.tabs.map((t) => t.href)).toEqual([
+      "/settings",
+    ]);
+  });
+
+  it("drops a hub left with no page the user may open", () => {
+    const ops = {
+      ...item("Activity"),
+      tabs: [{ href: "/tasks", label: "Tasks", adminOnly: true }],
+    };
+    expect(visibleNavItems(false, [item("Home"), ops]).map((i) => i.label)).toEqual(["Home"]);
+    expect(visibleNavItems(true, [item("Home"), ops]).map((i) => i.label)).toEqual([
+      "Home",
+      "Activity",
+    ]);
+  });
+});
+
+describe("isAdminOnlyTabPath (#2332)", () => {
+  it.each(["/tasks", "/runs", "/scheduler", "/vault", "/eval/leaderboard", "/eval/leaderboard/r1"])(
+    "refuses %s",
+    (path) => expect(isAdminOnlyTabPath(path)).toBe(true),
+  );
+
+  it("refuses the pages below an admin-only tab", () => {
+    expect(isAdminOnlyTabPath("/tasks/t1")).toBe(true);
+    expect(isAdminOnlyTabPath("/scheduler/j1")).toBe(true);
+  });
+
+  // A project's PR reviews link a non-admin to the run that reviewed the PR.
+  it("leaves a run's own page open below the Runs list", () => {
+    expect(isAdminOnlyTabPath("/runs/42")).toBe(false);
+    expect(isAdminOnlyTabPath("/runs/42/review")).toBe(false);
+  });
+
+  it.each(["/sessions", "/reviews", "/reviews/r1", "/dashboard", "/settings", "/runsheet"])(
+    "leaves %s open",
+    (path) => expect(isAdminOnlyTabPath(path)).toBe(false),
+  );
+});
+
+describe("isAdminOnlyPath (#2332)", () => {
+  it("covers admin-only hub pages and admin-only Settings sections", () => {
+    expect(isAdminOnlyPath("/vault")).toBe(true);
+    expect(isAdminOnlyPath("/settings/mcp")).toBe(true);
+    expect(isAdminOnlyPath("/settings/hooks")).toBe(true);
+    expect(isAdminOnlyPath("/settings/usage")).toBe(false);
+    expect(isAdminOnlyPath("/repositories")).toBe(false);
+  });
+
+  it("ignores a query string or fragment", () => {
+    expect(isAdminOnlyPath("/settings/mcp?tab=registry")).toBe(true);
+    expect(isAdminOnlyPath("/vault#top")).toBe(true);
+    expect(isAdminOnlyPath("/library?tab=skills")).toBe(false);
   });
 });
 

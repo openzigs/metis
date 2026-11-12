@@ -7,6 +7,7 @@ import {
   PORTFOLIO_ASSESSMENT_MAX_PRODUCTS,
   PORTFOLIO_COVERAGES,
   PORTFOLIO_DEGRADED_REASON,
+  PORTFOLIO_NOT_CHECKED_MAX,
   PORTFOLIO_RESOURCE_GROUPS,
   createPortfolioAssessmentSchema,
   portfolioAssessmentInputSchema,
@@ -285,6 +286,7 @@ describe("portfolio assessment schemas", () => {
       statement: "Export invoices",
       sourceRequirementId: null,
       sourceProjectId: null,
+      sourceDocumentId: null,
       scope: "product",
       productIds: ["p"],
       status: "pending",
@@ -296,6 +298,7 @@ describe("portfolio assessment schemas", () => {
       createdById: "u",
       products: [],
       repos: [],
+      notChecked: [],
     });
     expect(
       portfolioAssessmentProductInputSchema.parse({ productId: "p", coverage: "covers" }),
@@ -411,9 +414,38 @@ describe("portfolio assessment schemas", () => {
       expect(issues({ hostProductId: "" })).toEqual(["hostProductId"]);
     });
 
-    it("refuses a product-scoped assessment of more than one product", () => {
-      expect(issues({ scope: "product" })).toEqual(["productIds"]);
+    it("#2272 — a product-scoped assessment names several products, up to the cap", () => {
+      const many = (n: number) => Array.from({ length: n }, (_, i) => `p${i}`);
+      expect(issues({ scope: "product" })).toEqual([]);
       expect(issues({ scope: "product", productIds: ["p1"] })).toEqual([]);
+      expect(
+        issues({ scope: "product", productIds: many(PORTFOLIO_ASSESSMENT_MAX_PRODUCTS) }),
+      ).toEqual([]);
+      expect(
+        issues({ scope: "product", productIds: many(PORTFOLIO_ASSESSMENT_MAX_PRODUCTS + 1) }),
+      ).toEqual(["productIds"]);
+    });
+
+    it("#2272 — carries the not-checked list and the source document", () => {
+      const parsed = portfolioAssessmentInputSchema.parse({
+        ...base,
+        sourceDocumentId: "doc-1",
+        notChecked: [{ text: "Req 101", reason: "over-limit" }],
+      });
+      expect(parsed.sourceDocumentId).toBe("doc-1");
+      expect(parsed.notChecked).toEqual([{ text: "Req 101", reason: "over-limit", count: null }]);
+      expect(portfolioAssessmentInputSchema.parse(base).notChecked).toEqual([]);
+      expect(issues({ notChecked: [{ text: "x", reason: "dropped" }] })).toEqual([
+        "notChecked.0.reason",
+      ]);
+      expect(
+        issues({
+          notChecked: Array.from({ length: PORTFOLIO_NOT_CHECKED_MAX + 1 }, () => ({
+            text: "x",
+            reason: "budget",
+          })),
+        }),
+      ).toEqual(["notChecked"]);
     });
 
     it("refuses lists past their caps", () => {
@@ -452,32 +484,47 @@ describe("portfolio assessment schemas", () => {
 describe("createPortfolioAssessmentSchema (#1625)", () => {
   const ok = (v: unknown) => createPortfolioAssessmentSchema.safeParse(v).success;
 
-  it("takes exactly one of statement and requirementId", () => {
+  it("takes exactly one of statement, requirementId and (#2272) documentId", () => {
     expect(ok({ statement: "Reset by email", scope: "all-accessible" })).toBe(true);
     expect(ok({ requirementId: "r1", scope: "all-accessible" })).toBe(true);
+    expect(ok({ documentId: "d1", scope: "all-accessible" })).toBe(true);
     expect(ok({ scope: "all-accessible" })).toBe(false);
     expect(ok({ statement: "s", requirementId: "r1", scope: "all-accessible" })).toBe(false);
+    expect(ok({ statement: "s", documentId: "d1", scope: "all-accessible" })).toBe(false);
+    expect(ok({ requirementId: "r1", documentId: "d1", scope: "all-accessible" })).toBe(false);
+    expect(ok({ documentId: "", scope: "all-accessible" })).toBe(false);
   });
 
   it("bounds the statement and the products", () => {
     expect(ok({ statement: " ", scope: "all-accessible" })).toBe(false);
     expect(ok({ statement: "x".repeat(8_001), scope: "all-accessible" })).toBe(false);
     // #1657 — an all-accessible scope names no product: a list it would ignore is refused.
-    expect(PORTFOLIO_ASSESSMENT_MAX_PRODUCTS).toBe(1);
+    expect(PORTFOLIO_ASSESSMENT_MAX_PRODUCTS).toBe(50);
     expect(ok({ statement: "s", scope: "all-accessible", productIds: [] })).toBe(true);
     expect(ok({ statement: "s", scope: "all-accessible", productIds: ["p1"] })).toBe(false);
   });
 
-  it('a "product" scope names exactly one product; an unknown field is refused', () => {
+  it('#2272 — a "product" scope names one or several products, up to the cap', () => {
+    const many = (n: number) => Array.from({ length: n }, (_, i) => `p${i}`);
     expect(ok({ statement: "s", scope: "product" })).toBe(false);
     expect(ok({ statement: "s", scope: "product", productIds: [] })).toBe(false);
     expect(ok({ statement: "s", scope: "product", productIds: ["p1"] })).toBe(true);
-    expect(ok({ statement: "s", scope: "product", productIds: ["p1", "p2"] })).toBe(false);
+    expect(ok({ statement: "s", scope: "product", productIds: ["p1", "p2"] })).toBe(true);
+    expect(
+      ok({ statement: "s", scope: "product", productIds: many(PORTFOLIO_ASSESSMENT_MAX_PRODUCTS) }),
+    ).toBe(true);
+    expect(
+      ok({
+        statement: "s",
+        scope: "product",
+        productIds: many(PORTFOLIO_ASSESSMENT_MAX_PRODUCTS + 1),
+      }),
+    ).toBe(false);
     expect(ok({ statement: "s", scope: "all-accessible", extra: true })).toBe(false);
     expect(ok({ statement: "s", scope: "everything" })).toBe(false);
   });
 
-  it("#1623 — a host product: any for all-accessible, only its own for a product scope", () => {
+  it("#1623 — a host product: any for all-accessible, only one of its own for a product scope", () => {
     expect(ok({ statement: "s", scope: "all-accessible", hostProductId: "p9" })).toBe(true);
     expect(ok({ statement: "s", scope: "product", productIds: ["p1"], hostProductId: "p1" })).toBe(
       true,
@@ -485,6 +532,13 @@ describe("createPortfolioAssessmentSchema (#1625)", () => {
     expect(ok({ statement: "s", scope: "product", productIds: ["p1"], hostProductId: "p2" })).toBe(
       false,
     );
+    // #2272 — any one of several chosen products.
+    expect(
+      ok({ statement: "s", scope: "product", productIds: ["p1", "p2"], hostProductId: "p2" }),
+    ).toBe(true);
+    expect(
+      ok({ statement: "s", scope: "product", productIds: ["p1", "p2"], hostProductId: "p3" }),
+    ).toBe(false);
     expect(ok({ statement: "s", scope: "all-accessible", hostProductId: "" })).toBe(false);
   });
 });

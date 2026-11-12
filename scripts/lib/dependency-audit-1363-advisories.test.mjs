@@ -259,7 +259,7 @@ describe("the #1363 advisory set is closed in the resolved tree", () => {
       expect(
         keys.some((key) => key.includes("<0.8.15")),
         `no override bounds the 0.8 line at 0.8.15; keys present: ${keys.join(", ") || "none"}. ` +
-          "@node-saml/node-saml, xml-crypto, xml-encryption and mammoth all pin 0.8.13.",
+          "@node-saml/node-saml, xml-crypto and xml-encryption all pin 0.8.13.",
       ).toBe(true);
       expect(
         keys.some((key) => key.includes("<0.9.12")),
@@ -530,7 +530,7 @@ describe("the #1363 advisory set is closed in the resolved tree", () => {
           "uninterruptible infinite loop inflating a malformed stream. Sole consumer is " +
           "officeparser@6.1.1, reached from server/src/lib/documents/parsers.ts:290-294 " +
           "on the `pptx` branch — a ZIP, which is what fflate inflates. (.docx goes to " +
-          "mammoth and .xlsx to exceljs, so neither reaches fflate.)",
+          "the JSZip-based docx-to-markdown.ts and .xlsx to exceljs, so neither reaches fflate.)",
       ).toEqual([]);
     });
   });
