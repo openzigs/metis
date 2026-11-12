@@ -565,6 +565,7 @@ describe("a per-call forcePrompt read reaches the gate (#128 review)", () => {
 describe("executeToolCall — #2325 citation contract", () => {
   it("carries the tool's citations onto the executed call, and none when it returned none", async () => {
     const ref = {
+      repoConnectionId: "r1",
       path: "src/a.ts",
       startLine: 1,
       endLine: 2,

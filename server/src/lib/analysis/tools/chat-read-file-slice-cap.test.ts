@@ -65,7 +65,7 @@ function runtime(tool: AgentTool): RuntimeTool {
     source: "code",
     validate: (args) => ({ ok: true, args }),
     async execute(args, ctx) {
-      const r = await tool.execute(args, { projectId: ctx.projectId });
+      const r = await tool.execute(args, { projectId: ctx.projectId ?? "" });
       return { text: r.content, ...(r.isError ? { isError: true } : {}) };
     },
   };

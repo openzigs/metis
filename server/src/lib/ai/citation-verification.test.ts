@@ -433,6 +433,7 @@ describe("#2325 — a code citation records the version it was read at", () => {
   const SHA = "0123456789abcdef0123456789abcdef01234567";
   const HEAD = "fedcba9876543210fedcba9876543210fedcba98";
   const ref = (path: string, over: Record<string, unknown> = {}) => ({
+    repoConnectionId: null,
     path,
     startLine: 10,
     endLine: 40,
