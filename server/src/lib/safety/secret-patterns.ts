@@ -41,7 +41,11 @@ export interface SecretPattern {
   readonly id: string;
   /** What a person is told was found ("AWS access key id"); never the value. */
   readonly kind: string;
-  /** Global. Linear-time: see the module comment. */
+  /**
+   * Global. Linear-time: see the module comment. A FRESH RegExp on every read,
+   * so no consumer can leave `lastIndex` set for the next one (a `g` RegExp is
+   * stateful under `exec` and `test`).
+   */
   readonly re: RegExp;
   /**
    * A vendor-specific prefix or a key block: specific enough to REFUSE a save
@@ -51,6 +55,22 @@ export interface SecretPattern {
   readonly highConfidence: boolean;
   /** Return false to keep a match that is not a secret (a digest, a placeholder). */
   readonly accept?: (match: string, input: string, offset: number) => boolean;
+  /**
+   * For a {@link highConfidence} pattern: return false for a match that is
+   * still redacted but must never refuse a save (a vendor's published test key).
+   */
+  readonly refuse?: (match: string) => boolean;
+}
+
+type PatternSpec = Omit<SecretPattern, "re"> & { readonly re: RegExp };
+
+/** Freeze a spec, exposing `re` as a fresh copy on every read. */
+function secretPattern(spec: PatternSpec): SecretPattern {
+  const { re, ...rest } = spec;
+  const { source, flags } = re;
+  const p = { ...rest } as SecretPattern;
+  Object.defineProperty(p, "re", { get: () => new RegExp(source, flags), enumerable: true });
+  return Object.freeze(p);
 }
 
 /** Base64 characters a private-key body must hold before an unterminated block counts. */
@@ -77,13 +97,34 @@ function hasKeyBody(match: string): boolean {
 }
 
 /**
- * A URL password that is a named template slot (`${DB_PASS}`, `$DB_PASS`, `{pw}`,
- * `%(pw)s`, `****`), not a value. A password that merely starts with `$` or `%`
- * (`$ecretPa55`, a percent-encoded one) is a value.
+ * A whole value that is a named template slot, not a secret: `${DB_PASS}`,
+ * `{{ .pw }}`, `{pw}`, `%(pw)s`, `$DB_PASS`, `<password>`, `****`. Only the
+ * whole shape counts: a value that merely starts with `$`, `%` or `{`
+ * (`$ecretPa55`, a percent-encoded password) is a value.
  */
+const PLACEHOLDER_RE =
+  /^(?:\$\{[^{}]{1,100}\}|\{\{[^{}]{1,100}\}\}|\{[A-Za-z_][\w.-]{0,100}\}|%\([\w.-]{1,100}\)s|\$[A-Z_][A-Z0-9_]{0,100}|<[^<>]{1,100}>|\*+)$/;
+
 function isUrlCredential(match: string): boolean {
-  const password = match.slice(match.indexOf(":") + 1);
-  return !/^(?:\$\{|\{|%\(|\$[A-Z_][A-Z0-9_]*$|\*+$)/.test(password);
+  return !PLACEHOLDER_RE.test(match.slice(match.indexOf(":") + 1));
+}
+
+/**
+ * A value assigned to a password, token or key NAME is a secret unless it is
+ * plainly not one: a template slot or an interpolation, `changeme`, `xxx`, one
+ * repeated character (`********`), a path, URL or URN, another class's marker, or a bare
+ * word or dotted name with no digit or symbol (`"refresh"`, `settings.SECRET_KEY`,
+ * `your-api-key-here`, `true`): an enum value or a reference, not a literal.
+ */
+function isAssignedSecret(match: string): boolean {
+  if (PLACEHOLDER_RE.test(match) || match.includes("[REDACTED:")) return false;
+  // Interpolated (`${secret}-api-key`), so not a literal; or a stand-in.
+  if (/\$\{|\{\{|change[_-]?me|xxx/i.test(match) || /^(.)\1*$/.test(match)) return false;
+  // A word in any script (a translation: "Contraseña", "(Test-)Token") is a label.
+  if (/^(?:[A-Za-z_.()-]|[^\x00-\x7F])+$/.test(match)) return false;
+  if (/^(?:\.{0,2}\/|~\/|[A-Za-z]:\\|urn:|[A-Za-z][A-Za-z0-9+.-]{0,30}:\/\/)/i.test(match))
+    return false;
+  return !/\.(?:pem|key|crt|cer|der|p12|pfx|jks|json|ya?ml|txt)$/i.test(match);
 }
 
 // Digest lengths a hex string legitimately has: MD5, SHA-1, SHA-224, SHA-256,
@@ -101,7 +142,7 @@ function isHexSecret(match: string, input: string, offset: number): boolean {
  * The set, most specific first: a key block or a vendor key is replaced before
  * a generic shape (a long hex run, `Bearer …`) could take part of it.
  */
-export const SECRET_PATTERNS: readonly SecretPattern[] = [
+const SPECS: readonly PatternSpec[] = [
   {
     // PEM and OpenSSH private keys, multi-line or as one escaped string
     // (`"-----BEGIN PRIVATE KEY-----\nMIIE…\n-----END PRIVATE KEY-----\n"` in a
@@ -180,6 +221,10 @@ export const SECRET_PATTERNS: readonly SecretPattern[] = [
     kind: "Stripe key",
     re: /\b(?:(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}|whsec_[A-Za-z0-9]{24,})\b/g,
     highConfidence: true,
+    // Stripe publishes an `sk_test_` key in its own docs, so a definition that
+    // quotes it is not refused. Redacted all the same: a test-mode key still
+    // reads and writes its account's test data.
+    refuse: (match) => !match.startsWith("sk_test_"),
   },
   {
     id: "npm_token",
@@ -244,7 +289,29 @@ export const SECRET_PATTERNS: readonly SecretPattern[] = [
     highConfidence: false,
     accept: isHexSecret,
   },
+  {
+    // A literal assigned to a password, token or key NAME (`DB_PASSWORD=…`,
+    // `"client_secret": "…"`, `api_key: …`, `token := "…"`): the value only, so
+    // the name stays readable. Last, so a vendor shape names its own class
+    // first. Two forms:
+    //   - quoted, anywhere on a line (code, JSON, YAML, `.env`): the value ends
+    //     at its closing quote;
+    //   - unquoted, as a whole line's value (`.env`, YAML, `.properties`): the
+    //     name starts the line and the value runs to its end or a `#`. Code
+    //     (`token = cfg.token`, `password = get()`) has no such line.
+    // Not high-confidence: a name says nothing about the value, so it is
+    // redacted but never refuses a save. `isAssignedSecret` keeps placeholders,
+    // references and bare words.
+    id: "assigned_secret",
+    kind: "secret assigned to a password, token or key name",
+    re: /(?<=(?:passw(?:or)?d|secret(?:[_-]?key)?|api[_-]?key|token|private[_-]?key)["']?[ \t]{0,8}(?::=|=>|[=:])[ \t]{0,8}["'`])[^\s"'`]{6,200}(?=["'`])|(?<=^[ \t]{0,40}(?:(?:export|-)[ \t]{1,8})?["']?[\w.-]{0,60}(?:passw(?:or)?d|secret(?:[_-]?key)?|api[_-]?key|token|private[_-]?key)["']?[ \t]{0,8}[=:][ \t]{0,8})[^\s"'`#;,\(\)\{\}[\]<>=*&!][^\s"'`#;,\(\)\{\}[\]<>]{5,199}(?=[ \t]{0,40}(?:#|\r?$))/gim,
+    highConfidence: false,
+    accept: isAssignedSecret,
+  },
 ];
+
+/** {@link SPECS}, frozen; each `re` read is a fresh RegExp (see {@link SecretPattern.re}). */
+export const SECRET_PATTERNS: readonly SecretPattern[] = Object.freeze(SPECS.map(secretPattern));
 
 /**
  * Two classes keep the marker the connector redactor always gave them, so a
@@ -270,8 +337,6 @@ function inPlace(match: string, marker: string): string {
 
 /** Every match of `p` in `text` that its `accept` keeps, in order. */
 export function* secretMatches(p: SecretPattern, text: string): Generator<string> {
-  // matchAll copies lastIndex: a caller that left it mid-string would skip the start.
-  p.re.lastIndex = 0;
   for (const m of text.matchAll(p.re)) {
     if (!p.accept || p.accept(m[0], text, m.index)) yield m[0];
   }

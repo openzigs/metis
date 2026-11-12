@@ -939,3 +939,46 @@ One run per arm (Sonnet 5.5 answers and judge), compared with run 2 above:
   multi-product questions, which chat still runs unscoped (#2238).
 - The #2241 runs spent $0.772870 across both arms. These are single runs, so a difference of one
   question is within run-to-run noise (compare runs 1 and 2 above).
+
+### Secret redaction in repository source (#2333), 2026-11-12
+
+#2333 redacts secrets in repository files before they are indexed, stored in the code graph or
+read by `read_file_slice`. Both evals were run before it (on `main` at `0dac6304`) and after it
+(on the PR branch), each on a freshly materialized corpus, on `claude-sonnet-5-5` for answers and
+judge. One run per arm.
+
+**What redaction changed in the corpora.** In the BA-QA knowledge step, 7 Miniflux source files
+were redacted and none of the python-client's: the `.devcontainer` and three `contrib`
+docker-compose files (`ADMIN_PASSWORD=test123` and a `postgres://…:…@` URL),
+`contrib/thunder_client/collection.json` (a `"password": "test123"`), `client/client_test.go`
+(`Token: "token2"`) and `internal/config/options_parsing_test.go` (three database URLs).
+`questions.json` cites none of them as an expected source. In the localization corpora's
+3,573 committed symbol texts, one is redacted (`miniflux#00023`, the same `client_test.go`
+literal); A0 reads the committed rows and is not affected.
+
+| BA-QA | off, before | off, after | on, before | on, after |
+|---|---:|---:|---:|---:|
+| Correctness: mean facts stated | 27% | 27% | 45% | 45% |
+| Fully correct answers | 0/10 | 0/10 | 1/10 | 2/10 |
+| Citation precision | 31% (5/16) | 33% (5/15) | 89% (47/53) | 90% (37/41) |
+| Citation recall | 16% (5/32) | 16% (5/32) | 25% (8/32) | 28% (9/32) |
+| Abstention on unanswerable | 4/4 | 4/4 | 4/4 | 4/4 |
+| Follow-up on ambiguous | 4/4 | 4/4 | 4/4 | 4/4 |
+| False abstention on answerable | 6/10 | 6/10 | 4/10 | 4/10 |
+| Right behaviour, single-product | 4/6 | 4/6 | 6/6 | 6/6 |
+| Spend (answers + judge) | $0.296865 | $0.298324 | $0.522035 | $0.475595 |
+
+- **No regression.** Every question got the same behaviour (answer, abstain, follow-up) in both
+  arms before and after. With the flags off every question stated the same number of facts. With
+  them on, S3 stated one fact fewer and S5 one more, and S2 cited one more expected file: the
+  run-to-run spread of the baseline runs above. No `[REDACTED:` marker appears in any answer.
+- **Localization A0** (`--arms A0 --runs 1`, $0): Miniflux R@5 0.52, R@10 0.60, edit precision
+  0.17, MRR 0.55; fixture portfolio R@5 0.54, R@10 1.00, edit precision 0.21, MRR 0.54, before
+  and after. The per-corpus and pooled reports are identical apart from run ids and times.
+- **The `--floor-sweep` retrieval ($0)** kept every expected-source excerpt at the default 0.55
+  floor before and after (27/27), and every question's count of expected files in its top 8 was
+  the same. The rest of the top 8 moved: 24 of 39 question-product lists differ in membership or
+  order. That is index-rebuild noise, not redaction. A second baseline, re-materialized and
+  re-ingested from scratch on the same `main` code, differs from the first in 25 of 39 lists and
+  from the branch in 22. No redacted file appears in any list that changed.
+- **Spend:** $1.592819 in all, the four BA-QA runs above. Localization A0 calls no model.

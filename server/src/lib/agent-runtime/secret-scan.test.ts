@@ -35,6 +35,20 @@ describe("findSecretKinds", () => {
     const bearer = ["Bearer ", "abcdefghijklmnopqrstuv"].join("");
     const url = ["postgres://app:", "s3cr3tPassw0rd", "@db/app"].join("");
     expect(findSecretKinds(`${bearer} ${url} ${"0123456789abcdef".repeat(3)}`)).toEqual([]);
+    // Keyword-anchored assignments and the AWS secret key are redacted, never refused.
+    const assigned = ["DB_PASSWORD=", "s3cr3t-Pa55"].join("");
+    const awsSecret = ["aws_secret_access_key = ", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYzzzzzzKEYa"].join(
+      "",
+    );
+    expect(findSecretKinds(`${assigned}\n${awsSecret}\n`)).toEqual([]);
+  });
+
+  it("does not refuse Stripe's documented sk_test_ key, but refuses its live and restricted keys", () => {
+    // The shape Stripe's own API docs print, assembled at runtime.
+    const docsKey = ["sk_", "test_", "4eC39HqLyjWDarjtT1zdp7dc"].join("");
+    expect(findSecretKinds(`curl -u ${docsKey}: https://api.stripe.com/v1/charges`)).toEqual([]);
+    expect(findSecretKinds(["rk_", "test_", "f".repeat(24)].join(""))).toEqual(["Stripe key"]);
+    expect(findSecretKinds(STRIPE)).toEqual(["Stripe key"]);
   });
 
   it("does not refuse a key-block header with no key in it (#2333)", () => {

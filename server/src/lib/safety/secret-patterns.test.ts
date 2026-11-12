@@ -6,8 +6,17 @@
  * Every credential-shaped value is BUILT at runtime (`k(...)`), so this file
  * carries none as a literal and no push-protection scanner trips on it.
  */
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { gunzipSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 import { redactSecrets, SECRET_PATTERNS, secretMarker, secretMatches } from "./secret-patterns.js";
+
+const EVAL_CORPUS = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "../../../../eval-data/corpus",
+);
 
 const k = (...parts: string[]): string => parts.join("");
 const B64 = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7";
@@ -104,6 +113,11 @@ const CASES: ReadonlyArray<{ id: string; positive: string; negative: string }> =
     id: "long_hex",
     positive: "0123456789abcdef".repeat(3),
     negative: "0123456789abcdef".repeat(4),
+  },
+  {
+    id: "assigned_secret",
+    positive: k('password = "', "s3cr3t-Pa55", '"'),
+    negative: 'password = "${DB_PASSWORD}"',
   },
 ];
 
@@ -203,14 +217,29 @@ describe("SECRET_PATTERNS", () => {
     expect(redactSecrets(pgp).byClass).toEqual({ private_key: 1 });
   });
 
-  it("secretMatches finds a match even after a caller left lastIndex mid-string", () => {
+  it("a consumer cannot leave lastIndex set for the next one: each `re` read is a fresh RegExp", () => {
     const p = SECRET_PATTERNS.find((x) => x.id === "aws_key")!;
     const key = k("AKIA", "Q3EGRTXXXXZ7Y2WB");
-    p.re.lastIndex = 1000;
-    try {
-      expect([...secretMatches(p, key)]).toEqual([key]);
-    } finally {
-      p.re.lastIndex = 0;
+    const mine = p.re;
+    expect(mine.exec(`x ${key}`)).not.toBeNull(); // a `g` exec leaves lastIndex past the match
+    expect(mine.lastIndex).toBeGreaterThan(0);
+    expect(p.re).not.toBe(mine);
+    expect(p.re.lastIndex).toBe(0);
+    expect(p.re.test(key)).toBe(true);
+    expect([...secretMatches(p, key)]).toEqual([key]);
+    expect(redactSecrets(key).count).toBe(1);
+    // The set and each pattern are frozen: a consumer cannot swap one out either.
+    expect(Object.isFrozen(SECRET_PATTERNS)).toBe(true);
+    expect(Object.isFrozen(p)).toBe(true);
+  });
+
+  it("URL credentials: only the whole named-slot shapes are templates", () => {
+    for (const slot of ["${PASS}", "{{.pw}}", "{pw}", "%(pw)s", "$DB_PASS", "****"]) {
+      expect(redactSecrets(`mysql://root:${slot}@db/`).count, slot).toBe(0);
+    }
+    // Starts like a slot, but is a value.
+    for (const value of ["${PASS}tail9", "{notclosed9", "%(pw)x", "$lowercase1", "**pw**"]) {
+      expect(redactSecrets(k("mysql://root:", value, "@db/")).count, value).toBe(1);
     }
   });
 
@@ -227,6 +256,7 @@ describe("SECRET_PATTERNS", () => {
       "bearer",
       "jwt",
       "long_hex",
+      "assigned_secret",
     ]);
   });
 
@@ -311,6 +341,104 @@ describe("false positives on source code (#1138)", () => {
   });
 });
 
+describe("assigned_secret: a literal assigned to a password, token or key name", () => {
+  const PW = k("s3cr3t", "-Pa55");
+  const MARK = secretMarker("assigned_secret");
+
+  it.each([
+    [".env", k("DB_PASSWORD=", PW), k("DB_PASSWORD=", MARK)],
+    [
+      ".env, exported and commented",
+      k("export API_KEY=", PW, "  # prod"),
+      k("export API_KEY=", MARK, "  # prod"),
+    ],
+    [".env, quoted", k('CLIENT_SECRET="', PW, '"'), k('CLIENT_SECRET="', MARK, '"')],
+    ["YAML", k("  password: ", PW), k("  password: ", MARK)],
+    ["YAML list item", k("  - ADMIN_PASSWORD=", PW), k("  - ADMIN_PASSWORD=", MARK)],
+    ["YAML, quoted", k("  apiKey: '", PW, "'"), k("  apiKey: '", MARK, "'")],
+    [".properties", k("spring.datasource.password=", PW), k("spring.datasource.password=", MARK)],
+    [
+      "JSON",
+      k('{"client_secret": "', PW, '", "x": 1}'),
+      k('{"client_secret": "', MARK, '", "x": 1}'),
+    ],
+    ["Go", k('token := "', PW, '"'), k('token := "', MARK, '"')],
+    [
+      "Python kwarg",
+      k('connect(user="app", passwd="', PW, '")'),
+      k('connect(user="app", passwd="', MARK, '")'),
+    ],
+    ["TS object", k("{ privateKey: `", PW, "` }"), k("{ privateKey: `", MARK, "` }")],
+    ["Ruby hash", k(':api_key => "', PW, '"'), k(':api_key => "', MARK, '"')],
+  ])("%s: the value is replaced, the name stays readable", (_label, input, expected) => {
+    expect(redactSecrets(input)).toEqual({
+      text: expected,
+      count: 1,
+      byClass: { assigned_secret: 1 },
+    });
+  });
+
+  it.each([
+    ["a template slot", 'password: "${DB_PASSWORD}"'],
+    ["a Helm value", "password: {{ .Values.db.password }}"],
+    ["an angle-bracket placeholder", 'api_key = "<your-api-key>"'],
+    ["changeme", "password: changeme123"],
+    ["all asterisks", 'password = "********"'],
+    ["xxx", "export E2B_API_KEY=e2b_xxx"],
+    ["empty", 'password = ""'],
+    ["a printf slot", 'password = "%(password)s"'],
+    ["a short value", 'token = "abc12"'],
+    ["a bare word", 'token: "refresh"'],
+    ["a translated label", '"form.user.label.password": "Contraseña"'],
+    ["an interpolation", "apiKey: `${secret}-api-key`,"],
+    ["a reference", "password = settings.SECRET_KEY"],
+    ["a call", "password = get_password()"],
+    ["a subscript", 'api_key = os.environ["API_KEY"]'],
+    ["a property read", "apiKey: process.env.API_KEY,"],
+    ["a TS field type", "  token: string;"],
+    ["a Python annotation", "secret: str"],
+    ["a Go dereference", "feed.Password = *f.Password"],
+    ["a Go short assignment", "password := cfg.Pass1"],
+    ["a comparison", 'if password == "hunter22x" {'],
+    ["a key path", "private_key: /etc/ssl/private/server.pem"],
+    ["a key file name", 'private_key = "server-2024.pem"'],
+    ["a URL", 'token_url: "https://auth.example.com/oauth2/token"'],
+    ["a URN", 'password: "urn:oasis:names:tc:SAML:2.0:ac:classes:Password"'],
+    ["a counter", "max_tokens: 4096"],
+    ["a name that only contains the word", 'password_hash = "abc123def456"'],
+    ["the word in the value", 'label = "Enter password 12345"'],
+  ])("leaves %s alone", (_label, line) => {
+    expect(redactSecrets(line)).toEqual({ text: line, count: 0, byClass: {} });
+  });
+
+  it("a vendor shape keeps its own class; the assignment does not redact its marker again", () => {
+    const out = redactSecrets(k('token = "', "ghp_", "a".repeat(36), '"'));
+    expect(out.byClass).toEqual({ github_pat: 1 });
+  });
+
+  it("ordinary code stays intact: 3,573 stored symbol texts of the eval corpora", () => {
+    // Real Go, Python, JS and TS from the localization corpora (miniflux/v2 and the
+    // three fixture repositories), as the code graph stores them.
+    const rows = ["localization-01-miniflux-heldout", "localization-02-fixture-portfolio"].flatMap(
+      (corpus) =>
+        (
+          JSON.parse(
+            gunzipSync(readFileSync(path.join(EVAL_CORPUS, corpus, "symbols.json.gz"))).toString(
+              "utf8",
+            ),
+          ) as { rows: { id: string; embeddingText: string }[] }
+        ).rows,
+    );
+    expect(rows).toHaveLength(3573);
+    const hit = rows.filter((r) => redactSecrets(r.embeddingText).count > 0);
+    // The one hit is a credential-shaped literal in a Go test fixture
+    // (`client_test.go`: `Token: "token2"`), which the class is meant to take.
+    expect(hit.map((r) => [r.id, redactSecrets(r.embeddingText).byClass])).toEqual([
+      ["miniflux#00023", { assigned_secret: 1 }],
+    ]);
+  });
+});
+
 describe("linear time", () => {
   /** The stated bound: the whole set over one 1 MB line. Linear patterns take a few ms. */
   const BOUND_MS = 1500;
@@ -340,6 +468,11 @@ describe("linear time", () => {
     ["repeated Bearer", fill("Bearer ")],
     ["hex separated by dashes", fill("0123456789abcdef-")],
     ["whitespace", fill(" \t")],
+    ["repeated quoted assignments", fill('password="')],
+    ["repeated unquoted assignments", fill("token=")],
+    ["an assignment then 1 MB of value", "api_key=" + fill("a1")],
+    ["a quoted assignment then 1 MB with no closing quote", 'secret: "' + fill("a1")],
+    ["a long name before the keyword", fill("a.") + "password=" + "a1".repeat(20)],
   ];
 
   it.each(adversarial)(`redacts %s (1 MB) within ${BOUND_MS} ms`, (_label, line) => {

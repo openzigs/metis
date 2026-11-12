@@ -8,7 +8,8 @@
  * Deliberately narrow: only the shared set's high-confidence shapes (vendor
  * prefixes and key blocks, not "long random strings") — a false positive blocks
  * a legitimate save. Documentation placeholders that end in `EXAMPLE` (the form
- * AWS's own docs use) are allowed.
+ * AWS's own docs use) are allowed, as is a match its pattern's `refuse` exempts
+ * (Stripe's published `sk_test_` key): still redacted on every read path.
  *
  * #2333 — the shapes live in `safety/secret-patterns.ts`, the one set the
  * connector redactor and every repository read path use too; this file keeps
@@ -24,7 +25,7 @@ export function findSecretKinds(text: string): string[] {
   const kinds = new Set<string>();
   for (const p of REFUSED) {
     for (const m of secretMatches(p, text)) {
-      if (/EXAMPLE$/i.test(m)) continue;
+      if (/EXAMPLE$/i.test(m) || (p.refuse && !p.refuse(m))) continue;
       kinds.add(p.kind);
     }
   }
