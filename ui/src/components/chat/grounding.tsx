@@ -28,6 +28,16 @@ export function groundingText(g: ChatGrounding): string {
       return [`Grounded in ${g.projectName}`, ...parts].join(" · ");
     }
     case "no-context":
+      // #2241 — say why nothing was supplied, when the server said.
+      if (g.reason === "insufficient-evidence") {
+        const weak = g.belowFloor
+          ? ` (${plural(g.belowFloor, "weak match", "weak matches")} set aside)`
+          : "";
+        return `Insufficient evidence — nothing in ${g.projectName} was relevant enough to this question${weak}; check any file or code it names`;
+      }
+      if (g.reason === "retrieval-failed") {
+        return `Retrieval failed — ${g.projectName}'s knowledge base could not be searched for this reply; check any file or code it names`;
+      }
       // PR #437 review: say only what is known. Auto-retrieval supplied no
       // excerpts, but the model may still have read the project through its
       // tools (code search, tree, MCP), so "answered from general knowledge"
@@ -79,19 +89,57 @@ function multiGrounded(g: Extract<ChatGrounding, { status: "multi" }>): boolean 
   return g.projects.some((p) => p.sources > 0) && !g.unsearched?.length && !g.unavailable;
 }
 
-/** Under each assistant reply: what that reply was grounded in. */
+/** #2241 — the line saying only part of the project could be searched; `null` when all of it could. */
+export function coverageText(g: ChatGrounding): string | null {
+  if (g.status === "unscoped" || g.status === "multi" || !g.coverage) return null;
+  const { matchingChunks, totalChunks } = g.coverage;
+  return `Partial coverage — only ${matchingChunks} of ${totalChunks} chunks in ${g.projectName} are searchable with the current embedding model; re-index to search the rest`;
+}
+
+function relevanceText(relevance: number | undefined): string {
+  return relevance === undefined ? "" : ` · relevance ${relevance.toFixed(2)}`;
+}
+
+/**
+ * Under each assistant reply: what that reply was grounded in. #2241 — and
+ * which files and documents its excerpts came from, and a partial coverage.
+ */
 export function GroundingBadge({ grounding }: { grounding: ChatGrounding | undefined }) {
   if (!grounding) return null;
   const grounded =
     grounding.status === "grounded" || (grounding.status === "multi" && multiGrounded(grounding));
+  const sources = grounding.status === "grounded" ? (grounding.sourcesUsed ?? []) : [];
+  const coverage = coverageText(grounding);
   return (
-    <p
+    <div
       data-testid="chat-grounding"
       data-grounding={grounding.status}
+      {...(grounding.status === "no-context" && grounding.reason
+        ? { "data-reason": grounding.reason }
+        : {})}
       className={`mt-1 text-xs ${grounded ? "text-muted-foreground" : "text-warning"}`}
     >
-      {groundingText(grounding)}
-    </p>
+      {sources.length > 0 ? (
+        <details>
+          <summary className="cursor-pointer">{groundingText(grounding)}</summary>
+          <ul data-testid="chat-grounding-sources" className="mt-1 list-disc pl-5">
+            {sources.map((s) => (
+              <li key={s.name}>
+                <span className="font-mono">{s.name}</span>
+                {` · ${plural(s.excerpts, "excerpt", "excerpts")}${relevanceText(s.relevance)}`}
+              </li>
+            ))}
+          </ul>
+        </details>
+      ) : (
+        <p>{groundingText(grounding)}</p>
+      )}
+      {coverage ? (
+        <p data-testid="chat-grounding-coverage" className="text-warning">
+          {coverage}
+        </p>
+      ) : null}
+    </div>
   );
 }
 
