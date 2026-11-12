@@ -14,12 +14,16 @@
  *     moves on to the next repo — a traversal refusal or bad args returns at once;
  *   • git internals and credential files (`.git/**`, `.env*`, `.netrc`, …) are refused
  *     before any read. A chat result goes to the model provider and is kept in full
- *     in the transcript, and a committed secret file should not travel that way.
+ *     in the transcript, and a committed secret file should not travel that way;
+ *   • #2243 — a file whose document the caller may not see (its ACL, or a shared
+ *     audience) is refused with the reply a missing file gets.
  */
+import { promises as fs } from "node:fs";
 import path from "node:path";
 import { prisma } from "../../prisma.js";
 import { resolveExistingCloneDir } from "../clone-availability.js";
 import { readFileSliceTool } from "./read-file-slice.js";
+import { UNRESTRICTED_CODE_ACCESS, type CodeAccessFilter } from "./code-access.js";
 import type { AgentTool, ToolContext, ToolResult } from "./types.js";
 
 export interface ChatReadFileSliceDeps {
@@ -63,6 +67,31 @@ export function isSensitiveRepoPath(filePath: string): boolean {
   return (base === ".env" || base.startsWith(".env.")) && !ENV_TEMPLATE.test(base);
 }
 
+/**
+ * #2243 — whether `filePath` in the clone of `repoId` is a hidden file. Checked
+ * on the path as asked AND on where it really resolves, so a symlink inside the
+ * repository (`public.ts -> secret.ts`) cannot read a hidden file under
+ * another name.
+ */
+async function isHiddenInClone(
+  access: CodeAccessFilter,
+  repoId: string,
+  cloneDir: string,
+  filePath: string,
+): Promise<boolean> {
+  const asked = path.relative(path.resolve(cloneDir), path.resolve(cloneDir, filePath));
+  if (access.isHidden(repoId, asked)) return true;
+  try {
+    const [real, root] = await Promise.all([
+      fs.realpath(path.resolve(cloneDir, filePath)),
+      fs.realpath(cloneDir),
+    ]);
+    return access.isHidden(repoId, path.relative(root, real));
+  } catch {
+    return false; // not on disk: the read below reports it as not found
+  }
+}
+
 export function createChatReadFileSliceTool(deps: ChatReadFileSliceDeps = {}): AgentTool {
   const listRepoIds = deps.listRepoIds ?? projectRepoIds;
   const resolveCloneDir = deps.resolveCloneDir ?? resolveExistingCloneDir;
@@ -86,10 +115,10 @@ export function createChatReadFileSliceTool(deps: ChatReadFileSliceDeps = {}): A
           isError: true,
         };
       }
-      const dirs: string[] = [];
+      const dirs: Array<{ id: string; dir: string }> = [];
       for (const id of await listRepoIds(ctx.projectId)) {
         const dir = await resolveCloneDir(id);
-        if (dir) dirs.push(dir);
+        if (dir) dirs.push({ id, dir });
       }
       if (dirs.length === 0) {
         return {
@@ -99,12 +128,22 @@ export function createChatReadFileSliceTool(deps: ChatReadFileSliceDeps = {}): A
           isError: true,
         };
       }
+      // #2243 — a file whose document the caller may not see is treated as
+      // absent from that repository, and once anything is hidden from the
+      // caller a missing file and a hidden one get the SAME reply: the reply
+      // must not confirm that a restricted file exists.
+      const access = ctx.codeAccess ?? UNRESTRICTED_CODE_ACCESS;
       let last: ToolResult | undefined;
-      for (const cloneDir of dirs) {
+      for (const { id, dir: cloneDir } of dirs) {
+        if (!access.unrestricted && (await isHiddenInClone(access, id, cloneDir, filePath))) {
+          last = undefined;
+          continue;
+        }
         last = await readFileSliceTool.execute(args, { projectId: ctx.projectId, cloneDir });
         if (!(last.isError && last.content.startsWith(NOT_FOUND))) return last;
       }
-      return last as ToolResult;
+      if (access.unrestricted && last) return last;
+      return { content: `Error: File not found or not accessible: ${filePath}`, isError: true };
     },
   };
 }

@@ -52,7 +52,8 @@ vi.mock("../src/lib/prisma.js", async (importOriginal) => {
 });
 vi.mock("../src/lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
 
-const { runPortfolioGapAnalysis } = await import("../src/lib/portfolio/gap-engine.js");
+const { MAX_SCOPE_PRODUCTS, runPortfolioGapAnalysis } =
+  await import("../src/lib/portfolio/gap-engine.js");
 const { getPortfolioAssessment } = await import("../src/lib/portfolio/assessment-store.js");
 const { portfolioVerdictFromStored } = await import("../src/lib/portfolio/gap-rollup.js");
 const { FederatedSearchService } = await import("../src/lib/rag/federated-search-service.js");
@@ -334,11 +335,27 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(portfolioVerdictFromStored(p1.portfolioVerdict)).toBe("implemented");
     });
 
-    it("refuses a product scope that names more than one product", async () => {
+    it("#2272 — checks every product a product scope chooses, and no other", async () => {
+      const read = await run(
+        ANA,
+        { statement: RESET_STATEMENT, scope: "product", productIds: [P1, P2] },
+        { provider: scriptedProvider() },
+      );
+      expect(read.scope).toBe("product");
+      expect(read.productIds).toEqual([P1, P2]);
+      expect(read.products.map((p) => p.productId)).toEqual([P1, P2]);
+      expect(read.products.every((p) => p.coverage !== "restricted")).toBe(true);
+    });
+
+    it("#2272 — refuses a product scope past the cap", async () => {
       await expect(
         run(
           ANA,
-          { statement: RESET_STATEMENT, scope: "product", productIds: [P1, P2] },
+          {
+            statement: RESET_STATEMENT,
+            scope: "product",
+            productIds: Array.from({ length: MAX_SCOPE_PRODUCTS + 1 }, (_, i) => `p-${i}`),
+          },
           { provider: scriptedProvider() },
         ),
       ).rejects.toThrow();

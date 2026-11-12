@@ -5,6 +5,7 @@
  * Schema for its parameters, a description for the LLM system prompt, and an
  * `execute` function that returns a stringified result.
  */
+import type { CodeAccessFilter } from "./code-access.js";
 
 export interface JSONSchema {
   type: string;
@@ -19,6 +20,11 @@ export interface ToolContext {
   projectId: string;
   connectorId?: string;
   cloneDir?: string;
+  /**
+   * #2243 — the files the caller may not see (document ACLs). Set by the chat
+   * tool runtime for every code-tool call; omitted (analysis), nothing is hidden.
+   */
+  codeAccess?: CodeAccessFilter;
 }
 
 export interface ToolResult {

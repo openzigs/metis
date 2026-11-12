@@ -220,6 +220,25 @@ describe("ImpactAnalysisDetailPage", () => {
     expect(screen.queryByTestId("impact-rerun-reread")).toBeNull();
   });
 
+  it("#2293 — a run with pasted text beside a document reads the text, so it offers no re-read", () => {
+    mockUse.mockReturnValue(
+      state({
+        data: { ...detail, documentId: "doc-0000000001", sourceText: "Lock accounts after five." },
+      }),
+    );
+    render(<ImpactAnalysisDetailPage />, { wrapper: makeWrapper() });
+    expect(screen.queryByTestId("impact-rerun-reread")).toBeNull();
+    expect(screen.getByTestId("impact-rerun")).toBeInTheDocument();
+  });
+
+  it("#2293 — blank pasted text beside a document still offers the re-read", () => {
+    mockUse.mockReturnValue(
+      state({ data: { ...detail, documentId: "doc-0000000001", sourceText: "   " } }),
+    );
+    render(<ImpactAnalysisDetailPage />, { wrapper: makeWrapper() });
+    expect(screen.getByTestId("impact-rerun-reread")).toBeInTheDocument();
+  });
+
   it("shows the rerun-of lineage crumb + drift diff for a re-run (#965)", () => {
     mockUse.mockReturnValue(state({ data: { ...detail, rerunOfId: "ia-original" } }));
     mockDrift.mockReturnValue({
