@@ -483,6 +483,26 @@ export function githubPrWebhookRouter(deps: GithubPrRouterDeps = {}): Router {
       res.status(200).json({ ok: true, handled: false, reason: push.reason });
       return;
     }
+    // The per-connector request limit, before any claim write or connector
+    // lookup, so a flood of validly signed pushes costs neither. Keyed on what
+    // the signature verified: the connector, or the delivery's host and
+    // repository (a connector has one repository, so one budget either way).
+    const limitKey =
+      signer.kind === "connector"
+        ? `conn-id:${signer.connectorId}`
+        : `repo:${githubHost(push.repoHtmlUrl) ?? "github.com"}/${push.repoFullName.toLowerCase()}`;
+    if (!allowRepoRefreshRequest(limitKey)) {
+      log.warn("push_webhook.rate_limited", {
+        deliveryId,
+        repo: push.repoFullName,
+        ...(signer.kind === "connector" ? { connectorId: signer.connectorId } : {}),
+      });
+      // Opaque on the shared-secret receiver, as every answer there is (#1475);
+      // the connection's own URL says 429, so its Redeliver can try later.
+      if (signer.kind === "deployment") res.status(200).json({ ok: true });
+      else res.status(429).json({ ok: false, reason: "RATE_LIMITED" });
+      return;
+    }
     // Replay protection, as on the other receivers: the delivery id (GitHub's
     // own redeliveries; rows purged after 24 h), then the signed body itself.
     const dedupKey = deliveryDedupKey("github-push", signer, deliveryId);
@@ -548,13 +568,17 @@ export function githubPrWebhookRouter(deps: GithubPrRouterDeps = {}): Router {
       answer(200, { ok: true, handled: false, reason });
       return;
     }
-    const outcome = { started: 0, queued: 0, rateLimited: 0 };
+    if (match.capped.length > 0) {
+      log.warn("push_webhook.fanout_capped", {
+        deliveryId,
+        repo: push.repoFullName,
+        cap: match.targets.length,
+        capped: match.capped.length,
+        cappedConnectorIds: match.capped,
+      });
+    }
+    const outcome = { started: 0, queued: 0 };
     for (const id of match.targets) {
-      if (!allowRepoRefreshRequest(id)) {
-        outcome.rateLimited += 1;
-        log.warn("push_webhook.rate_limited", { deliveryId, connectorId: id });
-        continue;
-      }
       const requested = requestRepoConnectorRefresh(id, {
         trigger: "push",
         commitSha: push.commitSha,
@@ -562,11 +586,6 @@ export function githubPrWebhookRouter(deps: GithubPrRouterDeps = {}): Router {
       outcome[requested.status] += 1;
     }
     log.info("push_webhook.handled", { deliveryId, repo: push.repoFullName, ...outcome });
-    if (outcome.rateLimited === match.targets.length) {
-      await releaseClaims();
-      answer(429, { ok: false, reason: "RATE_LIMITED" });
-      return;
-    }
     answer(200, { ok: true, handled: true, ...outcome });
   };
   r.post("/github/push", webhookReceiverRateLimiter, handlePushDelivery);
@@ -577,13 +596,21 @@ export function githubPrWebhookRouter(deps: GithubPrRouterDeps = {}): Router {
 
 /** #2335 — at most this many connectors are refreshed for one push. */
 const MAX_PUSH_FANOUT = 50;
+/**
+ * #2335 — the most connectors to one repository read for one push. The host,
+ * own-secret and branch filters run on these, and only then the fan-out cap,
+ * so a connector that qualifies is never skipped for one that does not.
+ */
+const MAX_PUSH_SCAN = 1000;
 
 /** #2335 — the connectors a verified push is for. */
 interface PushMatch {
   /** Live connectors to the repository the signer may refresh, on any branch. */
   candidates: number;
-  /** Those whose tracked branch is the pushed one. */
+  /** Those whose tracked branch is the pushed one, at most {@link MAX_PUSH_FANOUT}. */
   targets: string[];
+  /** Qualifying connectors the fan-out cap left out (logged; refreshed by schedule). */
+  capped: string[];
 }
 
 /**
@@ -598,7 +625,8 @@ interface PushMatch {
  *   into the project (it pulls the connector's own remote with its own token),
  *   so every such project's connector is refreshed, not only the earliest one.
  *
- * Then only those whose tracked branch (`defaultBranch`) is the pushed one.
+ * Then only those whose tracked branch (`defaultBranch`) is the pushed one,
+ * and only then the first {@link MAX_PUSH_FANOUT} of those, by id.
  */
 async function matchPushConnectors(
   signer: DeliverySigner,
@@ -626,8 +654,11 @@ async function matchPushConnectors(
       webhookSecretCheck: true,
     },
     orderBy: { id: "asc" },
-    take: MAX_PUSH_FANOUT,
+    take: MAX_PUSH_SCAN,
   });
+  if (conns.length >= MAX_PUSH_SCAN) {
+    log.warn("push_webhook.scan_capped", { repo: push.repoFullName, scanned: conns.length });
+  }
   let candidates = conns;
   if (signer.kind === "deployment") {
     const host = githubHost(push.repoHtmlUrl) ?? "github.com";
@@ -638,9 +669,11 @@ async function matchPushConnectors(
     );
     candidates = sameHost.filter((c) => !ownSecretProjects.has(c.projectId));
   }
+  const tracking = candidates.filter((c) => c.defaultBranch === push.branch).map((c) => c.id);
   return {
     candidates: candidates.length,
-    targets: candidates.filter((c) => c.defaultBranch === push.branch).map((c) => c.id),
+    targets: tracking.slice(0, MAX_PUSH_FANOUT),
+    capped: tracking.slice(MAX_PUSH_FANOUT),
   };
 }
 

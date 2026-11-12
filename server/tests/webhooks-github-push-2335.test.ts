@@ -36,6 +36,8 @@ const h = vi.hoisted(() => ({
   failDigest: false,
   findMany: [] as Array<Record<string, unknown>>,
   findFirst: 0,
+  /** Runs after the secret lookup: a connector deleted between verification and match. */
+  afterFindFirst: null as null | (() => void),
   requestRefresh: vi.fn(),
   info: vi.fn(),
   warn: vi.fn(),
@@ -55,7 +57,9 @@ vi.mock("../src/lib/prisma.js", () => {
       repoConnection: {
         findFirst: vi.fn(async ({ where }: { where: { id: string } }) => {
           h.findFirst += 1;
-          return h.conns.find((c) => c.id === where.id && live(c)) ?? null;
+          const found = h.conns.find((c) => c.id === where.id && live(c)) ?? null;
+          h.afterFindFirst?.();
+          return found ? { ...found } : null;
         }),
         findMany: vi.fn(
           async (args: {
@@ -64,22 +68,29 @@ vi.mock("../src/lib/prisma.js", () => {
               ownerOrOrg?: string;
               repoName?: string;
               provider?: { in: string[] };
+              deletedAt?: null;
+              project?: { deletedAt?: null };
             };
             take?: number;
           }) => {
             h.findMany.push(args as unknown as Record<string, unknown>);
             if (h.failMatch) throw new Error("database down");
             const w = args.where;
-            return h.conns
-              .filter(
-                (c) =>
-                  live(c) &&
-                  (w.id === undefined || c.id === w.id) &&
-                  (w.ownerOrOrg === undefined || c.ownerOrOrg === w.ownerOrOrg) &&
-                  (w.repoName === undefined || c.repoName === w.repoName) &&
-                  (w.provider === undefined || w.provider.in.includes(c.provider as string)),
-              )
-              .slice(0, args.take ?? Infinity);
+            return (
+              h.conns
+                // Honours the query's own soft-delete terms (not `live`), so a
+                // receiver that dropped them would refresh a deleted connector.
+                .filter(
+                  (c) =>
+                    (!("deletedAt" in w) || c.deletedAt === null) &&
+                    (w.project?.deletedAt !== null || c.projectDeleted !== true) &&
+                    (w.id === undefined || c.id === w.id) &&
+                    (w.ownerOrOrg === undefined || c.ownerOrOrg === w.ownerOrOrg) &&
+                    (w.repoName === undefined || c.repoName === w.repoName) &&
+                    (w.provider === undefined || w.provider.in.includes(c.provider as string)),
+                )
+                .slice(0, args.take ?? Infinity)
+            );
           },
         ),
       },
@@ -240,6 +251,7 @@ afterEach(() => {
   h.digests.clear();
   h.findMany = [];
   h.findFirst = 0;
+  h.afterFindFirst = null;
   h.failMatch = false;
   h.failDedup = false;
   h.failDigest = false;
@@ -289,7 +301,7 @@ describe("push receiver: matching and refresh (#2335)", () => {
     expect(res.status).toBe(200);
     // The shared-secret answer says nothing about which connectors matched (#1475).
     expect(res.body).toEqual({ ok: true });
-    expect(handled()).toMatchObject({ started: 1, queued: 0, rateLimited: 0 });
+    expect(handled()).toEqual({ deliveryId: "d-1", repo: "acme/app", started: 1, queued: 0 });
     expect(h.requestRefresh).toHaveBeenCalledExactlyOnceWith("conn-main", {
       trigger: "push",
       commitSha: SHA_A,
@@ -395,9 +407,74 @@ describe("push receiver: matching and refresh (#2335)", () => {
         ownerOrOrg: "acme",
         repoName: "app",
         provider: { in: ["github", "github_enterprise"] },
+        deletedAt: null,
+        project: { deletedAt: null },
       },
-      take: 50,
+      take: 1000,
     });
+  });
+
+  it("caps the fan-out after the host, own-secret and branch filters, and logs what the cap left out", async () => {
+    const rows: ConnRow[] = [];
+    const n = (i: number) => String(i).padStart(2, "0");
+    // Sorted first by id, and none of them qualify: another branch, another host.
+    for (let i = 0; i < 30; i += 1)
+      rows.push(conn({ id: `a-dev-${n(i)}`, projectId: `pd-${i}`, defaultBranch: "develop" }));
+    for (let i = 0; i < 30; i += 1)
+      rows.push(
+        conn({
+          id: `b-ghe-${n(i)}`,
+          projectId: `pg-${i}`,
+          provider: "github_enterprise",
+          apiBaseUrl: "https://ghe.corp.example/api/v3",
+        }),
+      );
+    for (let i = 0; i < 55; i += 1) rows.push(conn({ id: `c-main-${n(i)}`, projectId: `pm-${i}` }));
+    h.conns = rows as unknown as Array<Record<string, unknown>>;
+    await post(pushBody(), { delivery: "d-fan" });
+    const refreshed = h.requestRefresh.mock.calls.map((c) => c[0] as string);
+    expect(refreshed).toHaveLength(50);
+    expect(refreshed.every((id) => id.startsWith("c-main-"))).toBe(true);
+    expect(h.warn).toHaveBeenCalledWith(
+      "push_webhook.fanout_capped",
+      expect.objectContaining({
+        deliveryId: "d-fan",
+        cap: 50,
+        capped: 5,
+        cappedConnectorIds: ["c-main-50", "c-main-51", "c-main-52", "c-main-53", "c-main-54"],
+      }),
+    );
+  });
+
+  it("never refreshes a deleted connector, or a connector in a deleted project", async () => {
+    h.conns = [
+      conn({ id: "conn-deleted", deletedAt: new Date() }),
+      conn({ id: "conn-dead-project", projectId: "proj-dead", projectDeleted: true }),
+    ] as unknown as Array<Record<string, unknown>>;
+    expect((await post(pushBody())).body).toEqual({ ok: true });
+    expect(h.requestRefresh).not.toHaveBeenCalled();
+    expect(h.info).toHaveBeenCalledWith(
+      "push_webhook.ignored",
+      expect.objectContaining({ reason: "NO_MATCHING_CONNECTOR" }),
+    );
+  });
+
+  it("never refreshes its own connector once it, or its project, is deleted", async () => {
+    const overs: Array<Partial<ConnRow>> = [{ deletedAt: new Date() }, { projectDeleted: true }];
+    for (const [i, over] of overs.entries()) {
+      const row = conn();
+      const secret = withOwnSecret(row);
+      h.conns = [row as unknown as Record<string, unknown>];
+      // Verified while live (the secret lookup), deleted before the match.
+      h.afterFindFirst = () => Object.assign(row, over);
+      const body = pushBody({ after: String(i + 7).repeat(40) });
+      const res = await post(body, {
+        path: "/api/webhooks/github/push/c/conn-main",
+        signature: sign(body, secret),
+      });
+      expect(res.body).toEqual({ ok: true, handled: false, reason: "NO_MATCHING_CONNECTOR" });
+    }
+    expect(h.requestRefresh).not.toHaveBeenCalled();
   });
 
   it("matches an Enterprise push to that server's connectors only", async () => {
@@ -488,35 +565,56 @@ describe("push receiver: replay protection (#2335)", () => {
 });
 
 describe("push receiver: per-connector rate limit (#2335)", () => {
-  it("refreshes nothing once the connector's budget is spent, and gives the claims back", async () => {
+  it("limits a flood before any claim write or connector lookup, answering opaquely", async () => {
     process.env.REPO_REFRESH_REQUEST_LIMIT_MAX = "2";
     for (const sha of ["1", "2"]) {
-      const ok = await post(pushBody({ after: sha.repeat(40) }));
+      const ok = await post(pushBody({ after: sha.repeat(40) }), { delivery: `d-ok-${sha}` });
       expect(ok.body).toEqual({ ok: true });
     }
-    const limited = await post(pushBody({ after: "3".repeat(40) }), { delivery: "d-limited" });
-    // Opaque on the shared-secret receiver; the connection's own URL answers 429 (below).
-    expect(limited.status).toBe(200);
-    expect(limited.body).toEqual({ ok: true });
-    expect(handled()).toMatchObject({ started: 0, rateLimited: 1 });
+    const lookups = h.findMany.length;
+    const claims = h.deliveries.size + h.digests.size;
+    for (const sha of ["3", "4", "5"]) {
+      const limited = await post(pushBody({ after: sha.repeat(40) }), {
+        delivery: `d-lim-${sha}`,
+      });
+      // Opaque on the shared-secret receiver; the connection's own URL answers 429 (below).
+      expect(limited.status).toBe(200);
+      expect(limited.body).toEqual({ ok: true });
+    }
+    expect(h.findMany).toHaveLength(lookups);
+    expect(h.deliveries.size + h.digests.size).toBe(claims);
     expect(h.requestRefresh).toHaveBeenCalledTimes(2);
-    expect(h.deliveries.has("github-push:deployment:d-limited")).toBe(false);
     expect(h.warn).toHaveBeenCalledWith(
       "push_webhook.rate_limited",
-      expect.objectContaining({ connectorId: "conn-main" }),
+      expect.objectContaining({ deliveryId: "d-lim-3", repo: "acme/app" }),
     );
   });
 
-  it("still refreshes the connectors with budget left when one is limited", async () => {
+  it("counts only verified deliveries, and gives each repository its own budget", async () => {
     process.env.REPO_REFRESH_REQUEST_LIMIT_MAX = "1";
-    h.conns = [conn()] as unknown as Array<Record<string, unknown>>;
-    await post(pushBody({ after: "1".repeat(40) }));
+    // Unsigned and wrongly signed calls do not spend the repository's budget.
+    await post(pushBody(), { signature: null });
+    await post(pushBody(), { signature: sign(pushBody(), "wrong") });
+    expect((await post(pushBody({ after: "1".repeat(40) }))).body).toEqual({ ok: true });
+    expect(h.requestRefresh).toHaveBeenCalledTimes(1);
     h.conns.push(
-      conn({ id: "conn-new", projectId: "proj-new" }) as unknown as Record<string, unknown>,
+      conn({ id: "conn-other-repo", projectId: "proj-o", repoName: "other" }) as unknown as Record<
+        string,
+        unknown
+      >,
     );
-    const res = await post(pushBody({ after: "2".repeat(40) }));
-    expect(res.status).toBe(200);
-    expect(handled()).toMatchObject({ started: 1, rateLimited: 1 });
+    await post(
+      pushBody({
+        after: "2".repeat(40),
+        repository: {
+          full_name: "acme/other",
+          html_url: "https://github.com/acme/other",
+          pushed_at: Math.floor(Date.now() / 1000),
+        },
+      }),
+    );
+    expect(h.requestRefresh).toHaveBeenCalledTimes(2);
+    expect(h.requestRefresh).toHaveBeenLastCalledWith("conn-other-repo", expect.anything());
   });
 });
 
@@ -597,18 +695,25 @@ describe("push receiver: a connection's own secret, the CI / git-hook call (#233
     expect(h.requestRefresh).not.toHaveBeenCalled();
   });
 
-  it("answers 429 when its connector's budget is spent", async () => {
+  it("answers 429 when its connector's budget is spent, before any claim write or match", async () => {
     process.env.REPO_REFRESH_REQUEST_LIMIT_MAX = "1";
     const row = conn();
     const secret = withOwnSecret(row);
     h.conns = [row as unknown as Record<string, unknown>];
-    for (const [i, expected] of [
-      [1, 200],
-      [2, 429],
-    ] as const) {
-      const body = pushBody({ after: String(i).repeat(40) });
-      const res = await post(body, { path: PATH, signature: sign(body, secret) });
-      expect(res.status).toBe(expected);
-    }
+    const first = pushBody({ after: "1".repeat(40) });
+    expect((await post(first, { path: PATH, signature: sign(first, secret) })).status).toBe(200);
+    const lookups = h.findMany.length;
+    const claims = h.deliveries.size + h.digests.size;
+    const body = pushBody({ after: "2".repeat(40) });
+    const res = await post(body, { path: PATH, signature: sign(body, secret), delivery: "d-429" });
+    expect(res.status).toBe(429);
+    expect(res.body).toEqual({ ok: false, reason: "RATE_LIMITED" });
+    expect(h.findMany).toHaveLength(lookups);
+    expect(h.deliveries.size + h.digests.size).toBe(claims);
+    expect(h.warn).toHaveBeenCalledWith(
+      "push_webhook.rate_limited",
+      expect.objectContaining({ deliveryId: "d-429", connectorId: "conn-main" }),
+    );
+    expect(h.requestRefresh).toHaveBeenCalledTimes(1);
   });
 });

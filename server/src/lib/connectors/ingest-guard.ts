@@ -54,7 +54,12 @@ export type IngestTrigger = "push" | "manual" | "scheduled";
 
 /** #2335 — the single "re-run when done" marker of a busy connector. */
 export interface QueuedIngestRerun {
-  /** The trigger of the most recent request folded into the marker. */
+  /**
+   * The trigger of the most recent request folded into the marker, except that
+   * once a manual Sync is folded in the marker stays `manual`: its follow-up
+   * runs the Sync route's body, which does everything a push or scheduled
+   * refresh does and more (discovery), so no request is short-changed.
+   */
   trigger: IngestTrigger;
   /**
    * The newest commit any folded request named (a request naming none keeps
@@ -147,7 +152,7 @@ export function acquireOrQueueConnectorIngest(
   if (lease) return { lease };
   const prior = queued.get(connectorId);
   const rerun: QueuedIngestRerun = {
-    trigger: request.trigger,
+    trigger: prior?.trigger === "manual" ? "manual" : request.trigger,
     commitSha: request.commitSha ?? prior?.commitSha ?? null,
     requests: (prior?.requests ?? 0) + 1,
     requestedAt: Date.now(),

@@ -3659,7 +3659,10 @@ that repository no longer fails with "An ingest is already running". METIS answe
 is already running. This one is queued and runs when it finishes.* However many syncs are
 asked for during one run, exactly one more runs after it, in the background, so a burst of
 pushes never piles up work. If that follow-up sync fails, it is not retried on its own; the
-next push, **Sync** or scheduled refresh runs it again. The queue is kept in the server's
+next push, **Sync** or scheduled refresh runs it again. A queued **Sync** does everything
+**Sync** does, including the scan for database connections and its notification, even if a
+push was also asked for during the run. A push or scheduled sync that waited runs the same
+work as the scheduled refresh. The queue is kept in the server's
 memory: a server restart forgets a queued sync, and the next push or scheduled refresh
 catches the repository up.
 
@@ -3684,18 +3687,21 @@ type** to `application/json`, choose **Just the push event**, and use one of:
   `GITHUB_WEBHOOK_SECRET`. Every GitHub connection to that repository (on that GitHub or
   GitHub Enterprise server) that tracks the pushed branch is synced, except in a project
   that gave one of its connections to the repository its own secret: that project syncs
-  only from its own webhook. At most 50 connections are synced for one push.
+  only from its own webhook. At most 50 connections that track the pushed branch are synced
+  for one push; any beyond that are logged as `push_webhook.fanout_capped` and catch up on the
+  next scheduled refresh.
 
 The secret is checked (HMAC-SHA256 over the exact request body) before METIS reads
 anything in the delivery; a delivery with a missing or wrong signature gets `401` and
 does nothing. Keep the secret in GitHub and in the server's configuration only: never in
 a repository, a CI log or a ticket. A delivery GitHub sends twice (same
 `X-GitHub-Delivery`), or the same signed body sent again, is acknowledged and not acted on
-again; a delivery whose push is more than four days old is ignored. Each connection
-takes at most 20 push requests a minute (`REPO_REFRESH_REQUEST_LIMIT_MAX`,
-`REPO_REFRESH_REQUEST_LIMIT_WINDOW_MS`); past that the push is not synced (logged as
-`push_webhook.rate_limited`), and on a connection's own URL METIS answers `429`, so GitHub's
-**Redeliver** can send it again later. The shared-secret URL answers every signed push to a
+again; a delivery whose push is more than four days old is ignored. Each connection's URL,
+and each repository on the shared-secret URL, takes at most 20 signed push requests a minute
+(`REPO_REFRESH_REQUEST_LIMIT_MAX`, `REPO_REFRESH_REQUEST_LIMIT_WINDOW_MS`). The limit is
+checked as soon as the signature verifies, before METIS records or looks anything up; past
+it the push is not synced (logged as `push_webhook.rate_limited`), and on a connection's own
+URL METIS answers `429`, so GitHub's **Redeliver** can send it again later. The shared-secret URL answers every signed push to a
 repository it accepts with the same `{"ok": true}`, whether or not any connection matched:
 GitHub shows that answer to the repository's admins, and it never says whether other
 workspaces connect the repository. The server log (`push_webhook.handled`,

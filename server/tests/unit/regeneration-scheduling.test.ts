@@ -233,4 +233,36 @@ describe("retryRegenerationScheduling (#449)", () => {
       lease.release();
     }
   });
+
+  // #2335 panel — a push-started refresh and every queued follow-up schedule
+  // regeneration themselves (repo-refresh.ts, repo-sync.ts), so the retry stands
+  // down for them instead of throwing "deferred" and burning its attempts.
+  it.each([
+    "refresh:push",
+    "refresh:manual",
+    "refresh:scheduled",
+    "rerun:push",
+    "rerun:manual",
+    "rerun:scheduled",
+  ])("stands down while the #2335 holder %s runs", async (holder) => {
+    h.findFirst.mockResolvedValueOnce({ id: "rc1" });
+    const lease = tryAcquireConnectorIngest("rc1", holder)!;
+    try {
+      await expect(retryRegenerationScheduling("p1", "rc1")).resolves.toBeUndefined();
+      expect(h.check).not.toHaveBeenCalled();
+      expect(lease.held).toBe(true);
+    } finally {
+      lease.release();
+    }
+  });
+
+  it("still defers for a holder that only looks like a re-run", async () => {
+    h.findFirst.mockResolvedValueOnce({ id: "rc1" });
+    const lease = tryAcquireConnectorIngest("rc1", "rerun:source-ingest")!;
+    try {
+      await expect(retryRegenerationScheduling("p1", "rc1")).rejects.toThrow(/deferred/);
+    } finally {
+      lease.release();
+    }
+  });
 });

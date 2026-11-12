@@ -10,6 +10,7 @@ const h = vi.hoisted(() => ({
   info: vi.fn(),
   warn: vi.fn(),
   runRepoConnectorRefresh: vi.fn(),
+  runQueuedRepoConnectorSync: vi.fn(),
 }));
 vi.mock("../../../src/lib/logger.js", () => ({
   createChildLogger: () => ({ info: h.info, warn: h.warn, error: vi.fn(), debug: vi.fn() }),
@@ -17,10 +18,17 @@ vi.mock("../../../src/lib/logger.js", () => ({
 vi.mock("../../../src/lib/connectors/repo/repo-refresh.js", () => ({
   runRepoConnectorRefresh: h.runRepoConnectorRefresh,
 }));
+vi.mock("../../../src/lib/connectors/repo/repo-sync.js", () => ({
+  runQueuedRepoConnectorSync: h.runQueuedRepoConnectorSync,
+}));
 
 import {
+  __repoRefreshesInFlight,
+  __repoRefreshRateLimitSize,
   __resetRepoRefreshRateLimit,
+  __resetRepoRefreshShutdown,
   allowRepoRefreshRequest,
+  stopRepoConnectorRefreshes,
   installRepoRefreshRerunRunner,
   requestRepoConnectorRefresh,
 } from "../../../src/lib/connectors/repo/refresh-trigger.js";
@@ -35,29 +43,38 @@ const SHA2 = "2".repeat(40);
 const SHA3 = "3".repeat(40);
 
 /** Each refresh holds its lease until the test settles it, as a real run would. */
-const pending: Array<{ lease: ConnectorIngestLease; settle: (fail?: Error) => void }> = [];
+const pending: Array<{
+  lease: ConnectorIngestLease;
+  signal: AbortSignal;
+  settle: (fail?: Error) => void;
+}> = [];
+
+/** Both runners behave alike here; which one ran is what the tests read. */
+const heldRun = (_id: string, lease: ConnectorIngestLease, signal: AbortSignal) =>
+  new Promise((resolve, reject) => {
+    pending.push({
+      lease,
+      signal,
+      settle: (fail?: Error) => {
+        lease.release();
+        if (fail) reject(fail);
+        else resolve({ headSha: SHA3, filesChanged: 2 });
+      },
+    });
+  });
 
 beforeEach(() => {
-  h.runRepoConnectorRefresh.mockImplementation(
-    (_id: string, lease: ConnectorIngestLease) =>
-      new Promise((resolve, reject) => {
-        pending.push({
-          lease,
-          settle: (fail?: Error) => {
-            lease.release();
-            if (fail) reject(fail);
-            else resolve({ headSha: SHA3, filesChanged: 2 });
-          },
-        });
-      }),
-  );
+  h.runRepoConnectorRefresh.mockImplementation(heldRun);
+  h.runQueuedRepoConnectorSync.mockImplementation(heldRun);
   installRepoRefreshRerunRunner();
 });
 
 afterEach(() => {
-  for (const p of pending.splice(0)) if (p.lease.held) p.lease.release();
   setIngestRerunRunner(null);
+  for (const p of pending.splice(0)) if (p.lease.held) p.settle();
   h.runRepoConnectorRefresh.mockReset();
+  h.runQueuedRepoConnectorSync.mockReset();
+  __resetRepoRefreshShutdown();
   h.info.mockClear();
   h.warn.mockClear();
   __resetRepoRefreshRateLimit();
@@ -114,12 +131,58 @@ describe("requestRepoConnectorRefresh (#2335)", () => {
     expect(h.runRepoConnectorRefresh).toHaveBeenCalledTimes(2);
   });
 
-  it("runs the follow-up a manual Sync queued behind another entry point", () => {
+  it("runs a queued manual Sync's follow-up as a Sync, not as the unattended refresh", () => {
     const sync = acquireConnectorIngest("rc-manual", "refresh-ingest");
     expect(requestRepoConnectorRefresh("rc-manual", { trigger: "manual" }).status).toBe("queued");
     sync.release();
-    expect(h.runRepoConnectorRefresh).toHaveBeenCalledTimes(1);
+    expect(h.runQueuedRepoConnectorSync).toHaveBeenCalledTimes(1);
+    expect(h.runQueuedRepoConnectorSync.mock.calls[0]![0]).toBe("rc-manual");
+    expect(h.runRepoConnectorRefresh).not.toHaveBeenCalled();
     expect(pending[0]!.lease.holder).toBe("rerun:manual");
+  });
+
+  it("keeps the follow-up a Sync when a push folds in after a manual Sync", () => {
+    const sync = acquireConnectorIngest("rc-sticky", "refresh-ingest");
+    requestRepoConnectorRefresh("rc-sticky", { trigger: "manual" });
+    expect(
+      requestRepoConnectorRefresh("rc-sticky", { trigger: "push", commitSha: SHA1 }),
+    ).toMatchObject({ status: "queued", trigger: "manual", commitSha: SHA1, requests: 2 });
+    sync.release();
+    expect(h.runQueuedRepoConnectorSync).toHaveBeenCalledTimes(1);
+    expect(h.runRepoConnectorRefresh).not.toHaveBeenCalled();
+  });
+
+  it("runs a queued push or scheduled follow-up as the unattended refresh", () => {
+    for (const trigger of ["push", "scheduled"] as const) {
+      const sync = acquireConnectorIngest(`rc-${trigger}`, "refresh-ingest");
+      requestRepoConnectorRefresh(`rc-${trigger}`, { trigger });
+      sync.release();
+    }
+    expect(h.runRepoConnectorRefresh).toHaveBeenCalledTimes(2);
+    expect(h.runQueuedRepoConnectorSync).not.toHaveBeenCalled();
+  });
+
+  it("ties every background run to the shutdown signal, and waits for runs in flight", async () => {
+    requestRepoConnectorRefresh("rc-stop", { trigger: "push" });
+    expect(__repoRefreshesInFlight()).toBe(1);
+    expect(pending[0]!.signal.aborted).toBe(false);
+    const stopping = stopRepoConnectorRefreshes(5_000);
+    expect(pending[0]!.signal.aborted).toBe(true);
+    let stopped = false;
+    void stopping.then(() => (stopped = true));
+    await Promise.resolve();
+    expect(stopped).toBe(false);
+    pending[0]!.settle(new Error("aborted"));
+    await stopping;
+    expect(__repoRefreshesInFlight()).toBe(0);
+  });
+
+  it("stops waiting for a run that ignores shutdown after the timeout", async () => {
+    requestRepoConnectorRefresh("rc-stuck", { trigger: "push" });
+    const started = Date.now();
+    await stopRepoConnectorRefreshes(20);
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(__repoRefreshesInFlight()).toBe(1);
   });
 
   it("a failed follow-up is logged and not retried", async () => {
@@ -168,10 +231,24 @@ describe("allowRepoRefreshRequest (#2335)", () => {
     process.env.REPO_REFRESH_REQUEST_LIMIT_MAX = "1";
     process.env.REPO_REFRESH_REQUEST_LIMIT_WINDOW_MS = "10";
     for (let i = 0; i < 1000; i += 1) allowRepoRefreshRequest(`sweep-${i}`, 0);
+    expect(__repoRefreshRateLimitSize()).toBe(1000);
     // The 1001st connector triggers the sweep; the old windows have expired.
     expect(allowRepoRefreshRequest("sweep-new", 100)).toBe(true);
+    expect(__repoRefreshRateLimitSize()).toBe(1);
     // A swept connector starts a fresh window.
     expect(allowRepoRefreshRequest("sweep-0", 100)).toBe(true);
     expect(allowRepoRefreshRequest("sweep-0", 100)).toBe(false);
+    expect(__repoRefreshRateLimitSize()).toBe(2);
+  });
+
+  it("never holds more than 1000 windows: when all are live, the oldest goes", () => {
+    process.env.REPO_REFRESH_REQUEST_LIMIT_MAX = "1";
+    for (let i = 0; i < 1000; i += 1) allowRepoRefreshRequest(`live-${i}`, i);
+    expect(allowRepoRefreshRequest("live-new", 1000)).toBe(true);
+    expect(__repoRefreshRateLimitSize()).toBe(1000);
+    // The oldest window was dropped; a still-live one keeps its count.
+    expect(allowRepoRefreshRequest("live-0", 1001)).toBe(true);
+    expect(allowRepoRefreshRequest("live-999", 1001)).toBe(false);
+    expect(__repoRefreshRateLimitSize()).toBe(1000);
   });
 });
