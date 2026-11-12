@@ -296,7 +296,7 @@ export function documentReadingNotice(reading: DocumentReading, fromDocument: bo
       `${counted(reading.droppedUnverified, "statement was", "statements were")} dropped because ${reading.droppedUnverified === 1 ? "its" : "their"} quote is not in ${sourceName(fromDocument)}.`,
     );
   }
-  if (reading.reused) sentences.push(reusedReadingSentence(reading.reused));
+  if (reading.reused) sentences.push(impactReusedReadingSentence(reading.reused));
   return sentences.join(" ");
 }
 
@@ -304,7 +304,7 @@ export function documentReadingNotice(reading: DocumentReading, fromDocument: bo
  * #2280 — the notice's sentence when the reading was reused: when and with
  * which model it was made, and how to get a fresh one.
  */
-export function reusedReadingSentence(reused: { readAt: Date; model: string }): string {
+export function impactReusedReadingSentence(reused: { readAt: Date; model: string }): string {
   return `This reading was saved on ${reused.readAt.toISOString().slice(0, 10)} (read with ${reused.model}) and reused, because the document's file has not changed; re-run with "Read the document again" for a fresh reading.`;
 }
 

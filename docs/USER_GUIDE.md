@@ -2070,14 +2070,17 @@ Section 15.5), and the check reads the code in those repositories. [#1608]
 1. Open **Projects › Portfolio coverage** (`/portfolio`).
 2. Describe what the business needs in plain language, up to 8,000 characters. For example:
    *"Customers can pay an invoice by bank transfer."*
-3. Under **Where to look**, choose **All products I can access**, or **One product** and pick
-   it. **Find a product** searches all your products by name.
+3. Under **Where to look**, choose **All products I can access**, **One product** and pick
+   it, or **Several products** and tick each one (up to 50). **Find a product** searches all
+   your products by name; a product you ticked stays ticked when a search hides it.
 4. Click **Check coverage**.
 
-You can also start a check from two other places. Every **approved** requirement on a
+You can also start a check from three other places. Every **approved** requirement on a
 project's **Requirements** tab has a **Check across portfolio** button, which checks that
 requirement, including its acceptance criteria. A product's page has a **Check across
-portfolio** button too, which starts with that product chosen.
+portfolio** button too, which starts with that product chosen. And every ready document on
+a project's **Documents** page has a **Check requirements across portfolio** button, which
+checks each requirement the document holds (see *Checking a document* below). [#2272]
 
 The check runs in the background. Its page (`/portfolio/<id>`) shows progress, and you can
 leave it or reload it: the same check picks up where it is. Your recent checks are listed
@@ -2085,11 +2088,46 @@ under **Recent checks**. You can start 10 checks in 15 minutes.
 
 What METIS does in a check:
 
-1. It splits the requirement into at most 8 acceptance criteria. A requirement that already
-   has acceptance criteria uses its own.
-2. It searches each product's repositories for code that bears on them.
+1. It splits the requirement into acceptance criteria (it asks the AI model for at most 8).
+   A requirement that already has acceptance criteria uses its own.
+2. It searches each product's repositories for code that bears on them. Criteria that do
+   not fit one search are searched in groups, so every criterion is searched for, however
+   long the requirement.
 3. For each repository, it asks the AI model whether each criterion is already there, and
    cites the code that shows it.
+
+#### Checking a document
+
+A check started from a document reads the document and checks **each requirement in it on
+its own**, rather than treating the whole document as one requirement. [#2272]
+
+- With the document reader on (the `ANALYSIS_DOCUMENT_READER` setting, off by default; an
+  administrator turns it on), the AI model reads the whole document, and every requirement,
+  constraint and business rule it finds is one requirement to check, with the section it
+  sits in. With the reader off, or when the model
+  cannot read it, the document is split by paragraph and bullet instead, and the check's
+  statement says so.
+- Under the answer, **Requirements checked** lists each requirement with the products found
+  implementing it, or *no product found implementing it*. A requirement checked against
+  several acceptance criteria lists them the same way.
+- Only someone who can read the document's project can open the check, because it shows the
+  document's own words.
+- A repository's file, or a document that has not finished processing, cannot be checked.
+  If the document has no text, holds nothing that reads as a requirement, or is deleted
+  before the check reads it, the check fails, and its statement says which.
+
+#### Not checked
+
+Nothing is left out without saying so. **Not checked** on the check's page, and in the
+Markdown export, lists everything the check did not check, and why: [#2272]
+
+| Reason | What it means |
+|---|---|
+| *One check takes 100 requirements* | The document (or requirement) has more than 100 requirements or criteria; the ones past the first 100 are listed. |
+| *Not checked in full* | A requirement's text is longer than one check reads (8,000 characters for the requirement, 2,000 for each criterion); the number of characters left out is given. |
+| *The model could not read this section* | A section of the document the AI model could not read. |
+| *Statements were dropped* | Statements the model read whose quote is not in the document, so they were not kept. |
+| *Not checked in N repositories* | The check's budget ran out before those repositories were checked for this requirement. |
 
 A claim that something is implemented is accepted only with cited code from that
 repository, and the repository is named next to every citation. The repositories must be
@@ -2164,6 +2202,17 @@ reaches.
 | **Restricted** | A product you can read, but whose impact cannot be shown in full. Either the change reaches it along a path that runs through a repository or product you cannot read, so the path is withheld (*"Its impact path goes through a repository or product you cannot read"*). Or the change may reach it through a repository or product that the person who ran the check cannot read, so the check could not follow the change there, and whether it reaches this product at all is not known (*"The change may reach it through a repository or product that the person who ran the check cannot read…"*). That is so when the change would reach this product if the check could follow it everywhere, as far as the check looks, whether the way runs through a product that person cannot read, through a repository of a readable product that they cannot read, or along a coupling recorded on a product they cannot read, even one between two repositories they can read. It does not depend on where else the check stopped. A product the change cannot reach, such as one that only provides something to that product, stays **Not affected**. Older checks read differently. A check run before METIS looked for a connection to the product it stopped at relabelled every product the change did not reach; such a product's note says the check stopped at a product it could not read. A check run under the older connection rule relabelled the products connected to that product; such a product's note says it is connected to it, and the **Not affected** group says a product listed there may still be reached. A check run before METIS followed the change past a repository or a coupling that person cannot read, and that stopped at no product they cannot read, relabelled nothing; its **Not affected** group says the same. Running any of these checks again gives the current answer. |
 | **Not affected** | Nothing reaches it. These products are listed in the collapsed **Not affected** group. |
 
+Every product the change reaches also shows how sure that is, in one of five tiers (the
+Markdown export has it in an **Impact tier** column): [#2272]
+
+| Tier | What it means |
+|---|---|
+| **Found in code** | Must change: the check found its code covers or partly covers the requirement. This comes from reading the product's code, not from a path through the graph. |
+| **Verified by graph path** | Downstream only: every coupling on the path to it was declared (or corrected) by a person, or detected with a confidence of at least 0.8. |
+| **Likely** | Downstream: every coupling on the path was detected with a confidence of at least 0.5. Must change: it was chosen to build the requirement (or holds that product's repository), and no code of it was found yet. |
+| **Possible** | A coupling on the path was detected with a confidence below 0.5. |
+| **Needs review** | The path cannot be shown to you: it runs through a product or repository you cannot read, or the change may reach the product through one the person who ran the check cannot read. |
+
 Each product's **Technical deep dive** lists its repositories and files, the contract items
 that changed, and the shared resources the coupling goes through, grouped as databases,
 tables and columns, topics, identity providers and buckets. It also draws the path of
@@ -2177,7 +2226,8 @@ If nothing covers the requirement yet, no product's code changes until one is ch
 build it, so there is nothing to work the impact out from. Choose that product under
 **Which product will build this? (optional)** when you start the check (the API takes
 `hostProductId` on `POST /api/portfolio-assessments`). In **One product** scope, only that
-product can be chosen. The check then names it (**Product that will build it**, and
+product can be chosen; in **Several products** scope, any one of those ticked. The check
+then names it (**Product that will build it**, and
 **Built by** above the impact, with a **Chosen to build this** badge on its card). It reads
 **Must change**, and so does every product that holds one of its repositories, such as an
 umbrella product that includes it: that repository's code is that product's code too. The
