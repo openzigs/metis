@@ -563,6 +563,9 @@ export function sentenceSpan(
   let from = start;
   while (from > 0 && text[from - 1] !== "\n" && !endsSentence(from - 1)) from--;
   let to = end;
+  // `to > start`: an empty span (`end === start`, as `foldSentences` asks and a
+  // direct caller may) right after a full stop is not a finished sentence, so
+  // it widens forward to the sentence it starts instead of stopping at once.
   if (!(to > start && endsSentence(to - 1))) {
     while (to < text.length && text[to] !== "\n" && !endsSentence(to)) to++;
     if (to < text.length && text[to] !== "\n") to++;
@@ -579,16 +582,18 @@ export function sentenceSpan(
  *
  * Only the same single sentence folds: a statement is compared with its own
  * sentence's span, never with a group widened by another, so folding cannot
- * cascade along a paragraph. A statement whose quote runs over several
- * sentences folds only with another quoting exactly those sentences (the same
- * passage, read twice): a statement from one of its sentences stays apart, as
- * it may be a separate requirement.
+ * cascade along a paragraph. A quote that runs over several sentences or over
+ * a line break (two table rows, a heading) never folds, with anything: the
+ * statements beside it may be separate requirements, and a fold must not span
+ * lines or sections. Members of a fold share a section, too.
  */
 function foldSentences(text: string, kept: Kept[], onFolded: (k: Kept) => void): Kept[] {
   const groups = new Map<string, Kept[]>();
-  for (const k of kept) {
+  kept.forEach((k, i) => {
     const sentence = sentenceSpan(text, k.start, k.end);
-    const key = `${sentence.start}:${sentence.end}`;
+    // In one sentence on one line: the quote ends where its first sentence does.
+    const single = sentence.end === sentenceSpan(text, k.start, k.start).end;
+    const key = single ? `${k.section.id}:${sentence.start}:${sentence.end}` : `#${i}`;
     const members = groups.get(key);
     if (members) {
       members.push(k);
@@ -596,7 +601,7 @@ function foldSentences(text: string, kept: Kept[], onFolded: (k: Kept) => void):
     } else {
       groups.set(key, [k]);
     }
-  }
+  });
   return [...groups.values()].map((members) => {
     const first = members[0]!;
     if (members.length === 1) return first;
