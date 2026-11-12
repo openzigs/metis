@@ -51,6 +51,11 @@ const CASES: ReadonlyArray<{ id: string; positive: string; negative: string }> =
     negative: "postgres://${DB_USER}:${DB_PASS}@db.internal:5432/app",
   },
   { id: "aws_key", positive: k("AKIA", "Q3EGRTXXXXZ7Y2WB"), negative: k("AKIA", "short") },
+  {
+    id: "aws_secret",
+    positive: k("aws_secret_access_key = ", '"', "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", '"'),
+    negative: 'aws_secret_access_key = "${AWS_SECRET}"',
+  },
   { id: "github_pat", positive: k("ghp_", "a".repeat(36)), negative: "ghp_short" },
   {
     id: "anthropic_key",
@@ -163,6 +168,52 @@ describe("SECRET_PATTERNS", () => {
     expect(redactSecrets("mysql://root:%(pw)s@db/").count).toBe(0);
   });
 
+  it("a password holding a raw '@' is replaced whole, not up to its first '@'", () => {
+    const out = redactSecrets(k("postgres://app:", "p@ssw0rd", "@db:5432/app"));
+    expect(out.text).toBe("postgres://[REDACTED:url_credentials]@db:5432/app");
+    expect(out.text).not.toContain("ssw0rd");
+  });
+
+  it("a password that merely starts with '$' or '%' is still a value; named slots are kept", () => {
+    expect(redactSecrets(k("mysql://root:", "$ecretPa55", "@db/")).count).toBe(1);
+    expect(redactSecrets(k("mysql://root:", "%40pa55w0rd", "@db/")).count).toBe(1);
+    expect(redactSecrets("mysql://root:${PASS}@db/").count).toBe(0);
+    expect(redactSecrets("mysql://root:$DB_PASS@db/").count).toBe(0);
+    expect(redactSecrets("mysql://root:{pw}@db/").count).toBe(0);
+  });
+
+  it("a key written as concatenated string literals, and a PGP block, are caught", () => {
+    const concatenated = [
+      k('String key = "-----BEGIN ', 'PRIVATE KEY-----\\n" +'),
+      `    "${B64}\\n" +`,
+      `    "${B64}\\n" +`,
+      k('    "-----END ', 'PRIVATE KEY-----\\n";'),
+    ].join("\n");
+    const out = redactSecrets(concatenated);
+    expect(out.byClass).toEqual({ private_key: 1 });
+    expect(out.text.split("\n")).toHaveLength(4);
+    expect(out.text).not.toContain("MIIEvQIB");
+    const pgp = [
+      k("-----BEGIN PGP ", "PRIVATE KEY BLOCK-----"),
+      "",
+      B64,
+      B64,
+      k("-----END PGP ", "PRIVATE KEY BLOCK-----"),
+    ].join("\n");
+    expect(redactSecrets(pgp).byClass).toEqual({ private_key: 1 });
+  });
+
+  it("secretMatches finds a match even after a caller left lastIndex mid-string", () => {
+    const p = SECRET_PATTERNS.find((x) => x.id === "aws_key")!;
+    const key = k("AKIA", "Q3EGRTXXXXZ7Y2WB");
+    p.re.lastIndex = 1000;
+    try {
+      expect([...secretMatches(p, key)]).toEqual([key]);
+    } finally {
+      p.re.lastIndex = 0;
+    }
+  });
+
   it("an Anthropic key is reported once, as Anthropic — the OpenAI shape excludes it", () => {
     expect(redactSecrets(k("sk-ant-", "api03-", "b".repeat(40))).byClass).toEqual({
       anthropic_key: 1,
@@ -172,6 +223,7 @@ describe("SECRET_PATTERNS", () => {
   it("only the generic shapes are not high-confidence", () => {
     expect(SECRET_PATTERNS.filter((p) => !p.highConfidence).map((p) => p.id)).toEqual([
       "url_credentials",
+      "aws_secret",
       "bearer",
       "jwt",
       "long_hex",

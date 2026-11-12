@@ -76,10 +76,14 @@ function hasKeyBody(match: string): boolean {
   return n >= MIN_KEY_BODY_CHARS;
 }
 
-/** A URL password that is a template slot (`${DB_PASS}`, `{pw}`, `%(pw)s`, `****`), not a value. */
+/**
+ * A URL password that is a named template slot (`${DB_PASS}`, `$DB_PASS`, `{pw}`,
+ * `%(pw)s`, `****`), not a value. A password that merely starts with `$` or `%`
+ * (`$ecretPa55`, a percent-encoded one) is a value.
+ */
 function isUrlCredential(match: string): boolean {
   const password = match.slice(match.indexOf(":") + 1);
-  return !/^(?:[$%{]|\*+$)/.test(password);
+  return !/^(?:\$\{|\{|%\(|\$[A-Z_][A-Z0-9_]*$|\*+$)/.test(password);
 }
 
 // Digest lengths a hex string legitimately has: MD5, SHA-1, SHA-224, SHA-256,
@@ -103,18 +107,21 @@ export const SECRET_PATTERNS: readonly SecretPattern[] = [
     // (`"-----BEGIN PRIVATE KEY-----\nMIIE…\n-----END PRIVATE KEY-----\n"` in a
     // JSON service-account file). The body may not contain `-----`, so it stops
     // at the END line (or at the next BEGIN): one path through it, no backtracking.
+    // Quotes are body so a key split into string literals (`"MIIE…\n" + "…"`) is
+    // one block; PGP armor (`PRIVATE KEY BLOCK`) is the same shape.
     id: "private_key",
     kind: "private key",
-    re: /-----BEGIN (?:[A-Z0-9]{1,20} ){0,4}PRIVATE KEY-----(?:[A-Za-z0-9+/=\s:,]|\\[nr]|-(?!----))*(?:-----END (?:[A-Z0-9]{1,20} ){0,4}PRIVATE KEY-----)?/g,
+    re: /-----BEGIN (?:[A-Z0-9]{1,20} ){0,4}PRIVATE KEY(?: BLOCK)?-----(?:[A-Za-z0-9+/=\s:,"']|\\[nr]|-(?!----))*(?:-----END (?:[A-Z0-9]{1,20} ){0,4}PRIVATE KEY(?: BLOCK)?-----)?/g,
     highConfidence: true,
     accept: hasKeyBody,
   },
   {
     // `scheme://user:password@host` — the `user:password` part only, so the
-    // scheme and host stay readable.
+    // scheme and host stay readable. The password may hold a raw `@`: it ends at
+    // the last `@` that is followed by a host and then a delimiter.
     id: "url_credentials",
     kind: "credentials in a URL",
-    re: /(?<=\b[A-Za-z][A-Za-z0-9+.-]{0,30}:\/\/)[^\s:/@"'<>]{0,256}:[^\s/@"'<>]{1,256}(?=@)/g,
+    re: /(?<=\b[A-Za-z][A-Za-z0-9+.-]{0,30}:\/\/)[^\s:/@"'<>]{0,256}:[^\s/"'<>]{1,256}(?=@[^\s@/"'<>]{0,256}(?:[\s/:?#"'<>]|$))/g,
     highConfidence: false,
     accept: isUrlCredential,
   },
@@ -123,6 +130,14 @@ export const SECRET_PATTERNS: readonly SecretPattern[] = [
     kind: "AWS access key id",
     re: /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g,
     highConfidence: true,
+  },
+  {
+    // Keyword-anchored: a bare 40-character base64 string is not a secret, the
+    // value after `aws_secret_access_key` is.
+    id: "aws_secret",
+    kind: "AWS secret access key",
+    re: /(?<=aws_secret_access_key["']?[ \t]{0,8}[=:][ \t]{0,8}["']?)[A-Za-z0-9/+=]{40}(?![A-Za-z0-9/+=])/gi,
+    highConfidence: false,
   },
   {
     id: "github_pat",
@@ -255,6 +270,8 @@ function inPlace(match: string, marker: string): string {
 
 /** Every match of `p` in `text` that its `accept` keeps, in order. */
 export function* secretMatches(p: SecretPattern, text: string): Generator<string> {
+  // matchAll copies lastIndex: a caller that left it mid-string would skip the start.
+  p.re.lastIndex = 0;
   for (const m of text.matchAll(p.re)) {
     if (!p.accept || p.accept(m[0], text, m.index)) yield m[0];
   }
