@@ -8,10 +8,26 @@
  * ({@link buildSymbolDocumentText}). Vector search uses embeddings from issue #508.
  */
 import { createChildLogger } from "../logger.js";
+import { MAX_EMBED_TEXT_CHARS } from "../rag/embed-model-config.js";
 import { shippedDocumentText } from "./symbol-context.js";
 import type { EmbedService, SymbolEmbeddingMetadata } from "./symbol-embeddings.js";
 
 const log = createChildLogger("hybrid-search");
+
+/**
+ * #2276 — the longest query the vector channel hands the embedder: the
+ * embeddings sidecar's own per-text limit (`MAX_EMBED_TEXT_CHARS`, #786), over
+ * which it answers a non-retryable 400. Only the embed input is bounded — BM25
+ * scores the whole query — so an over-long query costs the vector channel its
+ * tail instead of the whole vector channel (the 400 used to land in the catch
+ * below and drop vector search entirely).
+ */
+export const MAX_VECTOR_QUERY_CHARS = MAX_EMBED_TEXT_CHARS;
+
+/** The query text the embedder is given: unchanged within the bound, else its head. */
+export function vectorQueryText(query: string): string {
+  return query.length <= MAX_VECTOR_QUERY_CHARS ? query : query.slice(0, MAX_VECTOR_QUERY_CHARS);
+}
 
 // ---- Types ----------------------------------------------------------------
 
@@ -73,6 +89,12 @@ export interface HybridSearchResult {
    * scores the same for every query. Absent for a hit only BM25 found.
    */
   vectorScore?: number;
+  /**
+   * #2325 — which channels returned this symbol (`lexical`: BM25, `dense`:
+   * vector), the field knowledge hits carry. Reported only: it plays no part
+   * in the ranking.
+   */
+  matchedBy?: Array<"dense" | "lexical">;
 }
 
 export interface HybridSearchOptions {
@@ -741,7 +763,7 @@ export class HybridCodeSearch {
     let vectorResults: Array<{ id: string; score: number }> = [];
     if (weights.vectorWeight > 0) {
       try {
-        const queryEmbedding = await this.embedService.embed([query]);
+        const queryEmbedding = await this.embedService.embed([vectorQueryText(query)]);
         if (queryEmbedding.vectors.length > 0) {
           const vectorHits = await this.vectorStore.search(
             projectId,
@@ -809,9 +831,14 @@ export class HybridCodeSearch {
 
     // Build results
     const results: HybridSearchResult[] = [];
+    const lexicalIds = new Set(bm25Ranked.map((r) => r.id));
     for (const { id, score } of ranked) {
       const sym = symbolMap.get(id);
       if (!sym) continue;
+      const matchedBy: Array<"dense" | "lexical"> = [
+        ...(vectorScores.has(id) ? (["dense"] as const) : []),
+        ...(lexicalIds.has(id) ? (["lexical"] as const) : []),
+      ];
 
       results.push({
         symbolId: sym.symbolId,
@@ -821,6 +848,7 @@ export class HybridCodeSearch {
         score,
         snippet: sym.snippet ?? sym.signature,
         ...(vectorScores.has(id) ? { vectorScore: vectorScores.get(id) } : {}),
+        ...(matchedBy.length > 0 ? { matchedBy } : {}),
       });
     }
 

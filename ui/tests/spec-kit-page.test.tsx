@@ -1256,7 +1256,7 @@ describe("SpecKitPage — #789", () => {
     fireEvent.click(screen.getByTestId("spec-kit-export-preview"));
     await waitFor(() =>
       expect(screen.getByTestId("spec-kit-export-credential")).toHaveTextContent(
-        /does not name a vault secret/,
+        /No vault secret has that name/,
       ),
     );
     expect(screen.getByTestId("spec-kit-export-publish")).toBeDisabled();

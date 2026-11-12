@@ -103,7 +103,7 @@ describe("ProjectTabs", () => {
     );
     expect(screen.getByTestId("project-tabs")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Overview" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Analyze" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Change requests" })).toBeInTheDocument();
     // #28 — the "More" overflow menu is gone.
     expect(screen.queryByRole("button", { name: /more project sections/i })).toBeNull();
   });
@@ -129,15 +129,13 @@ describe("ProjectTabs", () => {
     );
     for (const name of [
       "Overview",
-      "Sources",
-      "Analyze",
+      "Knowledge",
+      "Change requests",
       "Requirements",
-      "Docs",
-      "Publish",
-      "Code",
+      "Deliverables",
     ]) {
       expect(screen.getByRole("link", { name })).toBeInTheDocument();
     }
-    expect(screen.getByRole("link", { name: "Settings" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Project settings" })).toBeInTheDocument();
   });
 });

@@ -29,8 +29,13 @@ vi.mock("@/lib/projects-api", () => ({
 // #368 — the palette filters admin destinations by the caller's system role.
 // The real registry has no admin-only entry today, so the test adds one.
 const authRole = vi.hoisted(() => ({ current: "user" as string }));
+// #2368 — the New project action follows `project.create`.
+const authPermissions = vi.hoisted(() => ({ current: ["project.create"] as string[] }));
 vi.mock("@/lib/auth-context", () => ({
-  useAuth: () => ({ user: { id: "u1", role: authRole.current }, isLoading: false }),
+  useAuth: () => ({
+    user: { id: "u1", role: authRole.current, permissions: authPermissions.current },
+    isLoading: false,
+  }),
 }));
 vi.mock("@/lib/navigation", async () => {
   const actual = await vi.importActual<typeof import("@/lib/navigation")>("@/lib/navigation");
@@ -80,6 +85,7 @@ beforeEach(() => {
   listProjects.mockResolvedValue({ items: [{ id: "p1", name: "Alpha Project" }] });
   setViewport(false);
   authRole.current = "user";
+  authPermissions.current = ["project.create"];
 });
 
 afterEach(() => {
@@ -239,6 +245,15 @@ describe("CommandPalette — New project", () => {
     await waitFor(() =>
       expect(screen.queryByRole("dialog", { name: "New project" })).not.toBeInTheDocument(),
     );
+  });
+
+  it("offers no New project action to a role without project.create (#2368)", async () => {
+    authPermissions.current = [];
+    await openPalette();
+    fireEvent.change(screen.getByRole("combobox", { name: "Search commands" }), {
+      target: { value: "new project" },
+    });
+    expect(screen.queryByTestId("command-item-action:new-project")).not.toBeInTheDocument();
   });
 });
 

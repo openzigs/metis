@@ -23,6 +23,7 @@ import {
   TOOL_ERROR_MESSAGES,
   preview,
   type RuntimeToolContext,
+  type RuntimeToolResult,
   type ToolErrorCode,
   type ToolEvent,
 } from "./types.js";
@@ -57,6 +58,8 @@ export interface ExecutedToolCall {
   reason?: string;
   /** #147 — the sub-agent run the call started, when the tool ran an agent. */
   subAgentRunId?: string;
+  /** #2325 — the citation contract the tool returned. */
+  citations?: RuntimeToolResult["citations"];
 }
 
 export interface ExecutorDeps {
@@ -276,6 +279,7 @@ export async function executeToolCall(
       ...(typeof result.resultCount === "number" ? { resultCount: result.resultCount } : {}),
       ...(result.truncated ? { truncated: true } : {}),
       ...(result.subAgentRunId ? { subAgentRunId: result.subAgentRunId } : {}),
+      ...(result.citations ? { citations: result.citations } : {}),
     };
   } catch (err) {
     log.warn("Tool execution failed", {

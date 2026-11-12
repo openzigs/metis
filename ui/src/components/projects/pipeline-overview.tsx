@@ -20,6 +20,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { CheckCircle2, AlertTriangle, Circle, Loader2 } from "lucide-react";
 import { apiFetch } from "@/lib/api-client";
 import { analysisApi } from "@/lib/analysis-api";
+import { openQuestionCount } from "@metis/shared";
 import { dbConnectorsApi, repoConnectorsApi } from "@/lib/connectors-api";
 import { documentsApi } from "@/lib/projects-api";
 import { publishingApi } from "@/lib/publishing-api";
@@ -218,6 +219,14 @@ export function ProjectPipelineOverview({ projectId }: { projectId: string }) {
     queryFn: () => analysisApi.get(reviewId as string),
     enabled: Boolean(reviewId),
   });
+  // #2367 — pending approval checkpoints are not requirements yet, so the
+  // draft count alone read 0 while they waited. The SAME key the analysis page
+  // and ApprovalsPanel read and invalidate, so resolving one updates this too.
+  const approvals = useQuery({
+    queryKey: ["approvals", reviewId ?? ""],
+    queryFn: () => analysisApi.listApprovals(projectId, reviewId as string),
+    enabled: Boolean(reviewId),
+  });
 
   // When a live ingest finishes, re-read what it wrote: the connector's
   // `lastIngestAt` and the document list. Without this the stage would drop
@@ -249,6 +258,12 @@ export function ProjectPipelineOverview({ projectId }: { projectId: string }) {
     awaitingReview: review.data
       ? review.data.requirements.filter((r) => r.reviewStatus === "draft").length
       : null,
+    pendingApprovals: approvals.isError
+      ? "unreadable"
+      : (approvals.data?.ticketStatus.pendingCount ?? null),
+    openQuestions: openQuestionCount(review.data?.metadata) ?? 0,
+    rejectedRequirements:
+      review.data?.requirements.filter((r) => r.reviewStatus === "rejected").length ?? 0,
     docs: docs.data ?? [],
     batches: canReadBatches ? (batches.data ?? []) : null,
   };
@@ -268,7 +283,7 @@ export function ProjectPipelineOverview({ projectId }: { projectId: string }) {
       ) : null}
       <ProjectChecklist stages={stages} projectId={projectId} driftCount={driftCount} />
       <p className="text-sm text-muted-foreground">
-        The code summary lives under Code:{" "}
+        The code summary lives under Project settings:{" "}
         <Link
           href={`/projects/${projectId}/overview`}
           className="underline"

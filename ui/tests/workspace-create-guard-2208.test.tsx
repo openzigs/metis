@@ -16,7 +16,7 @@ import {
   ACTIVE_WORKSPACE_STORAGE_KEY,
   useValidatedActiveWorkspaceId,
 } from "@/lib/active-workspace";
-import { makeWrapper, TEST_USER } from "./test-utils";
+import { makeWrapper, TEST_USER, userWith } from "./test-utils";
 
 vi.mock("sonner", () => ({
   toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn(), info: vi.fn() },
@@ -77,7 +77,7 @@ afterEach(() => {
 /** #2349 — /projects opens the New project wizard; walk it to its Create step. */
 async function openProjectsCreate() {
   const user = userEvent.setup();
-  render(<ProjectsPage />, { wrapper: makeWrapper({ initialUser: TEST_USER }) });
+  render(<ProjectsPage />, { wrapper: makeWrapper({ initialUser: userWith("project.create") }) });
   await user.click(screen.getByTestId("new-project-button"));
   await user.type(await screen.findByTestId("wizard-name-input"), "Acme");
   await user.click(screen.getByRole("button", { name: "Next" }));
@@ -116,7 +116,9 @@ describe("the New project wizard waits for the workspaces (#2208)", () => {
   it("disables Create with a retry while the workspaces cannot be read", async () => {
     workspaces = 500;
     const user = userEvent.setup();
-    render(<NewProjectDialog />, { wrapper: makeWrapper({ initialUser: TEST_USER }) });
+    render(<NewProjectDialog />, {
+      wrapper: makeWrapper({ initialUser: userWith("project.create") }),
+    });
     await user.click(screen.getByRole("button", { name: "New project" }));
     await user.type(screen.getByLabelText("Name"), "Acme");
     await user.click(screen.getByRole("button", { name: "Next" }));

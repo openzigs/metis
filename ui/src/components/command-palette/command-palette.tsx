@@ -97,6 +97,8 @@ export function CommandPalette() {
   const listId = useId();
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
+  // #2368 — offered only to a role the server lets create a project.
+  const canCreateProject = user?.permissions.includes("project.create") ?? false;
 
   // ⌘K / Ctrl+K to toggle.
   useEffect(() => {
@@ -125,14 +127,16 @@ export function CommandPalette() {
       hint: "Page",
       href: n.href,
     }));
-    const actionItems: CommandItem[] = [
-      {
-        id: "action:new-project",
-        label: "New project",
-        hint: "Action",
-        run: () => setNewProjectOpen(true),
-      },
-    ];
+    const actionItems: CommandItem[] = canCreateProject
+      ? [
+          {
+            id: "action:new-project",
+            label: "New project",
+            hint: "Action",
+            run: () => setNewProjectOpen(true),
+          },
+        ]
+      : [];
     const projectItems: CommandItem[] = (projects.data?.items ?? []).map((p) => ({
       id: `project:${p.id}`,
       label: p.name,
@@ -140,7 +144,7 @@ export function CommandPalette() {
       href: `/projects/${p.id}`,
     }));
     return [...navItems, ...actionItems, ...projectItems];
-  }, [projects.data, isAdmin]);
+  }, [projects.data, isAdmin, canCreateProject]);
 
   const ranked = useMemo(() => rankCommands(items, query), [items, query]);
 

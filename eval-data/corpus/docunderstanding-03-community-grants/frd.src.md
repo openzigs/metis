@@ -159,7 +159,7 @@ The council's Equality and Inclusion officer asked that the application process 
 
 [[R30 The Youth Voice fund application form shall use plain language suitable for applicants aged 13 to 25, and shall allow a group of young people to apply with the support of a named adult.]]
 
-The application process should be quick to complete for small grants.
+[[R103 The application process should be quick to complete for small grants.]]
 
 ## 7. Assessment
 
@@ -183,7 +183,7 @@ Each round's applications are scored by assessors against the round's criteria. 
 
 [[R37 The moderated score and the reason for any change from the assessors' scores shall be recorded, and the assessors' original scores shall be kept.]]
 
-[[R38 A grants officer shall carry out due diligence on every application recommended for funding before it goes to the decision-maker, recording the checks made and their outcome.]] Due diligence includes checking the organisation's accounts, its governing document and, for grants over 25,000, a credit check.
+[[R38 A grants officer shall carry out due diligence on every application recommended for funding before it goes to the decision-maker, recording the checks made and their outcome.]] [[R104 Due diligence includes checking the organisation's accounts, its governing document and, for grants over 25,000, a credit check.]]
 
 ## 8. Decisions
 
@@ -198,7 +198,7 @@ Who can decide on a grant depends on the programme and the amount. The table bel
 | 25,001 to 100,000 | [[R41 The Cabinet member for communities decides on grants from 25,001 to 100,000.]] |
 | Over 100,000 | [[R42 Cabinet decides on grants over 100,000.]] |
 
-[[R43 The system shall route each recommended application to the decision-maker required by the scheme of delegation, based on the total value of the grant over its whole term.]] For multi-year Strategic Partnerships grants, the total over all years determines the decision-maker.
+[[R43 The system shall route each recommended application to the decision-maker required by the scheme of delegation, based on the total value of the grant over its whole term.]] [[R105 For multi-year Strategic Partnerships grants, the total over all years determines the decision-maker.]]
 
 [[R44 A grant panel member who has an interest in an application shall declare it before the panel meets, and the system shall exclude them from the decision on that application.]]
 
@@ -364,7 +364,7 @@ The council holds records of grants made in the last six years in spreadsheets a
 
 ## Appendix A. Programme-specific rules
 
-The general requirements in sections 4 to 12 apply to every programme. Each programme also has rules of its own, set by the programme's terms and summarised here. The system must allow these rules to be applied for the programme concerned without affecting other programmes.
+The general requirements in sections 4 to 12 apply to every programme. Each programme also has rules of its own, set by the programme's terms and summarised here. [[R106 The system must allow these rules to be applied for the programme concerned without affecting other programmes.]]
 
 ### A.1 Neighbourhood Fund
 
@@ -428,15 +428,18 @@ A youth group applies to the Youth Voice fund for 2,000 for a film project. The 
 A1 [tbd] @R56: a grant offer lapses after "a reasonable time", and Legal Services have not yet advised on the period => How long may a grant offer remain unsigned before it lapses and the money returns to the round budget?
 A2 [tbd] @R13,R38: an income threshold below which accounts are not required has been suggested but not set, and R13 and R38 assume accounts always exist => Is there an income threshold below which an organisation need not provide accounts, and what is it?
 A3 [tbd] @R79: whether ward members are notified of applications from their ward is undecided, and R79 shows them only awarded grants => Should ward members be told when an organisation in their ward applies, and at what stage?
-A4 [conflict] @R39,R40: the decision table bands are "up to 5,000" and "5,001 to 25,000", but monitoring and signature rules use "over 5,000", so a grant of 5,000.50 or a multi-year total near a boundary is unclear => How are amounts between band boundaries, such as 5,000.50, treated for decision-making?
-A5 [conflict] @R43,R40: decision-making uses the whole-term total for multi-year grants, but the document does not say whether the monitoring and payment tables use the annual or the total amount => For multi-year grants, do the monitoring, signature and instalment rules use the annual amount or the total over the term?
+A4 [missing] @R39,R40: the decision table bands are "up to 5,000" and "5,001 to 25,000", but monitoring and signature rules use "over 5,000", so a grant of 5,000.50 or a multi-year total near a boundary is unclear => How are amounts between band boundaries, such as 5,000.50, treated for decision-making?
+A5 [missing] @R43,R40: decision-making uses the whole-term total for multi-year grants, but the document does not say whether the monitoring and payment tables use the annual or the total amount => For multi-year grants, do the monitoring, signature and instalment rules use the annual amount or the total over the term?
 A6 [vague-term] @R82: "the application process should be quick to complete for small grants" adds nothing measurable beyond the 30-minute target, and "small" is undefined => Which grants count as small for the quicker application process: under 1,000, Small Sparks only, or something else?
 A7 [missing] @R6,R7: an extension can be granted to a single applicant, but nothing says how long it may be or whether it is allowed after assessment has begun => What is the longest extension the programme manager may grant, and may it be granted once the round has closed?
-A8 [conflict] @R57,R58: grants over 10,000 are paid in instalments, while Strategic Partnerships instalments depend on quarterly monitoring; for a 12,000 Neighbourhood grant, the monitoring rules require only a mid-point report, so the release condition for later instalments is unstated => What condition releases the second and later instalments of a non-Strategic grant over 10,000?
+A8 [missing] @R57,R58: grants over 10,000 are paid in instalments, while Strategic Partnerships instalments depend on quarterly monitoring; for a 12,000 Neighbourhood grant, the monitoring rules require only a mid-point report, so the release condition for later instalments is unstated => What condition releases the second and later instalments of a non-Strategic grant over 10,000?
 A9 [missing] @R21,R70: an overdue report blocks new applications, but the document does not say whether a report submitted late but not yet accepted still blocks => Does an organisation remain blocked from applying while a late monitoring report awaits review?
-A10 [conflict] @R31,R39: two assessors are needed above 10,000, and a grants officer can decide alone up to 5,000; the document does not say whether the officer who decides may also be the assessor => May a grants officer assess an application and then decide it under delegated authority?
+A10 [missing] @R31,R39: two assessors are needed above 10,000, and a grants officer can decide alone up to 5,000; the document does not say whether the officer who decides may also be the assessor => May a grants officer assess an application and then decide it under delegated authority?
 A11 [missing] @R30,R45: young people under 18 sit on the Youth Voice panel, and Legal Services have not decided whether they can record decisions in the system => Can panel members under 18 record decisions in the system, or must an adult record the decision for them?
 A12 [vague-term] @R12: a grants officer adds a user "after verifying the person's connection with the organisation", with no stated evidence required => What evidence must a grants officer see before adding a user to an organisation that has no other active users?
 A13 [missing] @R52,R49: the six weeks before a local election block recommendations, but nothing says what happens to recommendations already made and not yet approved in that period => Can a Ward Member Grant recommended before the pre-election period be approved and paid during it?
 A14 [conflict] @R97,R16: Appendix A gives Small Sparks grants of 100 to 1,500, while section 1.1 says Small Sparks is for grants up to 1,000; and paying through a sponsor sits awkwardly with R16's check that the account name matches the organisation => Is the Small Sparks maximum 1,000 or 1,500, and whose name must a sponsored group's bank account match?
+A15 [undefined-term] @R8: 'Connected with' and 'related' are not defined, and no verification of unrelatedness is described => What counts as connected and as related, and how is unrelatedness checked or declared?
+A16 [missing] @R14: only the expiry of accounts is defined; the expiry rules for other documents and the effect of expiry on open applications are not given => How are expiry dates set for the governing document and policies, and does an expired document block applying or payment?
+A17 [undefined-term] @R68: the due dates of the mid-point and end-of-grant reports are not defined, although reminders and overdue status depend on them => How are due dates for each report type set and by whom?
 -->

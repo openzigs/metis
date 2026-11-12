@@ -43,8 +43,8 @@ export class ImportPage {
 
     this.heading = page.getByRole("heading", { name: "Import Requirements", exact: true });
     this.newImportTitle = page.getByText("New import", { exact: true });
-    // `exact` matters: the project sub-nav is labelled "Sources pages" and the
-    // tab bar has a "Sources" link, both of which a substring match selects.
+    // `exact` matters: a substring match on "Source" also selects other
+    // labelled controls on the page.
     this.sourceSelect = page.getByLabel("Source", { exact: true });
     this.labelInput = page.getByLabel("Label", { exact: true });
     this.tokenInput = page.getByLabel("API token");
@@ -60,7 +60,7 @@ export class ImportPage {
 
     this.historyTitle = page.getByText("Import history", { exact: true });
     this.emptyState = page.getByText("No imports yet.");
-    this.loadingState = page.getByText("Loading import history…");
+    this.loadingState = page.getByTestId("import-history-loading");
     this.runNowButton = page.getByRole("button", { name: "Run now" });
     this.deleteButton = page.getByRole("button", { name: "Delete", exact: true });
     this.confirmDeleteButton = page.getByRole("button", { name: "Confirm" });

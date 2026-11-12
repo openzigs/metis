@@ -79,6 +79,7 @@ import {
   type SymbolFileLookup,
 } from "../plan-checks.js";
 import { fenceSourceRequirementsInSpec } from "../requirements-seed.js";
+import { clarificationsPromptSection } from "../clarifications.js";
 
 const log = createChildLogger("spec-kit-plan");
 
@@ -250,6 +251,10 @@ export async function runPlanExpanded(input: PlanInput): Promise<PlanResult> {
     localise: { ...(input.localisationSource ? { source: input.localisationSource } : {}) },
   });
 
+  // #2236 — the feature's /clarify answers bind every plan artifact.
+  const clarifications = clarificationsPromptSection(
+    (await getFeatureArtifact(feature.id, "clarify.md"))?.content,
+  );
   const userBase = [
     `Feature: ${feature.slug} — ${feature.title}`,
     "",
@@ -257,6 +262,7 @@ export async function runPlanExpanded(input: PlanInput): Promise<PlanResult> {
     "```md",
     fenceSourceRequirementsInSpec(spec.content),
     "```",
+    ...(clarifications ? ["", clarifications] : []),
   ].join("\n");
 
   let totalTokens = 0;

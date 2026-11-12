@@ -11,7 +11,7 @@ import { act, fireEvent, render, renderHook, screen, waitFor } from "@testing-li
 import userEvent from "@testing-library/user-event";
 import { useRouter } from "next/navigation";
 import { ApiError } from "@/lib/api-client";
-import { makeWrapper } from "./test-utils";
+import { makeWrapper, userWith } from "./test-utils";
 
 vi.mock("sonner", () => ({
   toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn(), info: vi.fn() },
@@ -314,8 +314,9 @@ describe("NewProjectWizard", () => {
     await user.click(screen.getByRole("button", { name: "Create and start ingest" }));
 
     expect(await screen.findByText("Slug already in use")).toBeInTheDocument();
-    expect(screen.getByLabelText("Slug")).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByLabelText("Short name")).toHaveAttribute("aria-invalid", "true");
     expect(screen.queryByTestId("wizard-next-step")).not.toBeInTheDocument();
+    expect(push()).not.toHaveBeenCalled();
     expect(deepIngest).not.toHaveBeenCalled();
   });
 
@@ -336,20 +337,20 @@ describe("NewProjectWizard", () => {
     const user = userEvent.setup();
     renderWizard();
     await user.type(screen.getByLabelText("Name"), "My Cool Project!");
-    expect(screen.getByLabelText("Slug")).toHaveValue("my-cool-project");
-    await user.clear(screen.getByLabelText("Slug"));
-    await user.type(screen.getByLabelText("Slug"), "custom");
+    expect(screen.getByLabelText("Short name")).toHaveValue("my-cool-project");
+    await user.clear(screen.getByLabelText("Short name"));
+    await user.type(screen.getByLabelText("Short name"), "custom");
     await user.type(screen.getByLabelText("Name"), " Two");
-    expect(screen.getByLabelText("Slug")).toHaveValue("custom");
+    expect(screen.getByLabelText("Short name")).toHaveValue("custom");
   });
 
   it("refills a cleared Slug from the Name on blur (#23)", async () => {
     const user = userEvent.setup();
     renderWizard();
     await user.type(screen.getByLabelText("Name"), "Acme Two");
-    await user.clear(screen.getByLabelText("Slug"));
-    fireEvent.blur(screen.getByLabelText("Slug"));
-    expect(screen.getByLabelText("Slug")).toHaveValue("acme-two");
+    await user.clear(screen.getByLabelText("Short name"));
+    fireEvent.blur(screen.getByLabelText("Short name"));
+    expect(screen.getByLabelText("Short name")).toHaveValue("acme-two");
   });
 
   // #23, carried over from the removed Create form.
@@ -363,17 +364,17 @@ describe("NewProjectWizard", () => {
     const user = userEvent.setup();
     renderWizard();
     await user.type(screen.getByLabelText("Name"), "!!!");
-    expect(screen.getByLabelText("Slug")).toHaveValue("");
+    expect(screen.getByLabelText("Short name")).toHaveValue("");
     expect(next()).toBeDisabled();
-    expect(screen.getByRole("alert")).toHaveTextContent("Slug is required");
+    expect(screen.getByRole("alert")).toHaveTextContent("Short name is required");
   });
 
   it("blocks Next on a malformed slug, suggesting a fix", async () => {
     const user = userEvent.setup();
     renderWizard();
     await user.type(screen.getByLabelText("Name"), "Acme");
-    await user.clear(screen.getByLabelText("Slug"));
-    await user.type(screen.getByLabelText("Slug"), "bad slug");
+    await user.clear(screen.getByLabelText("Short name"));
+    await user.type(screen.getByLabelText("Short name"), "bad slug");
     expect(next()).toBeDisabled();
     expect(screen.getByRole("alert")).toHaveTextContent("bad-slug");
   });
@@ -430,11 +431,20 @@ describe("NewProjectWizard", () => {
     const user = userEvent.setup();
     renderWizard();
     expect(screen.getByLabelText("Name")).not.toHaveAttribute("autocomplete");
-    expect(screen.getByLabelText("Slug")).not.toHaveAttribute("autocomplete");
+    expect(screen.getByLabelText("Short name")).not.toHaveAttribute("autocomplete");
     await fillName(user);
     await user.click(screen.getByLabelText("A GitHub repository"));
     expect(screen.getByLabelText("Owner / Org")).not.toHaveAttribute("autocomplete");
     expect(screen.getByLabelText("Repository")).not.toHaveAttribute("autocomplete");
+  });
+
+  it("labels the repository credential in plain language, not 'Secret ref' (#2337)", async () => {
+    const user = userEvent.setup();
+    renderWizard();
+    await fillName(user);
+    await user.click(screen.getByLabelText("A GitHub repository"));
+    expect(screen.getByLabelText("Access token (vault secret)")).toBeInTheDocument();
+    expect(screen.queryByText(/secret ref/i)).not.toBeInTheDocument();
   });
 
   it("goes Back without losing what was typed", async () => {
@@ -480,7 +490,7 @@ describe("NewProjectDialog", () => {
   });
 
   function renderDialog(props: Parameters<typeof NewProjectDialog>[0] = {}) {
-    const Wrapper = makeWrapper({});
+    const Wrapper = makeWrapper({ initialUser: userWith("project.create") });
     return render(
       <Wrapper>
         <NewProjectDialog {...props} />

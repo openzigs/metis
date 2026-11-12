@@ -206,6 +206,7 @@ export function codeRuntimeTool(tool: AgentTool, wireName: string): RuntimeTool 
         ...(typeof r.isError === "boolean" ? { isError: r.isError } : {}),
         ...(typeof r.resultCount === "number" ? { resultCount: r.resultCount } : {}),
         ...(r.truncated ? { truncated: true } : {}),
+        ...(r.citations && r.citations.length > 0 ? { citations: r.citations } : {}),
       };
     },
   });
@@ -263,6 +264,8 @@ function registryRuntimeTool(
         ...(r.isError ? { isError: true } : {}),
         // #464 — chat grounding counts a project-scoped read by this.
         ...(typeof r.resultCount === "number" ? { resultCount: r.resultCount } : {}),
+        // #2325 — `search-knowledge`'s code-derived hits carry the citation contract.
+        ...(r.citations && r.citations.length > 0 ? { citations: r.citations } : {}),
       };
     },
   });

@@ -108,7 +108,8 @@ describe("Generate Documentation (#1727)", () => {
     expect(notice).toHaveTextContent(
       "Not analysed, with no clone yet: openzigs/metis-fixture-billing, openzigs/metis-fixture-notify.",
     );
-    expect(notice).toHaveTextContent(/Sync them on the project's Connections page/);
+    expect(notice).toHaveTextContent(/Update them on the project's Connections page/);
+    expect(notice).not.toHaveTextContent(/sync/i);
   });
 });
 

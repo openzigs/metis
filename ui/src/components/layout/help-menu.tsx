@@ -1,9 +1,11 @@
 "use client";
 
+import Link from "next/link";
 import { BookOpen, HelpCircle, LifeBuoy, Keyboard } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
+  DialogClose,
   DialogContent,
   DialogDescription,
   DialogHeader,
@@ -24,15 +26,10 @@ import {
  * and focus-restore behaviour for free.
  *
  * The dialog exposes SC 3.2.6-allowed help mechanisms: a self-help /
- * documentation link (the User Guide) and a contact mechanism (the project
- * issue tracker). Links are honest — they point at the real repository docs and
- * issues — and open in a new tab with `rel="noopener noreferrer"` to avoid
- * reverse-tabnabbing (OWASP).
+ * documentation link and a contact mechanism. #2337 — both open the in-app Help
+ * page (`/help`), not GitHub: an analyst may have no access to the repository,
+ * and the person to contact is the deployment's own administrator.
  */
-
-const REPO_URL = "https://github.com/openzigs/metis";
-const USER_GUIDE_URL = `${REPO_URL}/blob/main/docs/USER_GUIDE.md`;
-const ISSUES_URL = `${REPO_URL}/issues`;
 
 interface HelpLink {
   href: string;
@@ -43,15 +40,15 @@ interface HelpLink {
 
 const HELP_LINKS: HelpLink[] = [
   {
-    href: USER_GUIDE_URL,
+    href: "/help",
     label: "User guide & documentation",
-    description: "Task-by-task walkthroughs for ingesting, analysing and publishing.",
+    description: "How to get started, where things are in a project, and what METIS's words mean.",
     icon: BookOpen,
   },
   {
-    href: ISSUES_URL,
-    label: "Contact support — report an issue",
-    description: "Ask a question or report a problem on the project issue tracker.",
+    href: "/help#contact",
+    label: "Contact support — ask your administrator",
+    description: "Who to ask for access, vault secrets and AI settings.",
     icon: LifeBuoy,
   },
 ];
@@ -80,18 +77,19 @@ export function HelpMenu() {
         <ul className="flex flex-col gap-2">
           {HELP_LINKS.map(({ href, label, description, icon: Icon }) => (
             <li key={href}>
-              <a
-                href={href}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-start gap-3 rounded-md border p-3 transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                <Icon className="mt-0.5 h-5 w-5 shrink-0 text-muted-foreground" aria-hidden />
-                <span className="flex flex-col">
-                  <span className="text-sm font-medium">{label}</span>
-                  <span className="text-xs text-muted-foreground">{description}</span>
-                </span>
-              </a>
+              {/* Closing on navigation: the dialog would otherwise stay open over /help. */}
+              <DialogClose asChild>
+                <Link
+                  href={href}
+                  className="flex items-start gap-3 rounded-md border p-3 transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  <Icon className="mt-0.5 h-5 w-5 shrink-0 text-muted-foreground" aria-hidden />
+                  <span className="flex flex-col">
+                    <span className="text-sm font-medium">{label}</span>
+                    <span className="text-xs text-muted-foreground">{description}</span>
+                  </span>
+                </Link>
+              </DialogClose>
             </li>
           ))}
         </ul>
