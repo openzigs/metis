@@ -467,7 +467,11 @@ async function read(
         // #2361 — either order: the one named is the one that says less, and an
         // overview comes before the section that sets it out. The statement it
         // repeats must still be kept, so a pair named both ways never drops both.
+        // A summary table restates the body, not the other way round: a prose
+        // statement is never dropped as a repeat of a table row (measured on 04,
+        // where 6's teen DVD rule went into the appendix's entitlement row).
         if (absorbs.get(of)!.size > 1 || dropped.has(i) || dropped.has(of)) continue;
+        if (isTableRow(text, kept[of]!.start) && !isTableRow(text, kept[i]!.start)) continue;
         dropped.add(i);
         keptAs.set(i, of);
         const cov = coverage.get(kept[i]!.section.id)!;
@@ -532,6 +536,14 @@ async function read(
     outputTokenCap,
     usage: meter.usage,
   };
+}
+
+/** #2361 review — whether the line holding `at` is a table row (`| a | b |`). */
+export function isTableRow(text: string, at: number): boolean {
+  return text
+    .slice(text.lastIndexOf("\n", at - 1) + 1, at + 1)
+    .trimStart()
+    .startsWith("|");
 }
 
 /**

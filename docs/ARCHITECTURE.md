@@ -4967,7 +4967,8 @@ sentences. A cross-section pass over the statements then names repeats (dropped)
 cross-references (kept); the repeat dropped is the statement that says less, whichever comes
 first, so an overview restated in full by a later section goes and the later one stays; a
 statement that several others are named repeats of is a summary of them (an entitlements table),
-so none is dropped into it. A reference to a dropped repeat is redirected to the statement it repeats, and a section whose
+so none is dropped into it, and a prose statement is never dropped as a repeat of a table row,
+since a summary table restates the body. A reference to a dropped repeat is redirected to the statement it repeats, and a section whose
 statements went that way records the sections they were merged into (`mergedInto`), which the
 coverage panel shows instead of "nothing extracted". If the pass fails, every statement is kept
 and the report says so; each section's `repeats` counts both kinds. Every quote is checked with

@@ -7,6 +7,7 @@ import {
   READER_BATCH_CHARS,
   READER_WHOLE_MAX_DOCUMENT_TOKENS,
   chooseReadingMode,
+  isTableRow,
   readDocument,
   sentenceSpan,
   spentUsageOf,
@@ -957,6 +958,65 @@ describe("#2361 — repeats", () => {
     expect(reading.sections.find((s) => s.sectionId === "S5")).toMatchObject({ repeats: 1 });
   });
 
+  it("never drops a prose statement as a repeat of a summary table's row, but drops the row", async () => {
+    const text = [
+      "# Lending",
+      "",
+      "## 1 Teens",
+      "",
+      "Teen members cannot borrow a DVD with an 18 certificate.",
+      "",
+      "## 2 Summary",
+      "",
+      "| Category | Limits |",
+      "| --- | --- |",
+      "| Teen | 12 items on loan, no DVD with an 18 certificate |",
+      "| Teen DVDs | no DVD with an 18 certificate |",
+      "",
+    ].join("\n");
+    const reply = statements(
+      {
+        section: "S2",
+        kind: "business-rule",
+        statement: "Teens cannot borrow 18-certificate DVDs.",
+        quote: "Teen members cannot borrow a DVD with an 18 certificate.",
+      },
+      {
+        section: "S3",
+        kind: "business-rule",
+        statement: "Teens: 12 items, no 18-certificate DVDs.",
+        quote: "| Teen | 12 items on loan, no DVD with an 18 certificate |",
+      },
+    );
+    const read = async (duplicate: { id: string; of: string }, items = reply) => {
+      const merge = JSON.stringify({ duplicates: [duplicate], crossReferences: [] });
+      const { provider } = routedProvider([
+        [WHOLE, items],
+        [MERGE, merge],
+      ]);
+      const reading = await readDocument({ title: "Lending", text, provider });
+      return reading.statements.map((s) => s.sectionId);
+    };
+    expect(await read({ id: "T1", of: "T2" })).toEqual(["S2", "S3"]);
+    expect(await read({ id: "T2", of: "T1" })).toEqual(["S2"]);
+    // One row may still repeat another.
+    const rows = statements(
+      {
+        section: "S3",
+        kind: "business-rule",
+        statement: "Teens: 12 items, no 18-certificate DVDs.",
+        quote: "| Teen | 12 items on loan, no DVD with an 18 certificate |",
+      },
+      {
+        section: "S3",
+        kind: "business-rule",
+        statement: "Teens may not borrow 18-certificate DVDs.",
+        quote: "| Teen DVDs | no DVD with an 18 certificate |",
+      },
+    );
+    expect(await read({ id: "T2", of: "T1" }, rows)).toEqual(["S3"]);
+  });
+
   it("points a reference to a dropped repeat at the statement it repeats, through a chain", async () => {
     const reply = statements(
       {
@@ -1031,6 +1091,17 @@ describe("#2361 — repeats", () => {
   it("tells the cross-section pass to name the statement that says less", () => {
     const { systemMessage } = buildMergePrompt({ title: "Booking FRD", statements: [] });
     expect(systemMessage).toContain("name the one that says less");
+  });
+});
+
+describe("isTableRow", () => {
+  const text = "Prose line.\n  | a | b |\n| c | d |";
+  it("is true anywhere on a row, indented or not, and false on prose", () => {
+    expect(isTableRow(text, 0)).toBe(false);
+    expect(isTableRow(text, 5)).toBe(false);
+    expect(isTableRow(text, text.indexOf("| a"))).toBe(true);
+    expect(isTableRow(text, text.indexOf("b |"))).toBe(true);
+    expect(isTableRow(text, text.indexOf("| c"))).toBe(true);
   });
 });
 
