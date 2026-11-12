@@ -46,6 +46,12 @@ document is silent on (ten), and decisions it leaves open (eight). Every arm rea
 file through production's `parseDocument` (mammoth, then `htmlToMarkdown`), so the
 conversion's losses are part of every reading: numbered lists arrive as bullets.
 
+**A fourth document has been added since this baseline (#2255), with no results yet.**
+`docunderstanding-04-library-lending` is a 31 KB Word FRD (60,624 characters converted, 81
+sections, 214 requirements in 45 sections, 28 ambiguities). Many of its requirements are
+written in the second person or as plain statements rather than "shall". Every reading
+above covers documents 01 to 03 only. See `eval-data/README.md`.
+
 **The labels were written by the document's author and have not been reviewed by a second
 person.** The Miniflux sample the issue suggested as a starting point is not in the
 repository, and the existing `eval-data/corpus/brd-*` items are about 500 bytes each, so the

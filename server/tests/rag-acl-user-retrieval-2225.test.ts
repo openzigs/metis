@@ -96,7 +96,7 @@ vi.mock("../src/lib/rag/knowledge-service.js", async (original) => ({
 }));
 
 const { KnowledgeService } = await import("../src/lib/rag/knowledge-service.js");
-const { buildAutoRagContext } = await import("../src/routes/ai.js");
+const { buildAutoRagContext, RETRIEVAL_FAILED_BLOCK } = await import("../src/routes/ai.js");
 const { projectRetriever } = await import("../src/lib/discussions/project-retrieval.js");
 const { buildSearchKnowledgeTool } = await import("../src/lib/rag/search-knowledge-tool.js");
 const { FederatedSearchService } = await import("../src/lib/rag/federated-search-service.js");
@@ -182,10 +182,11 @@ describe("chat auto-RAG — buildAutoRagContext (#2225)", () => {
   it("retrieves nothing when the requester's role cannot be read (fail closed)", async () => {
     state.roleReadFails = true;
     const capture = { contexts: [] as string[], sources: 0 };
+    // #2241 — no excerpt; the model is only told the search failed.
     await expect(buildAutoRagContext("p1", question, "carol", undefined, capture)).resolves.toBe(
-      "",
+      RETRIEVAL_FAILED_BLOCK,
     );
-    expect(capture).toEqual({ contexts: [], sources: 0 });
+    expect(capture).toEqual({ contexts: [], sources: 0, failed: true });
   });
 });
 
@@ -317,7 +318,7 @@ describe("deprovisioned users (#2248)", () => {
 
   it("a deprovisioned admin's chat retrieves nothing: no bypass, no access", async () => {
     deprovision("root");
-    await expect(buildAutoRagContext("p1", question, "root")).resolves.toBe("");
+    await expect(buildAutoRagContext("p1", question, "root")).resolves.toBe(RETRIEVAL_FAILED_BLOCK);
   });
 
   it("a deprovisioned user's search-knowledge call fails, never searching", async () => {

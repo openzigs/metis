@@ -247,6 +247,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       "ANTHROPIC_API_KEY",
       "ANTHROPIC_BASE_URL",
       "CHAT_TOOLS",
+      "CHAT_CODE_SEARCH_TOOLS",
       "AI_RETRY_BASE_DELAY_MS",
     ];
     const savedEnv: Record<string, string | undefined> = {};
@@ -348,6 +349,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       process.env.ANTHROPIC_API_KEY = "k-anthropic";
       process.env.ANTHROPIC_BASE_URL = anthropicBase;
       delete process.env.CHAT_TOOLS;
+      // #2243 — the code-search tools are on by default; "no tools" here means
+      // CHAT_TOOLS=false leaves a plain call, so they stay off as they were.
+      process.env.CHAT_CODE_SEARCH_TOOLS = "false";
       usageMode = "reported";
       dropStreams = 0;
       dropBodies = 0;

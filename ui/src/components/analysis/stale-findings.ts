@@ -17,15 +17,27 @@ export interface StaleFindingRequirement {
   evidenceFindingIds: readonly string[];
 }
 
+/**
+ * One stale note, with the requirement it names. #2281 — two requirements can
+ * share a title, and so a note's text, so the id is what tells them apart.
+ */
+export interface StaleFindingNote {
+  requirementId: string;
+  text: string;
+}
+
 /** By finding id, one note per requirement edited since the finding judged it. */
 export function staleFindingNotes(
   requirements: readonly StaleFindingRequirement[],
-): Map<string, string[]> {
-  const notes = new Map<string, string[]>();
+): Map<string, StaleFindingNote[]> {
+  const notes = new Map<string, StaleFindingNote[]>();
   for (const r of requirements) {
     const stale = requirementFindingsStale(r);
     if (!stale) continue;
-    const note = `Stale: judged v${stale.judgedVersion} of “${r.title}”, which is now v${stale.currentVersion}.`;
+    const note = {
+      requirementId: r.id,
+      text: `Stale: judged v${stale.judgedVersion} of “${r.title}”, which is now v${stale.currentVersion}.`,
+    };
     for (const id of r.evidenceFindingIds) notes.set(id, [...(notes.get(id) ?? []), note]);
   }
   return notes;
