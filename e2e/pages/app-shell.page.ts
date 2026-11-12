@@ -1,7 +1,7 @@
 /**
  * App-shell page object for the UI Information-Architecture overhaul (Epic #133).
  *
- * Encapsulates the authed shell chrome: the six-entry sidebar and the hub page
+ * Encapsulates the authed shell chrome: the seven-entry sidebar and the hub page
  * tabs under it (#27, which replaced N1 #140's grouped sections), the
  * consolidated breadcrumb header that replaced the dual workspace/project
  * switcher (N7 #152), and the icon-only header controls whose accessible names
@@ -12,12 +12,16 @@
  */
 import { expect, type Locator, type Page } from "@playwright/test";
 
-/** The six object-level sidebar destinations (#27 — see ui/src/lib/navigation.ts). */
+/**
+ * The seven object-level sidebar destinations (#27 — see ui/src/lib/navigation.ts).
+ * #2332 — Reviews left the Activity tab bar for an entry of its own.
+ */
 export const SIDEBAR_ENTRIES = [
   "Home",
   "Projects",
   "Chat",
   "Activity",
+  "Reviews",
   "Library",
   "Settings",
 ] as const;
@@ -71,6 +75,16 @@ export class AppShellPage {
    * with same-named links elsewhere (e.g. the project tab "Documents"). */
   navLink(name: string): Locator {
     return this.sidebar.getByRole("link", { name, exact: true });
+  }
+
+  /** #2332 — the refusal a non-admin gets on a page hidden from them. */
+  get noAccess(): Locator {
+    return this.page.getByRole("heading", { name: "You don't have access to this page" });
+  }
+
+  /** #2332 — the count badge on the Reviews sidebar entry (absent at 0). */
+  get reviewsCount(): Locator {
+    return this.sidebar.getByTestId("reviews-count");
   }
 
   async expectLoaded(): Promise<void> {

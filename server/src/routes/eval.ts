@@ -1,13 +1,15 @@
 /**
  * Epic #194 (C.5) — Nightly leaderboard endpoint.
  *
- *   GET  /api/eval/leaderboard?bench=swe-bench-pro|tau-bench   (auth)
- *   GET  /api/eval/leaderboard/runs/:id                        (auth)
+ *   GET  /api/eval/leaderboard?bench=swe-bench-pro|tau-bench   (admin.read)
+ *   GET  /api/eval/leaderboard/runs/:id                        (admin.read)
  *   POST /api/eval/leaderboard/run                             (admin.write)
  *
- * Read endpoints expose the latest 30 days of BenchRun results so the
- * OPERATIONS dashboard widget can render the trend lines. Admins see the
- * full per-task detail; non-admins get the run-level rollup only (RBAC AC).
+ * Read endpoints expose the latest 30 days of BenchRun results to the Eval
+ * leaderboard page. #2332 — that page is an admin's, so the reads are too:
+ * they carried authentication only, and any signed-in reader got every
+ * benchmark run. The per-task diff is still withheld from anyone who is not
+ * an admin, should `admin.read` ever be granted to another role.
  *
  * The trigger endpoint kicks off a manual benchmark run — useful for
  * smoke-testing after a config change. The actual runner work happens
@@ -63,84 +65,94 @@ export function isEvalEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
 export function evalRouter(deps: EvalRouterDeps = {}): Router {
   const r = Router();
 
-  r.get("/leaderboard", requireAuth, async (req: Request, res: Response) => {
-    const parsed = listSchema.safeParse(req.query);
-    if (!parsed.success) {
-      throw new AppError(400, "VALIDATION_ERROR", "Invalid query", {
-        issues: parsed.error.flatten(),
+  r.get(
+    "/leaderboard",
+    requireAuth,
+    requirePermission("admin.read"),
+    async (req: Request, res: Response) => {
+      const parsed = listSchema.safeParse(req.query);
+      if (!parsed.success) {
+        throw new AppError(400, "VALIDATION_ERROR", "Invalid query", {
+          issues: parsed.error.flatten(),
+        });
+      }
+      const { bench, days } = parsed.data;
+      const since = new Date(Date.now() - days * 86_400_000);
+      const where: { benchmark?: Bench; startedAt: { gte: Date } } = { startedAt: { gte: since } };
+      if (bench) where.benchmark = bench;
+      const runs = await prisma.benchRun.findMany({
+        where,
+        orderBy: { startedAt: "desc" },
+        take: 200,
       });
-    }
-    const { bench, days } = parsed.data;
-    const since = new Date(Date.now() - days * 86_400_000);
-    const where: { benchmark?: Bench; startedAt: { gte: Date } } = { startedAt: { gte: since } };
-    if (bench) where.benchmark = bench;
-    const runs = await prisma.benchRun.findMany({
-      where,
-      orderBy: { startedAt: "desc" },
-      take: 200,
-    });
-    res.json(
-      ok({
-        runs: runs.map((run) => ({
-          id: run.id,
-          benchmark: run.benchmark,
-          model: run.model,
-          score: run.score,
-          totalTasks: run.totalTasks,
-          passedTasks: run.passedTasks,
-          meanTokens: run.meanTokens,
-          meanCostCents: run.meanCostCents,
-          meanLatencyMs: run.meanLatencyMs,
-          startedAt: run.startedAt.toISOString(),
-          completedAt: run.completedAt?.toISOString() ?? null,
-          status: run.status,
-        })),
-      }),
-    );
-  });
+      res.json(
+        ok({
+          runs: runs.map((run) => ({
+            id: run.id,
+            benchmark: run.benchmark,
+            model: run.model,
+            score: run.score,
+            totalTasks: run.totalTasks,
+            passedTasks: run.passedTasks,
+            meanTokens: run.meanTokens,
+            meanCostCents: run.meanCostCents,
+            meanLatencyMs: run.meanLatencyMs,
+            startedAt: run.startedAt.toISOString(),
+            completedAt: run.completedAt?.toISOString() ?? null,
+            status: run.status,
+          })),
+        }),
+      );
+    },
+  );
 
-  r.get("/leaderboard/runs/:id", requireAuth, async (req: Request, res: Response) => {
-    const id = String(req.params.id ?? "");
-    if (!id) throw new AppError(400, "VALIDATION_ERROR", "id required");
-    const run = await prisma.benchRun.findUnique({
-      where: { id },
-      include: { tasks: { orderBy: { taskId: "asc" } } },
-    });
-    if (!run) throw new AppError(404, "BENCH_RUN_NOT_FOUND", `BenchRun ${id} not found`);
-    const isAdmin = req.user?.role === "admin";
-    res.json(
-      ok({
-        run: {
-          id: run.id,
-          benchmark: run.benchmark,
-          model: run.model,
-          score: run.score,
-          totalTasks: run.totalTasks,
-          passedTasks: run.passedTasks,
-          meanTokens: run.meanTokens,
-          meanCostCents: run.meanCostCents,
-          meanLatencyMs: run.meanLatencyMs,
-          startedAt: run.startedAt.toISOString(),
-          completedAt: run.completedAt?.toISOString() ?? null,
-          status: run.status,
-          metadata: safeParse(run.metadata),
-        },
-        tasks: run.tasks.map((t) => ({
-          id: t.id,
-          taskId: t.taskId,
-          passed: t.passed,
-          score: t.score,
-          tokens: t.tokens,
-          costCents: t.costCents,
-          latencyMs: t.latencyMs,
-          // RBAC: only admins see the diff content (may include source code).
-          expected: isAdmin ? t.expected : null,
-          actual: isAdmin ? t.actual : null,
-          error: t.error,
-        })),
-      }),
-    );
-  });
+  r.get(
+    "/leaderboard/runs/:id",
+    requireAuth,
+    requirePermission("admin.read"),
+    async (req: Request, res: Response) => {
+      const id = String(req.params.id ?? "");
+      if (!id) throw new AppError(400, "VALIDATION_ERROR", "id required");
+      const run = await prisma.benchRun.findUnique({
+        where: { id },
+        include: { tasks: { orderBy: { taskId: "asc" } } },
+      });
+      if (!run) throw new AppError(404, "BENCH_RUN_NOT_FOUND", `BenchRun ${id} not found`);
+      const isAdmin = req.user?.role === "admin";
+      res.json(
+        ok({
+          run: {
+            id: run.id,
+            benchmark: run.benchmark,
+            model: run.model,
+            score: run.score,
+            totalTasks: run.totalTasks,
+            passedTasks: run.passedTasks,
+            meanTokens: run.meanTokens,
+            meanCostCents: run.meanCostCents,
+            meanLatencyMs: run.meanLatencyMs,
+            startedAt: run.startedAt.toISOString(),
+            completedAt: run.completedAt?.toISOString() ?? null,
+            status: run.status,
+            metadata: safeParse(run.metadata),
+          },
+          tasks: run.tasks.map((t) => ({
+            id: t.id,
+            taskId: t.taskId,
+            passed: t.passed,
+            score: t.score,
+            tokens: t.tokens,
+            costCents: t.costCents,
+            latencyMs: t.latencyMs,
+            // RBAC: only admins see the diff content (may include source code).
+            expected: isAdmin ? t.expected : null,
+            actual: isAdmin ? t.actual : null,
+            error: t.error,
+          })),
+        }),
+      );
+    },
+  );
 
   r.post(
     "/leaderboard/run",
