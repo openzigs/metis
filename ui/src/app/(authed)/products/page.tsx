@@ -98,7 +98,7 @@ export default function ProductsPage() {
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="product-slug">Slug</Label>
+                  <Label htmlFor="product-slug">Short name</Label>
                   <Input
                     id="product-slug"
                     value={slug}

@@ -69,9 +69,9 @@ export function credentialWarning(plan: DryRunPlan): string | null {
   if (plan.credentialResolved) return null;
   switch (plan.credentialCheck) {
     case "missing":
-      return "No vault secret ref was supplied, so this preview could not check the credential. A live publish will be rejected until you provide one.";
+      return "No vault secret was chosen, so this preview could not check the credential. A live publish will be rejected until you provide one.";
     case "unresolved":
-      return `The vault secret ref did not resolve${
+      return `The vault secret did not resolve${
         plan.credentialErrorCode ? ` (${plan.credentialErrorCode})` : ""
       }. A live publish would fail before reaching GitHub.`;
     default:

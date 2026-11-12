@@ -208,7 +208,7 @@ export default function SettingsNotificationsPage() {
     <div className="space-y-6 p-2 md:p-0" data-testid="settings-notifications-root">
       <PageHeader
         title="Notifications"
-        description="Choose which channels deliver which events. Synced to your account across devices."
+        description="Choose which channels deliver which events. Saved to your account, so every device you use gets the same choices."
         actions={
           <>
             {savedToast ? (

@@ -2003,7 +2003,6 @@ The federated search service extends single-project RAG with cross-project retri
 | `buildMultiProjectRagContext` (`ai/multi-project-rag.ts`) | #2238 — chat auto-RAG for a session scoped to 2+ projects (`AISession.scopeProjectIds`) or a workspace (`scopeWorkspaceId`, resolved every turn by `listMemberProjectsInWorkspace`). Builds the `## Retrieved Knowledge (multi-product RAG)` block — each excerpt tagged `[Product]`, an instruction to attribute every claim to its product, and the projects searched without a match, timed out or no longer reachable named (or, for the last, counted) — and the turn's `multi` grounding. |
 | `searchRouter` (`routes/search.ts`) | REST endpoint `POST /api/search/federated` — accepts `{query, projectIds?, k?}` and returns fused results. Also exposes `GET /api/search/projects` for the UI scope selector. |
 | `ProjectScopeSelector` (UI) | Chat scope picker, persisted in `localStorage`: **All my projects** (unscoped), **Every project in _workspace_** (the top bar's), or one or more ticked projects. `POST /api/ai/sessions` takes them as `projectIds` (2+ make a multi-product session) or `workspaceId`; each project must be reachable (404 otherwise) and a workspace needs membership. |
-| `ProvenanceContent` (UI) | Renders `[ProjectName]` tags from cross-project results as colored badges for attribution clarity. |
 
 **Security invariants:**
 - ACL enforcement: requested `projectIds` are intersected with the user's accessible projects (via `getUserAccessibleProjects`). Unauthorized project IDs are silently rejected and logged — they are dropped before any per-project index is queried, so a widening attempt returns no hits rather than an error.
@@ -7775,6 +7774,7 @@ The v1.2 shell ships **30+ user-facing routes** plus the auth proxy handlers. Th
 | `/eval/leaderboard` | Eval Leaderboard | SWE-bench-Pro + TAU-bench results, sparklines, admin "Run now" triggers. |
 | `/eval/leaderboard/[id]` | Eval Run Detail | Per-task diffs via `BenchDiffViewer` for failing tasks. |
 | `/runs/[id]/review` | PR Review | AC matrix, verdict, inline comments, sandbox results for a reviewed PR. |
+| `/help` | Help | Plain-language glossary of METIS terms with links to the pages that use them. |
 | `/settings` | Settings Hub | Navigation card grid linking to all settings sub-pages. |
 | `/settings/profile` | Profile | Account info (read-only in v1.2). |
 | `/settings/appearance` | Appearance | Theme + density controls. |

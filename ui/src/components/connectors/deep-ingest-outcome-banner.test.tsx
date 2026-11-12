@@ -46,7 +46,7 @@ describe("DeepIngestOutcomeBanner (#432)", () => {
   it("renders a clean run in the success palette", () => {
     render(<DeepIngestOutcomeBanner outcome={outcome({})} />);
     const banner = screen.getByRole("status");
-    expect(banner).toHaveTextContent("Deep ingest complete: 10 of 12 files parsed.");
+    expect(banner).toHaveTextContent("Full re-read complete: 10 of 12 files parsed.");
     expect(banner.className).toContain("bg-success-muted");
     expect(banner.className).not.toContain("warning");
   });
@@ -55,11 +55,12 @@ describe("DeepIngestOutcomeBanner (#432)", () => {
     const message = "Deep ingest completed with 2 failures: 2 source files could not be ingested.";
     render(<DeepIngestOutcomeBanner outcome={outcome({ message, failureCount: 2 })} />);
     const banner = screen.getByRole("status");
-    expect(banner).toHaveTextContent(message);
+    const shown = "Full re-read completed with 2 failures: 2 source files could not be ingested.";
+    expect(banner).toHaveTextContent(shown);
     expect(banner.className).toContain("bg-warning-muted");
     expect(banner.className).toContain("border-warning/40");
     expect(banner.className).not.toContain("success");
-    expect(screen.getByText(message).className).toContain("text-warning");
+    expect(screen.getByText(shown).className).toContain("text-warning");
   });
 
   it("renders a failed run as an alert with the server's message", () => {
@@ -69,7 +70,7 @@ describe("DeepIngestOutcomeBanner (#432)", () => {
       />,
     );
     const banner = screen.getByRole("alert");
-    expect(banner).toHaveTextContent("Deep ingest failed");
+    expect(banner).toHaveTextContent("Full re-read failed");
     expect(banner).toHaveTextContent("Repository ingestion failed.");
     expect(banner.className).toContain("border-destructive/40");
   });

@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { LogOut, User as UserIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -45,8 +46,11 @@ export function UserMenu() {
           </div>
         </DropdownMenuLabel>
         <DropdownMenuSeparator />
-        <DropdownMenuItem disabled>
-          <UserIcon className="mr-2 h-4 w-4" /> Profile (soon)
+        {/* #2337 — was a disabled "Profile (soon)"; the profile page exists. */}
+        <DropdownMenuItem asChild>
+          <Link href="/settings/profile" data-testid="user-menu-profile">
+            <UserIcon className="mr-2 h-4 w-4" aria-hidden /> Profile
+          </Link>
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem

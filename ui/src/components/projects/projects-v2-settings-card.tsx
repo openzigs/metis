@@ -89,7 +89,7 @@ export function ProjectsV2SettingsCard({ projectId }: ProjectsV2SettingsCardProp
 
       <div className="grid grid-cols-3 gap-3">
         <div>
-          <Label htmlFor="pv2-secret">Vault secret ref</Label>
+          <Label htmlFor="pv2-secret">Vault secret</Label>
           <Input
             id="pv2-secret"
             data-testid="pv2-secret"

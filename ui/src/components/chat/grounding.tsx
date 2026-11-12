@@ -93,7 +93,7 @@ function multiGrounded(g: Extract<ChatGrounding, { status: "multi" }>): boolean 
 export function coverageText(g: ChatGrounding): string | null {
   if (g.status === "unscoped" || g.status === "multi" || !g.coverage) return null;
   const { matchingChunks, totalChunks } = g.coverage;
-  return `Partial coverage — only ${matchingChunks} of ${totalChunks} chunks in ${g.projectName} are searchable with the current embedding model; re-index to search the rest`;
+  return `Partial coverage — only ${matchingChunks} of ${totalChunks} indexed sections in ${g.projectName} are searchable with the current embedding model; re-index to search the rest`;
 }
 
 function relevanceText(relevance: number | undefined): string {

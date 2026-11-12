@@ -18,6 +18,7 @@ describe("legacyRedirect", () => {
     ["/admin/agents", "/library?tab=agents"],
     ["/agents", "/library?tab=agents"],
     ["/settings/agents", "/library?tab=agents"],
+    ["/settings/audit", "/settings/api-keys?tab=audit"],
     ["/projects/p1/usage", "/settings/usage?scope=project&projectId=p1"],
     ["/workspaces/ws-1/finops", "/settings/usage?scope=workspace&workspaceId=ws-1"],
   ])("sends %s to %s", (from, to) => {
