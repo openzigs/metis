@@ -132,8 +132,16 @@ describe("#2341 — the title schema", () => {
   it("trims, and accepts markup as plain text", () => {
     expect(changeRequestTitleSchema.parse("  <b>Checkout</b>  ")).toBe("<b>Checkout</b>");
   });
-  it("refuses blank, over-long and multi-line titles", () => {
-    for (const bad of ["", "   ", "x".repeat(CHANGE_REQUEST_TITLE_MAX + 1), "a\nb", "a\u0007b"]) {
+  it("turns a pasted TAB, newline or other control character into one space", () => {
+    expect(changeRequestTitleSchema.parse("Q3\tcheckout")).toBe("Q3 checkout");
+    expect(changeRequestTitleSchema.parse(" a\t\tb\r\nc\u0007d\u007f ")).toBe("a b c d");
+    expect(renameAnalysisSchema.parse({ title: "Refunds\tv2" })).toEqual({ title: "Refunds v2" });
+    // The same rule as a generated title's.
+    const pasted = " Q3\t\u0000refunds\n ";
+    expect(changeRequestTitleSchema.parse(pasted)).toBe(clampTitle(pasted));
+  });
+  it("refuses blank, over-long and control-character-only titles", () => {
+    for (const bad of ["", "   ", "x".repeat(CHANGE_REQUEST_TITLE_MAX + 1), "\t", "\u0000\r\n\t"]) {
       expect(changeRequestTitleSchema.safeParse(bad).success).toBe(false);
     }
     expect(changeRequestTitleSchema.safeParse("x".repeat(CHANGE_REQUEST_TITLE_MAX)).success).toBe(

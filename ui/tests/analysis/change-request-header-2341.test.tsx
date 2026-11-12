@@ -18,6 +18,8 @@ vi.mock("@/lib/governing-findings-api", async (importOriginal) => ({
 }));
 const productsList = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/products-api", () => ({ productsApi: { list: productsList } }));
+const listForRun = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/portfolio-api", () => ({ portfolioApi: { listForRun } }));
 const listDrafts = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/publishing-api", () => ({ publishingApi: { listDrafts } }));
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
@@ -90,6 +92,7 @@ beforeEach(() => {
   governingList.mockResolvedValue(null);
   productsList.mockResolvedValue({ items: [], total: 0 });
   listDrafts.mockResolvedValue([]);
+  listForRun.mockResolvedValue([]);
 });
 
 describe("ChangeRequestSummary", () => {
@@ -150,6 +153,20 @@ describe("ChangeRequestSummary", () => {
     await waitFor(() =>
       expect(screen.queryByTestId("change-request-rename-input")).not.toBeInTheDocument(),
     );
+  });
+
+  it("renames a pasted title with a TAB to one line, and cannot save control characters alone", async () => {
+    rename.mockResolvedValue({ id: "an-1", title: "Refunds v2" });
+    renderWith(
+      <ChangeRequestSummary projectId="p1" snapshot={snapshot()} fallbackTitle="x" canRename />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Rename change request" }));
+    const input = screen.getByTestId("change-request-rename-input");
+    fireEvent.change(input, { target: { value: "\t\u0007 " } });
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+    fireEvent.change(input, { target: { value: "Refunds\t\tv2" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(rename).toHaveBeenCalledWith("p1", "an-1", "Refunds v2"));
   });
 
   it("sends nothing for an unchanged title and cannot save a blank one", () => {
@@ -283,6 +300,40 @@ describe("ChangeRequestStepHeader", () => {
     );
     expect(screen.getByTestId("change-request-step-review")).toHaveAttribute("data-state", "done");
     expect(screen.getByTestId("change-request-step-portfolio")).toHaveTextContent("Not started");
+  });
+
+  it("#2341 — reads this run's portfolio checks: done once one completed, in progress while one runs", async () => {
+    productsList.mockResolvedValue({ items: [], total: 2 });
+    listForRun.mockResolvedValue([{ id: "pa-1", status: "completed" }]);
+    const { unmount } = renderWith(
+      <ChangeRequestStepHeader projectId="p1" snapshot={snapshot()} pendingApprovals={0} />,
+    );
+    const portfolio = () => screen.getByTestId("change-request-step-portfolio");
+    await waitFor(() => expect(portfolio()).toHaveAttribute("data-state", "done"));
+    expect(portfolio()).toHaveAttribute("title", "1 portfolio check completed.");
+    expect(listForRun).toHaveBeenCalledWith("an-1");
+    unmount();
+
+    listForRun.mockResolvedValue([{ id: "pa-2", status: "running" }]);
+    renderWith(
+      <ChangeRequestStepHeader projectId="p1" snapshot={snapshot()} pendingApprovals={0} />,
+    );
+    await waitFor(() => expect(portfolio()).toHaveAttribute("data-state", "in-progress"));
+  });
+
+  it("#2341 — a refused portfolio-checks read leaves Portfolio unknown, never 'Not started'", async () => {
+    productsList.mockResolvedValue({ items: [], total: 2 });
+    listForRun.mockRejectedValue(
+      new ApiError(403, "Requires permission analysis.read", "FORBIDDEN"),
+    );
+    renderWith(
+      <ChangeRequestStepHeader projectId="p1" snapshot={snapshot()} pendingApprovals={0} />,
+    );
+    const portfolio = screen.getByTestId("change-request-step-portfolio");
+    await waitFor(() =>
+      expect(portfolio).toHaveAttribute("title", "Couldn't check the portfolio."),
+    );
+    expect(portfolio).toHaveAttribute("data-state", "unknown");
   });
 
   it("treats a payload of an unexpected shape as not known", async () => {

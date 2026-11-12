@@ -81,6 +81,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     let DEV = "";
     let READER = "";
     let OUTSIDER = "";
+    // Each rate-limit test spends its own user's bucket, so neither depends on
+    // how many requests the tests before it made.
+    let LIMITED_DEV = "";
+    let FLOODING_READER = "";
 
     const app = () => {
       const a = express();
@@ -124,7 +128,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       sqlite = createMigratedSqlite("2341-change-request");
       db = new PrismaClient({ adapter: new PrismaBetterSqlite3({ url: sqlite.url }) });
       state.db = db;
-      for (const id of ["u-dev", "u-read", "u-out"]) {
+      for (const id of ["u-dev", "u-read", "u-out", "u-dev-limit", "u-read-flood"]) {
         await db.user.create({
           data: { id, username: id, displayName: id, email: `${id}@example.test` },
         });
@@ -135,6 +139,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         ["u-dev", "ws-2341"],
         ["u-read", "ws-2341"],
         ["u-out", "ws-2341-x"],
+        ["u-dev-limit", "ws-2341"],
+        ["u-read-flood", "ws-2341"],
       ] as const) {
         await db.workspaceMember.create({ data: { workspaceId, userId, role: "member" } });
       }
@@ -213,6 +219,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       DEV = token("u-dev", "developer", ["ws-2341"]);
       READER = token("u-read", "reader", ["ws-2341"]);
       OUTSIDER = token("u-out", "developer", ["ws-2341-x"]);
+      LIMITED_DEV = token("u-dev-limit", "developer", ["ws-2341"]);
+      FLOODING_READER = token("u-read-flood", "reader", ["ws-2341"]);
     }, MIGRATED_SQLITE_HOOK_TIMEOUT_MS);
 
     afterAll(async () => {
@@ -352,11 +360,26 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
     });
 
-    it("refuses a start whose title is too long or not one line", async () => {
-      for (const title of ["x".repeat(201), "two\nlines", "   "]) {
+    it("refuses a start whose title is too long, blank, or only control characters", async () => {
+      for (const title of ["x".repeat(201), "   ", "\t\u0000\r\n"]) {
         const res = await as(DEV).start({ title });
         expect(res.status).toBe(400);
       }
+    });
+
+    it("stores a pasted title's TAB and newline as one space, at start and on rename", async () => {
+      const started = await as(DEV).start({ title: "Q3\tcheckout\nrefunds " });
+      expect(started.status).toBe(202);
+      const id = started.body.data.id as string;
+      expect((await db.analysis.findUniqueOrThrow({ where: { id } })).title).toBe(
+        "Q3 checkout refunds",
+      );
+      const renamed = await as(DEV).rename(id, { title: "Refunds\t\tv2" });
+      expect(renamed.status).toBe(200);
+      expect(renamed.body.data).toEqual({ id, title: "Refunds v2" });
+      expect((await db.analysis.findUniqueOrThrow({ where: { id } })).title).toBe("Refunds v2");
+      expect((await as(DEV).rename(id, { title: "\t\u0007\n" })).status).toBe(400);
+      expect((await db.analysis.findUniqueOrThrow({ where: { id } })).title).toBe("Refunds v2");
     });
 
     it("renames a change request for an analyst, and the new title reads back as typed", async () => {
@@ -466,18 +489,40 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     });
 
     it("bounds renames per user, like its sibling PATCH", async () => {
-      // The analyst has renamed several times in this window already; a cap of
-      // one (read per request) refuses the next, before the handler runs.
+      // A user no other test renames as: with a cap of one (read per request),
+      // the first rename lands and the second is refused before the handler.
       process.env.ANALYSIS_RENAME_RATE_LIMIT_MAX = "1";
       try {
-        const before = await db.analysis.findUniqueOrThrow({ where: { id: IMPORTED_RUN } });
-        const res = await as(DEV).rename(IMPORTED_RUN, { title: "Over the limit" });
+        const first = await as(LIMITED_DEV).rename(IMPORTED_RUN, { title: "Within the limit" });
+        expect(first.status).toBe(200);
+        const res = await as(LIMITED_DEV).rename(IMPORTED_RUN, { title: "Over the limit" });
         expect(res.status).toBe(429);
         expect(res.body.error.code).toBe("RATE_LIMITED");
         const after = await db.analysis.findUniqueOrThrow({ where: { id: IMPORTED_RUN } });
-        expect(after.title).toBe(before.title);
+        expect(after.title).toBe("Within the limit");
       } finally {
         delete process.env.ANALYSIS_RENAME_RATE_LIMIT_MAX;
+      }
+    });
+
+    it("refuses a flood with 429 ahead of auth and the permission check", async () => {
+      // A reader is refused 403 by the permission check. With the per-peer
+      // ceiling at one, the first request reaches that check; the second is
+      // answered 429 by the pre-auth limiter, so auth and the permission check
+      // never run for it.
+      process.env.ANALYSIS_RENAME_PREAUTH_RATE_LIMIT_MAX = "1";
+      try {
+        const before = await db.analysis.findUniqueOrThrow({ where: { id: IMPORTED_RUN } });
+        const first = await as(FLOODING_READER).rename(IMPORTED_RUN, { title: "Flood" });
+        expect(first.status).toBe(403);
+        const flooded = await as(FLOODING_READER).rename(IMPORTED_RUN, { title: "Flood" });
+        expect(flooded.status).toBe(429);
+        expect(flooded.body.error.code).toBe("RATE_LIMITED");
+        expect(flooded.body.error.message).toContain("rename");
+        const after = await db.analysis.findUniqueOrThrow({ where: { id: IMPORTED_RUN } });
+        expect(after.title).toBe(before.title);
+      } finally {
+        delete process.env.ANALYSIS_RENAME_PREAUTH_RATE_LIMIT_MAX;
       }
     });
   },

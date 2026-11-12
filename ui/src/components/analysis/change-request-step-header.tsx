@@ -5,7 +5,8 @@
  * each with its state in words and a link to the screen where that step is
  * done. States come from `deriveChangeRequestSteps` (`@metis/shared`, the rules
  * the server shares); this component only loads the facts the run snapshot does
- * not carry (governing findings, the portfolio, the publish drafts) and renders
+ * not carry (governing findings, the portfolio and this run's checks of it, the
+ * publish drafts) and renders
  * them. A fact that is still loading, or whose read failed or was refused,
  * reads "Unknown", never as a state the step might not be in.
  *
@@ -20,6 +21,7 @@ import {
   STEP_STATE_LABELS,
   agentState,
   deriveChangeRequestSteps,
+  portfolioCheckTally,
   requirementTally,
   runOptionsFromMetadata,
   type ChangeRequestFacts,
@@ -28,6 +30,8 @@ import {
 } from "@metis/shared";
 import type { AnalysisSnapshot } from "@/lib/analysis-api";
 import { governingFindingsApi, governingFindingsKeys } from "@/lib/governing-findings-api";
+import { portfolioApi } from "@/lib/portfolio-api";
+import { portfolioKeys } from "@/lib/portfolio-hooks";
 import { productsApi } from "@/lib/products-api";
 import { publishingApi } from "@/lib/publishing-api";
 import { cn } from "@/lib/utils";
@@ -65,6 +69,12 @@ export function ChangeRequestStepHeader({ projectId, snapshot, pendingApprovals 
   const products = useQuery({
     queryKey: ["products", "count"],
     queryFn: () => productsApi.list({ pageSize: 1 }),
+    retry: false,
+  });
+  // #2341 — the portfolio checks started from this run's requirements.
+  const checks = useQuery({
+    queryKey: portfolioKeys.runList(analysisId),
+    queryFn: () => portfolioApi.listForRun(analysisId),
     retry: false,
   });
   // The publish page's own key, so the two share one read.
@@ -109,6 +119,12 @@ export function ChangeRequestStepHeader({ projectId, snapshot, pendingApprovals 
     };
   }
 
+  // A refused or malformed read is not knowing, never "no checks".
+  let portfolioChecks: ChangeRequestFacts["portfolioChecks"];
+  if (!checks.isSuccess) portfolioChecks = unknownFact(checks);
+  else if (!Array.isArray(checks.data)) portfolioChecks = "failed";
+  else portfolioChecks = portfolioCheckTally(checks.data);
+
   const facts: ChangeRequestFacts = {
     status: snapshot.status,
     agentKeys: options.agentKeys,
@@ -120,6 +136,7 @@ export function ChangeRequestStepHeader({ projectId, snapshot, pendingApprovals 
     pendingApprovals: pendingApprovals ?? null,
     policy,
     products: productTotal,
+    portfolioChecks,
     drafts: handoff,
   };
   const steps = deriveChangeRequestSteps(facts);

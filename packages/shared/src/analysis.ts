@@ -1315,17 +1315,34 @@ export function specKitHandoffLabelsNotInContext(
 export const CHANGE_REQUEST_TITLE_MAX = 200;
 
 /**
- * Issue #2341 — a change request title: trimmed, 1..{@link CHANGE_REQUEST_TITLE_MAX}
- * characters, no control characters (a newline or a NUL would break the one-line
- * label it is shown as). It is stored and rendered as plain text, never as HTML
- * or Markdown, so markup characters are allowed and shown as typed.
+ * Issue #2341 — a title as one line of plain text: every control character
+ * (a TAB pasted from a spreadsheet cell, a newline, a NUL) and every run of
+ * whitespace becomes one space, then the ends are trimmed. The rule the
+ * server's `clampTitle` applies to a generated title, so a typed title and a
+ * generated one are normalised the same way.
+ */
+export function normaliseChangeRequestTitle(raw: string): string {
+  return raw.replace(/[\u0000-\u001f\u007f\s]+/g, " ").trim();
+}
+
+/**
+ * Issue #2341 — a change request title: normalised to one line
+ * ({@link normaliseChangeRequestTitle}), then 1..{@link CHANGE_REQUEST_TITLE_MAX}
+ * characters. A control character is turned into a space, not refused, so a
+ * pasted title with a TAB is accepted; a title of nothing but control
+ * characters and spaces normalises to blank and is refused. It is stored and
+ * rendered as plain text, never as HTML or Markdown, so markup characters are
+ * allowed and shown as typed.
  */
 export const changeRequestTitleSchema = z
   .string()
-  .trim()
-  .min(1, "Give the change request a title")
-  .max(CHANGE_REQUEST_TITLE_MAX, `A title is at most ${CHANGE_REQUEST_TITLE_MAX} characters`)
-  .refine((t) => !/[\u0000-\u001f\u007f]/.test(t), "A title is one line of text");
+  .transform(normaliseChangeRequestTitle)
+  .pipe(
+    z
+      .string()
+      .min(1, "Give the change request a title")
+      .max(CHANGE_REQUEST_TITLE_MAX, `A title is at most ${CHANGE_REQUEST_TITLE_MAX} characters`),
+  );
 
 /** Issue #2341 — `PATCH /api/projects/:projectId/analyses/:id`: rename a change request. */
 export const renameAnalysisSchema = z.object({ title: changeRequestTitleSchema }).strict();

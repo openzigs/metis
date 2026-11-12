@@ -10,7 +10,7 @@
  * title or a document name holding markup shows the markup as typed.
  */
 import { useState } from "react";
-import { CHANGE_REQUEST_TITLE_MAX } from "@metis/shared";
+import { CHANGE_REQUEST_TITLE_MAX, normaliseChangeRequestTitle } from "@metis/shared";
 import { Pencil } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -61,7 +61,8 @@ export function ChangeRequestSummary({
   const title = snapshot.title ?? fallbackTitle;
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(title);
-  const trimmed = draft.trim();
+  // A pasted TAB or newline becomes a space, as the server normalises it.
+  const trimmed = normaliseChangeRequestTitle(draft);
   const rename = useAppMutation({
     mutationFn: (next: string) => analysisApi.rename(projectId, snapshot.id, next),
     successMessage: "Change request renamed",

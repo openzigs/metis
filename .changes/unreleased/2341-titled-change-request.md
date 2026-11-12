@@ -10,3 +10,5 @@ section: Added
   words where each step stands, or "Unknown" when it could not be checked.
 - Every run stores its title, so titles can be searched and sorted; earlier runs are named from
   their sources when the server starts.
+- A pasted title keeps working: a tab or line break in it becomes a space. The Portfolio step
+  reads done once a requirement of the run has been checked across the portfolio.

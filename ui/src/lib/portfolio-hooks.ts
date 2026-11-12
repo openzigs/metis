@@ -32,6 +32,8 @@ export const portfolioKeys = {
   list: () => [...portfolioKeys.all, "list"] as const,
   /** Under `list()`, so invalidating the list refreshes each product's too. */
   productList: (productId: string) => [...portfolioKeys.list(), productId] as const,
+  /** #2341 — the checks started from one run's requirements; also under `list()`. */
+  runList: (analysisId: string) => [...portfolioKeys.list(), "run", analysisId] as const,
   detail: (id: string) => [...portfolioKeys.all, "detail", id] as const,
 };
 

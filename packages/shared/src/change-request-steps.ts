@@ -67,6 +67,27 @@ export interface DraftFacts {
   published: number;
 }
 
+/** This run's portfolio checks, once read, by status. */
+export interface PortfolioCheckFacts {
+  completed: number;
+  /** Pending or running. */
+  inFlight: number;
+  failed: number;
+}
+
+/** A run's portfolio checks tallied by status (an unknown status counts as none). */
+export function portfolioCheckTally(
+  checks: ReadonlyArray<{ status: string }>,
+): PortfolioCheckFacts {
+  const tally = { completed: 0, inFlight: 0, failed: 0 };
+  for (const c of checks) {
+    if (c.status === "completed") tally.completed += 1;
+    else if (c.status === "pending" || c.status === "running") tally.inFlight += 1;
+    else if (c.status === "failed") tally.failed += 1;
+  }
+  return tally;
+}
+
 /** The facts the steps are derived from. */
 export interface ChangeRequestFacts {
   status: AnalysisStatus;
@@ -85,6 +106,12 @@ export interface ChangeRequestFacts {
   policy: PolicyFacts | "off" | UnknownFact;
   /** How many products the portfolio has; `null` when not known. */
   products: number | null;
+  /**
+   * The portfolio checks started from this run's requirements (a check's
+   * `sourceRequirementId` names a requirement, whose `analysisId` is the run),
+   * as far as the reader may read them.
+   */
+  portfolioChecks: PortfolioCheckFacts | UnknownFact;
   /** This run's issue drafts. */
   drafts: DraftFacts | UnknownFact;
 }
@@ -187,12 +214,20 @@ function impactStep(f: ChangeRequestFacts): Derived {
 function portfolioStep(f: ChangeRequestFacts): Derived {
   if (f.products === 0)
     return { state: "not-applicable", reason: "There is no portfolio of products." };
+  const c = f.portfolioChecks;
+  if (c === "loading" || c === "failed") return unknownStep(c, "the portfolio");
+  if (c.completed > 0)
+    return {
+      state: "done",
+      reason: `${c.completed} portfolio check${c.completed === 1 ? "" : "s"} completed.`,
+    };
+  if (c.inFlight > 0) return { state: "in-progress", reason: "Checking across the portfolio." };
+  if (c.failed > 0) return { state: "needs-you", reason: "The portfolio check failed." };
   if (f.requirementCounts.approved === 0)
     return {
       state: "not-started",
       reason: "Approve a requirement to check it across the portfolio.",
     };
-  // No record of a portfolio check per run exists to say it is done.
   return {
     state: "not-started",
     reason: "Approved requirements can be checked across the portfolio.",

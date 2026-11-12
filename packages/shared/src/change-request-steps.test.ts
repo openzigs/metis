@@ -9,6 +9,7 @@ import {
   STEP_STATE_LABELS,
   agentState,
   deriveChangeRequestSteps,
+  portfolioCheckTally,
   requirementTally,
   runOptionsFromMetadata,
   type ChangeRequestFacts,
@@ -18,6 +19,7 @@ import {
 import * as barrel from "./index.js";
 
 const NONE = { draft: 0, approved: 0, rejected: 0, deferred: 0 };
+const NO_CHECKS = { completed: 0, inFlight: 0, failed: 0 };
 
 /** A completed run that used every agent and asked questions, with nothing else known. */
 function facts(over: Partial<ChangeRequestFacts> = {}): ChangeRequestFacts {
@@ -32,6 +34,7 @@ function facts(over: Partial<ChangeRequestFacts> = {}): ChangeRequestFacts {
     pendingApprovals: 0,
     policy: "off",
     products: null,
+    portfolioChecks: { ...NO_CHECKS },
     drafts: { total: 0, published: 0 },
     ...over,
   };
@@ -110,6 +113,28 @@ const CASES: Record<ChangeRequestStepKey, Case[]> = {
     ["no products", { products: 0 }, "not-applicable"],
     ["nothing approved", { products: 3 }, "not-started"],
     ["approved, unknown products", { requirementCounts: { ...NONE, approved: 1 } }, "not-started"],
+    [
+      "a check of this run's requirement completed",
+      { products: 3, portfolioChecks: { ...NO_CHECKS, completed: 1, failed: 1 } },
+      "done",
+    ],
+    [
+      "a check of this run's requirement running",
+      { products: 3, portfolioChecks: { ...NO_CHECKS, inFlight: 1, failed: 1 } },
+      "in-progress",
+    ],
+    [
+      "the only check failed",
+      { products: 3, portfolioChecks: { ...NO_CHECKS, failed: 1 } },
+      "needs-you",
+    ],
+    ["checks still loading", { products: 3, portfolioChecks: "loading" }, "unknown"],
+    ["checks read failed", { products: 3, portfolioChecks: "failed" }, "unknown"],
+    [
+      "no products, whatever the checks say",
+      { products: 0, portfolioChecks: { ...NO_CHECKS, completed: 1 } },
+      "not-applicable",
+    ],
   ],
   review: [
     ["no requirements", {}, "not-started"],
@@ -185,6 +210,8 @@ describe("#2341 — deriveChangeRequestSteps", () => {
         policy: { findings: 2, needsInput: 2, checked: true },
         requirementCounts: { ...NONE, draft: 2, approved: 1 },
         drafts: { total: 2, published: 2 },
+        products: 4,
+        portfolioChecks: { ...NO_CHECKS, completed: 2 },
       }),
     );
     const reason = (k: ChangeRequestStepKey) => steps.find((s) => s.key === k)!.reason;
@@ -193,6 +220,24 @@ describe("#2341 — deriveChangeRequestSteps", () => {
     expect(reason("policy")).toBe("2 findings need your input.");
     expect(reason("review")).toBe("1 of 3 reviewed; 2 to go.");
     expect(reason("handoff")).toBe("2 issues published.");
+    expect(reason("portfolio")).toBe("2 portfolio checks completed.");
+  });
+
+  it("tallies a run's portfolio checks by status", () => {
+    expect(
+      portfolioCheckTally([
+        { status: "completed" },
+        { status: "completed" },
+        { status: "pending" },
+        { status: "running" },
+        { status: "failed" },
+        { status: "something-new" },
+      ]),
+    ).toEqual({ completed: 2, inFlight: 2, failed: 1 });
+    expect(portfolioCheckTally([])).toEqual(NO_CHECKS);
+    expect(stepOf("portfolio", { products: 2, portfolioChecks: "failed" }).reason).toBe(
+      "Couldn't check the portfolio.",
+    );
   });
 
   it("is exported from the package barrel, for the server and the UI alike", () => {

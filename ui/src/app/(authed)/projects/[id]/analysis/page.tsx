@@ -198,7 +198,7 @@ import { PortfolioCheckLink } from "@/components/portfolio/portfolio-check-link"
 import { ChangeRequestSummary } from "@/components/analysis/change-request-summary";
 import { proposedChangeRequestTitle } from "@/components/analysis/change-request-steps";
 import { ChangeRequestStepHeader } from "@/components/analysis/change-request-step-header";
-import { CHANGE_REQUEST_TITLE_MAX } from "@metis/shared";
+import { CHANGE_REQUEST_TITLE_MAX, normaliseChangeRequestTitle } from "@metis/shared";
 
 const SPECIALIST_AGENTS: AnalysisAgentKey[] = ["document", "code", "database", "web"];
 
@@ -742,7 +742,8 @@ export default function AnalysisPage(): React.ReactElement {
     (d) => selectedDocs.includes(d.id) && d.status !== "ready",
   );
   const proposedTitle = proposedChangeRequestTitle(selectedDocs, allDocs);
-  const changeRequestTitle = (titleDraft ?? proposedTitle).trim();
+  // A pasted TAB or newline becomes a space, as the server normalises it.
+  const changeRequestTitle = normaliseChangeRequestTitle(titleDraft ?? proposedTitle);
   /** What both start buttons send: the title and the change request's inputs. */
   const intake = {
     title: changeRequestTitle || undefined,

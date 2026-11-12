@@ -14,6 +14,7 @@
  */
 import {
   CHANGE_REQUEST_TITLE_MAX,
+  normaliseChangeRequestTitle,
   type AnalysisSourceRequirement,
   type ChangeRequestSources,
 } from "@metis/shared";
@@ -24,7 +25,7 @@ export const GENERATED_TITLE_EXCERPT = 80;
 
 /** One line of plain text, at most `max` characters (an ellipsis marks a cut). */
 export function clampTitle(raw: string, max = CHANGE_REQUEST_TITLE_MAX): string {
-  const line = raw.replace(/[\u0000-\u001f\u007f\s]+/g, " ").trim();
+  const line = normaliseChangeRequestTitle(raw);
   return line.length <= max ? line : `${line.slice(0, max - 1).trimEnd()}…`;
 }
 

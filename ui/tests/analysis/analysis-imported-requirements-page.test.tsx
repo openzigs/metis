@@ -261,6 +261,17 @@ describe("#2341 — one intake action: a titled change request, run with default
     });
   });
 
+  it("sends a pasted title's TAB as one space, as the server stores it", async () => {
+    listForProject.mockResolvedValue({ items: [] });
+    renderPage();
+    fireEvent.change(await screen.findByTestId("change-request-title-input"), {
+      target: { value: "Q3\t\tcheckout\u0007refunds " },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Run with defaults" }));
+    await waitFor(() => expect(analysisApi.start).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(analysisApi.start).mock.calls[0][1].title).toBe("Q3 checkout refunds");
+  });
+
   it("leaves the title to the server when the analyst clears it", async () => {
     listForProject.mockResolvedValue({ items: [] });
     renderPage();
