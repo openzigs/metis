@@ -4720,3 +4720,45 @@ CREATE UNIQUE INDEX "saved_document_readings_key" ON "saved_document_readings"("
 
 -- AddForeignKey
 ALTER TABLE "saved_document_readings" ADD CONSTRAINT "saved_document_readings_documentId_fkey" FOREIGN KEY ("documentId") REFERENCES "documents"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- Issue #2236 — clarification answers kept as project knowledge (epic #2227).
+-- CreateTable
+CREATE TABLE "clarification_records" (
+    "id" TEXT NOT NULL,
+    "projectId" TEXT NOT NULL,
+    "origin" TEXT NOT NULL,
+    "questionKey" TEXT NOT NULL,
+    "analysisId" TEXT,
+    "specKitFeature" TEXT,
+    "questionId" TEXT,
+    "question" TEXT NOT NULL,
+    "answer" TEXT NOT NULL,
+    "answeredById" TEXT,
+    "answeredAt" TIMESTAMP(3) NOT NULL,
+    "ambiguityField" TEXT,
+    "sourceDocumentId" TEXT,
+    "sourceFilename" TEXT,
+    "sourceHeadingPath" TEXT NOT NULL DEFAULT '[]',
+    "sourceQuote" TEXT,
+    "requirementIds" TEXT NOT NULL DEFAULT '[]',
+    "productIds" TEXT NOT NULL DEFAULT '[]',
+    "status" TEXT NOT NULL DEFAULT 'settled',
+    "reopenedAt" TIMESTAMP(3),
+    "knowledgeDocumentId" TEXT,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "clarification_records_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateIndex
+CREATE INDEX "clarification_records_analysisId_idx" ON "clarification_records"("analysisId");
+
+-- CreateIndex
+CREATE INDEX "clarification_records_projectId_status_idx" ON "clarification_records"("projectId", "status");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "clarification_records_projectId_questionKey_key" ON "clarification_records"("projectId", "questionKey");
+
+-- AddForeignKey
+ALTER TABLE "clarification_records" ADD CONSTRAINT "clarification_records_projectId_fkey" FOREIGN KEY ("projectId") REFERENCES "projects"("id") ON DELETE CASCADE ON UPDATE CASCADE;

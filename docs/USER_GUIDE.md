@@ -4961,7 +4961,7 @@ Below that, **Context given to the code agent, not requirements** opens to show 
 | **Specify** | `/specify` | Business Analyst | `spec.md` — stakeholders, in-scope, out-of-scope, Given/When/Then ACs, NFRs |
 | **Plan** | `/plan` | Architect | `plan.md` — architecture plan with at least one Mermaid diagram |
 | **Tasks** | `/tasks` | Product Owner | `tasks.md` — topologically-ordered task table with Fibonacci sizing |
-| **Clarify** | `/clarify` | — | `clarify.md` — Q&A log; empty input asks a question, non-empty input answers the latest |
+| **Clarify** | `/clarify` | — | `clarify.md` — Q&A log; empty input asks a question, non-empty input answers the latest. Answered questions are read by `/specify`, `/plan` and `/tasks`, and each answer is saved as project knowledge (#2236) |
 | **Analyze** | `/analyze` | Cross-phase | `analysis.md` — consistency check across spec + plan + tasks |
 | **Implement** | `/implement` | Dispatcher | Returns the orchestrator handoff payload (no AI call) |
 
@@ -6044,6 +6044,16 @@ round that is no longer open (for example from a second browser tab still showin
 refused, and nothing is changed: reload the questions and answer the current round.
 
 **The next round follows your answers (#2077).** When you submit a round and questions are still open (an ambiguity you left unanswered, or a company-policy question), the next round's questions are prepared and shown in place of the round you answered, up to the third round. Before #2077 the panel stayed on the answered round and rounds 2 and 3 were never asked. Only people who can run analyses (a developer, coordinator or admin) start or continue the questions; anyone else sees them as they stand.
+
+**Answers are kept for the project (#2236).** Each answer you give is saved with the question,
+who answered it and when, the paragraph of the document it was about, and the requirement it
+applies to. It is also added to the project's knowledge, so chat and later analyses can find
+and cite it. A later analysis of the same project does not ask a question you have already
+answered. It reuses your answer and lists it under **already answered in this project, not asked
+again**. If the paragraph the question was about has changed in the document, the question is
+asked again. After you answer, METIS maps the affected requirements to code again and re-checks
+them against your company's policies. Until that finishes, the **Governing rules** panel says it
+is re-checking.
 
 **Your progress is saved.** As of Epic #201, an in-flight clarification dialog is stored durably on the server: if you reload the page (or the server restarts) the dialog resumes exactly where you left off, showing how many ambiguities are already resolved versus still remaining. Your submitted answers are persisted with the analysis and feed directly into the generated requirements/specs — changing an answer changes the regenerated output.
 

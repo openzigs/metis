@@ -1,0 +1,148 @@
+/**
+ * #2236 — the document a clarification record is indexed as, and the index
+ * step's edges. The round trip into `documents` is
+ * `tests/clarification-knowledge-2236.sqlite.test.ts`.
+ */
+import { describe, expect, it, vi } from "vitest";
+import type { StoredClarification } from "./clarification-records.js";
+
+const db = vi.hoisted(() => ({
+  document: { create: vi.fn(), findFirst: vi.fn() },
+  clarificationRecord: { updateMany: vi.fn() },
+}));
+vi.mock("../prisma.js", () => ({ prisma: db }));
+
+const {
+  clarificationTitle,
+  indexClarification,
+  inertLine,
+  renderClarificationDocument,
+  withdrawClarification,
+} = await import("./clarification-knowledge.js");
+
+function record(over: Partial<StoredClarification> = {}): StoredClarification {
+  return {
+    id: "rec-1",
+    projectId: "p1",
+    origin: "analysis",
+    questionKey: "k",
+    analysisId: "a1",
+    specKitFeature: null,
+    questionId: "q1",
+    question: "How long must a password be?",
+    answer: "At least 12 characters.",
+    answeredById: "u1",
+    answeredAt: new Date("2026-11-11T00:00:00.000Z"),
+    ambiguityField: "minimumLength",
+    source: null,
+    requirementIds: ["R-1"],
+    productIds: [],
+    status: "settled",
+    reopenedAt: null,
+    knowledgeDocumentId: null,
+    ...over,
+  };
+}
+
+describe("#2236 — the clarification document", () => {
+  it("keeps an answer to one inert line: no code fence, tag or comment", () => {
+    expect(inertLine("```js\nalert(1)\n``` <!-- x --> <script>")).toBe(
+      "'''js alert(1) ''' &lt;!-- x --> &lt;script>",
+    );
+  });
+
+  it("names the question in the title, clipped", () => {
+    expect(clarificationTitle(record())).toBe("Clarification: How long must a password be?");
+    const long = clarificationTitle(record({ question: "x".repeat(300) }));
+    expect(long).toBe(`Clarification: ${"x".repeat(120)}…`);
+  });
+
+  it("says where it was asked, what it applies to, and quotes the paragraph", () => {
+    const md = renderClarificationDocument(
+      record({
+        answer: "Twelve.\n\n# Not a heading",
+        source: { filename: "frd.docx", headingPath: ["4 Accounts"], quote: "Long enough." },
+      }),
+    );
+    expect(md).toContain("- Asked in: requirements analysis a1");
+    expect(md).toContain("- Applies to requirements: R-1");
+    expect(md).toContain("- Source: frd.docx › 4 Accounts");
+    expect(md).toContain("**Answer:** Twelve. # Not a heading");
+    expect(md).toContain("**Source paragraph:** Long enough.");
+    const specKit = renderClarificationDocument(
+      record({ origin: "spec-kit", specKitFeature: "001-export", requirementIds: [] }),
+    );
+    expect(specKit).toContain("- Asked in: Spec Kit /clarify (feature 001-export)");
+    expect(specKit).not.toContain("Applies to requirements");
+    expect(specKit).not.toContain("Source paragraph");
+  });
+});
+
+describe("#2236 — indexClarification edges", () => {
+  it("indexes nothing without a user to attribute the document to", async () => {
+    const storage = { write: vi.fn() };
+    expect(await indexClarification(record({ answeredById: null }), { storage })).toBeNull();
+    expect(storage.write).not.toHaveBeenCalled();
+  });
+
+  it("never throws: a failed write is logged and reads as not indexed", async () => {
+    const storage = {
+      write: vi.fn(async () => {
+        throw new Error("disk full");
+      }),
+    };
+    const enqueue = vi.fn();
+    expect(await indexClarification(record(), { storage, enqueue })).toBeNull();
+    expect(enqueue).not.toHaveBeenCalled();
+    expect(db.document.create).not.toHaveBeenCalled();
+  });
+
+  it("copies the source document's ACL onto the clarification document, scoped to the project", async () => {
+    const acl = JSON.stringify([{ kind: "role", value: "legal" }]);
+    db.document.findFirst.mockResolvedValueOnce({ aclSubjects: acl });
+    db.document.create.mockResolvedValueOnce({ id: "doc-new" });
+    const storage = {
+      write: vi.fn(async () => ({ sizeBytes: 1, storagePath: "p", checksum: "c" })),
+    };
+    const id = await indexClarification(
+      record({
+        source: { documentId: "doc-src", filename: "f.docx", headingPath: [], quote: "q" },
+      }),
+      { storage: storage as never, enqueue: vi.fn() },
+    );
+    expect(id).toBe("doc-new");
+    expect(db.document.findFirst).toHaveBeenCalledWith({
+      where: { id: "doc-src", projectId: "p1" },
+      select: { aclSubjects: true },
+    });
+    expect(db.document.create.mock.calls.at(-1)![0].data.aclSubjects).toBe(acl);
+  });
+});
+
+describe("#2236 — withdrawClarification", () => {
+  it("deletes a reopened record's document and unlinks it, scoped to the project", async () => {
+    db.clarificationRecord.updateMany.mockClear();
+    const deleteDocument = vi.fn(async () => undefined);
+    expect(
+      await withdrawClarification(record({ knowledgeDocumentId: "doc-9" }), { deleteDocument }),
+    ).toBe(true);
+    expect(deleteDocument).toHaveBeenCalledWith("doc-9");
+    expect(db.clarificationRecord.updateMany).toHaveBeenCalledWith({
+      where: { projectId: "p1", id: "rec-1" },
+      data: { knowledgeDocumentId: null },
+    });
+  });
+
+  it("does nothing for a record never indexed, and never throws: a failed delete keeps the link", async () => {
+    db.clarificationRecord.updateMany.mockClear();
+    const deleteDocument = vi.fn(async () => {
+      throw new Error("store down");
+    });
+    expect(await withdrawClarification(record(), { deleteDocument })).toBe(false);
+    expect(deleteDocument).not.toHaveBeenCalled();
+    expect(
+      await withdrawClarification(record({ knowledgeDocumentId: "doc-9" }), { deleteDocument }),
+    ).toBe(false);
+    expect(db.clarificationRecord.updateMany).not.toHaveBeenCalled();
+  });
+});
