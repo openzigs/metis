@@ -23,8 +23,8 @@ describe("<SettingsHubPage />", () => {
     expect(screen.getByRole("heading", { name: "Settings" })).toBeInTheDocument();
   });
 
-  it("links to every settings sub-page", () => {
-    renderHub();
+  it("links an admin to every settings sub-page", () => {
+    renderHub("admin");
     const expected: Array<[string, string]> = [
       ["settings-hub-link-profile", "/settings/profile"],
       ["settings-hub-link-appearance", "/settings/appearance"],
@@ -46,16 +46,33 @@ describe("<SettingsHubPage />", () => {
     }
   });
 
+  // #2332 — no card for a page the shell hides from a non-admin.
+  it("shows a non-admin no developer or operations card", () => {
+    renderHub("reader");
+    for (const hidden of ["api-keys", "mcp", "acp", "hooks", "triggers"]) {
+      expect(screen.queryByTestId(`settings-hub-link-${hidden}`)).not.toBeInTheDocument();
+    }
+    for (const kept of ["profile", "appearance", "notifications", "integrations", "usage"]) {
+      expect(screen.getByTestId(`settings-hub-link-${kept}`)).toBeInTheDocument();
+    }
+  });
+
   it("does not present Vault as a primary settings card (its own page is canonical)", () => {
     renderHub();
     // N5 #153 — Vault/Repositories/Databases have their own pages, not hub cards.
     expect(screen.queryByTestId("settings-hub-link-vault")).not.toBeInTheDocument();
   });
 
-  it("keeps a thin pointer to the canonical Vault surface", () => {
-    renderHub();
+  it("keeps a thin pointer to the canonical Vault surface for an admin", () => {
+    renderHub("admin");
     const pointer = screen.getByRole("link", { name: "Vault" });
     expect(pointer).toHaveAttribute("href", "/vault");
+  });
+
+  it("points a non-admin at no Vault, which is hidden from them (#2332)", () => {
+    renderHub("reader");
+    expect(screen.queryByRole("link", { name: "Vault" })).not.toBeInTheDocument();
+    expect(screen.getByText("Pick a category to view or edit.")).toBeInTheDocument();
   });
 
   it("includes a description for each card", () => {
@@ -105,7 +122,7 @@ describe("<SettingsHubPage />", () => {
   it("exposes a single h1 and a level-2 heading per hub card (#58)", () => {
     renderHub();
     expect(screen.getByRole("heading", { level: 1, name: "Settings" })).toBeInTheDocument();
-    for (const name of ["Profile", "Appearance", "Notifications", "MCP servers", "Integrations"]) {
+    for (const name of ["Profile", "Appearance", "Notifications", "Usage & cost", "Integrations"]) {
       expect(screen.getByRole("heading", { level: 2, name })).toBeInTheDocument();
     }
   });

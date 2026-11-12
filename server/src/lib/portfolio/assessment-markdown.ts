@@ -14,7 +14,11 @@
 import { z } from "zod";
 import {
   PORTFOLIO_DEGRADED_REASON,
+  PORTFOLIO_IMPACT_TIER_LABEL,
   PORTFOLIO_NOT_AFFECTED_OLDER_RULE,
+  portfolioImpactTier,
+  portfolioNotCheckedText,
+  portfolioRequirementCoverage,
   portfolioImpactUnderOlderRule,
   portfolioLinkResources,
   portfolioModifierText,
@@ -144,12 +148,21 @@ function impactCell(p: Row): string {
   }`;
 }
 
+/** #2272 — the Impact tier cell: how sure the impact is, empty for a product it does not reach. */
+function tierCell(p: Row): string {
+  const tier = portfolioImpactTier(p);
+  return tier ? PORTFOLIO_IMPACT_TIER_LABEL[tier] : "";
+}
+
 function impactHeading(p: Row): string {
   const also = portfolioOtherLinkKinds(p.technicalDetail, p.via);
+  const tier = portfolioImpactTier(p);
   const tags = [
     p.via ? `via ${p.via}` : null,
     p.severity,
     also.length > 0 ? `also via ${also.join(", ")}` : null,
+    // #2272 — how sure the impact is.
+    tier ? PORTFOLIO_IMPACT_TIER_LABEL[tier].toLowerCase() : null,
   ]
     .filter(Boolean)
     .join(", ");
@@ -345,6 +358,31 @@ export function renderPortfolioAssessmentMarkdown(v: PortfolioAssessmentView): s
     }
   }
 
+  // #2272 — each requirement checked, and the products found implementing it.
+  const checked = portfolioRequirementCoverage(v.products);
+  if (checked.length > 1) {
+    lines.push(
+      "## Requirements checked",
+      "",
+      "| # | Requirement | Implemented by |",
+      "| --- | --- | --- |",
+      ...checked.map(
+        (r, i) =>
+          `| ${i + 1} | ${cell(r.requirement)} | ${r.coveredBy.length > 0 ? cell(r.coveredBy.map(name).join(", ")) : "No product found"} |`,
+      ),
+      "",
+    );
+  }
+  // #2272 — nothing cut silently: everything the check did not check, and why.
+  if (v.notChecked.length > 0) {
+    lines.push(
+      "## Not checked",
+      "",
+      ...v.notChecked.map((n) => `- ${mdInline(n.text)}: ${portfolioNotCheckedText(n)}`),
+      "",
+    );
+  }
+
   if (report) {
     const functional = report.requirements.filter((r) => r.kind === "functional");
     const nonFunctional = report.requirements.filter((r) => r.kind === "non-functional");
@@ -373,12 +411,12 @@ export function renderPortfolioAssessmentMarkdown(v: PortfolioAssessmentView): s
   lines.push(
     "## Products",
     "",
-    "| Product | Coverage | Summary | Impact | Severity |",
-    "| --- | --- | --- | --- | --- |",
+    "| Product | Coverage | Summary | Impact | Severity | Impact tier |",
+    "| --- | --- | --- | --- | --- | --- |",
     ...v.products.map((p) =>
       p.coverage === "restricted"
-        ? `| ${cell(name(p.productId))} | Restricted |  |  |  |`
-        : `| ${cell(name(p.productId))} | ${COVERAGE_LABEL[p.coverage]} | ${cell(summaryAfterCoverage(p.baSummary, COVERAGE_LABEL[p.coverage]))} | ${impactCell(p)} | ${p.severity ? cell(p.severity) : ""} |`,
+        ? `| ${cell(name(p.productId))} | Restricted |  |  |  | ${tierCell(p)} |`
+        : `| ${cell(name(p.productId))} | ${COVERAGE_LABEL[p.coverage]} | ${cell(summaryAfterCoverage(p.baSummary, COVERAGE_LABEL[p.coverage]))} | ${impactCell(p)} | ${p.severity ? cell(p.severity) : ""} | ${tierCell(p)} |`,
     ),
   );
   // #1689 — a check stored under an older rule may have missed a product it reaches.

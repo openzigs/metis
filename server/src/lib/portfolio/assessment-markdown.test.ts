@@ -90,6 +90,8 @@ function fixture(): PortfolioAssessment {
     statement: "Refunds post to the ledger within 2 seconds | <b>fast</b>",
     sourceRequirementId: null,
     sourceProjectId: null,
+    sourceDocumentId: null,
+    notChecked: [],
     scope: "all-accessible",
     productIds: ["p-orders", "p-reporting", "p-storefront"],
     status: "completed",
@@ -593,6 +595,52 @@ describe("renderPortfolioAssessmentMarkdown (#1624)", () => {
     const rep = section("Reporting");
     expect(rep).toContain("- `customers`");
     expect(rep).not.toContain("provides what changes");
+  });
+
+  it("#2272 — lists each requirement checked and everything not checked, escaped", async () => {
+    store.getPortfolioAssessment.mockResolvedValue({
+      ...fixture(),
+      notChecked: [
+        { text: "Refunds <b>over</b> 1k | escalate", reason: "over-limit", count: null },
+        { text: "Appendix B", reason: "section-unread", count: null },
+      ],
+    });
+    const md = await exported();
+    const notChecked = md.slice(md.indexOf("## Not checked"));
+    expect(notChecked).toContain(
+      "- Refunds &lt;b&gt;over&lt;/b&gt; 1k | escalate: Not checked: one check takes 100 requirements, and this one is past them.",
+    );
+    expect(notChecked).toContain(
+      "- Appendix B: Not checked: the model could not read this section of the document.",
+    );
+    // After the summary's affected products, before the restated requirements.
+    expect(md.indexOf("## Requirements checked")).toBeGreaterThan(
+      md.indexOf("### Affected products"),
+    );
+    expect(md.indexOf("## Not checked")).toBeLessThan(md.indexOf("## Functional requirements"));
+    expect(md).toContain("| 1 | A refund posts a ledger entry | Orders |");
+    expect(md).toContain("| 2 | It posts within 2 seconds | No product found |");
+  });
+
+  it("#2272 — a check of one requirement whole, with nothing cut, adds neither section", async () => {
+    const one = fixture();
+    store.getPortfolioAssessment.mockResolvedValue({
+      ...one,
+      products: one.products.map((p) =>
+        p.productId === "p-orders"
+          ? {
+              ...p,
+              technicalDetail: {
+                ...p.technicalDetail,
+                criteria: [{ criterion: "Refunds post", coveredBy: ["rc-orders"] }],
+              },
+            }
+          : { ...p, technicalDetail: { ...p.technicalDetail, criteria: undefined } },
+      ),
+    });
+    const md = await exported();
+    expect(md).not.toContain("## Requirements checked");
+    expect(md).not.toContain("## Not checked");
   });
 });
 

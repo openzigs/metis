@@ -9,6 +9,7 @@
  */
 import {
   CHANGE_SEVERITIES,
+  portfolioImpactTier,
   portfolioImpactUnderOlderRule,
   portfolioLinkResources,
   portfolioModifierText,
@@ -17,6 +18,7 @@ import {
   portfolioRestrictedRule,
   type CodeCitation,
   type PortfolioAssessmentView,
+  type PortfolioImpactTier,
   type PortfolioRestrictedRule,
   type PortfolioResourceList,
 } from "@metis/shared";
@@ -203,6 +205,8 @@ export interface AffectedProduct {
   /** #1963 — the other edge kinds the change reaches it by, beyond `via`'s path. */
   otherVia: string[];
   severity: string | null;
+  /** #2272 — how sure the impact is (`portfolioImpactTier`): found in code, verified by graph path, likely, possible, needs review. */
+  tier: PortfolioImpactTier;
   /** The product's one-paragraph summary: the report's, else the stored sentence. */
   summary: string;
   /** Hop by hop, how the severity was reached; empty for a direct change. */
@@ -364,6 +368,8 @@ export function impactGroups(view: PortfolioAssessmentView): {
       via: restricted ? null : p.via,
       otherVia: restricted ? [] : portfolioOtherLinkKinds(p.technicalDetail, p.via),
       severity: restricted ? null : p.severity,
+      // A row the change reaches always has a tier; `none` was listed not affected above.
+      tier: portfolioImpactTier(p) ?? "needs-review",
       summary: restricted ? "" : paragraphFor(view, p),
       derivation: hops.map((h) => ({
         label: `${nameOf(h.fromProductId) ?? "A product"} → ${nameOf(h.toProductId) ?? "a product"}`,
@@ -414,19 +420,36 @@ export function impactNeedsHost(view: PortfolioAssessmentView): boolean {
 export const HOST_LINK_STATEMENT_MAX = 2_000;
 
 /**
+ * #2272 — the document title a document check's statement quotes
+ * (`Requirements read from "…": …`, or no tail before the run read it). The
+ * quote closes at the last `"` before `: ` or the end, so a title that itself
+ * holds a quote is read whole: what follows the title holds none.
+ */
+function documentTitleOf(statement: string): string {
+  return /^Requirements read from "(.*)"(?=: |$)/.exec(statement)?.[1] ?? "Selected document";
+}
+
+/**
  * #1725 — the entry page with this check's requirement and scope filled in, at
  * the host picker. A requirement it started from is carried by id (its title
- * is the statement's first line); a typed statement is carried when it fits.
+ * is the statement's first line), and (#2272) a document by id with its title;
+ * a typed statement is carried when it fits. #2272 — every product a
+ * product-scoped check chose is carried.
  */
 export function hostPickerHref(view: PortfolioAssessmentView): string {
   const params = new URLSearchParams();
   if (view.sourceRequirementId) {
     params.set("requirementId", view.sourceRequirementId);
     params.set("title", view.statement.split("\n", 1)[0].slice(0, 200));
+  } else if (view.sourceDocumentId) {
+    params.set("documentId", view.sourceDocumentId);
+    params.set("title", documentTitleOf(view.statement).slice(0, 200));
   } else if (view.statement.length <= HOST_LINK_STATEMENT_MAX) {
     params.set("statement", view.statement);
   }
-  if (view.scope === "product" && view.productIds[0]) params.set("productId", view.productIds[0]);
+  if (view.scope === "product") {
+    for (const id of view.productIds) params.append("productId", id);
+  }
   const query = params.toString();
   return `/portfolio${query ? `?${query}` : ""}#portfolio-host`;
 }

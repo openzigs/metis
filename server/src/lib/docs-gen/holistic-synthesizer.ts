@@ -165,6 +165,7 @@ import {
 } from "./phase1-chunking.js";
 import { mapSettledWithConcurrency, resolvePhase1Concurrency } from "./phase1-concurrency.js";
 import { isInPathScope, restrictToPathScope, withPathScopeBanner } from "./path-scope.js";
+import { NoDocumentableCodeError } from "./no-documentable-code.js";
 import { resolvePhase2Concurrency } from "./phase2-concurrency.js";
 import { DOCS_GEN_AGENT_STEP, noteRunUsage, withDocsGenRunCost } from "./run-cost.js";
 import {
@@ -203,7 +204,6 @@ import {
 import type { SectionGroundingRetriever } from "./grounding/grounding-retrieval.js";
 import {
   type DocWarning,
-  noModulesWarning,
   sourceUnavailableWarning,
   factsTruncatedWarning,
   phase1FactsTruncatedWarning,
@@ -1623,24 +1623,20 @@ async function runHolisticSynthesis(
   );
 
   if (modules.length === 0) {
-    // Distinguish a genuinely-empty project (no symbols at all → clean empty
-    // doc, no warning) from one that HAS indexed symbols but produced no
-    // documentable modules. The latter is a silent failure (e.g. SAS-only
-    // projects whose `function`-only symbols were dropped) and must be surfaced
-    // so deriveDocStatus reports "degraded" instead of a clean "ready".
-    const warnings = [
-      ...repositoryWarnings,
-      ...sqlScanWarnings,
-      ...(rawSymbolCount > 0 ? [noModulesWarning(rawSymbolCount)] : []),
-    ];
-    if (warnings.length > 0) {
-      log.warn("Empty document despite indexed symbols", {
-        projectId,
-        docType,
-        rawSymbolCount,
-      });
-    }
-    return { markdown: renderEmptyDocument(title, docType, meta), warnings };
+    // #2369 — no module, no document. This used to return a stub that said it
+    // "could not be generated" as the document's content, which the route then
+    // published as `ready` and queued for indexing. Throwing ends the run as
+    // `failed` with a fixed message that says what to do, and publishes
+    // nothing. Whether any code was indexed at all picks that message: none (a
+    // documents-only project) is "connect source code", some is "none of it is
+    // documentable".
+    log.warn("No documentable modules; the document is not generated", {
+      projectId,
+      docType,
+      rawSymbolCount,
+      warnings: [...repositoryWarnings, ...sqlScanWarnings].map((w) => w.kind),
+    });
+    throw new NoDocumentableCodeError(rawSymbolCount);
   }
 
   log.info("Phase 1: extracting per-module facts", {
@@ -9218,10 +9214,6 @@ function docTypeLabel(docType: DocType): string {
     case "user-guide":
       return "User Guide";
   }
-}
-
-function renderEmptyDocument(title: string, docType: DocType, meta: ProjectMeta): string {
-  return `# ${title}\n\n*No documentable modules were found in **${meta.name}**.*\n\nThis ${docTypeLabel(docType)} document could not be generated because the project's code graph contains no business-logic modules large enough to summarize. Try ingesting more source code, or verify that test/generated/build directories are not the only content.\n`;
 }
 
 function renderOfflineDocument(

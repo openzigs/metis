@@ -176,12 +176,14 @@ describe("holistic synthesizer — junk-path filter", () => {
     expect(result.markdown).toContain("SAS prose.");
   });
 
-  it("a project of ONLY junk symbols is a CLEAN empty doc (no false degraded warning)", async () => {
+  // #2369 — no module now means no document; junk still counts as no code at
+  // all, so the message is "connect source code", not "nothing documentable".
+  it("a project of ONLY junk symbols fails as having no source code (junk is not counted)", async () => {
     // No source-bearing repository: this fixture tests junk filtering, not a missing checkout.
     mockPrisma.codeGraph.findMany.mockResolvedValue([]);
     // Before the fix, junk inflated rawSymbolCount → the "indexed but no
-    // modules" degraded warning fired even though there is no real source.
-    // After filtering, rawSymbolCount is 0 → clean empty doc, NO warnings.
+    // modules" case fired even though there is no real source. After
+    // filtering, rawSymbolCount is 0 → the "no source code" case.
     mockPrisma.codeSymbol.groupBy.mockResolvedValue([
       { filePath: JUNK_FILE, _count: { _all: 1 } },
       { filePath: "__MACOSX/RISK_CALC_SAS/src/._other.sas", _count: { _all: 1 } },
@@ -191,8 +193,9 @@ describe("holistic synthesizer — junk-path filter", () => {
       junkModule("j2", "__MACOSX/RISK_CALC_SAS/src/._other.sas"),
     ] as never);
 
-    const result = await synthesizeHolisticDocument("p1", "architecture", "Arch");
-    expect(result.markdown).toContain("No documentable modules");
-    expect(result.warnings).toHaveLength(0);
+    await expect(synthesizeHolisticDocument("p1", "architecture", "Arch")).rejects.toMatchObject({
+      name: "NoDocumentableCodeError",
+      indexedSymbols: 0,
+    });
   });
 });

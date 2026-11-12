@@ -34,6 +34,7 @@ import {
 import { Card } from "@/components/ui/card";
 import { PageHeader } from "@/components/ui/page-header";
 import { useAuth } from "@/lib/auth-context";
+import { isAdminOnlyPath } from "@/lib/navigation";
 
 interface HubLink {
   href: string;
@@ -159,19 +160,26 @@ const HUB_LINKS: HubLink[] = [
 export default function SettingsHubPage() {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
-  const links = HUB_LINKS.filter((link) => isAdmin || !link.adminOnly);
+  // #2332 — nor a card for a page the shell hides from a non-admin.
+  const links = HUB_LINKS.filter(
+    (link) => isAdmin || (!link.adminOnly && !isAdminOnlyPath(link.href)),
+  );
   return (
     <div className="space-y-6 p-2 md:p-0" data-testid="settings-hub-root">
       <PageHeader
         title="Settings"
         description={
-          <>
-            Pick a category to view or edit. Sensitive credentials live in the dedicated{" "}
-            <Link href="/vault" className="underline">
-              Vault
-            </Link>{" "}
-            surface.
-          </>
+          isAdmin ? (
+            <>
+              Pick a category to view or edit. Sensitive credentials live in the dedicated{" "}
+              <Link href="/vault" className="underline">
+                Vault
+              </Link>{" "}
+              surface.
+            </>
+          ) : (
+            "Pick a category to view or edit."
+          )
         }
       />
       <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">

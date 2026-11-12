@@ -87,6 +87,12 @@ vi.mock("../ai/index.js", async (importOriginal) => {
 });
 
 import { synthesizeHolisticDocument } from "./holistic-synthesizer.js";
+import { NO_DOCUMENTABLE_CODE, NoDocumentableCodeError } from "./no-documentable-code.js";
+import {
+  GENERATION_NO_DOCUMENTABLE_MODULES_MESSAGE,
+  GENERATION_NO_SOURCE_CODE_MESSAGE,
+  generationFailureMessage,
+} from "./generation-failure-message.js";
 
 function seedMetaPrisma(): void {
   mockPrisma.project.findUnique.mockResolvedValue({ name: "SasProj" });
@@ -200,25 +206,31 @@ describe("holistic synthesizer — SAS module filter (loadModules)", () => {
     expect(result.markdown).not.toContain("No documentable modules");
   });
 
-  it("emits a degraded-output warning when modules are empty BUT raw symbols existed", async () => {
+  // #2369 — no module, no document: the run fails rather than publishing a
+  // stub that says it "could not be generated".
+  it("fails as not-documentable when modules are empty BUT raw symbols existed", async () => {
     // Only a symbol under an excluded (test) directory: indexed, never documented.
     mockPrisma.codeSymbol.findMany.mockResolvedValue([
       sasFn("s1", "onlyOne", "sas/tests/unit/fixture.sas"),
     ] as never);
 
-    const result = await synthesizeHolisticDocument("p1", "architecture", "Arch");
-    expect(result.markdown).toContain("No documentable modules");
-    expect(result.warnings.length).toBeGreaterThan(0);
-    expect(result.warnings[0].severity).toBeDefined();
-    expect(result.warnings[0].message.length).toBeGreaterThan(0);
+    const err = await synthesizeHolisticDocument("p1", "architecture", "Arch").catch(
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(NoDocumentableCodeError);
+    expect(err).toMatchObject({ code: NO_DOCUMENTABLE_CODE, indexedSymbols: 1 });
+    expect(generationFailureMessage(err)).toBe(GENERATION_NO_DOCUMENTABLE_MODULES_MESSAGE);
   });
 
-  it("genuinely-zero-symbols case stays a clean empty document with NO warnings", async () => {
+  it("fails as no-source-code when the project has no symbols at all (#2369)", async () => {
     mockPrisma.codeGraph.findMany.mockResolvedValue([]);
     mockPrisma.codeSymbol.findMany.mockResolvedValue([] as never);
 
-    const result = await synthesizeHolisticDocument("p1", "architecture", "Arch");
-    expect(result.markdown).toContain("No documentable modules");
-    expect(result.warnings).toHaveLength(0);
+    const err = await synthesizeHolisticDocument("p1", "business-requirements", "BRD").catch(
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(NoDocumentableCodeError);
+    expect(err).toMatchObject({ indexedSymbols: 0 });
+    expect(generationFailureMessage(err)).toBe(GENERATION_NO_SOURCE_CODE_MESSAGE);
   });
 });

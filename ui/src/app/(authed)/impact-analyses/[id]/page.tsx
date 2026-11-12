@@ -234,8 +234,10 @@ function ImpactAnalysisDetailView({
             {rerun.isPending ? "Re-running…" : "Re-run"}
           </Button>
           {/* #2280 — a re-run reuses the saved reading of an unchanged document;
-              this one reads the document again. */}
-          {data.documentId ? (
+              this one reads the document again. #2293 — a run with pasted text
+              reads the text, never the document (`changesFromSource`), so it
+              has no document to read again. */}
+          {data.documentId && !data.sourceText?.trim() ? (
             <Button
               variant="outline"
               size="sm"
