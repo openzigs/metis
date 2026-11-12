@@ -1,7 +1,7 @@
 /** #18 — the words a user reads about what an answer is based on. */
 import { describe, it, expect } from "vitest";
-import { render, screen } from "@testing-library/react";
-import { GroundingBadge, UngroundedScopeNotice, groundingText } from "./grounding";
+import { render, screen, within } from "@testing-library/react";
+import { GroundingBadge, UngroundedScopeNotice, coverageText, groundingText } from "./grounding";
 
 describe("groundingText (#18)", () => {
   it("names the project and counts its sources", () => {
@@ -55,6 +55,100 @@ describe("GroundingBadge (#18)", () => {
       />,
     );
     expect(screen.getByTestId("chat-grounding").className).toContain("text-muted-foreground");
+  });
+});
+
+describe("groundingText — why nothing was supplied (#2241)", () => {
+  const nc = { status: "no-context", projectId: "p", projectName: "Payments" } as const;
+
+  it("says the evidence was insufficient, counting the weak matches set aside", () => {
+    expect(groundingText({ ...nc, reason: "insufficient-evidence", belowFloor: 8 })).toBe(
+      "Insufficient evidence — nothing in Payments was relevant enough to this question (8 weak matches set aside); check any file or code it names",
+    );
+    expect(groundingText({ ...nc, reason: "insufficient-evidence", belowFloor: 1 })).toMatch(
+      /\(1 weak match set aside\)/,
+    );
+    expect(groundingText({ ...nc, reason: "insufficient-evidence" })).not.toMatch(/set aside/);
+  });
+
+  it("says the search failed", () => {
+    expect(groundingText({ ...nc, reason: "retrieval-failed" })).toMatch(
+      /^Retrieval failed — Payments's knowledge base could not be searched/,
+    );
+  });
+
+  it("keeps the plain wording when nothing was found", () => {
+    expect(groundingText({ ...nc, reason: "nothing-found" })).toMatch(
+      /^No excerpts from Payments were retrieved automatically/,
+    );
+  });
+});
+
+describe("GroundingBadge — sources and coverage (#2241)", () => {
+  const grounded = {
+    status: "grounded",
+    projectId: "p",
+    projectName: "Payments",
+    sources: 3,
+  } as const;
+
+  it("lists each source with its excerpt count and relevance", () => {
+    render(
+      <GroundingBadge
+        grounding={{
+          ...grounded,
+          sourcesUsed: [
+            { name: "internal/feed.go", excerpts: 2, relevance: 0.713 },
+            { name: "rules.md", excerpts: 1 },
+          ],
+        }}
+      />,
+    );
+    const items = within(screen.getByTestId("chat-grounding-sources")).getAllByRole("listitem");
+    expect(items.map((li) => li.textContent)).toEqual([
+      "internal/feed.go · 2 excerpts · relevance 0.71",
+      "rules.md · 1 excerpt",
+    ]);
+    expect(screen.getByText("Grounded in Payments · 3 sources").tagName).toBe("SUMMARY");
+  });
+
+  it("lists nothing when no sources were recorded", () => {
+    render(<GroundingBadge grounding={grounded} />);
+    expect(screen.queryByTestId("chat-grounding-sources")).toBeNull();
+    expect(screen.getByTestId("chat-grounding").textContent).toBe(
+      "Grounded in Payments · 3 sources",
+    );
+  });
+
+  it("shows a partial coverage, and the reason a reply had no excerpts", () => {
+    render(
+      <GroundingBadge
+        grounding={{
+          status: "no-context",
+          projectId: "p",
+          projectName: "Payments",
+          reason: "insufficient-evidence",
+          belowFloor: 2,
+          coverage: { matchingChunks: 6, totalChunks: 10 },
+        }}
+      />,
+    );
+    const badge = screen.getByTestId("chat-grounding");
+    expect(badge).toHaveAttribute("data-reason", "insufficient-evidence");
+    expect(badge.className).toContain("text-warning");
+    expect(screen.getByTestId("chat-grounding-coverage").textContent).toBe(
+      "Partial coverage — only 6 of 10 chunks in Payments are searchable with the current embedding model; re-index to search the rest",
+    );
+  });
+
+  it("has no coverage line or reason when there is nothing to say", () => {
+    expect(coverageText({ status: "unscoped" })).toBeNull();
+    expect(coverageText(grounded)).toBeNull();
+    render(
+      <GroundingBadge grounding={{ status: "no-context", projectId: "p", projectName: "P" }} />,
+    );
+    expect(screen.getByTestId("chat-grounding")).not.toHaveAttribute("data-reason");
+    expect(screen.queryByTestId("chat-grounding-coverage")).toBeNull();
   });
 });
 

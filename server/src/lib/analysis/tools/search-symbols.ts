@@ -15,6 +15,7 @@
  */
 import type { AgentTool, ToolContext, ToolResult, JSONSchema } from "./types.js";
 import { missingParamError } from "./arg-errors.js";
+import { hiddenSymbolIds } from "./code-access.js";
 import type { FusedCodeSearcher, SymbolLineLookup } from "../../rag/fused-code-context.js";
 import { quotableSnippet } from "../../code-graph/symbol-context.js";
 import {
@@ -102,7 +103,17 @@ export function createSearchSymbolsTool(deps?: Partial<SearchSymbolsDeps>): Agen
     }
     const limit = validated.limit ?? DEFAULT_LIMIT;
 
-    const raw = await searcher.search(validated.query, context.projectId, { limit });
+    const found = await searcher.search(validated.query, context.projectId, { limit });
+    // #2243 — a symbol in a file whose document the caller may not see is
+    // dropped, as if it were not indexed.
+    const hidden = context.codeAccess
+      ? await hiddenSymbolIds(
+          context.codeAccess,
+          context.projectId,
+          found.map((r) => r.symbolId),
+        )
+      : new Set<string>();
+    const raw = hidden.size > 0 ? found.filter((r) => !hidden.has(r.symbolId)) : found;
     if (raw.length === 0) {
       // Empty index (no built code graph) or no keyword/vector match — a clean
       // no-op result, never an error.
@@ -130,7 +141,7 @@ export function createSearchSymbolsTool(deps?: Partial<SearchSymbolsDeps>): Agen
 
     return {
       content: lines.join("\n\n"),
-      truncated: raw.length >= limit,
+      truncated: found.length >= limit,
       resultCount: raw.length,
     };
   }
