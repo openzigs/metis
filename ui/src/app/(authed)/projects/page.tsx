@@ -10,17 +10,14 @@ import { MoreHorizontal, Trash2 } from "lucide-react";
 import { projectsApi } from "@/lib/projects-api";
 import { queryKeys } from "@/lib/query-keys";
 import { ProjectMetaLine } from "@/components/projects/project-meta-line";
-import { ProjectCreateForm } from "@/components/projects/project-create-form";
+import {
+  NewProjectDialog,
+  ProjectCreateForbiddenNotice,
+} from "@/components/projects/new-project-wizard";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { SkeletonText } from "@/components/ui/skeleton";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -29,9 +26,16 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { PageHeader } from "@/components/ui/page-header";
 import { useValidatedActiveWorkspaceId } from "@/lib/active-workspace";
+import { useAuth } from "@/lib/auth-context";
 
 export default function ProjectsPage() {
   const qc = useQueryClient();
+  // #2368 — offer a write action only to a role holding the key its route
+  // checks (`POST /api/projects`, `DELETE /api/projects/:id`). Hiding is not
+  // access control: the server refuses either way.
+  const { user } = useAuth();
+  const canCreate = user?.permissions.includes("project.create") ?? false;
+  const canDelete = user?.permissions.includes("project.delete") ?? false;
   // #2197 — the validated id, not the raw stored one: a workspace the caller is
   // not in (a second user on a shared browser) filtered the list down to the
   // unassigned projects. Subscribed, so a switch in the top bar re-lists.
@@ -44,7 +48,6 @@ export default function ProjectsPage() {
     enabled: workspace.status !== "loading",
   });
 
-  const [open, setOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string } | null>(null);
 
   const remove = useMutation({
@@ -59,24 +62,14 @@ export default function ProjectsPage() {
     <div className="space-y-6 p-2 md:p-0">
       <PageHeader
         title="Projects"
-        description="Browse, create, and manage migration projects."
+        description="Browse, create, and manage projects."
+        // #2349 — the same wizard as Home and the command palette, whatever the count.
         actions={
-          <Dialog open={open} onOpenChange={setOpen}>
-            <DialogTrigger asChild>
-              <Button data-testid="new-project-button">New project</Button>
-            </DialogTrigger>
-            <DialogContent>
-              <DialogHeader>
-                <DialogTitle>Create project</DialogTitle>
-              </DialogHeader>
-              <ProjectCreateForm
-                workspaceId={activeWorkspaceId}
-                workspaceStatus={workspace.status}
-                onRetryWorkspaces={workspace.retry}
-                onCreated={() => setOpen(false)}
-              />
-            </DialogContent>
-          </Dialog>
+          canCreate ? (
+            <NewProjectDialog triggerTestId="new-project-button" />
+          ) : (
+            <ProjectCreateForbiddenNotice />
+          )
         }
       />
 
@@ -101,36 +94,42 @@ export default function ProjectsPage() {
                   </div>
                 </Card>
               </Link>
-              <div className="absolute right-2 top-1/2 -translate-y-1/2">
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-8 w-8"
-                      onClick={(e) => e.preventDefault()}
-                      aria-label="Project actions"
-                    >
-                      <MoreHorizontal className="h-4 w-4" />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
-                    <DropdownMenuItem
-                      className="text-destructive focus:text-destructive"
-                      onSelect={() => setDeleteTarget({ id: project.id, name: project.name })}
-                    >
-                      <Trash2 className="mr-2 h-4 w-4" />
-                      Delete
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </div>
+              {/* Delete is the menu's only item, so without project.delete the
+                  menu itself is not offered. */}
+              {canDelete ? (
+                <div className="absolute right-2 top-1/2 -translate-y-1/2">
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8"
+                        onClick={(e) => e.preventDefault()}
+                        aria-label="Project actions"
+                      >
+                        <MoreHorizontal className="h-4 w-4" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem
+                        className="text-destructive focus:text-destructive"
+                        onSelect={() => setDeleteTarget({ id: project.id, name: project.name })}
+                      >
+                        <Trash2 className="mr-2 h-4 w-4" />
+                        Delete
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
+              ) : null}
             </div>
           ))}
         </div>
       ) : (
         <Card className="p-6 text-center text-sm text-muted-foreground">
-          No projects yet. Create one to get started.
+          {canCreate
+            ? "No projects yet. Create one to get started."
+            : "No projects yet. Ask an admin or coordinator to create one."}
         </Card>
       )}
 

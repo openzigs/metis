@@ -37,7 +37,13 @@ import { getKnowledgeService, type KnowledgeService } from "../lib/rag/knowledge
 import { getIngestQueue, type IngestQueue } from "../lib/rag/ingest-queue.js";
 import { getProject } from "../lib/projects/project-service.js";
 import { approveDocument, rejectDocument } from "../lib/rag/quarantine.js";
-import { propagateAcl, resolveAclActor } from "../lib/rag/acl.js";
+import {
+  inactiveCallerAsUnauthenticated,
+  newGroupSubjects,
+  parseAclSubjects,
+  propagateAcl,
+  resolveAclActor,
+} from "../lib/rag/acl.js";
 import { createChildLogger } from "../lib/logger.js";
 import {
   approvalFailureMessage,
@@ -487,6 +493,15 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
         where: { id: documentId, projectId, deletedAt: null },
       });
       if (!doc) throw new AppError(404, "DOCUMENT_NOT_FOUND", "Document not found");
+      const groups = newGroupSubjects(parseAclSubjects(doc.aclSubjects), parsed.data.aclSubjects);
+      if (groups.length > 0) {
+        throw new AppError(
+          400,
+          "ACL_GROUP_UNSUPPORTED",
+          "Group subjects are not supported: METIS does not store group membership, so a group would match no one. Use a user or role subject.",
+          { groups },
+        );
+      }
       const chunkCount = await propagateAcl(documentId, parsed.data.aclSubjects);
       audit({
         actor: { id: actor.id },
@@ -605,8 +620,11 @@ export function knowledgeRouter(deps: KnowledgeRouterDeps = {}): Router {
           documentIds: parsed.data.documentIds,
           mode: parsed.data.mode,
           // #2225 — the caller's chunk ACLs apply; `requireAuth` has no live
-          // re-read here, so the role comes from durable state.
-          actor: await resolveAclActor(actor.id),
+          // re-read here, so the role comes from durable state. #2261 — a
+          // deprovisioned caller is a 401, not a 500.
+          actor: await resolveAclActor(actor.id).catch((err: unknown) => {
+            throw inactiveCallerAsUnauthenticated(err);
+          }),
         },
       );
       audit({

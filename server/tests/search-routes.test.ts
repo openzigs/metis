@@ -43,6 +43,7 @@ vi.mock("../src/lib/auth/accessible-projects.js", () => ({
 
 import request from "supertest";
 import { createApp } from "../src/app.js";
+import { InactiveAclActorError } from "../src/lib/rag/acl.js";
 
 let app: ReturnType<typeof createApp>;
 let token: string;
@@ -115,6 +116,27 @@ describe("POST /api/search/federated", () => {
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe("INVALID_INPUT");
     expect(searchAcrossProjects).not.toHaveBeenCalled();
+  });
+
+  // #2261 — a token that outlived its user's account is an authentication
+  // failure, answered as `refreshAuthenticatedUser` answers it, not a 500.
+  it("answers 401 TOKEN_INVALID when the caller has been deprovisioned", async () => {
+    searchAcrossProjects.mockRejectedValue(new InactiveAclActorError());
+    const res = await request(app)
+      .post("/api/search/federated")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ query: "auth flow" });
+    expect(res.status).toBe(401);
+    expect(res.body.error.code).toBe("TOKEN_INVALID");
+  });
+
+  it("leaves any other search failure a server error", async () => {
+    searchAcrossProjects.mockRejectedValue(new Error("db down"));
+    const res = await request(app)
+      .post("/api/search/federated")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ query: "auth flow" });
+    expect(res.status).toBe(500);
   });
 });
 

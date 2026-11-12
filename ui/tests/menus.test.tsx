@@ -97,6 +97,19 @@ describe("<UserMenu />", () => {
     expect(await screen.findByRole("menuitem", { name: /sign out/i })).toBeInTheDocument();
   });
 
+  // #2337 — "Profile (soon)" was a disabled dead end; the page exists.
+  it("links Profile to the profile settings page", async () => {
+    const user = userEvent.setup();
+    render(<UserMenu />, {
+      wrapper: makeWrapper({ initialUser: TEST_USER }),
+    });
+    await user.click(screen.getByRole("button", { name: /account menu for tester/i }));
+    const profile = await screen.findByRole("menuitem", { name: "Profile" });
+    expect(profile).toHaveAttribute("href", "/settings/profile");
+    expect(profile).not.toHaveAttribute("aria-disabled");
+    expect(screen.queryByText(/soon/i)).toBeNull();
+  });
+
   it("invokes logout when sign out is selected", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,

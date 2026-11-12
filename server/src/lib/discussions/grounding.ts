@@ -5,9 +5,10 @@
  * a project-scoped question was answered from the model's background knowledge
  * and it invented paths. It now gets the same grounding chat has (#736, #772):
  * the project's auto-RAG block (supplied by the route) and the project-scoped
- * READ tools chat offers — `search-knowledge` and, when the deployment enables
- * them (`CHAT_CODE_SEARCH_TOOLS`), the curated code tools including
- * `read_file_slice`.
+ * READ tools chat offers — `search-knowledge` and, unless the deployment turns
+ * them off (`CHAT_CODE_SEARCH_TOOLS`, on by default since #2243), the curated
+ * code tools including `read_file_slice`. A model without native tool calls
+ * gets them only when the flag is set explicitly (#2295).
  *
  * Narrower than a chat session, deliberately:
  *   - Only the tools in {@link DISCUSSION_TOOL_ALLOWLIST}. Nobody in a thread
@@ -18,7 +19,8 @@
  *   - A smaller step budget ({@link DISCUSSION_TOOL_MAX_TURNS}); a spent budget
  *     still ends in an answer through chat's one tool-free synthesis call (#772).
  *
- * The flags are chat's own (`CHAT_TOOLS`, `CHAT_CODE_SEARCH_TOOLS`), so a
+ * The flags are chat's own (`CHAT_TOOLS`, `CHAT_CODE_SEARCH_TOOLS`,
+ * `CHAT_CODE_SEARCH_PRIMITIVES`), so a
  * deployment that withholds a tool from chat withholds it here too.
  */
 import { formatToolSchemas } from "../analysis/agent-loop.js";
@@ -95,7 +97,9 @@ export async function resolveDiscussionTools(
 ): Promise<DiscussionToolRuntime | null> {
   const flags = input.flags ?? loadSessionToolsFlags();
   const native = input.native ?? resolveCapabilities(input.provider, input.model).nativeToolCalls;
-  const codeTools = flags.codeSearchTools ? getChatCodeTools(input.codeToolDeps) : [];
+  const codeTools = flags.codeSearchTools
+    ? getChatCodeTools(input.codeToolDeps, { primitives: flags.codeSearchPrimitives === true })
+    : [];
   const ctx = {
     sessionId: input.session.id,
     userId: input.session.userId,
@@ -114,9 +118,12 @@ export async function resolveDiscussionTools(
     });
     note = DISCUSSION_NATIVE_TOOL_NOTE;
   } else {
-    // Not tool-capable: only the curated code tools, on the text protocol (#713).
-    toolset = makeToolset(codeTools.map((t) => codeRuntimeTool(t, t.name)));
-    note = formatToolSchemas(codeTools);
+    // Not tool-capable: only the curated code tools, on the text protocol (#713),
+    // and only when the deployment set CHAT_CODE_SEARCH_TOOLS (#2295).
+    const textCodeTools =
+      (flags.codeSearchToolsOnTextProtocol ?? flags.codeSearchTools) ? codeTools : [];
+    toolset = makeToolset(textCodeTools.map((t) => codeRuntimeTool(t, t.name)));
+    note = formatToolSchemas(textCodeTools);
   }
   if (toolset.tools.length === 0) return null;
 

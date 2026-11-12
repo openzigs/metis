@@ -31,6 +31,7 @@ import { dispatchReviewDecision, dispatchReviewSubmitted } from "./notify.js";
 import { emitReviewChanged } from "./review-events.js";
 import { noteRequirementsChanged } from "../docs-gen/approved-requirements-staleness.js";
 import { attachSharedCriteria } from "./review-shared-criteria.js";
+import { awaitingDecisionWhere } from "./awaiting-decision.js";
 import {
   REVIEW_STATUSES,
   aggregateDecisions,
@@ -126,6 +127,15 @@ function reviewStateChangedError(): AppError {
     "REVIEW_STATE_CHANGED",
     "The review's status changed concurrently — reload and retry",
   );
+}
+
+/**
+ * #2370 — the review's assigned reviewers, whose own rooms `review:changed`
+ * also reaches: their sidebar count drops or grows on a state change they did
+ * not make, on whatever page they have open.
+ */
+function reviewerIdsOf(review: ReviewRow): string[] {
+  return review.assignments.map((a) => a.reviewerId);
 }
 
 /** 403 unless the caller is the review's requester or holds `review.admin`. */
@@ -673,7 +683,7 @@ async function startReviewRound(
     reopened: event === "reopen",
   });
   // #1574 — an open review page shows the new status without a reload.
-  emitReviewChanged(review.projectId, reviewId);
+  emitReviewChanged(review.projectId, reviewId, reviewerIdsOf(review));
 
   return updated;
 }
@@ -893,7 +903,7 @@ export async function recordDecision(
     baselineId: result.baselineId,
   });
   // #1574 — an open review page shows the decision (and any outcome) live.
-  emitReviewChanged(review.projectId, reviewId);
+  emitReviewChanged(review.projectId, reviewId, reviewerIdsOf(review));
   // #1230 — a verdict reached sets the scope's review statuses: a reader BRD
   // listing approved requirements may now be stale. Post-commit; never throws.
   if (result.aggregate !== "pending") {
@@ -950,7 +960,7 @@ async function transitionReview(
     });
   });
   // #1574 — post-commit: an open review page shows the withdraw or close live.
-  emitReviewChanged(review.projectId, reviewId);
+  emitReviewChanged(review.projectId, reviewId, reviewerIdsOf(review));
 
   return updated;
 }
@@ -985,6 +995,8 @@ export interface ListReviewsFilters {
   projectScope?: Record<string, unknown>;
   status?: string;
   assignee?: string;
+  /** #2370 — `pending` only, with `assignee=me`: waiting on my decision. */
+  decision?: string;
   requester?: string;
   page: number;
   pageSize: number;
@@ -1013,6 +1025,25 @@ export async function listReviews(
   // `requester=me` cannot be pointed at arbitrary user ids.
   if (filters.assignee === "me") where.assignments = { some: { reviewerId: actorId } };
   if (filters.requester === "me") where.requestedById = actorId;
+  // #2348 / #2370 — `assignee=me&decision=pending`: reviews waiting on the
+  // caller's decision, by the SAME predicate Home's "Reviews assigned to me"
+  // uses (`awaitingDecisionWhere`), so the sidebar count and Home agree.
+  if (filters.decision !== undefined) {
+    if (filters.decision !== "pending" || filters.assignee !== "me") {
+      throw new AppError(
+        400,
+        "VALIDATION_ERROR",
+        "The decision filter takes only decision=pending, with assignee=me",
+      );
+    }
+    const awaiting = awaitingDecisionWhere(
+      actorId,
+      (where.project as Record<string, unknown> | undefined) ?? {},
+    );
+    // A `status` other than in_review matches nothing, as it should.
+    if (where.status !== undefined && where.status !== awaiting.status) where.id = { in: [] };
+    Object.assign(where, awaiting);
+  }
 
   const [reviews, total] = await Promise.all([
     prisma.reviewRequest.findMany({

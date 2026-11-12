@@ -9,18 +9,36 @@
  * a `filePath:startLine-endLine` locator (which #715 citations reuse).
  *
  * A project without a built code graph yields zero symbols → a clean "no code
- * graph symbols" result, never an error (matching `searchCodeGraphTool`). The
+ * graph symbols" result, never an error (matching `searchCodeGraphTool`).
+ *
+ * #2325 — every hit carries the citation contract: its span at the indexed
+ * commit of its repository, a permalink where the connector has one, and the
+ * retrievers that matched it; the result opens with the commit it describes. The
  * searcher / line-lookup are injectable so unit tests never touch a live
  * embedder, LanceDB table, or Prisma.
+ *
+ * #2327 — with `filters` on (chat, behind `CHAT_CODE_SEARCH_PRIMITIVES`), the
+ * tool also takes `fileGlob`, `symbolKind` and `language`, each validated here
+ * and handed to the searcher's pre-filter. Off (analysis, and chat with the key
+ * off), the schema is exactly the pre-#2327 one, so the measured default does
+ * not move until the key does.
  */
 import type { AgentTool, ToolContext, ToolResult, JSONSchema } from "./types.js";
 import { missingParamError } from "./arg-errors.js";
+import { checkRepoGlob, repoPathError } from "./repo-paths.js";
+import { hiddenSymbolIds } from "./code-access.js";
 import type { FusedCodeSearcher, SymbolLineLookup } from "../../rag/fused-code-context.js";
 import { quotableSnippet } from "../../code-graph/symbol-context.js";
 import {
   createDefaultCodeSearcher,
   createDefaultSymbolLineLookup,
 } from "../../code-graph/project-code-searcher.js";
+import {
+  codeCitationRef,
+  formatCodeVersionLine,
+  type CodeVersionIndex,
+} from "../../code-graph/code-version.js";
+import type { CodeCitationRef } from "@metis/shared";
 
 /**
  * The cut-off the agent actually sees. EXPORTED because it is a retrieval
@@ -34,9 +52,47 @@ export const MAX_LIMIT = 30;
 /** Trim each rendered snippet so a wide hit set cannot blow the context. */
 const MAX_SNIPPET_CHARS = 400;
 
+/**
+ * #2327 — the `CodeSymbol.kind` values a filter may name: the parsers' kinds
+ * (`code-graph/parsers.ts` `SymbolKind`) plus the schema symbols the SQL path
+ * writes (`table`, `column`, `procedure`).
+ */
+export const SYMBOL_KINDS = [
+  "function",
+  "method",
+  "class",
+  "interface",
+  "type",
+  "module",
+  "table",
+  "column",
+  "procedure",
+] as const;
+
+/** #2327 — the `CodeSymbol.language` values (`code-graph/parsers.ts` `Language`, plus `sql`). */
+export const SYMBOL_LANGUAGES = [
+  "ts",
+  "js",
+  "py",
+  "go",
+  "java",
+  "kt",
+  "scala",
+  "cs",
+  "c",
+  "cpp",
+  "rs",
+  "sas",
+  "cbl",
+  "sql",
+] as const;
+
 export interface SearchSymbolsArgs {
   query: string;
   limit?: number;
+  fileGlob?: string;
+  symbolKind?: string;
+  language?: string;
 }
 
 const parameters: JSONSchema = {
@@ -56,6 +112,67 @@ const parameters: JSONSchema = {
   required: ["query"],
 };
 
+/** #2327 — the schema with the filters. */
+const filteredParameters: JSONSchema = {
+  type: "object",
+  properties: {
+    ...parameters.properties,
+    fileGlob: {
+      type: "string",
+      description:
+        "Optional: only symbols in files matching this repository-relative glob " +
+        "(`*` within a directory, `**` across directories, `?` one character), e.g. 'internal/reader/**'.",
+    },
+    symbolKind: {
+      type: "string",
+      enum: [...SYMBOL_KINDS],
+      description: "Optional: only symbols of this kind.",
+    },
+    language: {
+      type: "string",
+      enum: [...SYMBOL_LANGUAGES],
+      description: "Optional: only symbols in files of this language.",
+    },
+  },
+  required: ["query"],
+};
+
+const TOOL = "search_code_symbols";
+
+type FilterCheck =
+  | { ok: true; filters: Pick<SearchSymbolsArgs, "fileGlob" | "symbolKind" | "language"> }
+  | { ok: false; error: string };
+
+/** #2327 — the optional filters, each validated; an invalid one is refused, never ignored. */
+function checkFilters(a: Record<string, unknown>): FilterCheck {
+  const filters: Pick<SearchSymbolsArgs, "fileGlob" | "symbolKind" | "language"> = {};
+  // An empty or blank fileGlob reads as absent, as grep_files reads pathContains.
+  const blank = typeof a.fileGlob === "string" && a.fileGlob.trim() === "";
+  if (a.fileGlob !== undefined && a.fileGlob !== null && !blank) {
+    if (typeof a.fileGlob !== "string") {
+      return { ok: false, error: repoPathError(TOOL, "fileGlob", "it is not a string") };
+    }
+    const g = checkRepoGlob(a.fileGlob);
+    if (!g.ok) return { ok: false, error: repoPathError(TOOL, "fileGlob", g.reason) };
+    filters.fileGlob = g.value;
+  }
+  for (const [key, allowed] of [
+    ["symbolKind", SYMBOL_KINDS],
+    ["language", SYMBOL_LANGUAGES],
+  ] as const) {
+    const v = a[key];
+    if (v === undefined || v === null) continue;
+    if (typeof v !== "string" || !(allowed as readonly string[]).includes(v)) {
+      return {
+        ok: false,
+        error: `Error: ${TOOL} "${key}" must be one of: ${allowed.join(", ")}.`,
+      };
+    }
+    filters[key] = v;
+  }
+  return { ok: true, filters };
+}
+
 function validateArgs(args: unknown): SearchSymbolsArgs | null {
   if (!args || typeof args !== "object") return null;
   const a = args as Record<string, unknown>;
@@ -73,16 +190,36 @@ function validateArgs(args: unknown): SearchSymbolsArgs | null {
 export interface SearchSymbolsDeps {
   searcher: FusedCodeSearcher;
   lineLookup: SymbolLineLookup;
+  /**
+   * #2325 — the project's indexed versions. Chat passes it (`getChatCodeTools`);
+   * without it (the analysis surface) the result carries no citation contract
+   * and reads as before.
+   */
+  loadVersions: (projectId: string) => Promise<CodeVersionIndex>;
+}
+
+/** #2327 — how the tool is offered. */
+export interface SearchSymbolsOptions {
+  /** Offer and honour `fileGlob`, `symbolKind` and `language`. Default off. */
+  filters?: boolean;
 }
 
 /**
  * Build the `search_code_symbols` tool. Deps default to the production
  * Prisma/HybridCodeSearch wiring (#714), and are overridable for tests.
  */
-export function createSearchSymbolsTool(deps?: Partial<SearchSymbolsDeps>): AgentTool {
+export function createSearchSymbolsTool(
+  deps?: Partial<SearchSymbolsDeps>,
+  options: SearchSymbolsOptions = {},
+): AgentTool {
+  const withFilters = options.filters === true;
   const searcher = deps?.searcher ?? createDefaultCodeSearcher();
-  // #1636 — the tool renders `path:start-end` only, so it skips the repo read.
-  const lineLookup = deps?.lineLookup ?? createDefaultSymbolLineLookup({ withRepo: false });
+  const loadVersions = deps?.loadVersions;
+  // #1636 — the analysis surface renders `path:start-end` only, so it skips the
+  // repo read. #2325 — chat (given `loadVersions`) reads it: a hit's commit is
+  // its repository's.
+  const lineLookup =
+    deps?.lineLookup ?? createDefaultSymbolLineLookup({ withRepo: Boolean(loadVersions) });
 
   async function execute(args: unknown, context: ToolContext): Promise<ToolResult> {
     const validated = validateArgs(args);
@@ -101,15 +238,37 @@ export function createSearchSymbolsTool(deps?: Partial<SearchSymbolsDeps>): Agen
       };
     }
     const limit = validated.limit ?? DEFAULT_LIMIT;
+    let filters: Pick<SearchSymbolsArgs, "fileGlob" | "symbolKind" | "language"> = {};
+    if (withFilters) {
+      const checked = checkFilters(args as Record<string, unknown>);
+      if (!checked.ok) return { content: checked.error, isError: true };
+      filters = checked.filters;
+    }
 
-    const raw = await searcher.search(validated.query, context.projectId, { limit });
+    const found = await searcher.search(validated.query, context.projectId, {
+      limit,
+      ...filters,
+    });
+    // #2243 — a symbol in a file whose document the caller may not see is
+    // dropped, as if it were not indexed.
+    const hidden = context.codeAccess
+      ? await hiddenSymbolIds(
+          context.codeAccess,
+          context.projectId,
+          found.map((r) => r.symbolId),
+        )
+      : new Set<string>();
+    const raw = hidden.size > 0 ? found.filter((r) => !hidden.has(r.symbolId)) : found;
     if (raw.length === 0) {
       // Empty index (no built code graph) or no keyword/vector match — a clean
       // no-op result, never an error.
       // #773 — resultCount 0 is the STRUCTURED "worked, found nothing" contract:
       // evidence of absence, not of a broken run.
+      const narrowed = Object.keys(filters).length > 0;
       return {
-        content: "No matching code symbols found in this project's code graph.",
+        content: narrowed
+          ? "No matching code symbols found in this project's code graph with these filters."
+          : "No matching code symbols found in this project's code graph.",
         resultCount: 0,
       };
     }
@@ -119,19 +278,44 @@ export function createSearchSymbolsTool(deps?: Partial<SearchSymbolsDeps>): Agen
       context.projectId,
     );
 
+    const versions = loadVersions ? await loadVersions(context.projectId) : null;
+    const citations: CodeCitationRef[] = [];
     const lines = raw.map((hit) => {
       const span = spans.get(hit.symbolId);
       const locator = span ? `${span.filePath}:${span.startLine}-${span.endLine}` : hit.filePath;
       const head = `${hit.kind} ${hit.name} — ${locator} (score=${hit.score.toFixed(3)})`;
       // Cut first, then quote: a cut cannot expose a line the quoting defused.
+      const cut = (hit.snippet?.length ?? 0) > MAX_SNIPPET_CHARS;
       const snippet = quotableSnippet(hit.snippet?.slice(0, MAX_SNIPPET_CHARS));
+      if (versions)
+        citations.push(
+          codeCitationRef({
+            repoConnectionId: span?.repoConnectionId,
+            path: span?.filePath ?? hit.filePath,
+            startLine: span?.startLine ?? null,
+            endLine: span?.endLine ?? null,
+            version: versions.forRepo(span?.repoConnectionId),
+            ...(hit.matchedBy ? { matchedBy: hit.matchedBy } : {}),
+            // A snippet the cap cut: the symbol's whole span is the next read.
+            truncated: cut,
+            ...(cut && span
+              ? {
+                  totalLines: span.endLine - span.startLine + 1,
+                  next: { startLine: span.startLine, endLine: span.endLine },
+                }
+              : {}),
+          }),
+        );
       return snippet ? `${head}\n${snippet}` : head;
     });
 
+    // #2325 — the commit FIRST: chat's model-context cap keeps a result's start.
+    const version = formatCodeVersionLine(citations);
     return {
-      content: lines.join("\n\n"),
-      truncated: raw.length >= limit,
+      content: version ? `${version}\n\n${lines.join("\n\n")}` : lines.join("\n\n"),
+      truncated: found.length >= limit,
       resultCount: raw.length,
+      ...(versions ? { citations } : {}),
     };
   }
 
@@ -141,8 +325,11 @@ export function createSearchSymbolsTool(deps?: Partial<SearchSymbolsDeps>): Agen
       "Hybrid (keyword + semantic) search over the project's code symbol index. " +
       "Returns ranked symbols each with a filePath:startLine-endLine locator into the real source. " +
       "Use for fuzzy/semantic code discovery when you don't know exact names; use search_code_graph " +
-      "for exact qualified-name / caller / callee graph traversal.",
-    parameters,
+      "for exact qualified-name / caller / callee graph traversal." +
+      (withFilters
+        ? " Narrow with fileGlob, symbolKind or language; for an exact string use grep_files."
+        : ""),
+    parameters: withFilters ? filteredParameters : parameters,
     execute,
   };
 }

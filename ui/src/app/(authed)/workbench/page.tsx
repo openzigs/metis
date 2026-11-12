@@ -26,6 +26,7 @@ import { entryLabel, toPanelEntries } from "@/lib/workbench-document-tree";
 import { useRepoNames } from "@/hooks/use-repo-names";
 import {
   type AISession,
+  type ChatCitation,
   type ChatMessage,
   type StreamEvent,
   createSession,
@@ -50,6 +51,7 @@ import { readStoredActiveProjectId, resolveActiveProjectId } from "@/lib/active-
 import { LoadedSkillsPanel } from "@/components/chat/loaded-skills-panel";
 import { AgentPicker } from "@/components/chat/agent-picker";
 import { ChatMarkdown } from "@/components/chat/chat-markdown";
+import { CitationList } from "@/components/chat/citation-list";
 import { ToolActivityList } from "@/components/chat/tool-activity";
 import { useToolApprovals } from "@/hooks/use-tool-approvals";
 import { consumeRunPayload } from "@/lib/templates";
@@ -59,6 +61,8 @@ import { PageHeader } from "@/components/ui/page-header";
 interface DisplayMessage extends ChatMessage {
   id: string;
   isError?: boolean;
+  /** #2242 — the reply's citations, checked against what its turn read. */
+  citations?: ChatCitation[];
 }
 
 export default function WorkbenchPage() {
@@ -358,6 +362,11 @@ export default function WorkbenchPage() {
           m.id === assistantMsgId ? { ...m, content: m.content.slice(0, ev.keepChars) } : m,
         ),
       );
+    } else if (ev.type === "citations") {
+      // #2242 — the answer's citations, checked against what the turn read.
+      setMessages((prev) =>
+        prev.map((m) => (m.id === assistantMsgId ? { ...m, citations: ev.citations } : m)),
+      );
     } else if (ev.type === "tool_event") {
       // #142 — the server's approval gate decides every call; the owner answers
       // its `awaiting_approval` prompt in the list below. (The `tool_call`
@@ -586,6 +595,9 @@ export default function WorkbenchPage() {
                         {m.content || (streaming ? "…" : "")}
                       </span>
                     )}
+                    {m.role === "assistant" && !m.isError ? (
+                      <CitationList citations={m.citations} projectId={session?.projectId} />
+                    ) : null}
                   </li>
                 ))}
               </ul>

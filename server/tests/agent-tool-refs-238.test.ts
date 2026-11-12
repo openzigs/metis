@@ -294,6 +294,9 @@ describe("#727 agentSelectableTools — the authoring picker offers the code too
       "search_code_graph",
       "search_code_symbols",
       "read_file_slice",
+      // #2327 — offered by chat behind CHAT_CODE_SEARCH_PRIMITIVES; an agent may name them.
+      "grep_files",
+      "list_files",
     ]);
     for (const t of listed.slice(1)) {
       expect(t.risk).toBe("low");

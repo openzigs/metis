@@ -5,10 +5,11 @@
 import { describe, it, expect } from "vitest";
 import {
   derivePipelineStages,
-  isFirstRun,
+  isChecklistComplete,
   isIngestRunning,
   isProjectRepoIngestJob,
-  FIRST_RUN_STEPS,
+  KNOWLEDGE_SEARCH_ANCHOR,
+  newChangeRequestHref,
   type PipelineFacts,
   type PipelineStage,
 } from "@/lib/project-pipeline";
@@ -24,6 +25,9 @@ function facts(over: Partial<PipelineFacts> = {}): PipelineFacts {
     ingestInProgress: false,
     analyses: [],
     awaitingReview: null,
+    pendingApprovals: 0,
+    openQuestions: 0,
+    rejectedRequirements: 0,
     docs: [],
     batches: [],
     ...over,
@@ -60,8 +64,8 @@ describe("sources stage", () => {
   it("asks to connect a source when there is none", () => {
     const s = stage(facts(), "sources");
     expect(s.state).toBe("todo");
-    expect(s.status).toMatch(/no sources/i);
-    expect(s.action).toEqual({ label: "Connect a source", href: `${B}/connections` });
+    expect(s.status).toBe("No documents, repositories or databases yet");
+    expect(s.action).toEqual({ label: "Add knowledge", href: `${B}/connections` });
   });
 
   it("counts repositories, databases and documents", () => {
@@ -78,7 +82,7 @@ describe("sources stage", () => {
     );
     expect(s.state).toBe("done");
     expect(s.status).toBe("2 repositories · 1 database · 14 documents");
-    expect(s.action.label).toBe("Manage sources");
+    expect(s.action.label).toBe("Manage knowledge");
   });
 
   it("uses the singular for one of each", () => {
@@ -154,7 +158,7 @@ describe("ingest stage", () => {
     );
     expect(s.state).toBe("done");
     expect(s.status).toContain("2 documents ready");
-    expect(s.status).toContain("1,203 chunks");
+    expect(s.status).toContain("1,203 sections indexed");
   });
 
   it("omits the chunk total when only a page of documents was listed", () => {
@@ -162,7 +166,7 @@ describe("ingest stage", () => {
       facts({ documents: { total: 40, items: [{ status: "ready", chunkCount: 5 }] } }),
       "ingest",
     );
-    expect(s.status).not.toContain("chunks");
+    expect(s.status).not.toContain("sections indexed");
   });
 
   // Review of #63 — `GET /documents` returns one page (at most 100), and a
@@ -182,7 +186,7 @@ describe("ingest stage", () => {
     expect(s.status).toContain("1,234 documents");
     expect(s.status).not.toMatch(/100 documents/);
     expect(s.status).not.toContain("ready");
-    expect(s.status).not.toContain("chunks");
+    expect(s.status).not.toContain("sections indexed");
   });
 
   it("states failures and processing on a partial list as lower bounds", () => {
@@ -232,7 +236,7 @@ describe("ingest stage", () => {
       }),
       "ingest",
     );
-    expect(s.status).toBe("2 documents ready · 2 chunks · 1 document failed");
+    expect(s.status).toBe("2 documents ready · 2 sections indexed · 1 document failed");
   });
 
   it("counts a repository ingest as done and dates it", () => {
@@ -242,6 +246,32 @@ describe("ingest stage", () => {
     );
     expect(s.state).toBe("done");
     expect(s.status).toMatch(/repository last ingested/i);
+  });
+
+  // #2349 — "Ready: ask a question": once ready, the action is the question.
+  it("offers to ask a question, on the Overview's knowledge search, once ready", () => {
+    const s = stage(
+      facts({ documents: { total: 1, items: [{ status: "ready", chunkCount: 2 }] } }),
+      "ingest",
+    );
+    expect(s.state).toBe("done");
+    expect(s.action).toEqual({ label: "Ask a question", href: `${B}#${KNOWLEDGE_SEARCH_ANCHOR}` });
+  });
+
+  it("keeps the Ingest action while a document has failed", () => {
+    const s = stage(
+      facts({
+        documents: {
+          total: 2,
+          items: [
+            { status: "ready", chunkCount: 1 },
+            { status: "failed", chunkCount: 0 },
+          ],
+        },
+      }),
+      "ingest",
+    );
+    expect(s.action).toEqual({ label: "Ingest", href: `${B}/connections` });
   });
 
   it("flags failed documents", () => {
@@ -263,10 +293,12 @@ describe("ingest stage", () => {
 });
 
 describe("analyze stage", () => {
-  it("asks to run the first analysis", () => {
+  it("asks for the first change request, where its documents are uploaded", () => {
     const s = stage(facts(), "analyze");
     expect(s.state).toBe("todo");
-    expect(s.action).toEqual({ label: "Run analysis", href: `${B}/analysis` });
+    expect(s.status).toBe("No change request yet");
+    expect(s.action).toEqual({ label: "New change request", href: newChangeRequestHref(P) });
+    expect(newChangeRequestHref(P)).toBe(`${B}/analysis`);
   });
 
   it.each(["running", "pending"])("is running when the latest analysis is %s", (status) => {
@@ -304,7 +336,7 @@ describe("review stage", () => {
   it("waits on an analysis before there is anything to review", () => {
     const s = stage(facts(), "review");
     expect(s.state).toBe("todo");
-    expect(s.status).toMatch(/run an analysis/i);
+    expect(s.status).toMatch(/start a change request/i);
     expect(s.action.href).toBe(`${B}/requirements`);
   });
 
@@ -348,6 +380,107 @@ describe("review stage", () => {
     expect(s.state).toBe("todo");
     expect(s.status).toMatch(/checking/i);
   });
+
+  // #2367 — each of these read "All requirements reviewed" in the #2330 walkthrough.
+  it("needs attention while the run has pending approvals, linked to its Approvals tab", () => {
+    const s = stage(
+      facts({ analyses: [completed], awaitingReview: 0, pendingApprovals: 6 }),
+      "review",
+    );
+    expect(s.state).toBe("attention");
+    expect(s.status).toBe("6 approvals pending");
+    expect(s.action).toEqual({
+      label: "Resolve 6 approvals",
+      href: `${B}/analysis?analysisId=a1&tab=approvals`,
+    });
+  });
+
+  it("needs attention while the run has open clarifying questions, linked to its Questions tab", () => {
+    const s = stage(
+      facts({ analyses: [completed], awaitingReview: 0, openQuestions: 1 }),
+      "review",
+    );
+    expect(s.state).toBe("attention");
+    expect(s.status).toBe("1 clarifying question open");
+    expect(s.action).toEqual({
+      label: "Answer 1 question",
+      href: `${B}/analysis?analysisId=a1&tab=questions`,
+    });
+  });
+
+  it("needs attention when requirements were rejected", () => {
+    const s = stage(
+      facts({ analyses: [completed], awaitingReview: 0, rejectedRequirements: 11 }),
+      "review",
+    );
+    expect(s.state).toBe("attention");
+    expect(s.status).toBe("11 requirements rejected");
+    expect(s.action).toEqual({
+      label: "Revisit 11 rejected requirements",
+      href: `${B}/analysis?analysisId=a1&tab=requirements`,
+    });
+  });
+
+  it("names everything waiting, and acts on the most blocking first", () => {
+    const s = stage(
+      facts({
+        analyses: [completed],
+        awaitingReview: 0,
+        pendingApprovals: 6,
+        openQuestions: 12,
+        rejectedRequirements: 1,
+      }),
+      "review",
+    );
+    expect(s.status).toBe(
+      "6 approvals pending · 12 clarifying questions open · 1 requirement rejected",
+    );
+    expect(s.action.href).toBe(`${B}/analysis?analysisId=a1&tab=approvals`);
+  });
+
+  it("puts drafts awaiting review ahead of approvals", () => {
+    const s = stage(
+      facts({ analyses: [completed], awaitingReview: 2, pendingApprovals: 1 }),
+      "review",
+    );
+    expect(s.status).toBe("2 requirements awaiting review · 1 approval pending");
+    expect(s.action.href).toBe(`${B}/analysis?analysisId=a1`);
+  });
+
+  it("says it is checking, not done, while the approvals are unknown", () => {
+    const s = stage(
+      facts({ analyses: [completed], awaitingReview: 0, pendingApprovals: null }),
+      "review",
+    );
+    expect(s.state).toBe("todo");
+    expect(s.status).toMatch(/checking/i);
+  });
+
+  it("does not read an unreadable approvals check as nothing pending", () => {
+    const s = stage(
+      facts({ analyses: [completed], awaitingReview: 0, pendingApprovals: "unreadable" }),
+      "review",
+    );
+    expect(s.state).toBe("attention");
+    expect(s.status).toBe("Could not check this run's approvals");
+    expect(s.action.href).toBe(`${B}/analysis?analysisId=a1&tab=approvals`);
+  });
+
+  it("is done only with nothing awaiting review, pending, open or rejected", () => {
+    const s = stage(
+      facts({
+        analyses: [completed],
+        awaitingReview: 0,
+        pendingApprovals: 0,
+        openQuestions: 0,
+        rejectedRequirements: 0,
+      }),
+      "review",
+    );
+    expect(s.state).toBe("done");
+    expect(s.status).toBe("All requirements reviewed");
+    expect(s.action).toEqual({ label: "Open requirements", href: `${B}/requirements` });
+  });
 });
 
 // #66 — generated docs published back into the knowledge base and held for
@@ -374,7 +507,7 @@ describe("quarantined documents (#66)", () => {
     );
     expect(s.state).toBe("done");
     expect(s.status).not.toMatch(/ingesting|processing/i);
-    expect(s.status).toBe("1 document ready · 4 chunks · 3 documents awaiting review");
+    expect(s.status).toBe("1 document ready · 4 sections indexed · 3 documents awaiting review");
   });
 
   it("do not hide a document that is really still processing", () => {
@@ -442,7 +575,7 @@ describe("docs stage", () => {
   it("asks to generate docs when there are none", () => {
     const s = stage(facts(), "docs");
     expect(s.state).toBe("todo");
-    expect(s.action).toEqual({ label: "Generate docs", href: `${B}/documentation` });
+    expect(s.action).toEqual({ label: "Generate a deliverable", href: `${B}/documentation` });
   });
 
   it.each(["generating", "pending"])("is running while a doc is %s", (status) => {
@@ -545,44 +678,81 @@ describe("isIngestRunning", () => {
   });
 });
 
-describe("isFirstRun", () => {
-  it("treats unreadable publish history as none", () => {
-    expect(isFirstRun(facts({ batches: null }))).toBe(true);
+describe("the checklist (#2349)", () => {
+  /** A project that has done every required step, and never published. */
+  const allDone = facts({
+    documents: { total: 1, items: [{ status: "ready", chunkCount: 3 }] },
+    analyses: [completed],
+    awaitingReview: 0,
+    docs: [{ status: "ready" }],
+    batches: [],
+  });
+  const states = (f: PipelineFacts) =>
+    Object.fromEntries(derivePipelineStages(P, f).map((s) => [s.id, s.state]));
+
+  it("reads in the analyst's terms, in order", () => {
+    expect(derivePipelineStages(P, facts()).map((s) => s.title)).toEqual([
+      "Add knowledge",
+      "Ready: ask a question",
+      "New change request",
+      "Review",
+      "Deliverable",
+      "Publish",
+    ]);
   });
 
-  it("is true for a brand-new project", () => {
-    expect(isFirstRun(facts())).toBe(true);
-  });
-
-  it("stays true after only connecting a source — the checklist guides the rest", () => {
-    expect(isFirstRun(facts({ repos: [{ status: "connected", lastIngestAt: null }] }))).toBe(true);
-  });
-
-  it("is false once an analysis exists", () => {
-    expect(isFirstRun(facts({ analyses: [completed] }))).toBe(false);
-  });
-
-  it("is false once anything has been published", () => {
+  it("marks Publish, and only Publish, as optional", () => {
     expect(
-      isFirstRun(
-        facts({
-          batches: [
-            {
-              status: "completed",
-              dryRun: true,
-              publishedCount: 0,
-              totalDrafts: 0,
-              startedAt: "2026-09-05T10:00:00Z",
-              completedAt: null,
-            },
-          ],
-        }),
-      ),
-    ).toBe(false);
+      derivePipelineStages(P, facts())
+        .filter((s) => s.optional)
+        .map((s) => s.id),
+    ).toEqual(["publish"]);
   });
 
-  it("lists the five first-run steps in order, without docs", () => {
-    expect(FIRST_RUN_STEPS).toEqual(["sources", "ingest", "analyze", "review", "publish"]);
+  it("is incomplete for a brand-new project", () => {
+    expect(isChecklistComplete(derivePipelineStages(P, facts()))).toBe(false);
+  });
+
+  it("is complete with every required step done and nothing published", () => {
+    expect(states(allDone)).toEqual({
+      sources: "done",
+      ingest: "done",
+      analyze: "done",
+      review: "done",
+      docs: "done",
+      publish: "todo",
+    });
+    expect(isChecklistComplete(derivePipelineStages(P, allDone))).toBe(true);
+  });
+
+  it("stays complete when publish history cannot be read", () => {
+    expect(isChecklistComplete(derivePipelineStages(P, { ...allDone, batches: null }))).toBe(true);
+  });
+
+  it.each([
+    ["no deliverable yet", { docs: [] }],
+    ["requirements awaiting review", { awaitingReview: 2 }],
+    ["a running change request", { analyses: [{ ...completed, status: "running" }] }],
+  ])("is incomplete with %s", (_label, over) => {
+    expect(isChecklistComplete(derivePipelineStages(P, { ...allDone, ...over }))).toBe(false);
+  });
+
+  // An existing project reads as far along as its data says on first load — no
+  // project regresses to "nothing done" because the checklist is new to it.
+  it("shows an existing repository project's progress, not an empty checklist", () => {
+    const existing = facts({
+      repos: [{ status: "connected", lastIngestAt: "2026-09-02T08:00:00Z" }],
+      analyses: [completed],
+      awaitingReview: 3,
+    });
+    expect(states(existing)).toEqual({
+      sources: "done",
+      ingest: "done",
+      analyze: "done",
+      review: "attention",
+      docs: "todo",
+      publish: "todo",
+    });
   });
 });
 

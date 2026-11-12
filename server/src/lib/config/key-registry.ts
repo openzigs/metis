@@ -43,6 +43,12 @@ export interface ConfigKeyDef {
   description: string;
   /** When true, value is redacted in logs and audit entries. */
   sensitive: boolean;
+  /**
+   * #2295 — the value the code applies when the key is unset, for the admin
+   * page to show. Only keys whose readers default to something other than
+   * "unset/off" declare one; it must match the default those readers pass.
+   */
+  default?: string;
 }
 
 // ── Re-usable schema fragments ───────────────────────────────────────────
@@ -586,7 +592,7 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
     valueType: "bool",
     schema: z.coerce.boolean(),
     description:
-      "Requirements Analysis reads the selected documents in full instead of ten retrieved chunks (#2230, Epic #2227). The model reads the whole document (section by section when it is too long for the model's window), labels every statement (requirement, constraint, business rule, assumption, definition, background, example) with its verified source span, and the run reports what was read from every section. OFF by default until it is measured on a 60 KB document (docs/DOCUMENT_UNDERSTANDING_BASELINE.md). Retrieval stays for the code agent and the other specialists. Impact Analysis (#2231) uses the same reader on a document source and on long pasted text: one change per requirement, constraint or business rule instead of one per paragraph.",
+      "Requirements Analysis reads the selected documents in full instead of ten retrieved chunks (#2230, Epic #2227). The model reads the whole document (section by section when it is too long for the model's window), labels every statement (requirement, constraint, business rule, assumption, definition, background, example) with its verified source span, and the run reports what was read from every section. OFF by default: measured on four documents up to 60 KB (#2255), it finds every requirement but repeats many of them (precision 0.59 to 0.69 against 1.00 for a whole-document read; docs/DOCUMENT_UNDERSTANDING_BASELINE.md). Retrieval stays for the code agent and the other specialists. Impact Analysis (#2231) uses the same reader on a document source and on long pasted text: one change per requirement, constraint or business rule instead of one per paragraph.",
     sensitive: false,
   },
   ANALYSIS_FUSED_CODE_TOKEN_BUDGET: {
@@ -968,7 +974,17 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
     valueType: "bool",
     schema: z.coerce.boolean(),
     description:
-      "Master enable for agentic code-search TOOLS in chat + stream (#713). OFF by default. When on, project-scoped sessions may call search_code_graph (exact graph traversal), search_code_symbols (hybrid BM25+vector symbol search) and read_file_slice (up to 200 lines from the project's own repo clones, #736) — offered and EXECUTED on every provider path (Copilot SDK, native-Anthropic, bedrock-direct) via the shared textual agent loop, even without loaded skills. Tool schemas render deterministically into the byte-stable prompt lead, so the flag flips the cached prefix ONCE per deploy (expected); the per-turn latency cost is one extra bounded model round-trip per executed tool call (loop capped at a few turns). When off, no tools are offered, no loop runs, and the prompt is byte-identical to today. Distinct from CHAT_FUSED_CODE_RETRIEVAL (#714), which is PASSIVE per-request retrieval into the volatile tail.",
+      "Master enable for agentic code-search TOOLS in chat + stream (#713). ON by default since #2243, measured on the #2237 BA question set (single-product questions: facts stated 51% → 73–84%, citation precision 28% → 80–83%, about 4x the input tokens per question; eval-data/README.md); set false to turn them off. When on, project-scoped sessions may call search_code_graph (exact graph traversal), search_code_symbols (hybrid BM25+vector symbol search) and read_file_slice (up to 200 lines from the project's own repo clones, #736) — offered as native tools to a tool-capable model, even without loaded skills. A model without native tool calls gets them through the text-protocol loop, which does not stream, and only when this key is set to true (#2295). Tool schemas render deterministically into the byte-stable prompt lead, so the flag flips the cached prefix ONCE per deploy (expected); the per-turn latency cost is one extra bounded model round-trip per executed tool call (loop capped at a few turns). When off, no code tools are offered and, with CHAT_TOOLS also off or the model not tool-capable, no loop runs. Distinct from CHAT_FUSED_CODE_RETRIEVAL (#714), which is PASSIVE per-request retrieval into the volatile tail.",
+    sensitive: false,
+    default: "true",
+  },
+  // ── #2327 — sharper search primitives for chat ─────────────────────────
+  CHAT_CODE_SEARCH_PRIMITIVES: {
+    tier: "tunable",
+    valueType: "bool",
+    schema: z.coerce.boolean(),
+    description:
+      "With CHAT_CODE_SEARCH_TOOLS on, also offer chat grep_files (a literal, case-insensitive text search over the project's repository clones: at most 50 lines of 200 characters and 5,000 characters shown, 5,000 files of at most 512 KB and 64 MB read, with totals when cut), list_files (a glob over the same clones: at most 100 paths shown, with the total) and search_code_symbols's fileGlob / symbolKind / language filters (#2327). Every path is repository-relative (absolute paths, '..' and symlinks out of a clone refused; .git, .env* and credential files never read) and every result is filtered on the caller's document ACLs. OFF by default (#2327, eval-data/README.md): paired against the tools alone on the #2237 BA question set (2 runs each) it stated 85–87% of facts vs 81–84%, citation precision 63–76% vs 60–76%, but used about 25% more input tokens per question (32,600 vs 26,100) and 0.45 more model calls; the model called grep_files instead of the graph and symbol tools. On the localization held-out corpus (A3P vs A3A, 24 items) no metric moved measurably and edit precision fell 0.57 → 0.51 (Δ −0.06, 95% CI [−0.19, +0.05]) at 39% more cost per item. Turn it on to give chat literal search over the source.",
     sensitive: false,
   },
   // ── Epic #128 — one tool runtime + enforced approval gate ─────────────
@@ -979,6 +995,7 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
     description:
       "Offer METIS and MCP tools to the model in chat and stream (#140). ON by default. Applies only to project-scoped sessions on a model the catalog marks tool-capable: the tools go as NATIVE tool definitions, only MCP servers the project may use are offered, and EVERY call passes the session's approval gate (#142) before it runs — its low/medium/high policy, its agent's tool allowlist, and a prompt to the session's owner when the policy asks for one. Off: no METIS/MCP tools are offered (the code-search tools still follow CHAT_CODE_SEARCH_TOOLS).",
     sensitive: false,
+    default: "true",
   },
   // ── Epic #129 — agents and skills ─────────────────────────────────────
   CHAT_PROGRESSIVE_SKILLS: {
@@ -988,6 +1005,7 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
     description:
       "Load a chat's skills progressively (#146). ON by default. On a tool-capable model the prompt carries each available skill's name and description only, and the model calls `load_skill` to read a skill's full instructions (or one of its supporting files) when the task needs it; the call passes the session's approval gate and re-checks the project's skill allow-list. Off, or on a model that cannot take tools: the whole skill bodies are pasted into the prompt as before.",
     sensitive: false,
+    default: "true",
   },
   CHAT_SUBAGENTS: {
     tier: "tunable",
@@ -996,6 +1014,7 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
     description:
       "Offer a project's agents to its chats as tools (#147). ON by default. Each custom agent the project owns or has enabled, and each library agent explicitly enabled for it, becomes a tool the chat's agent may delegate a task to; the sub-agent runs in a fresh context with its own persona, skills and tool allowlist (never more tools than its caller), and every tool it calls passes the same session's approval gate. Requires CHAT_TOOLS.",
     sensitive: false,
+    default: "true",
   },
   SUBAGENT_MAX_DEPTH: {
     tier: "tunable",

@@ -3,7 +3,7 @@
 import { useEffect, useMemo } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
-import { Building2, ChevronsUpDown, Plus } from "lucide-react";
+import { Building2, ChevronsUpDown, LayoutGrid, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -112,6 +112,16 @@ export function WorkspaceSwitcher() {
           </DropdownMenuItem>
         ))}
         <DropdownMenuSeparator />
+        {/* #2339 — the workspace's own pages (Traceability, Governing documents). */}
+        {active ? (
+          <DropdownMenuItem
+            onClick={() => router.push(`/workspaces/${active.id}`)}
+            className="flex items-center gap-2"
+          >
+            <LayoutGrid className="h-4 w-4 text-muted-foreground" />
+            <span>Open workspace</span>
+          </DropdownMenuItem>
+        ) : null}
         <DropdownMenuItem
           onClick={() => router.push("/settings/workspaces")}
           className="flex items-center gap-2 text-muted-foreground"

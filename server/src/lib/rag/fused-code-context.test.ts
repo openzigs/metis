@@ -21,6 +21,7 @@ import {
   type RawCodeSymbolHit,
   type SymbolLineLookup,
 } from "./fused-code-context.js";
+import { codeVersionIndexOf } from "../code-graph/code-version.js";
 
 function hit(overrides: Partial<FusedSymbolHit> = {}): FusedSymbolHit {
   return {
@@ -65,6 +66,20 @@ describe("fuseCodeContext — rendering + locators (AC a)", () => {
     expect(res.block).toContain("[1] A (class) — src/A.ts:5-9");
     // Header frames the block as untrusted reference material.
     expect(res.block).toContain("## Retrieved Code Symbols (project-scoped code graph)");
+  });
+
+  it("#2242 — numbers its entries from firstIndex, so they continue the excerpts' [n]", () => {
+    const res = fuseCodeContext(
+      [
+        hit({ symbolId: "s1", filePath: "src/A.ts", startLine: 5, endLine: 9, name: "A" }),
+        hit({ symbolId: "s2", filePath: "src/B.ts", startLine: 1, endLine: 3, name: "B" }),
+      ],
+      [],
+      { tokenBudget: 10_000, firstIndex: 4 },
+    );
+    expect(res.block).toContain("[4] A (class) — src/A.ts:5-9");
+    expect(res.block).toContain("[5] B (class) — src/B.ts:1-3");
+    expect(res.block).not.toMatch(/^\[1\]/m);
   });
 
   it("returns an empty block when there are no symbol hits", () => {
@@ -435,7 +450,10 @@ function mockSearcher(results: RawCodeSymbolHit[]): FusedCodeSearcher & {
 }
 
 function mockLineLookup(
-  entries: Record<string, { filePath: string; startLine: number; endLine: number }>,
+  entries: Record<
+    string,
+    { filePath: string; startLine: number; endLine: number; repoConnectionId?: string }
+  >,
 ): SymbolLineLookup {
   return {
     resolve: vi.fn().mockResolvedValue(new Map(Object.entries(entries))),
@@ -588,5 +606,120 @@ describe("buildFusedCodeBlock — enabled path", () => {
     expect((await buildFusedCodeBlock({ ...base, projectId: "p1", query: "   " })).block).toBe("");
     expect((await buildFusedCodeBlock({ ...base, projectId: null, query: "q" })).block).toBe("");
     expect(searcher.search).not.toHaveBeenCalled();
+  });
+});
+
+describe("fused code context — the citation contract (#2325)", () => {
+  const SHA = "0123456789abcdef0123456789abcdef01234567";
+  const versions = codeVersionIndexOf([
+    {
+      repoConnectionId: "r1",
+      commitSha: SHA,
+      repo: { provider: "github", ownerOrOrg: "acme", repoName: "app", apiBaseUrl: null },
+    },
+  ]);
+
+  it("gives every placed entry its indexed commit and ends the block with it", () => {
+    const res = fuseCodeContext(
+      [
+        hit({
+          symbolId: "s1",
+          filePath: "src/A.ts",
+          startLine: 5,
+          endLine: 9,
+          repoConnectionId: "r1",
+        }),
+        hit({
+          symbolId: "s2",
+          filePath: "src/B.ts",
+          startLine: 1,
+          endLine: 2,
+          matchedBy: ["lexical"],
+        }),
+      ],
+      [],
+      { tokenBudget: 1500, versions },
+    );
+    expect(res.hits.map((h) => h.citation)).toEqual([
+      {
+        repoConnectionId: "r1",
+        path: "src/A.ts",
+        startLine: 5,
+        endLine: 9,
+        commitSha: SHA,
+        permalink: `https://github.com/acme/app/blob/${SHA}/src/A.ts#L5-L9`,
+        truncated: false,
+        totalLines: null,
+        stale: false,
+      },
+      // The project's only graph is r1's, so a hit with no repo resolves to it.
+      expect.objectContaining({ path: "src/B.ts", commitSha: SHA, matchedBy: ["lexical"] }),
+    ]);
+    expect(res.block.endsWith("Code version: indexed commit 0123456789ab.")).toBe(true);
+  });
+
+  it("keeps the block within its budget with the version line counted", () => {
+    const many = Array.from({ length: 40 }, (_, i) =>
+      hit({
+        symbolId: `s${i}`,
+        filePath: `src/f${i}.ts`,
+        name: `F${i}`,
+        snippet: "x\n".repeat(20),
+      }),
+    );
+    for (const tokenBudget of [60, 120, 300, 800]) {
+      const res = fuseCodeContext(many, [], { tokenBudget, versions });
+      expect(Math.ceil(res.block.length / 4), String(tokenBudget)).toBeLessThanOrEqual(tokenBudget);
+    }
+  });
+
+  it("marks an entry whose snippet the budget cut truncated, with its span as the next read", () => {
+    const res = fuseCodeContext(
+      [hit({ snippet: Array.from({ length: 30 }, (_, i) => `line ${i}`).join("\n") })],
+      [],
+      { tokenBudget: 150, versions },
+    );
+    expect(res.hits[0]?.citation).toMatchObject({
+      truncated: true,
+      totalLines: 31,
+      next: { startLine: 10, endLine: 40 },
+    });
+  });
+
+  it("is byte-identical without versions (the spec-kit and analysis callers)", () => {
+    const res = fuseCodeContext([hit()], [], { tokenBudget: 1500 });
+    expect(res.block).not.toContain("Code version");
+    expect(res.hits[0]).not.toHaveProperty("citation");
+  });
+
+  it("buildFusedCodeBlock reads the project's versions, and degrades to no version on a failure", async () => {
+    const searcher = mockSearcher([
+      { symbolId: "s1", filePath: "x", name: "W", kind: "class", score: 1, matchedBy: ["dense"] },
+    ]);
+    const lineLookup = mockLineLookup({
+      s1: { filePath: "src/w.ts", startLine: 1, endLine: 3, repoConnectionId: "r1" },
+    });
+    const base = {
+      projectId: "p1",
+      query: "w",
+      ragChunks: [],
+      enabled: true,
+      tokenBudget: 1500,
+      maxSymbols: 5,
+      searcher,
+      lineLookup,
+    };
+    const loadVersions = vi.fn(async () => versions);
+    const ok = await buildFusedCodeBlock({ ...base, loadVersions });
+    expect(loadVersions).toHaveBeenCalledWith("p1");
+    expect(ok.hits[0]?.citation).toMatchObject({ commitSha: SHA, matchedBy: ["dense"] });
+    const failed = await buildFusedCodeBlock({
+      ...base,
+      loadVersions: async () => {
+        throw new Error("db down");
+      },
+    });
+    expect(failed.usedSymbols).toBe(1);
+    expect(failed.hits[0]).not.toHaveProperty("citation");
   });
 });

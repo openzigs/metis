@@ -1,6 +1,7 @@
 "use client";
 
 import type { DeepIngestOutcome } from "@/hooks/use-deep-ingest";
+import { analystCopy } from "@/lib/analyst-copy";
 
 export type DeepIngestBannerTone = "success" | "warning" | "error";
 
@@ -19,7 +20,7 @@ const COMPLETED_STYLES = {
   warning: { box: "border-warning/40 bg-warning-muted", text: "text-warning" },
 } as const;
 
-/** The banner under the repository list reporting how the last Deep Ingest ended. */
+/** The banner under the repository list reporting how the last full re-read ended. */
 export function DeepIngestOutcomeBanner({ outcome }: { outcome: DeepIngestOutcome | null }) {
   if (!outcome) return null;
   const tone = deepIngestBannerTone(outcome);
@@ -29,8 +30,8 @@ export function DeepIngestOutcomeBanner({ outcome }: { outcome: DeepIngestOutcom
         className="rounded border border-destructive/40 bg-destructive/10 p-3 text-sm"
         role="alert"
       >
-        <div className="mb-1 font-medium text-destructive">Deep ingest failed</div>
-        <div className="text-xs text-foreground">{outcome.message}</div>
+        <div className="mb-1 font-medium text-destructive">Full re-read failed</div>
+        <div className="text-xs text-foreground">{analystCopy(outcome.message)}</div>
       </div>
     );
   }
@@ -38,8 +39,8 @@ export function DeepIngestOutcomeBanner({ outcome }: { outcome: DeepIngestOutcom
   return (
     <div className={`rounded border ${styles.box} p-3 text-sm`} role="status">
       {/* The server's line already reads "Deep ingest complete: …" or
-          "Deep ingest completed with N failures: …". */}
-      <div className={`font-medium ${styles.text}`}>{outcome.message}</div>
+          "Deep ingest completed with N failures: …"; shown as "Full re-read …". */}
+      <div className={`font-medium ${styles.text}`}>{analystCopy(outcome.message)}</div>
     </div>
   );
 }

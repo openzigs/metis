@@ -154,7 +154,7 @@ const SELECTION_CHANGED = "The task selection changed since the dry run — run 
 const CREDENTIAL_TEXT: Record<"resolved" | "missing" | "unresolved", string> = {
   resolved: "The vault secret resolved — Publish will use it.",
   missing: "No GitHub token picked — choose a vault secret and run the dry run again.",
-  unresolved: "That vault secret ref does not name a vault secret.",
+  unresolved: "No vault secret has that name.",
 };
 
 export default function SpecKitPage() {

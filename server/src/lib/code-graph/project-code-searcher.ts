@@ -93,6 +93,10 @@ export function __resetSymbolIndexCache(): void {
  * document is built from them (`buildSymbolDocumentText`). `receiver` is stored
  * and deliberately NOT read: no symbol of the evaluation corpus has one, so it
  * was not measured and is in no document (ADR 0020).
+ *
+ * #2327 — `language` is read for the `language` filter of
+ * `search_code_symbols` only; it is in no document (#1159 measured it there as
+ * a loss).
  */
 const SYMBOL_SELECT = {
   id: true,
@@ -103,6 +107,7 @@ const SYMBOL_SELECT = {
   signature: true,
   docComment: true,
   package: true,
+  language: true,
 } as const;
 
 interface SymbolRow {
@@ -114,6 +119,7 @@ interface SymbolRow {
   signature: string | null;
   docComment: string | null;
   package: string | null;
+  language: string;
 }
 
 function toSearchable(r: SymbolRow): SearchableSymbol {
@@ -123,6 +129,7 @@ function toSearchable(r: SymbolRow): SearchableSymbol {
     qualifiedName: r.qualifiedName,
     kind: r.kind,
     filePath: r.filePath,
+    language: r.language,
     // Absent, not null, when a symbol has none: a `module`, a schema symbol.
     ...(r.signature ? { signature: r.signature } : {}),
     ...(r.docComment ? { docstring: r.docComment } : {}),
@@ -369,6 +376,10 @@ export function createDefaultCodeSearcher(deps: CodeSearcherDeps = {}): FusedCod
       const results = await hybrid.search(query, projectId, {
         limit: opts?.limit ?? 20,
         onRetrievalMode: opts?.onRetrievalMode,
+        // #2327 — `search_code_symbols`'s filters, validated by the tool.
+        ...(opts?.fileGlob ? { fileGlob: opts.fileGlob } : {}),
+        ...(opts?.symbolKind ? { symbolKind: opts.symbolKind } : {}),
+        ...(opts?.language ? { language: opts.language } : {}),
       });
       // #1072 — a hit carries the first lines of its body. A failure to read
       // them must not fail the search: the hit then keeps what it had (its
@@ -398,6 +409,8 @@ export function createDefaultCodeSearcher(deps: CodeSearcherDeps = {}): FusedCod
         snippet: snippets.get(r.symbolId) ?? quotableSnippet(r.snippet),
         // #1784 — the cosine compares across searches; the fused score does not.
         ...(r.vectorScore !== undefined ? { vectorScore: r.vectorScore } : {}),
+        // #2325 — which channels found it, for the citation contract.
+        ...(r.matchedBy ? { matchedBy: r.matchedBy } : {}),
       }));
     },
   };

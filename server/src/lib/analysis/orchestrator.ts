@@ -41,6 +41,9 @@ import {
   codeInvestigationContinueLimitReached,
   type CodeInvestigationGap,
   deriveCapabilityReasons,
+  type FindingsLeftOutNotice,
+  readFindingsLeftOut,
+  readRequirementsLeftOut,
   isCodeCitation,
   MAX_REQUIREMENTS_FOR_RETRIEVAL,
   REQUIREMENT_RETRIEVAL_CONCURRENCY,
@@ -221,6 +224,7 @@ import {
   collectRecoveryAttempts,
   isJsonFinalAnswer,
   isSchemaValidFinalAnswer,
+  salvagedFindingsLeftOut,
   salvageWithRepair,
   selectSalvageSource,
   type AgenticDegradationReason,
@@ -279,6 +283,7 @@ import { produceGoverningFindingsForAnalysis } from "../governing/findings-store
 import { isDocumentReaderEnabled } from "../document-reader/flag.js";
 import { spentUsageOf } from "../document-reader/reader.js";
 import { resolveAclActor, sharedAudienceActor } from "../rag/acl.js";
+import { SYSTEM_ACTOR_ID } from "../audit/system-actor.js";
 import {
   readerSourceOf,
   runDocumentReaderAgent,
@@ -960,6 +965,13 @@ export class AnalysisOrchestrator {
   private readonly retrievalHealths = new Map<string, AnalysisRetrievalHealth[]>();
   /** #1131 — per-run record of what each agentic code pass reached. */
   private readonly passReaches = new Map<string, CodePassReach[]>();
+  /**
+   * #2276 — the findings a single-agent regenerate's answer lost at the
+   * 50-finding cap. A regenerate has no capability tracker, so without this
+   * {@link noteFindingsLeftOut} recorded nothing and the stored notice for
+   * the regenerated agent went stale.
+   */
+  private readonly regenFindingsLeftOut = new Map<string, FindingsLeftOutNotice[]>();
 
   constructor(deps: OrchestratorDeps) {
     // #724 — every model call the analysis family makes through this provider
@@ -1230,6 +1242,8 @@ export class AnalysisOrchestrator {
     // #766 — the agent's card reads the re-run as running (with the code
     // agent's tool calls so far) instead of its stale `completed` result.
     beginLiveAgent(opts.analysisId, opts.agentKey, { rerun: true });
+    const findingsLeftOut: FindingsLeftOutNotice[] = [];
+    this.regenFindingsLeftOut.set(opts.analysisId, findingsLeftOut);
     try {
       reopened = await reopenForFollowUp(opts.analysisId);
       // #1145 — resolved inside the try, so a failure here is recorded and the
@@ -1332,11 +1346,27 @@ export class AnalysisOrchestrator {
               : {}),
           });
         }
+        await this.refreshFindingsLeftOut(
+          opts.analysisId,
+          opts.agentKey,
+          findingsLeftOut,
+          continuation !== null,
+        );
       }
       this.emitCompleted(opts.analysisId);
     } catch (err) {
       outcome = "failed";
       errorMessage = (err as Error).message;
+      // #2297 — a document read that failed (or was cancelled) still spent what
+      // it spent before failing, as the pipeline counts it (#2262): without it
+      // `Analysis.totalTokens`, and so the monthly cap, under-counts. Only the
+      // reader marks an error with its spend, so nothing here is counted twice.
+      const spent = spentUsageOf(err);
+      if (spent) {
+        delta.promptTokens += spent.promptTokens;
+        delta.completionTokens += spent.completionTokens;
+        delta.totalTokens += spent.totalTokens;
+      }
       this.emit({
         analysisId: opts.analysisId,
         agentKey: opts.agentKey,
@@ -1355,6 +1385,7 @@ export class AnalysisOrchestrator {
         // A failed regenerate leaves no tracker to finalize its pass health.
         this.retrievalHealths.delete(opts.analysisId);
         this.passReaches.delete(opts.analysisId);
+        this.regenFindingsLeftOut.delete(opts.analysisId);
         await closeFollowUpRun(opts.analysisId, reopened, outcome, delta);
         // Atomic write — increments columns server-side so two concurrent
         // regenerates can't lose tokens to a read/modify/write race.
@@ -3528,13 +3559,19 @@ export class AnalysisOrchestrator {
    * #2262 — only documents the requester may see are read. A requester who is
    * no longer active fails the agent (`InactiveAclActorError`): never read
    * without an actor. With no requester at all, only unrestricted documents.
+   *
+   * #2297 — a scheduled run's requester is `SYSTEM_ACTOR_ID`, no user: it
+   * reads as no requester rather than failing as an inactive one, and the
+   * system actor attributes the reader's ACL audit rows (no `User` row named
+   * "analysis" exists for the audit log's foreign key).
    */
   private async readSelectedDocuments(
     input: Parameters<AnalysisOrchestrator["runOneAgent"]>[0],
   ): Promise<AgentRunResult | null> {
-    const actor = input.actorId
-      ? await resolveAclActor(input.actorId)
-      : sharedAudienceActor("analysis");
+    const actor =
+      input.actorId && input.actorId !== SYSTEM_ACTOR_ID
+        ? await resolveAclActor(input.actorId)
+        : sharedAudienceActor(SYSTEM_ACTOR_ID);
     const read = await runDocumentReaderAgent({
       provider: this.deps.provider,
       projectId: input.projectId,
@@ -3785,6 +3822,8 @@ export class AnalysisOrchestrator {
           ragChunks: [],
           deps: this.deps.fusedCode,
         });
+        // #2276 — requirements past the embedder's limit reach keyword search only.
+        this.noteRequirementsLeftOut(input.analysisId, fused.semanticLeftOut);
 
         const agentBudget = input.tokenBudget ?? resolveAgentTokenBudget();
         // #774 — every tool call the loop makes, across every pass, so the run's
@@ -3990,6 +4029,7 @@ export class AnalysisOrchestrator {
             );
             let salvaged = salvage.findings;
             fieldRepairs = salvage.fieldRepairs;
+            let leftOutTitles = salvage.leftOutTitles;
             // #766 — nothing recovered from the transcript path (the retry failed
             // outright, or answered in prose): ONE tool-free call over the task and
             // the untruncated evidence, without the transcript. 64 tool calls had
@@ -4011,8 +4051,14 @@ export class AnalysisOrchestrator {
               });
               salvaged = evidenceSalvage.findings;
               fieldRepairs = evidenceSalvage.fieldRepairs;
+              leftOutTitles = evidenceSalvage.leftOutTitles;
               extraUsage = evidenceSalvage.usage;
             }
+            // #2276 — the salvage keeps 50 findings; the valid ones past them are named.
+            this.noteFindingsLeftOut(
+              input.analysisId,
+              salvagedFindingsLeftOut(agentKey, salvaged.length, leftOutTitles),
+            );
             log.warn("Agentic code pass degraded; salvaging investigation", {
               analysisId: input.analysisId,
               reason,
@@ -4754,6 +4800,8 @@ export class AnalysisOrchestrator {
           ragChunks: perRequirement.flatMap((r) => r.chunks).map(toFusedRagChunkRef),
           deps: this.deps.fusedCode,
         });
+        // #2276 — requirements past the embedder's limit reach keyword search only.
+        this.noteRequirementsLeftOut(input.analysisId, fused.semanticLeftOut);
 
         // All retrieved chunks across requirements PLUS the fused symbol chunks,
         // for citation enrichment (so a model citing a code-graph symbol resolves
@@ -5992,7 +6040,53 @@ export class AnalysisOrchestrator {
   ): void {
     if (!analysisId || !notice) return;
     const tracker = this.capabilities.get(analysisId);
-    if (tracker) recordFindingsLeftOut(tracker, notice);
+    if (tracker) {
+      recordFindingsLeftOut(tracker, notice);
+      return;
+    }
+    // #2276 — a regenerate collects its pass's notices for refreshFindingsLeftOut.
+    if (notice.producedCount > notice.keptCount)
+      this.regenFindingsLeftOut.get(analysisId)?.push(notice);
+  }
+
+  /**
+   * #2276 — after a single-agent regenerate, the stored `findingsLeftOut`
+   * describes the regenerated agent's new answer: its earlier notices are
+   * replaced by what this pass cut (or removed, when it cut nothing). A
+   * continuation added to the code findings instead of replacing them, so it
+   * keeps the earlier notices and adds its own. Reasons are re-derived. No
+   * write when nothing changed; best-effort, like every capability write.
+   */
+  private async refreshFindingsLeftOut(
+    analysisId: string,
+    agentKey: string,
+    notices: readonly FindingsLeftOutNotice[],
+    continued: boolean,
+  ): Promise<void> {
+    let capability: AnalysisCapability | null;
+    try {
+      capability = await getAnalysisCapability(analysisId);
+    } catch (err) {
+      log.warn("Capability read failed", { analysisId, error: (err as Error).message });
+      return;
+    }
+    if (!capability) return;
+    const prev = readFindingsLeftOut(capability.findingsLeftOut);
+    const kept = continued ? prev : prev.filter((n) => n.agentKey !== agentKey);
+    if (kept.length === prev.length && notices.length === 0) return;
+    const next: AnalysisCapability = { ...capability };
+    // A stored entry of the wrong shape must not throw in deriveCapabilityReasons
+    // after synthesis has persisted: read it through the same reader as the panel.
+    const requirementsLeftOut = readRequirementsLeftOut(capability.requirementsLeftOut);
+    if (requirementsLeftOut.length > 0) next.requirementsLeftOut = requirementsLeftOut;
+    else delete next.requirementsLeftOut;
+    const findingsLeftOut = [...kept, ...notices];
+    if (findingsLeftOut.length > 0) next.findingsLeftOut = findingsLeftOut;
+    else delete next.findingsLeftOut;
+    await this.persistAndEmitCapability(analysisId, {
+      ...next,
+      reasons: deriveCapabilityReasons(next),
+    });
   }
 
   /**

@@ -6,6 +6,13 @@
  * completed analysis's requirements, the generated docs, and the publish
  * batches. No new endpoint is involved. `ProjectPipelineOverview` gathers the
  * facts; this module decides what each stage says and where its action goes.
+ *
+ * #2349 — the stages read as the analyst's job, as one checklist:
+ * Add knowledge → Ready: ask a question → New change request → Review →
+ * Deliverable, then Publish, which is optional. The ids are the original
+ * pipeline's (`sources` is "Add knowledge", `ingest` is "Ready: ask a question",
+ * `analyze` is "New change request", `docs` is "Deliverable"); they stay because
+ * deep links, test ids and the drift badge are keyed on them.
  */
 
 export type PipelineStageId = "sources" | "ingest" | "analyze" | "review" | "docs" | "publish";
@@ -23,6 +30,8 @@ export interface PipelineStage {
   action: { label: string; href: string };
   /** A second thing waiting in this stage, when there is one. */
   secondaryAction?: { label: string; href: string };
+  /** #2349 — shown, but never holds the checklist at incomplete (Publish). */
+  optional?: true;
 }
 
 type DateLike = string | Date;
@@ -50,6 +59,17 @@ export interface PipelineFacts {
   }>;
   /** Draft requirements in the latest completed analysis; null while unknown. */
   awaitingReview: number | null;
+  /**
+   * #2367 — that analysis's approval checkpoints still pending (`ticketStatus`
+   * of `GET /approvals`); null while unknown, `"unreadable"` when the read
+   * failed. Pending approvals are not requirements yet, so `awaitingReview`
+   * alone read 0 and the stage said "All requirements reviewed".
+   */
+  pendingApprovals: number | null | "unreadable";
+  /** #2367 — its clarifying questions still open, as the Questions tab counts them. */
+  openQuestions: number;
+  /** #2367 — its requirements a reviewer rejected. */
+  rejectedRequirements: number;
   docs: Array<{ status: string }>;
   /**
    * Newest first, as `GET /publishing/batches` returns them; `null` when the
@@ -92,14 +112,17 @@ export function isProjectRepoIngestJob(
   return job.kind === "repo-ingest" && job.projectId === projectId;
 }
 
-/** The numbered first-run checklist: connect → ingest → analyse → review → publish. */
-export const FIRST_RUN_STEPS: readonly PipelineStageId[] = [
-  "sources",
-  "ingest",
-  "analyze",
-  "review",
-  "publish",
-];
+/**
+ * #2349 — where "New change request" starts: the Change requests tab's run
+ * page, whose start form takes document uploads (it opens by itself on a
+ * project with no runs yet). The one place to repoint when that intake moves.
+ */
+export function newChangeRequestHref(projectId: string): string {
+  return `/projects/${projectId}/analysis`;
+}
+
+/** Where the Overview's knowledge search is, to ask a question of what was ingested. */
+export const KNOWLEDGE_SEARCH_ANCHOR = "knowledge-search";
 
 const RUNNING_DOC_STATUSES = new Set(["pending", "queued", "processing"]);
 
@@ -149,6 +172,16 @@ function latestTime(values: Array<DateLike | null | undefined>): Date | null {
   return best;
 }
 
+/** #2349 — the checklist's wording, in the analyst's terms. */
+const TITLE: Record<PipelineStageId, string> = {
+  sources: "Add knowledge",
+  ingest: "Ready: ask a question",
+  analyze: "New change request",
+  review: "Review",
+  docs: "Deliverable",
+  publish: "Publish",
+};
+
 function sourcesStage(base: string, f: PipelineFacts): PipelineStage {
   const parts: string[] = [];
   if (f.repos.length) parts.push(plural(f.repos.length, "repository", "repositories"));
@@ -158,21 +191,21 @@ function sourcesStage(base: string, f: PipelineFacts): PipelineStage {
   if (parts.length === 0) {
     return {
       id: "sources",
-      title: "Connect sources",
+      title: TITLE.sources,
       state: "todo",
-      status: "No sources connected yet",
-      action: { label: "Connect a source", href },
+      status: "No documents, repositories or databases yet",
+      action: { label: "Add knowledge", href },
     };
   }
   const errored = f.repos.filter((r) => r.status === "error").length;
   return {
     id: "sources",
-    title: "Connect sources",
+    title: TITLE.sources,
     state: errored ? "attention" : "done",
     status: errored
       ? `${parts.join(" · ")} — ${errored === 1 ? "1 connection has" : `${errored} connections have`} an error`
       : parts.join(" · "),
-    action: { label: "Manage sources", href },
+    action: { label: "Manage knowledge", href },
   };
 }
 
@@ -191,7 +224,7 @@ function ingestStage(base: string, f: PipelineFacts): PipelineStage {
   if (f.ingestInProgress || processing > 0) {
     return {
       id: "ingest",
-      title: "Ingest",
+      title: TITLE.ingest,
       state: "running",
       status:
         processing > 0
@@ -208,7 +241,9 @@ function ingestStage(base: string, f: PipelineFacts): PipelineStage {
       parts.push(
         plural(
           ready.reduce((n, d) => n + d.chunkCount, 0),
-          "chunk",
+          // #2337 — "chunks" is system jargon.
+          "section indexed",
+          "sections indexed",
         ),
       );
     }
@@ -221,33 +256,50 @@ function ingestStage(base: string, f: PipelineFacts): PipelineStage {
   if (failed) parts.push(`${atLeast}${plural(failed, "document")} failed`);
 
   if (parts.length === 0) {
-    return { id: "ingest", title: "Ingest", state: "todo", status: "Nothing ingested yet", action };
+    return {
+      id: "ingest",
+      title: TITLE.ingest,
+      state: "todo",
+      status: "Nothing ingested yet",
+      action,
+    };
   }
+  if (failed) {
+    return {
+      id: "ingest",
+      title: TITLE.ingest,
+      state: "attention",
+      status: parts.join(" · "),
+      action,
+    };
+  }
+  // #2349 — once something is ingested, the step's action is the question itself.
   return {
     id: "ingest",
-    title: "Ingest",
-    state: failed ? "attention" : "done",
+    title: TITLE.ingest,
+    state: "done",
     status: parts.join(" · "),
-    action,
+    action: { label: "Ask a question", href: `${base}#${KNOWLEDGE_SEARCH_ANCHOR}` },
   };
 }
 
-function analyzeStage(base: string, f: PipelineFacts): PipelineStage {
+function analyzeStage(projectId: string, f: PipelineFacts): PipelineStage {
+  const base = `/projects/${projectId}`;
   const latest = f.analyses[0];
-  const run = { label: "Run analysis", href: `${base}/analysis` };
+  const run = { label: "New change request", href: newChangeRequestHref(projectId) };
   if (!latest) {
     return {
       id: "analyze",
-      title: "Analyze",
+      title: TITLE.analyze,
       state: "todo",
-      status: "No analysis yet",
+      status: "No change request yet",
       action: run,
     };
   }
   if (RUNNING_JOB_STATUSES.has(latest.status)) {
     return {
       id: "analyze",
-      title: "Analyze",
+      title: TITLE.analyze,
       state: "running",
       status: `Analysis running since ${when(latest.startedAt)}`,
       action: {
@@ -259,7 +311,7 @@ function analyzeStage(base: string, f: PipelineFacts): PipelineStage {
   if (latest.status === "completed") {
     return {
       id: "analyze",
-      title: "Analyze",
+      title: TITLE.analyze,
       state: "done",
       status: `Last analysis completed ${when(latest.completedAt ?? latest.startedAt)}`,
       action: run,
@@ -267,7 +319,7 @@ function analyzeStage(base: string, f: PipelineFacts): PipelineStage {
   }
   return {
     id: "analyze",
-    title: "Analyze",
+    title: TITLE.analyze,
     state: "attention",
     status: `Last analysis ${latest.status} (${when(latest.startedAt)})`,
     action: run,
@@ -282,39 +334,78 @@ export function latestCompletedAnalysisId(f: Pick<PipelineFacts, "analyses">): s
 function requirementsReview(base: string, f: PipelineFacts): PipelineStage {
   const hub = `${base}/requirements`;
   const analysisId = latestCompletedAnalysisId(f);
+  const checking: PipelineStage = {
+    id: "review",
+    title: TITLE.review,
+    state: "todo",
+    status: "Checking requirements…",
+    action: { label: "Open requirements", href: hub },
+  };
   if (!analysisId) {
-    return {
-      id: "review",
-      title: "Review requirements",
-      state: "todo",
-      status: "Run an analysis to produce requirements",
-      action: { label: "Open requirements", href: hub },
-    };
+    return { ...checking, status: "Start a change request to produce requirements" };
   }
-  if (f.awaitingReview === null) {
-    return {
-      id: "review",
-      title: "Review requirements",
-      state: "todo",
-      status: "Checking requirements…",
-      action: { label: "Open requirements", href: hub },
-    };
-  }
+  if (f.awaitingReview === null) return checking;
+
+  const run = `${base}/analysis?analysisId=${encodeURIComponent(analysisId)}`;
+  // #2367 — everything in this run still waiting on a person, most blocking
+  // first: the first is the stage's action, and the status names them all.
+  const waiting: Array<{ status: string; action: { label: string; href: string } }> = [];
   if (f.awaitingReview > 0) {
+    waiting.push({
+      status: `${plural(f.awaitingReview, "requirement")} awaiting review`,
+      action: { label: `Review ${plural(f.awaitingReview, "requirement")}`, href: run },
+    });
+  }
+  if (typeof f.pendingApprovals === "number" && f.pendingApprovals > 0) {
+    waiting.push({
+      status: `${plural(f.pendingApprovals, "approval")} pending`,
+      action: {
+        label: `Resolve ${plural(f.pendingApprovals, "approval")}`,
+        href: `${run}&tab=approvals`,
+      },
+    });
+  }
+  if (f.openQuestions > 0) {
+    waiting.push({
+      status: `${plural(f.openQuestions, "clarifying question")} open`,
+      action: {
+        label: `Answer ${plural(f.openQuestions, "question")}`,
+        href: `${run}&tab=questions`,
+      },
+    });
+  }
+  if (f.rejectedRequirements > 0) {
+    waiting.push({
+      status: `${plural(f.rejectedRequirements, "requirement")} rejected`,
+      action: {
+        label: `Revisit ${plural(f.rejectedRequirements, "rejected requirement")}`,
+        href: `${run}&tab=requirements`,
+      },
+    });
+  }
+  if (waiting.length > 0) {
     return {
       id: "review",
-      title: "Review requirements",
+      title: TITLE.review,
       state: "attention",
-      status: `${plural(f.awaitingReview, "requirement")} awaiting review`,
-      action: {
-        label: `Review ${plural(f.awaitingReview, "requirement")}`,
-        href: `${base}/analysis?analysisId=${encodeURIComponent(analysisId)}`,
-      },
+      status: waiting.map((w) => w.status).join(" · "),
+      action: waiting[0].action,
+    };
+  }
+  if (f.pendingApprovals === null) return checking;
+  if (f.pendingApprovals === "unreadable") {
+    // A failed read must not pass for "nothing pending".
+    return {
+      id: "review",
+      title: TITLE.review,
+      state: "attention",
+      status: "Could not check this run's approvals",
+      action: { label: "Open approvals", href: `${run}&tab=approvals` },
     };
   }
   return {
     id: "review",
-    title: "Review requirements",
+    title: TITLE.review,
     state: "done",
     status: "All requirements reviewed",
     action: { label: "Open requirements", href: hub },
@@ -346,13 +437,13 @@ function reviewStage(base: string, projectId: string, f: PipelineFacts): Pipelin
 }
 
 function docsStage(base: string, f: PipelineFacts): PipelineStage {
-  const action = { label: "Generate docs", href: `${base}/documentation` };
+  const action = { label: "Generate a deliverable", href: `${base}/documentation` };
   const generating = f.docs.filter(isGeneratedDocRunning).length;
   const failed = f.docs.filter((d) => d.status === "failed").length;
   if (generating > 0) {
     return {
       id: "docs",
-      title: "Documentation",
+      title: TITLE.docs,
       state: "running",
       status: `Generating ${plural(generating, "document")}`,
       action: { label: "View progress", href: action.href },
@@ -361,20 +452,20 @@ function docsStage(base: string, f: PipelineFacts): PipelineStage {
   if (f.docs.length === 0) {
     return {
       id: "docs",
-      title: "Documentation",
+      title: TITLE.docs,
       state: "todo",
-      status: "No documentation generated",
+      status: "No deliverable generated yet",
       action,
     };
   }
   return {
     id: "docs",
-    title: "Documentation",
+    title: TITLE.docs,
     state: failed ? "attention" : "done",
     status: failed
       ? `${plural(f.docs.length, "document")} — ${failed} failed`
       : `${plural(f.docs.length, "document")} generated`,
-    action: { label: "Open docs", href: action.href },
+    action: { label: "Open deliverables", href: action.href },
   };
 }
 
@@ -383,7 +474,7 @@ function publishStage(base: string, f: PipelineFacts): PipelineStage {
   if (f.batches === null) {
     return {
       id: "publish",
-      title: "Publish",
+      title: TITLE.publish,
       state: "todo",
       status: "Publish history is not available to your role",
       action,
@@ -393,7 +484,7 @@ function publishStage(base: string, f: PipelineFacts): PipelineStage {
   if (!latest) {
     return {
       id: "publish",
-      title: "Publish",
+      title: TITLE.publish,
       state: "todo",
       status: "Nothing published yet",
       action,
@@ -403,7 +494,7 @@ function publishStage(base: string, f: PipelineFacts): PipelineStage {
   if (RUNNING_JOB_STATUSES.has(latest.status)) {
     return {
       id: "publish",
-      title: "Publish",
+      title: TITLE.publish,
       state: "running",
       status: `Publishing${kind} — started ${when(latest.startedAt)}`,
       action,
@@ -413,7 +504,7 @@ function publishStage(base: string, f: PipelineFacts): PipelineStage {
   if (latest.status === "completed") {
     return {
       id: "publish",
-      title: "Publish",
+      title: TITLE.publish,
       state: "done",
       status: `Last publish${kind} completed ${when(latest.completedAt ?? latest.startedAt)} · ${counts}`,
       action,
@@ -421,31 +512,32 @@ function publishStage(base: string, f: PipelineFacts): PipelineStage {
   }
   return {
     id: "publish",
-    title: "Publish",
+    title: TITLE.publish,
     state: "attention",
     status: `Last publish ${latest.status}${kind} · ${counts}`,
     action,
   };
 }
 
-/** Every stage, in pipeline order, with its state and primary action. */
+/** Every stage, in checklist order, with its state and primary action. */
 export function derivePipelineStages(projectId: string, facts: PipelineFacts): PipelineStage[] {
   const base = `/projects/${projectId}`;
   return [
     sourcesStage(base, facts),
     ingestStage(base, facts),
-    analyzeStage(base, facts),
+    analyzeStage(projectId, facts),
     reviewStage(base, projectId, facts),
     docsStage(base, facts),
-    publishStage(base, facts),
+    // #2349 — not every analyst publishes issues; a deliverable is the job's end.
+    { ...publishStage(base, facts), optional: true },
   ];
 }
 
 /**
- * A project is on its first run until it has an analysis or a publish — the
- * checklist keeps guiding through connect and ingest, which are the steps a new
- * user is least likely to find on their own.
+ * #2349 — the checklist is complete when every step but the optional ones is
+ * done. Each state comes from the project's existing data, so a project that
+ * already did the work reads as done the first time this checklist shows it.
  */
-export function isFirstRun(facts: PipelineFacts): boolean {
-  return facts.analyses.length === 0 && (facts.batches ?? []).length === 0;
+export function isChecklistComplete(stages: readonly PipelineStage[]): boolean {
+  return stages.every((s) => s.optional || s.state === "done");
 }

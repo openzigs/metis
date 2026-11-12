@@ -167,6 +167,21 @@ export function collectAnsweredQuestions(
       });
     }
   }
+  // #2236 — an answer the project had already settled counts as answered here
+  // too, so it reaches the requirement body like one typed in this dialog.
+  for (const r of state.reused ?? []) {
+    if (r.governing) continue;
+    const answer = r.answer.trim();
+    if (answer.length === 0) continue;
+    const questionId = `reused:${r.recordId}:${r.requirementId}`;
+    byQuestionId.set(questionId, {
+      questionId,
+      requirementId: r.requirementId,
+      question: r.question,
+      answer,
+      provenance: "reused",
+    });
+  }
   return [...byQuestionId.values()];
 }
 
@@ -533,6 +548,7 @@ export const PROVENANCE_TAGS: Record<AnswerProvenance, string> = {
   typed: "_(typed by the requester)_",
   edited: "_(METIS suggestion, edited by the requester)_",
   suggested: "_(METIS suggestion, accepted unchanged)_",
+  reused: "_(answered earlier in this project, reused)_",
 };
 
 /**

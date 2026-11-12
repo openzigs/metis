@@ -9,9 +9,25 @@ import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { ToolRegistry } from "../tool-registry.js";
 import type { ToolDefinition } from "../types.js";
-import { buildSessionToolset, CHAT_EXCLUDED_TOOLS, makeToolset, toWireName } from "./toolset.js";
+import {
+  buildSessionToolset,
+  CHAT_EXCLUDED_TOOLS,
+  codeRuntimeTool,
+  makeToolset,
+  toWireName,
+} from "./toolset.js";
+import { __resetToolResultCacheForTests } from "./tool-result-cache.js";
 import type { RuntimeTool } from "./types.js";
 import { zodToJsonSchema, toolParametersSchema } from "./json-schema.js";
+import { UNRESTRICTED_CODE_ACCESS } from "../../analysis/tools/code-access.js";
+
+// #2243 — the code tools read the caller's document ACLs; the SQLite suite
+// (`tests/chat-code-tools-acl-2243.sqlite.test.ts`) covers the real read.
+const codeAccess = vi.hoisted(() => ({ load: vi.fn() }));
+vi.mock("../../analysis/tools/code-access.js", async (original) => ({
+  ...(await original<typeof import("../../analysis/tools/code-access.js")>()),
+  loadCodeAccessFilter: codeAccess.load,
+}));
 
 const CTX = { sessionId: "s1", userId: "u1", projectId: "p1" };
 
@@ -152,8 +168,25 @@ describe("buildSessionToolset", () => {
     expect(t.risk).toBe("low");
     expect(t.validate({ query: "x" })).toEqual({ ok: true, args: { query: "x" } });
     expect(t.validate([1])).toEqual({ ok: false });
+    codeAccess.load.mockResolvedValue(UNRESTRICTED_CODE_ACCESS);
     await expect(t.execute({ query: "x" }, CTX)).resolves.toEqual({ text: "hit", resultCount: 3 });
-    expect(execute).toHaveBeenCalledWith({ query: "x" }, { projectId: "p1" });
+    expect(execute).toHaveBeenCalledWith(
+      { query: "x" },
+      { projectId: "p1", codeAccess: UNRESTRICTED_CODE_ACCESS },
+    );
+    expect(codeAccess.load).toHaveBeenCalledWith({ projectId: "p1", userId: "u1" });
+    // #2248 — a shared reply reads the code as its audience does.
+    await t.execute({ query: "y" }, { ...CTX, aclAudience: "shared" });
+    expect(codeAccess.load).toHaveBeenLastCalledWith({
+      projectId: "p1",
+      userId: "u1",
+      aclAudience: "shared",
+    });
+    // An actor that cannot be resolved fails the call: nothing is read.
+    codeAccess.load.mockRejectedValueOnce(new Error("ACL actor unavailable"));
+    execute.mockClear();
+    await expect(t.execute({ query: "z" }, CTX)).rejects.toThrow("ACL actor unavailable");
+    expect(execute).not.toHaveBeenCalled();
     await expect(t.execute({}, { ...CTX, projectId: null })).resolves.toMatchObject({
       isError: true,
     });
@@ -357,5 +390,49 @@ describe("makeToolset — `-` and `_` spell the same tool (#772)", () => {
     // The offered tool's own exact name still resolves.
     expect(set.resolve("a_b-c")?.name).toBe("a_b-c");
     expect(set.withheld("a_b-c")).toBeUndefined();
+  });
+});
+
+describe("#2325 — the citation contract rides the tool result", () => {
+  const ref = {
+    repoConnectionId: "r1",
+    path: "src/a.ts",
+    startLine: 1,
+    endLine: 2,
+    commitSha: "0123456789abcdef0123456789abcdef01234567",
+    permalink: null,
+    truncated: false,
+    totalLines: 2,
+    stale: false,
+  };
+
+  it("a code tool's citations reach the runtime result", async () => {
+    __resetToolResultCacheForTests();
+    codeAccess.load.mockResolvedValue(UNRESTRICTED_CODE_ACCESS);
+    const tool = codeRuntimeTool(
+      {
+        name: "list_things_2325",
+        description: "d",
+        parameters: { type: "object" },
+        execute: async () => ({ content: "src/a.ts:1-2", resultCount: 1, citations: [ref] }),
+      },
+      "list_things_2325",
+    );
+    const r = await tool.execute({}, CTX);
+    expect(r.citations).toEqual([ref]);
+  });
+
+  it("a registry tool's citations reach the runtime result; none when it returns none", async () => {
+    const set = await buildSessionToolset({
+      ctx: CTX,
+      registry: registryWith(
+        def("with_refs", { exec: vi.fn(async () => ({ text: "x", citations: [ref] })) }),
+        def("without_refs"),
+      ),
+    });
+    expect((await set.resolve("with_refs")!.execute({ q: "a" }, CTX)).citations).toEqual([ref]);
+    expect(await set.resolve("without_refs")!.execute({ q: "a" }, CTX)).not.toHaveProperty(
+      "citations",
+    );
   });
 });

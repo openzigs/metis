@@ -353,7 +353,7 @@ export default function ProductDetailPage({ params }: { params: Promise<{ id: st
           >
             <p className="text-sm">
               Not analysed, with no clone yet: {reposWithoutClone.map((r) => r.name).join(", ")}.
-              Sync {reposWithoutClone.length === 1 ? "it" : "them"} on the project&apos;s
+              Update {reposWithoutClone.length === 1 ? "it" : "them"} on the project&apos;s
               Connections page, then generate again.
             </p>
           </div>

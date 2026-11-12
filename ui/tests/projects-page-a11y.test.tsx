@@ -11,7 +11,7 @@
  */
 import { afterEach, describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
-import { makeWrapper } from "./test-utils";
+import { makeWrapper, userWith } from "./test-utils";
 
 vi.mock("@/lib/projects-api", () => ({
   projectsApi: {
@@ -26,7 +26,7 @@ import ProjectsPage from "@/app/(authed)/projects/page";
 const listMock = vi.mocked(projectsApi.list);
 
 function renderPage() {
-  render(<ProjectsPage />, { wrapper: makeWrapper({ withAuth: false }) });
+  render(<ProjectsPage />, { wrapper: makeWrapper({ initialUser: userWith("project.delete") }) });
 }
 
 beforeEach(() => {

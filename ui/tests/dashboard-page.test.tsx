@@ -6,7 +6,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor, act } from "@testing-library/react";
-import { makeWrapper } from "./test-utils";
+import { makeWrapper, userWith } from "./test-utils";
 import DashboardPage from "@/app/(authed)/dashboard/page";
 import { projectsApi } from "@/lib/projects-api";
 import { tasksApi, schedulerApi } from "@/lib/scheduler-api";
@@ -19,6 +19,13 @@ vi.mock("@/lib/scheduler-api", () => ({
   tasksApi: { list: vi.fn() },
   schedulerApi: { list: vi.fn() },
 }));
+// #2348 — My work loads above the widgets on Home.
+vi.mock("@/lib/my-work", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/my-work")>()),
+  myWorkApi: {
+    get: vi.fn(async () => ({ changeRequests: [], reviews: [], projectCount: 1 })),
+  },
+}));
 // #2187 — Recent lists a session only while the server lists it as resumable.
 vi.mock("@/lib/sdk-alignment-api", () => ({
   sdkApi: {
@@ -30,8 +37,9 @@ const projectsListMock = vi.mocked(projectsApi.list);
 const tasksListMock = vi.mocked(tasksApi.list);
 const schedulerListMock = vi.mocked(schedulerApi.list);
 
+// #2348 — the operations widgets are an admin's Home.
 function renderPage() {
-  const Wrapper = makeWrapper({ withAuth: false });
+  const Wrapper = makeWrapper({ initialUser: userWith("project.create") });
   render(
     <Wrapper>
       <DashboardPage />
@@ -101,7 +109,8 @@ describe("<DashboardPage />", () => {
     expect(screen.getByLabelText("Name")).toBeInTheDocument();
   });
 
-  it("offers no wizard once projects exist", async () => {
+  // #2349 — the same wizard for the tenth project as for the first.
+  it("still opens the New-project wizard once projects exist", async () => {
     projectsListMock.mockResolvedValue({
       items: [{ id: "p-1", name: "Alpha", slug: "alpha", status: "active" }],
       total: 1,
@@ -110,6 +119,16 @@ describe("<DashboardPage />", () => {
     } as never);
     renderPage();
     await screen.findByText("Alpha");
+    const buttons = screen.getAllByRole("button", { name: "New project" });
+    expect(buttons).toHaveLength(1);
+    act(() => buttons[0].click());
+    await screen.findByRole("dialog");
+    expect(screen.getByTestId("new-project-wizard")).toBeInTheDocument();
+  });
+
+  it("offers no New project while the Projects widget is still loading", () => {
+    projectsListMock.mockImplementation(() => new Promise(() => {}));
+    renderPage();
     expect(screen.queryByRole("button", { name: "New project" })).not.toBeInTheDocument();
   });
 

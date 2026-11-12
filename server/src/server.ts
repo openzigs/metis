@@ -17,6 +17,7 @@ import { configurePublisher } from "./lib/publishing/publisher.js";
 import { createSocketPublishEmitter } from "./lib/publishing/socket-emitter.js";
 import { configureKnowledgeService } from "./lib/rag/knowledge-service.js";
 import { configureIngestQueue, getIngestQueue } from "./lib/rag/ingest-queue.js";
+import { installRepoRefreshRerunRunner } from "./lib/connectors/repo/refresh-trigger.js";
 import { createSocketDocumentEmitter } from "./lib/rag/socket-emitter.js";
 import { setUsageEmitter } from "./lib/finops/index.js";
 import { createSocketUsageEmitter } from "./lib/finops/socket-emitter.js";
@@ -360,6 +361,10 @@ export function createServer(opts: CreateServerOptions = {}): MetisServer {
   // Touch the singleton so any environment validation runs at boot, not on
   // first upload.
   getIngestQueue();
+
+  // #2335 — a sync requested while one runs queues one follow-up; this is what
+  // runs it (the shared unattended repository refresh). Per pod, like the lease.
+  installRepoRefreshRerunRunner();
 
   // Epic #164 — wire the FinOps usage emitter so `recordUsage` ticks fan
   // out to the `project:{id}` Socket.IO room and the UI usage page can

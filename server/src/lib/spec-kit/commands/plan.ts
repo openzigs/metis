@@ -39,6 +39,7 @@ import {
   type SymbolFileLookup,
 } from "../plan-checks.js";
 import { fenceSourceRequirementsInSpec } from "../requirements-seed.js";
+import { clarificationsPromptSection } from "../clarifications.js";
 export { PLAN_SYSTEM_PROMPT } from "./prompts.js";
 
 const SYSTEM_PROMPT = PLAN_SYSTEM_PROMPT;
@@ -124,6 +125,10 @@ export async function runPlan(input: PlanInput): Promise<PlanResult> {
     localise: { ...(input.localisationSource ? { source: input.localisationSource } : {}) },
   });
 
+  // #2236 — the answers given with /clarify bind the plan as they bind the spec.
+  const clarifications = clarificationsPromptSection(
+    (await getArtifact(input.projectId, "clarify.md"))?.content,
+  );
   const userPrompt = [
     `Project: ${project.name}`,
     "",
@@ -132,6 +137,7 @@ export async function runPlan(input: PlanInput): Promise<PlanResult> {
     fenceSourceRequirementsInSpec(spec.content),
     "```",
     "",
+    ...(clarifications ? [clarifications, ""] : []),
     ...(previousPlan ? [previousPlanSection(previousPlan), ""] : []),
     "Produce plan.md per the system instructions.",
   ].join("\n");

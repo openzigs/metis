@@ -162,6 +162,8 @@ export interface EvidenceSalvageResult {
   usage: TokenUsage;
   /** #298 field repairs applied to the recovered findings. */
   fieldRepairs: FindingsRepair[];
+  /** #2276 — titles of the valid findings past the 50-finding cap; absent when none. */
+  leftOutTitles?: string[];
   /** Why the call produced nothing, when it failed outright. */
   error?: string;
   /**
@@ -264,6 +266,7 @@ export async function salvageFromEvidence(
     evidenceEntries: digest.included,
     usage,
     fieldRepairs: salvage.fieldRepairs,
+    ...(salvage.leftOutTitles ? { leftOutTitles: salvage.leftOutTitles } : {}),
     reply: {
       ...(finishReason ? { finishReason } : {}),
       responseLength: raw.length,

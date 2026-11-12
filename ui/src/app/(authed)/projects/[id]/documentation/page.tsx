@@ -110,13 +110,17 @@ interface GeneratedDoc {
   title: string;
   scope: string;
   status: string;
+  /**
+   * #2377 — `null` when there is no publication to report: a failed document
+   * that never published was never queued for indexing, so it has no badge.
+   */
   indexing?: {
     state: string;
     status: string;
     chunkCount: number;
     errorMessage?: string | null;
     processedAt?: string | null;
-  };
+  } | null;
   /**
    * Epic #204 (#225) — genuine error string for `failed` docs. Legacy degraded
    * docs (pre-#252) may still carry a JSON `DocWarning[]` here; the banner reads
@@ -441,7 +445,7 @@ export default function DocumentationPage(): React.ReactElement {
               <h3 className="font-semibold">{doc.title}</h3>
               <div className="flex items-center gap-2 mt-2 text-sm text-muted-foreground">
                 <StatusBadge status={doc.status} />
-                <IndexingBadge state={doc.indexing?.state} />
+                {doc.indexing !== null && <IndexingBadge state={doc.indexing?.state} />}
                 <span className="capitalize">{doc.scope}</span>
                 {doc.autoUpdate && (
                   <span className="text-xs bg-info-muted text-info px-1.5 py-0.5 rounded">
@@ -581,11 +585,16 @@ export default function DocumentationPage(): React.ReactElement {
           <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
             <span>Generation</span>
             <StatusBadge status={docDetail.data.status} />
-            <span>Indexing</span>
-            <IndexingBadge state={docDetail.data.indexing?.state} />
-            <span data-testid="doc-indexing-summary">
-              {formatIndexingSummary(docDetail.data.indexing)}
-            </span>
+            {/* #2377 — nothing was queued for indexing, so nothing is said about it. */}
+            {docDetail.data.indexing !== null && (
+              <>
+                <span>Indexing</span>
+                <IndexingBadge state={docDetail.data.indexing?.state} />
+                <span data-testid="doc-indexing-summary">
+                  {formatIndexingSummary(docDetail.data.indexing)}
+                </span>
+              </>
+            )}
             {/* #1582 — the approval happens in the project's quarantine queue,
                 which nothing on this page pointed to. */}
             {docDetail.data.indexing?.state === "quarantined" && (
@@ -962,6 +971,25 @@ function GenerateForm({
 
   const connectedDbs = dbConnectorsQuery.data?.filter((db) => db.status === "connected") ?? [];
 
+  // #2369 — a full-project or repository document is written from the code
+  // graph; on a project with no indexed code it produces nothing. Say so before
+  // the run rather than after it fails.
+  // #2377 — By Repository asks about the chosen repository alone (until one is
+  // chosen, the project: with no code there, no repository has any).
+  const codeBasedScope = scope === "full" || scope === "repository";
+  const sourceCodeRepoId = scope === "repository" && selectedRepoId ? selectedRepoId : undefined;
+  const sourceCodeQuery = useQuery<{ indexed: boolean }>({
+    queryKey: ["generated-docs", projectId, "source-code", sourceCodeRepoId ?? null],
+    queryFn: () =>
+      sourceCodeRepoId
+        ? apiFetch<{ indexed: boolean }>(`/projects/${projectId}/docs/source-code`, {
+            params: { repoConnectorId: sourceCodeRepoId },
+          })
+        : apiFetch<{ indexed: boolean }>(`/projects/${projectId}/docs/source-code`),
+    enabled: codeBasedScope && Boolean(projectId),
+  });
+  const noSourceCode = codeBasedScope && sourceCodeQuery.data?.indexed === false;
+
   // #991 — completed analysis runs, newest first, when scope is "requirements".
   const analysesQuery = useQuery({
     queryKey: ["analyses", projectId],
@@ -1236,6 +1264,19 @@ function GenerateForm({
         </div>
       )}
 
+      {noSourceCode && (
+        <p
+          className="rounded-md border border-warning/40 bg-warning-muted p-3 text-sm"
+          role="note"
+          data-testid="no-source-code-warning"
+        >
+          {defaultTitles[docType] ?? "This document"} needs connected source code today, and this
+          project has none indexed, so it would not produce a document. Connect a repository to the
+          project first, or choose the scope <strong>Requirements (analysis run)</strong> to write
+          up a change request&rsquo;s requirements.
+        </p>
+      )}
+
       {/* #283 — opt-in domain web-research grounding (business-requirements only). */}
       {docType === "business-requirements" && (scope === "full" || scope === "repository") && (
         <div className="space-y-1">
@@ -1508,11 +1549,11 @@ export function isExportable(status: string | null | undefined): boolean {
   return status === "ready" || status === "degraded";
 }
 
-function formatIndexingSummary(indexing?: GeneratedDoc["indexing"]): string {
+function formatIndexingSummary(indexing?: NonNullable<GeneratedDoc["indexing"]>): string {
   if (!indexing) return "Queued for indexing.";
   switch (indexing.state) {
     case "indexed":
-      return `${indexing.chunkCount} chunks indexed.`;
+      return `${indexing.chunkCount} ${indexing.chunkCount === 1 ? "section" : "sections"} indexed.`;
     case "quarantined":
       return "Awaiting approval before indexing.";
     case "rejected":

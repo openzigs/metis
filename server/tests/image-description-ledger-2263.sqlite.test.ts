@@ -16,7 +16,7 @@ import {
   type MigratedSqlite,
   MIGRATED_SQLITE_HOOK_TIMEOUT_MS,
 } from "./helpers/sqlite-migrated-db.js";
-import type { AIProvider, ChatResponse } from "../src/lib/ai/types.js";
+import type { AIProvider, ChatChunk } from "../src/lib/ai/types.js";
 import { buildBrdDocx } from "./fixtures/docx-2232.js";
 
 const state = vi.hoisted(() => ({ db: null as unknown }));
@@ -45,14 +45,11 @@ function visionProvider(): AIProvider & { calls: number } {
     calls: 0,
     capabilities: { responseFormat: false, nativeToolCalls: false },
     capabilitiesFor: () => ({ responseFormat: false, nativeToolCalls: false, vision: true }),
-    async chat(): Promise<ChatResponse> {
+    async *stream(): AsyncGenerator<ChatChunk> {
       p.calls += 1;
-      return {
-        content: "A login form.",
-        usage: { ...CALL },
-        model: MODEL,
-        provider: "anthropic",
-      };
+      yield { type: "delta", content: "A login form." };
+      yield { type: "usage", usage: { ...CALL }, model: MODEL };
+      yield { type: "done" };
     },
   };
   return p as unknown as AIProvider & { calls: number };

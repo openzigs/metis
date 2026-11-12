@@ -235,10 +235,21 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       delete process.env.CHAT_CONTEXT_WINDOW_FALLBACK;
     });
 
+    // #2295 — restore the value the run started with, not just delete it.
+    const savedCodeSearchTools = process.env.CHAT_CODE_SEARCH_TOOLS;
+
     beforeEach(() => {
       model = new ScriptedProvider();
       setAIProviderForTests(model);
       delete process.env.CHAT_CONTEXT_WINDOW_FALLBACK;
+      // #2243 — the code-search tools are on by default; this suite tests the
+      // plain turn, so it keeps them off whatever the deployment default is.
+      process.env.CHAT_CODE_SEARCH_TOOLS = "false";
+    });
+
+    afterAll(() => {
+      if (savedCodeSearchTools === undefined) delete process.env.CHAT_CODE_SEARCH_TOOLS;
+      else process.env.CHAT_CODE_SEARCH_TOOLS = savedCodeSearchTools;
     });
 
     // ── #136 — the server owns the transcript ───────────────────────────────

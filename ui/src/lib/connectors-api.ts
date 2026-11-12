@@ -80,6 +80,18 @@ export interface RefreshIngestSummary {
   warning?: string;
 }
 
+/**
+ * #2335 — the 202 answer of `refresh-ingest` while another run holds the
+ * connector: this Sync is queued and runs once that one ends.
+ */
+export interface RefreshIngestQueued {
+  status: "queued";
+  connectorId: string;
+  trigger: "push" | "manual" | "scheduled";
+  /** Requests folded into the one queued re-run so far. */
+  requests: number;
+}
+
 type Id = string;
 
 const repoBase = (projectId: Id, id?: Id) =>
@@ -141,9 +153,12 @@ export const repoConnectorsApi = {
       method: "POST",
     }),
   refreshIngest: (projectId: Id, id: Id) =>
-    apiFetch<RefreshIngestSummary>(`${repoBase(projectId, id)}/refresh-ingest`, {
-      method: "POST",
-    }),
+    apiFetch<RefreshIngestSummary | RefreshIngestQueued>(
+      `${repoBase(projectId, id)}/refresh-ingest`,
+      {
+        method: "POST",
+      },
+    ),
   rescanCredentials: (projectId: Id, id: Id) =>
     apiFetch<{
       filesScanned: number;

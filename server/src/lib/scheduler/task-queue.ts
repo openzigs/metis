@@ -24,6 +24,7 @@
 import { createChildLogger } from "../logger.js";
 import { isDurableTask } from "./durable-task-types.js";
 import { TaskAbortError } from "./task-abort.js";
+import { isPermanentTaskFailure } from "./permanent-failure.js";
 import { logDeletedProjectSkip } from "../projects/deleted-project-guard.js";
 import {
   isRetryWindowBounded,
@@ -432,7 +433,12 @@ export class TaskQueue {
         (this.stopped && isDurableTask(running.type) && entry.abortSource !== "timeout")
       ) {
         await this.persistInterruption(entry, message);
-      } else if (running.attempts < running.maxAttempts) {
+      } else if (
+        running.attempts < running.maxAttempts &&
+        // #2377 — a failure the task's own inputs decide fails the same way
+        // on every attempt: it ends `failed` now (the branch below).
+        !isPermanentTaskFailure(err)
+      ) {
         // Schedule a retry with exponential backoff.
         const backoff = Math.min(
           this.config.retryBackoffMs * Math.pow(2, running.attempts - 1),

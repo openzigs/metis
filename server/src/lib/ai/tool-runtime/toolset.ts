@@ -16,6 +16,7 @@ import crypto from "node:crypto";
 import type { ChatToolSpec } from "../types.js";
 import type { ToolRegistry, ToolRuntimeView } from "../tool-registry.js";
 import type { AgentTool } from "../../analysis/tools/types.js";
+import { loadCodeAccessFilter } from "../../analysis/tools/code-access.js";
 import { matchesToolRef } from "../approval-policy.js";
 import type { RiskLevel } from "../types.js";
 import type { RuntimeTool, RuntimeToolContext } from "./types.js";
@@ -170,6 +171,10 @@ function allowedByAgent(name: string, allowlist: readonly string[] | null | unde
 /**
  * Wrap one curated code tool. They are read-only and project-scoped: `low` risk.
  * #1843 — the read tools' results are cached on the project's content version.
+ * #2243 — every call carries the caller's {@link loadCodeAccessFilter}, so a file
+ * whose document the caller may not see is neither read nor listed. The cache
+ * stays correct: it is scoped per user (and per shared audience), and an ACL
+ * edit moves the content version.
  */
 export function codeRuntimeTool(tool: AgentTool, wireName: string): RuntimeTool {
   return withToolResultCache({
@@ -187,12 +192,21 @@ export function codeRuntimeTool(tool: AgentTool, wireName: string): RuntimeTool 
       if (!ctx.projectId) {
         return { text: "Code search needs a project-scoped session.", isError: true };
       }
-      const r = await tool.execute(args, { projectId: ctx.projectId });
+      // #2243 — the caller's document ACLs (a shared audience sees no
+      // restricted file). A caller whose actor cannot be resolved rejects:
+      // the call fails as a tool error, never reading without restrictions.
+      const codeAccess = await loadCodeAccessFilter({
+        projectId: ctx.projectId,
+        userId: ctx.userId,
+        ...(ctx.aclAudience ? { aclAudience: ctx.aclAudience } : {}),
+      });
+      const r = await tool.execute(args, { projectId: ctx.projectId, codeAccess });
       return {
         text: r.content,
         ...(typeof r.isError === "boolean" ? { isError: r.isError } : {}),
         ...(typeof r.resultCount === "number" ? { resultCount: r.resultCount } : {}),
         ...(r.truncated ? { truncated: true } : {}),
+        ...(r.citations && r.citations.length > 0 ? { citations: r.citations } : {}),
       };
     },
   });
@@ -250,6 +264,8 @@ function registryRuntimeTool(
         ...(r.isError ? { isError: true } : {}),
         // #464 — chat grounding counts a project-scoped read by this.
         ...(typeof r.resultCount === "number" ? { resultCount: r.resultCount } : {}),
+        // #2325 — `search-knowledge`'s code-derived hits carry the citation contract.
+        ...(r.citations && r.citations.length > 0 ? { citations: r.citations } : {}),
       };
     },
   });

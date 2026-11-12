@@ -67,6 +67,8 @@ test.describe("Database-aware analysis — settings control + status indicator (
   }) => {
     const detail = new ProjectDetailPage(page);
     await page.goto(`/projects/${projectId}/settings`, { waitUntil: "load" });
+    // #2337 — the card is in the Advanced group, which starts collapsed.
+    await page.getByTestId("project-settings-advanced-toggle").click();
 
     await test.step("a fresh project resolves 'auto' with no schema data — hint links to Connections", async () => {
       await expect(detail.databaseAwareCard).toBeVisible({ timeout: 15_000 });

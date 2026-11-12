@@ -100,6 +100,11 @@ export interface DecisionResult {
 export interface ReviewListFilters {
   /** Only `"me"` is supported by the server (session-resolved). */
   assignee?: "me";
+  /**
+   * #2370 — with `assignee: "me"` only: reviews whose caller's own decision is
+   * still pending (the server refuses any other value, #2348).
+   */
+  decision?: "pending";
   /** Only `"me"` is supported by the server (session-resolved). */
   requester?: "me";
   status?: ReviewStatus;
@@ -124,6 +129,7 @@ export const reviewsApi = {
     return apiFetch<ReviewListPage>("/reviews", {
       params: {
         assignee: filters.assignee,
+        decision: filters.decision,
         requester: filters.requester,
         status: filters.status,
         projectId: filters.projectId,

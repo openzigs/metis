@@ -107,7 +107,8 @@ describe("useDeepIngest (#373)", () => {
       message: "Deep ingest complete: 42",
       failureCount: 0,
     });
-    expect(toastSuccess).toHaveBeenCalledWith("Deep ingest complete: 42");
+    // #2337 — the toast uses the control's new name.
+    expect(toastSuccess).toHaveBeenCalledWith("Full re-read complete: 42");
     expect(onSettled).toHaveBeenCalledWith("r1");
   });
 
@@ -127,7 +128,9 @@ describe("useDeepIngest (#373)", () => {
       failureCount: 3,
     });
     expect(toastSuccess).not.toHaveBeenCalled();
-    expect(toastWarning).toHaveBeenCalledWith(message);
+    expect(toastWarning).toHaveBeenCalledWith(
+      "Full re-read completed with 3 failures: 3 source files could not be ingested.",
+    );
   });
 
   it("reports a failed run with the server's generic error", async () => {
@@ -202,7 +205,7 @@ describe("useDeepIngest (#373)", () => {
     deepIngest.mockRejectedValue(new TypeError("fetch failed"));
     const { result } = renderHook(() => useDeepIngest("p1"), { wrapper });
     act(() => result.current.start("r1"));
-    await waitFor(() => expect(toastError).toHaveBeenCalledWith("Deep ingest failed"));
+    await waitFor(() => expect(toastError).toHaveBeenCalledWith("Full re-read failed"));
   });
 
   it("clearOutcome drops the last result", async () => {
@@ -213,7 +216,7 @@ describe("useDeepIngest (#373)", () => {
       expect(fake.emit).toHaveBeenCalledWith("subscribe:job", { jobId: "job-1" }),
     );
     act(() => fake.fire("job:lifecycle", ev({ status: "completed" })));
-    expect(result.current.outcome?.message).toBe("Deep ingest complete");
+    expect(result.current.outcome?.message).toBe("Full re-read complete");
     act(() => result.current.clearOutcome());
     expect(result.current.outcome).toBeNull();
   });

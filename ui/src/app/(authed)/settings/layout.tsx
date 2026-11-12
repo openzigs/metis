@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/auth-context";
+import { NoAccess } from "@/components/layout/no-access";
 import {
   type SettingsNavItem,
   isAdminOnlySettingsPath,
@@ -26,8 +27,8 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
   const { user, isLoading } = useAuth();
   const isAdmin = user?.role === "admin";
   const items = visibleSettingsNav(isAdmin);
-  const general = items.filter((i) => !i.adminOnly);
-  const admin = items.filter((i) => i.adminOnly);
+  const general = items.filter((i) => !i.administration);
+  const admin = items.filter((i) => i.administration);
   const refused = !isAdmin && !isLoading && isAdminOnlySettingsPath(pathname);
 
   return (
@@ -48,9 +49,7 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
       </nav>
       <div className="min-w-0 flex-1">
         {refused ? (
-          <div role="alert" data-testid="settings-admin-required" className="text-sm">
-            This section is for system administrators.
-          </div>
+          <NoAccess testId="settings-admin-required" />
         ) : isAdminOnlySettingsPath(pathname) && isLoading ? null : (
           children
         )}

@@ -136,6 +136,8 @@ export interface ChatToolRecord {
   source?: ToolSource;
   /** #439 / #464 — code tools and `search-knowledge`: how many results came back (`0` = found nothing). */
   resultCount?: number;
+  /** #2325 — the citation contract of the locations the tool returned. */
+  citations?: ExecutedToolCall["citations"];
 }
 
 export interface ChatToolTurnResult {
@@ -439,6 +441,7 @@ export async function runChatToolTurn(
             ...(executed.errorCode ? { errorCode: executed.errorCode } : {}),
             ...(executed.reason ? { reason: executed.reason } : {}),
             ...(executed.subAgentRunId ? { subAgentRunId: executed.subAgentRunId } : {}),
+            ...(executed.citations ? { citations: executed.citations } : {}),
           };
           const source = input.toolset.resolve(executed.tool)?.source;
           if (source) record.source = source;

@@ -1,10 +1,15 @@
 /**
- * Phase 12 — Dashboard widgets (issue #86).
+ * Phase 12 — Dashboard widgets (issue #86); #2348 — "My work" first.
+ *
+ * Home opens with "My work": what needs the signed-in user (change requests
+ * by state, reviews assigned to them). Admins keep the operations widgets
+ * below it; everyone else sees only their recent activity, as Tasks, Runs and
+ * Scheduler are operator pages (#2332).
  *
  * Composable grid: each widget owns its own TanStack Query (keyed so
- * widgets refetch independently at sane intervals). Mobile collapses to
- * a single column. Empty states are actionable — every widget points at
- * the page where you'd create the first record.
+ * widgets refetch independently at sane intervals). Empty states are
+ * actionable — every widget points at the page where you'd create the first
+ * record.
  */
 "use client";
 
@@ -19,27 +24,50 @@ import { Button } from "@/components/ui/button";
 import type { ReactNode } from "react";
 import { PageHeader } from "@/components/ui/page-header";
 import { NewProjectDialog } from "@/components/projects/new-project-wizard";
+import { MyWork } from "@/components/dashboard/my-work";
+import { useAuth } from "@/lib/auth-context";
+import { hasPermission } from "@metis/shared";
 
 const REFRESH_MS = 30_000;
 
 export default function DashboardPage() {
+  const { user, isLoading } = useAuth();
+  const isAdmin = user?.role === "admin";
   return (
     <div className="space-y-6 p-2 md:p-0" data-testid="dashboard-root">
       <PageHeader
         title="Dashboard"
-        description="Project health, recent activity, and quick actions."
+        description={
+          isAdmin
+            ? "What needs you, then project health, recent activity, and quick actions."
+            : "What needs you, your projects, and your recent activity."
+        }
       />
 
-      <section
-        aria-label="Dashboard widgets"
-        className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3"
-      >
-        <ProjectsWidget />
-        <ActiveTasksWidget />
-        <ActiveRunsWidget />
-        <ScheduledJobsWidget />
-        <RecentActivityWidget />
-      </section>
+      <MyWork />
+
+      {/* #2348 — the widgets wait for the session, so an admin's Home does
+          not first render the analyst's layout and then grow (as
+          `settings/layout.tsx` waits before deciding on an admin section). */}
+      {isLoading ? null : (
+        <section
+          aria-label="Dashboard widgets"
+          className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3"
+        >
+          <ProjectsWidget />
+          {/* #2348 — operations widgets are an admin's: Tasks, Runs and
+            Scheduler are operator pages (#2332), so their "Open tasks" and
+            "Open scheduler" links are never shown to anyone they refuse. */}
+          {isAdmin ? (
+            <>
+              <ActiveTasksWidget />
+              <ActiveRunsWidget />
+              <ScheduledJobsWidget />
+            </>
+          ) : null}
+          <RecentActivityWidget />
+        </section>
+      )}
     </div>
   );
 }
@@ -55,6 +83,8 @@ interface WidgetShellProps {
   emptyHrefLabel?: string;
   /** A primary action shown in the empty state, ahead of the link. */
   emptyAction?: ReactNode;
+  /** An action beside the title once there is something listed. */
+  headerAction?: ReactNode;
   children: ReactNode;
 }
 
@@ -68,11 +98,20 @@ function WidgetShell({
   emptyHref,
   emptyHrefLabel,
   emptyAction,
+  headerAction,
   children,
 }: WidgetShellProps) {
+  const showHeaderAction = Boolean(headerAction) && !loading && !empty;
   return (
     <Card className="p-4" data-testid={testId}>
-      <h2 className="mb-3 text-sm font-semibold">{title}</h2>
+      {showHeaderAction ? (
+        <div className="mb-3 flex items-center justify-between gap-2">
+          <h2 className="text-sm font-semibold">{title}</h2>
+          {headerAction}
+        </div>
+      ) : (
+        <h2 className="mb-3 text-sm font-semibold">{title}</h2>
+      )}
       {loading ? (
         <div role="status" aria-live="polite" className="space-y-2">
           <div className="h-3 w-1/2 animate-pulse rounded bg-muted" />
@@ -105,6 +144,9 @@ function WidgetShell({
 }
 
 function ProjectsWidget() {
+  const { user } = useAuth();
+  // #2348 — the first-run wizard only for a role the server lets create one.
+  const canCreate = user ? hasPermission(user.role, "project.create") : false;
   const q = useQuery({
     queryKey: ["dashboard", "projects"],
     queryFn: () => projectsApi.list({ limit: 5 }),
@@ -118,11 +160,17 @@ function ProjectsWidget() {
       loading={q.isLoading}
       empty={!q.isLoading && items.length === 0}
       emptyTitle="No projects yet"
-      emptyCta="Create your first project to get started."
+      emptyCta={
+        canCreate
+          ? "Create your first project to get started."
+          : "Ask an admin or coordinator to add you to a project."
+      }
       emptyHref="/projects"
       emptyHrefLabel="Open projects"
       // #273 — first run: create, connect and ingest without leaving Home.
-      emptyAction={<NewProjectDialog />}
+      emptyAction={canCreate ? <NewProjectDialog /> : undefined}
+      // #2349 — and the same wizard for every later project.
+      headerAction={canCreate ? <NewProjectDialog /> : undefined}
     >
       <ul className="space-y-1 text-sm" data-testid="widget-projects-list">
         {items.map((p) => (

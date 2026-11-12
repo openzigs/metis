@@ -20,6 +20,8 @@ const EXACT: Readonly<Record<string, string>> = {
   "/admin/agents": "/library?tab=agents",
   "/agents": "/library?tab=agents",
   "/settings/agents": "/library?tab=agents",
+  // #2337 — an alias no navigation linked; Configuration carries the tab.
+  "/settings/audit": "/settings/api-keys?tab=audit",
 };
 
 function decodeSegment(segment: string): string {

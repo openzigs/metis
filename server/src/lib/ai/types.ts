@@ -11,6 +11,7 @@
  * one shape regardless of backend.
  */
 import type { z } from "zod";
+import type { CodeCitationRef } from "@metis/shared";
 import type { ProviderCapabilities } from "./capabilities.js";
 
 export type {
@@ -46,6 +47,9 @@ export type CacheTelemetryCallType =
   // #1329 — the docs-gen prefix-cache warm-up: one short call per section
   // written in parts, kept out of the "synthesis" share it exists to raise.
   | "warmup"
+  // #2268 — contextual chunks' `model` mode: one short call per document chunk at
+  // ingest, its own bucket rather than the "grounding" share it used to inflate.
+  | "chunk-context"
   | "chat"
   | "discussion"
   | "spec-kit"
@@ -602,6 +606,8 @@ export interface ToolResult {
    * result). Chat grounding counts a project read only when this is positive.
    */
   resultCount?: number;
+  /** #2325 — the citation contract of the code-derived locations it returned. */
+  citations?: CodeCitationRef[];
 }
 
 /** Provider implementations live in `providers/`. */

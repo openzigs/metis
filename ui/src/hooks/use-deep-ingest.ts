@@ -63,7 +63,7 @@ export function useDeepIngest(projectId: string, options: UseDeepIngestOptions =
         if (jobId) setJob({ connectorId, jobId });
         return;
       }
-      toast.error(err instanceof ApiError ? err.message : "Deep ingest failed");
+      toast.error(err instanceof ApiError ? err.message : "Full re-read failed");
       options.onError?.(connectorId);
     },
   });
@@ -76,8 +76,8 @@ export function useDeepIngest(projectId: string, options: UseDeepIngestOptions =
         connectorId: job.connectorId,
         status: failed ? "failed" : "completed",
         message: failed
-          ? (event.error ?? "Deep ingest failed")
-          : (event.message ?? "Deep ingest complete"),
+          ? (event.error ?? "Full re-read failed")
+          : (event.message ?? "Full re-read complete"),
         failureCount: event.failureCount ?? 0,
       });
       setJob(null);

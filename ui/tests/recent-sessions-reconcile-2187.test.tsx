@@ -9,7 +9,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, renderHook, screen, waitFor } from "@testing-library/react";
 import type { ResumableSessionDto } from "@metis/shared";
-import { makeWrapper } from "./test-utils";
+import { makeWrapper, userWith } from "./test-utils";
 
 vi.mock("@/lib/sdk-alignment-api", async () => {
   const actual =
@@ -17,6 +17,13 @@ vi.mock("@/lib/sdk-alignment-api", async () => {
   return { ...actual, sdkApi: { ...actual.sdkApi, listResumable: vi.fn() } };
 });
 vi.mock("@/lib/projects-api", () => ({ projectsApi: { list: vi.fn() } }));
+// #2348 — My work loads above the widgets on Home.
+vi.mock("@/lib/my-work", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/my-work")>()),
+  myWorkApi: {
+    get: vi.fn(async () => ({ changeRequests: [], reviews: [], projectCount: 1 })),
+  },
+}));
 vi.mock("@/lib/scheduler-api", () => ({
   tasksApi: { list: vi.fn() },
   schedulerApi: { list: vi.fn() },
@@ -140,7 +147,7 @@ describe("dashboard Recent activity lists only resumable sessions (#2187)", () =
     recentTracker.touch(entry("session", "stale", "New Chat", "2026-10-20T00:00:00Z"));
     recentTracker.touch(entry("session", "live", "New Chat", "2026-10-30T03:00:00Z"));
     listResumable.mockResolvedValue([session("live", "Invoice tables")]);
-    const Wrapper = makeWrapper({ withAuth: false });
+    const Wrapper = makeWrapper({ initialUser: userWith("project.create") });
     render(
       <Wrapper>
         <DashboardPage />

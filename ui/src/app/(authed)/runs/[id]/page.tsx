@@ -19,6 +19,7 @@ import { RECORDED_COST_HEADER, formatRunCost } from "@/lib/run-cost";
 import { SandboxStatusBadge } from "@/components/sandbox/SandboxStatusBadge";
 import { SandboxSessionTable } from "@/components/sandbox/SandboxSessionTable";
 import { PageHeader } from "@/components/ui/page-header";
+import { useAuth } from "@/lib/auth-context";
 
 function StepCard({ step }: { step: AgentRunStep }) {
   const [open, setOpen] = useState(step.kind === "tool_call" || step.kind === "agent_phase");
@@ -83,9 +84,23 @@ function StepCard({ step }: { step: AgentRunStep }) {
   );
 }
 
+/**
+ * #2337 — a PR-review run stores its result (or its failure) as a
+ * `tool_result` step whose content kind is `pr_review` (server
+ * `run-reviews.ts`, `pr-review-job.ts`); such a run has a review page. A
+ * failed review (`pr_review_error`) does not: GET /runs/:id/review returns
+ * `review: null` for it, so linking there would be a dead end.
+ */
+function isPrReviewStep(step: AgentRunStep): boolean {
+  if (step.kind !== "tool_result") return false;
+  const kind = (step.content as { kind?: unknown } | null)?.kind;
+  return kind === "pr_review";
+}
+
 export default function RunDetailPage() {
   const params = useParams<{ id: string }>();
   const id = params.id;
+  const isAdmin = useAuth().user?.role === "admin";
 
   const detail = useQuery({
     queryKey: ["runs", "detail", id],
@@ -106,14 +121,19 @@ export default function RunDetailPage() {
   const mostRecentSession = sessions.length > 0 ? sessions[sessions.length - 1] : null;
 
   if (!id) return null;
+  const isPrReview = (detail.data?.steps ?? []).some(isPrReviewStep);
 
   return (
     <div className="space-y-6 p-6" data-testid="run-detail-page">
       <PageHeader
         eyebrow={
-          <Link href="/runs" className="text-sm text-info hover:underline">
-            ← All runs
-          </Link>
+          // #2370 — a non-admin reaches this page from a project's PR reviews
+          // but is refused the Runs list (#2332), so it is not offered.
+          isAdmin ? (
+            <Link href="/runs" className="text-sm text-info hover:underline">
+              ← All runs
+            </Link>
+          ) : undefined
         }
         title={`Run ${id}`}
         titleExtra={
@@ -122,6 +142,17 @@ export default function RunDetailPage() {
               outcome={mostRecentSession.outcome}
               errorMessage={mostRecentSession.errorMessage}
             />
+          ) : undefined
+        }
+        actions={
+          isPrReview ? (
+            <Link
+              href={`/runs/${encodeURIComponent(id)}/review`}
+              className="text-sm text-info hover:underline"
+              data-testid="run-review-link"
+            >
+              Open the PR review →
+            </Link>
           ) : undefined
         }
       />
