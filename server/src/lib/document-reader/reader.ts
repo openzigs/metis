@@ -133,7 +133,8 @@ export interface SectionCoverage {
   repeats: number;
   /**
    * #2361 — sections that hold, in full, a statement dropped from this one as
-   * a repeat (an overview set out later), by `sectionId`, each once. A section
+   * a repeat (an overview set out later), by `sectionId`, each once; through a
+   * chain of repeats, the section of the statement finally kept. A section
    * whose every statement went this way was read: its content is there.
    */
   mergedInto?: string[];
@@ -474,9 +475,16 @@ async function read(
         if (isTableRow(text, kept[of]!.start) && !isTableRow(text, kept[i]!.start)) continue;
         dropped.add(i);
         keptAs.set(i, of);
+        coverage.get(kept[i]!.section.id)!.repeats++;
+      }
+      // Where each repeat's content now lives: its final keeper, through a
+      // chain of drops (A repeats B, B repeats C: A's content is in C), each
+      // other section once.
+      for (const i of dropped) {
+        let at = keptAs.get(i)!;
+        while (dropped.has(at)) at = keptAs.get(at)!;
         const cov = coverage.get(kept[i]!.section.id)!;
-        cov.repeats++;
-        const into = kept[of]!.section.id;
+        const into = kept[at]!.section.id;
         if (into !== cov.sectionId && !cov.mergedInto?.includes(into))
           cov.mergedInto = [...(cov.mergedInto ?? []), into];
       }
@@ -585,15 +593,23 @@ export function sentenceSpan(
  * cascade along a paragraph. A quote that runs over several sentences or over
  * a line break (two table rows, a heading) never folds, with anything: the
  * statements beside it may be separate requirements, and a fold must not span
- * lines or sections. Members of a fold share a section, too.
+ * lines or sections. Members of a fold share a section, too. The one
+ * exception is an exact twin: the same multi-sentence quote with the same
+ * statement, written twice, is kept once.
  */
 function foldSentences(text: string, kept: Kept[], onFolded: (k: Kept) => void): Kept[] {
   const groups = new Map<string, Kept[]>();
-  kept.forEach((k, i) => {
+  for (const k of kept) {
     const sentence = sentenceSpan(text, k.start, k.end);
     // In one sentence on one line: the quote ends where its first sentence does.
     const single = sentence.end === sentenceSpan(text, k.start, k.start).end;
-    const key = single ? `${k.section.id}:${sentence.start}:${sentence.end}` : `#${i}`;
+    // The section prefix is defensive: one line never crosses a heading, so the
+    // sentence alone already fixes the section. A longer quote folds only with
+    // an exact twin (the same span, the same statement), as main's key did.
+    const said = k.statement.replace(/\s+/g, " ").trim().toLowerCase();
+    const key = single
+      ? `${k.section.id}:${sentence.start}:${sentence.end}`
+      : `twin:${k.start}:${k.end}:${said}`;
     const members = groups.get(key);
     if (members) {
       members.push(k);
@@ -601,7 +617,7 @@ function foldSentences(text: string, kept: Kept[], onFolded: (k: Kept) => void):
     } else {
       groups.set(key, [k]);
     }
-  });
+  }
   return [...groups.values()].map((members) => {
     const first = members[0]!;
     if (members.length === 1) return first;

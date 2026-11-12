@@ -839,6 +839,13 @@ describe("#2361 — repeats", () => {
         statement: "Failed attempts lock, and an hour unlocks.",
         quote: "after five failed attempts. It shall unlock it after one hour.",
       },
+      // Its exact twin (same quote, same statement) is kept once, as on main.
+      {
+        section: "S2",
+        kind: "requirement",
+        statement: "Failed attempts lock, and an hour unlocks.",
+        quote: "after five failed attempts. It shall unlock it after one hour.",
+      },
       {
         section: "S2",
         kind: "requirement",
@@ -877,7 +884,7 @@ describe("#2361 — repeats", () => {
     ]);
     expect(reading.sections.find((s) => s.sectionId === "S2")).toMatchObject({
       statements: 4,
-      repeats: 1,
+      repeats: 2,
     });
   });
 
@@ -912,6 +919,13 @@ describe("#2361 — repeats", () => {
         statement: "Fees run on.",
         quote: "20p a day | | Lost card",
       },
+      // Its exact twin is kept once.
+      {
+        section: "S2",
+        kind: "background",
+        statement: "Fees run on.",
+        quote: "20p a day | | Lost card",
+      },
       {
         section: "S2",
         kind: "background",
@@ -938,7 +952,7 @@ describe("#2361 — repeats", () => {
       ["background", "Fees continue."],
       ["requirement", "A lost card costs 2 pounds."],
     ]);
-    expect(reading.sections.find((s) => s.sectionId === "S2")).toMatchObject({ repeats: 1 });
+    expect(reading.sections.find((s) => s.sectionId === "S2")).toMatchObject({ repeats: 2 });
   });
 
   it("never folds a quote across a heading, so the next section keeps its own statement", async () => {
@@ -988,6 +1002,76 @@ describe("#2361 — repeats", () => {
       statements: 1,
       repeats: 0,
     });
+  });
+
+  it("records where a repeat's content finally lives, through a chain, each section once", async () => {
+    const text = [
+      "# Visits",
+      "",
+      "## 1 Overview",
+      "",
+      "The portal books clinic visits. The portal cancels clinic visits.",
+      "",
+      "## 2 Booking",
+      "",
+      "The portal shall book clinic visits online.",
+      "",
+      "## 3 Rules",
+      "",
+      "The portal shall book clinic visits online at any hour. The portal shall cancel clinic visits online at any hour.",
+      "",
+    ].join("\n");
+    const reply = statements(
+      {
+        section: "S2",
+        kind: "background",
+        statement: "Visits are booked.",
+        quote: "The portal books clinic visits.",
+      },
+      {
+        section: "S2",
+        kind: "background",
+        statement: "Visits are cancelled.",
+        quote: "The portal cancels clinic visits.",
+      },
+      {
+        section: "S3",
+        kind: "requirement",
+        statement: "Book online.",
+        quote: "The portal shall book clinic visits online.",
+      },
+      {
+        section: "S4",
+        kind: "requirement",
+        statement: "Book online at any hour.",
+        quote: "The portal shall book clinic visits online at any hour.",
+      },
+      {
+        section: "S4",
+        kind: "requirement",
+        statement: "Cancel online at any hour.",
+        quote: "The portal shall cancel clinic visits online at any hour.",
+      },
+    );
+    // T1 (S2) repeats T3 (S3), which repeats T4 (S4); T2 (S2) repeats T5 (S4).
+    const merge = JSON.stringify({
+      duplicates: [
+        { id: "T1", of: "T3" },
+        { id: "T3", of: "T4" },
+        { id: "T2", of: "T5" },
+      ],
+      crossReferences: [],
+    });
+    const { provider } = routedProvider([
+      [WHOLE, reply],
+      [MERGE, merge],
+    ]);
+    const reading = await readDocument({ title: "Visits", text, provider });
+    expect(reading.statements.map((s) => s.sectionId)).toEqual(["S4", "S4"]);
+    const merged = (id: string) => reading.sections.find((s) => s.sectionId === id);
+    // Both of S2's statements now live in S4: named once, not S3 (which holds nothing).
+    expect(merged("S2")).toMatchObject({ statements: 0, repeats: 2, mergedInto: ["S4"] });
+    expect(merged("S3")).toMatchObject({ statements: 0, repeats: 1, mergedInto: ["S4"] });
   });
 
   it("counts a statement the cross-section pass names more than once as one repeat", async () => {
