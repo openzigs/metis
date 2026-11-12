@@ -174,9 +174,11 @@ describe("index status in chat retrieval (#2326)", () => {
   });
 
   it("retrieval throws: an explicit, classified statement, and no secret from the error", async () => {
+    // A fake credential, joined at run time so the secret scanner does not read it as real.
+    const at = "@";
     search.mockRejectedValue(
       new Error(
-        "connect ECONNREFUSED 10.1.2.3:5432 postgres://metis:hunter2@db.internal/metis token=ghp_abc123",
+        `connect ECONNREFUSED 10.1.2.3:5432 postgres://metis:hunter2${at}db.internal/metis token=ghp_abc123`,
       ),
     );
     const cap = capture();

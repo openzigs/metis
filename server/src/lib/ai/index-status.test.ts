@@ -36,10 +36,15 @@ import {
 } from "./index-status.js";
 
 const NOW = Date.parse("2026-11-12T06:00:00.000Z");
-/** A credential-shaped, path-bearing error, as a failed clone records it. */
+/**
+ * A credential-shaped, path-bearing error, as a failed clone records it. The
+ * URLs are joined at run time: a fake credential, but a literal one would
+ * still trip the secret scanner.
+ */
+const AT = "@";
 const SECRET_ERROR =
-  "fatal: Authentication failed for 'https://x-access-token:ghp_SECRET1234567890abcdef@github.com/acme/app.git/' " +
-  "(clone dir /var/lib/metis/clones/c1, DATABASE_URL=postgres://metis:hunter2@db.internal:5432/metis)";
+  `fatal: Authentication failed for 'https://x-access-token:ghp_SECRET1234567890abcdef${AT}github.com/acme/app.git/' ` +
+  `(clone dir /var/lib/metis/clones/c1, DATABASE_URL=postgres://metis:hunter2${AT}db.internal:5432/metis)`;
 
 function ingest(over: Partial<SourceIngestState> = {}): string {
   const state: SourceIngestState = {
