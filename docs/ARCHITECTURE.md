@@ -4993,7 +4993,10 @@ of one document shares a prefix sent with `promptCaching` (`system` plus `userPr
 document over `READER_WHOLE_MAX_DOCUMENT_TOKENS` (20,000, about 80 KB) is read sectioned, whose
 cost grows in step with its length rather than with its square.
 
-Requirements Analysis uses it behind `ANALYSIS_DOCUMENT_READER` (off by default):
+Requirements Analysis uses it behind `ANALYSIS_DOCUMENT_READER` (off by default; #2255
+measured it on four documents up to 60 KB: recall 1.00 but precision 0.59 to 0.69 against a
+whole-document read's 1.00, mostly repeats, so it stays off; see
+docs/DOCUMENT_UNDERSTANDING_BASELINE.md):
 `runOneAgent("document")` calls `readSelectedDocuments` instead of `retrieveContext`
 (`analysis/document-reader-agent.ts`). It reads as the requester: `resolveAclActor` (an
 inactive requester fails the agent), and each document's `aclSubjects` checked with
