@@ -239,6 +239,14 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       model = new ScriptedProvider();
       setAIProviderForTests(model);
       delete process.env.CHAT_CONTEXT_WINDOW_FALLBACK;
+      // #2243 — the code-search tools are on by default and would put this
+      // text-protocol provider's turns through the tool loop; this suite
+      // tests the plain turn, so it keeps them off as they were.
+      process.env.CHAT_CODE_SEARCH_TOOLS = "false";
+    });
+
+    afterAll(() => {
+      delete process.env.CHAT_CODE_SEARCH_TOOLS;
     });
 
     // ── #136 — the server owns the transcript ───────────────────────────────

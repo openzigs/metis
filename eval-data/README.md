@@ -824,8 +824,9 @@ FRD with two requirements, uploaded to both products.
 
 ```bash
 pnpm eval:materialize baqa-01-acme-reader     # clones, projects, code graph, symbol vectors ($0)
-pnpm eval:ba-qa --arm off --budget 5          # today's chat: the three flags unset
+pnpm eval:ba-qa --arm off --budget 5          # the three flags off
 pnpm eval:ba-qa --arm on --budget 5 --include eval-results/ba-qa/<off run>.json
+pnpm eval:ba-qa --arm no-rerank --budget 2 --questions S1,S2,S3,S4,S5,S6,A3,U3,U4
 ```
 
 Before its first question, `eval:ba-qa` gives each product what an analyst's project holds.
@@ -837,12 +838,27 @@ The step can be re-run: an unchanged, indexed file is skipped. The first run emb
 Each question is its own one-turn chat session, run through production's chat pieces as in
 `eval:chat-cache`. A question scoped to both products is asked the way chat takes it today,
 as an unscoped session with no retrieval (`chatSessionScope`, mirroring
-`server/src/routes/ai.ts`). The `off` arm unsets `CHAT_CODE_SEARCH_TOOLS`,
-`CHAT_FUSED_CODE_RETRIEVAL` and `RAG_RERANK` even when the shell or `.env` sets them. The `on`
-arm sets all three, and runs the embedder inline so the reranker can share the main thread
-(#222). On macOS the `on` arm can abort with `libc++abi: … mutex lock failed` as it exits.
-That is onnxruntime-node shutting down after the results are written, and the files are
-complete.
+`server/src/routes/ai.ts`). Every arm sets `CHAT_CODE_SEARCH_TOOLS`,
+`CHAT_FUSED_CODE_RETRIEVAL` and `RAG_RERANK` itself, whatever the shell or `.env` says (#2243):
+
+| Arm | Code-search tools | Fused code retrieval | Reranker |
+|---|---|---|---|
+| `off` | off | off | off |
+| `on` | on | on | on |
+| `no-tools` | off | on | on |
+| `no-fused` | on | off | on |
+| `no-rerank` | on | on | off |
+| `tools-only` | on | off | off |
+| `default` | unset: the server's default | unset | unset |
+
+An arm with the reranker on runs the embedder inline so the reranker can share the main
+thread (#222). On macOS such an arm can abort with `libc++abi: … mutex lock failed` as it
+exits. That is onnxruntime-node shutting down after the results are written, and the files
+are complete. Before #2243, `off` meant "unset", which was the same thing while all three
+defaulted to off.
+
+The report also counts the tool loop's two caps per arm: sessions that ran out of turns
+(`CHAT_TOOL_MAX_TURNS`) and tool results cut to `CHAT_TOOL_RESULT_MAX_TOKENS`.
 
 One judge call per answer returns verdicts only. It gives the reply's behaviour, whether each
 fact is stated, contradicted or missing, and whether each cited span supports its claim.
@@ -894,6 +910,55 @@ before and differs only where shown.
   follow-ups, and two of the four abstentions on unanswerable questions, came in unscoped
   sessions with no retrieval. A3, the one ambiguous question with retrieval, was answered on
   a stated assumption in every run instead of asked about.
+
+### Each flag on its own, 2026-11-11 (#2243)
+
+#2243 turns a flag on by default only once this set shows a gain from it. The `on` arm above
+moves all three flags at once, so each flag was measured on its own: the leave-one-out arms,
+plus `tools-only`. Sonnet 5.5 answered and judged. The arms ran on the 9 questions that chat
+binds to one product (S1 to S6, A3, U3 and U4). The other 9 run unscoped, with no retrieval
+and no tools, so no flag can change them. Tools with fused retrieval, and tools alone, were
+each run twice. The second "tools + fused" run is `default` on an intermediate state of this
+branch, and the second "tools only" run is `default` as it merged.
+
+| | off | tools only | tools + fused | on (all three) | no-fused | no-tools |
+|---|---:|---:|---:|---:|---:|---:|
+| Correctness: mean facts stated | 51% | 84%, 73% | 86%, 80% | 76% | 76% | 41% |
+| Fully correct answers | 0/6 | 2/5, 2/6 | 3/6, 2/6 | 1/5 | 1/6 | 0/6 |
+| Citation precision | 28% (5/18) | 80%, 83% | 86%, 77% | 89% (32/36) | 86% (44/51) | 45% (9/20) |
+| … checked against the span | 0/18 | 27/35, 34/41 | 35/43, 27/35 | 31/36 | 47/51 | 6/20 |
+| Citation recall | 5/15 | 8/13, 10/15 | 10/15, 10/15 | 9/14 | 10/15 | 5/15 |
+| False abstention on answerable | 1/6 | 0/5, 0/6 | 0/6, 0/6 | 0/5 | 0/6 | 1/6 |
+| Input tokens per question (cache reads included) | 6,000 | 27,500, 24,300 | 25,200, 27,000 | 24,900 | 33,100 | 6,700 |
+| Model calls per question | 1.00 | 3.00, 2.78 | 2.56, 2.78 | 2.56 | 3.33 | 1.00 |
+| Tool loop out of turns (`CHAT_TOOL_MAX_TURNS` 6) | 0/9 | 0/9, 0/9 | 0/9, 0/9 | 0/9 | 0/9 | 0/9 |
+| Tool results truncated (`CHAT_TOOL_RESULT_MAX_TOKENS` 2,000) | 0 | 0, 0 | 1, 0 | 0 | 0 | 0 |
+
+The first "tools only" run and the `on` run each have one unscored judge reply (S5 and S6).
+
+- **Code-search tools: on by default.** The gain comes from them. With them, facts stated go
+  from 51% to 73–84% and citation precision from 28% to 80–83%. S4 (user validation) is
+  answered instead of abstained. Taking them out of `on` (`no-tools`) loses all of it. They
+  cost about 4 times the input tokens and 2 more model calls per question.
+- **Fused code retrieval: stays off.** On top of the tools it shows no gain that two runs of 6
+  answerable questions can tell from noise: 86% and 80% of facts stated against 84% and 73%,
+  77–86% precision against 80–83%, and the same recall. Without the tools it gives citations
+  lines to check (6 of 20 against 0 of 18), but facts stated fall from 51% to 41%.
+- **Reranker: stays off.** It shows no gain either: `on` against tools + fused is 76% against
+  86% and 80% of facts stated. It also cannot run beside the default worker-thread embedder
+  (#222), and ADR 0005 measured it worse on code search.
+- **The two caps hold for code reading.** No session in any arm ran out of turns. The most
+  any used was 6 (`no-fused` S1, answered on its last turn); with the tools on and the
+  reranker off, the most was 5. One of 167 tool results was cut: a `search_code_symbols`
+  result of 6,128 characters against the 6,000 the cap allows at 3 characters per token.
+  `read_file_slice` results peaked at 5,116 characters, because the model reads narrow line
+  ranges. `search_code_symbols` comes closest to the cap: 14 of its 48 results were over 5,000
+  characters. Both caps are left as they are.
+- **Dollar spend is not compared across these arms.** An arm that shares a prompt prefix with
+  the one run just before it reads that arm's prompt cache. The second "tools only" run cost
+  $0.0178 per question in answers, against $0.0331 for the first. The table gives input
+  tokens instead. The nine runs, one of them a 1-question smoke run, cost **$2.764553**
+  (answers and judge).
 
 ### Relevance floor (#2241)
 
