@@ -1310,6 +1310,11 @@ export function specKitHandoffLabelsNotInContext(
 
 export const startAnalysisSchema = z.object({
   documentIds: z.array(idSchema).max(100).optional(),
+  /**
+   * #2280 — read the selected documents again instead of reusing a saved
+   * reading of an unchanged file (the document reader, `ANALYSIS_DOCUMENT_READER`).
+   */
+  rereadDocuments: z.boolean().optional(),
   agentKeys: z.array(z.enum(ANALYSIS_SPECIALIST_AGENT_KEYS)).max(4).optional(),
   model: z.string().min(1).max(120).optional(),
   /**
@@ -3078,6 +3083,12 @@ export interface DocumentReadingDocument {
   merge?: "done" | "failed" | "skipped";
   /** The output-token cap each reading call had (#2229). */
   outputTokenCap?: number;
+  /**
+   * #2280 — set when the document was not read again: its file, the reader and
+   * the model were unchanged, so a saved reading was reused. When (ISO) and
+   * with which model that reading was made.
+   */
+  reused?: { readAt: string; model: string };
 }
 
 /** Issue #2230 — the coverage report of the documents an analysis read in full. */

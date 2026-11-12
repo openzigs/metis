@@ -31,6 +31,8 @@ import { __resetConfigSingleton } from "../lib/config/config-service.js";
 import type { FusedCodeDeps, RagContextCapture, buildAutoRagContext as Build } from "./ai.js";
 
 let buildAutoRagContext: typeof Build;
+let RETRIEVAL_FAILED_BLOCK: string;
+let insufficientEvidenceBlock: (name: string, n: number) => string;
 
 function hit(id: string, text = `text of ${id}`, filename = `${id}.md`): RetrievedChunk {
   return {
@@ -39,7 +41,8 @@ function hit(id: string, text = `text of ${id}`, filename = `${id}.md`): Retriev
     filename,
     position: 0,
     text,
-    score: 0.5,
+    // #2241 — above chat's relevance floor, so the floor keeps every excerpt here.
+    score: 0.9,
     embeddingModel: "test",
     source: "upload",
   };
@@ -55,7 +58,8 @@ function deps(): FusedCodeDeps & { searcher: { search: ReturnType<typeof vi.fn> 
 const capture = (): RagContextCapture => ({ contexts: [], sources: 0 });
 
 beforeEach(async () => {
-  ({ buildAutoRagContext } = await import("./ai.js"));
+  ({ buildAutoRagContext, RETRIEVAL_FAILED_BLOCK, insufficientEvidenceBlock } =
+    await import("./ai.js"));
   search.mockReset();
   loadChunksById.mockReset();
   findUnique.mockReset();
@@ -249,8 +253,11 @@ describe("buildAutoRagContext — cited excerpts carry forward (#2240)", () => {
       sources: 1,
       excerpts: [{ n: 1, chunkId: "x", name: "x", locator: "x#0" }],
     };
-    expect(await buildAutoRagContext("p1", followUp, "u1", deps(), cap)).toBe("");
-    expect(cap).toEqual({ contexts: [], sources: 0 });
+    // #2241 — the model is told the search failed, and the capture says so.
+    expect(await buildAutoRagContext("p1", followUp, "u1", deps(), cap)).toBe(
+      RETRIEVAL_FAILED_BLOCK,
+    );
+    expect(cap).toEqual({ contexts: [], sources: 0, failed: true });
   });
 });
 
@@ -277,5 +284,113 @@ describe("buildAutoRagContext — attached documents (#2240)", () => {
     });
     for (const c of search.mock.calls) expect(c[2]).not.toHaveProperty("documentIds");
     expect(out).not.toContain("attached");
+  });
+});
+
+describe("buildAutoRagContext — relevance floor (#2241)", () => {
+  const question: ChatMessage[] = [{ role: "user", content: "How does the refund rule work?" }];
+  const scored = (id: string, score: number): RetrievedChunk => ({
+    ...hit(id),
+    score,
+    matchedBy: ["dense"],
+    embeddingModel: "Alibaba-NLP/gte-modernbert-base",
+  });
+
+  afterEach(() => {
+    delete process.env.CHAT_RETRIEVAL_MIN_SCORE;
+    __resetConfigSingleton();
+  });
+
+  it("keeps a weak match out of the prompt and records it, with each excerpt's relevance", async () => {
+    search.mockResolvedValue({ hits: [scored("strong", 0.72), scored("weak", 0.41)] });
+    const cap = capture();
+    const out = await buildAutoRagContext("p1", question, "u1", deps(), cap);
+    expect(out).toContain("text of strong");
+    expect(out).not.toContain("text of weak");
+    expect(cap.sources).toBe(1);
+    expect(cap.belowFloor).toBe(1);
+    expect(cap.excerpts).toEqual([
+      { n: 1, chunkId: "strong", name: "strong.md", locator: "strong.md#0", relevance: 0.72 },
+    ]);
+  });
+
+  it("leaves the floor off for an embedder it was not calibrated on", async () => {
+    search.mockResolvedValue({
+      hits: [
+        { ...scored("a", 0.05), embeddingModel: "hash-stub" },
+        { ...scored("b", 0.02), embeddingModel: "hash-stub" },
+      ],
+    });
+    const cap = capture();
+    const out = await buildAutoRagContext("p1", question, "u1", deps(), cap);
+    expect(out).toContain("text of a");
+    expect(cap.belowFloor).toBeUndefined();
+  });
+
+  it("tells the model the sources don't support an answer when every match is too weak", async () => {
+    search.mockResolvedValue({ hits: [scored("a", 0.3), scored("b", 0.2)] });
+    const cap = capture();
+    const out = await buildAutoRagContext("p1", question, "u1", deps(), cap);
+    expect(out).toBe(insufficientEvidenceBlock("Reader", 2));
+    expect(out).toContain("2 closest matches were too weak");
+    expect(out).toContain(`say that "Reader"'s sources don't show this`);
+    expect(out).not.toContain("text of a");
+    expect(cap).toEqual({ contexts: [], sources: 0, belowFloor: 2 });
+  });
+
+  it("says nothing when the search found nothing at all", async () => {
+    search.mockResolvedValue({ hits: [] });
+    const cap = capture();
+    expect(await buildAutoRagContext("p1", question, "u1", deps(), cap)).toBe("");
+    expect(cap).toEqual({ contexts: [], sources: 0 });
+  });
+
+  it("records a partial coverage the search reported", async () => {
+    search.mockResolvedValue({
+      hits: [scored("a", 0.8)],
+      coverageWarning: {
+        totalChunks: 10,
+        matchingChunks: 6,
+        mismatchedModels: ["old"],
+        currentModel: "new",
+      },
+    });
+    const cap = capture();
+    await buildAutoRagContext("p1", question, "u1", deps(), cap);
+    expect(cap.coverage).toEqual({ matchingChunks: 6, totalChunks: 10 });
+  });
+
+  it("keeps an attached document's weak matches: the user chose the source", async () => {
+    search.mockResolvedValue({ hits: [scored("frd", 0.3), scored("frd-2", 0.2)] });
+    const cap = capture();
+    const out = await buildAutoRagContext("p1", question, "u1", deps(), cap, {
+      documentIds: ["d-frd", "d-frd-2"],
+    });
+    expect(out).toContain("text of frd");
+    expect(out).toContain("text of frd-2");
+    expect(out).toContain("The user attached documents to this question");
+    expect(out).not.toContain("too weak");
+    expect(cap.sources).toBe(2);
+    expect(cap.belowFloor).toBeUndefined();
+  });
+
+  it("keeps an attached document's weak matches under an operator-set floor too", async () => {
+    process.env.CHAT_RETRIEVAL_MIN_SCORE = "0.6";
+    __resetConfigSingleton();
+    search.mockResolvedValue({ hits: [scored("frd", 0.3)] });
+    const out = await buildAutoRagContext("p1", question, "u1", deps(), capture(), {
+      documentIds: ["d-frd"],
+    });
+    expect(out).toContain("text of frd");
+  });
+
+  it("keeps every match when the floor is configured off", async () => {
+    process.env.CHAT_RETRIEVAL_MIN_SCORE = "0";
+    __resetConfigSingleton();
+    search.mockResolvedValue({ hits: [scored("weak", 0.2)] });
+    const cap = capture();
+    const out = await buildAutoRagContext("p1", question, "u1", deps(), cap);
+    expect(out).toContain("text of weak");
+    expect(cap.belowFloor).toBeUndefined();
   });
 });

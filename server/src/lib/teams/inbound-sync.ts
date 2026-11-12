@@ -51,7 +51,7 @@ import {
 import { canAccessThread } from "../discussions/access.js";
 import { isThreadInWorkspace } from "../workspaces/chatops-project-scope.js";
 import { createHumanDiscussionMessage } from "../discussions/create-message.js";
-import { maybeRespondAsAI } from "./ai-participant.js";
+import { maybeRespondAsAI, type TeamsAITrigger } from "./ai-participant.js";
 import { prisma as defaultPrisma } from "../prisma.js";
 import type { PrismaClient } from "@prisma/client";
 import {
@@ -326,7 +326,13 @@ export async function ingestTeamsActivity(
   //    channel (a single send — no double-post). This is fully delegated +
   //    NON-BLOCKING for the ingest result: an AI failure never changes the
   //    "ingested" outcome (the human message is already persisted).
-  await runAIParticipant(context, deps, link.threadId, access.projectId, user.userId, message.id);
+  await runAIParticipant(context, deps, {
+    threadId: link.threadId,
+    projectId: access.projectId,
+    authorUserId: user.userId,
+    messageId: message.id,
+    linkedAt: link.createdAt,
+  });
 
   return { outcome: "ingested", messageId: message.id };
 }
@@ -341,11 +347,9 @@ export async function ingestTeamsActivity(
 async function runAIParticipant(
   context: TurnContext,
   deps: InboundSyncDeps,
-  threadId: string,
-  projectId: string,
-  authorUserId: string,
-  messageId: string,
+  trigger: Omit<TeamsAITrigger, "aiResponseMode">,
 ): Promise<void> {
+  const { threadId } = trigger;
   try {
     const thread = await deps.db.discussionThread.findFirst({
       where: { id: threadId, deletedAt: null },
@@ -353,13 +357,7 @@ async function runAIParticipant(
     });
     if (!thread) return;
 
-    await deps.respondAsAI(context, {
-      threadId,
-      projectId,
-      aiResponseMode: thread.aiResponseMode,
-      messageId,
-      authorUserId,
-    });
+    await deps.respondAsAI(context, { ...trigger, aiResponseMode: thread.aiResponseMode });
   } catch (err) {
     log.warn("Teams AI participant step failed (ingest unaffected)", {
       workspaceId: deps.workspaceId,

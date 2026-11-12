@@ -1,0 +1,1489 @@
+{
+  "corpusId": "docunderstanding-04-library-lending",
+  "title": "Kestrel Vale Libraries: Membership and Lending Platform, Functional Requirements Document",
+  "license": "CC0-1.0",
+  "labelStatus": "author-labelled while writing the synthetic document; not yet reviewed by a second person",
+  "sourceSha256": "bed075ceadb331c85558d8ad77cd4e6bbc3c9b962ba43233ee1480bbe07261e3",
+  "sections": [
+    "Kestrel Vale Libraries: Membership and Lending Platform, Functional Requirements Document",
+    "About this document",
+    "How the requirements are written",
+    "1. Introduction",
+    "1.1 The library service",
+    "1.2 Why a new platform is needed",
+    "1.3 Objectives",
+    "1.4 Constraints",
+    "2. Scope",
+    "2.1 In scope",
+    "2.2 Out of scope",
+    "2.3 Users",
+    "3. Glossary",
+    "4. Joining the library",
+    "4.1 Who can join",
+    "4.2 Joining online",
+    "4.3 Joining in a branch",
+    "4.4 Proof of identity and address",
+    "4.5 Children and young people",
+    "4.6 Visitor membership",
+    "5. Cards, sign-in and your account",
+    "5.1 Cards",
+    "5.2 PINs and signing in",
+    "5.3 Your account",
+    "5.4 Keeping your membership",
+    "5.5 Closing an account and merging duplicates",
+    "6. Borrower categories and entitlements",
+    "7. Finding items in the catalogue",
+    "8. Borrowing",
+    "8.1 Self-service kiosks",
+    "8.2 Borrowing at the counter",
+    "8.3 Loan periods",
+    "8.4 Equipment and age-rated items",
+    "9. Renewals",
+    "10. Reservations",
+    "10.1 Placing a reservation",
+    "10.2 The queue and which copy is used",
+    "10.3 Collecting a reservation",
+    "10.4 Moving items between branches",
+    "10.5 Requests from other library services",
+    "11. Returns, reminders and charges",
+    "11.1 Returning items",
+    "11.2 Reminders and overdue notices",
+    "11.3 Overdue charges",
+    "11.4 Lost and damaged items",
+    "11.5 Blocks on an account",
+    "12. Payments",
+    "13. E-lending",
+    "14. Home library service and mobile libraries",
+    "14.1 Home library service",
+    "14.2 Mobile libraries",
+    "15. Extended-hours access and public computers",
+    "15.1 Extended-hours access",
+    "15.2 Public computers",
+    "16. Notifications and communications",
+    "17. Staff administration",
+    "17.1 Staff roles and access",
+    "17.2 Branches, opening hours and closures",
+    "17.3 Stock movements",
+    "18. Reports",
+    "19. Data protection and retention",
+    "20. Accessibility",
+    "21. Non-functional requirements",
+    "22. Migration from the current system",
+    "23. Assumptions and open issues",
+    "23.1 Assumptions",
+    "23.2 Open issues",
+    "Appendix A. Entitlements by borrower category",
+    "Appendix B. Notification schedule",
+    "Appendix C. Reading groups and the summer reading scheme",
+    "C.1 Reading group sets",
+    "C.2 The summer reading scheme",
+    "Appendix D. Worked examples",
+    "D.1 A family joins at a rhyme time session",
+    "D.2 A member reserves a title held at another branch",
+    "D.3 A member returns an item late",
+    "D.4 A housebound member's delivery",
+    "D.5 A branch closes for a week",
+    "D.6 A reservation collected from a mobile library",
+    "D.7 A resident without a fixed address",
+    "D.8 Renewing a mixed set of loans"
+  ],
+  "requirements": [
+    {
+      "id": "R1",
+      "section": "4.1 Who can join",
+      "span": "You can join the library if you live, work or study in Kestrel Vale, whatever your age."
+    },
+    {
+      "id": "R2",
+      "section": "4.1 Who can join",
+      "span": "Proof of address is not required for a child who joins with a responsible adult who is already a member."
+    },
+    {
+      "id": "R3",
+      "section": "4.2 Joining online",
+      "span": "You must be able to join online by giving your name, date of birth, home address and at least one way for the library to contact you, which is either an email address or a mobile phone number."
+    },
+    {
+      "id": "R4",
+      "section": "4.2 Joining online",
+      "span": "The platform shall check the address you give against the council's address gazetteer and, if the address is outside Kestrel Vale, shall ask whether you work or study in Kestrel Vale before you can continue."
+    },
+    {
+      "id": "R5",
+      "section": "4.2 Joining online",
+      "span": "If you sign in with the council's customer identity service, your name, date of birth and verified address will be filled in for you, and you will not be asked to prove them again."
+    },
+    {
+      "id": "R6",
+      "section": "4.2 Joining online",
+      "span": "If you join online without the customer identity service, you will receive a digital card straight away that lets you borrow e-books and e-audiobooks and reserve items, and you will be able to borrow physical items once a member of staff has seen your proof of identity and address."
+    },
+    {
+      "id": "R7",
+      "section": "4.2 Joining online",
+      "span": "The platform shall show, next to each question on the joining form, why the library needs the information and whether the question is optional."
+    },
+    {
+      "id": "R8",
+      "section": "4.2 Joining online",
+      "span": "Equality monitoring questions, such as ethnicity and disability, are asked only after a person has joined, and answering them is always optional."
+    },
+    {
+      "id": "R9",
+      "section": "4.2 Joining online",
+      "span": "You will receive a welcome email or text message with your card number within five minutes of joining online."
+    },
+    {
+      "id": "R10",
+      "section": "4.2 Joining online",
+      "span": "Before a new membership is created, the platform shall look for existing members with the same name and date of birth, or with the same email address, and shall warn the person joining, and the member of staff if there is one, that a duplicate may exist."
+    },
+    {
+      "id": "R11",
+      "section": "4.3 Joining in a branch",
+      "span": "As a member of branch staff, you must be able to register a new member at the counter on a single screen, scanning a new card and recording the proof of identity and address you have seen in the same visit."
+    },
+    {
+      "id": "R12",
+      "section": "4.3 Joining in a branch",
+      "span": "You must be able to print, or show on screen, a summary of the information recorded about a new member before they leave the counter."
+    },
+    {
+      "id": "R13",
+      "section": "4.3 Joining in a branch",
+      "span": "New members who join in a branch are given a physical card at the counter, and the card is activated as soon as it is scanned against the new record."
+    },
+    {
+      "id": "R14",
+      "section": "4.4 Proof of identity and address",
+      "span": "A photocard driving licence is accepted as proof of both identity and address."
+    },
+    {
+      "id": "R15",
+      "section": "4.4 Proof of identity and address",
+      "span": "A passport or national identity card is accepted as proof of identity only."
+    },
+    {
+      "id": "R16",
+      "section": "4.4 Proof of identity and address",
+      "span": "A utility bill, bank statement or council tax bill dated within the last three months is accepted as proof of address only."
+    },
+    {
+      "id": "R17",
+      "section": "4.4 Proof of identity and address",
+      "span": "A letter from a trusted referee is accepted as proof of both identity and address for a resident who has none of the other evidence."
+    },
+    {
+      "id": "R18",
+      "section": "4.4 Proof of identity and address",
+      "span": "A student card from a school or college in Kestrel Vale is accepted as proof of identity for members aged 16 to 18."
+    },
+    {
+      "id": "R19",
+      "section": "4.4 Proof of identity and address",
+      "span": "The platform shall record which kind of evidence was seen and by whom, but shall not store a copy of any document or any document's number."
+    },
+    {
+      "id": "R20",
+      "section": "4.4 Proof of identity and address",
+      "span": "A person who cannot provide any of the evidence in the table may be given a Restricted membership by a branch supervisor."
+    },
+    {
+      "id": "R21",
+      "section": "4.5 Children and young people",
+      "span": "A child under 16 can only join with the consent of a responsible adult, who is linked to the child's account when the child joins."
+    },
+    {
+      "id": "R22",
+      "section": "4.5 Children and young people",
+      "span": "Up to two responsible adults shall be linkable to a child's account."
+    },
+    {
+      "id": "R23",
+      "section": "4.5 Children and young people",
+      "span": "As a responsible adult, you will be able to see your linked children's loans, reservations and due dates from your own account, and to renew their items."
+    },
+    {
+      "id": "R24",
+      "section": "4.5 Children and young people",
+      "span": "A child's account is moved to the Teen category automatically on the child's 12th birthday and to the Adult category on their 18th birthday, and the member and any responsible adult are told about the change a week before it happens."
+    },
+    {
+      "id": "R25",
+      "section": "4.5 Children and young people",
+      "span": "The platform shall stop showing a child's loans to a responsible adult when the child turns 16, unless the child agrees to keep sharing them."
+    },
+    {
+      "id": "R26",
+      "section": "4.6 Visitor membership",
+      "span": "If you are visiting Kestrel Vale, you can take out a Visitor membership that lasts three months and can be renewed once."
+    },
+    {
+      "id": "R27",
+      "section": "4.6 Visitor membership",
+      "span": "Visitor members have the entitlements set out in section 6 for their borrower category."
+    },
+    {
+      "id": "R28",
+      "section": "4.6 Visitor membership",
+      "span": "A Visitor membership shall expire automatically at the end of its term, and its holder shall be asked to return any items still on loan."
+    },
+    {
+      "id": "R29",
+      "section": "5.1 Cards",
+      "span": "You can use either a physical card or a digital card shown on your phone; both carry the same card number and both work at the counter, on kiosks and at extended-hours doors."
+    },
+    {
+      "id": "R30",
+      "section": "5.1 Cards",
+      "span": "You will be able to add your digital card to your phone's wallet app."
+    },
+    {
+      "id": "R31",
+      "section": "5.1 Cards",
+      "span": "A replacement physical card is issued at the counter free of charge the first time in any twelve months; any further replacement in the same twelve months costs 2.50."
+    },
+    {
+      "id": "R32",
+      "section": "5.1 Cards",
+      "span": "When a replacement card is issued, the platform shall cancel the old card number immediately so that it can no longer be used to borrow or to enter an extended-hours branch."
+    },
+    {
+      "id": "R33",
+      "section": "5.2 PINs and signing in",
+      "span": "You will sign in to your account online with either the customer identity service or your card number and PIN."
+    },
+    {
+      "id": "R34",
+      "section": "5.2 PINs and signing in",
+      "span": "PINs shall be at least six digits, and the platform shall refuse a PIN that repeats one digit or is a simple sequence."
+    },
+    {
+      "id": "R35",
+      "section": "5.2 PINs and signing in",
+      "span": "You must be able to reset your PIN yourself, using a link sent to your email address or a code sent to your mobile phone."
+    },
+    {
+      "id": "R36",
+      "section": "5.2 PINs and signing in",
+      "span": "After five failed attempts to sign in with a card number and PIN, the platform shall lock the PIN for 30 minutes and tell the member by their preferred contact method."
+    },
+    {
+      "id": "R37",
+      "section": "5.2 PINs and signing in",
+      "span": "Members borrowing at a kiosk are identified by scanning their card or by typing their card number."
+    },
+    {
+      "id": "R38",
+      "section": "5.3 Your account",
+      "span": "You must be able to see, on one page, everything you have on loan with its due date, everything you have reserved with its place in the queue, any charges you owe and any blocks on your account."
+    },
+    {
+      "id": "R39",
+      "section": "5.3 Your account",
+      "span": "You will be able to see a list of the items you have borrowed in the past, if you have chosen to keep a borrowing history."
+    },
+    {
+      "id": "R40",
+      "section": "5.3 Your account",
+      "span": "A borrowing history is kept only for members who choose to keep one, and the choice is off by default."
+    },
+    {
+      "id": "R41",
+      "section": "5.3 Your account",
+      "span": "You can change your contact details, your preferred pickup location and your notification preferences at any time."
+    },
+    {
+      "id": "R42",
+      "section": "5.3 Your account",
+      "span": "You will be asked to confirm a new email address or mobile number from that address or number before it is used."
+    },
+    {
+      "id": "R43",
+      "section": "5.3 Your account",
+      "span": "The platform shall record every change made to a member's details, who made it and when, and shall show this history to branch staff."
+    },
+    {
+      "id": "R44",
+      "section": "5.4 Keeping your membership",
+      "span": "An adult membership is extended automatically each time the member borrows, renews or reserves an item."
+    },
+    {
+      "id": "R45",
+      "section": "5.4 Keeping your membership",
+      "span": "The platform shall mark a membership as inactive when the member has not borrowed, renewed, reserved or signed in for three years, and shall delete the record six months later if the member has not responded to a reminder."
+    },
+    {
+      "id": "R46",
+      "section": "5.4 Keeping your membership",
+      "span": "You will be reminded by your preferred contact method one month before your membership is closed for inactivity."
+    },
+    {
+      "id": "R47",
+      "section": "5.5 Closing an account and merging duplicates",
+      "span": "You can ask to close your membership at any time, online or in a branch, as long as you have nothing on loan and owe no replacement charges."
+    },
+    {
+      "id": "R48",
+      "section": "5.5 Closing an account and merging duplicates",
+      "span": "As a branch supervisor, you must be able to merge two records that belong to the same person, keeping the loans, reservations, charges and history of both under the card number the member chooses."
+    },
+    {
+      "id": "R49",
+      "section": "5.5 Closing an account and merging duplicates",
+      "span": "Possible duplicate records found by the platform shall be listed for branch supervisors to review, and duplicates are to be resolved quickly once they have been identified."
+    },
+    {
+      "id": "R50",
+      "section": "6. Borrower categories and entitlements",
+      "span": "Adult members may have up to 20 items on loan at once, of which no more than four may be DVDs."
+    },
+    {
+      "id": "R51",
+      "section": "6. Borrower categories and entitlements",
+      "span": "Adult members may have up to 15 reservations open at once."
+    },
+    {
+      "id": "R52",
+      "section": "6. Borrower categories and entitlements",
+      "span": "Teen members may have up to 12 items on loan and 8 reservations open at once."
+    },
+    {
+      "id": "R53",
+      "section": "6. Borrower categories and entitlements",
+      "span": "Teen members cannot borrow a DVD with an 18 certificate."
+    },
+    {
+      "id": "R54",
+      "section": "6. Borrower categories and entitlements",
+      "span": "Junior members may have up to 12 items on loan and 5 reservations open at once, and may borrow only from the children's and teenage collections and DVDs with a U or PG certificate, unless a responsible adult has agreed otherwise."
+    },
+    {
+      "id": "R55",
+      "section": "6. Borrower categories and entitlements",
+      "span": "Restricted members may have up to 3 items on loan at once and cannot borrow DVDs or equipment, but they have the same access to e-lending and to the public computers as Adult members."
+    },
+    {
+      "id": "R56",
+      "section": "6. Borrower categories and entitlements",
+      "span": "Home library service members may have up to 30 items on loan, and each of their loans lasts until the next delivery rather than for a fixed period."
+    },
+    {
+      "id": "R57",
+      "section": "6. Borrower categories and entitlements",
+      "span": "Institutional members may have up to 60 items on loan for a loan period of eight weeks, and the platform shall record the named member of staff responsible for each institutional card."
+    },
+    {
+      "id": "R58",
+      "section": "6. Borrower categories and entitlements",
+      "span": "The platform shall hold the entitlements of each borrower category as configuration that stock and systems staff can change without the supplier's help, and every change shall be recorded with who made it and when."
+    },
+    {
+      "id": "R59",
+      "section": "6. Borrower categories and entitlements",
+      "span": "When a category's entitlements change, existing loans keep the due dates they already have."
+    },
+    {
+      "id": "R60",
+      "section": "7. Finding items in the catalogue",
+      "span": "You must be able to search the catalogue by title, author, subject, series, ISBN and keyword, and to filter the results by format, branch, age group, language and whether a copy is on the shelf now."
+    },
+    {
+      "id": "R61",
+      "section": "7. Finding items in the catalogue",
+      "span": "You will see, for each title, how many copies the library has, which branches hold them, how many are on the shelf and how many reservations are waiting."
+    },
+    {
+      "id": "R62",
+      "section": "7. Finding items in the catalogue",
+      "span": "The platform shall load the catalogue records sent by the council's stock acquisition system each night, and shall report any record it could not load to stock and systems staff the next morning."
+    },
+    {
+      "id": "R63",
+      "section": "7. Finding items in the catalogue",
+      "span": "E-books and e-audiobooks from the e-lending supplier shall appear in the same search results as physical items, marked as such, and their availability shall be fetched from the supplier's service at the time of the search."
+    },
+    {
+      "id": "R64",
+      "section": "7. Finding items in the catalogue",
+      "span": "You can save a search and choose to be told when a new title matches it."
+    },
+    {
+      "id": "R65",
+      "section": "7. Finding items in the catalogue",
+      "span": "You can make lists of titles, and keep each list private or share it with anyone who has the link."
+    },
+    {
+      "id": "R66",
+      "section": "7. Finding items in the catalogue",
+      "span": "Items that are for reference only, such as most of the local studies collection, are shown in search results but cannot be reserved or borrowed."
+    },
+    {
+      "id": "R67",
+      "section": "8.1 Self-service kiosks",
+      "span": "You can borrow, return and renew items at any kiosk in any branch, and you will be given a receipt, printed or emailed as you choose, listing your due dates."
+    },
+    {
+      "id": "R68",
+      "section": "8.1 Self-service kiosks",
+      "span": "A kiosk shall refuse a loan that would take the member over their entitlement, or that the member's category does not allow, and shall tell the member why in plain language."
+    },
+    {
+      "id": "R69",
+      "section": "8.1 Self-service kiosks",
+      "span": "Kiosks shall be easy to use for older members and for members who have never used one before."
+    },
+    {
+      "id": "R70",
+      "section": "8.1 Self-service kiosks",
+      "span": "Kiosks shall accept contactless card payments where the branch's equipment allows."
+    },
+    {
+      "id": "R71",
+      "section": "8.1 Self-service kiosks",
+      "span": "If a kiosk loses its connection to the platform, it shall continue to lend and return items offline for up to four hours, and shall send the transactions to the platform when the connection returns."
+    },
+    {
+      "id": "R72",
+      "section": "8.2 Borrowing at the counter",
+      "span": "At the counter, you must be able to lend items to a member by scanning their card and the items, and to override an entitlement limit, recording your reason."
+    },
+    {
+      "id": "R73",
+      "section": "8.2 Borrowing at the counter",
+      "span": "Overrides of entitlement limits are reported to the branch supervisor each week."
+    },
+    {
+      "id": "R74",
+      "section": "8.2 Borrowing at the counter",
+      "span": "You must be able to lend items to a member who has forgotten their card, once you have confirmed who they are by asking for their date of birth and address."
+    },
+    {
+      "id": "R75",
+      "section": "8.3 Loan periods",
+      "span": "Books, audiobooks and music scores are lent for three weeks and can be renewed up to five times."
+    },
+    {
+      "id": "R76",
+      "section": "8.3 Loan periods",
+      "span": "High-demand titles are lent for one week and cannot be renewed."
+    },
+    {
+      "id": "R77",
+      "section": "8.3 Loan periods",
+      "span": "DVDs are lent for one week and can be renewed twice."
+    },
+    {
+      "id": "R78",
+      "section": "8.3 Loan periods",
+      "span": "Equipment is lent for two weeks, cannot be renewed, and must be returned to the branch it was borrowed from."
+    },
+    {
+      "id": "R79",
+      "section": "8.3 Loan periods",
+      "span": "The platform shall set due dates so that no item falls due on a day when the branch it was borrowed from is closed; such a due date moves to that branch's next opening day."
+    },
+    {
+      "id": "R80",
+      "section": "8.4 Equipment and age-rated items",
+      "span": "Equipment can be borrowed only by Adult members who have held their membership for at least three months."
+    },
+    {
+      "id": "R81",
+      "section": "8.4 Equipment and age-rated items",
+      "span": "Before lending equipment, you must ask the member to confirm that they have read the safety guidance for it, and the platform shall record their confirmation."
+    },
+    {
+      "id": "R82",
+      "section": "8.4 Equipment and age-rated items",
+      "span": "The platform shall prevent the loan of an item with an age certificate above the member's age, unless a responsible adult has given permission on the child's account."
+    },
+    {
+      "id": "R83",
+      "section": "9. Renewals",
+      "span": "You can renew an item up to three times, online, by phone, at a kiosk or at the counter, as long as nobody else has reserved it."
+    },
+    {
+      "id": "R84",
+      "section": "9. Renewals",
+      "span": "Each renewal runs for the item's normal loan period from the day of the renewal, not from the old due date."
+    },
+    {
+      "id": "R85",
+      "section": "9. Renewals",
+      "span": "The platform shall renew every eligible item on a member's account automatically two days before it is due, and shall tell the member which items were renewed, which were not, and why not."
+    },
+    {
+      "id": "R86",
+      "section": "9. Renewals",
+      "span": "When you renew several items at once, the items that can be renewed will be renewed even if some of the others cannot."
+    },
+    {
+      "id": "R87",
+      "section": "9. Renewals",
+      "span": "Renewals by telephone are handled by an automated line that recognises the card number and PIN entered on the phone's keypad."
+    },
+    {
+      "id": "R88",
+      "section": "9. Renewals",
+      "span": "You will still be able to renew items while your account is blocked, unless the block is for an item that is more than 28 days overdue."
+    },
+    {
+      "id": "R89",
+      "section": "10.1 Placing a reservation",
+      "span": "You can reserve any title that can be borrowed, whether or not a copy is on the shelf, and choose any branch or mobile library stop as your pickup location."
+    },
+    {
+      "id": "R90",
+      "section": "10.1 Placing a reservation",
+      "span": "Reservations are free of charge for every member."
+    },
+    {
+      "id": "R91",
+      "section": "10.1 Placing a reservation",
+      "span": "The platform shall not let a member reserve a title they already have on loan, or reserve the same title twice."
+    },
+    {
+      "id": "R92",
+      "section": "10.1 Placing a reservation",
+      "span": "You can suspend a reservation for up to 90 days, for example while you are on holiday, without losing your place in the queue."
+    },
+    {
+      "id": "R93",
+      "section": "10.2 The queue and which copy is used",
+      "span": "Reservations for a title shall be filled in the order in which they were placed, except that reservations placed by priority members shall go ahead of other reservations."
+    },
+    {
+      "id": "R94",
+      "section": "10.2 The queue and which copy is used",
+      "span": "When a copy is returned at any branch, the platform shall check it against the queue of reservations and shall tell the member of staff or the kiosk whether the copy should go to the hold shelf or be sent to another branch."
+    },
+    {
+      "id": "R95",
+      "section": "10.2 The queue and which copy is used",
+      "span": "The platform shall prefer a copy at, or nearest to, the member's pickup location when choosing which copy fills a reservation."
+    },
+    {
+      "id": "R96",
+      "section": "10.3 Collecting a reservation",
+      "span": "You will be told promptly when an item you reserved is ready to collect, by your preferred contact method."
+    },
+    {
+      "id": "R97",
+      "section": "10.3 Collecting a reservation",
+      "span": "Reserved items are kept on the hold shelf for seven days, after which the reservation is cancelled and the item passes to the next member in the queue."
+    },
+    {
+      "id": "R98",
+      "section": "10.3 Collecting a reservation",
+      "span": "You will receive a reminder two days before a reserved item you have not collected is taken off the hold shelf."
+    },
+    {
+      "id": "R99",
+      "section": "10.3 Collecting a reservation",
+      "span": "You must be able to print a list each morning of the reservations that have expired on your branch's hold shelf, so that you can clear them."
+    },
+    {
+      "id": "R100",
+      "section": "10.3 Collecting a reservation",
+      "span": "Members with an extended-hours enrolment can collect their reservations from the hold shelf during extended hours and borrow them on a kiosk."
+    },
+    {
+      "id": "R101",
+      "section": "10.4 Moving items between branches",
+      "span": "An item needed to fill a reservation at another branch shall be sent on the next van run and shall arrive within three working days, unless this is operationally impractical."
+    },
+    {
+      "id": "R102",
+      "section": "10.4 Moving items between branches",
+      "span": "The platform shall show every item in transit, the branch it left and the branch it is going to, and shall flag any item that has been in transit for more than ten days."
+    },
+    {
+      "id": "R103",
+      "section": "10.4 Moving items between branches",
+      "span": "When a branch is to close temporarily, as a branch supervisor you must be able to move all of its reservations to another pickup location in one action, giving the members affected the standard notice period."
+    },
+    {
+      "id": "R104",
+      "section": "10.5 Requests from other library services",
+      "span": "If the library does not hold a title, you can ask for it to be borrowed from another library service, and you will be told within five working days whether the request has been accepted."
+    },
+    {
+      "id": "R105",
+      "section": "10.5 Requests from other library services",
+      "span": "Inter-library requests are limited to two at a time for each Adult member and are not available to other borrower categories."
+    },
+    {
+      "id": "R106",
+      "section": "10.5 Requests from other library services",
+      "span": "The platform shall record the lending library, the date by which the item must be returned to it and any conditions it sets, such as use in the library only."
+    },
+    {
+      "id": "R107",
+      "section": "11.1 Returning items",
+      "span": "You can return items to any branch, to either mobile library, or through the returns chute of any branch when it is closed."
+    },
+    {
+      "id": "R108",
+      "section": "11.1 Returning items",
+      "span": "Items returned through a chute while the branch is closed are treated as returned on the last day the branch was open."
+    },
+    {
+      "id": "R109",
+      "section": "11.1 Returning items",
+      "span": "When an item with a note attached is returned, for example a note recording a missing disc, the platform shall show the note to the person or kiosk returning it."
+    },
+    {
+      "id": "R110",
+      "section": "11.2 Reminders and overdue notices",
+      "span": "You will receive a reminder three days before an item is due, by email, text message or both, as you have chosen."
+    },
+    {
+      "id": "R111",
+      "section": "11.2 Reminders and overdue notices",
+      "span": "Overdue notices are sent by email or text message 7, 14 and 28 days after the due date."
+    },
+    {
+      "id": "R112",
+      "section": "11.2 Reminders and overdue notices",
+      "span": "Members who have neither an email address nor a mobile number are sent the 28-day notice by post."
+    },
+    {
+      "id": "R113",
+      "section": "11.2 Reminders and overdue notices",
+      "span": "After 42 days, an item still on loan shall be marked as lost, and the member shall be sent a bill for its replacement charge."
+    },
+    {
+      "id": "R114",
+      "section": "11.3 Overdue charges",
+      "span": "From the day the new platform goes live, the library is fine-free for every member: no charge is made for returning any item late."
+    },
+    {
+      "id": "R115",
+      "section": "11.3 Overdue charges",
+      "span": "Overdue charges on members' accounts at the date of migration are written off."
+    },
+    {
+      "id": "R116",
+      "section": "11.3 Overdue charges",
+      "span": "Replacement charges for lost and damaged items continue to apply."
+    },
+    {
+      "id": "R117",
+      "section": "11.4 Lost and damaged items",
+      "span": "The replacement charge for an item shall be its catalogue price or, where no price is held, a standard charge for its item type set by stock and systems staff."
+    },
+    {
+      "id": "R118",
+      "section": "11.4 Lost and damaged items",
+      "span": "If you return an item you have been billed for as lost within six months of the bill, the replacement charge will be refunded to you in full by the method you used to pay."
+    },
+    {
+      "id": "R119",
+      "section": "11.4 Lost and damaged items",
+      "span": "As a branch supervisor, you must be able to waive or reduce a charge, recording your reason, and a waiver of more than 50 must be approved by a library manager."
+    },
+    {
+      "id": "R120",
+      "section": "11.4 Lost and damaged items",
+      "span": "Children shall not be asked to pay for items they have lost or damaged, except in exceptional circumstances."
+    },
+    {
+      "id": "R121",
+      "section": "11.5 Blocks on an account",
+      "span": "A member's account shall be blocked from borrowing physical items when the member owes more than 10 in charges or has an item that is more than 28 days overdue."
+    },
+    {
+      "id": "R122",
+      "section": "11.5 Blocks on an account",
+      "span": "When your account is blocked, you will still be able to return items, pay charges, use the public computers and borrow e-books."
+    },
+    {
+      "id": "R123",
+      "section": "11.5 Blocks on an account",
+      "span": "You must be able to lift a block for a single visit, recording your reason."
+    },
+    {
+      "id": "R124",
+      "section": "12. Payments",
+      "span": "You can pay charges online, at a kiosk or at the counter by card, and at the counter in cash."
+    },
+    {
+      "id": "R125",
+      "section": "12. Payments",
+      "span": "Every card payment shall be taken through the council's payment gateway, and the platform shall never see or store a full card number."
+    },
+    {
+      "id": "R126",
+      "section": "12. Payments",
+      "span": "The platform shall send Finance a daily file of payments and refunds by branch and by charge type, which balances to the payment gateway's own daily total."
+    },
+    {
+      "id": "R127",
+      "section": "12. Payments",
+      "span": "Overdue charges on DVDs borrowed by Adult members accrue at 1.00 a day, up to a maximum of 7.00 for each item, and are shown on the member's account as they accrue."
+    },
+    {
+      "id": "R128",
+      "section": "12. Payments",
+      "span": "Refunds are made only to the card used to pay, or in cash at the counter when the payment was made in cash."
+    },
+    {
+      "id": "R129",
+      "section": "12. Payments",
+      "span": "You will receive an email receipt for every payment you make online or at a kiosk."
+    },
+    {
+      "id": "R130",
+      "section": "12. Payments",
+      "span": "At the counter, you must be able to take a part payment of a charge and leave the remainder on the member's account."
+    },
+    {
+      "id": "R131",
+      "section": "13. E-lending",
+      "span": "You will be able to borrow, reserve and return e-books and e-audiobooks from your library account, without a separate sign-in to the e-lending supplier's app."
+    },
+    {
+      "id": "R132",
+      "section": "13. E-lending",
+      "span": "The platform shall confirm to the e-lending supplier's service, each time a member signs in to it, that the member's card is valid and which borrower category the member belongs to."
+    },
+    {
+      "id": "R133",
+      "section": "13. E-lending",
+      "span": "E-loans count separately from physical loans: a member may hold up to 10 e-loans at once, whatever their borrower category."
+    },
+    {
+      "id": "R134",
+      "section": "13. E-lending",
+      "span": "E-loans are returned automatically at the end of the loan period, and no reminder or overdue notice is sent for them."
+    },
+    {
+      "id": "R135",
+      "section": "13. E-lending",
+      "span": "You will see your e-loans and e-reservations on the same account page as your physical loans and reservations."
+    },
+    {
+      "id": "R136",
+      "section": "13. E-lending",
+      "span": "The pages of the platform that show e-lending titles shall meet the accessibility requirements in section 20 as far as possible."
+    },
+    {
+      "id": "R137",
+      "section": "13. E-lending",
+      "span": "The platform shall show the number of licences still available for an e-lending title, where the supplier's service provides it."
+    },
+    {
+      "id": "R138",
+      "section": "14.1 Home library service",
+      "span": "As the home library service coordinator, you must be able to record each member's reading preferences, the authors and subjects they do not want, the formats they need, such as large print or audio, and the titles they have already read."
+    },
+    {
+      "id": "R139",
+      "section": "14.1 Home library service",
+      "span": "The platform shall warn a volunteer selecting items for a home library member when an item has been lent to that member before."
+    },
+    {
+      "id": "R140",
+      "section": "14.1 Home library service",
+      "span": "You must be able to plan delivery rounds, allocating members to volunteers and to a four-weekly delivery date, and to print each volunteer's round sheet."
+    },
+    {
+      "id": "R141",
+      "section": "14.1 Home library service",
+      "span": "Volunteers are given access only to the details of the members on their own round, and only on the day of the delivery and the day after it."
+    },
+    {
+      "id": "R142",
+      "section": "14.1 Home library service",
+      "span": "Home library members do not receive overdue notices or replacement charge bills; an item that cannot be found is written off by the coordinator."
+    },
+    {
+      "id": "R143",
+      "section": "14.1 Home library service",
+      "span": "As a volunteer, you will record the items you deliver and collect on a phone or tablet at the member's home, and the loans and returns will be recorded on the member's account."
+    },
+    {
+      "id": "R144",
+      "section": "14.1 Home library service",
+      "span": "The platform shall let the coordinator record that a home library member is temporarily away, for example in hospital, so that no delivery is planned for them until they return."
+    },
+    {
+      "id": "R145",
+      "section": "14.2 Mobile libraries",
+      "span": "The mobile library laptops shall work offline for the whole of a day's route, lending, returning and renewing items and joining new members, and shall send the day's transactions to the platform when they next connect."
+    },
+    {
+      "id": "R146",
+      "section": "14.2 Mobile libraries",
+      "span": "Joining on a mobile library while offline creates a provisional record, which is checked for duplicates when the laptop next connects."
+    },
+    {
+      "id": "R147",
+      "section": "14.2 Mobile libraries",
+      "span": "You can choose a mobile library stop as your pickup location, and your reserved item will be held on the vehicle for its next two visits to that stop."
+    },
+    {
+      "id": "R148",
+      "section": "14.2 Mobile libraries",
+      "span": "The platform shall hold each mobile library's timetable of stops and shall use it to set due dates, so that an item borrowed on a mobile library falls due on a day the vehicle visits the stop where it was borrowed."
+    },
+    {
+      "id": "R149",
+      "section": "14.2 Mobile libraries",
+      "span": "As a mobile library crew member, you must be able to see, before setting off, the reservations waiting to be delivered to each stop on the day's route."
+    },
+    {
+      "id": "R150",
+      "section": "15.1 Extended-hours access",
+      "span": "You can apply for an extended-hours enrolment if you are an Adult member and have held your membership for at least a month, by attending a short induction at the branch."
+    },
+    {
+      "id": "R151",
+      "section": "15.1 Extended-hours access",
+      "span": "The platform shall send the building management system the list of members with a valid extended-hours enrolment for each branch, and shall send each change within five minutes of an enrolment being granted, suspended or withdrawn."
+    },
+    {
+      "id": "R152",
+      "section": "15.1 Extended-hours access",
+      "span": "An extended-hours enrolment is suspended automatically while the member's account is blocked."
+    },
+    {
+      "id": "R153",
+      "section": "15.1 Extended-hours access",
+      "span": "As a branch supervisor, you must be able to suspend or withdraw a member's extended-hours enrolment, recording your reason, and the member will be told why."
+    },
+    {
+      "id": "R154",
+      "section": "15.1 Extended-hours access",
+      "span": "The platform shall keep, for 30 days, a record of each entry to an extended-hours branch received from the building management system."
+    },
+    {
+      "id": "R155",
+      "section": "15.2 Public computers",
+      "span": "You can book a public computer at any branch up to seven days ahead, online or at the counter, for up to two hours a day."
+    },
+    {
+      "id": "R156",
+      "section": "15.2 Public computers",
+      "span": "You will sign in to a public computer with your card number and PIN."
+    },
+    {
+      "id": "R157",
+      "section": "15.2 Public computers",
+      "span": "Visitors who are not members are given a one-hour guest pass by staff, and no personal details are recorded for it."
+    },
+    {
+      "id": "R158",
+      "section": "15.2 Public computers",
+      "span": "Junior members' sessions shall use the filtered internet profile, and Teen and Adult members' sessions shall use the standard profile."
+    },
+    {
+      "id": "R159",
+      "section": "15.2 Public computers",
+      "span": "The platform shall release a booked computer to walk-in users if the member who booked it has not signed in within ten minutes of the start of the booking."
+    },
+    {
+      "id": "R160",
+      "section": "15.2 Public computers",
+      "span": "Printing from the public computers is charged by the page to the member's account, and a print job is released only when the member pays at the print station or a kiosk."
+    },
+    {
+      "id": "R161",
+      "section": "16. Notifications and communications",
+      "span": "You can choose to receive notices by email, by text message, by both, or by post if you have neither an email address nor a mobile number."
+    },
+    {
+      "id": "R162",
+      "section": "16. Notifications and communications",
+      "span": "You can choose which kinds of message you receive, apart from overdue notices and bills, which are always sent."
+    },
+    {
+      "id": "R163",
+      "section": "16. Notifications and communications",
+      "span": "The platform shall send every message from the library's own email address and telephone number, and a text message shall never contain more about a loan than its title and due date."
+    },
+    {
+      "id": "R164",
+      "section": "16. Notifications and communications",
+      "span": "Members aged 13 and over can join online without a responsible adult, and can choose their own contact details and notification preferences."
+    },
+    {
+      "id": "R165",
+      "section": "16. Notifications and communications",
+      "span": "Newsletters and event announcements are sent only to members who have opted in to them, and every one carries a link to opt out."
+    },
+    {
+      "id": "R166",
+      "section": "16. Notifications and communications",
+      "span": "As a member of stock and systems staff, you must be able to edit the wording of every notice the platform sends and preview it before it is used."
+    },
+    {
+      "id": "R167",
+      "section": "16. Notifications and communications",
+      "span": "The platform shall record every notice sent to a member, with its date, its channel and whether it was delivered, and shall show this record to branch staff."
+    },
+    {
+      "id": "R168",
+      "section": "17.1 Staff roles and access",
+      "span": "The platform shall give each member of staff a role that sets what they can see and do, and stock and systems staff shall be able to create and change roles without the supplier's help."
+    },
+    {
+      "id": "R169",
+      "section": "17.1 Staff roles and access",
+      "span": "Staff sign in with the council's single sign-on, and a staff account is disabled automatically when the person leaves the council."
+    },
+    {
+      "id": "R170",
+      "section": "17.1 Staff roles and access",
+      "span": "The platform shall record every time a member of staff views a member's record, and Information Governance officers shall be able to see who viewed a given record and when."
+    },
+    {
+      "id": "R171",
+      "section": "17.1 Staff roles and access",
+      "span": "As a member of branch staff, you will see only the details you need to serve a member; their date of birth and address are hidden until you choose to show them, and showing them is recorded."
+    },
+    {
+      "id": "R172",
+      "section": "17.2 Branches, opening hours and closures",
+      "span": "You must be able to record each branch's opening hours and planned closures, such as bank holidays, up to eighteen months ahead, and the platform shall use them to set due dates."
+    },
+    {
+      "id": "R173",
+      "section": "17.2 Branches, opening hours and closures",
+      "span": "When a branch closes unexpectedly, for example because of a heating failure, you must be able to record the closure on the day, and items due back at that branch on the days it is closed shall have their due dates moved to its next opening day."
+    },
+    {
+      "id": "R174",
+      "section": "17.3 Stock movements",
+      "span": "Stock and systems staff shall be able to move groups of items between branches as part of stock rotation, and the platform shall update each item's home branch when it arrives."
+    },
+    {
+      "id": "R175",
+      "section": "17.3 Stock movements",
+      "span": "Items that have not been borrowed for two years are listed each quarter for their branch to consider withdrawing them."
+    },
+    {
+      "id": "R176",
+      "section": "17.3 Stock movements",
+      "span": "The platform shall tell the council's stock acquisition system about the withdrawal of each item, so that its catalogue record can be updated."
+    },
+    {
+      "id": "R177",
+      "section": "18. Reports",
+      "span": "The platform shall produce the Libraries Board's quarterly report without manual work, showing active members, new members, loans, renewals, reservations and computer sessions, each by branch, by borrower category and by ward."
+    },
+    {
+      "id": "R178",
+      "section": "18. Reports",
+      "span": "Reports for library managers shall be available in near real time."
+    },
+    {
+      "id": "R179",
+      "section": "18. Reports",
+      "span": "As a library manager, you must be able to build your own report from the platform's data, filter it and export it as a spreadsheet."
+    },
+    {
+      "id": "R180",
+      "section": "18. Reports",
+      "span": "Figures for the national annual statistics return are produced from the platform using the return's own definitions."
+    },
+    {
+      "id": "R181",
+      "section": "18. Reports",
+      "span": "No report shall show a member's name, card number or address unless the user's role allows it, and a report by ward shall suppress any figure below five."
+    },
+    {
+      "id": "R182",
+      "section": "19. Data protection and retention",
+      "span": "The platform shall hold members' personal information only in data centres in the UK."
+    },
+    {
+      "id": "R183",
+      "section": "19. Data protection and retention",
+      "span": "A member's record shall be deleted 18 months after the member's last activity, unless the member still has items on loan or owes charges."
+    },
+    {
+      "id": "R184",
+      "section": "19. Data protection and retention",
+      "span": "The link between a returned loan and the member who borrowed it shall be removed once the item has been returned and any charge paid, except for members who keep a borrowing history."
+    },
+    {
+      "id": "R185",
+      "section": "19. Data protection and retention",
+      "span": "You can ask for a copy of the information the library holds about you, and Information Governance officers must be able to produce it from the platform in a single export."
+    },
+    {
+      "id": "R186",
+      "section": "19. Data protection and retention",
+      "span": "You can ask for your borrowing history to be deleted at any time, and it will be deleted within one working day."
+    },
+    {
+      "id": "R187",
+      "section": "19. Data protection and retention",
+      "span": "Answers to equality monitoring questions are kept apart from the member's record and are used only in reports in which no member can be identified."
+    },
+    {
+      "id": "R188",
+      "section": "20. Accessibility",
+      "span": "Every page that members use shall meet the Web Content Accessibility Guidelines version 2.2 at level AA."
+    },
+    {
+      "id": "R189",
+      "section": "20. Accessibility",
+      "span": "You will be able to use the whole of your account, the catalogue and the joining form with a screen reader, and with the keyboard alone."
+    },
+    {
+      "id": "R190",
+      "section": "20. Accessibility",
+      "span": "Kiosks are given audio guidance and a large-text mode, which a member can switch on at the start of a session."
+    },
+    {
+      "id": "R191",
+      "section": "20. Accessibility",
+      "span": "You can ask for any notice to be sent to you in large print or another format, and your choice will be remembered for every future notice."
+    },
+    {
+      "id": "R192",
+      "section": "20. Accessibility",
+      "span": "The platform shall be tested for accessibility by disabled users, including members who took part in the listening sessions, before it goes live."
+    },
+    {
+      "id": "R193",
+      "section": "21. Non-functional requirements",
+      "span": "The pages that members use shall be available 99.5 per cent of the time in each month, outside maintenance windows agreed with the council."
+    },
+    {
+      "id": "R194",
+      "section": "21. Non-functional requirements",
+      "span": "95 per cent of catalogue searches shall return results within two seconds."
+    },
+    {
+      "id": "R195",
+      "section": "21. Non-functional requirements",
+      "span": "The platform shall support 2,000 members signed in at once and 300 loans or returns a minute across all branches, kiosks and mobile libraries."
+    },
+    {
+      "id": "R196",
+      "section": "21. Non-functional requirements",
+      "span": "Maintenance that makes the platform unavailable shall be done outside branch opening hours, and members shall be told about it at least three days ahead."
+    },
+    {
+      "id": "R197",
+      "section": "21. Non-functional requirements",
+      "span": "All data shall be backed up daily, and the platform shall be restorable to its state no more than one hour before a failure."
+    },
+    {
+      "id": "R198",
+      "section": "21. Non-functional requirements",
+      "span": "Members' PINs are stored only in a form from which they cannot be read back."
+    },
+    {
+      "id": "R199",
+      "section": "22. Migration from the current system",
+      "span": "Every member record, current loan, open reservation and outstanding charge in the current system shall be migrated, and each reservation shall keep its place in its queue."
+    },
+    {
+      "id": "R200",
+      "section": "22. Migration from the current system",
+      "span": "Each member's loan history for the last two years shall be migrated, so that members can see what they borrowed before the change."
+    },
+    {
+      "id": "R201",
+      "section": "22. Migration from the current system",
+      "span": "Members are not asked to register again or to choose a new PIN: their existing card numbers and PINs continue to work."
+    },
+    {
+      "id": "R202",
+      "section": "22. Migration from the current system",
+      "span": "Duplicate records shall be identified during migration and listed for branch supervisors, but shall not be merged automatically."
+    },
+    {
+      "id": "R203",
+      "section": "22. Migration from the current system",
+      "span": "A trial migration is run at least twice before go-live, and each time the counts of members, loans, reservations and charges are reconciled with the current system."
+    },
+    {
+      "id": "R204",
+      "section": "22. Migration from the current system",
+      "span": "During the cut-over, you must be able to lend and return items offline at the counter for up to two days, and those transactions shall be loaded into the platform when it goes live."
+    },
+    {
+      "id": "R205",
+      "section": "C.1 Reading group sets",
+      "span": "As a reading group organiser, you can book up to three sets at a time, for a loan period of six weeks each, choosing from the list of sets the library publishes."
+    },
+    {
+      "id": "R206",
+      "section": "C.1 Reading group sets",
+      "span": "A reading group set is lent to the organiser's card as a single loan, and the platform shall record how many copies the set contains when it is lent and when it comes back."
+    },
+    {
+      "id": "R207",
+      "section": "C.1 Reading group sets",
+      "span": "If a set comes back with copies missing, the organiser is asked to return them within four weeks before any replacement charge is made."
+    },
+    {
+      "id": "R208",
+      "section": "C.1 Reading group sets",
+      "span": "The platform shall show each set's calendar of bookings, so that you can see when a set is next free before you book it."
+    },
+    {
+      "id": "R209",
+      "section": "C.1 Reading group sets",
+      "span": "Sets that are booked by a reading group are not counted against the organiser's own entitlement to borrow."
+    },
+    {
+      "id": "R210",
+      "section": "C.2 The summer reading scheme",
+      "span": "A child taking part in the summer reading scheme shall be able to have their progress recorded against their library account, so that it is not lost if the paper card is."
+    },
+    {
+      "id": "R211",
+      "section": "C.2 The summer reading scheme",
+      "span": "As a member of branch staff or a volunteer, you must be able to record a book a child has read for the scheme in no more than two steps, by scanning the child's card and then the book or choosing it from the child's recent loans."
+    },
+    {
+      "id": "R212",
+      "section": "C.2 The summer reading scheme",
+      "span": "Children who join the library in order to take part in the scheme are counted separately in the reports, so that the service can see how many new members the scheme brings in."
+    },
+    {
+      "id": "R213",
+      "section": "C.2 The summer reading scheme",
+      "span": "A responsible adult will be able to see their child's progress in the scheme from their own account."
+    },
+    {
+      "id": "R214",
+      "section": "C.2 The summer reading scheme",
+      "span": "At the end of the scheme, the platform shall produce a list of the children who completed it at each branch, for the certificates that are presented in September."
+    }
+  ],
+  "ambiguities": [
+    {
+      "id": "A1",
+      "kind": "tbd",
+      "description": "whether a PIN is required to borrow at a kiosk, or the card alone is enough, is left to the Libraries Board",
+      "question": "Must members enter a PIN to borrow at a kiosk, or is scanning the card enough?",
+      "requirements": ["R37"],
+      "spans": [
+        "Whether a PIN should also be required to borrow at a kiosk, or whether the card alone should be enough, has not yet been decided by the Libraries Board.",
+        "Members borrowing at a kiosk are identified by scanning their card or by typing their card number."
+      ],
+      "sections": ["5.2 PINs and signing in"]
+    },
+    {
+      "id": "A2",
+      "kind": "undefined-term",
+      "description": "a \"trusted referee\" may vouch for identity and address, but the document never says who counts as one",
+      "question": "Who counts as a trusted referee, and what must their letter say?",
+      "requirements": ["R17"],
+      "spans": [
+        "A letter from a trusted referee is accepted as proof of both identity and address for a resident who has none of the other evidence."
+      ],
+      "sections": ["4.4 Proof of identity and address"]
+    },
+    {
+      "id": "A3",
+      "kind": "conflict",
+      "description": "section 4.5 says a child under 16 can only join with a responsible adult's consent, while section 16 lets members aged 13 and over join online without one",
+      "question": "Can a 13 to 15 year old join online without a responsible adult, and if so is anyone linked to their account?",
+      "requirements": ["R21", "R164"],
+      "spans": [
+        "A child under 16 can only join with the consent of a responsible adult, who is linked to the child's account when the child joins.",
+        "Members aged 13 and over can join online without a responsible adult, and can choose their own contact details and notification preferences."
+      ],
+      "sections": ["4.5 Children and young people", "16. Notifications and communications"]
+    },
+    {
+      "id": "A4",
+      "kind": "missing",
+      "description": "Visitor members get \"the entitlements set out in section 6 for their borrower category\", but neither section 6 nor Appendix A lists a Visitor category or says which category a visitor joins",
+      "question": "What may a Visitor member borrow and reserve, and which borrower category do they belong to?",
+      "requirements": ["R27", "R26"],
+      "spans": [
+        "Visitor members have the entitlements set out in section 6 for their borrower category.",
+        "If you are visiting Kestrel Vale, you can take out a Visitor membership that lasts three months and can be renewed once."
+      ],
+      "sections": ["4.6 Visitor membership"]
+    },
+    {
+      "id": "A5",
+      "kind": "conflict",
+      "description": "a borrowing history is kept only for members who opt in and is off by default, yet migration brings over two years of loan history for every member",
+      "question": "Is the migrated loan history kept for members who have not opted in, and are members asked first?",
+      "requirements": ["R40", "R200"],
+      "spans": [
+        "A borrowing history is kept only for members who choose to keep one, and the choice is off by default.",
+        "Each member's loan history for the last two years shall be migrated, so that members can see what they borrowed before the change."
+      ],
+      "sections": ["5.3 Your account", "22. Migration from the current system"]
+    },
+    {
+      "id": "A6",
+      "kind": "conflict",
+      "description": "section 5.4 deletes a record three and a half years after the last activity, section 19 after 18 months",
+      "question": "After how long without activity is a member's record deleted, and is the member reminded first in both cases?",
+      "requirements": ["R45", "R183"],
+      "spans": [
+        "The platform shall mark a membership as inactive when the member has not borrowed, renewed, reserved or signed in for three years, and shall delete the record six months later if the member has not responded to a reminder.",
+        "A member's record shall be deleted 18 months after the member's last activity, unless the member still has items on loan or owes charges."
+      ],
+      "sections": ["5.4 Keeping your membership", "19. Data protection and retention"]
+    },
+    {
+      "id": "A7",
+      "kind": "vague-term",
+      "description": "duplicates \"are to be resolved quickly once they have been identified\", with no time or owner",
+      "question": "Within what time must a branch supervisor resolve a possible duplicate, and what happens if they do not?",
+      "requirements": ["R49"],
+      "spans": [
+        "Possible duplicate records found by the platform shall be listed for branch supervisors to review, and duplicates are to be resolved quickly once they have been identified."
+      ],
+      "sections": ["5.5 Closing an account and merging duplicates"]
+    },
+    {
+      "id": "A8",
+      "kind": "conflict",
+      "description": "the loan-period table lets books be renewed up to five times, while section 9 allows any item three renewals",
+      "question": "How many times can a book be renewed: three or five?",
+      "requirements": ["R75", "R83"],
+      "spans": [
+        "Books, audiobooks and music scores are lent for three weeks and can be renewed up to five times.",
+        "You can renew an item up to three times, online, by phone, at a kiosk or at the counter, as long as nobody else has reserved it."
+      ],
+      "sections": ["8.3 Loan periods", "9. Renewals"]
+    },
+    {
+      "id": "A9",
+      "kind": "conflict",
+      "description": "Appendix A gives Adults 15 items on loan, while section 6 gives them 20",
+      "question": "Is the Adult loan limit 15 or 20 items?",
+      "requirements": ["R50"],
+      "spans": [
+        "15 items, of which up to 4 DVDs",
+        "Adult members may have up to 20 items on loan at once, of which no more than four may be DVDs."
+      ],
+      "sections": [
+        "Appendix A. Entitlements by borrower category",
+        "6. Borrower categories and entitlements"
+      ]
+    },
+    {
+      "id": "A10",
+      "kind": "undefined-term",
+      "description": "\"high-demand titles\" are lent for one week and cannot be renewed, but nothing says what makes a title high-demand or who decides",
+      "question": "What makes a title high-demand, who marks it, and does the mark come off when demand falls?",
+      "requirements": ["R76"],
+      "spans": ["High-demand titles are lent for one week and cannot be renewed."],
+      "sections": ["8.3 Loan periods"]
+    },
+    {
+      "id": "A11",
+      "kind": "vague-term",
+      "description": "kiosks must be \"easy to use for older members and for members who have never used one before\", with no measure",
+      "question": "How will ease of use be tested on the kiosks, and with whom?",
+      "requirements": ["R69"],
+      "spans": [
+        "Kiosks shall be easy to use for older members and for members who have never used one before."
+      ],
+      "sections": ["8.1 Self-service kiosks"]
+    },
+    {
+      "id": "A12",
+      "kind": "escape-clause",
+      "description": "kiosks take contactless payments only \"where the branch's equipment allows\"",
+      "question": "Which kiosks will take contactless payments at go-live, and who pays for any new equipment?",
+      "requirements": ["R70"],
+      "spans": [
+        "Kiosks shall accept contactless card payments where the branch's equipment allows."
+      ],
+      "sections": ["8.1 Self-service kiosks"]
+    },
+    {
+      "id": "A13",
+      "kind": "undefined-term",
+      "description": "reservations by \"priority members\" jump the queue, but the term is not defined and no category carries it",
+      "question": "Who are priority members, and how is a member given that status?",
+      "requirements": ["R93"],
+      "spans": [
+        "Reservations for a title shall be filled in the order in which they were placed, except that reservations placed by priority members shall go ahead of other reservations."
+      ],
+      "sections": ["10.2 The queue and which copy is used"]
+    },
+    {
+      "id": "A14",
+      "kind": "vague-term",
+      "description": "members are told \"promptly\" when a reservation is ready, and Appendix B gives no time either",
+      "question": "Within what time of an item reaching the hold shelf must the member be told?",
+      "requirements": ["R96"],
+      "spans": [
+        "You will be told promptly when an item you reserved is ready to collect, by your preferred contact method."
+      ],
+      "sections": ["10.3 Collecting a reservation"]
+    },
+    {
+      "id": "A15",
+      "kind": "conflict",
+      "description": "section 10.3 keeps reserved items on the hold shelf for seven days, while Appendix B speaks of a ten-day collection period",
+      "question": "Is a reserved item kept for seven days or ten, and are these calendar days or opening days?",
+      "requirements": ["R97", "R98"],
+      "spans": [
+        "Two days before the end of the ten-day collection period",
+        "Reserved items are kept on the hold shelf for seven days, after which the reservation is cancelled and the item passes to the next member in the queue.",
+        "You will receive a reminder two days before a reserved item you have not collected is taken off the hold shelf."
+      ],
+      "sections": ["Appendix B. Notification schedule", "10.3 Collecting a reservation"]
+    },
+    {
+      "id": "A16",
+      "kind": "escape-clause",
+      "description": "items should arrive within three working days \"unless this is operationally impractical\"",
+      "question": "When may a transfer take longer than three working days, and is the member told?",
+      "requirements": ["R101"],
+      "spans": [
+        "An item needed to fill a reservation at another branch shall be sent on the next van run and shall arrive within three working days, unless this is operationally impractical."
+      ],
+      "sections": ["10.4 Moving items between branches"]
+    },
+    {
+      "id": "A17",
+      "kind": "undefined-term",
+      "description": "members of a closing branch are given \"the standard notice period\", which the document never defines",
+      "question": "What is the standard notice period for moving reservations from a branch that is closing temporarily?",
+      "requirements": ["R103"],
+      "spans": [
+        "When a branch is to close temporarily, as a branch supervisor you must be able to move all of its reservations to another pickup location in one action, giving the members affected the standard notice period."
+      ],
+      "sections": ["10.4 Moving items between branches"]
+    },
+    {
+      "id": "A18",
+      "kind": "missing",
+      "description": "members with neither email nor mobile get only the 28-day notice by post; nothing says whether they get the due-date reminder or the 7 and 14-day notices",
+      "question": "Do members without email or a mobile number get a due-date reminder and the earlier overdue notices, and by what channel?",
+      "requirements": ["R110", "R111", "R112"],
+      "spans": [
+        "You will receive a reminder three days before an item is due, by email, text message or both, as you have chosen.",
+        "Overdue notices are sent by email or text message 7, 14 and 28 days after the due date.",
+        "Members who have neither an email address nor a mobile number are sent the 28-day notice by post."
+      ],
+      "sections": ["11.2 Reminders and overdue notices"]
+    },
+    {
+      "id": "A19",
+      "kind": "conflict",
+      "description": "section 11.3 makes the library fine-free for every member, while section 12 charges adults 1.00 a day for overdue DVDs",
+      "question": "Are overdue DVD charges abolished with the rest, or do they remain?",
+      "requirements": ["R114", "R127"],
+      "spans": [
+        "From the day the new platform goes live, the library is fine-free for every member: no charge is made for returning any item late.",
+        "Overdue charges on DVDs borrowed by Adult members accrue at 1.00 a day, up to a maximum of 7.00 for each item, and are shown on the member's account as they accrue."
+      ],
+      "sections": ["11.3 Overdue charges", "12. Payments"]
+    },
+    {
+      "id": "A20",
+      "kind": "escape-clause",
+      "description": "children are not asked to pay for lost or damaged items \"except in exceptional circumstances\"",
+      "question": "What circumstances justify charging a child, and who decides?",
+      "requirements": ["R120"],
+      "spans": [
+        "Children shall not be asked to pay for items they have lost or damaged, except in exceptional circumstances."
+      ],
+      "sections": ["11.4 Lost and damaged items"]
+    },
+    {
+      "id": "A21",
+      "kind": "tbd",
+      "description": "whether inter-library requests are charged for is undecided",
+      "question": "Will members be charged for inter-library requests, and how much?",
+      "requirements": ["R105"],
+      "spans": [
+        "The Libraries Board has not yet decided whether to charge for inter-library requests, which cost the service around 9 each to obtain.",
+        "Inter-library requests are limited to two at a time for each Adult member and are not available to other borrower categories."
+      ],
+      "sections": ["23.2 Open issues", "10.5 Requests from other library services"]
+    },
+    {
+      "id": "A22",
+      "kind": "escape-clause",
+      "description": "e-lending pages need meet the accessibility requirements only \"as far as possible\"",
+      "question": "Which e-lending pages may fall short of WCAG 2.2 AA, and what is the fallback for screen reader users?",
+      "requirements": ["R136"],
+      "spans": [
+        "The pages of the platform that show e-lending titles shall meet the accessibility requirements in section 20 as far as possible."
+      ],
+      "sections": ["13. E-lending"]
+    },
+    {
+      "id": "A23",
+      "kind": "missing",
+      "description": "nothing says what happens to the member's e-loans, e-reservations or the supplier's copy of their details when a membership is closed or deleted",
+      "question": "When a membership is closed or deleted, are its e-loans ended and is the e-lending supplier told to delete its record?",
+      "requirements": ["R131", "R47"],
+      "spans": [
+        "You will be able to borrow, reserve and return e-books and e-audiobooks from your library account, without a separate sign-in to the e-lending supplier's app.",
+        "You can ask to close your membership at any time, online or in a branch, as long as you have nothing on loan and owe no replacement charges."
+      ],
+      "sections": ["13. E-lending", "5.5 Closing an account and merging duplicates"]
+    },
+    {
+      "id": "A24",
+      "kind": "missing",
+      "description": "the mobile library laptops must work offline, but nothing says whether the volunteers' phones or tablets must, though many homes have no signal",
+      "question": "Must home library volunteers be able to record deliveries offline?",
+      "requirements": ["R143", "R145"],
+      "spans": [
+        "As a volunteer, you will record the items you deliver and collect on a phone or tablet at the member's home, and the loans and returns will be recorded on the member's account.",
+        "The mobile library laptops shall work offline for the whole of a day's route, lending, returning and renewing items and joining new members, and shall send the day's transactions to the platform when they next connect."
+      ],
+      "sections": ["14.1 Home library service", "14.2 Mobile libraries"]
+    },
+    {
+      "id": "A25",
+      "kind": "vague-term",
+      "description": "reports must be available \"in near real time\"",
+      "question": "How current must manager reports be: minutes, hours or the previous night?",
+      "requirements": ["R178"],
+      "spans": ["Reports for library managers shall be available in near real time."],
+      "sections": ["18. Reports"]
+    },
+    {
+      "id": "A26",
+      "kind": "tbd",
+      "description": "how long the link between a returned loan and its borrower is kept has not been set",
+      "question": "How long after return may the platform keep the link between a loan and its borrower?",
+      "requirements": ["R184"],
+      "spans": [
+        "The period for which the link should be kept after return, for example so that damage found after an item comes back can be traced to the borrower, is to be confirmed by the Information Governance team.",
+        "The link between a returned loan and the member who borrowed it shall be removed once the item has been returned and any charge paid, except for members who keep a borrowing history."
+      ],
+      "sections": ["19. Data protection and retention"]
+    },
+    {
+      "id": "A27",
+      "kind": "conflict",
+      "description": "new PINs must be at least six digits, yet migrated members keep their existing four-digit PINs",
+      "question": "Will four-digit PINs keep working after migration, and if not, how and when are members moved to six digits?",
+      "requirements": ["R34", "R201"],
+      "spans": [
+        "PINs shall be at least six digits, and the platform shall refuse a PIN that repeats one digit or is a simple sequence.",
+        "Members are not asked to register again or to choose a new PIN: their existing card numbers and PINs continue to work."
+      ],
+      "sections": ["5.2 PINs and signing in", "22. Migration from the current system"]
+    },
+    {
+      "id": "A28",
+      "kind": "tbd",
+      "description": "whether Institutional members may reserve is undecided, and Appendix A says \"Not stated\"",
+      "question": "May Institutional members place reservations, and how many?",
+      "requirements": ["R57"],
+      "spans": [
+        "Whether Institutional members may place reservations is not covered by the lending policy, and the Libraries Board will decide before go-live.",
+        "Institutional members may have up to 60 items on loan for a loan period of eight weeks, and the platform shall record the named member of staff responsible for each institutional card."
+      ],
+      "sections": ["23.2 Open issues", "6. Borrower categories and entitlements"]
+    }
+  ]
+}

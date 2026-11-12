@@ -123,6 +123,8 @@ function prismaWith(opts: {
       findUnique: vi.fn(async () =>
         opts.doc === undefined
           ? {
+              projectId: "proj-docs",
+              checksum: "sum-frd",
               filename: "frd.md",
               title: "Clinic booking FRD",
               mimeType: "text/markdown",
@@ -147,6 +149,8 @@ describe("loadImpactDocumentText", () => {
     const doc = await loadImpactDocumentText(prisma as never, "doc-1", { read });
     expect(read).toHaveBeenCalledWith("p/frd.md");
     expect(doc).toMatchObject({ from: "file", title: "Clinic booking FRD" });
+    // #2280 — the key its reading is saved under: the document's OWN project.
+    expect(doc.saved).toEqual({ projectId: "proj-docs", documentId: "doc-1", checksum: "sum-frd" });
     for (const p of paragraphs) expect(occurrences(doc.text, p)).toBe(1);
     expect(prisma.knowledgeChunk.findMany).not.toHaveBeenCalled();
     expect(prisma.document.findUnique).toHaveBeenCalledWith(
@@ -164,6 +168,7 @@ describe("loadImpactDocumentText", () => {
     const read = vi.fn(async () => Buffer.from(reparsed, "utf8"));
     const doc = await loadImpactDocumentText(prisma as never, "doc-1", { read });
     expect(doc.from).toBe("chunks");
+    expect(doc.saved?.checksum).toBe("sum-frd");
     expect(doc.text).toContain("a calendar with a Book button");
     expect(doc.text).not.toContain("image not read");
   });
@@ -187,6 +192,7 @@ describe("loadImpactDocumentText", () => {
       text: "one two three four five six",
       from: "chunks",
       title: "Clinic booking FRD",
+      saved: { projectId: "proj-docs", documentId: "doc-1", checksum: "sum-frd" },
     });
     expect(prisma.quarantineChunk.findMany).not.toHaveBeenCalled();
   });
@@ -212,13 +218,25 @@ describe("loadImpactDocumentText", () => {
 
   it("names the document by its filename when it has no title, and refuses an unparseable file", async () => {
     const prisma = prismaWith({
-      doc: { filename: "x.bin", title: null, mimeType: "application/x-unknown", storagePath: "x" },
+      doc: {
+        projectId: "p",
+        checksum: "c",
+        filename: "x.bin",
+        title: null,
+        mimeType: "application/x-unknown",
+        storagePath: "x",
+      },
       approved: ["from chunks"],
     });
     const doc = await loadImpactDocumentText(prisma as never, "doc-1", {
       read: async () => Buffer.from("binary"),
     });
-    expect(doc).toEqual({ text: "from chunks", from: "chunks", title: "x.bin" });
+    expect(doc).toEqual({
+      text: "from chunks",
+      from: "chunks",
+      title: "x.bin",
+      saved: { projectId: "p", documentId: "doc-1", checksum: "c" },
+    });
   });
 });
 
@@ -341,6 +359,23 @@ describe("changesFromReading", () => {
 });
 
 describe("documentReadingNotice", () => {
+  it("#2280 — says a reading was reused, when and with which model, and how to read again", () => {
+    const text = documentReadingNotice(
+      reading({
+        statements: [statement({ id: "T1" })],
+        sections: [section({ sectionId: "S1", kinds: { requirement: 1 } })],
+        reused: { readAt: new Date("2026-11-02T09:00:00Z"), model: "claude-sonnet-5-5" },
+      }),
+      true,
+    );
+    expect(text).toContain(
+      'This reading was saved on 2026-11-02 (read with claude-sonnet-5-5) and reused, because the document\'s file has not changed; re-run with "Read the document again" for a fresh reading.',
+    );
+    expect(
+      documentReadingNotice(reading({ statements: [statement({ id: "T1" })] }), true),
+    ).not.toContain("reused");
+  });
+
   it("counts the changes by kind and names the sections that held none", () => {
     const text = documentReadingNotice(
       reading({

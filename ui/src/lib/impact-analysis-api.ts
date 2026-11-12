@@ -108,9 +108,14 @@ export const impactAnalysisApi = {
    * Issue #965 — re-run a completed analysis against the CURRENT code graph. The
    * new run reuses the original's stored source verbatim and links back via
    * `rerunOfId`; the original is never mutated. 202 Accepted — poll the new run.
+   * #2280 — `rereadDocument` reads the source document again instead of
+   * reusing its saved reading.
    */
-  rerun: (id: string) =>
-    apiFetch<ImpactRerunResponse>(`${BASE}/${encodeURIComponent(id)}/rerun`, { method: "POST" }),
+  rerun: (id: string, options: { rereadDocument?: boolean } = {}) =>
+    apiFetch<ImpactRerunResponse>(`${BASE}/${encodeURIComponent(id)}/rerun`, {
+      method: "POST",
+      ...(options.rereadDocument ? { body: { rereadDocument: true } } : {}),
+    }),
 
   /**
    * Issue #965 — the deterministic drift report for a run vs the original it

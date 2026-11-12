@@ -44,6 +44,10 @@ import { optimisticLock, sendVersionConflict } from "../middleware/optimistic-lo
 import { assertLiveProjectAccess } from "../lib/custom-agents/authz.js";
 import { analysisDeepDiveRateLimiter } from "../middleware/analysis-deepdive-rate-limit.js";
 import {
+  governingRecheckPreAuthRateLimiter,
+  governingRecheckUserRateLimiter,
+} from "../middleware/governing-recheck-rate-limit.js";
+import {
   criteriaProposalPreAuthRateLimiter,
   criteriaProposalUserRateLimiter,
 } from "../middleware/criteria-proposal-rate-limit.js";
@@ -63,6 +67,7 @@ import {
 import { isGoverningDocsEnabled } from "../lib/governing/flag.js";
 import { recheckGoverningRequirement } from "../lib/governing/recheck.js";
 import {
+  editedWithoutFindings,
   recheckedRequirementTitles,
   storedRequirementStates,
   withGoverningStaleness,
@@ -651,6 +656,7 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
           ...(sourceRequirements ? { sourceRequirements } : {}),
           enableWebResearch: parsed.data.enableWebResearch ?? false,
           enableClarification: parsed.data.enableClarification ?? false,
+          ...(parsed.data.rereadDocuments ? { rereadDocuments: true } : {}),
           ...(parsed.data.specKitHandoff ? { specKitHandoff: parsed.data.specKitHandoff } : {}),
           // #1027 — never joined to `extraInstructions`: the requirement
           // splitter, its cap and the input account do not see it.
@@ -1032,6 +1038,9 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
           // (rules unavailable, every requirement undecided) checked nothing.
           checked: applicability?.requirements.some((r) => !r.error) ?? false,
           requirementTitles: recheckedRequirementTitles(findings, states),
+          // #2281 — requirements edited since the check that no finding offers a
+          // re-check for: their analysed requirement produced no finding.
+          editedWithoutFindings: editedWithoutFindings(findings, states, applicability),
         }),
       );
     },
@@ -1080,12 +1089,17 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
    * one of this analysis in this project; 409 when the workspace has no
    * current governing rule; 502 when the rules could not be read or the
    * requirement could not be evaluated (nothing is stored). The model calls are
-   * metered to the project, as a clarify round's are.
+   * metered to the project, as a clarify round's are. #2281 — rate limited
+   * (several model calls each), and a client that goes away aborts the model
+   * calls: nothing is stored and no answer is written.
    */
   projectScoped.post(
     "/:id/governing-findings/recheck",
+    // Ahead of auth: CodeQL js/missing-rate-limiting.
+    governingRecheckPreAuthRateLimiter,
     requireAuth,
     requirePermission("analysis.run"),
+    governingRecheckUserRateLimiter,
     async (req: Request, res: Response) => {
       if (!isGoverningDocsEnabled()) throw new AppError(404, "NOT_FOUND", "Not found");
       const analysisId = String(req.params.id);
@@ -1098,6 +1112,11 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
         });
       }
       const provider = meterAnalysisProvider(buildProvider({ config: loadAIConfig() }));
+      // #2281 — the request's lifetime bounds the model calls.
+      const ac = new AbortController();
+      res.on("close", () => {
+        if (!res.writableEnded) ac.abort();
+      });
       const outcome = await runInAnalysisUsageScope({ projectId, sessionId: analysisId }, () =>
         recheckGoverningRequirement({
           analysisId,
@@ -1105,8 +1124,11 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
           requirementId: parsed.data.requirementId,
           provider,
           actorId: actorFromReq(req).id,
+          signal: ac.signal,
         }),
       );
+      // Nobody is left to answer.
+      if (!outcome.ok && outcome.reason === "cancelled") return;
       if (outcome.ok) {
         res.json(ok(outcome.result));
         return;
