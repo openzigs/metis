@@ -433,6 +433,7 @@ describe("#2325 — a code citation records the version it was read at", () => {
   const SHA = "0123456789abcdef0123456789abcdef01234567";
   const HEAD = "fedcba9876543210fedcba9876543210fedcba98";
   const ref = (path: string, over: Record<string, unknown> = {}) => ({
+    repoConnectionId: null,
     path,
     startLine: 10,
     endLine: 40,
@@ -527,5 +528,41 @@ describe("#2325 — a code citation records the version it was read at", () => {
     expect(doc).not.toHaveProperty("stale");
     expect(mcp).toMatchObject({ status: "not-read" });
     expect(mcp).not.toHaveProperty("commitSha");
+  });
+
+  it("keys a version by repository AND path: two repositories' src/index.ts stay apart", () => {
+    // Repo A's copy read current at SHA (lines 1-20); repo B's read stale at
+    // OTHER (lines 100-150). Neither lends its commit or staleness to the other.
+    const OTHER = "abcdef0123456789abcdef0123456789abcdef01";
+    const ev = collectCitationEvidence(null, [
+      tool({
+        tool: "search_code_symbols",
+        result: "function a — src/index.ts:1-20 (score=1.000)",
+        citations: [ref("src/index.ts", { repoConnectionId: "repoA", startLine: 1, endLine: 20 })],
+      }),
+      tool({
+        result: "src/index.ts (lines 100-150 of 300)\n100| x",
+        citations: [
+          ref("src/index.ts", {
+            repoConnectionId: "repoB",
+            startLine: 100,
+            endLine: 150,
+            commitSha: OTHER,
+            stale: true,
+            workingTreeSha: HEAD,
+          }),
+        ],
+      }),
+    ]);
+    const [a, b, either] = verifyCitations(
+      "See src/index.ts:5-10, then src/index.ts:120, and src/index.ts in general.",
+      ev,
+    );
+    expect(a).toMatchObject({ text: "src/index.ts:5-10", commitSha: SHA });
+    expect(a).not.toHaveProperty("stale");
+    expect(b).toMatchObject({ text: "src/index.ts:120", commitSha: OTHER, stale: true });
+    // No lines: either repository's copy. The commits differ, so none is
+    // stated, and it may be the stale one, so it is flagged.
+    expect(either).toMatchObject({ path: "src/index.ts", commitSha: null, stale: true });
   });
 });

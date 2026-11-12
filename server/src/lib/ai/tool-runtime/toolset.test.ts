@@ -395,6 +395,7 @@ describe("makeToolset — `-` and `_` spell the same tool (#772)", () => {
 
 describe("#2325 — the citation contract rides the tool result", () => {
   const ref = {
+    repoConnectionId: "r1",
     path: "src/a.ts",
     startLine: 1,
     endLine: 2,

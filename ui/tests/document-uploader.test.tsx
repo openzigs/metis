@@ -146,9 +146,9 @@ describe("uploadOutcomeMessage (#364)", () => {
     expect(msg).not.toMatch(/0 chunks/);
   });
 
-  it("names the chunk count of a synchronous ingest", () => {
-    expect(uploadOutcomeMessage({ status: "ready", chunkCount: 4 })).toBe("indexed · 4 chunks");
-    expect(uploadOutcomeMessage({ status: "ready", chunkCount: 1 })).toBe("indexed · 1 chunk");
+  it("names the sections indexed by a synchronous ingest", () => {
+    expect(uploadOutcomeMessage({ status: "ready", chunkCount: 4 })).toBe("indexed · 4 sections");
+    expect(uploadOutcomeMessage({ status: "ready", chunkCount: 1 })).toBe("indexed · 1 section");
   });
 
   it("points a failed ingest at the list", () => {

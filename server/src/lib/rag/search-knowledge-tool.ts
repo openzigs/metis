@@ -14,7 +14,8 @@
  * #2325 — a hit from a repository's source (a `repo` document) carries the
  * citation contract: its path at the repository's indexed commit, with the
  * retrievers that matched it. An excerpt has no line numbers, so its lines are
- * `null`. Documents that are not code carry none.
+ * `null`. Documents that are not code carry none. The result opens with the
+ * `Code version` line, before every chunk's text.
  */
 import { z } from "zod";
 import { DEFAULT_RETRIEVE_K, MAX_RETRIEVE_K } from "@metis/shared";
@@ -64,6 +65,7 @@ async function codeCitations(
   const versions = await loadVersions(projectId);
   return code.map(({ hit, connectorId, path }) =>
     codeCitationRef({
+      repoConnectionId: connectorId,
       path,
       startLine: null,
       endLine: null,
@@ -122,13 +124,13 @@ export function buildSearchKnowledgeTool(
       const warning = coverageWarning
         ? `⚠️ Partial coverage: ${coverageWarning.matchingChunks}/${coverageWarning.totalChunks} chunks match the current model '${coverageWarning.currentModel}'. Other models present: ${coverageWarning.mismatchedModels.join(", ")}.\n\n`
         : "";
-      const header = `${note}${warning}`;
+      // #2325 — the version line opens the result, before any chunk's text:
+      // chat's model-context cap keeps a result's start, and a chunk that
+      // carries its own `Code version: …` line can only come after the real one.
       const version = formatCodeVersionLine(citations);
+      const header = `${note}${warning}${version ? `${version}\n\n` : ""}`;
       return {
-        text:
-          hits.length === 0
-            ? `${header}(no matches)`
-            : `${header}${lines.join("\n\n---\n\n")}${version ? `\n\n${version}` : ""}`,
+        text: hits.length === 0 ? `${header}(no matches)` : `${header}${lines.join("\n\n---\n\n")}`,
         data: { hits, coverageWarning },
         resultCount: hits.length,
         ...(citations.length > 0 ? { citations } : {}),

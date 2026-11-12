@@ -8,7 +8,7 @@ export {
   type ToolCallRequest,
   type JSONSchema,
 } from "./types.js";
-export { searchCodeGraphTool } from "./search-code-graph.js";
+export { searchCodeGraphTool, chatSearchCodeGraphTool } from "./search-code-graph.js";
 export { readFileSliceTool } from "./read-file-slice.js";
 export { listFilesTool } from "./list-files.js";
 export { createSearchKnowledgeTool } from "./search-knowledge.js";
@@ -16,7 +16,7 @@ export { createSearchSymbolsTool, type SearchSymbolsDeps } from "./search-symbol
 export { createDescribeTableTool, type DescribeTableDeps } from "./describe-table.js";
 
 import type { AgentTool } from "./types.js";
-import { searchCodeGraphTool } from "./search-code-graph.js";
+import { chatSearchCodeGraphTool } from "./search-code-graph.js";
 import { createSearchSymbolsTool, type SearchSymbolsDeps } from "./search-symbols.js";
 import { createChatReadFileSliceTool } from "./chat-read-file-slice.js";
 import { loadCodeVersions } from "../../code-graph/code-version.js";
@@ -40,9 +40,10 @@ export type ChatCodeToolDeps = Partial<SearchSymbolsDeps> & {
 
 /**
  * Epic #712 / Issue #713 — the curated code-search tool set offered on the
- * chat/stream surface for project-scoped sessions. Reuses the SAME
- * `searchCodeGraphTool` the analysis surface registers (single source of truth,
- * no duplication) plus the hybrid `search_code_symbols` tool. Ordering is
+ * chat/stream surface for project-scoped sessions. Reuses the SAME search the
+ * analysis surface's `searchCodeGraphTool` runs (single source of truth, no
+ * duplication; chat's copy adds only the #2325 citation contract) plus the
+ * hybrid `search_code_symbols` tool. Ordering is
  * irrelevant here — `formatToolSchemas` sorts deterministically by name before
  * rendering the schemas into the cache-stable prompt lead.
  *
@@ -51,9 +52,10 @@ export type ChatCodeToolDeps = Partial<SearchSymbolsDeps> & {
  */
 export function getChatCodeTools(deps?: ChatCodeToolDeps): AgentTool[] {
   const { codeContext, ...searchDeps } = deps ?? {};
-  // #2325 — chat's symbol search states the indexed commit of every hit.
+  // #2325 — chat's graph and symbol searches state the indexed commit of every
+  // hit; the analysis surface's copies do not.
   const tools = [
-    searchCodeGraphTool,
+    chatSearchCodeGraphTool,
     createSearchSymbolsTool({ loadVersions: loadCodeVersions, ...searchDeps }),
     createChatReadFileSliceTool(),
   ];

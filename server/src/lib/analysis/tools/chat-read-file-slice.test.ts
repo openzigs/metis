@@ -282,6 +282,7 @@ describe("chat read_file_slice — the citation contract (#2325)", () => {
     );
     expect(r.citations).toEqual([
       {
+        repoConnectionId: "conn-a",
         path: "src/a.ts",
         startLine: 2,
         endLine: 3,

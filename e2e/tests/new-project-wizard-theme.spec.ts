@@ -89,7 +89,7 @@ for (const { os, theme } of SCENARIOS) {
         await expect(page.getByRole("dialog", { name: "New project" })).toBeVisible();
         await page.getByTestId("wizard-name-input").fill(`Wizard ${suffix}`);
         await expect(page.getByTestId("wizard-slug-input")).toHaveValue(`wizard-${suffix}`);
-        await expectLegible(page, "wizard-name", ["New project", "Slug", "2. Source"], out);
+        await expectLegible(page, "wizard-name", ["New project", "Short name", "2. Source"], out);
         await page.getByRole("button", { name: "Next" }).click();
       });
 

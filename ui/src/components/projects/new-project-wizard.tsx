@@ -138,7 +138,7 @@ export function NewProjectWizard({
           jobId: ingest.jobId,
           projectId: project.id,
           status: "started",
-          message: "Deep ingest started",
+          message: "Full re-read started",
           ts: Date.now(),
         });
         toast.success("Project created — ingest started");
@@ -219,7 +219,7 @@ export function NewProjectWizard({
             ) : null}
           </div>
           <div className="space-y-2">
-            <Label htmlFor="wizard-slug">Slug</Label>
+            <Label htmlFor="wizard-slug">Short name</Label>
             <Input
               id="wizard-slug"
               value={slug}
@@ -328,12 +328,12 @@ export function NewProjectWizard({
                 ) : null}
               </div>
               <div className="space-y-1">
-                <Label htmlFor="wizard-secret">Secret ref (optional)</Label>
+                <Label htmlFor="wizard-secret">Access token (vault secret)</Label>
                 <VaultPicker
                   id="wizard-secret"
                   value={secretRef}
                   onChange={setSecretRef}
-                  placeholder="${vault:my-pat}"
+                  placeholder="Choose a vault secret"
                 />
                 <p className="text-xs text-muted-foreground">Needed for a private repository.</p>
               </div>

@@ -60,7 +60,7 @@ export class ImportPage {
 
     this.historyTitle = page.getByText("Import history", { exact: true });
     this.emptyState = page.getByText("No imports yet.");
-    this.loadingState = page.getByText("Loading import history…");
+    this.loadingState = page.getByTestId("import-history-loading");
     this.runNowButton = page.getByRole("button", { name: "Run now" });
     this.deleteButton = page.getByRole("button", { name: "Delete", exact: true });
     this.confirmDeleteButton = page.getByRole("button", { name: "Confirm" });

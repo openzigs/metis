@@ -115,6 +115,7 @@ describe("#2325 — the version fields of a chat citation", () => {
 describe("parseCodeCitationRefs (#2325)", () => {
   const SHA = "0123456789abcdef0123456789abcdef01234567";
   const ref = {
+    repoConnectionId: "cmrepo0001",
     path: "src/a.ts",
     startLine: 1,
     endLine: 200,
@@ -148,6 +149,7 @@ describe("parseCodeCitationRefs (#2325)", () => {
       },
     ]);
     expect(r).toEqual({
+      repoConnectionId: null,
       path: "a.ts",
       startLine: null,
       endLine: null,
@@ -161,6 +163,18 @@ describe("parseCodeCitationRefs (#2325)", () => {
     expect(
       parseCodeCitationRefs([{ path: "a.ts", permalink: "http://x.test/a" }])[0]?.permalink,
     ).toBeNull();
+  });
+
+  it("keeps a repository id only in a connector id's shape (absent, foreign or malformed: null)", () => {
+    const repoOf = (v: unknown) =>
+      parseCodeCitationRefs([{ path: "a.ts", repoConnectionId: v }])[0]?.repoConnectionId;
+    expect(repoOf("cmwdu8h2k0000eb9k0oghxh56")).toBe("cmwdu8h2k0000eb9k0oghxh56");
+    expect(repoOf("eval-baqa-01-acme-reader-miniflux")).toBe("eval-baqa-01-acme-reader-miniflux");
+    expect(repoOf(undefined)).toBeNull();
+    expect(repoOf(42)).toBeNull();
+    expect(repoOf("../etc")).toBeNull();
+    expect(repoOf("a b")).toBeNull();
+    expect(repoOf("x".repeat(129))).toBeNull();
   });
 
   it("caps the list", () => {

@@ -46,8 +46,8 @@ export interface DraftPullRequestDialogProps {
 
 const CREDENTIAL_TEXT: Record<DraftPullRequestResult["credentialCheck"], string> = {
   resolved: "The vault secret resolved — a live run would reach GitHub.",
-  missing: "No vault secret ref given — a live run needs one.",
-  unresolved: "That vault secret ref does not name a vault secret.",
+  missing: "No vault secret chosen — a live run needs one.",
+  unresolved: "No vault secret has that name.",
 };
 
 function messageOf(err: unknown, fallback: string): string {
@@ -118,7 +118,7 @@ export function DraftPullRequestDialog({
         <div className="space-y-3">
           <p className="text-sm font-medium">{draft?.title}</p>
           <div>
-            <Label htmlFor="draft-pr-secret">Vault secret ref</Label>
+            <Label htmlFor="draft-pr-secret">Vault secret</Label>
             <Input
               id="draft-pr-secret"
               placeholder={VAULT_REF_EXAMPLE}

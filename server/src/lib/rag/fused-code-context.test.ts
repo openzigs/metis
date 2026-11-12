@@ -643,6 +643,7 @@ describe("fused code context — the citation contract (#2325)", () => {
     );
     expect(res.hits.map((h) => h.citation)).toEqual([
       {
+        repoConnectionId: "r1",
         path: "src/A.ts",
         startLine: 5,
         endLine: 9,

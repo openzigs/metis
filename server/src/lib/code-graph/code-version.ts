@@ -91,9 +91,13 @@ export interface RepoCodeVersion {
 /** The indexed version of each of a project's repositories. */
 export interface CodeVersionIndex {
   /**
-   * The version of the repository `repoConnectionId`. `null` (a graph with no
-   * connection) or an unknown id resolves to the project's only graph when it
-   * has one, else to "unknown".
+   * The version of the repository `repoConnectionId`. An id the index does
+   * not hold is "unknown", never another repository's version: a project
+   * whose second repository is still indexing (or failed to) must not lend
+   * the first one's commit, staleness or permalink to the second's files.
+   * Only a `null`/absent id (a legacy graph with no connection, a hit whose
+   * repository was not read) resolves to the project's only graph, when it
+   * has exactly one.
    */
   forRepo(repoConnectionId: string | null | undefined): RepoCodeVersion;
 }
@@ -113,10 +117,7 @@ export function codeVersionIndexOf(
   const only = rows.length === 1 ? rows[0]! : null;
   return {
     forRepo(repoConnectionId) {
-      if (repoConnectionId) {
-        const hit = byRepo.get(repoConnectionId);
-        if (hit) return hit;
-      }
+      if (repoConnectionId) return byRepo.get(repoConnectionId) ?? UNKNOWN;
       return only ? { commitSha: only.commitSha, repo: only.repo } : UNKNOWN;
     },
   };
@@ -189,6 +190,8 @@ export async function loadCodeVersions(projectId: string): Promise<CodeVersionIn
 
 /** One location's citation ref at `version`. */
 export function codeCitationRef(input: {
+  /** The repository the file is in (`null`: not known); see {@link CodeCitationRef}. */
+  repoConnectionId: string | null | undefined;
   path: string;
   startLine: number | null;
   endLine: number | null;
@@ -202,6 +205,7 @@ export function codeCitationRef(input: {
 }): CodeCitationRef {
   const { version } = input;
   return {
+    repoConnectionId: input.repoConnectionId ?? null,
     path: input.path,
     startLine: input.startLine,
     endLine: input.endLine,
@@ -223,10 +227,12 @@ export function codeCitationRef(input: {
 }
 
 /**
- * The line a tool result ends with, telling the model which version of the
- * code the locations above describe: `Code version: indexed commit <sha>`
+ * The line a tool result opens with, telling the model which version of the
+ * code its locations describe: `Code version: indexed commit <sha>`
  * (several, comma-separated, when the result spans repositories), or that the
- * index records none. `""` for a result with no locations.
+ * index records none. `""` for a result with no locations. A tool result puts
+ * it first because chat caps the model's copy of a result by keeping its start
+ * (`capForModel`); the fused code block, which is not capped, ends with it.
  */
 export function formatCodeVersionLine(refs: readonly CodeCitationRef[]): string {
   if (refs.length === 0) return "";

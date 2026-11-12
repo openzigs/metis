@@ -39,10 +39,6 @@ vi.mock("@/components/chat/project-scope-selector", () => ({
   }),
 }));
 
-vi.mock("@/components/chat/provenance-content", () => ({
-  ProvenanceContent: ({ content }: { content: string }) => <span>{content}</span>,
-}));
-
 const createSessionMock = vi.mocked(aiClient.createSessionWithScope);
 const useSearchParamsMock = vi.mocked(useSearchParams);
 

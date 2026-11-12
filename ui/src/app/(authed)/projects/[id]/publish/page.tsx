@@ -896,9 +896,9 @@ export default function PublishingPage() {
             />
           </div>
           <div>
-            <Label htmlFor="batchSecret">Vault secret ref</Label>
+            <Label htmlFor="batchSecret">Vault secret</Label>
             {/* #980 — the vault picker the import and connector forms use, not
-                free text; "Enter custom ref…" still allows a typed ref. */}
+                free text; "Type a secret name…" still allows a typed ref. */}
             <VaultPicker
               id="batchSecret"
               placeholder="${vault:my-token-label}"

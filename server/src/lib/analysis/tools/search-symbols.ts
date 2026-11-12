@@ -13,7 +13,7 @@
  *
  * #2325 — every hit carries the citation contract: its span at the indexed
  * commit of its repository, a permalink where the connector has one, and the
- * retrievers that matched it; the result ends with the commit it describes. The
+ * retrievers that matched it; the result opens with the commit it describes. The
  * searcher / line-lookup are injectable so unit tests never touch a live
  * embedder, LanceDB table, or Prisma.
  */
@@ -98,9 +98,12 @@ export interface SearchSymbolsDeps {
  */
 export function createSearchSymbolsTool(deps?: Partial<SearchSymbolsDeps>): AgentTool {
   const searcher = deps?.searcher ?? createDefaultCodeSearcher();
-  // #2325 — the repo is read again (#1636 skipped it): a hit's commit is its repository's.
-  const lineLookup = deps?.lineLookup ?? createDefaultSymbolLineLookup();
   const loadVersions = deps?.loadVersions;
+  // #1636 — the analysis surface renders `path:start-end` only, so it skips the
+  // repo read. #2325 — chat (given `loadVersions`) reads it: a hit's commit is
+  // its repository's.
+  const lineLookup =
+    deps?.lineLookup ?? createDefaultSymbolLineLookup({ withRepo: Boolean(loadVersions) });
 
   async function execute(args: unknown, context: ToolContext): Promise<ToolResult> {
     const validated = validateArgs(args);
@@ -159,6 +162,7 @@ export function createSearchSymbolsTool(deps?: Partial<SearchSymbolsDeps>): Agen
       if (versions)
         citations.push(
           codeCitationRef({
+            repoConnectionId: span?.repoConnectionId,
             path: span?.filePath ?? hit.filePath,
             startLine: span?.startLine ?? null,
             endLine: span?.endLine ?? null,
@@ -177,9 +181,10 @@ export function createSearchSymbolsTool(deps?: Partial<SearchSymbolsDeps>): Agen
       return snippet ? `${head}\n${snippet}` : head;
     });
 
+    // #2325 — the commit FIRST: chat's model-context cap keeps a result's start.
     const version = formatCodeVersionLine(citations);
     return {
-      content: version ? `${lines.join("\n\n")}\n\n${version}` : lines.join("\n\n"),
+      content: version ? `${version}\n\n${lines.join("\n\n")}` : lines.join("\n\n"),
       truncated: found.length >= limit,
       resultCount: raw.length,
       ...(versions ? { citations } : {}),

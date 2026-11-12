@@ -358,6 +358,7 @@ export function fuseCodeContext(
   // the placed hits name no more commits than that, so the line only shrinks.
   const refOf = (hit: FusedSymbolHit, cut: boolean): CodeCitationRef =>
     codeCitationRef({
+      repoConnectionId: hit.repoConnectionId,
       path: hit.filePath,
       startLine: hit.startLine,
       endLine: hit.endLine,

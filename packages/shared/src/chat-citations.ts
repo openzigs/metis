@@ -82,7 +82,12 @@ export interface ChatCitation {
  * - `truncated` / `totalLines` / `next`: a result a line or byte cap cut says
  *   so, how long the file is when known, and the range to ask for next;
  * - `stale`: the content was read from a working tree whose commit is not the
- *   indexed one. A stale citation is flagged, never dropped.
+ *   indexed one. A stale citation is flagged, never dropped;
+ * - `repoConnectionId`: the repository the file is in. A file is its
+ *   repository AND its path, never the path alone (#1965, `impactFileKey`):
+ *   two repositories of one project can both hold `src/index.ts`. `null` when
+ *   the producer does not know the repository (a legacy graph with no
+ *   connection, the analysis surface's directory read).
  *
  * `startLine` / `endLine` are `null` for a knowledge excerpt, which is a chunk
  * of a file and has no line numbers. `totalLines` counts the unit the result
@@ -90,6 +95,7 @@ export interface ChatCitation {
  * snippet a cap cut (whose `next` is then the symbol's whole span).
  */
 export interface CodeCitationRef {
+  repoConnectionId: string | null;
   path: string;
   startLine: number | null;
   endLine: number | null;
@@ -109,6 +115,12 @@ export interface CodeCitationRef {
 export const MAX_CODE_CITATION_REFS = 50;
 const MAX_PATH = 1024;
 const SHA_RE = /^[0-9a-f]{7,64}$/i;
+/** A connector id as METIS writes them (cuids, eval fixture slugs). */
+const REPO_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+
+function repoId(v: unknown): string | null {
+  return typeof v === "string" && REPO_ID_RE.test(v) ? v : null;
+}
 
 function sha(v: unknown): string | null {
   return typeof v === "string" && SHA_RE.test(v) ? v : null;
@@ -147,6 +159,7 @@ export function parseCodeCitationRefs(value: unknown): CodeCitationRef[] {
       c.next && typeof c.next === "object" ? (c.next as Record<string, unknown>) : undefined;
     const stale = c.stale === true;
     out.push({
+      repoConnectionId: repoId(c.repoConnectionId),
       path: c.path,
       startLine: lines ? startLine : null,
       endLine: lines ? endLine : null,
