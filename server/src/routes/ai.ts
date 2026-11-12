@@ -147,6 +147,13 @@ import {
 } from "../lib/ai/conversation/retrieval-query.js";
 import { applyRelevanceFloor, denseCosine, readRelevanceFloor } from "../lib/ai/relevance-floor.js";
 import {
+  citationsMeta,
+  collectCitationEvidence,
+  priorToolEvidence,
+  verifyCitations,
+  type ToolEvidence,
+} from "../lib/ai/citation-verification.js";
+import {
   countProjectToolReads,
   describeGrounding,
   withToolReads,
@@ -605,6 +612,11 @@ export interface RagContextCapture {
    * the answer cited and carry them into the next turn.
    */
   excerpts?: CitableExcerpt[];
+  /**
+   * #2242 — the fused code block's entries by their `[n]`, which continue the
+   * excerpts' numbering, so a citation of one resolves to its locator.
+   */
+  codeEntries?: Array<{ n: number; path: string; lines: [number, number] }>;
   /** #2241 — retrieved excerpts the relevance floor kept out of the prompt. */
   belowFloor?: number;
   /** #2241 — the knowledge search failed, so the turn has no excerpts. */
@@ -793,6 +805,7 @@ export async function buildAutoRagContext(
             chunkId: h.chunkId,
             name: h.path ?? h.filename,
             locator: formatHitLocator(h),
+            source: h.source,
             ...(relevance !== null ? { relevance } : {}),
           };
         });
@@ -835,11 +848,18 @@ export async function buildAutoRagContext(
       maxSymbols: cfg.getNumber("CHAT_FUSED_CODE_MAX_SYMBOLS", 12),
       searcher: fusedDeps.searcher,
       lineLookup: fusedDeps.lineLookup,
+      // #2242 — numbered on from the excerpts, so `[n]` names one entry only.
+      firstIndex: listed.length + 1,
     });
 
     if (capture && fused.block) {
       capture.contexts.push(fused.block);
       capture.sources += fused.usedSymbols;
+      capture.codeEntries = fused.hits.map((h, i) => ({
+        n: listed.length + 1 + i,
+        path: h.filePath,
+        lines: [h.startLine, h.endLine],
+      }));
     }
     if (!ragBlock && !fused.block) {
       // #2241 — the search found matches, all too weak to use: tell the model
@@ -860,6 +880,7 @@ export async function buildAutoRagContext(
       capture.contexts.length = 0;
       capture.sources = 0;
       delete capture.excerpts;
+      delete capture.codeEntries;
       delete capture.belowFloor;
       delete capture.coverage;
       // #2241 — recorded, so the reply's label says the search failed.
@@ -1946,6 +1967,8 @@ export function aiRouter(): Router {
       // runs; prompts reach the owner over the session's socket room. Otherwise,
       // the single non-loop provider call as before.
       let response: ChatResponse;
+      // #2242 — what the tools returned, which the citations are checked against.
+      let chatToolRecords: ToolEvidence[] = [];
       // #1238 — a dropped attempt's usage is in the turn's (see calibrationPromptChars).
       let resentPrompt = false;
       // #146 — an unscoped session may run the loop too: its only tool is
@@ -1996,6 +2019,7 @@ export function aiRouter(): Router {
           },
         );
         resentPrompt = loop.droppedUsage !== undefined;
+        chatToolRecords = loop.toolResults;
         // #439 — a reply that read the project through its tools is grounded.
         grounding = withToolReads(grounding, countProjectToolReads(loop.toolResults));
         response = {
@@ -2070,6 +2094,18 @@ export function aiRouter(): Router {
         turnMeter.markProjectRecorded();
       }
 
+      // #2242 — every citation in the answer, checked against what the turn
+      // retrieved and what its project-reading tools returned, and what the
+      // earlier turns still in its history read (#773 tells the model those stand).
+      const citations = verifyCitations(
+        outContent,
+        collectCitationEvidence(
+          ragCapture,
+          chatToolRecords,
+          priorToolEvidence(turn.historyRows ?? []),
+        ),
+      );
+
       // #136/#137 — the reply, with the provider-reported usage, into the transcript.
       const replyRow = await recordReply({
         sessionId: session.id,
@@ -2087,6 +2123,7 @@ export function aiRouter(): Router {
           grounding,
           // #2240 — what the answer cited, so the next turn keeps those excerpts.
           ...citedExcerptsMeta(outContent, ragCapture.excerpts),
+          ...citationsMeta(citations),
           ...(response.model && response.model !== model ? { servedModel: response.model } : {}),
         },
       });
@@ -2170,6 +2207,7 @@ export function aiRouter(): Router {
           response: { ...response, content: outContent },
           transcript: { userOrdinal: turn.userRow.ordinal, replyOrdinal: replyRow.ordinal },
           grounding,
+          citations,
           ...(turn.compaction ? { compaction: compactionEvent(turn.compaction) } : {}),
           ...(toolApprovals.length > 0 ? { toolApprovals } : {}),
           ...(toolsWithheld.length > 0 ? { toolsWithheld } : {}),
@@ -2517,6 +2555,22 @@ export function aiRouter(): Router {
     const toolCalls: ReplyToolCall[] = [];
     // #439 — how many of them read the project (see `countProjectToolReads`).
     let projectToolReads = 0;
+    // #2242 — what they returned, which the answer's citations are checked against.
+    const streamToolRecords: ToolEvidence[] = [];
+    // #2242 — the answer's checked citations: sent before `done`, recorded on the row.
+    const streamCitations = (answer: string) => {
+      const checked = verifyCitations(
+        answer,
+        collectCitationEvidence(
+          ragCapture,
+          streamToolRecords,
+          priorToolEvidence(prepared?.historyRows ?? []),
+        ),
+      );
+      if (checked.length > 0) send("citations", { type: "citations", citations: checked });
+      return checked;
+    };
+    let citations: ReturnType<typeof verifyCitations> = [];
     let prepared: PreparedTurn | null = null;
     const providerKey: string = streamProvider.key;
     // #243 — what this turn has spent, metered even if it fails.
@@ -2663,6 +2717,7 @@ export function aiRouter(): Router {
             onToolRecord: (rec) => {
               toolCalls.push(replyToolCall(rec));
               projectToolReads += countProjectToolReads([rec]);
+              streamToolRecords.push(rec);
               // #713's frame, kept for existing clients: one per call, after it
               // was handled. `tool_event` (#143) is the full lifecycle.
               send("tool_call", { type: "tool_call", name: rec.tool, arguments: rec.args });
@@ -2747,6 +2802,7 @@ export function aiRouter(): Router {
         resentPrompt = loop.droppedUsage !== undefined;
         finishReason = loop.finishReason ?? null;
         send("usage", { type: "usage", usage: loop.usage });
+        citations = streamCitations(finalAnswer);
         send("done", {
           type: "done",
           ...(loop.finishReason ? { finishReason: loop.finishReason } : {}),
@@ -2770,7 +2826,10 @@ export function aiRouter(): Router {
           }
           if (observeOnline && c.type === "delta") observedAnswer += c.content;
           if (c.type === "delta") finalAnswer += c.content;
-          if (c.type === "done") finishReason = c.finishReason ?? null;
+          if (c.type === "done") {
+            finishReason = c.finishReason ?? null;
+            citations = streamCitations(finalAnswer);
+          }
           send(c.type, c);
           if (c.type === "done") break;
         }
@@ -2798,7 +2857,11 @@ export function aiRouter(): Router {
           promptChars: calibrationPromptChars(turn, toolCalls, resentPrompt),
           ratio: turn.ratio,
           // #2240 — what the answer cited, so the next turn keeps those excerpts.
-          meta: { grounding, ...citedExcerptsMeta(finalAnswer, ragCapture.excerpts) },
+          meta: {
+            grounding,
+            ...citedExcerptsMeta(finalAnswer, ragCapture.excerpts),
+            ...citationsMeta(citations),
+          },
         });
         replyRecorded = true;
         await writeDerivedSnapshot(session);
