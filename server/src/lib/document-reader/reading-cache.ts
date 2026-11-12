@@ -19,7 +19,9 @@
  *     that hold those descriptions (`impact-analysis/document-source.ts`); so
  *     switching the image describer on, re-ingesting, or a parser change gives
  *     another text and reads again. It also keeps every saved quote offset
- *     pointing into the text the caller holds.
+ *     pointing into the text the caller holds;
+ *   - the operator's notes the reading was given (#2262), folded into that
+ *     hash: notes frame what the reader looks for.
  *
  * Only a whole reading is saved: never a failed one (it throws), a partial one
  * (a batch whose reply could not be read, or a cross-section pass that failed),
@@ -70,9 +72,19 @@ export interface ReadingCacheDeps {
 
 const ZERO_USAGE = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
-/** The SHA-256 of the text a reading was made from. */
-export function readingTextHash(text: string): string {
-  return createHash("sha256").update(text, "utf8").digest("hex");
+/**
+ * The SHA-256 of the text a reading was made from and the operator's notes it
+ * was given (#2262). Without notes (blank ones are never sent, `prompts.ts`)
+ * it is the text's own hash, so readings saved before #2262 still match; with
+ * notes it is a separately prefixed hash of both, so a reading made with other
+ * notes, or none, is never reused.
+ */
+export function readingTextHash(text: string, operatorNotes?: string): string {
+  const notes = operatorNotes?.trim();
+  if (!notes) return createHash("sha256").update(text, "utf8").digest("hex");
+  return createHash("sha256")
+    .update(`metis-reading-notes-v1\0${JSON.stringify([text, notes])}`, "utf8")
+    .digest("hex");
 }
 
 /** Whether a reading may be saved: every section read, the cross-section pass done, and something found. */
@@ -118,6 +130,9 @@ function parseSaved(json: string): Omit<DocumentReading, "usage" | "reused"> | n
  * Read `input.text`, or reuse the saved reading of the same document, file,
  * reader, model and text. A reused reading carries `reused` (when and with
  * which model it was read) and zero `calls` and `usage`: no model was called.
+ *
+ * A read that throws is not caught here: its error reaches the caller as the
+ * reader threw it, with the usage it spent attached (`spentUsageOf`, #2262).
  */
 export async function readDocumentOnce(
   input: ReadDocumentOnceInput,
@@ -133,7 +148,7 @@ export async function readDocumentOnce(
     checksum: document.checksum,
     readerVersion: READER_VERSION,
     model: input.model ?? input.provider.model,
-    textHash: readingTextHash(input.text),
+    textHash: readingTextHash(input.text, input.operatorNotes),
   };
 
   if (!reread) {

@@ -12,6 +12,15 @@ import type { ToolDefinition } from "../types.js";
 import { buildSessionToolset, CHAT_EXCLUDED_TOOLS, makeToolset, toWireName } from "./toolset.js";
 import type { RuntimeTool } from "./types.js";
 import { zodToJsonSchema, toolParametersSchema } from "./json-schema.js";
+import { UNRESTRICTED_CODE_ACCESS } from "../../analysis/tools/code-access.js";
+
+// #2243 — the code tools read the caller's document ACLs; the SQLite suite
+// (`tests/chat-code-tools-acl-2243.sqlite.test.ts`) covers the real read.
+const codeAccess = vi.hoisted(() => ({ load: vi.fn() }));
+vi.mock("../../analysis/tools/code-access.js", async (original) => ({
+  ...(await original<typeof import("../../analysis/tools/code-access.js")>()),
+  loadCodeAccessFilter: codeAccess.load,
+}));
 
 const CTX = { sessionId: "s1", userId: "u1", projectId: "p1" };
 
@@ -152,8 +161,25 @@ describe("buildSessionToolset", () => {
     expect(t.risk).toBe("low");
     expect(t.validate({ query: "x" })).toEqual({ ok: true, args: { query: "x" } });
     expect(t.validate([1])).toEqual({ ok: false });
+    codeAccess.load.mockResolvedValue(UNRESTRICTED_CODE_ACCESS);
     await expect(t.execute({ query: "x" }, CTX)).resolves.toEqual({ text: "hit", resultCount: 3 });
-    expect(execute).toHaveBeenCalledWith({ query: "x" }, { projectId: "p1" });
+    expect(execute).toHaveBeenCalledWith(
+      { query: "x" },
+      { projectId: "p1", codeAccess: UNRESTRICTED_CODE_ACCESS },
+    );
+    expect(codeAccess.load).toHaveBeenCalledWith({ projectId: "p1", userId: "u1" });
+    // #2248 — a shared reply reads the code as its audience does.
+    await t.execute({ query: "y" }, { ...CTX, aclAudience: "shared" });
+    expect(codeAccess.load).toHaveBeenLastCalledWith({
+      projectId: "p1",
+      userId: "u1",
+      aclAudience: "shared",
+    });
+    // An actor that cannot be resolved fails the call: nothing is read.
+    codeAccess.load.mockRejectedValueOnce(new Error("ACL actor unavailable"));
+    execute.mockClear();
+    await expect(t.execute({ query: "z" }, CTX)).rejects.toThrow("ACL actor unavailable");
+    expect(execute).not.toHaveBeenCalled();
     await expect(t.execute({}, { ...CTX, projectId: null })).resolves.toMatchObject({
       isError: true,
     });

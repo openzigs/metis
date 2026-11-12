@@ -641,6 +641,10 @@ is available per project on the admin embeddings route. See
 depth — for 91–508 ms of added p50 latency. The wiring was reverted. `RAG_RERANK` is wired on
 the *document* path but that path has **no harness that runs retrieval at all**, so it is
 unmeasured rather than cleared; do not enable it citing #1158. Both are detailed in ADR 0005.
+#2243 then ran it end to end on chat's document path, through the BA question set of #2237
+(`eval-data/README.md`, "Each flag on its own"): one run of 9 questions with the reranker
+on stated 76% of the expected facts, against 86% and 80% for two runs with it off. That is
+no gain, so `RAG_RERANK` stays unset by default.
 
 ## Code-symbol embeddings (#797)
 
