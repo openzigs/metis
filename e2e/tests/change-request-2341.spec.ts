@@ -59,7 +59,9 @@ test.describe("Change request — titled, run with defaults, renamed (#2341)", (
       await expect(toggle).toBeVisible({ timeout: 30_000 });
       await expect(toggle).toHaveText(/change request/);
       if ((await toggle.getAttribute("aria-expanded")) !== "true") await toggle.click();
-      await expect(page.getByRole("heading", { name: "New change request" })).toBeVisible();
+      await expect(
+        page.getByRole("heading", { name: "New change request", exact: true }),
+      ).toBeVisible();
       // The up-front decisions are behind Options, closed.
       await expect(page.getByTestId("change-request-options-toggle")).toHaveAttribute(
         "aria-expanded",
