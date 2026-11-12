@@ -21,8 +21,13 @@
  *     every section and as much of the text as fits; every batch of sections
  *     is then read with that context, each section under its heading path.
  *
- * Then one cross-section pass over the statements (not the document) names
- * repeats, which are dropped, and cross-references, which are kept.
+ * Statements cut from one sentence are folded back into one ({@link sentenceSpan}):
+ * #2361 measured that most of the reader's repeats were one sentence written as
+ * two or three statements, not one statement written twice. Then one
+ * cross-section pass over the statements (not the document) names repeats,
+ * which are dropped, and cross-references, which are kept. A repeat is the
+ * statement that says less, so an overview written before the section that
+ * sets a requirement out in full is the one that goes.
  *
  * Every statement passes the governing rule reader's deterministic check
  * before it is kept: its quote must be in the source verbatim, whitespace
@@ -50,6 +55,7 @@ import { clauseLocator } from "../governing/clause-verify.js";
 import {
   DOCUMENT_CONTEXT_SHAPE,
   MERGE_REPLY_SHAPE,
+  REQUIREMENT_STATEMENT_KINDS,
   STATEMENTS_REPLY_SHAPE,
   buildDocumentContextPrompt,
   buildMergePrompt,
@@ -69,7 +75,7 @@ import { batchSections, outlineSections, sectionAt, type ReaderSection } from ".
  * (`reading-cache.ts`). Bump it when the reader's prompts, reply schemas,
  * batching or verification change: every saved reading is then read again.
  */
-export const READER_VERSION = "2230.1";
+export const READER_VERSION = "2361.1";
 
 /** Source characters whose statements one reply is asked to write. */
 export const READER_BATCH_CHARS = 8000;
@@ -120,7 +126,10 @@ export interface SectionCoverage {
   statements: number;
   /** Statements whose quote was not found in this section's source. */
   unverified: number;
-  /** Statements dropped as repeats of an earlier one. */
+  /**
+   * Statements dropped as repeats: one the cross-section pass found said in
+   * full by another, or one of several cut from the same sentence (#2361).
+   */
   repeats: number;
 }
 
@@ -339,8 +348,7 @@ async function read(
   }
 
   const locate = clauseLocator(text);
-  const kept: Kept[] = [];
-  const seen = new Set<string>();
+  const quoted: Kept[] = [];
   let droppedUnverified = 0;
   let readBatches = 0;
   const batches = batchSections(sections, batchChars);
@@ -392,10 +400,7 @@ async function read(
         continue;
       }
       const section = sectionAt(sections, clause.clauseStart) ?? batch[0]!;
-      const key = `${clause.clauseStart}:${clause.clauseEnd}:${parsed.data.statement.replace(/\s+/g, " ").toLowerCase()}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      kept.push({
+      quoted.push({
         kind: parsed.data.kind,
         statement: parsed.data.statement,
         quote: clause.clauseExcerpt,
@@ -411,7 +416,8 @@ async function read(
     );
   }
 
-  kept.sort((a, b) => a.start - b.start || a.end - b.end);
+  quoted.sort((a, b) => a.start - b.start || a.end - b.end);
+  const kept = foldSentences(text, quoted, (k) => coverage.get(k.section.id)!.repeats++);
   const draftIds = kept.map((_k, i) => `T${i + 1}`);
 
   // The cross-section pass: repeats and cross-references.
@@ -440,7 +446,11 @@ async function read(
       for (const d of outcome.verdict.duplicates) {
         const i = indexOf.get(d.id.toUpperCase());
         const of = indexOf.get(d.of.toUpperCase());
-        if (i === undefined || of === undefined || of >= i || dropped.has(of)) continue;
+        // #2361 — either order: the one named is the one that says less, and an
+        // overview comes before the section that sets it out. The statement it
+        // repeats must still be kept, so a pair named both ways never drops both.
+        if (i === undefined || of === undefined || i === of || dropped.has(i) || dropped.has(of))
+          continue;
         dropped.add(i);
         coverage.get(kept[i]!.section.id)!.repeats++;
       }
@@ -494,6 +504,68 @@ async function read(
     outputTokenCap,
     usage: meter.usage,
   };
+}
+
+/**
+ * #2361 — the sentence around `[start, end)`: from just after the previous
+ * sentence's end (`.`, `!` or `?` before whitespace) or line break, to the
+ * next one. A line is never more than one sentence, so a table row or a list
+ * item is its own. An abbreviation (`e.g.`) ends a sentence early, which only
+ * ever leaves two statements unfolded.
+ */
+export function sentenceSpan(
+  text: string,
+  start: number,
+  end: number,
+): { start: number; end: number } {
+  const endsSentence = (i: number): boolean =>
+    /[.!?]/.test(text[i] ?? "") && (i + 1 >= text.length || /\s/.test(text[i + 1]!));
+  let from = start;
+  while (from > 0 && text[from - 1] !== "\n" && !endsSentence(from - 1)) from--;
+  let to = end;
+  if (!(to > start && endsSentence(to - 1))) {
+    while (to < text.length && text[to] !== "\n" && !endsSentence(to)) to++;
+    if (to < text.length && text[to] !== "\n") to++;
+  }
+  return { start: from, end: to };
+}
+
+/**
+ * #2361 — statements whose quotes lie in one sentence, folded into one: the
+ * quote spans them all, the statements are joined, and the kind is the first
+ * requirement kind among them (else the first's). One sentence is one
+ * statement, as #2229's whole-document read wrote it; `onFolded` is told of
+ * every statement folded into another. `kept` is in document order.
+ */
+function foldSentences(text: string, kept: Kept[], onFolded: (k: Kept) => void): Kept[] {
+  const groups: Array<{ members: Kept[]; sentenceEnd: number }> = [];
+  for (const k of kept) {
+    const sentence = sentenceSpan(text, k.start, k.end);
+    const last = groups[groups.length - 1];
+    if (last && sentence.start < last.sentenceEnd) {
+      last.members.push(k);
+      last.sentenceEnd = Math.max(last.sentenceEnd, sentence.end);
+      onFolded(k);
+    } else {
+      groups.push({ members: [k], sentenceEnd: sentence.end });
+    }
+  }
+  return groups.map(({ members }) => {
+    const first = members[0]!;
+    if (members.length === 1) return first;
+    const start = Math.min(...members.map((m) => m.start));
+    const end = Math.max(...members.map((m) => m.end));
+    const said = new Map<string, string>();
+    for (const m of members) said.set(m.statement.replace(/\s+/g, " ").toLowerCase(), m.statement);
+    return {
+      kind: (members.find((m) => REQUIREMENT_STATEMENT_KINDS.has(m.kind)) ?? first).kind,
+      statement: [...said.values()].join(" "),
+      quote: text.slice(start, end),
+      start,
+      end,
+      section: first.section,
+    };
+  });
 }
 
 function startsIn(clause: { clauseStart: number }, span: { start: number; end: number }): boolean {

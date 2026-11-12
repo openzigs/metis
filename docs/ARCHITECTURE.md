@@ -4941,9 +4941,14 @@ whole document in every call and asks for one batch of sections' statements at a
 (`READER_BATCH_CHARS`, 8,000 source characters), which keeps #2229's whole-document recall
 without one reply having to hold every requirement; **sectioned** (it does not fit) builds the
 document context once (purpose, scope, actors, glossary) from the full outline and as much text
-as fits, then reads each batch with it. A cross-section pass over the statements names repeats
-(dropped) and cross-references (kept); if it fails, every statement is kept and the report says
-so. Every quote is checked with the governing `clauseLocator` and the stored quote and offsets
+as fits, then reads each batch with it. One sentence is one statement (#2361): statements whose
+quotes lie in the same sentence (`sentenceSpan`; a line break also ends one, so a table row is
+its own) are folded into one, quoting the span of all of them, because #2255's measurement found
+most of the reader's repeats were one sentence written as several statements. A cross-section
+pass over the statements then names repeats (dropped) and cross-references (kept); the repeat
+dropped is the statement that says less, whichever comes first, so an overview restated in full
+by a later section goes and the later one stays. If the pass fails, every statement is kept and
+the report says so; each section's `repeats` counts both kinds. Every quote is checked with the governing `clauseLocator` and the stored quote and offsets
 are the source's own; a quote not in the source, or found only outside the batch the call was
 asked about, is dropped and counted (#2262). A batch whose reply cannot be read is reported
 `unread`; a provider error fails the read, and the error carries the tokens already spent
