@@ -15,6 +15,12 @@ export interface SettingsNavItem {
   label: string;
   /** Shown to, and rendered for, system admins only. */
   adminOnly?: boolean;
+  /**
+   * Listed under the "Administration" heading. #2332 — kept apart from
+   * `adminOnly` so hiding the developer sections from non-admins leaves an
+   * admin's nav in the order it had.
+   */
+  administration?: boolean;
 }
 
 export const SETTINGS_NAV: readonly SettingsNavItem[] = [
@@ -22,16 +28,23 @@ export const SETTINGS_NAV: readonly SettingsNavItem[] = [
   { href: "/settings/profile", label: "Profile" },
   { href: "/settings/appearance", label: "Appearance" },
   { href: "/settings/notifications", label: "Notifications" },
-  { href: "/settings/api-keys", label: "Configuration" },
+  // #2332 — Configuration, MCP servers, ACP tokens, Hooks and Triggers are
+  // developer and operations tools, not part of an analyst's job.
+  { href: "/settings/api-keys", label: "Configuration", adminOnly: true },
   { href: "/settings/integrations", label: "Integrations" },
-  { href: "/settings/mcp", label: "MCP servers" },
+  { href: "/settings/mcp", label: "MCP servers", adminOnly: true },
   { href: "/settings/usage", label: "Usage & cost" },
-  { href: "/settings/acp", label: "ACP tokens" },
-  { href: "/settings/hooks", label: "Hooks" },
-  { href: "/settings/triggers", label: "Triggers" },
+  { href: "/settings/acp", label: "ACP tokens", adminOnly: true },
+  { href: "/settings/hooks", label: "Hooks", adminOnly: true },
+  { href: "/settings/triggers", label: "Triggers", adminOnly: true },
   { href: "/settings/workspaces", label: "Workspaces" },
-  { href: "/settings/auth", label: "SSO & authentication", adminOnly: true },
-  { href: "/settings/embeddings", label: "Embeddings", adminOnly: true },
+  {
+    href: "/settings/auth",
+    label: "SSO & authentication",
+    adminOnly: true,
+    administration: true,
+  },
+  { href: "/settings/embeddings", label: "Embeddings", adminOnly: true, administration: true },
 ] as const;
 
 /**

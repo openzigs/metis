@@ -16,7 +16,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { CheckCircle2, AlertTriangle, Circle, Loader2 } from "lucide-react";
 import { apiFetch } from "@/lib/api-client";
 import { analysisApi } from "@/lib/analysis-api";
-import { openQuestionCount } from "@/components/analysis/analysis-views";
+import { openQuestionCount } from "@metis/shared";
 import { dbConnectorsApi, repoConnectorsApi } from "@/lib/connectors-api";
 import { documentsApi } from "@/lib/projects-api";
 import { publishingApi } from "@/lib/publishing-api";

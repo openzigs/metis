@@ -467,6 +467,9 @@ const OUTPUT_CAPS = {
   requirementId: 128,
 } as const;
 
+/** #2276 — the most findings one agent answer keeps (`agentOutputSchema`). */
+export const MAX_AGENT_FINDINGS = OUTPUT_CAPS.findings;
+
 /**
  * #2233 — what {@link clampAgentOutputStrings} will cut from `parsed.findings`
  * at the 50-finding cap: the counts and each cut finding's title (excerpted),
@@ -769,9 +772,6 @@ export async function runAgent(
     });
   }
 
-  // #1143 — like the categories above: the schema salvages citations, and the
-  // counts are read here, before the parse erases what it dropped. #1155 —
-  // read after the clamp, so findings it cut past the 50th are not counted.
   // #2233 — read before the clamp cuts the findings past the 50th.
   const findingsLeftOut = collectFindingsLeftOut(parsed, input.agentKey);
   if (findingsLeftOut) {
@@ -782,6 +782,9 @@ export async function runAgent(
     });
   }
   const clamped = clampAgentOutputStrings(parsed);
+  // #1143 — like the categories above: the schema salvages citations, and the
+  // counts are read here, before the parse erases what it dropped. #1155 —
+  // read after the clamp, so findings it cut past the 50th are not counted.
   const citationSalvage = collectSalvagedCitations(clamped);
   const validated = schema.parse(clamped);
 

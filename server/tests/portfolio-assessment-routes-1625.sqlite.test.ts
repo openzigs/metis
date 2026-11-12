@@ -12,6 +12,7 @@ import request from "supertest";
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 import { PrismaClient } from "@prisma/client";
 import {
+  PORTFOLIO_ASSESSMENT_MAX_PRODUCTS,
   getPermissionsForRole,
   type AuthPayload,
   type PortfolioAssessmentView,
@@ -237,7 +238,21 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       // requirement Ana cannot read, which the route would otherwise answer
       // 404 before the engine's own schema ever saw the products.
       it.each([
-        ["a product scope naming two products", { scope: "product", productIds: [P1, P2] }],
+        // #2272 — several products are a choice; more than the cap is not.
+        [
+          "a product scope naming more products than the cap",
+          {
+            scope: "product",
+            productIds: Array.from({ length: PORTFOLIO_ASSESSMENT_MAX_PRODUCTS + 1 }, (_, i) =>
+              i === 0 ? P1 : `p-${i}`,
+            ),
+          },
+        ],
+        ["a product scope naming no product", { scope: "product", productIds: [] }],
+        [
+          "a product scope hosting on a product it does not name",
+          { scope: "product", productIds: [P1, P2], hostProductId: P3 },
+        ],
         ["an all-accessible scope naming a product", { scope: "all-accessible", productIds: [P1] }],
       ])("400 on %s, from the HTTP contract", async (_label, scope) => {
         const res = await post("ana", { requirementId: REQ_B, ...scope });

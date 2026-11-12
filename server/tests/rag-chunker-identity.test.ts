@@ -21,6 +21,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   BOUNDARY_TIERS,
+  CHUNK_CONTEXT_NONE,
   CHUNKER_ALGORITHM_VERSION,
   chunkMarkdown,
   chunkerIdentity,
@@ -346,6 +347,51 @@ describe("issue #1182 — classifyChunkerIdentity", () => {
     expect(chunkerProducerOf("noseparator")).toBe("");
     expect(DOCSGEN_CHUNKER_IDENTITY.startsWith(DOCUMENT_CHUNKER_PRODUCER)).toBe(true);
     expect(classifyChunkerIdentity(DOCSGEN_CHUNKER_IDENTITY, ACTIVE)).not.toBe("drifted");
+  });
+});
+
+/**
+ * Issue #2268 — the contextual-chunks mode is part of what a row was indexed with:
+ * turning `RAG_CONTEXTUAL_CHUNKS` on (or off, or between modes) changes the text the
+ * indexes see, and only a re-ingest changes it back, so `embeddings:migrate status`
+ * must read a flag change as drift.
+ */
+describe("issue #2268 — the contextual mode in the chunker identity", () => {
+  const OPTS = { chunkSize: 2048, overlap: 256 };
+  const OFF = chunkerIdentity(OPTS);
+  const HEADINGS = chunkerIdentity(OPTS, "headings");
+  const MODEL = chunkerIdentity(OPTS, "model");
+  const REPO = chunkerIdentity(OPTS, CHUNK_CONTEXT_NONE);
+
+  it("off appends nothing: the identity is exactly what it was before #2268", () => {
+    expect(chunkerIdentity(OPTS, "off")).toBe(OFF);
+    expect(chunkerIdentity(OPTS, undefined)).toBe(OFF);
+    expect(OFF).toBe(`doc:v${CHUNKER_ALGORITHM_VERSION}:2048/256`);
+  });
+
+  it("an on mode appends its own segment and keeps the producer", () => {
+    expect(HEADINGS).toBe(`${OFF};ctx=headings`);
+    expect(MODEL).toBe(`${OFF};ctx=model`);
+    expect(chunkerProducerOf(HEADINGS)).toBe(DOCUMENT_CHUNKER_PRODUCER);
+  });
+
+  it("a flag change in either direction, or between modes, is drift", () => {
+    expect(classifyChunkerIdentity(OFF, HEADINGS)).toBe("drifted");
+    expect(classifyChunkerIdentity(HEADINGS, OFF)).toBe("drifted");
+    expect(classifyChunkerIdentity(HEADINGS, MODEL)).toBe("drifted");
+    expect(classifyChunkerIdentity(MODEL, MODEL)).toBe("current");
+  });
+
+  it("a row never prefixed (a repository file) is current under every mode", () => {
+    for (const active of [OFF, HEADINGS, MODEL]) {
+      expect(classifyChunkerIdentity(REPO, active)).toBe("current");
+    }
+  });
+
+  it("…but not when it was cut differently", () => {
+    const oldCut = chunkerIdentity({ chunkSize: 1024, overlap: 128 }, CHUNK_CONTEXT_NONE);
+    expect(classifyChunkerIdentity(oldCut, HEADINGS)).toBe("drifted");
+    expect(classifyChunkerIdentity(oldCut, OFF)).toBe("drifted");
   });
 });
 
