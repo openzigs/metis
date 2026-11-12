@@ -32,6 +32,8 @@ export class ConnectionsPage {
   readonly dbAllowTablesInput: Locator;
   readonly dbAllowColumnsInput: Locator;
   readonly addDbButton: Locator;
+  readonly repoForbidden: Locator;
+  readonly dbForbidden: Locator;
 
   // Primary repo elements (Epic #640)
   readonly primaryBadge: Locator;
@@ -75,6 +77,9 @@ export class ConnectionsPage {
     this.dbAllowTablesInput = page.getByLabel("Allowed tables (optional)");
     this.dbAllowColumnsInput = page.getByLabel("Allowed columns (optional)");
     this.addDbButton = page.getByRole("button", { name: "Add database connector" });
+    // #2368 — what a role without `connector.write` sees in place of each form.
+    this.repoForbidden = page.getByText("Ask an admin to add repository connectors.");
+    this.dbForbidden = page.getByText("Ask an admin to add database connectors.");
 
     // Epic #640 — primary badge
     this.primaryBadge = page.getByTestId("primary-badge");

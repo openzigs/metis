@@ -1080,6 +1080,12 @@ card on **Home** has a **New project** button that opens a three-step wizard:
    ref**), or **Skip — add a source later**.
 3. **Ingest** — check the summary and click **Create and start ingest**.
 
+Creating a project needs `project.create` (coordinator or admin), and deleting one
+(**Projects** › **…** › **Delete**) needs `project.delete` (admin). A role without
+the permission is not offered the action: in place of **New project**, on
+**Projects** and on **Home**, it reads "Ask an admin to create projects.", and the
+**…** menu on each project card is absent (#2368).
+
 The wizard creates the project, connects the repository and starts its Deep
 Ingest, then opens the project's **Overview** with the **Ingest** stage reading
 "Ingesting…". If the repository cannot be linked or the ingest cannot start, a
@@ -3783,6 +3789,8 @@ This information is used by the Database Analyst agent during analysis and can a
 ### 16.4 Phase 8 — The Connections Tab
 
 Open any project and click **Connections** in the left nav (`/projects/{id}/connections`). You'll see two sections:
+
+The add forms below, and a suggested connector's **Configure** and **Dismiss**, appear only for a role with `connector.write` (coordinator or admin). Other roles see the existing connectors and "Ask an admin to add repository connectors." (or database connectors) in place of each form (#2368).
 
 **Repository connectors**
 

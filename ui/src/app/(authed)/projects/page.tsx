@@ -29,9 +29,17 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { PageHeader } from "@/components/ui/page-header";
 import { useValidatedActiveWorkspaceId } from "@/lib/active-workspace";
+import { useAuth } from "@/lib/auth-context";
+import { ProjectCreateForbiddenNotice } from "@/components/projects/new-project-wizard";
 
 export default function ProjectsPage() {
   const qc = useQueryClient();
+  // #2368 — offer a write action only to a role holding the key its route
+  // checks (`POST /api/projects`, `DELETE /api/projects/:id`). Hiding is not
+  // access control: the server refuses either way.
+  const { user } = useAuth();
+  const canCreate = user?.permissions.includes("project.create") ?? false;
+  const canDelete = user?.permissions.includes("project.delete") ?? false;
   // #2197 — the validated id, not the raw stored one: a workspace the caller is
   // not in (a second user on a shared browser) filtered the list down to the
   // unassigned projects. Subscribed, so a switch in the top bar re-lists.
@@ -61,22 +69,26 @@ export default function ProjectsPage() {
         title="Projects"
         description="Browse, create, and manage migration projects."
         actions={
-          <Dialog open={open} onOpenChange={setOpen}>
-            <DialogTrigger asChild>
-              <Button data-testid="new-project-button">New project</Button>
-            </DialogTrigger>
-            <DialogContent>
-              <DialogHeader>
-                <DialogTitle>Create project</DialogTitle>
-              </DialogHeader>
-              <ProjectCreateForm
-                workspaceId={activeWorkspaceId}
-                workspaceStatus={workspace.status}
-                onRetryWorkspaces={workspace.retry}
-                onCreated={() => setOpen(false)}
-              />
-            </DialogContent>
-          </Dialog>
+          canCreate ? (
+            <Dialog open={open} onOpenChange={setOpen}>
+              <DialogTrigger asChild>
+                <Button data-testid="new-project-button">New project</Button>
+              </DialogTrigger>
+              <DialogContent>
+                <DialogHeader>
+                  <DialogTitle>Create project</DialogTitle>
+                </DialogHeader>
+                <ProjectCreateForm
+                  workspaceId={activeWorkspaceId}
+                  workspaceStatus={workspace.status}
+                  onRetryWorkspaces={workspace.retry}
+                  onCreated={() => setOpen(false)}
+                />
+              </DialogContent>
+            </Dialog>
+          ) : (
+            <ProjectCreateForbiddenNotice />
+          )
         }
       />
 
@@ -101,36 +113,42 @@ export default function ProjectsPage() {
                   </div>
                 </Card>
               </Link>
-              <div className="absolute right-2 top-1/2 -translate-y-1/2">
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-8 w-8"
-                      onClick={(e) => e.preventDefault()}
-                      aria-label="Project actions"
-                    >
-                      <MoreHorizontal className="h-4 w-4" />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
-                    <DropdownMenuItem
-                      className="text-destructive focus:text-destructive"
-                      onSelect={() => setDeleteTarget({ id: project.id, name: project.name })}
-                    >
-                      <Trash2 className="mr-2 h-4 w-4" />
-                      Delete
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </div>
+              {/* Delete is the menu's only item, so without project.delete the
+                  menu itself is not offered. */}
+              {canDelete ? (
+                <div className="absolute right-2 top-1/2 -translate-y-1/2">
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8"
+                        onClick={(e) => e.preventDefault()}
+                        aria-label="Project actions"
+                      >
+                        <MoreHorizontal className="h-4 w-4" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem
+                        className="text-destructive focus:text-destructive"
+                        onSelect={() => setDeleteTarget({ id: project.id, name: project.name })}
+                      >
+                        <Trash2 className="mr-2 h-4 w-4" />
+                        Delete
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
+              ) : null}
             </div>
           ))}
         </div>
       ) : (
         <Card className="p-6 text-center text-sm text-muted-foreground">
-          No projects yet. Create one to get started.
+          {canCreate
+            ? "No projects yet. Create one to get started."
+            : "No projects yet. Ask an admin to create one."}
         </Card>
       )}
 
