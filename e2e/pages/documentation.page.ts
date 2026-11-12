@@ -23,6 +23,7 @@ export class DocumentationPage {
   readonly titleInput: Locator;
   readonly scopeSelect: Locator;
   readonly submitGenerate: Locator;
+  readonly noSourceCodeWarning: Locator;
   readonly cancelGenerate: Locator;
 
   // Document list
@@ -70,6 +71,7 @@ export class DocumentationPage {
     this.titleInput = page.getByTestId("doc-title-input");
     this.scopeSelect = page.getByTestId("doc-scope-select");
     this.submitGenerate = page.getByTestId("submit-generate");
+    this.noSourceCodeWarning = page.getByTestId("no-source-code-warning");
     this.cancelGenerate = page.getByRole("button", { name: "Cancel" });
 
     // Document list

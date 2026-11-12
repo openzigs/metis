@@ -16,10 +16,15 @@ export type GoverningStatusLabel = "Compliant" | "Gap" | "Needs BA input";
 export class GoverningFindingsPage {
   readonly page: Page;
   readonly panel: Locator;
+  /** #2339 — the panel's way to the workspace's Governing documents page. */
+  readonly workspaceDocumentsLink: Locator;
 
   constructor(page: Page) {
     this.page = page;
     this.panel = page.getByRole("region", { name: "Governing rules" });
+    this.workspaceDocumentsLink = this.panel.getByRole("link", {
+      name: "Open this workspace's governing documents",
+    });
   }
 
   /** Open the project's latest run on the Findings tab and wait for the panel. */

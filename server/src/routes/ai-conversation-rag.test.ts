@@ -310,7 +310,14 @@ describe("buildAutoRagContext — relevance floor (#2241)", () => {
     expect(cap.sources).toBe(1);
     expect(cap.belowFloor).toBe(1);
     expect(cap.excerpts).toEqual([
-      { n: 1, chunkId: "strong", name: "strong.md", locator: "strong.md#0", relevance: 0.72 },
+      {
+        n: 1,
+        chunkId: "strong",
+        name: "strong.md",
+        locator: "strong.md#0",
+        source: "upload",
+        relevance: 0.72,
+      },
     ]);
   });
 

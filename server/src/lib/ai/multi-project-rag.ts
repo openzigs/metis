@@ -42,7 +42,7 @@ export { readChatSearchScope, type ChatSearchScope } from "./chat-search-scope.j
 const log = createChildLogger("multi-project-rag");
 
 /** The excerpts one multi-product turn puts in the prompt (single-project chat: 8). */
-const MULTI_PROJECT_K = 8;
+export const MULTI_PROJECT_K = 8;
 const MAX_QUERY_CHARS = 2048;
 
 export interface MultiProjectRagDeps {

@@ -27,7 +27,21 @@ const SELF_SCHEDULING_INGESTS = new Set([
   "deep-ingest",
   "refresh-ingest",
   "scheduled-refresh",
+  // #2335 — a refresh a push (or a signed CI call) started, and the queued
+  // follow-up of any of them: `repo-refresh.ts` and `repo-sync.ts` schedule it.
+  "refresh:push",
+  "refresh:manual",
+  "refresh:scheduled",
 ]);
+
+/** #2335 — the lease a queued follow-up runs under (`ingest-guard.ts`): `rerun:<trigger>`. */
+const SELF_SCHEDULING_RERUN = /^rerun:(push|manual|scheduled)$/;
+
+function schedulesItsOwnRegeneration(holder: string | null): boolean {
+  return (
+    holder !== null && (SELF_SCHEDULING_INGESTS.has(holder) || SELF_SCHEDULING_RERUN.test(holder))
+  );
+}
 
 /** The task that retries only the scheduling step (#449). */
 export const SCHEDULE_REGENERATION_TASK = "schedule-regeneration";
@@ -189,7 +203,7 @@ export async function retryRegenerationScheduling(
     // why not) when it lands. Any other holder -- the docs-gen eval runner's
     // bare source ingest -- never schedules, so standing down would drop this
     // retry for good; throw so the queue retries it with backoff (PR #505 review).
-    if (holder !== null && SELF_SCHEDULING_INGESTS.has(holder)) {
+    if (schedulesItsOwnRegeneration(holder)) {
       log.info(
         "Skipping the regeneration scheduling retry: an ingest is running and schedules it",
         {

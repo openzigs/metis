@@ -145,6 +145,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         statement: "Customers can export invoices as PDF.",
         sourceRequirementId: null,
         sourceProjectId: PROJECT,
+        // #2272 — none given: no document, and nothing listed as not checked.
+        sourceDocumentId: null,
+        notChecked: [],
         scope: "all-accessible",
         productIds: ["prod-a", "prod-b"],
         status: "completed",

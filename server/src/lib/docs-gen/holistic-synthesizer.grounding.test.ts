@@ -793,11 +793,12 @@ describe("synthesizeHolisticDocument grounding + warnings", () => {
     });
   });
 
-  it("returns an empty-document result with no warnings when there are no modules", async () => {
+  // #2369 — no module, no document: never a stub published as the content.
+  it("produces no document when there are no modules", async () => {
     mockPrisma.codeSymbol.findMany.mockResolvedValue([]);
-    const result = await synthesizeHolisticDocument("p1", "architecture", "Arch", { grounding });
-    expect(result.warnings).toHaveLength(0);
-    expect(result.markdown).toContain("No documentable modules");
+    await expect(
+      synthesizeHolisticDocument("p1", "architecture", "Arch", { grounding }),
+    ).rejects.toMatchObject({ name: "NoDocumentableCodeError", indexedSymbols: 0 });
   });
 
   // ── #273 — entailment-based faithfulness wired into the synthesis loop ──

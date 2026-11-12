@@ -6,7 +6,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { act, render, screen, waitFor, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { makeWrapper } from "./test-utils";
+import { makeWrapper, userWith } from "./test-utils";
 
 vi.mock("next/navigation", async () => {
   const actual = await vi.importActual<typeof import("next/navigation")>("next/navigation");
@@ -87,7 +87,12 @@ vi.mock("@/components/projects/rebuild-cache-button", () => ({
 }));
 
 vi.mock("sonner", () => ({
-  toast: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn(), warning: vi.fn() }),
+  toast: Object.assign(vi.fn(), {
+    success: vi.fn(),
+    error: vi.fn(),
+    warning: vi.fn(),
+    info: vi.fn(),
+  }),
 }));
 
 import { repoConnectorsApi, dbConnectorsApi, suggestedConnectorsApi } from "@/lib/connectors-api";
@@ -130,7 +135,7 @@ beforeEach(() => {
 });
 
 function renderPage() {
-  const Wrapper = makeWrapper({});
+  const Wrapper = makeWrapper({ initialUser: userWith("connector.write", "project.update") });
   return render(
     <Wrapper>
       <ConnectionsPage />
@@ -320,6 +325,26 @@ describe("ConnectionsPage — deep ingest and refresh ingest", () => {
     fireEvent.click(screen.getByRole("button", { name: /^Sync$/ }));
     await waitFor(() => expect(refreshIngest).toHaveBeenCalledWith("proj-1", "r1"));
     await waitFor(() => expect(screen.getByText(/Sync complete/i)).toBeInTheDocument());
+  });
+
+  it("#2335 — a Sync queued behind a running one says so, and shows no result summary", async () => {
+    refreshIngest.mockResolvedValueOnce({
+      status: "queued",
+      connectorId: "r1",
+      trigger: "manual",
+      requests: 1,
+    });
+    repoList.mockResolvedValue([makeRepo({ id: "r1" })]);
+    renderPage();
+    await waitFor(() => expect(screen.getByRole("button", { name: /^Sync$/ })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: /^Sync$/ }));
+    await waitFor(() =>
+      expect(toast.info).toHaveBeenCalledExactlyOnceWith(
+        "A sync is already running. This one is queued and runs when it finishes.",
+      ),
+    );
+    expect(toast.success).not.toHaveBeenCalled();
+    expect(screen.queryByText(/Sync complete/i)).not.toBeInTheDocument();
   });
 
   it("#715 — shows the code graph's size apart from the incremental delta", async () => {

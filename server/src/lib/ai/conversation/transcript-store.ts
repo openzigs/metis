@@ -12,11 +12,12 @@
  */
 import { randomUUID } from "node:crypto";
 import type { AIMessage, Prisma } from "@prisma/client";
-import type {
-  TranscriptKind,
-  TranscriptMessageDto,
-  TranscriptPart,
-  TranscriptRole,
+import {
+  parseChatCitations,
+  type TranscriptKind,
+  type TranscriptMessageDto,
+  type TranscriptPart,
+  type TranscriptRole,
 } from "@metis/shared";
 import { prisma } from "../../prisma.js";
 import { readGrounding } from "../chat-grounding.js";
@@ -369,6 +370,10 @@ export function toDto(m: StoredMessage): TranscriptMessageDto {
         : null,
     // #18 — what the reply was grounded in; only assistant replies carry one.
     grounding: m.role === "assistant" && m.kind === "message" ? readGrounding(m.meta) : null,
+    // #2242 — the reply's citations, as checked when it was answered.
+    ...(m.role === "assistant" && m.kind === "message" && m.meta?.citations !== undefined
+      ? { citations: parseChatCitations(m.meta.citations) }
+      : {}),
     createdAt: m.createdAt.toISOString(),
   };
 }
