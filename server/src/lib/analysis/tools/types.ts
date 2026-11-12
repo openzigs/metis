@@ -49,6 +49,13 @@ export interface ToolResult {
    * replaces the sniff; the sniff remains only as a fallback for legacy records.
    */
   resultCount?: number;
+  /**
+   * #2324 — a fixed, server-authored instruction the model reads AFTER the
+   * result's closing data fence (the chat runtime sets it on grounding tool
+   * results). Never built from the result's text: what a tool retrieved stays
+   * inside the fence.
+   */
+  instructions?: string;
 }
 
 export interface AgentTool {

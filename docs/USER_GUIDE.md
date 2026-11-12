@@ -3258,6 +3258,13 @@ can use tools to look things up or act for you:
 | **MCP tools** | Tools from MCP servers this project is allowed to use (see §20.7) |
 | **Code search** | Searches the project's code graph and symbols, and reads up to 200 lines of a file from the project's repository so an answer can quote the code it cites. On unless your administrator has turned it off with `CHAT_CODE_SEARCH_TOOLS=false`. A source file whose document is restricted to other people is not read or listed for you, and a discussion reply leaves out every restricted file |
 
+When the chat can search the project's code or knowledge base, it is also told
+how to search before it answers: put the question in the terms the code uses,
+try two or three wordings before saying something is not there, read the code
+before saying one part calls another, and, when nothing turns up, say what it
+searched. Administrators can turn this guidance off with
+`CHAT_SEARCH_GUIDANCE=false`.
+
 A chat that is not scoped to a project is offered no tools. Administrators can
 turn the METIS and MCP tools off with `CHAT_TOOLS=false`. A chat can be scoped
 only to a project you can open: asking for another workspace's project is

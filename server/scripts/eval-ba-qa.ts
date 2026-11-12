@@ -172,8 +172,13 @@ async function main(): Promise<void> {
   }
   const { buildProvider, loadAIConfig } = await import("../src/lib/ai/index.js");
   const { LedgerCostMeter, meterProvider } = await import("../src/lib/eval/localization/cost.js");
-  const { resolveSessionTools, loadSessionToolsFlags, sessionGate, withoutApprovalGatedTools } =
-    await import("../src/lib/ai/tool-runtime/session-tools.js");
+  const {
+    resolveSessionTools,
+    loadSessionToolsFlags,
+    offersSearchGuidance,
+    sessionGate,
+    withoutApprovalGatedTools,
+  } = await import("../src/lib/ai/tool-runtime/session-tools.js");
   const { runChatToolTurn } = await import("../src/lib/ai/tool-runtime/chat-turn.js");
   const { prepareTurn, loadChatTurnConfig } = await import("../src/lib/ai/conversation/turn.js");
   const { chatToolLoopPromptCaching } = await import("../src/lib/ai/chat-prompt-caching.js");
@@ -367,6 +372,7 @@ async function main(): Promise<void> {
       session,
       tools.mode === "native" ? NATIVE_CHAT_TOOL_NOTE : tools.schemaBlock,
       { mode: tools.skillMode, catalog: tools.skillCatalog },
+      offersSearchGuidance(tools),
     );
     // #2225 — retrieval runs as the asking user, so chunk ACLs apply as in /chat.
     const rag = await buildAutoRagContext(

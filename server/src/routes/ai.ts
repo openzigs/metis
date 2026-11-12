@@ -70,11 +70,13 @@ import type {
   TokenUsage,
 } from "../lib/ai/index.js";
 import {
+  offersSearchGuidance,
   resolveSessionTools,
   sessionGate,
   withoutApprovalGatedTools,
   type SessionToolRuntime,
 } from "../lib/ai/tool-runtime/session-tools.js";
+import { SEARCH_GUIDANCE_INSTRUCTION } from "../lib/ai/search-guidance.js";
 import { runChatToolTurn, type ChatToolRecord } from "../lib/ai/tool-runtime/chat-turn.js";
 import {
   CHAT_TURN_AGENT_STEP,
@@ -931,6 +933,11 @@ export async function buildLibrarySystemMessages(
    * `load_skill`). Absent: the pre-#146 behaviour (every loaded skill's body).
    */
   skills?: { mode: "progressive" | "inline"; catalog: readonly SkillCatalogEntry[] },
+  /**
+   * #2324 — the turn offers a code/knowledge tool and `CHAT_SEARCH_GUIDANCE`
+   * is on (`offersSearchGuidance`): the lead carries the search guidance.
+   */
+  searchGuidance = false,
 ): Promise<AssembledChatSystem> {
   // Stable — agent persona bound to the session.
   let persona: string | null = null;
@@ -1022,6 +1029,7 @@ export async function buildLibrarySystemMessages(
       })
         ? ANSWER_POLICY_INSTRUCTION
         : null,
+    searchGuidance: searchGuidance ? SEARCH_GUIDANCE_INSTRUCTION : null,
     chronicle,
   });
 }
@@ -1789,10 +1797,12 @@ export function aiRouter(): Router {
           });
         }
       }
-      const librarySystem = await buildLibrarySystemMessages(session, toolLead(tools), {
-        mode: tools.skillMode,
-        catalog: tools.skillCatalog,
-      });
+      const librarySystem = await buildLibrarySystemMessages(
+        session,
+        toolLead(tools),
+        { mode: tools.skillMode, catalog: tools.skillCatalog },
+        offersSearchGuidance(tools),
+      );
       // #700 — emit the byte-stable lead (persona + skills + tool schemas) first,
       // then the volatile tail (Chronicle), then the per-request user
       // `systemMessage` override, so the cacheable prefix stays byte-identical.
@@ -2538,10 +2548,12 @@ export function aiRouter(): Router {
         provider: streamProvider,
         model,
       });
-      const librarySystem = await buildLibrarySystemMessages(session, toolLead(tools), {
-        mode: tools.skillMode,
-        catalog: tools.skillCatalog,
-      });
+      const librarySystem = await buildLibrarySystemMessages(
+        session,
+        toolLead(tools),
+        { mode: tools.skillMode, catalog: tools.skillCatalog },
+        offersSearchGuidance(tools),
+      );
       // #700 — emit the byte-stable lead (persona + skills + tool schemas) first,
       // then the volatile tail (Chronicle), then the per-request user
       // `systemMessage` override, so the cacheable prefix stays byte-identical.

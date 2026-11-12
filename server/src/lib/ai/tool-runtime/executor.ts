@@ -57,6 +57,8 @@ export interface ExecutedToolCall {
   reason?: string;
   /** #147 — the sub-agent run the call started, when the tool ran an agent. */
   subAgentRunId?: string;
+  /** #2324 — the tool's fixed instructions for this result (`RuntimeTool.instructionsFor`). */
+  instructions?: string;
 }
 
 export interface ExecutorDeps {
@@ -265,6 +267,7 @@ export async function executeToolCall(
       ...(result.subAgentRunId ? { subAgentRunId: result.subAgentRunId } : {}),
     });
     recordAudit(deps, call, tool.name, result.isError ? "error" : "ok", decision.decision, true);
+    const instructions = tool.instructionsFor?.(result);
     return {
       callId: call.id,
       tool: tool.name,
@@ -276,6 +279,7 @@ export async function executeToolCall(
       ...(typeof result.resultCount === "number" ? { resultCount: result.resultCount } : {}),
       ...(result.truncated ? { truncated: true } : {}),
       ...(result.subAgentRunId ? { subAgentRunId: result.subAgentRunId } : {}),
+      ...(instructions ? { instructions } : {}),
     };
   } catch (err) {
     log.warn("Tool execution failed", {

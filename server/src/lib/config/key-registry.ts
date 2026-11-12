@@ -971,6 +971,15 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
       "Master enable for agentic code-search TOOLS in chat + stream (#713). ON by default since #2243, measured on the #2237 BA question set (single-product questions: facts stated 51% → 73–84%, citation precision 28% → 80–83%, about 4x the input tokens per question; eval-data/README.md); set false to turn them off. When on, project-scoped sessions may call search_code_graph (exact graph traversal), search_code_symbols (hybrid BM25+vector symbol search) and read_file_slice (up to 200 lines from the project's own repo clones, #736) — offered and EXECUTED on every provider path (Copilot SDK, native-Anthropic, bedrock-direct) via the shared textual agent loop, even without loaded skills. Tool schemas render deterministically into the byte-stable prompt lead, so the flag flips the cached prefix ONCE per deploy (expected); the per-turn latency cost is one extra bounded model round-trip per executed tool call (loop capped at a few turns). When off, no code tools are offered and, with CHAT_TOOLS also off or the model not tool-capable, no loop runs. Distinct from CHAT_FUSED_CODE_RETRIEVAL (#714), which is PASSIVE per-request retrieval into the volatile tail.",
     sensitive: false,
   },
+  // ── #2324 — how chat searches before it answers ──────────────────────
+  CHAT_SEARCH_GUIDANCE: {
+    tier: "tunable",
+    valueType: "bool",
+    schema: z.coerce.boolean(),
+    description:
+      "Tell the chat model how to search, not only what each tool is for (#2324). ON by default. When a turn offers a code or knowledge tool (search_code_symbols, search_code_graph, read_file_slice, search-knowledge), the byte-stable prompt lead gets one block: turn the question into identifiers, run two or three wordings before concluding something is absent, fall back symbol → text → file listing → read, verify a call or data-flow claim by reading the code, and say what was searched when nothing turns up. Those four tools' descriptions say when to use each, what a good query looks like and what to try after an empty result, and each of their results carries a fixed instruction after its data fence (an empty result's prompts a reworded search). About 250 tokens for the block and 320 for the four descriptions, both in the cached prompt lead, plus about 50 per grounding tool result. Off: the prompt, descriptions and results are as before #2324.",
+    sensitive: false,
+  },
   // ── Epic #128 — one tool runtime + enforced approval gate ─────────────
   CHAT_TOOLS: {
     tier: "tunable",
