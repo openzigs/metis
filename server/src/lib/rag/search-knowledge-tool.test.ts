@@ -7,6 +7,7 @@ import {
 } from "./search-knowledge-tool.js";
 import { getToolRegistry } from "../ai/tool-registry.js";
 import type { KnowledgeService } from "./knowledge-service.js";
+import { codeVersionIndexOf, NO_CODE_VERSIONS } from "../code-graph/code-version.js";
 
 // #2225 — the caller's role read is covered in tests/rag-acl-user-retrieval-2225.test.ts.
 vi.mock("./acl.js", async (original) => ({
@@ -156,6 +157,7 @@ describe("search-knowledge tool — paths and scores (#717)", () => {
           matchedBy: ["lexical"],
         }),
       ]),
+      loadVersions: async () => NO_CODE_VERSIONS,
     });
     const result = await tool.exec(
       { projectId: "p1", query: "q" },
@@ -164,5 +166,80 @@ describe("search-knowledge tool — paths and scores (#717)", () => {
     expect(result.text).toContain("[1] (score=0.5000, keyword match) internal/model/feed.go#2");
     expect(result.text).not.toContain("src/internal");
     expect(result.text).not.toContain("score=0.0000");
+  });
+});
+
+describe("search-knowledge tool — the citation contract of code-derived hits (#2325)", () => {
+  const SHA = "c".repeat(40);
+  const versions = codeVersionIndexOf([
+    {
+      repoConnectionId: "conn1",
+      commitSha: SHA,
+      repo: { provider: "github", ownerOrOrg: "acme", repoName: "app", apiBaseUrl: null },
+    },
+  ]);
+
+  it("states the repository's indexed commit on a source hit, and nothing on a document", async () => {
+    const loadVersions = vi.fn(async () => versions);
+    const tool = buildSearchKnowledgeTool({
+      service: stubService([
+        hit({
+          chunkId: "r1",
+          filename: "connector:repo:conn1:src/internal/model/feed.go",
+          path: "internal/model/feed.go",
+          position: 2,
+          source: "repo",
+          matchedBy: ["dense", "lexical"],
+        }),
+        hit({ chunkId: "u1", filename: "FRD-12.md", source: "upload" }),
+      ]),
+      loadVersions,
+    });
+    const result = await tool.exec(
+      { query: "q" },
+      { sessionId: "s", userId: "u", projectId: "p1" },
+    );
+    expect(loadVersions).toHaveBeenCalledWith("p1");
+    expect(result.citations).toEqual([
+      {
+        path: "internal/model/feed.go",
+        startLine: null,
+        endLine: null,
+        commitSha: SHA,
+        permalink: `https://github.com/acme/app/blob/${SHA}/internal/model/feed.go`,
+        matchedBy: ["dense", "lexical"],
+        truncated: false,
+        totalLines: null,
+        stale: false,
+      },
+    ]);
+    expect(result.text).toContain(`Code version: indexed commit ${SHA.slice(0, 12)}.`);
+  });
+
+  it("reads no versions and adds no line when no hit is code", async () => {
+    const loadVersions = vi.fn(async () => versions);
+    const tool = buildSearchKnowledgeTool({
+      service: stubService([hit({ filename: "FRD-12.md", source: "upload" })]),
+      loadVersions,
+    });
+    const result = await tool.exec(
+      { query: "q" },
+      { sessionId: "s", userId: "u", projectId: "p1" },
+    );
+    expect(loadVersions).not.toHaveBeenCalled();
+    expect(result.citations).toBeUndefined();
+    expect(result.text).not.toContain("Code version");
+  });
+
+  it("does not treat an upload stored under a repository-shaped name as code", async () => {
+    const tool = buildSearchKnowledgeTool({
+      service: stubService([hit({ filename: "connector:repo:conn1:src/x.go", source: "upload" })]),
+      loadVersions: async () => versions,
+    });
+    const result = await tool.exec(
+      { query: "q" },
+      { sessionId: "s", userId: "u", projectId: "p1" },
+    );
+    expect(result.citations).toBeUndefined();
   });
 });

@@ -168,6 +168,7 @@ import {
   createDefaultCodeSearcher,
   createDefaultSymbolLineLookup,
 } from "../lib/code-graph/project-code-searcher.js";
+import { loadCodeVersions, type CodeVersionIndex } from "../lib/code-graph/code-version.js";
 import { getConfigService } from "../lib/config/config-service.js";
 import { envMs } from "../lib/config/env-ms.js";
 import { getModelCatalog } from "../lib/ai/model-catalog.js";
@@ -199,12 +200,15 @@ const log = createChildLogger("ai-routes");
 export interface FusedCodeDeps {
   searcher: FusedCodeSearcher;
   lineLookup: SymbolLineLookup;
+  /** #2325 — the project's indexed versions, so each entry names its commit. */
+  loadVersions?: (projectId: string) => Promise<CodeVersionIndex>;
 }
 
 function defaultFusedCodeDeps(): FusedCodeDeps {
   return {
     searcher: createDefaultCodeSearcher(),
     lineLookup: createDefaultSymbolLineLookup(),
+    loadVersions: loadCodeVersions,
   };
 }
 
@@ -616,7 +620,13 @@ export interface RagContextCapture {
    * #2242 — the fused code block's entries by their `[n]`, which continue the
    * excerpts' numbering, so a citation of one resolves to its locator.
    */
-  codeEntries?: Array<{ n: number; path: string; lines: [number, number] }>;
+  codeEntries?: Array<{
+    n: number;
+    path: string;
+    lines: [number, number];
+    /** #2325 — the indexed commit the entry was read at (absent: unversioned block). */
+    commitSha?: string | null;
+  }>;
   /** #2241 — retrieved excerpts the relevance floor kept out of the prompt. */
   belowFloor?: number;
   /** #2241 — the knowledge search failed, so the turn has no excerpts. */
@@ -848,6 +858,7 @@ export async function buildAutoRagContext(
       maxSymbols: cfg.getNumber("CHAT_FUSED_CODE_MAX_SYMBOLS", 12),
       searcher: fusedDeps.searcher,
       lineLookup: fusedDeps.lineLookup,
+      ...(fusedDeps.loadVersions ? { loadVersions: fusedDeps.loadVersions } : {}),
       // #2242 — numbered on from the excerpts, so `[n]` names one entry only.
       firstIndex: listed.length + 1,
     });
@@ -859,6 +870,8 @@ export async function buildAutoRagContext(
         n: listed.length + 1 + i,
         path: h.filePath,
         lines: [h.startLine, h.endLine],
+        // #2325 — the entry's version, carried onto a citation of it.
+        ...(h.citation ? { commitSha: h.citation.commitSha } : {}),
       }));
     }
     if (!ragBlock && !fused.block) {
@@ -1122,6 +1135,7 @@ function replyToolCall(r: ChatToolRecord): ReplyToolCall {
     ...(r.errorCode ? { errorCode: r.errorCode } : {}),
     executed: r.executed,
     ...(r.subAgentRunId ? { subAgentRunId: r.subAgentRunId } : {}),
+    ...(r.citations ? { citations: r.citations } : {}),
   };
 }
 

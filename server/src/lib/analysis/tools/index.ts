@@ -19,6 +19,7 @@ import type { AgentTool } from "./types.js";
 import { searchCodeGraphTool } from "./search-code-graph.js";
 import { createSearchSymbolsTool, type SearchSymbolsDeps } from "./search-symbols.js";
 import { createChatReadFileSliceTool } from "./chat-read-file-slice.js";
+import { loadCodeVersions } from "../../code-graph/code-version.js";
 
 export { CHAT_CODE_TOOL_NAMES } from "./chat-code-tool-names.js";
 
@@ -37,5 +38,10 @@ export type ChatCodeToolDeps = Partial<SearchSymbolsDeps>;
  * than reported unverified. It reads only the session project's own clones.
  */
 export function getChatCodeTools(deps?: ChatCodeToolDeps): AgentTool[] {
-  return [searchCodeGraphTool, createSearchSymbolsTool(deps), createChatReadFileSliceTool()];
+  // #2325 — chat's symbol search states the indexed commit of every hit.
+  return [
+    searchCodeGraphTool,
+    createSearchSymbolsTool({ loadVersions: loadCodeVersions, ...deps }),
+    createChatReadFileSliceTool(),
+  ];
 }

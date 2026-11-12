@@ -10,6 +10,11 @@
  * actor, so a chunk whose ACL excludes them never reaches the model. #2248 — a
  * call that grounds a shared reply (`ctx.aclAudience: "shared"`, a discussion
  * thread) sees unrestricted chunks only.
+ *
+ * #2325 — a hit from a repository's source (a `repo` document) carries the
+ * citation contract: its path at the repository's indexed commit, with the
+ * retrievers that matched it. An excerpt has no line numbers, so its lines are
+ * `null`. Documents that are not code carry none.
  */
 import { z } from "zod";
 import { DEFAULT_RETRIEVE_K, MAX_RETRIEVE_K } from "@metis/shared";
@@ -19,6 +24,14 @@ import { getKnowledgeService, type KnowledgeService } from "./knowledge-service.
 import { formatDerivedLabel } from "./derived-label.js";
 import { formatHitLocator, formatHitScore } from "./hit-locator.js";
 import { resolveAclActor, sharedAudienceActor } from "./acl.js";
+import { repoDocumentPath } from "../analysis/tools/code-access.js";
+import {
+  codeCitationRef,
+  formatCodeVersionLine,
+  loadCodeVersions,
+  type CodeVersionIndex,
+} from "../code-graph/code-version.js";
+import type { CodeCitationRef, RetrievedChunk } from "@metis/shared";
 
 const argsSchema = z.object({
   // #736 — optional: a project-scoped chat session is already bound to its
@@ -32,6 +45,32 @@ const argsSchema = z.object({
 
 export interface BuildSearchKnowledgeToolOptions {
   service?: KnowledgeService;
+  /** #2325 — the project's indexed versions (read only when a hit is code). */
+  loadVersions?: (projectId: string) => Promise<CodeVersionIndex>;
+}
+
+/** #2325 — the citation contract of the hits that are repository code. */
+async function codeCitations(
+  hits: readonly RetrievedChunk[],
+  projectId: string,
+  loadVersions: (projectId: string) => Promise<CodeVersionIndex>,
+): Promise<CodeCitationRef[]> {
+  const code = hits.flatMap((h) => {
+    if (h.source !== "repo") return [];
+    const named = repoDocumentPath(h.filename);
+    return named ? [{ hit: h, ...named }] : [];
+  });
+  if (code.length === 0) return [];
+  const versions = await loadVersions(projectId);
+  return code.map(({ hit, connectorId, path }) =>
+    codeCitationRef({
+      path,
+      startLine: null,
+      endLine: null,
+      version: versions.forRepo(connectorId),
+      ...(hit.matchedBy ? { matchedBy: hit.matchedBy } : {}),
+    }),
+  );
 }
 
 export function buildSearchKnowledgeTool(
@@ -72,6 +111,7 @@ export function buildSearchKnowledgeTool(
         documentIds: args.documentIds,
         actor,
       });
+      const citations = await codeCitations(hits, projectId, opts.loadVersions ?? loadCodeVersions);
       const lines = hits.map(
         (h, i) =>
           `[${i + 1}] (${formatHitScore(h, 4)}) ${formatHitLocator(h)}${formatDerivedLabel(h.derived)}\n${h.text}`,
@@ -83,10 +123,15 @@ export function buildSearchKnowledgeTool(
         ? `⚠️ Partial coverage: ${coverageWarning.matchingChunks}/${coverageWarning.totalChunks} chunks match the current model '${coverageWarning.currentModel}'. Other models present: ${coverageWarning.mismatchedModels.join(", ")}.\n\n`
         : "";
       const header = `${note}${warning}`;
+      const version = formatCodeVersionLine(citations);
       return {
-        text: hits.length === 0 ? `${header}(no matches)` : `${header}${lines.join("\n\n---\n\n")}`,
+        text:
+          hits.length === 0
+            ? `${header}(no matches)`
+            : `${header}${lines.join("\n\n---\n\n")}${version ? `\n\n${version}` : ""}`,
         data: { hits, coverageWarning },
         resultCount: hits.length,
+        ...(citations.length > 0 ? { citations } : {}),
       };
     },
   };

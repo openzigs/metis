@@ -43,6 +43,7 @@ describe("verifyCitations — retrieved excerpts and the fused code block", () =
         lines: [125, 140],
         status: "verified",
         source: "repo",
+        commitSha: null,
       },
       { text: "FRD-12.md", path: "FRD-12.md", status: "verified", source: "document" },
     ]);
@@ -89,6 +90,7 @@ describe("verifyCitations — retrieved excerpts and the fused code block", () =
         path: "internal/model/feed.go",
         status: "verified",
         source: "repo",
+        commitSha: null,
       },
       { text: "[3]", path: "", status: "not-read" },
     ]);
@@ -252,6 +254,7 @@ describe("citations read in an earlier turn of the conversation", () => {
         lines: [12, 20],
         status: "verified-earlier",
         source: "repo",
+        commitSha: null,
       },
     ]);
     // Without the earlier turns the same answer is a false alarm.
@@ -341,6 +344,7 @@ describe("[n] references", () => {
         lines: [120, 150],
         status: "verified",
         source: "repo",
+        commitSha: null,
       },
     ]);
   });
@@ -422,5 +426,106 @@ describe("normalizePath and citationsMeta", () => {
     expect(citationsMeta([])).toEqual({});
     const c = [{ text: "a.md", path: "a.md", status: "verified" as const }];
     expect(citationsMeta(c)).toEqual({ citations: c });
+  });
+});
+
+describe("#2325 — a code citation records the version it was read at", () => {
+  const SHA = "0123456789abcdef0123456789abcdef01234567";
+  const HEAD = "fedcba9876543210fedcba9876543210fedcba98";
+  const ref = (path: string, over: Record<string, unknown> = {}) => ({
+    path,
+    startLine: 10,
+    endLine: 40,
+    commitSha: SHA,
+    permalink: null,
+    truncated: false,
+    totalLines: 300,
+    stale: false,
+    ...over,
+  });
+
+  it("stamps a citation with the commit the tool's contract stated", () => {
+    const ev = collectCitationEvidence(null, [
+      tool({ result: "src/a.ts (lines 10-40 of 300)\n10| x", citations: [ref("src/a.ts")] }),
+    ]);
+    expect(verifyCitations("src/a.ts:12-20", ev)).toEqual([
+      {
+        text: "src/a.ts:12-20",
+        path: "src/a.ts",
+        lines: [12, 20],
+        status: "verified",
+        source: "repo",
+        commitSha: SHA,
+      },
+    ]);
+  });
+
+  it("flags a citation of a stale read, keeping its status (never dropped or downgraded)", () => {
+    const ev = collectCitationEvidence(null, [
+      tool({
+        result: "src/a.ts (lines 10-40 of 300)\n10| x",
+        citations: [ref("src/a.ts", { stale: true, workingTreeSha: HEAD })],
+      }),
+      // A later, fresh search of the same file does not hide the stale read.
+      tool({
+        tool: "search_code_symbols",
+        result: "function f — src/a.ts:10-40 (score=1.000)",
+        citations: [ref("src/a.ts")],
+      }),
+    ]);
+    expect(verifyCitations("src/a.ts:12-20", ev)[0]).toMatchObject({
+      status: "verified",
+      commitSha: SHA,
+      stale: true,
+    });
+  });
+
+  it("reads the version back from an earlier turn's stored tool result", () => {
+    const earlier = [
+      row([
+        result("read_file_slice", "src/a.ts (lines 10-40 of 300)\n10| x", {
+          citations: [ref("src/a.ts", { stale: true }), { path: 42 }],
+        }),
+      ]),
+    ];
+    const prior = priorToolEvidence(earlier);
+    expect(prior[0]?.citations).toHaveLength(1);
+    const ev = collectCitationEvidence(null, [], prior);
+    expect(verifyCitations("src/a.ts:12-20", ev)[0]).toMatchObject({
+      status: "verified-earlier",
+      commitSha: SHA,
+      stale: true,
+    });
+  });
+
+  it("gives a fused entry's [n] its version, and a repository file no tool versioned null", () => {
+    const ev = collectCitationEvidence({
+      contexts: ["[1] A (class) — src/a.ts:1-9"],
+      codeEntries: [{ n: 1, path: "src/a.ts", lines: [1, 9], commitSha: SHA }],
+    });
+    expect(verifyCitations("See [1] and src/a.ts:2.", ev)).toEqual([
+      expect.objectContaining({ text: "[1]", commitSha: SHA }),
+      expect.objectContaining({ text: "src/a.ts:2", commitSha: SHA }),
+    ]);
+    const unversioned = collectCitationEvidence(null, [
+      tool({ result: "src/b.ts (lines 1-5 of 5)\n1| x" }),
+    ]);
+    expect(verifyCitations("src/b.ts:2", unversioned)[0]).toMatchObject({ commitSha: null });
+  });
+
+  it("leaves a document citation without version fields, and a tool that is not the project's unread", () => {
+    const ev = collectCitationEvidence(retrieved, [
+      tool({
+        tool: "mcp:x:read",
+        source: "mcp",
+        result: "src/c.ts (lines 1-5 of 5)",
+        citations: [ref("src/c.ts")],
+      }),
+    ]);
+    const [doc, mcp] = verifyCitations("FRD-12.md and src/c.ts:2", ev);
+    expect(doc).not.toHaveProperty("commitSha");
+    expect(doc).not.toHaveProperty("stale");
+    expect(mcp).toMatchObject({ status: "not-read" });
+    expect(mcp).not.toHaveProperty("commitSha");
   });
 });

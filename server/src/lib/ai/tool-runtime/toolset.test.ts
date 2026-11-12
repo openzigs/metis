@@ -9,7 +9,14 @@ import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { ToolRegistry } from "../tool-registry.js";
 import type { ToolDefinition } from "../types.js";
-import { buildSessionToolset, CHAT_EXCLUDED_TOOLS, makeToolset, toWireName } from "./toolset.js";
+import {
+  buildSessionToolset,
+  CHAT_EXCLUDED_TOOLS,
+  codeRuntimeTool,
+  makeToolset,
+  toWireName,
+} from "./toolset.js";
+import { __resetToolResultCacheForTests } from "./tool-result-cache.js";
 import type { RuntimeTool } from "./types.js";
 import { zodToJsonSchema, toolParametersSchema } from "./json-schema.js";
 import { UNRESTRICTED_CODE_ACCESS } from "../../analysis/tools/code-access.js";
@@ -383,5 +390,48 @@ describe("makeToolset — `-` and `_` spell the same tool (#772)", () => {
     // The offered tool's own exact name still resolves.
     expect(set.resolve("a_b-c")?.name).toBe("a_b-c");
     expect(set.withheld("a_b-c")).toBeUndefined();
+  });
+});
+
+describe("#2325 — the citation contract rides the tool result", () => {
+  const ref = {
+    path: "src/a.ts",
+    startLine: 1,
+    endLine: 2,
+    commitSha: "0123456789abcdef0123456789abcdef01234567",
+    permalink: null,
+    truncated: false,
+    totalLines: 2,
+    stale: false,
+  };
+
+  it("a code tool's citations reach the runtime result", async () => {
+    __resetToolResultCacheForTests();
+    codeAccess.load.mockResolvedValue(UNRESTRICTED_CODE_ACCESS);
+    const tool = codeRuntimeTool(
+      {
+        name: "list_things_2325",
+        description: "d",
+        parameters: { type: "object" },
+        execute: async () => ({ content: "src/a.ts:1-2", resultCount: 1, citations: [ref] }),
+      },
+      "list_things_2325",
+    );
+    const r = await tool.execute({}, CTX);
+    expect(r.citations).toEqual([ref]);
+  });
+
+  it("a registry tool's citations reach the runtime result; none when it returns none", async () => {
+    const set = await buildSessionToolset({
+      ctx: CTX,
+      registry: registryWith(
+        def("with_refs", { exec: vi.fn(async () => ({ text: "x", citations: [ref] })) }),
+        def("without_refs"),
+      ),
+    });
+    expect((await set.resolve("with_refs")!.execute({ q: "a" }, CTX)).citations).toEqual([ref]);
+    expect(await set.resolve("without_refs")!.execute({ q: "a" }, CTX)).not.toHaveProperty(
+      "citations",
+    );
   });
 });

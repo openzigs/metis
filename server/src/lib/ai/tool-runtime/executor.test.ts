@@ -561,3 +561,22 @@ describe("a per-call forcePrompt read reaches the gate (#128 review)", () => {
     expect(out).toMatchObject({ executed: true, decision: "auto-approve" });
   });
 });
+
+describe("executeToolCall — #2325 citation contract", () => {
+  it("carries the tool's citations onto the executed call, and none when it returned none", async () => {
+    const ref = {
+      path: "src/a.ts",
+      startLine: 1,
+      endLine: 2,
+      commitSha: "0123456789abcdef0123456789abcdef01234567",
+      permalink: null,
+      truncated: false,
+      totalLines: 2,
+      stale: false,
+    };
+    const withRefs = tool();
+    withRefs.execute.mockResolvedValueOnce({ text: "src/a.ts:1-2", citations: [ref] });
+    expect((await run(withRefs, gate(ALL_AUTO))).out.citations).toEqual([ref]);
+    expect((await run(tool(), gate(ALL_AUTO))).out).not.toHaveProperty("citations");
+  });
+});
