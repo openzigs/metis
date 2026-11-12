@@ -141,6 +141,10 @@ export interface FusedCodeSearcher {
       limit?: number;
       /** #1036 — told which channels answered (`hybrid` or `bm25-only`). */
       onRetrievalMode?: (mode: "hybrid" | "bm25-only") => void;
+      /** #2327 — `search_code_symbols`'s pre-filters, as `HybridSearchOptions` takes them. */
+      fileGlob?: string;
+      symbolKind?: string;
+      language?: string;
     },
   ): Promise<RawCodeSymbolHit[]>;
 }

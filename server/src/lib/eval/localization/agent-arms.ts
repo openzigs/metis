@@ -12,8 +12,11 @@
  *     after every hybrid edit candidate, as production would union them.
  *   - `A3A` (A3-alone): the same pass; the citations alone are the files.
  *   - `A3N` (A3-nograph): FILE tools only (`list_files`, `read_file_slice` and
- *     the eval-only `grep_files`), no graph or symbol search, no seeded blocks;
- *     the citations alone are the files. It says what the graph tools add.
+ *     `grep_files`), no graph or symbol search, no seeded blocks; the citations
+ *     alone are the files. It says what the graph tools add.
+ *   - `A3P` (A3-primitives, #2327): A3A's pass with chat's search primitives
+ *     added (`search_code_symbols`'s filters, `grep_files`); the citations
+ *     alone are the files. Paired with A3A, it says what the primitives add.
  *
  * The pass itself (database, clone, tools, agent loop) is injected as an
  * {@link AgentPass}, so this module is testable without a model or a database;
@@ -57,7 +60,7 @@ export type {
 
 /** A3's variants. */
 export interface AgentVariant {
-  id: "A3" | "A3A" | "A3N";
+  id: "A3" | "A3A" | "A3N" | "A3P";
   toolset: AgentToolset;
   /** Union the citations with A0's hybrid seeds (stored-link channel), or use them alone. */
   union: boolean;
@@ -67,6 +70,7 @@ export const AGENT_VARIANTS: Readonly<Record<AgentVariant["id"], AgentVariant>> 
   A3: { id: "A3", toolset: "graph", union: true },
   A3A: { id: "A3A", toolset: "graph", union: false },
   A3N: { id: "A3N", toolset: "files", union: false },
+  A3P: { id: "A3P", toolset: "graph-primitives", union: false },
 };
 
 /** The arms that run an agent pass: the CLI materializes their corpus and database. */
@@ -183,13 +187,16 @@ export function createAgentArm(deps: ArmDeps, variant: AgentVariant): Localizati
   const toolsetLabel =
     variant.toolset === "graph"
       ? "assembleAgenticCodeTools (search_code_graph, search_code_symbols, search_knowledge, read_file_slice, list_files) + seeded fused / affected-code / affected-schema blocks"
-      : "list_files, read_file_slice, grep_files (eval-only literal text search); no graph or symbol search, no seeded blocks";
+      : variant.toolset === "graph-primitives"
+        ? "assembleAgenticCodeTools with search_code_symbols's fileGlob/symbolKind/language filters, plus grep_files (#2327) + seeded fused / affected-code / affected-schema blocks"
+        : "list_files, read_file_slice, grep_files (literal text search); no graph or symbol search, no seeded blocks";
   return {
     id: variant.id,
     label:
       `${variant.id} — the Analysis code agent's graph-resolving citations` +
       `${variant.union ? ", unioned with A0's hybrid seeds" : " alone"}` +
       `${variant.toolset === "files" ? ", file tools only (no graph)" : ""}` +
+      `${variant.toolset === "graph-primitives" ? ", with chat's search primitives" : ""}` +
       ` (${provider.key}/${provider.model})`,
     configuration: {
       ...(a0 ? a0.configuration : {}),
@@ -295,4 +302,9 @@ export function createA3AArm(deps: ArmDeps): LocalizationArm {
 /** A3N — file tools only, no graph, no seeds; citations alone (#1755). */
 export function createA3NArm(deps: ArmDeps): LocalizationArm {
   return createAgentArm(deps, AGENT_VARIANTS.A3N);
+}
+
+/** A3P — A3A's pass with chat's search primitives; citations alone (#2327). */
+export function createA3PArm(deps: ArmDeps): LocalizationArm {
+  return createAgentArm(deps, AGENT_VARIANTS.A3P);
 }

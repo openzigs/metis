@@ -17,6 +17,7 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ProjectPipelineOverview } from "@/components/projects/pipeline-overview";
+import { KNOWLEDGE_SEARCH_ANCHOR } from "@/lib/project-pipeline";
 import { KnowledgeSearchHit } from "@/components/projects/knowledge-search-hit";
 import { PageHeader } from "@/components/ui/page-header";
 
@@ -73,7 +74,8 @@ export default function ProjectDetailPage() {
 
       <ProjectPipelineOverview projectId={id} />
 
-      <Card className="space-y-4 p-4">
+      {/* #2349 — the checklist's "Ask a question" lands here. */}
+      <Card id={KNOWLEDGE_SEARCH_ANCHOR} className="scroll-mt-4 space-y-4 p-4">
         <h2 className="text-lg font-semibold">Knowledge search</h2>{" "}
         <form
           className="flex items-end gap-2"

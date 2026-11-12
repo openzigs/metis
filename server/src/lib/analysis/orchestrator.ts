@@ -283,6 +283,7 @@ import { produceGoverningFindingsForAnalysis } from "../governing/findings-store
 import { isDocumentReaderEnabled } from "../document-reader/flag.js";
 import { spentUsageOf } from "../document-reader/reader.js";
 import { resolveAclActor, sharedAudienceActor } from "../rag/acl.js";
+import { SYSTEM_ACTOR_ID } from "../audit/system-actor.js";
 import {
   readerSourceOf,
   runDocumentReaderAgent,
@@ -1356,6 +1357,16 @@ export class AnalysisOrchestrator {
     } catch (err) {
       outcome = "failed";
       errorMessage = (err as Error).message;
+      // #2297 — a document read that failed (or was cancelled) still spent what
+      // it spent before failing, as the pipeline counts it (#2262): without it
+      // `Analysis.totalTokens`, and so the monthly cap, under-counts. Only the
+      // reader marks an error with its spend, so nothing here is counted twice.
+      const spent = spentUsageOf(err);
+      if (spent) {
+        delta.promptTokens += spent.promptTokens;
+        delta.completionTokens += spent.completionTokens;
+        delta.totalTokens += spent.totalTokens;
+      }
       this.emit({
         analysisId: opts.analysisId,
         agentKey: opts.agentKey,
@@ -3548,13 +3559,19 @@ export class AnalysisOrchestrator {
    * #2262 — only documents the requester may see are read. A requester who is
    * no longer active fails the agent (`InactiveAclActorError`): never read
    * without an actor. With no requester at all, only unrestricted documents.
+   *
+   * #2297 — a scheduled run's requester is `SYSTEM_ACTOR_ID`, no user: it
+   * reads as no requester rather than failing as an inactive one, and the
+   * system actor attributes the reader's ACL audit rows (no `User` row named
+   * "analysis" exists for the audit log's foreign key).
    */
   private async readSelectedDocuments(
     input: Parameters<AnalysisOrchestrator["runOneAgent"]>[0],
   ): Promise<AgentRunResult | null> {
-    const actor = input.actorId
-      ? await resolveAclActor(input.actorId)
-      : sharedAudienceActor("analysis");
+    const actor =
+      input.actorId && input.actorId !== SYSTEM_ACTOR_ID
+        ? await resolveAclActor(input.actorId)
+        : sharedAudienceActor(SYSTEM_ACTOR_ID);
     const read = await runDocumentReaderAgent({
       provider: this.deps.provider,
       projectId: input.projectId,

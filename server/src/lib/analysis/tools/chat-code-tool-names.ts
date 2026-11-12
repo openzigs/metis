@@ -35,6 +35,18 @@ export const CHAT_CODE_TOOL_DESCRIPTORS: ReadonlyArray<{
     risk: "low",
   },
   {
+    // #2327 — offered when CHAT_CODE_SEARCH_PRIMITIVES is on.
+    name: "grep_files",
+    description: "Find a literal text in the project's repository files, as path:line matches.",
+    risk: "low",
+  },
+  {
+    // #2327 — offered when CHAT_CODE_SEARCH_PRIMITIVES is on.
+    name: "list_files",
+    description: "List the project's repository files matching a glob.",
+    risk: "low",
+  },
+  {
     // #2329 — whole symbols for a question (offered when CHAT_CODE_CONTEXT_TOOL is on).
     name: "search_code_context",
     description:

@@ -112,11 +112,25 @@ describe("resolveDiscussionTools", () => {
       native: false,
     });
     expect(rt!.native).toBe(false);
-    // #2329 — search_code_context is allowlisted but off by default (CHAT_CODE_CONTEXT_TOOL).
-    expect(rt!.toolset.tools.map((t) => t.name)).toEqual(
-      DISCUSSION_TOOL_ALLOWLIST.slice(1).filter((n) => n !== "search_code_context"),
-    );
+    // The code tools, in the allowlist's order; #2327's primitives and #2329's
+    // search_code_context follow their keys (off here).
+    expect(rt!.toolset.tools.map((t) => t.name)).toEqual(DISCUSSION_TOOL_ALLOWLIST.slice(1, 4));
     expect(rt!.note).toContain("read_file_slice");
+  });
+
+  it("follows chat's flags: grep_files and list_files with CHAT_CODE_SEARCH_PRIMITIVES on (#2327)", async () => {
+    const rt = await resolveDiscussionTools({
+      session,
+      provider,
+      model: "m",
+      flags: { ...ON, codeSearchPrimitives: true },
+      registry: FULL(),
+      native: true,
+    });
+    const names = rt!.toolset.tools.map((t) => t.name);
+    expect(names).toEqual(expect.arrayContaining(["grep_files", "list_files"]));
+    // Both are in the allowlist a discussion reply is gated on.
+    expect(DISCUSSION_TOOL_ALLOWLIST).toEqual(expect.arrayContaining(["grep_files", "list_files"]));
   });
 
   it("#2295: a non-tool-capable model gets no code tools unless the deployment set the flag", async () => {

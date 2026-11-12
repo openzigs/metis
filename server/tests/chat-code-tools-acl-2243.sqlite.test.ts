@@ -16,6 +16,13 @@
  *   - unrestricted files, and the whole repository once the restriction is
  *     lifted, read exactly as the tools read them with no filter at all;
  *   - the tool-result cache never hands Alice's read to Bob.
+ *
+ * #2327 — `grep_files`, `list_files` and the filtered `search_code_symbols`
+ * (chat's search primitives) are held to the same rule.
+ *
+ * #2329 — so is `search_code_context`, driven as a discussion reply offers it
+ * (`resolveDiscussionTools`, then the `ctx` `ai-responder` passes): the shared
+ * audience's access, never `UNRESTRICTED_CODE_ACCESS`.
  */
 import { existsSync, mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
@@ -31,8 +38,10 @@ import {
 } from "./helpers/sqlite-migrated-db.js";
 import type { RuntimeTool, RuntimeToolContext } from "../src/lib/ai/tool-runtime/types.js";
 import type { AgentTool } from "../src/lib/analysis/tools/types.js";
+import type { ChatCodeToolDeps } from "../src/lib/analysis/tools/index.js";
+import type { AIProvider } from "../src/lib/ai/types.js";
 
-const state = vi.hoisted(() => ({ db: null as unknown }));
+const state = vi.hoisted(() => ({ db: null as unknown, clone: "" }));
 vi.mock("../src/lib/prisma.js", async () => {
   const { Prisma } = await import("@prisma/client");
   return {
@@ -42,6 +51,13 @@ vi.mock("../src/lib/prisma.js", async () => {
     Prisma,
   };
 });
+// #2329 — the default clone resolver (the one a discussion's code tools use)
+// finds this test's clone for its one repository.
+vi.mock("../src/lib/analysis/clone-availability.js", async (original) => ({
+  ...(await original<typeof import("../src/lib/analysis/clone-availability.js")>()),
+  resolveExistingCloneDir: async (id: string | undefined) =>
+    id === "rc-app" ? state.clone : undefined,
+}));
 // The content version must not probe an embedding sidecar.
 vi.mock("../src/lib/rag/embedder.js", async (original) => ({
   ...(await original<typeof import("../src/lib/rag/embedder.js")>()),
@@ -53,6 +69,9 @@ const { searchCodeGraphTool } = await import("../src/lib/analysis/tools/search-c
 const { createSearchSymbolsTool } = await import("../src/lib/analysis/tools/search-symbols.js");
 const { createChatReadFileSliceTool } =
   await import("../src/lib/analysis/tools/chat-read-file-slice.js");
+const { createChatGrepFilesTool, createChatListFilesTool } =
+  await import("../src/lib/analysis/tools/chat-file-tools.js");
+const { resolveDiscussionTools } = await import("../src/lib/discussions/grounding.js");
 const { __resetToolResultCacheForTests } =
   await import("../src/lib/ai/tool-runtime/tool-result-cache.js");
 
@@ -80,8 +99,23 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       kind: string;
       score: number;
     }> = [];
-    let raw: { graph: AgentTool; symbols: AgentTool; slice: AgentTool };
-    let tools: { graph: RuntimeTool; symbols: RuntimeTool; slice: RuntimeTool };
+    let raw: {
+      graph: AgentTool;
+      symbols: AgentTool;
+      slice: AgentTool;
+      filtered: AgentTool;
+      grep: AgentTool;
+      list: AgentTool;
+    };
+    let symbolDeps: ChatCodeToolDeps;
+    let tools: {
+      graph: RuntimeTool;
+      symbols: RuntimeTool;
+      slice: RuntimeTool;
+      filtered: RuntimeTool;
+      grep: RuntimeTool;
+      list: RuntimeTool;
+    };
 
     const ctx = (userId: string, shared = false): RuntimeToolContext => ({
       sessionId: "s-1",
@@ -217,51 +251,60 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       if (caseSensitive)
         writeFileSync(path.join(clone, "src", "Secret.ts"), "export const OPEN = 1;\n");
 
+      state.clone = clone;
+      symbolDeps = {
+        searcher: {
+          search: async () => [
+            {
+              symbolId: "s-secret",
+              filePath: "src/secret.ts",
+              name: "computeSecretFee",
+              kind: "function",
+              score: 0.9,
+              snippet: SECRET_LINE,
+            },
+            {
+              symbolId: "s-public",
+              filePath: "src/public.ts",
+              name: "computeFee",
+              kind: "function",
+              score: 0.8,
+            },
+            ...ghostHits,
+          ],
+        },
+        lineLookup: {
+          resolve: async (ids: string[]) =>
+            new Map(
+              ids.map((id) => [
+                id,
+                {
+                  filePath: id === "s-secret" ? "src/secret.ts" : "src/public.ts",
+                  startLine: 1,
+                  endLine: 3,
+                },
+              ]),
+            ),
+        },
+      };
+      // Repo ids come from the real `repo_connections` rows; only the clone
+      // location is given.
+      const clones = { resolveCloneDir: async () => clone };
       raw = {
         graph: searchCodeGraphTool,
-        symbols: createSearchSymbolsTool({
-          searcher: {
-            search: async () => [
-              {
-                symbolId: "s-secret",
-                filePath: "src/secret.ts",
-                name: "computeSecretFee",
-                kind: "function",
-                score: 0.9,
-                snippet: SECRET_LINE,
-              },
-              {
-                symbolId: "s-public",
-                filePath: "src/public.ts",
-                name: "computeFee",
-                kind: "function",
-                score: 0.8,
-              },
-              ...ghostHits,
-            ],
-          },
-          lineLookup: {
-            resolve: async (ids: string[]) =>
-              new Map(
-                ids.map((id) => [
-                  id,
-                  {
-                    filePath: id === "s-secret" ? "src/secret.ts" : "src/public.ts",
-                    startLine: 1,
-                    endLine: 3,
-                  },
-                ]),
-              ),
-          },
-        }),
-        // Repo ids come from the real `repo_connections` rows; only the clone
-        // location is given.
-        slice: createChatReadFileSliceTool({ resolveCloneDir: async () => clone }),
+        symbols: createSearchSymbolsTool(symbolDeps),
+        slice: createChatReadFileSliceTool(clones),
+        filtered: createSearchSymbolsTool(symbolDeps, { filters: true }),
+        grep: createChatGrepFilesTool(clones),
+        list: createChatListFilesTool(clones),
       };
       tools = {
         graph: codeRuntimeTool(raw.graph, raw.graph.name),
         symbols: codeRuntimeTool(raw.symbols, raw.symbols.name),
         slice: codeRuntimeTool(raw.slice, raw.slice.name),
+        filtered: codeRuntimeTool(raw.filtered, raw.filtered.name),
+        grep: codeRuntimeTool(raw.grep, raw.grep.name),
+        list: codeRuntimeTool(raw.list, raw.list.name),
       };
     }, MIGRATED_SQLITE_HOOK_TIMEOUT_MS);
 
@@ -317,6 +360,40 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(r.resultCount).toBe(1);
       });
 
+      it("#2327 — finds nothing of it with grep_files, list_files or a filtered symbol search", async () => {
+        // grep: neither the file nor the in-repo symlink to it (src/alias.ts).
+        const grep = await run(tools.grep, { text: "RATE" }, ctx(BOB));
+        expect(grep).toEqual({ text: "No lines contain: RATE", resultCount: 0 });
+        const fee = await run(tools.grep, { text: "export function" }, ctx(BOB));
+        expect(fee.text).toContain("src/public.ts:1:");
+        expect(fee.text).not.toMatch(/secret\.ts|alias\.ts/);
+
+        const list = await run(tools.list, { pattern: "src/*.ts" }, ctx(BOB));
+        expect(list.text).toContain("src/public.ts");
+        expect(list.text).not.toContain("src/secret.ts");
+
+        const filtered = await run(
+          tools.filtered,
+          { query: "fee", fileGlob: "src/**", symbolKind: "function", language: "ts" },
+          ctx(BOB),
+        );
+        expect(filtered.text).toContain("computeFee");
+        expect(filtered.text).not.toContain("computeSecretFee");
+        expect(filtered.text).not.toContain(SECRET_LINE);
+
+        // The owner still finds all three, the shared audience none.
+        expect((await run(tools.grep, { text: "RATE" }, ctx(ALICE))).text).toContain(
+          "src/secret.ts:1:",
+        );
+        expect((await run(tools.list, { pattern: "src/*.ts" }, ctx(ALICE))).text).toContain(
+          "src/secret.ts",
+        );
+        expect((await run(tools.grep, { text: "RATE" }, ctx(ALICE, true))).resultCount).toBe(0);
+        expect(
+          (await run(tools.list, { pattern: "src/*.ts" }, ctx(ALICE, true))).text,
+        ).not.toContain("src/secret.ts");
+      });
+
       it("gets no code-graph hit from it, by name, file, caller, callee or probable call site", async () => {
         const byName = await run(tools.graph, { query: "Fee" }, ctx(BOB));
         expect(byName.text).toContain("computeFee");
@@ -370,6 +447,32 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect((await run(tools.slice, { filePath: "src/public.ts" }, shared)).text).toContain(
           "computeFee",
         );
+      });
+    });
+
+    // #2329 — with CHAT_CODE_CONTEXT_TOOL on, search_code_context joins a
+    // discussion reply through DISCUSSION_TOOL_ALLOWLIST. Its own fallback with
+    // no filter is UNRESTRICTED_CODE_ACCESS, so the reply must hand it one.
+    describe("search_code_context in a discussion reply (#2329)", () => {
+      it("reads with the shared audience's access, never unrestricted", async () => {
+        const rt = await resolveDiscussionTools({
+          session: { id: "s-1", userId: ALICE, projectId: PROJECT },
+          provider: { key: "openai", model: "m" } as unknown as AIProvider,
+          model: "m",
+          flags: { chatTools: false, codeSearchTools: true },
+          codeToolDeps: { ...symbolDeps, codeContext: true },
+          native: true,
+        });
+        const tool = rt!.toolset.resolve("search_code_context");
+        expect(tool).toBeDefined();
+        // The ctx ai-responder passes: the whole thread reads the reply.
+        const shared = await run(tool!, { query: "fee" }, ctx(ALICE, true));
+        expect(shared.isError).toBeFalsy();
+        expect(shared.text).toContain("computeFee");
+        expect(shared.text).not.toContain(SECRET_LINE);
+        // Alice's own chat reads it: the filter kept it out, not an empty search.
+        expect((await run(tool!, { query: "fee" }, ctx(ALICE))).text).toContain(SECRET_LINE);
+        expect((await run(tool!, { query: "fee" }, ctx(BOB))).text).not.toContain(SECRET_LINE);
       });
     });
 

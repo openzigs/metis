@@ -22,7 +22,16 @@
  *   5. spans are placed best-ranked first while they fit `tokenBudget`. A
  *      span larger than what is left is cut down to fit (signature first, the
  *      range to read next named), never skipped silently; one that cannot fit
- *      even its signature is named by locator in the notes.
+ *      even its signature is COUNTED in the notes, never named by locator: the
+ *      #2242 citation verifier reads every `path:a-b` in a code tool's text as
+ *      lines that were read, so a locator for an unreturned span would let an
+ *      answer citing it pass as verified.
+ *
+ * A hit whose code graph names no repository (a legacy graph, `repoConnectionId`
+ * null) is read as `search_code_symbols` and chat's `read_file_slice` read it:
+ * its version is the project's only graph's (`forRepo(null)`), and its file is
+ * read from the first of the project's clones that has it, under that clone's
+ * checks.
  *
  * The notes (the version line, a stale warning, left-out spans) come BEFORE
  * the spans, as #2325 placed them on every chat code tool: chat caps the
@@ -36,7 +45,9 @@
  * OWASP: A01 — a hit whose file the caller may not see is dropped BEFORE
  * merging (`hiddenSymbolIds`), so a merged span never bridges into a hidden
  * file, and the clone path is checked again where the read really resolves
- * (`isHiddenInClone`). A03 — line ranges come from `CodeSymbol` rows, are
+ * (`isHiddenInClone`, with the id of the clone actually read). Git internals
+ * and credential files are refused as `read_file_slice` refuses them
+ * (`isSensitiveInClone`: as named AND where the path really resolves). A03 — line ranges come from `CodeSymbol` rows, are
  * clamped to the file, and no path comes from model text.
  *
  * Off by default (`CHAT_CODE_CONTEXT_TOOL`): it becomes a default chat tool
@@ -52,10 +63,11 @@ import { readCloneFileLines } from "./read-file-slice.js";
 import {
   cloneStaleness,
   isHiddenInClone,
-  isSensitiveRepoPath,
   readCloneHead,
   staleNote,
 } from "./chat-read-file-slice.js";
+import { isSensitiveInClone, isSensitiveRepoPath } from "./repo-paths.js";
+import { resolveChatClones, type ChatCloneDeps } from "./chat-clones.js";
 import { resolveExistingCloneDir } from "../clone-availability.js";
 import {
   mergeAdjacentSpans,
@@ -119,6 +131,11 @@ export interface SearchCodeContextDeps {
   loadVersions: (projectId: string) => Promise<CodeVersionIndex>;
   /** A connector's clone dir, only when it exists and is readable. */
   resolveCloneDir: (connectorId: string) => Promise<string | undefined>;
+  /**
+   * The project's live repo connections, in search order: where a hit from a
+   * graph that names no repository is looked for (`resolveChatClones`).
+   */
+  listRepoIds: NonNullable<ChatCloneDeps["listRepoIds"]>;
   readHead: (cloneDir: string) => Promise<string | null>;
   mergeGap: number;
   maxSpanLines: number;
@@ -126,7 +143,8 @@ export interface SearchCodeContextDeps {
 }
 
 interface Hit extends LocatedHit {
-  repoId: string;
+  /** `null`: a legacy graph that names no repository. */
+  repoId: string | null;
   path: string;
   name: string;
   kind: string;
@@ -263,10 +281,11 @@ export function createSearchCodeContextTool(deps: Partial<SearchCodeContextDeps>
     const hits: Hit[] = [];
     visible.forEach((r, rank) => {
       const span = located.get(r.symbolId);
-      if (!span?.repoConnectionId || isSensitiveRepoPath(span.filePath)) return;
+      if (!span || isSensitiveRepoPath(span.filePath)) return;
+      const repoId = span.repoConnectionId ?? null;
       hits.push({
-        file: `${span.repoConnectionId}\u0000${span.filePath}`,
-        repoId: span.repoConnectionId,
+        file: `${repoId ?? ""}\u0000${span.filePath}`,
+        repoId,
         path: span.filePath,
         startLine: span.startLine,
         endLine: span.endLine,
@@ -288,6 +307,34 @@ export function createSearchCodeContextTool(deps: Partial<SearchCodeContextDeps>
       if (!dir) clones.set(repoId, (dir = resolveCloneDir(repoId)));
       return dir;
     };
+    let projectClones: ReturnType<typeof resolveChatClones> | undefined;
+    const allClones = () =>
+      (projectClones ??= resolveChatClones(projectId, {
+        resolveCloneDir: cloneOf,
+        ...(deps.listRepoIds ? { listRepoIds: deps.listRepoIds } : {}),
+      }));
+    /**
+     * The span's file from the clone it is read from: its own repository's, or
+     * (a graph naming none) the first of the project's clones that has it. A
+     * clone where the path is a credential file or hidden from the caller, as
+     * named or where it really resolves, is not read.
+     */
+    const readSpanFile = async (
+      repoId: string | null,
+      filePath: string,
+    ): Promise<{ repoId: string; cloneDir: string; lines: string[] } | null> => {
+      const candidates =
+        repoId !== null ? [{ id: repoId, dir: await cloneOf(repoId) }] : await allClones();
+      for (const { id, dir } of candidates) {
+        if (!dir) continue;
+        if (await isSensitiveInClone(dir, filePath)) continue;
+        if (await isHiddenInClone(access, id, dir, filePath)) continue;
+        const read = await readCloneFileLines(dir, filePath);
+        if ("error" in read) continue;
+        return { repoId: id, cloneDir: dir, lines: read.lines };
+      }
+      return null;
+    };
     const staleness = new Map<string, Promise<{ stale: boolean; head: string | null }>>();
 
     const blocks: string[] = [];
@@ -296,24 +343,20 @@ export function createSearchCodeContextTool(deps: Partial<SearchCodeContextDeps>
     let spent = 0;
     let notReturned = 0;
     let unreadable = 0;
-    /** Locators of spans left out because not even their signature fit the budget. */
-    const overBudget: string[] = [];
+    /** Spans left out because not even their signature fit the budget. Counted, never located. */
+    let overBudget = 0;
     for (const span of spans) {
       if (blocks.length >= validated.limit) {
         notReturned += 1;
         continue;
       }
       const first = span.hits[0]!;
-      const cloneDir = await cloneOf(first.repoId);
-      if (!cloneDir || (await isHiddenInClone(access, first.repoId, cloneDir, first.path))) {
+      const read = await readSpanFile(first.repoId, first.path);
+      if (!read) {
         unreadable += 1;
         continue;
       }
-      const read = await readCloneFileLines(cloneDir, first.path);
-      if ("error" in read) {
-        unreadable += 1;
-        continue;
-      }
+      const { repoId, cloneDir } = read;
       // A03 — the span is clamped to the file as it is on disk.
       const total = read.lines.length;
       if (span.startLine > total) {
@@ -330,22 +373,25 @@ export function createSearchCodeContextTool(deps: Partial<SearchCodeContextDeps>
         renderSpan(blocks.length + 1, first.path, clamped, plan, read.lines, span),
       );
       if (!fitted) {
-        overBudget.push(`${first.path}:${clamped.startLine}-${clamped.endLine}`);
+        overBudget += 1;
         continue;
       }
       const { plan, block, cost } = fitted;
       spent += cost;
       blocks.push(block);
+      // A legacy graph's hit takes the project's only graph's version, as
+      // search_code_symbols states it.
       const version = versions.forRepo(first.repoId);
-      let check = staleness.get(first.repoId);
-      if (!check)
-        staleness.set(first.repoId, (check = cloneStaleness(version, cloneDir, readHead)));
+      const key = `${first.repoId ?? ""}\u0000${repoId}`;
+      let check = staleness.get(key);
+      if (!check) staleness.set(key, (check = cloneStaleness(version, cloneDir, readHead)));
       const { stale, head } = await check;
       if (stale) staleNotes.add(staleNote(version.commitSha!, head));
       citations.push(
         codeCitationRef({
-          // #2325 — a code citation is identified by repository AND path.
-          repoConnectionId: first.repoId,
+          // #2325 — a code citation is identified by repository AND path: the
+          // repository the lines were read from.
+          repoConnectionId: repoId,
           path: first.path,
           startLine: clamped.startLine,
           endLine: clamped.endLine,
@@ -380,10 +426,13 @@ export function createSearchCodeContextTool(deps: Partial<SearchCodeContextDeps>
           `again with a narrower question, or read one with read_file_slice.`,
       );
     }
-    if (overBudget.length > 0) {
+    if (overBudget > 0) {
+      // A count, never a `path:a-b`: the citation verifier would read a locator
+      // here as lines this result returned.
       notes.push(
-        `Left out for the token budget: ${overBudget.join(", ")}. Read ` +
-          `${overBudget.length === 1 ? "it" : "them"} with read_file_slice.`,
+        `${overBudget} span${overBudget === 1 ? "" : "s"} left out for the token budget; ask ` +
+          `again with a smaller limit or a narrower question, or find ` +
+          `${overBudget === 1 ? "it" : "them"} with search_code_symbols.`,
       );
     }
     if (unreadable > 0) {
@@ -392,7 +441,7 @@ export function createSearchCodeContextTool(deps: Partial<SearchCodeContextDeps>
     return {
       content: `${notes.filter(Boolean).join("\n")}\n\n${blocks.join("\n\n")}`,
       resultCount: blocks.length,
-      truncated: notReturned > 0 || overBudget.length > 0 || citations.some((c) => c.truncated),
+      truncated: notReturned > 0 || overBudget > 0 || citations.some((c) => c.truncated),
       citations,
     };
   }

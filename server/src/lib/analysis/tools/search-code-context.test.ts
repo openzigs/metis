@@ -25,6 +25,7 @@ import {
 import { DEFAULT_LIMIT } from "./search-symbols.js";
 import { codeAccessFilterOf } from "./code-access.js";
 import { codeVersionIndexOf } from "../../code-graph/code-version.js";
+import { collectCitationEvidence, verifyCitations } from "../../ai/citation-verification.js";
 import { getChatCodeTools, CHAT_CODE_TOOL_NAMES } from "./index.js";
 import { CONFIG_KEYS } from "../../config/key-registry.js";
 import type { RawCodeSymbolHit } from "../../rag/fused-code-context.js";
@@ -56,7 +57,8 @@ interface Sym {
   path: string;
   start: number;
   end: number;
-  repo?: string;
+  /** The graph's repository; `null`: a legacy graph that names none. Default `r1`. */
+  repo?: string | null;
   matchedBy?: Array<"dense" | "lexical">;
 }
 
@@ -82,7 +84,7 @@ function deps(ranked: Sym[], over: Partial<SearchCodeContextDeps> = {}) {
               filePath: s.path,
               startLine: s.start,
               endLine: s.end,
-              repoConnectionId: s.repo ?? "r1",
+              repoConnectionId: s.repo === undefined ? "r1" : s.repo,
             },
           ]),
       ),
@@ -214,7 +216,7 @@ describe("search_code_context (#2329)", () => {
     expect(r.content).not.toContain("src/big.ts:1-300");
   });
 
-  it("holds the token budget and names by locator the spans it left out", async () => {
+  it("holds the token budget and counts the spans it left out, naming none by locator", async () => {
     for (let i = 0; i < 5; i += 1) await file(`src/f${i}.ts`, 40);
     const ranked = Array.from({ length: 5 }, (_, i) => ({
       id: `f${i}`,
@@ -231,10 +233,11 @@ describe("search_code_context (#2329)", () => {
     let spent = 0;
     for (const b of spanBlocks(r.content)) spent += Math.ceil(b.length / 4);
     expect(spent).toBeLessThanOrEqual(250);
-    const left = Array.from({ length: 5 - r.resultCount! }, (_, i) => r.resultCount! + i);
+    const left = 5 - r.resultCount!;
     expect(r.content).toContain(
-      `Left out for the token budget: ${left.map((i) => `src/f${i}.ts:1-40`).join(", ")}.`,
+      `${left} span${left === 1 ? "" : "s"} left out for the token budget`,
     );
+    for (let i = r.resultCount!; i < 5; i += 1) expect(r.content).not.toContain(`src/f${i}.ts`);
     expect(r.truncated).toBe(true);
   });
 
@@ -264,8 +267,46 @@ describe("search_code_context (#2329)", () => {
     expect(printedLines(first).slice(0, 4)).toEqual([1, 2, 3, 4]);
     expect(Math.ceil(first.length / 4)).toBeLessThanOrEqual(1000);
     // The cut span took what the budget had; the next one is named, not dropped.
-    expect(r.content).toContain("Left out for the token budget: src/small.ts:1-3.");
+    expect(r.content).toContain("1 span left out for the token budget");
+    expect(r.content).not.toContain("src/small.ts");
     expect(r.content).not.toContain("src/wide.ts:1-120");
+  });
+
+  // Panel finding (instruction-correctness) — the #2242 verifier reads every
+  // `path:a-b` in a code tool's text as lines that were read, so a note naming
+  // a left-out span by locator made a citation of it pass as verified.
+  it("gives the citation verifier no locator for a span it did not return", async () => {
+    await file("src/wide.ts", 120, (n) => `W${n} ${"x".repeat(120)}`);
+    await file("src/small.ts", 5);
+    const { deps: d } = deps([
+      { id: "wide", path: "src/wide.ts", start: 1, end: 120 },
+      { id: "small", path: "src/small.ts", start: 1, end: 3 },
+    ]);
+    const r = await createSearchCodeContextTool({ ...d, tokenBudget: 1000 }).execute(
+      { query: "q" },
+      CTX,
+    );
+    expect(r.content).toContain("1 span left out for the token budget");
+    const ev = collectCitationEvidence(null, [
+      {
+        tool: SEARCH_CODE_CONTEXT_TOOL,
+        source: "code",
+        executed: true,
+        result: r.content,
+        ...(r.citations ? { citations: r.citations } : {}),
+      },
+    ]);
+    const statuses = verifyCitations(
+      "See src/wide.ts:1-4, src/small.ts:1-3 and src/wide.ts:110-120.",
+      ev,
+    ).map((c) => [c.text, c.status]);
+    expect(statuses).toEqual([
+      ["src/wide.ts:1-4", "verified"],
+      // Left out for the budget: never read, so never verified.
+      ["src/small.ts:1-3", "not-read"],
+      // The cut span's tail was not printed either.
+      ["src/wide.ts:110-120", "span-unverified"],
+    ]);
   });
 
   it("returns at most MAX_SPANS spans however large a limit is asked for", async () => {
@@ -336,6 +377,97 @@ describe("search_code_context (#2329)", () => {
     } finally {
       await rm(other, { recursive: true, force: true });
     }
+  });
+
+  // Panel finding (over-blocking) — a legacy graph names no repository; its
+  // hits were dropped, so a project indexed only by one found no code.
+  it("reads a legacy graph's hit (no repository) from the first clone that has it", async () => {
+    const other = await mkdtemp(path.join(os.tmpdir(), "code-context-legacy-"));
+    try {
+      // The file is only in the second repository's clone.
+      await mkdir(path.join(other, "src"), { recursive: true });
+      await writeFile(
+        path.join(other, "src", "legacy.ts"),
+        Array.from({ length: 6 }, (_, i) => `LEGACY${i + 1}`).join("\n"),
+      );
+      const { deps: d } = deps(
+        [{ id: "old", path: "src/legacy.ts", start: 2, end: 4, repo: null }],
+        {
+          listRepoIds: async () => ["r1", "r2"],
+          resolveCloneDir: async (id) => (id === "r2" ? other : clone),
+          // The project's only graph is the legacy one: forRepo(null) is its version.
+          loadVersions: async () =>
+            codeVersionIndexOf([{ repoConnectionId: null, commitSha: SHA, repo: null }]),
+        },
+      );
+      const r = await createSearchCodeContextTool(d).execute({ query: "q" }, CTX);
+      expect(r.resultCount).toBe(1);
+      expect(printedLines(r.content)).toEqual([2, 3, 4]);
+      expect(r.content).toContain("LEGACY3");
+      expect(r.citations?.[0]).toMatchObject({
+        repoConnectionId: "r2",
+        path: "src/legacy.ts",
+        startLine: 2,
+        endLine: 4,
+        commitSha: SHA,
+        stale: false,
+      });
+    } finally {
+      await rm(other, { recursive: true, force: true });
+    }
+  });
+
+  // Panel finding (test-falsifiability) — the repository passed to the clone's
+  // access check must be the one read: repo A hides a path repo B exposes.
+  it("checks a clone's access under that clone's repository, in a two-repo project", async () => {
+    const other = await mkdtemp(path.join(os.tmpdir(), "code-context-r2-"));
+    try {
+      // r1: src/x.ts is restricted; src/alias.ts links to it.
+      await file("src/x.ts", 5, (n) => `R1SECRET${n}`);
+      await symlink("x.ts", path.join(clone, "src", "alias.ts"));
+      // r2: its own src/x.ts, which the caller may see.
+      await mkdir(path.join(other, "src"), { recursive: true });
+      await writeFile(
+        path.join(other, "src", "x.ts"),
+        Array.from({ length: 5 }, (_, i) => `R2OPEN${i + 1}`).join("\n"),
+      );
+      symbolRows.mockResolvedValue([
+        { id: "alias", filePath: "src/alias.ts", graph: { repoConnectionId: "r1" } },
+        { id: "open", filePath: "src/x.ts", graph: { repoConnectionId: "r2" } },
+      ]);
+      const { deps: d } = deps(
+        [
+          { id: "alias", path: "src/alias.ts", start: 1, end: 5, repo: "r1" },
+          { id: "open", path: "src/x.ts", start: 1, end: 5, repo: "r2" },
+        ],
+        { resolveCloneDir: async (id) => (id === "r2" ? other : clone) },
+      );
+      const codeAccess = codeAccessFilterOf([{ connectorId: "r1", path: "src/x.ts" }]);
+      const r = await createSearchCodeContextTool(d).execute(
+        { query: "q" },
+        { ...CTX, codeAccess },
+      );
+      // r1's alias resolves to r1's hidden file: refused under r1.
+      expect(r.content).not.toContain("R1SECRET");
+      // r2's own file is not hidden under r2: read.
+      expect(r.content).toContain("R2OPEN1");
+      expect(r.citations?.map((c) => [c.repoConnectionId, c.path])).toEqual([["r2", "src/x.ts"]]);
+      expect(r.content).toContain("1 matching span could not be read");
+    } finally {
+      await rm(other, { recursive: true, force: true });
+    }
+  });
+
+  // #2327's rule, as read_file_slice applies it: a path that resolves to a
+  // credential file through an in-repo link is refused too.
+  it("refuses an in-clone link to a credential file, as read_file_slice does", async () => {
+    await file(".ssh/id_rsa", 3, () => "PRIVATE KEY MATERIAL");
+    await mkdir(path.join(clone, "src"), { recursive: true });
+    await symlink("../.ssh/id_rsa", path.join(clone, "src", "key.ts"));
+    const { deps: d } = deps([{ id: "k", path: "src/key.ts", start: 1, end: 3 }]);
+    const r = await createSearchCodeContextTool(d).execute({ query: "q" }, CTX);
+    expect(r.content).not.toContain("PRIVATE KEY");
+    expect(r.resultCount).toBe(0);
   });
 
   it("puts its notes before the spans, so the model cap cannot cut them", async () => {

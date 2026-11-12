@@ -74,11 +74,14 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+/** #2349 — /projects opens the New project wizard; walk it to its Create step. */
 async function openProjectsCreate() {
   const user = userEvent.setup();
   render(<ProjectsPage />, { wrapper: makeWrapper({ initialUser: userWith("project.create") }) });
   await user.click(screen.getByTestId("new-project-button"));
-  await user.type(await screen.findByTestId("project-name-input"), "Acme");
+  await user.type(await screen.findByTestId("wizard-name-input"), "Acme");
+  await user.click(screen.getByRole("button", { name: "Next" }));
+  await user.click(screen.getByRole("button", { name: "Next" }));
   return user;
 }
 
@@ -86,7 +89,7 @@ describe("/projects Create waits for the workspaces (#2208)", () => {
   it("is disabled, saying why, while the workspaces load", async () => {
     workspaces = "pending";
     await openProjectsCreate();
-    expect(screen.getByTestId("project-create-submit")).toBeDisabled();
+    expect(screen.getByTestId("wizard-create")).toBeDisabled();
     const notice = screen.getByTestId("workspace-status");
     expect(notice).toHaveAttribute("role", "status");
     expect(notice).toHaveTextContent("Loading your workspaces");
@@ -97,13 +100,13 @@ describe("/projects Create waits for the workspaces (#2208)", () => {
     const user = await openProjectsCreate();
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("could not be loaded");
-    expect(screen.getByTestId("project-create-submit")).toBeDisabled();
+    expect(screen.getByTestId("wizard-create")).toBeDisabled();
 
     workspaces = 200;
     await user.click(screen.getByRole("button", { name: "Try again" }));
-    await waitFor(() => expect(screen.getByTestId("project-create-submit")).toBeEnabled());
+    await waitFor(() => expect(screen.getByTestId("wizard-create")).toBeEnabled());
     expect(screen.queryByTestId("workspace-status")).not.toBeInTheDocument();
-    await user.click(screen.getByTestId("project-create-submit"));
+    await user.click(screen.getByTestId("wizard-create"));
     await waitFor(() => expect(created()).toHaveLength(1));
     expect(created()[0].workspaceId).toBe("ws-a");
   });
@@ -119,7 +122,7 @@ describe("the New project wizard waits for the workspaces (#2208)", () => {
     await user.click(screen.getByRole("button", { name: "New project" }));
     await user.type(screen.getByLabelText("Name"), "Acme");
     await user.click(screen.getByRole("button", { name: "Next" }));
-    await user.click(screen.getByLabelText("Skip — add a source later"));
+
     await user.click(screen.getByRole("button", { name: "Next" }));
 
     expect(await screen.findByTestId("workspace-status")).toHaveTextContent("could not be loaded");
