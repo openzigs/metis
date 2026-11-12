@@ -19,6 +19,7 @@ import {
 export { GENERATION_CANCELLED_MESSAGE };
 import { sectionFailedWarning } from "./grounding/degraded-warnings.js";
 import { PATH_SCOPE_EMPTY_CODE } from "./path-scope.js";
+import { NO_DOCUMENTABLE_CODE } from "./no-documentable-code.js";
 
 export const GENERATION_FAILED_MESSAGE =
   "Document generation failed. The details are in the server log; regenerate the document to try again.";
@@ -78,6 +79,22 @@ export const GENERATION_PROVIDER_CLOSED_MESSAGE =
 /** The document's path scope matched no documentable (non-test) code. */
 export const GENERATION_PATH_SCOPE_EMPTY_MESSAGE =
   "The document's path scope matched no documentable code (test files are excluded). Check the path prefixes — they are repository-relative, for example packages/fit/ — then generate again.";
+
+/**
+ * #2369 — a code-based document (Business Requirements, Architecture, User
+ * Guide over the full project or a repository) on a project with no indexed
+ * source code: a documents-only project, or one whose repository has not
+ * finished ingesting.
+ */
+export const GENERATION_NO_SOURCE_CODE_MESSAGE =
+  "This document type needs connected source code, and this project has none indexed yet. Connect a repository to the project and let its ingestion finish, then generate again. To write up a change request's requirements without code, choose the scope Requirements (analysis run).";
+
+/**
+ * #2369 — the project has indexed code, but none of it forms a module the
+ * document can describe (all of it test, generated or build files, say).
+ */
+export const GENERATION_NO_DOCUMENTABLE_MODULES_MESSAGE =
+  "This project's indexed code has no modules this document can describe: test, generated and build files are left out. Connect or re-ingest the repository that holds the application code, then generate again.";
 
 /**
  * #1322 — stable code of `SourceCloneUnavailableError` (source-preflight.ts),
@@ -209,6 +226,8 @@ const SAFE_MESSAGES: ReadonlySet<string> = new Set([
   GENERATION_PROVIDER_DROPPED_MESSAGE,
   GENERATION_PROVIDER_CLOSED_MESSAGE,
   GENERATION_PATH_SCOPE_EMPTY_MESSAGE,
+  GENERATION_NO_SOURCE_CODE_MESSAGE,
+  GENERATION_NO_DOCUMENTABLE_MODULES_MESSAGE,
   GENERATION_SOURCE_UNAVAILABLE_MESSAGE,
   GENERATION_SOURCE_BUSY_MESSAGE,
   ...REASONING_REJECTED_MESSAGES,
@@ -465,6 +484,12 @@ export function generationFailureMessage(err: unknown): string {
   const message = readMessage(err);
 
   if (readCode(err) === PATH_SCOPE_EMPTY_CODE) return GENERATION_PATH_SCOPE_EMPTY_MESSAGE;
+  if (readCode(err) === NO_DOCUMENTABLE_CODE) {
+    const indexed = (err as { indexedSymbols?: unknown }).indexedSymbols;
+    return typeof indexed === "number" && indexed > 0
+      ? GENERATION_NO_DOCUMENTABLE_MODULES_MESSAGE
+      : GENERATION_NO_SOURCE_CODE_MESSAGE;
+  }
   if (readCode(err) === SOURCE_CLONE_UNAVAILABLE_CODE) return GENERATION_SOURCE_UNAVAILABLE_MESSAGE;
   if (readCode(err) === SOURCE_CLONE_BUSY_CODE) return GENERATION_SOURCE_BUSY_MESSAGE;
   if (readCode(err) === "BUDGET_EXCEEDED" || /monthly budget exceeded/i.test(message)) {
