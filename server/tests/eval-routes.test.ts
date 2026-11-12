@@ -56,6 +56,44 @@ afterEach(() => {
   delete process.env.EVAL_NIGHTLY_ENABLED;
 });
 
+// #2332 — the Eval page is an admin's, and so are its reads. They carried
+// authentication only: any signed-in reader got every benchmark run.
+describe("GET leaderboard reads require admin.read (#2332)", () => {
+  const tokenFor = (role: "reader" | "developer" | "coordinator") =>
+    issueTokens({
+      userId: `u-${role}`,
+      username: role,
+      role,
+      permissions: getPermissionsForRole(role),
+    }).accessToken;
+
+  it.each([
+    ["reader", "/api/eval/leaderboard"],
+    ["developer", "/api/eval/leaderboard"],
+    ["coordinator", "/api/eval/leaderboard"],
+    ["reader", "/api/eval/leaderboard/runs/r1"],
+    ["developer", "/api/eval/leaderboard/runs/r1"],
+    ["coordinator", "/api/eval/leaderboard/runs/r1"],
+  ] as const)("refuses a %s GET %s with 403, reading nothing", async (role, path) => {
+    const res = await request(makeApp())
+      .get(path)
+      .set("Authorization", `Bearer ${tokenFor(role)}`);
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe("FORBIDDEN");
+    expect(benchRunFindMany).not.toHaveBeenCalled();
+    expect(benchRunFindUnique).not.toHaveBeenCalled();
+  });
+
+  it("lets an admin list the runs", async () => {
+    benchRunFindMany.mockResolvedValueOnce([]);
+    const res = await request(makeApp())
+      .get("/api/eval/leaderboard")
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(res.status).toBe(200);
+    expect(res.body.data.runs).toEqual([]);
+  });
+});
+
 describe("GET /api/eval/leaderboard", () => {
   it("requires authentication", async () => {
     const res = await request(makeApp()).get("/api/eval/leaderboard");
@@ -65,7 +103,7 @@ describe("GET /api/eval/leaderboard", () => {
   it("rejects an invalid bench query", async () => {
     const res = await request(makeApp())
       .get("/api/eval/leaderboard?bench=bogus")
-      .set("Authorization", `Bearer ${viewerToken}`);
+      .set("Authorization", `Bearer ${adminToken}`);
     expect(res.status).toBe(400);
   });
 
@@ -88,7 +126,7 @@ describe("GET /api/eval/leaderboard", () => {
     ]);
     const res = await request(makeApp())
       .get("/api/eval/leaderboard?bench=swe-bench-pro&days=7")
-      .set("Authorization", `Bearer ${viewerToken}`);
+      .set("Authorization", `Bearer ${adminToken}`);
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
     expect(res.body.data.runs[0]).toMatchObject({ id: "r1", benchmark: "swe-bench-pro" });
@@ -102,11 +140,11 @@ describe("GET /api/eval/leaderboard/runs/:id", () => {
     benchRunFindUnique.mockResolvedValueOnce(null);
     const res = await request(makeApp())
       .get("/api/eval/leaderboard/runs/missing")
-      .set("Authorization", `Bearer ${viewerToken}`);
+      .set("Authorization", `Bearer ${adminToken}`);
     expect(res.status).toBe(404);
   });
 
-  it("hides expected/actual diff content from non-admins", async () => {
+  it("parses JSON metadata for an admin", async () => {
     benchRunFindUnique.mockResolvedValueOnce({
       id: "r1",
       benchmark: "swe-bench-pro",
@@ -118,31 +156,17 @@ describe("GET /api/eval/leaderboard/runs/:id", () => {
       meanCostCents: 0,
       meanLatencyMs: 1,
       startedAt: new Date("2026-04-25T00:00:00Z"),
-      completedAt: new Date("2026-04-25T00:00:01Z"),
+      completedAt: null,
       status: "completed",
       metadata: '{"foo":"bar"}',
-      tasks: [
-        {
-          id: "t1",
-          taskId: "task-1",
-          passed: true,
-          score: 1,
-          tokens: 1,
-          costCents: 0,
-          latencyMs: 1,
-          expected: "EXPECTED",
-          actual: "ACTUAL",
-          error: null,
-        },
-      ],
+      tasks: [],
     });
     const res = await request(makeApp())
       .get("/api/eval/leaderboard/runs/r1")
-      .set("Authorization", `Bearer ${viewerToken}`);
+      .set("Authorization", `Bearer ${adminToken}`);
     expect(res.status).toBe(200);
     expect(res.body.data.run.metadata).toEqual({ foo: "bar" });
-    expect(res.body.data.tasks[0].expected).toBeNull();
-    expect(res.body.data.tasks[0].actual).toBeNull();
+    expect(res.body.data.run.completedAt).toBeNull();
   });
 
   it("exposes diff content to admins", async () => {

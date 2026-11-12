@@ -17,6 +17,13 @@ vi.mock("@/lib/sdk-alignment-api", async () => {
   return { ...actual, sdkApi: { ...actual.sdkApi, listResumable: vi.fn() } };
 });
 vi.mock("@/lib/projects-api", () => ({ projectsApi: { list: vi.fn() } }));
+// #2348 — My work loads above the widgets on Home.
+vi.mock("@/lib/my-work", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/my-work")>()),
+  myWorkApi: {
+    get: vi.fn(async () => ({ changeRequests: [], reviews: [], projectCount: 1 })),
+  },
+}));
 vi.mock("@/lib/scheduler-api", () => ({
   tasksApi: { list: vi.fn() },
   schedulerApi: { list: vi.fn() },

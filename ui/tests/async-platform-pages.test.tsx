@@ -3,7 +3,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import { makeWrapper } from "./test-utils";
+import { makeWrapper, TEST_USER } from "./test-utils";
 import TriggersSettingsPage from "@/app/(authed)/settings/triggers/page";
 import DashboardPage from "@/app/(authed)/dashboard/page";
 import { asyncApi } from "@/lib/async-platform-api";
@@ -29,6 +29,14 @@ vi.mock("@/lib/api-client", async (importOriginal) => {
     apiFetch: vi.fn(async () => [{ id: "p1", name: "Project One" }]),
   };
 });
+
+// #2348 — My work loads above the widgets on Home.
+vi.mock("@/lib/my-work", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/my-work")>()),
+  myWorkApi: {
+    get: vi.fn(async () => ({ changeRequests: [], reviews: [], projectCount: 1 })),
+  },
+}));
 
 vi.mock("@/lib/projects-api", () => ({
   projectsApi: { list: vi.fn(async () => ({ items: [] })) },
@@ -147,7 +155,8 @@ describe("DashboardPage active runs widget (#146)", () => {
         },
       ],
     });
-    render(<DashboardPage />, { wrapper: makeWrapper() });
+    // #2348 — Active runs is an admin's widget.
+    render(<DashboardPage />, { wrapper: makeWrapper({ initialUser: TEST_USER }) });
     await waitFor(() => expect(screen.getByTestId("bg-run-r1")).toBeInTheDocument());
     expect(screen.getByTestId("bg-run-cancel-r1")).toBeInTheDocument();
     expect(screen.getByTestId("bg-run-pause-r1")).toBeInTheDocument();
@@ -177,7 +186,7 @@ describe("DashboardPage active runs widget (#146)", () => {
     });
     api.cancelBackgroundRun.mockResolvedValue({ ok: true });
     api.pauseBackgroundRun.mockResolvedValue({ ok: true });
-    render(<DashboardPage />, { wrapper: makeWrapper() });
+    render(<DashboardPage />, { wrapper: makeWrapper({ initialUser: TEST_USER }) });
     fireEvent.click(await screen.findByTestId("bg-run-cancel-r1"));
     await waitFor(() => expect(api.cancelBackgroundRun).toHaveBeenCalledWith("r1"));
     fireEvent.click(screen.getByTestId("bg-run-pause-r1"));
