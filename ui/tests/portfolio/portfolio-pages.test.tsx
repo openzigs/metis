@@ -100,6 +100,32 @@ describe("portfolio assessment page", () => {
     expect(screen.queryByTestId("portfolio-assessment-progress")).toBeNull();
   });
 
+  it("#2272 — a document check names the document, and lists what it did not check", async () => {
+    api.get.mockResolvedValue({
+      ...fiveStates(),
+      sourceDocumentId: "doc-1",
+      statement:
+        'Requirements read from "Payments FRD": the model read it in full and found 2 requirements. Each is checked on its own.',
+      notChecked: [{ text: "Appendix B", reason: "section-unread", count: null }],
+    });
+    const { container } = render(<PortfolioAssessmentPage />, { wrapper: makeWrapper() });
+    expect(await screen.findByRole("heading", { name: "Document" })).toBeVisible();
+    expect(screen.getByTestId("portfolio-not-checked")).toHaveTextContent(
+      "Appendix B Not checked: the model could not read this section of the document.",
+    );
+    expect(await axeViolations(container)).toEqual([]);
+  });
+
+  it("#2272 — a check still running lists nothing as not checked yet", async () => {
+    api.get.mockResolvedValue({
+      ...view({ status: "running" }),
+      notChecked: [{ text: "Appendix B", reason: "section-unread", count: null }],
+    });
+    render(<PortfolioAssessmentPage />, { wrapper: makeWrapper() });
+    await screen.findByTestId("portfolio-detail-statement");
+    expect(screen.queryByTestId("portfolio-not-checked")).toBeNull();
+  });
+
   it("puts the answer before the table", async () => {
     api.get.mockResolvedValue(fiveStates());
     render(<PortfolioAssessmentPage />, { wrapper: makeWrapper() });
@@ -282,6 +308,39 @@ describe("portfolio entry page", () => {
     await waitFor(() =>
       expect(api.create).toHaveBeenCalledWith({ requirementId: "req-1", scope: "all-accessible" }),
     );
+  });
+
+  it("#2272 — arrives with a document and sends its id; it can be dropped for a statement", async () => {
+    const user = userEvent.setup();
+    vi.mocked(useSearchParams).mockReturnValue(
+      new URLSearchParams({ documentId: "doc-1", title: "Payments FRD" }) as never,
+    );
+    api.list.mockResolvedValue([]);
+    api.create.mockResolvedValue({ id: "pa-new" });
+    render(<PortfolioPage />, { wrapper: makeWrapper() });
+    expect(screen.getByTestId("portfolio-form-document")).toHaveTextContent("Payments FRD");
+    await user.click(screen.getByRole("button", { name: "Check coverage" }));
+    await waitFor(() =>
+      expect(api.create).toHaveBeenCalledWith({ documentId: "doc-1", scope: "all-accessible" }),
+    );
+    await user.click(screen.getByRole("button", { name: "Type a statement instead" }));
+    expect(screen.getByLabelText("Requirement statement")).toBeVisible();
+  });
+
+  it("#2272 — arrives with several products chosen", async () => {
+    vi.mocked(useSearchParams).mockReturnValue(
+      new URLSearchParams([
+        ["productId", "p-billing"],
+        ["productId", "p-crm"],
+        ["documentId", "doc-1"],
+      ]) as never,
+    );
+    api.list.mockResolvedValue([]);
+    render(<PortfolioPage />, { wrapper: makeWrapper() });
+    expect(screen.getByRole("radio", { name: "Several products" })).toBeChecked();
+    expect(screen.getByTestId("portfolio-form-document")).toHaveTextContent("Selected document");
+    expect(await screen.findByRole("checkbox", { name: "Billing" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "CRM" })).toBeChecked();
   });
 
   it("lets the analyst drop the requirement and type a statement", async () => {

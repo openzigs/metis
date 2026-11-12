@@ -15,7 +15,12 @@
 import { useId, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { ChevronDown, ChevronRight } from "lucide-react";
-import { PORTFOLIO_NOT_AFFECTED_OLDER_RULE, portfolioRestrictedNote } from "@metis/shared";
+import {
+  PORTFOLIO_IMPACT_TIER_LABEL,
+  PORTFOLIO_NOT_AFFECTED_OLDER_RULE,
+  portfolioRestrictedNote,
+  type PortfolioImpactTier,
+} from "@metis/shared";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -40,6 +45,23 @@ const SEVERITY_VARIANT: Record<string, "destructive" | "warning" | "info"> = {
   medium: "warning",
   low: "info",
 };
+
+const TIER_VARIANT: Record<PortfolioImpactTier, "success" | "info" | "warning" | "outline"> = {
+  "found-in-code": "success",
+  verified: "success",
+  likely: "info",
+  possible: "warning",
+  "needs-review": "outline",
+};
+
+/** #2272 — how sure the impact is: found in code, verified by graph path, likely, possible or needs review. */
+export function ImpactTierBadge({ tier }: { tier: PortfolioImpactTier }) {
+  return (
+    <Badge variant={TIER_VARIANT[tier]} data-testid="portfolio-impact-tier" data-tier={tier}>
+      {PORTFOLIO_IMPACT_TIER_LABEL[tier]}
+    </Badge>
+  );
+}
 
 export function SeverityBadge({ severity }: { severity: string }) {
   return (
@@ -221,6 +243,7 @@ function AffectedCard({ product, host }: { product: AffectedProduct; host: boole
           </span>
         ) : null}
         {product.severity ? <SeverityBadge severity={product.severity} /> : null}
+        <ImpactTierBadge tier={product.tier} />
       </div>
       {product.summary ? <p className="text-sm">{product.summary}</p> : null}
       {product.impactWithheld ? (

@@ -9,6 +9,8 @@
  * No new server endpoints (per AC). Existing connector + MCP routes remain
  * the source of truth.
  */
+"use client";
+
 import Link from "next/link";
 import {
   Bell,
@@ -22,6 +24,8 @@ import {
 } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { PageHeader } from "@/components/ui/page-header";
+import { useAuth } from "@/lib/auth-context";
+import { isAdminOnlyPath } from "@/lib/navigation";
 
 interface IntegrationLink {
   href: string;
@@ -91,6 +95,11 @@ const INTEGRATIONS: IntegrationLink[] = [
 ];
 
 export default function SettingsIntegrationsPage() {
+  const { user } = useAuth();
+  // #2332 — no card for a page the shell hides from a non-admin (MCP, Hooks,
+  // Triggers, Vault).
+  const links =
+    user?.role === "admin" ? INTEGRATIONS : INTEGRATIONS.filter((l) => !isAdminOnlyPath(l.href));
   return (
     <div className="space-y-6 p-2 md:p-0" data-testid="settings-integrations-root">
       <PageHeader
@@ -107,7 +116,7 @@ export default function SettingsIntegrationsPage() {
         className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3"
         data-testid="settings-integrations-grid"
       >
-        {INTEGRATIONS.map((link) => (
+        {links.map((link) => (
           <Link
             key={link.href}
             href={link.href}

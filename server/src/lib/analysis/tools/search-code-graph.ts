@@ -71,6 +71,17 @@ async function describeUnresolvedCallees(callerId: string): Promise<string> {
   return `${count} ${noun} to external or unresolved symbols (not in the code graph)${list}`;
 }
 
+/**
+ * #2243 — the `where` fragment that leaves out the files hidden from the caller
+ * (`{}` when none are), on a symbol or an edge: both carry `filePath`.
+ */
+type VisibleFiles = { filePath?: { notIn: string[] } };
+
+function visibleFiles(context: ToolContext, repoConnectionId: string | null): VisibleFiles {
+  const hidden = context.codeAccess?.hiddenPaths(repoConnectionId) ?? [];
+  return hidden.length > 0 ? { filePath: { notIn: hidden } } : {};
+}
+
 const SYMBOL_REF_SELECT = {
   id: true,
   name: true,
@@ -118,10 +129,14 @@ const TYPE_MEMBER_REF = /^[A-Za-z_]\w*\.[A-Za-z_]\w*$/;
  * reported as ambiguous so the model re-asks with a qualified name, instead of
  * reasoning from an arbitrary pick.
  */
-async function resolveNamedSymbol(codeGraphId: string, ref: string): Promise<Resolution> {
+async function resolveNamedSymbol(
+  codeGraphId: string,
+  ref: string,
+  visible: VisibleFiles,
+): Promise<Resolution> {
   const page = { select: SYMBOL_REF_SELECT, orderBy: { qualifiedName: "asc" as const } };
   const exact: SymbolRef[] = await prisma.codeSymbol.findMany({
-    where: { codeGraphId, OR: [{ qualifiedName: ref }, { name: ref }] },
+    where: { codeGraphId, ...visible, OR: [{ qualifiedName: ref }, { name: ref }] },
     ...page,
     take: MAX_CANDIDATES + 1,
   });
@@ -140,9 +155,10 @@ async function resolveNamedSymbol(codeGraphId: string, ref: string): Promise<Res
       where: member
         ? {
             codeGraphId,
+            ...visible,
             OR: [{ qualifiedName: { contains: ref } }, { qualifiedName: { endsWith: member } }],
           }
-        : { codeGraphId, qualifiedName: { contains: ref } },
+        : { codeGraphId, ...visible, qualifiedName: { contains: ref } },
       ...page,
       take: MAX_CANDIDATES + 1,
     });
@@ -193,6 +209,7 @@ async function describeProbableCallSites(
   codeGraphId: string,
   callee: SymbolRef,
   filePath: string | undefined,
+  visible: VisibleFiles,
 ): Promise<string> {
   const rows = await prisma.codeEdge.findMany({
     where: {
@@ -209,8 +226,10 @@ async function describeProbableCallSites(
           ],
         },
         goUndecidedCallWhere(),
+        // #2243 — a call site in a hidden file is not listed.
+        ...(visible.filePath ? [visible] : []),
       ],
-      fromSymbol: { language: callee.language },
+      fromSymbol: { language: callee.language, ...visible },
       ...(filePath ? { filePath: { contains: filePath } } : {}),
     },
     select: {
@@ -302,7 +321,7 @@ async function execute(args: unknown, context: ToolContext): Promise<ToolResult>
   // Find the code graph for this project
   const codeGraph = await prisma.codeGraph.findFirst({
     where: { projectId: context.projectId },
-    select: { id: true },
+    select: { id: true, repoConnectionId: true },
     orderBy: { lastIndexedAt: "desc" },
   });
 
@@ -317,13 +336,17 @@ async function execute(args: unknown, context: ToolContext): Promise<ToolResult>
   const where: any = { codeGraphId: codeGraph.id };
   if (query) where.qualifiedName = { contains: query };
   if (kind) where.kind = kind;
+  // #2243 — a symbol in a file whose document the caller may not see is not
+  // returned, and cannot be named as a `calls`/`calledBy` target either.
   if (filePath) where.filePath = { contains: filePath };
+  const visible = visibleFiles(context, codeGraph.repoConnectionId);
+  if (visible.filePath) where.AND = [visible];
 
   // Handle edge-based queries (calledBy / calls)
   let unresolvedNote = "";
   let probableNote = "";
   if (calledBy) {
-    const resolved = await resolveNamedSymbol(codeGraph.id, calledBy);
+    const resolved = await resolveNamedSymbol(codeGraph.id, calledBy, visible);
     if (resolved.kind === "none") {
       return { content: `No symbol matching "${calledBy}" found.`, resultCount: 0 };
     }
@@ -357,7 +380,7 @@ async function execute(args: unknown, context: ToolContext): Promise<ToolResult>
   }
 
   if (calls) {
-    const resolved = await resolveNamedSymbol(codeGraph.id, calls);
+    const resolved = await resolveNamedSymbol(codeGraph.id, calls, visible);
     if (resolved.kind === "none") {
       return { content: `No symbol matching "${calls}" found.`, resultCount: 0 };
     }
@@ -373,7 +396,7 @@ async function execute(args: unknown, context: ToolContext): Promise<ToolResult>
       take: MAX_RESULTS,
     });
     const callerIds = edges.map((e) => e.fromSymbolId);
-    probableNote = await describeProbableCallSites(codeGraph.id, callee, filePath);
+    probableNote = await describeProbableCallSites(codeGraph.id, callee, filePath, visible);
     if (callerIds.length === 0) {
       if (probableNote) {
         return {

@@ -519,9 +519,10 @@ export type DocumentStatus = (typeof DOCUMENT_STATUSES)[number];
 
 /**
  * MIME types accepted by the upload pipeline. PDF/DOCX/XLSX entries reflect
- * the AC for #39 — actual parsing of the binary formats is gated on the
- * optional `pdf-parse`/`mammoth` libs being available; when missing the
- * uploads are still accepted but the document is left in `pending` state.
+ * the AC for #39 — actual parsing of PDF is gated on the optional
+ * `pdf-parse` lib being available (DOCX is converted in-house, #2292); when
+ * missing the uploads are still accepted but the document is left in
+ * `pending` state.
  */
 export const UPLOAD_MIME_ALLOWLIST = [
   "text/plain",
