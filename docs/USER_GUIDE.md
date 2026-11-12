@@ -1142,7 +1142,9 @@ The AI answers from **this project's own sources**, as the project chat does: it
 
 **Configuring the thread.** Click **Settings** (top of the thread) to open the thread settings panel:
 - **AI participation** — a 3-way control to set the thread's mode (**Off**, **On mention**, or **Auto**). Your choice takes effect immediately.
-- **Anchor (optional)** — attach the discussion to a specific Requirement, Analysis, or Spec Kit feature so it carries that context. For a **Requirement**, search the project's requirements by title and pick one; an Analysis or Spec Kit feature still takes its id. (Both controls are available to thread members only.) When the AI replies, it reads each anchor as it is at that moment: a requirement's title, body and acceptance criteria; an analysis's status and its requirements' titles; a Spec Kit feature's name, status and the summary paragraph at the top of its `spec.md`. Setting an anchor of one kind does not clear an anchor of another kind, so a thread can carry several, and the AI reads every one that still exists. [#2226, #2249]
+- **Anchor (optional)** — attach the discussion to a specific Requirement, Analysis, or Spec Kit feature so it carries that context. For a **Requirement**, search the project's requirements by title and pick one; an Analysis or Spec Kit feature still takes its id. (Both controls are available to thread members only.) When the AI replies, it reads each anchor as it is at that moment: a requirement's title, body and acceptance criteria; an analysis's status and its requirements' titles; a Spec Kit feature's name, status and the summary paragraph at the top of its `spec.md`. Setting an anchor of one kind does not clear an anchor of another kind, so a thread can carry several, and the AI reads every one that still exists. [#2226, #2249] If the feature's `spec.md` exists but has nothing under its `# Spec` heading, the AI is told that, rather than that no spec has been written. [#2282]
+
+**Asking the AI from Teams.** When a thread is linked to a Microsoft Teams channel, an `@AI` question asked in Teams is answered from the thread's messages since the channel was linked, because earlier messages were never posted to the channel. If those messages cannot be read, the AI still answers, without them. [#2282]
 
 **Discussing a requirement.** When you start a discussion, **About requirement (optional)** under the title lets you pick the requirement it is about: click the box to see the project's newest requirements, or type part of a title to narrow them; typing searches every requirement in the project, however old its run. The date beside each one tells apart requirements with the same title from different runs. The discussions list then shows *About: …* under the thread's title, and the thread page links to the requirement. [#2187]
 
@@ -6152,6 +6154,15 @@ An approval is of a wording, so editing that wording reopens it:
   older results stop being marked stale for it. Editing it again marks
   both stale until the next re-check. The analysis findings (the code
   and document evidence) are not re-run: a new analysis does that.
+- **An edited requirement with no governing result (#2281).** If no
+  governing rule applied to a requirement's earlier wording, there is
+  no result to mark stale. The Governing rules panel names it instead
+  ("Not checked since an edit: … was checked at v0 and is now v1") with
+  the same **Re-check this requirement** button, so its new wording can
+  be checked too. Re-checks are limited to 30 per user every 15
+  minutes; closing the page while one runs cancels it and changes
+  nothing. Deleting a re-checked requirement removes its re-check
+  results from the panel, the BRD and the clarifying questions.
 
 **One requirement in two open reviews (#1016).** You can request a
 second review of requirements that are already in review, for example
