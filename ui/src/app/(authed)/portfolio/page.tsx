@@ -16,6 +16,10 @@
  * it is not on the first page of the list.
  * #1725 — `?statement=` starts the form with a statement typed already: a
  * check whose impact needed a host product links back here to choose one.
+ * #2272 — `?documentId=&title=` arrives from a project's documents: each
+ * requirement the document holds is checked (the title is display-only; the
+ * server reads the document itself, with access). Several `productId`s start
+ * "Several products" with each one chosen.
  */
 "use client";
 
@@ -58,11 +62,21 @@ export default function PortfolioPage() {
 function PortfolioEntry({
   searchParams,
 }: {
-  searchParams: { get(name: string): string | null } | null;
+  searchParams: { get(name: string): string | null; getAll?(name: string): string[] } | null;
 }) {
   const router = useRouter();
   const initialProductId = searchParams?.get("productId") ?? null;
+  const initialProductIds = searchParams?.getAll?.("productId") ?? [];
   const requirementId = searchParams?.get("requirementId") ?? null;
+  const documentId = searchParams?.get("documentId") ?? null;
+  const [document, setDocument] = useState(() =>
+    documentId
+      ? {
+          id: documentId,
+          title: (searchParams?.get("title") ?? "").slice(0, TITLE_MAX) || "Selected document",
+        }
+      : null,
+  );
   const initialStatement = searchParams?.get("statement") ?? "";
   const [requirement, setRequirement] = useState(() =>
     requirementId
@@ -116,9 +130,12 @@ function PortfolioEntry({
         productTotal={productsQuery.data?.total}
         initialProductId={initialProductId}
         initialProductName={initialProduct.data?.name ?? null}
+        initialProductIds={initialProductIds}
         initialStatement={initialStatement}
         requirement={requirement}
         onClearRequirement={() => setRequirement(null)}
+        document={document}
+        onClearDocument={() => setDocument(null)}
         pending={create.isPending}
         error={error}
         onSubmit={(input) =>

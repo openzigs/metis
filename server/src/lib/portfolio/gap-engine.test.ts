@@ -4,7 +4,13 @@
  * `tests/portfolio-gap-engine-1622.sqlite.test.ts`.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { AuthPayload } from "@metis/shared";
+import {
+  PORTFOLIO_MAX_REQUIREMENTS,
+  PORTFOLIO_NOT_CHECKED_MAX,
+  PORTFOLIO_REQUIREMENT_MAX_CHARS,
+  portfolioAssessmentInputSchema,
+  type AuthPayload,
+} from "@metis/shared";
 import type { AIProvider, ChatResponse } from "../ai/types.js";
 import type { FederatedSearchResult } from "../rag/federated-search-service.js";
 
@@ -39,8 +45,13 @@ vi.mock("../rag/federated-search-service.js", () => ({
 }));
 
 const {
+  MAX_QUERY_CHARS,
+  MAX_SCOPE_PRODUCTS,
+  clipText,
+  criteriaGroups,
   evaluatePortfolioGap,
   mapWithConcurrency,
+  mergeRepoGroups,
   portfolioGapInputSchema,
   portfolioSummary,
   querySearchedFor,
@@ -50,6 +61,7 @@ const {
   toAssessmentInput,
 } = await import("./gap-engine.js");
 const { AppError } = await import("../../middleware/error-handler.js");
+const { NOT_CHECKED_LISTED_PER_REASON } = await import("./document-requirements.js");
 
 const USER: AuthPayload = {
   userId: "u",
@@ -104,7 +116,17 @@ const found = (hits: ReturnType<typeof hit>[]): FederatedSearchResult => ({
 });
 
 const ALL = { scope: "all-accessible" as const };
+const PRODUCT_P1 = { scope: "product" as const, productIds: ["p1"] };
 const limits = { runCostCapUsd: 10, productCostCapUsd: 10, concurrency: 2 };
+
+/** #2272 — the criteria a repo verdict prompt lists, in order. */
+function promptCriteria(prompt: string): string[] {
+  const block = prompt.split("<<<CRITERIA>>>")[1]?.split("<<<END CRITERIA>>>")[0] ?? "";
+  return block
+    .split("\n")
+    .map((l) => /^\[\d+\] (.*)$/.exec(l)?.[1])
+    .filter((c): c is string => c !== undefined);
+}
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -130,12 +152,22 @@ beforeEach(() => {
 });
 
 describe("portfolioGapInputSchema", () => {
-  it('a "product" scope names exactly one product', () => {
+  it('#2272 — a "product" scope names one or several products, up to the cap', () => {
     const parse = (productIds?: string[]) =>
       portfolioGapInputSchema.safeParse({ statement: "s", scope: "product", productIds }).success;
     expect(parse()).toBe(false);
     expect(parse(["p"])).toBe(true);
-    expect(parse(["p", "q"])).toBe(false);
+    expect(parse(["p", "q"])).toBe(true);
+    expect(parse(Array.from({ length: MAX_SCOPE_PRODUCTS }, (_, i) => `p${i}`))).toBe(true);
+    expect(parse(Array.from({ length: MAX_SCOPE_PRODUCTS + 1 }, (_, i) => `p${i}`))).toBe(false);
+  });
+
+  it("#2272 — takes up to the cap of criteria, each up to its length", () => {
+    const parse = (criteria: string[]) =>
+      portfolioGapInputSchema.safeParse({ statement: "s", criteria, ...ALL }).success;
+    expect(parse(Array.from({ length: PORTFOLIO_MAX_REQUIREMENTS }, () => "c"))).toBe(true);
+    expect(parse(Array.from({ length: PORTFOLIO_MAX_REQUIREMENTS + 1 }, () => "c"))).toBe(false);
+    expect(parse(["x".repeat(PORTFOLIO_REQUIREMENT_MAX_CHARS + 1)])).toBe(false);
   });
 
   it("refuses an empty statement and an unknown field", () => {
@@ -152,6 +184,105 @@ describe("readPortfolioGapLimits", () => {
       concurrency: 4,
       maxModelCalls: 250,
     });
+  });
+});
+
+describe("#2272 — criteriaGroups", () => {
+  it("a statement and criteria that fit one query and one call are one group, as before", () => {
+    expect(criteriaGroups("Title\nbody", ["c1", "c2"], 8)).toEqual([
+      { start: 0, criteria: ["c1", "c2"], query: "Title\nbody\nc1\nc2", searched: [true, true] },
+    ]);
+  });
+
+  it("splits by the criteria one call takes, each query the statement's first line and its own", () => {
+    const criteria = Array.from({ length: 5 }, (_, i) => `criterion ${i + 1}`);
+    const groups = criteriaGroups("Title\nmore body", criteria, 2);
+    expect(groups.map((g) => [g.start, g.criteria])).toEqual([
+      [0, ["criterion 1", "criterion 2"]],
+      [2, ["criterion 3", "criterion 4"]],
+      [4, ["criterion 5"]],
+    ]);
+    expect(groups[1].query).toBe("Title\ncriterion 3\ncriterion 4");
+    expect(groups.flatMap((g) => g.searched).every(Boolean)).toBe(true);
+  });
+
+  it("splits by the query's length, so every criterion is sent whole", () => {
+    const long = (n: number) => `${n} ${"x".repeat(1_500)}`;
+    const criteria = [long(1), long(2), long(3), long(4)];
+    const groups = criteriaGroups("T", criteria, 8);
+    expect(groups.map((g) => g.criteria.length)).toEqual([2, 2]);
+    for (const g of groups) {
+      expect(g.query.length).toBeLessThanOrEqual(MAX_QUERY_CHARS);
+      for (const c of g.criteria) expect(g.query).toContain(c);
+    }
+  });
+
+  it("a long statement alone does not push its criteria out of the query", () => {
+    const statement = `Heading\n${"lorem ".repeat(800)}`;
+    const [group] = criteriaGroups(statement, ["Export as PDF"], 8);
+    expect(group.query).toBe("Heading\nExport as PDF");
+    expect(group.searched).toEqual([true]);
+  });
+
+  it("a zero or negative group size still takes one criterion per call", () => {
+    expect(criteriaGroups("T", ["a", "b"], 0).map((g) => g.criteria)).toEqual([["a"], ["b"]]);
+  });
+});
+
+describe("#2272 — mergeRepoGroups", () => {
+  const part = (over: Partial<Parameters<typeof mergeRepoGroups>[0][number]>) => ({
+    productId: "p1",
+    repoConnectionId: "rc-1",
+    label: "acme/one",
+    verdict: "implemented" as const,
+    criteria: ["implemented" as const],
+    citations: [],
+    reason: null,
+    costUsd: 0.1,
+    ...over,
+  });
+
+  it("one group is returned as it is", () => {
+    const one = part({});
+    expect(mergeRepoGroups([one])).toBe(one);
+  });
+
+  it("joins the groups' criteria in order, citations once each, cost summed", () => {
+    const cite = (filePath: string) => ({ filePath, startLine: 1, endLine: 1 });
+    const merged = mergeRepoGroups([
+      part({ criteria: ["implemented", "implemented"], citations: [cite("a.ts")] }),
+      part({
+        verdict: "gap-confirmed",
+        criteria: ["gap-confirmed"],
+        citations: [cite("a.ts"), cite("b.ts")],
+        costUsd: 0.2,
+      }),
+    ]);
+    expect(merged.criteria).toEqual(["implemented", "implemented", "gap-confirmed"]);
+    expect(merged.citations.map((c) => c.filePath)).toEqual(["a.ts", "b.ts"]);
+    expect(merged.costUsd).toBeCloseTo(0.3);
+    expect(merged.verdict).toBe("partial");
+    expect(merged.reason).toBeNull();
+  });
+
+  it("keeps why a group was not verified, a failed model call first", () => {
+    const cnv = { verdict: "could-not-verify" as const, criteria: ["could-not-verify" as const] };
+    expect(mergeRepoGroups([part({}), part({ ...cnv, reason: "budget" })]).reason).toBe("budget");
+    expect(
+      mergeRepoGroups([
+        part({ ...cnv, reason: "no-evidence-retrieved" }),
+        part({ ...cnv, reason: "model-error" }),
+      ]).reason,
+    ).toBe("model-error");
+  });
+});
+
+describe("#2272 — clipText", () => {
+  it("keeps a text that fits, and ends a longer one with an ellipsis within the limit", () => {
+    expect(clipText("short")).toBe("short");
+    const clipped = clipText("y".repeat(PORTFOLIO_REQUIREMENT_MAX_CHARS + 10));
+    expect(clipped).toHaveLength(PORTFOLIO_REQUIREMENT_MAX_CHARS);
+    expect(clipped.endsWith("…")).toBe(true);
   });
 });
 
@@ -418,10 +549,11 @@ describe("evaluatePortfolioGap", () => {
       USER,
       { statement: "s", criteria, ...ALL },
       {
-        provider: provider(() =>
+        // #2272 — judged in groups of `maxCriteria`: each reply answers its prompt's criteria.
+        provider: provider((prompt) =>
           JSON.stringify({
-            criteria: criteria.map((_, i) =>
-              i === 11
+            criteria: promptCriteria(prompt).map((c, i) =>
+              c === "c12"
                 ? { index: i + 1, verdict: "gap-confirmed" }
                 : { index: i + 1, verdict: "implemented", excerpts: [1] },
             ),
@@ -516,9 +648,11 @@ describe("evaluatePortfolioGap", () => {
     expect(none.products.every((p) => p.repos[0].reason === "budget")).toBe(true);
   });
 
-  it("a criterion the query never carried is not a confirmed gap (#1657)", async () => {
-    // The query is cut at 4,000 characters, so this criterion never reaches it.
+  it("#2272 — a criterion a long statement pushed out of one query is searched in its own (#1657)", async () => {
+    // One query of statement and criterion would be cut at 4,000 characters,
+    // and the criterion never sent: before #2272 it could not be a confirmed gap.
     const statement = "lorem ".repeat(700).trim();
+    const queries: string[] = [];
     const result = await evaluatePortfolioGap(
       USER,
       { statement, criteria: ["Invoices are exported as PDF"], ...ALL },
@@ -526,13 +660,151 @@ describe("evaluatePortfolioGap", () => {
         provider: provider(() =>
           JSON.stringify({ criteria: [{ index: 1, verdict: "gap-confirmed" }] }),
         ),
-        search: async () => found([hit("rc-p1", "a.ts", "a"), hit("rc-p2", "b.ts", "b")]),
+        search: async ({ query }) => {
+          queries.push(query);
+          return found([hit("rc-p1", "a.ts", "a"), hit("rc-p2", "b.ts", "b")]);
+        },
         limits,
       },
     );
-    expect(result.products[0].repos[0].criteria).toEqual(["could-not-verify"]);
-    expect(result.products.map((p) => p.coverage)).toEqual(["not-checked", "not-checked"]);
-    expect(result.verdict).toBe("could-not-verify");
+    expect(queries.every((q) => q.includes("Invoices are exported as PDF"))).toBe(true);
+    expect(queries.every((q) => q.length <= MAX_QUERY_CHARS)).toBe(true);
+    expect(result.products[0].repos[0].criteria).toEqual(["gap-confirmed"]);
+    expect(result.verdict).toBe("gap-confirmed");
+    expect(result.notChecked).toEqual([]);
+  });
+
+  it("#2272 — a document's requirements are each searched and judged, a group at a time", async () => {
+    const requirements = Array.from({ length: 20 }, (_, i) => `Requirement ${i + 1} text`);
+    const queries: string[] = [];
+    const result = await evaluatePortfolioGap(
+      USER,
+      { statement: "Requirements read from FRD", criteria: requirements, ...PRODUCT_P1 },
+      {
+        provider: provider((prompt) =>
+          JSON.stringify({
+            criteria: promptCriteria(prompt).map((c, i) =>
+              c === "Requirement 20 text"
+                ? { index: i + 1, verdict: "gap-confirmed" }
+                : { index: i + 1, verdict: "implemented", excerpts: [1] },
+            ),
+          }),
+        ),
+        search: async ({ query }) => {
+          queries.push(query);
+          return found([hit("rc-p1", "a.ts", "a")]);
+        },
+        limits: { ...limits, maxCriteria: 8 },
+      },
+    );
+    // 8 + 8 + 4: three searches and three calls for the one repo.
+    expect(queries).toHaveLength(3);
+    expect(queries[2]).toContain("Requirement 20 text");
+    const repo = result.products[0].repos[0];
+    expect(repo.criteria).toHaveLength(20);
+    expect(repo.criteria[19]).toBe("gap-confirmed");
+    expect(repo.criteria.slice(0, 19).every((v) => v === "implemented")).toBe(true);
+    expect(repo.citations).toHaveLength(1);
+    expect(result.products[0].coverage).toBe("partial");
+    expect(result.products[0].criteriaCoveredBy[0]).toEqual(["rc-p1"]);
+    expect(result.products[0].criteriaCoveredBy[19]).toEqual([]);
+  });
+
+  it("#2272 — criteria a repo was not judged on for want of budget are listed not checked", async () => {
+    const requirements = Array.from({ length: 10 }, (_, i) => `R${i + 1}`);
+    const result = await evaluatePortfolioGap(
+      USER,
+      { statement: "Requirements", criteria: requirements, ...PRODUCT_P1 },
+      {
+        provider: provider((prompt) =>
+          JSON.stringify({
+            criteria: promptCriteria(prompt).map((_, i) => ({
+              index: i + 1,
+              verdict: "implemented",
+              excerpts: [1],
+            })),
+          }),
+        ),
+        search: async () => found([hit("rc-p1", "a.ts", "a")]),
+        // One call: the first group (R1..R8) is judged, the second (R9, R10) is not.
+        limits: { ...limits, maxCriteria: 8, maxModelCalls: 1 },
+      },
+    );
+    expect(result.products[0].repos[0].criteria.slice(8)).toEqual([
+      "could-not-verify",
+      "could-not-verify",
+    ]);
+    expect(result.products[0].repos[0].reason).toBe("budget");
+    expect(result.notChecked).toEqual([
+      { text: "R9", reason: "budget", count: 1 },
+      { text: "R10", reason: "budget", count: 1 },
+    ]);
+    expect(
+      toAssessmentInput(result, {
+        createdById: "u",
+        sourceRequirementId: null,
+        sourceProjectId: null,
+      }).notChecked,
+    ).toEqual(result.notChecked);
+  });
+
+  it("#2272 — criteria the model split a statement into past the cap are listed, not dropped", async () => {
+    const split = Array.from({ length: PORTFOLIO_MAX_REQUIREMENTS + 2 }, (_, i) => `k${i + 1}`);
+    const result = await evaluatePortfolioGap(
+      USER,
+      { statement: "A big requirement", ...PRODUCT_P1 },
+      {
+        provider: provider((prompt) =>
+          prompt.includes("<<<CODE>>>")
+            ? JSON.stringify({ criteria: [] })
+            : JSON.stringify({ criteria: split }),
+        ),
+        search: async () => found([]),
+        limits,
+      },
+    );
+    expect(result.criteria).toHaveLength(PORTFOLIO_MAX_REQUIREMENTS);
+    expect(result.notChecked).toEqual([
+      { text: `k${PORTFOLIO_MAX_REQUIREMENTS + 1}`, reason: "over-limit", count: null },
+      { text: `k${PORTFOLIO_MAX_REQUIREMENTS + 2}`, reason: "over-limit", count: null },
+    ]);
+  });
+
+  it("#2272 — a huge split is listed up to a bound and the rest counted, so the record still stores", async () => {
+    const extra = PORTFOLIO_NOT_CHECKED_MAX + 500;
+    const split = Array.from({ length: PORTFOLIO_MAX_REQUIREMENTS + extra }, (_, i) => `k${i + 1}`);
+    const result = await evaluatePortfolioGap(
+      USER,
+      { statement: "A huge requirement", ...PRODUCT_P1 },
+      {
+        provider: provider((prompt) =>
+          prompt.includes("<<<CODE>>>")
+            ? JSON.stringify({ criteria: [] })
+            : JSON.stringify({ criteria: split }),
+        ),
+        search: async () => found([]),
+        limits,
+      },
+    );
+    const overLimit = result.notChecked.filter((n) => n.reason === "over-limit");
+    expect(overLimit).toHaveLength(NOT_CHECKED_LISTED_PER_REASON + 1);
+    expect(overLimit[0]).toEqual({
+      text: `k${PORTFOLIO_MAX_REQUIREMENTS + 1}`,
+      reason: "over-limit",
+      count: null,
+    });
+    const rest = extra - NOT_CHECKED_LISTED_PER_REASON;
+    expect(overLimit.at(-1)).toEqual({
+      text: `${rest} more requirements`,
+      reason: "over-limit",
+      count: rest,
+    });
+    const record = toAssessmentInput(result, {
+      createdById: "u",
+      sourceRequirementId: null,
+      sourceProjectId: null,
+    });
+    expect(portfolioAssessmentInputSchema.safeParse(record).success).toBe(true);
   });
 
   it("uses the deployment provider, the federated search and the price table by default", async () => {
@@ -681,6 +953,7 @@ describe("#1963 — the verdict over the products in scope of the change", () =>
       verdict,
       summary: portfolioSummary(verdict, rows),
       costUsd: 0,
+      notChecked: [],
     };
   };
   const issueImpact = impactOf([
