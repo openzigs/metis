@@ -46,10 +46,44 @@ describe("<HubTabs /> (#27)", () => {
     expect(screen.queryByRole("link", { name: "Admin" })).not.toBeInTheDocument();
   });
 
-  it("hides the Admin tab from non-admins", () => {
-    renderAt("/vault", "reader");
-    expect(screen.getByRole("link", { name: "Vault" })).toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "Admin" })).not.toBeInTheDocument();
+  // #2332 — Settings keeps one page for a non-admin, so it has no tab bar.
+  it("renders no tab bar for a non-admin in Settings, whose Vault and Eval are hidden", () => {
+    renderAt("/settings/profile", "reader");
+    expect(screen.queryByTestId("hub-tabs")).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Vault" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Eval" })).not.toBeInTheDocument();
+  });
+
+  // #2332 — Activity keeps only Sessions for a non-admin: no one-tab bar.
+  it("renders no tab bar for a non-admin in Activity", () => {
+    renderAt("/sessions", "reader");
+    expect(screen.queryByTestId("hub-tabs")).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Tasks" })).not.toBeInTheDocument();
+  });
+
+  it("shows an admin the Activity tabs in their order, without Reviews (#2332)", () => {
+    renderAt("/sessions", "admin");
+    const nav = screen.getByRole("navigation", { name: "Activity pages" });
+    expect(
+      within(nav)
+        .getAllByRole("link")
+        .map((l) => l.textContent),
+    ).toEqual(["Tasks", "Runs", "Sessions", "Scheduler"]);
+  });
+
+  it("shows an admin the Settings tabs", () => {
+    renderAt("/vault", "admin");
+    const nav = screen.getByRole("navigation", { name: "Settings pages" });
+    expect(
+      within(nav)
+        .getAllByRole("link")
+        .map((l) => l.textContent),
+    ).toEqual(["Settings", "Vault", "Eval"]);
+  });
+
+  it("renders nothing on the Reviews page, a sidebar entry of its own (#2332)", () => {
+    renderAt("/reviews", "reader");
+    expect(screen.queryByTestId("hub-tabs")).not.toBeInTheDocument();
   });
 
   it("renders nothing inside a project, which has its own tabs", () => {

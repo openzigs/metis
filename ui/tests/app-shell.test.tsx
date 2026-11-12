@@ -143,3 +143,57 @@ describe("<AppShell /> — AGPL §13 source offer", () => {
     );
   });
 });
+
+// #2332 — a non-admin who opens an operations page by URL gets a plain refusal
+// with a way back, inside the usual shell, never the page.
+describe("<AppShell /> — admin-only pages (#2332)", () => {
+  function renderAt(pathname: string, role: "admin" | "developer" | "coordinator" | "reader") {
+    vi.mocked(usePathname).mockReturnValue(pathname);
+    return render(
+      <AppShell>
+        <p>the page</p>
+      </AppShell>,
+      { wrapper: makeWrapper({ initialUser: { ...TEST_USER, role } }) },
+    );
+  }
+
+  it.each([
+    ["/tasks", "developer"],
+    ["/runs", "reader"],
+    ["/scheduler", "coordinator"],
+    ["/vault", "developer"],
+    ["/eval/leaderboard", "developer"],
+    ["/eval/leaderboard/run-1", "reader"],
+  ] as const)("refuses %s to a %s", (path, role) => {
+    renderAt(path, role);
+    expect(screen.getByTestId("no-access")).toHaveAttribute("role", "alert");
+    expect(
+      screen.getByRole("heading", { name: "You don't have access to this page" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Back to dashboard" })).toHaveAttribute(
+      "href",
+      "/dashboard",
+    );
+    expect(screen.queryByText("the page")).not.toBeInTheDocument();
+    // Still the signed-in shell: the sidebar is there to leave by.
+    expect(screen.getByTestId("sidebar")).toBeInTheDocument();
+  });
+
+  it.each(["/tasks", "/runs", "/scheduler", "/vault", "/eval/leaderboard"])(
+    "renders %s for an admin",
+    (path) => {
+      renderAt(path, "admin");
+      expect(screen.getByText("the page")).toBeInTheDocument();
+      expect(screen.queryByTestId("no-access")).not.toBeInTheDocument();
+    },
+  );
+
+  it.each(["/sessions", "/reviews", "/runs/42", "/dashboard"])(
+    "renders %s for a non-admin",
+    (path) => {
+      renderAt(path, "developer");
+      expect(screen.getByText("the page")).toBeInTheDocument();
+      expect(screen.queryByTestId("no-access")).not.toBeInTheDocument();
+    },
+  );
+});
