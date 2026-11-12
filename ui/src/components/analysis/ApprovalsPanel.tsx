@@ -334,16 +334,25 @@ export function approvalItemName(
 /**
  * #1000 — the `reqId:field` keys of the ambiguities the clarification dialog
  * has closed: everything the user answered plus everything the resolution model
- * resolved (the server's `addressedAmbiguities`). Empty with no dialog.
+ * resolved (the server's `addressedAmbiguities`). Empty with no dialog. #2275 —
+ * and everything set aside as not worth asking (#2235), as the server counts
+ * it: a card no longer shows those as open.
  */
 export function addressedAmbiguityKeys(
   state:
-    | Pick<ClarificationStatePayload, "resolvedAmbiguities" | "answeredAmbiguities">
+    | Pick<
+        ClarificationStatePayload,
+        "resolvedAmbiguities" | "answeredAmbiguities" | "setAsideAmbiguities"
+      >
     | null
     | undefined,
 ): ReadonlySet<string> {
   if (!state) return new Set();
-  return new Set([...(state.resolvedAmbiguities ?? []), ...(state.answeredAmbiguities ?? [])]);
+  return new Set([
+    ...(state.resolvedAmbiguities ?? []),
+    ...(state.answeredAmbiguities ?? []),
+    ...(state.setAsideAmbiguities ?? []),
+  ]);
 }
 
 /** #2147 — replace one approval's open edit; `undefined` closes it. */

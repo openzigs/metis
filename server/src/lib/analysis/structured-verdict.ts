@@ -197,6 +197,11 @@ export interface StructuredVerdictRequest<T> {
   /** #1058 — expose no tools to the model (a pure extraction call). */
   disableTools?: boolean;
   /**
+   * #2262 — passed through to the provider unchanged ({@link ChatOptions.promptCaching}):
+   * a caller making many calls over one large stable prefix caches it.
+   */
+  promptCaching?: ChatOptions["promptCaching"];
+  /**
    * Used ONLY when the active provider declares `responseFormat` support
    * (#1115). Supplying it to a provider that drops it would be a silent no-op,
    * so this helper omits it there rather than passing it and hoping.
@@ -380,6 +385,7 @@ export async function requestStructuredVerdict<T>(
     ...(request.maxTokens ? { maxTokens: request.maxTokens } : {}),
     ...(request.callType ? { callType: request.callType } : {}),
     ...(request.disableTools ? { disableTools: true } : {}),
+    ...(request.promptCaching ? { promptCaching: request.promptCaching } : {}),
     ...(responseFormat ? { responseFormat } : {}),
   };
 
