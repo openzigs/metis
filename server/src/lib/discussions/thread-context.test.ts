@@ -54,6 +54,40 @@ describe("specSummary", () => {
   it("shows a spec without a `# Spec` heading from its start", () => {
     expect(specSummary("  ## Overview\nfree-form spec  ")).toBe("## Overview\nfree-form spec");
   });
+
+  // #2282 — a `# comment` in a fenced block is code, not the next heading.
+  it("reads through fenced code: a `#` line inside a fence neither ends nor starts the summary", () => {
+    const spec = [
+      "```sh",
+      "# Spec",
+      "```",
+      "# Spec",
+      "Run the export:",
+      "```sh",
+      "# export every feed",
+      "metis export --all",
+      "```",
+      "~~~",
+      "## not a heading either",
+      "~~~",
+      "Then check the file.",
+      "## Stakeholders",
+      "- Business analysts",
+    ].join("\n");
+    expect(specSummary(spec)).toBe(
+      [
+        "Run the export:",
+        "```sh",
+        "# export every feed",
+        "metis export --all",
+        "```",
+        "~~~",
+        "## not a heading either",
+        "~~~",
+        "Then check the file.",
+      ].join("\n"),
+    );
+  });
 });
 
 describe("renderAnchorContext", () => {
@@ -136,17 +170,21 @@ describe("renderAnchorContext", () => {
     expect(text).not.toContain("AC-1");
   });
 
-  it("says when a feature has no spec yet, or an empty one", () => {
-    for (const spec of [null, "# Spec\n\n## Stakeholders"]) {
-      const text = renderAnchorContext({
+  // #2282 — a written spec.md with nothing to summarise is not "no spec written yet".
+  it("says when a feature has no spec yet, an empty one, or an empty Spec section", () => {
+    const summaryOf = (spec: string | null) =>
+      renderAnchorContext({
         kind: "specKitFeature",
         slug: "001-x",
         title: "x",
         status: "draft",
         spec,
       });
-      expect(text).toMatch(/Spec summary: no spec written yet\.$/);
-    }
+    expect(summaryOf(null)).toMatch(/Spec summary: no spec written yet\.$/);
+    expect(summaryOf("  \n")).toMatch(/Spec summary: none\. The feature's spec\.md is empty\.$/);
+    expect(summaryOf("# Spec\n\n## Stakeholders\n- Business analysts")).toMatch(
+      /Spec summary: none\. The feature's spec\.md has no text under its Spec heading\.$/,
+    );
   });
 
   it("bounds a long spec summary", () => {
@@ -185,6 +223,25 @@ describe("loadRecentHistory", () => {
         },
         orderBy: [{ createdAt: "desc" }, { id: "desc" }],
         take: RESPONDER_HISTORY_LIMIT,
+      }),
+    );
+  });
+
+  // #2282 — a Teams reply's history starts where the channel was linked.
+  it("with `since`, reads only the messages written from then on", async () => {
+    const at = new Date("2026-11-01T10:00:00.000Z");
+    const since = new Date("2026-11-01T09:00:00.000Z");
+    messageFindFirst.mockResolvedValue({ id: "m-trigger", createdAt: at });
+    messageFindMany.mockResolvedValue([]);
+    await loadRecentHistory("t1", "m-trigger", { since });
+    expect(messageFindMany).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        where: {
+          threadId: "t1",
+          deletedAt: null,
+          OR: [{ createdAt: { lt: at } }, { createdAt: at, id: { lt: "m-trigger" } }],
+          AND: [{ createdAt: { gte: since } }],
+        },
       }),
     );
   });

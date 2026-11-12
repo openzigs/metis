@@ -147,6 +147,22 @@ export function groupFindingsByRequirement(
   return [...groups.values()];
 }
 
+/**
+ * #2281 — the note for requirements edited since the governing check whose
+ * earlier wording produced no finding: nothing goes stale for them, so they
+ * are named here instead, with a re-check for each. Null when there are none.
+ */
+export function editedWithoutFindingsNote(
+  edited: readonly GoverningStaleRequirement[],
+): string | null {
+  if (edited.length === 0) return null;
+  const changes = edited.map(
+    (s) => `"${s.title}" was checked at v${s.judgedVersion} and is now v${s.currentVersion}`,
+  );
+  const one = edited.length === 1;
+  return `Not checked since an edit: ${changes.join("; ")}. The governing check produced no finding for the earlier wording, so ${one ? "its" : "their"} current wording has not been checked.`;
+}
+
 /** The BA answer a finding's rule was re-judged on, and the reason judged on it (#2087). */
 export interface AnswerSettlement {
   answer: string;
@@ -281,6 +297,17 @@ export function GoverningFindingsPanel({
     );
   }
   if (!findingsQuery.data) return null;
+  const editedNote = editedWithoutFindingsNote(findingsQuery.data.editedWithoutFindings ?? []);
+  const edited = editedNote ? (
+    <RecheckNotice
+      projectId={projectId}
+      analysisId={analysisId}
+      note={editedNote}
+      requirements={findingsQuery.data.editedWithoutFindings ?? []}
+      canRecheck={canDecide}
+      testId="governing-edited-unchecked"
+    />
+  ) : null;
   if (!hasFindings) {
     // #2113 — "not checked" and "checked, nothing applied" read differently.
     // While a findings run is in flight, the list is about to change: nothing yet.
@@ -304,6 +331,7 @@ export function GoverningFindingsPanel({
             ? "Governing rules were checked against this analysis's requirements. None produced a finding."
             : "Governing rules were not checked for this analysis: the workspace had no current governing rules, or the check did not run."}
         </p>
+        {edited}
       </section>
     );
   }
@@ -344,6 +372,7 @@ export function GoverningFindingsPanel({
             Re-checking after a BA answer. These findings update when it finishes.
           </p>
         ) : null}
+        {edited}
       </div>
       {groups.map((group) => (
         <div
@@ -359,11 +388,13 @@ export function GoverningFindingsPanel({
             <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">{group.text}</p>
           ) : null}
           {group.stale.length > 0 ? (
-            <StaleRequirementsNotice
+            <RecheckNotice
               projectId={projectId}
               analysisId={analysisId}
-              stale={group.stale}
+              note={governingStaleNote(group.stale) ?? ""}
+              requirements={group.stale}
               canRecheck={canDecide}
+              testId="governing-stale"
             />
           ) : null}
           <ul className="mt-2 space-y-2">
@@ -391,22 +422,27 @@ export function GoverningFindingsPanel({
 }
 
 /**
- * #2222 — the requirements edited since these findings judged them, and a
- * **Re-check this requirement** for each: the governing check on its current
- * wording only. The findings and the applicability are read again once the
- * server has stored the new result; nothing is shown optimistically.
+ * #2222 — requirements edited since the governing check judged them (#2281:
+ * or since it produced no finding for them), and a **Re-check this
+ * requirement** for each: the governing check on its current wording only. The
+ * findings and the applicability are read again once the server has stored the
+ * new result; nothing is shown optimistically.
  */
-function StaleRequirementsNotice({
+function RecheckNotice({
   projectId,
   analysisId,
-  stale,
+  note,
+  requirements,
   canRecheck,
+  testId,
 }: {
   projectId: string;
   analysisId: string;
-  stale: readonly GoverningStaleRequirement[];
+  note: string;
+  requirements: readonly GoverningStaleRequirement[];
   /** The user holds `analysis.run`, which the re-check route requires. */
   canRecheck: boolean;
+  testId: string;
 }): React.ReactElement {
   const recheck = useAppMutation({
     mutationFn: (requirementId: string) =>
@@ -420,12 +456,12 @@ function StaleRequirementsNotice({
     <div
       role="note"
       className="mt-2 rounded border border-warning/40 bg-warning/10 p-2 text-xs text-foreground"
-      data-testid="governing-stale"
+      data-testid={testId}
     >
-      <p>{governingStaleNote(stale)}</p>
+      <p>{note}</p>
       {canRecheck ? (
         <div className="mt-2 flex flex-wrap gap-2">
-          {stale.map((s) => (
+          {requirements.map((s) => (
             <Button
               key={s.requirementId}
               type="button"
@@ -437,7 +473,7 @@ function StaleRequirementsNotice({
             >
               {recheck.isPending && recheck.variables === s.requirementId
                 ? "Re-checking…"
-                : stale.length === 1
+                : requirements.length === 1
                   ? "Re-check this requirement"
                   : `Re-check “${s.title}”`}
             </Button>

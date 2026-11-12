@@ -1624,11 +1624,11 @@ export default function AnalysisPage(): React.ReactElement {
                             <FindingBody body={f.body} />
                             {(staleNotesOf.get(f.id) ?? []).map((note) => (
                               <p
-                                key={note}
+                                key={note.requirementId}
                                 className="mt-1 text-xs text-warning"
                                 data-testid="finding-stale"
                               >
-                                {note}
+                                {note.text}
                               </p>
                             ))}
                             {f.citations.length > 0 ? (

@@ -46,6 +46,8 @@ const state = vi.hoisted(() => {
     /** What the stubbed applicability hook does; null: no current rules. */
     decide: null as null | ((r: { id: string; text: string }) => Promise<unknown>),
     decided: [] as Array<{ id: string; text: string }>,
+    /** #2281 — the signal the route passed to the hook. */
+    signal: undefined as AbortSignal | undefined,
   };
 });
 vi.mock("../src/lib/prisma.js", async (importOriginal) => ({
@@ -60,15 +62,17 @@ vi.mock("../src/lib/ai/index.js", async (importOriginal) => ({
 }));
 vi.mock("../src/lib/governing/applicability.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/lib/governing/applicability.js")>()),
-  governingApplicabilityHookFor: async () =>
-    state.decide
+  governingApplicabilityHookFor: async (args: { signal?: AbortSignal }) => {
+    state.signal = args.signal;
+    return state.decide
       ? {
           decide: async (r: { id: string; text: string }) => {
             state.decided.push(r);
             return state.decide!(r);
           },
         }
-      : null,
+      : null;
+  },
 }));
 
 const { initAnalysisRouter } = await import("../src/routes/analysis.js");
@@ -117,6 +121,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     let ruleId = "";
     let r1 = "";
     let r2 = "";
+    let r3 = "";
     let rOther = "";
     let rB = "";
 
@@ -128,11 +133,11 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       a.use(errorHandler);
       return a;
     };
-    const token = (userId: string, ws: string) =>
+    const token = (userId: string, ws: string, role: "coordinator" | "reader" = "coordinator") =>
       issueTokens({
         userId,
         username: userId,
-        role: "coordinator",
+        role,
         permissions: [],
         workspaces: [ws],
       }).accessToken;
@@ -156,12 +161,25 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           }>;
         }>;
         requirementTitles: Record<string, string>;
+        editedWithoutFindings: Array<{
+          requirementId: string;
+          title: string;
+          judgedVersion: number;
+          currentVersion: number;
+        }>;
       };
     };
-    const recheck = (body: unknown, project = PA, analysis = ANA, user = MEMBER_A, ws = WS_A) =>
+    const recheck = (
+      body: unknown,
+      project = PA,
+      analysis = ANA,
+      user = MEMBER_A,
+      ws = WS_A,
+      role: "coordinator" | "reader" = "coordinator",
+    ) =>
       request(app())
         .post(`${findingsPath(project, analysis)}/recheck`)
-        .set("Authorization", `Bearer ${token(user, ws)}`)
+        .set("Authorization", `Bearer ${token(user, ws, role)}`)
         .send(body as object);
     const personEdit = async (id: string, body: string) => {
       const row = await db.requirement.findUniqueOrThrow({ where: { id } });
@@ -314,6 +332,19 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       r2 = await requirement(ANA, PA, "Reset page states the password rules", [
         `finding:${code.id}`,
       ]);
+      // #2281 — R3 is drawn from AC-3, on which no governing rule produced a finding.
+      const session = await db.finding.create({
+        data: {
+          agentResultId: agent.id,
+          category: "gap",
+          title: "Sessions never time out",
+          body: "b",
+          evidence: JSON.stringify({ requirementId: "AC-3" }),
+        },
+      });
+      r3 = await requirement(ANA, PA, "Sessions time out after 30 minutes", [
+        `finding:${session.id}`,
+      ]);
       rOther = await requirement(ANA_OTHER, PA, "A requirement of another analysis", []);
       rB = await requirement(ANB, PB, "A requirement of another project", []);
       // R2 gets a SYSTEM version (kept approved criteria): the analysis's own writing.
@@ -431,6 +462,74 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect((await recheck({ requirementId: r1 })).status).toBe(404);
     });
 
+    it("#2281 — 403 for a member without analysis.run, and nothing is checked", async () => {
+      const res = await recheck({ requirementId: r1 }, PA, ANA, MEMBER_A, WS_A, "reader");
+      expect(res.status).toBe(403);
+      expect(res.body.error.code).toBe("FORBIDDEN");
+      expect(state.decided).toEqual([]);
+    });
+
+    it("#2281 — rate limited per user, after the permission check", async () => {
+      process.env.GOVERNING_RECHECK_LIMIT_MAX = "1";
+      try {
+        const limitedUser = "u-2281-limited";
+        await db.user.create({
+          data: {
+            id: limitedUser,
+            username: limitedUser,
+            displayName: limitedUser,
+            email: `${limitedUser}@example.test`,
+          },
+        });
+        await db.workspaceMember.create({
+          data: { workspaceId: WS_A, userId: limitedUser, role: "member" },
+        });
+        // A refused caller spends nothing.
+        expect((await recheck({}, PA, ANA, limitedUser, WS_A, "reader")).status).toBe(403);
+        expect((await recheck({}, PA, ANA, limitedUser, WS_A)).status).toBe(400);
+        const limited = await recheck({ requirementId: r1 }, PA, ANA, limitedUser, WS_A);
+        expect(limited.status).toBe(429);
+        expect(limited.body.error.code).toBe("GOVERNING_RECHECK_RATE_LIMITED");
+        expect(state.decided).toEqual([]);
+      } finally {
+        delete process.env.GOVERNING_RECHECK_LIMIT_MAX;
+      }
+    });
+
+    it("#2281 — a client that goes away aborts the check, and nothing is stored", async () => {
+      let aborted = false;
+      state.decide = (r) =>
+        new Promise((resolve) => {
+          state.signal!.addEventListener("abort", () => {
+            aborted = true;
+            resolve({
+              requirementId: r.id,
+              decisions: [],
+              rulesScreened: 0,
+              screenBatches: 0,
+              candidates: 0,
+              reasked: 0,
+              screenReasked: 0,
+              error: "aborted",
+            });
+          });
+        });
+      await expect(recheck({ requirementId: r2 }).timeout(300)).rejects.toThrow(/timeout/i);
+      await vi.waitFor(() => expect(aborted).toBe(true));
+      expect(state.decided.map((d) => d.id)).toEqual([r2]);
+      // Settle any work the abort let through before reading the store.
+      await new Promise((r) => setTimeout(r, 50));
+      expect(vi.mocked((state.provider as AIProvider).chat)).not.toHaveBeenCalled();
+      const data = await getFindings();
+      expect(data.findings.map((f) => f.requirementId)).toEqual(["AC-2"]);
+      const stored = JSON.parse(
+        (await db.analysis.findUniqueOrThrow({ where: { id: ANA } })).metadata!,
+      ) as { governingApplicability: { requirements: Array<{ requirementId: string }> } };
+      expect(stored.governingApplicability.requirements.map((r) => r.requirementId)).toEqual([
+        "AC-2",
+      ]);
+    });
+
     it("Re-check R1: checks its current wording only, stores its findings at v1, clears the stale marker, audits the user", async () => {
       const res = await recheck({ requirementId: r1 });
       expect(res.status).toBe(200);
@@ -477,6 +576,38 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(analysed!.stale).toEqual([
         expect.objectContaining({ requirementId: r1, judgedVersion: 0, currentVersion: 2 }),
       ]);
+      // R1 has findings that offer its re-check: it is not listed again.
+      expect(data.editedWithoutFindings).toEqual([]);
+    });
+
+    it("#2281 — an edited requirement whose analysed requirement produced no finding is listed, and a re-check takes it off", async () => {
+      expect((await getFindings()).editedWithoutFindings).toEqual([]);
+      await personEdit(r3, "Sessions time out after 15 minutes of inactivity.");
+      expect((await getFindings()).editedWithoutFindings).toEqual([
+        {
+          requirementId: r3,
+          title: "Sessions time out after 30 minutes",
+          judgedVersion: 0,
+          currentVersion: 1,
+        },
+      ]);
+      const res = await recheck({ requirementId: r3 });
+      expect(res.status).toBe(200);
+      const data = await getFindings();
+      expect(data.editedWithoutFindings).toEqual([]);
+      expect(data.requirementTitles[r3]).toBe("Sessions time out after 30 minutes");
+    });
+
+    it("#2281 — a deleted re-checked requirement's findings are not shown, and nothing is stale for it", async () => {
+      await db.requirement.update({ where: { id: r1 }, data: { deletedAt: new Date() } });
+      const data = await getFindings();
+      expect(data.findings.map((f) => f.requirementId).sort()).toEqual(["AC-2", r3].sort());
+      expect(data.findings.find((f) => f.requirementId === "AC-2")!.stale).toEqual([]);
+      expect(data.requirementTitles).toEqual({ [r3]: "Sessions time out after 30 minutes" });
+      // Kept, not deleted: a restore brings them back.
+      expect(
+        await db.governingFinding.count({ where: { analysisId: ANA, requirementId: r1 } }),
+      ).toBe(1);
     });
   },
 );

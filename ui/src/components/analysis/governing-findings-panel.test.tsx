@@ -18,6 +18,7 @@ import {
   governingSummarySentence,
   type GoverningAnalysisApplicability,
   type GoverningFinding,
+  type GoverningStaleRequirement,
 } from "@metis/shared";
 import { createQueryClient } from "@/lib/query-client";
 import type { ClarificationStatePayload, ClarifyingQuestion } from "@/lib/analysis-api";
@@ -29,6 +30,7 @@ import {
   answerSettlementOf,
   clarifyQuestionAnchor,
   clarifyingQuestionHref,
+  editedWithoutFindingsNote,
   governingSummarySentences,
   groupFindingsByRequirement,
 } from "./governing-findings-panel";
@@ -155,6 +157,8 @@ class FakeServer {
   requirementTitles: Record<string, string> = {};
   /** #2222 — the titles of the stored requirements, for a re-check to name. */
   storedTitles: Record<string, string> = {};
+  /** #2281 — edited requirements no finding offers a re-check for. */
+  editedWithoutFindings: GoverningStaleRequirement[] = [];
   requests: { method: string; path: string; body: unknown }[] = [];
   /** #2339 — the workspace the project belongs to; null for a project in none. */
   workspaceId: string | null = "ws-1";
@@ -193,6 +197,7 @@ class FakeServer {
         refreshing: this.refreshing,
         checked: this.checked,
         requirementTitles: this.requirementTitles,
+        editedWithoutFindings: this.editedWithoutFindings,
       });
     }
     // #2222 — the re-check stores the requirement's own finding and the
@@ -215,6 +220,9 @@ class FakeServer {
         }),
       ];
       this.requirementTitles = { ...this.requirementTitles, [requirementId]: title };
+      this.editedWithoutFindings = this.editedWithoutFindings.filter(
+        (e) => e.requirementId !== requirementId,
+      );
       return json(200, { requirementId, version: 2, findings: 1 });
     }
     if (rest.length === 3 && rest[2] === "decision" && method === "POST") {
@@ -533,6 +541,48 @@ describe("GoverningFindingsPanel (#1876)", () => {
       await screen.findByRole("button", { name: "Re-check this requirement: One" }),
     ).toHaveTextContent("Re-check “One”");
     expect(screen.getByRole("button", { name: "Re-check this requirement: Two" })).toBeVisible();
+  });
+
+  it("#2281 — an edited requirement whose earlier wording produced no finding is offered a re-check", async () => {
+    server.editedWithoutFindings = [
+      { requirementId: "r9", title: "Session timeout", judgedVersion: 0, currentVersion: 1 },
+    ];
+    server.storedTitles = { r9: "Session timeout" };
+    const user = userEvent.setup();
+    mount();
+
+    const note = await screen.findByTestId("governing-edited-unchecked");
+    expect(note).toHaveTextContent(
+      'Not checked since an edit: "Session timeout" was checked at v0 and is now v1. The governing check produced no finding for the earlier wording, so its current wording has not been checked.',
+    );
+    // In the panel's header, not under any requirement's group.
+    expect(note.closest("[role=group]")).toBeNull();
+    await user.click(
+      within(note).getByRole("button", { name: "Re-check this requirement: Session timeout" }),
+    );
+    expect(
+      await screen.findByRole("group", { name: "Governing rules for Session timeout" }),
+    ).toBeVisible();
+    await waitFor(() => expect(screen.queryByTestId("governing-edited-unchecked")).toBeNull());
+  });
+
+  it("#2281 — with no finding at all, an edited requirement is still offered a re-check; without analysis.run only the note", async () => {
+    server.findings = [];
+    server.editedWithoutFindings = [
+      { requirementId: "r9", title: "Session timeout", judgedVersion: 0, currentVersion: 2 },
+    ];
+    mount();
+    const empty = await screen.findByTestId("governing-findings-empty");
+    expect(within(empty).getByTestId("governing-edited-unchecked")).toHaveTextContent(
+      '"Session timeout" was checked at v0 and is now v2',
+    );
+    expect(
+      within(empty).getByRole("button", { name: "Re-check this requirement: Session timeout" }),
+    ).toBeVisible();
+
+    reload(false);
+    const readOnly = await screen.findByTestId("governing-edited-unchecked");
+    expect(within(readOnly).queryByRole("button")).toBeNull();
   });
 
   it("without analysis.run the decisions are shown but no decision controls are", async () => {
@@ -997,6 +1047,20 @@ describe("governingSummarySentences", () => {
         sentence: "2 of 2 rules in P v3 apply. No gaps found. Not an audit opinion.",
       },
     ]);
+  });
+});
+
+describe("editedWithoutFindingsNote (#2281)", () => {
+  it("says nothing for none, and names each edited requirement with its versions", () => {
+    expect(editedWithoutFindingsNote([])).toBeNull();
+    expect(
+      editedWithoutFindingsNote([
+        { requirementId: "a", title: "A", judgedVersion: 0, currentVersion: 1 },
+        { requirementId: "b", title: "B", judgedVersion: 2, currentVersion: 3 },
+      ]),
+    ).toBe(
+      'Not checked since an edit: "A" was checked at v0 and is now v1; "B" was checked at v2 and is now v3. The governing check produced no finding for the earlier wording, so their current wording has not been checked.',
+    );
   });
 });
 
