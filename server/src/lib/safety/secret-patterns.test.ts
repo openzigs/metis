@@ -140,13 +140,12 @@ describe("SECRET_PATTERNS", () => {
 
   it("an OpenSSH key and the escaped single-string PEM are both caught", () => {
     expect(redactSecrets(OPENSSH).byClass).toEqual({ private_key: 1 });
-    const json = `{"type":"service_account","private_key":"${PEM_ESCAPED}","x":1}`;
-    const out = redactSecrets(json);
+    // A service-account file's shape, assembled so no scanner reads this test as one.
+    const head = k('{"type":"service', '_account","private', '_key":"');
+    const out = redactSecrets(`${head}${PEM_ESCAPED}","x":1}`);
     expect(out.byClass).toEqual({ private_key: 1 });
     // The escaped newline after the END line is JSON, not key: it stays.
-    expect(out.text).toBe(
-      `{"type":"service_account","private_key":"[REDACTED:private_key]\\n","x":1}`,
-    );
+    expect(out.text).toBe(`${head}[REDACTED:private_key]\\n","x":1}`);
   });
 
   it("an unterminated key block with key material is caught; a bare header is not", () => {
