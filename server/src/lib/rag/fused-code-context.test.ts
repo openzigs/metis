@@ -450,7 +450,10 @@ function mockSearcher(results: RawCodeSymbolHit[]): FusedCodeSearcher & {
 }
 
 function mockLineLookup(
-  entries: Record<string, { filePath: string; startLine: number; endLine: number }>,
+  entries: Record<
+    string,
+    { filePath: string; startLine: number; endLine: number; repoConnectionId?: string }
+  >,
 ): SymbolLineLookup {
   return {
     resolve: vi.fn().mockResolvedValue(new Map(Object.entries(entries))),
