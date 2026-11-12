@@ -116,6 +116,29 @@ describe("resolveDiscussionTools", () => {
     expect(rt!.note).toContain("read_file_slice");
   });
 
+  it("#2295: a non-tool-capable model gets no code tools unless the deployment set the flag", async () => {
+    const flags = { ...ON, codeSearchToolsOnTextProtocol: false };
+    const rt = await resolveDiscussionTools({
+      session,
+      provider,
+      model: "m",
+      flags,
+      registry: FULL(),
+      native: false,
+    });
+    expect(rt).toBeNull();
+    // The same flags still give a tool-capable model its code tools.
+    const native = await resolveDiscussionTools({
+      session,
+      provider,
+      model: "m",
+      flags,
+      registry: FULL(),
+      native: true,
+    });
+    expect(native!.toolset.resolve("read_file_slice")).toBeDefined();
+  });
+
   it("a non-tool-capable model with code tools off gets no tools", async () => {
     const rt = await resolveDiscussionTools({
       session,

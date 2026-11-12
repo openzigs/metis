@@ -27,13 +27,16 @@ interface TunableRowProps {
 }
 
 export function TunableRow({ view, onChanged }: TunableRowProps) {
-  const [draft, setDraft] = useState<string>(view.value ?? "");
+  // #2295 — an unset key shows the value the server applies, not a blank: an
+  // unset flag that defaults on must not read as off.
+  const shown = view.value ?? view.defaultValue ?? "";
+  const [draft, setDraft] = useState<string>(shown);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    setDraft(view.value ?? "");
-  }, [view.value]);
+    setDraft(shown);
+  }, [shown]);
 
   async function handleSave() {
     setBusy(true);
@@ -71,7 +74,9 @@ export function TunableRow({ view, onChanged }: TunableRowProps) {
         ? "vault"
         : view.source === "env"
           ? "env"
-          : "unset";
+          : view.defaultValue != null
+            ? "default"
+            : "unset";
 
   return (
     <div
