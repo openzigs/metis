@@ -16,6 +16,7 @@ vi.mock("../../prisma.js", () => ({
 import {
   createSearchCodeContextTool,
   DEFAULT_SPANS,
+  MAX_SPANS,
   planSpanLines,
   SEARCH_CODE_CONTEXT_TOOL,
   SEARCH_DEPTH,
@@ -25,6 +26,7 @@ import { DEFAULT_LIMIT } from "./search-symbols.js";
 import { codeAccessFilterOf } from "./code-access.js";
 import { codeVersionIndexOf } from "../../code-graph/code-version.js";
 import { getChatCodeTools, CHAT_CODE_TOOL_NAMES } from "./index.js";
+import { CONFIG_KEYS } from "../../config/key-registry.js";
 import type { RawCodeSymbolHit } from "../../rag/fused-code-context.js";
 
 const SHA = "0123456789abcdef0123456789abcdef01234567";
@@ -106,6 +108,11 @@ function deps(ranked: Sym[], over: Partial<SearchCodeContextDeps> = {}) {
   };
 }
 
+/** The `[n] …` span blocks of a result, in order (the notes before them excluded). */
+function spanBlocks(text: string): string[] {
+  return text.split("\n\n").filter((b) => /^\[\d+\]/.test(b));
+}
+
 /** The line numbers a result printed, per `N| ` prefix. */
 function printedLines(text: string): number[] {
   return [...text.matchAll(/^(\d+)\| /gm)].map((m) => Number(m[1]));
@@ -129,6 +136,7 @@ describe("search_code_context (#2329)", () => {
     );
     expect(r.citations).toEqual([
       {
+        repoConnectionId: "r1",
         path: "src/a.ts",
         startLine: 10,
         endLine: 40,
@@ -206,7 +214,7 @@ describe("search_code_context (#2329)", () => {
     expect(r.content).not.toContain("src/big.ts:1-300");
   });
 
-  it("holds the token budget and says how many spans it left out", async () => {
+  it("holds the token budget and names by locator the spans it left out", async () => {
     for (let i = 0; i < 5; i += 1) await file(`src/f${i}.ts`, 40);
     const ranked = Array.from({ length: 5 }, (_, i) => ({
       id: `f${i}`,
@@ -220,10 +228,134 @@ describe("search_code_context (#2329)", () => {
     );
     expect(r.resultCount).toBeGreaterThan(0);
     expect(r.resultCount).toBeLessThan(5);
-    const blocks = r.content.split("\n\n").filter((b) => /^\[\d+\]/.test(b));
-    expect(Math.ceil(blocks.join("\n\n").length / 4)).toBeLessThanOrEqual(250);
-    expect(r.content).toContain(`${5 - r.resultCount!} more span`);
+    let spent = 0;
+    for (const b of spanBlocks(r.content)) spent += Math.ceil(b.length / 4);
+    expect(spent).toBeLessThanOrEqual(250);
+    const left = Array.from({ length: 5 - r.resultCount! }, (_, i) => r.resultCount! + i);
+    expect(r.content).toContain(
+      `Left out for the token budget: ${left.map((i) => `src/f${i}.ts:1-40`).join(", ")}.`,
+    );
     expect(r.truncated).toBe(true);
+  });
+
+  // Review finding 3 — a top-ranked span bigger than the whole budget used to be
+  // skipped silently while lower-ranked ones filled the result.
+  it("cuts the best-ranked span down to fit the budget instead of skipping it", async () => {
+    await file("src/wide.ts", 120, (n) => `W${n} ${"x".repeat(120)}`);
+    await file("src/small.ts", 5);
+    const { deps: d } = deps([
+      { id: "wide", path: "src/wide.ts", start: 1, end: 120 },
+      { id: "small", path: "src/small.ts", start: 1, end: 3 },
+    ]);
+    const r = await createSearchCodeContextTool({ ...d, tokenBudget: 1000 }).execute(
+      { query: "q" },
+      CTX,
+    );
+    expect(r.citations?.[0]).toMatchObject({
+      path: "src/wide.ts",
+      startLine: 1,
+      endLine: 120,
+      truncated: true,
+      totalLines: 120,
+      next: { startLine: expect.any(Number) },
+    });
+    const first = spanBlocks(r.content)[0]!;
+    expect(first).toMatch(/^\[1\] src\/wide\.ts:1-\d+ /);
+    expect(printedLines(first).slice(0, 4)).toEqual([1, 2, 3, 4]);
+    expect(Math.ceil(first.length / 4)).toBeLessThanOrEqual(1000);
+    // The cut span took what the budget had; the next one is named, not dropped.
+    expect(r.content).toContain("Left out for the token budget: src/small.ts:1-3.");
+    expect(r.content).not.toContain("src/wide.ts:1-120");
+  });
+
+  it("returns at most MAX_SPANS spans however large a limit is asked for", async () => {
+    for (let i = 0; i < 15; i += 1) await file(`src/f${i}.ts`, 1);
+    const ranked = Array.from({ length: 15 }, (_, i) => ({
+      id: `f${i}`,
+      path: `src/f${i}.ts`,
+      start: 1,
+      end: 1,
+    }));
+    const r = await createSearchCodeContextTool(deps(ranked).deps).execute(
+      { query: "q", limit: 50 },
+      CTX,
+    );
+    expect(MAX_SPANS).toBe(12);
+    expect(r.resultCount).toBe(MAX_SPANS);
+    expect(r.content).toContain(`${15 - MAX_SPANS} more spans not returned`);
+  });
+
+  it("says in its description what the limit allows", () => {
+    const { description } = createSearchCodeContextTool(deps([]).deps);
+    expect(description).toContain(`${DEFAULT_SPANS} whole functions/classes by default`);
+    expect(description).toContain(`up to ${MAX_SPANS}`);
+  });
+
+  // #2325 — a code citation is identified by repository AND path.
+  it("stamps each citation with the repository it was read from, in a two-repo project", async () => {
+    const other = await mkdtemp(path.join(os.tmpdir(), "code-context-r2-"));
+    try {
+      await file("src/same.ts", 10, (n) => `R1-${n}`);
+      await mkdir(path.join(other, "src"), { recursive: true });
+      await writeFile(
+        path.join(other, "src", "same.ts"),
+        Array.from({ length: 10 }, (_, i) => `R2-${i + 1}`).join("\n"),
+      );
+      const { deps: d } = deps(
+        [
+          { id: "two", path: "src/same.ts", start: 1, end: 3, repo: "r2" },
+          { id: "one", path: "src/same.ts", start: 1, end: 3, repo: "r1" },
+        ],
+        {
+          resolveCloneDir: async (id) => (id === "r2" ? other : clone),
+          loadVersions: async () =>
+            codeVersionIndexOf([
+              {
+                repoConnectionId: "r1",
+                commitSha: SHA,
+                repo: { provider: "github", ownerOrOrg: "acme", repoName: "app", apiBaseUrl: null },
+              },
+              {
+                repoConnectionId: "r2",
+                commitSha: MOVED,
+                repo: { provider: "github", ownerOrOrg: "acme", repoName: "lib", apiBaseUrl: null },
+              },
+            ]),
+          readHead: async (dir) => (dir === other ? MOVED : SHA),
+        },
+      );
+      const r = await createSearchCodeContextTool(d).execute({ query: "q" }, CTX);
+      expect(r.citations?.map((c) => [c.repoConnectionId, c.path, c.commitSha])).toEqual([
+        ["r2", "src/same.ts", MOVED],
+        ["r1", "src/same.ts", SHA],
+      ]);
+      expect(r.citations?.[0]?.permalink).toContain("acme/lib");
+      const [b2, b1] = spanBlocks(r.content);
+      expect(b2).toContain("R2-1");
+      expect(b1).toContain("R1-1");
+    } finally {
+      await rm(other, { recursive: true, force: true });
+    }
+  });
+
+  it("puts its notes before the spans, so the model cap cannot cut them", async () => {
+    for (let i = 0; i < 8; i += 1) await file(`src/f${i}.ts`, 5);
+    const ranked = Array.from({ length: 8 }, (_, i) => ({
+      id: `f${i}`,
+      path: `src/f${i}.ts`,
+      start: 1,
+      end: 3,
+    }));
+    const r = await createSearchCodeContextTool(
+      deps(ranked, { readHead: async () => MOVED }).deps,
+    ).execute({ query: "q" }, CTX);
+    const firstSpan = r.content.indexOf("[1] ");
+    expect(firstSpan).toBeGreaterThan(0);
+    for (const note of ["index is behind the repository", "more spans not returned"]) {
+      const at = r.content.indexOf(note);
+      expect(at).toBeGreaterThanOrEqual(0);
+      expect(at).toBeLessThan(firstSpan);
+    }
   });
 
   it("returns at most `limit` spans (default 6) and counts the rest", async () => {
@@ -363,5 +495,12 @@ describe("offering it in chat", () => {
     ]);
     // Nameable in an agent's allowlist, and its results are evidence for citations.
     expect(CHAT_CODE_TOOL_NAMES).toContain(SEARCH_CODE_CONTEXT_TOOL);
+  });
+
+  it("bounds the token budget an administrator can set", () => {
+    const schema = CONFIG_KEYS.CHAT_CODE_CONTEXT_TOKEN_BUDGET!.schema;
+    expect(schema.safeParse("32000").success).toBe(true);
+    expect(schema.safeParse("32001").success).toBe(false);
+    expect(schema.safeParse("0").success).toBe(false);
   });
 });

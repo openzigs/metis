@@ -265,6 +265,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(r.text).toContain("4| }");
       expect(r.citations).toEqual([
         expect.objectContaining({
+          repoConnectionId: REPO,
           path: "internal/feed.go",
           startLine: 2,
           endLine: 4,

@@ -984,7 +984,7 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
     valueType: "bool",
     schema: z.coerce.boolean(),
     description:
-      "Offer search_code_context in chat beside the other code tools (#2329): one call returns up to 6 whole functions/classes for a question, adjacent matches in a file merged into one span, ranked exactly as search_code_symbols ranks them, read from the project's clones under the same path and access checks as read_file_slice. OFF by default: it becomes a default only once the paired `pnpm eval:ba-qa` tools-only arms show turns per answer falling without facts stated or citation precision regressing. Needs CHAT_CODE_SEARCH_TOOLS on.",
+      "Offer search_code_context in chat beside the other code tools (#2329): one call returns up to 6 whole functions/classes for a question by default (up to 12 when the model asks for more), adjacent matches in a file merged into one span, ranked exactly as search_code_symbols ranks them, read from the project's clones under the same path and access checks as read_file_slice. OFF by default: it becomes a default only once the paired `pnpm eval:ba-qa` tools-only arms show turns per answer falling without facts stated or citation precision regressing. Needs CHAT_CODE_SEARCH_TOOLS on.",
     sensitive: false,
   },
   CHAT_CODE_CONTEXT_MERGE_GAP: {
@@ -998,9 +998,9 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
   CHAT_CODE_CONTEXT_TOKEN_BUDGET: {
     tier: "tunable",
     valueType: "int",
-    schema: z.coerce.number().int().positive(),
+    schema: z.coerce.number().int().positive().max(32000),
     description:
-      "search_code_context (#2329): the most tokens (≈4 chars/token) one result may hold. Spans are placed best-ranked first while they fit; the result says how many were left out. Default 4000.",
+      "search_code_context (#2329): the most tokens (≈4 chars/token) one result may hold, at most 32000, so a typo cannot turn one call into the whole context. Spans are placed best-ranked first; one that does not fit what is left is cut down to fit, and the result names what it left out. Default 4000.",
     sensitive: false,
   },
   // ── Epic #128 — one tool runtime + enforced approval gate ─────────────

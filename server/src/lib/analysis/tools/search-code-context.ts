@@ -19,8 +19,15 @@
  *   4. a span longer than `maxSpanLines` is returned as its signature (first
  *      lines) plus the matched window(s), with `truncated` and `totalLines` set
  *      and the next range to read named;
- *   5. spans are placed best-ranked first while they fit `tokenBudget`; the
- *      result says how many were left out.
+ *   5. spans are placed best-ranked first while they fit `tokenBudget`. A
+ *      span larger than what is left is cut down to fit (signature first, the
+ *      range to read next named), never skipped silently; one that cannot fit
+ *      even its signature is named by locator in the notes.
+ *
+ * The notes (the version line, a stale warning, left-out spans) come BEFORE
+ * the spans, as #2325 placed them on every chat code tool: chat caps the
+ * model's copy of a result by keeping its start (`capForModel`), so a note
+ * after the spans would be the first thing cut.
  *
  * It is NOT a re-chunking of the document store (ADR 0002 stands): it is
  * assembled at query time from the symbol index and the clone. Every span
@@ -87,6 +94,8 @@ export const DEFAULT_TOKEN_BUDGET = 4000;
 /** Lines of a cut span kept as its signature. */
 const SIGNATURE_LINES = 4;
 const CHARS_PER_TOKEN = 4;
+/** The fewest lines a span is cut down to before it is left out: its signature and one more. */
+const MIN_FITTED_LINES = SIGNATURE_LINES + 1;
 
 const parameters: JSONSchema = {
   type: "object",
@@ -287,6 +296,8 @@ export function createSearchCodeContextTool(deps: Partial<SearchCodeContextDeps>
     let spent = 0;
     let notReturned = 0;
     let unreadable = 0;
+    /** Locators of spans left out because not even their signature fit the budget. */
+    const overBudget: string[] = [];
     for (const span of spans) {
       if (blocks.length >= validated.limit) {
         notReturned += 1;
@@ -315,13 +326,14 @@ export function createSearchCodeContextTool(deps: Partial<SearchCodeContextDeps>
         endLine: Math.min(span.endLine, total),
         hits: span.hits,
       };
-      const plan = planSpanLines(clamped, maxSpanLines);
-      const block = renderSpan(blocks.length + 1, first.path, clamped, plan, read.lines, span);
-      const cost = Math.ceil(block.length / CHARS_PER_TOKEN);
-      if (spent + cost > tokenBudget) {
-        notReturned += 1;
+      const fitted = fitSpan(clamped, maxSpanLines, tokenBudget - spent, (plan) =>
+        renderSpan(blocks.length + 1, first.path, clamped, plan, read.lines, span),
+      );
+      if (!fitted) {
+        overBudget.push(`${first.path}:${clamped.startLine}-${clamped.endLine}`);
         continue;
       }
+      const { plan, block, cost } = fitted;
       spent += cost;
       blocks.push(block);
       const version = versions.forRepo(first.repoId);
@@ -332,6 +344,8 @@ export function createSearchCodeContextTool(deps: Partial<SearchCodeContextDeps>
       if (stale) staleNotes.add(staleNote(version.commitSha!, head));
       citations.push(
         codeCitationRef({
+          // #2325 — a code citation is identified by repository AND path.
+          repoConnectionId: first.repoId,
           path: first.path,
           startLine: clamped.startLine,
           endLine: clamped.endLine,
@@ -358,21 +372,27 @@ export function createSearchCodeContextTool(deps: Partial<SearchCodeContextDeps>
         resultCount: 0,
       };
     }
-    const footer: string[] = [];
+    // Notes BEFORE the spans: the model cap keeps a result's start (#2325).
+    const notes: string[] = [formatCodeVersionLine(citations), ...staleNotes];
     if (notReturned > 0) {
-      footer.push(
-        `${notReturned} more span${notReturned === 1 ? "" : "s"} not returned (span limit or token ` +
-          `budget); ask again with a narrower question, or read one with read_file_slice.`,
+      notes.push(
+        `${notReturned} more span${notReturned === 1 ? "" : "s"} not returned (span limit); ask ` +
+          `again with a narrower question, or read one with read_file_slice.`,
+      );
+    }
+    if (overBudget.length > 0) {
+      notes.push(
+        `Left out for the token budget: ${overBudget.join(", ")}. Read ` +
+          `${overBudget.length === 1 ? "it" : "them"} with read_file_slice.`,
       );
     }
     if (unreadable > 0) {
-      footer.push(`${unreadable} matching span${unreadable === 1 ? "" : "s"} could not be read.`);
+      notes.push(`${unreadable} matching span${unreadable === 1 ? "" : "s"} could not be read.`);
     }
-    footer.push(...staleNotes, formatCodeVersionLine(citations));
     return {
-      content: `${blocks.join("\n\n")}\n\n${footer.join("\n")}`,
+      content: `${notes.filter(Boolean).join("\n")}\n\n${blocks.join("\n\n")}`,
       resultCount: blocks.length,
-      truncated: notReturned > 0 || citations.some((c) => c.truncated),
+      truncated: notReturned > 0 || overBudget.length > 0 || citations.some((c) => c.truncated),
       citations,
     };
   }
@@ -381,13 +401,44 @@ export function createSearchCodeContextTool(deps: Partial<SearchCodeContextDeps>
     name: SEARCH_CODE_CONTEXT_TOOL,
     description:
       "Answer-oriented code search: a good FIRST call for a question about how the code works. " +
-      "Returns up to 6 whole functions/classes (adjacent matches in one file merged into one span, " +
+      `Returns ${DEFAULT_SPANS} whole functions/classes by default, up to ${MAX_SPANS} with limit ` +
+      "(adjacent matches in one file merged into one span, " +
       "numbered lines, each with a path:start-end locator), ranked as search_code_symbols ranks them. " +
       "A long symbol comes back as its signature plus the matched part, with the range to read next. " +
       "Keep using search_code_graph, search_code_symbols and read_file_slice for anything it leaves out.",
     parameters,
     execute,
   };
+}
+
+/**
+ * The span's plan and rendered block, cut down until it fits `remaining`
+ * tokens: whole (or signature + matched window) when that fits, else fewer
+ * lines, signature first, with the next range named. `null` when not even
+ * the signature and one line fit.
+ */
+export function fitSpan(
+  span: {
+    startLine: number;
+    endLine: number;
+    hits: ReadonlyArray<{ startLine: number; endLine: number }>;
+  },
+  maxSpanLines: number,
+  remaining: number,
+  render: (plan: Plan) => string,
+): { plan: Plan; block: string; cost: number } | null {
+  let maxLines = maxSpanLines;
+  for (;;) {
+    const plan = planSpanLines(span, maxLines);
+    const block = render(plan);
+    const cost = Math.ceil(block.length / CHARS_PER_TOKEN);
+    if (cost <= remaining) return { plan, block, cost };
+    const shown = plan.ranges.reduce((n, [a, b]) => n + b - a + 1, 0);
+    if (shown <= MIN_FITTED_LINES) return null;
+    // Scale the lines to the share of the cost that fits; always drop at least one.
+    const scaled = Math.floor((shown * remaining) / cost);
+    maxLines = Math.max(MIN_FITTED_LINES, Math.min(shown - 1, scaled));
+  }
 }
 
 /** One span as the model reads it: a head with its locators, then numbered lines. */
