@@ -46,8 +46,7 @@ export function VaultPicker({ id, value, onChange, placeholder, className }: Vau
     queryKey: ["vault", "list"],
     queryFn: () => vaultApi.list(),
     staleTime: 30_000,
-    // A refusal will not change on retry.
-    retry: (count, err) => !(err instanceof ApiError && err.status === 403) && count < 3,
+    // No per-query `retry`: the app default already never retries a 4xx.
   });
   // #2337 — a role refused `GET /api/vault` saw "No vault entries found", which
   // hid the refusal; and anyone without `vault.reveal` can attach only secrets

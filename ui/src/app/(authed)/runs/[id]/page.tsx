@@ -85,13 +85,15 @@ function StepCard({ step }: { step: AgentRunStep }) {
 
 /**
  * #2337 — a PR-review run stores its result (or its failure) as a
- * `tool_result` step whose content kind is `pr_review` / `pr_review_error`
- * (server `run-reviews.ts`, `pr-review-job.ts`); such a run has a review page.
+ * `tool_result` step whose content kind is `pr_review` (server
+ * `run-reviews.ts`, `pr-review-job.ts`); such a run has a review page. A
+ * failed review (`pr_review_error`) does not: GET /runs/:id/review returns
+ * `review: null` for it, so linking there would be a dead end.
  */
 function isPrReviewStep(step: AgentRunStep): boolean {
   if (step.kind !== "tool_result") return false;
   const kind = (step.content as { kind?: unknown } | null)?.kind;
-  return kind === "pr_review" || kind === "pr_review_error";
+  return kind === "pr_review";
 }
 
 export default function RunDetailPage() {

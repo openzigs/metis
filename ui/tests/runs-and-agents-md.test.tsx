@@ -168,9 +168,14 @@ describe("RunDetailPage", () => {
   });
 
   // #2337 — /runs/[id]/review was reachable only by typing its URL.
-  it.each(["pr_review", "pr_review_error"])(
-    "links a PR-review run (%s step) to its review page",
-    async (contentKind) => {
+  // A failed review (`pr_review_error`) has no review to show: GET
+  // /runs/:id/review returns `review: null` for it, so it gets no link.
+  it.each([
+    ["pr_review", true],
+    ["pr_review_error", false],
+  ] as const)(
+    "links a PR-review run (%s step) to its review page: %s",
+    async (contentKind, linked) => {
       get.mockResolvedValue({
         run: {
           id: "run_42",
@@ -203,6 +208,11 @@ describe("RunDetailPage", () => {
           <RunDetailPage />
         </Wrapper>,
       );
+      await screen.findByTestId("run-timeline");
+      if (!linked) {
+        expect(screen.queryByTestId("run-review-link")).toBeNull();
+        return;
+      }
       const link = await screen.findByTestId("run-review-link");
       expect(link).toHaveAttribute("href", "/runs/run_42/review");
       expect(link).toHaveTextContent("Open the PR review");

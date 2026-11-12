@@ -1109,7 +1109,17 @@ export default function ConnectionsPage() {
               <EmptyState
                 data-testid="repo-connectors-empty"
                 title="No repo connectors yet."
-                description="The code repositories METIS reads to learn how the system works belong here. Add one with the form above."
+                description="The code repositories METIS reads to learn how the system works belong here."
+                action={
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    data-testid="repo-connectors-empty-action"
+                    onClick={() => document.getElementById("repo-source")?.focus()}
+                  >
+                    Add a repo connector
+                  </Button>
+                }
               />
             </li>
           ) : null}
@@ -1371,7 +1381,17 @@ export default function ConnectionsPage() {
               <EmptyState
                 data-testid="db-connectors-empty"
                 title="No database connectors yet."
-                description="Databases whose tables and columns METIS should read belong here. Add one with the form above."
+                description="Databases whose tables and columns METIS should read belong here."
+                action={
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    data-testid="db-connectors-empty-action"
+                    onClick={() => document.getElementById("db-label")?.focus()}
+                  >
+                    Add a database connector
+                  </Button>
+                }
               />
             </li>
           ) : null}

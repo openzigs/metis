@@ -191,7 +191,10 @@ describe("ConnectionsPage — rendering", () => {
     // #2337 — the shared EmptyState: what belongs here and the next action.
     const empty = screen.getByTestId("repo-connectors-empty");
     expect(empty).toHaveAttribute("data-slot", "empty-state");
-    expect(empty).toHaveTextContent(/code repositories .* Add one with the form above/);
+    expect(empty).toHaveTextContent(/code repositories/);
+    // The next action is a button that takes you to the form, not prose.
+    fireEvent.click(screen.getByTestId("repo-connectors-empty-action"));
+    expect(document.activeElement?.id).toBe("repo-source");
   });
 
   it("shows no db connectors message when list is empty", async () => {
@@ -201,7 +204,8 @@ describe("ConnectionsPage — rendering", () => {
     );
     const empty = screen.getByTestId("db-connectors-empty");
     expect(empty).toHaveAttribute("data-slot", "empty-state");
-    expect(empty).toHaveTextContent(/Add one with the form above/);
+    fireEvent.click(screen.getByTestId("db-connectors-empty-action"));
+    expect(document.activeElement?.id).toBe("db-label");
   });
 });
 

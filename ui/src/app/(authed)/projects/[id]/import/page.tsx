@@ -10,6 +10,7 @@
  *  4. manage saved import sources: ongoing-sync toggle, interval, manual
  *     re-run, and deletion (with a confirm).
  */
+import { SkeletonText } from "@/components/ui/skeleton";
 import { useParams } from "next/navigation";
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -525,7 +526,12 @@ function ImportHistory({
     },
   });
 
-  if (loading) return <p className="text-sm text-muted-foreground">Loading import history…</p>;
+  if (loading)
+    return (
+      <div data-testid="import-history-loading" aria-label="Loading import history">
+        <SkeletonText lines={3} />
+      </div>
+    );
   if (sources.length === 0) {
     return (
       <EmptyState

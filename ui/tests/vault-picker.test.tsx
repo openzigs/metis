@@ -14,6 +14,7 @@ import userEvent from "@testing-library/user-event";
 import { VaultPicker } from "@/components/connectors/vault-picker";
 import { makeWrapper, TEST_USER } from "./test-utils";
 import { ApiError } from "@/lib/api-client";
+import { createQueryClient } from "@/lib/query-client";
 
 vi.mock("@/lib/vault-api", () => ({ vaultApi: { list: vi.fn() } }));
 
@@ -146,6 +147,25 @@ describe("VaultPicker", () => {
     expect(await screen.findByRole("option", { name: /gh-pat/ })).toBeInTheDocument();
     expect(screen.queryByTestId("vault-picker-own-only")).toBeNull();
   });
+
+  // #2337 panel — the picker must keep production's "never retry a 4xx". The
+  // default test client has retry:false, so this one uses the real client.
+  it.each([403, 404])(
+    "fetches the vault once on a %i with production's retry policy",
+    async (status) => {
+      list.mockRejectedValue(new ApiError(status, "nope", "X"));
+      const Wrapper = makeWrapper({ withAuth: false, queryClient: createQueryClient() });
+      render(
+        <Wrapper>
+          <VaultPicker id="s" value="" onChange={vi.fn()} />
+        </Wrapper>,
+      );
+      await waitFor(() => expect(list).toHaveBeenCalled());
+      // The first retry would fire after 2s (`defaultRetryDelay(1)`); wait past it.
+      await new Promise((r) => setTimeout(r, 2_500));
+      expect(list).toHaveBeenCalledTimes(1);
+    },
+  );
 });
 
 function renderWithUser(permissions: typeof TEST_USER.permissions) {
