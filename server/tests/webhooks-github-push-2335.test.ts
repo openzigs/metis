@@ -616,6 +616,35 @@ describe("push receiver: per-connector rate limit (#2335)", () => {
     expect(h.requestRefresh).toHaveBeenCalledTimes(2);
     expect(h.requestRefresh).toHaveBeenLastCalledWith("conn-other-repo", expect.anything());
   });
+
+  it("gives each pushed branch its own budget, so untracked-branch pushes cannot starve the tracked one", async () => {
+    // Default budget (20 a minute). 25 pushes to a branch no connection tracks...
+    for (let i = 0; i < 25; i++) {
+      const sha = i.toString(16).padStart(40, "f");
+      await post(pushBody({ ref: "refs/heads/feature/x", after: sha }), { delivery: `d-fx-${i}` });
+    }
+    expect(h.requestRefresh).not.toHaveBeenCalled();
+    // ...then one to the tracked branch, inside the same window, still refreshes.
+    const res = await post(pushBody({ after: "a".repeat(40) }), { delivery: "d-main-after" });
+    expect(res.body).toEqual({ ok: true });
+    expect(h.requestRefresh).toHaveBeenCalledExactlyOnceWith("conn-main", expect.anything());
+    expect(h.warn).not.toHaveBeenCalledWith(
+      "push_webhook.rate_limited",
+      expect.objectContaining({ deliveryId: "d-main-after" }),
+    );
+  });
+
+  it("still limits the tracked branch itself past its budget", async () => {
+    for (let i = 0; i < 21; i++) {
+      const sha = i.toString(16).padStart(40, "c");
+      await post(pushBody({ after: sha }), { delivery: `d-main-${i}` });
+    }
+    expect(h.requestRefresh).toHaveBeenCalledTimes(20);
+    expect(h.warn).toHaveBeenCalledWith(
+      "push_webhook.rate_limited",
+      expect.objectContaining({ deliveryId: "d-main-20" }),
+    );
+  });
 });
 
 describe("push receiver: a connection's own secret, the CI / git-hook call (#2335)", () => {

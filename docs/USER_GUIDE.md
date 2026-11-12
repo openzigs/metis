@@ -3748,6 +3748,7 @@ a repository, a CI log or a ticket. A delivery GitHub sends twice (same
 `X-GitHub-Delivery`), or the same signed body sent again, is acknowledged and not acted on
 again; a delivery whose push is more than four days old is ignored. Each connection's URL,
 and each repository on the shared-secret URL, takes at most 20 signed push requests a minute
+per pushed branch, so pushes to branches no connection tracks never use up the tracked branch's budget
 (`REPO_REFRESH_REQUEST_LIMIT_MAX`, `REPO_REFRESH_REQUEST_LIMIT_WINDOW_MS`). The limit is
 checked as soon as the signature verifies, before METIS records or looks anything up; past
 it the push is not synced (logged as `push_webhook.rate_limited`), and on a connection's own

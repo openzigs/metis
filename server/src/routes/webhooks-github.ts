@@ -486,11 +486,15 @@ export function githubPrWebhookRouter(deps: GithubPrRouterDeps = {}): Router {
     // The per-connector request limit, before any claim write or connector
     // lookup, so a flood of validly signed pushes costs neither. Keyed on what
     // the signature verified: the connector, or the delivery's host and
-    // repository (a connector has one repository, so one budget either way).
+    // repository (a connector has one repository, so one budget either way),
+    // plus the pushed branch from the signed payload: the tracked-branch match
+    // runs later, so without it pushes to untracked branches would spend the
+    // budget a push to the tracked branch needs (#2335 panel).
     const limitKey =
-      signer.kind === "connector"
+      (signer.kind === "connector"
         ? `conn-id:${signer.connectorId}`
-        : `repo:${githubHost(push.repoHtmlUrl) ?? "github.com"}/${push.repoFullName.toLowerCase()}`;
+        : `repo:${githubHost(push.repoHtmlUrl) ?? "github.com"}/${push.repoFullName.toLowerCase()}`) +
+      `@${push.branch}`;
     if (!allowRepoRefreshRequest(limitKey)) {
       log.warn("push_webhook.rate_limited", {
         deliveryId,
