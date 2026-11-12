@@ -16,6 +16,10 @@ export class ProjectsPage {
   readonly slugInput: Locator;
   readonly submitButton: Locator;
   readonly list: Locator;
+  /** #2368 — shown in New project's place to a role without `project.create`. */
+  readonly createForbidden: Locator;
+  /** Each card's overflow menu; its only item is Delete (`project.delete`). */
+  readonly projectActions: Locator;
 
   // Primary repo section in create-project dialog (Epic #640)
   readonly toggleRepoSection: Locator;
@@ -33,6 +37,8 @@ export class ProjectsPage {
     this.slugInput = page.getByTestId("project-slug-input");
     this.submitButton = page.getByTestId("project-create-submit");
     this.list = page.getByTestId("project-list");
+    this.createForbidden = page.getByText("Ask an admin or coordinator to create projects.");
+    this.projectActions = page.getByRole("button", { name: "Project actions" });
 
     // Epic #640 — source repository fields in create-project dialog
     this.toggleRepoSection = page.getByTestId("toggle-repo-section");

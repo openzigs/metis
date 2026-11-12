@@ -6,7 +6,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, fireEvent, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { makeWrapper } from "./test-utils";
+import { makeWrapper, userWith } from "./test-utils";
 
 vi.mock("next/navigation", async () => {
   const actual = await vi.importActual<typeof import("next/navigation")>("next/navigation");
@@ -124,7 +124,7 @@ beforeEach(() => {
 });
 
 function renderPage() {
-  const Wrapper = makeWrapper({});
+  const Wrapper = makeWrapper({ initialUser: userWith("connector.write", "project.update") });
   return render(
     <Wrapper>
       <ConnectionsPage />

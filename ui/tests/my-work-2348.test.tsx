@@ -5,7 +5,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import type { MyWorkChangeRequest, MyWorkResponse } from "@metis/shared";
-import { makeWrapper, TEST_USER } from "./test-utils";
+import { makeWrapper, TEST_USER, userWith } from "./test-utils";
 import DashboardPage from "@/app/(authed)/dashboard/page";
 import { MyWork } from "@/components/dashboard/my-work";
 import { changeRequestHref, groupChangeRequests, myWorkApi, timeInState } from "@/lib/my-work";
@@ -187,7 +187,8 @@ describe("<MyWork />", () => {
 
   it("offers the New-project wizard when I have no projects", async () => {
     fetchMock.mockResolvedValue({ changeRequests: [], reviews: [], projectCount: 0 });
-    renderWith(<MyWork />);
+    // #2368 — the wizard opens only for a session granted project.create.
+    renderWith(<MyWork />, userWith("project.create"));
     const button = await screen.findByRole("button", { name: "New project" });
     act(() => button.click());
     expect(await screen.findByTestId("new-project-wizard")).toBeInTheDocument();
