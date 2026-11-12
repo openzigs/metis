@@ -276,7 +276,7 @@ The current online catalogue is a separate product with its own sign-in. Members
 
 ### 8.1 Self-service kiosks
 
-Around 70 per cent of physical loans are made on kiosks. The kiosks are owned by the council and will be kept; the platform must drive them through the standard self-service protocol that the current kiosks already use.
+Around 70 per cent of physical loans are made on kiosks. [[R215 The kiosks are owned by the council and will be kept; the platform must drive them through the standard self-service protocol that the current kiosks already use.]]
 
 [[R67 You can borrow, return and renew items at any kiosk in any branch, and you will be given a receipt, printed or emailed as you choose, listing your due dates.]]
 
@@ -513,7 +513,7 @@ The two mobile libraries each visit around 45 stops on a fortnightly timetable. 
 
 ### 15.1 Extended-hours access
 
-Four branches open for extended hours, from 8 in the morning to 8 in the evening, every day, with staff present for only part of that time. Members enter with their card and PIN at the door, which is controlled by the building management system. The platform is responsible for deciding who may enter.
+Four branches open for extended hours, from 8 in the morning to 8 in the evening, every day, with staff present for only part of that time. Members enter with their card and PIN at the door, which is controlled by the building management system. [[R216 The platform is responsible for deciding who may enter.]]
 
 [[R150 You can apply for an extended-hours enrolment if you are an Adult member and have held your membership for at least a month, by attending a short induction at the branch.]]
 
@@ -802,4 +802,6 @@ A25 [vague-term] @R178: reports must be available "in near real time" => How cur
 A26 [tbd] @R184: how long the link between a returned loan and its borrower is kept has not been set => How long after return may the platform keep the link between a loan and its borrower?
 A27 [conflict] @R34,R201: new PINs must be at least six digits, yet migrated members keep their existing four-digit PINs => Will four-digit PINs keep working after migration, and if not, how and when are members moved to six digits?
 A28 [tbd] @R57: whether Institutional members may reserve is undecided, and Appendix A says "Not stated" => May Institutional members place reservations, and how many?
+A29 [conflict] @R141,R139: volunteers select items beforehand but can only access member details on delivery day and the day after => How can volunteers select items before the delivery day?
+A30 [undefined-term] @R119: library manager is not in the users list and the role is undefined => Which role is a library manager, and how does it map to platform roles?
 -->

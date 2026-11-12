@@ -2,8 +2,8 @@
   "corpusId": "docunderstanding-02-freight-claims",
   "title": "Northgate Freight: Cargo Loss and Damage Claims Handling, Business Requirements Document",
   "license": "CC0-1.0",
-  "labelStatus": "author-labelled while writing the synthetic document; not yet reviewed by a second person",
-  "sourceSha256": "d629e85e3a47ae75b57191c52084be77996696dec8dde95a9169768d31acf91b",
+  "labelStatus": "author-labelled while writing the synthetic document; cross-checked by two independent blind AI reviewers; disagreements judged by an AI and each judgement confirmed by a person (#2255)",
+  "sourceSha256": "5208fe1e5b3d6707264e0fbd22bbeda95c55f7c7d048b07d16c1cbb300940b98",
   "sections": [
     "Northgate Freight: Cargo Loss and Damage Claims Handling, Business Requirements Document",
     "Purpose of this document",
@@ -107,6 +107,11 @@
       "id": "R13",
       "section": "6.1 Required documents",
       "span": "If the required documents have not been received 21 days after the request, the application shall send a reminder to the claimant, and if they have still not been received 21 days after the reminder, the claim shall be closed as abandoned."
+    },
+    {
+      "id": "R59",
+      "section": "6.1 Required documents",
+      "span": "An abandoned claim can be reopened if the documents arrive later."
     },
     {
       "id": "R14",
@@ -309,6 +314,11 @@
       "span": "Claim records and their documents shall be retained for seven years after the claim is closed and then deleted, unless the claim is subject to litigation."
     },
     {
+      "id": "R60",
+      "section": "12. Data, security and audit",
+      "span": "The legal department has asked that access to documents be no wider than access to claims."
+    },
+    {
       "id": "R54",
       "section": "13. Migration",
       "span": "All claims open on the regional spreadsheets at go-live shall be migrated into the application with their status, amounts and the documents held in the mailbox."
@@ -378,6 +388,7 @@
       "question": "How quickly must an approver act on a settlement, and what happens when they do not?",
       "requirements": ["R31"],
       "spans": [
+        "Approvers are expected to deal with approvals promptly so that settlement times can be met.",
         "The application shall route each settlement to the approver required by the matrix and shall not allow a person to approve a settlement on a claim they registered or handled."
       ],
       "sections": ["8.1 Approval matrix"]
@@ -419,7 +430,7 @@
     },
     {
       "id": "A8",
-      "kind": "conflict",
+      "kind": "missing",
       "description": "handlers see every region's claims, while legal asks that document access be no wider than claim access and the role model is not described; it is unclear whether customer service sees documents",
       "question": "Which roles may see the documents attached to a claim, including invoices and photographs of people?",
       "requirements": ["R51", "R46"],
@@ -475,6 +486,72 @@
         "Consequential losses, such as lost profit or the cost of a missed production run, shall not be payable under the standard conditions, and the application shall prevent a handler from including them in the amount payable unless special terms allow them."
       ],
       "sections": ["7.3 Delay claims", "7.2 Limitation of liability"]
+    },
+    {
+      "id": "A13",
+      "kind": "undefined-term",
+      "description": "the policy excess amount and whether it varies by policy or period is not given",
+      "question": "What is the excess, and how is it maintained in the application?",
+      "requirements": ["R41"],
+      "spans": [
+        "The application shall identify every settled claim whose amount paid exceeds the insurance policy excess and shall produce, for any period, the schedule of those claims in the format the insurer requires."
+      ],
+      "sections": ["9.2 Insurance"]
+    },
+    {
+      "id": "A14",
+      "kind": "undefined-term",
+      "description": "proven value and how salvage value is determined and recorded are not defined",
+      "question": "What evidence establishes proven value, and how is salvage value captured?",
+      "requirements": ["R23"],
+      "spans": [
+        "The amount payable for a consignment shall be the lower of the proven value of the loss and the limit of liability, less any salvage value recovered from damaged goods."
+      ],
+      "sections": ["7.2 Limitation of liability"]
+    },
+    {
+      "id": "A15",
+      "kind": "undefined-term",
+      "description": "the customer claim form is never described, and the portal is out of scope, so its format and submission route are unclear",
+      "question": "What is the claim form, in what format does it arrive, and what fields does it hold?",
+      "requirements": ["R1"],
+      "spans": [
+        "A handler shall be able to register a claim from an email, a telephone note passed on by customer service, or a completed claim form, and the application shall record the channel and the date and time the claim was first notified."
+      ],
+      "sections": ["5.1 Notification"]
+    },
+    {
+      "id": "A16",
+      "kind": "vague-term",
+      "description": "usable and standard remote access arrangements are not defined or measurable",
+      "question": "Which remote access method applies and what acceptance criteria define usable?",
+      "requirements": ["R58"],
+      "spans": [
+        "The application shall be usable by handlers working from home through the company's standard remote access arrangements."
+      ],
+      "sections": ["14. Non-functional requirements"]
+    },
+    {
+      "id": "A17",
+      "kind": "escape-clause",
+      "description": "a handler can bypass the document gate by recording a reason, with no limit or approval",
+      "question": "Are there document types that can never be waived, and does a waiver need approval?",
+      "requirements": ["R12"],
+      "spans": [
+        "The application shall not allow a claim to proceed to approval until every required document has been received or the handler has recorded why it is not needed."
+      ],
+      "sections": ["6.1 Required documents"]
+    },
+    {
+      "id": "A18",
+      "kind": "missing",
+      "description": "delay claims are in scope but no notification time limit is given for them, and the flag has no stated consequence or audience",
+      "question": "What notice period applies to delay claims, and who sees the late flag?",
+      "requirements": ["R6"],
+      "spans": [
+        "The application shall calculate, for each consignment on a claim, whether the claim was notified within the time limit in the claimant's terms, and shall flag any claim notified late."
+      ],
+      "sections": ["5.2 Time limits for notification"]
     }
   ]
 }
