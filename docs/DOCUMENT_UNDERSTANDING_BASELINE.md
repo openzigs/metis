@@ -108,7 +108,7 @@ reply. Its cross-section pass failed on documents 02 and 04, so every statement 
    read, against 0.93 in #2229, on labels that gained 18 requirements in the review. The two
    readings are not directly comparable.
 
-### What has to change before the flag goes on
+### What has to change before the flag goes on (#2361)
 
 - The reader's repeats. Make the cross-section pass drop them, or stop a batch from writing a
   statement a neighbouring batch already wrote.
