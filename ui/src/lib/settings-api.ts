@@ -39,6 +39,8 @@ export interface ConfigKeyView {
   sensitive: boolean;
   source: "vault" | "db" | "env" | "unset";
   value: string | null;
+  /** #2295 — what the server applies while the key is unset; `null` when it registers none. */
+  defaultValue?: string | null;
 }
 
 export const configApi = {
