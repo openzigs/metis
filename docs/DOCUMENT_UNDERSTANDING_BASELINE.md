@@ -1,11 +1,126 @@
-# Document understanding: the Phase 0 baseline (#2229)
+# Document understanding: the Phase 0 baseline (#2229) and the reader's measurement (#2255)
 
-- **Issue:** #2229, Phase 0 of epic #2227 ("METIS understands the documents it is given")
-- **Measured:** 2026-11-10, at commit `8a0601902`, on `claude-sonnet-5-5` (production) and `deepseek-flash` (iteration)
+- **Issues:** #2229, Phase 0 of epic #2227 ("METIS understands the documents it is given");
+  #2255, the document reader measured on four documents
+- **Measured:** 2026-11-10, at commit `8a0601902` (#2229); 2026-11-12, at commit `658a61dc2`
+  (#2255); on `claude-sonnet-5-5` (production) and `deepseek-flash` (iteration)
 - **Readings:** `eval-data/readings/doc-understanding/`
 - **Harness:** `pnpm --filter server eval:doc-understanding` (`server/src/lib/eval/doc-understanding/`)
 
-## The answer
+## The reader, measured (#2255)
+
+**`ANALYSIS_DOCUMENT_READER` stays off.** The document reader (arm R) finds every labelled
+requirement on all four documents, on both models, including the 60 KB one that the
+whole-document read (arm B) cannot answer in one reply. But it does not hold B's precision.
+On Sonnet it scores 0.59 to 0.69, where B scores 1.00 on the three documents it can read.
+An analyst would read about one statement in three either twice or when it is not a
+requirement. Most of the loss is repeats that the reader's cross-section pass keeps.
+
+**The rule.** R holds B on a document when R's requirement recall and precision are each no
+more than 0.05 below B's, on every document where B produced a scored reading on that model.
+0.05 is about one run's noise: B's recall on document 01 was 0.91 on Sonnet and 0.96 on
+DeepSeek. R holds recall everywhere and misses precision by 0.34 to 0.41 everywhere, so the
+result does not depend on the tolerance.
+
+| Model, document | B recall | B precision | R recall | R precision | Held? |
+|---|---|---|---|---|---|
+| Sonnet, 01 clinic booking | 0.91 | 1.00 | 1.00 | 0.62 | no |
+| Sonnet, 02 freight claims | 1.00 | 1.00 | 1.00 | 0.59 | no |
+| Sonnet, 03 community grants | 1.00 (cap 21,333) | 1.00 | 1.00 | 0.63 | no |
+| Sonnet, 04 library lending | failed | | 1.00 | 0.69 | no B to compare |
+| DeepSeek, 01 clinic booking | 0.96 | 0.96 | 0.98 | 0.62 | no |
+| DeepSeek, 02 to 04 | failed | | 1.00 | 0.54, 0.52, 0.55 | no B to compare |
+
+### Results per document
+
+Ambiguity recall and question precision are B's only. The reader asks no questions (that is
+Phase 2 of the epic), so its ambiguity recall reads 0. Cost is the reader's own; the judge's
+is under "Spend". A failed reading's cost is counted.
+
+**Sonnet 5.5** (`reader-sonnet-5-5`, output cap 16,384 for both arms;
+`reader-sonnet-5-5-B-cap21333`, B alone at 21,333 on documents 03 and 04)
+
+| Document | Arm | Recall | Precision | Ambiguity recall | Question precision | Extracted | Repeats | Not labelled | $ |
+|---|---|---|---|---|---|---|---|---|---|
+| 01 (22 KB) | B | 0.91 | 1.00 | 0.83 (10/12) | 1.00 | 51 | 0 | 0 | $0.1037 |
+| 01 | R | 1.00 | 0.62 | n/a | n/a | 90 | 16 | 18 | $0.2688 |
+| 02 (23 KB) | B | 1.00 | 1.00 | 0.50 (9/18) | 0.93 | 60 | 0 | 0 | $0.1325 |
+| 02 | R | 1.00 | 0.59 | n/a | n/a | 102 | 31 | 11 | $0.2890 |
+| 03 (35 KB) | B, cap 16,384 | failed | | | | | | | $0.3721 |
+| 03 | B, cap 21,333 | 1.00 | 1.00 | 0.59 (10/17) | 0.83 | 106 | 0 | 0 | $0.2287 |
+| 03 | R | 1.00 | 0.63 | n/a | n/a | 169 | 53 | 10 | $0.4261 |
+| 04 (61 KB) | B, cap 16,384 | failed | | | | | | | $0.4031 |
+| 04 | B, cap 21,333 | failed | | | | | | | $0.5021 |
+| 04 | R | 1.00 | 0.69 | n/a | n/a | 313 | 71 | 26 | $1.0159 |
+
+**DeepSeek** (`reader-deepseek-flash-cap21333`, `ANALYSIS_FINAL_ANSWER_MAX_OUTPUT_TOKENS=21333`
+for both arms)
+
+| Document | Arm | Recall | Precision | Ambiguity recall | Question precision | Extracted | Repeats | Not labelled | $ |
+|---|---|---|---|---|---|---|---|---|---|
+| 01 | B | 0.96 | 0.96 | 0.83 (10/12) | 1.00 | 56 | 0 | 2 | $0.0503 |
+| 01 | R | 0.98 | 0.62 | n/a | n/a | 89 | 24 | 10 | $0.0968 |
+| 02 | B | failed | | | | | | | $0.0514 |
+| 02 | R | 1.00 | 0.54 | n/a | n/a | 112 | 41 | 11 | $0.0930 |
+| 03 | B | failed | | | | | | | $0.0515 |
+| 03 | R | 1.00 | 0.52 | n/a | n/a | 204 | 66 | 32 | $0.1427 |
+| 04 | B | failed | | | | | | | $0.0553 |
+| 04 | R | 1.00 | 0.55 | n/a | n/a | 392 | 136 | 40 | $0.1966 |
+
+"Repeats" are extracted statements of a labelled requirement that another statement had
+already claimed. "Not labelled" are statements the judge matched to no label. Both count
+against precision. Section coverage was 1.00 for R on every document, and every R quote was
+found verbatim in the document (quote accuracy 1.00).
+
+### Output-token caps
+
+| Reading | Model | B's cap | R's cap | R's mode |
+|---|---|---|---|---|
+| `reader-sonnet-5-5` | claude-sonnet-5-5 | 16,384 (production default) | 16,384 | whole on all four documents (4, 5, 6 and 11 calls) |
+| `reader-sonnet-5-5-B-cap21333` | claude-sonnet-5-5 | 21,333 | not run | |
+| `reader-deepseek-flash-cap21333` | deepseek-flash | 21,333 | 21,333 | sectioned on all four documents (7 to 12 calls) |
+
+On DeepSeek the reader chose sectioned mode for every document, the 22 KB one included: the
+window METIS resolves for `deepseek-flash` has no room for the document plus a 21,333-token
+reply. Its cross-section pass failed on documents 02 and 04, so every statement was kept.
+
+### Findings
+
+1. **The reader removes B's output limit.** B has to write every requirement in one reply.
+   On Sonnet at production's 16,384 it failed on documents 03 and 04, with thinking taking
+   part of the same budget (the #2229 run of 03 had needed a re-prompt). At 21,333 it read 03
+   and still failed on 04. On DeepSeek it failed on 02, 03 and 04. The reader read all four
+   on both models with recall 1.00 (0.98 on DeepSeek's 01), section coverage 1.00 and every
+   quote verbatim.
+2. **It repeats itself, and that is most of the precision it loses.** On Sonnet, 16, 31, 53
+   and 71 of R's statements restate a requirement another statement had already stated.
+   Without the repeats its precision would be 0.76, 0.85, 0.91 and 0.89. The cross-section
+   pass is meant to drop them and drops few; on DeepSeek it failed outright on two documents.
+3. **The rest is statements the labels do not count**, 10 to 26 per document on Sonnet:
+   scope lines ("The first release includes patient sign-in"), background read as a
+   constraint ("The PMS remains the system of record for appointments"), and the review
+   instructions in a document control section. The reader labels these requirement,
+   constraint or business rule; B leaves them out.
+4. **It costs about twice what B costs where B succeeds** (Sonnet: $0.27 against $0.10 on
+   01, $0.43 against $0.23 on 03), and $1.02 on the 60 KB document, where each of its 11
+   calls carries the whole document (260,442 input tokens).
+5. **The labels moved with the review.** B's precision is 1.00 on every Sonnet document it
+   read, against 0.93 in #2229, on labels that gained 18 requirements in the review. The two
+   readings are not directly comparable.
+
+### What has to change before the flag goes on
+
+- The reader's repeats. Make the cross-section pass drop them, or stop a batch from writing a
+  statement a neighbouring batch already wrote.
+- Then measure R against B again, under the rule above. #2262 (PR #2288) changes the reader
+  (prompt caching, batch-scoped quotes, a size bound on whole mode, operator notes) and has
+  not merged; this measurement is of the reader on `main` before it.
+- #2262's chunk-ACL fix must be on `main` first: on `main` today the reader does not apply a
+  document's ACL. #2321's existence oracle has to be decided with it. With no selection, a
+  project whose every upload is restricted gives an empty report, while one with no uploads
+  falls back to retrieval. That code comes from #2300, which has not merged either.
+
+## The Phase 0 answer (#2229)
 
 When an analyst gives METIS a Word FRD today, Requirements Analysis finds **about a quarter
 of its requirements**: 0.26 recall on Sonnet 5.5 and 0.27 on DeepSeek, falling from 0.37 on
@@ -46,14 +161,19 @@ document is silent on (ten), and decisions it leaves open (eight). Every arm rea
 file through production's `parseDocument` (mammoth, then `htmlToMarkdown`), so the
 conversion's losses are part of every reading: numbered lists arrive as bullets.
 
-**A fourth document has been added since this baseline (#2255), with no results yet.**
-`docunderstanding-04-library-lending` is a 31 KB Word FRD (60,624 characters converted, 81
-sections, 214 requirements in 45 sections, 28 ambiguities). Many of its requirements are
-written in the second person or as plain statements rather than "shall". Every reading
-above covers documents 01 to 03 only. See `eval-data/README.md`.
+**A fourth document was added for #2255.** `docunderstanding-04-library-lending` is a 31 KB
+Word FRD (60,624 characters converted, 81 sections, 216 requirements in 45 sections, 30
+ambiguities). Many of its requirements are written in the second person or as plain
+statements rather than "shall". The #2229 readings cover documents 01 to 03 only. See
+`eval-data/README.md`.
 
-**The labels were written by the document's author and have not been reviewed by a second
-person.** The Miniflux sample the issue suggested as a starting point is not in the
+**The counts above are the labels #2229 was scored against.** The labels were written by the
+document's author. For #2255, two AI reviewers labelled each document blind, an AI judge
+recommended an answer for each disagreement, and a person confirmed every one. That added 18
+requirements and 12 ambiguities across the four documents, and re-kinded five ambiguities
+from contradiction to gap. 01 now has 56 requirements and 12 ambiguities, 02 has 60 and 18,
+and 03 has 106 and 17. It was not a second human labelling, and the #2229 readings were not
+re-scored. The Miniflux sample the issue suggested as a starting point is not in the
 repository, and the existing `eval-data/corpus/brd-*` items are about 500 bytes each, so the
 corpus was written from scratch.
 
@@ -64,6 +184,7 @@ corpus was written from scratch.
 | **A** (today) | The document chunked by production's chunker and retrieved the way `retrieveContext` serves the document specialist (`buildRetrievalQueries` + `runGroundedRetrieval`, k = `ANALYSIS_RETRIEVE_K` = 10), then production's `runAgent("document")`, then what `runEnhancementPipeline` makes of its output: `RequirementsExtractor` over the agent's requirement texts. Its requirements are the structured requirements the analyst approves; its questions are their ambiguities' suggested questions (the UI's clarification toggle is on by default). |
 | **B** | The whole converted document in one call: every requirement and every question, each with a verbatim quote. |
 | **C** | One call over the whole document for a summary, glossary and actors; one call per section (production's `splitSections`, the governing rule reader's) with that context; one reduce call that drops repeated requirements, settles the questions and adds cross-section conflicts. |
+| **R** (#2230, measured in #2255) | Production's document reader, `readDocument`: the whole document in every call (or sectioned when it does not fit the model's window), its statements written a batch of sections at a time, each quote verified, then a cross-section pass. Its requirements are the statements it labels requirement, constraint or business rule. It asks no questions. |
 
 Retrieval in arm A is lexical (production's BM25 options), padded to k with unmatched
 chunks in document order, so A always reads ten chunks as production's hybrid search
@@ -175,11 +296,9 @@ documents 02 and 03 once its reduce had failed on the smallest one.
 
 ## How far to trust this
 
-- **The labels have one author**, who also wrote the documents. A second reviewer should go
-  through each `frd.src.md` (the trailer lists each ambiguity and its question). Precision
-  in particular is a floor: an extracted requirement the labels missed counts as a false
-  positive. Reports from now on list those (`unmatchedExtracted`) for that review; the
-  readings above predate the field.
+- **The #2229 labels had one author**, who also wrote the documents. Precision there is a
+  floor: an extracted requirement the labels missed counts as a false positive. The #2255
+  review (above) added 18 requirements; the #2229 readings were not re-scored against them.
 - **One run per document and arm.** Arm A's recall was within 0.03 across the two models on
   every document, which suggests the gap is not noise, but no repeat run was made on one
   model.
@@ -203,7 +322,11 @@ documents 02 and 03 once its reduce had failed on the smallest one.
 | `baseline-deepseek-flash-A` | deepseek-flash | $0.0679 | $0.0719 | $0.1398 |
 | `baseline-deepseek-flash-BC-cap21333` | deepseek-flash | $0.2738 | $0.0166 | $0.2904 |
 | `deepseek-flash-BC-cap16384-failures` | deepseek-flash | $0.2307 | $0.0000 | $0.2307 |
-| **Metered total** | | | | **$4.3766** |
+| **#2229 metered total** | | | | **$4.3766** |
+| `reader-sonnet-5-5` (B, R × 4 documents, cap 16,384) (#2255) | claude-sonnet-5-5 | $3.0111 | $0.4344 | **$3.4455** |
+| `reader-sonnet-5-5-B-cap21333` (B × documents 03, 04) (#2255) | claude-sonnet-5-5 | $0.7308 | $0.0688 | **$0.7996** |
+| `reader-deepseek-flash-cap21333` (B, R × 4 documents) (#2255) | deepseek-flash | $0.7376 | $0.0905 | **$0.8281** |
+| **#2255 metered total** | | | | **$5.0732** (Sonnet $4.2451, DeepSeek $0.8281) |
 
 Not in the readings: a first smoke run on DeepSeek before the harness was committed, stopped
 by its time limit during arm C (A and B logged $0.0806 with their judges; C's partial spend
@@ -215,6 +338,7 @@ was not metered), and one direct probe call that confirmed the empty-reply cause
 ```bash
 pnpm --filter server eval:doc-understanding --corpus docunderstanding-01-clinic-booking   # one document, arms A,B,C
 pnpm --filter server eval:doc-understanding --arms A,B --runs 3 --budget 5
+pnpm --filter server eval:doc-understanding --arms B,R --corpus docunderstanding-04-library-lending --budget 8   # #2255, one document per process
 pnpm --filter server eval:doc-understanding --combine a.json,b.json,c.json --reading <name>   # no model call
 pnpm --filter server eval:doc-understanding:build    # after editing a document's frd.src.md
 ```

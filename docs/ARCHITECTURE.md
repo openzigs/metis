@@ -4945,7 +4945,10 @@ so. Every quote is checked with the governing `clauseLocator` and the stored quo
 are the source's own; a quote not in the source is dropped and counted. A batch whose reply
 cannot be read is reported `unread`; a provider error fails the read.
 
-Requirements Analysis uses it behind `ANALYSIS_DOCUMENT_READER` (off by default):
+Requirements Analysis uses it behind `ANALYSIS_DOCUMENT_READER` (off by default; #2255
+measured it on four documents up to 60 KB: recall 1.00 but precision 0.59 to 0.69 against a
+whole-document read's 1.00, mostly repeats, so it stays off; see
+docs/DOCUMENT_UNDERSTANDING_BASELINE.md):
 `runOneAgent("document")` calls `readSelectedDocuments` instead of `retrieveContext`
 (`analysis/document-reader-agent.ts`). It loads the selected documents (or every ready
 upload) of the run's project from storage, parses them as ingest does, and writes the reading
