@@ -808,12 +808,12 @@ say so in the write-up (#2229 did this for two strings).
 `corpus/baqa-01-acme-reader/` is Phase 0 of #2228: the questions a business analyst asks
 chat, over a two-product sample called Acme Reader. The two products are the Miniflux server
 (`miniflux/v2` at 2.3.3, Apache-2.0) and its Python client (`miniflux/python-client` at
-1.1.6, MIT). `questions.json` holds 18 one-turn questions in four categories, plus the
+1.1.6, MIT). `questions.json` holds 23 one-turn questions in four categories, plus the
 multi-turn set below, and the category fixes what a good reply does:
 
 | Category | Questions | A good reply |
 |---|---:|---|
-| `single-product`: "how does rule X work in product Y" | 6 | answers; carries facts and expected code and doc sources |
+| `single-product`: "how does rule X work in product Y" | 11 | answers; carries facts and expected code and doc sources |
 | `multi-product`: "what does FRD-12 change in A and B" | 4 | answers from both products and `frd-12.md`; carries facts, expected requirements and the files an impact analysis should name |
 | `ambiguous` | 4 | asks a follow-up question |
 | `unanswerable` | 4 | says the sources don't show this |
@@ -821,6 +821,21 @@ multi-turn set below, and the category fixes what a good reply does:
 Every fact and line range was read from the pinned commits by the agent that wrote the
 set. No person has reviewed them yet (`authoredBy`). `frd-12.md` is a synthetic CC0
 FRD with two requirements, uploaded to both products.
+
+S7 to S11 (#2198) are walkthrough run 10's wrong chat answers, asked again as BA questions.
+Each `why` names the run step and the wrong claim, and each lists the source that disproves
+it, so a contradicted fact is what a recurrence looks like:
+
+| Question | Run 10's wrong claim | The source that disproves it |
+|---|---|---|
+| S7 | cited `storage/user.go:13-16` (the imports) and missed the unique username | `migrations.go:25`, `storage/user.go:72` |
+| S8 | the `removed` status is still used | `migrations.go:1489-1495` |
+| S9 | `MarkAllAsReadBeforeDate` has no callers | `googlereader/handler.go:1225` |
+| S10 | `showUnreadPage` has the paging bug; missed the category page | `ui/unread_entries.go:38`, `ui/category_entries.go` |
+| S11 | the `read_at` requirement is the reading-time estimate | `readingtime/readingtime.go`, `storage/entry.go:412-427` |
+
+The baseline below predates them and covers the first 18 questions only. To measure the
+five on their own, add `--questions S7,S8,S9,S10,S11`.
 
 ```bash
 pnpm eval:materialize baqa-01-acme-reader     # clones, projects, code graph, symbol vectors ($0)

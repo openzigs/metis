@@ -16,8 +16,13 @@
  *   permission (`analysis.run` to start, `analysis.read` to read). CSRF is the
  *   app-wide `csrfProtection` (#913), which runs before every `/api` router.
  * - `requirementId` must name a requirement in a project the caller can read;
- *   anything else is 404 (no existence oracle). So must an `all-accessible`
- *   scope's `hostProductId` name a product they can read.
+ *   anything else is 404 (no existence oracle). So must (#2272) `documentId` a
+ *   live document in such a project, and an `all-accessible` scope's
+ *   `hostProductId` a product they can read.
+ * - #2272 — a check started from a document records the document's project as
+ *   its source project, so only a reader of that project may read the check
+ *   (`viewPortfolioAssessment`): its statement and requirements are the
+ *   document's words.
  * - Reads never trust what was stored: `viewPortfolioAssessment` re-filters
  *   every product and repo against the reader's access now.
  *
@@ -27,11 +32,13 @@
  */
 import { Router } from "express";
 import {
+  PORTFOLIO_STATEMENT_MAX_CHARS,
   createPortfolioAssessmentSchema,
   parseAcceptanceCriteria,
   type ApiResponse,
   type AuthPayload,
   type PortfolioAssessmentListItem,
+  type PortfolioNotChecked,
 } from "@metis/shared";
 import { z } from "zod";
 import { requireAuth } from "../middleware/auth.js";
@@ -60,7 +67,6 @@ import {
   scopedToChange,
   toAssessmentInput,
   type PortfolioGapDeps,
-  type PortfolioGapInput,
 } from "../lib/portfolio/gap-engine.js";
 import {
   directChangeProductIds,
@@ -75,6 +81,24 @@ import {
   type PortfolioReportDeps,
 } from "../lib/portfolio/assessment-report.js";
 import { assertProductAccessible } from "../lib/products/product-access.js";
+import { prisma } from "../lib/prisma.js";
+import { canAccessProjectDiscussions } from "../lib/discussions/access.js";
+import { getDocumentStorage } from "../lib/documents/storage.js";
+import { isDocumentReaderEnabled } from "../lib/document-reader/flag.js";
+import { readDocumentOnce } from "../lib/document-reader/reading-cache.js";
+import { shapeAwareChangeExtractor } from "../lib/impact-analysis/change-request.js";
+import type { ReadStoredFile } from "../lib/impact-analysis/document-source.js";
+import { buildProvider } from "../lib/ai/providers/factory.js";
+import { loadAIConfig } from "../lib/ai/config.js";
+import type { AIProvider } from "../lib/ai/types.js";
+import { estimateUsageCostUsd } from "../lib/ai/token-tracker.js";
+import {
+  boundedRequirements,
+  cutText,
+  NoDocumentRequirementsError,
+  requirementsFromDocument,
+  type PortfolioDocumentReader,
+} from "../lib/portfolio/document-requirements.js";
 import {
   renderPortfolioAssessmentMarkdown,
   resolveReaderAccess,
@@ -110,31 +134,177 @@ export interface PortfolioAssessmentsRouterDeps {
   heartbeatMs?: number;
   /** Report collaborators (#1624); the model defaults to the gap engine's. */
   report?: Omit<PortfolioReportDeps, "signal">;
+  /** #2272 — how a check started from a document reads it; tests inject these. */
+  document?: {
+    storage?: ReadStoredFile;
+    /** Whether the model reads it (`ANALYSIS_DOCUMENT_READER`); default the flag. */
+    readerEnabled?: () => boolean;
+    /** The model reading; default the document reader on the gap engine's model. */
+    reader?: PortfolioDocumentReader;
+  };
 }
 
-/** The engine's input for a start request, or 404 for a requirement the caller cannot read. */
+/** #2272 — the document reader on `provider`, priced from its usage. */
+function documentReaderOn(provider: AIProvider, signal?: AbortSignal): PortfolioDocumentReader {
+  return async ({ title, text, document }) => {
+    // #2280 — a saved reading of the same file, reader and model is reused (usage 0).
+    const reading = await readDocumentOnce({
+      title,
+      text,
+      provider,
+      ...(signal ? { signal } : {}),
+      ...(document ? { document } : {}),
+    });
+    return {
+      reading,
+      costUsd: estimateUsageCostUsd(provider.model, reading.usage, provider.key) ?? 0,
+    };
+  };
+}
+
+/**
+ * #2272 — the document a check is started from, or 404: it must be live (not
+ * soft-deleted) and in a project the caller can read, like a requirement
+ * (`loadReadableSourceRequirement`). Unknown, deleted and unreadable answer
+ * alike (no existence oracle). A readable one that is a repository's file, or
+ * not yet `ready`, is a 400.
+ */
+async function loadReadableSourceDocument(
+  user: AuthPayload,
+  documentId: string,
+): Promise<{ id: string; projectId: string; title: string }> {
+  const doc = await prisma.document.findFirst({
+    where: { id: documentId, deletedAt: null },
+    select: {
+      id: true,
+      projectId: true,
+      title: true,
+      filename: true,
+      source: true,
+      status: true,
+    },
+  });
+  if (
+    !doc ||
+    !(await canAccessProjectDiscussions({ id: user.userId, role: user.role }, doc.projectId))
+  ) {
+    throw new AppError(404, "NOT_FOUND", "Document not found");
+  }
+  // Only after the read check, so neither answer is an existence oracle. The page offers
+  // neither; the API refuses them too: a repository's file is code, not requirements, and a
+  // document still ingesting (or failed) has no text the check can rely on.
+  if (doc.source === "repo") {
+    throw new AppError(
+      400,
+      "DOCUMENT_NOT_CHECKABLE",
+      "A repository file cannot be checked across the portfolio: choose an uploaded or imported document.",
+    );
+  }
+  if (doc.status !== "ready") {
+    throw new AppError(
+      400,
+      "DOCUMENT_NOT_READY",
+      "This document is not ready yet: check it once it has finished processing.",
+    );
+  }
+  return { id: doc.id, projectId: doc.projectId, title: doc.title ?? doc.filename };
+}
+
+/** What a run checks: its engine input, and what of its source it could not check (#2272). */
+interface RunSource {
+  input: ReturnType<typeof portfolioGapInputSchema.parse>;
+  notChecked: PortfolioNotChecked[];
+  /** #2272 — a document's requirements are read as the run starts, not in the request. */
+  documentId: string | null;
+}
+
+/**
+ * The engine's input for a start request, or 404 for a requirement or document
+ * the caller cannot read. #2272 — nothing is cut silently: a requirement's text
+ * past what one check reads, and criteria past the cap, are returned in
+ * `notChecked`. A document's requirements are read when the run starts
+ * ({@link resolveDocumentSource}); until then its statement names the document.
+ */
 async function gapInputFor(
   user: AuthPayload,
   body: ReturnType<typeof createPortfolioAssessmentSchema.parse>,
-): Promise<ReturnType<typeof portfolioGapInputSchema.parse>> {
+): Promise<RunSource> {
   const scoped = {
     scope: body.scope,
     productIds: body.scope === "product" ? (body.productIds ?? []) : [],
   };
   if (body.statement !== undefined) {
-    return portfolioGapInputSchema.parse({ statement: body.statement, ...scoped });
+    return {
+      input: portfolioGapInputSchema.parse({ statement: body.statement, ...scoped }),
+      notChecked: [],
+      documentId: null,
+    };
+  }
+  if (body.documentId !== undefined) {
+    const doc = await loadReadableSourceDocument(user, body.documentId);
+    return {
+      input: portfolioGapInputSchema.parse({
+        statement: `Requirements read from "${doc.title.replace(/\s+/g, " ").trim().slice(0, 200)}"`,
+        sourceProjectId: doc.projectId,
+        ...scoped,
+      }),
+      notChecked: [],
+      documentId: doc.id,
+    };
   }
   // #1657 — a soft-deleted requirement is not found, like one that never existed.
   const requirement = await loadReadableSourceRequirement(user, body.requirementId!);
-  return portfolioGapInputSchema.parse({
-    statement: `${requirement.title}\n\n${requirement.body}`.trim().slice(0, 8_000),
-    criteria: parseAcceptanceCriteria(requirement.acceptanceCriteria)
-      .map((c) => c.slice(0, 2_000))
-      .slice(0, 50),
-    sourceRequirementId: requirement.id,
-    sourceProjectId: requirement.projectId,
-    ...scoped,
+  const statement = cutText(
+    `${requirement.title}\n\n${requirement.body}`.trim(),
+    PORTFOLIO_STATEMENT_MAX_CHARS,
+  );
+  const criteria = boundedRequirements(parseAcceptanceCriteria(requirement.acceptanceCriteria));
+  return {
+    input: portfolioGapInputSchema.parse({
+      statement: statement.text,
+      criteria: criteria.criteria,
+      sourceRequirementId: requirement.id,
+      sourceProjectId: requirement.projectId,
+      ...scoped,
+    }),
+    notChecked: [...(statement.entry ? [statement.entry] : []), ...criteria.notChecked],
+    documentId: null,
+  };
+}
+
+/**
+ * #2272 — a document source's requirements, read now (the model reading takes
+ * a while, so not in the start request): each is one criterion of the check.
+ */
+async function resolveDocumentSource(
+  source: RunSource,
+  deps: PortfolioAssessmentsRouterDeps,
+): Promise<RunSource & { costUsd: number }> {
+  if (!source.documentId) return { ...source, costUsd: 0 };
+  const enabled = (deps.document?.readerEnabled ?? isDocumentReaderEnabled)();
+  const reader = !enabled
+    ? undefined
+    : (deps.document?.reader ??
+      documentReaderOn(
+        deps.gap?.provider ?? buildProvider({ config: loadAIConfig() }),
+        deps.gap?.signal,
+      ));
+  const read = await requirementsFromDocument(source.documentId, {
+    prisma,
+    storage: deps.document?.storage ?? { read: (path) => getDocumentStorage().read(path) },
+    reader,
+    extractor: shapeAwareChangeExtractor,
   });
+  return {
+    ...source,
+    input: portfolioGapInputSchema.parse({
+      ...source.input,
+      statement: read.statement,
+      criteria: read.criteria,
+    }),
+    notChecked: [...source.notChecked, ...read.notChecked],
+    costUsd: read.costUsd,
+  };
 }
 
 /**
@@ -176,7 +346,7 @@ async function readablePage(
 async function runAssessment(
   id: string,
   user: AuthPayload,
-  input: PortfolioGapInput & { sourceRequirementId: string | null; sourceProjectId: string | null },
+  source: RunSource,
   hostProductId: string | null,
   deps: PortfolioAssessmentsRouterDeps,
   heartbeatMs: number,
@@ -195,6 +365,8 @@ async function runAssessment(
     // #1668 — only from `pending`: a row that ended already is not run.
     if (!(await setPortfolioAssessmentStatus(id, "running"))) return;
     jobEvents.started(KIND, id, null, "Portfolio assessment started");
+    // #2272 — a document's requirements, read by the model (or split) first.
+    const { input, notChecked, costUsd: readCostUsd } = await resolveDocumentSource(source, deps);
     const gap = await evaluatePortfolioGap(user, input, {
       ...deps.gap,
       onProgress: ({ done, total }) =>
@@ -224,15 +396,21 @@ async function runAssessment(
       costOf: deps.report?.costOf ?? deps.gap?.costOf,
       signal: deps.gap?.signal,
     });
+    const record = toAssessmentInput(result, {
+      createdById: user.userId,
+      sourceRequirementId: input.sourceRequirementId ?? null,
+      sourceProjectId: input.sourceProjectId ?? null,
+    });
     const written = await completePortfolioAssessment(
       id,
       withReport(
         withImpact(
-          toAssessmentInput(result, {
-            createdById: user.userId,
-            sourceRequirementId: input.sourceRequirementId,
-            sourceProjectId: input.sourceProjectId,
-          }),
+          {
+            ...record,
+            // #2272 — what its source could not give the check, then what the run did not check.
+            notChecked: [...notChecked, ...(record.notChecked ?? [])],
+            costUsd: (record.costUsd ?? 0) + readCostUsd,
+          },
           impact,
         ),
         report,
@@ -249,15 +427,23 @@ async function runAssessment(
       id,
       error: err instanceof Error ? err.message : String(err),
     });
-    const moved = await setPortfolioAssessmentStatus(id, "failed").catch((e: unknown) => {
-      log.error("Could not record a failed portfolio assessment", {
-        id,
-        error: e instanceof Error ? e.message : String(e),
-      });
-      return true;
-    });
+    // #2272 — a document with no requirement to check says so, on the page and in the export:
+    // its message is METIS's own (never a provider's), so it is safe to show.
+    const reason = err instanceof NoDocumentRequirementsError ? err.message : null;
+    const statement = reason
+      ? cutText(`${source.input.statement}: ${reason}`, PORTFOLIO_STATEMENT_MAX_CHARS).text
+      : undefined;
+    const moved = await setPortfolioAssessmentStatus(id, "failed", statement).catch(
+      (e: unknown) => {
+        log.error("Could not record a failed portfolio assessment", {
+          id,
+          error: e instanceof Error ? e.message : String(e),
+        });
+        return true;
+      },
+    );
     // #1668 — a row the sweep failed already had its failed event.
-    if (moved) jobEvents.failed(KIND, id, null, genericFailureMessage(KIND));
+    if (moved) jobEvents.failed(KIND, id, null, reason ?? genericFailureMessage(KIND));
   } finally {
     clearInterval(heartbeat);
   }
@@ -276,7 +462,8 @@ export function portfolioAssessmentsRouter(deps: PortfolioAssessmentsRouterDeps 
       try {
         const user = req.user!;
         const body = createPortfolioAssessmentSchema.parse(req.body);
-        const input = await gapInputFor(user, body);
+        const source = await gapInputFor(user, body);
+        const { input } = source;
         const hostProductId = body.hostProductId ?? null;
         // A host the caller cannot read is answered like a missing one (no existence oracle).
         if (hostProductId && body.scope === "all-accessible") {
@@ -286,6 +473,8 @@ export function portfolioAssessmentsRouter(deps: PortfolioAssessmentsRouterDeps 
           statement: input.statement,
           sourceRequirementId: input.sourceRequirementId,
           sourceProjectId: input.sourceProjectId,
+          // #2272 — the document whose requirements it checks.
+          sourceDocumentId: source.documentId,
           scope: input.scope,
           productIds: input.productIds,
           // #1725 — stored so the page can say which product will build it.
@@ -297,7 +486,7 @@ export function portfolioAssessmentsRouter(deps: PortfolioAssessmentsRouterDeps 
         void runAssessment(
           id,
           user,
-          input,
+          source,
           hostProductId,
           deps,
           deps.heartbeatMs ?? PORTFOLIO_ASSESSMENT_HEARTBEAT_MS,
