@@ -587,6 +587,22 @@ describe("HybridCodeSearch", () => {
       expect((await run("a|b")).map((r) => r.symbolId)).toEqual(["s1"]);
       expect((await run("a", "b|")).map((r) => r.symbolId)).toEqual(["s2"]);
     });
+
+    it("never lets two language filters share an index (#2327)", async () => {
+      symbolIndex.symbols = [
+        makeSearchableSymbol({ symbolId: "s1", name: "alpha", language: "go" }),
+        makeSearchableSymbol({ symbolId: "s2", name: "alpha", language: "ts" }),
+      ];
+      const run = (language?: string) =>
+        new HybridCodeSearch(vectorStore, symbolIndex, embedService).search("alpha", "p", {
+          ...bm25Only,
+          ...(language ? { language } : {}),
+        });
+
+      expect((await run("go")).map((r) => r.symbolId)).toEqual(["s1"]);
+      expect((await run("ts")).map((r) => r.symbolId)).toEqual(["s2"]);
+      expect((await run()).map((r) => r.symbolId).sort()).toEqual(["s1", "s2"]);
+    });
   });
 });
 

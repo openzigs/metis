@@ -18,6 +18,8 @@ export interface ReportSession {
   turnsExhausted?: boolean;
   /** #2243 — tool results cut to `CHAT_TOOL_RESULT_MAX_TOKENS` in the model's copy. */
   truncatedToolResults?: number;
+  /** #2327 — the tools called, in call order. Absent in a run recorded before #2327. */
+  toolNames?: string[];
 }
 
 /** `n/of` over the sessions that recorded `field`, or n/a when none did. */
