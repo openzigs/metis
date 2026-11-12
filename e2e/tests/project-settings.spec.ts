@@ -82,7 +82,7 @@ test.describe("Project settings — AI pickers (#234)", () => {
       expect(value).toBeTruthy();
       await detail.aiProviderSelect.selectOption({ index: 1 });
       await detail.aiProviderSave.click();
-      await expect(page.getByText("Saved")).toBeVisible({ timeout: 10_000 });
+      await expect(detail.aiProviderPicker.getByText("Saved")).toBeVisible({ timeout: 10_000 });
     });
   });
 
@@ -117,7 +117,7 @@ test.describe("Project settings — AI pickers (#234)", () => {
         detail.aiProviderSave.click(),
       ]);
       expect(patch.request().postDataJSON()).toMatchObject({ aiProviderId: "local-gemma" });
-      await expect(page.getByText("Saved")).toBeVisible({ timeout: 10_000 });
+      await expect(detail.aiProviderPicker.getByText("Saved")).toBeVisible({ timeout: 10_000 });
     });
 
     await test.step("Persisted value is local-gemma", async () => {
@@ -144,13 +144,15 @@ test.describe("Project settings — AI pickers (#234)", () => {
     await test.step("Enter a model id and save", async () => {
       await detail.aiModelInput.fill("us.anthropic.claude-sonnet-4-6");
       await detail.aiModelSave.click();
-      await expect(page.getByText("Saved")).toBeVisible({ timeout: 10_000 });
+      // #2337 — scoped: the collapsed Advanced group's text also contains "saved".
+      await expect(detail.aiModelPicker.getByText("Saved")).toBeVisible({ timeout: 10_000 });
     });
 
     await test.step("Clear model id and save (revert to global default)", async () => {
       await detail.aiModelInput.clear();
       await detail.aiModelSave.click();
-      await expect(page.getByText("Saved")).toBeVisible({ timeout: 10_000 });
+      // #2337 — scoped: the collapsed Advanced group's text also contains "saved".
+      await expect(detail.aiModelPicker.getByText("Saved")).toBeVisible({ timeout: 10_000 });
     });
   });
 });
