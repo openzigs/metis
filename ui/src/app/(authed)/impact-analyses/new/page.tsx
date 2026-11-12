@@ -42,6 +42,8 @@ export default function NewImpactAnalysisPage() {
   const [documentId, setDocumentId] = useState<string | null>(null);
   const [includeSchema, setIncludeSchema] = useState(true);
   const [includeDependencies, setIncludeDependencies] = useState(false);
+  // #2280 — a saved reading of the document is reused unless this is ticked.
+  const [rereadDocument, setRereadDocument] = useState(false);
 
   const projectsQuery = useQuery({
     queryKey: ["impact", "projects"],
@@ -90,6 +92,7 @@ export default function NewImpactAnalysisPage() {
       ...base,
       ...(includeSchema ? {} : { includeSchemaImpact: false }),
       ...(includeDependencies ? { includeDependencies: true } : {}),
+      ...(mode === "document" && rereadDocument ? { rereadDocument: true } : {}),
     };
 
     createMutation.mutate(payload, {
@@ -164,6 +167,18 @@ export default function NewImpactAnalysisPage() {
         />
         Include downstream dependencies (what the changed code uses — broader & noisier)
       </label>
+
+      {mode === "document" ? (
+        <label className="flex items-center gap-2 text-sm" data-testid="impact-new-reread-toggle">
+          <input
+            type="checkbox"
+            checked={rereadDocument}
+            onChange={(e) => setRereadDocument(e.target.checked)}
+            data-testid="impact-new-reread-checkbox"
+          />
+          Read the document again (otherwise a saved reading of the same file is reused, at no cost)
+        </label>
+      ) : null}
 
       {errorMessage ? (
         <Card

@@ -179,6 +179,7 @@ function fixture() {
       updateMany: vi.fn(async () => ({ count: 0 })),
       deleteMany: vi.fn(async () => ({ count: 0 })),
     },
+    savedDocumentReading: { deleteMany: vi.fn(async () => ({ count: 0 })) },
     $executeRaw: execute,
     $executeRawUnsafe: executeUnsafe,
     $queryRaw: query,

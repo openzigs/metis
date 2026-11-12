@@ -656,6 +656,7 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
           ...(sourceRequirements ? { sourceRequirements } : {}),
           enableWebResearch: parsed.data.enableWebResearch ?? false,
           enableClarification: parsed.data.enableClarification ?? false,
+          ...(parsed.data.rereadDocuments ? { rereadDocuments: true } : {}),
           ...(parsed.data.specKitHandoff ? { specKitHandoff: parsed.data.specKitHandoff } : {}),
           // #1027 — never joined to `extraInstructions`: the requirement
           // splitter, its cap and the input account do not see it.
