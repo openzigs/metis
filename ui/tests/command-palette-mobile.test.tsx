@@ -219,6 +219,29 @@ describe("CommandPalette — admin destinations (#368)", () => {
   });
 });
 
+// #2349 — "New project" is the same wizard here as on Home and the Projects list.
+describe("CommandPalette — New project", () => {
+  it("opens the New-project wizard in place, navigating nowhere", async () => {
+    await openPalette();
+    const input = screen.getByRole("combobox", { name: "Search commands" });
+    fireEvent.change(input, { target: { value: "new project" } });
+    const first = within(screen.getByRole("listbox")).getAllByRole("option")[0];
+    expect(first).toHaveTextContent("New project");
+    expect(first).not.toHaveAttribute("data-href");
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    const wizard = await screen.findByRole("dialog", { name: "New project" });
+    expect(within(wizard).getByTestId("new-project-wizard")).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Command palette" })).not.toBeInTheDocument();
+    expect(vi.mocked(useRouter)().push).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(wizard, { key: "Escape" });
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "New project" })).not.toBeInTheDocument(),
+    );
+  });
+});
+
 describe("CommandPalette — responsive variant", () => {
   it("renders the centered dialog variant on wide viewports", async () => {
     setViewport(false);

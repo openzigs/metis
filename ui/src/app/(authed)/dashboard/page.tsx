@@ -55,6 +55,8 @@ interface WidgetShellProps {
   emptyHrefLabel?: string;
   /** A primary action shown in the empty state, ahead of the link. */
   emptyAction?: ReactNode;
+  /** An action beside the title once there is something listed. */
+  headerAction?: ReactNode;
   children: ReactNode;
 }
 
@@ -68,11 +70,20 @@ function WidgetShell({
   emptyHref,
   emptyHrefLabel,
   emptyAction,
+  headerAction,
   children,
 }: WidgetShellProps) {
+  const showHeaderAction = Boolean(headerAction) && !loading && !empty;
   return (
     <Card className="p-4" data-testid={testId}>
-      <h2 className="mb-3 text-sm font-semibold">{title}</h2>
+      {showHeaderAction ? (
+        <div className="mb-3 flex items-center justify-between gap-2">
+          <h2 className="text-sm font-semibold">{title}</h2>
+          {headerAction}
+        </div>
+      ) : (
+        <h2 className="mb-3 text-sm font-semibold">{title}</h2>
+      )}
       {loading ? (
         <div role="status" aria-live="polite" className="space-y-2">
           <div className="h-3 w-1/2 animate-pulse rounded bg-muted" />
@@ -123,6 +134,8 @@ function ProjectsWidget() {
       emptyHrefLabel="Open projects"
       // #273 — first run: create, connect and ingest without leaving Home.
       emptyAction={<NewProjectDialog />}
+      // #2349 — and the same wizard for every later project.
+      headerAction={<NewProjectDialog />}
     >
       <ul className="space-y-1 text-sm" data-testid="widget-projects-list">
         {items.map((p) => (

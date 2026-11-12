@@ -101,7 +101,8 @@ describe("<DashboardPage />", () => {
     expect(screen.getByLabelText("Name")).toBeInTheDocument();
   });
 
-  it("offers no wizard once projects exist", async () => {
+  // #2349 — the same wizard for the tenth project as for the first.
+  it("still opens the New-project wizard once projects exist", async () => {
     projectsListMock.mockResolvedValue({
       items: [{ id: "p-1", name: "Alpha", slug: "alpha", status: "active" }],
       total: 1,
@@ -110,6 +111,16 @@ describe("<DashboardPage />", () => {
     } as never);
     renderPage();
     await screen.findByText("Alpha");
+    const buttons = screen.getAllByRole("button", { name: "New project" });
+    expect(buttons).toHaveLength(1);
+    act(() => buttons[0].click());
+    await screen.findByRole("dialog");
+    expect(screen.getByTestId("new-project-wizard")).toBeInTheDocument();
+  });
+
+  it("offers no New project while the Projects widget is still loading", () => {
+    projectsListMock.mockImplementation(() => new Promise(() => {}));
+    renderPage();
     expect(screen.queryByRole("button", { name: "New project" })).not.toBeInTheDocument();
   });
 

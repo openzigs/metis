@@ -234,7 +234,7 @@ Every phase records: **steps → Works → Useful**, plus the evidence listed un
 
 ### Phase 1 — Project creation and setup
 - **Steps:**
-  1. Go to `/projects` and use the create form (`components/projects/project-create-form`). This calls `POST /api/projects`. Name the project "Miniflux v2.3.3".
+  1. Go to `/projects` and click **New project**, which opens the New-project wizard (`components/projects/new-project-wizard`, #2349). This calls `POST /api/projects`. Name the project "Miniflux v2.3.3", keep **Documents only** (the repository is added in Phase 2), click **Create project**, then **Skip — open the Overview**.
   2. Open `/projects/:id` (pipeline overview), then `/projects/:id/settings`. Confirm the AI provider and model, then set the budget, safety, autopilot (off) and database-aware analysis (on). These call `PATCH /api/projects/:id`, `PATCH /api/projects/:id/budget` and `…/database-aware-analysis`.
   3. Open `/projects/:id/settings/models`. This calls `GET /api/projects/:id/model-preferences` and `…/analyses/model-recommendation`.
 - **Works:** the project appears in `/projects` and on `/dashboard`, settings persist across a reload, and the model picker shows `deepseek-flash`. The workspace slug field logs no console error and rejects an invalid slug (#729).

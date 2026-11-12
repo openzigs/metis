@@ -13,9 +13,10 @@
  * The wizard is the Home Projects widget's EMPTY-state action, and this suite
  * shares one database across specs, so the widget's list call is answered with
  * an empty page. Everything else — auth, `POST /projects`, the Overview — is the
- * real stack. The source step is filled in (so its repository fields render and
- * are measured), then switched to "Skip" before Create: the deterministic stack
- * has no network, and a Deep Ingest would only fail in the background.
+ * real stack. The source step's repository fields are filled in (so they render
+ * and are measured), then switched back to "Documents only" before Create: the
+ * deterministic stack has no network, and a Deep Ingest would only fail in the
+ * background. #2349 added the last step, which is measured and then skipped.
  */
 import { test, expect, type Page } from "@playwright/test";
 import { apiBase } from "../fixtures/api-base.js";
@@ -94,23 +95,30 @@ for (const { os, theme } of SCENARIOS) {
       });
 
       await test.step("Source", async () => {
+        await page.getByLabel("A GitHub repository").check();
         await page.getByTestId("wizard-owner-input").fill("acme-corp");
         await page.getByTestId("wizard-repo-input").fill("my-app");
         await expectLegible(
           page,
           "wizard-source",
-          ["Where is the code?", "Needed for a private repository."],
+          ["What does the project start from?", "Needed for a private repository."],
           out,
         );
-        await page.getByLabel("Skip — add a source later").check();
-        await expectLegible(page, "wizard-source-skip", ["Skip — add a source later"], out);
+        await page.getByLabel("Documents only").check();
+        await expectLegible(page, "wizard-source-documents", ["Documents only"], out);
         await page.getByRole("button", { name: "Next" }).click();
       });
 
-      await test.step("Ingest", async () => {
-        await expect(page.getByTestId("wizard-summary")).toContainText("None");
-        await expectLegible(page, "wizard-ingest", ["Project", "Source"], out);
+      await test.step("Create", async () => {
+        await expect(page.getByTestId("wizard-summary")).toContainText("Documents only");
+        await expectLegible(page, "wizard-create", ["Project", "Source"], out);
         await page.getByTestId("wizard-create").click();
+      });
+
+      await test.step("Change request", async () => {
+        await expect(page.getByTestId("wizard-next-step")).toBeVisible({ timeout: 15_000 });
+        await expectLegible(page, "wizard-next-step", ["Skip — open the Overview"], out);
+        await page.getByTestId("wizard-skip").click();
       });
 
       await test.step("Overview", async () => {

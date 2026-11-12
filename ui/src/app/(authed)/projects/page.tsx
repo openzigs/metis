@@ -10,17 +10,11 @@ import { MoreHorizontal, Trash2 } from "lucide-react";
 import { projectsApi } from "@/lib/projects-api";
 import { queryKeys } from "@/lib/query-keys";
 import { ProjectMetaLine } from "@/components/projects/project-meta-line";
-import { ProjectCreateForm } from "@/components/projects/project-create-form";
+import { NewProjectDialog } from "@/components/projects/new-project-wizard";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { SkeletonText } from "@/components/ui/skeleton";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -44,7 +38,6 @@ export default function ProjectsPage() {
     enabled: workspace.status !== "loading",
   });
 
-  const [open, setOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string } | null>(null);
 
   const remove = useMutation({
@@ -60,24 +53,8 @@ export default function ProjectsPage() {
       <PageHeader
         title="Projects"
         description="Browse, create, and manage migration projects."
-        actions={
-          <Dialog open={open} onOpenChange={setOpen}>
-            <DialogTrigger asChild>
-              <Button data-testid="new-project-button">New project</Button>
-            </DialogTrigger>
-            <DialogContent>
-              <DialogHeader>
-                <DialogTitle>Create project</DialogTitle>
-              </DialogHeader>
-              <ProjectCreateForm
-                workspaceId={activeWorkspaceId}
-                workspaceStatus={workspace.status}
-                onRetryWorkspaces={workspace.retry}
-                onCreated={() => setOpen(false)}
-              />
-            </DialogContent>
-          </Dialog>
-        }
+        // #2349 — the same wizard as Home and the command palette, whatever the count.
+        actions={<NewProjectDialog triggerTestId="new-project-button" />}
       />
 
       {workspace.status === "loading" || list.isLoading ? (

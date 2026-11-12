@@ -18,6 +18,7 @@ import { useMediaQuery } from "@/components/tables/responsive-table";
 import { projectsApi } from "@/lib/projects-api";
 import { useAuth } from "@/lib/auth-context";
 import { PALETTE_DESTINATIONS, paletteDestinations } from "@/lib/navigation";
+import { NewProjectDialog } from "@/components/projects/new-project-wizard";
 
 /**
  * Below this width the palette presents as a bottom sheet instead of the
@@ -41,7 +42,10 @@ export interface CommandItem {
   id: string;
   label: string;
   hint: string;
-  href: string;
+  /** Where a destination goes. An action has none. */
+  href?: string;
+  /** #2349 — an action run in place, e.g. opening the New-project wizard. */
+  run?: () => void;
 }
 
 /**
@@ -84,6 +88,8 @@ export function rankCommands(items: CommandItem[], query: string): CommandItem[]
 
 export function CommandPalette() {
   const [open, setOpen] = useState(false);
+  // #2349 — "New project" opens the same wizard as Home and the Projects list.
+  const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
   const router = useRouter();
@@ -119,13 +125,21 @@ export function CommandPalette() {
       hint: "Page",
       href: n.href,
     }));
+    const actionItems: CommandItem[] = [
+      {
+        id: "action:new-project",
+        label: "New project",
+        hint: "Action",
+        run: () => setNewProjectOpen(true),
+      },
+    ];
     const projectItems: CommandItem[] = (projects.data?.items ?? []).map((p) => ({
       id: `project:${p.id}`,
       label: p.name,
       hint: "Project",
       href: `/projects/${p.id}`,
     }));
-    return [...navItems, ...projectItems];
+    return [...navItems, ...actionItems, ...projectItems];
   }, [projects.data, isAdmin]);
 
   const ranked = useMemo(() => rankCommands(items, query), [items, query]);
@@ -144,7 +158,8 @@ export function CommandPalette() {
   function handleSelect(item: CommandItem) {
     setOpen(false);
     setQuery("");
-    router.push(item.href);
+    if (item.run) item.run();
+    else if (item.href) router.push(item.href);
   }
 
   // Roving highlight over the listbox via aria-activedescendant: focus stays on
@@ -172,68 +187,71 @@ export function CommandPalette() {
     ranked.length === 0 ? "No results" : `${ranked.length} result${ranked.length === 1 ? "" : "s"}`;
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogContent
-        aria-modal="true"
-        className={cn("max-w-lg", isMobile && SHEET_CLASSES)}
-        data-testid="command-palette"
-        data-variant={isMobile ? "sheet" : "dialog"}
-      >
-        <DialogTitle className="sr-only">Command palette</DialogTitle>
-        <Input
-          role="combobox"
-          aria-label="Search commands"
-          aria-controls={listId}
-          aria-expanded={ranked.length > 0}
-          aria-autocomplete="list"
-          aria-activedescendant={activeItem ? optionId(activeItem) : undefined}
-          placeholder="Search projects, pages…"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          onKeyDown={handleInputKeyDown}
-          autoFocus
-          data-testid="command-palette-input"
-        />
-        <ul
-          id={listId}
-          role="listbox"
-          aria-label="Command results"
-          className="mt-2 max-h-80 space-y-1 overflow-y-auto"
-          data-testid="command-palette-list"
+    <>
+      {newProjectOpen ? <NewProjectDialog open onOpenChange={setNewProjectOpen} /> : null}
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent
+          aria-modal="true"
+          className={cn("max-w-lg", isMobile && SHEET_CLASSES)}
+          data-testid="command-palette"
+          data-variant={isMobile ? "sheet" : "dialog"}
         >
-          {ranked.length === 0 ? (
-            <li role="presentation" className="px-2 py-3 text-sm text-muted-foreground">
-              No matches.
-            </li>
-          ) : (
-            ranked.map((item, index) => (
-              <li
-                key={item.id}
-                id={optionId(item)}
-                role="option"
-                aria-selected={index === activeClampedIndex}
-                data-href={item.href}
-                onClick={() => handleSelect(item)}
-                onMouseMove={() => setActiveIndex(index)}
-                className={cn(
-                  "flex w-full cursor-pointer items-center justify-between gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-accent",
-                  index === activeClampedIndex && "bg-accent",
-                )}
-                data-testid={`command-item-${item.id}`}
-              >
-                <span>{item.label}</span>
-                <span className="text-xs text-muted-foreground">{item.hint}</span>
+          <DialogTitle className="sr-only">Command palette</DialogTitle>
+          <Input
+            role="combobox"
+            aria-label="Search commands"
+            aria-controls={listId}
+            aria-expanded={ranked.length > 0}
+            aria-autocomplete="list"
+            aria-activedescendant={activeItem ? optionId(activeItem) : undefined}
+            placeholder="Search projects, pages…"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={handleInputKeyDown}
+            autoFocus
+            data-testid="command-palette-input"
+          />
+          <ul
+            id={listId}
+            role="listbox"
+            aria-label="Command results"
+            className="mt-2 max-h-80 space-y-1 overflow-y-auto"
+            data-testid="command-palette-list"
+          >
+            {ranked.length === 0 ? (
+              <li role="presentation" className="px-2 py-3 text-sm text-muted-foreground">
+                No matches.
               </li>
-            ))
-          )}
-        </ul>
-        <p aria-live="polite" className="sr-only" data-testid="command-palette-status">
-          {statusText}
-        </p>
-        <p className="mt-2 text-xs text-muted-foreground">
-          Tip: press <kbd className="rounded border px-1">⌘K</kbd> to toggle.
-        </p>
-      </DialogContent>
-    </Dialog>
+            ) : (
+              ranked.map((item, index) => (
+                <li
+                  key={item.id}
+                  id={optionId(item)}
+                  role="option"
+                  aria-selected={index === activeClampedIndex}
+                  data-href={item.href}
+                  onClick={() => handleSelect(item)}
+                  onMouseMove={() => setActiveIndex(index)}
+                  className={cn(
+                    "flex w-full cursor-pointer items-center justify-between gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-accent",
+                    index === activeClampedIndex && "bg-accent",
+                  )}
+                  data-testid={`command-item-${item.id}`}
+                >
+                  <span>{item.label}</span>
+                  <span className="text-xs text-muted-foreground">{item.hint}</span>
+                </li>
+              ))
+            )}
+          </ul>
+          <p aria-live="polite" className="sr-only" data-testid="command-palette-status">
+            {statusText}
+          </p>
+          <p className="mt-2 text-xs text-muted-foreground">
+            Tip: press <kbd className="rounded border px-1">⌘K</kbd> to toggle.
+          </p>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }

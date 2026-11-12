@@ -1,6 +1,6 @@
 /**
  * #29 (epic #26) — <ProjectPipelineOverview>: the project Overview's stage
- * status, the first-run checklist, and live-status plumbing.
+ * status, the project checklist (#2349), and live-status plumbing.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
@@ -48,6 +48,7 @@ import { apiFetch } from "@/lib/api-client";
 import { useProjectJobEvents } from "@/hooks/use-job-events";
 import { useConnectorProgress } from "@/hooks/use-connector-events";
 import ChangeAnalysisPage from "@/app/(authed)/projects/[id]/changes/page";
+import { getProjectTabModel, resolveActiveProjectTab } from "@/components/projects/project-tabs";
 
 const repos = vi.mocked(repoConnectorsApi.list);
 const dbs = vi.mocked(dbConnectorsApi.list);
@@ -104,44 +105,91 @@ beforeEach(() => {
   });
 });
 
-describe("first-run checklist", () => {
-  it("shows a numbered five-step checklist on a brand-new project", async () => {
+/** The name the project tab bar gives the tab a path belongs to. */
+const tabLabel = (path: string) =>
+  resolveActiveProjectTab(path, getProjectTabModel("p1"))?.section.label;
+
+describe("the checklist (#2349)", () => {
+  it("numbers the five steps of the analyst's job, with Publish optional", async () => {
     renderOverview();
-    const list = await screen.findByTestId("first-run-checklist");
+    const list = await screen.findByTestId("project-checklist");
     expect(within(list).getByRole("heading", { name: "Get started" })).toBeInTheDocument();
     const items = within(list).getAllByRole("listitem");
     expect(items.map((li) => li.querySelector("h3")?.textContent)).toEqual([
-      "1.Connect sources",
-      "2.Ingest",
-      "3.Analyze",
-      "4.Review requirements",
-      "5.Publish",
+      "1.Add knowledge",
+      "2.Ready: ask a question",
+      "3.New change request",
+      "4.Review",
+      "5.Deliverable",
+      "Publish (optional)",
     ]);
     expect(list.querySelector("ol")).not.toBeNull();
-    expect(screen.queryByTestId("pipeline-stage-sources")).toBeNull();
+    expect(screen.getByTestId("checklist-progress")).toHaveTextContent(
+      "0 of 5 steps done. Publishing is optional.",
+    );
   });
 
   it("deep-links every step to where it is done", async () => {
     renderOverview();
-    await screen.findByTestId("first-run-checklist");
+    await screen.findByTestId("project-checklist");
     const href = (id: string) => screen.getByTestId(`pipeline-action-${id}`).getAttribute("href");
     expect(href("sources")).toBe("/projects/p1/connections");
     expect(href("ingest")).toBe("/projects/p1/connections");
     expect(href("analyze")).toBe("/projects/p1/analysis");
     expect(href("review")).toBe("/projects/p1/requirements");
+    expect(href("docs")).toBe("/projects/p1/documentation");
     expect(href("publish")).toBe("/projects/p1/publish");
-    expect(screen.getByTestId("pipeline-action-sources")).toHaveTextContent("Connect a source");
+    expect(screen.getByTestId("pipeline-action-sources")).toHaveTextContent("Add knowledge");
+    expect(screen.getByTestId("pipeline-action-analyze")).toHaveTextContent("New change request");
+  });
+
+  it("names the project tab each step opens, as the tab bar names it", async () => {
+    renderOverview();
+    await screen.findByTestId("project-checklist");
+    const tab = (id: string) => screen.getByTestId(`pipeline-tab-${id}`).textContent;
+    expect(tab("sources")).toBe(`in ${tabLabel("/projects/p1/connections")}`);
+    expect(tab("analyze")).toBe(`in ${tabLabel("/projects/p1/analysis")}`);
+    expect(tab("review")).toBe("in Requirements");
+    expect(tab("docs")).toBe(`in ${tabLabel("/projects/p1/documentation")}`);
+    expect(tab("publish")).toBe(`in ${tabLabel("/projects/p1/publish")}`);
   });
 
   it("contains no settings inputs", async () => {
     const { container } = renderOverview();
-    await screen.findByTestId("first-run-checklist");
+    await screen.findByTestId("project-checklist");
     expect(container.querySelector("input, select, textarea")).toBeNull();
+  });
+
+  it("reads complete with every required step done and nothing published", async () => {
+    listAnalyses.mockResolvedValue({ items: [COMPLETED] });
+    getAnalysis.mockResolvedValue({ requirements: [{ reviewStatus: "approved" }] } as never);
+    docsList.mockResolvedValue({
+      items: [{ status: "ready", chunkCount: 4 } as never],
+      total: 1,
+      limit: 100,
+      offset: 0,
+    });
+    generatedDocs = [{ status: "ready" }];
+    renderOverview();
+    const list = await screen.findByTestId("project-checklist");
+    await waitFor(() =>
+      expect(within(list).getByRole("heading", { level: 2 })).toHaveTextContent("Every step done"),
+    );
+    expect(screen.getByTestId("checklist-progress")).toHaveTextContent("5 of 5 steps done");
+    expect(screen.getByTestId("pipeline-status-publish")).toHaveTextContent(
+      "Nothing published yet",
+    );
+    // Ready → ask the question on this page's knowledge search.
+    expect(screen.getByTestId("pipeline-action-ingest")).toHaveAttribute(
+      "href",
+      "/projects/p1#knowledge-search",
+    );
+    expect(screen.getByTestId("pipeline-tab-ingest")).toHaveTextContent("in Overview");
   });
 });
 
-describe("stage grid", () => {
-  it("replaces the checklist once an analysis exists, with every stage and its action", async () => {
+describe("checklist steps", () => {
+  it("keeps every step and its action once an analysis exists", async () => {
     listAnalyses.mockResolvedValue({ items: [COMPLETED] });
     getAnalysis.mockResolvedValue({
       requirements: [
@@ -154,7 +202,6 @@ describe("stage grid", () => {
     } as never);
     renderOverview();
     await screen.findByTestId("pipeline-stage-analyze");
-    expect(screen.queryByTestId("first-run-checklist")).toBeNull();
     for (const id of ["sources", "ingest", "analyze", "review", "docs", "publish"]) {
       expect(screen.getByTestId(`pipeline-stage-${id}`)).toBeInTheDocument();
     }
@@ -298,7 +345,7 @@ describe("stage grid", () => {
     batches.mockRejectedValue(new Error("boom"));
     renderOverview();
     expect(await screen.findByTestId("pipeline-partial")).toHaveTextContent(/could not be loaded/);
-    expect(screen.getByTestId("first-run-checklist")).toBeInTheDocument();
+    expect(screen.getByTestId("project-checklist")).toBeInTheDocument();
   });
 
   // Review of #63 — `reader` lacks `issue.preview`; the batches request used to
@@ -317,7 +364,7 @@ describe("stage grid", () => {
 
   it("reads the newest full page of documents, so counts are not capped at 25", async () => {
     renderOverview();
-    await screen.findByTestId("first-run-checklist");
+    await screen.findByTestId("project-checklist");
     expect(docsList).toHaveBeenCalledWith("p1", { limit: 100 });
   });
 
@@ -331,7 +378,7 @@ describe("stage grid", () => {
 describe("live status", () => {
   it("subscribes to the project's job events", async () => {
     renderOverview();
-    await screen.findByTestId("first-run-checklist");
+    await screen.findByTestId("project-checklist");
     expect(useProjectJobEvents).toHaveBeenCalledWith("p1");
     expect(useConnectorProgress).toHaveBeenCalledWith("p1");
   });
