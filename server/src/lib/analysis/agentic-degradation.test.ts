@@ -19,6 +19,8 @@ import {
   isJsonFinalAnswer,
   isSchemaValidFinalAnswer,
   salvageFindings,
+  salvagedFindingsLeftOut,
+  salvageRepairedFindings,
   salvageWithRepair,
 } from "./agentic-degradation.js";
 
@@ -358,6 +360,44 @@ describe("#769 salvage helpers", () => {
     );
     expect(salvaged.map((f) => f.title)).toEqual(["lost", "kept"]);
     expect(salvaged.map(citationsLostToSalvage)).toEqual([1, 0]);
+  });
+
+  it("#2276 salvageRepairedFindings keeps 50 and names the valid findings past them", () => {
+    const valid = (i: number) => ({
+      category: "gap",
+      severity: "low",
+      title: `F${i}`,
+      body: "b",
+      citations: [],
+      tags: [],
+    });
+    const result = salvageRepairedFindings(
+      JSON.stringify({
+        agentKey: "code",
+        findings: [
+          ...Array.from({ length: 50 }, (_, i) => valid(i + 1)),
+          { category: "gap", severity: "low", body: "no title" },
+          valid(51),
+          valid(52),
+        ],
+      }),
+    );
+    expect(result.findings).toHaveLength(50);
+    expect(result.findings.at(-1)!.title).toBe("F50");
+    // The invalid one is not counted as left out: it was never a finding.
+    expect(result.leftOutTitles).toEqual(["F51", "F52"]);
+    expect(salvagedFindingsLeftOut("code", 50, result.leftOutTitles)).toEqual({
+      agentKey: "code",
+      producedCount: 52,
+      keptCount: 50,
+      leftOutTitles: ["F51", "F52"],
+    });
+  });
+
+  it("#2276 a salvage within the cap leaves nothing out", () => {
+    expect(salvageRepairedFindings(findingsJson()).leftOutTitles).toEqual([]);
+    expect(salvagedFindingsLeftOut("code", 1, [])).toBeUndefined();
+    expect(salvagedFindingsLeftOut("code", 1, undefined)).toBeUndefined();
   });
 
   it("salvageFindings returns [] for prose and for JSON without findings", () => {

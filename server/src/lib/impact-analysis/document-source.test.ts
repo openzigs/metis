@@ -6,7 +6,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { chunkMarkdown } from "../rag/chunker.js";
 import type { DocumentReading, ReadStatement, SectionCoverage } from "../document-reader/reader.js";
 import {
@@ -22,6 +22,17 @@ import {
 } from "./document-source.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
+
+// #2276 — a fallback to the chunks says why, in the log.
+const logged = vi.hoisted(() => ({ info: vi.fn(), warn: vi.fn() }));
+vi.mock("../logger.js", () => ({
+  createChildLogger: () => ({ debug: vi.fn(), error: vi.fn(), ...logged }),
+}));
+const fellBackBecause = (reason: string) =>
+  expect(logged.info).toHaveBeenCalledWith(
+    "impact run reads the document's chunks instead of its file",
+    { documentId: expect.any(String), reason },
+  );
 
 /** An FRD of a dozen paragraphs, each sentence unique so a repeat is visible. */
 const FRD = [
@@ -143,6 +154,11 @@ function prismaWith(opts: {
 }
 
 describe("loadImpactDocumentText", () => {
+  beforeEach(() => {
+    logged.info.mockClear();
+    logged.warn.mockClear();
+  });
+
   it("reads the stored file, parsed, and never touches the chunks", async () => {
     const prisma = prismaWith({ approved: ["chunk one", "chunk two"] });
     const read = vi.fn(async () => Buffer.from(FRD, "utf8"));
@@ -171,6 +187,7 @@ describe("loadImpactDocumentText", () => {
     expect(doc.saved?.checksum).toBe("sum-frd");
     expect(doc.text).toContain("a calendar with a Book button");
     expect(doc.text).not.toContain("image not read");
+    fellBackBecause("images-not-described");
   });
 
   it("keeps the re-parsed file when it lost images but there are no chunks to read", async () => {
@@ -195,6 +212,11 @@ describe("loadImpactDocumentText", () => {
       saved: { projectId: "proj-docs", documentId: "doc-1", checksum: "sum-frd" },
     });
     expect(prisma.quarantineChunk.findMany).not.toHaveBeenCalled();
+    fellBackBecause("file-unreadable");
+    expect(logged.warn).toHaveBeenCalledWith("impact run could not read the document's file", {
+      documentId: "doc-1",
+      error: "ENOENT",
+    });
   });
 
   it("falls back to the quarantined chunks when none are approved", async () => {
@@ -206,6 +228,7 @@ describe("loadImpactDocumentText", () => {
     expect(prisma.quarantineChunk.findMany).toHaveBeenCalledWith(
       expect.objectContaining({ where: { documentId: "doc-1", ord: { gte: 0 } } }),
     );
+    fellBackBecause("parsed-empty");
   });
 
   it("reads the chunks of a document whose row is gone, titled by its id", async () => {
@@ -214,6 +237,7 @@ describe("loadImpactDocumentText", () => {
     const doc = await loadImpactDocumentText(prisma as never, "doc-9", { read });
     expect(read).not.toHaveBeenCalled();
     expect(doc).toEqual({ text: "only chunk", from: "chunks", title: "doc-9" });
+    fellBackBecause("no-document-row");
   });
 
   it("names the document by its filename when it has no title, and refuses an unparseable file", async () => {
@@ -237,6 +261,7 @@ describe("loadImpactDocumentText", () => {
       title: "x.bin",
       saved: { projectId: "p", documentId: "doc-1", checksum: "c" },
     });
+    fellBackBecause("parse-failed");
   });
 });
 
@@ -344,8 +369,47 @@ describe("changesFromReading", () => {
       changeType: "added",
       bodyDelta: changes[0]!.body.length,
     });
-    // The change type reads the statement and its quote.
+    // The change type reads the source's words, here its quote.
     expect(changes[1]!.changeType).toBe("removed");
+  });
+
+  it("#2276 — types a change from the source's words, not the model's paraphrase", () => {
+    const [kept, retired] = changesFromReading(
+      reading({
+        statements: [
+          statement({
+            id: "T1",
+            kind: "constraint",
+            // The model restated a retention period as a removal.
+            statement: "Bookings must be removed after 30 days.",
+            quote: "Bookings are kept for 30 days.",
+            headingPath: ["Booking FRD", "3 Retention"],
+          }),
+          statement({
+            id: "T2",
+            statement: "Paper booking forms are accepted at reception.",
+            quote: "Paper booking forms are accepted at reception.",
+            headingPath: ["Booking FRD", "4 Retired channels"],
+          }),
+        ],
+      }),
+    );
+    expect(kept!.changeType).toBe("added");
+    // The heading is the source's words too, as the splitter reads it.
+    expect(retired!.changeType).toBe("removed");
+  });
+
+  it("#2276 — quotes every line of a multi-line quote", () => {
+    const [change] = changesFromReading(
+      reading({
+        statements: [
+          statement({ quote: "The portal shall lock an account\nafter five failed attempts." }),
+        ],
+      }),
+    );
+    expect(change!.body).toMatch(
+      /\n> The portal shall lock an account\n> after five failed attempts\.$/,
+    );
   });
 
   it("clips a long statement's title onto one line", () => {
