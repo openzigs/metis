@@ -738,6 +738,8 @@ Each policy supports `auto | prompt-once | always-prompt | deny`. Decisions are 
 
 **Conversation-aware retrieval (#2240).** Both chat routes call `conversationRagContext` (`routes/ai.ts`), which reads the session's active transcript (`listActiveMessages`) before the turn is prepared and hands `buildAutoRagContext` the prior user/assistant turns plus the new message. `planRetrievalQueries` (`lib/ai/conversation/retrieval-query.ts`, deterministic: no model call) plans the searches: the user's latest words, cut to 2,048 characters, always first; one per part of a multi-part question (two or more list items, else two or more `?` sentences; at most `MAX_QUESTION_PARTS` = 3); and, for a follow-up, one search of the latest message, then the model's closing question, then the previous user question. A message is a follow-up when it has at most 6 words, opens with a continuation cue (`and`, `but`, `so`, `what about`, `yes`, `no`, …), or uses a referring word (`it`, `that`, `there`, `also`, …) while naming at most 3 content words of its own (`contentWords`: not a function, referring or generic question word). A question that names its own subject ("Which teams own the payment reconciliation service and its alerts?") is not a follow-up, and a previous answer ending on a question does not make it one. A single search keeps its own ranking (a first or self-contained question's block is byte-identical to before); several are merged by `fuseRetrievalHits`: weighted reciprocal rank fusion (the user's own searches weigh 1, the conversational one `CONTEXTUAL_WEIGHT` = 0.95, ties to the user's), and excerpts only the conversational search found are held to at most 3 of the 8 slots, so the earlier topic can never fill a majority. The fused code block (#714) searches the follow-up's conversational query. **Carry-forward:** the capture lists the block's numbered excerpts (`RagContextCapture.excerpts`); when the reply is recorded, `citedExcerptsMeta` stores the chunk ids the answer cited (by `[n]`, locator or file name; at most 4) in the assistant row's `meta.citedExcerpts`. The next turn reads only the most recent answer's ids and re-reads them through `loadChunksById` (`lib/rag/chunk-lookup.ts`): a `knowledge_chunks` read filtered on the session's `projectId` as well as the ids, skipping soft-deleted documents and applying the requester's chunk ACL (`filterAccessible`, as search does, #2225). They are appended after the fresh hits, labelled `(cited in your previous answer)`, and counted in `sources`; failing to read them leaves the fresh retrieval intact. **Attachments:** the chat body's optional `documentIds` (at most `MAX_ATTACHED_DOCUMENTS` = 50, `@metis/shared`; the Workbench refuses a 51st chip with a visible note and never sends more) becomes `SearchOptions.documentIds` on every search, the block says the excerpts come from the attached documents, and the fused code block is skipped. The Workbench sends its context chips this way instead of pasting their file names into the question. The discussion and Teams `@AI` retriever still searches the triggering message alone.
 
+**Abstain or ask (#2241).** `buildAutoRagContext` applies chat's relevance floor (`server/src/lib/ai/relevance-floor.ts`, `CHAT_RETRIEVAL_MIN_SCORE`, default 0.55) to the fused hits before the block is built. The floor reads each hit's dense cosine (`denseScore`, which `KnowledgeService.search` now keeps when a reranker rewrites `score` with its logit; else `score`), never the RRF or rerank rank. A keyword-only hit has no cosine and is kept only beside a dense hit that cleared the floor. When the floor sets aside every match, the block is `insufficientEvidenceBlock`: no excerpt, and an instruction to say the sources don't show this and what is missing. A failed search returns `RETRIEVAL_FAILED_BLOCK` instead of `""`, logged at warn. The capture records `belowFloor`, `failed`, the search's `coverageWarning` (previously only logged) as `coverage`, and each excerpt's `relevance`. `describeGrounding` turns them into `grounded.sourcesUsed` (one entry per file, with excerpt count and best relevance, at most 20), `no-context.reason` (`nothing-found` / `insufficient-evidence` / `retrieval-failed`, plus `belowFloor`) and `coverage` on either. `parseChatGrounding` validates all of these, and the chat page's `GroundingBadge` shows them. The policy itself is `ANSWER_POLICY_SENTENCES` (`chat-system-prompt.ts`): in the byte-stable lead of a session bound to one project or scoped to several (#2238) (`answerPolicy`, after the citation policy), and appended to `DISCUSSION_SYSTEM_PROMPT`. It names no excerpts or tools, because a discussion reply may have neither. The discussion responder still drops a block with no excerpts (`retrieveSafely`), so its replies rest on the policy alone. The absolute floor applies to single-project auto-RAG without attachments: a turn with `documentIds` gets floor 0, so the documents the user chose always reach the prompt; a multi-product turn keeps #2238's relative floor (`CHAT_MULTI_PROJECT_RELEVANCE_FLOOR_PCT`) and its `multi` grounding. The default floor was calibrated with `pnpm eval:ba-qa --floor-sweep` (`server/src/lib/eval/ba-qa/relevance-floor.ts`; `eval-data/README.md`).
+
 **No provider-side tools.** #149 removed the Copilot SDK and, with it, the only provider that carried tools of its own (shell, file write, URL fetch) outside this gate, and the `withholdSdkBuiltinTools` flag that withheld them. `disableTools` still means "send no tools" on every provider. (History: the Copilot SDK carried its own tools (shell, file write, URL fetch, …) that would run under the provider's `onPermissionRequest`, never this gate. Every chat call asks for them withheld with `withholdSdkBuiltinTools` (set by `buildSdkSkillRuntime`), a flag only the Copilot provider reads: it maps to `availableTools: []`, and its permission handler refuses every request (`rejectSdkPermission`). It is deliberately **not** `disableTools`, which means "send no tools" on every provider — the Anthropic and OpenAI-compatible clients drop `tools` from the request when it is set, so using it here would strip METIS's own tools from every chat. `disableTools` stays on the pure-text callers that offer no tools (discussion replies, custom-agent playground runs, analysis/docs-gen synthesis), and on Copilot it withholds the built-ins too. The SDK hands the handler the full request (a shell request's `fullCommandText`, a write's `fileName` and `diff`), so routing it through the gate would be possible; refusing everything is the least-risk interim because the Copilot provider is removed in P4 (#130). Non-chat text-synthesis callers that set neither flag keep the earlier behaviour until then. The Copilot provider declares `nativeToolCalls: false` — it never reads `ChatOptions.tools` — so a Copilot chat got the code tools on the text protocol.)
 
 **Local provider.** The loop asks for approval and runs tools only between provider calls, so the per-base-URL concurrency slot (#127) is never held across a human decision or a tool run. That depends on every reader that stops at `done` returning the provider stream: `withIdleTimeout` (`stream-idle.ts`) passes an early stop (`break`, `collectStream`, a throw in the consumer) on to the source, whose `finally` releases the slot — without it the next local call on that base URL waited forever.
@@ -4942,13 +4944,26 @@ document context once (purpose, scope, actors, glossary) from the full outline a
 as fits, then reads each batch with it. A cross-section pass over the statements names repeats
 (dropped) and cross-references (kept); if it fails, every statement is kept and the report says
 so. Every quote is checked with the governing `clauseLocator` and the stored quote and offsets
-are the source's own; a quote not in the source is dropped and counted. A batch whose reply
-cannot be read is reported `unread`; a provider error fails the read.
+are the source's own; a quote not in the source, or found only outside the batch the call was
+asked about, is dropped and counted (#2262). A batch whose reply cannot be read is reported
+`unread`; a provider error fails the read, and the error carries the tokens already spent
+(`spentUsageOf`), which the failed agent row and the run's total count.
+
+Cost (#2262): the system message names no batch, and each statements call's user message is
+the document (and the operator's notes) followed by the batch it asks about, so every batch call
+of one document shares a prefix sent with `promptCaching` (`system` plus `userPrefix`). A
+document over `READER_WHOLE_MAX_DOCUMENT_TOKENS` (20,000, about 80 KB) is read sectioned, whose
+cost grows in step with its length rather than with its square.
 
 Requirements Analysis uses it behind `ANALYSIS_DOCUMENT_READER` (off by default):
 `runOneAgent("document")` calls `readSelectedDocuments` instead of `retrieveContext`
-(`analysis/document-reader-agent.ts`). It loads the selected documents (or every ready
-upload) of the run's project from storage, parses them as ingest does, and writes the reading
+(`analysis/document-reader-agent.ts`). It reads as the requester: `resolveAclActor` (an
+inactive requester fails the agent), and each document's `aclSubjects` checked with
+`isVisibleTo`; a document the requester may not see is reported with the same reason as one
+that is not ready, and never sends the agent back to retrieval. The operator's notes reach every
+statements call as fenced data (#1237). It loads the selected documents (or, with none
+selected, the `READER_IMPLICIT_MAX_DOCUMENTS` (5) most recently uploaded ones the requester may
+see, the rest listed unread with the reason) of the run's project from storage, parses them as ingest does, and writes the reading
 as the document agent's output: `requirements` (`REQ-001`, ... for requirements, constraints and
 business rules, each with its document and stored chunk), one cited finding per requirement,
 and the full `reading`. The coverage report goes on the capability record
@@ -4979,7 +4994,10 @@ is the document id, `Document.checksum`, `READER_VERSION` (bump it when the read
 schemas, batching or verification change), the model, and the SHA-256 of the exact text read —
 which changes when the image describer's descriptions are in that text (impact reads the chunks
 then) and when the parser changes, and keeps the saved offsets pointing into the caller's text.
-A failed, partial (a batch `unread`, or the cross-section pass `failed`) or empty reading is
+Requirements Analysis's operator notes (#2262) are folded into that hash (`readingTextHash`),
+so a reading made with other notes, or none, is never reused; without notes it is the text's
+own hash. A read that throws reaches the caller unchanged, with its spent usage attached
+(`spentUsageOf`), so the document agent still counts it. A failed, partial (a batch `unread`, or the cross-section pass `failed`) or empty reading is
 never saved, and pasted text is never saved. Every lookup filters on the document's own
 `projectId` as well as its id, and runs only after the caller's existing access check (impact:
 `assertDocumentReadable`; Requirements Analysis loads only its own project's documents). Rows
@@ -5020,6 +5038,23 @@ Only missing knowledge (and an unclassified or governing question) goes through 
 search; an ambiguity or a silence is the author's intent and is asked directly. A question's
 `citation` is copied from its requirement's source (the paragraph holding a flagged term),
 never from the model. A reply without the new fields is asked and grounded as before #2235.
+
+**Only with the reader on (#2275).** The classifying prompt, the set-asides, the per-round cap and
+the missing-knowledge-only search were measured only with `ANALYSIS_DOCUMENT_READER` on. So the
+dialog applies them only then: `ClarificationDialogDeps.sourceQuestions`, which defaults to the
+flag. With the flag off, the dialog uses the pre-#2235 prompt (`LEGACY_QUESTION_SYSTEM_PROMPT`),
+and every question raised is asked unclassified and uncapped, in the order raised, and searched
+for (`askEveryQuestion`). The `#1873 — flag off` snapshot is again the pre-#2235 one. A question
+carries `searched: true` only when the grounding search ran for it and did not fail. The panel
+says "searched your documents and code" only then.
+
+The GtWR rules scan every reader statement (`attachUncitedQualityFlags`). The hits of a
+statement no requirement cites go to the one requirement whose title and description hold at
+least half of the statement's words, and the statement becomes one of its sources. A tie or no
+match attaches nothing, and is logged. The section line and the reader's statement now sit
+inside the `<<<SOURCE … SOURCE>>>` fence with the quote, in both the extraction input and the
+question prompt. The approval cards and the panel's "addressed" count include
+`setAsideAmbiguities`, as the server's `addressedAmbiguities` does.
 Impact Analysis and the portfolio check do not yet raise questions in this dialog (#2270).
 
 #### Online eval — scoring sampled live production runs (#1321, epic #1316)
