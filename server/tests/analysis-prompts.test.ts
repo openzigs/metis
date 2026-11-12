@@ -479,3 +479,30 @@ describe("AFFECTED SCHEMA integration (#824)", () => {
     });
   });
 });
+
+// #2198 — walkthrough run 10 grounded "Track reading time with read_at
+// timestamp" in the reading-time ESTIMATE code, which shares only the words, and
+// Tested by then counted the estimate's tests. Both code-agent prompts say a
+// shared word is not grounding.
+describe("code citations are chosen for what the code does (#2198)", () => {
+  const RULE = /not because its name shares a word with the requirement/;
+  const requirements = [{ id: "REQ-001", text: "Track reading time with read_at timestamp" }];
+
+  it("the agentic code prompt carries the rule", () => {
+    const { systemMessage } = buildAgenticCodePrompt({
+      projectName: "Acme",
+      projectDescription: "reader",
+      requirements,
+    });
+    expect(systemMessage).toMatch(RULE);
+  });
+
+  it("the requirement-grounded code prompt carries the rule", () => {
+    const { systemMessage } = buildRequirementGroundedPrompt({
+      projectName: "Acme",
+      projectDescription: "reader",
+      requirements: requirements.map((r) => ({ ...r, evidence: "[1] readingtime.go" })),
+    });
+    expect(systemMessage).toMatch(RULE);
+  });
+});

@@ -262,3 +262,56 @@ describe("assembleChatSystem", () => {
     expect(stableLeadText(withEmpty)).toBe(stableLeadText(withInstr));
   });
 });
+
+// #2198 — walkthrough run 10's wrong chat answers were claims the model made
+// without the check that would have caught them. The policy names each check.
+describe("CITATION_INSTRUCTION — checking a claim before making it (#2198)", () => {
+  const section = () => {
+    const at = CITATION_INSTRUCTION.indexOf("## Checking a claim before you make it");
+    expect(at).toBeGreaterThan(0);
+    return CITATION_INSTRUCTION.slice(at);
+  };
+
+  it("says a 'no callers' claim needs a caller lookup, and to say when none was run", () => {
+    // Run 10 e-16-5: "no callers" for a method a handler calls through a receiver.
+    expect(section()).toMatch(/has no callers/);
+    expect(section()).toContain("search_code_graph");
+    expect(section()).toContain("`calls`");
+    expect(section()).toMatch(/through a receiver/);
+    expect(section()).toMatch(/were not checked/);
+  });
+
+  it("says a 'same bug elsewhere' claim needs that code read first", () => {
+    // Run 10 e-16-6: "showUnreadPage has the same bug", which it does not have.
+    expect(section()).toMatch(/same behaviour or the same bug/);
+    expect(section()).toMatch(/read that code in this conversation/);
+  });
+
+  it("says a schema element defined once may have been dropped by a later migration", () => {
+    // Run 10 BA Q8: the `removed` status "is still used"; a later migration dropped it.
+    expect(section()).toMatch(/dropped or replaced by a later migration/);
+    expect(section()).toMatch(/before saying it is still used/);
+  });
+
+  it("asks for the lines that hold the claim, not the file's header", () => {
+    // Run 10 BA Q1: `storage/user.go:13-16` (the imports) for the INSERT at :72.
+    expect(section()).toMatch(/not the file's imports or header/);
+  });
+
+  it("names a requirement by its title and keeps its id for tool calls", () => {
+    // Run 10 J2.3: a raw requirement id quoted in prose.
+    expect(section()).toMatch(/Name a METIS requirement by its title/);
+    expect(section()).toMatch(/never put the raw id in your reply/);
+  });
+
+  it("says a shared word is not evidence that code does what the question asks", () => {
+    // Run 10 e-17-2: "Track reading time with read_at" grounded in the
+    // reading-time ESTIMATE code, which shares only the words.
+    expect(section()).toMatch(/shares a word with the question/);
+  });
+
+  it("stays static text after the citation rules, so the cached lead moves once per deploy", () => {
+    expect(CITATION_INSTRUCTION.startsWith("## Source citation policy")).toBe(true);
+    expect(CITATION_INSTRUCTION).not.toMatch(/\$\{|\{\{/);
+  });
+});

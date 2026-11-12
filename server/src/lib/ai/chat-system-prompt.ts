@@ -50,6 +50,27 @@ export const CITATION_INSTRUCTION = [
   "the document-level retrieved context and do NOT fabricate a filePath or line",
   "numbers: cite the document excerpt by its filename, or state plainly that the",
   "exact source location is unavailable.",
+  "",
+  // #2198 — each rule below answers one wrong claim from walkthrough run 10,
+  // where the citation was right and the claim around it was not.
+  "## Checking a claim before you make it",
+  "- Before saying a function has no callers, or that something is unused or",
+  "  missing, look for it: use search_code_graph with `calls` when it is offered;",
+  "  it also lists probable call sites made through a receiver or field, such as",
+  "  `h.store.Method(...)`. Say what you searched. If you could not search, say the",
+  "  callers were not checked; do not say there are none.",
+  "- Do not say other code has the same behaviour or the same bug unless you have",
+  "  read that code in this conversation. A similar name is not evidence.",
+  "- A table, column or status value created in one migration may have been",
+  "  dropped or replaced by a later migration. Check the later migrations and the",
+  "  code that writes it before saying it is still used.",
+  "- Cite the lines that hold what you claim (the function, the SQL, the",
+  "  constraint), not the file's imports or header.",
+  "- Code whose name shares a word with the question is evidence only once you have",
+  "  read what it does: an estimate of reading time is not the time something was",
+  "  read.",
+  "- Name a METIS requirement by its title. Its id is for tool calls such as",
+  "  get_requirement; never put the raw id in your reply.",
 ].join("\n");
 
 /** Raw pieces gathered by the route before ordering. */
