@@ -6,7 +6,7 @@
  * The last crumb is the current page and has no `href`; every crumb before it
  * links to its landing page.
  */
-import { NAV_DESTINATIONS, isActiveRoute } from "./navigation";
+import { NAV_DESTINATIONS, isActiveRoute, isAdminOnlyPath } from "./navigation";
 import { SETTINGS_NAV } from "./settings-nav";
 import {
   getProjectTabModel,
@@ -68,7 +68,18 @@ function withLeaf(path: string, matchedHref: string, trail: Crumb[]): Crumb[] {
   return [...trail, { label: leafLabel(rest[rest.length - 1], parent) }];
 }
 
-export function pageCrumbs(pathname: string): Crumb[] {
+/**
+ * The page-level crumbs for `pathname`. #2370 — for a non-admin, a crumb whose
+ * page they would be refused (#2332: the Runs list above a run's own page)
+ * keeps its name and loses its link.
+ */
+export function pageCrumbs(pathname: string, isAdmin: boolean): Crumb[] {
+  const crumbs = trailFor(pathname);
+  if (isAdmin) return crumbs;
+  return crumbs.map((c) => (c.href && isAdminOnlyPath(c.href) ? { label: c.label } : c));
+}
+
+function trailFor(pathname: string): Crumb[] {
   const path = pathname.replace(/\/+$/, "") || "/";
 
   const project = path.match(/^\/projects\/([^/]+)(?:\/|$)/);

@@ -27,7 +27,7 @@ vi.mock("../prisma.js", () => ({
 
 // ---- Socket registry double -------------------------------------------------
 const emit = vi.fn();
-const to = vi.fn((_room: string) => ({ emit }));
+const to = vi.fn((_room: string | string[]) => ({ emit }));
 let io: { to: typeof to } | null = { to };
 vi.mock("../socket/registry.js", () => ({
   getSocketServer: () => io,
@@ -393,7 +393,7 @@ describe("#2219 — notifyReviewedRequirementEdited", () => {
       });
     }
     // The open review page re-reads the review.
-    expect(to).toHaveBeenCalledWith("project:proj-1");
+    expect(to).toHaveBeenCalledWith(["project:proj-1"]);
     expect(emit).toHaveBeenCalledWith(
       "review:changed",
       expect.objectContaining({ reviewId: "rev-1" }),
