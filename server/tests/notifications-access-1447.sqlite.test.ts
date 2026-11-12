@@ -305,9 +305,15 @@ describe.skipIf(!isSqlite)("#1447 — migration backfills each notification's pr
       }
       await db.analysis.create({
         data: { id: "a-1", projectId: "p-req", startedById: "u-1", status: "completed" },
+        // Only `id` back: the current client would read columns added since
+        // this database's migration (#2341's `title`).
+        select: { id: true },
       });
       await db.analysis.create({
         data: { id: "a-2", projectId: "p-sla", startedById: "u-1", status: "completed" },
+        // Only `id` back: the current client would read columns added since
+        // this database's migration (#2341's `title`).
+        select: { id: true },
       });
       await db.requirement.create({
         data: { id: "req-1", projectId: "p-req", analysisId: "a-1", title: "r", body: "b" },
