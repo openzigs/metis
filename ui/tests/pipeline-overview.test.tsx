@@ -24,7 +24,7 @@ vi.mock("@/lib/projects-api", async (orig) => ({
 }));
 vi.mock("@/lib/analysis-api", async (orig) => ({
   ...(await orig<typeof import("@/lib/analysis-api")>()),
-  analysisApi: { listForProject: vi.fn(), get: vi.fn() },
+  analysisApi: { listForProject: vi.fn(), get: vi.fn(), listApprovals: vi.fn() },
 }));
 vi.mock("@/lib/publishing-api", () => ({ publishingApi: { listBatches: vi.fn() } }));
 vi.mock("@/lib/api-client", async (orig) => ({
@@ -54,6 +54,13 @@ const dbs = vi.mocked(dbConnectorsApi.list);
 const docsList = vi.mocked(documentsApi.list);
 const listAnalyses = vi.mocked(analysisApi.listForProject);
 const getAnalysis = vi.mocked(analysisApi.get);
+const listApprovals = vi.mocked(analysisApi.listApprovals);
+function pendingApprovals(pendingCount: number) {
+  listApprovals.mockResolvedValue({
+    items: [],
+    ticketStatus: { allowed: pendingCount === 0, pendingCount, rejectedCount: 0 },
+  });
+}
 const batches = vi.mocked(publishingApi.listBatches);
 const fetchMock = vi.mocked(apiFetch);
 const progress = vi.mocked(useConnectorProgress);
@@ -97,6 +104,7 @@ beforeEach(() => {
   docsList.mockResolvedValue({ items: [], total: 0, limit: 25, offset: 0 });
   listAnalyses.mockResolvedValue({ items: [] });
   batches.mockResolvedValue([]);
+  pendingApprovals(0);
   fetchMock.mockImplementation(async (url: string) => {
     if (url === "/projects/p1/docs") return generatedDocs;
     if (url === "/projects/p1/analyses") return { items: [COMPLETED] };
@@ -173,6 +181,71 @@ describe("stage grid", () => {
     );
     // The state is announced, not only colour-coded.
     expect(screen.getByTestId("pipeline-stage-review")).toHaveTextContent("Needs attention:");
+  });
+
+  // #2367 — the #2330 walkthrough: a finished run held 6 pending approvals and
+  // 12 open questions, no requirements yet, and Overview said "All requirements
+  // reviewed".
+  it("#2367 — needs attention, not done, while approvals are pending and questions open", async () => {
+    listAnalyses.mockResolvedValue({ items: [COMPLETED] });
+    getAnalysis.mockResolvedValue({
+      requirements: [],
+      metadata: {
+        enhancement: { enableClarification: true, enableWebResearch: false },
+        structuredRequirements: { requirements: [], totalAmbiguities: 12 },
+      },
+    } as never);
+    pendingApprovals(6);
+    renderOverview();
+    await waitFor(() =>
+      expect(screen.getByTestId("pipeline-status-review")).toHaveTextContent(
+        "6 approvals pending · 12 clarifying questions open",
+      ),
+    );
+    expect(listApprovals).toHaveBeenCalledWith("p1", "a1");
+    expect(screen.getByTestId("pipeline-stage-review")).toHaveTextContent("Needs attention:");
+    expect(screen.getByTestId("pipeline-action-review")).toHaveAttribute(
+      "href",
+      "/projects/p1/analysis?analysisId=a1&tab=approvals",
+    );
+  });
+
+  it("#2367 — needs attention after a review rejects every requirement", async () => {
+    listAnalyses.mockResolvedValue({ items: [COMPLETED] });
+    getAnalysis.mockResolvedValue({
+      requirements: Array.from({ length: 11 }, () => ({ reviewStatus: "rejected" })),
+    } as never);
+    renderOverview();
+    await waitFor(() =>
+      expect(screen.getByTestId("pipeline-status-review")).toHaveTextContent(
+        "11 requirements rejected",
+      ),
+    );
+    expect(screen.getByTestId("pipeline-status-review")).not.toHaveTextContent(/all requirements/i);
+  });
+
+  it("#2367 — does not read a failed approvals check as nothing pending", async () => {
+    listAnalyses.mockResolvedValue({ items: [COMPLETED] });
+    getAnalysis.mockResolvedValue({ requirements: [{ reviewStatus: "approved" }] } as never);
+    listApprovals.mockRejectedValue(new Error("boom"));
+    renderOverview();
+    await waitFor(() =>
+      expect(screen.getByTestId("pipeline-status-review")).toHaveTextContent(
+        "Could not check this run's approvals",
+      ),
+    );
+  });
+
+  it("#2367 — is done once every requirement is approved and nothing is pending", async () => {
+    listAnalyses.mockResolvedValue({ items: [COMPLETED] });
+    getAnalysis.mockResolvedValue({ requirements: [{ reviewStatus: "approved" }] } as never);
+    renderOverview();
+    await waitFor(() =>
+      expect(screen.getByTestId("pipeline-status-review")).toHaveTextContent(
+        "All requirements reviewed",
+      ),
+    );
+    expect(screen.getByTestId("pipeline-stage-review")).toHaveTextContent("Done:");
   });
 
   // #66 — observed after #63 merged: three generated docs held in quarantine
