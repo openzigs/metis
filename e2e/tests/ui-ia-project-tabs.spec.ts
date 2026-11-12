@@ -15,11 +15,14 @@
  *         checklist whose steps deep-link to where each is done, and carries no
  *         settings form — that lives behind ⚙
  *   R1 #156 — below `md` the whole bar collapses to a single dropdown
+ *   #2381 — a non-admin (`developer`) gets the same six tabs, and every tab
+ *           and moved page opens for them, not a no-access page
  */
 import { test, expect } from "@playwright/test";
 import { apiBase } from "../fixtures/api-base.js";
 import { ADMIN_USER, primeAdminUser } from "../fixtures/seed-user.js";
 import { createProjectViaApi } from "../fixtures/project-helpers.js";
+import { AppShellPage } from "../pages/app-shell.page.js";
 import { LoginPage } from "../pages/login.page.js";
 import { ProjectTabsPage } from "../pages/project-tabs.page.js";
 
@@ -64,6 +67,18 @@ const ROUTES: ReadonlyArray<{ path: string; tab: string; item?: string; landsOn?
   { path: "/pulls", tab: "Project settings", item: "Pull Requests" },
   { path: "/spec-kit", tab: "Project settings", item: "Spec Kit" },
   // #31 — /usage now redirects to Settings → Usage & cost; it is no project page.
+];
+
+// Every page that moved tab is two clicks from the project: its tab, then its
+// sub-nav link, landing on the URL it always had.
+const MOVED: ReadonlyArray<[string, string, string]> = [
+  ["Change requests", "Import", "/import"],
+  ["Change requests", "Jira", "/jira"],
+  ["Requirements", "Compare analyses", "/changes"],
+  ["Deliverables", "Publish", "/publish"],
+  ["Project settings", "Code Overview", "/overview"],
+  ["Project settings", "Pull Requests", "/pulls"],
+  ["Project settings", "Spec Kit", "/spec-kit"],
 ];
 
 test.describe("Project navigation follows the analyst's job (#2334, #28, #29)", () => {
@@ -163,17 +178,6 @@ test.describe("Project navigation follows the analyst's job (#2334, #28, #29)", 
     ]);
   });
 
-  // Every page that moved tab is two clicks from the project: its tab, then its
-  // sub-nav link, landing on the URL it always had.
-  const MOVED: ReadonlyArray<[string, string, string]> = [
-    ["Change requests", "Import", "/import"],
-    ["Change requests", "Jira", "/jira"],
-    ["Requirements", "Compare analyses", "/changes"],
-    ["Deliverables", "Publish", "/publish"],
-    ["Project settings", "Code Overview", "/overview"],
-    ["Project settings", "Pull Requests", "/pulls"],
-    ["Project settings", "Spec Kit", "/spec-kit"],
-  ];
   test("each moved page is two clicks from the project, at its old URL", async ({ page }) => {
     const tabs = new ProjectTabsPage(page);
     for (const [tab, item, suffix] of MOVED) {
@@ -317,4 +321,69 @@ test.describe("Project navigation follows the analyst's job (#2334, #28, #29)", 
       }
     });
   }
+});
+
+// #2381 — every test above signs in as the admin. The tabs are not role-gated,
+// so a non-admin analyst must see the same bar and reach every page in it.
+// Mock auth's `developer` is the role it gives an analyst (#2332).
+const ANALYST = { username: "developer", password: "password" } as const;
+
+test.describe("A non-admin analyst gets the same project tabs (#2381)", () => {
+  test.describe.configure({ timeout: 180_000 });
+
+  let projectId: string;
+
+  test.beforeAll(async () => {
+    // Created by the admin, in no workspace, so every role can open it.
+    const primed = await primeAdminUser(API_BASE);
+    projectId = (await createProjectViaApi(API_BASE, primed.accessToken)).id;
+  });
+
+  test.beforeEach(async ({ page }) => {
+    const login = new LoginPage(page);
+    await login.goto();
+    await login.login(ANALYST.username, ANALYST.password);
+  });
+
+  test("the tab bar reads the six tabs, and each tab lands on its first page", async ({ page }) => {
+    const shell = new AppShellPage(page);
+    const tabs = new ProjectTabsPage(page);
+    await page.goto(`/projects/${projectId}`, { waitUntil: "load" });
+    await tabs.expectVisible();
+    await expect(tabs.nav.getByRole("link")).toHaveText(TABS);
+
+    const landings: Array<[string, string]> = [
+      ["Knowledge", "/connections"],
+      ["Change requests", "/analysis"],
+      ["Requirements", "/requirements"],
+      ["Deliverables", "/documentation"],
+      ["Project settings", "/settings"],
+      ["Overview", ""],
+    ];
+    for (const [tab, suffix] of landings) {
+      await test.step(`${tab} → ${suffix || "/"}`, async () => {
+        await tabs.primaryLink(tab).click();
+        await expect(page).toHaveURL((url) => url.pathname === `/projects/${projectId}${suffix}`);
+        await expect(tabs.primaryLink(tab)).toHaveAttribute("aria-current", "page");
+        await expect(shell.noAccess).toHaveCount(0);
+      });
+    }
+  });
+
+  test("each moved page is two clicks away and opens for them", async ({ page }) => {
+    const shell = new AppShellPage(page);
+    const tabs = new ProjectTabsPage(page);
+    for (const [tab, item, suffix] of MOVED) {
+      await test.step(`${tab} › ${item}`, async () => {
+        await page.goto(`/projects/${projectId}`, { waitUntil: "load" });
+        await tabs.expectVisible();
+        await tabs.openPage(tab, item);
+        await expect(page).toHaveURL((url) => url.pathname === `/projects/${projectId}${suffix}`);
+        await expect(tabs.subnavLink(item)).toHaveAttribute("aria-current", "page");
+        await expect(shell.noAccess).toHaveCount(0);
+      });
+    }
+    // Spec Kit says when the caller cannot open the project; this one can.
+    await expect(page.getByTestId("spec-kit-no-access")).toHaveCount(0);
+  });
 });

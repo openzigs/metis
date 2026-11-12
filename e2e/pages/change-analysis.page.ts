@@ -63,12 +63,12 @@ export class ChangeAnalysisPage {
       exact: true,
     });
     this.analysisList = page.getByTestId("analysis-list");
-    this.emptyListMessage = page.getByText("No change analyses yet.");
+    this.emptyListMessage = page.getByText("No comparisons yet.");
     this.loadingMessage = page.getByText("Loading…");
 
     // Detail panel
     this.detailPanel = page.getByTestId("change-detail");
-    this.detailHeading = page.getByRole("heading", { name: "Change Analysis Detail", exact: true });
+    this.detailHeading = page.getByRole("heading", { name: "Comparison details", exact: true });
     this.detailPlaceholder = page.getByText("Select a change analysis to view details");
     this.changesList = page.getByTestId("changes-list");
     this.noChangesMessage = page.getByText("No changes detected.");
