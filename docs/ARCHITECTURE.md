@@ -1382,6 +1382,27 @@ project-scoped traceability spine (#229) — it never rewrites it. Two reads:
    (`routes/traceability.ts` → `workspaceTraceabilityRouter`) and rendered by the
    workspace **Traceability** tab.
 
+**#2272 — a document's requirements, in chosen products.** `POST /api/portfolio-assessments`
+also takes `documentId` (a live document in a project the caller can read, else 404); the
+check reads it as it starts (`lib/portfolio/document-requirements.ts`: the parsed file, else
+its de-overlapped chunks, through `loadImpactDocumentText`; with `ANALYSIS_DOCUMENT_READER`
+on, `readDocumentOnce`, which reuses a saved reading of the same file (#2280), else the
+shape-aware splitter) and checks each requirement it finds as one criterion. Criteria that do not fit one 4,000-character query or one model call
+(`maxCriteria`) are judged in groups (`criteriaGroups`), each with its own search and repo
+call, and merged per repo (`mergeRepoGroups`), so no criterion is left unsearched. A `product`
+scope names up to `PORTFOLIO_ASSESSMENT_MAX_PRODUCTS` (50). Nothing is cut silently: what was
+not checked (past `PORTFOLIO_MAX_REQUIREMENTS`, text past its length, an unread section,
+dropped statements, repos the budget ran out before) is stored in
+`portfolio_assessments.notChecked` (JSON) with the document in `sourceDocumentId` (migration
+`20261124002272_issue2272_portfolio_document_check`, both schemas), and shown on the page and
+in the export. A document check's `sourceProjectId` is the document's project, so only its
+readers may read the check. Each product the change reaches has an impact tier
+(`portfolioImpactTier` in `@metis/shared`, computed at read time from the stored path).
+A product that must change is never `verified`: no graph path is walked to it, so when
+the code verdict found it covers or partly covers the requirement its tier is
+`found-in-code`, and "Verified by graph path" is kept for a downstream product whose every
+hop is declared, overridden or detected at confidence 0.8 or more.
+
 **Portfolio gap and impact analysis (epic #1608): the model.** One requirement is checked
 against a set of products in one run. The run finds which products already cover it
 (#1622), which must change and which are reached downstream (#1623), writes it up for a

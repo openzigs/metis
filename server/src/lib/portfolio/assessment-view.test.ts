@@ -68,6 +68,8 @@ function assessment(overrides: Partial<PortfolioAssessment> = {}): PortfolioAsse
     statement: "Reset <script>x</script>",
     sourceRequirementId: null,
     sourceProjectId: null,
+    sourceDocumentId: null,
+    notChecked: [],
     scope: "all-accessible",
     productIds: ["p1", "p2"],
     status: "completed",
@@ -648,7 +650,8 @@ describe("viewPortfolioAssessment — impact (#1623)", () => {
       // The links' repos are looked up for the reader.
       expect(db.repoConnection.findMany.mock.calls[0][0].where.id.in).toContain("rc-hidden");
       expect(renderPortfolioAssessmentMarkdown(v)).toContain(
-        "Downstream consumer (via api, low, also via event)",
+        // #2272 — the stored path has no hops to judge it by, so its tier asks for review.
+        "Downstream consumer (via api, low, also via event, needs review)",
       );
     });
 
