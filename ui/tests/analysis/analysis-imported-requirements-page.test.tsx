@@ -286,15 +286,28 @@ describe("#2341 — one intake action: a titled change request, run with default
       "aria-expanded",
       "true",
     );
+    // Every Option set away from its default: clarification off, re-read on,
+    // the code agent unticked and web research ticked.
     fireEvent.click(screen.getByRole("checkbox", { name: /Ask clarifying questions/ }));
     fireEvent.click(screen.getByTestId("analysis-reread-documents"));
+    const codeAgent = screen.getByRole("checkbox", { name: /— code$/ });
+    fireEvent.click(codeAgent);
+    expect(codeAgent).not.toBeChecked();
+    const web = screen.getByRole("checkbox", { name: /Enhance with web research/ });
+    fireEvent.click(web);
+    expect(web).toBeChecked();
     fireEvent.click(screen.getByRole("button", { name: "Run with defaults" }));
     await waitFor(() => expect(analysisApi.start).toHaveBeenCalledTimes(1));
-    expect(vi.mocked(analysisApi.start).mock.calls[0][1]).toMatchObject({
+    const body = vi.mocked(analysisApi.start).mock.calls[0][1];
+    expect(body).toMatchObject({
       enableClarification: true,
       startedWithDefaults: true,
+      // All four specialists, whatever the Options' agent list says.
+      agentKeys: ["document", "code", "database", "web"],
     });
-    expect(vi.mocked(analysisApi.start).mock.calls[0][1].rereadDocuments).toBeUndefined();
+    expect(body.rereadDocuments).toBeUndefined();
+    expect(body.enableWebResearch).toBeUndefined();
+    expect(body.model).toBeUndefined();
   });
 
   it("a run with the chosen options does not say it used the defaults", async () => {

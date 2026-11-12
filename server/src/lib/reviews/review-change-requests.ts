@@ -31,7 +31,8 @@ async function changeRequestsByRequirement(
   const out = new Map<string, ReviewChangeRequest>();
   if (requirementIds.length === 0) return out;
   const rows = await prisma.requirement.findMany({
-    where: { id: { in: [...requirementIds] }, projectId },
+    // A soft-deleted item does not label the review.
+    where: { id: { in: [...requirementIds] }, projectId, deletedAt: null },
     select: { id: true, analysisId: true },
   });
   const runs = await prisma.analysis.findMany({

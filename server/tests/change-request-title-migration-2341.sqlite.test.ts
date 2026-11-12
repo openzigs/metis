@@ -85,33 +85,40 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     afterAll(() => sqlite?.cleanup());
 
     it(
-      "up adds a nullable title (an existing run reads NULL); reverse drops it; up again re-applies",
+      "up adds a nullable title and titleGenerated (an existing run reads NULL, false); reverse drops both; up again re-applies",
       () => {
         expect(columnsBefore).not.toContain("title");
 
         sqlite.apply(MIGRATION);
-        expect(columns()).toEqual([...columnsBefore, "title"]);
-        expect(run()).toEqual({ ...seeded, title: null });
+        expect(columns()).toEqual([...columnsBefore, "title", "titleGenerated"]);
+        // The startup backfill (not the migration) names an existing run.
+        expect(run()).toEqual({ ...seeded, title: null, titleGenerated: 0 });
 
         // A title written after the migration is lost by the reverse, which the
         // rollback's header says; every other column survives.
         withDb((db) =>
-          db.prepare(`UPDATE "analyses" SET "title" = ? WHERE "id" = 'an-1'`).run("Checkout v2"),
+          db
+            .prepare(`UPDATE "analyses" SET "title" = ?, "titleGenerated" = 1 WHERE "id" = 'an-1'`)
+            .run("Checkout v2"),
         );
         withDb((db) => db.exec(rollback));
         expect(columns()).toEqual(columnsBefore);
         expect(run()).toEqual(seeded);
 
         sqlite.applyRemaining();
-        expect(columns()).toContain("title");
-        expect(run()).toEqual({ ...seeded, title: null });
+        expect(columns()).toEqual([...columnsBefore, "title", "titleGenerated"]);
+        expect(run()).toEqual({ ...seeded, title: null, titleGenerated: 0 });
       },
       MIGRATED_SQLITE_HOOK_TIMEOUT_MS,
     );
 
     it("the Postgres twin makes the same change and its reverse, idempotently", () => {
       expect(pgUp).toContain(`ALTER TABLE "analyses" ADD COLUMN IF NOT EXISTS "title" TEXT;`);
+      expect(pgUp).toContain(
+        `ALTER TABLE "analyses" ADD COLUMN IF NOT EXISTS "titleGenerated" BOOLEAN NOT NULL DEFAULT false;`,
+      );
       expect(pgDown).toContain(`ALTER TABLE "analyses" DROP COLUMN IF EXISTS "title";`);
+      expect(pgDown).toContain(`ALTER TABLE "analyses" DROP COLUMN IF EXISTS "titleGenerated";`);
       expect(pgDown).toContain(
         `DELETE FROM "_prisma_migrations" WHERE "migration_name" = '${MIGRATION}'`,
       );

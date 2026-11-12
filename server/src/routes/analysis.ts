@@ -53,7 +53,11 @@ import {
   criteriaProposalUserRateLimiter,
 } from "../middleware/criteria-proposal-rate-limit.js";
 import { dismissAllCriteriaProposals } from "../lib/analysis/analysis-service.js";
-import { defaultChangeRequestTitle, renameChangeRequest } from "../lib/analysis/change-request.js";
+import { renameChangeRequest } from "../lib/analysis/change-request.js";
+import {
+  analysisRenamePreAuthRateLimiter,
+  analysisRenameRateLimiter,
+} from "../middleware/analysis-rename-rate-limit.js";
 import {
   governingQuestionRequirementLabel,
   governingQuestionSourceFor,
@@ -651,21 +655,13 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
         ));
       }
       const actor = actorFromReq(req);
-      // #2341 — a change request always has a name: the analyst's, else the
-      // first chosen document's, else the first imported item's.
-      const title =
-        parsed.data.title ??
-        (await defaultChangeRequestTitle({
-          projectId,
-          documentIds: parsed.data.documentIds,
-          importedTitles: sourceRequirements?.map((r) => r.title),
-          extraInstructions: parsed.data.extraInstructions,
-        }));
       try {
         const result = await ensureOrch().start({
           projectId,
           startedById: actor.id,
-          title,
+          // #2341 — the analyst's title; absent, `createAnalysis` stores the
+          // default from the run's sources (the rule every start path shares).
+          ...(parsed.data.title ? { title: parsed.data.title } : {}),
           ...(parsed.data.startedWithDefaults ? { startedWithDefaults: true } : {}),
           agentKeys: parsed.data.agentKeys,
           documentIds: parsed.data.documentIds,
@@ -710,8 +706,12 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
   // same 404 as an unknown one and its title is never read or written.
   projectScoped.patch(
     "/:id",
+    // Per-IP ahead of auth (CodeQL js/missing-rate-limiting), then per user,
+    // bounded like the sibling `PATCH …/approvals/:approvalId/requirement`.
+    analysisRenamePreAuthRateLimiter,
     requireAuth,
     requirePermission("analysis.run"),
+    analysisRenameRateLimiter,
     async (req: Request, res: Response) => {
       const projectId = String(req.params.projectId);
       const id = String(req.params.id);

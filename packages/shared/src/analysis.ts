@@ -1640,13 +1640,16 @@ export interface AnalysisSnapshot {
   id: string;
   projectId: string;
   /**
-   * Issue #2341 — the change request's title: the stored one, or for a run with
-   * none (before #2341, or started by the system) one generated from its
-   * sources. Never blank. Plain text. `getAnalysisSnapshot` always sets it;
-   * optional only so a payload built elsewhere (a test fixture) need not.
+   * Issue #2341 — the change request's title, stored on every run (a run from
+   * before #2341 is backfilled at startup with the default from its sources).
+   * Never blank. Plain text. `getAnalysisSnapshot` always sets it; optional
+   * only so a payload built elsewhere (a test fixture) need not.
    */
   title?: string;
-  /** Issue #2341 — true when `title` was generated, not stored. */
+  /**
+   * Issue #2341 — true when Metis proposed `title` from the run's sources, not
+   * set by anyone; false when a person typed it at start or renamed the run.
+   */
   titleGenerated?: boolean;
   /** Issue #2341 — the documents and imported items the run was started from. */
   sources?: ChangeRequestSources;

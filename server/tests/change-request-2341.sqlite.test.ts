@@ -47,6 +47,8 @@ const { createAnalysis } = await import("../src/lib/analysis/analysis-service.js
 const { audit } = await import("../src/lib/audit/audit-service.js");
 const { listReviews } = await import("../src/lib/reviews/review-service.js");
 const { attachChangeRequests } = await import("../src/lib/reviews/review-change-requests.js");
+const { backfillChangeRequestTitles } = await import("../src/lib/analysis/change-request.js");
+const { SYSTEM_ACTOR_ID } = await import("../src/lib/audit/system-actor.js");
 
 const PROJECT = "proj-2341";
 const FOREIGN_PROJECT = "proj-2341-foreign";
@@ -258,16 +260,80 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
     });
 
-    it("stores the first chosen document's name when a run starts without a title", async () => {
+    it("backfills a stored title on every untitled run, by the rule the read path uses, idempotently", async () => {
+      // Read before the backfill: the titles the read path generates.
+      const before = new Map(
+        await Promise.all(
+          [LEGACY_RUN, IMPORTED_RUN].map(async (id) => [id, (await listed(id))!.title] as const),
+        ),
+      );
+      // A deleted run from before #2341 is history, and is named too.
+      await db.analysis.create({
+        data: {
+          id: "ana-2341-old-deleted",
+          projectId: PROJECT,
+          startedById: "u-dev",
+          status: "completed",
+          startedAt: new Date("2026-09-30T09:00:00Z"),
+          deletedAt: new Date(),
+        },
+      });
+      // batchSize 1 walks the cursor across several pages and both projects' rows.
+      const first = await backfillChangeRequestTitles({ batchSize: 1 });
+      expect(first.updated).toBeGreaterThanOrEqual(3);
+      for (const [id, title] of before) {
+        const row = await db.analysis.findUniqueOrThrow({ where: { id } });
+        expect(row).toMatchObject({ title, titleGenerated: true });
+        expect(await listed(id)).toMatchObject({ title, titleGenerated: true });
+      }
+      expect(
+        await db.analysis.findUniqueOrThrow({ where: { id: "ana-2341-old-deleted" } }),
+      ).toMatchObject({ title: "Change request of 2026-09-30", titleGenerated: true });
+      // A typed title is never overwritten.
+      expect((await db.analysis.findUniqueOrThrow({ where: { id: FOREIGN_RUN } })).title).toBe(
+        "Foreign plans",
+      );
+      expect(await db.analysis.count({ where: { title: null } })).toBe(0);
+      expect(await backfillChangeRequestTitles()).toEqual({ scanned: 0, updated: 0 });
+    });
+
+    it("stores the first chosen document's name, marked generated, when a run starts without a title", async () => {
       const res = await as(DEV).start({ documentIds: ["doc-2341-brief", "doc-2341-page"] });
       expect(res.status).toBe(202);
       const id = res.body.data.id as string;
       const row = await db.analysis.findUniqueOrThrow({ where: { id } });
-      expect(row.title).toBe("checkout-brief.docx and 1 more");
+      expect(row).toMatchObject({ title: "checkout-brief.docx and 1 more", titleGenerated: true });
       expect(await listed(id)).toMatchObject({
         title: "checkout-brief.docx and 1 more",
-        titleGenerated: false,
+        titleGenerated: true,
       });
+    });
+
+    it("stores a default title on a system start too, so no run is left NULL", async () => {
+      const row = await createAnalysis({
+        projectId: PROJECT,
+        startedById: SYSTEM_ACTOR_ID,
+        agentKeys: ["document"],
+        sourceRequirements: [
+          {
+            candidateId: "NR-1",
+            requirementId: "req-ext-9",
+            title: "Nightly re-run item",
+            externalSource: "jira",
+            externalId: "PAY-99",
+            externalUrl: null,
+          },
+        ],
+      });
+      expect(row).toMatchObject({ title: "Nightly re-run item", titleGenerated: true });
+      const blank = await createAnalysis({
+        projectId: PROJECT,
+        startedById: SYSTEM_ACTOR_ID,
+        agentKeys: ["document"],
+        title: "   ",
+      });
+      expect(blank.title).toBe(`Change request of ${blank.startedAt.toISOString().slice(0, 10)}`);
+      expect(blank.titleGenerated).toBe(true);
     });
 
     it("stores the analyst's title, trimmed, and records a run started with defaults", async () => {
@@ -369,6 +435,16 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         { projectId: PROJECT, items: [{ requirementId: "req-2341-x" }, { requirementId: null }] },
       ]);
       expect(forged!.changeRequests).toEqual([]);
+
+      // A soft-deleted item does not label the review with its run.
+      await db.requirement.update({
+        where: { id: "req-2341-c" },
+        data: { deletedAt: new Date() },
+      });
+      const [withDeleted] = await attachChangeRequests([
+        { projectId: PROJECT, items: [{ requirementId: "req-2341-c" }] },
+      ]);
+      expect(withDeleted!.changeRequests).toEqual([]);
     });
 
     it("refuses a rename of a deleted run, an empty title, and unknown fields", async () => {
@@ -387,6 +463,22 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(
         (await as(DEV).rename(IMPORTED_RUN, { title: "ok", projectId: FOREIGN_PROJECT })).status,
       ).toBe(400);
+    });
+
+    it("bounds renames per user, like its sibling PATCH", async () => {
+      // The analyst has renamed several times in this window already; a cap of
+      // one (read per request) refuses the next, before the handler runs.
+      process.env.ANALYSIS_RENAME_RATE_LIMIT_MAX = "1";
+      try {
+        const before = await db.analysis.findUniqueOrThrow({ where: { id: IMPORTED_RUN } });
+        const res = await as(DEV).rename(IMPORTED_RUN, { title: "Over the limit" });
+        expect(res.status).toBe(429);
+        expect(res.body.error.code).toBe("RATE_LIMITED");
+        const after = await db.analysis.findUniqueOrThrow({ where: { id: IMPORTED_RUN } });
+        expect(after.title).toBe(before.title);
+      } finally {
+        delete process.env.ANALYSIS_RENAME_RATE_LIMIT_MAX;
+      }
     });
   },
 );

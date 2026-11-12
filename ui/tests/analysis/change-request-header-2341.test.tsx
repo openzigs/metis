@@ -28,10 +28,7 @@ import {
   ChangeRequestSummary,
   runSettingsSummary,
 } from "@/components/analysis/change-request-summary";
-import {
-  ChangeRequestStepHeader,
-  requirementTally,
-} from "@/components/analysis/change-request-step-header";
+import { ChangeRequestStepHeader } from "@/components/analysis/change-request-step-header";
 
 function snapshot(over: Partial<AnalysisSnapshot> = {}): AnalysisSnapshot {
   return {
@@ -206,6 +203,19 @@ describe("ChangeRequestStepHeader", () => {
       />,
     );
     const nav = screen.getByRole("navigation", { name: "Change request steps" });
+    // Until the drafts are read, Hand-off is not known; then it is a state.
+    await waitFor(() =>
+      expect(screen.getByTestId("change-request-step-handoff")).toHaveAttribute(
+        "data-state",
+        "not-started",
+      ),
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("change-request-step-policy")).toHaveAttribute(
+        "data-state",
+        "not-applicable",
+      ),
+    );
     const links = within(nav).getAllByRole("link");
     expect(links.map((l) => l.textContent?.split(":")[0])).toEqual([
       "1. ReadDone",
@@ -213,7 +223,8 @@ describe("ChangeRequestStepHeader", () => {
       "3. RequirementsNeeds you",
       "4. Policy checkNot applicable",
       "5. ImpactDone",
-      "6. PortfolioNot started",
+      // The portfolio is empty (total 0), so its step does not apply.
+      "6. PortfolioNot applicable",
       "7. ReviewNot started",
       "8. Hand-offNot started",
     ]);
@@ -281,24 +292,68 @@ describe("ChangeRequestStepHeader", () => {
     renderWith(
       <ChangeRequestStepHeader projectId="p1" snapshot={snapshot()} pendingApprovals={0} />,
     );
-    await waitFor(() => expect(listDrafts).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(screen.getByTestId("change-request-step-handoff")).toHaveAttribute(
+        "data-state",
+        "unknown",
+      ),
+    );
     expect(screen.getByTestId("change-request-step-policy")).toHaveAttribute(
       "data-state",
-      "not-applicable",
-    );
-    expect(screen.getByTestId("change-request-step-handoff")).toHaveAttribute(
-      "data-state",
-      "not-started",
+      "unknown",
     );
   });
 
-  it("requirementTally counts by review status", () => {
-    expect(
-      requirementTally([
-        { reviewStatus: "draft" },
-        { reviewStatus: "draft" },
-        { reviewStatus: "deferred" },
-      ]),
-    ).toEqual({ draft: 2, approved: 0, rejected: 0, deferred: 1 });
+  it("reads 'Unknown' while the facts load, never a state", () => {
+    governingList.mockReturnValue(new Promise(() => {}));
+    listDrafts.mockReturnValue(new Promise(() => {}));
+    renderWith(
+      <ChangeRequestStepHeader projectId="p1" snapshot={snapshot()} pendingApprovals={0} />,
+    );
+    const policy = screen.getByTestId("change-request-step-policy");
+    expect(policy).toHaveAttribute("data-state", "unknown");
+    expect(policy).toHaveTextContent("Unknown");
+    expect(policy).toHaveAttribute("title", "Checking the policy findings…");
+    expect(screen.getByTestId("change-request-step-handoff")).toHaveAttribute(
+      "data-state",
+      "unknown",
+    );
+  });
+
+  it("a failed governing-findings read says it couldn't check, never that the policy check is off", async () => {
+    governingList.mockRejectedValue(new ApiError(500, "boom", "INTERNAL"));
+    renderWith(
+      <ChangeRequestStepHeader projectId="p1" snapshot={snapshot()} pendingApprovals={0} />,
+    );
+    const policy = screen.getByTestId("change-request-step-policy");
+    await waitFor(() =>
+      expect(policy).toHaveAttribute("title", "Couldn't check the policy findings."),
+    );
+    expect(policy).toHaveAttribute("data-state", "unknown");
+    expect(policy).toHaveTextContent("Unknown");
+    expect(policy).not.toHaveTextContent("Not applicable");
+    expect(policy).not.toHaveTextContent("The policy check is off");
+  });
+
+  it("drafts refused (403, no issue.draft) leave Hand-off unknown, not 'Not started'", async () => {
+    listDrafts.mockRejectedValue(new ApiError(403, "Requires permission issue.draft", "FORBIDDEN"));
+    renderWith(
+      <ChangeRequestStepHeader
+        projectId="p1"
+        snapshot={snapshot({
+          requirements: [
+            { id: "req-1", reviewStatus: "approved" },
+          ] as AnalysisSnapshot["requirements"],
+        })}
+        pendingApprovals={0}
+      />,
+    );
+    const handoff = screen.getByTestId("change-request-step-handoff");
+    await waitFor(() =>
+      expect(handoff).toHaveAttribute("title", "Couldn't check the issue drafts."),
+    );
+    expect(handoff).toHaveAttribute("data-state", "unknown");
+    expect(handoff).toHaveTextContent("Unknown");
+    expect(handoff).not.toHaveTextContent("Not started");
   });
 });

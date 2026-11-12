@@ -303,18 +303,20 @@ describe.skipIf(!isSqlite)("#1447 — migration backfills each notification's pr
       for (const id of ["p-req", "p-spec", "p-disc", "p-review", "p-sla"]) {
         await db.project.create({ data: { id, name: id, slug: id, createdById: "u-1" } });
       }
-      await db.analysis.create({
-        data: { id: "a-1", projectId: "p-req", startedById: "u-1", status: "completed" },
-        // Only `id` back: the current client would read columns added since
-        // this database's migration (#2341's `title`).
-        select: { id: true },
-      });
-      await db.analysis.create({
-        data: { id: "a-2", projectId: "p-sla", startedById: "u-1", status: "completed" },
-        // Only `id` back: the current client would read columns added since
-        // this database's migration (#2341's `title`).
-        select: { id: true },
-      });
+      // Raw SQL: the current client also WRITES columns added since this
+      // database's migration (#2341's defaulted `titleGenerated`).
+      sqlite.exec(
+        `INSERT INTO "analyses" ("id","projectId","startedById","status","updatedAt")
+         VALUES (?, ?, 'u-1', 'completed', CURRENT_TIMESTAMP)`,
+        ["a-1", "p-req"],
+      );
+      // Raw SQL: the current client also WRITES columns added since this
+      // database's migration (#2341's defaulted `titleGenerated`).
+      sqlite.exec(
+        `INSERT INTO "analyses" ("id","projectId","startedById","status","updatedAt")
+         VALUES (?, ?, 'u-1', 'completed', CURRENT_TIMESTAMP)`,
+        ["a-2", "p-sla"],
+      );
       await db.requirement.create({
         data: { id: "req-1", projectId: "p-req", analysisId: "a-1", title: "r", body: "b" },
         // Only `id` back: this database stops before #1447, and the current

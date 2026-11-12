@@ -796,6 +796,29 @@ describe("AnalysisOrchestrator.start", () => {
     expect(new Set(analysisEvents.map((e) => e.room))).toEqual(new Set([analysisRoom(analysisId)]));
   });
 
+  it("#2341 — start() hands the analyst's title and the defaults flag to createAnalysis", async () => {
+    const orch = new AnalysisOrchestrator({
+      provider: makeProvider({}),
+      io: makeIO() as unknown as import("../src/lib/socket/server.js").MetisIOServer,
+      retrieve: async () => [],
+    });
+    const create = vi.mocked(prisma.analysis.create);
+    create.mockClear();
+    const { id: analysisId } = await orch.start({
+      projectId: "proj-abcdefghij",
+      startedById: "user-1234567890",
+      title: "Checkout v2",
+      startedWithDefaults: true,
+    });
+    expect(create).toHaveBeenCalledTimes(1);
+    const data = (create.mock.calls[0]![0] as { data: Record<string, unknown> }).data;
+    expect(data).toMatchObject({ title: "Checkout v2", titleGenerated: false });
+    expect(JSON.parse(data.metadata as string)).toMatchObject({ startedWithDefaults: true });
+    for (let i = 0; i < 200 && analyses.get(analysisId)!.status === "running"; i += 1) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+  });
+
   it("runs cross-doc detection post-synthesis and persists findings (#203/#221)", async () => {
     const io = makeIO();
     const provider = makeProvider({

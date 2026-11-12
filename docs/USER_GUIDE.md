@@ -1356,11 +1356,16 @@ click **Run analysis** to start with your own choices instead.
   whose feature is off or does not apply to the run (no governing documents, no portfolio, no
   code analysed) reads *Not applicable*. Questions reads *Needs you* while the run has open
   clarifying questions, even once the run has completed. Portfolio never reads *Done*: METIS
-  keeps no record of a portfolio check per change request yet.
+  keeps no record of a portfolio check per change request yet. A step METIS could not check
+  (the policy findings or the issue drafts could not be read, for example because your role may
+  not see issue drafts) reads *Unknown*, with "Couldn't check …" as its reason, never a state
+  it might not be in.
 
-A run made before change requests had titles gets one from its sources (its first document's
-name, else its first imported item's title, else the start of its typed requirements, else its
-date), until someone renames it.
+A run made before change requests had titles is given one from its sources (its first
+document's name, else its first imported item's title, else the start of its typed
+requirements, else its date) the next time the server starts, and keeps it until someone
+renames it. A run METIS starts itself (a scheduled re-run, an import) is named the same way
+when it starts.
 
 ### 11.2 Adding Documents and New Requirements Before a Run
 

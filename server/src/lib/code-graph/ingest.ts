@@ -126,6 +126,7 @@ import {
   type OwnFileContext,
 } from "./symbol-context.js";
 import { reconcileProjectSchemaIdentities } from "../cross-project/schema-object-identity-service.js";
+import { sourcelessRunTitle } from "../analysis/change-request.js";
 
 const log = createChildLogger("code-graph-ingest");
 
@@ -4406,12 +4407,17 @@ async function persistRationale(
 
   // One Analysis + AgentResult per ingest run. The agentKey identifies these
   // as rationale-extractor outputs so they are easy to filter in the UI.
+  const startedAt = new Date();
   const analysis = await prisma.analysis.create({
     data: {
       projectId,
       startedById: triggeredByUserId,
       status: "completed",
-      completedAt: new Date(),
+      // #2341 — every run stores a title (the rule's date title: no sources).
+      startedAt,
+      title: sourcelessRunTitle(startedAt),
+      titleGenerated: true,
+      completedAt: startedAt,
       metadata: JSON.stringify({ source: "code-graph-ingest", filesParsed: parsedFiles.length }),
     },
     select: { id: true },

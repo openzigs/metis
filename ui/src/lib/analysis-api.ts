@@ -294,12 +294,15 @@ export interface AnalysisListItem {
   id: string;
   projectId: string;
   /**
-   * #2341 — the change request's title: stored, or generated from its sources
-   * for a run with none. Plain text; render it as text, never as HTML/Markdown.
-   * Optional only for a payload from an older server.
+   * #2341 — the change request's title, stored on every run. Plain text; render
+   * it as text, never as HTML/Markdown. Optional only for a payload from an
+   * older server.
    */
   title?: string;
-  /** #2341 — true when `title` was generated, not set by anyone. */
+  /**
+   * #2341 — true when Metis proposed `title` from the run's sources, not set by
+   * anyone; false when a person typed it at start or renamed the run.
+   */
   titleGenerated?: boolean;
   /** #2341 — the documents and imported items the run was started from. */
   sources?: ChangeRequestSources;

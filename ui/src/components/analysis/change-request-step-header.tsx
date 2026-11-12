@@ -3,9 +3,11 @@
 /**
  * Issue #2341 (epic #2328) — the change request's step header: eight steps,
  * each with its state in words and a link to the screen where that step is
- * done. States come from `deriveChangeRequestSteps`; this component only loads
- * the facts the run snapshot does not carry (governing findings, the portfolio,
- * the publish drafts) and renders them.
+ * done. States come from `deriveChangeRequestSteps` (`@metis/shared`, the rules
+ * the server shares); this component only loads the facts the run snapshot does
+ * not carry (governing findings, the portfolio, the publish drafts) and renders
+ * them. A fact that is still loading, or whose read failed or was refused,
+ * reads "Unknown", never as a state the step might not be in.
  *
  * Keyboard: every step is a link in an ordered list, so Tab walks the steps in
  * order. Each state is a word ("Needs you"), with an icon and colour only as
@@ -13,21 +15,23 @@
  */
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
-import { Check, CircleDashed, CircleDot, AlertCircle, MinusCircle } from "lucide-react";
-import type { AnalysisSnapshot, RequirementReviewStatus } from "@/lib/analysis-api";
-import { governingFindingsApi, governingFindingsKeys } from "@/lib/governing-findings-api";
-import { productsApi } from "@/lib/products-api";
-import { publishingApi } from "@/lib/publishing-api";
-import { cn } from "@/lib/utils";
+import { Check, CircleDashed, CircleDot, AlertCircle, MinusCircle, HelpCircle } from "lucide-react";
 import {
   STEP_STATE_LABELS,
   agentState,
   deriveChangeRequestSteps,
+  requirementTally,
   runOptionsFromMetadata,
-  stepHref,
   type ChangeRequestFacts,
   type ChangeRequestStepState,
-} from "@/components/analysis/change-request-steps";
+  type UnknownFact,
+} from "@metis/shared";
+import type { AnalysisSnapshot } from "@/lib/analysis-api";
+import { governingFindingsApi, governingFindingsKeys } from "@/lib/governing-findings-api";
+import { productsApi } from "@/lib/products-api";
+import { publishingApi } from "@/lib/publishing-api";
+import { cn } from "@/lib/utils";
+import { stepHref } from "@/components/analysis/change-request-steps";
 
 const STATE_STYLE: Record<ChangeRequestStepState, { icon: typeof Check; className: string }> = {
   done: { icon: Check, className: "border-success/40 text-success" },
@@ -35,15 +39,12 @@ const STATE_STYLE: Record<ChangeRequestStepState, { icon: typeof Check; classNam
   "in-progress": { icon: CircleDot, className: "border-info/50 text-info" },
   "not-started": { icon: CircleDashed, className: "border-border text-muted-foreground" },
   "not-applicable": { icon: MinusCircle, className: "border-dashed text-muted-foreground" },
+  unknown: { icon: HelpCircle, className: "border-dashed text-muted-foreground" },
 };
 
-/** The run's requirements tallied by review status. */
-export function requirementTally(
-  requirements: ReadonlyArray<{ reviewStatus: RequirementReviewStatus }>,
-): Record<RequirementReviewStatus, number> {
-  const tally = { draft: 0, approved: 0, rejected: 0, deferred: 0 };
-  for (const r of requirements) tally[r.reviewStatus] += 1;
-  return tally;
+/** A query's fact while it is not known: still loading, or the read failed or was refused. */
+function unknownFact(q: { isError: boolean }): UnknownFact {
+  return q.isError ? "failed" : "loading";
 }
 
 interface Props {
@@ -75,12 +76,39 @@ export function ChangeRequestStepHeader({ projectId, snapshot, pendingApprovals 
 
   const options = runOptionsFromMetadata(snapshot.metadata);
   const requirementIds = new Set(snapshot.requirements.map((r) => r.id));
-  // A payload of an unexpected shape (an older server) is "not known", never a crash.
-  const runDrafts = Array.isArray(drafts.data)
-    ? drafts.data.filter((d) => d.requirementId && requirementIds.has(d.requirementId))
-    : undefined;
-  const findings = Array.isArray(governing.data?.findings) ? governing.data.findings : null;
   const productTotal = typeof products.data?.total === "number" ? products.data.total : null;
+
+  // `list` answers `null` for a 404, which is the policy check switched off. A
+  // failed or refused read is an error and reads "unknown", never "off"; so
+  // does a payload of an unexpected shape (an older server).
+  let policy: ChangeRequestFacts["policy"];
+  if (!governing.isSuccess) policy = unknownFact(governing);
+  else if (governing.data === null) policy = "off";
+  else if (!Array.isArray(governing.data?.findings)) policy = "failed";
+  else {
+    const findings = governing.data.findings;
+    policy = {
+      findings: findings.length,
+      needsInput: findings.filter((f) => f.status === "needs-ba-input").length,
+      checked: governing.data.checked === true,
+    };
+  }
+
+  // A user without `issue.draft` is refused the drafts (403): that is not
+  // knowing, not "nothing drafted", so Hand-off reads "unknown".
+  let handoff: ChangeRequestFacts["drafts"];
+  if (!drafts.isSuccess) handoff = unknownFact(drafts);
+  else if (!Array.isArray(drafts.data)) handoff = "failed";
+  else {
+    const runDrafts = drafts.data.filter(
+      (d) => d.requirementId && requirementIds.has(d.requirementId),
+    );
+    handoff = {
+      total: runDrafts.length,
+      published: runDrafts.filter((d) => d.status === "published").length,
+    };
+  }
+
   const facts: ChangeRequestFacts = {
     status: snapshot.status,
     agentKeys: options.agentKeys,
@@ -90,20 +118,9 @@ export function ChangeRequestStepHeader({ projectId, snapshot, pendingApprovals 
     openQuestions: options.openQuestions,
     requirementCounts: requirementTally(snapshot.requirements),
     pendingApprovals: pendingApprovals ?? null,
-    policy: findings
-      ? {
-          findings: findings.length,
-          needsInput: findings.filter((f) => f.status === "needs-ba-input").length,
-          checked: governing.data?.checked === true,
-        }
-      : null,
+    policy,
     products: productTotal,
-    drafts: runDrafts
-      ? {
-          total: runDrafts.length,
-          published: runDrafts.filter((d) => d.status === "published").length,
-        }
-      : null,
+    drafts: handoff,
   };
   const steps = deriveChangeRequestSteps(facts);
   const current = steps.find((s) => s.state === "needs-you" || s.state === "in-progress");

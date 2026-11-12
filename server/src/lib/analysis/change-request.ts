@@ -2,12 +2,15 @@
  * Issue #2341 (epic #2328) — the change request: an analysis run with a name
  * and a record of what it was started from.
  *
- * The title is stored on `Analysis.title` when a run starts. A run with no
- * stored title (before #2341, or started by the system) gets one generated
- * here, from the same sources a new run is named after, so no run is ever
- * listed blank. The sources are not a new table: every run already records its
- * chosen documents (`metadata.documentIds`) and imported items
- * (`metadata.sourceRequirements`, #1006).
+ * Every run stores its title on `Analysis.title`, so SQL can search and sort
+ * it (#2347): the analyst's, else the default `createAnalysis` writes from the
+ * run's sources ({@link generatedChangeRequestTitle}), with `titleGenerated`
+ * saying which. A run from before #2341 is given the same default by
+ * {@link backfillChangeRequestTitles} at startup; until then the read path
+ * generates the identical title, so no run is ever listed blank. The sources
+ * are not a new table: every run already records its chosen documents
+ * (`metadata.documentIds`) and imported items (`metadata.sourceRequirements`,
+ * #1006).
  */
 import {
   CHANGE_REQUEST_TITLE_MAX,
@@ -113,6 +116,7 @@ export async function documentNames(
 
 export interface ChangeRequestDetails {
   title: string;
+  /** True when Metis proposed the title; false when a person typed or renamed it. */
   titleGenerated: boolean;
   sources: ChangeRequestSources;
 }
@@ -126,6 +130,7 @@ export async function changeRequestDetails(
   rows: ReadonlyArray<{
     id: string;
     title: string | null;
+    titleGenerated?: boolean;
     metadata: string | null;
     startedAt: Date;
   }>,
@@ -160,7 +165,8 @@ export async function changeRequestDetails(
             extraInstructions: record.extraInstructions,
             startedAt: row.startedAt,
           }),
-      titleGenerated: !stored,
+      // A NULL title (not yet backfilled) is generated here, so it is Metis's.
+      titleGenerated: stored ? row.titleGenerated === true : true,
       sources,
     });
   }
@@ -179,7 +185,7 @@ export async function renameChangeRequest(
 ): Promise<boolean> {
   const res = await prisma.analysis.updateMany({
     where: { id: analysisId, projectId, deletedAt: null },
-    data: { title },
+    data: { title, titleGenerated: false },
   });
   return res.count > 0;
 }
@@ -205,4 +211,55 @@ export async function defaultChangeRequestTitle(input: {
     extraInstructions: input.extraInstructions ?? null,
     startedAt: input.startedAt ?? new Date(),
   });
+}
+
+/**
+ * The title of a run with no sources to name it after (the synthetic import,
+ * discussion and code-ingest runs): the same rule's date title, which is what
+ * the read path would generate for it.
+ */
+export function sourcelessRunTitle(startedAt: Date): string {
+  return generatedChangeRequestTitle({ documentNames: [], importedTitles: [], startedAt });
+}
+
+/**
+ * #2341 — store a title on every run that has none (every run from before
+ * #2341), by the same rule the read path generates it with, so a title is
+ * searchable and sortable in SQL for every row. Idempotent: it reads only
+ * `title IS NULL` rows and writes each only while it is still NULL, so a
+ * second run, or a run racing a rename, changes nothing. Deleted runs are named
+ * too: they are history, and a filter over them must not miss them either.
+ */
+export async function backfillChangeRequestTitles(
+  opts: { batchSize?: number } = {},
+): Promise<{ scanned: number; updated: number }> {
+  const take = opts.batchSize ?? 500;
+  let scanned = 0;
+  let updated = 0;
+  let after: string | undefined;
+  for (;;) {
+    const rows = await prisma.analysis.findMany({
+      where: { title: null, ...(after ? { id: { gt: after } } : {}) },
+      orderBy: { id: "asc" },
+      take,
+      select: { id: true, projectId: true, title: true, metadata: true, startedAt: true },
+    });
+    if (rows.length === 0) break;
+    scanned += rows.length;
+    after = rows[rows.length - 1]!.id;
+    const byProject = new Map<string, typeof rows>();
+    for (const r of rows) byProject.set(r.projectId, [...(byProject.get(r.projectId) ?? []), r]);
+    for (const [projectId, projectRows] of byProject) {
+      const details = await changeRequestDetails(projectId, projectRows);
+      for (const r of projectRows) {
+        const res = await prisma.analysis.updateMany({
+          where: { id: r.id, title: null },
+          data: { title: details.get(r.id)!.title, titleGenerated: true },
+        });
+        updated += res.count;
+      }
+    }
+    if (rows.length < take) break;
+  }
+  return { scanned, updated };
 }

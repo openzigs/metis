@@ -28,6 +28,11 @@ import { CodeCitation } from "@/components/findings/code-citation";
 import { ListPager } from "@/components/analysis/ListPager";
 import { serverPage } from "@/components/analysis/analysis-views";
 import { usePageFor } from "@/components/analysis/use-page-for";
+import {
+  formatChangeRunLabels,
+  formatRunOptionLabel,
+  formatRunTimestamp,
+} from "@/lib/format-change-run-label";
 
 interface Props {
   projectId: string;
@@ -283,6 +288,8 @@ export function RequirementDiff({
     () => analyses.filter((a) => a.id !== analysisId && a.status === "completed"),
     [analyses, analysisId],
   );
+  // Sequence numbers over every run, so they match the run dropdown's.
+  const runLabels = useMemo(() => formatChangeRunLabels(analyses).byId, [analyses]);
 
   const query = useQuery({
     queryKey: ["requirement-diff", projectId, analysisId, baseId ?? "auto", page],
@@ -318,11 +325,15 @@ export function RequirementDiff({
             }}
           >
             <option value="">Previous run (auto)</option>
-            {baseOptions.map((a) => (
-              <option key={a.id} value={a.id}>
-                {new Date(a.startedAt).toLocaleString()}
-              </option>
-            ))}
+            {baseOptions.map((a) => {
+              // #2341 — by the change request's title, the date after it.
+              const label = runLabels.get(a.id);
+              return (
+                <option key={a.id} value={a.id}>
+                  {label ? formatRunOptionLabel(label) : formatRunTimestamp(a.startedAt)}
+                </option>
+              );
+            })}
           </select>
         </label>
       </div>

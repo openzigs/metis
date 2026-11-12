@@ -132,7 +132,11 @@ import {
   noteRequirementsChanged,
 } from "../docs-gen/approved-requirements-staleness.js";
 import { pairedInRun, pairingColumns, type PromotedFrom } from "./promotion-pairing.js";
-import { changeRequestDetails, type ChangeRequestDetails } from "./change-request.js";
+import {
+  changeRequestDetails,
+  defaultChangeRequestTitle,
+  type ChangeRequestDetails,
+} from "./change-request.js";
 import {
   ACCEPTED_CRITERIA_PROPOSAL_REASON,
   APPROVED_CRITERIA_KEY,
@@ -172,7 +176,11 @@ export interface CreateAnalysisInput {
   specKitHandoff?: SpecKitHandoffRecord;
   /** Issue #1027 — the code agent's plan context; persisted for regenerate and resume. */
   agentContext?: string;
-  /** Issue #2341 — the change request's title (already validated and clamped). */
+  /**
+   * Issue #2341 — the title the analyst typed (already validated and clamped).
+   * Absent, `createAnalysis` stores the default from the run's sources, so every
+   * start path (system starts included) stores a title.
+   */
   title?: string;
   /** Issue #2341 — started with "Run with defaults"; recorded in the metadata. */
   startedWithDefaults?: boolean;
@@ -247,6 +255,18 @@ const isAgentOutput = (
   value !== null && Array.isArray((value as AgentOutput).findings);
 
 export async function createAnalysis(input: CreateAnalysisInput) {
+  const startedAt = new Date();
+  // #2341 — every run stores a title, so SQL can search and sort it (#2347).
+  const typed = input.title?.trim();
+  const title =
+    typed ||
+    (await defaultChangeRequestTitle({
+      projectId: input.projectId,
+      documentIds: input.documentIds,
+      importedTitles: input.sourceRequirements?.map((r) => r.title),
+      extraInstructions: input.extraInstructions ?? null,
+      startedAt,
+    }));
   return prisma.analysis.create({
     data: {
       projectId: input.projectId,
@@ -254,8 +274,9 @@ export async function createAnalysis(input: CreateAnalysisInput) {
       // at, so it is stored as NULL, as the audit log stores it (#1518).
       startedById: input.startedById === SYSTEM_ACTOR_ID ? null : input.startedById,
       status: "running",
-      // #2341 — NULL when no title was given: the read path generates one.
-      title: input.title ?? null,
+      startedAt,
+      title,
+      titleGenerated: !typed,
       metadata: JSON.stringify({
         agentKeys: input.agentKeys,
         documentIds: input.documentIds ?? [],
@@ -2080,8 +2101,9 @@ export async function listAnalysesForProject(projectId: string) {
     select: {
       id: true,
       projectId: true,
-      // #2341 — the change request's name.
+      // #2341 — the change request's name, and whether a person set it.
       title: true,
+      titleGenerated: true,
       status: true,
       startedAt: true,
       completedAt: true,
