@@ -2880,6 +2880,8 @@ export const ANALYSIS_CAPABILITY_REASONS = [
    * Issue #2233 — a stage that reads at most `MAX_REQUIREMENTS_FOR_RETRIEVAL`
    * requirements (requirement-grounded code retrieval, governing-rule
    * applicability) was given more, so the rest were not analysed there.
+   * #2276 — also when the code search's vector half could not embed every
+   * requirement (`fused-code-semantic`).
    * {@link AnalysisCapability.requirementsLeftOut} names each one.
    */
   "requirements-left-out",
@@ -2990,10 +2992,15 @@ export function hasDiscardedRequirementInputs(
  * `requirement-grounded-code` — evidence retrieval and the code agent's prompt
  *                               when the project has no code graph.
  * `governing-applicability`   — deciding which governing rules apply.
+ * `fused-code-semantic`       — #2276: the meaning-based (vector) half of the
+ *                               code agent's symbol search, which embeds at most
+ *                               the embedder's per-text limit of the combined
+ *                               query. Keyword search still reads every requirement.
  */
 export const REQUIREMENT_LIMIT_STAGES = [
   "requirement-grounded-code",
   "governing-applicability",
+  "fused-code-semantic",
 ] as const;
 export type RequirementLimitStage = (typeof REQUIREMENT_LIMIT_STAGES)[number];
 
@@ -3386,6 +3393,61 @@ export function readDroppedCitations(value: unknown): AnalysisDroppedCitations[]
     if (typeof agentKey !== "string" || agentKey.length === 0) continue;
     if (typeof count !== "number" || !Number.isInteger(count) || count <= 0) continue;
     out.push({ agentKey, count });
+  }
+  return out;
+}
+
+function isCount(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
+/**
+ * Issue #2276 — a stored `requirementsLeftOut` value, shape-checked on read as
+ * {@link readDroppedCitations} is. Keeps a notice only when its stage is known,
+ * its counts are whole numbers and `leftOut` is a list; within it, only entries
+ * with a string `id` and `excerpt`. A notice left with nothing left out is dropped.
+ */
+export function readRequirementsLeftOut(value: unknown): RequirementsLeftOutNotice[] {
+  if (!Array.isArray(value)) return [];
+  const out: RequirementsLeftOutNotice[] = [];
+  for (const entry of value) {
+    if (entry === null || typeof entry !== "object") continue;
+    const { stage, analysedCount, totalCount, leftOut } = entry as Record<string, unknown>;
+    if (!(REQUIREMENT_LIMIT_STAGES as readonly unknown[]).includes(stage)) continue;
+    if (!isCount(analysedCount) || !isCount(totalCount) || !Array.isArray(leftOut)) continue;
+    const kept: RequirementLeftOut[] = [];
+    for (const r of leftOut) {
+      if (r === null || typeof r !== "object") continue;
+      const { id, excerpt } = r as Record<string, unknown>;
+      if (typeof id === "string" && typeof excerpt === "string") kept.push({ id, excerpt });
+    }
+    if (kept.length === 0) continue;
+    out.push({ stage: stage as RequirementLimitStage, analysedCount, totalCount, leftOut: kept });
+  }
+  return out;
+}
+
+/**
+ * Issue #2276 — a stored `findingsLeftOut` value, shape-checked on read. Keeps
+ * a notice only when `agentKey` is a non-empty string, both counts are whole
+ * numbers with more produced than kept, and `leftOutTitles` is a list; within
+ * it, only the string titles.
+ */
+export function readFindingsLeftOut(value: unknown): FindingsLeftOutNotice[] {
+  if (!Array.isArray(value)) return [];
+  const out: FindingsLeftOutNotice[] = [];
+  for (const entry of value) {
+    if (entry === null || typeof entry !== "object") continue;
+    const { agentKey, producedCount, keptCount, leftOutTitles } = entry as Record<string, unknown>;
+    if (typeof agentKey !== "string" || agentKey.length === 0) continue;
+    if (!isCount(producedCount) || !isCount(keptCount) || producedCount <= keptCount) continue;
+    if (!Array.isArray(leftOutTitles)) continue;
+    out.push({
+      agentKey,
+      producedCount,
+      keptCount,
+      leftOutTitles: leftOutTitles.filter((t): t is string => typeof t === "string"),
+    });
   }
   return out;
 }

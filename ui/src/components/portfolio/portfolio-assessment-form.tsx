@@ -20,11 +20,20 @@
  * starts from that product; without one there is nothing to walk from. It
  * offers the products the analyst can read (the same list), and a `product`
  * scope may only host on its own product, as the schema says.
+ *
+ * #2272 — "Several products" checks the products ticked (up to
+ * `PORTFOLIO_ASSESSMENT_MAX_PRODUCTS`), sent as a `product` scope naming each;
+ * the host may be any one of them. A document handed over from the project's
+ * documents (`document`) is sent by id: the server reads it and checks each
+ * requirement it holds.
  */
 "use client";
 
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import type { CreatePortfolioAssessmentInput, PortfolioAssessmentScope } from "@metis/shared";
+import {
+  PORTFOLIO_ASSESSMENT_MAX_PRODUCTS,
+  type CreatePortfolioAssessmentInput,
+} from "@metis/shared";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -46,14 +55,26 @@ export interface PortfolioFormRequirement {
   title: string;
 }
 
+/** #2272 — a document handed over to be checked, requirement by requirement. */
+export interface PortfolioFormDocument {
+  id: string;
+  title: string;
+}
+
+/** Where to look: every product, one chosen product, or (#2272) several chosen ones. */
+type ScopeMode = "all-accessible" | "product" | "several";
+
 export function PortfolioAssessmentForm({
   products,
   productsLoading = false,
   initialProductId,
   initialProductName,
+  initialProductIds,
   initialStatement = "",
   requirement,
   onClearRequirement,
+  document,
+  onClearDocument,
   productQuery = "",
   onProductQueryChange,
   productTotal,
@@ -71,18 +92,27 @@ export function PortfolioAssessmentForm({
   initialProductId?: string | null;
   /** #1680 — the name of `initialProductId`, for when the list does not hold it. */
   initialProductName?: string | null;
+  /** #2272 — several products to start chosen (a check of several re-run to choose a host). */
+  initialProductIds?: string[];
   /** #1725 — a statement to start from (a check re-run to choose a host). */
   initialStatement?: string;
   requirement?: PortfolioFormRequirement | null;
   onClearRequirement?: () => void;
+  /** #2272 — a document whose requirements are each checked. */
+  document?: PortfolioFormDocument | null;
+  onClearDocument?: () => void;
   pending: boolean;
   error?: string | null;
   onSubmit: (input: CreatePortfolioAssessmentInput) => void;
 }) {
   const [statement, setStatement] = useState(initialStatement.slice(0, STATEMENT_MAX));
-  const [scope, setScope] = useState<PortfolioAssessmentScope>(
-    initialProductId ? "product" : "all-accessible",
+  const several0 = (initialProductIds ?? []).length > 1;
+  const [scope, setScope] = useState<ScopeMode>(
+    several0 ? "several" : initialProductId ? "product" : "all-accessible",
   );
+  // #2272 — the products ticked for "Several products", and the names of those the list may drop.
+  const [chosen, setChosen] = useState<string[]>(several0 ? (initialProductIds ?? []) : []);
+  const [chosenNames, setChosenNames] = useState<Record<string, string>>({});
   const [productId, setProductId] = useState(initialProductId ?? "");
   // The chosen product's name, kept while a search narrows the list past it.
   // #1689 — read from the list whenever it holds the product, so one the page
@@ -109,13 +139,30 @@ export function PortfolioAssessmentForm({
   const [hostName, setHostName] = useState<string | null>(null);
   const listedHostName = products.find((p) => p.id === hostId)?.name;
   if (listedHostName !== undefined && listedHostName !== hostName) setHostName(listedHostName);
-  // A `product` scope hosts only on its own product (`createPortfolioAssessmentSchema`).
+  // #2272 — every product ticked, named from the list or as it was when ticked.
+  const nameOfChosen = (id: string) =>
+    products.find((p) => p.id === id)?.name ?? chosenNames[id] ?? "Selected product";
+  const severalOptions = [
+    ...chosen
+      .filter((id) => !products.some((p) => p.id === id))
+      .map((id) => ({ id, name: nameOfChosen(id) })),
+    ...products,
+  ];
+  const full = chosen.length >= PORTFOLIO_ASSESSMENT_MAX_PRODUCTS;
+  const toggle = (p: PortfolioFormProduct) => {
+    setChosenNames((cur) => ({ ...cur, [p.id]: p.name }));
+    setChosen((cur) => (cur.includes(p.id) ? cur.filter((id) => id !== p.id) : [...cur, p.id]));
+  };
+
+  // A `product` scope hosts only on its own products (`createPortfolioAssessmentSchema`).
   const hostOptions =
     scope === "product"
       ? options.filter((p) => p.id === productId)
-      : hostId && !options.some((p) => p.id === hostId)
-        ? [{ id: hostId, name: hostName ?? "Selected product" }, ...options]
-        : options;
+      : scope === "several"
+        ? chosen.map((id) => ({ id, name: nameOfChosen(id) }))
+        : hostId && !options.some((p) => p.id === hostId)
+          ? [{ id: hostId, name: hostName ?? "Selected product" }, ...options]
+          : options;
   const host = hostOptions.some((p) => p.id === hostId) ? hostId : "";
 
   // #1749 — a check that needed a host links here at `#portfolio-host`: put the
@@ -129,21 +176,28 @@ export function PortfolioAssessmentForm({
     hostRef.current?.focus();
   }, [productsLoading]);
 
-  const hasSource = requirement ? true : statement.trim().length > 0;
-  const hasScope = scope === "all-accessible" || productId !== "";
+  const hasSource = requirement || document ? true : statement.trim().length > 0;
+  const hasScope =
+    scope === "all-accessible" ||
+    (scope === "product" && productId !== "") ||
+    (scope === "several" && chosen.length > 0);
   const canSubmit = hasSource && hasScope && !pending;
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
     if (!canSubmit) return;
-    const source = requirement
-      ? { requirementId: requirement.id }
-      : { statement: statement.trim() };
+    const source = document
+      ? { documentId: document.id }
+      : requirement
+        ? { requirementId: requirement.id }
+        : { statement: statement.trim() };
     const hosted = host ? { hostProductId: host } : {};
     onSubmit(
       scope === "product"
         ? { ...source, scope, productIds: [productId], ...hosted }
-        : { ...source, scope: "all-accessible", ...hosted },
+        : scope === "several"
+          ? { ...source, scope: "product", productIds: chosen, ...hosted }
+          : { ...source, scope: "all-accessible", ...hosted },
     );
   }
 
@@ -154,7 +208,27 @@ export function PortfolioAssessmentForm({
       aria-label="Check a requirement across your portfolio"
       data-testid="portfolio-assessment-form"
     >
-      {requirement ? (
+      {document ? (
+        <div className="space-y-1" data-testid="portfolio-form-document">
+          <p className="text-sm font-medium">Document</p>
+          <p className="text-sm">{document.title}</p>
+          <p className="text-xs text-muted-foreground">
+            METIS reads the document and checks each requirement it finds on its own. Anything it
+            cannot check is listed as not checked.
+          </p>
+          {onClearDocument ? (
+            <Button
+              type="button"
+              variant="link"
+              size="sm"
+              className="px-0"
+              onClick={onClearDocument}
+            >
+              Type a statement instead
+            </Button>
+          ) : null}
+        </div>
+      ) : requirement ? (
         <div className="space-y-1" data-testid="portfolio-form-requirement">
           <p className="text-sm font-medium">Requirement</p>
           <p className="text-sm">{requirement.title}</p>
@@ -211,6 +285,60 @@ export function PortfolioAssessmentForm({
           />
           One product
         </label>
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="radio"
+            name="portfolio-scope"
+            value="several"
+            checked={scope === "several"}
+            onChange={() => setScope("several")}
+          />
+          Several products
+        </label>
+        {scope === "several" ? (
+          <div className="space-y-1 pl-6" data-testid="portfolio-several-products">
+            {onProductQueryChange ? (
+              <div className="space-y-1 pb-1">
+                <Label htmlFor="portfolio-several-search">Find products</Label>
+                <Input
+                  id="portfolio-several-search"
+                  type="search"
+                  className="max-w-sm"
+                  value={productQuery}
+                  placeholder="Type part of a product's name"
+                  onChange={(e) => onProductQueryChange(e.target.value)}
+                />
+              </div>
+            ) : null}
+            <fieldset className="space-y-1" aria-describedby="portfolio-several-hint">
+              <legend className="text-sm font-medium">Products to check</legend>
+              {productsLoading ? (
+                <p className="text-sm text-muted-foreground">Loading products…</p>
+              ) : (
+                severalOptions.map((p) => {
+                  const checked = chosen.includes(p.id);
+                  return (
+                    <label key={p.id} className="flex items-center gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        disabled={!checked && full}
+                        onChange={() => toggle(p)}
+                      />
+                      {p.name}
+                    </label>
+                  );
+                })
+              )}
+            </fieldset>
+            <p id="portfolio-several-hint" className="text-xs text-muted-foreground">
+              {chosen.length} chosen, up to {PORTFOLIO_ASSESSMENT_MAX_PRODUCTS}.
+              {productTotal !== undefined && productTotal > products.length
+                ? ` Showing ${products.length} of ${productTotal} products${onProductQueryChange ? "; type part of a name to find another" : ""}.`
+                : ""}
+            </p>
+          </div>
+        ) : null}
         {scope === "product" ? (
           <div className="space-y-1 pl-6">
             {onProductQueryChange ? (

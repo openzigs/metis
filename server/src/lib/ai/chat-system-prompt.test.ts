@@ -11,7 +11,13 @@
  *     model, carrying the same content, only reordered.
  */
 import { describe, expect, it } from "vitest";
-import { assembleChatSystem, stableLeadText, CITATION_INSTRUCTION } from "./chat-system-prompt.js";
+import {
+  ANSWER_POLICY_INSTRUCTION,
+  ANSWER_POLICY_SENTENCES,
+  assembleChatSystem,
+  stableLeadText,
+  CITATION_INSTRUCTION,
+} from "./chat-system-prompt.js";
 
 const PERSONA = "You are the METIS session agent. Follow the operator's policy.";
 const SKILL_A = "[skill:review@1.0] Code Review\nReview diffs for defects.";
@@ -250,6 +256,46 @@ describe("assembleChatSystem", () => {
     expect(CITATION_INSTRUCTION).toContain("filePath:startLine-endLine");
     expect(CITATION_INSTRUCTION).toContain("do NOT fabricate");
     expect(CITATION_INSTRUCTION).toContain("reconstructed from the knowledge base");
+  });
+
+  // ── #2241 — the answering policy: abstain when unsupported, ask when ambiguous ──
+
+  it("places the answering policy in the stable lead, after the citation policy", () => {
+    const a = assembleChatSystem({
+      persona: PERSONA,
+      citationInstruction: CITATION_INSTRUCTION,
+      answerPolicy: ANSWER_POLICY_INSTRUCTION,
+      chronicle: CHRONICLE,
+    });
+    expect(a.stable.map((m) => m.content)).toEqual([
+      PERSONA,
+      CITATION_INSTRUCTION,
+      ANSWER_POLICY_INSTRUCTION,
+    ]);
+    expect(a.volatile.map((m) => m.content)).toEqual([CHRONICLE]);
+  });
+
+  it("an absent answering policy leaves the lead as it was", () => {
+    const without = assembleChatSystem({
+      persona: PERSONA,
+      citationInstruction: CITATION_INSTRUCTION,
+    });
+    const blank = assembleChatSystem({
+      persona: PERSONA,
+      citationInstruction: CITATION_INSTRUCTION,
+      answerPolicy: " ",
+    });
+    expect(stableLeadText(blank)).toBe(stableLeadText(without));
+  });
+
+  it("the answering policy says to abstain and name what is missing, and to ask one specific follow-up", () => {
+    expect(ANSWER_POLICY_INSTRUCTION).toContain("## Answering from the sources");
+    expect(ANSWER_POLICY_SENTENCES).toContain("the sources don't show this");
+    expect(ANSWER_POLICY_SENTENCES).toContain("what is missing");
+    expect(ANSWER_POLICY_SENTENCES).toContain("ask ONE specific follow-up question");
+    expect(ANSWER_POLICY_SENTENCES).toMatch(/product, rule, version/);
+    // A discussion reply may have neither excerpts nor tools (PR #850 review).
+    expect(ANSWER_POLICY_SENTENCES).not.toMatch(/excerpt|tool/i);
   });
 
   it("an absent citation instruction does not perturb the lead (mechanical part-ordering)", () => {

@@ -64,6 +64,32 @@ export const CITATION_INSTRUCTION = [
   "- Name a requirement by its title, never its internal database id (a cuid); REQ-xxx, imported ids and ids from the BA's documents are fine.",
 ].join("\n");
 
+/**
+ * #2241 — the base answering policy for project and discussion chat, as plain
+ * sentences: answer from the sources, say when they don't support an answer and
+ * what is missing, and ask one specific follow-up when the question could mean
+ * more than one thing. Before #2241 nothing told chat to abstain or ask, and an
+ * ambiguous question was answered on an unstated assumption (#2237, A3).
+ */
+export const ANSWER_POLICY_SENTENCES = [
+  // Names no particular source: a discussion reply may have no excerpts and no
+  // tools, and must not be told about either (PR #850 review).
+  "Answer from the project sources you are given.",
+  "If they don't support an answer, say so plainly (\"the sources don't show this\") and say",
+  "what is missing: which document, rule or code would answer it. Never fill the gap with a",
+  "confident guess from general knowledge. If they support only part of the question, answer",
+  "that part and name the rest as unsupported.",
+  "If the question is ambiguous (it could mean more than one product, rule, version or",
+  "document), do not answer on an assumption: ask ONE specific follow-up question that lists",
+  "the options you found in the sources, and stop.",
+].join(" ");
+
+/** #2241 — {@link ANSWER_POLICY_SENTENCES} as chat's stable system block. */
+export const ANSWER_POLICY_INSTRUCTION = [
+  "## Answering from the sources",
+  ANSWER_POLICY_SENTENCES,
+].join("\n");
+
 /** Raw pieces gathered by the route before ordering. */
 export interface ChatSystemParts {
   /**
@@ -94,6 +120,12 @@ export interface ChatSystemParts {
    */
   citationInstruction?: string | null;
   /**
+   * Stable — the #2241 answering policy ({@link ANSWER_POLICY_INSTRUCTION}),
+   * for a session bound to a project. Fixed text, so it rides in the lead
+   * after the citation policy. Empty/absent ⇒ the lead is unchanged.
+   */
+  answerPolicy?: string | null;
+  /**
    * Volatile — the per-project Chronicle memory block. Grows as memory entries
    * are added, so it must NOT sit ahead of the cachePoint.
    */
@@ -123,7 +155,7 @@ function sys(content: string): ChatMessage {
  * Assemble the chat system messages into a stable lead + volatile tail.
  *
  * Ordering (wire order): `persona`, then each non-empty `skillBlock`, then the
- * `toolSchemas` block, then the `citationInstruction` (all stable), then
+ * `toolSchemas` block, then the `citationInstruction`, then the `answerPolicy` (all stable), then
  * `chronicle`, then `userSystemMessage` (volatile). Empty/whitespace-only pieces
  * are dropped, exactly as the previous inline assembly did.
  *
@@ -150,6 +182,10 @@ export function assembleChatSystem(parts: ChatSystemParts): AssembledChatSystem 
   // block; only this static instruction leads.
   if (parts.citationInstruction && parts.citationInstruction.trim().length > 0) {
     stable.push(sys(parts.citationInstruction));
+  }
+  // #2241 — fixed text too, and constant for a session (its project never changes).
+  if (parts.answerPolicy && parts.answerPolicy.trim().length > 0) {
+    stable.push(sys(parts.answerPolicy));
   }
 
   const volatile: ChatMessage[] = [];

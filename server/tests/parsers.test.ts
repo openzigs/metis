@@ -41,7 +41,7 @@ async function createXlsxBuffer(
 
 /**
  * Create a minimal valid DOCX buffer using raw OOXML + JSZip.
- * mammoth needs [Content_Types].xml, _rels/.rels, word/document.xml
+ * A Word package needs [Content_Types].xml, _rels/.rels, word/document.xml
  */
 async function createDocxBuffer(bodyXml: string): Promise<Buffer> {
   const zip = new JSZip();
@@ -186,7 +186,7 @@ describe("parseXlsx (real exceljs)", () => {
 /* ================================================================== */
 /*  DOCX                                                              */
 /* ================================================================== */
-describe("parseDocx (real mammoth)", () => {
+describe("parseDocx (real converter)", () => {
   it("converts DOCX with a paragraph to Markdown", async () => {
     const buffer = await createDocxBuffer(`<w:p><w:r><w:t>Hello World</w:t></w:r></w:p>`);
 
