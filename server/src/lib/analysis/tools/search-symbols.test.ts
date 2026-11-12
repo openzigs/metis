@@ -6,6 +6,16 @@
  * validation contracts are exercised in isolation.
  */
 import { describe, expect, it, vi } from "vitest";
+// #2325 review — which line lookup the tool builds by default (#1636: the
+// analysis surface skips the repo read; chat needs it for a hit's version).
+vi.mock("../../code-graph/project-code-searcher.js", async (original) => {
+  const actual = await original<typeof import("../../code-graph/project-code-searcher.js")>();
+  return {
+    ...actual,
+    createDefaultSymbolLineLookup: vi.fn(actual.createDefaultSymbolLineLookup),
+  };
+});
+import { createDefaultSymbolLineLookup } from "../../code-graph/project-code-searcher.js";
 import { createSearchSymbolsTool } from "./search-symbols.js";
 import type {
   FusedCodeSearcher,
@@ -13,6 +23,7 @@ import type {
   SymbolLineLookup,
 } from "../../rag/fused-code-context.js";
 import type { ToolContext } from "./types.js";
+import { codeVersionIndexOf } from "../../code-graph/code-version.js";
 
 const CTX: ToolContext = { projectId: "proj-1" };
 
@@ -176,5 +187,117 @@ describe("search_code_symbols tool", () => {
     });
     expect(tool.name).toBe("search_code_symbols");
     expect(tool.parameters.required).toContain("query");
+  });
+});
+
+describe("search_code_symbols — the citation contract (#2325)", () => {
+  const SHA = "0123456789abcdef0123456789abcdef01234567";
+  const OTHER = "fedcba9876543210fedcba9876543210fedcba98";
+  const versions = codeVersionIndexOf([
+    {
+      repoConnectionId: "r1",
+      commitSha: SHA,
+      repo: { provider: "github", ownerOrOrg: "acme", repoName: "app", apiBaseUrl: null },
+    },
+    { repoConnectionId: "r2", commitSha: OTHER, repo: null },
+  ]);
+  const lineLookup: SymbolLineLookup = {
+    resolve: vi.fn(
+      async () =>
+        new Map([
+          ["s1", { filePath: "src/a.ts", startLine: 10, endLine: 40, repoConnectionId: "r1" }],
+          ["s2", { filePath: "lib/b.go", startLine: 5, endLine: 8, repoConnectionId: "r2" }],
+        ]),
+    ),
+  };
+
+  it("states each hit's indexed commit, link and matchers when the project has a code graph", async () => {
+    const searcher = mockSearcher([
+      {
+        symbolId: "s1",
+        filePath: "src/a.ts",
+        name: "parse",
+        kind: "function",
+        score: 0.9,
+        matchedBy: ["dense", "lexical"],
+      },
+      { symbolId: "s2", filePath: "lib/b.go", name: "Store", kind: "struct", score: 0.4 },
+    ]);
+    const loadVersions = vi.fn(async () => versions);
+    const tool = createSearchSymbolsTool({ searcher, lineLookup, loadVersions });
+    const res = await tool.execute({ query: "parse" }, CTX);
+    expect(loadVersions).toHaveBeenCalledWith("proj-1");
+    expect(res.citations).toEqual([
+      {
+        repoConnectionId: "r1",
+        path: "src/a.ts",
+        startLine: 10,
+        endLine: 40,
+        commitSha: SHA,
+        permalink: `https://github.com/acme/app/blob/${SHA}/src/a.ts#L10-L40`,
+        matchedBy: ["dense", "lexical"],
+        truncated: false,
+        totalLines: null,
+        stale: false,
+      },
+      {
+        repoConnectionId: "r2",
+        path: "lib/b.go",
+        startLine: 5,
+        endLine: 8,
+        commitSha: OTHER,
+        permalink: null,
+        truncated: false,
+        totalLines: null,
+        stale: false,
+      },
+    ]);
+    // First, so chat's model-context cap (which keeps a result's start) cannot cut it.
+    expect(res.content).toMatch(/^Code version: indexed commits 0123456789ab, fedcba987654\.\n/);
+  });
+
+  it("marks a snippet the cap cut truncated, with the symbol's span as the next read", async () => {
+    const searcher = mockSearcher([
+      {
+        symbolId: "s1",
+        filePath: "src/a.ts",
+        name: "parse",
+        kind: "function",
+        score: 0.9,
+        snippet: "x".repeat(401),
+      },
+    ]);
+    const tool = createSearchSymbolsTool({
+      searcher,
+      lineLookup,
+      loadVersions: async () => versions,
+    });
+    const res = await tool.execute({ query: "parse" }, CTX);
+    expect(res.citations?.[0]).toMatchObject({
+      truncated: true,
+      totalLines: 31,
+      next: { startLine: 10, endLine: 40 },
+    });
+  });
+
+  it("carries no contract and no version line on the analysis surface (no version reader)", async () => {
+    const searcher = mockSearcher([
+      { symbolId: "s1", filePath: "src/a.ts", name: "parse", kind: "function", score: 0.9 },
+    ]);
+    const res = await createSearchSymbolsTool({ searcher, lineLookup }).execute(
+      { query: "parse" },
+      CTX,
+    );
+    expect(res.citations).toBeUndefined();
+    expect(res.content).not.toContain("Code version");
+  });
+
+  it("reads a hit's repository only for chat: the analysis surface keeps #1636's skip", () => {
+    const lookup = vi.mocked(createDefaultSymbolLineLookup);
+    lookup.mockClear();
+    createSearchSymbolsTool({ searcher: mockSearcher([]) });
+    expect(lookup).toHaveBeenLastCalledWith({ withRepo: false });
+    createSearchSymbolsTool({ searcher: mockSearcher([]), loadVersions: async () => versions });
+    expect(lookup).toHaveBeenLastCalledWith({ withRepo: true });
   });
 });

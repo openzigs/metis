@@ -5,7 +5,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { makeWrapper } from "./test-utils";
+import { makeWrapper, userWith } from "./test-utils";
 import { ApiError } from "@/lib/api-client";
 
 // ─── Connections rescan branches ─────────────────────────────────────────────
@@ -116,7 +116,7 @@ beforeEach(() => {
 });
 
 function renderPage() {
-  const Wrapper = makeWrapper({});
+  const Wrapper = makeWrapper({ initialUser: userWith("connector.write", "project.update") });
   return render(
     <Wrapper>
       <ConnectionsPage />
@@ -130,9 +130,9 @@ describe("ConnectionsPage — deep ingest error path", () => {
     repoList.mockResolvedValue([makeRepo({ id: "r1" })]);
     renderPage();
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: /Deep Ingest/i })).toBeInTheDocument(),
+      expect(screen.getByRole("button", { name: /Full re-read/i })).toBeInTheDocument(),
     );
-    fireEvent.click(screen.getByRole("button", { name: /Deep Ingest/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Full re-read/i }));
     await waitFor(() => expect(deepIngest).toHaveBeenCalled());
     await waitFor(() =>
       expect((toast as unknown as { error: ReturnType<typeof vi.fn> }).error).toHaveBeenCalled(),

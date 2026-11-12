@@ -1,0 +1,888 @@
+{
+  "generatedAt": "2026-11-12T01:18:43.823Z",
+  "model": "anthropic/claude-sonnet-5-5",
+  "judgeModel": "anthropic/claude-sonnet-5-5",
+  "runsRequested": 1,
+  "budgetUsd": 4,
+  "spentUsd": 0.7995699999999999,
+  "judgeSpentUsd": 0.06878000000000001,
+  "unpricedCalls": 0,
+  "stopped": null,
+  "provenance": {
+    "commit": "658a61dc26c145a31cdfed08485489713cc16c41",
+    "dirty": false
+  },
+  "corpus": [
+    {
+      "id": "docunderstanding-03-community-grants",
+      "title": "Harbour City Council: Community Grants Management System, Functional Requirements Document",
+      "docxBytes": 21643,
+      "chars": 35075,
+      "sections": 53,
+      "chunks": 54,
+      "requirements": 106,
+      "labelledSections": 31,
+      "ambiguities": 17
+    },
+    {
+      "id": "docunderstanding-04-library-lending",
+      "title": "Kestrel Vale Libraries: Membership and Lending Platform, Functional Requirements Document",
+      "docxBytes": 31270,
+      "chars": 60624,
+      "sections": 81,
+      "chunks": 82,
+      "requirements": 216,
+      "labelledSections": 45,
+      "ambiguities": 30
+    }
+  ],
+  "arms": [
+    {
+      "id": "B",
+      "label": "B — the whole document in one call",
+      "configuration": {
+        "conversion": "parseDocument (docx-to-markdown, #2232)",
+        "context": "the whole converted document, fenced",
+        "calls": "1 (plus one re-prompt on an unreadable reply)",
+        "model": "anthropic/claude-sonnet-5-5"
+      },
+      "records": [
+        {
+          "itemId": "docunderstanding-03-community-grants",
+          "armId": "B",
+          "run": 1,
+          "output": {
+            "requirements": [
+              {
+                "text": "A grants officer can create a round for a programme, recording its opening and closing date and time, budget, minimum and maximum grant, eligibility questions, application questions and weighted assessment criteria.",
+                "section": "4. Programme and round set-up",
+                "quote": "A grants officer shall be able to create a round for a programme, recording its opening and closing date and time, its budget, the minimum and maximum grant that can be requested, the eligibility questions, the application questions and the assessment criteria with their weightings."
+              },
+              {
+                "text": "A round can only be opened after its programme manager has approved its set-up, and the system records who approved it and when.",
+                "section": "4. Programme and round set-up",
+                "quote": "A round shall only be opened once its programme manager has approved its set-up, and the system shall record who approved it and when."
+              },
+              {
+                "text": "The total budget of the rounds in a programme in a financial year must not exceed the programme's budget for that year.",
+                "section": "4. Programme and round set-up",
+                "quote": "The system shall not allow the budget of the rounds in a programme in one financial year to exceed the programme's budget for that year."
+              },
+              {
+                "text": "A grants officer can copy a previous round as the starting point for a new one.",
+                "section": "4. Programme and round set-up",
+                "quote": "A grants officer shall be able to copy a previous round as the starting point for a new one."
+              },
+              {
+                "text": "In an invitation-only round, only invited organisations can start an application.",
+                "section": "4. Programme and round set-up",
+                "quote": "A round may be open to all eligible applicants or by invitation only; for an invitation-only round, the system shall only let invited organisations start an application."
+              },
+              {
+                "text": "No applications are accepted after the round's closing date and time, and an application still being completed at closing cannot be submitted.",
+                "section": "4. Programme and round set-up",
+                "quote": "Applications shall not be accepted after a round's closing date and time, and an application that is being completed when the round closes shall not be submittable."
+              },
+              {
+                "text": "The programme manager can extend the closing date for a single applicant, recording the reason, and the extension appears in the round's audit history.",
+                "section": "4. Programme and round set-up",
+                "quote": "The programme manager shall be able to extend the closing date for a single applicant, recording the reason, and the extension shall be shown in the round's audit history."
+              },
+              {
+                "text": "A person can register an organisation by giving its name, address, legal form, charity or company number if it has one, and details of at least two unrelated people connected with it.",
+                "section": "5.1 Registering an organisation",
+                "quote": "A person shall be able to register an organisation in the system by giving its name, address, legal form, charity or company number if it has one, and the details of at least two people connected with it who are not related to each other."
+              },
+              {
+                "text": "Where a charity or company number is given, the system checks it against the public register and shows the officer any differences in name and address.",
+                "section": "5.1 Registering an organisation",
+                "quote": "Where a charity or company number is given, the system shall check it against the public register and shall show the officer any difference between the registered name and address and those entered."
+              },
+              {
+                "text": "The system prevents registering an organisation whose charity or company number is already on another record, and directs the person to request access to the existing record.",
+                "section": "5.1 Registering an organisation",
+                "quote": "The system shall prevent the registration of an organisation whose charity or company number is already held on another organisation record, and shall direct the person to request access to the existing record."
+              },
+              {
+                "text": "An organisation record can have several users, and existing users approve requests from new users to join.",
+                "section": "5.1 Registering an organisation",
+                "quote": "An organisation record shall be able to have several users, and the organisation's existing users shall approve any request by a new user to join it."
+              },
+              {
+                "text": "If no remaining user can approve a join request, a grants officer can add a user after verifying the person's connection with the organisation.",
+                "section": "5.1 Registering an organisation",
+                "quote": "If an organisation has no remaining users who can approve a request, a grants officer shall be able to add a user after verifying the person's connection with the organisation."
+              },
+              {
+                "text": "An organisation uploads its governing document, latest accounts, safeguarding policy and equality policy once, and the system attaches the current versions to each application automatically.",
+                "section": "5.2 Organisation documents",
+                "quote": "An organisation shall be able to upload its governing document, latest accounts, safeguarding policy and equality policy to its organisation record once, and the system shall attach the current versions to each application automatically."
+              },
+              {
+                "text": "The system records an expiry date for each organisation document and asks the organisation to upload a new version when one expires.",
+                "section": "5.2 Organisation documents",
+                "quote": "The system shall record an expiry date for each organisation document and shall ask the organisation to upload a new version when one expires."
+              },
+              {
+                "text": "Accounts are treated as expired 18 months after the end of the financial year they cover.",
+                "section": "5.2 Organisation documents",
+                "quote": "Accounts shall be treated as expired 18 months after the end of the financial year they cover."
+              },
+              {
+                "text": "Organisations enter bank details in the system, and the system verifies the account name matches the organisation name using the council's bank account verification service before the details can be used for a payment.",
+                "section": "5.3 Bank details",
+                "quote": "An organisation shall enter its bank details in the system, and the system shall verify that the account name matches the organisation's name using the council's bank account verification service before the details can be used for a payment."
+              },
+              {
+                "text": "A change of bank details takes effect only after a grants officer confirms it by phone with a person connected with the organisation, using a number already on the record, and the system records who called and when.",
+                "section": "5.3 Bank details",
+                "quote": "A change to an organisation's bank details shall only take effect after a grants officer has confirmed it by telephone with a person connected with the organisation, using a telephone number already held on the record, and the system shall record who made the call and when."
+              },
+              {
+                "text": "No payment is released to bank details changed in the previous 10 working days until a finance officer has reviewed the change.",
+                "section": "5.3 Bank details",
+                "quote": "No payment shall be released to bank details that were changed in the previous 10 working days until a finance officer has reviewed the change."
+              },
+              {
+                "text": "Before starting an application the applicant answers the round's eligibility questions and is told immediately whether they are eligible and, if not, which answer made them ineligible.",
+                "section": "6.1 Eligibility check",
+                "quote": "Before starting an application, an applicant shall answer the round's eligibility questions, and the system shall tell them immediately whether they are eligible, and if not, which answer made them ineligible."
+              },
+              {
+                "text": "An ineligible applicant is shown contact details of the grants team and the local umbrella body.",
+                "section": "6.1 Eligibility check",
+                "quote": "An applicant who is not eligible shall be shown the contact details of the grants team and of the local umbrella body that can offer advice."
+              },
+              {
+                "text": "An organisation with an overdue monitoring report on any previous grant cannot apply to a round.",
+                "section": "6.1 Eligibility check",
+                "quote": "The system shall prevent an organisation from applying to a round if it has an overdue monitoring report on any previous grant."
+              },
+              {
+                "text": "An organisation cannot hold more than one open application to the same round.",
+                "section": "6.1 Eligibility check",
+                "quote": "An organisation shall not hold more than one open application to the same round."
+              },
+              {
+                "text": "The application form saves answers automatically and the applicant can leave and return at any time before the round closes.",
+                "section": "6.2 Completing an application",
+                "quote": "The application form shall save the applicant's answers automatically as they are entered, and the applicant shall be able to leave and return to the application at any time before the round closes."
+              },
+              {
+                "text": "Several users of an organisation can work on an application but only one can edit at a time, and the system shows who is editing.",
+                "section": "6.2 Completing an application",
+                "quote": "Several users of the same organisation shall be able to work on an application, but only one shall be able to edit it at a time, and the system shall show who is editing."
+              },
+              {
+                "text": "The application includes a budget table (item, cost, capital or revenue) and the system calculates the total and checks it equals the amount requested.",
+                "section": "6.2 Completing an application",
+                "quote": "The application shall include a budget table in which the applicant lists each item of expenditure, its cost and whether it is capital or revenue, and the system shall calculate the total and check that it equals the amount requested."
+              },
+              {
+                "text": "An application cannot request less than the round's minimum or more than its maximum grant.",
+                "section": "6.2 Completing an application",
+                "quote": "The system shall not allow an application to request less than the round's minimum or more than its maximum grant."
+              },
+              {
+                "text": "Before submitting, the applicant confirms a declaration that the information is true, and the system records who confirmed it and when.",
+                "section": "6.2 Completing an application",
+                "quote": "Before submitting, the applicant shall confirm a declaration that the information given is true, and the system shall record the name of the person who confirmed it and the date and time."
+              },
+              {
+                "text": "On submission the system emails the applicant an acknowledgement with a reference number and the date a decision is expected.",
+                "section": "6.2 Completing an application",
+                "quote": "When an application is submitted the system shall send the applicant an acknowledgement by email with a reference number and the date by which a decision is expected."
+              },
+              {
+                "text": "A grants officer can complete and submit an application for an applicant who cannot apply online, recording that they did so and the applicant's confirmation of the declaration.",
+                "section": "6.3 Accessibility of the application process",
+                "quote": "A grants officer shall be able to complete and submit an application on behalf of an applicant who cannot apply online, recording that they did so and the applicant's confirmation of the declaration."
+              },
+              {
+                "text": "The Youth Voice application form uses plain language suitable for ages 13 to 25 and lets a group of young people apply with a named adult.",
+                "section": "6.3 Accessibility of the application process",
+                "quote": "The Youth Voice fund application form shall use plain language suitable for applicants aged 13 to 25, and shall allow a group of young people to apply with the support of a named adult."
+              },
+              {
+                "text": "The application process should be quick to complete for small grants.",
+                "section": "6.3 Accessibility of the application process",
+                "quote": "The application process should be quick to complete for small grants."
+              },
+              {
+                "text": "A grants officer can allocate applications to assessors, and the system requires two independent assessors for any application requesting more than 10,000.",
+                "section": "7.1 Allocating assessors",
+                "quote": "A grants officer shall be able to allocate applications to assessors, and the system shall require two independent assessors for any application requesting more than 10,000."
+              },
+              {
+                "text": "Assessors must declare any interest before seeing an application, and an assessor who declares an interest cannot see or score it.",
+                "section": "7.1 Allocating assessors",
+                "quote": "Before an assessor can see an application, they shall declare whether they have any interest in the applicant organisation, and an assessor who declares an interest shall not be able to see or score the application."
+              },
+              {
+                "text": "Every declaration of interest, including declarations of no interest, is recorded with date and person.",
+                "section": "7.1 Allocating assessors",
+                "quote": "The system shall record every declaration of interest, including declarations of no interest, with the date and the person who made it."
+              },
+              {
+                "text": "External volunteer assessors see only applications allocated to them and cannot see bank details or other assessors' scores.",
+                "section": "7.1 Allocating assessors",
+                "quote": "External volunteer assessors shall only see the applications allocated to them and shall not see the organisation's bank details or the scores of other assessors."
+              },
+              {
+                "text": "Assessors score each criterion on the round's scale with a comment per score, and the system calculates the weighted total.",
+                "section": "7.2 Scoring and moderation",
+                "quote": "An assessor shall score each criterion on a scale defined for the round and shall write a comment for each score, and the system shall calculate the weighted total."
+              },
+              {
+                "text": "The system flags an application for moderation where two assessors' weighted totals differ by more than 20% of the maximum score.",
+                "section": "7.2 Scoring and moderation",
+                "quote": "Where the weighted totals given by two assessors differ by more than 20% of the maximum score, the system shall flag the application for moderation."
+              },
+              {
+                "text": "The moderated score and reason for any change are recorded, and original assessor scores are kept.",
+                "section": "7.2 Scoring and moderation",
+                "quote": "The moderated score and the reason for any change from the assessors' scores shall be recorded, and the assessors' original scores shall be kept."
+              },
+              {
+                "text": "A grants officer carries out and records due diligence on every application recommended for funding before it goes to the decision-maker.",
+                "section": "7.2 Scoring and moderation",
+                "quote": "A grants officer shall carry out due diligence on every application recommended for funding before it goes to the decision-maker, recording the checks made and their outcome."
+              },
+              {
+                "text": "Due diligence includes checking accounts, governing document and, for grants over 25,000, a credit check.",
+                "section": "7.2 Scoring and moderation",
+                "quote": "Due diligence includes checking the organisation's accounts, its governing document and, for grants over 25,000, a credit check."
+              },
+              {
+                "text": "The system routes each recommended application to the decision-maker required by the scheme of delegation, based on the total value over the grant's term.",
+                "section": "8.1 Decision-making authority",
+                "quote": "The system shall route each recommended application to the decision-maker required by the scheme of delegation, based on the total value of the grant over its whole term."
+              },
+              {
+                "text": "Grants up to 5,000 are decided by a grants officer under delegated authority.",
+                "section": "8.1 Decision-making authority",
+                "quote": "A grants officer can decide on grants of up to 5,000 under delegated authority."
+              },
+              {
+                "text": "Grants from 5,001 to 25,000 are decided by the programme's grant panel.",
+                "section": "8.1 Decision-making authority",
+                "quote": "The programme's grant panel decides on grants from 5,001 to 25,000."
+              },
+              {
+                "text": "Grants from 25,001 to 100,000 are decided by the Cabinet member for communities.",
+                "section": "8.1 Decision-making authority",
+                "quote": "The Cabinet member for communities decides on grants from 25,001 to 100,000."
+              },
+              {
+                "text": "Grants over 100,000 are decided by Cabinet.",
+                "section": "8.1 Decision-making authority",
+                "quote": "Cabinet decides on grants over 100,000."
+              },
+              {
+                "text": "For multi-year Strategic Partnerships grants, the total over all years determines the decision-maker.",
+                "section": "8.1 Decision-making authority",
+                "quote": "For multi-year Strategic Partnerships grants, the total over all years determines the decision-maker."
+              },
+              {
+                "text": "A panel member with an interest in an application declares it before the panel meets and the system excludes them from that decision.",
+                "section": "8.1 Decision-making authority",
+                "quote": "A grant panel member who has an interest in an application shall declare it before the panel meets, and the system shall exclude them from the decision on that application."
+              },
+              {
+                "text": "Each decision is recorded as approved, approved with conditions or declined, with decision-maker, date, amount approved and reasons.",
+                "section": "8.2 Recording decisions",
+                "quote": "The system shall record each decision as approved, approved with conditions, or declined, with the decision-maker, the date, the amount approved and the reasons."
+              },
+              {
+                "text": "The total approved in a round must not exceed its budget, and the decision-maker is shown the remaining budget before each decision.",
+                "section": "8.2 Recording decisions",
+                "quote": "The total approved in a round shall not exceed the round's budget, and the system shall show the decision-maker the remaining budget before each decision."
+              },
+              {
+                "text": "Every applicant is told the decision by email within five working days of the decision, and declined applicants receive the assessors' comments as feedback.",
+                "section": "8.2 Recording decisions",
+                "quote": "Every applicant shall be told the decision on their application by email within five working days of the decision, and declined applicants shall be given the assessors' comments as feedback."
+              },
+              {
+                "text": "Decisions on grants over 25,000 are published on the council's website showing organisation, amount and purpose.",
+                "section": "8.2 Recording decisions",
+                "quote": "Decisions on grants over 25,000 shall be published on the council's website, showing the organisation, the amount and the purpose."
+              },
+              {
+                "text": "Each ward member can see their remaining allocation and recommend a grant to an eligible organisation for a project in their ward.",
+                "section": "8.3 Ward Member Grants",
+                "quote": "Each ward member shall be able to see their remaining allocation for the year and recommend a grant to an eligible organisation for a project in their ward."
+              },
+              {
+                "text": "A ward member cannot recommend a grant to an organisation in which they have a declared interest in the register of members' interests.",
+                "section": "8.3 Ward Member Grants",
+                "quote": "A ward member shall not be able to recommend a grant to an organisation in which they have declared an interest in the council's register of members' interests."
+              },
+              {
+                "text": "A grants officer checks every Ward Member Grant recommendation and approves or rejects it; a rejected recommendation returns the amount to the member's allocation.",
+                "section": "8.3 Ward Member Grants",
+                "quote": "A grants officer shall check every Ward Member Grant recommendation for eligibility and shall approve or reject it, and a rejected recommendation shall return the amount to the member's allocation."
+              },
+              {
+                "text": "Ward Member Grants cannot be recommended in the six weeks before a local election.",
+                "section": "8.3 Ward Member Grants",
+                "quote": "Ward Member Grants shall not be recommended in the six weeks before a local election."
+              },
+              {
+                "text": "On approval the system generates a grant agreement from the programme template including amount, purpose, conditions, payment schedule and monitoring requirements.",
+                "section": "9.1 Issuing an agreement",
+                "quote": "When a grant is approved, the system shall generate a grant agreement from the template for the programme, including the amount, the purpose, any conditions set by the decision-maker, the payment schedule and the monitoring requirements."
+              },
+              {
+                "text": "The recipient signs the agreement electronically through the system, with two people connected with the organisation signing for grants over 5,000.",
+                "section": "9.1 Issuing an agreement",
+                "quote": "The grant recipient shall sign the grant agreement electronically through the system, and the agreement shall be signed by two people connected with the organisation for grants over 5,000."
+              },
+              {
+                "text": "No payment is made until the agreement is signed by the recipient and countersigned by the council.",
+                "section": "9.1 Issuing an agreement",
+                "quote": "No payment shall be made on a grant until the grant agreement has been signed by the recipient and countersigned by the council."
+              },
+              {
+                "text": "A grant offer lapses if the agreement is not signed within a reasonable time, and the amount returns to the round's budget.",
+                "section": "9.1 Issuing an agreement",
+                "quote": "An offer of a grant shall lapse if the agreement is not signed within a reasonable time, and the amount shall be returned to the round's budget."
+              },
+              {
+                "text": "Grants up to 10,000 are paid in a single payment after signing; grants over 10,000 are paid in instalments per the payment schedule.",
+                "section": "9.2 Payment schedules",
+                "quote": "Grants up to 10,000 shall be paid in a single payment after the agreement is signed, and grants over 10,000 shall be paid in instalments set out in the payment schedule."
+              },
+              {
+                "text": "For Strategic Partnerships grants, instalments after the first are released only once the previous quarter's monitoring report has been accepted.",
+                "section": "9.2 Payment schedules",
+                "quote": "For Strategic Partnerships grants, instalments after the first shall only be released once the previous quarter's monitoring report has been accepted."
+              },
+              {
+                "text": "When a payment is due and its conditions are met, the system creates a payment request with grant reference, amount, cost centre and verified bank details.",
+                "section": "10. Payments",
+                "quote": "When a payment is due under the payment schedule and its conditions have been met, the system shall create a payment request containing the grant reference, the amount, the cost centre and the recipient's verified bank details."
+              },
+              {
+                "text": "A finance officer reviews and releases each payment request, and the officer who approved the grant cannot release its payment.",
+                "section": "10. Payments",
+                "quote": "A finance officer shall review each payment request and release it to the finance system, and the system shall prevent the officer who approved the grant from releasing its payment."
+              },
+              {
+                "text": "The system records the payment date and finance system reference when Finance confirms payment.",
+                "section": "10. Payments",
+                "quote": "The system shall record the payment date and the finance system reference when Finance confirms that a payment has been made."
+              },
+              {
+                "text": "The system automatically stops a payment request if the recipient's registration shows it as removed, dissolved or in insolvency.",
+                "section": "10. Payments",
+                "quote": "The system shall stop a payment request automatically if the recipient organisation's charity or company registration shows it as removed, dissolved or in insolvency."
+              },
+              {
+                "text": "A recipient can request a variation through the system, explaining what and why.",
+                "section": "11. Variations",
+                "quote": "A recipient shall be able to request a variation to their grant through the system, explaining what they want to change and why."
+              },
+              {
+                "text": "A variation changing the grant amount is decided by the decision-maker required for the new total.",
+                "section": "11. Variations",
+                "quote": "A variation that changes the amount of the grant shall be decided by the decision-maker who would be required for the new total amount."
+              },
+              {
+                "text": "A variation moving less than 10% of the grant between budget items without changing the total is decided by a grants officer.",
+                "section": "11. Variations",
+                "quote": "A variation that moves less than 10% of the grant between budget items, without changing the total, shall be decided by a grants officer."
+              },
+              {
+                "text": "Every variation is recorded against the agreement, and both the original signed agreement and the varied agreement are kept.",
+                "section": "11. Variations",
+                "quote": "Every variation shall be recorded against the grant agreement, and the system shall keep the agreement as originally signed as well as the agreement as varied."
+              },
+              {
+                "text": "Recipients of grants up to 5,000 submit a single end-of-grant report.",
+                "section": "12.1 Monitoring reports",
+                "quote": "Recipients of grants up to 5,000 submit a single end-of-grant report."
+              },
+              {
+                "text": "Recipients of grants from 5,001 to 25,000 submit a mid-point report and an end-of-grant report.",
+                "section": "12.1 Monitoring reports",
+                "quote": "Recipients of grants from 5,001 to 25,000 submit a mid-point report and an end-of-grant report."
+              },
+              {
+                "text": "Recipients of grants over 25,000 submit quarterly reports and an end-of-grant report with evidence of expenditure.",
+                "section": "12.1 Monitoring reports",
+                "quote": "Recipients of grants over 25,000 submit quarterly reports and an end-of-grant report with evidence of expenditure."
+              },
+              {
+                "text": "The system reminds the recipient 14 days before a report is due and on the due date, and marks it overdue if not submitted within 14 days after the due date.",
+                "section": "12.1 Monitoring reports",
+                "quote": "The system shall remind the recipient of each monitoring report 14 days before it is due and again on the due date, and shall mark the report as overdue if it is not submitted within 14 days after the due date."
+              },
+              {
+                "text": "A grants officer reviews each monitoring report, records whether it is accepted, and may ask for more information.",
+                "section": "12.1 Monitoring reports",
+                "quote": "A grants officer shall review each monitoring report and record whether it is accepted, and may ask the recipient for more information."
+              },
+              {
+                "text": "Monitoring reports collect the outcome measures set for the round.",
+                "section": "12.1 Monitoring reports",
+                "quote": "Monitoring reports shall collect the outcome measures set for the round, so that the council can report the outcomes achieved across all grants in a programme."
+              },
+              {
+                "text": "A grants officer can start a clawback, recording amount and reason, and the system sends the recipient a request for repayment.",
+                "section": "12.2 Clawback and closure",
+                "quote": "Where a grant has not been used for its agreed purpose, a grants officer shall be able to start a clawback, recording the amount to be recovered and the reason, and the system shall send a request for repayment to the recipient."
+              },
+              {
+                "text": "A clawback over 5,000 must be approved by the programme manager before the repayment request is sent.",
+                "section": "12.2 Clawback and closure",
+                "quote": "A clawback over 5,000 shall be approved by the programme manager before the request for repayment is sent."
+              },
+              {
+                "text": "A grant is closed when the end-of-grant report is accepted and all payments and any clawback are completed.",
+                "section": "12.2 Clawback and closure",
+                "quote": "A grant shall be closed when the end-of-grant report has been accepted and every payment and any clawback has been completed."
+              },
+              {
+                "text": "The system reports grants awarded and paid for any period by programme, round, ward and organisation.",
+                "section": "13. Reporting",
+                "quote": "The system shall report, for any period, the grants awarded and paid by programme, round, ward and organisation."
+              },
+              {
+                "text": "The system shows, for any organisation, every application and every grant across all programmes.",
+                "section": "13. Reporting",
+                "quote": "The system shall show, for any organisation, every application it has made and every grant it has received from the council across all programmes."
+              },
+              {
+                "text": "The system reports applications received, approved and declined per round, with decline reasons, by ward and by equality information.",
+                "section": "13. Reporting",
+                "quote": "The system shall report the applications received, approved and declined in each round, with the reasons for declining, by ward and by the equality information applicants provided."
+              },
+              {
+                "text": "Each ward member can see grants awarded in their ward under all programmes.",
+                "section": "13. Reporting",
+                "quote": "Each ward member shall be able to see the grants awarded in their ward under all programmes."
+              },
+              {
+                "text": "Auditors can see every record, including declarations of interest, decisions and bank detail changes, with read-only access.",
+                "section": "13. Reporting",
+                "quote": "Auditors shall be able to see every record in the system, including declarations of interest, decisions, bank detail changes and their verification, without being able to change anything."
+              },
+              {
+                "text": "Applicant-facing parts meet WCAG 2.2 AA and work on mobile phones and computers.",
+                "section": "14.1 Accessibility and usability",
+                "quote": "The applicant-facing parts of the system shall meet the WCAG 2.2 AA standard and shall work on mobile phones as well as on computers."
+              },
+              {
+                "text": "A first-time applicant with documents to hand can complete an application for a grant under 1,000 in no more than 30 minutes.",
+                "section": "14.1 Accessibility and usability",
+                "quote": "The application process for a grant under 1,000 shall be completable in no more than 30 minutes by a first-time applicant who has their organisation documents to hand."
+              },
+              {
+                "text": "The system is available at least 99.5% of the time and has no planned maintenance in the last 48 hours before a round closes.",
+                "section": "14.2 Availability and performance",
+                "quote": "The system shall be available at least 99.5% of the time, and in the last 48 hours before a round closes it shall have no planned maintenance."
+              },
+              {
+                "text": "The system supports at least 500 concurrent applicants without any page taking more than three seconds to load.",
+                "section": "14.2 Availability and performance",
+                "quote": "The system shall support at least 500 applicants working on applications at the same time without a page taking more than three seconds to load."
+              },
+              {
+                "text": "Council users sign in with single sign-on; applicants and external assessors sign in with email, password and a second factor.",
+                "section": "14.3 Security and data protection",
+                "quote": "Council users shall sign in with the council's single sign-on, and applicants and external assessors shall sign in with an email address, a password and a second factor."
+              },
+              {
+                "text": "A grants officer can remove personal data of applicants' service users included by mistake without deleting the rest of the application.",
+                "section": "14.3 Security and data protection",
+                "quote": "Personal data about applicants' service users, if any is included in an application by mistake, shall be removable by a grants officer without deleting the rest of the application."
+              },
+              {
+                "text": "Approved grant records are kept seven years after closure and declined application records two years after the decision, then deleted.",
+                "section": "14.3 Security and data protection",
+                "quote": "The system shall retain records of approved grants for seven years after the grant is closed and records of declined applications for two years after the decision, and shall then delete them."
+              },
+              {
+                "text": "Equality information is optional, kept separately from the application, and not visible to assessors or decision-makers.",
+                "section": "14.3 Security and data protection",
+                "quote": "Equality information given by applicants shall be optional, shall be kept separately from the application, and shall not be visible to assessors or decision-makers."
+              },
+              {
+                "text": "Every change to a record is logged with user, date and time and before/after values, and the audit record cannot be edited or deleted by any user.",
+                "section": "14.4 Audit",
+                "quote": "Every action that changes a record in the system shall be recorded with the user, the date and time, and the value before and after the change, and the audit record shall not be editable or deletable by any user."
+              },
+              {
+                "text": "Grants from the three financial years before go-live are migrated with organisation, amount, programme and status.",
+                "section": "15. Data migration",
+                "quote": "Grants made in the three financial years before go-live shall be migrated into the system with their organisation, amount, programme and status, so that reports of funding to an organisation are complete."
+              },
+              {
+                "text": "Organisation records that appear to be the same are presented to a grants officer to decide on merging before migration.",
+                "section": "15. Data migration",
+                "quote": "Before migration, organisation records that appear to refer to the same organisation shall be presented to a grants officer for a decision on whether to merge them."
+              },
+              {
+                "text": "In-progress Strategic Partnerships grants are migrated with agreements, payment schedules and monitoring reports.",
+                "section": "15. Data migration",
+                "quote": "Strategic Partnerships grants that are in progress at go-live shall be migrated with their agreements, payment schedules and monitoring reports, so that they can be managed in the system from go-live."
+              },
+              {
+                "text": "The system must allow each programme's own rules to be applied without affecting other programmes.",
+                "section": "Appendix A. Programme-specific rules",
+                "quote": "The system must allow these rules to be applied for the programme concerned without affecting other programmes."
+              },
+              {
+                "text": "Neighbourhood Fund applications record the neighbourhood served from the council's list, and the system adds the round's priority weighting to the weighted score for priority neighbourhoods.",
+                "section": "A.1 Neighbourhood Fund",
+                "quote": "A Neighbourhood Fund application shall record the neighbourhood the project serves, chosen from the council's list of neighbourhoods, and the system shall add the priority weighting set for the round to the weighted score of applications from priority neighbourhoods."
+              },
+              {
+                "text": "An organisation cannot receive more than one Neighbourhood Fund grant in the same financial year.",
+                "section": "A.1 Neighbourhood Fund",
+                "quote": "An organisation shall not receive more than one Neighbourhood Fund grant in the same financial year."
+              },
+              {
+                "text": "Strategic Partnerships agreements state that years two and three are subject to the council's annual budget, and the programme manager must confirm each year's funding before its first instalment is released.",
+                "section": "A.2 Strategic Partnerships",
+                "quote": "A Strategic Partnerships grant agreement shall state that the second and third years' funding is subject to the council's annual budget, and the system shall require the programme manager to confirm each year's funding before its first instalment is released."
+              },
+              {
+                "text": "Each Strategic Partnerships grant has a named relationship manager, and a note of each quarterly meeting is recorded against the grant.",
+                "section": "A.2 Strategic Partnerships",
+                "quote": "Each Strategic Partnerships grant shall have a named relationship manager, and the system shall record a note of each quarterly meeting against the grant."
+              },
+              {
+                "text": "For Small Sparks grants paid through a sponsor, the system records the sponsor, verifies its bank details as for a recipient, and requires the sponsor to sign the agreement as well as the group.",
+                "section": "A.3 Small Sparks",
+                "quote": "Where a Small Sparks grant is paid through a sponsoring organisation, the system shall record the sponsor, verify the sponsor's bank details in the same way as a recipient's, and require the sponsor to sign the grant agreement as well as the group."
+              },
+              {
+                "text": "Small Sparks decisions are made within ten working days of submission, and the system alerts the programme manager to any application undecided after eight working days.",
+                "section": "A.3 Small Sparks",
+                "quote": "A decision on a Small Sparks application shall be made within ten working days of submission, and the system shall alert the programme manager about any application still undecided after eight working days."
+              },
+              {
+                "text": "Youth Voice assessors may be youth council members aged 16 or over, and the system records that an assessor is a youth panel member and the supporting youth worker's name.",
+                "section": "A.4 Youth Voice",
+                "quote": "Assessors for the Youth Voice fund may be members of the youth council aged 16 or over, and the system shall record that an assessor is a youth panel member and the name of the supporting youth worker."
+              },
+              {
+                "text": "An Arts in the Open grant is not paid until the applicant uploads the events team's permission, and the system records the permission reference.",
+                "section": "A.5 Arts in the Open",
+                "quote": "An Arts in the Open grant shall not be paid until the applicant has uploaded the event permission from the council's events team, and the system shall record the permission reference."
+              },
+              {
+                "text": "If an Arts in the Open event is cancelled for bad weather, the recipient may keep costs incurred and a grants officer can record a partial clawback of the remainder.",
+                "section": "A.5 Arts in the Open",
+                "quote": "If an Arts in the Open event is cancelled because of bad weather, the recipient may keep costs already incurred, and the system shall allow a grants officer to record a partial clawback of the remainder."
+              },
+              {
+                "text": "Winter Warmth grants are approved only for activities between 1 November and 31 March, and the end-of-grant report is due by 30 April.",
+                "section": "A.6 Winter Warmth",
+                "quote": "Winter Warmth grants shall only be approved for activities that take place between 1 November and 31 March, and the end-of-grant report shall be due by 30 April."
+              }
+            ],
+            "questions": [
+              {
+                "text": "Who is authorised to extend a deadline for an individual applicant: grants officers or only the programme manager? Also, how does this individual extension fit with the rule that no applications are accepted after the closing date and time?",
+                "section": "4. Programme and round set-up",
+                "quote": "Grants officers sometimes extend the deadline for an individual applicant who had technical problems."
+              },
+              {
+                "text": "How does the system decide whether two people are 'not related to each other'? Is it a declaration by the registrant, a check by an officer, or something else, and what relationships count?",
+                "section": "5.1 Registering an organisation",
+                "quote": "the details of at least two people connected with it who are not related to each other"
+              },
+              {
+                "text": "What happens when a document expires? Does it block new applications or submission, and how is the expiry date set for documents other than accounts? What should a new organisation with no accounts yet provide?",
+                "section": "5.2 Organisation documents",
+                "quote": "The system shall record an expiry date for each organisation document and shall ask the organisation to upload a new version when one expires."
+              },
+              {
+                "text": "What is the income threshold below which small organisations need not provide accounts? Until it is set, the accounts rule cannot be built or tested.",
+                "section": "16.2 Open questions",
+                "quote": "Programme managers have suggested that small organisations with an annual income below a threshold should not have to provide accounts, but the threshold has not been set."
+              },
+              {
+                "text": "How is the 'date by which a decision is expected' calculated? Is it set per round, per programme, or by a service standard, and does it differ for Small Sparks and Ward Member Grants?",
+                "section": "6.2 Completing an application",
+                "quote": "the date by which a decision is expected"
+              },
+              {
+                "text": "What counts as a 'small grant', and what is the measurable target for 'quick to complete'? Is it the 30 minutes for grants under 1,000 in 14.1, or something else?",
+                "section": "6.3 Accessibility of the application process",
+                "quote": "The application process should be quick to complete for small grants."
+              },
+              {
+                "text": "What other checks does due diligence include beyond accounts, governing document and credit check, and what outcome blocks a recommendation?",
+                "section": "7.2 Scoring and moderation",
+                "quote": "Due diligence includes checking the organisation's accounts, its governing document and, for grants over 25,000, a credit check."
+              },
+              {
+                "text": "The Small Sparks upper limit is given as 1,000 in section 1.1 and 1,500 in Appendix A.3, and Section 14.1 refers to grants under 1,000. Which figure is correct?",
+                "section": "A.3 Small Sparks",
+                "quote": "Small Sparks grants range from 100 to 1,500, and groups without a bank account in their own name may be paid through a sponsoring organisation."
+              },
+              {
+                "text": "What is 'a reasonable time' for signing an agreement before an offer lapses? Legal Services' advice is outstanding. A specific period, and whether it varies by programme or amount, is needed to build and test the lapse rule.",
+                "section": "9.1 Issuing an agreement",
+                "quote": "An offer of a grant shall lapse if the agreement is not signed within a reasonable time, and the amount shall be returned to the round's budget."
+              },
+              {
+                "text": "Who decides variations other than a change of amount or a budget-item move under 10%, for example a time extension, a reduction in project scale, or a budget move of 10% or more? Is the 10% measured against the whole grant or the year's grant?",
+                "section": "11. Variations",
+                "quote": "A variation that moves less than 10% of the grant between budget items, without changing the total, shall be decided by a grants officer."
+              },
+              {
+                "text": "Who sets the due dates for mid-point, quarterly and end-of-grant reports (e.g. from the agreement start date or the payment schedule), and how are they entered in the system?",
+                "section": "12.1 Monitoring reports",
+                "quote": "Recipients of grants from 5,001 to 25,000 submit a mid-point report and an end-of-grant report."
+              },
+              {
+                "text": "What does 'the officer who approved the grant' mean when grants are approved by a panel, Cabinet member or Cabinet? Does the restriction apply only to grants officers using delegated authority, or to any officer who recommended or processed the grant?",
+                "section": "10. Payments",
+                "quote": "the system shall prevent the officer who approved the grant from releasing its payment"
+              },
+              {
+                "text": "Which 'ward' do ward-based reports and the ward member's view use: the project's location, the organisation's address or the beneficiaries? Also, who may see reports broken down by equality information, given that it is hidden from assessors and decision-makers?",
+                "section": "13. Reporting",
+                "quote": "The system shall report the applications received, approved and declined in each round, with the reasons for declining, by ward and by the equality information applicants provided."
+              },
+              {
+                "text": "The audit record 'shall not be editable or deletable by any user', yet records must be deleted after the retention period and personal data can be removed by a grants officer. How do these fit together? Also, what retention applies to records not covered, such as lapsed or withdrawn offers, organisation records and payment records?",
+                "section": "14.4 Audit",
+                "quote": "the audit record shall not be editable or deletable by any user"
+              },
+              {
+                "text": "Over what period is 99.5% availability measured, and are planned maintenance windows outside the last 48 hours before closing excluded from it?",
+                "section": "14.2 Availability and performance",
+                "quote": "The system shall be available at least 99.5% of the time, and in the last 48 hours before a round closes it shall have no planned maintenance."
+              },
+              {
+                "text": "What is the outcome for under-18 Youth Voice panel members: can they take part in decisions recorded in the system, or must an adult record them? The system's decision recording and user roles depend on Legal Services' answer.",
+                "section": "16.2 Open questions",
+                "quote": "The Youth Voice fund panel includes young people who are under 18. Legal Services are considering whether they can take part in decisions recorded in the system or whether an adult must record the decision for them."
+              },
+              {
+                "text": "Is the system to notify ward members when an organisation in their ward applies to any programme? If so, this needs a decision and a requirement.",
+                "section": "16.2 Open questions",
+                "quote": "Some ward members have asked to be told when an organisation in their ward applies to any programme; no decision has been made."
+              },
+              {
+                "text": "How is Small Sparks, which is open all year, modelled in the system given that every programme is described as running rounds with an opening date, closing date and budget? Only Ward Member Grants are described as not run as rounds.",
+                "section": "A.3 Small Sparks",
+                "quote": "The fund is open all year, and decisions are made within ten working days."
+              }
+            ]
+          },
+          "diagnostics": {
+            "documentChars": 35075,
+            "calls": 1
+          },
+          "score": {
+            "labelled": 106,
+            "extracted": 106,
+            "matched": 106,
+            "repeats": 0,
+            "requirementRecall": 1,
+            "requirementPrecision": 1,
+            "labelledSections": 31,
+            "coveredSections": 31,
+            "sectionCoverage": 1,
+            "missedSections": [],
+            "questions": 18,
+            "worthAsking": 15,
+            "questionPrecision": 0.8333333333333334,
+            "ambiguities": 17,
+            "ambiguitiesRaised": 10,
+            "ambiguityRecall": 0.5882352941176471,
+            "missedRequirements": [],
+            "missedAmbiguities": ["A4", "A5", "A8", "A9", "A10", "A12", "A13"],
+            "unmatchedExtracted": [],
+            "quoted": 106,
+            "quotesVerified": 106,
+            "quoteAccuracy": 1
+          },
+          "judge": {
+            "invalid": 0,
+            "ungraded": 0
+          },
+          "costUsd": 0.22869399999999998,
+          "judgeCostUsd": 0.06878000000000001,
+          "inputTokens": 10687,
+          "completionTokens": 20732,
+          "seconds": 116.86
+        },
+        {
+          "itemId": "docunderstanding-04-library-lending",
+          "armId": "B",
+          "run": 1,
+          "output": null,
+          "diagnostics": {},
+          "score": null,
+          "judge": null,
+          "error": "reader: doc-understanding-whole: no usable reply (unparseable)",
+          "costUsd": 0.502096,
+          "judgeCostUsd": 0,
+          "inputTokens": 37718,
+          "completionTokens": 42666,
+          "seconds": 229.354
+        }
+      ],
+      "summary": {
+        "metrics": {
+          "requirementRecall": {
+            "mean": 1,
+            "min": 1,
+            "max": 1,
+            "n": 1
+          },
+          "requirementPrecision": {
+            "mean": 1,
+            "min": 1,
+            "max": 1,
+            "n": 1
+          },
+          "sectionCoverage": {
+            "mean": 1,
+            "min": 1,
+            "max": 1,
+            "n": 1
+          },
+          "questionPrecision": {
+            "mean": 0.8333333333333334,
+            "min": 0.8333333333333334,
+            "max": 0.8333333333333334,
+            "n": 1
+          },
+          "ambiguityRecall": {
+            "mean": 0.5882352941176471,
+            "min": 0.5882352941176471,
+            "max": 0.5882352941176471,
+            "n": 1
+          },
+          "quoteAccuracy": {
+            "mean": 1,
+            "min": 1,
+            "max": 1,
+            "n": 1
+          }
+        },
+        "extractedPerDocument": 106,
+        "questionsPerDocument": 18,
+        "usdPerDocument": 0.36539499999999997,
+        "inputTokensPerDocument": 24202.5,
+        "completionTokensPerDocument": 31699,
+        "secondsPerDocument": 173.107,
+        "failures": 1,
+        "readings": 2
+      },
+      "byItem": [
+        {
+          "itemId": "docunderstanding-03-community-grants",
+          "summary": {
+            "metrics": {
+              "requirementRecall": {
+                "mean": 1,
+                "min": 1,
+                "max": 1,
+                "n": 1
+              },
+              "requirementPrecision": {
+                "mean": 1,
+                "min": 1,
+                "max": 1,
+                "n": 1
+              },
+              "sectionCoverage": {
+                "mean": 1,
+                "min": 1,
+                "max": 1,
+                "n": 1
+              },
+              "questionPrecision": {
+                "mean": 0.8333333333333334,
+                "min": 0.8333333333333334,
+                "max": 0.8333333333333334,
+                "n": 1
+              },
+              "ambiguityRecall": {
+                "mean": 0.5882352941176471,
+                "min": 0.5882352941176471,
+                "max": 0.5882352941176471,
+                "n": 1
+              },
+              "quoteAccuracy": {
+                "mean": 1,
+                "min": 1,
+                "max": 1,
+                "n": 1
+              }
+            },
+            "extractedPerDocument": 106,
+            "questionsPerDocument": 18,
+            "usdPerDocument": 0.22869399999999998,
+            "inputTokensPerDocument": 10687,
+            "completionTokensPerDocument": 20732,
+            "secondsPerDocument": 116.86,
+            "failures": 0,
+            "readings": 1
+          }
+        },
+        {
+          "itemId": "docunderstanding-04-library-lending",
+          "summary": {
+            "metrics": {
+              "requirementRecall": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "requirementPrecision": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "sectionCoverage": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "questionPrecision": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "ambiguityRecall": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "quoteAccuracy": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              }
+            },
+            "extractedPerDocument": null,
+            "questionsPerDocument": null,
+            "usdPerDocument": 0.502096,
+            "inputTokensPerDocument": 37718,
+            "completionTokensPerDocument": 42666,
+            "secondsPerDocument": 229.354,
+            "failures": 1,
+            "readings": 1
+          }
+        }
+      ]
+    }
+  ]
+}

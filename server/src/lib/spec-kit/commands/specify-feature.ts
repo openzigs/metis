@@ -18,7 +18,12 @@ import {
   truncateAtWord,
   type SpecKitFeatureDto,
 } from "../features.js";
-import { writeFeatureArtifact, type FeatureArtifactDto } from "../feature-artifacts.js";
+import {
+  getFeatureArtifact,
+  writeFeatureArtifact,
+  type FeatureArtifactDto,
+} from "../feature-artifacts.js";
+import { clarificationsPromptSection } from "../clarifications.js";
 import { runSpecKitAgent, loadProjectContext, truncationWarning, type RunDeps } from "./runner.js";
 import { SpecKitArtifactError } from "../artifacts.js";
 import {
@@ -124,6 +129,11 @@ export async function runSpecifyFeature(input: SpecifyFeatureInput): Promise<Spe
     });
   }
 
+  // #2236 — re-specifying a feature reads the answers its /clarify already has
+  // (a new feature has none, and the prompt reads as before).
+  const clarifications = clarificationsPromptSection(
+    (await getFeatureArtifact(feature.id, "clarify.md"))?.content,
+  );
   const userPrompt = [
     `Project: ${project.name}`,
     project.description ? `Description: ${project.description}` : "",
@@ -137,6 +147,7 @@ export async function runSpecifyFeature(input: SpecifyFeatureInput): Promise<Spe
     "",
     ...(seed ? [] : ["Brief from operator:"]),
     trimmed,
+    ...(clarifications ? ["", clarifications] : []),
   ]
     .filter(Boolean)
     .join("\n");

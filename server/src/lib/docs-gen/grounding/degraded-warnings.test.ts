@@ -12,7 +12,6 @@ import {
   affectsDocStatus,
   faithfulnessThreshold,
   resolveSectionFaithfulnessThreshold,
-  noModulesWarning,
   sourceUnavailableWarning,
   factsTruncatedWarning,
   phase1FactsTruncatedWarning,
@@ -406,9 +405,8 @@ describe("tier discriminator (tier-aware banner)", () => {
     expect(w.domainContext).toBeUndefined();
   });
 
-  it("does NOT tag a tier on section-failed, no-modules, or the legacy count-based warning", () => {
+  it("does NOT tag a tier on section-failed or the legacy count-based warning", () => {
     expect(sectionFailedWarning("Calculations", "boom").tier).toBeUndefined();
-    expect(noModulesWarning(7).tier).toBeUndefined();
     expect(sectionUngroundedWarning("Workflows", 2, 9).tier).toBeUndefined();
   });
 

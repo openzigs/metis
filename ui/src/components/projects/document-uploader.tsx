@@ -66,7 +66,7 @@ export function clientValidate(file: File): string | null {
  */
 export function uploadOutcomeMessage(ingest: { status: string; chunkCount: number }): string {
   if (ingest.status === "ready") {
-    return `indexed · ${ingest.chunkCount} chunk${ingest.chunkCount === 1 ? "" : "s"}`;
+    return `indexed · ${ingest.chunkCount} section${ingest.chunkCount === 1 ? "" : "s"}`;
   }
   if (ingest.status === "failed") return "indexing failed — see the document list";
   return "indexing in the background — the document list shows progress";

@@ -21,6 +21,7 @@ import {
   type GoverningStaleRequirement,
 } from "@metis/shared";
 import { createQueryClient } from "@/lib/query-client";
+import { queryKeys } from "@/lib/query-keys";
 import type { ClarificationStatePayload, ClarifyingQuestion } from "@/lib/analysis-api";
 import type { GoverningFindingRevision } from "@/lib/governing-findings-api";
 import {
@@ -160,6 +161,10 @@ class FakeServer {
   /** #2281 — edited requirements no finding offers a re-check for. */
   editedWithoutFindings: GoverningStaleRequirement[] = [];
   requests: { method: string; path: string; body: unknown }[] = [];
+  /** #2339 — the workspace the project belongs to; null for a project in none. */
+  workspaceId: string | null = "ws-1";
+  /** #2339 — the project read fails (e.g. the project was deleted or access revoked). */
+  projectError = false;
 
   handle = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = new URL(String(input), "http://localhost");
@@ -171,6 +176,11 @@ class FakeServer {
     const err = (status: number, code: string, message: string) =>
       new Response(JSON.stringify({ success: false, error: { code, message } }), { status });
 
+    // #2339 — the project, for the workspace its governing documents belong to.
+    if (url.pathname === `/api/projects/${PROJECT}` && method === "GET") {
+      if (this.projectError) return err(404, "NOT_FOUND", "Project not found");
+      return json(200, { id: PROJECT, name: "Card vault", workspaceId: this.workspaceId });
+    }
     const prefix = `/api/projects/${PROJECT}/analyses/${ANALYSIS}/`;
     if (!url.pathname.startsWith(prefix)) return err(404, "NOT_FOUND", "Not found");
     const rest = url.pathname.slice(prefix.length).split("/");
@@ -898,6 +908,71 @@ function settledApplicability(): GoverningAnalysisApplicability {
     ],
   };
 }
+
+describe("GoverningFindingsPanel — the way to the workspace's governing documents (#2339)", () => {
+  const LINK = "Open this workspace's governing documents";
+
+  it("links to the workspace's Governing documents above the findings", async () => {
+    mount();
+    const panel = await screen.findByTestId("governing-findings");
+    expect(await within(panel).findByRole("link", { name: LINK })).toHaveAttribute(
+      "href",
+      "/workspaces/ws-1/governing",
+    );
+  });
+
+  it("links there too when no rules were checked, so the analyst can go and add a document", async () => {
+    server.findings = [];
+    server.checked = false;
+    mount();
+    const empty = await screen.findByTestId("governing-findings-empty");
+    expect(await within(empty).findByRole("link", { name: LINK })).toHaveAttribute(
+      "href",
+      "/workspaces/ws-1/governing",
+    );
+  });
+
+  it("shows no link for a project in no workspace", async () => {
+    server.workspaceId = null;
+    mount();
+    await screen.findByTestId("governing-findings");
+    await waitFor(() =>
+      expect(server.requests.some((r) => r.path === `/api/projects/${PROJECT}`)).toBe(true),
+    );
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(screen.queryByRole("link", { name: LINK })).toBeNull();
+  });
+
+  it("drops the link once a re-read of the project fails, though the earlier read is cached", async () => {
+    const qc = mount();
+    const panel = await screen.findByTestId("governing-findings");
+    await within(panel).findByRole("link", { name: LINK });
+    server.projectError = true;
+    const before = server.requests.length;
+    await act(async () => {
+      await qc.invalidateQueries({ queryKey: queryKeys.projects.detail(PROJECT) });
+    });
+    expect(server.requests.slice(before).some((r) => r.path === `/api/projects/${PROJECT}`)).toBe(
+      true,
+    );
+    await waitFor(() => expect(screen.queryByRole("link", { name: LINK })).toBeNull());
+  });
+
+  it("shows no link, and reads no project, while the feature is off", async () => {
+    server.flagOn = false;
+    mount();
+    await waitFor(() =>
+      expect(server.requests.some((r) => r.path.endsWith("/governing-findings"))).toBe(true),
+    );
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(screen.queryByRole("link", { name: LINK })).toBeNull();
+    expect(server.requests.some((r) => r.path === `/api/projects/${PROJECT}`)).toBe(false);
+  });
+});
 
 describe("answerSettlementOf (#2087)", () => {
   const audit = finding({ requirementId: "REQ-001", ruleId: "rule-audit" });

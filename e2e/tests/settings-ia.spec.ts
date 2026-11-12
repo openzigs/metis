@@ -92,6 +92,7 @@ test.describe("Settings IA + top-level surfaces (#196) @quarantine", () => {
       ["/settings/appearance", "settings-appearance-root"],
       ["/settings/notifications", "settings-notifications-root"],
       ["/settings/api-keys", "settings-api-keys-root"],
+      // #2337 — a retired alias that redirects to Configuration's Audit log tab.
       ["/settings/audit", "settings-api-keys-root"],
       ["/settings/integrations", "settings-integrations-root"],
       ["/vault", "vault-root"],

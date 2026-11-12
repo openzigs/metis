@@ -300,6 +300,11 @@ export default function AdminEmbeddingsPage() {
             </p>
           ) : coverage.data ? (
             <div className="space-y-3" data-testid="coverage-report">
+              {/* #2337 — an admin screen keeps the term, with one line saying what it is. */}
+              <p className="text-xs text-muted-foreground" data-testid="coverage-chunk-hint">
+                A chunk is one indexed section of a document or source file; analysts see it as
+                &quot;sections indexed&quot;.
+              </p>
               <div className="flex flex-wrap items-center gap-4 text-sm">
                 <span>
                   <span className="text-muted-foreground">Total chunks:</span>{" "}

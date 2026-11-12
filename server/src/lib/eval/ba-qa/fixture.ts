@@ -21,6 +21,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
+import { fileKey } from "../localization/corpus.js";
 import { assertCommitSha, parseGithubRepoUrl } from "../localization/materialize.js";
 
 /** The committed question set (`eval-data/corpus/baqa-01-acme-reader/`). */
@@ -192,11 +193,6 @@ export async function loadBaQaFixture(dir: string): Promise<BaQaFixture> {
   return parseBaQaFixture(raw);
 }
 
-/** `<product>:<path>`, the key a source and a citation are compared by. */
-export function sourceKey(product: string, file: string): string {
-  return `${product}:${file}`;
-}
-
 /**
  * The code files the materialized graph must hold (`<product>:<path>`): every
  * expected source that is not a document. `eval:materialize` checks these.
@@ -205,7 +201,7 @@ export function requiredCodeFiles(fixture: BaQaFixture): string[] {
   const out = new Set<string>();
   for (const q of fixture.questions) {
     for (const s of q.sources ?? []) {
-      if (s.kind !== "doc") out.add(sourceKey(s.product, s.path));
+      if (s.kind !== "doc") out.add(fileKey(s.product, s.path));
     }
   }
   return [...out].sort();
@@ -213,5 +209,5 @@ export function requiredCodeFiles(fixture: BaQaFixture): string[] {
 
 /** The distinct expected source files of one question, as `<product>:<path>`. */
 export function expectedSourceFiles(q: BaQaQuestion): string[] {
-  return [...new Set((q.sources ?? []).map((s) => sourceKey(s.product, s.path)))].sort();
+  return [...new Set((q.sources ?? []).map((s) => fileKey(s.product, s.path)))].sort();
 }

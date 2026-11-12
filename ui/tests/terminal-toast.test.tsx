@@ -83,7 +83,10 @@ describe("terminalToastText", () => {
     const partial = "Deep ingest completed with 2 failures: 2 source files could not be ingested.";
     expect(
       terminalToastText(lifecycle({ status: "completed", message: partial, failureCount: 2 })),
-    ).toEqual({ kind: "warning", text: partial });
+    ).toEqual({
+      kind: "warning",
+      text: "Full re-read completed with 2 failures: 2 source files could not be ingested.",
+    });
   });
 
   it("#432 — a completion that reports zero failures stays a success", () => {

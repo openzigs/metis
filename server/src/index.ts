@@ -31,6 +31,7 @@ import {
   retiredProviderMessage,
 } from "./lib/ai/retired-providers.js";
 import { getConfigService } from "./lib/config/config-service.js";
+import { stopRepoConnectorRefreshes } from "./lib/connectors/repo/refresh-trigger.js";
 
 export const SERVER_NAME = "metis-server";
 export function getServerBanner(): string {
@@ -367,6 +368,13 @@ if (isMainModule() && process.env.METIS_NO_LISTEN !== "1") {
         await socketCluster?.close();
       } catch (e) {
         log.error("Socket.IO cluster adapter close error", { error: (e as Error).message });
+      }
+      try {
+        // #2335 — abort background repository refreshes (push, queued Sync)
+        // and give them a moment to release their leases before Prisma goes.
+        await stopRepoConnectorRefreshes();
+      } catch (e) {
+        log.error("Repository refresh stop error", { error: (e as Error).message });
       }
       try {
         await prisma.$disconnect();

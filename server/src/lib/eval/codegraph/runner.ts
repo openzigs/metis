@@ -25,6 +25,7 @@ import {
   type FusedRagChunkRef,
   type FuseCodeContextResult,
 } from "../../rag/fused-code-context.js";
+import { NO_CODE_VERSIONS } from "../../code-graph/code-version.js";
 import { citesLocator, expectedLocator, findForbiddenDisclaimer } from "./assertions.js";
 import type { CodegraphFixture } from "./fixture.js";
 
@@ -94,7 +95,12 @@ export async function runCodegraphCitationEval(
   const runtime = buildChatCodeToolRuntime({
     enabled,
     projectId: fixture.projectId,
-    deps: { searcher: fixture.searcher, lineLookup: fixture.lineLookup },
+    // #2325 — and the version read too: the fixture project has no code graph row.
+    deps: {
+      searcher: fixture.searcher,
+      lineLookup: fixture.lineLookup,
+      loadVersions: async () => NO_CODE_VERSIONS,
+    },
   });
 
   // #713 + #715 — assemble the byte-stable chat prompt lead: tool schemas +

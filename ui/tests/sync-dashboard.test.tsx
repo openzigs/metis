@@ -51,7 +51,7 @@ describe("SyncDashboardPage", () => {
     mockFetchDriftEvents.mockResolvedValue({ items: [], total: 0 });
     render(<SyncDashboardPage />);
     await waitFor(() => {
-      expect(screen.getByText("All synced up!")).toBeInTheDocument();
+      expect(screen.getByText("Everything is up to date")).toBeInTheDocument();
     });
   });
 

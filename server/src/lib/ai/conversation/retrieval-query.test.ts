@@ -358,6 +358,8 @@ describe("citedExcerptIds", () => {
   it("cites nothing for an answer with no citations, a number out of range, or no excerpts", () => {
     expect(citedExcerptIds("I don't know.", excerpts)).toEqual([]);
     expect(citedExcerptIds("see [9]", excerpts)).toEqual([]);
+    // #2242 — an index into code is not a citation.
+    expect(citedExcerptIds("use arr[1] or f()[3]", excerpts)).toEqual([]);
     expect(citedExcerptIds("see [1]", [])).toEqual([]);
     expect(citedExcerptIds("", excerpts)).toEqual([]);
   });

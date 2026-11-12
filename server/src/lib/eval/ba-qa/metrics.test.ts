@@ -62,8 +62,8 @@ describe("scoreQuestion", () => {
       answerQ,
       citations,
       new Map([
-        [0, 1],
-        [1, 2],
+        [0, [1]],
+        [1, [2]],
       ]),
       verdict({
         facts: { "S1.a": "stated", "S1.b": "stated", "S1.c": "contradicted" },
@@ -90,12 +90,32 @@ describe("scoreQuestion", () => {
     const s = scoreQuestion(
       answerQ,
       [cite("a.go", [900, 950])],
-      new Map([[0, 0]]),
+      new Map([[0, []]]),
       verdict({ facts: { "S1.a": "stated", "S1.b": "stated", "S1.c": "stated" } }),
     );
-    expect(s.citations[0]).toMatchObject({ check: "span", supports: false });
+    // Never shown to the judge, so not counted as a span check.
+    expect(s.citations[0]).toMatchObject({ check: "no-such-lines", supports: false });
     expect(s.fullyCorrect).toBe(true);
     expect(s.citationRecall).toBe(0.5);
+  });
+
+  it("supports a citation of a shared path when any of its products' spans supports it", () => {
+    const shared: Citation = { path: "README.md", products: ["cli", "srv"], lines: [1, 2] };
+    const facts = { "S1.a": "stated", "S1.b": "stated", "S1.c": "stated" } as const;
+    const one = scoreQuestion(
+      answerQ,
+      [shared],
+      new Map([[0, [1, 2]]]),
+      verdict({ facts, spans: { 1: false, 2: true } }),
+    );
+    expect(one.citations[0]).toMatchObject({ check: "span", supports: true });
+    const none = scoreQuestion(
+      answerQ,
+      [shared],
+      new Map([[0, [1, 2]]]),
+      verdict({ facts, spans: { 1: false, 2: false } }),
+    );
+    expect(none.citations[0]).toMatchObject({ check: "span", supports: false });
   });
 
   it("leaves precision null with no citations and recall null for a non-answer question", () => {
@@ -121,12 +141,23 @@ describe("summarizeArm", () => {
   const all = (): QuestionScore[] => [
     scoreQuestion(
       answerQ,
-      [cite("a.go", [1, 5]), cite("z.go")],
-      new Map([[0, 1]]),
+      [cite("a.go", [1, 5]), cite("a.go", [900, 901]), cite("b.go"), cite("z.go")],
+      new Map([
+        [0, [1]],
+        [1, []],
+      ]),
       verdict({
         facts: { "S1.a": "stated", "S1.b": "stated", "S1.c": "stated" },
         spans: { 1: true },
       }),
+    ),
+    // An answer question the reply asked back about: an unneeded follow-up,
+    // not a false abstention.
+    scoreQuestion(
+      { ...answerQ, id: "S3", facts: [{ id: "S3.a", text: "a" }] },
+      [],
+      new Map(),
+      verdict({ behaviour: "follow-up", facts: { "S3.a": "missing" } }),
     ),
     scoreQuestion(
       { ...answerQ, id: "S2", facts: [{ id: "S2.a", text: "a" }] },
@@ -141,16 +172,20 @@ describe("summarizeArm", () => {
   ];
 
   it("computes every rate from the verdicts and leaves the unscored out", () => {
-    const s = summarizeArm("off", all(), { answerUsd: 0.6, judgeUsd: 0.12 });
-    expect(s.questions).toBe(6);
+    const s = summarizeArm("off", all(), { answerUsd: 0.7, judgeUsd: 0.12 });
+    expect(s.questions).toBe(7);
     expect(s.unscored).toBe(1);
-    expect(s.correctness).toBeCloseTo(0.5);
-    expect(s.fullyCorrect).toEqual({ n: 1, of: 2, rate: 0.5 });
-    expect(s.citationPrecision).toEqual({ n: 1, of: 2, rate: 0.5 });
-    expect(s.spanChecked).toEqual({ n: 1, of: 2, rate: 0.5 });
-    expect(s.citationRecall).toEqual({ n: 1, of: 4, rate: 0.25 });
-    expect(s.falseAbstention).toEqual({ n: 1, of: 2, rate: 0.5 });
-    expect(s.unneededFollowUp).toEqual({ n: 0, of: 2, rate: 0 });
+    expect(s.correctness).toBeCloseTo(1 / 3);
+    expect(s.fullyCorrect).toEqual({ n: 1, of: 3, rate: 1 / 3 });
+    // The two checks are reported apart: cited lines (read by the judge, or not
+    // in the file) and a file named without lines.
+    expect(s.citationPrecisionLines).toEqual({ n: 1, of: 2, rate: 0.5 });
+    expect(s.citationPrecisionFile).toEqual({ n: 1, of: 2, rate: 0.5 });
+    // Only a span the judge was shown counts as span-checked.
+    expect(s.spanChecked).toEqual({ n: 1, of: 4, rate: 0.25 });
+    expect(s.citationRecall).toEqual({ n: 2, of: 6, rate: 1 / 3 });
+    expect(s.falseAbstention).toEqual({ n: 1, of: 3, rate: 1 / 3 });
+    expect(s.unneededFollowUp).toEqual({ n: 1, of: 3, rate: 1 / 3 });
     expect(s.followUp).toEqual({ n: 1, of: 2, rate: 0.5 });
     expect(s.abstention).toEqual({ n: 0, of: 1, rate: 0 });
     expect(s.confidentGuess).toEqual({ n: 1, of: 1, rate: 1 });
@@ -163,7 +198,7 @@ describe("summarizeArm", () => {
       questions: 0,
       behaviourOk: { n: 0, of: 0, rate: null },
     });
-    expect(s.cost.totalUsd).toBeCloseTo(0.72);
+    expect(s.cost.totalUsd).toBeCloseTo(0.82);
     expect(s.cost.perQuestionUsd).toBeCloseTo(0.1);
   });
 
