@@ -1,10 +1,15 @@
 /**
- * Phase 12 — Dashboard widgets (issue #86).
+ * Phase 12 — Dashboard widgets (issue #86); #2348 — "My work" first.
+ *
+ * Home opens with "My work": what needs the signed-in user (change requests
+ * by state, reviews assigned to them). Admins keep the operations widgets
+ * below it; everyone else sees only their recent activity, as Tasks, Runs and
+ * Scheduler are operator pages (#2332).
  *
  * Composable grid: each widget owns its own TanStack Query (keyed so
- * widgets refetch independently at sane intervals). Mobile collapses to
- * a single column. Empty states are actionable — every widget points at
- * the page where you'd create the first record.
+ * widgets refetch independently at sane intervals). Empty states are
+ * actionable — every widget points at the page where you'd create the first
+ * record.
  */
 "use client";
 
@@ -19,25 +24,40 @@ import { Button } from "@/components/ui/button";
 import type { ReactNode } from "react";
 import { PageHeader } from "@/components/ui/page-header";
 import { NewProjectDialog } from "@/components/projects/new-project-wizard";
+import { MyWork } from "@/components/dashboard/my-work";
+import { useAuth } from "@/lib/auth-context";
 
 const REFRESH_MS = 30_000;
 
 export default function DashboardPage() {
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
   return (
     <div className="space-y-6 p-2 md:p-0" data-testid="dashboard-root">
       <PageHeader
         title="Dashboard"
-        description="Project health, recent activity, and quick actions."
+        description={
+          isAdmin
+            ? "What needs you, then project health, recent activity, and quick actions."
+            : "What needs you, and your recent activity."
+        }
       />
+
+      <MyWork />
 
       <section
         aria-label="Dashboard widgets"
         className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3"
       >
-        <ProjectsWidget />
-        <ActiveTasksWidget />
-        <ActiveRunsWidget />
-        <ScheduledJobsWidget />
+        {/* #2348 — operations widgets are an admin's; the rest see My work. */}
+        {isAdmin ? (
+          <>
+            <ProjectsWidget />
+            <ActiveTasksWidget />
+            <ActiveRunsWidget />
+            <ScheduledJobsWidget />
+          </>
+        ) : null}
         <RecentActivityWidget />
       </section>
     </div>

@@ -956,7 +956,14 @@ Press **⌘K** (or **Ctrl+K** on Windows/Linux) anywhere in the app to open the 
 
 ## 8.1 Dashboard
 
-The Dashboard summarises live activity across four widgets that poll independently:
+The Dashboard (Home) opens with **My work**: what needs you. [#2348]
+
+- **Your change requests, by state.** Each analysis run you started is listed under the state it is in, if it needs something: **Waiting on your answers** (its clarifying questions have unanswered entries; the row says how many), **In review** (the latest review of its requirements is open), **Rejected** (that review was rejected) or **Ready to hand off** (that review approved). Each row shows the title (the source document's file name until change requests carry their own titles), the project, and how long it has been in that state. A row opens where the work is: the run's **Questions** tab, the review, or **Publish** for that run.
+- **Reviews assigned to me.** Reviews waiting on your decision, with who requested each; a row opens the review.
+- A group with nothing in it is left out. With nothing at all, Home offers **New change request** (pick a project and start an analysis), or **New project** — the first-run wizard — when you have no project yet.
+- Only work in projects you can open is listed; the server does the filtering. The list refreshes every 30 seconds.
+
+Below My work, admins keep the operations widgets; everyone else sees **Recent activity** only. The widgets poll independently:
 
 - **Projects** — your most recent projects with status chips. Empty? Click **Open projects** to create your first one.
 - **Active analyses & tasks** — anything currently running, refreshed every 15 seconds.
