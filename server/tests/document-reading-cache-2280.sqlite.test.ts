@@ -166,6 +166,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         provider,
         projectId,
         documentIds: [docA],
+        // #2262 — the requester; the document is unrestricted, so a member sees it.
+        actor: { userId: "alice", role: "member" },
         load: createReaderDocumentLoader(storage),
         ...(reread ? { reread: true } : {}),
       });

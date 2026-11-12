@@ -330,6 +330,14 @@ describe("requestStructuredVerdict — opportunistic responseFormat", () => {
     expect(opts?.systemMessage).toBe("You are a verifier.");
     expect(opts?.maxTokens).toBe(512);
     expect(opts?.callType).toBe("grounding");
+    expect(opts).not.toHaveProperty("promptCaching");
+  });
+
+  it("#2262 — forwards the caller's prompt-caching hint unchanged", async () => {
+    const provider = new ScriptedProvider([VALID]);
+    const promptCaching = { system: true, userPrefix: "the shared lead" };
+    await requestStructuredVerdict(provider, makeRequest({ promptCaching }));
+    expect(provider.calls[0]!.opts?.promptCaching).toEqual(promptCaching);
   });
 });
 
