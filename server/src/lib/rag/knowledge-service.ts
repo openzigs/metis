@@ -903,6 +903,8 @@ export class KnowledgeService {
         text: m.text,
         score: m.score,
         rankScore: rankScoreByChunk.get(m.chunkId) ?? m.score,
+        // #2241 — the cosine survives a rerank, which rewrites `score`.
+        ...(denseIds.has(m.chunkId) ? { denseScore: meta.get(m.chunkId)!.score } : {}),
         matchedBy,
         ...(path ? { path } : {}),
         embeddingModel: m.embeddingModel,

@@ -2,24 +2,50 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AIProvider, ChatMessage, ChatOptions, ChatResponse } from "../ai/types.js";
 import { AIProviderError } from "../ai/errors.js";
 import type { StorageBackend } from "../documents/storage.js";
+import type { AclActor } from "../rag/acl.js";
+
+interface DocRow {
+  id: string;
+  projectId: string;
+  filename: string;
+  title: string | null;
+  mimeType: string;
+  storagePath: string;
+  aclSubjects?: string;
+  checksum?: string;
+  source?: string;
+  uploadedAt?: number;
+}
 
 const db = {
-  documents: [] as Array<{
-    id: string;
-    projectId: string;
-    filename: string;
-    title: string | null;
-    mimeType: string;
-    storagePath: string;
-    checksum?: string;
-  }>,
+  documents: [] as DocRow[],
   knowledge: [] as Array<{ projectId: string; documentId: string; position: number; text: string }>,
   quarantine: [] as Array<{ projectId: string; documentId: string; ord: number; text: string }>,
 };
 
+/** Filters on the project, the ids and the excluded sources; newest first when ordered. */
 const findManyDocuments = vi.fn(
-  async ({ where }: { where: { projectId: string; id: { in: string[] } } }) =>
-    db.documents.filter((d) => d.projectId === where.projectId && where.id.in.includes(d.id)),
+  async ({
+    where,
+    orderBy,
+  }: {
+    where: {
+      projectId: string;
+      id?: { in: string[] };
+      source?: { notIn: string[] };
+    };
+    orderBy?: unknown;
+  }) => {
+    const rows = db.documents
+      .filter(
+        (d) =>
+          d.projectId === where.projectId &&
+          (!where.id || where.id.in.includes(d.id)) &&
+          (!where.source || !where.source.notIn.includes(d.source ?? "upload")),
+      )
+      .map((d) => ({ ...d, aclSubjects: d.aclSubjects ?? "[]" }));
+    return orderBy ? rows.sort((a, b) => (b.uploadedAt ?? 0) - (a.uploadedAt ?? 0)) : rows;
+  },
 );
 
 vi.mock("../prisma.js", () => ({
@@ -43,12 +69,20 @@ vi.mock("../prisma.js", () => ({
 }));
 
 const {
+  READER_IMPLICIT_MAX_DOCUMENTS,
   chunkIndexer,
   createReaderDocumentLoader,
+  implicitReaderSelection,
   readerSourceOf,
   reusedReadingsSentence,
   runDocumentReaderAgent,
 } = await import("./document-reader-agent.js");
+const { spentUsageOf } = await import("../document-reader/reader.js");
+
+/** A project member with no special role or group. */
+const MEMBER: AclActor = { userId: "u1", role: "member" };
+const restrictedTo = (...subjects: Array<{ kind: string; value: string }>) =>
+  JSON.stringify(subjects);
 
 const TEXT = [
   "# Grants FRD",
@@ -169,7 +203,7 @@ describe("createReaderDocumentLoader", () => {
     const load = createReaderDocumentLoader(
       storage({ "p1/a": TEXT, "p1/b": "# B\n\nb", "p2/c": "# other" }),
     );
-    const loads = await load("p1", ["d1", "d2", "d3"]);
+    const loads = await load("p1", ["d1", "d2", "d3"], MEMBER);
 
     const where = findManyDocuments.mock.calls[0]![0].where as Record<string, unknown>;
     expect(where).toMatchObject({
@@ -198,7 +232,7 @@ describe("createReaderDocumentLoader", () => {
       ok: true,
       document: { title: "b.md", chunks: [{ index: 0, text: "quarantined chunk" }] },
     });
-    expect(loads[2]).toMatchObject({ ok: false, reason: expect.stringContaining("not ready") });
+    expect(loads[2]).toMatchObject({ ok: false, reason: expect.stringContaining("not available") });
   });
 
   it("reports a file storage cannot read, and one that cannot be converted, with a safe reason", async () => {
@@ -223,7 +257,7 @@ describe("createReaderDocumentLoader", () => {
     const load = createReaderDocumentLoader(
       storage({ "p1/gone": new Error("ENOENT /var/secret/path"), "p1/fake": "not a pdf" }),
     );
-    const loads = await load("p1", ["d1", "d2"]);
+    const loads = await load("p1", ["d1", "d2"], MEMBER);
     expect(loads).toEqual([
       {
         ok: false,
@@ -238,6 +272,143 @@ describe("createReaderDocumentLoader", () => {
         reason: "Its file could not be converted to text.",
       },
     ]);
+  });
+});
+
+describe("#2262 — the loader applies the requester's ACL", () => {
+  const row = (id: string, aclSubjects: string): DocRow => ({
+    id,
+    projectId: "p1",
+    filename: `${id}-secret-name.md`,
+    title: null,
+    mimeType: "text/markdown",
+    storagePath: `p1/${id}`,
+    aclSubjects,
+  });
+
+  beforeEach(() => {
+    db.documents = [
+      row("open", "[]"),
+      row("mine", restrictedTo({ kind: "user", value: "u1" })),
+      row("theirs", restrictedTo({ kind: "user", value: "u2" })),
+      row("analysts", restrictedTo({ kind: "role", value: "analyst" })),
+      row("finance", restrictedTo({ kind: "group", value: "finance" })),
+    ];
+  });
+  const files = storage({
+    "p1/open": TEXT,
+    "p1/mine": TEXT,
+    "p1/theirs": TEXT,
+    "p1/analysts": TEXT,
+    "p1/finance": TEXT,
+  });
+  const ids = ["open", "mine", "theirs", "analysts", "finance"];
+  const readable = async (actor: AclActor) =>
+    (await createReaderDocumentLoader(files)("p1", ids, actor)).map((l) =>
+      l.ok ? l.document.documentId : null,
+    );
+
+  it("withholds a document restricted to someone else, naming neither it nor why", async () => {
+    const loads = await createReaderDocumentLoader(files)("p1", ids, MEMBER);
+    expect(loads.map((l) => (l.ok ? l.document.documentId : null))).toEqual([
+      "open",
+      "mine",
+      null,
+      null,
+      null,
+    ]);
+    const theirs = loads[2]!;
+    expect(theirs).toEqual({
+      ok: false,
+      documentId: "theirs",
+      // The id the requester sent, never the stored filename.
+      filename: "theirs",
+      reason: expect.stringContaining("not available"),
+      withheld: true,
+    });
+    // The same reason as a document that is not ready: no existence oracle.
+    const [gone] = await createReaderDocumentLoader(files)("p1", ["nope"], MEMBER);
+    expect(gone).toMatchObject({ ok: false, reason: (theirs as { reason: string }).reason });
+    expect(gone).not.toHaveProperty("withheld");
+  });
+
+  it("reads a role's, a group's and an admin's documents for them", async () => {
+    expect(await readable({ userId: "u9", role: "analyst" })).toEqual([
+      "open",
+      null,
+      null,
+      "analysts",
+      null,
+    ]);
+    expect(await readable({ userId: "u9", role: "member", groups: ["finance"] })).toEqual([
+      "open",
+      null,
+      null,
+      null,
+      "finance",
+    ]);
+    expect(await readable({ userId: "u9", role: "admin" })).toEqual(ids);
+  });
+});
+
+describe("#2262 — implicitReaderSelection", () => {
+  it("takes the newest visible uploads up to the bound and names the rest", async () => {
+    const n = READER_IMPLICIT_MAX_DOCUMENTS + 2;
+    db.documents = [
+      ...Array.from({ length: n }, (_, i) => ({
+        id: `d${i}`,
+        projectId: "p1",
+        filename: `doc-${i}.md`,
+        title: null,
+        mimeType: "text/markdown",
+        storagePath: `p1/d${i}`,
+        uploadedAt: i,
+      })),
+      {
+        id: "secret",
+        projectId: "p1",
+        filename: "secret.md",
+        title: null,
+        mimeType: "text/markdown",
+        storagePath: "p1/secret",
+        aclSubjects: restrictedTo({ kind: "user", value: "u2" }),
+        uploadedAt: 999,
+      },
+      {
+        id: "repo",
+        projectId: "p1",
+        filename: "connector:repo:x",
+        title: null,
+        mimeType: "text/plain",
+        storagePath: "p1/repo",
+        source: "repo",
+        uploadedAt: 1000,
+      },
+    ];
+    const selection = await implicitReaderSelection("p1", MEMBER);
+
+    const query = findManyDocuments.mock.calls[0]![0] as {
+      where: Record<string, unknown>;
+      orderBy: unknown;
+    };
+    expect(query.where).toMatchObject({
+      projectId: "p1",
+      deletedAt: null,
+      status: "ready",
+      indexState: { not: "rejected" },
+      source: { notIn: ["repo", "db"] },
+    });
+    expect(query.orderBy).toEqual([{ uploadedAt: "desc" }, { id: "asc" }]);
+    // Newest first; the restricted one and the repository row are not candidates.
+    expect(selection.documentIds).toEqual(["d6", "d5", "d4", "d3", "d2"]);
+    expect(selection.leftOut.map((d) => [d.documentId, d.filename, d.status])).toEqual([
+      ["d1", "doc-1.md", "unread"],
+      ["d0", "doc-0.md", "unread"],
+    ]);
+    expect(selection.leftOut[0]!.reason).toContain(
+      `reads the ${READER_IMPLICIT_MAX_DOCUMENTS} most recently uploaded`,
+    );
+    expect(selection.withheld).toBe(1);
   });
 });
 
@@ -318,6 +489,7 @@ describe("#2280 — runDocumentReaderAgent reuses a saved reading", () => {
         provider: model.provider,
         projectId: "p1",
         documentIds: ["d1"],
+        actor: MEMBER,
         load: async () => [saved("d1")],
         cache,
         ...(reread ? { reread } : {}),
@@ -357,11 +529,63 @@ describe("#2280 — runDocumentReaderAgent reuses a saved reading", () => {
         provider: model.provider,
         projectId: "p1",
         documentIds: ["d1"],
+        actor: MEMBER,
         load: async () => [saved("d1", null)],
         cache,
       });
     }
     expect(model.calls()).toBe(4);
+    expect(cache.rows).toHaveLength(0);
+  });
+
+  it("#2262 — a reading made with other operator notes, or none, is never reused", async () => {
+    const cache = store();
+    const model = counting();
+    const run = (operatorNotes?: string) =>
+      runDocumentReaderAgent({
+        provider: model.provider,
+        projectId: "p1",
+        documentIds: ["d1"],
+        actor: MEMBER,
+        load: async () => [saved("d1")],
+        cache,
+        ...(operatorNotes ? { operatorNotes } : {}),
+      });
+    await run("Only the payment rules matter.");
+    expect(model.calls()).toBe(2);
+    // The same notes reuse it; other notes, and none, read again.
+    const same = await run("Only the payment rules matter.");
+    expect(model.calls()).toBe(2);
+    expect(same!.coverage.documents[0]!.reused).toBeDefined();
+    const other = await run("Only eligibility matters.");
+    expect(model.calls()).toBe(4);
+    expect(other!.coverage.documents[0]!.reused).toBeUndefined();
+    const none = await run();
+    expect(model.calls()).toBe(6);
+    expect(none!.coverage.documents[0]!.reused).toBeUndefined();
+    expect(cache.rows).toHaveLength(3);
+  });
+
+  it("#2262 — a read through the saved-reading store that fails still counts what it spent", async () => {
+    const cache = store();
+    const spent = { promptTokens: 70, completionTokens: 40, totalTokens: 110 };
+    const failing = new AIProviderError("upstream down", 503);
+    const { withSpentUsage } = await import("../document-reader/reader.js");
+    const err = await runDocumentReaderAgent({
+      provider: counting().provider,
+      projectId: "p1",
+      documentIds: ["d1"],
+      actor: MEMBER,
+      load: async () => [saved("d1")],
+      cache: {
+        ...cache,
+        read: async () => {
+          throw withSpentUsage(failing, spent);
+        },
+      },
+    }).catch((e: unknown) => e);
+    expect(err).toBe(failing);
+    expect(spentUsageOf(err)?.totalTokens).toBe(110);
     expect(cache.rows).toHaveLength(0);
   });
 });
@@ -405,6 +629,7 @@ describe("runDocumentReaderAgent", () => {
     const read = await runDocumentReaderAgent({
       provider: reading,
       projectId: "p1",
+      actor: MEMBER,
       documentIds: ["d1", "d2"],
       load: async () => [doc("d1"), doc("d2")],
     });
@@ -461,10 +686,27 @@ describe("runDocumentReaderAgent", () => {
     expect(read!.result.usage.totalTokens).toBe(220);
   });
 
+  it("#2275 — clips a long filename to the source schema's 512 characters", async () => {
+    const long = "f".repeat(700);
+    const read = await runDocumentReaderAgent({
+      provider: reading,
+      projectId: "p1",
+      documentIds: ["d1"],
+      actor: MEMBER,
+      load: async () => [{ ...doc("d1"), document: { ...doc("d1").document, filename: long } }],
+    });
+    const output = read!.result.output as unknown as {
+      requirements: Array<{ source: { filename: string } }>;
+    };
+    expect(output.requirements[0]!.source.filename.length).toBeLessThanOrEqual(512);
+    expect(output.requirements[0]!.source.filename.startsWith("fff")).toBe(true);
+  });
+
   it("cites a statement by its quote alone when no stored chunk covers it", async () => {
     const read = await runDocumentReaderAgent({
       provider: reading,
       projectId: "p1",
+      actor: MEMBER,
       documentIds: ["d1"],
       load: async () => [{ ...doc("d1"), document: { ...doc("d1").document, chunks: [] } }],
     });
@@ -488,6 +730,7 @@ describe("runDocumentReaderAgent", () => {
     const read = await runDocumentReaderAgent({
       provider: reading,
       projectId: "p1",
+      actor: MEMBER,
       documentIds: ["d1"],
       load: async () => [{ ok: false, documentId: "d1", filename: "d1", reason: "gone" }],
     });
@@ -503,6 +746,7 @@ describe("runDocumentReaderAgent", () => {
     const read = await runDocumentReaderAgent({
       provider: flaky,
       projectId: "p1",
+      actor: MEMBER,
       documentIds: ["d1", "d2"],
       load: async () => [doc("d1"), doc("d2")],
     });
@@ -519,6 +763,7 @@ describe("runDocumentReaderAgent", () => {
       runDocumentReaderAgent({
         provider: provider(() => "garbage"),
         projectId: "p1",
+        actor: MEMBER,
         documentIds: ["d1"],
         load: async () => [doc("d1")],
       }),
@@ -538,10 +783,213 @@ describe("runDocumentReaderAgent", () => {
       runDocumentReaderAgent({
         provider: down,
         projectId: "p1",
+        actor: MEMBER,
         documentIds: ["d1"],
         load: async () => [doc("d1")],
       }),
     ).rejects.toBeInstanceOf(AIProviderError);
+  });
+
+  it("#2262 — a provider error on the second document fails the agent, carrying the first one's tokens", async () => {
+    let calls = 0;
+    const second = {
+      key: "anthropic",
+      model: "claude-sonnet-5-5",
+      offline: false,
+      async chat(_m: ChatMessage[], opts?: ChatOptions): Promise<ChatResponse> {
+        // d1: one read + one merge; d2's read fails.
+        if (++calls > 2) throw new AIProviderError("upstream down", 503);
+        return {
+          content: (opts?.systemMessage ?? "").includes("combining the statements")
+            ? NO_MERGE
+            : READ_REPLY,
+          model: "claude-sonnet-5-5",
+          provider: "anthropic",
+          usage: { promptTokens: 50, completionTokens: 5, totalTokens: 55 },
+        };
+      },
+    } as unknown as AIProvider;
+    const err = await runDocumentReaderAgent({
+      provider: second,
+      projectId: "p1",
+      actor: MEMBER,
+      documentIds: ["d1", "d2"],
+      load: async () => [doc("d1"), doc("d2")],
+    }).catch((e) => e);
+    expect(err).toBeInstanceOf(AIProviderError);
+    expect(spentUsageOf(err)?.totalTokens).toBe(110);
+  });
+
+  it("#2262 — counts the tokens an unreadable document cost, beside the documents read", async () => {
+    let n = 0;
+    const flaky = provider((system) => {
+      if (system.includes("combining the statements")) return NO_MERGE;
+      return n++ < 2 ? "garbage" : READ_REPLY;
+    });
+    const read = await runDocumentReaderAgent({
+      provider: flaky,
+      projectId: "p1",
+      actor: MEMBER,
+      documentIds: ["d1", "d2"],
+      load: async () => [doc("d1"), doc("d2")],
+    });
+    // d1: two unreadable attempts; d2: one read + one merge. 55 tokens each.
+    expect(read!.result.usage.totalTokens).toBe(220);
+  });
+
+  it("#2262 — the error when every document was unreadable carries what they cost", async () => {
+    const err = await runDocumentReaderAgent({
+      provider: provider(() => "garbage"),
+      projectId: "p1",
+      actor: MEMBER,
+      documentIds: ["d1", "d2"],
+      load: async () => [doc("d1"), doc("d2")],
+    }).catch((e) => e);
+    expect(err.message).toMatch(/could not be read/);
+    // Two documents × two attempts × 55 tokens.
+    expect(spentUsageOf(err)?.totalTokens).toBe(220);
+  });
+
+  it("#2262 — passes the actor to the loader and the operator's notes to every reading call", async () => {
+    const seen: string[] = [];
+    const noting = {
+      ...reading,
+      async chat(messages: ChatMessage[], opts?: ChatOptions): Promise<ChatResponse> {
+        if (!(opts?.systemMessage ?? "").includes("combining the statements")) {
+          seen.push(messages.map((m) => m.content as string).join("\n"));
+        }
+        return reading.chat(messages, opts);
+      },
+    } as unknown as AIProvider;
+    const load = vi.fn(async () => [doc("d1"), doc("d2")]);
+    await runDocumentReaderAgent({
+      provider: noting,
+      projectId: "p1",
+      actor: MEMBER,
+      documentIds: ["d1", "d2"],
+      operatorNotes: "Only the payment rules matter for this change.",
+      load,
+    });
+    expect(load).toHaveBeenCalledWith("p1", ["d1", "d2"], MEMBER);
+    expect(seen).toHaveLength(2);
+    for (const prompt of seen) {
+      expect(prompt).toContain("Only the payment rules matter for this change.");
+    }
+  });
+
+  it("#2262 — says how many statements it found to analyse", async () => {
+    const read = await runDocumentReaderAgent({
+      provider: reading,
+      projectId: "p1",
+      actor: MEMBER,
+      documentIds: ["d1"],
+      load: async () => [doc("d1")],
+    });
+    expect(read!.result.output.summary).toBe(
+      "Read 1 of 1 selected document in full (3 sections): 2 statements to analyse, each with its source.",
+    );
+    const one = await runDocumentReaderAgent({
+      provider: provider((system) =>
+        system.includes("combining the statements")
+          ? NO_MERGE
+          : JSON.stringify({ statements: [JSON.parse(READ_REPLY).statements[0]] }),
+      ),
+      projectId: "p1",
+      actor: MEMBER,
+      documentIds: ["d1"],
+      load: async () => [doc("d1")],
+    });
+    expect(one!.result.output.summary).toContain(": 1 statement to analyse,");
+  });
+
+  it("#2262 — with nothing selected, reads the bounded implicit selection and lists the rest", async () => {
+    db.documents = Array.from({ length: READER_IMPLICIT_MAX_DOCUMENTS + 1 }, (_, i) => ({
+      id: `d${i}`,
+      projectId: "p1",
+      filename: `d${i}.docx`,
+      title: null,
+      mimeType: "text/markdown",
+      storagePath: `p1/d${i}`,
+      uploadedAt: i,
+    }));
+    const load = vi.fn(async (_p: string, ids: readonly string[]) => ids.map((id) => doc(id)));
+    const read = await runDocumentReaderAgent({
+      provider: reading,
+      projectId: "p1",
+      actor: MEMBER,
+      documentIds: [],
+      load,
+    });
+    expect(load).toHaveBeenCalledWith("p1", ["d5", "d4", "d3", "d2", "d1"], MEMBER);
+    expect(read!.coverage.documents.map((d) => [d.documentId, d.status])).toEqual([
+      ["d5", "read"],
+      ["d4", "read"],
+      ["d3", "read"],
+      ["d2", "read"],
+      ["d1", "read"],
+      ["d0", "unread"],
+    ]);
+    expect(read!.result.output.summary).toContain("Read 5 of 6 selected documents");
+  });
+
+  it("#2262 — with nothing selected and nothing ready, returns null without loading", async () => {
+    const load = vi.fn(async () => []);
+    const read = await runDocumentReaderAgent({
+      provider: reading,
+      projectId: "p1",
+      actor: MEMBER,
+      documentIds: [],
+      load,
+    });
+    expect(read).toBeNull();
+    expect(load).not.toHaveBeenCalled();
+  });
+
+  it("#2262 — never sends the caller to retrieval for a document its ACL withheld", async () => {
+    const read = await runDocumentReaderAgent({
+      provider: reading,
+      projectId: "p1",
+      actor: MEMBER,
+      documentIds: ["secret"],
+      load: async () => [
+        {
+          ok: false,
+          documentId: "secret",
+          filename: "secret",
+          reason: "unavailable",
+          withheld: true,
+        },
+      ],
+    });
+    expect(read).not.toBeNull();
+    expect(read!.result.output.findings).toEqual([]);
+    expect(read!.coverage.documents).toEqual([
+      expect.objectContaining({ documentId: "secret", status: "unread" }),
+    ]);
+  });
+
+  it("#2262 — nor when the implicit selection held only documents the requester may not see", async () => {
+    db.documents = [
+      {
+        id: "secret",
+        projectId: "p1",
+        filename: "secret.md",
+        title: null,
+        mimeType: "text/markdown",
+        storagePath: "p1/secret",
+        aclSubjects: restrictedTo({ kind: "user", value: "u2" }),
+      },
+    ];
+    const read = await runDocumentReaderAgent({
+      provider: reading,
+      projectId: "p1",
+      actor: MEMBER,
+      documentIds: [],
+      load: async () => [],
+    });
+    expect(read).not.toBeNull();
+    // The withheld document is not named to the requester.
+    expect(read!.coverage.documents).toEqual([]);
   });
 });
 
