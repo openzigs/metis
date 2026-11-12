@@ -18,6 +18,11 @@
  * place. A requirement whose rules could not be loaded, or whose evaluation
  * failed, stores nothing and is reported as failed.
  *
+ * CANCELLED (#2281). The route ties `signal` to the request: a client that goes
+ * away aborts the model calls in flight, and a re-check aborted at any point
+ * before its findings are written stores nothing (an aborted findings run
+ * rejects before its write).
+ *
  * TENANCY. The requirement is read with the analysis AND project ids, which the
  * route binds with `ensureAnalysisVisible`; the rules are the project's
  * workspace's (`governingApplicabilityHookFor`).
@@ -36,7 +41,10 @@ import {
   toStoredApplicability,
   upsertGoverningRequirementApplicability,
 } from "./applicability-store.js";
-import { produceGoverningFindingsForAnalysis } from "./findings-store.js";
+import {
+  produceGoverningFindingsForAnalysis,
+  type GoverningFindingsRun,
+} from "./findings-store.js";
 
 const log = createChildLogger("governing-recheck");
 
@@ -60,7 +68,9 @@ export type RecheckGoverningRequirementOutcome =
   /** The flag is off, or the workspace has no current governing rule. */
   | { ok: false; reason: "no-rules" }
   /** The rules could not be read, or the requirement could not be evaluated. */
-  | { ok: false; reason: "failed"; message: string };
+  | { ok: false; reason: "failed"; message: string }
+  /** #2281 — `signal` aborted before anything was stored. */
+  | { ok: false; reason: "cancelled" };
 
 /** The wording a requirement is checked on: its title, body and acceptance criteria. */
 export function requirementWording(r: {
@@ -96,6 +106,7 @@ export async function recheckGoverningRequirement(
 
   const text = requirementWording(requirement);
   const set = await hook.decide({ id: requirement.id, text });
+  if (input.signal?.aborted) return { ok: false, reason: "cancelled" };
   if (set.error) return { ok: false, reason: "failed", message: set.error };
 
   const at = input.now ?? new Date();
@@ -107,15 +118,22 @@ export async function recheckGoverningRequirement(
     ...decided.requirements[0]!,
     versions: { [requirement.id]: requirement.version },
   };
-  const run = await produceGoverningFindingsForAnalysis({
-    analysisId,
-    projectId,
-    provider: input.provider,
-    requirementIds: [requirement.id],
-    applicability: { decidedAt: at.toISOString(), requirements: [entry] },
-    ...(input.model ? { model: input.model } : {}),
-    ...(input.signal ? { signal: input.signal } : {}),
-  });
+  let run: GoverningFindingsRun;
+  try {
+    run = await produceGoverningFindingsForAnalysis({
+      analysisId,
+      projectId,
+      provider: input.provider,
+      requirementIds: [requirement.id],
+      applicability: { decidedAt: at.toISOString(), requirements: [entry] },
+      ...(input.model ? { model: input.model } : {}),
+      ...(input.signal ? { signal: input.signal } : {}),
+    });
+  } catch (err) {
+    // An aborted run rejects before it writes anything.
+    if (input.signal?.aborted) return { ok: false, reason: "cancelled" };
+    throw err;
+  }
   if (run.failed > 0) {
     return {
       ok: false,

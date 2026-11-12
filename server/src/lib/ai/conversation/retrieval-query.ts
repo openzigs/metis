@@ -265,6 +265,8 @@ export interface CitableExcerpt {
   name: string;
   /** `name#position`, as the block printed it. */
   locator: string;
+  /** #2241 — its dense cosine, for the grounding label; absent when it has none. */
+  relevance?: number;
 }
 
 /** The widest `#a-#b` chunk range read as citing every chunk in it. */

@@ -34,7 +34,7 @@ describe("formatBaQaReport", () => {
         summarizeArm("off", [off], { answerUsd: 0.01, judgeUsd: 0.002 }),
         summarizeArm("on", [on], { answerUsd: null, judgeUsd: 0.002 }),
       ],
-      armFlags: { off: { RAG_RERANK: "(unset: off)" }, on: { RAG_RERANK: "1" } },
+      armFlags: { off: { RAG_RERANK: "0" }, on: { RAG_RERANK: "1" } },
       sessions: [
         { arm: "off", score: off, costUsd: 0.01, projectId: null, ragChars: 0, toolCalls: 0 },
         { arm: "on", score: on, costUsd: null, projectId: "p", ragChars: 900, toolCalls: 3 },
@@ -77,6 +77,9 @@ describe("formatBaQaReport", () => {
     expect(md).not.toContain("Stopped early");
     // No multi-turn question, no retrieval section.
     expect(md).not.toContain("Multi-turn retrieval");
+    // A run recorded before #2243 has no cap fields.
+    expect(md).toContain("| Tool loop out of turns | n/a |");
+    expect(md).toContain("| Tool results truncated | n/a |");
   });
 
   it("adds the multi-turn retrieval section per arm (#2269)", () => {
@@ -117,5 +120,31 @@ describe("formatBaQaReport", () => {
     expect(md).toContain("| Follow-ups the planner caught | 100% (1/1) | n/a |");
     expect(md).toContain("| Better with the conversation | F2 | - |");
     expect(md).toContain("| Cited excerpts carried forward | 1 | 0 |");
+  });
+
+  it("counts the tool loop's two caps per arm, over the sessions that recorded them", () => {
+    const s = scoreQuestion(q, [], new Map(), null);
+    const base = { score: s, costUsd: 0, projectId: "p", ragChars: 1, toolCalls: 4 };
+    const md = formatBaQaReport({
+      title: "T",
+      provider: "p",
+      model: "m",
+      judgeModel: "m",
+      arms: [
+        summarizeArm("off", [s], { answerUsd: 0, judgeUsd: 0 }),
+        summarizeArm("on", [s, s, s], { answerUsd: 0, judgeUsd: 0 }),
+      ],
+      armFlags: {},
+      sessions: [
+        { ...base, arm: "off" },
+        { ...base, arm: "on", turnsExhausted: true, truncatedToolResults: 2 },
+        { ...base, arm: "on", turnsExhausted: false, truncatedToolResults: 1 },
+        { ...base, arm: "on", turnsExhausted: false, truncatedToolResults: 0 },
+      ],
+      spentUsd: 0,
+      stoppedEarly: null,
+    });
+    expect(md).toContain("| Tool loop out of turns | n/a | 1 in 1/3 sessions |");
+    expect(md).toContain("| Tool results truncated | n/a | 3 in 2/3 sessions |");
   });
 });

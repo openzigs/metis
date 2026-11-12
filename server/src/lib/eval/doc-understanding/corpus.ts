@@ -1,5 +1,6 @@
 /**
- * #2229 — the document-understanding corpus: three Word FRDs/BRDs with
+ * #2229 — the document-understanding corpus: four Word FRDs/BRDs (the fourth,
+ * a 60 KB FRD, from #2255) with
  * labelled requirements (a source span each) and labelled ambiguities (the
  * questions a business analyst would want raised).
  *
@@ -29,6 +30,7 @@ export const DOC_UNDERSTANDING_CORPORA = [
   "docunderstanding-01-clinic-booking",
   "docunderstanding-02-freight-claims",
   "docunderstanding-03-community-grants",
+  "docunderstanding-04-library-lending",
 ] as const;
 export type DocUnderstandingCorpusName = (typeof DOC_UNDERSTANDING_CORPORA)[number];
 

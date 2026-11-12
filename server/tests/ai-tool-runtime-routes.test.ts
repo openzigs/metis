@@ -154,6 +154,7 @@ import {
 import { __setSessionRuntime } from "../src/lib/library/session-runtime.js";
 import { registerSocketServer } from "../src/lib/socket/registry.js";
 import type { MetisIOServer } from "../src/lib/socket/server.js";
+import { CHAT_CODE_TOOL_NAMES } from "../src/lib/analysis/tools/chat-code-tool-names.js";
 
 // ── Tools ─────────────────────────────────────────────────────────────────
 const dangerExec = vi.fn(async (args: { table: string }) => ({ text: `rows in ${args.table}: 7` }));
@@ -469,12 +470,31 @@ describe("#140 native tools in chat", () => {
 
   it("CHAT_TOOLS=false offers no METIS/MCP tools", async () => {
     process.env.CHAT_TOOLS = "false";
+    process.env.CHAT_CODE_SEARCH_TOOLS = "false";
     try {
       const model = stubModel([{ content: "hi" }]);
       const app = makeApp();
       const sid = await newSession(app);
       await stream(app, sid);
       expect(model.requests[0]!.opts.tools).toBeUndefined();
+    } finally {
+      delete process.env.CHAT_TOOLS;
+      delete process.env.CHAT_CODE_SEARCH_TOOLS;
+    }
+  });
+
+  // #2243 — the code-search tools are on by default and follow their own flag,
+  // so CHAT_TOOLS=false leaves exactly them.
+  it("CHAT_TOOLS=false still offers the code-search tools by default (#2243)", async () => {
+    process.env.CHAT_TOOLS = "false";
+    delete process.env.CHAT_CODE_SEARCH_TOOLS;
+    try {
+      const model = stubModel([{ content: "hi" }]);
+      const app = makeApp();
+      const sid = await newSession(app);
+      await stream(app, sid);
+      const offered = (model.requests[0]!.opts.tools ?? []).map((t) => t.name).sort();
+      expect(offered).toEqual([...CHAT_CODE_TOOL_NAMES].sort());
     } finally {
       delete process.env.CHAT_TOOLS;
     }
