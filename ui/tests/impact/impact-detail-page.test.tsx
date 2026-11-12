@@ -205,6 +205,21 @@ describe("ImpactAnalysisDetailPage", () => {
     expect(mutate).toHaveBeenCalledWith({ id: "ia-0000000001" });
   });
 
+  it("#2280 — a run from a document can be re-run reading the document again", () => {
+    const mutate = vi.fn();
+    mockRerun.mockReturnValue({ mutate, isPending: false, isSuccess: false } as never);
+    mockUse.mockReturnValue(state({ data: { ...detail, documentId: "doc-0000000001" } }));
+    render(<ImpactAnalysisDetailPage />, { wrapper: makeWrapper() });
+    fireEvent.click(screen.getByTestId("impact-rerun-reread"));
+    expect(mutate).toHaveBeenCalledWith({ id: "ia-0000000001", rereadDocument: true });
+  });
+
+  it("#2280 — a run from pasted text has no document to read again", () => {
+    mockUse.mockReturnValue(state({ data: detail }));
+    render(<ImpactAnalysisDetailPage />, { wrapper: makeWrapper() });
+    expect(screen.queryByTestId("impact-rerun-reread")).toBeNull();
+  });
+
   it("shows the rerun-of lineage crumb + drift diff for a re-run (#965)", () => {
     mockUse.mockReturnValue(state({ data: { ...detail, rerunOfId: "ia-original" } }));
     mockDrift.mockReturnValue({

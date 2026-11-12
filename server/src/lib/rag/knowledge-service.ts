@@ -160,9 +160,10 @@ export interface KnowledgeServiceDeps {
   /**
    * #2232 — describes the images embedded in an ingested Word document. Defaults to the
    * project's own provider when its model reports `vision`; the provider is resolved only if
-   * the document has an image. Tests inject a fake.
+   * the document has an image. Tests inject a fake. #2263 — the document id is the ledger
+   * session its descriptions' usage is recorded under.
    */
-  imageDescriber?: (projectId: string) => ImageDescriber;
+  imageDescriber?: (projectId: string, documentId: string) => ImageDescriber;
 }
 
 export type KnowledgeEvent = {
@@ -439,11 +440,13 @@ export class KnowledgeService {
   private readonly contextualMode: ContextualChunksMode;
   private contextGenerator: ChunkContextGenerator | undefined;
   /** #2232 — see {@link KnowledgeServiceDeps.imageDescriber}. */
-  private readonly imageDescriber: (projectId: string) => ImageDescriber;
+  private readonly imageDescriber: (projectId: string, documentId: string) => ImageDescriber;
 
   constructor(deps: KnowledgeServiceDeps = {}) {
     this.leaseBackend = deps.reindexLeaseBackend;
-    this.imageDescriber = deps.imageDescriber ?? ((projectId) => projectImageDescriber(projectId));
+    this.imageDescriber =
+      deps.imageDescriber ??
+      ((projectId, documentId) => projectImageDescriber({ projectId, documentId }));
     this.embedder = deps.embedder ?? getEmbedder();
     this.store = deps.vectorStore ?? getVectorStore();
     this.storage = deps.storage ?? getDocumentStorage();
@@ -527,7 +530,7 @@ export class KnowledgeService {
       buffer,
       mimeType: doc.mimeType,
       filename: doc.filename,
-      describeImage: this.imageDescriber(doc.projectId),
+      describeImage: this.imageDescriber(doc.projectId, documentId),
     });
     if (!parsed.ok) {
       // Leave document in `pending` so a follow-up ingest can pick it up once the parser
@@ -900,6 +903,8 @@ export class KnowledgeService {
         text: m.text,
         score: m.score,
         rankScore: rankScoreByChunk.get(m.chunkId) ?? m.score,
+        // #2241 — the cosine survives a rerank, which rewrites `score`.
+        ...(denseIds.has(m.chunkId) ? { denseScore: meta.get(m.chunkId)!.score } : {}),
         matchedBy,
         ...(path ? { path } : {}),
         embeddingModel: m.embeddingModel,
@@ -959,6 +964,8 @@ export class KnowledgeService {
         data: { ord: -1 },
       });
       await tx.quarantineChunk.deleteMany({ where: { documentId, ord: { gte: 0 } } });
+      // #2280 — the delete is soft, so the cascade never fires: its saved readings go here.
+      await tx.savedDocumentReading.deleteMany({ where: { documentId } });
     });
     await prisma.knowledgeChunk.deleteMany({ where: { documentId } });
     await this.store.deleteByDocument(doc.projectId, documentId);

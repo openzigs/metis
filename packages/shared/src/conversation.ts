@@ -73,7 +73,13 @@ export type TranscriptRole = "user" | "assistant" | "system";
  *   failed, or no tool found anything). This does NOT mean the answer came from
  *   general knowledge: the model may still have called other tools, such as an
  *   MCP server, whose content is not known to be the project's (PR #437 review);
- * - `unscoped`: the session has no project ("All projects") and no retrieval ran.
+ * - `unscoped`: the session has no project ("All projects") and no retrieval ran;
+ * - `multi` (#2238): the session is scoped to several projects (or a
+ *   workspace) and retrieval searched each of them. `projects` lists every
+ *   project searched with how many of its excerpts reached the prompt (`0`:
+ *   searched, nothing included); `unsearched` the ones that timed out or
+ *   failed, by name; `unavailable` how many in the scope the caller can no
+ *   longer reach (a count: their names are not disclosed).
  *
  * Recorded on the assistant row as the turn is answered and streamed to the
  * client as a `grounding` event, so a reply says what it was based on both
@@ -81,10 +87,19 @@ export type TranscriptRole = "user" | "assistant" | "system";
  *
  * `sources` (#439) counts the excerpts automatic retrieval SUPPLIED — one per
  * knowledge-base chunk plus one per code symbol in the fused code block (#714).
- * It is not a count of relevant excerpts: the knowledge search returns its top
- * hits with no score threshold. `toolReads` counts the successful
+ * Since #2241 only excerpts that cleared chat's relevance floor are supplied,
+ * so the count is of excerpts relevant enough to use. `toolReads` counts the successful
  * project-scoped tool calls (code search, `search-knowledge`) that returned at
  * least one result; it is absent when there were none.
+ *
+ * #2241 — the label says what the reply rested on and what went wrong:
+ * - `sourcesUsed` lists the files and documents those excerpts came from, each
+ *   with how many excerpts it gave and its best relevance (dense cosine);
+ * - a `no-context` reply says why (`reason`): nothing was found, the matches
+ *   were too weak to use (`insufficient-evidence`, with `belowFloor` of them
+ *   set aside), or the search failed;
+ * - `coverage` is set when only part of the project's knowledge could be
+ *   searched (chunks embedded with another model).
  *
  * `projectName` is the project's name when the reply was answered, and stays
  * so after a rename (#439, deliberate): the label records what the reply was
@@ -98,9 +113,65 @@ export type ChatGrounding =
       projectName: string;
       sources: number;
       toolReads?: number;
+      sourcesUsed?: GroundingSource[];
+      coverage?: GroundingCoverage;
     }
-  | { status: "no-context"; projectId: string; projectName: string }
-  | { status: "unscoped" };
+  | {
+      status: "no-context";
+      projectId: string;
+      projectName: string;
+      reason?: NoContextReason;
+      belowFloor?: number;
+      coverage?: GroundingCoverage;
+    }
+  | { status: "unscoped" }
+  | {
+      status: "multi";
+      projects: ChatGroundingProject[];
+      unsearched?: ChatGroundingUnsearched[];
+      unavailable?: number;
+    };
+
+/** #2238 — one project a multi-product turn searched. */
+export interface ChatGroundingProject {
+  projectId: string;
+  projectName: string;
+  sources: number;
+}
+
+/** #2238 — one project a multi-product turn could not search, and why. */
+export interface ChatGroundingUnsearched {
+  projectId: string;
+  projectName: string;
+  reason: "timeout" | "error";
+}
+
+/** #2241 — one file or document a reply's excerpts came from. */
+export interface GroundingSource {
+  /** The repository path or document name the model was shown. */
+  name: string;
+  /** How many of the reply's excerpts came from it. */
+  excerpts: number;
+  /** The best dense cosine among them; absent for keyword-only or carried excerpts. */
+  relevance?: number;
+}
+
+/** #2241 — only `matchingChunks` of the project's `totalChunks` could be searched. */
+export interface GroundingCoverage {
+  matchingChunks: number;
+  totalChunks: number;
+}
+
+/** #2241 — why automatic retrieval supplied nothing. */
+export const NO_CONTEXT_REASONS = [
+  "nothing-found",
+  "insufficient-evidence",
+  "retrieval-failed",
+] as const;
+export type NoContextReason = (typeof NO_CONTEXT_REASONS)[number];
+
+/** #2241 — the most sources a label lists; the rest are counted in `sources`. */
+export const MAX_GROUNDING_SOURCES = 20;
 
 function nonEmpty(v: unknown): v is string {
   return typeof v === "string" && v.length > 0;
@@ -109,6 +180,33 @@ function nonEmpty(v: unknown): v is string {
 /** A non-negative whole number. */
 function count(v: unknown): v is number {
   return typeof v === "number" && Number.isInteger(v) && v >= 0;
+}
+
+function parseSources(v: unknown): GroundingSource[] | undefined {
+  if (!Array.isArray(v)) return undefined;
+  const out: GroundingSource[] = [];
+  for (const raw of v.slice(0, MAX_GROUNDING_SOURCES)) {
+    if (!raw || typeof raw !== "object") continue;
+    const s = raw as Record<string, unknown>;
+    if (!nonEmpty(s.name) || s.name.length > 500) continue;
+    if (!count(s.excerpts) || s.excerpts === 0) continue;
+    const relevance =
+      typeof s.relevance === "number" && Number.isFinite(s.relevance) ? s.relevance : undefined;
+    out.push({
+      name: s.name,
+      excerpts: s.excerpts,
+      ...(relevance !== undefined ? { relevance } : {}),
+    });
+  }
+  return out.length > 0 ? out : undefined;
+}
+
+function parseCoverage(v: unknown): GroundingCoverage | undefined {
+  if (!v || typeof v !== "object") return undefined;
+  const c = v as Record<string, unknown>;
+  return count(c.matchingChunks) && count(c.totalChunks) && c.matchingChunks < c.totalChunks
+    ? { matchingChunks: c.matchingChunks, totalChunks: c.totalChunks }
+    : undefined;
 }
 
 /**
@@ -123,32 +221,83 @@ export function parseChatGrounding(value: unknown): ChatGrounding | null {
   switch (g.status) {
     case "unscoped":
       return { status: "unscoped" };
-    case "no-context":
-      return nonEmpty(g.projectId) && nonEmpty(g.projectName)
-        ? { status: "no-context", projectId: g.projectId, projectName: g.projectName }
-        : null;
+    case "no-context": {
+      if (!nonEmpty(g.projectId) || !nonEmpty(g.projectName)) return null;
+      // #2241 — an unknown reason, or a count that is not one, is dropped:
+      // the label then says only what it said before.
+      const reason = NO_CONTEXT_REASONS.find((r) => r === g.reason);
+      const coverage = parseCoverage(g.coverage);
+      return {
+        status: "no-context",
+        projectId: g.projectId,
+        projectName: g.projectName,
+        ...(reason ? { reason } : {}),
+        ...(reason === "insufficient-evidence" && count(g.belowFloor) && g.belowFloor > 0
+          ? { belowFloor: g.belowFloor }
+          : {}),
+        ...(coverage ? { coverage } : {}),
+      };
+    }
     case "grounded": {
       // #439 — a present `toolReads` must be a positive count; `sources` may be
       // zero only when the tools read the project, so a label never claims
       // grounding that nothing supplied.
       const hasToolReads = g.toolReads !== undefined;
       if (hasToolReads && !(count(g.toolReads) && (g.toolReads as number) > 0)) return null;
-      return nonEmpty(g.projectId) &&
-        nonEmpty(g.projectName) &&
-        count(g.sources) &&
-        (g.sources > 0 || hasToolReads)
-        ? {
-            status: "grounded",
-            projectId: g.projectId,
-            projectName: g.projectName,
-            sources: g.sources,
-            ...(hasToolReads ? { toolReads: g.toolReads as number } : {}),
-          }
-        : null;
+      if (
+        !nonEmpty(g.projectId) ||
+        !nonEmpty(g.projectName) ||
+        !count(g.sources) ||
+        !(g.sources > 0 || hasToolReads)
+      ) {
+        return null;
+      }
+      const sourcesUsed = parseSources(g.sourcesUsed);
+      const coverage = parseCoverage(g.coverage);
+      return {
+        status: "grounded",
+        projectId: g.projectId,
+        projectName: g.projectName,
+        sources: g.sources,
+        ...(hasToolReads ? { toolReads: g.toolReads as number } : {}),
+        ...(sourcesUsed ? { sourcesUsed } : {}),
+        ...(coverage ? { coverage } : {}),
+      };
     }
+    case "multi":
+      return parseMultiGrounding(g);
     default:
       return null;
   }
+}
+
+/** #2238 — the `multi` shape, or `null` when any part of it is malformed. */
+function parseMultiGrounding(g: Record<string, unknown>): ChatGrounding | null {
+  if (!Array.isArray(g.projects)) return null;
+  const projects: ChatGroundingProject[] = [];
+  for (const raw of g.projects as unknown[]) {
+    const p = (raw ?? {}) as Record<string, unknown>;
+    if (!nonEmpty(p.projectId) || !nonEmpty(p.projectName) || !count(p.sources)) return null;
+    projects.push({ projectId: p.projectId, projectName: p.projectName, sources: p.sources });
+  }
+  let unsearched: ChatGroundingUnsearched[] | undefined;
+  if (g.unsearched !== undefined) {
+    if (!Array.isArray(g.unsearched)) return null;
+    unsearched = [];
+    for (const raw of g.unsearched as unknown[]) {
+      const u = (raw ?? {}) as Record<string, unknown>;
+      if (!nonEmpty(u.projectId) || !nonEmpty(u.projectName)) return null;
+      if (u.reason !== "timeout" && u.reason !== "error") return null;
+      unsearched.push({ projectId: u.projectId, projectName: u.projectName, reason: u.reason });
+    }
+  }
+  if (g.unavailable !== undefined && !(count(g.unavailable) && g.unavailable > 0)) return null;
+  return {
+    status: "multi",
+    projects,
+    ...(unsearched && unsearched.length > 0 ? { unsearched } : {}),
+    ...(g.unavailable !== undefined ? { unavailable: g.unavailable as number } : {}),
+  };
 }
 
 /** `summary` rows are written by compaction and stand in for the rows they fold. */
@@ -276,6 +425,10 @@ export interface ResumeSessionResponse {
     status: string;
     forkedFromSessionId: string | null;
     forkedFromOrdinal: number | null;
+    /** #2238 — the 2+ projects a multi-product session searches (`projectId` is null). */
+    scopeProjectIds: string[] | null;
+    /** #2238 — the workspace a workspace-scoped session searches (`projectId` is null). */
+    scopeWorkspaceId: string | null;
     updatedAt: string;
     /**
      * #149 — non-null when the session can be read but can no longer take a

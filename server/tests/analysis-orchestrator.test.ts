@@ -2238,6 +2238,47 @@ describe("AnalysisOrchestrator.regenerateAgent", () => {
     // Document + synthesis got replaced; total agentResults still 5.
     expect(agentResults.size).toBe(5);
   });
+
+  it("#2280 — 'Read the documents again' reaches every agent run, and a regenerate always reads again", async () => {
+    const orch = new AnalysisOrchestrator({ provider: makeProvider({}), retrieve: async () => [] });
+    const runOneAgent = vi.spyOn(
+      orch as unknown as { runOneAgent: (input: Record<string, unknown>) => Promise<unknown> },
+      "runOneAgent",
+    );
+    const wait = async (id: string) => {
+      for (let i = 0; i < 200 && analyses.get(id)!.status === "running"; i += 1) {
+        await new Promise((r) => setTimeout(r, 5));
+      }
+    };
+    const inputs = () => runOneAgent.mock.calls.map((c) => c[0] as Record<string, unknown>);
+
+    const { id: plain } = await orch.start({
+      projectId: "proj-abcdefghij",
+      startedById: "user-1234567890",
+    });
+    await wait(plain);
+    expect(inputs().length).toBeGreaterThan(0);
+    expect(inputs().every((i) => i.rereadDocuments === undefined)).toBe(true);
+
+    runOneAgent.mockClear();
+    const { id: reread } = await orch.start({
+      projectId: "proj-abcdefghij",
+      startedById: "user-1234567890",
+      rereadDocuments: true,
+    });
+    await wait(reread);
+    expect(inputs().find((i) => i.agentKey === "document")).toMatchObject({
+      rereadDocuments: true,
+    });
+
+    runOneAgent.mockClear();
+    await orch.regenerateAgent({
+      analysisId: plain,
+      agentKey: "document",
+      actorId: "user-1234567890",
+    });
+    expect(inputs()[0]).toMatchObject({ agentKey: "document", rereadDocuments: true });
+  });
 });
 
 describe("AnalysisOrchestrator.regenerateAgent guards", () => {
@@ -3584,7 +3625,11 @@ describe("runEnhancementPipeline (Epic #922)", () => {
 
   const runPipeline = async (
     provider: AIProvider,
-    opts: { enableWebResearch: boolean; enableClarification: boolean },
+    opts: {
+      enableWebResearch: boolean;
+      enableClarification: boolean;
+      extractedRequirements?: unknown[];
+    },
   ): Promise<string> => {
     const analysisId = nid("ana");
     analyses.set(analysisId, {
@@ -3613,7 +3658,9 @@ describe("runEnhancementPipeline (Epic #922)", () => {
       }
     ).runEnhancementPipeline({
       analysisId,
-      extractedRequirements: [{ id: "r1", text: "System must retain audit logs." }],
+      extractedRequirements: opts.extractedRequirements ?? [
+        { id: "r1", text: "System must retain audit logs." },
+      ],
       extraInstructions: undefined,
       enableWebResearch: opts.enableWebResearch,
       enableClarification: opts.enableClarification,
@@ -3661,6 +3708,75 @@ describe("runEnhancementPipeline (Epic #922)", () => {
     // says so once instead of persisting one empty digest per evidence need.
     expect(meta.webResearch.digests).toEqual([]);
     expect(meta.webResearch.notice).toBe(NO_WEB_SEARCH_PROVIDER_NOTICE);
+  });
+
+  /**
+   * #2235 — when the document reader read the source, the extraction reads its
+   * verified statements, each requirement keeps the paragraph it cites, and the
+   * GtWR rules' hits on that paragraph are persisted as its ambiguities: read
+   * back from the analysis metadata the clarification route reads.
+   */
+  it("extracts from the reader's verified paragraphs and persists their citations and rule hits", async () => {
+    const seen: string[] = [];
+    const provider = {
+      key: "anthropic" as const,
+      model: "stub",
+      offline: false,
+      async chat(messages: ChatMessage[]): Promise<ChatResponse> {
+        seen.push(messages.map((m) => messageText(m)).join("\n"));
+        return stubResponse(
+          JSON.stringify({
+            requirements: [
+              {
+                title: "Fast search",
+                description: "Search is quick",
+                priority: "must-have",
+                sourceIds: ["REQ-001"],
+                ambiguities: [],
+              },
+            ],
+          }),
+        );
+      },
+    } as unknown as AIProvider;
+    const analysisId = await runPipeline(provider, {
+      enableWebResearch: false,
+      enableClarification: true,
+      extractedRequirements: [
+        {
+          id: "REQ-001",
+          text: "Search is quick.",
+          source: {
+            ref: "REQ-001",
+            documentId: "doc-1",
+            filename: "frd.docx",
+            headingPath: ["4 Search"],
+            quote: "Search shall be fast, if possible.",
+          },
+        },
+      ],
+    });
+    // #2275 — the section and statement are fenced with the quote.
+    expect(seen[0]).toContain(
+      "[REQ-001]\n<<<SOURCE\nSection: frd.docx › 4 Search\nStatement: Search is quick.\n" +
+        "Search shall be fast, if possible.\nSOURCE>>>",
+    );
+    const meta = JSON.parse(analyses.get(analysisId)!.metadata!);
+    const [req] = meta.structuredRequirements.requirements;
+    expect(req.sources).toEqual([
+      {
+        ref: "REQ-001",
+        documentId: "doc-1",
+        filename: "frd.docx",
+        headingPath: ["4 Search"],
+        quote: "Search shall be fast, if possible.",
+      },
+    ]);
+    expect(req.ambiguities.map((a: { field: string }) => a.field)).toEqual([
+      "R7:fast",
+      "R8:if possible",
+    ]);
+    expect(meta.structuredRequirements.totalAmbiguities).toBe(2);
   });
 });
 

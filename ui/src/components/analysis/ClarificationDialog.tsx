@@ -14,7 +14,9 @@ import {
   analysisApi,
   type ClarificationStatePayload,
   type ClarifyingQuestion,
+  type ClarifyingQuestionCitation,
   type ClarifyImportResult,
+  type SetAsideClarifyingQuestion,
 } from "@/lib/analysis-api";
 import { triggerDownload } from "@/lib/plugins-api";
 import { formatSourceLabel } from "@/lib/format-source-label";
@@ -111,6 +113,166 @@ export function UnreadResolutionsNote({
       METIS could not read the model’s update for {count} requirement{count === 1 ? "" : "s"} after
       your answers, so {count === 1 ? "its description was" : "their descriptions were"} not
       rewritten from them. Your answers are saved and still count.
+    </p>
+  );
+}
+
+/** #2235 — what kind of uncertainty a question settles, in the analyst's words. */
+const UNCERTAINTY_LABEL: Record<NonNullable<ClarifyingQuestion["uncertainty"]>, string> = {
+  "missing-knowledge":
+    "Missing project knowledge: METIS searched your documents and code before asking",
+  ambiguity: "The document can be read more than one way",
+  silence: "The document does not say",
+  unanswerable: "No one can answer this yet",
+};
+
+/**
+ * #2275 — the label for `q`. "Searched" is said only when the search ran
+ * (`searched`): with no project knowledge to search, offline, or when the
+ * search failed, nothing was searched, and the label says what is missing
+ * without claiming a search.
+ */
+export function uncertaintyLabel(
+  q: Pick<ClarifyingQuestion, "uncertainty" | "searched">,
+): string | null {
+  if (!q.uncertainty) return null;
+  if (q.uncertainty === "missing-knowledge" && !q.searched) {
+    return "Missing project knowledge: your documents or code may answer this";
+  }
+  return UNCERTAINTY_LABEL[q.uncertainty];
+}
+
+/** #2235 — the paragraph of the source document a question is about. */
+export function QuestionCitation({
+  citation,
+}: {
+  citation: ClarifyingQuestionCitation;
+}): React.ReactElement {
+  const where = [citation.filename, ...citation.headingPath].filter(Boolean).join(" › ");
+  return (
+    <figure
+      className="mb-2 rounded border-l-2 border-border bg-muted px-2 py-1"
+      data-testid="question-citation"
+    >
+      {where && <figcaption className="text-xs text-muted-foreground">{where}</figcaption>}
+      <blockquote className="whitespace-pre-line text-xs text-foreground">
+        {citation.quote}
+      </blockquote>
+    </figure>
+  );
+}
+
+/**
+ * #2235 — the plausible readings a question offers. Picking one puts it in the
+ * answer box, where it can still be edited; nothing is submitted until Submit.
+ */
+export function QuestionOptions({
+  question,
+  onPick,
+}: {
+  question: ClarifyingQuestion;
+  onPick: (option: string) => void;
+}): React.ReactElement | null {
+  const options = question.options ?? [];
+  if (options.length === 0) return null;
+  return (
+    <div
+      role="group"
+      aria-label="Possible answers"
+      className="mb-2 flex flex-wrap gap-2"
+      data-testid="question-options"
+    >
+      {options.map((option) => (
+        <Button
+          key={option}
+          type="button"
+          variant="outline"
+          size="sm"
+          aria-describedby={`clarify-label-${question.id}`}
+          onClick={() => onPick(option)}
+        >
+          {option}
+        </Button>
+      ))}
+    </div>
+  );
+}
+
+const SET_ASIDE_HEADING: Record<SetAsideClarifyingQuestion["reason"], string> = {
+  unanswerable: "Open items: no one can answer these yet, so they are recorded and not asked",
+  "same-outcome": "Not asked: every reading of these builds the same thing",
+};
+
+/**
+ * #2235 — the questions METIS did not ask, and why. Listed so that nothing
+ * raised about the document disappears without a trace.
+ */
+export function SetAsideQuestions({
+  state,
+}: {
+  state: ClarificationStatePayload;
+}): React.ReactElement | null {
+  const setAside = state.setAside ?? [];
+  if (setAside.length === 0) return null;
+  const groups = (["unanswerable", "same-outcome"] as const)
+    .map((reason) => ({ reason, items: setAside.filter((q) => q.reason === reason) }))
+    .filter((g) => g.items.length > 0);
+  return (
+    <details className="text-sm" data-testid="clarification-set-aside">
+      <summary className="cursor-pointer text-xs text-muted-foreground">
+        {setAside.length} question{setAside.length === 1 ? "" : "s"} not asked
+      </summary>
+      <div className="mt-2 space-y-3">
+        {groups.map((g) => (
+          <div key={g.reason} className="space-y-2" data-testid={`set-aside-${g.reason}`}>
+            <p className="text-xs font-medium text-muted-foreground">
+              {SET_ASIDE_HEADING[g.reason]}
+            </p>
+            {g.items.map((q) => (
+              <div
+                key={`${q.requirementId}:${q.ambiguityField}:${q.round}`}
+                className="rounded border border-border p-2"
+              >
+                <p className="text-sm text-foreground">{q.question}</p>
+                {q.context && <p className="text-xs text-muted-foreground">{q.context}</p>}
+                {q.citation && <QuestionCitation citation={q.citation} />}
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
+    </details>
+  );
+}
+
+/**
+ * #2235 — a round asks at most a fixed number of questions, the highest-impact
+ * first. Say how many more are waiting, or, on the last round, that they will
+ * not be asked.
+ */
+export function NotAskedNote({
+  state,
+}: {
+  state: ClarificationStatePayload;
+}): React.ReactElement | null {
+  const last = state.rounds[state.rounds.length - 1];
+  const count = last?.notAsked ?? 0;
+  if (count === 0) return null;
+  const more = `${count} more question${count === 1 ? "" : "s"}`;
+  const lastRound = (last?.round ?? 0) >= state.maxRounds;
+  const were = count === 1 ? "was" : "were";
+  return (
+    <p
+      role="status"
+      className="text-xs text-muted-foreground"
+      data-testid="clarification-not-asked"
+    >
+      {lastRound
+        ? `${more} did not fit in the last round and ${were} not asked.`
+        : // #2275 — a completed dialog has no next round to wait for.
+          state.completed
+          ? `${more} of lower impact ${were} not asked.`
+          : `${more} of lower impact ${count === 1 ? "is" : "are"} waiting for the next round.`}
     </p>
   );
 }
@@ -251,9 +413,12 @@ export function ClarificationDialogPanel({
   // round 2 opened at "0 addressed" after round 1's only answer, a governing
   // one, was accepted. Keyed by question id, so the same rule asked again in a
   // later round is still remaining until that question is answered.
+  // #2275 — and the ambiguities set aside as not worth asking (#2235), as the
+  // server's `addressedAmbiguities` counts them.
   const addressedFields = new Set([
     ...state.resolvedAmbiguities,
     ...(state.answeredAmbiguities ?? []),
+    ...(state.setAsideAmbiguities ?? []),
     ...state.rounds
       .flatMap((r) => r.questions ?? [])
       .filter((q) => q.governing && q.answer?.trim())
@@ -406,10 +571,12 @@ export function ClarificationDialogPanel({
           </p>
         )}
         <UnreadResolutionsNote state={state} />
+        <NotAskedNote state={state} />
         {/* Issue #1104 (finding C) — the answers the user wrote are part of the
             analysis record, so show them. A bare "complete" summary is how a
             dozen hand-written answers became unreachable through the UI. */}
         <AnsweredRounds state={state} />
+        <SetAsideQuestions state={state} />
       </Card>
     );
   }
@@ -474,6 +641,7 @@ export function ClarificationDialogPanel({
         </span>
       </div>
       <UnreadResolutionsNote state={state} />
+      <NotAskedNote state={state} />
 
       <div className="space-y-4">
         {questions.map((q: ClarifyingQuestion) => {
@@ -510,6 +678,19 @@ export function ClarificationDialogPanel({
                 {q.question}
               </Label>
               {q.context && <p className="mb-2 text-xs text-muted-foreground">{q.context}</p>}
+              {q.uncertainty && (
+                <p
+                  className="mb-2 text-xs text-muted-foreground"
+                  data-testid="question-uncertainty"
+                >
+                  {uncertaintyLabel(q)}
+                </p>
+              )}
+              {q.citation && <QuestionCitation citation={q.citation} />}
+              <QuestionOptions
+                question={q}
+                onPick={(option) => setAnswers((prev) => ({ ...prev, [q.id]: option }))}
+              />
               {/* #1081 — open because the check failed, not because a model judged it. */}
               {q.groundingFailed && !isSelfResolved && (
                 <p className="mb-2 text-xs text-warning" data-testid="grounding-failed">
@@ -595,6 +776,7 @@ export function ClarificationDialogPanel({
       {submitMutation.isError && (
         <p className="text-sm text-destructive">Failed to submit answers. Please try again.</p>
       )}
+      <SetAsideQuestions state={state} />
     </Card>
   );
 }

@@ -70,6 +70,7 @@ import { FALLBACK_FINDING_QUESTION } from "./findings.js";
 import { produceGoverningFindingsForAnalysis } from "./findings-store.js";
 import { isGoverningDocsEnabled } from "./flag.js";
 import { workspaceRulesByIds } from "./governing-store.js";
+import { withoutDeletedRechecks } from "./requirement-staleness.js";
 
 const log = createChildLogger("governing-applicability-questions");
 
@@ -1292,8 +1293,11 @@ export function governingQuestionSourceFor(input: {
       // #2126 — a carry still running may settle a pair this round would ask.
       // #2133 — a client that goes away stops waiting; the carry runs on.
       await untilAborted(governingCarriesSettled(input.analysisId), signal);
-      const stored = await readGoverningApplicability(input.analysisId);
-      if (!stored) return [];
+      const read = await readGoverningApplicability(input.analysisId);
+      if (!read) return [];
+      // #2281 — a re-check's entry is keyed by its stored requirement: once
+      // that requirement is deleted, nothing is asked about it.
+      const stored = await withoutDeletedRechecks(read, input.analysisId, input.projectId);
       // #2059 — and the questions of Needs BA input findings on rules that apply;
       // #2068 — answered ones too, whose refresh may ask a new question.
       const findings = hasApplyingPair(stored) ? await needsInputFindings(input.analysisId) : [];

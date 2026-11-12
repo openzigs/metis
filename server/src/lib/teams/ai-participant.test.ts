@@ -17,6 +17,13 @@
  *   - in-app room emit fires for the Teams-triggered reply
  */
 import { describe, expect, it, vi } from "vitest";
+
+// #2282 — the default history reader, so the fallback in `resolveDeps` is observable.
+const realHistory = vi.hoisted(() => vi.fn());
+vi.mock("../discussions/thread-context.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../discussions/thread-context.js")>()),
+  loadRecentHistory: realHistory,
+}));
 import { ActivityTypes, type Activity, type TurnContext } from "botbuilder";
 
 import {
@@ -31,6 +38,7 @@ const THREAD = "th-1";
 const PROJECT = "pr-1";
 const USER = "u-99";
 const MSG = "msg-7";
+const LINKED_AT = new Date("2026-11-01T09:00:00.000Z");
 
 function trigger(over: Partial<TeamsAITrigger> = {}): TeamsAITrigger {
   return {
@@ -39,6 +47,7 @@ function trigger(over: Partial<TeamsAITrigger> = {}): TeamsAITrigger {
     aiResponseMode: "on_mention",
     messageId: MSG,
     authorUserId: USER,
+    linkedAt: LINKED_AT,
     ...over,
   };
 }
@@ -67,7 +76,13 @@ interface Harness {
   scheduleMirror: ReturnType<typeof vi.fn>;
   buildRetriever: ReturnType<typeof vi.fn>;
   retrieve: ReturnType<typeof vi.fn>;
+  loadHistory: ReturnType<typeof vi.fn>;
 }
+
+const HISTORY = [
+  { authorKind: "ai", body: "Which feeds should refresh hourly?" },
+  { authorKind: "human", body: "Only the news feeds.", authorUserId: USER },
+];
 
 function harness(
   over: {
@@ -101,6 +116,7 @@ function harness(
   const loadRateLimitConfig = vi.fn().mockReturnValue({ max: 10, windowMs: 60_000 });
   const retrieve = vi.fn().mockResolvedValue({ block: "## Retrieved", sources: 1 });
   const buildRetriever = vi.fn().mockReturnValue(retrieve);
+  const loadHistory = vi.fn().mockResolvedValue(HISTORY);
 
   const opts: AIParticipantOptions = {
     provider: fakeProvider,
@@ -112,6 +128,7 @@ function harness(
     emit: emit as unknown as AIParticipantOptions["emit"],
     scheduleMirror: scheduleMirror as unknown as AIParticipantOptions["scheduleMirror"],
     buildRetriever: buildRetriever as unknown as AIParticipantOptions["buildRetriever"],
+    loadHistory: loadHistory as unknown as AIParticipantOptions["loadHistory"],
   };
   return {
     opts,
@@ -122,6 +139,7 @@ function harness(
     scheduleMirror,
     buildRetriever,
     retrieve,
+    loadHistory,
   };
 }
 
@@ -241,6 +259,42 @@ describe("maybeRespondAsAI", () => {
     const call = h.streamReply.mock.calls[0][0];
     expect(call.retrieve).toBe(h.retrieve);
     expect(call).not.toHaveProperty("resolveTools");
+  });
+
+  // #2249 — a Teams reply sees the thread's recent history, as in-app does, read
+  // up to the trigger it answers. #2282 — and only since the channel was linked.
+  it("passes the thread's recent history, read up to the trigger and from the link", async () => {
+    const h = harness();
+    await maybeRespondAsAI(fakeContext({ text: "@AI so which feeds?" }), trigger(), h.opts);
+
+    expect(h.loadHistory).toHaveBeenCalledWith(THREAD, MSG, { since: LINKED_AT });
+    expect(h.streamReply.mock.calls[0][0].history).toEqual(HISTORY);
+  });
+
+  // #2282 — as a failed anchor or retrieval read does: the reply goes ahead without it.
+  it("a history read that fails degrades to no history, and the reply is still posted", async () => {
+    const h = harness();
+    h.loadHistory.mockRejectedValue(new Error("db down"));
+    const res = await maybeRespondAsAI(fakeContext({ text: "@AI hi" }), trigger(), h.opts);
+
+    expect(res.outcome).toBe("responded");
+    expect(h.streamReply).toHaveBeenCalledTimes(1);
+    expect(h.streamReply.mock.calls[0][0].history).toEqual([]);
+    expect(h.scheduleMirror).toHaveBeenCalledTimes(1);
+  });
+
+  // #2282 — the default reader is the real `loadRecentHistory`, given the link time.
+  it("reads history with the real loadRecentHistory when none is injected", async () => {
+    const h = harness();
+    realHistory.mockReset();
+    realHistory.mockResolvedValue(HISTORY);
+    const opts = { ...h.opts };
+    delete opts.loadHistory;
+    const res = await maybeRespondAsAI(fakeContext({ text: "@AI hi" }), trigger(), opts);
+
+    expect(res.outcome).toBe("responded");
+    expect(realHistory).toHaveBeenCalledWith(THREAD, MSG, { since: LINKED_AT });
+    expect(h.streamReply.mock.calls[0][0].history).toEqual(HISTORY);
   });
 
   it("does NOT call the provider when the gate declines (off mode)", async () => {

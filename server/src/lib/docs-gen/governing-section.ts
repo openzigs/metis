@@ -48,6 +48,7 @@ import {
   GOVERNING_PREVIEW,
   GOVERNING_PREVIEW_LABEL,
   GOVERNING_PREVIEW_NOTE,
+  governingStaleNote,
   governingSummarySentence,
   neutraliseComplianceClaims,
   type GoverningFinding,
@@ -62,6 +63,12 @@ import {
   listGoverningFindings,
   type GoverningFindingRevision,
 } from "../governing/findings-store.js";
+import {
+  evidenceRequirementId,
+  recheckedRequirementTitles,
+  storedRequirementStates,
+  withGoverningStaleness,
+} from "../governing/requirement-staleness.js";
 import { prisma } from "../prisma.js";
 import { cell } from "./markdown-cell.js";
 
@@ -76,6 +83,11 @@ export interface GoverningSectionRun {
   findings: readonly GoverningFinding[];
   /** The analysed requirement's text, by its id in the run (`REQ-001`). */
   requirementText: ReadonlyMap<string, string>;
+  /**
+   * #2222 — the title of each stored requirement re-checked on its own wording,
+   * by the id its findings are keyed by.
+   */
+  requirementTitles?: ReadonlyMap<string, string>;
   /** Each cited revision with its rule count (`governingFindingRevisions`). */
   revisions: readonly GoverningFindingRevision[];
   /**
@@ -120,18 +132,6 @@ function text(value: string): string {
   return cell(neutraliseComplianceClaims(value));
 }
 
-/** The analysed requirement a stored analysis finding was produced for, from its evidence blob. */
-function evidenceRequirementId(evidence: string | null): string | null {
-  if (!evidence) return null;
-  try {
-    const parsed: unknown = JSON.parse(evidence);
-    const id = (parsed as { requirementId?: unknown } | null)?.requirementId;
-    return typeof id === "string" && id ? id : null;
-  } catch {
-    return null;
-  }
-}
-
 /**
  * #2042 — per run, the analysed requirement ids the document covers, or `"all"`
  * when it holds every live requirement of the run. A run covered in part maps
@@ -154,6 +154,9 @@ async function coveredAnalysedRequirements(
   const evidence = new Map<string, string[]>();
   for (const r of requirements) {
     if (!partial.has(r.analysisId)) continue;
+    // #2222 — a requirement re-checked on its own wording has findings under its own id.
+    const own = covered.get(r.analysisId);
+    if (own instanceof Set) own.add(r.id);
     for (const label of parseRequirementLabels(r.labels)) {
       if (!label.startsWith("finding:")) continue;
       const list = evidence.get(r.analysisId) ?? [];
@@ -211,14 +214,20 @@ export async function loadGoverningSection(
   );
   const runs = await Promise.all(
     analyses.map(async (a): Promise<GoverningSectionRun | null> => {
-      const all = await listGoverningFindings(a.id);
+      const stored = await listGoverningFindings(a.id);
       const scope = covered.get(a.id) ?? "all";
-      const findings = scope === "all" ? all : all.filter((f) => scope.has(f.requirementId));
-      if (findings.length === 0) return null;
-      const [applicability, revisions] = await Promise.all([
+      const inScope = (f: GoverningFinding) => scope === "all" || scope.has(f.requirementId);
+      if (!stored.some(inScope)) return null;
+      const [applicability, states] = await Promise.all([
         readGoverningApplicability(a.id),
-        governingFindingRevisions(findings),
+        storedRequirementStates(a.id, projectId),
       ]);
+      // #2222 — a finding that judged an earlier wording says so, as the analysis view does.
+      // #2281 — and a deleted requirement's re-check is no finding of the run's, listed or not.
+      const all = withGoverningStaleness(stored, states, applicability);
+      const findings = all.filter(inScope);
+      if (findings.length === 0) return null;
+      const revisions = await governingFindingRevisions(findings);
       return {
         analysisId: a.id,
         startedAt: a.startedAt,
@@ -226,6 +235,7 @@ export async function loadGoverningSection(
         requirementText: new Map(
           (applicability?.requirements ?? []).map((r) => [r.requirementId, r.text] as const),
         ),
+        requirementTitles: new Map(Object.entries(recheckedRequirementTitles(findings, states))),
         revisions,
         omitted: all.length - findings.length,
       };
@@ -269,13 +279,24 @@ function documentName(f: GoverningFinding): string {
   return text([f.documentTitle, f.revisionLabel].filter((s) => s.trim()).join(" "));
 }
 
+/** #2222 — a re-checked requirement by its title; an analysed one by its id in the run. */
+function requirementName(run: GoverningSectionRun, requirementId: string): string {
+  return cell(run.requirementTitles?.get(requirementId) ?? requirementId);
+}
+
+/** #2222 — the status cell, marked when the finding judged an earlier wording. */
+function statusLabel(f: GoverningFinding): string {
+  const label = GOVERNING_STATUS_LABELS[f.status];
+  return f.stale?.length ? `${label} (stale)` : label;
+}
+
 function findingTable(run: GoverningSectionRun): string[] {
   return [
     "| Requirement | Control id | Status | Decision | Governing document |",
     "|---|---|---|---|---|",
     ...run.findings.map(
       (f) =>
-        `| ${cell(f.requirementId)} | ${cell(f.controlId)} | ${GOVERNING_STATUS_LABELS[f.status]} | ${decisionLabel(f)} | ${documentName(f)} |`,
+        `| ${requirementName(run, f.requirementId)} | ${cell(f.controlId)} | ${statusLabel(f)} | ${decisionLabel(f)} | ${documentName(f)} |`,
     ),
   ];
 }
@@ -315,6 +336,8 @@ function findingEntry(f: GoverningFinding): string[] {
     "",
     `- **Reasoning:** ${text(f.reasoning)}`,
   ];
+  const stale = governingStaleNote(f.stale ?? []);
+  if (stale) out.push(`- **${text(stale)}**`);
   if (f.modelStatus && f.modelStatus !== f.status && !f.citationDropped) {
     out.push(
       `- **Status set by METIS:** the model gave ${GOVERNING_STATUS_LABELS[f.modelStatus]} without evidence it could cite, so the finding is recorded as ${GOVERNING_STATUS_LABELS[f.status]}.`,
@@ -338,15 +361,28 @@ function omittedLine(run: GoverningSectionRun): string[] {
   ];
 }
 
+/**
+ * The wording the findings under a heading judged. #2281 — a re-checked
+ * requirement's wording was checked on its own (`recheck.ts`), not analysed,
+ * and opens with its title, which the heading already gives.
+ */
+function judgedWordingLines(run: GoverningSectionRun, requirementId: string): string[] {
+  const judged = run.requirementText.get(requirementId)?.trim();
+  if (!judged) return [];
+  const title = run.requirementTitles?.get(requirementId)?.trim();
+  if (title === undefined) return ["", `_As analysed:_ ${text(judged)}`];
+  const rest = judged.startsWith(title) ? judged.slice(title.length).trim() : judged;
+  return rest ? ["", `_As re-checked:_ ${text(rest)}`] : [];
+}
+
 function runLines(run: GoverningSectionRun, requirementLevel: string): string[] {
   const out: string[] = [...summaryLines(run), ...omittedLine(run), "", ...findingTable(run)];
   let current: string | null = null;
   for (const f of run.findings) {
     if (f.requirementId !== current) {
       current = f.requirementId;
-      out.push("", `${requirementLevel} ${cell(f.requirementId)}`);
-      const analysed = run.requirementText.get(f.requirementId);
-      if (analysed?.trim()) out.push("", `_As analysed:_ ${text(analysed)}`);
+      out.push("", `${requirementLevel} ${requirementName(run, f.requirementId)}`);
+      out.push(...judgedWordingLines(run, f.requirementId));
     }
     out.push("", ...findingEntry(f));
   }
@@ -419,6 +455,8 @@ export function governingSectionFacts(section: GoverningSection): string {
         f.decidedAt,
         f.updatedAt,
         run.requirementText.get(f.requirementId) ?? null,
+        // #2222 — an edit of a requirement makes its findings stale, and the section says so.
+        f.stale ?? [],
       ]),
       run.revisions.map((r) => [r.revisionId, r.rules, r.documentTitle, r.revisionLabel]),
     ]),

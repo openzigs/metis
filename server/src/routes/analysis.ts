@@ -32,6 +32,7 @@ import {
   MAX_IMPORTED_REQUIREMENTS_PER_ANALYSIS,
   hasPermission,
   governingFindingDecisionInputSchema,
+  governingRecheckInputSchema,
   editCheckpointRequirementSchema,
 } from "@metis/shared";
 import { requireAuth } from "../middleware/auth.js";
@@ -42,6 +43,10 @@ import { optimisticLock, sendVersionConflict } from "../middleware/optimistic-lo
 // mount `requireProjectAccess` on; it authorizes through this seam instead.
 import { assertLiveProjectAccess } from "../lib/custom-agents/authz.js";
 import { analysisDeepDiveRateLimiter } from "../middleware/analysis-deepdive-rate-limit.js";
+import {
+  governingRecheckPreAuthRateLimiter,
+  governingRecheckUserRateLimiter,
+} from "../middleware/governing-recheck-rate-limit.js";
 import {
   criteriaProposalPreAuthRateLimiter,
   criteriaProposalUserRateLimiter,
@@ -60,6 +65,13 @@ import {
   summariseFindings,
 } from "../lib/governing/findings-store.js";
 import { isGoverningDocsEnabled } from "../lib/governing/flag.js";
+import { recheckGoverningRequirement } from "../lib/governing/recheck.js";
+import {
+  editedWithoutFindings,
+  recheckedRequirementTitles,
+  storedRequirementStates,
+  withGoverningStaleness,
+} from "../lib/governing/requirement-staleness.js";
 import { requirementsWithoutCodeEvidence } from "../lib/analysis/code-evidence.js";
 import { inSynthesisOrder } from "../lib/analysis/synthesis-finding-order.js";
 import { createChildLogger } from "../lib/logger.js";
@@ -644,6 +656,7 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
           ...(sourceRequirements ? { sourceRequirements } : {}),
           enableWebResearch: parsed.data.enableWebResearch ?? false,
           enableClarification: parsed.data.enableClarification ?? false,
+          ...(parsed.data.rereadDocuments ? { rereadDocuments: true } : {}),
           ...(parsed.data.specKitHandoff ? { specKitHandoff: parsed.data.specKitHandoff } : {}),
           // #1027 — never joined to `extraInstructions`: the requirement
           // splitter, its cap and the input account do not see it.
@@ -1002,7 +1015,15 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
       const analysisId = String(req.params.id);
       const projectId = String(req.params.projectId);
       await ensureAnalysisVisible(analysisId, projectId);
-      const findings = await listGoverningFindings(analysisId);
+      const [stored, applicability, states] = await Promise.all([
+        listGoverningFindings(analysisId),
+        readGoverningApplicability(analysisId),
+        storedRequirementStates(analysisId, projectId),
+      ]);
+      // #2222 — each finding says which edited requirements it judged an
+      // earlier wording of (`stale`); a re-checked requirement's own findings
+      // are keyed by its id, and `requirementTitles` names it.
+      const findings = withGoverningStaleness(stored, states, applicability);
       res.json(
         ok({
           findings,
@@ -1015,9 +1036,11 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
           // workspace, or a run that skipped the check) reads differently
           // from "checked, no rule applied". A stored set that is all errors
           // (rules unavailable, every requirement undecided) checked nothing.
-          checked:
-            (await readGoverningApplicability(analysisId))?.requirements.some((r) => !r.error) ??
-            false,
+          checked: applicability?.requirements.some((r) => !r.error) ?? false,
+          requirementTitles: recheckedRequirementTitles(findings, states),
+          // #2281 — requirements edited since the check that no finding offers a
+          // re-check for: their analysed requirement produced no finding.
+          editedWithoutFindings: editedWithoutFindings(findings, states, applicability),
         }),
       );
     },
@@ -1054,6 +1077,73 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
       });
       if (!updated) throw new AppError(404, "NOT_FOUND", "Governing finding not found");
       res.json(ok({ finding: updated }));
+    },
+  );
+
+  /**
+   * POST /api/projects/:projectId/analyses/:id/governing-findings/recheck
+   * #2222 — Re-check this requirement: the governing check again on the
+   * current wording of one stored requirement of this analysis, only. Answers
+   * when its findings are stored, so a refetch shows them and the stale marker
+   * gone. 404 while the flag is off, and for a requirement that is not a live
+   * one of this analysis in this project; 409 when the workspace has no
+   * current governing rule; 502 when the rules could not be read or the
+   * requirement could not be evaluated (nothing is stored). The model calls are
+   * metered to the project, as a clarify round's are. #2281 — rate limited
+   * (several model calls each), and a client that goes away aborts the model
+   * calls: nothing is stored and no answer is written.
+   */
+  projectScoped.post(
+    "/:id/governing-findings/recheck",
+    // Ahead of auth: CodeQL js/missing-rate-limiting.
+    governingRecheckPreAuthRateLimiter,
+    requireAuth,
+    requirePermission("analysis.run"),
+    governingRecheckUserRateLimiter,
+    async (req: Request, res: Response) => {
+      if (!isGoverningDocsEnabled()) throw new AppError(404, "NOT_FOUND", "Not found");
+      const analysisId = String(req.params.id);
+      const projectId = String(req.params.projectId);
+      await ensureAnalysisVisible(analysisId, projectId);
+      const parsed = governingRecheckInputSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        throw new AppError(400, "VALIDATION_ERROR", "Invalid re-check payload", {
+          issues: parsed.error.flatten(),
+        });
+      }
+      const provider = meterAnalysisProvider(buildProvider({ config: loadAIConfig() }));
+      // #2281 — the request's lifetime bounds the model calls.
+      const ac = new AbortController();
+      res.on("close", () => {
+        if (!res.writableEnded) ac.abort();
+      });
+      const outcome = await runInAnalysisUsageScope({ projectId, sessionId: analysisId }, () =>
+        recheckGoverningRequirement({
+          analysisId,
+          projectId,
+          requirementId: parsed.data.requirementId,
+          provider,
+          actorId: actorFromReq(req).id,
+          signal: ac.signal,
+        }),
+      );
+      // Nobody is left to answer.
+      if (!outcome.ok && outcome.reason === "cancelled") return;
+      if (outcome.ok) {
+        res.json(ok(outcome.result));
+        return;
+      }
+      if (outcome.reason === "not-found") {
+        throw new AppError(404, "NOT_FOUND", "Requirement not found in this analysis");
+      }
+      if (outcome.reason === "no-rules") {
+        throw new AppError(
+          409,
+          "NO_GOVERNING_RULES",
+          "The workspace has no current governing rules",
+        );
+      }
+      throw new AppError(502, "GOVERNING_RECHECK_FAILED", outcome.message);
     },
   );
 

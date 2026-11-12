@@ -40,6 +40,17 @@ describe("impactAnalysisApi", () => {
     expect(apiFetch).toHaveBeenCalledWith("/impact-analyses/ia-0000000001");
   });
 
+  it("#2280 — POSTs a re-run, with a body only when the document is to be read again", async () => {
+    vi.mocked(apiFetch).mockResolvedValue({});
+    await impactAnalysisApi.rerun("ia-1");
+    expect(apiFetch).toHaveBeenLastCalledWith("/impact-analyses/ia-1/rerun", { method: "POST" });
+    await impactAnalysisApi.rerun("ia-1", { rereadDocument: true });
+    expect(apiFetch).toHaveBeenLastCalledWith("/impact-analyses/ia-1/rerun", {
+      method: "POST",
+      body: { rereadDocument: true },
+    });
+  });
+
   // #963 — markdown export.
   it("streams the markdown export and derives the filename", async () => {
     vi.mocked(streamFetch).mockResolvedValue({

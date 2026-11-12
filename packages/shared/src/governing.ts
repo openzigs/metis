@@ -189,6 +189,14 @@ export const governingRequirementApplicabilitySchema = z.object({
   decisions: z.array(governingApplicabilityDecisionSchema),
   /** Set when applicability could not be decided; `decisions` is then empty. */
   error: z.string().optional(),
+  /**
+   * #2222 — the stored requirements whose wording `text` is, by id, at the
+   * version that was judged. Set by **Re-check this requirement**, which
+   * stores an entry under the stored requirement's own id. Absent on an entry
+   * the analysis wrote: its `text` is the analysed wording, which the stored
+   * requirements drawn from it had at their analysed version.
+   */
+  versions: z.record(z.string().min(1).max(64), z.number().int().min(0)).optional(),
 });
 export type GoverningRequirementApplicability = z.infer<
   typeof governingRequirementApplicabilitySchema
@@ -220,6 +228,42 @@ export const governingFindingDecisionInputSchema = z
   .strict();
 export type GoverningFindingDecisionInput = z.infer<typeof governingFindingDecisionInputSchema>;
 
+/** #2222 — a stored requirement whose wording changed after a finding judged it. */
+export const governingStaleRequirementSchema = z.object({
+  requirementId: id,
+  title: z.string(),
+  /** The version the finding judged. */
+  judgedVersion: z.number().int().min(0),
+  /** The requirement's version now. */
+  currentVersion: z.number().int().min(0),
+});
+export type GoverningStaleRequirement = z.infer<typeof governingStaleRequirementSchema>;
+
+/** #2222 — the body of `POST …/governing-findings/recheck`: one stored requirement. */
+export const governingRecheckInputSchema = z.object({ requirementId: id }).strict();
+export type GoverningRecheckInput = z.infer<typeof governingRecheckInputSchema>;
+
+/** #2222 — what a re-check did. */
+export interface GoverningRecheckResult {
+  requirementId: string;
+  /** The requirement version whose wording was checked. */
+  version: number;
+  /** Findings written for it (0 when no rule applies to the new wording). */
+  findings: number;
+}
+
+/**
+ * #2222 — the note a stale result carries: which requirement changed, from
+ * which version to which. Null when nothing is stale.
+ */
+export function governingStaleNote(stale: readonly GoverningStaleRequirement[]): string | null {
+  if (stale.length === 0) return null;
+  const changes = stale.map(
+    (s) => `"${s.title}" was checked at v${s.judgedVersion} and is now v${s.currentVersion}`,
+  );
+  return `Stale: ${changes.join("; ")}. This result judges the earlier wording.`;
+}
+
 /** One cited governing finding, as the API returns it. */
 export const governingFindingSchema = z.object({
   id,
@@ -250,6 +294,18 @@ export const governingFindingSchema = z.object({
   decidedAt: timestamp.nullable(),
   createdAt: timestamp,
   updatedAt: timestamp,
+  /**
+   * #2222 — the stored requirement versions the finding judged
+   * (`requirementVersions` on the row). Null on a finding produced from the
+   * analysed wording: that judged each requirement at its analysed version.
+   */
+  requirementVersions: z.record(z.string(), z.number().int().min(0)).nullable().optional(),
+  /**
+   * #2222 — the stored requirements edited since this finding judged their
+   * wording, and not re-checked since. Empty or absent: it judges the current
+   * wording. Set by the readers that show findings (the route, the BRD, chat).
+   */
+  stale: z.array(governingStaleRequirementSchema).optional(),
 });
 export type GoverningFinding = z.infer<typeof governingFindingSchema>;
 

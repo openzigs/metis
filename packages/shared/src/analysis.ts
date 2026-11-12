@@ -807,6 +807,14 @@ export const documentRequirementSchema = z.object({
     .object({
       documentId: z.string().max(256).optional(),
       chunkIndex: z.number().int().min(0).optional(),
+      /**
+       * #2235 — set by the document reader (#2230): the paragraph's own text,
+       * its file and its section headings, so a clarifying question about the
+       * requirement can quote and cite it.
+       */
+      filename: z.string().max(512).optional(),
+      headingPath: z.array(z.string().max(512)).max(16).optional(),
+      quote: z.string().max(2048).optional(),
     })
     .optional(),
 });
@@ -1302,6 +1310,11 @@ export function specKitHandoffLabelsNotInContext(
 
 export const startAnalysisSchema = z.object({
   documentIds: z.array(idSchema).max(100).optional(),
+  /**
+   * #2280 — read the selected documents again instead of reusing a saved
+   * reading of an unchanged file (the document reader, `ANALYSIS_DOCUMENT_READER`).
+   */
+  rereadDocuments: z.boolean().optional(),
   agentKeys: z.array(z.enum(ANALYSIS_SPECIALIST_AGENT_KEYS)).max(4).optional(),
   model: z.string().min(1).max(120).optional(),
   /**
@@ -1712,6 +1725,13 @@ export interface AnalysisSnapshot {
      * rendered with, letting a stale form reliably 409 against concurrent edits.
      */
     version: number;
+    /**
+     * #2222 — the version the analysis judged: the one it wrote, before the
+     * first edit by a person. The findings the requirement was synthesised
+     * from judge that wording, so they are stale while `version` differs.
+     * Absent on snapshots that predate the field.
+     */
+    analysedVersion?: number;
     /**
      * Epic #1107 (#1110) — the #1109 panel's confidence for this requirement,
      * rolled up from the panels of the findings it was synthesised from, WITH
@@ -2305,8 +2325,38 @@ export interface TraceabilityRow {
    */
   verdict: RequirementVerdict | null;
   findings: TraceabilityFindingRef[];
+  /**
+   * #2222 — set when the requirement was edited after the analysis judged it:
+   * its `findings` judge the wording at `judgedVersion`. Null or absent: current.
+   */
+  findingsStale?: RequirementFindingsStale | null;
   codeLocations: TraceabilityCodeLocation[];
   tests: TraceabilityTestLink[];
+}
+
+/** #2222 — a requirement edited since the analysis whose findings it shows judged it. */
+export interface RequirementFindingsStale {
+  judgedVersion: number;
+  currentVersion: number;
+}
+
+/**
+ * #2222 — whether a requirement's analysis findings judge an earlier wording:
+ * null when `analysedVersion` is unknown or is the current version.
+ */
+export function requirementFindingsStale(req: {
+  version: number;
+  analysedVersion?: number | null;
+}): RequirementFindingsStale | null {
+  if (req.analysedVersion === undefined || req.analysedVersion === null) return null;
+  return req.analysedVersion === req.version
+    ? null
+    : { judgedVersion: req.analysedVersion, currentVersion: req.version };
+}
+
+/** #2222 — "Stale: the analysis judged v0; the requirement is now v2." */
+export function requirementFindingsStaleNote(stale: RequirementFindingsStale): string {
+  return `Stale: the analysis judged v${stale.judgedVersion}; the requirement is now v${stale.currentVersion}.`;
 }
 
 /**
@@ -3033,6 +3083,12 @@ export interface DocumentReadingDocument {
   merge?: "done" | "failed" | "skipped";
   /** The output-token cap each reading call had (#2229). */
   outputTokenCap?: number;
+  /**
+   * #2280 — set when the document was not read again: its file, the reader and
+   * the model were unchanged, so a saved reading was reused. When (ISO) and
+   * with which model that reading was made.
+   */
+  reused?: { readAt: string; model: string };
 }
 
 /** Issue #2230 — the coverage report of the documents an analysis read in full. */

@@ -59,6 +59,8 @@ interface MockQuarantineChunk {
 const documents = new Map<string, MockDocument>();
 const chunks = new Map<string, MockChunk>();
 const quarantine = new Map<string, MockQuarantineChunk>();
+/** #2280 — saved document readings, by the document they read. */
+const savedReadings: Array<{ id: string; documentId: string }> = [];
 let nextQuarantineId = 0;
 let nextChunkId = 0;
 
@@ -260,6 +262,18 @@ vi.mock("../src/lib/prisma.js", () => ({
           return out;
         },
       ),
+    },
+    // #2280 — the document's saved readings, deleted with it.
+    savedDocumentReading: {
+      deleteMany: vi.fn(async ({ where }: { where: { documentId: string } }) => {
+        const before = savedReadings.length;
+        savedReadings.splice(
+          0,
+          savedReadings.length,
+          ...savedReadings.filter((r) => r.documentId !== where.documentId),
+        );
+        return { count: before - savedReadings.length };
+      }),
     },
     project: {
       findFirst: vi.fn(async () => ({
@@ -594,7 +608,7 @@ describe("KnowledgeService.ingestDocument", () => {
     const r = await svc.ingestDocument("d-docx");
 
     expect(r.status).toBe("ready");
-    expect(describerFor).toHaveBeenCalledWith("p7");
+    expect(describerFor).toHaveBeenCalledWith("p7", "d-docx");
     expect(describe).toHaveBeenCalledTimes(1);
     // Read back through the indexed chunks, the rows retrieval serves.
     const text = [...chunks.values()]
@@ -716,6 +730,14 @@ describe("KnowledgeService.deleteDocument", () => {
 
   it("is a no-op for an unknown id", async () => {
     await expect(svc.deleteDocument("nope")).resolves.toBeUndefined();
+  });
+
+  it("#2280 — deletes the document's saved readings, and no other document's", async () => {
+    await seedDocument("d1", "p1", "# t\n\nbody");
+    savedReadings.push({ id: "r1", documentId: "d1" }, { id: "r2", documentId: "d2" });
+    await svc.deleteDocument("d1");
+    expect(savedReadings).toEqual([{ id: "r2", documentId: "d2" }]);
+    savedReadings.length = 0;
   });
 });
 

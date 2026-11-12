@@ -145,7 +145,16 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           // Every project answers, with nothing: no index.
           search: async ({ projectIds = [] }) => {
             searched.push(projectIds.length);
-            return { hits: [], projectsSearched: projectIds, projectsFailed: [], totalHits: 0 };
+            return {
+              hits: [],
+              projectsSearched: projectIds,
+              projectsFailed: [],
+              totalHits: 0,
+              projectsWithoutHits: [],
+              failures: [],
+              projectsRejected: 0,
+              projectNames: {},
+            };
           },
         },
       );

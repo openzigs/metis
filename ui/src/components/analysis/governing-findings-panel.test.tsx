@@ -18,6 +18,7 @@ import {
   governingSummarySentence,
   type GoverningAnalysisApplicability,
   type GoverningFinding,
+  type GoverningStaleRequirement,
 } from "@metis/shared";
 import { createQueryClient } from "@/lib/query-client";
 import type { ClarificationStatePayload, ClarifyingQuestion } from "@/lib/analysis-api";
@@ -29,6 +30,7 @@ import {
   answerSettlementOf,
   clarifyQuestionAnchor,
   clarifyingQuestionHref,
+  editedWithoutFindingsNote,
   governingSummarySentences,
   groupFindingsByRequirement,
 } from "./governing-findings-panel";
@@ -152,6 +154,11 @@ class FakeServer {
   checked = true;
   applicability: GoverningAnalysisApplicability = APPLICABILITY;
   clarification: ClarificationStatePayload | null = null;
+  requirementTitles: Record<string, string> = {};
+  /** #2222 — the titles of the stored requirements, for a re-check to name. */
+  storedTitles: Record<string, string> = {};
+  /** #2281 — edited requirements no finding offers a re-check for. */
+  editedWithoutFindings: GoverningStaleRequirement[] = [];
   requests: { method: string; path: string; body: unknown }[] = [];
 
   handle = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
@@ -183,7 +190,34 @@ class FakeServer {
         revisions: this.revisions,
         refreshing: this.refreshing,
         checked: this.checked,
+        requirementTitles: this.requirementTitles,
+        editedWithoutFindings: this.editedWithoutFindings,
       });
+    }
+    // #2222 — the re-check stores the requirement's own finding and the
+    // analysed ones stop being stale for it.
+    if (rest.length === 2 && rest[1] === "recheck" && method === "POST") {
+      const { requirementId } = body as { requirementId: string };
+      const title = this.storedTitles[requirementId];
+      if (!title) return err(404, "NOT_FOUND", "Requirement not found in this analysis");
+      this.findings = [
+        ...this.findings.map((f) => ({
+          ...f,
+          stale: (f.stale ?? []).filter((s) => s.requirementId !== requirementId),
+        })),
+        finding({
+          id: `gf-${requirementId}`,
+          requirementId,
+          controlId: "PW-01",
+          requirementVersions: { [requirementId]: 2 },
+          stale: [],
+        }),
+      ];
+      this.requirementTitles = { ...this.requirementTitles, [requirementId]: title };
+      this.editedWithoutFindings = this.editedWithoutFindings.filter(
+        (e) => e.requirementId !== requirementId,
+      );
+      return json(200, { requirementId, version: 2, findings: 1 });
     }
     if (rest.length === 3 && rest[2] === "decision" && method === "POST") {
       const f = this.findings.find((x) => x.id === rest[1]);
@@ -435,6 +469,114 @@ describe("GoverningFindingsPanel (#1876)", () => {
     expect(within(gap).getByTestId("governing-finding-decision")).toHaveTextContent(
       "Accepted by a former user",
     );
+  });
+
+  it("#2222 — findings that judged an edited requirement are marked stale, and Re-check clears it with the server's result", async () => {
+    const stale = {
+      requirementId: "r1",
+      title: "Minimum password length",
+      judgedVersion: 0,
+      currentVersion: 2,
+    };
+    server.findings = server.findings.map((f) => ({ ...f, stale: [stale] }));
+    server.storedTitles = { r1: "Minimum password length" };
+    const user = userEvent.setup();
+    mount();
+
+    const group = await screen.findByRole("group", { name: "Governing rules for REQ-001" });
+    expect(within(group).getByTestId("governing-stale")).toHaveTextContent(
+      'Stale: "Minimum password length" was checked at v0 and is now v2. This result judges the earlier wording.',
+    );
+    expect(within(group).getAllByTestId("governing-finding-stale")).toHaveLength(3);
+
+    await user.click(
+      within(group).getByRole("button", {
+        name: "Re-check this requirement: Minimum password length",
+      }),
+    );
+    await waitFor(() =>
+      expect(server.requests).toContainEqual({
+        method: "POST",
+        path: `/api/projects/${PROJECT}/analyses/${ANALYSIS}/governing-findings/recheck`,
+        body: { requirementId: "r1" },
+      }),
+    );
+
+    // Read back from the server: the re-checked requirement's own group, by
+    // its title, and no stale marker left.
+    const own = await screen.findByRole("group", {
+      name: "Governing rules for Minimum password length",
+    });
+    expect(within(own).getByRole("heading", { name: "Minimum password length" })).toBeVisible();
+    await waitFor(() => expect(screen.queryByTestId("governing-stale")).toBeNull());
+    expect(screen.queryByTestId("governing-finding-stale")).toBeNull();
+  });
+
+  it("#2222 — without analysis.run the stale marker shows but no Re-check does", async () => {
+    server.findings[0] = {
+      ...server.findings[0]!,
+      stale: [{ requirementId: "r1", title: "T", judgedVersion: 0, currentVersion: 1 }],
+    };
+    mount(false);
+    expect(await screen.findByTestId("governing-stale")).toBeVisible();
+    expect(screen.queryByRole("button", { name: /Re-check/ })).toBeNull();
+  });
+
+  it("#2222 — several edited requirements each get their own Re-check", async () => {
+    server.findings[0] = {
+      ...server.findings[0]!,
+      stale: [
+        { requirementId: "r1", title: "One", judgedVersion: 0, currentVersion: 1 },
+        { requirementId: "r2", title: "Two", judgedVersion: 0, currentVersion: 3 },
+      ],
+    };
+    mount();
+    expect(
+      await screen.findByRole("button", { name: "Re-check this requirement: One" }),
+    ).toHaveTextContent("Re-check “One”");
+    expect(screen.getByRole("button", { name: "Re-check this requirement: Two" })).toBeVisible();
+  });
+
+  it("#2281 — an edited requirement whose earlier wording produced no finding is offered a re-check", async () => {
+    server.editedWithoutFindings = [
+      { requirementId: "r9", title: "Session timeout", judgedVersion: 0, currentVersion: 1 },
+    ];
+    server.storedTitles = { r9: "Session timeout" };
+    const user = userEvent.setup();
+    mount();
+
+    const note = await screen.findByTestId("governing-edited-unchecked");
+    expect(note).toHaveTextContent(
+      'Not checked since an edit: "Session timeout" was checked at v0 and is now v1. The governing check produced no finding for the earlier wording, so its current wording has not been checked.',
+    );
+    // In the panel's header, not under any requirement's group.
+    expect(note.closest("[role=group]")).toBeNull();
+    await user.click(
+      within(note).getByRole("button", { name: "Re-check this requirement: Session timeout" }),
+    );
+    expect(
+      await screen.findByRole("group", { name: "Governing rules for Session timeout" }),
+    ).toBeVisible();
+    await waitFor(() => expect(screen.queryByTestId("governing-edited-unchecked")).toBeNull());
+  });
+
+  it("#2281 — with no finding at all, an edited requirement is still offered a re-check; without analysis.run only the note", async () => {
+    server.findings = [];
+    server.editedWithoutFindings = [
+      { requirementId: "r9", title: "Session timeout", judgedVersion: 0, currentVersion: 2 },
+    ];
+    mount();
+    const empty = await screen.findByTestId("governing-findings-empty");
+    expect(within(empty).getByTestId("governing-edited-unchecked")).toHaveTextContent(
+      '"Session timeout" was checked at v0 and is now v2',
+    );
+    expect(
+      within(empty).getByRole("button", { name: "Re-check this requirement: Session timeout" }),
+    ).toBeVisible();
+
+    reload(false);
+    const readOnly = await screen.findByTestId("governing-edited-unchecked");
+    expect(within(readOnly).queryByRole("button")).toBeNull();
   });
 
   it("without analysis.run the decisions are shown but no decision controls are", async () => {
@@ -852,6 +994,20 @@ describe("governingSummarySentences", () => {
   });
 });
 
+describe("editedWithoutFindingsNote (#2281)", () => {
+  it("says nothing for none, and names each edited requirement with its versions", () => {
+    expect(editedWithoutFindingsNote([])).toBeNull();
+    expect(
+      editedWithoutFindingsNote([
+        { requirementId: "a", title: "A", judgedVersion: 0, currentVersion: 1 },
+        { requirementId: "b", title: "B", judgedVersion: 2, currentVersion: 3 },
+      ]),
+    ).toBe(
+      'Not checked since an edit: "A" was checked at v0 and is now v1; "B" was checked at v2 and is now v3. The governing check produced no finding for the earlier wording, so their current wording has not been checked.',
+    );
+  });
+});
+
 describe("groupFindingsByRequirement", () => {
   it("groups in route order and names each requirement by its stored text when there is one", () => {
     const groups = groupFindingsByRequirement(
@@ -867,6 +1023,24 @@ describe("groupFindingsByRequirement", () => {
       ["REQ-002", null, ["2"]],
     ]);
     expect(groupFindingsByRequirement([finding({})], null)[0]!.text).toBeNull();
+  });
+
+  it("#2222 — names a re-checked requirement by its title, and lists each stale requirement once", () => {
+    const one = { requirementId: "r1", title: "One", judgedVersion: 0, currentVersion: 1 };
+    const two = { requirementId: "r2", title: "Two", judgedVersion: 0, currentVersion: 4 };
+    const groups = groupFindingsByRequirement(
+      [
+        finding({ id: "1", stale: [one] }),
+        finding({ id: "2", stale: [one, two] }),
+        finding({ id: "3", requirementId: "r9" }),
+      ],
+      null,
+      { r9: "Re-checked one" },
+    );
+    expect(groups.map((g) => [g.requirementId, g.title, g.stale])).toEqual([
+      ["REQ-001", null, [one, two]],
+      ["r9", "Re-checked one", []],
+    ]);
   });
 });
 

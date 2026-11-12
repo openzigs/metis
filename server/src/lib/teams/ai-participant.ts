@@ -45,6 +45,16 @@
  *    `resolveTools`: this path deliberately runs no tool execution, and the
  *    responder's prompt names tools only when tools are offered.
  *
+ * 6. THREAD HISTORY (#2249). The reply reads the same recent history the in-app
+ *    reply does (`loadRecentHistory`: the last 20 live messages before the
+ *    trigger), so it can see the answer a BA just gave. The thread's anchors
+ *    are added by the responder itself, for both paths. #2282 — only the
+ *    messages written since the channel was linked: nothing backfills the
+ *    channel, so an earlier in-app message is one its participants never saw,
+ *    and the reply is posted to all of them (as #2248 grounds it for a shared
+ *    audience). A history read that fails degrades to no history, as a failed
+ *    anchor or retrieval read does; it never cancels the reply.
+ *
  * SECURITY: the triggering body is UNTRUSTED Teams content. It flows only into
  * the responder's injection-isolated message array (a fixed system prompt + the
  * body as a USER turn); we never execute it. Member/tenant scoping from #549/#551
@@ -60,6 +70,7 @@ import {
 } from "../discussions/ai-rate-limit.js";
 import { streamAIReply } from "../discussions/ai-responder.js";
 import { projectRetriever } from "../discussions/project-retrieval.js";
+import { loadRecentHistory } from "../discussions/thread-context.js";
 import { emitMessageNew } from "../discussions/socket-emitter.js";
 import { scheduleMirrorToTeams } from "./outbound-sync.js";
 import { buildProvider, loadAIConfig, type AIProvider } from "../ai/index.js";
@@ -90,6 +101,8 @@ export interface TeamsAITrigger {
   messageId: string;
   /** The resolved METIS user who sent it (rate-limit + session attribution). */
   authorUserId: string;
+  /** #2282 — when the thread's channel link was made: history starts here. */
+  linkedAt: Date;
 }
 
 /** Injectable collaborators (defaults wire the real singletons/factories). */
@@ -104,6 +117,8 @@ export interface AIParticipantDeps {
   scheduleMirror: typeof scheduleMirrorToTeams;
   /** Builds the project-scoped excerpt retriever (chat's auto-RAG). */
   buildRetriever: typeof projectRetriever;
+  /** #2249 — the thread's recent messages before the trigger, as in-app. */
+  loadHistory: typeof loadRecentHistory;
 }
 
 export type AIParticipantOptions = Partial<AIParticipantDeps>;
@@ -118,6 +133,7 @@ function resolveDeps(opts: AIParticipantOptions): AIParticipantDeps {
     emit: opts.emit ?? emitMessageNew,
     scheduleMirror: opts.scheduleMirror ?? scheduleMirrorToTeams,
     buildRetriever: opts.buildRetriever ?? projectRetriever,
+    loadHistory: opts.loadHistory ?? loadRecentHistory,
   };
 }
 
@@ -207,6 +223,18 @@ export async function maybeRespondAsAI(
   //    `streamAIReply` persists the reply (authorKind=ai) + records ONE
   //    AITokenUsage row, exactly as the REST path.
   try {
+    // #2249 — the same recent history the in-app reply sees, ending at the
+    // trigger, so a Teams reply can read the answer a BA just gave. #2282 —
+    // starting at the link, and none rather than no reply when it cannot be read.
+    const history = await deps
+      .loadHistory(trigger.threadId, trigger.messageId, { since: trigger.linkedAt })
+      .catch((err: unknown) => {
+        log.warn("Teams @AI reply history could not be read; answering without it", {
+          threadId: trigger.threadId,
+          error: (err as Error).message,
+        });
+        return [];
+      });
     const result = await deps.streamReply({
       thread: {
         id: trigger.threadId,
@@ -216,6 +244,7 @@ export async function maybeRespondAsAI(
       triggerMessage: { id: trigger.messageId, body: canonicalBody },
       actor: { id: trigger.authorUserId },
       provider: deps.provider,
+      history,
       // #739 — the thread's project excerpts, as in-app. No `resolveTools`.
       // #2248 — the reply is posted to the whole channel, so `projectRetriever`
       // grounds it for a shared audience (unrestricted chunks only); the

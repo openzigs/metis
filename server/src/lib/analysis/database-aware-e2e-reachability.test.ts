@@ -132,6 +132,8 @@ vi.mock("../prisma.js", () => ({
       }),
     },
     crossDocFinding: { findMany: vi.fn(async () => []) },
+    // #2222 — the snapshot reads each requirement's analysed version; none was edited by a person.
+    requirementVersion: { groupBy: vi.fn(async () => []) },
     codeGraph: { findFirst: vi.fn(async () => null) },
     // #854's `hasSchemaData` probe — the SAME mock instance backs the run path
     // (orchestrator.ts's `resolveDatabaseAware`) AND the gap-report path

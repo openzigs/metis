@@ -29,6 +29,7 @@ const db = vi.hoisted(() => ({
   evidenceFindMany: vi.fn(),
   userFindMany: vi.fn(),
   ruleCount: vi.fn(),
+  versionGroupBy: vi.fn(),
 }));
 vi.mock("../prisma.js", () => ({
   prisma: {
@@ -38,6 +39,7 @@ vi.mock("../prisma.js", () => ({
     finding: { findMany: db.evidenceFindMany },
     user: { findMany: db.userFindMany },
     governingRule: { count: db.ruleCount },
+    requirementVersion: { groupBy: db.versionGroupBy },
     reviewRequest: { findFirst: vi.fn() },
   },
 }));
@@ -193,6 +195,8 @@ beforeEach(() => {
   ]);
   db.ruleCount.mockResolvedValue(12);
   db.analysisFindFirst.mockResolvedValue(null);
+  // #2222 — no requirement has a version by a person: none is stale.
+  db.versionGroupBy.mockResolvedValue([]);
 });
 afterEach(() => {
   delete process.env.GOVERNING_DOCS_ENABLED;
@@ -459,9 +463,10 @@ describe("the governing-rules section in a requirements BRD — #1877", () => {
     withFindings(THREE);
     await synthesizeRequirementsDocument("p1", { requirementIds: ["req-1"] }, "BRD");
     // #2042 — one read of the selected requirements serves the document and the section.
+    // (#2222's staleness read selects titles too, but no body.)
     expect(
       db.requirementFindMany.mock.calls.filter(
-        ([args]) => (args as { select: { title?: true } }).select.title,
+        ([args]) => (args as { select: { title?: true; body?: true } }).select.body,
       ),
     ).toHaveLength(1);
     expect(db.requirementFindMany).toHaveBeenCalledWith({
@@ -532,6 +537,30 @@ describe("a BRD covering some of a run's requirements lists only their findings 
     expect(markdown).not.toContain("so every finding of the run is listed");
     // The rule count is read for the listed findings' revision only.
     expect(db.ruleCount).toHaveBeenCalledTimes(1);
+  });
+
+  it("#2222 — marks the findings on a requirement a person edited since the analysis stale, and only those", async () => {
+    withFindings(THREE, APPLICABILITY, {
+      scoped: [CARD, STATEMENT],
+      live: LIVE,
+      evidence: EVIDENCE,
+    });
+    // req-1 (cards) is at v1 and its v1 is a person's edit; req-2 was never edited by one.
+    db.versionGroupBy.mockResolvedValue([{ requirementId: "req-1", _min: { version: 1 } }]);
+    const { markdown } = await synthesizeRequirementsDocument("p1", { analysisId: "run-1" }, "BRD");
+
+    const rows = tableRows(markdown);
+    expect(rows.get("EN-03")?.[2]).toBe("Compliant (stale)");
+    expect(rows.get("RT-01")?.[2]).not.toContain("stale");
+    expect(markdown).toContain(
+      '- **Stale: "Save a card" was checked at v0 and is now v1. This result judges the earlier wording.**',
+    );
+    expect(markdown).not.toContain('"Monthly statement" was checked');
+    expect(db.versionGroupBy).toHaveBeenCalledWith({
+      by: ["requirementId"],
+      where: { requirementId: { in: ["req-1", "req-2"] }, actorId: { not: null } },
+      _min: { version: true },
+    });
   });
 
   it("reads the evidence findings by id, within the project and the partly covered run", async () => {
@@ -796,5 +825,89 @@ describe("the Preview mark (#2109)", () => {
     expect(markdown).not.toContain("**Preview:**");
     expect(markdown).not.toContain(GOVERNING_PREVIEW_NOTE);
     expect(renderGoverningSection(section())[2]).toMatch(LEAD_IN);
+  });
+});
+
+describe("a re-checked requirement in the BRD — #2281", () => {
+  /** REQ-001's analysed finding, and req-1's own after a re-check of its v2. */
+  const RECHECKED = [
+    row(),
+    row({
+      id: "gf-own",
+      requirementId: "req-1",
+      ruleId: "rule-audit",
+      controlId: "AL-02",
+      requirementVersions: JSON.stringify({ "req-1": 2 }),
+    }),
+  ];
+  const withRecheck = (entries: Array<Record<string, unknown>>) => ({
+    ...APPLICABILITY,
+    requirements: [...APPLICABILITY.requirements, ...entries],
+  });
+
+  it("labels the re-checked wording as re-checked, without repeating the heading's title", async () => {
+    withFindings(
+      RECHECKED,
+      withRecheck([
+        {
+          requirementId: "req-1",
+          text: "Save a card\n\nA customer can save a card for later.",
+          decisions: [],
+          versions: { "req-1": 2 },
+        },
+      ]),
+      { scoped: [req({ version: 2 })] },
+    );
+    const { markdown } = await synthesizeRequirementsDocument("p1", { analysisId: "run-1" }, "BRD");
+    expect(markdown).toContain(
+      "### Save a card\n\n_As re-checked:_ A customer can save a card for later.",
+    );
+    expect(markdown).not.toContain("_As analysed:_ Save a card");
+    // The analysed requirement keeps its own label.
+    expect(markdown).toContain(
+      "### REQ-001\n\n_As analysed:_ Saved cards keep only the last four digits.",
+    );
+  });
+
+  it("a re-checked wording that is the title alone adds no line; one under a since-renamed title is quoted whole", () => {
+    const run = (text: string): GoverningSection => ({
+      runs: [
+        {
+          analysisId: "run-1",
+          startedAt: NOW,
+          findings: [
+            {
+              ...(row({ requirementId: "req-1" }) as unknown as GoverningFinding),
+              createdAt: NOW.toISOString(),
+              updatedAt: NOW.toISOString(),
+            },
+          ],
+          requirementText: new Map([["req-1", text]]),
+          requirementTitles: new Map([["req-1", "Save a card"]]),
+          revisions: [],
+          omitted: 0,
+        },
+      ],
+    });
+    const alone = renderGoverningSection(run("Save a card")).join("\n");
+    expect(alone).toContain("### Save a card");
+    expect(alone).not.toContain("_As re-checked:_");
+    expect(alone).not.toContain("_As analysed:_");
+    const renamed = renderGoverningSection(run("Keep a card\n\nBody.")).join("\n");
+    expect(renamed).toContain("_As re-checked:_ Keep a card");
+  });
+
+  it("leaves out a deleted requirement's re-check, and does not count it as left out", async () => {
+    withFindings(
+      [...THREE, row({ id: "gf-gone", requirementId: "req-gone", controlId: "XX-99" })],
+      withRecheck([
+        { requirementId: "req-gone", text: "Gone", decisions: [], versions: { "req-gone": 1 } },
+      ]),
+    );
+    const { markdown } = await synthesizeRequirementsDocument("p1", { analysisId: "run-1" }, "BRD");
+    expect(markdown).not.toContain("XX-99");
+    expect(markdown).not.toContain("req-gone");
+    expect(markdown).not.toContain("not listed or counted here");
+    expect(markdown).toContain("so every finding of the run is listed");
   });
 });

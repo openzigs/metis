@@ -14,8 +14,9 @@ vi.mock("../prisma.js", () => ({
   },
 }));
 
-const { countProjectToolReads, describeGrounding, readGrounding, withToolReads } =
+const { countProjectToolReads, describeGrounding, groundingSources, readGrounding, withToolReads } =
   await import("./chat-grounding.js");
+const { MAX_GROUNDING_SOURCES } = await import("@metis/shared");
 
 describe("describeGrounding", () => {
   const named = async () => "Payments";
@@ -60,6 +61,92 @@ describe("describeGrounding", () => {
   it("reads the project name from the database by default", async () => {
     expect(await describeGrounding("p-db", 1)).toMatchObject({ projectName: "Payments" });
     expect(await describeGrounding("p-gone", 0)).toMatchObject({ projectName: "this project" });
+  });
+});
+
+describe("describeGrounding — the retrieval outcome (#2241)", () => {
+  const named = async () => "Payments";
+
+  it("lists the sources a grounded reply's excerpts came from, and a partial coverage", async () => {
+    expect(
+      await describeGrounding(
+        "p1",
+        {
+          sources: 3,
+          excerpts: [
+            { name: "rules.md", relevance: 0.61234 },
+            { name: "internal/feed.go", relevance: 0.7 },
+            { name: "rules.md", relevance: 0.66 },
+          ],
+          coverage: { matchingChunks: 40, totalChunks: 50 },
+        },
+        named,
+      ),
+    ).toEqual({
+      status: "grounded",
+      projectId: "p1",
+      projectName: "Payments",
+      sources: 3,
+      sourcesUsed: [
+        { name: "rules.md", excerpts: 2, relevance: 0.66 },
+        { name: "internal/feed.go", excerpts: 1, relevance: 0.7 },
+      ],
+      coverage: { matchingChunks: 40, totalChunks: 50 },
+    });
+  });
+
+  it("says the evidence was insufficient when the floor set every match aside", async () => {
+    expect(await describeGrounding("p1", { sources: 0, belowFloor: 8 }, named)).toEqual({
+      status: "no-context",
+      projectId: "p1",
+      projectName: "Payments",
+      reason: "insufficient-evidence",
+      belowFloor: 8,
+    });
+  });
+
+  it("says the search failed, and that nothing was found, apart", async () => {
+    expect(await describeGrounding("p1", { sources: 0, failed: true }, named)).toMatchObject({
+      status: "no-context",
+      reason: "retrieval-failed",
+    });
+    expect(await describeGrounding("p1", { sources: 0 }, named)).toEqual({
+      status: "no-context",
+      projectId: "p1",
+      projectName: "Payments",
+      reason: "nothing-found",
+    });
+  });
+
+  it("keeps a partial coverage on a reply with no excerpts", async () => {
+    expect(
+      await describeGrounding(
+        "p1",
+        { sources: 0, coverage: { matchingChunks: 1, totalChunks: 9 } },
+        named,
+      ),
+    ).toMatchObject({ reason: "nothing-found", coverage: { matchingChunks: 1, totalChunks: 9 } });
+  });
+});
+
+describe("groundingSources (#2241)", () => {
+  it("names each file once, in the order shown, with its best relevance", () => {
+    expect(
+      groundingSources([
+        { name: "a.md" },
+        { name: "b.go", relevance: 0.6 },
+        { name: "a.md", relevance: 0.58 },
+        { name: "b.go", relevance: 0.55 },
+      ]),
+    ).toEqual([
+      { name: "a.md", excerpts: 2, relevance: 0.58 },
+      { name: "b.go", excerpts: 2, relevance: 0.6 },
+    ]);
+  });
+
+  it("lists at most MAX_GROUNDING_SOURCES files", () => {
+    const many = Array.from({ length: MAX_GROUNDING_SOURCES + 5 }, (_, i) => ({ name: `f${i}` }));
+    expect(groundingSources(many)).toHaveLength(MAX_GROUNDING_SOURCES);
   });
 });
 
@@ -170,6 +257,35 @@ describe("withToolReads (#439)", () => {
 
   it("keeps an unscoped turn unscoped", () => {
     expect(withToolReads({ status: "unscoped" }, 2)).toEqual({ status: "unscoped" });
+  });
+
+  it("#2241 — keeps the listed sources and a partial coverage", () => {
+    const coverage = { matchingChunks: 3, totalChunks: 4 };
+    const sourcesUsed = [{ name: "a.md", excerpts: 2, relevance: 0.6 }];
+    expect(withToolReads({ ...grounded, sourcesUsed, coverage }, 1)).toEqual({
+      ...grounded,
+      toolReads: 1,
+      sourcesUsed,
+      coverage,
+    });
+    expect(
+      withToolReads({ ...noContext, reason: "insufficient-evidence", belowFloor: 4, coverage }, 2),
+    ).toEqual({
+      status: "grounded",
+      projectId: "p1",
+      projectName: "P",
+      sources: 0,
+      toolReads: 2,
+      coverage,
+    });
+  });
+
+  it("keeps a multi-product turn as it was (#2238)", () => {
+    const multi: Parameters<typeof withToolReads>[0] = {
+      status: "multi",
+      projects: [{ projectId: "a", projectName: "A", sources: 0 }],
+    };
+    expect(withToolReads(multi, 2)).toBe(multi);
   });
 
   it("produces a grounding the shared validator accepts", () => {

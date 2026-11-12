@@ -20,6 +20,28 @@ export interface Ambiguity {
   field: string;
   description: string;
   suggestedQuestion: string;
+  /**
+   * #2235 — set when the deterministic GtWR pass found it in the source text
+   * (`requirement-quality-rules.ts`): the rule, and the source's own words.
+   * Absent on an ambiguity the model raised.
+   */
+  rule?: "R7" | "R8" | "R9" | "TBD";
+  term?: string;
+}
+
+/**
+ * #2235 — the paragraph of the uploaded document a requirement rests on, as
+ * the document reader verified it (#2230): the quote is the source's own text,
+ * never the model's copy. Questions about the requirement cite it.
+ */
+export interface RequirementSourceSpan {
+  /** The reader's statement label (`REQ-001`), which the extraction cites. */
+  ref: string;
+  documentId?: string;
+  filename?: string;
+  /** The section headings above the paragraph, outermost first. */
+  headingPath: string[];
+  quote: string;
 }
 
 export interface EvidenceNeed {
@@ -39,6 +61,13 @@ export interface StructuredRequirement {
   ambiguities: Ambiguity[];
   evidenceNeeds: EvidenceNeed[];
   rawSource: string;
+  /**
+   * #2235 — the document paragraphs this requirement rests on, when the
+   * document reader read its source (`ANALYSIS_DOCUMENT_READER`). Its
+   * clarifying questions are written from, and cite, these; the GtWR rules ran
+   * over their quotes. Absent on the retrieval path.
+   */
+  sources?: RequirementSourceSpan[];
   /**
    * Issue #1569 — present only on a requirement the extraction did not list,
    * offered at the approval checkpoint from a synthesis item that matched
@@ -154,6 +183,14 @@ export interface ClarifyingQuestion {
    * it open, and the panel says so. Absent when the check ran.
    */
   groundingFailed?: boolean;
+  /**
+   * #2275 — true when METIS actually searched the project's documents and
+   * code for this question (the grounding pass ran and did not fail). Absent
+   * when no search ran: an ambiguity or silence is asked directly, and with
+   * no retriever, or offline, nothing is searched. The panel says "searched"
+   * only on this.
+   */
+  searched?: boolean;
   /** Suggested answer text; absent when status is "open". */
   groundedAnswer?: string;
   /** Supporting citations; never empty when an answer is present. */
@@ -172,6 +209,55 @@ export interface ClarifyingQuestion {
    * business fact settles. Absent on every ambiguity question.
    */
   governing?: GoverningQuestionLink;
+  /**
+   * #2235 — what kind of uncertainty the question is about. Missing knowledge
+   * is searched for in the project first (the grounding pass); ambiguity and
+   * silence are the author's to settle, so they are asked; an unanswerable one
+   * is set aside as an open item. Absent on a question from before #2235, or
+   * when the model did not say: it is then grounded and asked, as before.
+   */
+  uncertainty?: UncertaintyKind;
+  /** #2235 — the plausible readings the analyst can pick from. */
+  options?: string[];
+  /** #2235 — how much of the solution the answer changes; rounds are ranked by it. */
+  impact?: QuestionImpact;
+  /**
+   * #2235 — the paragraph of the source document the question is about, copied
+   * from its requirement's verified source (never the model's words).
+   */
+  citation?: QuestionCitation;
+}
+
+export const UNCERTAINTY_KINDS = [
+  "missing-knowledge",
+  "ambiguity",
+  "silence",
+  "unanswerable",
+] as const;
+export type UncertaintyKind = (typeof UNCERTAINTY_KINDS)[number];
+
+export const QUESTION_IMPACTS = ["high", "medium", "low"] as const;
+export type QuestionImpact = (typeof QUESTION_IMPACTS)[number];
+
+/** #2235 — a question's cited paragraph: a requirement source without its label. */
+export type QuestionCitation = Omit<RequirementSourceSpan, "ref">;
+
+/**
+ * #2235 — a question the dialog did not ask, and why: no one available can
+ * answer it now (`unanswerable`, an open item), or every plausible reading
+ * builds the same thing (`same-outcome`). Kept on the state so the panel can
+ * list it; nothing is dropped without a trace.
+ */
+export interface SetAsideQuestion {
+  requirementId: string;
+  ambiguityField: string;
+  question: string;
+  context: string;
+  reason: "unanswerable" | "same-outcome";
+  /** The round it was set aside in. */
+  round: number;
+  options?: string[];
+  citation?: QuestionCitation;
 }
 
 export interface ClarificationAnswer {
@@ -190,6 +276,12 @@ export interface ClarificationRound {
    * Absent when every resolution was read.
    */
   unreadResolutions?: string[];
+  /**
+   * #2235 — questions worth asking that did not fit this round's cap
+   * (`MAX_QUESTIONS_PER_ROUND`). They stay open and are asked in a later
+   * round; on the last round they are never asked, and this count says so.
+   */
+  notAsked?: number;
 }
 
 export interface ClarificationState {
@@ -226,6 +318,18 @@ export interface ClarificationState {
    * Optional so states persisted before #1117 still load.
    */
   answeredAmbiguities?: string[];
+  /**
+   * #2235 — the questions not asked, and why ({@link SetAsideQuestion}).
+   * Optional so states persisted before #2235 still load.
+   */
+  setAside?: SetAsideQuestion[];
+  /**
+   * #2235 — `reqId:field` keys of the REAL ambiguities set aside. Like
+   * `answeredAmbiguities`, only a field that is an ambiguity of its
+   * requirement is counted, so a model that names a field of its own cannot
+   * complete the dialog early.
+   */
+  setAsideAmbiguities?: string[];
   escalatedToSonnet: boolean;
   completed: boolean;
 }
@@ -233,6 +337,7 @@ export interface ClarificationState {
 /**
  * Issue #1117 (finding A) — the set of ambiguities that must NOT be asked about
  * again: everything the user answered, plus everything the model closed.
+ * #2235 — and everything set aside as not worth asking.
  *
  * Used for question generation, the completion check and the panel's progress
  * copy. `resolvedAmbiguities` alone is deliberately still used for the Sonnet
@@ -242,8 +347,13 @@ export interface ClarificationState {
 export function addressedAmbiguities(state: {
   resolvedAmbiguities: string[];
   answeredAmbiguities?: string[];
+  setAsideAmbiguities?: string[];
 }): Set<string> {
-  return new Set([...state.resolvedAmbiguities, ...(state.answeredAmbiguities ?? [])]);
+  return new Set([
+    ...state.resolvedAmbiguities,
+    ...(state.answeredAmbiguities ?? []),
+    ...(state.setAsideAmbiguities ?? []),
+  ]);
 }
 
 /**

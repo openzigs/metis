@@ -82,6 +82,12 @@ vi.mock("./custom-agent-phase.js", () => ({
     results: [],
     usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
   })),
+  // #2262 — the pipeline persists the phase's results; without it the phase threw and was logged.
+  persistAgentPhaseResults: vi.fn(async () => undefined),
+}));
+vi.mock("../rag/acl.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../rag/acl.js")>()),
+  resolveAclActor: vi.fn(async (userId: string) => ({ userId, role: "member" })),
 }));
 vi.mock("../teams/notification-hooks.js", () => ({
   notifyAnalysisComplete: vi.fn(async () => undefined),
@@ -95,6 +101,9 @@ vi.mock("./approval-checkpoint.js", () => ({
 }));
 
 const { AnalysisOrchestrator } = await import("./orchestrator.js");
+const { prisma } = await import("../prisma.js");
+const { resolveAclActor, InactiveAclActorError } = await import("../rag/acl.js");
+const service = await import("./analysis-service.js");
 
 const DOC_TEXT = [
   "# Booking FRD",
@@ -132,7 +141,9 @@ interface CapturedCall {
   userMessage: string;
 }
 
-function makeProvider(calls: CapturedCall[]) {
+/** `readsBeforeFailing`: the reader's statements calls answered before the provider fails them. */
+function makeProvider(calls: CapturedCall[], readsBeforeFailing = Number.POSITIVE_INFINITY) {
+  let reads = 0;
   return {
     key: "anthropic",
     model: "claude-sonnet-5-5",
@@ -144,6 +155,9 @@ function makeProvider(calls: CapturedCall[]) {
       ) => {
         const systemMessage = opts?.systemMessage ?? "";
         calls.push({ systemMessage, userMessage: messages.map((m) => m.content).join("\n") });
+        if (systemMessage.includes("from beginning to end") && ++reads > readsBeforeFailing) {
+          throw new Error("upstream down");
+        }
         const content = systemMessage.includes("from beginning to end")
           ? READER_REPLY
           : systemMessage.includes("combining the statements")
@@ -172,7 +186,7 @@ const emptyGraphSource: AffectedCodeDeps["dataSourceFor"] = () =>
 
 const loader = vi.fn<ReaderDocumentLoader>(async (_projectId, ids) =>
   ids.map((documentId) =>
-    documentId === "doc_1"
+    documentId === "doc_1" || documentId === "doc_2"
       ? {
           ok: true as const,
           document: {
@@ -187,7 +201,10 @@ const loader = vi.fn<ReaderDocumentLoader>(async (_projectId, ids) =>
   ),
 );
 
-async function runPipeline(): Promise<{
+async function runPipeline(
+  opts: Record<string, unknown> = {},
+  readsBeforeFailing?: number,
+): Promise<{
   calls: CapturedCall[];
   capability: AnalysisCapability;
   retrieve: ReturnType<typeof vi.fn>;
@@ -195,7 +212,7 @@ async function runPipeline(): Promise<{
   const calls: CapturedCall[] = [];
   const retrieve = vi.fn(async () => []);
   const orch = new AnalysisOrchestrator({
-    provider: makeProvider(calls) as never,
+    provider: makeProvider(calls, readsBeforeFailing) as never,
     retrieve,
     knowledge: {} as never,
     affectedCode: { mapRequirement: mapEveryRequirement, dataSourceFor: emptyGraphSource },
@@ -215,6 +232,7 @@ async function runPipeline(): Promise<{
     projectId: PROJECT_ID,
     startedById: "u1",
     documentIds: ["doc_1", "doc_gone"],
+    ...opts,
   });
   const capability = persisted.capability.at(-1);
   if (!capability) throw new Error("capability was never persisted");
@@ -237,7 +255,7 @@ describe("#2230 — the document agent through the document reader", () => {
   it("reads the selected documents in full instead of retrieving chunks for the document agent", async () => {
     process.env.ANALYSIS_DOCUMENT_READER = "true";
     const { calls, retrieve } = await runPipeline();
-    expect(loader).toHaveBeenCalledWith(PROJECT_ID, ["doc_1", "doc_gone"]);
+    expect(loader).toHaveBeenCalledWith(PROJECT_ID, ["doc_1", "doc_gone"], expect.anything());
     const reads = calls.filter((c) => c.systemMessage?.includes("from beginning to end"));
     expect(reads).toHaveLength(1);
     expect(reads[0]!.userMessage).toContain("The clinic opened its first site in 1998");
@@ -260,7 +278,14 @@ describe("#2230 — the document agent through the document reader", () => {
       {
         id: "REQ-001",
         text: "Lock an account after five failed logins.",
-        source: { documentId: "doc_1", chunkIndex: 0 },
+        // #2235 — with the verified paragraph its clarifying questions cite.
+        source: {
+          documentId: "doc_1",
+          chunkIndex: 0,
+          filename: "booking.docx",
+          headingPath: ["Booking FRD", "1 Access"],
+          quote: "The portal shall lock an account after five failed attempts.",
+        },
       },
     ]);
     expect(output.findings[0]!.citations[0]!.snippet).toBe(
@@ -316,5 +341,118 @@ describe("#2230 — the document agent through the document reader", () => {
     );
     expect(retrievedFor.map((r) => r.agentKey)).toContain("document");
     expect(capability.documentReading).toBeUndefined();
+  });
+});
+
+/** The agent keys the pipeline retrieved chunks for. */
+const retrievedAgents = (retrieve: ReturnType<typeof vi.fn>): string[] =>
+  retrieve.mock.calls.map((c) => ((c as unknown[])[0] as { agentKey: string }).agentKey);
+
+/** The document agent's persisted row, as `persistAgentResult` was asked to write it. */
+function documentRow(): { status: string; usage: { totalTokens: number } } | undefined {
+  const call = vi
+    .mocked(service.persistAgentResult)
+    .mock.calls.map((c) => c[0] as { agentKey: string; status: string })
+    .find((input) => input.agentKey === "document");
+  return call as never;
+}
+
+describe("#2262 — the document reader before the flag goes on", () => {
+  beforeEach(() => {
+    process.env.ANALYSIS_DOCUMENT_READER = "true";
+  });
+  afterEach(() => {
+    vi.mocked(prisma.document.findMany).mockImplementation((async () => []) as never);
+  });
+
+  it("reads as the requester: their ACL actor reaches the loader", async () => {
+    await runPipeline();
+    expect(resolveAclActor).toHaveBeenCalledWith("u1");
+    expect(loader).toHaveBeenCalledWith(PROJECT_ID, ["doc_1", "doc_gone"], {
+      userId: "u1",
+      role: "member",
+    });
+  });
+
+  it("fails the document agent, reading and retrieving nothing, when the requester is no longer active", async () => {
+    vi.mocked(resolveAclActor).mockRejectedValueOnce(new InactiveAclActorError());
+    const { retrieve } = await runPipeline();
+    expect(loader).not.toHaveBeenCalled();
+    expect(retrievedAgents(retrieve)).not.toContain("document");
+    expect(documentRow()?.status).toBe("failed");
+  });
+
+  it("does not fall back to retrieval for a document the requester's ACL withheld", async () => {
+    loader.mockImplementationOnce(async (_p, ids) =>
+      ids.map((documentId) => ({
+        ok: false as const,
+        documentId,
+        filename: documentId,
+        reason: "It is not available.",
+        withheld: true as const,
+      })),
+    );
+    const { retrieve, capability } = await runPipeline({ documentIds: ["doc_secret"] });
+    expect(retrievedAgents(retrieve)).not.toContain("document");
+    expect(capability.documentReading?.documents).toEqual([
+      expect.objectContaining({ documentId: "doc_secret", status: "unread" }),
+    ]);
+  });
+
+  it("falls back to retrieval when no selected document could be loaded", async () => {
+    const { retrieve, capability } = await runPipeline({ documentIds: ["doc_gone"] });
+    expect(loader).toHaveBeenCalledWith(PROJECT_ID, ["doc_gone"], expect.anything());
+    expect(retrievedAgents(retrieve)).toContain("document");
+    expect(capability.documentReading).toBeUndefined();
+  });
+
+  it("with no document selected, reads the newest ready uploads the requester may see", async () => {
+    vi.mocked(prisma.document.findMany).mockImplementation((async (args: { orderBy?: unknown }) =>
+      // Only the reader's implicit query orders by upload time.
+      args.orderBy
+        ? [
+            { id: "doc_1", filename: "booking.docx", aclSubjects: "[]" },
+            {
+              id: "doc_secret",
+              filename: "secret.docx",
+              aclSubjects: JSON.stringify([{ kind: "user", value: "u2" }]),
+            },
+          ]
+        : []) as never);
+    const { retrieve, capability } = await runPipeline({ documentIds: undefined });
+    expect(loader).toHaveBeenCalledWith(PROJECT_ID, ["doc_1"], expect.anything());
+    expect(retrievedAgents(retrieve)).not.toContain("document");
+    expect(capability.documentReading?.documents.map((d) => d.documentId)).toEqual(["doc_1"]);
+  });
+
+  it("with no document selected and none ready, retrieves as before", async () => {
+    const { retrieve } = await runPipeline({ documentIds: undefined });
+    expect(loader).not.toHaveBeenCalled();
+    expect(retrievedAgents(retrieve)).toContain("document");
+  });
+
+  it("gives the operator's notes to the document reader", async () => {
+    const { calls } = await runPipeline({
+      extraInstructions: "Focus on account lockout for the audit.",
+    });
+    const reads = calls.filter((c) => c.systemMessage?.includes("from beginning to end"));
+    expect(reads).toHaveLength(1);
+    expect(reads[0]!.userMessage).toContain("Focus on account lockout for the audit.");
+  });
+
+  it("counts the tokens a document read spent before it failed, on its row and the run's total", async () => {
+    // doc_1 is read (a read and a merge, 2 tokens each); doc_2's read fails.
+    const { calls } = await runPipeline({ documentIds: ["doc_1", "doc_2"] }, 1);
+    const row = documentRow();
+    expect(row?.status).toBe("failed");
+    expect(row?.usage.totalTokens).toBe(4);
+    // Every call that answered cost 2 tokens, and the run's total counts each one.
+    const failed = 1;
+    const totals = [
+      ...vi.mocked(service.markAnalysisCompleted).mock.calls,
+      ...vi.mocked(service.markAnalysisFailed).mock.calls,
+    ].map((c) => c.at(-1) as { totalTokens: number });
+    expect(totals).toHaveLength(1);
+    expect(totals[0]!.totalTokens).toBe((calls.length - failed) * 2);
   });
 });

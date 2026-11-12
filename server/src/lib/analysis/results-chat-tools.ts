@@ -43,6 +43,7 @@
 import { z } from "zod";
 import {
   FINDING_SEVERITIES,
+  governingStaleNote,
   hasPermission as defaultHasPermission,
   type AuthPayload,
   type ImpactAnalysisDetail,
@@ -68,6 +69,10 @@ import { mapWithConcurrency } from "../portfolio/gap-engine.js";
 import { isGoverningDocsEnabled } from "../governing/flag.js";
 import { listGoverningFindings } from "../governing/findings-store.js";
 import { readGoverningApplicability } from "../governing/applicability-store.js";
+import {
+  storedRequirementStates,
+  withGoverningStaleness,
+} from "../governing/requirement-staleness.js";
 import { isBackgroundAnalysis } from "./requirement-runs.js";
 import type { ClarificationState } from "./types/requirements.js";
 
@@ -866,10 +871,13 @@ export function createGetGoverningFindingsTool(
       });
       if (!a) return notFound("analysis", args.analysisId, LIST_ANALYSES_TOOL_NAME);
       // Read by the analysis id alone, which the query above bound to this project.
-      const [all, applicability] = await Promise.all([
+      const [stored, applicability, states] = await Promise.all([
         listGoverningFindings(a.id),
         readGoverningApplicability(a.id),
+        storedRequirementStates(a.id, reader.projectId),
       ]);
+      // #2222 — as the route: a finding that judged an earlier wording says so.
+      const all = withGoverningStaleness(stored, states, applicability);
       const findings = args.requirementId
         ? all.filter((f) => f.requirementId === args.requirementId)
         : all;
@@ -904,6 +912,7 @@ export function createGetGoverningFindingsTool(
               ? "\n  The citation could not be verified, so it was dropped."
               : "") +
             (f.businessQuestion ? `\n  Open question: ${clip(f.businessQuestion, 300)}` : "") +
+            (f.stale?.length ? `\n  ${clip(governingStaleNote(f.stale) ?? "", 300)}` : "") +
             (f.decision
               ? `\n  Analyst ${f.decision} it${f.decisionNote ? `: ${clip(f.decisionNote, 300)}` : ""}`
               : ""),

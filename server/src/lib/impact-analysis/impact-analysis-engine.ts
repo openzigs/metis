@@ -79,6 +79,7 @@ import {
   type ReadStoredFile,
 } from "./document-source.js";
 import type { DocumentReading } from "../document-reader/reader.js";
+import type { SavedDocumentKey } from "../document-reader/reading-cache.js";
 import { getDocumentStorage } from "../documents/storage.js";
 import { resolveStructuralTwins, type CalleeNameSource } from "./structural-twins.js";
 import {
@@ -1316,8 +1317,15 @@ export interface ImpactServiceDeps {
    * each requirement, constraint or business rule it finds is one change. If
    * the reading fails, the run splits the text heuristically and says so.
    * Absent: every source goes through `extractor`, as before.
+   *
+   * #2280 — `document` is the stored document the text came from (absent for
+   * pasted text), so the reader can reuse a saved reading of the same file.
    */
-  documentReader?: (input: { title: string; text: string }) => Promise<DocumentReading>;
+  documentReader?: (input: {
+    title: string;
+    text: string;
+    document?: SavedDocumentKey;
+  }) => Promise<DocumentReading>;
   /** #2231 — where a document source's stored file is read from; default the document storage. */
   documentStorage?: ReadStoredFile;
   extractor?: ChangeExtractor;
@@ -1728,6 +1736,7 @@ async function changesFromSource(
   let text = "";
   let title = "Pasted text";
   let fromDocument = false;
+  let saved: SavedDocumentKey | undefined;
   if (row.sourceText && row.sourceText.trim().length > 0) {
     text = row.sourceText;
   } else if (row.documentId) {
@@ -1739,12 +1748,17 @@ async function changesFromSource(
     text = doc.text;
     title = doc.title;
     fromDocument = true;
+    saved = doc.saved;
   }
   const hasSource = text.trim().length > 0;
   if (!hasSource && hasRequirements) return { changes: [], notice: null };
   if (hasSource && deps.documentReader && shouldReadWithModel({ fromDocument, text })) {
     try {
-      const reading = await deps.documentReader({ title, text });
+      const reading = await deps.documentReader({
+        title,
+        text,
+        ...(saved ? { document: saved } : {}),
+      });
       return {
         changes: changesFromReading(reading),
         notice: documentReadingNotice(reading, fromDocument),

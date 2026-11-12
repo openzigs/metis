@@ -608,6 +608,10 @@ async function retrieveShared(
       projectIds: [...new Set(repos.map((r) => r.projectId))],
       query: ctx.query,
       k: ctx.limits.hitsPerProduct,
+      // #2238 — every project's evidence decides its repos' coverage, so none
+      // is left out for being less relevant than another: the rank-fusion
+      // result this engine was built on.
+      relevanceFloor: 0,
     });
     fileHits(result.hits, new Map(repos.map((r) => [r.repoConnectionId, r])), hitsByRepo);
     return { hitsByRepo, searched: new Set(result.projectsSearched) };

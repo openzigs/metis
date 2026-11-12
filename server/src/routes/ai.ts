@@ -56,6 +56,7 @@ import {
   getTokenTracker,
   getToolRegistry,
   assembleChatSystem,
+  ANSWER_POLICY_INSTRUCTION,
   CITATION_INSTRUCTION,
 } from "../lib/ai/index.js";
 import type {
@@ -144,6 +145,7 @@ import {
   retrievalConversation,
   type CitableExcerpt,
 } from "../lib/ai/conversation/retrieval-query.js";
+import { applyRelevanceFloor, denseCosine, readRelevanceFloor } from "../lib/ai/relevance-floor.js";
 import {
   countProjectToolReads,
   describeGrounding,
@@ -175,6 +177,9 @@ import {
 import { listBindableAgents, loadBoundCustomAgent } from "../lib/agent-runtime/session-agent.js";
 import { agentSelectableTools } from "../lib/agent-runtime/tool-refs.js";
 import { assertLiveProjectAccess } from "../lib/custom-agents/authz.js";
+import { listMemberProjectsInWorkspace } from "../lib/cross-project/cross-project-access.js";
+import { buildMultiProjectRagContext, readChatSearchScope } from "../lib/ai/multi-project-rag.js";
+import { parseScopeProjectIds } from "../lib/ai/chat-search-scope.js";
 import { assertSecretUsable, canUseSecret } from "../lib/vault/secret-access.js";
 import { resolveDurableRole } from "../lib/auth/durable-roles.js";
 import { getSubAgentRun } from "../lib/agent-runtime/subagents.js";
@@ -498,6 +503,8 @@ const createSessionSchema = z.object({
   title: z.string().min(1).max(200).optional(),
   projectId: z.string().min(1).max(120).optional(),
   projectIds: z.array(z.string().min(1).max(120)).max(50).optional(),
+  /// #2238 — scope the chat to a workspace: every project of it the caller can reach.
+  workspaceId: z.string().min(1).max(120).optional(),
   model: z.string().max(120).optional(),
   policy: patchSchemaOf(policySchema).optional(),
   providerSecretRef: z.string().max(200).optional(),
@@ -558,7 +565,13 @@ function aiErrorToAppError(err: unknown): AppError {
 /** * Auto-RAG: retrieve relevant knowledge chunks for the user's query — read
  * with the conversation since #2240, see {@link conversationRagContext} — and
  * return a system message with the context. Returns empty string when no
- * knowledge is available or retrieval fails.
+ * knowledge is available.
+ *
+ * #2241 — a retrieved chunk below chat's relevance floor never reaches the
+ * prompt. When the floor sets aside everything the search found, or the search
+ * fails, the block says so instead of being empty, so the model is told that
+ * the project's sources were searched and do not support an answer (or could
+ * not be read), and the capture records why for the grounding label.
  *
  * The instruction is deliberately explicit about which project "the project"
  * refers to. Chat history is resent in full on every turn (the client has no
@@ -592,6 +605,15 @@ export interface RagContextCapture {
    * the answer cited and carry them into the next turn.
    */
   excerpts?: CitableExcerpt[];
+  /** #2241 — retrieved excerpts the relevance floor kept out of the prompt. */
+  belowFloor?: number;
+  /** #2241 — the knowledge search failed, so the turn has no excerpts. */
+  failed?: boolean;
+  /**
+   * #2241 — only part of the project's knowledge could be searched: chunks
+   * embedded with another model are invisible to the current one.
+   */
+  coverage?: { matchingChunks: number; totalChunks: number };
 }
 
 /** #2240 — what the conversation adds to a turn's retrieval. */
@@ -683,25 +705,41 @@ export async function buildAutoRagContext(
     const actor = typeof requester === "string" ? await resolveAclActor(requester) : requester;
     const service = getKnowledgeService();
     const queries = [...searches.user, ...(searches.contextual ? [searches.contextual] : [])];
-    const lists = await Promise.all(
-      queries.map(
-        async (q) =>
-          (
-            await service.search(projectId, q, {
-              k: AUTO_RAG_K,
-              actor,
-              ...(documentIds ? { documentIds } : {}),
-            })
-          ).hits,
+    const results = await Promise.all(
+      queries.map((q) =>
+        service.search(projectId, q, {
+          k: AUTO_RAG_K,
+          actor,
+          ...(documentIds ? { documentIds } : {}),
+        }),
       ),
     );
+    const lists = results.map((r) => r.hits);
     // The user's own searches weigh more than the conversational one, whose
     // own finds never fill a majority of the slots.
-    const hits = fuseRetrievalHits(
+    const fusedHits = fuseRetrievalHits(
       lists.slice(0, searches.user.length),
       searches.contextual ? lists[searches.user.length]! : null,
       AUTO_RAG_K,
     );
+    // #2241 — a chunk too weak to bear on the question never reaches the prompt.
+    // The default floor applies only to the embedder it was calibrated on.
+    // Not when the user attached documents: they chose the source, so a
+    // question like "summarise this" must reach that document's best excerpts
+    // however weakly the words match, never an "insufficient evidence" block.
+    const floor = documentIds ? 0 : readRelevanceFloor(fusedHits.map((h) => h.embeddingModel));
+    const { kept: hits, belowFloor } = applyRelevanceFloor(fusedHits, floor);
+    // #2241 — a partial coverage is reported, not just logged.
+    const coverage = results.find((r) => r.coverageWarning)?.coverageWarning;
+    if (capture) {
+      if (belowFloor > 0) capture.belowFloor = belowFloor;
+      if (coverage) {
+        capture.coverage = {
+          matchingChunks: coverage.matchingChunks,
+          totalChunks: coverage.totalChunks,
+        };
+      }
+    }
     // #2240 — the excerpts the previous answer cited, read back as the project
     // holds them now. Losing them costs this turn its carry-over, never its
     // fresh retrieval.
@@ -747,12 +785,17 @@ export async function buildAutoRagContext(
       if (capture) {
         capture.contexts.push(...chunkList);
         capture.sources += chunkList.length;
-        capture.excerpts = listed.map((h, i) => ({
-          n: i + 1,
-          chunkId: h.chunkId,
-          name: h.path ?? h.filename,
-          locator: formatHitLocator(h),
-        }));
+        capture.excerpts = listed.map((h, i) => {
+          // #2241 — a fresh hit's dense cosine; a carried excerpt has none.
+          const relevance = i < hits.length ? denseCosine(hits[i]!) : null;
+          return {
+            n: i + 1,
+            chunkId: h.chunkId,
+            name: h.path ?? h.filename,
+            locator: formatHitLocator(h),
+            ...(relevance !== null ? { relevance } : {}),
+          };
+        });
       }
       const chunks = chunkList.join("\n\n---\n\n");
       // #2240 — said only when it applies, so an ordinary turn's block is unchanged.
@@ -798,7 +841,16 @@ export async function buildAutoRagContext(
       capture.contexts.push(fused.block);
       capture.sources += fused.usedSymbols;
     }
-    if (!ragBlock && !fused.block) return "";
+    if (!ragBlock && !fused.block) {
+      // #2241 — the search found matches, all too weak to use: tell the model
+      // the sources were searched and do not support an answer.
+      if (belowFloor === 0) return "";
+      const project = await prisma.project.findUnique({
+        where: { id: projectId },
+        select: { name: true },
+      });
+      return insufficientEvidenceBlock(project?.name?.trim() || "this project", belowFloor);
+    }
     if (!fused.block) return ragBlock;
     if (!ragBlock) return fused.block;
     return `${ragBlock}\n\n${fused.block}`;
@@ -808,14 +860,41 @@ export async function buildAutoRagContext(
       capture.contexts.length = 0;
       capture.sources = 0;
       delete capture.excerpts;
+      delete capture.belowFloor;
+      delete capture.coverage;
+      // #2241 — recorded, so the reply's label says the search failed.
+      capture.failed = true;
     }
-    log.debug("Auto-RAG retrieval failed, continuing without context", {
+    log.warn("Auto-RAG retrieval failed, continuing without context", {
       projectId,
       error: (err as Error).message,
     });
-    return "";
+    return RETRIEVAL_FAILED_BLOCK;
   }
 }
+
+/**
+ * #2241 — the block a turn gets when the relevance floor set aside every match:
+ * no excerpt, and a plain statement that the project's sources were searched.
+ */
+export function insufficientEvidenceBlock(projectName: string, belowFloor: number): string {
+  return (
+    `## Retrieved Knowledge (project-scoped RAG)\n` +
+    `This chat session is scoped to the project "${projectName}". Its knowledge base was ` +
+    `searched for this question and nothing in it was relevant enough to use: the ` +
+    `${belowFloor} closest ${belowFloor === 1 ? "match was" : "matches were"} too weak, so no ` +
+    `excerpt is shown. Unless your tools find support in the project, do not answer from ` +
+    `general knowledge: say that "${projectName}"'s sources don't show this, and say what is ` +
+    `missing (which document, rule or code would answer it).`
+  );
+}
+
+/** #2241 — the block a turn gets when the knowledge search failed. */
+export const RETRIEVAL_FAILED_BLOCK =
+  `## Retrieved Knowledge (project-scoped RAG)\n` +
+  `The search of this project's knowledge base failed for this turn, so no excerpt is shown. ` +
+  `Unless your tools can read the project, say that you could not check its sources; do not ` +
+  `answer as if you had.`;
 
 /** * Phase 10 / #700 \u2014 build the library-injected system messages for a chat
  * call from the agent persona + currently-loaded skills + per-project Chronicle
@@ -835,6 +914,9 @@ export async function buildLibrarySystemMessages(
     agentRef?: string | null;
     loadedSkillIds: string;
     projectId?: string | null;
+    /** #2238 — a multi-product scope; #2241 gives it the answering policy too. */
+    scopeProjectIds?: string | null;
+    scopeWorkspaceId?: string | null;
   },
   /**
    * #713 — the deterministically-ordered code-tool schema block, injected into
@@ -928,6 +1010,18 @@ export async function buildLibrarySystemMessages(
     skillBlocks,
     toolSchemas,
     citationInstruction: CITATION_INSTRUCTION,
+    // #2241 — the answering policy applies where there are project sources to
+    // answer from (one project, or several: #2238); an unscoped chat answers
+    // from general knowledge, and says so.
+    answerPolicy:
+      session.projectId ||
+      readChatSearchScope({
+        projectId: null,
+        scopeProjectIds: session.scopeProjectIds,
+        scopeWorkspaceId: session.scopeWorkspaceId,
+      })
+        ? ANSWER_POLICY_INSTRUCTION
+        : null,
     chronicle,
   });
 }
@@ -1118,31 +1212,54 @@ export function aiRouter(): Router {
 
     // Resolve the effective project scope up-front. Ids may arrive as
     // `projectId` or via the `projectIds` scope selector — both are
-    // client-supplied hints persisted in the browser. Two degradation paths
-    // exist, and BOTH must be reported back to the client explicitly
-    // (issue #607 — never silently drop a requested scope):
-    //  - 2+ ids: sessions bind at most one project (the per-project provider /
-    //    model override below reads exactly one row), so a multi-project
-    //    request degrades to an unscoped session with
-    //    reason "multi-project-unsupported".
-    //  - a stale id that no longer resolves (deleted project, reset local DB)
-    //    degrades to an unscoped session with reason "stale-project" rather
-    //    than being handed to Prisma and surfacing as a raw foreign-key
-    //    error (HTTP 500).
-    // Validate existence once here and reuse the row for the per-project
-    // provider / model override below.
+    // client-supplied hints persisted in the browser — or as a `workspaceId`.
+    //  - one id: the session binds that project (`projectId`), as before;
+    //  - #2238 — 2+ ids: a multi-product session. It binds no single project
+    //    (the per-project provider / model override below reads exactly one
+    //    row), keeps the ids in `scopeProjectIds`, and every turn searches each
+    //    of them. The caller must reach every one: no access reads as 404
+    //    NOT_FOUND and nothing is created (#304);
+    //  - #2238 — a `workspaceId`: a session scoped to that workspace's projects,
+    //    resolved every turn. A non-member gets 404 and nothing is created.
+    // A stale id that no longer resolves (deleted project, reset local DB)
+    // degrades to an unscoped session with reason "stale-project" rather than
+    // being handed to Prisma and surfacing as a raw foreign-key error (HTTP
+    // 500) — reported back to the client explicitly (issue #607: never
+    // silently drop a requested scope).
     const requestedProjectIds: string[] = parsed.data.projectId
       ? [parsed.data.projectId]
-      : (parsed.data.projectIds ?? []);
-    let scopeDegradationReason: "multi-project-unsupported" | "stale-project" | null = null;
+      : [...new Set(parsed.data.projectIds ?? [])];
+    if (parsed.data.workspaceId && requestedProjectIds.length > 0) {
+      throw new AppError(
+        400,
+        "SCOPE_CONFLICT",
+        "Scope a chat to projects or to a workspace, not both",
+      );
+    }
+    let scopeDegradationReason: "stale-project" | null = null;
     let effectiveProjectId: string | null =
       requestedProjectIds.length === 1 ? requestedProjectIds[0] : null;
+    let scopeProjectIds: string[] | null = null;
     if (requestedProjectIds.length > 1) {
-      scopeDegradationReason = "multi-project-unsupported";
-      log.warn("Multi-project session scope unsupported; creating unscoped session", {
-        userId,
-        requestedProjectIds,
+      const live = await prisma.project.findMany({
+        where: { id: { in: requestedProjectIds }, deletedAt: null },
+        select: { id: true },
       });
+      if (live.length !== requestedProjectIds.length) {
+        log.warn("Session project scope not found; creating unscoped session", {
+          userId,
+          requestedProjectIds,
+        });
+        scopeDegradationReason = "stale-project";
+      } else {
+        for (const id of requestedProjectIds) await assertLiveProjectAccess(req.user!, id);
+        scopeProjectIds = requestedProjectIds;
+      }
+    }
+    const scopeWorkspaceId = parsed.data.workspaceId ?? null;
+    if (scopeWorkspaceId) {
+      // Throws the audited 404 for a non-member (or a workspace that is gone).
+      await listMemberProjectsInWorkspace({ id: userId, role: req.user!.role }, scopeWorkspaceId);
     }
     if (effectiveProjectId) {
       const project = await prisma.project.findFirst({
@@ -1317,6 +1434,8 @@ export function aiRouter(): Router {
         agentRef: resolvedAgentRef,
         agentSnapshot,
         loadedSkillIds: JSON.stringify(initialSkillIds),
+        scopeProjectIds: scopeProjectIds ? JSON.stringify(scopeProjectIds) : null,
+        scopeWorkspaceId,
       },
     });
     audit({
@@ -1329,16 +1448,23 @@ export function aiRouter(): Router {
         agentId: resolvedAgentId,
         agentRef: resolvedAgentRef,
         skillCount: initialSkillIds.length,
+        ...(scopeProjectIds ? { scopeProjectIds } : {}),
+        ...(scopeWorkspaceId ? { scopeWorkspaceId } : {}),
       },
     });
     // #607 — echo the applied scope so the client can surface a degraded
     // (requested ≠ applied) scope instead of silently chatting unscoped.
     res.status(201).json(
       ok({
-        session: { ...session, policy },
+        // #2238 — the scope as a list, as the resume read returns it.
+        session: { ...session, policy, scopeProjectIds },
         scope: {
           requestedProjectIds,
           appliedProjectId: session.projectId,
+          // #2238 — every project the session searches (one, several or none),
+          // and the workspace when it is scoped to one.
+          appliedProjectIds: scopeProjectIds ?? (session.projectId ? [session.projectId] : []),
+          appliedWorkspaceId: scopeWorkspaceId,
           degraded: scopeDegradationReason !== null,
           ...(scopeDegradationReason ? { reason: scopeDegradationReason } : {}),
         },
@@ -1371,7 +1497,16 @@ export function aiRouter(): Router {
     conversationRateLimiter,
     async (req: Request, res: Response) => {
       const session = await loadAuthorizedSession(req.user, String(req.params.id));
-      res.json(ok({ session: { ...session, policy: parsePolicyJson(session.policy) } }));
+      res.json(
+        ok({
+          session: {
+            ...session,
+            policy: parsePolicyJson(session.policy),
+            // #2238 — the scope as a list, as the resume read returns it.
+            scopeProjectIds: parseScopeProjectIds(session.scopeProjectIds),
+          },
+        }),
+      );
     },
   );
 
@@ -1684,16 +1819,30 @@ export function aiRouter(): Router {
       // Issue #1321 — the observer needs the retrieved contexts as the model saw
       // them; the builder hands them over directly (no re-parsing of its block).
       const ragCapture: RagContextCapture = { contexts: [], sources: 0 };
-      const ragContext = await conversationRagContext(
-        session,
-        userText,
-        userId,
-        ragCapture,
-        parsed.data.documentIds,
-      );
+      // #2238 — a chat scoped to several products searches each of them.
+      const multiScope = readChatSearchScope(session);
+      const multi = multiScope
+        ? await buildMultiProjectRagContext({
+            userId,
+            scope: multiScope,
+            query: userText,
+            capture: ragCapture,
+          })
+        : null;
+      const ragContext = multi
+        ? multi.block
+        : await conversationRagContext(
+            session,
+            userText,
+            userId,
+            ragCapture,
+            parsed.data.documentIds,
+          );
       // #18 — what this reply is grounded in, recorded on the reply row. #439 —
       // what the code tools read of the project is folded in after the loop.
-      let grounding = await describeGrounding(session.projectId, ragCapture.sources);
+      let grounding = multi
+        ? multi.grounding
+        : await describeGrounding(session.projectId, ragCapture);
 
       // #136/#138 — persist the question, load the server-owned history, and
       // compact it first if the prompt has reached the watermark.
@@ -2110,17 +2259,31 @@ export function aiRouter(): Router {
     // Auto-RAG: inject relevant knowledge context for project-scoped sessions.
     // Issue #1321 — see the /chat route: contexts come from the builder.
     const ragCapture: RagContextCapture = { contexts: [], sources: 0 };
-    const ragContext = await conversationRagContext(
-      session,
-      userText,
-      userId,
-      ragCapture,
-      parsed.data.documentIds,
-    );
+    // #2238 — a chat scoped to several products searches each of them.
+    const multiScope = readChatSearchScope(session);
+    const multi = multiScope
+      ? await buildMultiProjectRagContext({
+          userId,
+          scope: multiScope,
+          query: userText,
+          capture: ragCapture,
+        })
+      : null;
+    const ragContext = multi
+      ? multi.block
+      : await conversationRagContext(
+          session,
+          userText,
+          userId,
+          ragCapture,
+          parsed.data.documentIds,
+        );
     // #18 — what this reply is grounded in: streamed before the answer and
     // recorded on the reply row, so the client can say so live and on reload.
     // #439 — re-sent after the tool loop when the tools read the project.
-    let grounding = await describeGrounding(session.projectId, ragCapture.sources);
+    let grounding = multi
+      ? multi.grounding
+      : await describeGrounding(session.projectId, ragCapture);
 
     res.status(200);
     res.setHeader("Content-Type", "text/event-stream");

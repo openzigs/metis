@@ -749,17 +749,27 @@ lineage writer: the read-path rule of #1135 (`writesData`) is inert on them.
 
 ## Document-understanding corpora (#2229)
 
-Three synthetic Word business documents, each larger than the 10 chunks (about 20 KB)
+Four synthetic Word business documents, each larger than the 10 chunks (about 20 KB)
 today's document agent reads, with every requirement and every ambiguity a business
-analyst would want raised labelled against a source span. They are the Phase 0
+analyst would want raised labelled against a source span. The first three are the Phase 0
 baseline of epic #2227: do not change a reader's default until this corpus shows the
-change is a gain.
+change is a gain. The fourth (#2255) is the 60 KB size the epic's definition of done names.
 
 | Corpus | Kind | Word file | Converted text | Sections | Requirements | Ambiguities |
 |---|---|---|---|---|---|---|
 | `docunderstanding-01-clinic-booking` | FRD | 18 KB | 22,129 chars | 26 | 46 | 11 |
 | `docunderstanding-02-freight-claims` | BRD | 18 KB | 23,478 chars | 36 | 58 | 12 |
 | `docunderstanding-03-community-grants` | FRD | 22 KB | 35,075 chars | 53 | 102 | 14 |
+| `docunderstanding-04-library-lending` | FRD | 31 KB | 60,624 chars | 81 | 214 | 28 |
+
+Document 04 does not write its requirements only as "shall" statements. Most of what a member
+experiences is written to the member, as in the library's own leaflets ("You can renew…",
+"You will receive…"), and many rules are plain or passive statements ("Overdue notices are
+sent…"). Of its 214 requirements, 74 are in the second person, 66 use neither "shall" nor
+"must", and 74 use "shall" or "must". All of them are labelled, so a reader that only
+picks out "shall" sentences loses recall. Its 28 ambiguities cover all six kinds (eight
+contradictions, four of each other kind). Three of the contradictions are between a table and
+the body, and several are between distant sections. It has no results yet.
 
 Each item holds `frd.src.md` (the authored document, labels marked inline as
 `[[R12 ...]]` and `[[A3 ...]]` with an ambiguity trailer; see
@@ -777,7 +787,7 @@ labels. A reviewer who disagrees with a label edits `frd.src.md` and rebuilds.
 ```bash
 pnpm --filter server eval:doc-understanding:build            # after editing a frd.src.md; commit all three files
 pnpm --filter server eval:doc-understanding:build --check    # labels.json up to date?
-pnpm --filter server eval:doc-understanding                  # arms A,B,C over all three, 1 run, $10 cap
+pnpm --filter server eval:doc-understanding                  # arms A,B,C over all four, 1 run, $10 cap
 pnpm --filter server eval:doc-understanding --corpus docunderstanding-01-clinic-booking --arms B
 pnpm --filter server eval:doc-understanding --combine a.json,b.json,c.json --reading baseline-sonnet
 ```
@@ -949,3 +959,58 @@ The first "tools only" run and the `on` run each have one unscored judge reply (
   $0.0178 per question in answers, against $0.0331 for the first. The table gives input
   tokens instead. The nine runs, one of them a 1-question smoke run, cost **$2.764553**
   (answers and judge).
+
+### Relevance floor (#2241)
+
+`pnpm eval:ba-qa --floor-sweep` asks no model and spends $0. After the knowledge step, it runs
+chat's knowledge search (k 8, as the eval user, flags off) for each question over each product
+in its scope. It also runs six off-topic probes (`OFF_TOPIC_PROBES`: "What is the capital of
+France?" and the like) over each product. For each candidate floor on the dense cosine it then
+reports what the floor would empty or drop (`server/src/lib/eval/ba-qa/relevance-floor.ts`).
+Run on 2026-11-11 with gte-modernbert-base, the default embedder:
+
+| Floor | Off-topic probes emptied | Unanswerable emptied | Answerable emptied | Ambiguous emptied | Expected excerpts kept | Excerpts dropped |
+|---:|---:|---:|---:|---:|---:|---:|
+| 0.50 | 3/12 | 0/4 | 0/10 | 0/4 | 25/25 | 0/216 |
+| 0.53 | 5/12 | 0/4 | 0/10 | 0/4 | 25/25 | 8/216 |
+| **0.55** | **6/12** | **0/4** | **0/10** | **0/4** | **25/25** | **14/216** |
+| 0.56 | 9/12 | 0/4 | 0/10 | 0/4 | 24/25 | 16/216 |
+| 0.57 | 12/12 | 0/4 | 0/10 | 0/4 | 24/25 | 21/216 |
+| 0.60 | 12/12 | 0/4 | 0/10 | 0/4 | 23/25 | 49/216 |
+| 0.65 | 12/12 | 1/4 | 0/10 | 3/4 | 12/25 | 138/216 |
+| 0.70 | 12/12 | 1/4 | 4/10 | 3/4 | 8/25 | 184/216 |
+
+- **The default is 0.55.** It is the highest floor that loses no expected-source excerpt. The
+  lowest such excerpt scored 0.560 (M2, the client's `miniflux.py`). At 0.57 every off-topic
+  probe is emptied, but that excerpt is lost.
+- **The floor does not catch an in-domain question the sources can't answer.** The top cosine of
+  the unanswerable questions (0.64 to 0.79) overlaps the answerable ones' (0.68 to 0.84). A floor
+  high enough to empty them empties answerable questions too. Off-topic questions top out
+  at 0.46 to 0.57. So the floor keeps unrelated text out of the prompt, and abstention on an
+  in-domain question rests on the answering policy (`ANSWER_POLICY_SENTENCES`).
+- **Retrieval misses the rule for most server questions.** S1, S3 and S4 had none of their
+  expected files in the top 8. That is a reach problem (#2243), not a floor problem.
+
+### With the floor and the answering policy (#2241), 2026-11-11
+
+One run per arm (Sonnet 5.5 answers and judge), compared with run 2 above:
+
+| | off, before | off, #2241 | on, before | on, #2241 |
+|---|---:|---:|---:|---:|
+| Correctness: mean facts stated | 29% | 22% | 49% | 48% |
+| Fully correct answers | 0/10 | 0/10 | 2/10 | 2/10 |
+| Citation precision | 30% (6/20) | 21% (4/19) | 83% (34/41) | 89% (50/56) |
+| Abstention on unanswerable | 4/4 | 4/4 | 4/4 | 4/4 |
+| Follow-up on ambiguous | 3/4 | **4/4** | 3/4 | **4/4** |
+| False abstention on answerable | 5/10 | 7/10 | 4/10 | 4/10 |
+| Right behaviour, single-product | 5/6 | 3/6 | 6/6 | 6/6 |
+| Spend (answers + judge) | $0.309360 | $0.295650 | $0.488667 | $0.477220 |
+
+- **A3 is now asked about in both arms.** Before, it was answered on an assumption.
+- **With the flags off, chat now abstains where retrieval missed the rule.** S1, S3 and S4 said
+  the sources don't show the answer. Their top 8 excerpts held none of the expected files. In run 2
+  before #2241, S1 and S3 were answered from those same excerpts. With the code-search tools on,
+  all six single-product questions were answered, and the only false abstentions are the four
+  multi-product questions, which chat still runs unscoped (#2238).
+- The #2241 runs spent $0.772870 across both arms. These are single runs, so a difference of one
+  question is within run-to-run noise (compare runs 1 and 2 above).

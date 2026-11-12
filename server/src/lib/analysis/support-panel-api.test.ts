@@ -47,6 +47,8 @@ const ANALYSIS_ID = "an_1";
 
 vi.mock("../prisma.js", () => ({
   prisma: {
+    // #2222 — the snapshot reads each requirement's analysed version; none was edited by a person.
+    requirementVersion: { groupBy: vi.fn(async () => []) },
     analysis: {
       findFirst: vi.fn(async ({ where }: { where: { id: string } }) => {
         if (where.id !== ANALYSIS_ID) return null;

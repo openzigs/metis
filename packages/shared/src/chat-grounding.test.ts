@@ -1,6 +1,6 @@
 /** #18 — the one validator both the server and the chat page use for a reply's grounding. */
 import { describe, expect, it } from "vitest";
-import { parseChatGrounding } from "./conversation.js";
+import { MAX_GROUNDING_SOURCES, parseChatGrounding } from "./conversation.js";
 
 describe("parseChatGrounding", () => {
   it("accepts each well-formed status", () => {
@@ -68,6 +68,147 @@ describe("parseChatGrounding", () => {
       "grounded with string tool reads",
       { status: "grounded", projectId: "p", projectName: "P", sources: 1, toolReads: "1" },
     ],
+  ])("rejects %s", (_label, value) => {
+    expect(parseChatGrounding(value)).toBeNull();
+  });
+});
+
+describe("parseChatGrounding — sources, reasons and coverage (#2241)", () => {
+  const grounded = { status: "grounded", projectId: "p", projectName: "P", sources: 2 } as const;
+  const noContext = { status: "no-context", projectId: "p", projectName: "P" } as const;
+
+  it("round-trips the listed sources, a reason and a partial coverage", () => {
+    const g = {
+      ...grounded,
+      sourcesUsed: [
+        { name: "rules.md", excerpts: 1, relevance: 0.61 },
+        { name: "a.go", excerpts: 1 },
+      ],
+      coverage: { matchingChunks: 3, totalChunks: 5 },
+    };
+    expect(parseChatGrounding(g)).toEqual(g);
+    const n = { ...noContext, reason: "insufficient-evidence", belowFloor: 8 };
+    expect(parseChatGrounding(n)).toEqual(n);
+    expect(parseChatGrounding({ ...noContext, reason: "retrieval-failed" })).toEqual({
+      ...noContext,
+      reason: "retrieval-failed",
+    });
+  });
+
+  it("drops a malformed source and keeps the well-formed ones", () => {
+    expect(
+      parseChatGrounding({
+        ...grounded,
+        sourcesUsed: [
+          { name: "", excerpts: 1 },
+          { name: "x".repeat(501), excerpts: 1 },
+          { name: "ok.md", excerpts: 0 },
+          { name: "nan.md", excerpts: 1, relevance: Number.NaN },
+          "not an object",
+          { name: "good.md", excerpts: 2, relevance: 0.7 },
+        ],
+      }),
+    ).toEqual({
+      ...grounded,
+      sourcesUsed: [
+        { name: "nan.md", excerpts: 1 },
+        { name: "good.md", excerpts: 2, relevance: 0.7 },
+      ],
+    });
+  });
+
+  it("keeps at most MAX_GROUNDING_SOURCES sources", () => {
+    const many = Array.from({ length: MAX_GROUNDING_SOURCES + 3 }, (_, i) => ({
+      name: `f${i}`,
+      excerpts: 1,
+    }));
+    expect(
+      parseChatGrounding({ ...grounded, sourcesUsed: many }) as { sourcesUsed: unknown[] },
+    ).toMatchObject({ sourcesUsed: many.slice(0, MAX_GROUNDING_SOURCES) });
+  });
+
+  it("drops an unknown reason, a belowFloor without insufficient evidence, and a full or broken coverage", () => {
+    expect(parseChatGrounding({ ...noContext, reason: "bored" })).toEqual(noContext);
+    expect(parseChatGrounding({ ...noContext, reason: "nothing-found", belowFloor: 3 })).toEqual({
+      ...noContext,
+      reason: "nothing-found",
+    });
+    expect(
+      parseChatGrounding({ ...noContext, reason: "insufficient-evidence", belowFloor: -1 }),
+    ).toEqual({ ...noContext, reason: "insufficient-evidence" });
+    expect(
+      parseChatGrounding({ ...grounded, coverage: { matchingChunks: 5, totalChunks: 5 } }),
+    ).toEqual(grounded);
+    expect(parseChatGrounding({ ...grounded, coverage: { matchingChunks: "1" } })).toEqual(
+      grounded,
+    );
+    expect(parseChatGrounding({ ...grounded, sourcesUsed: "a.md" })).toEqual(grounded);
+  });
+});
+
+describe("parseChatGrounding — multi-product (#2238)", () => {
+  const projects = [
+    { projectId: "a", projectName: "Alpha", sources: 3 },
+    { projectId: "b", projectName: "Beta", sources: 0 },
+  ];
+
+  it("accepts a multi-product grounding, with and without the projects it could not search", () => {
+    for (const g of [
+      { status: "multi", projects },
+      { status: "multi", projects: [] },
+      {
+        status: "multi",
+        projects,
+        unsearched: [{ projectId: "c", projectName: "Gamma", reason: "timeout" }],
+        unavailable: 2,
+      },
+      {
+        status: "multi",
+        projects,
+        unsearched: [{ projectId: "c", projectName: "Gamma", reason: "error" }],
+      },
+    ]) {
+      expect(parseChatGrounding(g)).toEqual(g);
+    }
+  });
+
+  it("drops extra keys and an empty unsearched list", () => {
+    expect(
+      parseChatGrounding({
+        status: "multi",
+        projects: [{ projectId: "a", projectName: "Alpha", sources: 1, x: 1 }],
+        unsearched: [],
+        y: 2,
+      }),
+    ).toEqual({
+      status: "multi",
+      projects: [{ projectId: "a", projectName: "Alpha", sources: 1 }],
+    });
+  });
+
+  it.each([
+    ["no projects list", { status: "multi" }],
+    ["a project without a name", { status: "multi", projects: [{ projectId: "a", sources: 1 }] }],
+    [
+      "a project with a negative count",
+      { status: "multi", projects: [{ projectId: "a", projectName: "A", sources: -1 }] },
+    ],
+    ["a project that is not an object", { status: "multi", projects: [7] }],
+    ["unsearched that is not a list", { status: "multi", projects: [], unsearched: "c" }],
+    [
+      "an unsearched project with an unknown reason",
+      {
+        status: "multi",
+        projects: [],
+        unsearched: [{ projectId: "c", projectName: "C", reason: "slow" }],
+      },
+    ],
+    [
+      "an unsearched project without an id",
+      { status: "multi", projects: [], unsearched: [{ projectName: "C", reason: "timeout" }] },
+    ],
+    ["a zero unavailable count", { status: "multi", projects: [], unavailable: 0 }],
+    ["a fractional unavailable count", { status: "multi", projects: [], unavailable: 1.5 }],
   ])("rejects %s", (_label, value) => {
     expect(parseChatGrounding(value)).toBeNull();
   });
