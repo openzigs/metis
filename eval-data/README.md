@@ -884,3 +884,58 @@ before and differs only where shown.
   follow-ups, and two of the four abstentions on unanswerable questions, came in unscoped
   sessions with no retrieval. A3, the one ambiguous question with retrieval, was answered on
   a stated assumption in every run instead of asked about.
+
+### Relevance floor (#2241)
+
+`pnpm eval:ba-qa --floor-sweep` asks no model and spends $0. After the knowledge step, it runs
+chat's knowledge search (k 8, as the eval user, flags off) for each question over each product
+in its scope. It also runs six off-topic probes (`OFF_TOPIC_PROBES`: "What is the capital of
+France?" and the like) over each product. For each candidate floor on the dense cosine it then
+reports what the floor would empty or drop (`server/src/lib/eval/ba-qa/relevance-floor.ts`).
+Run on 2026-11-11 with gte-modernbert-base, the default embedder:
+
+| Floor | Off-topic probes emptied | Unanswerable emptied | Answerable emptied | Ambiguous emptied | Expected excerpts kept | Excerpts dropped |
+|---:|---:|---:|---:|---:|---:|---:|
+| 0.50 | 3/12 | 0/4 | 0/10 | 0/4 | 25/25 | 0/216 |
+| 0.53 | 5/12 | 0/4 | 0/10 | 0/4 | 25/25 | 8/216 |
+| **0.55** | **6/12** | **0/4** | **0/10** | **0/4** | **25/25** | **14/216** |
+| 0.56 | 9/12 | 0/4 | 0/10 | 0/4 | 24/25 | 16/216 |
+| 0.57 | 12/12 | 0/4 | 0/10 | 0/4 | 24/25 | 21/216 |
+| 0.60 | 12/12 | 0/4 | 0/10 | 0/4 | 23/25 | 49/216 |
+| 0.65 | 12/12 | 1/4 | 0/10 | 3/4 | 12/25 | 138/216 |
+| 0.70 | 12/12 | 1/4 | 4/10 | 3/4 | 8/25 | 184/216 |
+
+- **The default is 0.55.** It is the highest floor that loses no expected-source excerpt. The
+  lowest such excerpt scored 0.560 (M2, the client's `miniflux.py`). At 0.57 every off-topic
+  probe is emptied, but that excerpt is lost.
+- **The floor does not catch an in-domain question the sources can't answer.** The top cosine of
+  the unanswerable questions (0.64 to 0.79) overlaps the answerable ones' (0.68 to 0.84). A floor
+  high enough to empty them empties answerable questions too. Off-topic questions top out
+  at 0.46 to 0.57. So the floor keeps unrelated text out of the prompt, and abstention on an
+  in-domain question rests on the answering policy (`ANSWER_POLICY_SENTENCES`).
+- **Retrieval misses the rule for most server questions.** S1, S3 and S4 had none of their
+  expected files in the top 8. That is a reach problem (#2243), not a floor problem.
+
+### With the floor and the answering policy (#2241), 2026-11-11
+
+One run per arm (Sonnet 5.5 answers and judge), compared with run 2 above:
+
+| | off, before | off, #2241 | on, before | on, #2241 |
+|---|---:|---:|---:|---:|
+| Correctness: mean facts stated | 29% | 22% | 49% | 48% |
+| Fully correct answers | 0/10 | 0/10 | 2/10 | 2/10 |
+| Citation precision | 30% (6/20) | 21% (4/19) | 83% (34/41) | 89% (50/56) |
+| Abstention on unanswerable | 4/4 | 4/4 | 4/4 | 4/4 |
+| Follow-up on ambiguous | 3/4 | **4/4** | 3/4 | **4/4** |
+| False abstention on answerable | 5/10 | 7/10 | 4/10 | 4/10 |
+| Right behaviour, single-product | 5/6 | 3/6 | 6/6 | 6/6 |
+| Spend (answers + judge) | $0.309360 | $0.295650 | $0.488667 | $0.477220 |
+
+- **A3 is now asked about in both arms.** Before, it was answered on an assumption.
+- **With the flags off, chat now abstains where retrieval missed the rule.** S1, S3 and S4 said
+  the sources don't show the answer. Their top 8 excerpts held none of the expected files. In run 2
+  before #2241, S1 and S3 were answered from those same excerpts. With the code-search tools on,
+  all six single-product questions were answered, and the only false abstentions are the four
+  multi-product questions, which chat still runs unscoped (#2238).
+- The #2241 runs spent $0.772870 across both arms. These are single runs, so a difference of one
+  question is within run-to-run noise (compare runs 1 and 2 above).
