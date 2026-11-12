@@ -563,10 +563,14 @@ Run this phase only after Phase 9's documents finish: a repo refresh during docs
   2. In `/scheduler`, list the handlers (`GET /api/scheduler/handlers`) and create a job of type `refresh-repo-connector` on a cron schedule. Pause, resume and view its history.
   3. In `/tasks`, cancel and retry a task.
   4. Open `/runs` and `/runs/:id`.
+  5. **Queued sync (#2335).** While the scheduled `refresh-repo-connector` run (or a Deep Ingest) holds the repository, press **Sync** on the connector card twice.
+  6. **Sync on push (#2335), sandbox connector only** (`openzigs/flux-v2`, as in Phase 15; never wire `miniflux/v2`). Give the connector its own webhook secret and send the signed CI call from USER_GUIDE §15.4 to `POST /api/webhooks/github/push/c/:connectorId`, once for its tracked branch, once for another branch, and once unsigned. The shared-secret receiver is `POST /api/webhooks/github/push`.
 - **Works:**
   - The handlers include `refresh-repo-connector`, `refresh-db-connector-schema`, `rerun-analysis`, `regenerate-generated-document`, `publish-batch` and `http-webhook`.
   - The job fires on schedule.
   - Retry produces a new attempt.
+  - Step 5: each click on **Sync** answers `202` with `data.status: "queued"` (`requests` 1, then 2), and the toast reads "A sync is already running. This one is queued and runs when it finishes." Exactly one more refresh runs after the first ends: the server log shows one `connector.refresh.start` with `trigger: "manual"` and `requests: 2`.
+  - Step 6: the tracked branch answers `200` with `handled: true` and `started: 1` (or `queued: 1`), and the server log shows `connector.refresh.start` with `trigger: "push"` and that `requestedCommitSha`. Another branch answers `handled: false`, `UNTRACKED_BRANCH`. The unsigned call answers `401` and changes nothing.
 - **Useful:** drift is empty or explained. After a manual `refresh-ingest` (`POST /api/projects/:id/connectors/repos/:repoId/refresh-ingest`) on an unchanged commit, the drift view reports no false drift, the code graph keeps its ID, and the repo connector's source-document count equals Phase 3's (#756, #856).
 
 ### Phase 14 — Spec Kit (see dedicated section below)
