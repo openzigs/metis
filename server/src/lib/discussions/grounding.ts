@@ -19,7 +19,8 @@
  *   - A smaller step budget ({@link DISCUSSION_TOOL_MAX_TURNS}); a spent budget
  *     still ends in an answer through chat's one tool-free synthesis call (#772).
  *
- * The flags are chat's own (`CHAT_TOOLS`, `CHAT_CODE_SEARCH_TOOLS`), so a
+ * The flags are chat's own (`CHAT_TOOLS`, `CHAT_CODE_SEARCH_TOOLS`,
+ * `CHAT_CODE_SEARCH_PRIMITIVES`), so a
  * deployment that withholds a tool from chat withholds it here too.
  */
 import { formatToolSchemas } from "../analysis/agent-loop.js";
@@ -96,7 +97,9 @@ export async function resolveDiscussionTools(
 ): Promise<DiscussionToolRuntime | null> {
   const flags = input.flags ?? loadSessionToolsFlags();
   const native = input.native ?? resolveCapabilities(input.provider, input.model).nativeToolCalls;
-  const codeTools = flags.codeSearchTools ? getChatCodeTools(input.codeToolDeps) : [];
+  const codeTools = flags.codeSearchTools
+    ? getChatCodeTools(input.codeToolDeps, { primitives: flags.codeSearchPrimitives === true })
+    : [];
   const ctx = {
     sessionId: input.session.id,
     userId: input.session.userId,

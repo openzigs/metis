@@ -47,7 +47,7 @@ import {
 import { fileKey, type LocalizationCorpus, type LocalizationItem } from "./corpus.js";
 import type { CorpusSearch } from "./search.js";
 import { seededRandom } from "./stats.js";
-import { createA3AArm, createA3Arm, createA3NArm } from "./agent-arms.js";
+import { createA3AArm, createA3Arm, createA3NArm, createA3PArm } from "./agent-arms.js";
 import {
   createA7Arm,
   createA7KArm,
@@ -91,6 +91,7 @@ export const MODEL_ARMS: ReadonlySet<string> = new Set([
   "A3",
   "A3A",
   "A3N",
+  "A3P",
   "A4",
   "A7",
   "A7O",
@@ -515,6 +516,7 @@ export const ARM_FACTORIES: Record<string, (deps: ArmDeps) => LocalizationArm> =
   A3: createA3Arm,
   A3A: createA3AArm,
   A3N: createA3NArm,
+  A3P: createA3PArm,
   A4: createA4Arm,
   A7: createA7Arm,
   A7O: createA7OArm,

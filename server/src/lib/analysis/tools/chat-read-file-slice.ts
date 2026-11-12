@@ -12,9 +12,11 @@
  *   • a clone that is not on disk is skipped (`resolveExistingCloneDir`, #777);
  *   • the file is read from the first clone that has it. Only "file not found"
  *     moves on to the next repo — a traversal refusal or bad args returns at once;
- *   • git internals and credential files (`.git/**`, `.env*`, `.netrc`, …) are refused
- *     before any read. A chat result goes to the model provider and is kept in full
- *     in the transcript, and a committed secret file should not travel that way;
+ *   • git internals and credential files (`isSensitiveRepoPath`: `.git/`, `.ssh/`,
+ *     `.env*`, private keys, …) are refused before any read, on the path as asked AND
+ *     where it really resolves, so an in-repo symlink to one is refused too (#2327). A
+ *     chat result goes to the model provider and is kept in full in the transcript,
+ *     and a committed secret file should not travel that way;
  *   • #2243 — a file whose document the caller may not see (its ACL, or a shared
  *     audience) is refused with the reply a missing file gets;
  *   • #2325 — the read states its version. The clone's HEAD is compared with the
@@ -31,10 +33,10 @@
  */
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { prisma } from "../../prisma.js";
-import { resolveExistingCloneDir } from "../clone-availability.js";
 import { readFileSliceTool } from "./read-file-slice.js";
+import { NO_WORKING_TREE, resolveChatClones, type ChatCloneDeps } from "./chat-clones.js";
 import { UNRESTRICTED_CODE_ACCESS, type CodeAccessFilter } from "./code-access.js";
+import { isSensitiveInClone, isSensitiveRepoPath, notAccessible } from "./repo-paths.js";
 import {
   codeCitationRef,
   formatCodeVersionLine,
@@ -44,11 +46,7 @@ import {
 import { shortCommitSha } from "@metis/shared";
 import type { AgentTool, ToolContext, ToolResult } from "./types.js";
 
-export interface ChatReadFileSliceDeps {
-  /** The project's live repo connection ids, in search order. */
-  listRepoIds?: (projectId: string) => Promise<string[]>;
-  /** A connector's clone dir, only when it exists and is readable. */
-  resolveCloneDir?: (connectorId: string) => Promise<string | undefined>;
+export interface ChatReadFileSliceDeps extends ChatCloneDeps {
   /** #2325 — the project's indexed versions. */
   loadVersions?: (projectId: string) => Promise<CodeVersionIndex>;
   /** #2325 — the commit a clone's working tree is at, or `null` when unreadable. */
@@ -110,15 +108,6 @@ function afterHeader(content: string, note: string): string {
   return `${content.slice(0, nl)}\n${note}${content.slice(nl)}`;
 }
 
-async function projectRepoIds(projectId: string): Promise<string[]> {
-  const rows = await prisma.repoConnection.findMany({
-    where: { projectId, deletedAt: null },
-    select: { id: true },
-    orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }],
-  });
-  return rows.map((r) => r.id);
-}
-
 function hasFilePath(args: unknown): boolean {
   if (!args || typeof args !== "object") return false;
   const p = (args as Record<string, unknown>).filePath;
@@ -127,22 +116,8 @@ function hasFilePath(args: unknown): boolean {
 
 const NOT_FOUND = "Error: File not found:";
 
-/** Basenames never returned to chat, matched case-insensitively. */
-const SECRET_FILES = new Set([".netrc", ".npmrc", ".pypirc", ".git-credentials"]);
-/** `.env` templates carry no values, so they stay readable. */
-const ENV_TEMPLATE = /^\.env\.(example|sample|template|dist)$/;
-
-/** True when `filePath` names git internals or a credential file. */
-export function isSensitiveRepoPath(filePath: string): boolean {
-  const segments = path.posix
-    .normalize(filePath.replace(/\\/g, "/"))
-    .split("/")
-    .map((s) => s.toLowerCase());
-  if (segments.includes(".git")) return true;
-  const base = segments[segments.length - 1] ?? "";
-  if (SECRET_FILES.has(base)) return true;
-  return (base === ".env" || base.startsWith(".env.")) && !ENV_TEMPLATE.test(base);
-}
+// #2327 — moved to `repo-paths.ts`, where `grep_files` and `list_files` read it too.
+export { isSensitiveRepoPath };
 
 /**
  * #2243 — whether `filePath` in the clone of `repoId` is a hidden file. Checked
@@ -170,8 +145,6 @@ async function isHiddenInClone(
 }
 
 export function createChatReadFileSliceTool(deps: ChatReadFileSliceDeps = {}): AgentTool {
-  const listRepoIds = deps.listRepoIds ?? projectRepoIds;
-  const resolveCloneDir = deps.resolveCloneDir ?? resolveExistingCloneDir;
   const loadVersions = deps.loadVersions ?? loadCodeVersions;
   const readHead = deps.readHead ?? readCloneHead;
   return {
@@ -188,33 +161,24 @@ export function createChatReadFileSliceTool(deps: ChatReadFileSliceDeps = {}): A
         return { content: "Error: reading a file needs a project-scoped session.", isError: true };
       }
       const filePath = (args as { filePath: string }).filePath;
-      if (isSensitiveRepoPath(filePath)) {
-        return {
-          content: `Error: ${filePath} is git metadata or a credential file and is not readable from chat.`,
-          isError: true,
-        };
-      }
-      const dirs: Array<{ id: string; dir: string }> = [];
-      for (const id of await listRepoIds(ctx.projectId)) {
-        const dir = await resolveCloneDir(id);
-        if (dir) dirs.push({ id, dir });
-      }
-      if (dirs.length === 0) {
-        return {
-          content:
-            "Error: No repository working tree is available for this project, so file contents " +
-            "cannot be read. Cite the file:line locators from the code search tools instead.",
-          isError: true,
-        };
-      }
+      // #2327 — refused with the reply a missing file gets, before any read.
+      if (isSensitiveRepoPath(filePath)) return { content: notAccessible(filePath), isError: true };
+      const dirs = await resolveChatClones(ctx.projectId, deps);
+      if (dirs.length === 0) return { content: NO_WORKING_TREE, isError: true };
       // #2243 — a file whose document the caller may not see is treated as
       // absent from that repository, and once anything is hidden from the
       // caller a missing file and a hidden one get the SAME reply: the reply
-      // must not confirm that a restricted file exists.
+      // must not confirm that a restricted file exists. #2327 — so is a path
+      // that resolves (through a symlink) to git internals or a credential file.
       const access = ctx.codeAccess ?? UNRESTRICTED_CODE_ACCESS;
       let last: ToolResult | undefined;
+      let refused = false;
       for (const { id, dir: cloneDir } of dirs) {
-        if (!access.unrestricted && (await isHiddenInClone(access, id, cloneDir, filePath))) {
+        if (
+          (await isSensitiveInClone(cloneDir, filePath)) ||
+          (!access.unrestricted && (await isHiddenInClone(access, id, cloneDir, filePath)))
+        ) {
+          refused = true;
           last = undefined;
           continue;
         }
@@ -224,8 +188,8 @@ export function createChatReadFileSliceTool(deps: ChatReadFileSliceDeps = {}): A
           return withVersion(last, id, cloneDir, await loadVersions(ctx.projectId), readHead);
         }
       }
-      if (access.unrestricted && last) return last;
-      return { content: `Error: File not found or not accessible: ${filePath}`, isError: true };
+      if (access.unrestricted && !refused && last) return last;
+      return { content: notAccessible(filePath), isError: true };
     },
   };
 }
