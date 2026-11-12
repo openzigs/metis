@@ -227,10 +227,12 @@ export function codeCitationRef(input: {
 }
 
 /**
- * The line a tool result ends with, telling the model which version of the
- * code the locations above describe: `Code version: indexed commit <sha>`
+ * The line a tool result opens with, telling the model which version of the
+ * code its locations describe: `Code version: indexed commit <sha>`
  * (several, comma-separated, when the result spans repositories), or that the
- * index records none. `""` for a result with no locations.
+ * index records none. `""` for a result with no locations. A tool result puts
+ * it first because chat caps the model's copy of a result by keeping its start
+ * (`capForModel`); the fused code block, which is not capped, ends with it.
  */
 export function formatCodeVersionLine(refs: readonly CodeCitationRef[]): string {
   if (refs.length === 0) return "";
