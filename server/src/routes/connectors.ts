@@ -57,6 +57,7 @@ import { fileTooLargeMessage } from "../lib/documents/upload.js";
 import { ConnectorError } from "../lib/connectors/types.js";
 import {
   INGEST_IN_PROGRESS,
+  acquireOrQueueConnectorIngest,
   tryAcquireConnectorIngest,
   type ConnectorIngestLease,
 } from "../lib/connectors/ingest-guard.js";
@@ -106,11 +107,11 @@ import {
   deepIngestCompletionMessage,
   deepIngestFailureCount,
   deepIngestReportedFailureCount,
-  syncFailureWarning,
   type DeepIngestOutcome,
 } from "../lib/connectors/repo/deep-ingest-outcome.js";
 import { scheduleIncrementalRegeneration } from "../lib/docs-gen/regeneration-scheduling.js";
 import { discoverAndUpsertConnections } from "../lib/connectors/repo/connection-discovery.js";
+import { runRepoConnectorSync } from "../lib/connectors/repo/repo-sync.js";
 import { prisma } from "../lib/prisma.js";
 import {
   assertDbSecretBinding,
@@ -830,7 +831,8 @@ export function connectorsRouter(): Router {
   // POST /repos/:id/refresh-ingest — git pull (or re-clone) + incremental
   // code-graph + RAG re-ingest.  Designed for both manual "sync now" triggers
   // from the UI and scheduled refresh tasks.  Only re-parses files whose
-  // content hash changed since the last run.
+  // content hash changed since the last run. While another run holds the
+  // connector it answers 202 { status: "queued" } (#2335).
   r.post(
     "/repos/:id/refresh-ingest",
     requireAuth,
@@ -841,136 +843,29 @@ export function connectorsRouter(): Router {
         const projectId = projectIdOf(req);
         const id = String(req.params.id);
         const a = actor(req);
-        // Step 1: github pulls (or re-clones); local re-validates path; upload
-        // re-extracts the stored archive. Both non-git providers skip the clone.
         const conn = await getRepoConnector(projectId, id);
         // #217 — claimed once the connector is known to be this project's, and
         // before the pull, so a concurrent refresh never races this one's clone.
-        lease = tryAcquireConnectorIngest(id, "refresh-ingest");
-        if (!lease) throw ingestInProgress();
-        const isNonGit =
-          conn.provider === REPO_PROVIDER_LOCAL || conn.provider === REPO_PROVIDER_UPLOAD;
-        let clone: {
-          path: string;
-          sizeBytes: number;
-          pulled: boolean;
-          filesChanged: number;
-          commitSha?: string | null;
-        };
-        let boundary: string | undefined;
-        if (isNonGit) {
-          const root = await resolveNonGitIngestRoot(projectId, id);
-          clone = { path: root.path, sizeBytes: 0, pulled: false, filesChanged: 0 };
-          boundary = root.boundary;
-        } else {
-          clone = await pullOrCloneRepo(projectId, id, a);
+        // #2335 — a busy connector is not refused: this request folds into its
+        // single queued re-run, which runs (in the background) when the current
+        // run ends. 202, because nothing has run yet.
+        const claim = acquireOrQueueConnectorIngest(id, "refresh-ingest", { trigger: "manual" });
+        if ("queued" in claim) {
+          res.status(202).json(
+            ok({
+              status: "queued" as const,
+              connectorId: id,
+              trigger: claim.queued.trigger,
+              requests: claim.queued.requests,
+            }),
+          );
+          return;
         }
-        // Step 2: incremental code-graph — only changed files are re-parsed.
-        // Best-effort SQL-lineage wiring from the project's DB connector
-        // (#316/#317); never blocks ingest if unavailable.
-        const refreshSchemaWiring = await buildCodeGraphSchemaWiring(projectId, a);
-        const stats = await ingestCodeGraph(prisma, {
-          projectId,
-          rootDir: clone.path,
-          repoConnectionId: id,
-          // #714/#758 — label the graph with the pulled commit; ingestCodeGraph
-          // records it as lastCommitSha too, once the graph is complete.
-          commitSha: clone.commitSha ?? undefined,
-          triggeredByUserId: a,
-          introspectedSchema: refreshSchemaWiring.introspectedSchema,
-          introspectionFailed: refreshSchemaWiring.introspectionFailed,
-          routines: refreshSchemaWiring.routines,
-          fetchRoutineBody: refreshSchemaWiring.fetchRoutineBody,
-          routineDialect: refreshSchemaWiring.routineDialect,
-          packages: refreshSchemaWiring.packages,
-          fetchPackageBody: refreshSchemaWiring.fetchPackageBody,
-          dependencies: refreshSchemaWiring.dependencies,
-          sqlLineageOverride: refreshSchemaWiring.sqlLineageOverride,
-          embedSymbols: true, // #797 — a refresh keeps symbol vectors current
-        });
-        // Step 3: incremental RAG knowledge ingest
-        const srcSummary = await ingestSourceAsKnowledge(projectId, id, a, clone.path, {
-          boundary,
-          lease,
-        });
-        // Step 4: refresh metadata (README, etc.) — github only
-        const metadata = { failures: 0, stepFailed: false };
-        if (!isNonGit) {
-          try {
-            const meta = await fetchRepoMetadata(projectId, id, a);
-            const summary = await ingestRepoMetadata(projectId, id, a, meta);
-            metadata.failures = summary.failures;
-          } catch (metaErr) {
-            metadata.stepFailed = true;
-            logger.warn(
-              "fetchRepoMetadata failed — skipping metadata ingest, core ingest continues",
-              { err: metaErr, projectId, connectorId: id },
-            );
-          }
-        }
-        // Step 5: re-scan for database connection references (epic #467)
-        const discovery = await discoverAndUpsertConnections(projectId, clone.path);
-        // Step 6: emit discovery notification via Socket.IO (#669).
-        if (discovery.connectionsFound > 0) {
-          const connector = await getRepoConnector(projectId, id);
-          getRepoConnectorEmitter().discovery({
-            projectId,
-            connectorId: id,
-            repoLabel: connector.label,
-            connectionsFound: discovery.connectionsFound,
-          });
-        }
-        // #498 — a partly failed ingest skips regeneration and says so, with
-        // its failure count, as Deep Ingest does; never a bare "Sync complete".
-        const ingestFailures = { source: srcSummary, metadata };
-        const ingestWarning = syncFailureWarning(ingestFailures);
-        // #449 — the refresh landed, so a scheduling failure still answers 200:
-        // the summary says regeneration was not scheduled and carries the
-        // warning, and the scheduling step alone is retried.
-        const scheduling =
-          ingestWarning === null ? await scheduleIncrementalRegeneration(projectId, id) : null;
-        const warning =
-          ingestWarning ??
-          (scheduling && !scheduling.regenerationScheduled ? scheduling.warning : null);
+        lease = claim.lease;
+        // #2335 panel — the body is shared with the queued re-run of a Sync, so
+        // a Sync that waited behind another run does exactly what this one does.
         res.json(
-          ok({
-            pulled: clone.pulled,
-            filesChanged: clone.filesChanged,
-            codeGraph: {
-              filesScanned: stats.filesScanned,
-              filesParsed: stats.filesParsed,
-              filesSkipped: stats.filesSkipped,
-              symbolsUpserted: stats.symbolsUpserted,
-              edgesUpserted: stats.edgesUpserted,
-              // #715 — the graph's size, so the Sync panel can tell it apart
-              // from the incremental delta above.
-              filesUnchanged: stats.filesUnchanged,
-              graphFiles: stats.graphFiles,
-              graphSymbols: stats.graphSymbols,
-              graphEdges: stats.graphEdges,
-              durationMs: stats.durationMs,
-              // #1071 — set when the time ceiling left Go calls unbound by
-              // type; the Sync panel says so, and the next Sync continues.
-              goBindingIncomplete: stats.goBinding?.incomplete ?? null,
-            },
-            sourceKnowledge: {
-              documentsCreated: srcSummary.documentsCreated,
-              documentsUpdated: srcSummary.documentsUpdated,
-              chunkCount: srcSummary.chunkCount,
-            },
-            suggestedConnectors: {
-              filesScanned: discovery.filesScanned,
-              connectionsFound: discovery.connectionsFound,
-              suggestionsUpserted: discovery.suggestionsUpserted,
-            },
-            cloneSizeBytes: clone.sizeBytes,
-            regenerationScheduled: scheduling?.regenerationScheduled ?? false,
-            // Ingest failures, plus one for a scheduling warning (as Deep Ingest reports).
-            failureCount:
-              deepIngestFailureCount(ingestFailures) +
-              (scheduling && !scheduling.regenerationScheduled ? 1 : 0),
-            ...(warning ? { warning } : {}),
-          }),
+          ok(await runRepoConnectorSync(projectId, id, a, { provider: conn.provider, lease })),
         );
       } catch (err) {
         rethrow(err);

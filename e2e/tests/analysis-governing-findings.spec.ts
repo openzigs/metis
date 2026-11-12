@@ -257,4 +257,19 @@ test.describe("Analysis view — Governing rules panel (#1876, #2060)", () => {
     await expect(answer).toBeVisible();
     await expect(answer).toBeInViewport();
   });
+
+  // #2339 AC: the panel links to the workspace's Governing documents.
+  test("the panel's link opens the workspace's governing documents", async ({ page }) => {
+    const governing = new GoverningFindingsPage(page);
+    await governing.goto(projectId);
+
+    await governing.workspaceDocumentsLink.click();
+    await expect(page).toHaveURL(new RegExp(`/workspaces/${workspaceId}/governing$`));
+    await expect(
+      page.getByRole("heading", { level: 1, name: "Governing documents", exact: true }),
+    ).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(page.getByText(GOVERNING_FIXTURE.documentTitle).first()).toBeVisible();
+  });
 });

@@ -50,6 +50,17 @@ export interface PipelineFacts {
   }>;
   /** Draft requirements in the latest completed analysis; null while unknown. */
   awaitingReview: number | null;
+  /**
+   * #2367 — that analysis's approval checkpoints still pending (`ticketStatus`
+   * of `GET /approvals`); null while unknown, `"unreadable"` when the read
+   * failed. Pending approvals are not requirements yet, so `awaitingReview`
+   * alone read 0 and the stage said "All requirements reviewed".
+   */
+  pendingApprovals: number | null | "unreadable";
+  /** #2367 — its clarifying questions still open, as the Questions tab counts them. */
+  openQuestions: number;
+  /** #2367 — its requirements a reviewer rejected. */
+  rejectedRequirements: number;
   docs: Array<{ status: string }>;
   /**
    * Newest first, as `GET /publishing/batches` returns them; `null` when the
@@ -284,34 +295,73 @@ export function latestCompletedAnalysisId(f: Pick<PipelineFacts, "analyses">): s
 function requirementsReview(base: string, f: PipelineFacts): PipelineStage {
   const hub = `${base}/requirements`;
   const analysisId = latestCompletedAnalysisId(f);
+  const checking: PipelineStage = {
+    id: "review",
+    title: "Review requirements",
+    state: "todo",
+    status: "Checking requirements…",
+    action: { label: "Open requirements", href: hub },
+  };
   if (!analysisId) {
-    return {
-      id: "review",
-      title: "Review requirements",
-      state: "todo",
-      status: "Run an analysis to produce requirements",
-      action: { label: "Open requirements", href: hub },
-    };
+    return { ...checking, status: "Run an analysis to produce requirements" };
   }
-  if (f.awaitingReview === null) {
-    return {
-      id: "review",
-      title: "Review requirements",
-      state: "todo",
-      status: "Checking requirements…",
-      action: { label: "Open requirements", href: hub },
-    };
-  }
+  if (f.awaitingReview === null) return checking;
+
+  const run = `${base}/analysis?analysisId=${encodeURIComponent(analysisId)}`;
+  // #2367 — everything in this run still waiting on a person, most blocking
+  // first: the first is the stage's action, and the status names them all.
+  const waiting: Array<{ status: string; action: { label: string; href: string } }> = [];
   if (f.awaitingReview > 0) {
+    waiting.push({
+      status: `${plural(f.awaitingReview, "requirement")} awaiting review`,
+      action: { label: `Review ${plural(f.awaitingReview, "requirement")}`, href: run },
+    });
+  }
+  if (typeof f.pendingApprovals === "number" && f.pendingApprovals > 0) {
+    waiting.push({
+      status: `${plural(f.pendingApprovals, "approval")} pending`,
+      action: {
+        label: `Resolve ${plural(f.pendingApprovals, "approval")}`,
+        href: `${run}&tab=approvals`,
+      },
+    });
+  }
+  if (f.openQuestions > 0) {
+    waiting.push({
+      status: `${plural(f.openQuestions, "clarifying question")} open`,
+      action: {
+        label: `Answer ${plural(f.openQuestions, "question")}`,
+        href: `${run}&tab=questions`,
+      },
+    });
+  }
+  if (f.rejectedRequirements > 0) {
+    waiting.push({
+      status: `${plural(f.rejectedRequirements, "requirement")} rejected`,
+      action: {
+        label: `Revisit ${plural(f.rejectedRequirements, "rejected requirement")}`,
+        href: `${run}&tab=requirements`,
+      },
+    });
+  }
+  if (waiting.length > 0) {
     return {
       id: "review",
       title: "Review requirements",
       state: "attention",
-      status: `${plural(f.awaitingReview, "requirement")} awaiting review`,
-      action: {
-        label: `Review ${plural(f.awaitingReview, "requirement")}`,
-        href: `${base}/analysis?analysisId=${encodeURIComponent(analysisId)}`,
-      },
+      status: waiting.map((w) => w.status).join(" · "),
+      action: waiting[0].action,
+    };
+  }
+  if (f.pendingApprovals === null) return checking;
+  if (f.pendingApprovals === "unreadable") {
+    // A failed read must not pass for "nothing pending".
+    return {
+      id: "review",
+      title: "Review requirements",
+      state: "attention",
+      status: "Could not check this run's approvals",
+      action: { label: "Open approvals", href: `${run}&tab=approvals` },
     };
   }
   return {

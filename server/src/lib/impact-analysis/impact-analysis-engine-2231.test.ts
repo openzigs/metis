@@ -7,7 +7,9 @@
 import { describe, expect, it, vi } from "vitest";
 import type { DocumentReading, ReadStatement } from "../document-reader/reader.js";
 import type { ChangedRequirement } from "./extract-changes.js";
+import { jobEvents } from "../socket/job-events.js";
 import { executeImpactAnalysis, InMemoryCodeGraphDataSource } from "./impact-analysis-engine.js";
+import { currentImpactProjectId } from "./impact-llm-scope.js";
 
 const FRD = [
   "# Clinic booking FRD",
@@ -279,5 +281,101 @@ describe("impact analysis on a document (#2231)", () => {
     expect(documentReader).toHaveBeenCalledWith({ title: "Pasted text", text: prose });
     expect(long.prisma.document.findUnique).not.toHaveBeenCalled();
     expect(String(long.analyses.get("ia")?.summary)).toContain("The model read the pasted text");
+  });
+});
+
+describe("#2276 — the reading waits on what the run will search", () => {
+  it("an empty source beside stored requirements reads nothing and splits nothing", async () => {
+    const { prisma, items } = prismaMock({ sourceText: "   ", documentId: null });
+    const requirement = {
+      findMany: vi.fn(async () => [
+        { id: "req-1", title: "Lock accounts", body: "After five failed attempts." },
+      ]),
+    };
+    prisma.impactAnalysis.findFirst.mockResolvedValueOnce({
+      id: "ia",
+      sourceText: "   ",
+      documentId: null,
+      requirementIds: JSON.stringify(["req-1"]),
+    });
+    const documentReader = vi.fn(async () => READING);
+    const extract = vi.fn(async (): Promise<ChangedRequirement[]> => []);
+    await run({ ...prisma, requirement } as never, { documentReader, extractor: { extract } });
+    expect(documentReader).not.toHaveBeenCalled();
+    expect(extract).not.toHaveBeenCalled();
+    expect(items.map((i) => i.requirementTitle)).toEqual(["Lock accounts"]);
+  });
+
+  it("does not read the document when every project is restricted or deleted", async () => {
+    const { prisma, analyses, items } = prismaMock({ sourceText: null, documentId: "doc-1" });
+    const documentReader = vi.fn(async () => READING);
+    await executeImpactAnalysis("ia", ["proj-1", "proj-2"], {
+      prisma: prisma as never,
+      mapRequirement,
+      dataSourceFor: () => graph,
+      includeSchemaImpact: false,
+      documentStorage: storage,
+      documentReader,
+      projectAccess: async (projectId) => (projectId === "proj-1" ? "restricted" : "deleted"),
+    });
+    expect(documentReader).not.toHaveBeenCalled();
+    expect(analyses.get("ia")?.status).toBe("completed");
+    expect(items).toEqual([]);
+    expect(String(analyses.get("ia")?.summary)).not.toContain("The model");
+  });
+
+  it("does not read the document when no accessible project has indexed symbols", async () => {
+    const { prisma, analyses } = prismaMock({ sourceText: null, documentId: "doc-1" });
+    const findFirst = vi.fn(async () => null);
+    const findMany = vi.fn(async () => []);
+    const documentReader = vi.fn(async () => READING);
+    await executeImpactAnalysis("ia", ["proj-1"], {
+      prisma: { ...prisma, codeSymbol: { findFirst, findMany }, codeEdge: { findMany } } as never,
+      mapRequirement,
+      includeSchemaImpact: false,
+      documentStorage: storage,
+      documentReader,
+    });
+    expect(findFirst).toHaveBeenCalledWith({
+      where: { projectId: "proj-1" },
+      select: { id: true },
+    });
+    expect(documentReader).not.toHaveBeenCalled();
+    expect(analyses.get("ia")?.status).toBe("completed");
+  });
+
+  it("reads once a project will be searched, billed to that project, and reports that it is reading", async () => {
+    const { prisma } = prismaMock({ sourceText: null, documentId: "doc-1" });
+    const billedTo: Array<string | null> = [];
+    const documentReader = vi.fn(async () => {
+      billedTo.push(currentImpactProjectId());
+      return READING;
+    });
+    const progress = vi.spyOn(jobEvents, "progress");
+    try {
+      await executeImpactAnalysis("ia", ["proj-1", "proj-2"], {
+        prisma: prisma as never,
+        mapRequirement,
+        dataSourceFor: () => graph,
+        includeSchemaImpact: false,
+        documentStorage: storage,
+        documentReader,
+        projectAccess: async (projectId) => (projectId === "proj-1" ? "restricted" : "accessible"),
+      });
+      expect(documentReader).toHaveBeenCalledTimes(1);
+      expect(billedTo).toEqual(["proj-2"]);
+      expect(progress).toHaveBeenCalledWith(
+        "impact-analysis",
+        "ia",
+        null,
+        0,
+        "Reading the document",
+      );
+      // Before the per-project progress, not after it.
+      const labels = progress.mock.calls.map((c) => c[4]);
+      expect(labels.indexOf("Reading the document")).toBeLessThan(labels.indexOf("Project 1/2"));
+    } finally {
+      progress.mockRestore();
+    }
   });
 });

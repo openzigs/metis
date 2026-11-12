@@ -37,6 +37,7 @@ vi.mock("../../src/lib/prisma.js", () => ({
     $transaction: vi.fn(async (fn) => fn(prisma)),
     reviewRequestItem: { findMany: vi.fn(async () => []) },
     codeSymbol: { findMany: vi.fn().mockResolvedValue([]) },
+    codeGraph: { findMany: vi.fn().mockResolvedValue([{ id: "graph-1" }]) },
     knowledgeChunk: {
       findMany: vi.fn().mockResolvedValue([]),
       deleteMany: vi.fn(),
@@ -905,6 +906,69 @@ describe("generated-docs routes", () => {
     });
   });
 
+  // #2369 — the form warns before a code-based document on a project with no code.
+  // #2377 — scoped to the chosen repository, and junk paths do not count.
+  describe("GET /projects/:projectId/docs/source-code", () => {
+    it("reports no indexed source code for a documents-only project", async () => {
+      vi.mocked(prisma.codeSymbol.findMany).mockResolvedValueOnce([]);
+      const res = await request(app).get("/projects/proj-1/docs/source-code");
+      expect(res.status).toBe(200);
+      expect(res.body.data).toEqual({ indexed: false });
+      // Project-scoped: the route's project's graphs, each probed on its own
+      // so the query fits the (codeGraphId, filePath) index.
+      expect(prisma.codeGraph.findMany).toHaveBeenCalledWith({
+        where: { projectId: "proj-1" },
+        select: { id: true },
+      });
+      expect(prisma.codeSymbol.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { projectId: "proj-1", codeGraphId: "graph-1" } }),
+      );
+      expect(requireRepositoryGraph).not.toHaveBeenCalled();
+    });
+
+    it("reports indexed source code once a real source file exists", async () => {
+      vi.mocked(prisma.codeSymbol.findMany).mockResolvedValueOnce([
+        { filePath: "src/app.ts" },
+      ] as never);
+      const res = await request(app).get("/projects/proj-1/docs/source-code");
+      expect(res.status).toBe(200);
+      expect(res.body.data).toEqual({ indexed: true });
+      // Not taken as a document id by `/:docId`.
+      expect(prisma.generatedDocument.findFirst).not.toHaveBeenCalled();
+    });
+
+    it("does not count OS/archive junk as source code", async () => {
+      vi.mocked(prisma.codeSymbol.findMany).mockResolvedValueOnce([
+        { filePath: "__MACOSX/src/._calc.sas" },
+        { filePath: "src/.DS_Store" },
+      ] as never);
+      const res = await request(app).get("/projects/proj-1/docs/source-code");
+      expect(res.body.data).toEqual({ indexed: false });
+    });
+
+    it("narrows to the chosen repository's code graph", async () => {
+      vi.mocked(requireRepositoryGraph).mockResolvedValueOnce("graph-1");
+      vi.mocked(prisma.codeSymbol.findMany).mockResolvedValueOnce([]);
+      const res = await request(app).get(
+        "/projects/proj-1/docs/source-code?repoConnectorId=repo-1",
+      );
+      expect(res.status).toBe(200);
+      expect(res.body.data).toEqual({ indexed: false });
+      expect(requireRepositoryGraph).toHaveBeenCalledWith("proj-1", "repo-1");
+      expect(prisma.codeSymbol.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { projectId: "proj-1", codeGraphId: "graph-1" } }),
+      );
+    });
+
+    it("rejects a repeated repoConnectorId", async () => {
+      const res = await request(app).get(
+        "/projects/proj-1/docs/source-code?repoConnectorId=a&repoConnectorId=b",
+      );
+      expect(res.status).toBe(400);
+      expect(prisma.codeSymbol.findMany).not.toHaveBeenCalled();
+    });
+  });
+
   describe("POST /projects/:projectId/docs/generate", () => {
     it("returns 202 and creates a document", async () => {
       (prisma.project.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue({ id: "proj-1" });
@@ -1189,6 +1253,49 @@ describe("generated-docs routes", () => {
         errorMessage: INDEXING_PUBLICATION_CANCELLED_MESSAGE,
       });
     });
+    // #2377 — a failed generation never queued anything for indexing.
+    it("#2377 — a failed document that never published reports no indexing state", async () => {
+      vi.mocked(prisma.generatedDocument.findMany).mockResolvedValue([
+        { id: "doc-1", title: "BRD", status: "failed", versions: [] },
+        { id: "doc-2", title: "Arch", status: "generating", versions: [] },
+      ] as never);
+      vi.mocked(prisma.document.findMany).mockResolvedValue([] as never);
+
+      const res = await request(app).get("/projects/proj-1/docs");
+
+      expect(res.status).toBe(200);
+      expect(res.body.data[0].indexing).toBeNull();
+      // Only a failed document: one still generating keeps its pending state.
+      expect(res.body.data[1].indexing).toMatchObject({ state: "pending" });
+    });
+
+    it("#2377 — a failed regeneration keeps its earlier version's real publication state", async () => {
+      vi.mocked(prisma.generatedDocument.findMany).mockResolvedValue([
+        {
+          id: "doc-1",
+          title: "BRD",
+          status: "failed",
+          versions: [{ id: "v1", version: 1, revisionId: "revision-1", createdAt: new Date(0) }],
+        },
+      ] as never);
+      vi.mocked(prisma.task.findMany).mockResolvedValueOnce([
+        {
+          id: generatedDocOutboxId({
+            projectId: "proj-1",
+            generatedDocumentId: "doc-1",
+            version: 1,
+            revisionId: "revision-1",
+          }),
+          status: "running",
+          errorMessage: null,
+        },
+      ] as never);
+      vi.mocked(prisma.document.findMany).mockResolvedValue([] as never);
+
+      const res = await request(app).get("/projects/proj-1/docs");
+
+      expect(res.body.data[0].indexing).toMatchObject({ state: "pending", status: "processing" });
+    });
   });
 
   describe("GET /projects/:projectId/docs/:docId", () => {
@@ -1253,6 +1360,37 @@ describe("generated-docs routes", () => {
       expect(res.body.data.indexing.state).toBe("failed");
       expectNoIndexingLeak(JSON.stringify(res.body));
       expect(res.body.data.indexing.errorMessage).toBe(INDEXING_EMBEDDER_UNAVAILABLE_MESSAGE);
+    });
+
+    it("#2377 — a failed document with no publication reports no indexing state", async () => {
+      vi.mocked(prisma.generatedDocument.findFirst).mockResolvedValue({
+        id: "doc-1",
+        content: "",
+        status: "failed",
+        errorMessage: null,
+        versions: [],
+      } as never);
+      vi.mocked(prisma.document.findFirst).mockResolvedValue(null);
+
+      const res = await request(app).get("/projects/proj-1/docs/doc-1");
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.status).toBe("failed");
+      expect(res.body.data.indexing).toBeNull();
+    });
+
+    it("#2377 — a ready document with no publication task yet still reads pending", async () => {
+      vi.mocked(prisma.generatedDocument.findFirst).mockResolvedValue({
+        id: "doc-1",
+        content: "body",
+        status: "ready",
+        versions: [],
+      } as never);
+      vi.mocked(prisma.document.findFirst).mockResolvedValue(null);
+
+      const res = await request(app).get("/projects/proj-1/docs/doc-1");
+
+      expect(res.body.data.indexing).toMatchObject({ state: "pending", status: "pending" });
     });
 
     // PR #497 panel: the cancelled write reaches pending AND quarantined rows

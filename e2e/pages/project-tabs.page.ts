@@ -1,10 +1,10 @@
 /**
- * Project tab-bar page object (#28, epic #26; R1 #156).
+ * Project tab-bar page object (#28, epic #26; R1 #156; #2334).
  *
- * The tabs follow the pipeline — Overview · Sources · Analyze · Requirements ·
- * Docs · Publish · Code · ⚙ — each a direct link, with the active section's
- * pages in a sub-nav beneath. There is no "More" overflow. Below `md` the bar
- * collapses into a single dropdown.
+ * The tabs follow the analyst's job — Overview · Knowledge · Change requests ·
+ * Requirements · Deliverables · ⚙ (named "Project settings") — each a direct
+ * link, with the active section's pages in a sub-nav beneath. There is no
+ * "More" overflow. Below `md` the bar collapses into a single dropdown.
  *
  * See ui/src/components/projects/project-tabs.tsx for the source of truth.
  */
@@ -26,7 +26,7 @@ export class ProjectTabsPage {
     this.mobileTrigger = page.getByTestId("project-tabs-mobile");
   }
 
-  /** A primary tab by its accessible name ("Overview", "Sources", …, "Settings"). */
+  /** A primary tab by its accessible name ("Overview", "Knowledge", …, "Project settings"). */
   primaryLink(name: string): Locator {
     return this.nav.getByRole("link", { name, exact: true });
   }

@@ -4,16 +4,24 @@
 import { describe, expect, it } from "vitest";
 import { render, screen } from "@testing-library/react";
 import SettingsIntegrationsPage from "@/app/(authed)/settings/integrations/page";
+import type { AuthUser } from "@/lib/auth-types";
+import { makeWrapper, TEST_USER } from "./test-utils";
+
+function renderPage(role: AuthUser["role"] = "admin") {
+  return render(<SettingsIntegrationsPage />, {
+    wrapper: makeWrapper({ initialUser: { ...TEST_USER, role } }),
+  });
+}
 
 describe("<SettingsIntegrationsPage />", () => {
   it("renders the page root with heading + description", () => {
-    render(<SettingsIntegrationsPage />);
+    renderPage();
     expect(screen.getByTestId("settings-integrations-root")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Integrations" })).toBeInTheDocument();
   });
 
-  it("links to every integration surface", () => {
-    render(<SettingsIntegrationsPage />);
+  it("links an admin to every integration surface", () => {
+    renderPage("admin");
     const expected: Array<[string, string]> = [
       ["settings-integrations-link-repositories", "/repositories"],
       ["settings-integrations-link-databases", "/databases"],
@@ -31,8 +39,19 @@ describe("<SettingsIntegrationsPage />", () => {
     }
   });
 
+  // #2332 — no card for a page the shell hides from a non-admin.
+  it("links a non-admin to no page hidden from them", () => {
+    renderPage("developer");
+    for (const hidden of ["mcp", "hooks", "triggers", "vault"]) {
+      expect(screen.queryByTestId(`settings-integrations-link-${hidden}`)).not.toBeInTheDocument();
+    }
+    for (const kept of ["repositories", "databases", "notifications", "teams"]) {
+      expect(screen.getByTestId(`settings-integrations-link-${kept}`)).toBeInTheDocument();
+    }
+  });
+
   it("renders a card grid container", () => {
-    render(<SettingsIntegrationsPage />);
+    renderPage();
     expect(screen.getByTestId("settings-integrations-grid")).toBeInTheDocument();
   });
 });

@@ -328,7 +328,45 @@ describe("body text is escaped where it would read as Markdown structure", () =>
   });
 
   it("leaves text in a table cell, a list item and a heading as it was", async () => {
-    const body = `<w:tbl><w:tr><w:tc>${p("# in a cell")}</w:tc></w:tr></w:tbl>`;
-    expect(await parse(await buildDocx({ body }))).toContain("| # in a cell |");
+    const body = [
+      `<w:tbl><w:tr><w:tc>${p("# in a cell")}</w:tc></w:tr></w:tbl>`,
+      p("# in a list", { numId: "3" }),
+      p("# in a heading", { style: "Heading1" }),
+    ].join("");
+    const text = await parse(await buildDocx({ body }));
+    expect(text).toContain("| # in a cell |");
+    expect(text).toContain("\n- # in a list");
+    expect(text).toContain("\n# 1 # in a heading");
+    expect(text).not.toContain("\\#");
+  });
+});
+
+describe("#2292 — whitespace runs in Word text", () => {
+  it("a line break in a heading or list item joins its run to one space; formatting wraps the words", async () => {
+    const body = [
+      `<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t xml:space="preserve">Scope  </w:t><w:br/><w:t xml:space="preserve">  and goals</w:t></w:r></w:p>`,
+      `<w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="3"/></w:numPr></w:pPr><w:r><w:t xml:space="preserve">first   word</w:t><w:br/><w:br/><w:t>next</w:t></w:r></w:p>`,
+      `<w:p><w:r><w:t xml:space="preserve">a</w:t></w:r><w:r><w:rPr><w:b/></w:rPr><w:t xml:space="preserve">  bold  </w:t></w:r><w:r><w:t>b</w:t></w:r></w:p>`,
+    ].join("");
+    const text = await parse(await buildDocx({ body }));
+    // A run holding a line break becomes one space; a run without one is kept as written.
+    expect(text).toContain("# 1 Scope and goals");
+    expect(text).toContain("- first   word next");
+    expect(text).toContain("a  **bold**  b");
+  });
+
+  it("are converted in linear time: 60,000 spaces in a heading took seconds before", async () => {
+    const run = " ".repeat(60_000);
+    const body = [
+      p(`Heading${run}end`, { style: "Heading1" }),
+      p(`Item${run}end`, { numId: "3" }),
+    ].join("");
+    const buffer = await buildDocx({ body });
+    const started = performance.now();
+    const text = await parse(buffer);
+    const elapsed = performance.now() - started;
+    expect(text).toContain(`Heading${run}end`);
+    // The quadratic forms took seconds per paragraph at this length; linear, a few milliseconds.
+    expect(elapsed).toBeLessThan(1_000);
   });
 });

@@ -24,6 +24,9 @@ function facts(over: Partial<PipelineFacts> = {}): PipelineFacts {
     ingestInProgress: false,
     analyses: [],
     awaitingReview: null,
+    pendingApprovals: 0,
+    openQuestions: 0,
+    rejectedRequirements: 0,
     docs: [],
     batches: [],
     ...over,
@@ -347,6 +350,107 @@ describe("review stage", () => {
     const s = stage(facts({ analyses: [completed], awaitingReview: null }), "review");
     expect(s.state).toBe("todo");
     expect(s.status).toMatch(/checking/i);
+  });
+
+  // #2367 — each of these read "All requirements reviewed" in the #2330 walkthrough.
+  it("needs attention while the run has pending approvals, linked to its Approvals tab", () => {
+    const s = stage(
+      facts({ analyses: [completed], awaitingReview: 0, pendingApprovals: 6 }),
+      "review",
+    );
+    expect(s.state).toBe("attention");
+    expect(s.status).toBe("6 approvals pending");
+    expect(s.action).toEqual({
+      label: "Resolve 6 approvals",
+      href: `${B}/analysis?analysisId=a1&tab=approvals`,
+    });
+  });
+
+  it("needs attention while the run has open clarifying questions, linked to its Questions tab", () => {
+    const s = stage(
+      facts({ analyses: [completed], awaitingReview: 0, openQuestions: 1 }),
+      "review",
+    );
+    expect(s.state).toBe("attention");
+    expect(s.status).toBe("1 clarifying question open");
+    expect(s.action).toEqual({
+      label: "Answer 1 question",
+      href: `${B}/analysis?analysisId=a1&tab=questions`,
+    });
+  });
+
+  it("needs attention when requirements were rejected", () => {
+    const s = stage(
+      facts({ analyses: [completed], awaitingReview: 0, rejectedRequirements: 11 }),
+      "review",
+    );
+    expect(s.state).toBe("attention");
+    expect(s.status).toBe("11 requirements rejected");
+    expect(s.action).toEqual({
+      label: "Revisit 11 rejected requirements",
+      href: `${B}/analysis?analysisId=a1&tab=requirements`,
+    });
+  });
+
+  it("names everything waiting, and acts on the most blocking first", () => {
+    const s = stage(
+      facts({
+        analyses: [completed],
+        awaitingReview: 0,
+        pendingApprovals: 6,
+        openQuestions: 12,
+        rejectedRequirements: 1,
+      }),
+      "review",
+    );
+    expect(s.status).toBe(
+      "6 approvals pending · 12 clarifying questions open · 1 requirement rejected",
+    );
+    expect(s.action.href).toBe(`${B}/analysis?analysisId=a1&tab=approvals`);
+  });
+
+  it("puts drafts awaiting review ahead of approvals", () => {
+    const s = stage(
+      facts({ analyses: [completed], awaitingReview: 2, pendingApprovals: 1 }),
+      "review",
+    );
+    expect(s.status).toBe("2 requirements awaiting review · 1 approval pending");
+    expect(s.action.href).toBe(`${B}/analysis?analysisId=a1`);
+  });
+
+  it("says it is checking, not done, while the approvals are unknown", () => {
+    const s = stage(
+      facts({ analyses: [completed], awaitingReview: 0, pendingApprovals: null }),
+      "review",
+    );
+    expect(s.state).toBe("todo");
+    expect(s.status).toMatch(/checking/i);
+  });
+
+  it("does not read an unreadable approvals check as nothing pending", () => {
+    const s = stage(
+      facts({ analyses: [completed], awaitingReview: 0, pendingApprovals: "unreadable" }),
+      "review",
+    );
+    expect(s.state).toBe("attention");
+    expect(s.status).toBe("Could not check this run's approvals");
+    expect(s.action.href).toBe(`${B}/analysis?analysisId=a1&tab=approvals`);
+  });
+
+  it("is done only with nothing awaiting review, pending, open or rejected", () => {
+    const s = stage(
+      facts({
+        analyses: [completed],
+        awaitingReview: 0,
+        pendingApprovals: 0,
+        openQuestions: 0,
+        rejectedRequirements: 0,
+      }),
+      "review",
+    );
+    expect(s.state).toBe("done");
+    expect(s.status).toBe("All requirements reviewed");
+    expect(s.action).toEqual({ label: "Open requirements", href: `${B}/requirements` });
   });
 });
 

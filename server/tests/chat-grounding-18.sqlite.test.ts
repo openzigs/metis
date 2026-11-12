@@ -29,6 +29,8 @@ const state = vi.hoisted(() => {
       position: number;
       score: number;
       text: string;
+      path?: string;
+      source?: string;
       /** #2241 — the relevance floor's default applies only to a calibrated embedder. */
       embeddingModel?: string;
     }>,
@@ -85,6 +87,8 @@ class ScriptedProvider implements AIProvider {
   failMidStream = false;
   /** #439 — scripted `chat()` replies, in order (the text tool protocol uses chat()). */
   chatReplies: string[] = [];
+  /** #2242 — what `stream()` answers. */
+  streamText = "stream answer";
   async chat(messages: ChatMessage[]) {
     this.prompts.push(messages);
     const next = this.chatReplies.shift();
@@ -98,7 +102,7 @@ class ScriptedProvider implements AIProvider {
   }
   async *stream(messages: ChatMessage[]): AsyncGenerator<ChatChunk> {
     this.prompts.push(messages);
-    yield { type: "delta", content: "stream answer" };
+    yield { type: "delta", content: this.streamText };
     if (this.failMidStream) throw new Error("provider dropped the stream");
     yield { type: "done", finishReason: "stop" };
   }
@@ -153,6 +157,14 @@ class NativeToolProvider extends ScriptedProvider {
     }
     yield { type: "done", finishReason: call ? "tool_use" : "stop" };
   }
+}
+
+/** #2242 — the `citations` frames of an SSE body, in order. */
+function citationFrames(text: string): unknown[] {
+  return text
+    .split("\n\n")
+    .filter((block) => block.startsWith("event: citations\n"))
+    .map((block) => (JSON.parse(block.split("\ndata: ")[1]!) as { citations: unknown }).citations);
 }
 
 /** The `grounding` frames of an SSE body, in order. */
@@ -412,6 +424,178 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           sourcesUsed: [{ name: "a.md", excerpts: 1, relevance: 0.9 }],
         },
       ]);
+    });
+
+    describe("#2242 — a reply's citations are checked against what the turn read", () => {
+      async function replyCitations(sessionId: string): Promise<unknown[]> {
+        const res = await request(app())
+          .get(`/api/ai/sessions/${sessionId}/messages`)
+          .set("Authorization", `Bearer ${alice}`);
+        expect(res.status, res.text).toBe(200);
+        const rows = res.body.data.messages as Array<{ role: string; citations?: unknown }>;
+        return rows.filter((r) => r.role === "assistant").map((r) => r.citations);
+      }
+
+      it("marks a retrieved file verified and a fabricated one not read, live and on reload", async () => {
+        // #2243 — the code tools are on by default; this is the non-loop stream path.
+        process.env.CHAT_CODE_SEARCH_TOOLS = "false";
+        state.hits = [
+          {
+            filename: "connector:repo:c1:src/net/ssrf.ts",
+            path: "src/net/ssrf.ts",
+            source: "repo",
+            position: 0,
+            score: 0.9,
+            text: "assertPublicHost()",
+          },
+        ];
+        model.streamText =
+          "Rebinding is blocked in `src/net/ssrf.ts`, and pinned in `src/net/pin.ts:10-20`.";
+        const sessionId = await newSession(PROJECT);
+        const res = await post("/api/ai/stream", {
+          sessionId,
+          message: "How is DNS rebinding handled?",
+        });
+        const expected = [
+          { text: "src/net/ssrf.ts", path: "src/net/ssrf.ts", status: "verified", source: "repo" },
+          {
+            text: "src/net/pin.ts:10-20",
+            path: "src/net/pin.ts",
+            lines: [10, 20],
+            status: "not-read",
+          },
+        ];
+        expect(citationFrames(res.text)).toEqual([expected]);
+        // Sent before the turn is done, so the client has it when the answer ends.
+        expect(res.text.indexOf("event: citations")).toBeLessThan(res.text.indexOf("event: done"));
+        expect(await replyCitations(sessionId)).toEqual([expected]);
+      });
+
+      it("#2241 — an excerpt the relevance floor set aside is not evidence: citing it is not-read", async () => {
+        // #2243 — the code tools are on by default; this is the non-loop stream path.
+        process.env.CHAT_CODE_SEARCH_TOOLS = "false";
+        state.hits = [
+          {
+            filename: "kept.md",
+            position: 0,
+            score: 0.9,
+            text: "kept-text",
+            embeddingModel: "Alibaba-NLP/gte-modernbert-base",
+          },
+          { ...weakCalibratedHit, filename: "floored.md" },
+        ];
+        model.streamText = "Per [1] and [2]; `floored.md:1` says so.";
+        const sessionId = await newSession(PROJECT);
+        const res = await post("/api/ai/stream", { sessionId, message: "What is the SLA?" });
+        // Only the kept excerpt reached the prompt, so only `[1]` names one.
+        expect(JSON.stringify(model.prompts[0])).not.toContain("unrelated-text");
+        const expected = [
+          { text: "[1]", path: "kept.md", status: "verified", source: "document" },
+          { text: "[2]", path: "", status: "not-read" },
+          { text: "floored.md:1", path: "floored.md", lines: [1, 1], status: "not-read" },
+        ];
+        expect(citationFrames(res.text)).toEqual([expected]);
+        expect(await replyCitations(sessionId)).toEqual([expected]);
+      });
+
+      it("#2241 — an attached document's excerpt under the floor still reached the model, so citing it is verified", async () => {
+        // #2243 — the code tools are on by default; this is the non-loop stream path.
+        process.env.CHAT_CODE_SEARCH_TOOLS = "false";
+        state.hits = [weakCalibratedHit];
+        model.streamText = "Summarised from [1] in `weak.md`.";
+        const sessionId = await newSession(PROJECT);
+        const res = await post("/api/ai/stream", {
+          sessionId,
+          message: "Summarise this",
+          documentIds: ["doc-frd"],
+        });
+        const expected = [
+          { text: "[1]", path: "weak.md", status: "verified", source: "document" },
+          { text: "weak.md", path: "weak.md", status: "verified", source: "document" },
+        ];
+        expect(citationFrames(res.text)).toEqual([expected]);
+        expect(await replyCitations(sessionId)).toEqual([expected]);
+      });
+
+      it("sends no citations frame, and records none, for an answer that cites nothing", async () => {
+        const sessionId = await newSession(PROJECT);
+        const res = await post("/api/ai/stream", { sessionId, message: "hello" });
+        expect(citationFrames(res.text)).toEqual([]);
+        expect(await replyCitations(sessionId)).toEqual([undefined]);
+      });
+
+      it("the /chat turn checks a cited line range against the lines a code tool returned", async () => {
+        process.env.CHAT_CODE_SEARCH_TOOLS = "true";
+        model.chatReplies = [
+          JSON.stringify({ tool: "search_code_graph", args: { query: "Validator" } }),
+          "It is `src/validator.ts:5-12`, not `src/validator.ts:50-60`.",
+        ];
+        const sessionId = await newSession(PROJECT);
+        const res = await post("/api/ai/chat", { sessionId, message: "where is validation?" });
+        expect(res.status, res.text).toBe(200);
+        const expected = [
+          {
+            text: "src/validator.ts:5-12",
+            path: "src/validator.ts",
+            lines: [5, 12],
+            status: "verified",
+            source: "repo",
+          },
+          {
+            text: "src/validator.ts:50-60",
+            path: "src/validator.ts",
+            lines: [50, 60],
+            status: "span-unverified",
+            source: "repo",
+          },
+        ];
+        expect(res.body.data.citations).toEqual(expected);
+        expect(await replyCitations(sessionId)).toEqual([expected]);
+      });
+
+      const SEARCH = JSON.stringify({ tool: "search_code_graph", args: { query: "Validator" } });
+      const validatorAt = (lines: [number, number], status: string) => ({
+        text: `src/validator.ts:${lines[0]}-${lines[1]}`,
+        path: "src/validator.ts",
+        lines,
+        status,
+        source: "repo",
+      });
+
+      it("the /stream tool loop checks the answer against what its tools read, live and on reload", async () => {
+        process.env.CHAT_CODE_SEARCH_TOOLS = "true";
+        model.chatReplies = [SEARCH, "It is `src/validator.ts:5-12`."];
+        const sessionId = await newSession(PROJECT);
+        const res = await post("/api/ai/stream", { sessionId, message: "where is validation?" });
+        expect(res.text).toContain("event: done");
+        const expected = [validatorAt([5, 12], "verified")];
+        expect(citationFrames(res.text)).toEqual([expected]);
+        expect(res.text.indexOf("event: citations")).toBeLessThan(res.text.indexOf("event: done"));
+        expect(await replyCitations(sessionId)).toEqual([expected]);
+      });
+
+      it.each(["/api/ai/stream", "/api/ai/chat"])(
+        "%s: a follow-up re-citing lines an earlier turn's tool read is verified-earlier, not not-read",
+        async (route) => {
+          process.env.CHAT_CODE_SEARCH_TOOLS = "true";
+          const sessionId = await newSession(PROJECT);
+          model.chatReplies = [SEARCH, "It is `src/validator.ts:5-12`."];
+          await post(route, { sessionId, message: "where is validation?" });
+          // The follow-up calls no tool: it answers from what the first turn read.
+          model.chatReplies = ["As above, `src/validator.ts:5-12`; not `src/validator.ts:90-99`."];
+          const res = await post(route, { sessionId, message: "and where exactly?" });
+          const expected = [
+            validatorAt([5, 12], "verified-earlier"),
+            validatorAt([90, 99], "span-unverified"),
+          ];
+          if (route.endsWith("/chat")) expect(res.body.data.citations).toEqual(expected);
+          else expect(citationFrames(res.text)).toEqual([expected]);
+          expect(await replyCitations(sessionId)).toEqual([
+            [validatorAt([5, 12], "verified")],
+            expected,
+          ]);
+        },
+      );
     });
 
     describe("#439 — what the tools read of the project counts as grounding", () => {

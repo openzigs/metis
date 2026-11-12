@@ -148,10 +148,12 @@ function StructuredExtractionFailedNotice(): React.ReactElement {
  * into published issues — only the answers are, verbatim.
  */
 /** Issue #1000 — who wrote an applied answer, as the note words it. */
-const PROVENANCE_LABELS: Record<"suggested" | "edited" | "typed", string> = {
+const PROVENANCE_LABELS: Record<"suggested" | "edited" | "typed" | "reused", string> = {
   suggested: "METIS suggestion, accepted unchanged",
   edited: "METIS suggestion, edited",
   typed: "typed by you",
+  // #2236 — an answer the project had already given, not asked again.
+  reused: "answered earlier in this project",
 };
 
 /** #1162 — why an answer matched to a requirement was not written into it. */

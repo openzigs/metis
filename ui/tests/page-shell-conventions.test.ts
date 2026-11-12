@@ -40,6 +40,7 @@ const DELEGATES: Record<string, string> = {
   "app/(authed)/reviews/[id]/page.tsx": "components/reviews/ReviewHeader.tsx",
   "app/(authed)/workspaces/[id]/agents/new/page.tsx":
     "components/custom-agents/AgentAuthoringWizard.tsx",
+  "app/(authed)/workspaces/[id]/page.tsx": "components/workspaces/workspace-overview.tsx",
 };
 
 /**

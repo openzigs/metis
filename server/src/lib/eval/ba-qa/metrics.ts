@@ -9,10 +9,13 @@
  *   - correctness (answer questions): the share of expected facts the answer
  *     states, and "fully correct" when it states every one and contradicts none;
  *   - citation precision: the share of citations that support the claim. A
- *     citation WITH lines is checked by the judge against the span's text; one
- *     without lines has no span to read, so it counts as supporting only when
- *     its file is one of the question's expected sources. Each citation records
- *     which check it got;
+ *     citation WITH lines is checked by the judge against the span's text
+ *     (lines that are not in the file support nothing); one without lines has
+ *     no span to read, so it counts as supporting only when its file is one of
+ *     the question's expected sources. Each citation records which check it
+ *     got, and an arm reports the two checks apart (#2265): an arm that cites
+ *     no lines is graded only by the looser file check, so one blended rate
+ *     would compare two different tests;
  *   - citation recall (answer questions): the share of the expected source
  *     files the answer cites at all.
  *
@@ -28,7 +31,15 @@ import type { Behaviour, BaQaQuestion, QuestionCategory } from "./fixture.js";
 import { expectedSourceFiles } from "./fixture.js";
 import type { JudgeVerdict } from "./judge.js";
 
-export type CitationCheck = "span" | "file";
+/**
+ * How a citation was checked:
+ *
+ *   - `span`: it gave lines, and the judge read them;
+ *   - `no-such-lines`: it gave lines that are not in the file, so there was no
+ *     span to show the judge and it supports nothing;
+ *   - `file`: it gave no lines, so it supports only when its file is expected.
+ */
+export type CitationCheck = "span" | "no-such-lines" | "file";
 
 export interface ScoredCitation extends Citation {
   check: CitationCheck;
@@ -46,6 +57,7 @@ export interface QuestionScore {
   factRecall: number | null;
   fullyCorrect: boolean | null;
   citations: ScoredCitation[];
+  /** Over both checks, for one reply: each citation carries the check it got. */
   citationPrecision: number | null;
   expectedFiles: string[];
   citedExpectedFiles: string[];
@@ -54,13 +66,15 @@ export interface QuestionScore {
 
 /**
  * Score one reply. `spanIndex` maps each citation (by position in `citations`)
- * to the span number the judge was shown, for the citations that had lines;
- * 0 marks lines that are not in the file, which support nothing.
+ * to the span numbers the judge was shown, for the citations that had lines:
+ * one per product whose file holds them (a shared path can name several), and
+ * none when no file does. A citation supports its claim when any of its spans
+ * does.
  */
 export function scoreQuestion(
   q: BaQaQuestion,
   citations: readonly Citation[],
-  spanIndex: ReadonlyMap<number, number>,
+  spanIndex: ReadonlyMap<number, readonly number[]>,
   verdict: JudgeVerdict | null,
 ): QuestionScore {
   const expectedFiles = q.expect === "answer" ? expectedSourceFiles(q) : [];
@@ -71,11 +85,11 @@ export function scoreQuestion(
     });
 
   const scored: ScoredCitation[] | null = verdict
-    ? citations.map((c, i) => {
-        const n = spanIndex.get(i);
-        return n !== undefined
-          ? { ...c, check: "span" as const, supports: n > 0 && verdict.spans[n] === true }
-          : { ...c, check: "file" as const, supports: isExpected(c) };
+    ? citations.map((c, i): ScoredCitation => {
+        const ns = spanIndex.get(i);
+        if (ns === undefined) return { ...c, check: "file", supports: isExpected(c) };
+        if (ns.length === 0) return { ...c, check: "no-such-lines", supports: false };
+        return { ...c, check: "span", supports: ns.some((n) => verdict.spans[n] === true) };
       })
     : null;
 
@@ -142,18 +156,29 @@ export interface ArmSummary {
   /** Answer questions: mean share of facts stated. */
   correctness: number | null;
   fullyCorrect: Rate;
-  /** Micro: supporting citations over all citations, answer questions only. */
-  citationPrecision: Rate;
+  /**
+   * Micro, answer questions only: supporting citations over the citations that
+   * gave lines, judged on the span's text (lines not in the file count, as
+   * unsupported).
+   */
+  citationPrecisionLines: Rate;
+  /**
+   * Micro, answer questions only: citations without lines whose file is an
+   * expected source, over all citations without lines. A looser test than the
+   * span's, so never blended with it.
+   */
+  citationPrecisionFile: Rate;
   /** Micro: expected files cited over expected files. */
   citationRecall: Rate;
-  /** How many citations were checked against a span rather than by file. */
+  /** How many citations had a span the judge read, over all citations. */
   spanChecked: Rate;
   /** Unanswerable questions answered "the sources don't show this". */
   abstention: Rate;
   /** Ambiguous questions met with a follow-up question. */
   followUp: Rate;
-  /** Answer questions the reply abstained on, or asked back about instead. */
+  /** Answer questions the reply abstained on. */
   falseAbstention: Rate;
+  /** Answer questions the reply asked a follow-up question about instead. */
   unneededFollowUp: Rate;
   /** Unanswerable questions given a confident answer anyway. */
   confidentGuess: Rate;
@@ -176,6 +201,8 @@ export function summarizeArm(
   const ambiguous = scored.filter((s) => s.expect === "follow-up");
   const unanswerable = scored.filter((s) => s.expect === "abstain");
   const answerCitations = answer.flatMap((s) => s.citations);
+  const withLines = answerCitations.filter((c) => c.check !== "file");
+  const fileOnly = answerCitations.filter((c) => c.check === "file");
   const byCategory = {} as ArmSummary["byCategory"];
   for (const category of [
     "single-product",
@@ -198,10 +225,8 @@ export function summarizeArm(
     unscored: scores.length - scored.length,
     correctness: mean(answer.map((s) => s.factRecall).filter((x): x is number => x !== null)),
     fullyCorrect: rate(answer.filter((s) => s.fullyCorrect).length, answer.length),
-    citationPrecision: rate(
-      answerCitations.filter((c) => c.supports).length,
-      answerCitations.length,
-    ),
+    citationPrecisionLines: rate(withLines.filter((c) => c.supports).length, withLines.length),
+    citationPrecisionFile: rate(fileOnly.filter((c) => c.supports).length, fileOnly.length),
     citationRecall: rate(
       answer.reduce((a, s) => a + s.citedExpectedFiles.length, 0),
       answer.reduce((a, s) => a + s.expectedFiles.length, 0),

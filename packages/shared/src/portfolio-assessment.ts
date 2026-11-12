@@ -10,7 +10,10 @@ import { REQUIREMENT_KINDS, REQUIREMENT_VERDICTS } from "./constants.js";
 import { NFR_CATEGORIES } from "./elicitation.js";
 import { PRODUCT_INTEGRATION_KINDS, type ProductResourceKind } from "./product-docs.js";
 
-/** Which products an assessment looked at: one product, or every one the caller can read. */
+/**
+ * Which products an assessment looked at: the products chosen (`product`: one or
+ * several, #2272), or every one the caller can read.
+ */
 export const PORTFOLIO_ASSESSMENT_SCOPES = ["product", "all-accessible"] as const;
 export type PortfolioAssessmentScope = (typeof PORTFOLIO_ASSESSMENT_SCOPES)[number];
 
@@ -86,6 +89,97 @@ export const PORTFOLIO_ASSESSMENT_LIMITS = {
   repos: 20_000,
 } as const;
 
+// ─── #2272 — a document's requirements, and what a check did not check ──────
+
+/**
+ * #2272 — products a `product` scope may name: one, or several chosen ones.
+ * More than this is an "all products" check (`all-accessible`).
+ */
+export const PORTFOLIO_ASSESSMENT_MAX_PRODUCTS = 50;
+/** #2272 — requirements (or a requirement's criteria) one check takes. */
+export const PORTFOLIO_MAX_REQUIREMENTS = 100;
+/** Characters of one requirement (or criterion) checked. */
+export const PORTFOLIO_REQUIREMENT_MAX_CHARS = 2_000;
+/** Characters of the statement checked. */
+export const PORTFOLIO_STATEMENT_MAX_CHARS = 8_000;
+
+/**
+ * #2272 — why something was not checked. Nothing is cut silently: each is
+ * listed with the assessment, on the page and in the export.
+ *
+ * - `over-limit` — a requirement past the {@link PORTFOLIO_MAX_REQUIREMENTS} one check takes.
+ * - `text-cut` — the characters of a requirement (or the statement) past what one may hold.
+ * - `section-unread` — a document section the model could not read.
+ * - `quote-not-found` — statements the model read that were dropped: their quote is not in the document.
+ * - `budget` — the check's budget ran out before some repositories were checked for it.
+ */
+export const PORTFOLIO_NOT_CHECKED_REASONS = [
+  "over-limit",
+  "text-cut",
+  "section-unread",
+  "quote-not-found",
+  "budget",
+] as const;
+export type PortfolioNotCheckedReason = (typeof PORTFOLIO_NOT_CHECKED_REASONS)[number];
+
+/** Entries one assessment's not-checked list may hold. */
+export const PORTFOLIO_NOT_CHECKED_MAX = 1_000;
+
+export const portfolioNotCheckedSchema = z
+  .object({
+    /** What was not checked: the requirement, the section's heading, or the opening of the cut text. */
+    text: z.string().max(PORTFOLIO_REQUIREMENT_MAX_CHARS),
+    reason: z.enum(PORTFOLIO_NOT_CHECKED_REASONS),
+    /** How many: characters cut, statements dropped, repositories not checked. */
+    count: z.number().int().min(0).nullable().default(null),
+  })
+  .strict();
+export type PortfolioNotChecked = z.output<typeof portfolioNotCheckedSchema>;
+export type PortfolioNotCheckedInput = z.input<typeof portfolioNotCheckedSchema>;
+
+/** #2272 — why an entry was not checked, in the words the page and the export share. */
+export function portfolioNotCheckedText(
+  item: Pick<PortfolioNotChecked, "reason" | "count">,
+): string {
+  const n = item.count ?? 0;
+  switch (item.reason) {
+    case "over-limit":
+      return `Not checked: one check takes ${PORTFOLIO_MAX_REQUIREMENTS} requirements, and this one is past them.`;
+    case "text-cut":
+      return `Not checked in full: the last ${n.toLocaleString("en-US")} character${n === 1 ? "" : "s"} of this text ${n === 1 ? "is" : "are"} past what one check reads.`;
+    case "section-unread":
+      return "Not checked: the model could not read this section of the document.";
+    case "quote-not-found":
+      return `Not checked: ${n} statement${n === 1 ? " was" : "s were"} dropped because ${n === 1 ? "its" : "their"} quote is not in the document.`;
+    case "budget":
+      return `Not checked in ${n} ${n === 1 ? "repository" : "repositories"}: the check's budget ran out first.`;
+  }
+}
+
+/**
+ * #2272 — each requirement an assessment checked, with the products found
+ * implementing it, read from the product rows' stored criteria
+ * (`technicalDetail.criteria`). A product whose row carries no criteria (a
+ * restricted one, or one the impact walk reached outside the scope) adds
+ * nothing. Empty when no row carries any.
+ */
+export function portfolioRequirementCoverage(
+  products: ReadonlyArray<{ productId: string; technicalDetail: Record<string, unknown> }>,
+): Array<{ requirement: string; coveredBy: string[] }> {
+  const out: Array<{ requirement: string; coveredBy: string[] }> = [];
+  for (const p of products) {
+    const criteria = (p.technicalDetail as { criteria?: unknown }).criteria;
+    if (!Array.isArray(criteria)) continue;
+    criteria.forEach((c: unknown, i) => {
+      const { criterion, coveredBy } = (c ?? {}) as { criterion?: unknown; coveredBy?: unknown };
+      if (typeof criterion !== "string") return;
+      out[i] ??= { requirement: criterion, coveredBy: [] };
+      if (Array.isArray(coveredBy) && coveredBy.length > 0) out[i].coveredBy.push(p.productId);
+    });
+  }
+  return out.filter(Boolean);
+}
+
 // ─── #1624 — the business-analyst report ────────────────────────────────────
 
 /** Where a report's prose came from: the model, or the deterministic template. */
@@ -145,6 +239,8 @@ export const portfolioAssessmentInputSchema = z
     statement: z.string().trim().min(1).max(20_000),
     sourceRequirementId: z.string().min(1).max(64).nullable().default(null),
     sourceProjectId: z.string().min(1).max(64).nullable().default(null),
+    /** #2272 — the document whose requirements were checked; null for any other source. */
+    sourceDocumentId: z.string().min(1).max(64).nullable().default(null),
     scope: z.enum(PORTFOLIO_ASSESSMENT_SCOPES),
     productIds: z.array(z.string().min(1).max(64)).max(PORTFOLIO_ASSESSMENT_LIMITS.products),
     status: z.enum(PORTFOLIO_ASSESSMENT_STATUSES).default("pending"),
@@ -164,9 +260,12 @@ export const portfolioAssessmentInputSchema = z
       .array(portfolioAssessmentRepoInputSchema)
       .max(PORTFOLIO_ASSESSMENT_LIMITS.repos)
       .default([]),
+    /** #2272 — what the check did not check, each with why. */
+    notChecked: z.array(portfolioNotCheckedSchema).max(PORTFOLIO_NOT_CHECKED_MAX).default([]),
   })
   .strict()
-  // #1647 — the parts must agree: a `product` scope names at most one product,
+  // #1647 — the parts must agree: a `product` scope names at most
+  // `PORTFOLIO_ASSESSMENT_MAX_PRODUCTS` products (#2272; one before it),
   // and every product row and repo verdict is under a product the assessment
   // says it assessed. (A duplicate row is left to the tables' unique keys,
   // which refuse the whole write.) #1623 — the one exception is a product the
@@ -174,11 +273,11 @@ export const portfolioAssessmentInputSchema = z
   // (#1725: or a `direct-change`, a product holding the host's repo), it has no
   // repo verdicts, and it never enters the portfolio verdict.
   .superRefine((a, ctx) => {
-    if (a.scope === "product" && a.productIds.length > 1) {
+    if (a.scope === "product" && a.productIds.length > PORTFOLIO_ASSESSMENT_MAX_PRODUCTS) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["productIds"],
-        message: "a product-scoped assessment names at most one product",
+        message: `a product-scoped assessment names at most ${PORTFOLIO_ASSESSMENT_MAX_PRODUCTS} products`,
       });
     }
     const assessed = new Set(a.productIds);
@@ -214,6 +313,8 @@ export interface PortfolioAssessment {
   /** Null once the requirement it started from was recreated or deleted. */
   sourceRequirementId: string | null;
   sourceProjectId: string | null;
+  /** #2272 — the document whose requirements were checked; null for any other source. */
+  sourceDocumentId: string | null;
   scope: PortfolioAssessmentScope;
   productIds: string[];
   status: PortfolioAssessmentStatus;
@@ -232,26 +333,25 @@ export interface PortfolioAssessment {
   updatedAt: string;
   products: Array<Required<z.output<typeof portfolioAssessmentProductInputSchema>>>;
   repos: Array<Required<z.output<typeof portfolioAssessmentRepoInputSchema>>>;
+  /** #2272 — what the check did not check, each with why; empty for a run before #2272. */
+  notChecked: PortfolioNotChecked[];
 }
 
 // ─── #1625 — the HTTP contract ──────────────────────────────────────────────
 
 /**
- * Ids a request may carry: a `product` scope names exactly one (#1622), and an
- * `all-accessible` one names none (#1657: a list it would ignore is refused, so
- * the contract says what it accepts).
- */
-export const PORTFOLIO_ASSESSMENT_MAX_PRODUCTS = 1;
-
-/**
- * `POST /api/portfolio-assessments`: exactly one of `statement` and
- * `requirementId`; a `product` scope names exactly one product (#1622, #1647)
- * and an `all-accessible` scope names none (#1657).
+ * `POST /api/portfolio-assessments`: exactly one of `statement`,
+ * `requirementId` and (#2272) `documentId`, whose requirements are each
+ * checked; a `product` scope names one or several chosen products, up to
+ * {@link PORTFOLIO_ASSESSMENT_MAX_PRODUCTS} (#2272; exactly one before), and an
+ * `all-accessible` scope names none (#1657).
  */
 export const createPortfolioAssessmentSchema = z
   .object({
-    statement: z.string().trim().min(1).max(8_000).optional(),
+    statement: z.string().trim().min(1).max(PORTFOLIO_STATEMENT_MAX_CHARS).optional(),
     requirementId: z.string().min(1).max(64).optional(),
+    /** #2272 — a document: the model reads it, and each requirement it finds is checked. */
+    documentId: z.string().min(1).max(64).optional(),
     scope: z.enum(PORTFOLIO_ASSESSMENT_SCOPES),
     productIds: z
       .array(z.string().min(1).max(64))
@@ -260,26 +360,29 @@ export const createPortfolioAssessmentSchema = z
     /**
      * #1623 — the product chosen to host the requirement where nothing covers it:
      * it changes directly, and the impact walk starts from it. A `product` scope
-     * may only name its own product.
+     * may only name one of its own products.
      */
     hostProductId: z.string().min(1).max(64).optional(),
   })
   .strict()
-  .refine((v) => (v.statement === undefined) !== (v.requirementId === undefined), {
-    message: "Give exactly one of statement and requirementId",
-    path: ["statement"],
-  })
-  .refine((v) => v.scope !== "product" || v.productIds?.length === 1, {
-    message: 'A "product" scope names exactly one product',
+  .refine(
+    (v) => [v.statement, v.requirementId, v.documentId].filter((x) => x !== undefined).length === 1,
+    {
+      message: "Give exactly one of statement, requirementId and documentId",
+      path: ["statement"],
+    },
+  )
+  .refine((v) => v.scope !== "product" || (v.productIds?.length ?? 0) >= 1, {
+    message: 'A "product" scope names at least one product',
     path: ["productIds"],
   })
   .refine(
     (v) =>
       v.scope !== "product" ||
       v.hostProductId === undefined ||
-      v.hostProductId === v.productIds?.[0],
+      (v.productIds ?? []).includes(v.hostProductId),
     {
-      message: 'A "product" scope can only host the requirement on its own product',
+      message: 'A "product" scope can only host the requirement on one of its own products',
       path: ["hostProductId"],
     },
   )
@@ -336,6 +439,78 @@ export interface PortfolioAssessmentListItem {
   createdById: string;
   createdAt: string;
   updatedAt: string;
+}
+
+// ─── #2272 — impact tiers ───────────────────────────────────────────────────
+
+/**
+ * #2272 — how sure a product's impact is, in five tiers:
+ *
+ * - `found-in-code` — a product that must change, whose code the check found
+ *   covers or partly covers the requirement. The evidence is the code verdict,
+ *   not a graph path: no path is walked to a product that must change.
+ * - `verified` — by graph path, for a downstream product only: every hop of
+ *   the path to it is an edge a person declared (or overrode), or one detected
+ *   with confidence at least {@link PORTFOLIO_VERIFIED_CONFIDENCE}.
+ * - `likely` — every hop at least {@link PORTFOLIO_LIKELY_CONFIDENCE}. For a
+ *   product that must change: it was chosen to build it (or holds that
+ *   product's repository), and no code of it was found yet.
+ * - `possible` — a hop below {@link PORTFOLIO_LIKELY_CONFIDENCE}.
+ * - `needs-review` — the path cannot be shown: the change may reach the
+ *   product through one its reader cannot read, the path was withheld from
+ *   them, or no stored path reads.
+ */
+export const PORTFOLIO_IMPACT_TIERS = [
+  "found-in-code",
+  "verified",
+  "likely",
+  "possible",
+  "needs-review",
+] as const;
+export type PortfolioImpactTier = (typeof PORTFOLIO_IMPACT_TIERS)[number];
+
+export const PORTFOLIO_IMPACT_TIER_LABEL: Readonly<Record<PortfolioImpactTier, string>> = {
+  "found-in-code": "Found in code",
+  verified: "Verified by graph path",
+  likely: "Likely",
+  possible: "Possible",
+  "needs-review": "Needs review",
+};
+
+/** A detected edge at least this confident verifies its hop. */
+export const PORTFOLIO_VERIFIED_CONFIDENCE = 0.8;
+/** Below this a hop is a weak signal (the severity's low-confidence step, #1623). */
+export const PORTFOLIO_LIKELY_CONFIDENCE = 0.5;
+
+/**
+ * #2272 — a product row's impact tier, from what its run stored; null for a
+ * product the change does not reach (`none`).
+ */
+export function portfolioImpactTier(row: {
+  coverage: PortfolioCoverage;
+  impactKind: PortfolioImpactKind;
+  technicalDetail: Record<string, unknown>;
+}): PortfolioImpactTier | null {
+  if (row.impactKind === "none") return null;
+  if (row.impactKind === "restricted" || row.coverage === "restricted") return "needs-review";
+  const detail = row.technicalDetail as { impactWithheld?: unknown; impact?: { hops?: unknown } };
+  if (detail.impactWithheld === true) return "needs-review";
+  if (row.impactKind === "direct-change") {
+    // No graph path is walked to a product that must change: its evidence is the code verdict.
+    return row.coverage === "covers" || row.coverage === "partial" ? "found-in-code" : "likely";
+  }
+  const hops = detail.impact?.hops;
+  if (!Array.isArray(hops) || hops.length === 0) return "needs-review";
+  let weakest = 1;
+  for (const hop of hops) {
+    const { origin, confidence } = (hop ?? {}) as { origin?: unknown; confidence?: unknown };
+    if (origin === "declared" || origin === "overridden") continue;
+    if (typeof confidence !== "number" || !Number.isFinite(confidence)) return "needs-review";
+    weakest = Math.min(weakest, confidence);
+  }
+  if (weakest >= PORTFOLIO_VERIFIED_CONFIDENCE) return "verified";
+  if (weakest >= PORTFOLIO_LIKELY_CONFIDENCE) return "likely";
+  return "possible";
 }
 
 // ─── #1673 — wording the page and the Markdown export share ─────────────────

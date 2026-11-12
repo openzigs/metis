@@ -34,10 +34,12 @@ import {
   type AgentOutput,
   type AnalysisAgentKey,
   type AnalysisSpecialistAgentKey,
+  type FindingsLeftOutNotice,
+  requirementInputExcerpt,
 } from "@metis/shared";
 import type { AIProvider } from "../ai/types.js";
 import { providerHonoursReasoningOptions } from "../docs-gen/docs-gen-reasoning.js";
-import { extractJsonObject, repairAgentJson } from "./agent-runner.js";
+import { extractJsonObject, MAX_AGENT_FINDINGS, repairAgentJson } from "./agent-runner.js";
 import { citationLossFrom, markCitationLoss } from "./citation-salvage.js";
 import {
   knownDocumentsForRepair,
@@ -176,30 +178,54 @@ export function salvageFindings(raw: string): AgentFindingPayload[] {
 export function salvageRepairedFindings(
   raw: string,
   opts: { knownDocuments?: readonly KnownDocument[] } = {},
-): { findings: AgentFindingPayload[]; repairs: FindingsRepair[] } {
+): { findings: AgentFindingPayload[]; repairs: FindingsRepair[]; leftOutTitles: string[] } {
+  const none = { findings: [], repairs: [], leftOutTitles: [] };
   let parsed: unknown;
   try {
     parsed = extractJsonObject(raw);
   } catch {
-    return { findings: [], repairs: [] };
+    return none;
   }
-  if (!parsed || typeof parsed !== "object") return { findings: [], repairs: [] };
+  if (!parsed || typeof parsed !== "object") return none;
   const findings = (parsed as { findings?: unknown }).findings;
-  if (!Array.isArray(findings)) return { findings: [], repairs: [] };
+  if (!Array.isArray(findings)) return none;
   const salvaged: AgentFindingPayload[] = [];
   const repairs: FindingsRepair[] = [];
+  // #2276 — the valid findings past the cap, named rather than dropped in silence.
+  const leftOutTitles: string[] = [];
   for (const [i, candidate] of findings.entries()) {
     const repaired = repairFinding(candidate, `findings.${i}`, opts);
     const result = agentFindingPayloadSchema.safeParse(repaired.value);
-    if (result.success) {
-      // #1155 — read before the parse erased it: what the schema dropped.
-      salvaged.push(markCitationLoss(result.data, citationLossFrom(repaired.value)));
-      // Only a salvaged finding's repairs happened to anything that is kept.
-      repairs.push(...repaired.repairs);
+    if (!result.success) continue;
+    if (salvaged.length >= MAX_AGENT_FINDINGS) {
+      leftOutTitles.push(requirementInputExcerpt(result.data.title));
+      continue;
     }
-    if (salvaged.length >= 50) break; // agentOutputSchema caps findings at 50.
+    // #1155 — read before the parse erased it: what the schema dropped.
+    salvaged.push(markCitationLoss(result.data, citationLossFrom(repaired.value)));
+    // Only a salvaged finding's repairs happened to anything that is kept.
+    repairs.push(...repaired.repairs);
   }
-  return { findings: salvaged, repairs };
+  return { findings: salvaged, repairs, leftOutTitles };
+}
+
+/**
+ * #2276 — the {@link FindingsLeftOutNotice} for a salvage that kept `kept`
+ * findings and left `leftOutTitles` past the cap, or `undefined` when it left
+ * none out.
+ */
+export function salvagedFindingsLeftOut(
+  agentKey: string,
+  kept: number,
+  leftOutTitles: readonly string[] | undefined,
+): FindingsLeftOutNotice | undefined {
+  if (!leftOutTitles || leftOutTitles.length === 0) return undefined;
+  return {
+    agentKey,
+    producedCount: kept + leftOutTitles.length,
+    keptCount: kept,
+    leftOutTitles: [...leftOutTitles],
+  };
 }
 
 /**
@@ -242,6 +268,8 @@ export interface SalvageResult {
   repairSucceeded: boolean;
   /** #298 — field repairs applied to the recovered findings (empty when none). */
   fieldRepairs: FindingsRepair[];
+  /** #2276 — titles of the valid findings past the 50-finding cap; absent when none. */
+  leftOutTitles?: string[];
 }
 
 /**
@@ -298,7 +326,12 @@ export async function salvageWithRepair(
     fieldRepairs: [],
   };
   if (first.findings.length > 0) {
-    return { ...none, findings: first.findings, fieldRepairs: first.repairs };
+    return {
+      ...none,
+      findings: first.findings,
+      fieldRepairs: first.repairs,
+      ...(first.leftOutTitles.length > 0 ? { leftOutTitles: first.leftOutTitles } : {}),
+    };
   }
   if (sourceKind !== "truncated-json" && sourceKind !== "malformed-json") {
     return { ...none, findings: [] };
@@ -340,6 +373,7 @@ export async function salvageWithRepair(
     repairParsed: true,
     repairSucceeded: recovered.findings.length > 0,
     fieldRepairs: recovered.repairs,
+    ...(recovered.leftOutTitles.length > 0 ? { leftOutTitles: recovered.leftOutTitles } : {}),
   };
 }
 

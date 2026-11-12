@@ -226,3 +226,28 @@ describe("Documents page — surrounding behaviour", () => {
     expect(screen.queryByText("stub-uploaded")).toBeNull();
   });
 });
+
+describe("Documents page — #2272 checking a document's requirements across the portfolio", () => {
+  it("links a ready document to the portfolio check, by id and title; not a repository file or one still ingesting", async () => {
+    listDocuments.mockResolvedValue(
+      page([
+        doc({ id: "d-ready", status: "ready", filename: "frd.docx", title: "Payments FRD" }),
+        doc({ id: "d-busy", status: "processing" }),
+        doc({
+          id: "d-repo",
+          status: "ready",
+          source: "repo",
+          filename: "connector:repo:r:src/a.ts",
+        }),
+      ]),
+    );
+    renderPage();
+    await screen.findByTestId("document-list");
+    const links = screen.getAllByRole("link", { name: "Check requirements across portfolio" });
+    expect(links).toHaveLength(1);
+    const href = new URL(links[0].getAttribute("href")!, "http://x");
+    expect(href.pathname).toBe("/portfolio");
+    expect(href.searchParams.get("documentId")).toBe("d-ready");
+    expect(href.searchParams.get("title")).toBe("Payments FRD");
+  });
+});

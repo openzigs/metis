@@ -95,7 +95,7 @@ export default function ChangeAnalysisPage() {
       <div className="px-6">
         <PageHeader
           className="mb-6"
-          title="Change Analysis"
+          title="Compare analyses"
           description="Compare requirements between analysis runs to detect additions, removals, and modifications."
         />
 

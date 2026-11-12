@@ -17,6 +17,8 @@
  *   github-pr:c:<connectorId>:<guid>   `/github/pr/c/:connectorId`
  *   github-issues:deployment:<guid>    `/github/issues`
  *   github-issues:c:<connectorId>:<guid>
+ *   github-push:deployment:<guid>      `/github/push` (#2335)
+ *   github-push:c:<connectorId>:<guid> `/github/push/c/:connectorId`
  *   jira-issues:deployment:<id>        `/jira/issues`
  *   github-trigger:<triggerId>:<guid>  `/github` triggers (#1492, built in `routes/triggers.ts`)
  *
@@ -34,7 +36,7 @@ export type DeliverySignerScope =
   { kind: "deployment" } | { kind: "connector"; connectorId: string };
 
 /** The receivers that dedup through this key (the trigger receiver builds its own). */
-export type DeliveryReceiver = "github-pr" | "github-issues" | "jira-issues";
+export type DeliveryReceiver = "github-pr" | "github-issues" | "github-push" | "jira-issues";
 
 /**
  * The dedup key for `rawId` at `receiver` under `signer`. An empty (or

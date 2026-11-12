@@ -17,23 +17,30 @@ Refunds are only partly delivered today. Orders must change, and Reporting is hi
 
 ### Affected products
 
-#### Orders: Must change
+#### Orders: Must change (found in code)
 
 - **Functional impact:** Orders posts a ledger entry for every refund.
 - **Business impact:** Refunds settle the same day.
 - **Stakeholder impact:** Finance reconciles refunds without manual work.
 
-#### Reporting: Downstream consumer (via database, medium)
+#### Reporting: Downstream consumer (via database, medium, possible)
 
 - **Functional impact:** Reporting reads the new ledger rows | twice.
 - **Business impact:** Not assessed.
 - **Stakeholder impact:** Analysts see refunds in the daily report.
 
-#### Storefront: Downstream consumer (via api, medium)
+#### Storefront: Downstream consumer (via api, medium, verified by graph path)
 
 - **Functional impact:** Storefront depends on Orders through its API; the impact is medium.
 - **Business impact:** Not assessed.
 - **Stakeholder impact:** Not assessed.
+
+## Requirements checked
+
+| # | Requirement | Implemented by |
+| --- | --- | --- |
+| 1 | A refund posts a ledger entry | Orders |
+| 2 | It posts within 2 seconds | No product found |
 
 ## Functional requirements
 
@@ -46,19 +53,19 @@ Refunds are only partly delivered today. Orders must change, and Reporting is hi
 
 ## Products
 
-| Product | Coverage | Summary | Impact | Severity |
-| --- | --- | --- | --- | --- |
-| Orders | Covers part of it | Orders (acme/orders-api). Not found: It posts within 2 seconds. | Must change |  |
-| p-partner | Restricted |  |  |  |
-| Reporting | Does not cover it |  | Downstream consumer via database | medium |
-| Storefront | Does not cover it |  | Downstream consumer via api | medium |
-| Notifications | Not checked | Downstream consumer via event (low). | Downstream consumer via event | low |
+| Product | Coverage | Summary | Impact | Severity | Impact tier |
+| --- | --- | --- | --- | --- | --- |
+| Orders | Covers part of it | Orders (acme/orders-api). Not found: It posts within 2 seconds. | Must change |  | Found in code |
+| p-partner | Restricted |  |  |  | Needs review |
+| Reporting | Does not cover it |  | Downstream consumer via database | medium | Possible |
+| Storefront | Does not cover it |  | Downstream consumer via api | medium | Verified by graph path |
+| Notifications | Not checked | Downstream consumer via event (low). | Downstream consumer via event | low | Verified by graph path |
 
 ## Technical deep dive
 
 ### Orders
 
-**Coverage:** Covers part of it · **Impact:** Must change
+**Coverage:** Covers part of it · **Impact:** Must change (found in code)
 
 **Repos**
 
@@ -76,7 +83,7 @@ Restricted: you cannot read this product, so nothing about it is shown.
 
 ### Reporting
 
-**Coverage:** Does not cover it · **Impact:** Downstream consumer (via database, medium)
+**Coverage:** Does not cover it · **Impact:** Downstream consumer (via database, medium, possible)
 
 **Repos**
 
@@ -102,7 +109,7 @@ Restricted: you cannot read this product, so nothing about it is shown.
 
 ### Storefront
 
-**Coverage:** Does not cover it · **Impact:** Downstream consumer (via api, medium)
+**Coverage:** Does not cover it · **Impact:** Downstream consumer (via api, medium, verified by graph path)
 
 **Repos**
 
@@ -128,7 +135,7 @@ Restricted: you cannot read this product, so nothing about it is shown.
 
 ### Notifications
 
-**Coverage:** Not checked · **Impact:** Downstream consumer (via event, low)
+**Coverage:** Not checked · **Impact:** Downstream consumer (via event, low, verified by graph path)
 
 **Repos**
 

@@ -64,6 +64,21 @@ vi.mock("../src/lib/ai/providers/bedrock-direct-provider.js", () => ({
 import { synthesizeHolisticDocument } from "../src/lib/docs-gen/holistic-synthesizer.js";
 import { buildProvider } from "../src/lib/ai/index.js";
 
+/**
+ * #2369 — these fixtures index no symbols, so the run ends with "no
+ * documentable code"; what is asserted here is the queries made on the way.
+ */
+async function synthesizeOrNoCode(
+  ...args: Parameters<typeof synthesizeHolisticDocument>
+): Promise<void> {
+  await synthesizeHolisticDocument(...args).then(
+    () => undefined,
+    (err: unknown) => {
+      if ((err as { name?: unknown } | null)?.name !== "NoDocumentableCodeError") throw err;
+    },
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -91,7 +106,7 @@ describe("synthesizeHolisticDocument — repoConnectorId filter", () => {
   it("queries codeGraph by repoConnectionId when repoConnectorId is provided", async () => {
     mockCodeGraphFindFirst.mockResolvedValue({ id: "graph_abc" });
 
-    await synthesizeHolisticDocument("proj_1", "business-requirements", "My Doc", {
+    await synthesizeOrNoCode("proj_1", "business-requirements", "My Doc", {
       repoConnectorId: "repo_xyz",
     });
 
@@ -108,7 +123,7 @@ describe("synthesizeHolisticDocument — repoConnectorId filter", () => {
   it("passes codeGraphId in the codeSymbol.findMany where clause", async () => {
     mockCodeGraphFindFirst.mockResolvedValue({ id: "graph_abc" });
 
-    await synthesizeHolisticDocument("proj_1", "business-requirements", "My Doc", {
+    await synthesizeOrNoCode("proj_1", "business-requirements", "My Doc", {
       repoConnectorId: "repo_xyz",
     });
 
@@ -132,7 +147,7 @@ describe("synthesizeHolisticDocument — repoConnectorId filter", () => {
   });
 
   it("does NOT call codeGraph.findFirst when no repoConnectorId is given", async () => {
-    await synthesizeHolisticDocument("proj_1", "business-requirements", "My Doc");
+    await synthesizeOrNoCode("proj_1", "business-requirements", "My Doc");
 
     expect(mockCodeGraphFindFirst).not.toHaveBeenCalled();
   });
@@ -151,7 +166,7 @@ describe("synthesizeHolisticDocument — repoConnectorId filter", () => {
   );
 
   it("passes projectId-only where clause when no repoConnectorId is given", async () => {
-    await synthesizeHolisticDocument("proj_1", "business-requirements", "My Doc");
+    await synthesizeOrNoCode("proj_1", "business-requirements", "My Doc");
 
     expect(mockCodeSymbolFindMany).toHaveBeenCalledWith(
       expect.objectContaining({

@@ -22,6 +22,7 @@ import { TextIngestForm } from "@/components/projects/text-ingest-form";
 import { PageHeader } from "@/components/ui/page-header";
 import { DocumentName } from "@/components/projects/document-name";
 import { useRepoNames } from "@/hooks/use-repo-names";
+import { PortfolioCheckLink } from "@/components/portfolio/portfolio-check-link";
 
 /**
  * #69 — what one row says about itself. A quarantined document keeps
@@ -138,14 +139,23 @@ export default function ProjectDocumentsPage() {
                     </Link>
                   ) : null}
                 </div>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => removeDoc.mutate(d.id)}
-                  disabled={removeDoc.isPending}
-                >
-                  Delete
-                </Button>
+                <div className="flex shrink-0 items-center gap-2">
+                  {/* #2272 — each requirement the document holds, checked across the portfolio. */}
+                  {d.source !== "repo" && d.status === "ready" ? (
+                    <PortfolioCheckLink
+                      from={{ documentId: d.id, title: d.title ?? d.filename }}
+                      label="Check requirements across portfolio"
+                    />
+                  ) : null}
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => removeDoc.mutate(d.id)}
+                    disabled={removeDoc.isPending}
+                  >
+                    Delete
+                  </Button>
+                </div>
               </li>
             ))}
           </ul>
