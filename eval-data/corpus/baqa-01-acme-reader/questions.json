@@ -57,7 +57,7 @@
         },
         {
           "id": "S1.c",
-          "text": "Under the entry-frequency scheduler the wait is one week divided by the number of articles the feed published in the past week (times a factor, 1 by default)."
+          "text": "Under the entry-frequency scheduler the wait is one week divided by the product of the number of articles the feed published in the past week and a factor (1 by default), so a larger factor shortens the wait."
         },
         {
           "id": "S1.d",

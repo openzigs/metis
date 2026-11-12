@@ -47,7 +47,12 @@ describe("formatBaQaReport", () => {
     expect(md).toContain("| Sessions chat left unscoped (no retrieval) | 1/1 | 0/1 |");
     expect(md).toContain("| Correctness: mean facts stated | 0% | 100% |");
     expect(md).toContain("| False abstention on answerable | 100% (1/1) | 0% (0/1) |");
-    expect(md).toContain("| Citation precision | n/a | 100% (1/1) |");
+    expect(md).not.toMatch(/\| Citation precision \|/);
+    expect(md).toContain("| Citation precision: cited lines, judged on the span | n/a | n/a |");
+    expect(md).toContain(
+      "| Citation precision: file named without lines, judged by file | n/a | 100% (1/1) |",
+    );
+    expect(md).toContain("| Citations whose span the judge read | n/a | 0% (0/1) |");
     expect(md).toContain("| Answer spend | $0.0100 | unpriced |");
     expect(md).toContain("Run total, every model call: $0.014000.");
     expect(md).toContain("**Stopped early:** the $1 cap was reached.");

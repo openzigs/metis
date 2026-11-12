@@ -58,8 +58,13 @@ export function formatBaQaReport(input: {
     }),
     row("Correctness: mean facts stated", (a) => pct(a.correctness)),
     row("Fully correct answers", (a) => r(a.fullyCorrect)),
-    row("Citation precision", (a) => r(a.citationPrecision)),
-    row("… of which checked against the span", (a) => r(a.spanChecked)),
+    // Two tests, never blended (#2265): an arm that cites no lines is graded
+    // only by the looser file check.
+    row("Citation precision: cited lines, judged on the span", (a) => r(a.citationPrecisionLines)),
+    row("Citation precision: file named without lines, judged by file", (a) =>
+      r(a.citationPrecisionFile),
+    ),
+    row("Citations whose span the judge read", (a) => r(a.spanChecked)),
     row("Citation recall (expected files cited)", (a) => r(a.citationRecall)),
     row("Abstention on unanswerable", (a) => r(a.abstention)),
     row("Confident guess on unanswerable", (a) => r(a.confidentGuess)),
