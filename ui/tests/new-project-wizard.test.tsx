@@ -7,7 +7,7 @@ import { render, renderHook, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useRouter } from "next/navigation";
 import { ApiError } from "@/lib/api-client";
-import { makeWrapper } from "./test-utils";
+import { makeWrapper, userWith } from "./test-utils";
 
 vi.mock("sonner", () => ({
   toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn(), info: vi.fn() },
@@ -240,7 +240,7 @@ describe("NewProjectWizard", () => {
     await user.click(screen.getByRole("button", { name: "Create and start ingest" }));
 
     expect(await screen.findByText("Slug already in use")).toBeInTheDocument();
-    expect(screen.getByLabelText("Slug")).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByLabelText("Short name")).toHaveAttribute("aria-invalid", "true");
     expect(push()).not.toHaveBeenCalled();
     expect(deepIngest).not.toHaveBeenCalled();
   });
@@ -263,19 +263,19 @@ describe("NewProjectWizard", () => {
     const user = userEvent.setup();
     renderWizard();
     await user.type(screen.getByLabelText("Name"), "My Cool Project!");
-    expect(screen.getByLabelText("Slug")).toHaveValue("my-cool-project");
-    await user.clear(screen.getByLabelText("Slug"));
-    await user.type(screen.getByLabelText("Slug"), "custom");
+    expect(screen.getByLabelText("Short name")).toHaveValue("my-cool-project");
+    await user.clear(screen.getByLabelText("Short name"));
+    await user.type(screen.getByLabelText("Short name"), "custom");
     await user.type(screen.getByLabelText("Name"), " Two");
-    expect(screen.getByLabelText("Slug")).toHaveValue("custom");
+    expect(screen.getByLabelText("Short name")).toHaveValue("custom");
   });
 
   it("blocks Next on a malformed slug", async () => {
     const user = userEvent.setup();
     renderWizard();
     await user.type(screen.getByLabelText("Name"), "Acme");
-    await user.clear(screen.getByLabelText("Slug"));
-    await user.type(screen.getByLabelText("Slug"), "bad slug");
+    await user.clear(screen.getByLabelText("Short name"));
+    await user.type(screen.getByLabelText("Short name"), "bad slug");
     expect(next()).toBeDisabled();
   });
 
@@ -314,6 +314,14 @@ describe("NewProjectWizard", () => {
       description: "Legacy estate",
       primaryRepo: { apiBaseUrl: "https://ghe.acme.test/api/v3", secretRef: undefined },
     });
+  });
+
+  it("labels the repository credential in plain language, not 'Secret ref' (#2337)", async () => {
+    const user = userEvent.setup();
+    renderWizard();
+    await fillName(user);
+    expect(screen.getByLabelText("Access token (vault secret)")).toBeInTheDocument();
+    expect(screen.queryByText(/secret ref/i)).not.toBeInTheDocument();
   });
 
   it("goes Back without losing what was typed", async () => {
@@ -361,7 +369,7 @@ describe("NewProjectDialog", () => {
   async function createThroughDialog() {
     const user = userEvent.setup();
     create.mockResolvedValue({ ...PROJECT, primaryRepo: null } as never);
-    const Wrapper = makeWrapper({});
+    const Wrapper = makeWrapper({ initialUser: userWith("project.create") });
     render(
       <Wrapper>
         <NewProjectDialog />
@@ -385,7 +393,7 @@ describe("NewProjectDialog", () => {
     const user = userEvent.setup();
     window.localStorage.setItem("metis.activeWorkspaceId", "ws-9");
     create.mockResolvedValue({ ...PROJECT, primaryRepo: null } as never);
-    const Wrapper = makeWrapper({});
+    const Wrapper = makeWrapper({ initialUser: userWith("project.create") });
     render(
       <Wrapper>
         <NewProjectDialog />

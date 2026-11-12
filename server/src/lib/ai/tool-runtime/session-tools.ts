@@ -118,6 +118,13 @@ export interface SessionToolsFlags {
   chatTools: boolean;
   /** `CHAT_CODE_SEARCH_TOOLS` — offer the curated code-search tools (default on, #2243). */
   codeSearchTools: boolean;
+  /**
+   * #2295 — offer them on the text protocol too, to a model that cannot call
+   * tools natively. On only when `CHAT_CODE_SEARCH_TOOLS` is set to true: the
+   * #2243 default was measured on native tool calls, and the text-protocol
+   * loop does not stream. Omitted: follows `codeSearchTools`.
+   */
+  codeSearchToolsOnTextProtocol?: boolean;
   /** #146 `CHAT_PROGRESSIVE_SKILLS` — catalog + `load_skill` (default on). */
   progressiveSkills?: boolean;
   /** #147 `CHAT_SUBAGENTS` — offer the project's agents as tools (default on). */
@@ -132,6 +139,8 @@ export function loadSessionToolsFlags(): SessionToolsFlags {
     chatTools: cfg.getBool("CHAT_TOOLS", true),
     // #2243 — on by default: measured on the #2237 BA question set.
     codeSearchTools: cfg.getBool("CHAT_CODE_SEARCH_TOOLS", true),
+    // #2295 — but not for a model without native tool calls unless asked for.
+    codeSearchToolsOnTextProtocol: cfg.getBool("CHAT_CODE_SEARCH_TOOLS", false),
     progressiveSkills: cfg.getBool("CHAT_PROGRESSIVE_SKILLS", true),
     subAgents: cfg.getBool("CHAT_SUBAGENTS", true),
     searchGuidance: searchGuidanceEnabled(),
@@ -386,8 +395,11 @@ export async function resolveSessionTools(
     };
   }
 
-  // Not tool-capable: only the curated code tools, on the text protocol (#713).
-  const allowed = codeTools.filter(
+  // Not tool-capable: only the curated code tools, on the text protocol (#713),
+  // and only when the deployment set CHAT_CODE_SEARCH_TOOLS (#2295).
+  const textCodeTools =
+    (flags.codeSearchToolsOnTextProtocol ?? flags.codeSearchTools) ? codeTools : [];
+  const allowed = textCodeTools.filter(
     (t) => !agentAllowlist || agentAllowlist.some((ref) => matchesToolRef(ref, t.name)),
   );
   if (allowed.length === 0) return off(catalog, agent.approvalOverride, agentAllowlist);

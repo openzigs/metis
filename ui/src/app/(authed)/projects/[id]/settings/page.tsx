@@ -29,6 +29,7 @@ import { InferenceProfileCard } from "@/components/projects/inference-profile-ca
 import { QuarantinePanel } from "@/components/projects/quarantine-panel";
 import { ChroniclePanel } from "@/components/projects/chronicle-panel";
 import { PageHeader } from "@/components/ui/page-header";
+import { SkeletonText } from "@/components/ui/skeleton";
 
 export default function ProjectSettingsPage() {
   const params = useParams<{ id: string }>();
@@ -53,7 +54,13 @@ export default function ProjectSettingsPage() {
   });
 
   if (!id) return <div className="p-6">Invalid project id.</div>;
-  if (project.isLoading) return <div className="p-6">Loading…</div>;
+  if (project.isLoading) {
+    return (
+      <div className="p-6">
+        <SkeletonText lines={4} label="Loading project settings…" />
+      </div>
+    );
+  }
   if (project.error instanceof ApiError && project.error.status === 404) {
     notFound();
   }
@@ -88,37 +95,13 @@ export default function ProjectSettingsPage() {
         }
       />
 
-      <Card className="space-y-4 p-4">
-        <h2 className="text-lg font-semibold">Settings</h2>
-        <AiProviderPicker projectId={id} current={p.aiProviderId} />
-        <AiModelPicker projectId={id} current={p.aiModel} />
+      {/* #2337 — grouped General / AI & cost / Advanced; Advanced starts closed.
+          Every card is still here and keeps its own behaviour. */}
+      <Card className="space-y-4 p-4" data-testid="project-settings-general">
+        <h2 className="text-lg font-semibold">General</h2>
         <WorkspaceAssignCard projectId={id} workspaceId={p.workspaceId} />
         <PrimaryRepoCard projectId={id} />
-        <AutoReviewPrsSettingsCard
-          projectId={id}
-          enabled={p.autoReviewPrs}
-          monthlyBudgetCents={p.prReviewMonthlyBudgetCents}
-          canEdit={canManageSkills}
-        />
-        <InferenceProfileCard projectId={id} />
-        <SafetySettingsCard projectId={id} current={p.safetyMode} />
-        <BudgetSettingsCard projectId={id} current={p.monthlyTokenBudget} canEdit={canEditBudget} />
-        <AutopilotSettingsCard
-          projectId={id}
-          enabled={p.autopilotEnabled}
-          costCeilingCents={p.autopilotCostCeilingCents}
-        />
-        <DatabaseAwareAnalysisSettingsCard projectId={id} />
-        <SqlLineageSettingsCard projectId={id} />
-        <AgentsMdCard projectId={id} />
         <p className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
-          <Link
-            href={`/projects/${id}/settings/models`}
-            className="underline"
-            data-testid="model-settings-link"
-          >
-            Configure model preferences →
-          </Link>
           {canManageSkills ? (
             <Link
               href={`/library?tab=skills&projectId=${encodeURIComponent(id)}`}
@@ -138,6 +121,53 @@ export default function ProjectSettingsPage() {
           </Link>
         </p>
       </Card>
+
+      <Card className="space-y-4 p-4" data-testid="project-settings-ai-cost">
+        <h2 className="text-lg font-semibold">AI &amp; cost</h2>
+        <AiProviderPicker projectId={id} current={p.aiProviderId} />
+        <AiModelPicker projectId={id} current={p.aiModel} />
+        <p className="text-xs text-muted-foreground">
+          <Link
+            href={`/projects/${id}/settings/models`}
+            className="underline"
+            data-testid="model-settings-link"
+          >
+            Configure model preferences →
+          </Link>
+        </p>
+        <SafetySettingsCard projectId={id} current={p.safetyMode} />
+        <BudgetSettingsCard projectId={id} current={p.monthlyTokenBudget} canEdit={canEditBudget} />
+        <AutopilotSettingsCard
+          projectId={id}
+          enabled={p.autopilotEnabled}
+          costCeilingCents={p.autopilotCostCeilingCents}
+        />
+        <AutoReviewPrsSettingsCard
+          projectId={id}
+          enabled={p.autoReviewPrs}
+          monthlyBudgetCents={p.prReviewMonthlyBudgetCents}
+          canEdit={canManageSkills}
+        />
+      </Card>
+
+      {/* A native disclosure: keyboard-operable and announced as expandable with no script. */}
+      <details className="group rounded-lg border bg-card" data-testid="project-settings-advanced">
+        <summary
+          className="cursor-pointer select-none p-4 text-lg font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          data-testid="project-settings-advanced-toggle"
+        >
+          Advanced
+          <span className="ml-2 text-sm font-normal text-muted-foreground">
+            Cloud inference profile, database and SQL analysis, AGENTS.md
+          </span>
+        </summary>
+        <div className="space-y-4 px-4 pb-4">
+          <InferenceProfileCard projectId={id} />
+          <DatabaseAwareAnalysisSettingsCard projectId={id} />
+          <SqlLineageSettingsCard projectId={id} />
+          <AgentsMdCard projectId={id} />
+        </div>
+      </details>
 
       <QuarantinePanel projectId={id} />
 

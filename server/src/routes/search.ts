@@ -14,6 +14,7 @@ import {
   type FederatedSearchResult,
 } from "../lib/rag/federated-search-service.js";
 import { getUserAccessibleProjects } from "../lib/auth/accessible-projects.js";
+import { inactiveCallerAsUnauthenticated } from "../lib/rag/acl.js";
 
 const federatedSearchBodySchema = z.object({
   query: z.string().min(1).max(2048),
@@ -40,12 +41,13 @@ export function searchRouter(): Router {
 
     const { query, projectIds, k } = parsed.data;
     const service = getFederatedSearchService();
-    const result = await service.searchAcrossProjects({
-      userId,
-      projectIds,
-      query,
-      k,
-    });
+    // #2261 — a deprovisioned caller (the service resolves them as the ACL
+    // actor) is a 401, not a 500.
+    const result = await service
+      .searchAcrossProjects({ userId, projectIds, query, k })
+      .catch((err: unknown) => {
+        throw inactiveCallerAsUnauthenticated(err);
+      });
 
     const response: ApiResponse<FederatedSearchResult> = { success: true, data: result };
     res.json(response);

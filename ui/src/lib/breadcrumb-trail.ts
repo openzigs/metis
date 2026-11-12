@@ -48,12 +48,17 @@ function humanize(segment: string): string {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
+/** #2337 — pages whose name is not their URL segment ("sync" reads as jargon). */
+const ROUTE_LABEL: Record<string, string> = {
+  sync: "Issue updates",
+};
+
 /** The label for the last segment of a route below a known page. */
 export function leafLabel(segment: string, parent: string | undefined): string {
   const detail = parent ? DETAIL_LABEL[parent] : undefined;
   if (detail && (ID_LIKE.test(segment) || parent === "pulls")) return detail(segment);
   if (ID_LIKE.test(segment)) return "Details";
-  return humanize(segment);
+  return ROUTE_LABEL[segment] ?? humanize(segment);
 }
 
 /** Crumbs for `matchedHref`'s page, plus a leaf when `path` goes deeper. */

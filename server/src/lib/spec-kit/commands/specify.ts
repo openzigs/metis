@@ -3,7 +3,8 @@
  * `.specify/spec.md` (Issue #204).
  */
 import type { SpecKitArtifactDto } from "@metis/shared";
-import { writeArtifact, SpecKitArtifactError } from "../artifacts.js";
+import { getArtifact, writeArtifact, SpecKitArtifactError } from "../artifacts.js";
+import { clarificationsPromptSection } from "../clarifications.js";
 import { runSpecKitAgent, loadProjectContext, truncationWarning, type RunDeps } from "./runner.js";
 import {
   buildSpecKitRagContext,
@@ -72,12 +73,17 @@ export async function runSpecify(input: SpecifyInput): Promise<SpecifyResult> {
     callers: { ...(input.callerLookup ? { lookup: input.callerLookup } : {}) },
   });
 
+  // #2236 — the answers already given with /clarify shape the spec too.
+  const clarifications = clarificationsPromptSection(
+    (await getArtifact(input.projectId, "clarify.md"))?.content,
+  );
   const userPrompt = [
     `Project: ${project.name}`,
     project.description ? `Description: ${project.description}` : "",
     "",
     "Brief from operator:",
     trimmed,
+    ...(clarifications ? ["", clarifications] : []),
   ]
     .filter(Boolean)
     .join("\n");

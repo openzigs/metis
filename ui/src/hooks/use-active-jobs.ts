@@ -149,7 +149,7 @@ const KIND_LABELS: Record<JobKind, string> = {
   "embeddings-reindex": "Embeddings reindex",
   "spec-kit": "Spec Kit",
   "overview-regenerate": "Overview regenerate",
-  "repo-ingest": "Repository deep ingest",
+  "repo-ingest": "Repository full re-read",
   "portfolio-assessment": "Portfolio assessment",
 };
 

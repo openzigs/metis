@@ -453,7 +453,11 @@ describe("#2280 — runDocumentReaderAgent reuses a saved reading", () => {
               return created;
             },
           ),
+          // #2293 — the save's tidy-up: nothing here is superseded.
+          deleteMany: vi.fn(async () => ({ count: 0 })),
         },
+        // #2293 — every document here is live and the run's project's.
+        document: { findFirst: vi.fn(async () => ({ id: "live" })) },
       } as never,
     };
   }

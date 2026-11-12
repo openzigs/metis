@@ -923,11 +923,12 @@ Open the user menu in the top-right of the header and click **Sign out**. The au
 
 After logging in you land on the **Dashboard** inside the persistent app shell:
 
-- **Sidebar** (left, 16 rem) — six destinations, one level deep: **Home** (the dashboard), **Projects**, **Chat**, **Activity**, **Library** and **Settings**. Each one opens a row of page tabs above the content for the pages it groups: **Projects** → All projects, Products, Documents, Repositories, Databases, Impact analyses (the cross-project views, all in one place); **Chat** → Chat, Workbench (the same chat sessions, in a project-scoped layout); **Activity** → Tasks, Runs, Sessions, Scheduler, Reviews; **Settings** → Settings, Vault, Eval, and Admin (Admin shown to system admins only). The sidebar entry stays highlighted on every page it groups, announced via `aria-current="page"`. Every page kept its address, so bookmarks and shared links still work; the command palette (⌘K / Ctrl+K) searches all of them by name. On viewports smaller than 768 px the sidebar collapses into a slide-in drawer; tap the menu button in the header to open it. [#27]
-- **Header** (top, sticky) — a **Workspace › Project breadcrumb** on the left (each crumb opens a switcher menu; degrades to workspace-only when no project is selected); on the right, the **activity indicator**, theme toggle (light / dark / system), the **notifications bell** (with an unread-count badge), and the user menu.
+- **Sidebar** (left, 16 rem) — seven destinations, one level deep: **Home** (the dashboard), **Projects**, **Chat**, **Activity**, **Reviews**, **Library** and **Settings**. Each one opens a row of page tabs above the content for the pages it groups: **Projects** → All projects, Products, Documents, Repositories, Databases, Impact analyses (the cross-project views, all in one place); **Chat** → Chat, Workbench (the same chat sessions, in a project-scoped layout); **Activity** → Tasks, Runs, Sessions, Scheduler; **Settings** → Settings, Vault, Eval. **Reviews** shows how many reviews are waiting on you (in review, with you as a reviewer); the number updates when you are assigned one or a review is decided, a screen reader announces each change, and no number shows when none are waiting. [#2332]
+- **What a non-admin sees** — the operations and developer pages are for system admins: **Tasks**, **Runs**, **Scheduler**, **Vault** and **Eval**, and the Settings sections **Configuration**, **MCP servers**, **ACP tokens**, **Hooks** and **Triggers**. Anyone else does not see them in the sidebar, the tab bars, the Settings pages or the command palette, and **Activity** opens on **Sessions**. A hub left with one page shows no tab bar. Opening one of those pages from an old link says *You don't have access to this page*, with a **Back to dashboard** button. A single run's page (`/runs/<id>`), linked from a project's PR reviews, still opens. [#2332] The sidebar entry stays highlighted on every page it groups, announced via `aria-current="page"`. Every page kept its address, so bookmarks and shared links still work; the command palette (⌘K / Ctrl+K) searches all of them by name. On viewports smaller than 768 px the sidebar collapses into a slide-in drawer; tap the menu button in the header to open it. [#27]
+- **Header** (top, sticky) — a **Workspace › Project breadcrumb** on the left (each crumb opens a switcher menu; degrades to workspace-only when no project is selected). The workspace menu's **Open workspace** opens the active workspace's own pages: **Overview**, **Traceability**, **Governing documents** (while that feature is on), **Usage & cost** and **New Agent**, as tabs under a line naming the workspace and a **Back to** link to the project you were in. [#2339] On the right, the **activity indicator**, theme toggle (light / dark / system), the **notifications bell** (with an unread-count badge), and the user menu.
 - **Activity indicator** — a small **"N jobs running"** control that appears in the header **only while something is actually running**, and disappears automatically when everything finishes. It reflects *any* long-running operation — documentation generation, analysis, PR reviews, imports/syncs, and more — not just one kind. Click it to open a drawer that lists each in-progress job with its type, project, and live progress bar. The count and announcements are accessible to screen readers (announced politely as jobs start and complete). For documentation specifically, you no longer have to open a document to watch it build: a doc that is generating now shows a live progress bar and an "N of M sections" counter **directly on its card in the documentation list**, and clicking **Generate Documentation** takes you straight to the new document's live progress (with a "View progress" toast) instead of leaving you on a static badge. [Epic #406] The **Import Requirements** page (`Projects › Import`) likewise streams live progress: after you click **Import** or **Run now** on a saved source, the page shows a live progress bar with the current step ("Fetched 5/10 issues") for the active run instead of going silent, and a toast announces the result when the run finishes ("Imported 5 new, 2 updated" on success, or a generic "The import sync failed. Please try again." on failure — raw error detail is never shown). The import history below still refreshes on its own as a fallback if the live connection drops, and the ongoing-sync toggle, interval, and **Run now** controls are unchanged. [Epic #406, #424]
 - **Consistent completion feedback** — every long-running operation now ends with a clear **success or failure toast**, and you get it **even when you are not on the operation's detail page**. Previously, if you started documentation generation or an analysis and then navigated to a list view (or simply looked away), a *failure* was recorded silently on the row but never announced — you had to notice the badge had changed. Now a single app-wide layer watches the realtime job bus and shows the terminal result wherever you are: a green toast on success (carrying the operation's own message, e.g. the Spec Kit "Generated spec.md (v3) … grounded on N retrieved chunks" line) and a red toast on failure with a **generic, non-revealing message** ("The … operation failed. Please try again.") — raw error detail and stack traces are never shown. Each operation toasts **exactly once**: the surfaces that already announce their own outcome (PR re-review, embeddings reindex, import/sync, Spec Kit, overview regenerate) are reconciled with this global layer so you never see a duplicate. [Epic #406, #425]
-- **Friendly form validation** — forms now guide you instead of dumping raw errors. The **New project** dialog (`Projects › New project`) keeps its **Create** button disabled until the required fields (**Name** and **Slug**) are filled in; leaving **Name** empty shows an inline "Name is required" message right under the field instead of silently doing nothing. The **Import Requirements** page behaves the same way: if a required filter field is missing (for example a GitHub import with no **Owner** or **Repository**), you get a clear inline message beside the offending field — never the previous wall of raw technical error text, and never a generic "something went wrong" page. Behind the scenes, validation problems now come back from the server as a friendly, structured message (a plain "X is required" per field); the application never exposes internal schema details, stack traces, or raw validation arrays to your browser. [Epic #407, #426 — OWASP A09]
+- **Friendly form validation** — forms now guide you instead of dumping raw errors. The **New project** dialog (`Projects › New project`) keeps its **Create** button disabled until the required fields (**Name** and **Short name**) are filled in; leaving **Name** empty shows an inline "Name is required" message right under the field instead of silently doing nothing. The **Import Requirements** page behaves the same way: if a required filter field is missing (for example a GitHub import with no **Owner** or **Repository**), you get a clear inline message beside the offending field — never the previous wall of raw technical error text, and never a generic "something went wrong" page. Behind the scenes, validation problems now come back from the server as a friendly, structured message (a plain "X is required" per field); the application never exposes internal schema details, stack traces, or raw validation arrays to your browser. [Epic #407, #426 — OWASP A09]
 - **Re-sync keeps your edits to imported requirements** — when you edit an imported requirement (title, body, type, priority or labels), the next import run or scheduled sync no longer puts the source's text back. If the source issue has not changed, your edit stays. If the source changed and you had not edited the requirement, the source's change is applied. If both changed, the requirement card shows a **Diverged from source** badge: **Compare** shows your version and the source's side by side, **Take the source version** replaces your text with the source's (recorded in History as a new version, so a review approved on the old text needs approving again), and **Keep mine** keeps your text; it creates no new version, so a review approved on your text stays approved, and History notes the choice. Either choice also protects the requirement from being replaced when the analysis is re-run, like any other review work. For requirements imported before this change, METIS checks History: one nobody edited in METIS simply takes the source's change; one that was edited and now differs from its source is flagged, with the card saying it was edited before METIS tracked its source, so compare and choose. After upgrading, the first sync may therefore flag some edited requirements for review; find them by the badge and by the run's "diverged from source" count. History shows your latest answer to a divergence on each requirement; every answer is kept in the audit log. The import run's badge now reads, for example, "0 new · 2 updated · kept 1 local edit · 1 diverged from source". [#1220]
 - **Import with a vault secret** — the **Import Requirements** page's credential defaults to **Vault secret**, the same `${vault:label}` picker the connector forms use, so you no longer paste a token into the form. **Paste a token** is still available; that token is vaulted for the import source alone. For a **public GitHub repository** you may leave the credential empty: the preview and import read GitHub anonymously and show a warning that anonymous reads are limited to 60 requests per hour. Azure DevOps and Linear still need a credential. You can only choose a vault secret you created unless you are an admin, and deleting an import source never deletes a vault secret it merely referred to. [#763]
 - **Main content** — the route's surface (Dashboard widgets by default). The shell owns the page gutter, so pages render with consistent spacing; pending data shows skeleton placeholders and errors show a retry/escape card.
@@ -935,20 +936,20 @@ After logging in you land on the **Dashboard** inside the persistent app shell:
 
 A **skip-to-content** link is the first focusable element on every authenticated page so keyboard users can bypass the navigation.
 
-**Project sections.** Inside a project, the tab bar follows the pipeline from left to right: **Overview · Sources · Analyze · Requirements · Docs · Publish · Code · ⚙**. Each tab opens its section's first step in one click, and the section's other pages appear in a row underneath:
+**Project sections.** Inside a project, the tab bar follows an analyst's work from left to right: **Overview · Knowledge · Change requests · Requirements · Deliverables · ⚙**. Each tab opens its section's first page in one click, and the section's other pages appear in a row underneath, so every page is at most two clicks from the project:
 
 | Tab | Pages |
 |---|---|
 | Overview | Where each stage stands and what to do next; a numbered **Get started** checklist on a new project |
-| Sources | Connections (including Deep Ingest), Documents, Import, Jira |
-| Analyze | Requirements Analysis, Impact Analysis (this project), Spec Kit |
-| Requirements | Review (what is awaiting review), Baselines, Discussions |
-| Docs | Documentation, Templates |
-| Publish | Issue drafts and publish batches |
-| Code | Code Overview, Changes, Pull Requests |
-| ⚙ | Project settings, Models, Plugins, Usage |
+| Knowledge | Connections (including Deep Ingest), Documents: what METIS knows about the system |
+| Change requests | Requirements Analysis, Import, Jira (requirements brought in from another system), Impact Analysis (this project) |
+| Requirements | Review (what is awaiting review), Baselines, Discussions, Compare analyses |
+| Deliverables | Documentation, Templates, Publish (issue drafts and publish batches) |
+| ⚙ Project settings | General, Models, Plugins, Usage, Code Overview, Pull Requests, Spec Kit |
 
-There is no "More" menu. Project settings (AI provider and model, safety, budget, autopilot, quarantine, archive, …) are behind **⚙**, not on the Overview. Per-project skills are managed from **Library**, which has a project picker. Every existing project URL still works. Below `md` the whole bar collapses into a single dropdown so there's no horizontal scrolling on mobile. **Settings** sub-pages share a persistent left sub-navigation.
+**Compare analyses** (it used to be called Changes) compares the requirements of two analysis runs; it is not a change request. The code views (Code Overview, Pull Requests) and Spec Kit sit behind **⚙** because they are not where an analyst works day to day; there is no Code tab. [#2334]
+
+The ⚙ tab is a gear icon; it is named **Project settings** for screen readers and shows that name as a tooltip. There is no "More" menu. Project settings (AI provider and model, safety, budget, autopilot, quarantine, archive, …) are behind **⚙**, not on the Overview. Per-project skills are managed from **Library**, which has a project picker. Every existing project URL still works. Below `md` the whole bar collapses into a single dropdown so there's no horizontal scrolling on mobile. **Settings** sub-pages share a persistent left sub-navigation.
 
 Press **⌘K** (or **Ctrl+K** on Windows/Linux) anywhere in the app to open the **command palette**. Type to fuzzy-search navigation targets, recently opened items, and project actions; ↑/↓ to move, **↵** to invoke, **Esc** to dismiss.
 
@@ -956,11 +957,19 @@ Press **⌘K** (or **Ctrl+K** on Windows/Linux) anywhere in the app to open the 
 
 ## 8.1 Dashboard
 
-The Dashboard summarises live activity across four widgets that poll independently:
+The Dashboard (Home) opens with **My work**: what needs you. [#2348]
 
-- **Projects** — your most recent projects with status chips. Empty? Click **Open projects** to create your first one.
-- **Active analyses & tasks** — anything currently running, refreshed every 15 seconds.
-- **Scheduled jobs** — upcoming and recently fired cron jobs. Open the **Scheduler** surface to add one.
+- **Your change requests, by state.** Each analysis run you started is listed under the state it is in, if it needs something: **Waiting on your answers** (the run finished with clarifying questions still open, whether or not you have opened its Questions tab yet; the row says how many, the same number the Questions tab shows), **In review** (the latest review of its requirements is open, timed from when it was sent), **Rejected** (that review was rejected) or **Ready to hand off** (that review approved). A ready change request leaves My work once any of its requirements is published as an issue; a rejected or ready one leaves 30 days after the verdict. Each row shows the title (the source document's file name until change requests carry their own titles), the project, and how long it has been in that state. A row opens where the work is: the run's **Questions** tab, the review, or **Publish** for that run.
+- **Reviews assigned to me.** Reviews in review where your own decision is still pending (one you have decided leaves the list, even while other reviewers have not), with who requested each; a row opens the review.
+- A group with nothing in it is left out. With nothing at all, Home offers **New change request** (pick a project and start an analysis), or **New project** — the first-run wizard — when you have no project yet and your role can create one; otherwise it tells you to ask an admin or coordinator to add you to a project.
+- Only work in projects you can open is listed; the server does the filtering. The list refreshes every 30 seconds.
+
+Below My work everyone sees **Projects** and **Recent activity**; admins also keep the operations widgets, marked (admins) below. The widgets poll independently:
+
+- **Projects** — your most recent projects with status chips. Empty? Click **Open projects**, or **New project** if your role can create one.
+- **Active analyses & tasks** (admins) — anything currently running, refreshed every 15 seconds.
+- **Active runs** (admins) — queued, running and paused background runs, with Cancel, Pause and Resume.
+- **Scheduled jobs** (admins) — upcoming and recently fired cron jobs. Open the **Scheduler** surface to add one.
 - **Recent activity** — your own recent chat sessions and analyses, drawn from a per-browser `localStorage` log capped at 10 entries per kind. A chat session is listed only while **Activity → Sessions** lists it (your own sessions that can still be resumed), under the title it has there. [#2187]
 
 Each widget shows a skeleton while loading, an actionable empty state with a deep link, and a compact list when populated.
@@ -989,7 +998,7 @@ The **Library** surface is a searchable index of every skill and agent registere
 
 ## 8.4 Settings
 
-Open **Settings** from the sidebar to see a navigation hub that cards every settings sub-page:
+Open **Settings** from the sidebar to see a navigation hub that cards every settings sub-page you may open. API Keys (Configuration), MCP, ACP tokens, Hooks, Triggers and Vault are shown to system admins only [#2332]:
 
 - **Profile** (`/settings/profile`) — view account info.
 - **Appearance** (`/settings/appearance`) — theme + density controls.
@@ -1010,7 +1019,7 @@ The bell icon in the header opens a side **notifications drawer** with these ale
 - **Mention** — someone @mentioned you in a comment, e.g. *Alex mentioned you on "Login lockout"*, with the start of the comment underneath. Click **Open →** to open that requirement (or Spec Kit artifact) with its comments showing. The quote follows the comment: if its author edits it, the notification quotes the new text (or reads *The comment was edited.* if you can no longer open the project); if they delete it, the notification keeps who and where but reads *The comment was deleted.* An item already showing in an open drawer updates on the next reload.
 - **Discussion mention** — someone @mentioned you in a project discussion, e.g. *Alex mentioned you in "Feed refresh schedule"*, with the start of the message underneath. Click **Open →** to go to that discussion thread.
 - **SLA deadline expired** — an assignment's SLA deadline has passed. Click **Open →** to navigate to the requirement. It goes only to people who can still open the project. A requirement can be assigned only to someone the assignee picker offers: an active member of the project's workspace, or a system admin. Anyone else gets "Assignee not found" (#1432).
-- **Review lifecycle** — for the formal review workflow (the Reviews page, sidebar → Activity → Reviews): as an **assigned reviewer** you are notified when a review is submitted and awaits your decision; as the **requester** you are notified of each reviewer's decision; the decision that settles the review arrives as one notification giving the final outcome (approved — including when a baseline was auto-created — or rejected) and who decided it. Each notification deep-links to the review's detail page. These are governed by the **Requirements approved × In-app** toggle in Settings → Notifications.
+- **Review lifecycle** — for the formal review workflow (the Reviews page, sidebar → Reviews): as an **assigned reviewer** you are notified when a review is submitted and awaits your decision; as the **requester** you are notified of each reviewer's decision; the decision that settles the review arrives as one notification giving the final outcome (approved — including when a baseline was auto-created — or rejected) and who decided it. Each notification deep-links to the review's detail page. These are governed by the **Requirements approved × In-app** toggle in Settings → Notifications.
 
 The badge shows your unread count; opening the drawer marks all items read. Use **Clear all** to dismiss the list. Comment mentions, discussion mentions and review notifications arrive **live** while you are signed in: the badge updates without a reload, and the item reads the same as it will after a reload. Notifications are **persisted server-side**, so they survive page reloads and reconnects and you do not miss an alert sent while you were offline. Each notification links to the item it is about where there is one. If you lose access to a notification's project — you are removed from its workspace, it moves to a workspace you are not in, or it is deleted — the notification stays in your list (so the unread count still adds up) but reads *Notification unavailable*, with no text or link.
 
@@ -1080,6 +1089,12 @@ card on **Home** has a **New project** button that opens a three-step wizard:
    ref**), or **Skip — add a source later**.
 3. **Ingest** — check the summary and click **Create and start ingest**.
 
+Creating a project needs `project.create` (coordinator or admin), and deleting one
+(**Projects** › **…** › **Delete**) needs `project.delete` (admin). A role without
+the permission is not offered the action: in place of **New project**, on
+**Projects** and on **Home**, it reads "Ask an admin or coordinator to create projects.", and the
+**…** menu on each project card is absent (#2368).
+
 The wizard creates the project, connects the repository and starts its Deep
 Ingest, then opens the project's **Overview** with the **Ingest** stage reading
 "Ingesting…". If the repository cannot be linked or the ingest cannot start, a
@@ -1108,6 +1123,12 @@ The Ingest card reads the newest 100 documents: on a larger project it shows the
 Beneath the pipeline, **Knowledge search** runs a retrieval query over the project's ingested documents and shows the top matching chunks.
 
 **Settings tab controls** (the project's **⚙** tab, `/projects/{id}/settings`): in addition to the AI provider/model pickers and safety/budget cards, the ⚙ tab includes a **Bedrock inference profile** card (Issue #127). Paste a cross-region inference-profile ARN and model id to use it as the Bedrock model identifier for this project; leave it blank to use the default model. The control only stores the value — it has no effect on non-Bedrock providers (e.g. `local-gemma`).
+
+**How the settings are grouped (#2337).** The ⚙ page has three groups. **General**: the workspace, the primary repository, and links to the project's skills and agents in Library. **AI & cost**: the AI provider and model, model preferences, safety, the monthly budget, autopilot and automatic PR review. **Advanced**, closed until you open it: the Bedrock inference profile, database-aware analysis, SQL lineage and AGENTS.md. No setting was removed, and each works as before. The quarantine and memory panels follow the groups.
+
+**Words on screen (#2337).** METIS uses plain words for its own machinery. A document's or repository's **sections indexed** are what METIS can search (an admin screen still says "chunks", with a line explaining the word). On **Connections**, **Update** fetches a repository's latest changes and re-reads only the files that changed (it was "Sync"), and **Full re-read** reads the whole repository again (it was "Deep Ingest"). A project's **Short name** is the name used in its web address (it was "Slug"). A repository's **Access token** and a database's **Password** are vault secrets that an admin stores. If the vault picker lists nothing, it says to ask an admin. If your role cannot list the vault, the picker says that, too. Without the `vault.reveal` permission you can attach only secrets you created, and the picker says so; when the server refuses a secret, the error toast repeats the server's reason. The published-issue drift page is now **Issue updates**.
+
+**Help (#2337).** The **?** button in the header opens **Help** inside METIS (`/help`): how to get started, a project's tabs and their pages, the words above, and who to ask (your METIS administrator). It no longer links to GitHub. Your **Profile** is one click from the account menu. A PR-review run's page (`/runs/{id}`) links to its review (**Open the PR review**). The old `/settings/audit` address now opens **Settings → Configuration** on its **Audit log** tab.
 
 **Plugins tab** (`/projects/{id}/plugins`, Issue #123): export a portable plugin by entering a name/version and selecting skills, custom agents, and hooks — METIS downloads a `metis-plugin-*.json` envelope. To import, upload a previously-exported envelope; METIS validates it and shows a summary of the skills/agents/hooks installed into the current project (or a human-readable error if the file is malformed).
 
@@ -1209,7 +1230,7 @@ instead of the work being queued.
 
 After METIS ingests a repository for **Code Discovery**, you can view a deterministic, AI-free summary of the codebase computed straight from the AST CodeGraph.
 
-**How to view it.** Open the project's **Code** tab — it lands on **Code Overview** (the project's own **Overview** tab links to it too). The page shows:
+**How to view it.** Open the project's **⚙** (Project settings) tab, then **Code Overview** (the project's own **Overview** tab links to it too). The page shows:
 
 - **Summary** — a 500-word paragraph composed from the rationale comments (`// WHY:`, `// NOTE:`, JSDoc, Python docstrings) attached to the project's most-referenced symbols. If no rationale is available, METIS renders a deterministic three-sentence boilerplate so the section is never blank.
 - **Top Symbols by In-Degree** — the top 20 functions/classes/modules sorted by how many other symbols call or reference them. Symbols in test files (`*.test.*`, `*.spec.*`, `tests/`, `e2e/`, `_test.go`, `*Test.java`, …) are not ranked. A call counts toward a symbol only with evidence that it targets that symbol: `items.join(",")` is not a call to a project function named `join`, and `describe`/`beforeEach`/`vi.mock` or a name imported from `node:path` never bind to project code by name.
@@ -1599,7 +1620,10 @@ them first.
 
 #### Who can upload
 
-Open your workspace and choose the **Governing documents** tab.
+In the header, open the workspace menu (the workspace's name), choose **Open workspace**, then
+the **Governing documents** tab. From an analysis, the **Governing rules** panel's **Open this
+workspace's governing documents** link goes straight there, including when it says no rules were
+checked. The page names the workspace, and **Back to** returns you to the project you came from.
 
 - **Workspace admins and owners** can upload a document (**Upload document**), add a new
   revision of it (**New revision**), edit a rule's summary or control id, remove a rule, and
@@ -2043,7 +2067,7 @@ Use the **Export** dropdown at the top of the History panel to download the **co
 
 Individual requirement links (Section 12.8) are most useful when you can see them **all at once**, across every project in a workspace. The **Workspace Traceability** view rolls them up.
 
-Open your workspace and select the **Traceability** tab (`/workspaces/<id>/traceability`). You'll see two panels:
+In the header, open the workspace menu (the workspace's name), choose **Open workspace**, and select the **Traceability** tab (`/workspaces/<id>/traceability`). You'll see two panels:
 
 - **Per-project coverage** — a table with one row per project in the workspace, showing its **analysed** requirement count, how many of those requirements are **linked across projects**, and its **spec** and **code** coverage as percentages of the analysed requirements (hover a badge to see the denominator). Items imported from a tracker that no analysis has mapped to a spec or to code are shown as a separate "+ N imported, not analysed" count under the requirement count and are left out of the percentages, so a project with hundreds of imported issues does not read as almost uncovered. A **Tested** column shows the share of requirements *with mapped code* that have at least one linked test (any of the "Tested by" labels in Section 12.4). Requirements with no mapped code are left out of that figure, and a project with none shows "No mapped code" instead of a percentage. **Shared entry point** links do not count. Hover the badge for the strict figure, which counts only **Mapped directly** and **Calls the code** links, not **Naming convention** or **Inferred call**. It's a quick read on which projects are well-connected and well-covered, and which are lagging.
 - **Cross-project link map** — a diagram of the workspace's cross-project requirement links: each project is a box, each participating requirement a node, and each link a typed arrow between them. When there are no cross-project links yet, the panel says so.
@@ -2064,14 +2088,17 @@ Section 15.5), and the check reads the code in those repositories. [#1608]
 1. Open **Projects › Portfolio coverage** (`/portfolio`).
 2. Describe what the business needs in plain language, up to 8,000 characters. For example:
    *"Customers can pay an invoice by bank transfer."*
-3. Under **Where to look**, choose **All products I can access**, or **One product** and pick
-   it. **Find a product** searches all your products by name.
+3. Under **Where to look**, choose **All products I can access**, **One product** and pick
+   it, or **Several products** and tick each one (up to 50). **Find a product** searches all
+   your products by name; a product you ticked stays ticked when a search hides it.
 4. Click **Check coverage**.
 
-You can also start a check from two other places. Every **approved** requirement on a
+You can also start a check from three other places. Every **approved** requirement on a
 project's **Requirements** tab has a **Check across portfolio** button, which checks that
 requirement, including its acceptance criteria. A product's page has a **Check across
-portfolio** button too, which starts with that product chosen.
+portfolio** button too, which starts with that product chosen. And every ready document on
+a project's **Documents** page has a **Check requirements across portfolio** button, which
+checks each requirement the document holds (see *Checking a document* below). [#2272]
 
 The check runs in the background. Its page (`/portfolio/<id>`) shows progress, and you can
 leave it or reload it: the same check picks up where it is. Your recent checks are listed
@@ -2079,15 +2106,50 @@ under **Recent checks**. You can start 10 checks in 15 minutes.
 
 What METIS does in a check:
 
-1. It splits the requirement into at most 8 acceptance criteria. A requirement that already
-   has acceptance criteria uses its own.
-2. It searches each product's repositories for code that bears on them.
+1. It splits the requirement into acceptance criteria (it asks the AI model for at most 8).
+   A requirement that already has acceptance criteria uses its own.
+2. It searches each product's repositories for code that bears on them. Criteria that do
+   not fit one search are searched in groups, so every criterion is searched for, however
+   long the requirement.
 3. For each repository, it asks the AI model whether each criterion is already there, and
    cites the code that shows it.
 
+#### Checking a document
+
+A check started from a document reads the document and checks **each requirement in it on
+its own**, rather than treating the whole document as one requirement. [#2272]
+
+- With the document reader on (the `ANALYSIS_DOCUMENT_READER` setting, off by default; an
+  administrator turns it on), the AI model reads the whole document, and every requirement,
+  constraint and business rule it finds is one requirement to check, with the section it
+  sits in. With the reader off, or when the model
+  cannot read it, the document is split by paragraph and bullet instead, and the check's
+  statement says so.
+- Under the answer, **Requirements checked** lists each requirement with the products found
+  implementing it, or *no product found implementing it*. A requirement checked against
+  several acceptance criteria lists them the same way.
+- Only someone who can read the document's project can open the check, because it shows the
+  document's own words.
+- A repository's file, or a document that has not finished processing, cannot be checked.
+  If the document has no text, holds nothing that reads as a requirement, or is deleted
+  before the check reads it, the check fails, and its statement says which.
+
+#### Not checked
+
+Nothing is left out without saying so. **Not checked** on the check's page, and in the
+Markdown export, lists everything the check did not check, and why: [#2272]
+
+| Reason | What it means |
+|---|---|
+| *One check takes 100 requirements* | The document (or requirement) has more than 100 requirements or criteria; the ones past the first 100 are listed. |
+| *Not checked in full* | A requirement's text is longer than one check reads (8,000 characters for the requirement, 2,000 for each criterion); the number of characters left out is given. |
+| *The model could not read this section* | A section of the document the AI model could not read. |
+| *Statements were dropped* | Statements the model read whose quote is not in the document, so they were not kept. |
+| *Not checked in N repositories* | The check's budget ran out before those repositories were checked for this requirement. |
+
 A claim that something is implemented is accepted only with cited code from that
 repository, and the repository is named next to every citation. The repositories must be
-indexed first: connect them and run a sync or **Deep Ingest** (Section 15).
+indexed first: connect them and run **Update** or **Full re-read** (Section 15).
 
 #### The answer
 
@@ -2158,6 +2220,17 @@ reaches.
 | **Restricted** | A product you can read, but whose impact cannot be shown in full. Either the change reaches it along a path that runs through a repository or product you cannot read, so the path is withheld (*"Its impact path goes through a repository or product you cannot read"*). Or the change may reach it through a repository or product that the person who ran the check cannot read, so the check could not follow the change there, and whether it reaches this product at all is not known (*"The change may reach it through a repository or product that the person who ran the check cannot read…"*). That is so when the change would reach this product if the check could follow it everywhere, as far as the check looks, whether the way runs through a product that person cannot read, through a repository of a readable product that they cannot read, or along a coupling recorded on a product they cannot read, even one between two repositories they can read. It does not depend on where else the check stopped. A product the change cannot reach, such as one that only provides something to that product, stays **Not affected**. Older checks read differently. A check run before METIS looked for a connection to the product it stopped at relabelled every product the change did not reach; such a product's note says the check stopped at a product it could not read. A check run under the older connection rule relabelled the products connected to that product; such a product's note says it is connected to it, and the **Not affected** group says a product listed there may still be reached. A check run before METIS followed the change past a repository or a coupling that person cannot read, and that stopped at no product they cannot read, relabelled nothing; its **Not affected** group says the same. Running any of these checks again gives the current answer. |
 | **Not affected** | Nothing reaches it. These products are listed in the collapsed **Not affected** group. |
 
+Every product the change reaches also shows how sure that is, in one of five tiers (the
+Markdown export has it in an **Impact tier** column): [#2272]
+
+| Tier | What it means |
+|---|---|
+| **Found in code** | Must change: the check found its code covers or partly covers the requirement. This comes from reading the product's code, not from a path through the graph. |
+| **Verified by graph path** | Downstream only: every coupling on the path to it was declared (or corrected) by a person, or detected with a confidence of at least 0.8. |
+| **Likely** | Downstream: every coupling on the path was detected with a confidence of at least 0.5. Must change: it was chosen to build the requirement (or holds that product's repository), and no code of it was found yet. |
+| **Possible** | A coupling on the path was detected with a confidence below 0.5. |
+| **Needs review** | The path cannot be shown to you: it runs through a product or repository you cannot read, or the change may reach the product through one the person who ran the check cannot read. |
+
 Each product's **Technical deep dive** lists its repositories and files, the contract items
 that changed, and the shared resources the coupling goes through, grouped as databases,
 tables and columns, topics, identity providers and buckets. It also draws the path of
@@ -2171,7 +2244,8 @@ If nothing covers the requirement yet, no product's code changes until one is ch
 build it, so there is nothing to work the impact out from. Choose that product under
 **Which product will build this? (optional)** when you start the check (the API takes
 `hostProductId` on `POST /api/portfolio-assessments`). In **One product** scope, only that
-product can be chosen. The check then names it (**Product that will build it**, and
+product can be chosen; in **Several products** scope, any one of those ticked. The check
+then names it (**Product that will build it**, and
 **Built by** above the impact, with a **Chosen to build this** badge on its card). It reads
 **Must change**, and so does every product that holds one of its repositories, such as an
 umbrella product that includes it: that repository's code is that product's code too. The
@@ -2554,7 +2628,7 @@ You don't have to configure any of this manually; it's tuned for safe, predictab
 
 Compare two analysis snapshots to see what requirements changed between versions.
 
-1. Navigate to your project and click the **Changes** tab.
+1. Navigate to your project, click the **Requirements** tab, then **Compare analyses**. (The page is titled **Compare analyses** so it is not confused with the **Change requests** tab.)
 2. Select a **Base analysis** (the older snapshot) and a **Head analysis** (the newer one).
 3. Click **Run Change Analysis**. METIS compares every requirement in both snapshots and detects:
    - **Added** — new requirements that didn't exist in the base
@@ -3256,7 +3330,7 @@ can use tools to look things up or act for you:
 | **Inspect Database** | Examines a connected database's schema |
 | **Query Database** | Runs read-only SQL against a connected database |
 | **MCP tools** | Tools from MCP servers this project is allowed to use (see §20.7) |
-| **Code search** | Searches the project's code graph and symbols, and reads up to 200 lines of a file from the project's repository so an answer can quote the code it cites. On unless your administrator has turned it off with `CHAT_CODE_SEARCH_TOOLS=false`. A source file whose document is restricted to other people is not read or listed for you, and a discussion reply leaves out every restricted file |
+| **Code search** | Searches the project's code graph and symbols, and reads up to 200 lines of a file from the project's repository so an answer can quote the code it cites. On unless your administrator has turned it off with `CHAT_CODE_SEARCH_TOOLS=false`. On a model that cannot call tools natively (some local runtimes) it is on only when the administrator sets `CHAT_CODE_SEARCH_TOOLS=true`, because there the answer does not stream while the tools run. A source file whose document is restricted to other people is not read or listed for you, and a discussion reply leaves out every restricted file |
 
 Administrators can turn on search guidance with `CHAT_SEARCH_GUIDANCE=true`.
 When the chat can search the project's code or knowledge base, the guidance
@@ -3600,6 +3674,18 @@ Opening Chat from a project (`/chat?projectId=…`) scopes it to that project.
 
 **Follow-up questions.** A scoped chat searches the project with the conversation, not just your last message. When you answer a question the model asked ("Which product do you mean?" — "Server"), or ask a short follow-up ("and for annual plans?"), the search reads your message together with the question before it. Your own words always run as a search of their own as well, and they count for more: excerpts found only through the earlier question take at most 3 of the 8 places. A question that names its own subject ("Are there any GDPR requirements in the onboarding spec?") is searched on its own, even right after the model asked you something. A question with several parts (a numbered list, or several questions in one message) searches each part, and the results are merged. The excerpts an answer cited (by its `[n]` number, its file name or its location) are given to the model again on your next message, marked as cited in the previous answer, so it can build on them. They are read again when you send it: an excerpt you can no longer see, or whose document was deleted, is not brought back. Each excerpt brought back counts toward the **N sources** in the label. [#2240]
 
+**Checked citations.** When an answer cites a file (`internal/model/feed.go:120-150`, a path, or an excerpt number such as `[2]`), METIS checks each citation against what that turn actually retrieved or read. That means the excerpts it was given and the files and line ranges its code and knowledge tools returned. A **Citations** line under the reply counts them, and opens to list each one:
+
+- **✓ verified**: the file or document is one the turn read, and so are the cited lines. A verified citation of the project's code links to the file on GitHub at those lines, when the project has exactly one GitHub repository connected.
+- **✓ read earlier in this conversation**: an earlier answer in the same chat read those lines, and the model is still building on that. It links the same way. Turns that were summarised to save space no longer count.
+- **⚠ names more than one file read**: a short name such as `util.ts:40` matches several files the chat read, and none of them at those lines.
+- **⚠ the file was read, but not these lines**: the turn read that file, but not the lines cited. It also shows when a document excerpt, which has no line numbers, is cited by line.
+- **✗ not in anything this reply retrieved or read**: no source the turn used is that file. Treat the claim as unsupported.
+
+The list opens by itself when any citation did not check out. A file name mentioned with no path and no line, such as "add a `config.yaml`", is a mention, not a citation, and is not listed. Paths in code blocks and links are not checked. The Workbench shows the same list. Discussion replies are not checked yet. [#2242]
+
+**Which version of the code a citation describes.** Each citation of the project's code shows the commit it was read at, as a short SHA such as `@0123456`. Hover it for the full commit. Its GitHub link opens the file at that commit, not at the latest one, so the lines it shows are the lines the answer read. A citation with no commit says **version unknown**: METIS did not record the version, which is the case for every answer from before this was added and for an uploaded or local folder. Read that as "not known", not as "current". When the project's index is behind the repository (new commits were pulled but the index was not rebuilt yet), a file the answer read is marked **⚠ index is behind the repository**. The lines it quoted are the newer ones, and line numbers from a search may not match them. A stale citation is still listed and still counts as verified: it is flagged, never dropped. Re-index the repository to clear it. [#2325]
+
 **When the sources don't answer, or the question is unclear.** A chat scoped to one project or several, and the AI in a discussion, answers from the project's sources. When they don't support an answer, the reply says so ("the sources don't show this") and names what is missing, such as the document, rule or code that would answer it, instead of guessing from general knowledge. When only part of a question is supported, it answers that part and says which part is not. When a question could mean more than one thing (which product, which rule, which version), it asks you one specific question listing the options it found, and waits for your answer. An unscoped chat ("All projects") has no project sources, so this does not apply there. [#2241]
 
 **Relevance floor.** In a chat scoped to one project, automatic retrieval sets aside any excerpt whose relevance to the question is below a floor, so an unrelated excerpt is never presented to the model as evidence. A keyword-only match is kept only when some other excerpt cleared the floor. When you attach documents to a question (the Workbench's context chips), the floor does not apply: you chose the source, so its closest excerpts are always given to the model, for example for "summarise this". The floor is `CHAT_RETRIEVAL_MIN_SCORE` (default 0.55; 0 turns it off). The default was measured with the default embedding model: it was the highest floor that set aside none of the excerpts a correct answer needed on the BA question set. An administrator who changes the embedding model should measure it again (`pnpm eval:ba-qa --floor-sweep`). [#2241]
@@ -3665,12 +3751,90 @@ Each sync records:
 - Whether the sync succeeded or failed
 - When it happened
 
+**A sync asked for while another runs is queued (#2335).** Clicking **Sync** while a
+sync, a Deep Ingest, a scheduled refresh or a push-triggered sync is already running for
+that repository no longer fails with "An ingest is already running". METIS answers *A sync
+is already running. This one is queued and runs when it finishes.* However many syncs are
+asked for during one run, exactly one more runs after it, in the background, so a burst of
+pushes never piles up work. If that follow-up sync fails, it is not retried on its own; the
+next push, **Sync** or scheduled refresh runs it again. A queued **Sync** does everything
+**Sync** does, including the scan for database connections and its notification, even if a
+push was also asked for during the run. A push or scheduled sync that waited runs the same
+work as the scheduled refresh. The queue is kept in the server's
+memory: a server restart forgets a queued sync, and the next push or scheduled refresh
+catches the repository up.
+
+#### Sync on push: a GitHub webhook, or a call from CI (admins)
+
+To keep the index current without anyone pressing **Sync**, have GitHub tell METIS about
+each push. A push to the branch the connection tracks (its **branch**, `main` by default)
+starts the same incremental sync as **Sync**; pushes to other branches, tag pushes and
+branch deletions are ignored (the reason is in the server log as `push_webhook.ignored`).
+METIS answers at once and syncs in the background.
+
+On the repository in GitHub, open **Settings › Webhooks › Add webhook**, set **Content
+type** to `application/json`, choose **Just the push event**, and use one of:
+
+- **The connection's own secret (recommended).** On the repository's card in
+  **Connections**, click **Create webhook secret** (the same secret its pull-request webhook
+  uses, if it has one). **Payload URL**: `https://<your-metis-host>/api/webhooks/github/push/c/<connection id>`
+  (the card's pull-request path, with `pr` replaced by `push`). **Secret**: the secret
+  shown. Pushes to that URL sync this connection only.
+- **The server's shared secret.** **Payload URL**:
+  `https://<your-metis-host>/api/webhooks/github/push`; **Secret**: the server's
+  `GITHUB_WEBHOOK_SECRET`. Every GitHub connection to that repository (on that GitHub or
+  GitHub Enterprise server) that tracks the pushed branch is synced, except in a project
+  that gave one of its connections to the repository its own secret: that project syncs
+  only from its own webhook. At most 50 connections that track the pushed branch are synced
+  for one push; any beyond that are logged as `push_webhook.fanout_capped` and catch up on the
+  next scheduled refresh.
+
+The secret is checked (HMAC-SHA256 over the exact request body) before METIS reads
+anything in the delivery; a delivery with a missing or wrong signature gets `401` and
+does nothing. Keep the secret in GitHub and in the server's configuration only: never in
+a repository, a CI log or a ticket. A delivery GitHub sends twice (same
+`X-GitHub-Delivery`), or the same signed body sent again, is acknowledged and not acted on
+again; a delivery whose push is more than four days old is ignored. Each connection's URL,
+and each repository on the shared-secret URL, takes at most 20 signed push requests a minute
+per pushed branch, so pushes to branches no connection tracks never use up the tracked branch's budget
+(`REPO_REFRESH_REQUEST_LIMIT_MAX`, `REPO_REFRESH_REQUEST_LIMIT_WINDOW_MS`). The limit is
+checked as soon as the signature verifies, before METIS records or looks anything up; past
+it the push is not synced (logged as `push_webhook.rate_limited`), and on a connection's own
+URL METIS answers `429`, so GitHub's **Redeliver** can send it again later. The shared-secret URL answers every signed push to a
+repository it accepts with the same `{"ok": true}`, whether or not any connection matched:
+GitHub shows that answer to the repository's admins, and it never says whether other
+workspaces connect the repository. The server log (`push_webhook.handled`,
+`push_webhook.ignored`) has the detail.
+
+**From CI or a git hook, where the host cannot send webhooks.** Send the same signed request
+yourself, with the connection's own secret, to its push URL. The body needs the pushed
+branch, the commit, the repository's `owner/name` exactly as the connection has it, and the
+push time in Unix seconds:
+
+```bash
+SECRET="$METIS_WEBHOOK_SECRET"   # the connection's own webhook secret, from a CI secret
+URL="https://metis.example.com/api/webhooks/github/push/c/<connection id>"
+BODY=$(printf '{"ref":"refs/heads/%s","before":"%s","after":"%s","commits":[],"pusher":{"name":"ci"},"repository":{"full_name":"%s","pushed_at":%s}}' \
+  "main" "0000000000000000000000000000000000000000" "$(git rev-parse HEAD)" "acme/app" "$(date +%s)")
+SIG="sha256=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$SECRET" | sed 's/^.* //')"
+curl -fsS -X POST "$URL" -H "Content-Type: application/json" \
+  -H "X-Hub-Signature-256: $SIG" --data-binary "$BODY"
+```
+
+A `200` answer with `"handled": true` says whether the sync `started` or was `queued`
+behind a running one; `"handled": false` gives the reason (for example
+`UNTRACKED_BRANCH`). This works for GitHub and GitHub Enterprise connections with their own
+secret. For any other connection, a CI job can call **Sync** itself:
+`POST /api/projects/<project id>/connectors/repos/<connection id>/refresh-ingest` with a
+METIS access token of a user who has `connector.write`; it waits for the sync, or answers
+`202` `"status": "queued"` when one is running.
+
 **"Go call binding is not finished"** (Go repositories): after a sync or a Deep Ingest of a
 very large Go repository, the result may end with *Go call binding is not finished: N Go
 calls in M files are not yet bound by type*. METIS stops working out which function each Go
 call reaches when that step has used its time limit, so the sync itself is never held up.
 Nothing that was already known is lost, the remaining calls are finished by the following
-syncs (the scheduled ones included), and running **Sync** again continues at once. Until
+syncs (the scheduled ones included), and running **Update** again continues at once. Until
 then, impact analysis and "Tested by" may miss some Go call paths in that repository.
 
 **Rebuild AST cache** (Issue #122): each repository row on the **Connections** tab has a **Rebuild AST cache** button. Clicking it pulls (or clones) the repository and re-indexes its source files into the AST summary cache, showing an explicit status — *Rebuilding…* → completed (with indexed-file / symbol / skipped counts) or a failed status with a parsed error message. Use it after large refactors when you want the code-overview and analysis tooling to reflect the latest structure immediately rather than waiting for the next scheduled ingest.
@@ -3794,7 +3958,11 @@ This information is used by the Database Analyst agent during analysis and can a
 
 ### 16.4 Phase 8 — The Connections Tab
 
-Open any project and click **Connections** in the left nav (`/projects/{id}/connections`). You'll see two sections:
+Open any project and click **Connections** in the left nav (`/projects/{id}/connections`).
+
+The add forms, a suggested connector's **Configure** and **Dismiss**, and each connector's write actions (editing branch, secret or API base, **Set as primary**, **Sync**, **Deep Ingest**, **Ingest**, **Delete**, and linking or unlinking a shared database) appear only for a role with `connector.write` (coordinator or admin); **Allow credential scan** needs `project.update`. Other roles keep **Test**, **Query** and the read-only details, and see "Ask an admin or coordinator to add repository connectors." (or database connectors) in place of each form (#2368).
+
+You'll see two sections:
 
 **Repository connectors**
 
@@ -4207,7 +4375,7 @@ Single admin home for AI provider preferences and runtime configuration. The rou
 - **Security evaluation** — kicks off the Phase-15 red-team harness via `POST /api/security-eval/run` and renders the report inline. Admin only.
 - **Runtime configuration** (Epic #249) — three tiers, all backed by the unified `GET/PUT/DELETE /api/admin/config/:key` surface:
     - **Runtime secrets** (Tier 2): vault-backed credentials such as `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, and `GITHUB_TOKEN`. Save rotates the secret in the vault; Clear deletes the override and falls back to the env value. Audit entries are always redacted. These are server configuration values the server itself reads. Each is stored as a global-scope entry in the [Vault](#18-the-secret-vault) under its key name, so it also appears on `/vault`, but manage it here: Clear falls back to the env value and changes are audited. Credentials for connectors, MCP servers and publishing are added in the Vault directly and referenced as `${vault:…}`. The section links to `/vault`, and the Vault page links back here for admins.
-    - **Runtime tunables** (Tier 3): non-sensitive knobs persisted to `runtime_config`. Changes take effect on the **next request** with no server restart — the in-memory cache is invalidated and the `config.changed` event fires for every subscriber. Includes provider/model selection (`AI_PROVIDER`, `AI_DEFAULT_MODEL`, `AI_MODE`), token caps (`ANALYSIS_MONTHLY_TOKEN_CAP`, `ANALYSIS_AGENT_TOKEN_CAP`), publishing rate limits, scheduler controls, MCP partial-health, and SSRF allowlists.
+    - **Runtime tunables** (Tier 3): non-sensitive knobs persisted to `runtime_config`. A setting nobody has set shows the value the server applies, with the source `default` (for example `CHAT_TOOLS` and `CHAT_CODE_SEARCH_TOOLS` show as checked). Changes take effect on the **next request** with no server restart — the in-memory cache is invalidated and the `config.changed` event fires for every subscriber. Includes provider/model selection (`AI_PROVIDER`, `AI_DEFAULT_MODEL`, `AI_MODE`), token caps (`ANALYSIS_MONTHLY_TOKEN_CAP`, `ANALYSIS_AGENT_TOKEN_CAP`), publishing rate limits, scheduler controls, MCP partial-health, and SSRF allowlists.
     - **Bootstrap configuration** (Tier 1): read-only values loaded from `.env` at boot — `DATABASE_URL`, `JWT_SECRET`, `PORT`, etc. Restart the server to change them.
 - **Audit log** — every Tier-2 / Tier-3 write produces a `config_audit` row with actor, key, old/new value (sensitive values masked as `[REDACTED]`), scope, and timestamp. The Audit log tab paginates this view.
 - **Runtime environment** — admin-only table that mirrors `GET /api/settings/env-vars`. Secrets are returned redacted; unset variables show `[unset]`.
@@ -4774,7 +4942,7 @@ The **Spec Kit** turns METIS into a structured specification tool. Rather than f
 
 ### Where to find it: the BA/PM "author the intent" front-door
 
-Spec Kit is the **business-analyst / product-manager front-door** for authoring intent. It sits under the **Analyze** tab beside Requirements Analysis — not under "Docs" — because it is a planning/requirements surface, not documentation. Open a project, click **Analyze**, then **Spec Kit**.
+Spec Kit is the **business-analyst / product-manager front-door** for authoring intent. It sits behind the project's **⚙** (Project settings) tab, beside the code views, because most analysts do not work in it day to day (#2334). Open a project, click **⚙**, then **Spec Kit**.
 
 The mental model is **author the intent here, then hand it off**:
 
@@ -4813,7 +4981,7 @@ Below that, **Context given to the code agent, not requirements** opens to show 
 | **Specify** | `/specify` | Business Analyst | `spec.md` — stakeholders, in-scope, out-of-scope, Given/When/Then ACs, NFRs |
 | **Plan** | `/plan` | Architect | `plan.md` — architecture plan with at least one Mermaid diagram |
 | **Tasks** | `/tasks` | Product Owner | `tasks.md` — topologically-ordered task table with Fibonacci sizing |
-| **Clarify** | `/clarify` | — | `clarify.md` — Q&A log; empty input asks a question, non-empty input answers the latest |
+| **Clarify** | `/clarify` | — | `clarify.md` — Q&A log; empty input asks a question, non-empty input answers the latest. Answered questions are read by `/specify`, `/plan` and `/tasks`, and each answer is saved as project knowledge (#2236) |
 | **Analyze** | `/analyze` | Cross-phase | `analysis.md` — consistency check across spec + plan + tasks |
 | **Implement** | `/implement` | Dispatcher | Returns the orchestrator handoff payload (no AI call) |
 
@@ -5229,6 +5397,8 @@ After clicking **Generate**, METIS will:
 
 Generation and indexing are reported separately. A document can be `ready` or `degraded` to read while indexing remains `pending` (with a processing status of `pending` or `processing`), `quarantined` awaiting approval, or `reconciling` after approval while index cleanup is incomplete. Only completed indexing and cleanup report `indexed`. Rejection reports `rejected`; failed publication reports indexing `failed` with an error. A publication you cancelled reports indexing `cancelled` (a neutral, not an error, badge) with a message saying it was cancelled before it finished and was not indexed (#489). Complex codebases may take 30–60 seconds to generate, and indexing may continue afterwards. A `quarantined` document shows a **Review in quarantine** link to the project's Quarantine list (Project settings), where it is approved or rejected. **Export PDF**, **Export Word** and **Export Markdown** appear only on a `ready` or `degraded` document: a generating, cancelled or failed one has nothing to export.
 
+**A project with no source code (#2369).** **Full Project** and **By Repository** documents (Business Requirements, Architecture, User Guide) are written from the project's indexed source code. On a project that has only uploaded documents, or whose repository has not finished ingesting, the form says so before you generate: "Business Requirements needs connected source code today, and this project has none indexed". If you generate anyway, the document is marked **failed** and an error toast says why and what to do: connect a repository and let its ingestion finish, or choose the scope **Requirements (analysis run)** to write up a change request's requirements. If the project has code but all of it is test, generated or build output, the message says that instead. A failed document has no content and is never added to the project's knowledge, so it does not appear among the project's knowledge documents or wait for review in quarantine, and it shows no indexing badge. With **By Repository**, the warning is about the repository you choose: an empty repository is flagged even while another repository in the project is indexed. Files such as `__MACOSX/` stubs and `.DS_Store` do not count as source code. An automatic update that finds no code fails once and is not retried; the next ingest tries again.
+
 **Live progress (Epic #238).** You no longer need to refresh to see completion. While a document is generating, the panel shows **live per-section progress** — each section appears as it moves from `Generating…` to `Done`, `Degraded`, or `Failed`, with any degraded/failed-section warnings surfaced inline as they happen rather than only after the run finishes. When generation completes, the document list and preview update automatically. The same push-driven live status applies to **Running an Analysis** (§11) and **Impact Analysis** — their status updates in real time over the websocket, with polling kept only as a fallback if the connection drops. Every action you take (start analysis, generate docs, submit clarifications, run impact analysis, edit a requirement) now shows a spinner/disabled button while in flight and a success-or-error toast on completion, so failures are never silent.
 
 **Interrupted generation (#50).** Documentation generation runs inside the server process. If the server restarts or stops while a document is generating (a deploy, a crash, a dev reload), the document no longer spins as "Generating" forever: within about five minutes of the server coming back it is marked **Failed** with an "interrupted" explanation and a **Regenerate** button that reruns the same document in place. Modules already analysed before the interruption are reused from the fact cache, so they are not paid for twice.
@@ -5358,8 +5528,8 @@ Above the document preview, you'll find export buttons:
 
 When you enable **Auto Update** on a document:
 
-1. After successful **Deep Ingest** or **Refresh** (including background Deep
-  Ingest and configured scheduled repository refresh), METIS checks the document's
+1. After successful **Full re-read** (formerly Deep Ingest) or **Update** (including the background
+  full re-read and configured scheduled repository refresh), METIS checks the document's
   inputs. The graph, source-knowledge, and applicable metadata steps must succeed;
   a partial ingest does not trigger regeneration. This is not a watcher on every
   commit, and there is no fixed 15-minute documentation timer.
@@ -5895,6 +6065,16 @@ refused, and nothing is changed: reload the questions and answer the current rou
 
 **The next round follows your answers (#2077).** When you submit a round and questions are still open (an ambiguity you left unanswered, or a company-policy question), the next round's questions are prepared and shown in place of the round you answered, up to the third round. Before #2077 the panel stayed on the answered round and rounds 2 and 3 were never asked. Only people who can run analyses (a developer, coordinator or admin) start or continue the questions; anyone else sees them as they stand.
 
+**Answers are kept for the project (#2236).** Each answer you give is saved with the question,
+who answered it and when, the paragraph of the document it was about, and the requirement it
+applies to. It is also added to the project's knowledge, so chat and later analyses can find
+and cite it. A later analysis of the same project does not ask a question you have already
+answered. It reuses your answer and lists it under **already answered in this project, not asked
+again**. If the paragraph the question was about has changed in the document, the question is
+asked again. After you answer, METIS maps the affected requirements to code again and re-checks
+them against your company's policies. Until that finishes, the **Governing rules** panel says it
+is re-checking.
+
 **Your progress is saved.** As of Epic #201, an in-flight clarification dialog is stored durably on the server: if you reload the page (or the server restarts) the dialog resumes exactly where you left off, showing how many ambiguities are already resolved versus still remaining. Your submitted answers are persisted with the analysis and feed directly into the generated requirements/specs — changing an answer changes the regenerated output.
 
 **"Addressed" counts your answers, not METIS's opinion of them (#1117).** The progress badges used to count only the ambiguities the resolution model reported it had closed. That model is often stingy — one run answered 14 questions and had exactly one confirmed — so the panel read *"1 resolved / 13 remaining"* and asked all 14 questions again in the next round, which looks exactly like your work being thrown away. The badge now reads **N addressed** and counts every question you answered, whether or not the model agreed it had enough to close the ambiguity. A question you have answered is never re-asked, the dialog finishes when you have answered everything, and when the model confirmed fewer than you answered the panel says so on its own line instead of reporting the shortfall as your progress. Your answers are carried into the analysis either way. Submitting also no longer blanks the form while the page refreshes — the text stays visible throughout.
@@ -6052,7 +6232,8 @@ set of requirement-version pins) is created automatically.
 
 ### Finding your reviews
 
-Open **Reviews** in the sidebar (Work section). The queue has two tabs:
+Open **Reviews** in the sidebar; its number is how many reviews are in review with you as
+a reviewer [#2332]. The queue has two tabs:
 
 - **Assigned to me** — reviews where you are a reviewer. Each row shows a
   status badge (`Draft`, `In review`, `Approved`, `Rejected`, `Closed`),
@@ -6302,8 +6483,8 @@ either end with **Unlink**.
 
 ### Workspace traceability rollup
 
-To see the whole picture, open a workspace and go to its **Traceability**
-tab. It shows:
+To see the whole picture, choose **Open workspace** from the workspace menu in
+the header and go to its **Traceability** tab. It shows:
 
 - A **per-project coverage table**: how many analysed requirements each
   project has (imported items no analysis has mapped are counted apart), how

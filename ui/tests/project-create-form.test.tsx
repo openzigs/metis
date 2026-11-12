@@ -149,7 +149,7 @@ describe("ProjectCreateForm", () => {
     expect(screen.getByTestId("project-slug-input")).toHaveValue("");
     expect(screen.getByTestId("project-create-submit")).toBeDisabled();
     // No blur / submit needed: the reason is shown as soon as it applies.
-    expect(screen.getByText(/Slug is required/i)).toBeInTheDocument();
+    expect(screen.getByText(/Short name is required/i)).toBeInTheDocument();
   });
 
   it("describes the Slug field so the derivation is discoverable (#23)", () => {
@@ -172,6 +172,14 @@ describe("ProjectCreateForm", () => {
     } finally {
       spy.mockRestore();
     }
+  });
+
+  it("labels the repository credential in plain language, not 'Secret Ref' (#2337)", async () => {
+    const user = userEvent.setup();
+    renderForm();
+    await user.click(screen.getByTestId("toggle-repo-section"));
+    expect(screen.getByLabelText("Access token (vault secret)")).toBeInTheDocument();
+    expect(screen.queryByText(/secret ref/i)).not.toBeInTheDocument();
   });
 
   it("resets to deriving after a successful create", async () => {

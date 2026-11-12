@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { makeWrapper } from "../test-utils";
 import SettingsApiKeysPage from "@/app/(authed)/settings/api-keys/page";
-import SettingsAuditPage from "@/app/(authed)/settings/audit/page";
+import { useSearchParams } from "next/navigation";
 import { configApi, settingsApi } from "@/lib/settings-api";
 import { ApiError } from "@/lib/api-client";
 
@@ -36,11 +36,15 @@ function renderPage() {
   );
 }
 
+/** #2337 — the retired `/settings/audit` alias redirects to `?tab=audit`. */
 function renderAuditPage() {
+  vi.mocked(useSearchParams).mockImplementation(
+    () => new URLSearchParams("tab=audit") as unknown as ReturnType<typeof useSearchParams>,
+  );
   const Wrapper = makeWrapper({ withAuth: false, withTheme: false });
   render(
     <Wrapper>
-      <SettingsAuditPage />
+      <SettingsApiKeysPage />
     </Wrapper>,
   );
 }
@@ -53,10 +57,13 @@ beforeEach(() => {
 
 afterEach(() => {
   window.localStorage.clear();
+  vi.mocked(useSearchParams).mockImplementation(
+    () => new URLSearchParams() as unknown as ReturnType<typeof useSearchParams>,
+  );
 });
 
 describe("Audit log tab", () => {
-  it("renders audit tab content by default on the direct audit route", async () => {
+  it("opens the audit tab from ?tab=audit (where /settings/audit now lands)", async () => {
     auditMock.mockResolvedValue({ items: [], nextCursor: null });
     renderAuditPage();
     await waitFor(() => expect(screen.getByTestId("settings-tab-audit")).toBeInTheDocument());

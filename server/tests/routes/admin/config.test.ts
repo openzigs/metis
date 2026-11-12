@@ -351,6 +351,35 @@ describe("GET /api/admin/config/:key", () => {
     expect(res.status).toBe(200);
     expect(res.body.data.key).toBe("AI_DEFAULT_MODEL");
     expect(res.body.data.tier).toBe("tunable");
+    // A key that registers no default says so.
+    expect(res.body.data.defaultValue).toBeNull();
+  });
+
+  it("#2295: an unset chat flag carries the default the code applies", async () => {
+    const saved = process.env.CHAT_CODE_SEARCH_TOOLS;
+    delete process.env.CHAT_CODE_SEARCH_TOOLS;
+    try {
+      __resetConfigSingleton();
+      const token = await login("admin");
+      const res = await request(app)
+        .get("/api/admin/config/CHAT_CODE_SEARCH_TOOLS")
+        .set("Authorization", `Bearer ${token}`);
+      expect(res.status).toBe(200);
+      expect(res.body.data).toMatchObject({
+        source: "unset",
+        value: null,
+        defaultValue: "true",
+      });
+      // The list carries it too: it is what the Configuration page renders.
+      const list = await request(app)
+        .get("/api/admin/config")
+        .set("Authorization", `Bearer ${token}`);
+      const items = list.body.data.items as Array<{ key: string; defaultValue: string | null }>;
+      expect(items.find((i) => i.key === "CHAT_TOOLS")?.defaultValue).toBe("true");
+    } finally {
+      if (saved === undefined) delete process.env.CHAT_CODE_SEARCH_TOOLS;
+      else process.env.CHAT_CODE_SEARCH_TOOLS = saved;
+    }
   });
 });
 

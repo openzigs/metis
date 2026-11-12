@@ -33,6 +33,8 @@ export class InferenceProfilePanel {
 
   async goto(projectId: string): Promise<void> {
     await this.page.goto(`/projects/${projectId}/settings`);
+    // #2337 — the card is in the Advanced group, which starts collapsed.
+    await this.page.getByTestId("project-settings-advanced-toggle").click();
     await expect(this.card).toBeVisible({ timeout: 15_000 });
   }
 

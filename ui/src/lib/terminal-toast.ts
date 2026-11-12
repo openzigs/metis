@@ -28,6 +28,7 @@
  */
 import { toast } from "sonner";
 import type { JobLifecycleEvent } from "@metis/shared";
+import { analystCopy } from "./analyst-copy";
 
 /** Generic, user-safe fallbacks used when the event omits a message/error. */
 export const GENERIC_SUCCESS_TOAST = "Done.";
@@ -75,12 +76,13 @@ export function terminalToastText(event: JobLifecycleEvent): {
   text: string;
 } {
   if (event.status === "failed") {
-    return { kind: "error", text: event.error || GENERIC_FAILURE_TOAST };
+    return { kind: "error", text: analystCopy(event.error || GENERIC_FAILURE_TOAST) };
   }
   // #432 — a job that completed with failures (e.g. a partial Deep Ingest) is
   // not a success; it reports the count so this never parses the message.
   const kind = (event.failureCount ?? 0) > 0 ? "warning" : "success";
-  return { kind, text: event.message || GENERIC_SUCCESS_TOAST };
+  // #2337 — server lines name the old controls ("Deep ingest complete: …").
+  return { kind, text: analystCopy(event.message || GENERIC_SUCCESS_TOAST) };
 }
 
 /**

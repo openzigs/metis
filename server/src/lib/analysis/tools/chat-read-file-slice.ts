@@ -16,7 +16,18 @@
  *     before any read. A chat result goes to the model provider and is kept in full
  *     in the transcript, and a committed secret file should not travel that way;
  *   • #2243 — a file whose document the caller may not see (its ACL, or a shared
- *     audience) is refused with the reply a missing file gets.
+ *     audience) is refused with the reply a missing file gets;
+ *   • #2325 — the read states its version. The clone's HEAD is compared with the
+ *     repository's indexed commit; on a mismatch the WORKING TREE's lines are
+ *     returned marked `stale`, with both commits named. The indexed commit's
+ *     blob is not read instead: a clone is a depth-1 working copy that a pull
+ *     moves on, so the indexed commit is usually no longer in it, and fetching
+ *     it would mean a credentialed network call per chat read. A HEAD that
+ *     cannot be read while the index names a commit counts as a mismatch: a
+ *     read is never served as the indexed version unless it is known to be.
+ *     The version line (or the stale warning) is the second line of the
+ *     result, before the numbered lines, so chat's model-context cap cannot
+ *     cut it.
  */
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -24,6 +35,13 @@ import { prisma } from "../../prisma.js";
 import { resolveExistingCloneDir } from "../clone-availability.js";
 import { readFileSliceTool } from "./read-file-slice.js";
 import { UNRESTRICTED_CODE_ACCESS, type CodeAccessFilter } from "./code-access.js";
+import {
+  codeCitationRef,
+  formatCodeVersionLine,
+  loadCodeVersions,
+  type CodeVersionIndex,
+} from "../../code-graph/code-version.js";
+import { shortCommitSha } from "@metis/shared";
 import type { AgentTool, ToolContext, ToolResult } from "./types.js";
 
 export interface ChatReadFileSliceDeps {
@@ -31,6 +49,65 @@ export interface ChatReadFileSliceDeps {
   listRepoIds?: (projectId: string) => Promise<string[]>;
   /** A connector's clone dir, only when it exists and is readable. */
   resolveCloneDir?: (connectorId: string) => Promise<string | undefined>;
+  /** #2325 — the project's indexed versions. */
+  loadVersions?: (projectId: string) => Promise<CodeVersionIndex>;
+  /** #2325 — the commit a clone's working tree is at, or `null` when unreadable. */
+  readHead?: (cloneDir: string) => Promise<string | null>;
+}
+
+async function readCloneHead(cloneDir: string): Promise<string | null> {
+  const { readCloneHeadSha } = await import("../../connectors/repo/repo-service.js");
+  return readCloneHeadSha(cloneDir);
+}
+
+/**
+ * #2325 — stamp a successful read with its version: the repository's indexed
+ * commit, and `stale` with the working tree's commit when they differ.
+ */
+async function withVersion(
+  result: ToolResult,
+  repoId: string,
+  cloneDir: string,
+  versions: CodeVersionIndex,
+  readHead: (cloneDir: string) => Promise<string | null>,
+): Promise<ToolResult> {
+  if (result.isError || !result.citations) return result;
+  const version = versions.forRepo(repoId);
+  const head = version.commitSha ? await readHead(cloneDir) : null;
+  const stale = version.commitSha !== null && head !== version.commitSha;
+  const citations = result.citations.map((c) =>
+    codeCitationRef({
+      repoConnectionId: repoId,
+      path: c.path,
+      startLine: c.startLine,
+      endLine: c.endLine,
+      version,
+      truncated: c.truncated,
+      totalLines: c.totalLines,
+      ...(c.next ? { next: c.next } : {}),
+      stale,
+      workingTreeSha: head,
+    }),
+  );
+  const note = stale
+    ? `⚠ Stale: the index is behind the repository. These lines are the working tree ` +
+      `(${head ? `commit ${shortCommitSha(head)}` : "commit unknown"}); the index, and the line ` +
+      `numbers search returned, are at commit ${shortCommitSha(version.commitSha!)}.`
+    : formatCodeVersionLine(citations);
+  return { ...result, content: afterHeader(result.content, note), citations };
+}
+
+/**
+ * `note` as the second line of a read: after its `path (lines a-b of n)`
+ * header, BEFORE the numbered lines. Chat caps the model's copy of a tool
+ * result by keeping its start (`capForModel`, #138), and a 200-line read is
+ * routinely longer than the cap, so a note after the lines would be cut away
+ * and the model would read stale lines unmarked.
+ */
+function afterHeader(content: string, note: string): string {
+  const nl = content.indexOf("\n");
+  if (nl < 0) return `${content}\n${note}`;
+  return `${content.slice(0, nl)}\n${note}${content.slice(nl)}`;
 }
 
 async function projectRepoIds(projectId: string): Promise<string[]> {
@@ -95,6 +172,8 @@ async function isHiddenInClone(
 export function createChatReadFileSliceTool(deps: ChatReadFileSliceDeps = {}): AgentTool {
   const listRepoIds = deps.listRepoIds ?? projectRepoIds;
   const resolveCloneDir = deps.resolveCloneDir ?? resolveExistingCloneDir;
+  const loadVersions = deps.loadVersions ?? loadCodeVersions;
+  const readHead = deps.readHead ?? readCloneHead;
   return {
     name: readFileSliceTool.name,
     description:
@@ -140,7 +219,10 @@ export function createChatReadFileSliceTool(deps: ChatReadFileSliceDeps = {}): A
           continue;
         }
         last = await readFileSliceTool.execute(args, { projectId: ctx.projectId, cloneDir });
-        if (!(last.isError && last.content.startsWith(NOT_FOUND))) return last;
+        if (!(last.isError && last.content.startsWith(NOT_FOUND))) {
+          if (last.isError) return last;
+          return withVersion(last, id, cloneDir, await loadVersions(ctx.projectId), readHead);
+        }
       }
       if (access.unrestricted && last) return last;
       return { content: `Error: File not found or not accessible: ${filePath}`, isError: true };

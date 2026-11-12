@@ -29,7 +29,7 @@ export default function NewImpactAnalysisPage() {
   const router = useRouter();
   const createMutation = useCreateImpactAnalysis();
 
-  // #28 — the project's Analyze → Impact Analysis entry arrives with
+  // #28 — the project's Change requests → Impact Analysis entry arrives with
   // `?projectId=` so that project starts selected. The server still checks
   // access to every selected project on submit.
   const searchParams = useSearchParams();

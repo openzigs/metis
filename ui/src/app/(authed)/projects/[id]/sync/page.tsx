@@ -77,7 +77,7 @@ export default function SyncDashboardPage() {
   if (loading && items.length === 0) {
     return (
       <div className="p-6">
-        <PageHeader className="mb-4" title="Issue Sync" />
+        <PageHeader className="mb-4" title="Issue updates" />
         <p className="text-muted-foreground">Loading drift events...</p>
       </div>
     );
@@ -86,7 +86,7 @@ export default function SyncDashboardPage() {
   return (
     <div className="p-6 space-y-6">
       <PageHeader
-        title="Issue Sync"
+        title="Issue updates"
         titleExtra={<Badge variant="secondary">{total} pending</Badge>}
       />
 
@@ -149,8 +149,8 @@ function SyncedEmptyState() {
     <EmptyState
       className="p-12"
       titleAs="h2"
-      title="All synced up!"
-      description="No drift detected between your published issues and external trackers. Changes will appear here automatically when they're detected."
+      title="Everything is up to date"
+      description="Your published issues match the trackers they were published to. When someone changes one there, it appears here."
     />
   );
 }

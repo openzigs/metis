@@ -38,9 +38,9 @@ const read = (full: string) =>
  */
 const DELEGATES: Record<string, string> = {
   "app/(authed)/reviews/[id]/page.tsx": "components/reviews/ReviewHeader.tsx",
-  "app/(authed)/settings/audit/page.tsx": "app/(authed)/settings/api-keys/page.tsx",
   "app/(authed)/workspaces/[id]/agents/new/page.tsx":
     "components/custom-agents/AgentAuthoringWizard.tsx",
+  "app/(authed)/workspaces/[id]/page.tsx": "components/workspaces/workspace-overview.tsx",
 };
 
 /**
@@ -53,6 +53,7 @@ const REDIRECT_ONLY = new Set([
   "app/(authed)/agents/page.tsx",
   "app/(authed)/projects/[id]/usage/page.tsx",
   "app/(authed)/settings/agents/page.tsx",
+  "app/(authed)/settings/audit/page.tsx",
   "app/(authed)/workspaces/[id]/finops/page.tsx",
   "app/(authed)/projects/[id]/repositories/page.tsx",
   "app/(authed)/skills/page.tsx",

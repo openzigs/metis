@@ -2,6 +2,7 @@ import { type ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ThemeProvider } from "next-themes";
 import { AuthProvider } from "@/lib/auth-context";
+import type { PermissionKey } from "@metis/shared";
 import type { AuthUser } from "@/lib/auth-types";
 
 interface WrapperOpts {
@@ -53,3 +54,11 @@ export const TEST_USER: AuthUser = {
   role: "admin",
   permissions: [],
 };
+
+/**
+ * {@link TEST_USER} holding exactly `permissions` — for a page that offers a
+ * write control only when `/api/auth/me` grants its key (#2368).
+ */
+export function userWith(...permissions: PermissionKey[]): AuthUser {
+  return { ...TEST_USER, permissions };
+}

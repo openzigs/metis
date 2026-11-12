@@ -355,6 +355,12 @@ export const CHUNKER_ALGORITHM_VERSION = 3;
  */
 export const DOCUMENT_CHUNKER_PRODUCER = "doc";
 
+/** #2268 — the context segment of a chunker identity, before its mode. */
+const CONTEXT_SEGMENT = ";ctx=";
+
+/** #2268 — the context tag of rows that are never prefixed, so match every mode. */
+export const CHUNK_CONTEXT_NONE = "none";
+
 /**
  * The identity of the chunking a call with these options would produce:
  * producer, algorithm version and EFFECTIVE parameters — e.g. `doc:v2:2048/256`.
@@ -363,10 +369,27 @@ export const DOCUMENT_CHUNKER_PRODUCER = "doc";
  * {@link maxOverlapFor} (#1185), so `2048/1500` and `2048/512` produce
  * byte-identical chunks; tagging them differently would report a drift that does
  * not exist and send an operator into a re-ingest that changes nothing.
+ *
+ * #2268 — `context` is the contextual-chunks mode the rows were INDEXED under
+ * (`RAG_CONTEXTUAL_CHUNKS`), appended as `;ctx=<mode>` — e.g.
+ * `doc:v3:2048/256;ctx=headings`. The cut is the same in every mode, but the indexed
+ * text is not, and only a re-ingest changes it, so a flag change must read as drift.
+ * `off` (or none given) appends nothing: rows written before the segment existed and
+ * rows written with the flag off share one identity. A document that is never
+ * prefixed in any mode (a repository file) is tagged {@link CHUNK_CONTEXT_NONE}.
  */
-export function chunkerIdentity(opts: ChunkOptions = {}): string {
+export function chunkerIdentity(opts: ChunkOptions = {}, context?: string): string {
   const { chunkSize, overlap } = resolveChunkParams(opts);
-  return `${DOCUMENT_CHUNKER_PRODUCER}:v${CHUNKER_ALGORITHM_VERSION}:${chunkSize}/${overlap}`;
+  const base = `${DOCUMENT_CHUNKER_PRODUCER}:v${CHUNKER_ALGORITHM_VERSION}:${chunkSize}/${overlap}`;
+  return context && context !== "off" ? `${base}${CONTEXT_SEGMENT}${context}` : base;
+}
+
+/** #2268 — an identity split into its cut and its context mode (`""` when untagged). */
+function splitContextSegment(identity: string): { cut: string; context: string } {
+  const i = identity.indexOf(CONTEXT_SEGMENT);
+  return i === -1
+    ? { cut: identity, context: "" }
+    : { cut: identity.slice(0, i), context: identity.slice(i + CONTEXT_SEGMENT.length) };
 }
 
 /**
@@ -415,6 +438,12 @@ export function classifyChunkerIdentity(
   // the producer comparison, which would otherwise route "" into `foreign`.
   if (chunkerProducerOf(stored) === "") return "untagged";
   if (chunkerProducerOf(stored) !== chunkerProducerOf(active)) return "foreign";
+  // #2268 — a row never prefixed in any mode is current under every mode, provided
+  // it was cut the way the active chunker cuts.
+  const row = splitContextSegment(stored);
+  if (row.context === CHUNK_CONTEXT_NONE && row.cut === splitContextSegment(active).cut) {
+    return "current";
+  }
   return "drifted";
 }
 

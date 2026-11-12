@@ -3,7 +3,7 @@
  * #31 — Settings and Admin are one area, with role-gated admin sections.
  */
 import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { usePathname } from "next/navigation";
 import {
   SETTINGS_NAV,
@@ -16,7 +16,7 @@ import { makeWrapper, TEST_USER } from "./test-utils";
 
 const usePathnameMock = vi.mocked(usePathname);
 
-function renderAt(pathname: string, role: "admin" | "reader" = "admin") {
+function renderAt(pathname: string, role: "admin" | "developer" | "reader" = "admin") {
   usePathnameMock.mockReturnValue(pathname);
   return render(
     <SettingsLayout>
@@ -39,9 +39,39 @@ describe("isSettingsNavActive", () => {
 });
 
 describe("admin-only settings sections (#31)", () => {
-  it("lists the system-admin pages as admin-only sections", () => {
+  it("lists the system-admin and developer pages as admin-only sections (#2332)", () => {
     const admin = SETTINGS_NAV.filter((i) => i.adminOnly).map((i) => i.href);
-    expect(admin).toEqual(["/settings/auth", "/settings/embeddings"]);
+    expect(admin).toEqual([
+      "/settings/api-keys",
+      "/settings/mcp",
+      "/settings/acp",
+      "/settings/hooks",
+      "/settings/triggers",
+      "/settings/auth",
+      "/settings/embeddings",
+    ]);
+  });
+
+  it("files only SSO and Embeddings under Administration (#2332)", () => {
+    const grouped = SETTINGS_NAV.filter((i) => i.administration).map((i) => i.href);
+    expect(grouped).toEqual(["/settings/auth", "/settings/embeddings"]);
+    for (const i of SETTINGS_NAV) if (i.administration) expect(i.adminOnly).toBe(true);
+  });
+
+  it("hides MCP servers, ACP tokens, Hooks, Triggers and Configuration from a non-admin (#2332)", () => {
+    const labels = visibleSettingsNav(false).map((i) => i.label);
+    for (const hidden of ["MCP servers", "ACP tokens", "Hooks", "Triggers", "Configuration"]) {
+      expect(labels).not.toContain(hidden);
+    }
+    expect(labels).toEqual([
+      "Overview",
+      "Profile",
+      "Appearance",
+      "Notifications",
+      "Integrations",
+      "Usage & cost",
+      "Workspaces",
+    ]);
   });
 
   it("hides admin-only sections from non-admins", () => {
@@ -84,6 +114,47 @@ describe("<SettingsLayout />", () => {
     expect(adminList).not.toHaveTextContent("Workspaces");
     expect(adminList).not.toHaveTextContent("Profile");
     expect(screen.getByTestId("child")).toBeInTheDocument();
+  });
+
+  // #2332 — hiding the developer sections from non-admins moves nothing for an admin.
+  it("keeps an admin's sections in the order they had", () => {
+    renderAt("/settings/profile", "admin");
+    const nav = screen.getByRole("navigation", { name: "Settings" });
+    expect(
+      within(nav)
+        .getAllByRole("link")
+        .map((l) => l.textContent),
+    ).toEqual(SETTINGS_NAV.map((i) => i.label));
+    const adminList = screen.getByRole("list", { name: "Administration" });
+    expect(
+      within(adminList)
+        .getAllByRole("link")
+        .map((l) => l.textContent),
+    ).toEqual(["SSO & authentication", "Embeddings"]);
+  });
+
+  it("shows a non-admin no developer section (#2332)", () => {
+    renderAt("/settings/profile", "reader");
+    for (const hidden of ["MCP servers", "ACP tokens", "Hooks", "Triggers", "Configuration"]) {
+      expect(screen.queryByRole("link", { name: hidden })).not.toBeInTheDocument();
+    }
+  });
+
+  it.each([
+    "/settings/mcp",
+    "/settings/acp",
+    "/settings/hooks",
+    "/settings/triggers",
+    "/settings/api-keys",
+  ])("refuses %s to a non-admin with a way back (#2332)", (path) => {
+    renderAt(path, "developer");
+    const refusal = screen.getByTestId("settings-admin-required");
+    expect(refusal).toHaveTextContent("You don't have access to this page");
+    expect(within(refusal).getByRole("link", { name: "Back to dashboard" })).toHaveAttribute(
+      "href",
+      "/dashboard",
+    );
+    expect(screen.queryByTestId("child")).not.toBeInTheDocument();
   });
 
   it("hides the Administration group from a non-admin", () => {

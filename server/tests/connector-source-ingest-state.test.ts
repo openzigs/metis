@@ -242,7 +242,7 @@ describe("repositoryIndexWarnings", () => {
         section: "Document",
         severity: "warning",
       });
-      expect(w.message).toContain("Re-sync the repository, then regenerate.");
+      expect(w.message).toContain("Update the repository, then regenerate.");
     }
     expect(h.findMany).toHaveBeenCalledWith({
       where: { projectId: "p1", deletedAt: null },

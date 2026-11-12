@@ -5,6 +5,7 @@
  * Schema for its parameters, a description for the LLM system prompt, and an
  * `execute` function that returns a stringified result.
  */
+import type { CodeCitationRef } from "@metis/shared";
 import type { CodeAccessFilter } from "./code-access.js";
 
 export interface JSONSchema {
@@ -56,6 +57,11 @@ export interface ToolResult {
    * inside the fence.
    */
   instructions?: string;
+  /**
+   * #2325 — the citation contract: one ref per location the result returns,
+   * with the indexed commit it describes. Chat records it with the call.
+   */
+  citations?: CodeCitationRef[];
 }
 
 export interface AgentTool {

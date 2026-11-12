@@ -388,6 +388,67 @@ describe("buildAutoRagContext — #1321 context capture", () => {
     expect(capture.sources).toBe(4);
   });
 
+  it("#2242 — numbers the fused entries on from the excerpts, so [n] names one of them", async () => {
+    process.env.CHAT_FUSED_CODE_RETRIEVAL = "true";
+    __resetConfigSingleton();
+    search.mockResolvedValue({
+      hits: [docHit, { ...docHit, chunkId: "c2", filename: "notes.md", source: "upload" }],
+    });
+    const deps = fusedDeps(
+      [
+        { symbolId: "s2", filePath: "y", name: "Validator", kind: "class", score: 1 },
+        { symbolId: "s3", filePath: "z", name: "Parser", kind: "class", score: 0.9 },
+      ],
+      {
+        s2: { filePath: "src/Validator.java", startLine: 3, endLine: 40 },
+        s3: { filePath: "src/Parser.java", startLine: 1, endLine: 20 },
+      },
+    );
+    const capture: Parameters<typeof buildAutoRagContext>[4] = { contexts: [], sources: 0 };
+    const out = await buildAutoRagContext("p1", [userTurn], "u1", deps, capture);
+
+    expect(out).toContain("[1] connector:repo:cid1:src/main/java/Doc.java#0");
+    expect(out).toContain("[2] notes.md#0");
+    expect(out).toContain("[3] Validator (class) — src/Validator.java:3-40");
+    expect(out).toContain("[4] Parser (class) — src/Parser.java:1-20");
+    expect(capture!.excerpts!.map((e) => e.n)).toEqual([1, 2]);
+    expect(capture!.codeEntries).toEqual([
+      { n: 3, path: "src/Validator.java", lines: [3, 40] },
+      { n: 4, path: "src/Parser.java", lines: [1, 20] },
+    ]);
+  });
+
+  it("#2242/#2241 — numbers the fused entries on from the excerpts the floor KEPT", async () => {
+    process.env.CHAT_FUSED_CODE_RETRIEVAL = "true";
+    __resetConfigSingleton();
+    const calibrated = "Alibaba-NLP/gte-modernbert-base";
+    search.mockResolvedValue({
+      hits: [
+        { ...docHit, score: 0.9, embeddingModel: calibrated },
+        {
+          ...docHit,
+          chunkId: "c2",
+          filename: "weak.md",
+          source: "upload",
+          score: 0.2,
+          embeddingModel: calibrated,
+        },
+      ],
+    });
+    const deps = fusedDeps(
+      [{ symbolId: "s2", filePath: "y", name: "Validator", kind: "class", score: 1 }],
+      { s2: { filePath: "src/Validator.java", startLine: 3, endLine: 40 } },
+    );
+    const capture: Parameters<typeof buildAutoRagContext>[4] = { contexts: [], sources: 0 };
+    const out = await buildAutoRagContext("p1", [userTurn], "u1", deps, capture);
+
+    expect(out).not.toContain("weak.md");
+    expect(capture!.belowFloor).toBe(1);
+    expect(out).toContain("[2] Validator (class) — src/Validator.java:3-40");
+    expect(capture!.excerpts!.map((e) => e.n)).toEqual([1]);
+    expect(capture!.codeEntries).toEqual([{ n: 2, path: "src/Validator.java", lines: [3, 40] }]);
+  });
+
   it("leaves the capture empty when retrieval throws mid-way", async () => {
     __resetConfigSingleton();
     search.mockRejectedValue(new Error("lancedb down"));

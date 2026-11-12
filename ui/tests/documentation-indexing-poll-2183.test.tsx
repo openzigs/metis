@@ -125,7 +125,7 @@ describe("DocumentationPage — a just-finished BRD's index", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(INDEXING_POLL_MS + 100);
     });
-    expect(await screen.findByText("74 chunks indexed.")).toBeInTheDocument();
+    expect(await screen.findByText("74 sections indexed.")).toBeInTheDocument();
 
     const detailReads = () =>
       mockApiFetch.mock.calls.filter(([p]) => /\/docs\/doc_1$/.test(String(p))).length;

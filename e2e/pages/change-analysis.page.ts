@@ -36,14 +36,15 @@ export class ChangeAnalysisPage {
 
   // ── Project navigation ─────────────────────────────────────────────
   readonly projectTabs: Locator;
-  readonly codeTab: Locator;
+  readonly requirementsTab: Locator;
   readonly changesTab: Locator;
 
   constructor(page: Page) {
     this.page = page;
 
     // Page-level
-    this.heading = page.getByRole("heading", { name: "Change Analysis", exact: true });
+    // #2334 — titled "Compare analyses" so it is not read as a change request.
+    this.heading = page.getByRole("heading", { name: "Compare analyses", exact: true });
     this.subtitle = page.getByText(
       "Compare requirements between analysis runs to detect additions, removals, and modifications.",
     );
@@ -72,11 +73,17 @@ export class ChangeAnalysisPage {
     this.changesList = page.getByTestId("changes-list");
     this.noChangesMessage = page.getByText("No changes detected.");
 
-    // Project navigation. Since #28, Changes is a page of the Code section: the
-    // Code tab is in the bar, Changes in the section's sub-nav.
+    // Project navigation. Since #2334 the page is "Compare analyses" in the
+    // Requirements section: the Requirements tab is in the bar, the page in the
+    // section's sub-nav.
     this.projectTabs = page.getByTestId("project-tabs");
-    this.codeTab = this.projectTabs.getByRole("link", { name: "Code", exact: true });
-    this.changesTab = page.getByTestId("project-subnav").getByRole("link", { name: "Changes" });
+    this.requirementsTab = this.projectTabs.getByRole("link", {
+      name: "Requirements",
+      exact: true,
+    });
+    this.changesTab = page
+      .getByTestId("project-subnav")
+      .getByRole("link", { name: "Compare analyses", exact: true });
   }
 
   async goto(projectId: string): Promise<void> {

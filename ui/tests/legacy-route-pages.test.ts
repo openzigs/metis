@@ -11,6 +11,7 @@ import AdminRedirect from "@/app/(authed)/admin/[[...slug]]/page";
 import AgentsRedirect from "@/app/(authed)/agents/page";
 import SkillsRedirect from "@/app/(authed)/skills/page";
 import SettingsAgentsRedirect from "@/app/(authed)/settings/agents/page";
+import SettingsAuditRedirect from "@/app/(authed)/settings/audit/page";
 import ProjectUsageRedirect from "@/app/(authed)/projects/[id]/usage/page";
 import WorkspaceFinopsRedirect from "@/app/(authed)/workspaces/[id]/finops/page";
 
@@ -49,6 +50,12 @@ describe("retired route pages (#31)", () => {
   ] as const)("sends %s to the Library", async (_path, Page, target) => {
     await Page({ searchParams: query() });
     expect(redirect).toHaveBeenCalledWith(target);
+  });
+
+  // #2337 — the unlinked `/settings/audit` alias is retired to the tab it showed.
+  it("sends /settings/audit to Configuration's Audit log tab", async () => {
+    await SettingsAuditRedirect({ searchParams: query() });
+    expect(redirect).toHaveBeenCalledWith("/settings/api-keys?tab=audit");
   });
 
   it("sends a project's usage to the Project scope of Usage & cost", async () => {

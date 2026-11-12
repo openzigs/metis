@@ -123,7 +123,11 @@ export function toolResultCacheKey(input: {
 }
 
 const sizeOf = (key: string, v: RuntimeToolResult): number =>
-  Buffer.byteLength(key) + Buffer.byteLength(v.text) + 64;
+  Buffer.byteLength(key) +
+  Buffer.byteLength(v.text) +
+  // #2325 — a cached result keeps its citation contract, which counts too.
+  (v.citations ? Buffer.byteLength(JSON.stringify(v.citations)) : 0) +
+  64;
 
 export class ToolResultCache {
   private readonly entries = new Map<string, Entry>();

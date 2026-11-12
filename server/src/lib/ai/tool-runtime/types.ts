@@ -8,7 +8,7 @@
  * {@link ToolEvent} whose error text comes from a FIXED vocabulary (#143) — raw
  * exception text never reaches a client.
  */
-import type { AiToolEvent, AiToolEventPhase } from "@metis/shared";
+import type { AiToolEvent, AiToolEventPhase, CodeCitationRef } from "@metis/shared";
 import type { RiskLevel } from "../types.js";
 
 /** #147 — `agent`: a sub-agent call (the tool runs another agent). */
@@ -23,6 +23,8 @@ export interface RuntimeToolResult {
   truncated?: boolean;
   /** #147 — the sub-agent run this call started, when the tool ran an agent. */
   subAgentRunId?: string;
+  /** #2325 — the citation contract of the locations a code or knowledge tool returned. */
+  citations?: CodeCitationRef[];
 }
 
 /** The identity a tool executes under — always server-derived, never model-supplied. */

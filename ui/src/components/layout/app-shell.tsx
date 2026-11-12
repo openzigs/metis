@@ -9,6 +9,8 @@ import { CommandPalette } from "@/components/command-palette/command-palette";
 import { ConnectionStatus } from "@/components/realtime/connection-status";
 import { SourceOfferFooter } from "./source-offer-footer";
 import { HubTabs } from "./hub-tabs";
+import { NoAccess } from "./no-access";
+import { isAdminOnlyTabPath } from "@/lib/navigation";
 
 interface AppShellProps {
   children: ReactNode;
@@ -21,7 +23,7 @@ interface AppShellProps {
  * the cookie expires mid-session.
  */
 export function AppShell({ children }: AppShellProps) {
-  const { isLoading, isAuthenticated, isSigningOut } = useAuth();
+  const { user, isLoading, isAuthenticated, isSigningOut } = useAuth();
   const router = useRouter();
   const pathname = usePathname();
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
@@ -83,7 +85,8 @@ export function AppShell({ children }: AppShellProps) {
         <main id="main-content" role="main" className="flex-1 p-4 md:p-6">
           {/* #27 — the sibling pages of the current sidebar destination. */}
           <HubTabs />
-          {children}
+          {/* #2332 — an operations page a non-admin reached by URL. */}
+          {user?.role !== "admin" && isAdminOnlyTabPath(pathname ?? "/") ? <NoAccess /> : children}
         </main>
         {/*
          * #1296 — AGPL-3.0 §13 source offer. Inside the content column and after

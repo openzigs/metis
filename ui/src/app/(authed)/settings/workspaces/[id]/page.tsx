@@ -139,7 +139,8 @@ export default function WorkspaceSettingsPage() {
             <Input id="ws-name" value={name} onChange={(e) => setName(e.target.value)} />
           </div>
           <div className="text-sm text-muted-foreground">
-            Slug: <code className="rounded bg-muted px-1.5 py-0.5">{workspace.slug}</code>
+            Short name (used in links):{" "}
+            <code className="rounded bg-muted px-1.5 py-0.5">{workspace.slug}</code>
             {" · "}
             {workspace._count.projects} project(s)
           </div>
