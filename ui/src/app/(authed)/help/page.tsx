@@ -1,3 +1,5 @@
+"use client";
+
 /**
  * #2337 — in-app help. The Help menu used to link the User Guide and the issue
  * tracker on GitHub, which an analyst may have no access to. This page answers
@@ -5,7 +7,8 @@
  * project, what METIS's own words mean, and who to ask.
  *
  * The project section list is read from the tab model, so it cannot drift from
- * the tab bar.
+ * the tab bar. That model lives in a client module (`project-tabs.tsx`), so this
+ * page is a client component too: a server page cannot call a client function.
  */
 import Link from "next/link";
 import { Card } from "@/components/ui/card";
