@@ -1087,7 +1087,8 @@ The wizard has four steps:
    the project's Knowledge pages.
 3. **Create** — check the summary and click **Create project** (or **Create and
    start ingest** for a repository, which also starts its Deep Ingest in the
-   background).
+   background). If you close the dialog while it reads **Creating…**, the
+   project is still created and a message says so. Open it from **Projects**.
 4. **Change request** — click **New change request** to upload the documents
    that describe the change and start its analysis, or **Skip — open the
    Overview**. Closing the dialog at this step also opens the Overview.
