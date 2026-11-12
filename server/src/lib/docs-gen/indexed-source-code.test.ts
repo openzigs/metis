@@ -7,7 +7,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const { mockPrisma } = vi.hoisted(() => ({
   mockPrisma: {
     codeSymbol: { findMany: vi.fn() },
-    codeGraph: { findFirst: vi.fn() },
+    codeGraph: { findFirst: vi.fn(), findMany: vi.fn() },
   },
 }));
 vi.mock("../prisma.js", () => ({ prisma: mockPrisma }));
@@ -50,12 +50,12 @@ describe("hasIndexedSourceCode (#2377)", () => {
 
   it("is false for a project with no symbols at all", async () => {
     serveSymbols([]);
-    await expect(hasIndexedSourceCode({ projectId: "p1" })).resolves.toBe(false);
+    await expect(hasIndexedSourceCode({ projectId: "p1", codeGraphId: "g1" })).resolves.toBe(false);
   });
 
   it("is true once a real source file is indexed", async () => {
     serveSymbols([sym("src/app.ts")]);
-    await expect(hasIndexedSourceCode({ projectId: "p1" })).resolves.toBe(true);
+    await expect(hasIndexedSourceCode({ projectId: "p1", codeGraphId: "g1" })).resolves.toBe(true);
   });
 
   it("is false when every symbol is OS/archive junk, as the synthesizer counts it", async () => {
@@ -65,14 +65,14 @@ describe("hasIndexedSourceCode (#2377)", () => {
       sym("src/.DS_Store"),
       sym("assets/Thumbs.db"),
     ]);
-    await expect(hasIndexedSourceCode({ projectId: "p1" })).resolves.toBe(false);
+    await expect(hasIndexedSourceCode({ projectId: "p1", codeGraphId: "g1" })).resolves.toBe(false);
   });
 
   it("never counts another project's symbols", async () => {
     serveSymbols([sym("src/app.ts", "g9", "other-project")]);
-    await expect(hasIndexedSourceCode({ projectId: "p1" })).resolves.toBe(false);
+    await expect(hasIndexedSourceCode({ projectId: "p1", codeGraphId: "g1" })).resolves.toBe(false);
     expect(mockPrisma.codeSymbol.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { projectId: "p1" } }),
+      expect.objectContaining({ where: { projectId: "p1", codeGraphId: "g1" } }),
     );
   });
 
@@ -81,18 +81,19 @@ describe("hasIndexedSourceCode (#2377)", () => {
       sym(`__MACOSX/src/._f${String(i).padStart(4, "0")}.sas`),
     );
     serveSymbols([...junk, sym("zz/real.sas")]);
-    await expect(hasIndexedSourceCode({ projectId: "p1" })).resolves.toBe(true);
+    await expect(hasIndexedSourceCode({ projectId: "p1", codeGraphId: "g1" })).resolves.toBe(true);
     expect(mockPrisma.codeSymbol.findMany).toHaveBeenCalledTimes(2);
     // The second page starts after the last path the first page judged.
     expect(mockPrisma.codeSymbol.findMany.mock.calls[1]![0].where).toEqual({
       projectId: "p1",
+      codeGraphId: "g1",
       filePath: { gt: junk[SOURCE_CODE_PAGE - 1]!.filePath },
     });
   });
 
   it("stops after a short page of junk without another query", async () => {
     serveSymbols([sym("__MACOSX/a/._x.sas")]);
-    await expect(hasIndexedSourceCode({ projectId: "p1" })).resolves.toBe(false);
+    await expect(hasIndexedSourceCode({ projectId: "p1", codeGraphId: "g1" })).resolves.toBe(false);
     expect(mockPrisma.codeSymbol.findMany).toHaveBeenCalledTimes(1);
   });
 
@@ -102,7 +103,7 @@ describe("hasIndexedSourceCode (#2377)", () => {
         sym(`__MACOSX/src/._f${String(i).padStart(4, "0")}.sas`),
       ),
     );
-    await expect(hasIndexedSourceCode({ projectId: "p1" })).resolves.toBe(false);
+    await expect(hasIndexedSourceCode({ projectId: "p1", codeGraphId: "g1" })).resolves.toBe(false);
     expect(mockPrisma.codeSymbol.findMany).toHaveBeenCalledTimes(2);
   });
 });
@@ -113,9 +114,37 @@ describe("scopeHasIndexedSourceCode (#2377)", () => {
   });
 
   it("reads the whole project when no repository is chosen", async () => {
+    mockPrisma.codeGraph.findMany.mockResolvedValue([{ id: "g1" }, { id: "g2" }]);
     serveSymbols([sym("src/app.ts", "g2")]);
     await expect(scopeHasIndexedSourceCode("p1")).resolves.toBe(true);
     expect(mockPrisma.codeGraph.findFirst).not.toHaveBeenCalled();
+  });
+
+  it("scopes every whole-project symbol query to one graph, so it fits the (codeGraphId, filePath) index", async () => {
+    mockPrisma.codeGraph.findMany.mockResolvedValue([{ id: "g1" }, { id: "g2" }]);
+    serveSymbols([sym("__MACOSX/._a.ts", "g1"), sym("src/app.ts", "g2")]);
+    await expect(scopeHasIndexedSourceCode("p1")).resolves.toBe(true);
+    expect(mockPrisma.codeGraph.findMany).toHaveBeenCalledWith({
+      where: { projectId: "p1" },
+      select: { id: true },
+    });
+    const wheres = mockPrisma.codeSymbol.findMany.mock.calls.map((c) => c[0].where);
+    expect(wheres).toEqual([
+      { projectId: "p1", codeGraphId: "g1" },
+      { projectId: "p1", codeGraphId: "g2" },
+    ]);
+  });
+
+  it("is false for a project with no code graphs, without a symbol query", async () => {
+    mockPrisma.codeGraph.findMany.mockResolvedValue([]);
+    await expect(scopeHasIndexedSourceCode("p1")).resolves.toBe(false);
+    expect(mockPrisma.codeSymbol.findMany).not.toHaveBeenCalled();
+  });
+
+  it("is false when every graph holds only junk", async () => {
+    mockPrisma.codeGraph.findMany.mockResolvedValue([{ id: "g1" }, { id: "g2" }]);
+    serveSymbols([sym(".DS_Store", "g1"), sym("x/Thumbs.db", "g2")]);
+    await expect(scopeHasIndexedSourceCode("p1")).resolves.toBe(false);
   });
 
   it("is false for an empty repository even while another repository is indexed", async () => {

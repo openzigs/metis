@@ -37,6 +37,7 @@ vi.mock("../../src/lib/prisma.js", () => ({
     $transaction: vi.fn(async (fn) => fn(prisma)),
     reviewRequestItem: { findMany: vi.fn(async () => []) },
     codeSymbol: { findMany: vi.fn().mockResolvedValue([]) },
+    codeGraph: { findMany: vi.fn().mockResolvedValue([{ id: "graph-1" }]) },
     knowledgeChunk: {
       findMany: vi.fn().mockResolvedValue([]),
       deleteMany: vi.fn(),
@@ -913,9 +914,14 @@ describe("generated-docs routes", () => {
       const res = await request(app).get("/projects/proj-1/docs/source-code");
       expect(res.status).toBe(200);
       expect(res.body.data).toEqual({ indexed: false });
-      // Project-scoped: the route's project, never another one's symbols.
+      // Project-scoped: the route's project's graphs, each probed on its own
+      // so the query fits the (codeGraphId, filePath) index.
+      expect(prisma.codeGraph.findMany).toHaveBeenCalledWith({
+        where: { projectId: "proj-1" },
+        select: { id: true },
+      });
       expect(prisma.codeSymbol.findMany).toHaveBeenCalledWith(
-        expect.objectContaining({ where: { projectId: "proj-1" } }),
+        expect.objectContaining({ where: { projectId: "proj-1", codeGraphId: "graph-1" } }),
       );
       expect(requireRepositoryGraph).not.toHaveBeenCalled();
     });

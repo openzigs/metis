@@ -73,6 +73,8 @@ export function view(over: Partial<PortfolioAssessmentView> = {}): PortfolioAsse
     statement: "Customers can pay an invoice by bank transfer.",
     sourceRequirementId: null,
     sourceProjectId: null,
+    sourceDocumentId: null,
+    notChecked: [],
     scope: "all-accessible",
     productIds: [],
     status: "completed",

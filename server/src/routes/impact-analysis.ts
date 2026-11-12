@@ -471,6 +471,12 @@ function impactSummarizerDep(
  * #2280 — a document source is read through `readDocumentOnce`: a saved
  * reading of the same file, reader and model is reused with no model call (so
  * no `document-read` stage row); `reread` reads it again and replaces it.
+ *
+ * #2276 — the provider is built on the first read, not when the run is wired:
+ * a run that never reads (short pasted text, an issue, stored requirements)
+ * must not name "document reading" among the stages that did not run. A read
+ * with no provider records the stage unavailable and rejects, so the engine
+ * splits the source and says the model could not read it.
  */
 export function documentReaderDep(
   runtime: ImpactLlmRuntime,
@@ -479,10 +485,11 @@ export function documentReaderDep(
   options: { reread?: boolean; cache?: ReadingCacheDeps } = {},
 ): ImpactServiceDeps["documentReader"] | undefined {
   if (!enabled()) return undefined;
-  const provider = instrumentStage(runtime, "document-read", build());
-  if (!provider) return undefined;
-  return ({ title, text, document }) =>
-    readDocumentOnce(
+  let provider: AIProvider | null | undefined;
+  return async ({ title, text, document }) => {
+    if (provider === undefined) provider = instrumentStage(runtime, "document-read", build());
+    if (!provider) throw new Error("no AI provider is available to read the document");
+    return readDocumentOnce(
       {
         title,
         text,
@@ -492,6 +499,7 @@ export function documentReaderDep(
       },
       options.cache,
     );
+  };
 }
 
 /**

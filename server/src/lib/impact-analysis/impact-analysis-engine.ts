@@ -1732,6 +1732,14 @@ async function changesFromSource(
   deps: ImpactServiceDeps,
   /** #1754 — the run also asks about stored requirements: an empty source then adds nothing. */
   hasRequirements: boolean,
+  /**
+   * #2276 — the reading's project: the run's first project that will be
+   * searched, or `null` when none will be. Asked only when the model is about
+   * to read, so a run that never reads checks nothing extra.
+   */
+  readingProject: () => Promise<string | null>,
+  /** #2276 — told when the reading starts, so the run reports progress during it. */
+  onReading: () => void,
 ): Promise<{ changes: ChangedRequirement[]; notice: string | null }> {
   let text = "";
   let title = "Pasted text";
@@ -1753,6 +1761,19 @@ async function changesFromSource(
   const hasSource = text.trim().length > 0;
   if (!hasSource && hasRequirements) return { changes: [], notice: null };
   if (hasSource && deps.documentReader && shouldReadWithModel({ fromDocument, text })) {
+    // #2276 — a whole-document reading can take minutes and is the run's
+    // largest model spend; a run that will search no project (each one
+    // restricted, deleted or unindexed) has no use for it.
+    const project = await readingProject();
+    if (project === null) {
+      log.info("impact run reads no document: none of its projects will be searched", {
+        fromDocument,
+      });
+      return { changes: await extractor.extract(text), notice: null };
+    }
+    // Billed to a project the run searches, not to one it skips.
+    enterImpactProjectScope(project);
+    onReading();
     try {
       const reading = await deps.documentReader({
         title,
@@ -1774,6 +1795,31 @@ async function changesFromSource(
     }
   }
   return { changes: await extractor.extract(text), notice: null };
+}
+
+/**
+ * #2276 — the first of `projectIds` the run will search: one the starter can
+ * still open (#1609) that has indexed symbols (the loop below records any
+ * other `not-checked`). With an injected graph (`dataSourceFor`) every
+ * accessible project counts as indexed, as it does in the loop. `null` when
+ * the run will search none.
+ */
+async function firstSearchedProject(
+  prisma: ImpactPrisma,
+  projectIds: readonly string[],
+  accessOf: (projectId: string) => Promise<ProjectExecutionAccess>,
+  graphInjected: boolean,
+): Promise<string | null> {
+  for (const projectId of projectIds) {
+    if ((await accessOf(projectId)) !== "accessible") continue;
+    if (graphInjected) return projectId;
+    const symbol = await prisma.codeSymbol.findFirst({
+      where: { projectId },
+      select: { id: true },
+    });
+    if (symbol) return projectId;
+  }
+  return null;
 }
 
 /**
@@ -1934,7 +1980,22 @@ async function runImpactAnalysis(
     // #1754 — a run about stored requirements: one change per requirement, after
     // any pasted text's or document's own changes.
     const requirementIds = parseRequirementIds(row.requirementIds);
-    const source = await changesFromSource(prisma, row, extractor, deps, requirementIds.length > 0);
+    const source = await changesFromSource(
+      prisma,
+      row,
+      extractor,
+      deps,
+      requirementIds.length > 0,
+      () => firstSearchedProject(prisma, projectIds, accessOf, deps.dataSourceFor !== undefined),
+      () =>
+        jobEvents.progress(
+          "impact-analysis",
+          id,
+          null,
+          0,
+          row.documentId && !row.sourceText?.trim() ? "Reading the document" : "Reading the text",
+        ),
+    );
     const changes = [...source.changes, ...(await loadRequirementChanges(prisma, requirementIds))];
 
     // #1776 — seed every change in every accessible project first, and rank the

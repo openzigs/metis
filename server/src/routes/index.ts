@@ -81,6 +81,7 @@ import { baselinesRouter, projectBaselinesRouter } from "./baselines.js";
 import { usersRouter } from "./users.js";
 import { notificationPreferencesRouter } from "./notification-preferences.js";
 import { notificationsRouter } from "./notifications.js";
+import { meRouter } from "./me.js";
 import { discussionsRouter } from "./discussions.js";
 import { teamsIntegrationRouter } from "./integrations/teams.js";
 import { pagerDutyIntegrationRouter } from "./integrations/pagerduty.js";
@@ -233,6 +234,8 @@ export function apiRouter(): Router {
   r.use("/users", usersRouter());
   // Issue #416 — persisted notification center.
   r.use("/notifications", notificationsRouter());
+  // #2348 — the session user's "My work" for Home.
+  r.use("/me", meRouter());
   // Epic #475 — collaborative multi-analyst discussions.
   r.use("/discussions", discussionsRouter());
   // Epic #547 Phase 0 (#548) — Microsoft Teams app foundation (bot endpoint +

@@ -9,6 +9,11 @@
  * while another repository is indexed, and a project whose only symbols sit in
  * OS/archive junk (`__MACOSX/`, `._*`, `.DS_Store`), which the synthesizer
  * drops before counting.
+ *
+ * Every symbol query is scoped to one code graph so it walks the
+ * `(codeGraphId, filePath)` index; CodeSymbol has no `(projectId, filePath)`
+ * index, so a project-wide `ORDER BY filePath` would sort the project's whole
+ * symbol set. The whole-project answer probes the project's graphs one by one.
  */
 import { isJunkSourcePath } from "@metis/shared";
 import { prisma } from "../prisma.js";
@@ -21,11 +26,20 @@ export const SOURCE_CODE_PAGE = 200;
 type SymbolPathReader = {
   codeSymbol: {
     findMany(args: {
-      where: { projectId: string; codeGraphId?: string; filePath?: { gt: string } };
+      where: { projectId: string; codeGraphId: string; filePath?: { gt: string } };
       select: { filePath: true };
       orderBy: { filePath: "asc" };
       take: number;
     }): Promise<Array<{ filePath: string }>>;
+  };
+};
+
+type GraphReader = {
+  codeGraph: {
+    findMany(args: {
+      where: { projectId: string };
+      select: { id: true };
+    }): Promise<Array<{ id: string }>>;
   };
 };
 
@@ -35,7 +49,7 @@ type SymbolPathReader = {
  * already judged, and stops at the first non-junk file.
  */
 export async function hasIndexedSourceCode(
-  where: { projectId: string; codeGraphId?: string },
+  where: { projectId: string; codeGraphId: string },
   db: SymbolPathReader = prisma as unknown as SymbolPathReader,
 ): Promise<boolean> {
   let after: string | undefined;
@@ -62,7 +76,16 @@ export async function scopeHasIndexedSourceCode(
   projectId: string,
   repoConnectorId?: string,
 ): Promise<boolean> {
-  if (repoConnectorId === undefined) return hasIndexedSourceCode({ projectId });
+  if (repoConnectorId === undefined) {
+    const graphs = await (prisma as unknown as GraphReader).codeGraph.findMany({
+      where: { projectId },
+      select: { id: true },
+    });
+    for (const graph of graphs) {
+      if (await hasIndexedSourceCode({ projectId, codeGraphId: graph.id })) return true;
+    }
+    return false;
+  }
   let codeGraphId: string;
   try {
     codeGraphId = await requireRepositoryGraph(projectId, repoConnectorId);
