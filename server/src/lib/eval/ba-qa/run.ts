@@ -2,9 +2,9 @@
  * #2237 — the runner's testable half: the arms, the chat scope a question gets,
  * and the cited spans the judge is shown.
  */
-import { normalizeFilePath } from "../localization/corpus.js";
+import { fileKey, normalizeFilePath } from "../localization/corpus.js";
 import type { CitableProduct, Citation } from "./citations.js";
-import { isMultiTurn, sourceKey, type BaQaQuestion } from "./fixture.js";
+import { isMultiTurn, type BaQaQuestion } from "./fixture.js";
 import type { JudgedSpan } from "./judge.js";
 
 /**
@@ -54,7 +54,7 @@ export function retrievedExpectedFiles(
   product: Pick<CitableProduct, "name" | "documents">,
   names: readonly string[],
 ): string[] {
-  const found = new Set(names.map((n) => sourceKey(product.name, product.documents.get(n) ?? n)));
+  const found = new Set(names.map((n) => fileKey(product.name, product.documents.get(n) ?? n)));
   return expected.filter((key) => found.has(key));
 }
 
