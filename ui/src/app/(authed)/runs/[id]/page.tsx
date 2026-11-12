@@ -83,6 +83,17 @@ function StepCard({ step }: { step: AgentRunStep }) {
   );
 }
 
+/**
+ * #2337 — a PR-review run stores its result (or its failure) as a
+ * `tool_result` step whose content kind is `pr_review` / `pr_review_error`
+ * (server `run-reviews.ts`, `pr-review-job.ts`); such a run has a review page.
+ */
+function isPrReviewStep(step: AgentRunStep): boolean {
+  if (step.kind !== "tool_result") return false;
+  const kind = (step.content as { kind?: unknown } | null)?.kind;
+  return kind === "pr_review" || kind === "pr_review_error";
+}
+
 export default function RunDetailPage() {
   const params = useParams<{ id: string }>();
   const id = params.id;
@@ -106,6 +117,7 @@ export default function RunDetailPage() {
   const mostRecentSession = sessions.length > 0 ? sessions[sessions.length - 1] : null;
 
   if (!id) return null;
+  const isPrReview = (detail.data?.steps ?? []).some(isPrReviewStep);
 
   return (
     <div className="space-y-6 p-6" data-testid="run-detail-page">
@@ -122,6 +134,17 @@ export default function RunDetailPage() {
               outcome={mostRecentSession.outcome}
               errorMessage={mostRecentSession.errorMessage}
             />
+          ) : undefined
+        }
+        actions={
+          isPrReview ? (
+            <Link
+              href={`/runs/${encodeURIComponent(id)}/review`}
+              className="text-sm text-info hover:underline"
+              data-testid="run-review-link"
+            >
+              Open the PR review →
+            </Link>
           ) : undefined
         }
       />

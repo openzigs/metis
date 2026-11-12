@@ -137,7 +137,7 @@ export default function DocumentsTopLevelPage() {
     <div className="space-y-6 p-2 md:p-0" data-testid="documents-top-root">
       <PageHeader
         title="Documents"
-        description="Every document you can access, across every project. Use the filter to scope to a single project. Upload happens inside the destination project so the file lands in the right RAG namespace."
+        description="Every document you can access, across every project. Use the filter to scope to a single project. To upload, open the project the document belongs to, so it is searched with that project's knowledge."
       />
       <Card className="space-y-3 p-4" data-testid="documents-top-controls">
         <div className="flex flex-col gap-2 md:flex-row md:items-center md:gap-4">

@@ -130,9 +130,9 @@ describe("ConnectionsPage — deep ingest error path", () => {
     repoList.mockResolvedValue([makeRepo({ id: "r1" })]);
     renderPage();
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: /Deep Ingest/i })).toBeInTheDocument(),
+      expect(screen.getByRole("button", { name: /Full re-read/i })).toBeInTheDocument(),
     );
-    fireEvent.click(screen.getByRole("button", { name: /Deep Ingest/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Full re-read/i }));
     await waitFor(() => expect(deepIngest).toHaveBeenCalled());
     await waitFor(() =>
       expect((toast as unknown as { error: ReturnType<typeof vi.fn> }).error).toHaveBeenCalled(),

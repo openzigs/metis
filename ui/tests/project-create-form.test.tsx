@@ -149,7 +149,7 @@ describe("ProjectCreateForm", () => {
     expect(screen.getByTestId("project-slug-input")).toHaveValue("");
     expect(screen.getByTestId("project-create-submit")).toBeDisabled();
     // No blur / submit needed: the reason is shown as soon as it applies.
-    expect(screen.getByText(/Slug is required/i)).toBeInTheDocument();
+    expect(screen.getByText(/Short name is required/i)).toBeInTheDocument();
   });
 
   it("describes the Slug field so the derivation is discoverable (#23)", () => {

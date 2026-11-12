@@ -11,6 +11,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { chronicleApi } from "@/lib/projects-api";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { EmptyState } from "@/components/ui/empty-state";
+import { SkeletonText } from "@/components/ui/skeleton";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
@@ -109,7 +111,7 @@ export function ChroniclePanel({ projectId }: { projectId: string }) {
             </div>
           </form>
           {list.isLoading ? (
-            <p className="text-sm text-muted-foreground">Loading entries…</p>
+            <SkeletonText lines={2} data-testid="chronicle-loading" />
           ) : list.data && list.data.items.length > 0 ? (
             <ul className="divide-y" data-testid="chronicle-list">
               {list.data.items.map((entry) => (
@@ -134,7 +136,11 @@ export function ChroniclePanel({ projectId }: { projectId: string }) {
               ))}
             </ul>
           ) : (
-            <p className="text-sm text-muted-foreground">No entries yet.</p>
+            <EmptyState
+              data-testid="chronicle-empty"
+              title="No entries yet."
+              description="Facts the AI should remember about this project belong here. Add one with Remember above."
+            />
           )}
         </>
       )}

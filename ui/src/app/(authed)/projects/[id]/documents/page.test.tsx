@@ -172,7 +172,7 @@ describe("Documents page — #69 quarantined documents", () => {
     renderPage();
 
     const row = await screen.findByTestId("document-row-d2");
-    await waitFor(() => expect(row).toHaveTextContent(/ready · 7 chunks/i));
+    await waitFor(() => expect(row).toHaveTextContent(/ready · 7 sections indexed/i));
     expect(screen.queryByRole("link", { name: /review/i })).toBeNull();
   });
 });

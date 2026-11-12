@@ -59,7 +59,7 @@ export default function ProjectsPage() {
     <div className="space-y-6 p-2 md:p-0">
       <PageHeader
         title="Projects"
-        description="Browse, create, and manage migration projects."
+        description="Browse, create, and manage projects."
         actions={
           <Dialog open={open} onOpenChange={setOpen}>
             <DialogTrigger asChild>

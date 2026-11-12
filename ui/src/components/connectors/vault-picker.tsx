@@ -8,6 +8,8 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { vaultApi } from "@/lib/vault-api";
+import { ApiError } from "@/lib/api-client";
+import { useOptionalAuth } from "@/lib/auth-context";
 import {
   Select,
   SelectContent,
@@ -40,11 +42,19 @@ function formatVaultRef(label: string): string {
 }
 
 export function VaultPicker({ id, value, onChange, placeholder, className }: VaultPickerProps) {
-  const { data } = useQuery({
+  const { data, error } = useQuery({
     queryKey: ["vault", "list"],
     queryFn: () => vaultApi.list(),
     staleTime: 30_000,
+    // A refusal will not change on retry.
+    retry: (count, err) => !(err instanceof ApiError && err.status === 403) && count < 3,
   });
+  // #2337 — a role refused `GET /api/vault` saw "No vault entries found", which
+  // hid the refusal; and anyone without `vault.reveal` can attach only secrets
+  // they created (the server's SECRET_BINDING_FORBIDDEN), which nothing said.
+  const refused = error instanceof ApiError && error.status === 403;
+  const auth = useOptionalAuth();
+  const attachesOwnOnly = !(auth?.user?.permissions.includes("vault.reveal") ?? false);
 
   const entries = data?.items ?? [];
   const parsedLabel = parseVaultLabel(value);
@@ -89,15 +99,35 @@ export function VaultPicker({ id, value, onChange, placeholder, className }: Vau
         }}
       >
         <SelectTrigger id={id} className="w-full">
-          <SelectValue placeholder={placeholder ?? "${vault:select-a-key}"} />
+          <SelectValue placeholder={placeholder ?? "Choose a vault secret"} />
         </SelectTrigger>
         <SelectContent>
           {/* #23 — a plain note, not a second item: Radix mirrors every item
               into a native <select> keyed by value, so a disabled item sharing
               CUSTOM_KEY with the real custom row logged a duplicate-key error. */}
-          {entries.length === 0 && (
-            <div className="px-2 py-1.5 text-xs text-muted-foreground">No vault entries found</div>
-          )}
+          {refused ? (
+            <div
+              className="max-w-xs px-2 py-1.5 text-xs text-muted-foreground"
+              data-testid="vault-picker-refused"
+            >
+              Your role cannot list the vault&apos;s secrets. Ask an admin to add a secret, or to
+              bind one for you.
+            </div>
+          ) : entries.length === 0 ? (
+            <div
+              className="max-w-xs px-2 py-1.5 text-xs text-muted-foreground"
+              data-testid="vault-picker-empty"
+            >
+              No secrets in the vault yet. Ask an admin to add one.
+            </div>
+          ) : attachesOwnOnly ? (
+            <div
+              className="max-w-xs px-2 py-1.5 text-xs text-muted-foreground"
+              data-testid="vault-picker-own-only"
+            >
+              You can attach only secrets you created. For any other, ask an admin to bind it.
+            </div>
+          ) : null}
           {entries.map((entry) => (
             <SelectItem key={entry.id} value={entry.label}>
               <span className="font-mono text-xs">{entry.label}</span>
@@ -107,7 +137,7 @@ export function VaultPicker({ id, value, onChange, placeholder, className }: Vau
             </SelectItem>
           ))}
           <SelectItem value={CUSTOM_KEY}>
-            <span className="text-muted-foreground">Enter custom ref…</span>
+            <span className="text-muted-foreground">Type a secret name…</span>
           </SelectItem>
         </SelectContent>
       </Select>

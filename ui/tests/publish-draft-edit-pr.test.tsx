@@ -190,7 +190,7 @@ describe("Draft pull request (#776)", () => {
     expect(open).toBeDisabled();
     expect(within(screen.getByRole("dialog")).queryByLabelText(/owner|repo/i)).toBeNull();
 
-    fireEvent.change(within(screen.getByRole("dialog")).getByLabelText("Vault secret ref"), {
+    fireEvent.change(within(screen.getByRole("dialog")).getByLabelText("Vault secret"), {
       target: { value: "${vault:github-flux-v2-sandbox}" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Plan (dry run)" }));

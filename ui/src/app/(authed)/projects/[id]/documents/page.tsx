@@ -15,6 +15,7 @@ import { useProjectDocuments } from "@/hooks/use-project-documents";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { SkeletonText } from "@/components/ui/skeleton";
+import { EmptyState } from "@/components/ui/empty-state";
 import { DocumentUploader } from "@/components/projects/document-uploader";
 import { UrlIngestForm } from "@/components/projects/url-ingest-form";
 import { TextIngestForm } from "@/components/projects/text-ingest-form";
@@ -122,7 +123,8 @@ export default function ProjectDocumentsPage() {
                     className="font-medium"
                   />
                   <p className="text-xs text-muted-foreground">
-                    {documentStatusLabel(d)} · {d.chunkCount} chunks ·{" "}
+                    {documentStatusLabel(d)} · {d.chunkCount}{" "}
+                    {d.chunkCount === 1 ? "section" : "sections"} indexed ·{" "}
                     {(d.sizeBytes / 1024).toFixed(1)} KB
                     {d.errorMessage ? ` · ${d.errorMessage}` : ""}
                   </p>
@@ -148,7 +150,11 @@ export default function ProjectDocumentsPage() {
             ))}
           </ul>
         ) : (
-          <p className="text-sm text-muted-foreground">No documents yet.</p>
+          <EmptyState
+            data-testid="project-documents-empty"
+            title="No documents yet."
+            description="Specifications, policies and notes about the system belong here. Upload a file, a web page or text above; METIS indexes it for analyses and chat."
+          />
         )}
       </Card>
     </div>

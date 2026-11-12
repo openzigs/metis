@@ -240,7 +240,7 @@ describe("NewProjectWizard", () => {
     await user.click(screen.getByRole("button", { name: "Create and start ingest" }));
 
     expect(await screen.findByText("Slug already in use")).toBeInTheDocument();
-    expect(screen.getByLabelText("Slug")).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByLabelText("Short name")).toHaveAttribute("aria-invalid", "true");
     expect(push()).not.toHaveBeenCalled();
     expect(deepIngest).not.toHaveBeenCalled();
   });
@@ -263,19 +263,19 @@ describe("NewProjectWizard", () => {
     const user = userEvent.setup();
     renderWizard();
     await user.type(screen.getByLabelText("Name"), "My Cool Project!");
-    expect(screen.getByLabelText("Slug")).toHaveValue("my-cool-project");
-    await user.clear(screen.getByLabelText("Slug"));
-    await user.type(screen.getByLabelText("Slug"), "custom");
+    expect(screen.getByLabelText("Short name")).toHaveValue("my-cool-project");
+    await user.clear(screen.getByLabelText("Short name"));
+    await user.type(screen.getByLabelText("Short name"), "custom");
     await user.type(screen.getByLabelText("Name"), " Two");
-    expect(screen.getByLabelText("Slug")).toHaveValue("custom");
+    expect(screen.getByLabelText("Short name")).toHaveValue("custom");
   });
 
   it("blocks Next on a malformed slug", async () => {
     const user = userEvent.setup();
     renderWizard();
     await user.type(screen.getByLabelText("Name"), "Acme");
-    await user.clear(screen.getByLabelText("Slug"));
-    await user.type(screen.getByLabelText("Slug"), "bad slug");
+    await user.clear(screen.getByLabelText("Short name"));
+    await user.type(screen.getByLabelText("Short name"), "bad slug");
     expect(next()).toBeDisabled();
   });
 

@@ -42,13 +42,7 @@ const BOOTSTRAP_TOOLTIP = "Bootstrap config — set in `.env`. Restart required 
 
 type SettingsTab = "config" | "audit";
 
-interface SettingsApiKeysPageProps {
-  initialTab?: SettingsTab;
-}
-
-export default function SettingsApiKeysPage({
-  initialTab = "config",
-}: SettingsApiKeysPageProps = {}) {
+export default function SettingsApiKeysPage() {
   return (
     <div className="space-y-6 p-2 md:p-0" data-testid="settings-api-keys-root">
       <PageHeader
@@ -66,16 +60,17 @@ export default function SettingsApiKeysPage({
       />
       <ProviderPrefsSection />
       <SecurityEvalSection />
-      <RuntimeConfigSection initialTab={initialTab} />
+      <RuntimeConfigSection />
       <EnvVarsSection />
     </div>
   );
 }
 
-function RuntimeConfigSection({ initialTab }: { initialTab: SettingsTab }) {
+function RuntimeConfigSection() {
   const searchParams = useSearchParams();
+  // `?tab=audit` opens the Audit log (#2337: the retired /settings/audit lands here).
   const [tab, setTab] = useState<SettingsTab>(
-    searchParams.get("tab") === "audit" || initialTab === "audit" ? "audit" : "config",
+    searchParams.get("tab") === "audit" ? "audit" : "config",
   );
   return (
     <Card className="p-0" data-testid="settings-config-tabs">

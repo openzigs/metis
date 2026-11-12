@@ -38,7 +38,7 @@ export class ProductsListPage {
     // Create product dialog
     this.dialogTitle = page.getByRole("heading", { name: "Create product", exact: true });
     this.nameInput = page.getByLabel("Name");
-    this.slugInput = page.getByLabel("Slug");
+    this.slugInput = page.getByLabel("Short name");
     this.descriptionInput = page.getByLabel("Description");
     this.createSubmit = page.getByRole("button", { name: "Create" });
     this.createError = page.locator(".text-destructive");

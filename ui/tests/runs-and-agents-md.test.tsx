@@ -163,7 +163,51 @@ describe("RunDetailPage", () => {
     expect(screen.getByTestId("run-step-0")).toHaveAttribute("data-step-kind", "agent_phase");
     // tool_call card defaults to expanded → its JSON content is visible
     expect(screen.getByTestId("run-step-1-content").textContent).toContain("browser_verify");
+    // Not a PR-review run: no link to a review page that would be empty.
+    expect(screen.queryByTestId("run-review-link")).toBeNull();
   });
+
+  // #2337 — /runs/[id]/review was reachable only by typing its URL.
+  it.each(["pr_review", "pr_review_error"])(
+    "links a PR-review run (%s step) to its review page",
+    async (contentKind) => {
+      get.mockResolvedValue({
+        run: {
+          id: "run_42",
+          sessionId: "pr-review-7-1",
+          projectId: "p",
+          kind: "tool",
+          status: "completed",
+          startedAt: "2026-04-01T00:00:00.000Z",
+          completedAt: "2026-04-01T00:00:01.000Z",
+          latencyMs: 100,
+          totalTokens: 50,
+          costCents: 1,
+        },
+        steps: [
+          {
+            id: "st1",
+            ord: 0,
+            kind: "tool_result",
+            content: { kind: contentKind },
+            spanId: null,
+            traceId: null,
+            latencyMs: null,
+            createdAt: "2026-04-01T00:00:00.500Z",
+          },
+        ],
+      });
+      const Wrapper = makeWrapper({});
+      render(
+        <Wrapper>
+          <RunDetailPage />
+        </Wrapper>,
+      );
+      const link = await screen.findByTestId("run-review-link");
+      expect(link).toHaveAttribute("href", "/runs/run_42/review");
+      expect(link).toHaveTextContent("Open the PR review");
+    },
+  );
 
   it("surfaces an error when the API rejects", async () => {
     get.mockRejectedValue(new Error("nope"));
