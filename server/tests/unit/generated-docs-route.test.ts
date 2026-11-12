@@ -36,7 +36,7 @@ vi.mock("../../src/lib/prisma.js", () => ({
     },
     $transaction: vi.fn(async (fn) => fn(prisma)),
     reviewRequestItem: { findMany: vi.fn(async () => []) },
-    codeSymbol: { findMany: vi.fn().mockResolvedValue([]) },
+    codeSymbol: { findMany: vi.fn().mockResolvedValue([]), findFirst: vi.fn() },
     knowledgeChunk: {
       findMany: vi.fn().mockResolvedValue([]),
       deleteMany: vi.fn(),
@@ -902,6 +902,30 @@ describe("generated-docs routes", () => {
       });
       for (const [input] of vi.mocked(prisma.task.upsert).mock.calls)
         expect(input.create.createdById).toBe("user_admin");
+    });
+  });
+
+  // #2369 — the form warns before a code-based document on a project with no code.
+  describe("GET /projects/:projectId/docs/source-code", () => {
+    it("reports no indexed source code for a documents-only project", async () => {
+      vi.mocked(prisma.codeSymbol.findFirst).mockResolvedValue(null);
+      const res = await request(app).get("/projects/proj-1/docs/source-code");
+      expect(res.status).toBe(200);
+      expect(res.body.data).toEqual({ indexed: false });
+      // Project-scoped: the route's project, never another one's symbols.
+      expect(prisma.codeSymbol.findFirst).toHaveBeenCalledWith({
+        where: { projectId: "proj-1" },
+        select: { id: true },
+      });
+    });
+
+    it("reports indexed source code once any symbol exists", async () => {
+      vi.mocked(prisma.codeSymbol.findFirst).mockResolvedValue({ id: "sym-1" } as never);
+      const res = await request(app).get("/projects/proj-1/docs/source-code");
+      expect(res.status).toBe(200);
+      expect(res.body.data).toEqual({ indexed: true });
+      // Not taken as a document id by `/:docId`.
+      expect(prisma.generatedDocument.findFirst).not.toHaveBeenCalled();
     });
   });
 

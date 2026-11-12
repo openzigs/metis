@@ -52,6 +52,16 @@ export class WorkspaceSwitcherPage {
     await expect(this.dropdown).toBeHidden();
   }
 
+  /**
+   * #2339 — "Open workspace": the active workspace's own page, from which its
+   * Traceability and Governing documents are one click away.
+   */
+  async openWorkspace(): Promise<void> {
+    await this.open();
+    await this.dropdown.getByRole("menuitem", { name: "Open workspace" }).click();
+    await expect(this.dropdown).toBeHidden();
+  }
+
   /** Assert the trigger shows a specific active workspace name. */
   async expectActiveWorkspace(name: string): Promise<void> {
     await expect(this.trigger).toContainText(name);

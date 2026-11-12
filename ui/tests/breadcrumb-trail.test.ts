@@ -27,16 +27,31 @@ describe("pageCrumbs (#271)", () => {
     }
   });
 
-  it("Analyze › Requirements Analysis on the analysis page", () => {
+  it("Change requests › Requirements Analysis on the analysis page (#2334)", () => {
     expect(pageCrumbs("/projects/p1/analysis/", true)).toEqual([
-      { label: "Analyze", href: "/projects/p1/analysis" },
+      { label: "Change requests", href: "/projects/p1/analysis" },
       { label: "Requirements Analysis" },
+    ]);
+  });
+
+  it("names the moved pages by their new tab (#2334)", () => {
+    expect(pageCrumbs("/projects/p1/publish", true)).toEqual([
+      { label: "Deliverables", href: "/projects/p1/documentation" },
+      { label: "Publish" },
+    ]);
+    expect(pageCrumbs("/projects/p1/changes", true)).toEqual([
+      { label: "Requirements", href: "/projects/p1/requirements" },
+      { label: "Compare analyses" },
+    ]);
+    expect(pageCrumbs("/projects/p1/spec-kit", true)).toEqual([
+      { label: "Project settings", href: "/projects/p1/settings" },
+      { label: "Spec Kit" },
     ]);
   });
 
   it("a route reached from inside a section (issue sync) ends at its own label", () => {
     expect(pageCrumbs("/projects/p1/sync", true)).toEqual([
-      { label: "Publish", href: "/projects/p1/publish" },
+      { label: "Deliverables", href: "/projects/p1/documentation" },
       { label: "Sync" },
     ]);
   });

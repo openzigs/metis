@@ -22,6 +22,7 @@ import {
   type SuggestedConnector,
 } from "@/lib/connectors-api";
 import { projectsApi } from "@/lib/projects-api";
+import { useAuth } from "@/lib/auth-context";
 import { VaultPicker } from "@/components/connectors/vault-picker";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -163,6 +164,15 @@ export default function ConnectionsPage() {
   const params = useParams<{ id: string }>();
   const projectId = params?.id ?? "";
   const qc = useQueryClient();
+  // #2368 — adding a connector (`POST …/connectors/repos`, `…/repos/upload`,
+  // `…/dbs`, and a suggestion's Configure or Dismiss) requires `connector.write`.
+  // A role without it is told who can, not handed a form refused on submit.
+  // Hiding is not access control: the server refuses either way.
+  const { user } = useAuth();
+  const canWriteConnectors = user?.permissions.includes("connector.write") ?? false;
+  // The credential-scan toggle is a project setting: PATCH /projects/:id/allow-credential-scan
+  // requires `project.update`, not `connector.write`.
+  const canUpdateProject = user?.permissions.includes("project.update") ?? false;
 
   // Socket.IO real-time progress + discovery (#664, #669)
   // #762 — a run that ends (the auto-ingest a new connector starts has no job
@@ -428,6 +438,12 @@ export default function ConnectionsPage() {
   const refreshIngestRepo = useMutation({
     mutationFn: (id: string) => repoConnectorsApi.refreshIngest(projectId, id),
     onSuccess: (data, id) => {
+      // #2335 — another run (a push, the schedule, a Deep Ingest) holds the
+      // repository: this Sync is queued and runs once that one ends.
+      if ("status" in data) {
+        toast.info("A sync is already running. This one is queued and runs when it finishes.");
+        return;
+      }
       setRefreshIngestResult({ connectorId: id, summary: data });
       deepIngest.clearOutcome();
       qc.invalidateQueries({ queryKey: repoKeys.list(projectId) });
@@ -574,23 +590,25 @@ export default function ConnectionsPage() {
         }
         description="Repo and database connectors for this project. Secrets are stored as vault references — never as plaintext."
       >
-        <div className="mt-3 flex items-center gap-2">
-          <input
-            id="allow-credential-scan"
-            type="checkbox"
-            className="h-4 w-4 cursor-pointer accent-success"
-            data-testid="allow-credential-scan-toggle"
-            checked={project.data?.allowCredentialScan === true}
-            disabled={!project.data || toggleAllowCredentialScan.isPending}
-            onChange={(e) => toggleAllowCredentialScan.mutate(e.target.checked)}
-          />
-          <label htmlFor="allow-credential-scan" className="cursor-pointer text-sm">
-            Allow credential scan during repo discovery
-            <span className="ml-2 text-xs text-muted-foreground">
-              (passwords from <span className="font-mono">.env*</span> are vaulted; opt-in only)
-            </span>
-          </label>
-        </div>
+        {canUpdateProject ? (
+          <div className="mt-3 flex items-center gap-2">
+            <input
+              id="allow-credential-scan"
+              type="checkbox"
+              className="h-4 w-4 cursor-pointer accent-success"
+              data-testid="allow-credential-scan-toggle"
+              checked={project.data?.allowCredentialScan === true}
+              disabled={!project.data || toggleAllowCredentialScan.isPending}
+              onChange={(e) => toggleAllowCredentialScan.mutate(e.target.checked)}
+            />
+            <label htmlFor="allow-credential-scan" className="cursor-pointer text-sm">
+              Allow credential scan during repo discovery
+              <span className="ml-2 text-xs text-muted-foreground">
+                (passwords from <span className="font-mono">.env*</span> are vaulted; opt-in only)
+              </span>
+            </label>
+          </div>
+        ) : null}
       </PageHeader>
 
       {/* ── Suggested connectors (Epic #467) ────────────────────────── */}
@@ -625,18 +643,20 @@ export default function ConnectionsPage() {
                 <p className="truncate text-xs text-muted-foreground" title={s.sourceFile}>
                   {s.sourceFile}:{s.lineNumber}
                 </p>
-                <div className="mt-auto flex gap-2 pt-2">
-                  <Button size="sm" onClick={() => setWizardSuggestion(s)}>
-                    Configure
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => dismissSuggestion.mutate(s.id)}
-                  >
-                    Dismiss
-                  </Button>
-                </div>
+                {canWriteConnectors ? (
+                  <div className="mt-auto flex gap-2 pt-2">
+                    <Button size="sm" onClick={() => setWizardSuggestion(s)}>
+                      Configure
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => dismissSuggestion.mutate(s.id)}
+                    >
+                      Dismiss
+                    </Button>
+                  </div>
+                ) : null}
               </Card>
             ))}
           </div>
@@ -646,157 +666,163 @@ export default function ConnectionsPage() {
       {/* ── Repo connectors ─────────────────────────────────────────── */}
       <section className="space-y-3">
         <h2 className="text-lg font-medium">Repository connectors</h2>
-        <Card className="space-y-3 p-4">
-          <div>
-            <Label htmlFor="repo-source">Source</Label>
-            <select
-              id="repo-source"
-              data-testid="repo-source-select"
-              className="w-full rounded border bg-background px-2 py-1 text-sm"
-              value={repoSource}
-              onChange={(e) => {
-                setRepoSource(e.target.value as "github" | "local" | "upload");
-                setRepoError(null);
-              }}
-            >
-              <option value="github">GitHub repository</option>
-              <option value="local">Local directory (server path)</option>
-              <option value="upload">Upload folder (.zip)</option>
-            </select>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
+        {canWriteConnectors ? (
+          <Card className="space-y-3 p-4">
             <div>
-              <Label htmlFor="repo-label">Label</Label>
-              <Input
-                id="repo-label"
-                value={repoLabel}
-                onChange={(e) => setRepoLabel(e.target.value)}
-              />
+              <Label htmlFor="repo-source">Source</Label>
+              <select
+                id="repo-source"
+                data-testid="repo-source-select"
+                className="w-full rounded border bg-background px-2 py-1 text-sm"
+                value={repoSource}
+                onChange={(e) => {
+                  setRepoSource(e.target.value as "github" | "local" | "upload");
+                  setRepoError(null);
+                }}
+              >
+                <option value="github">GitHub repository</option>
+                <option value="local">Local directory (server path)</option>
+                <option value="upload">Upload folder (.zip)</option>
+              </select>
             </div>
-            {repoSource === "github" && (
-              <>
-                <div>
-                  <Label htmlFor="repo-owner">Owner / org</Label>
-                  <Input
-                    id="repo-owner"
-                    value={repoOwner}
-                    onChange={(e) => setRepoOwner(e.target.value)}
-                  />
-                </div>
-                <div>
-                  <Label htmlFor="repo-name">Repo name</Label>
-                  <Input
-                    id="repo-name"
-                    value={repoName}
-                    onChange={(e) => setRepoName(e.target.value)}
-                  />
-                </div>
-                <div>
-                  <Label htmlFor="repo-base">GitHub Enterprise URL</Label>
-                  <Input
-                    id="repo-base"
-                    value={repoApiBase}
-                    onChange={(e) => setRepoApiBase(e.target.value)}
-                    placeholder="https://git.example.com"
-                  />
-                </div>
-                <div>
-                  <Label htmlFor="repo-ref">Branch or tag</Label>
-                  <Input
-                    id="repo-ref"
-                    value={repoRef}
-                    onChange={(e) => setRepoRef(e.target.value)}
-                    placeholder="main"
-                  />
-                </div>
-                <div>
-                  <Label htmlFor="repo-secret">Secret ref (vault)</Label>
-                  <VaultPicker
-                    id="repo-secret"
-                    value={repoSecretRef}
-                    onChange={setRepoSecretRef}
-                    placeholder="${vault:my-token-label}"
-                  />
-                </div>
-              </>
-            )}
-            {repoSource === "local" && (
-              <div className="col-span-2">
-                <Label htmlFor="repo-local-path">Server directory path</Label>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label htmlFor="repo-label">Label</Label>
                 <Input
-                  id="repo-local-path"
-                  data-testid="repo-local-path"
-                  value={repoLocalPath}
-                  onChange={(e) => setRepoLocalPath(e.target.value)}
-                  placeholder="/srv/code/my-app"
-                />
-                <p className="mt-1 text-xs text-muted-foreground">
-                  Must be inside an allowlisted{" "}
-                  <span className="font-mono">LOCAL_SOURCE_ROOTS</span> directory. Requires admin.
-                </p>
-              </div>
-            )}
-            {repoSource === "upload" && (
-              <div className="col-span-2">
-                <Label htmlFor="repo-upload">Folder archive (.zip)</Label>
-                <input
-                  id="repo-upload"
-                  data-testid="repo-upload-input"
-                  type="file"
-                  accept=".zip,application/zip"
-                  className="w-full text-sm"
-                  onChange={(e) => setRepoUploadFile(e.target.files?.[0] ?? null)}
+                  id="repo-label"
+                  value={repoLabel}
+                  onChange={(e) => setRepoLabel(e.target.value)}
                 />
               </div>
-            )}
-          </div>
-          <div className="flex items-center gap-2">
-            {repoSource === "github" && (
-              <Button
-                data-testid="add-repo-github"
-                onClick={() => createRepo.mutate()}
-                disabled={!repoFormValid || createRepo.isPending}
-              >
-                Add repo connector
-              </Button>
-            )}
-            {repoSource === "local" && (
-              <Button
-                data-testid="add-repo-local"
-                onClick={() => createLocalRepo.mutate()}
-                disabled={
-                  repoLabel.trim().length === 0 ||
-                  repoLocalPath.trim().length === 0 ||
-                  createLocalRepo.isPending
-                }
-              >
-                Add local directory
-              </Button>
-            )}
-            {repoSource === "upload" && (
-              <Button
-                data-testid="add-repo-upload"
-                onClick={() => createUploadRepo.mutate()}
-                disabled={
-                  repoLabel.trim().length === 0 || !repoUploadFile || createUploadRepo.isPending
-                }
-              >
-                Upload folder
-              </Button>
-            )}
-            {repoSource === "github" && !isRepoRefOrEmpty(repoRef) ? (
-              <span className="text-sm text-destructive">
-                &quot;{repoRef.trim()}&quot; is not a valid branch or tag name.
-              </span>
-            ) : null}
-            {repoSource === "github" && !isVaultRefOrEmpty(repoSecretRef) ? (
-              <span className="text-sm text-destructive">
-                Secret ref must look like ${"${vault:name}"}.
-              </span>
-            ) : null}
-            {repoError ? <span className="text-sm text-destructive">{repoError}</span> : null}
-          </div>
-        </Card>
+              {repoSource === "github" && (
+                <>
+                  <div>
+                    <Label htmlFor="repo-owner">Owner / org</Label>
+                    <Input
+                      id="repo-owner"
+                      value={repoOwner}
+                      onChange={(e) => setRepoOwner(e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="repo-name">Repo name</Label>
+                    <Input
+                      id="repo-name"
+                      value={repoName}
+                      onChange={(e) => setRepoName(e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="repo-base">GitHub Enterprise URL</Label>
+                    <Input
+                      id="repo-base"
+                      value={repoApiBase}
+                      onChange={(e) => setRepoApiBase(e.target.value)}
+                      placeholder="https://git.example.com"
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="repo-ref">Branch or tag</Label>
+                    <Input
+                      id="repo-ref"
+                      value={repoRef}
+                      onChange={(e) => setRepoRef(e.target.value)}
+                      placeholder="main"
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="repo-secret">Secret ref (vault)</Label>
+                    <VaultPicker
+                      id="repo-secret"
+                      value={repoSecretRef}
+                      onChange={setRepoSecretRef}
+                      placeholder="${vault:my-token-label}"
+                    />
+                  </div>
+                </>
+              )}
+              {repoSource === "local" && (
+                <div className="col-span-2">
+                  <Label htmlFor="repo-local-path">Server directory path</Label>
+                  <Input
+                    id="repo-local-path"
+                    data-testid="repo-local-path"
+                    value={repoLocalPath}
+                    onChange={(e) => setRepoLocalPath(e.target.value)}
+                    placeholder="/srv/code/my-app"
+                  />
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Must be inside an allowlisted{" "}
+                    <span className="font-mono">LOCAL_SOURCE_ROOTS</span> directory. Requires admin.
+                  </p>
+                </div>
+              )}
+              {repoSource === "upload" && (
+                <div className="col-span-2">
+                  <Label htmlFor="repo-upload">Folder archive (.zip)</Label>
+                  <input
+                    id="repo-upload"
+                    data-testid="repo-upload-input"
+                    type="file"
+                    accept=".zip,application/zip"
+                    className="w-full text-sm"
+                    onChange={(e) => setRepoUploadFile(e.target.files?.[0] ?? null)}
+                  />
+                </div>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              {repoSource === "github" && (
+                <Button
+                  data-testid="add-repo-github"
+                  onClick={() => createRepo.mutate()}
+                  disabled={!repoFormValid || createRepo.isPending}
+                >
+                  Add repo connector
+                </Button>
+              )}
+              {repoSource === "local" && (
+                <Button
+                  data-testid="add-repo-local"
+                  onClick={() => createLocalRepo.mutate()}
+                  disabled={
+                    repoLabel.trim().length === 0 ||
+                    repoLocalPath.trim().length === 0 ||
+                    createLocalRepo.isPending
+                  }
+                >
+                  Add local directory
+                </Button>
+              )}
+              {repoSource === "upload" && (
+                <Button
+                  data-testid="add-repo-upload"
+                  onClick={() => createUploadRepo.mutate()}
+                  disabled={
+                    repoLabel.trim().length === 0 || !repoUploadFile || createUploadRepo.isPending
+                  }
+                >
+                  Upload folder
+                </Button>
+              )}
+              {repoSource === "github" && !isRepoRefOrEmpty(repoRef) ? (
+                <span className="text-sm text-destructive">
+                  &quot;{repoRef.trim()}&quot; is not a valid branch or tag name.
+                </span>
+              ) : null}
+              {repoSource === "github" && !isVaultRefOrEmpty(repoSecretRef) ? (
+                <span className="text-sm text-destructive">
+                  Secret ref must look like ${"${vault:name}"}.
+                </span>
+              ) : null}
+              {repoError ? <span className="text-sm text-destructive">{repoError}</span> : null}
+            </div>
+          </Card>
+        ) : (
+          <p className="text-sm text-muted-foreground" data-testid="repo-connector-forbidden">
+            Ask an admin or coordinator to add repository connectors.
+          </p>
+        )}
 
         <ul className="space-y-2">
           {(repos.data ?? []).map((r) => (
@@ -863,6 +889,8 @@ export default function ConnectionsPage() {
                               ✕
                             </Button>
                           </span>
+                        ) : !canWriteConnectors ? (
+                          <span>{r.defaultBranch}</span>
                         ) : (
                           <button
                             className="underline decoration-dotted hover:text-foreground"
@@ -930,6 +958,8 @@ export default function ConnectionsPage() {
                               ✕
                             </Button>
                           </span>
+                        ) : !canWriteConnectors ? (
+                          <span>{r.secretRef || <span className="italic">not set</span>}</span>
                         ) : (
                           <button
                             className="underline decoration-dotted hover:text-foreground"
@@ -991,6 +1021,12 @@ export default function ConnectionsPage() {
                               ✕
                             </Button>
                           </span>
+                        ) : !canWriteConnectors ? (
+                          <span>
+                            {r.apiBaseUrl || (
+                              <span className="italic text-muted-foreground/60">not set</span>
+                            )}
+                          </span>
                         ) : (
                           <button
                             className="underline decoration-dotted hover:text-foreground"
@@ -1015,7 +1051,7 @@ export default function ConnectionsPage() {
                     >
                       {repoStatusLabel(r as RepoConnectorWithIngest)}
                     </span>
-                    {!r.isPrimary && (repos.data ?? []).length > 1 && (
+                    {canWriteConnectors && !r.isPrimary && (repos.data ?? []).length > 1 && (
                       <Button
                         size="sm"
                         variant="outline"
@@ -1029,30 +1065,40 @@ export default function ConnectionsPage() {
                     <Button size="sm" variant="outline" onClick={() => testRepo.mutate(r.id)}>
                       Test
                     </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => refreshIngestRepo.mutate(r.id)}
-                      disabled={isRepoIngesting}
-                      title="Pull latest commits and re-ingest changed files"
-                    >
-                      {refreshIngestRepo.isPending && refreshIngestRepo.variables === r.id
-                        ? "Syncing…"
-                        : "Sync"}
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => deepIngest.start(r.id)}
-                      disabled={isRepoIngesting}
-                      title="Fresh clone and full re-ingest (first-time setup)"
-                    >
-                      {deepIngest.runningConnectorId === r.id ? "Ingesting…" : "Deep Ingest"}
-                    </Button>
+                    {canWriteConnectors ? (
+                      <>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => refreshIngestRepo.mutate(r.id)}
+                          disabled={isRepoIngesting}
+                          title="Pull latest commits and re-ingest changed files"
+                        >
+                          {refreshIngestRepo.isPending && refreshIngestRepo.variables === r.id
+                            ? "Syncing…"
+                            : "Sync"}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => deepIngest.start(r.id)}
+                          disabled={isRepoIngesting}
+                          title="Fresh clone and full re-ingest (first-time setup)"
+                        >
+                          {deepIngest.runningConnectorId === r.id ? "Ingesting…" : "Deep Ingest"}
+                        </Button>
+                      </>
+                    ) : null}
                     <RebuildCacheButton projectId={projectId} repoId={r.id} />
-                    <Button size="sm" variant="destructive" onClick={() => removeRepo.mutate(r.id)}>
-                      Delete
-                    </Button>
+                    {canWriteConnectors ? (
+                      <Button
+                        size="sm"
+                        variant="destructive"
+                        onClick={() => removeRepo.mutate(r.id)}
+                      >
+                        Delete
+                      </Button>
+                    ) : null}
                   </div>
                 </div>
                 {progressMap[r.id] && (
@@ -1186,98 +1232,104 @@ export default function ConnectionsPage() {
       {/* ── DB connectors ───────────────────────────────────────────── */}
       <section className="space-y-3">
         <h2 className="text-lg font-medium">Database connectors</h2>
-        <Card className="space-y-3 p-4">
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <Label htmlFor="db-label">Label</Label>
-              <Input id="db-label" value={dbLabel} onChange={(e) => setDbLabel(e.target.value)} />
+        {canWriteConnectors ? (
+          <Card className="space-y-3 p-4">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label htmlFor="db-label">Label</Label>
+                <Input id="db-label" value={dbLabel} onChange={(e) => setDbLabel(e.target.value)} />
+              </div>
+              <div>
+                <Label htmlFor="db-driver">Driver</Label>
+                <select
+                  id="db-driver"
+                  className="mt-1 block w-full rounded border px-2 py-1 text-sm"
+                  value={dbDriver}
+                  onChange={(e) => setDbDriver(e.target.value)}
+                >
+                  <option value="postgres">postgres</option>
+                  <option value="mysql">mysql</option>
+                  <option value="oracle">oracle</option>
+                  <option value="sqlserver">sqlserver</option>
+                </select>
+              </div>
+              <div>
+                <Label htmlFor="db-host">Host</Label>
+                <Input id="db-host" value={dbHost} onChange={(e) => setDbHost(e.target.value)} />
+              </div>
+              <div>
+                <Label htmlFor="db-port">Port</Label>
+                <Input
+                  id="db-port"
+                  value={dbPort}
+                  onChange={(e) => setDbPort(e.target.value)}
+                  inputMode="numeric"
+                />
+              </div>
+              <div>
+                <Label htmlFor="db-name">Database</Label>
+                <Input
+                  id="db-name"
+                  value={dbDatabase}
+                  onChange={(e) => setDbDatabase(e.target.value)}
+                />
+              </div>
+              <div>
+                <Label htmlFor="db-user">Username</Label>
+                <Input
+                  id="db-user"
+                  value={dbUsername}
+                  onChange={(e) => setDbUsername(e.target.value)}
+                />
+              </div>
+              <div className="col-span-2">
+                <Label htmlFor="db-secret">Secret ref (vault)</Label>
+                <VaultPicker
+                  id="db-secret"
+                  value={dbSecretRef}
+                  onChange={setDbSecretRef}
+                  placeholder="${vault:my-pw-label}"
+                />
+              </div>
+              <div className="col-span-2">
+                <Label htmlFor="db-allow-tables">Allowed tables (optional)</Label>
+                <Input
+                  id="db-allow-tables"
+                  value={dbAllowTables}
+                  onChange={(e) => setDbAllowTables(e.target.value)}
+                  placeholder="people, orders, public.invoices"
+                />
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Comma- or newline-separated. When set, AI queries may only touch these tables.
+                  Leave blank to allow all tables (read-only validation still applies).
+                </p>
+              </div>
+              <div className="col-span-2">
+                <Label htmlFor="db-allow-columns">Allowed columns (optional)</Label>
+                <Input
+                  id="db-allow-columns"
+                  value={dbAllowColumns}
+                  onChange={(e) => setDbAllowColumns(e.target.value)}
+                  placeholder="id, name, created_at"
+                />
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Optional column allow-list. When set, <code>SELECT *</code> and any non-listed
+                  column are rejected.
+                </p>
+              </div>
             </div>
-            <div>
-              <Label htmlFor="db-driver">Driver</Label>
-              <select
-                id="db-driver"
-                className="mt-1 block w-full rounded border px-2 py-1 text-sm"
-                value={dbDriver}
-                onChange={(e) => setDbDriver(e.target.value)}
-              >
-                <option value="postgres">postgres</option>
-                <option value="mysql">mysql</option>
-                <option value="oracle">oracle</option>
-                <option value="sqlserver">sqlserver</option>
-              </select>
+            <div className="flex items-center gap-2">
+              <Button onClick={() => createDb.mutate()} disabled={!dbLabel || createDb.isPending}>
+                Add database connector
+              </Button>
+              {dbError ? <span className="text-sm text-destructive">{dbError}</span> : null}
             </div>
-            <div>
-              <Label htmlFor="db-host">Host</Label>
-              <Input id="db-host" value={dbHost} onChange={(e) => setDbHost(e.target.value)} />
-            </div>
-            <div>
-              <Label htmlFor="db-port">Port</Label>
-              <Input
-                id="db-port"
-                value={dbPort}
-                onChange={(e) => setDbPort(e.target.value)}
-                inputMode="numeric"
-              />
-            </div>
-            <div>
-              <Label htmlFor="db-name">Database</Label>
-              <Input
-                id="db-name"
-                value={dbDatabase}
-                onChange={(e) => setDbDatabase(e.target.value)}
-              />
-            </div>
-            <div>
-              <Label htmlFor="db-user">Username</Label>
-              <Input
-                id="db-user"
-                value={dbUsername}
-                onChange={(e) => setDbUsername(e.target.value)}
-              />
-            </div>
-            <div className="col-span-2">
-              <Label htmlFor="db-secret">Secret ref (vault)</Label>
-              <VaultPicker
-                id="db-secret"
-                value={dbSecretRef}
-                onChange={setDbSecretRef}
-                placeholder="${vault:my-pw-label}"
-              />
-            </div>
-            <div className="col-span-2">
-              <Label htmlFor="db-allow-tables">Allowed tables (optional)</Label>
-              <Input
-                id="db-allow-tables"
-                value={dbAllowTables}
-                onChange={(e) => setDbAllowTables(e.target.value)}
-                placeholder="people, orders, public.invoices"
-              />
-              <p className="mt-1 text-xs text-muted-foreground">
-                Comma- or newline-separated. When set, AI queries may only touch these tables. Leave
-                blank to allow all tables (read-only validation still applies).
-              </p>
-            </div>
-            <div className="col-span-2">
-              <Label htmlFor="db-allow-columns">Allowed columns (optional)</Label>
-              <Input
-                id="db-allow-columns"
-                value={dbAllowColumns}
-                onChange={(e) => setDbAllowColumns(e.target.value)}
-                placeholder="id, name, created_at"
-              />
-              <p className="mt-1 text-xs text-muted-foreground">
-                Optional column allow-list. When set, <code>SELECT *</code> and any non-listed
-                column are rejected.
-              </p>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <Button onClick={() => createDb.mutate()} disabled={!dbLabel || createDb.isPending}>
-              Add database connector
-            </Button>
-            {dbError ? <span className="text-sm text-destructive">{dbError}</span> : null}
-          </div>
-        </Card>
+          </Card>
+        ) : (
+          <p className="text-sm text-muted-foreground" data-testid="db-connector-forbidden">
+            Ask an admin or coordinator to add database connectors.
+          </p>
+        )}
 
         <ul className="space-y-2">
           {(dbs.data ?? []).map((d) => (
@@ -1323,15 +1375,19 @@ export default function ConnectionsPage() {
                   <Button size="sm" variant="outline" onClick={() => testDb.mutate(d.id)}>
                     Test
                   </Button>
-                  <Button size="sm" variant="outline" onClick={() => ingestDb.mutate(d.id)}>
-                    Ingest
-                  </Button>
+                  {canWriteConnectors ? (
+                    <Button size="sm" variant="outline" onClick={() => ingestDb.mutate(d.id)}>
+                      Ingest
+                    </Button>
+                  ) : null}
                   <Button size="sm" variant="outline" onClick={() => setQueryDbId(d.id)}>
                     Query
                   </Button>
-                  <Button size="sm" variant="destructive" onClick={() => removeDb.mutate(d.id)}>
-                    Delete
-                  </Button>
+                  {canWriteConnectors ? (
+                    <Button size="sm" variant="destructive" onClick={() => removeDb.mutate(d.id)}>
+                      Delete
+                    </Button>
+                  ) : null}
                 </div>
                 {testResults[`db:${d.id}`] ? (
                   <ConnectorTestResultLine
@@ -1375,6 +1431,7 @@ export default function ConnectionsPage() {
         <DatabaseResourceManager
           projectId={projectId}
           workspaceId={project.data ? (project.data.workspaceId ?? null) : undefined}
+          canWrite={canWriteConnectors}
         />
       </section>
       {wizardSuggestion ? (

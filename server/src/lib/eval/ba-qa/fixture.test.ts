@@ -145,6 +145,13 @@ describe("source helpers", () => {
     expect(expectedSourceFiles(f.questions[0])).toEqual(["srv:FRD.md", "srv:a.go"]);
     expect(expectedSourceFiles(f.questions[2])).toEqual([]);
     expect(requiredCodeFiles(f)).toEqual(["cli:c.py", "srv:a.go"]);
+    // Keyed as every eval keys a file (`fileKey`): a leading `./` is dropped.
+    const dotted = base();
+    dotted.questions[0].sources![0].path = "./a.go";
+    expect(expectedSourceFiles(parseBaQaFixture(dotted).questions[0])).toEqual([
+      "srv:FRD.md",
+      "srv:a.go",
+    ]);
   });
 
   it("refuses a corpus id that is not a plain name", () => {
