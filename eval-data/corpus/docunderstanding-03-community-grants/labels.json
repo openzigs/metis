@@ -2,8 +2,8 @@
   "corpusId": "docunderstanding-03-community-grants",
   "title": "Harbour City Council: Community Grants Management System, Functional Requirements Document",
   "license": "CC0-1.0",
-  "labelStatus": "author-labelled while writing the synthetic document; not yet reviewed by a second person",
-  "sourceSha256": "c358fc86fbb3f37d8fb01faed87a9a937c3b711779628ae5282bda4f6141b596",
+  "labelStatus": "author-labelled while writing the synthetic document; cross-checked by two independent blind AI reviewers; disagreements judged by an AI and each judgement confirmed by a person (#2255)",
+  "sourceSha256": "00c68aa6dd7f5c557a6d42b155c6dac9d21e528dfc414ea70af430ab8a21ea64",
   "sections": [
     "Harbour City Council: Community Grants Management System, Functional Requirements Document",
     "About this document",
@@ -211,6 +211,11 @@
       "span": "The Youth Voice fund application form shall use plain language suitable for applicants aged 13 to 25, and shall allow a group of young people to apply with the support of a named adult."
     },
     {
+      "id": "R103",
+      "section": "6.3 Accessibility of the application process",
+      "span": "The application process should be quick to complete for small grants."
+    },
+    {
       "id": "R31",
       "section": "7.1 Allocating assessors",
       "span": "A grants officer shall be able to allocate applications to assessors, and the system shall require two independent assessors for any application requesting more than 10,000."
@@ -251,6 +256,11 @@
       "span": "A grants officer shall carry out due diligence on every application recommended for funding before it goes to the decision-maker, recording the checks made and their outcome."
     },
     {
+      "id": "R104",
+      "section": "7.2 Scoring and moderation",
+      "span": "Due diligence includes checking the organisation's accounts, its governing document and, for grants over 25,000, a credit check."
+    },
+    {
       "id": "R39",
       "section": "8.1 Decision-making authority",
       "span": "A grants officer can decide on grants of up to 5,000 under delegated authority."
@@ -274,6 +284,11 @@
       "id": "R43",
       "section": "8.1 Decision-making authority",
       "span": "The system shall route each recommended application to the decision-maker required by the scheme of delegation, based on the total value of the grant over its whole term."
+    },
+    {
+      "id": "R105",
+      "section": "8.1 Decision-making authority",
+      "span": "For multi-year Strategic Partnerships grants, the total over all years determines the decision-maker."
     },
     {
       "id": "R44",
@@ -521,6 +536,11 @@
       "span": "Strategic Partnerships grants that are in progress at go-live shall be migrated with their agreements, payment schedules and monitoring reports, so that they can be managed in the system from go-live."
     },
     {
+      "id": "R106",
+      "section": "Appendix A. Programme-specific rules",
+      "span": "The system must allow these rules to be applied for the programme concerned without affecting other programmes."
+    },
+    {
       "id": "R93",
       "section": "A.1 Neighbourhood Fund",
       "span": "A Neighbourhood Fund application shall record the neighbourhood the project serves, chosen from the council's list of neighbourhoods, and the system shall add the priority weighting set for the round to the weighted score of applications from priority neighbourhoods."
@@ -615,7 +635,7 @@
     },
     {
       "id": "A4",
-      "kind": "conflict",
+      "kind": "missing",
       "description": "the decision table bands are \"up to 5,000\" and \"5,001 to 25,000\", but monitoring and signature rules use \"over 5,000\", so a grant of 5,000.50 or a multi-year total near a boundary is unclear",
       "question": "How are amounts between band boundaries, such as 5,000.50, treated for decision-making?",
       "requirements": ["R39", "R40"],
@@ -627,7 +647,7 @@
     },
     {
       "id": "A5",
-      "kind": "conflict",
+      "kind": "missing",
       "description": "decision-making uses the whole-term total for multi-year grants, but the document does not say whether the monitoring and payment tables use the annual or the total amount",
       "question": "For multi-year grants, do the monitoring, signature and instalment rules use the annual amount or the total over the term?",
       "requirements": ["R43", "R40"],
@@ -662,7 +682,7 @@
     },
     {
       "id": "A8",
-      "kind": "conflict",
+      "kind": "missing",
       "description": "grants over 10,000 are paid in instalments, while Strategic Partnerships instalments depend on quarterly monitoring; for a 12,000 Neighbourhood grant, the monitoring rules require only a mid-point report, so the release condition for later instalments is unstated",
       "question": "What condition releases the second and later instalments of a non-Strategic grant over 10,000?",
       "requirements": ["R57", "R58"],
@@ -686,7 +706,7 @@
     },
     {
       "id": "A10",
-      "kind": "conflict",
+      "kind": "missing",
       "description": "two assessors are needed above 10,000, and a grants officer can decide alone up to 5,000; the document does not say whether the officer who decides may also be the assessor",
       "question": "May a grants officer assess an application and then decide it under delegated authority?",
       "requirements": ["R31", "R39"],
@@ -743,6 +763,39 @@
         "An organisation shall enter its bank details in the system, and the system shall verify that the account name matches the organisation's name using the council's bank account verification service before the details can be used for a payment."
       ],
       "sections": ["A.3 Small Sparks", "5.3 Bank details"]
+    },
+    {
+      "id": "A15",
+      "kind": "undefined-term",
+      "description": "'Connected with' and 'related' are not defined, and no verification of unrelatedness is described",
+      "question": "What counts as connected and as related, and how is unrelatedness checked or declared?",
+      "requirements": ["R8"],
+      "spans": [
+        "A person shall be able to register an organisation in the system by giving its name, address, legal form, charity or company number if it has one, and the details of at least two people connected with it who are not related to each other."
+      ],
+      "sections": ["5.1 Registering an organisation"]
+    },
+    {
+      "id": "A16",
+      "kind": "missing",
+      "description": "only the expiry of accounts is defined; the expiry rules for other documents and the effect of expiry on open applications are not given",
+      "question": "How are expiry dates set for the governing document and policies, and does an expired document block applying or payment?",
+      "requirements": ["R14"],
+      "spans": [
+        "The system shall record an expiry date for each organisation document and shall ask the organisation to upload a new version when one expires."
+      ],
+      "sections": ["5.2 Organisation documents"]
+    },
+    {
+      "id": "A17",
+      "kind": "undefined-term",
+      "description": "the due dates of the mid-point and end-of-grant reports are not defined, although reminders and overdue status depend on them",
+      "question": "How are due dates for each report type set and by whom?",
+      "requirements": ["R68"],
+      "spans": [
+        "Recipients of grants from 5,001 to 25,000 submit a mid-point report and an end-of-grant report."
+      ],
+      "sections": ["12.1 Monitoring reports"]
     }
   ]
 }
