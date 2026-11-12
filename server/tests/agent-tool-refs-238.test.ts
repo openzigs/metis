@@ -294,6 +294,7 @@ describe("#727 agentSelectableTools — the authoring picker offers the code too
       "search_code_graph",
       "search_code_symbols",
       "read_file_slice",
+      "get_index_status", // #2326
     ]);
     for (const t of listed.slice(1)) {
       expect(t.risk).toBe("low");

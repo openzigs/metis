@@ -254,10 +254,11 @@ describe("buildAutoRagContext — cited excerpts carry forward (#2240)", () => {
       excerpts: [{ n: 1, chunkId: "x", name: "x", locator: "x#0" }],
     };
     // #2241 — the model is told the search failed, and the capture says so.
-    expect(await buildAutoRagContext("p1", followUp, "u1", deps(), cap)).toBe(
-      RETRIEVAL_FAILED_BLOCK,
-    );
-    expect(cap).toEqual({ contexts: [], sources: 0, failed: true });
+    // #2326 — with the project and the class of failure.
+    const out = await buildAutoRagContext("p1", followUp, "u1", deps(), cap);
+    expect(out.startsWith(RETRIEVAL_FAILED_BLOCK)).toBe(true);
+    expect(out).toContain('Retrieval failed for "Reader": unexpected error.');
+    expect(cap).toEqual({ contexts: [], sources: 0, failed: true, failure: "unexpected error" });
   });
 });
 

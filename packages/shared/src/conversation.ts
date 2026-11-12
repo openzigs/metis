@@ -101,6 +101,12 @@ export type TranscriptRole = "user" | "assistant" | "system";
  * - `coverage` is set when only part of the project's knowledge could be
  *   searched (chunks embedded with another model).
  *
+ * #2326 — and whether the index itself can be trusted:
+ * - `index` gives each repository's last indexed commit and time and how its
+ *   last indexing run ended, with the project's worst `state`;
+ * - a `retrieval-failed` reply names the class of failure (`failure`), one of
+ *   {@link INDEX_ERROR_CLASSES}, never the error's text.
+ *
  * `projectName` is the project's name when the reply was answered, and stays
  * so after a rename (#439, deliberate): the label records what the reply was
  * grounded in at the time, and it must still read after the project is
@@ -115,6 +121,7 @@ export type ChatGrounding =
       toolReads?: number;
       sourcesUsed?: GroundingSource[];
       coverage?: GroundingCoverage;
+      index?: GroundingIndex;
     }
   | {
       status: "no-context";
@@ -123,6 +130,8 @@ export type ChatGrounding =
       reason?: NoContextReason;
       belowFloor?: number;
       coverage?: GroundingCoverage;
+      failure?: IndexErrorClass;
+      index?: GroundingIndex;
     }
   | { status: "unscoped" }
   | {
@@ -161,6 +170,66 @@ export interface GroundingCoverage {
   matchingChunks: number;
   totalChunks: number;
 }
+
+/**
+ * #2326 — the fixed phrases an index or retrieval error is reduced to. Error
+ * text itself (which can carry a path, a host or a token) never reaches the
+ * model or the UI.
+ */
+export const INDEX_ERROR_CLASSES = [
+  "timed out",
+  "authentication failed",
+  "repository not found",
+  "network error",
+  "embedding model unavailable",
+  "vector index unavailable",
+  "database error",
+  "out of disk space or memory",
+  "access check failed",
+  "unexpected error",
+] as const;
+export type IndexErrorClass = (typeof INDEX_ERROR_CLASSES)[number];
+
+/** #2326 — a project's index, worst state first. */
+export const INDEX_STATES = [
+  "failed",
+  "never-indexed",
+  "in-progress",
+  "partial",
+  "healthy",
+] as const;
+export type IndexState = (typeof INDEX_STATES)[number];
+
+/** #2326 — how a repository's last indexing run ended (`unrecorded`: before #182). */
+export const LAST_RUN_STATUSES = [
+  "completed",
+  "partial",
+  "failed",
+  "running",
+  "interrupted",
+  "never",
+  "unrecorded",
+] as const;
+export type LastRunStatus = (typeof LAST_RUN_STATUSES)[number];
+
+/** #2326 — one repository's index, as a reply's grounding label shows it. */
+export interface GroundingIndexRepo {
+  label: string;
+  commitSha?: string;
+  /** ISO time it was last indexed. */
+  indexedAt?: string;
+  lastRun: LastRunStatus;
+  error?: IndexErrorClass;
+}
+
+/** #2326 — the project's index when the reply was answered. */
+export interface GroundingIndex {
+  state: IndexState;
+  repos: GroundingIndexRepo[];
+}
+
+/** #2326 — the most repositories a label lists. */
+export const MAX_GROUNDING_INDEX_REPOS = 10;
 
 /** #2241 — why automatic retrieval supplied nothing. */
 export const NO_CONTEXT_REASONS = [
@@ -209,6 +278,36 @@ function parseCoverage(v: unknown): GroundingCoverage | undefined {
     : undefined;
 }
 
+/** An ISO-8601 time that parses; anything else is dropped. */
+function isoTime(v: unknown): v is string {
+  return typeof v === "string" && v.length <= 40 && Number.isFinite(Date.parse(v));
+}
+
+/** #2326 — the `index` part, or `undefined` when it is malformed. */
+function parseIndex(v: unknown): GroundingIndex | undefined {
+  if (!v || typeof v !== "object") return undefined;
+  const i = v as Record<string, unknown>;
+  const state = INDEX_STATES.find((s) => s === i.state);
+  if (!state || !Array.isArray(i.repos)) return undefined;
+  const repos: GroundingIndexRepo[] = [];
+  for (const raw of i.repos.slice(0, MAX_GROUNDING_INDEX_REPOS)) {
+    const r = (raw ?? {}) as Record<string, unknown>;
+    const lastRun = LAST_RUN_STATUSES.find((s) => s === r.lastRun);
+    if (!nonEmpty(r.label) || r.label.length > 200 || !lastRun) continue;
+    const error = INDEX_ERROR_CLASSES.find((c) => c === r.error);
+    repos.push({
+      label: r.label,
+      ...(nonEmpty(r.commitSha) && /^[0-9a-f]{4,64}$/i.test(r.commitSha)
+        ? { commitSha: r.commitSha }
+        : {}),
+      ...(isoTime(r.indexedAt) ? { indexedAt: r.indexedAt } : {}),
+      lastRun,
+      ...(error ? { error } : {}),
+    });
+  }
+  return { state, repos };
+}
+
 /**
  * #18 — accept a {@link ChatGrounding} only in the shape the UI renders. The
  * server reads it back from a row's free-form `meta`, the client from an SSE
@@ -227,6 +326,12 @@ export function parseChatGrounding(value: unknown): ChatGrounding | null {
       // the label then says only what it said before.
       const reason = NO_CONTEXT_REASONS.find((r) => r === g.reason);
       const coverage = parseCoverage(g.coverage);
+      // #2326 — only a phrase from the fixed vocabulary, and only for a failure.
+      const failure =
+        reason === "retrieval-failed"
+          ? INDEX_ERROR_CLASSES.find((c) => c === g.failure)
+          : undefined;
+      const index = parseIndex(g.index);
       return {
         status: "no-context",
         projectId: g.projectId,
@@ -236,6 +341,8 @@ export function parseChatGrounding(value: unknown): ChatGrounding | null {
           ? { belowFloor: g.belowFloor }
           : {}),
         ...(coverage ? { coverage } : {}),
+        ...(failure ? { failure } : {}),
+        ...(index ? { index } : {}),
       };
     }
     case "grounded": {
@@ -254,6 +361,7 @@ export function parseChatGrounding(value: unknown): ChatGrounding | null {
       }
       const sourcesUsed = parseSources(g.sourcesUsed);
       const coverage = parseCoverage(g.coverage);
+      const index = parseIndex(g.index);
       return {
         status: "grounded",
         projectId: g.projectId,
@@ -262,6 +370,7 @@ export function parseChatGrounding(value: unknown): ChatGrounding | null {
         ...(hasToolReads ? { toolReads: g.toolReads as number } : {}),
         ...(sourcesUsed ? { sourcesUsed } : {}),
         ...(coverage ? { coverage } : {}),
+        ...(index ? { index } : {}),
       };
     }
     case "multi":

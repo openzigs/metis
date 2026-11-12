@@ -960,6 +960,44 @@ The first "tools only" run and the `on` run each have one unscored judge reply (
   tokens instead. The nine runs, one of them a 1-question smoke run, cost **$2.764553**
   (answers and judge).
 
+### Index status (#2326), 2026-11-12
+
+`--index-fault failed|partial` records every product's last indexing run as failed (an embedding
+timeout) or partial (200 of 500 eligible files, 300 past the file limit) for one run, and
+restores the record afterwards. The indexed content is left as it is, so the arms differ only in
+what the model is told. `CHAT_INDEX_STATUS` controls that: when the index is unhealthy, a status
+line leads the retrieved-knowledge block, and `get_index_status` is offered. The scorer
+(`server/src/lib/eval/ba-qa/index-fault.ts`, `mentionsIndexProblem`) counts the answers that say
+the index failed, is partial or is incomplete. These were Sonnet 5.5 runs on the `tools-only`
+arm, using the nine single-product questions:
+
+```bash
+CHAT_INDEX_STATUS=0 pnpm eval:ba-qa --arm tools-only --budget 2 --index-fault failed --questions S1,S2,S3,S4,S5,S6,A3,U3,U4
+CHAT_INDEX_STATUS=1 pnpm eval:ba-qa --arm tools-only --budget 2 --index-fault failed --questions S1,S2,S3,S4,S5,S6,A3,U3,U4
+```
+
+| | failed, before | failed, after | partial, before | partial, after |
+|---|---:|---:|---:|---:|
+| Answers that state the index problem | 0/9 | **7/9** | 0/9 | **8/9** |
+| Abstentions that assert absence without it | 2/2 | 2/2 | 2/2 | **0/2** |
+| Correctness: mean facts stated | 86% | 80% | 84% | 76% |
+| Citation precision | 84% (38/45) | 81% (29/36) | 88% (36/41) | 82% (31/38) |
+| Abstention on unanswerable / false abstention | 2/2, 0/6 | 2/2, 0/6 | 2/2, 0/6 | 2/2, 0/6 |
+| Input tokens / question | 31,300 | 25,500 | 26,900 | 26,100 |
+
+- **Without the status, no answer mentioned the index.** That held in both faults, because the
+  model had no way to know about it. With the status on, 7 and 8 of 9 answers said the index was
+  failed or partial. In the partial run, both abstentions on unanswerable questions (U3 uptime
+  promise, U4 download counts) named the partial index instead of only asserting absence. In the
+  failed run they did not. The answer to both of those questions really is outside the code, so
+  asserting absence there is not wrong.
+- **Facts stated and precision fell by 3 to 8 points with the status on.** That is within the
+  run-to-run spread on this set: two runs of the same arm differed by 7 points in #2324's
+  measurement. The status line is only added when the index is unhealthy, so a healthy project's
+  prompt is unchanged. `CHAT_INDEX_STATUS` is **on by default**.
+- The status line costs about 80 tokens per turn when it is shown. The four runs spent $1.445313,
+  answers and judge.
+
 ### Relevance floor (#2241)
 
 `pnpm eval:ba-qa --floor-sweep` asks no model and spends $0. After the knowledge step, it runs

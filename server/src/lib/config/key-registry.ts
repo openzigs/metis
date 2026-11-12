@@ -971,6 +971,15 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
       "Master enable for agentic code-search TOOLS in chat + stream (#713). ON by default since #2243, measured on the #2237 BA question set (single-product questions: facts stated 51% → 73–84%, citation precision 28% → 80–83%, about 4x the input tokens per question; eval-data/README.md); set false to turn them off. When on, project-scoped sessions may call search_code_graph (exact graph traversal), search_code_symbols (hybrid BM25+vector symbol search) and read_file_slice (up to 200 lines from the project's own repo clones, #736) — offered and EXECUTED on every provider path (Copilot SDK, native-Anthropic, bedrock-direct) via the shared textual agent loop, even without loaded skills. Tool schemas render deterministically into the byte-stable prompt lead, so the flag flips the cached prefix ONCE per deploy (expected); the per-turn latency cost is one extra bounded model round-trip per executed tool call (loop capped at a few turns). When off, no code tools are offered and, with CHAT_TOOLS also off or the model not tool-capable, no loop runs. Distinct from CHAT_FUSED_CODE_RETRIEVAL (#714), which is PASSIVE per-request retrieval into the volatile tail.",
     sensitive: false,
   },
+  // ── #2326 — tell the model when the index is stale, partial or failed ─
+  CHAT_INDEX_STATUS: {
+    tier: "tunable",
+    valueType: "bool",
+    schema: z.coerce.boolean(),
+    description:
+      "Tell the chat model when a project's index cannot be trusted (#2326). ON by default. With the code-search tools on, chat is offered `get_index_status` (per repository: last indexed commit and time, how the last indexing run ended with a classified error, symbol and document counts, files indexed and skipped), and a project whose index is failed, never built, partial or still being built gets one status line in the retrieved-knowledge block on every turn, telling the model not to conclude the project lacks what a search did not find. Off: neither. The reply's grounding label (last indexed commit, last run, a warning), the classified retrieval-failure statement and the partial-coverage note do not depend on this key.",
+    sensitive: false,
+  },
   // ── Epic #128 — one tool runtime + enforced approval gate ─────────────
   CHAT_TOOLS: {
     tier: "tunable",

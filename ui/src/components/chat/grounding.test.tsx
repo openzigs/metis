@@ -1,7 +1,14 @@
 /** #18 — the words a user reads about what an answer is based on. */
 import { describe, it, expect } from "vitest";
 import { render, screen, within } from "@testing-library/react";
-import { GroundingBadge, UngroundedScopeNotice, coverageText, groundingText } from "./grounding";
+import {
+  GroundingBadge,
+  UngroundedScopeNotice,
+  coverageText,
+  groundingText,
+  indexText,
+  indexWarningText,
+} from "./grounding";
 
 describe("groundingText (#18)", () => {
   it("names the project and counts its sources", () => {
@@ -149,6 +156,81 @@ describe("GroundingBadge — sources and coverage (#2241)", () => {
     );
     expect(screen.getByTestId("chat-grounding")).not.toHaveAttribute("data-reason");
     expect(screen.queryByTestId("chat-grounding-coverage")).toBeNull();
+  });
+});
+
+describe("index status on the label (#2326)", () => {
+  const repo = {
+    label: "acme-app",
+    commitSha: "c4d54f87abcdef",
+    indexedAt: "2026-11-12T05:09:41.000Z",
+    lastRun: "completed",
+  } as const;
+  const groundedWith = (index: { state: string; repos: unknown[] }) =>
+    ({
+      status: "grounded",
+      projectId: "p",
+      projectName: "Payments",
+      sources: 2,
+      index,
+    }) as never;
+
+  it("shows each repository's last indexed commit and time and its last run", () => {
+    render(<GroundingBadge grounding={groundedWith({ state: "healthy", repos: [repo] })} />);
+    expect(screen.getByTestId("chat-grounding-index").textContent).toBe(
+      "Index: acme-app @ c4d54f8, indexed 2026-11-12 05:09 UTC · last run completed",
+    );
+    // Healthy: no warning.
+    expect(screen.queryByTestId("chat-grounding-index-warning")).toBeNull();
+    expect(indexWarningText(groundedWith({ state: "healthy", repos: [repo] }))).toBeNull();
+  });
+
+  it.each([
+    ["failed", "the last indexing run failed"],
+    ["partial", "the index is partial"],
+    ["in-progress", "indexing is still in progress"],
+    ["never-indexed", "nothing in this project has been indexed yet"],
+  ])("warns, visibly, when the index is %s", (state, words) => {
+    render(
+      <GroundingBadge
+        grounding={groundedWith({
+          state,
+          repos: [{ ...repo, lastRun: "failed", error: "authentication failed" }],
+        })}
+      />,
+    );
+    const warning = screen.getByTestId("chat-grounding-index-warning");
+    expect(warning.textContent).toBe(
+      `Index warning — ${words}, so this reply may miss code or documents that are not indexed`,
+    );
+    expect(warning.className).toContain("text-warning");
+    expect(screen.getByTestId("chat-grounding-index").textContent).toContain(
+      "last run failed (authentication failed)",
+    );
+  });
+
+  it("says a repository that was never indexed, and has no line without repositories", () => {
+    expect(
+      indexText(
+        groundedWith({ state: "never-indexed", repos: [{ label: "r", lastRun: "never" }] }),
+      ),
+    ).toBe("Index: r, never indexed · last run never");
+    expect(indexText(groundedWith({ state: "never-indexed", repos: [] }))).toBeNull();
+    expect(indexText({ status: "unscoped" })).toBeNull();
+  });
+
+  it("names the class of a retrieval failure", () => {
+    expect(
+      groundingText({
+        status: "no-context",
+        projectId: "p",
+        projectName: "Payments",
+        reason: "retrieval-failed",
+        failure: "timed out",
+      }),
+    ).toBe(
+      "Retrieval failed — Payments's knowledge base could not be searched for this reply (timed out); check any file or code it names",
+    );
   });
 });
 

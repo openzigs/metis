@@ -166,10 +166,16 @@ describe("chat auto-RAG — buildAutoRagContext (#2225)", () => {
     state.roleReadFails = true;
     const capture = { contexts: [] as string[], sources: 0 };
     // #2241 — no excerpt; the model is only told the search failed.
-    await expect(buildAutoRagContext("p1", question, "carol", undefined, capture)).resolves.toBe(
-      RETRIEVAL_FAILED_BLOCK,
-    );
-    expect(capture).toEqual({ contexts: [], sources: 0, failed: true });
+    await expect(
+      buildAutoRagContext("p1", question, "carol", undefined, capture),
+    ).resolves.toContain(RETRIEVAL_FAILED_BLOCK);
+    // #2326 — the capture carries the class of failure too.
+    expect(capture).toEqual({
+      contexts: [],
+      sources: 0,
+      failed: true,
+      failure: expect.any(String),
+    });
   });
 });
 
@@ -280,7 +286,9 @@ describe("deprovisioned users (#2248)", () => {
 
   it("a deprovisioned admin's chat retrieves nothing: no bypass, no access", async () => {
     state.inactive = new Set(["root"]);
-    await expect(buildAutoRagContext("p1", question, "root")).resolves.toBe(RETRIEVAL_FAILED_BLOCK);
+    await expect(buildAutoRagContext("p1", question, "root")).resolves.toContain(
+      RETRIEVAL_FAILED_BLOCK,
+    );
   });
 
   it("a deprovisioned user's search-knowledge call fails, never searching", async () => {

@@ -34,6 +34,13 @@ export const CHAT_CODE_TOOL_DESCRIPTORS: ReadonlyArray<{
     description: "Read up to 200 numbered lines of a file in the project's repository.",
     risk: "low",
   },
+  {
+    // #2326 — whether the index is failed, partial or still being built.
+    name: "get_index_status",
+    description:
+      "Report the project's index: last indexed commit and time, how the last run ended, and coverage.",
+    risk: "low",
+  },
 ];
 
 export const CHAT_CODE_TOOL_NAMES: readonly string[] = CHAT_CODE_TOOL_DESCRIPTORS.map(

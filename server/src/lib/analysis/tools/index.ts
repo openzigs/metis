@@ -19,6 +19,7 @@ import type { AgentTool } from "./types.js";
 import { searchCodeGraphTool } from "./search-code-graph.js";
 import { createSearchSymbolsTool, type SearchSymbolsDeps } from "./search-symbols.js";
 import { createChatReadFileSliceTool } from "./chat-read-file-slice.js";
+import { indexStatusTool } from "./index-status.js";
 
 export { CHAT_CODE_TOOL_NAMES } from "./chat-code-tool-names.js";
 
@@ -36,6 +37,15 @@ export type ChatCodeToolDeps = Partial<SearchSymbolsDeps>;
  * #736 — plus `read_file_slice`, so a cited `file:line` can be quoted rather
  * than reported unverified. It reads only the session project's own clones.
  */
-export function getChatCodeTools(deps?: ChatCodeToolDeps): AgentTool[] {
-  return [searchCodeGraphTool, createSearchSymbolsTool(deps), createChatReadFileSliceTool()];
+export function getChatCodeTools(
+  deps?: ChatCodeToolDeps,
+  opts: { indexStatus?: boolean } = {},
+): AgentTool[] {
+  return [
+    searchCodeGraphTool,
+    createSearchSymbolsTool(deps),
+    createChatReadFileSliceTool(),
+    // #2326 — `CHAT_INDEX_STATUS`: what the index holds, and how its last run went.
+    ...(opts.indexStatus === false ? [] : [indexStatusTool]),
+  ];
 }

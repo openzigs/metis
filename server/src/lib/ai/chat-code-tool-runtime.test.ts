@@ -66,6 +66,7 @@ describe("buildChatCodeToolRuntime", () => {
 
     expect(a.enabled).toBe(true);
     expect(a.tools.map((t) => t.name).sort()).toEqual([
+      "get_index_status", // #2326
       "read_file_slice",
       "search_code_graph",
       "search_code_symbols",

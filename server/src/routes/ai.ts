@@ -24,9 +24,18 @@ import {
   sessionRoom,
   type ApiResponse,
   type CompactionEventDto,
+  type GroundingIndex,
+  type IndexErrorClass,
   type ModelCatalogResponse,
 } from "@metis/shared";
 import { requireAuth } from "../middleware/auth.js";
+import {
+  classifyIndexError,
+  indexStatusEnabled,
+  indexStatusLine,
+  readProjectIndexStatus,
+  toGroundingIndex,
+} from "../lib/ai/index-status.js";
 import { aiRateLimiter } from "../middleware/ai-rate-limit.js";
 import {
   conversationPreAuthRateLimiter,
@@ -614,6 +623,10 @@ export interface RagContextCapture {
    * embedded with another model are invisible to the current one.
    */
   coverage?: { matchingChunks: number; totalChunks: number };
+  /** #2326 — the class of a failed search (`failed`), never its text. */
+  failure?: IndexErrorClass;
+  /** #2326 — the project's index when the turn retrieved. */
+  index?: GroundingIndex;
 }
 
 /** #2240 — what the conversation adds to a turn's retrieval. */
@@ -689,6 +702,52 @@ export async function buildAutoRagContext(
   // the latest message read with the turn before it.
   const plan = planRetrievalQueries(messages);
   if (!plan || !projectId) return "";
+  // #2326 — read alongside the search: the index facts for the reply's label,
+  // and a status line when the index cannot be trusted. Best-effort: an
+  // unreadable status costs the turn its line, never its retrieval.
+  const statusRead = readProjectIndexStatus(projectId);
+  const cap: RagContextCapture = capture ?? { contexts: [], sources: 0 };
+  const block = await retrieveAutoRagBlock(projectId, plan, requester, fusedDeps, cap, opts);
+  const status = await statusRead;
+  // A healthy project with no repository has nothing for the label to show.
+  if (status && (status.repos.length > 0 || status.state !== "healthy")) {
+    cap.index = toGroundingIndex(status);
+  }
+  return [
+    status && indexStatusEnabled() ? indexStatusLine(status) : null,
+    block,
+    // #2326 — a partial coverage reaches the model too, not only the label.
+    cap.coverage ? partialCoverageNote(cap.coverage) : null,
+  ]
+    .filter((part): part is string => Boolean(part))
+    .join("\n\n");
+}
+
+/**
+ * #2326 — the model's note that only part of the project's knowledge could be
+ * searched (chunks embedded with another model are invisible to the current
+ * one), so an excerpt it did not get is not evidence of absence.
+ */
+export function partialCoverageNote(coverage: {
+  matchingChunks: number;
+  totalChunks: number;
+}): string {
+  return (
+    `Note: only ${coverage.matchingChunks} of the ${coverage.totalChunks} chunks in this ` +
+    `project's knowledge base could be searched (the rest were embedded with another model), so ` +
+    `something missing from these results may still be in the project; do not conclude it is absent.`
+  );
+}
+
+/** The retrieved-knowledge block of {@link buildAutoRagContext}, filling `capture`. */
+async function retrieveAutoRagBlock(
+  projectId: string,
+  plan: NonNullable<ReturnType<typeof planRetrievalQueries>>,
+  requester: string | SharedAudienceActor,
+  fusedDeps: FusedCodeDeps,
+  capture: RagContextCapture,
+  opts: AutoRagOptions,
+): Promise<string> {
   const searches = planSearches(plan);
   const documentIds =
     opts.documentIds && opts.documentIds.length > 0 ? [...opts.documentIds] : undefined;
@@ -865,12 +924,41 @@ export async function buildAutoRagContext(
       // #2241 — recorded, so the reply's label says the search failed.
       capture.failed = true;
     }
+    // #2326 — the model and the label get the class of failure; the log keeps
+    // the full detail (A09).
+    const failure = classifyIndexError(err);
+    capture.failure = failure;
     log.warn("Auto-RAG retrieval failed, continuing without context", {
       projectId,
+      failure,
       error: (err as Error).message,
+      stack: (err as Error).stack,
     });
-    return RETRIEVAL_FAILED_BLOCK;
+    let projectName = "this project";
+    try {
+      const project = await prisma.project.findUnique({
+        where: { id: projectId },
+        select: { name: true },
+      });
+      projectName = project?.name?.trim() || projectName;
+    } catch {
+      /* the name is a label; the statement stands without it */
+    }
+    return retrievalFailedBlock(projectName, failure);
   }
+}
+
+/**
+ * #2326 — the block a turn gets when the knowledge search failed: which
+ * project, the class of failure (never the error's text), and an explicit
+ * instruction not to read the failure as absence.
+ */
+export function retrievalFailedBlock(projectName: string, failure: IndexErrorClass): string {
+  return (
+    `${RETRIEVAL_FAILED_BLOCK}\n` +
+    `Retrieval failed for "${projectName}": ${failure}. Do not conclude that the project's code ` +
+    `or documents lack what the question asks about.`
+  );
 }
 
 /**

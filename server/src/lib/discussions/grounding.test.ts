@@ -70,7 +70,13 @@ describe("resolveDiscussionTools", () => {
     expect(rt!.native).toBe(true);
     expect(rt!.note).toBe(DISCUSSION_NATIVE_TOOL_NOTE);
     expect(rt!.toolset.tools.map((t) => t.name).sort()).toEqual(
-      ["read_file_slice", "search-knowledge", "search_code_graph", "search_code_symbols"].sort(),
+      [
+        "get_index_status", // #2326
+        "read_file_slice",
+        "search-knowledge",
+        "search_code_graph",
+        "search_code_symbols",
+      ].sort(),
     );
     // Writes, SQL, a cross-project search and other METIS tools are not offered.
     for (const absent of ["query_database", "apply_diff", "search-knowledge-global"]) {

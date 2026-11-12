@@ -1,0 +1,373 @@
+/**
+ * #2326 — tell "the code does not do this" apart from "the index is stale,
+ * half-built or failed", for the chat model and for the analyst.
+ *
+ * Before #2326 an empty retrieval read to the model as "nothing relevant
+ * exists", which is how a failed index turned into a confident wrong "no"
+ * (epic #2228, audit item 8). This module reads what METIS already records
+ * about a project's index — each repository connection's last source ingest
+ * (`sourceIngestState`, #182), its code graph (`commitSha`, `lastIndexedAt`,
+ * `symbolCount`) and the project's knowledge documents — and turns it into:
+ *
+ *   - {@link loadProjectIndexStatus}: the facts, for the `get_index_status`
+ *     chat tool and the reply's grounding label;
+ *   - {@link indexStatusLine}: one sentence for the model's context when the
+ *     index is failed, empty, partial or still being built;
+ *   - {@link classifyIndexError} / {@link classifyRetrievalError}: a fixed
+ *     summary of an error. Error text recorded by an ingest or thrown by a
+ *     search can carry a path, a host or a token, so neither the model nor the
+ *     UI ever sees it: they get one of a fixed set of phrases, and the full
+ *     error stays in the server log (A09).
+ *
+ * Read-only. The caller passes the project the session is already bound to;
+ * nothing here takes a project from the model.
+ */
+import {
+  INDEX_STATES,
+  MAX_GROUNDING_INDEX_REPOS,
+  type GroundingIndex,
+  type IndexErrorClass,
+  type IndexState,
+  type LastRunStatus,
+} from "@metis/shared";
+import { prisma } from "../prisma.js";
+import { createChildLogger } from "../logger.js";
+import { getConfigService } from "../config/config-service.js";
+import { isConnectorIngestActive } from "../connectors/ingest-guard.js";
+import {
+  effectiveSourceIngestStatus,
+  indexedCount,
+  parseSourceIngestState,
+  type SourceIngestState,
+} from "../connectors/source-ingest-state.js";
+import { repoDocumentPath, type CodeAccessFilter } from "../analysis/tools/code-access.js";
+
+const log = createChildLogger("index-status");
+
+/**
+ * The registry key for the two model-facing parts: the `get_index_status`
+ * tool and the status line in the retrieved-knowledge block. The grounding
+ * label, the classified retrieval error and the coverage note are always on.
+ */
+export const INDEX_STATUS_KEY = "CHAT_INDEX_STATUS";
+
+/**
+ * #2326 — ON: with a failed or partial index recorded (`eval:ba-qa
+ * --index-fault`), answers named the index problem 7/9 and 8/9 times with it
+ * and 0/9 without; the line is only added when the index is unhealthy
+ * (eval-data/README.md).
+ */
+export const INDEX_STATUS_DEFAULT = true;
+
+/** Whether the index-status tool and context line are on. */
+export function indexStatusEnabled(): boolean {
+  return getConfigService().getBool(INDEX_STATUS_KEY, INDEX_STATUS_DEFAULT);
+}
+
+/** The most repositories one status lists; the rest are counted. */
+export const MAX_INDEX_REPOS = MAX_GROUNDING_INDEX_REPOS;
+
+/**
+ * Ordered: the first rule whose pattern matches wins. A classifier, not a
+ * redaction list (#1268): it never strips text, it replaces all of it.
+ */
+const ERROR_RULES: ReadonlyArray<{ cls: IndexErrorClass; pattern: RegExp }> = [
+  { cls: "timed out", pattern: /\b(ETIMEDOUT|timed? ?out|timeout|AbortError|deadline)\b/i },
+  {
+    cls: "out of disk space or memory",
+    pattern: /\b(ENOSPC|ENOMEM|no space left|out of memory|heap out of memory)\b/i,
+  },
+  {
+    cls: "authentication failed",
+    pattern:
+      /\b(401|403|unauthori[sz]ed|forbidden|authentication|bad credentials|invalid token|permission denied)\b/i,
+  },
+  {
+    cls: "repository not found",
+    pattern: /\b(404|not found|repository .*does not exist|no such repository)\b/i,
+  },
+  {
+    cls: "network error",
+    pattern:
+      /\b(ECONNREFUSED|ECONNRESET|ENOTFOUND|EAI_AGAIN|EHOSTUNREACH|socket hang up|network|fetch failed)\b/i,
+  },
+  { cls: "access check failed", pattern: /\b(acl|actor|role)\b/i },
+  { cls: "embedding model unavailable", pattern: /\b(embed\w*|onnx\w*|xenova|tokeni[sz]er)\b/i },
+  { cls: "vector index unavailable", pattern: /\b(lance\w*|vector|arrow)\b/i },
+  { cls: "database error", pattern: /\b(prisma|sqlite|postgres\w*|database|SQLITE_\w+|P\d{4})\b/i },
+];
+
+/**
+ * Reduce an error (an ingest's recorded message, or what a search threw) to
+ * one {@link IndexErrorClass}. Never echoes the input.
+ */
+export function classifyIndexError(raw: unknown): IndexErrorClass {
+  const text =
+    raw instanceof Error
+      ? `${raw.name} ${raw.message} ${String((raw as { code?: unknown }).code ?? "")}`
+      : typeof raw === "string"
+        ? raw
+        : "";
+  for (const { cls, pattern } of ERROR_RULES) if (pattern.test(text)) return cls;
+  return "unexpected error";
+}
+
+export interface RepoIndexStatus {
+  /** The connection's label (what the project's settings page shows), never a path. */
+  label: string;
+  /** Last indexed commit (code graph, else the connector's last ingest). */
+  commitSha: string | null;
+  /** When it was last indexed, ISO. */
+  indexedAt: string | null;
+  lastRun: LastRunStatus;
+  /** A classified summary of why the last run or the connector failed. */
+  error?: IndexErrorClass;
+  /** Code-graph symbols. */
+  symbols: number;
+  /** Source files: eligible, indexed, and skipped by reason. `null` when not recorded. */
+  coverage: {
+    eligible: number;
+    indexed: number;
+    failed: number;
+    skipped: { limit: number; tooLarge: number; unreadable: number; policy: number };
+  } | null;
+  inProgress: boolean;
+}
+
+export interface ProjectIndexStatus {
+  projectId: string;
+  projectName: string;
+  state: IndexState;
+  /** Knowledge documents indexed for the project and visible to the caller. */
+  documents: number;
+  repos: RepoIndexStatus[];
+  /** Repositories past {@link MAX_INDEX_REPOS}, not listed. */
+  moreRepos: number;
+}
+
+function repoLastRun(
+  state: SourceIngestState | null,
+  hasIndex: boolean,
+  now: number,
+): LastRunStatus {
+  if (!state) return hasIndex ? "unrecorded" : "never";
+  return effectiveSourceIngestStatus(state, now);
+}
+
+function coverageOf(state: SourceIngestState | null): RepoIndexStatus["coverage"] {
+  if (!state) return null;
+  const s = state.skipped;
+  return {
+    eligible: state.eligible,
+    indexed: indexedCount(state),
+    failed: state.failed,
+    skipped: {
+      limit: s.cap,
+      tooLarge: s.tooLarge,
+      unreadable: s.unreadable,
+      policy: s.excludedTests + (s.excludedGenerated ?? 0),
+    },
+  };
+}
+
+/** The repository's own state, for the project's worst-first {@link IndexState}. */
+function repoState(r: RepoIndexStatus): IndexState {
+  if (r.inProgress || r.lastRun === "running") return "in-progress";
+  if (r.lastRun === "failed" || r.error) return "failed";
+  if (r.lastRun === "partial" || r.lastRun === "interrupted") return "partial";
+  if (r.lastRun === "never") return "never-indexed";
+  return "healthy";
+}
+
+export interface LoadIndexStatusOptions {
+  /** #2243 — the caller's code access: a document hidden from them is not counted. */
+  access?: CodeAccessFilter;
+  now?: number;
+  /** Test seam for the in-process ingest lease. */
+  ingestActive?: (connectorId: string) => boolean;
+}
+
+/**
+ * The index status of `projectId`, the project the session is bound to.
+ * `null` when the project is gone.
+ */
+export async function loadProjectIndexStatus(
+  projectId: string,
+  opts: LoadIndexStatusOptions = {},
+): Promise<ProjectIndexStatus | null> {
+  const now = opts.now ?? Date.now();
+  const active = opts.ingestActive ?? isConnectorIngestActive;
+  const project = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { name: true },
+  });
+  if (!project) return null;
+  const [connections, graphs, documents] = await Promise.all([
+    prisma.repoConnection.findMany({
+      where: { projectId, deletedAt: null },
+      select: {
+        id: true,
+        label: true,
+        status: true,
+        errorMessage: true,
+        lastIngestAt: true,
+        lastCommitSha: true,
+        sourceIngestState: true,
+      },
+      orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }],
+    }),
+    prisma.codeGraph.findMany({
+      where: { projectId },
+      select: { repoConnectionId: true, commitSha: true, lastIndexedAt: true, symbolCount: true },
+    }),
+    prisma.document.findMany({
+      // Rows from before #157 never moved off `pending`, so "not rejected"
+      // rather than "indexed": an older project is not reported as empty.
+      where: { projectId, deletedAt: null, indexState: { not: "rejected" } },
+      select: { filename: true },
+    }),
+  ]);
+  const graphByRepo = new Map(graphs.map((g) => [g.repoConnectionId, g]));
+  const repos: RepoIndexStatus[] = connections.map((c) => {
+    const state = parseSourceIngestState(c.sourceIngestState);
+    const graph = graphByRepo.get(c.id);
+    const indexedAt = graph?.lastIndexedAt ?? c.lastIngestAt ?? null;
+    const lastRun = repoLastRun(state, Boolean(graph || c.lastIngestAt), now);
+    // The connector's own error (a failed clone or pull) or the last run's.
+    const rawError =
+      c.status === "error"
+        ? (c.errorMessage ?? "error")
+        : lastRun === "failed"
+          ? state?.error
+          : null;
+    return {
+      label: c.label,
+      commitSha: graph?.commitSha ?? c.lastCommitSha ?? null,
+      indexedAt: indexedAt ? indexedAt.toISOString() : null,
+      lastRun,
+      ...(rawError !== null && rawError !== undefined
+        ? { error: classifyIndexError(rawError) }
+        : {}),
+      symbols: graph?.symbolCount ?? 0,
+      coverage: coverageOf(state),
+      inProgress: active(c.id) || lastRun === "running",
+    };
+  });
+  const access = opts.access;
+  const visibleDocs =
+    access?.unrestricted === false
+      ? documents.filter((d) => !isHiddenRepoDocument(access, d.filename)).length
+      : documents.length;
+  const states = repos.map(repoState);
+  let state: IndexState =
+    INDEX_STATES.find((s) => s !== "healthy" && states.includes(s)) ?? "healthy";
+  // A project with nothing indexed at all: no document (of any visibility —
+  // a hidden one is still indexed) and no code graph.
+  if (documents.length === 0 && graphs.length === 0 && state === "healthy") {
+    state = "never-indexed";
+  }
+  return {
+    projectId,
+    projectName: project.name?.trim() || "this project",
+    state,
+    documents: visibleDocs,
+    repos: repos.slice(0, MAX_INDEX_REPOS),
+    moreRepos: Math.max(0, repos.length - MAX_INDEX_REPOS),
+  };
+}
+
+function isHiddenRepoDocument(access: CodeAccessFilter, filename: string): boolean {
+  const file = repoDocumentPath(filename);
+  return file ? access.isHidden(file.connectorId, file.path) : false;
+}
+
+/** Best-effort {@link loadProjectIndexStatus}: a failed read is logged and yields `null`. */
+export async function readProjectIndexStatus(
+  projectId: string,
+  opts: LoadIndexStatusOptions = {},
+): Promise<ProjectIndexStatus | null> {
+  try {
+    return await loadProjectIndexStatus(projectId, opts);
+  } catch (err) {
+    log.warn("Index status unreadable", {
+      projectId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  }
+}
+
+function repoProblem(r: RepoIndexStatus): string | null {
+  const name = `repository "${r.label}"`;
+  const s = repoState(r);
+  if (s === "in-progress") return `${name} is still being indexed`;
+  if (s === "failed")
+    return `the last indexing of ${name} failed (${r.error ?? "unexpected error"})`;
+  if (s === "never-indexed") return `${name} has never been indexed`;
+  if (s === "partial") {
+    const c = r.coverage;
+    const counts = c ? `: ${c.indexed} of ${c.eligible} source files indexed` : "";
+    const how = r.lastRun === "interrupted" ? "was interrupted" : "is partial";
+    return `the index of ${name} ${how}${counts}`;
+  }
+  return null;
+}
+
+/**
+ * One sentence for the model's context when the project's index is not
+ * healthy, or `null` when it is. Fixed wording around server-held facts: the
+ * project's and repositories' names, counts and a classified error.
+ */
+export function indexStatusLine(status: ProjectIndexStatus): string | null {
+  if (status.state === "healthy") return null;
+  const problems = status.repos.map(repoProblem).filter((p): p is string => p !== null);
+  if (status.state === "never-indexed" && problems.length === 0) {
+    problems.push("nothing in it has been indexed yet");
+  }
+  return (
+    `## Index status\n` +
+    `The index of project "${status.projectName}" is not complete: ${problems.join("; ")}. ` +
+    `Code and documents may be missing or out of date, so if a search finds nothing, say the ` +
+    `index may be incomplete; do not conclude the project lacks it.`
+  );
+}
+
+/** The `get_index_status` tool's text: one block per repository. */
+export function formatIndexStatus(status: ProjectIndexStatus): string {
+  const lines = [
+    `Project "${status.projectName}": index ${status.state}; ${status.documents} knowledge document(s).`,
+  ];
+  if (status.repos.length === 0) lines.push("No repository is connected.");
+  for (const r of status.repos) {
+    const c = r.coverage;
+    const coverage = c
+      ? `${c.indexed} of ${c.eligible} eligible source files indexed; ${c.failed} failed; skipped: ` +
+        `${c.skipped.limit} past the file limit, ${c.skipped.tooLarge} too large, ` +
+        `${c.skipped.unreadable} unreadable, ${c.skipped.policy} by policy (tests, generated)`
+      : "coverage not recorded";
+    lines.push(
+      [
+        `- Repository "${r.label}":`,
+        `  last indexed commit ${r.commitSha ?? "unknown"} at ${r.indexedAt ?? "never"}`,
+        `  last run: ${r.lastRun}${r.error ? ` (${r.error})` : ""}${r.inProgress ? "; a run is in progress" : ""}`,
+        `  ${r.symbols} code symbol(s); ${coverage}`,
+      ].join("\n"),
+    );
+  }
+  if (status.moreRepos > 0) lines.push(`(${status.moreRepos} more repositories not listed)`);
+  return lines.join("\n");
+}
+
+/** The part of a status a reply's grounding label records (#2326). */
+export function toGroundingIndex(status: ProjectIndexStatus): GroundingIndex {
+  return {
+    state: status.state,
+    repos: status.repos.map((r) => ({
+      label: r.label,
+      ...(r.commitSha ? { commitSha: r.commitSha } : {}),
+      ...(r.indexedAt ? { indexedAt: r.indexedAt } : {}),
+      lastRun: r.lastRun,
+      ...(r.error ? { error: r.error } : {}),
+    })),
+  };
+}

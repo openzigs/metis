@@ -95,7 +95,9 @@ export async function resolveDiscussionTools(
 ): Promise<DiscussionToolRuntime | null> {
   const flags = input.flags ?? loadSessionToolsFlags();
   const native = input.native ?? resolveCapabilities(input.provider, input.model).nativeToolCalls;
-  const codeTools = flags.codeSearchTools ? getChatCodeTools(input.codeToolDeps) : [];
+  const codeTools = flags.codeSearchTools
+    ? getChatCodeTools(input.codeToolDeps, { indexStatus: flags.indexStatus !== false })
+    : [];
   const ctx = {
     sessionId: input.session.id,
     userId: input.session.userId,

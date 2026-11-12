@@ -43,6 +43,7 @@ import {
   type SubAgentLimits,
 } from "../../agent-runtime/subagents.js";
 import { resolveCapabilities } from "../capabilities.js";
+import { indexStatusEnabled } from "../index-status.js";
 import type { AIProvider, RiskLevel } from "../types.js";
 import { getToolRegistry, type ToolRegistry } from "../tool-registry.js";
 import {
@@ -105,6 +106,8 @@ export interface SessionToolsFlags {
   progressiveSkills?: boolean;
   /** #147 `CHAT_SUBAGENTS` — offer the project's agents as tools (default on). */
   subAgents?: boolean;
+  /** #2326 `CHAT_INDEX_STATUS` — the index-status tool and context line (default on). */
+  indexStatus?: boolean;
 }
 
 export function loadSessionToolsFlags(): SessionToolsFlags {
@@ -115,6 +118,7 @@ export function loadSessionToolsFlags(): SessionToolsFlags {
     codeSearchTools: cfg.getBool("CHAT_CODE_SEARCH_TOOLS", true),
     progressiveSkills: cfg.getBool("CHAT_PROGRESSIVE_SKILLS", true),
     subAgents: cfg.getBool("CHAT_SUBAGENTS", true),
+    indexStatus: indexStatusEnabled(),
   };
 }
 
@@ -290,7 +294,9 @@ export async function resolveSessionTools(
       subAgents: null,
     };
   }
-  const codeTools = flags.codeSearchTools ? getChatCodeTools(input.codeToolDeps) : [];
+  const codeTools = flags.codeSearchTools
+    ? getChatCodeTools(input.codeToolDeps, { indexStatus: flags.indexStatus !== false })
+    : [];
 
   if (native) {
     const base =
