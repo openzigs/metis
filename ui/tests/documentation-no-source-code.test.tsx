@@ -78,6 +78,43 @@ describe("DocumentationPage — no indexed source code (#2369)", () => {
     );
   });
 
+  // #2377 — an empty repository warns even while another repository is indexed.
+  it("asks about the chosen repository alone once one is selected", async () => {
+    mockApiFetch.mockImplementation(async (path: string, options?: unknown) => {
+      if (path === "/projects/proj_test/docs/source-code") {
+        const repo = (options as { params?: { repoConnectorId?: string } } | undefined)?.params
+          ?.repoConnectorId;
+        // The project has code (in repo-full); repo-empty has none.
+        return { indexed: repo !== "repo-empty" };
+      }
+      if (path.includes("/connectors/repos")) {
+        return [
+          { id: "repo-full", label: "Full", repoUrl: null },
+          { id: "repo-empty", label: "Empty", repoUrl: null },
+        ];
+      }
+      if (path.includes("/analyses")) return { items: [] };
+      return [];
+    });
+    await openForm();
+    fireEvent.change(screen.getByTestId("doc-scope-select"), { target: { value: "repository" } });
+    const repoSelect = await screen.findByTestId("repo-connector-select");
+    await screen.findByRole("option", { name: "Empty" });
+    // Before a choice the project answers: it has code, so no warning.
+    expect(screen.queryByTestId("no-source-code-warning")).not.toBeInTheDocument();
+
+    fireEvent.change(repoSelect, { target: { value: "repo-empty" } });
+    expect(await screen.findByTestId("no-source-code-warning")).toBeInTheDocument();
+    expect(mockApiFetch).toHaveBeenCalledWith("/projects/proj_test/docs/source-code", {
+      params: { repoConnectorId: "repo-empty" },
+    });
+
+    fireEvent.change(repoSelect, { target: { value: "repo-full" } });
+    await waitFor(() =>
+      expect(screen.queryByTestId("no-source-code-warning")).not.toBeInTheDocument(),
+    );
+  });
+
   it("does not warn when the answer is unknown (the check failed)", async () => {
     mockApiFetch.mockImplementation(async (path: string) => {
       if (path === "/projects/proj_test/docs/source-code") throw new Error("network");

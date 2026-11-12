@@ -1234,7 +1234,7 @@ The UI consumes these via `ui/src/hooks/use-job-events.ts`: `useJobLifecycle`/`u
 - **Overview regenerate** (`server/src/routes/projects.ts`, kind `overview-regenerate`) and the three Spec Kit commands that make no model call (`speckit.constitution`, `speckit.implement`, `speckit.taskstoissues`; kind `spec-kit`) — **awaited**: the op runs in one server-side shot and the HTTP response carries the result (so the precise success payload + 4xx/5xx error contract are preserved). Lifecycle events are still emitted for the global indicator, but the surface drives its terminal toast from the mutation callback (a late `subscribe:job` would miss the already-fired terminal event).
 - **Spec Kit commands that call the model** (kind `spec-kit`) — **a background job with a durable row** (#1059, §25.2.1): `POST …/commands/:cmd/jobs` answers `202` and the job runs on. Its state, result and error are read from `GET …/jobs/:jobId`, which is what the page watches; the lifecycle events (`started`, a `progress` per phase, `completed`/`failed`) feed the global indicator. The grounded-completion line is threaded verbatim into `jobEvents.completed` via `extractCompletionMessage`, and the `failed` event stays generic.
 
-Client surfaces use `useJobToast` (`ui/src/hooks/use-job-toast.ts`) for the fire-and-forget case (subscribe to one `jobId` → live progress + a terminal toast fired at most once) and the shared accessible `<JobProgress>` component (`ui/src/components/realtime/job-progress.tsx`, `role="progressbar"`; determinate bar from a 0-100 progress event, indeterminate animated bar for awaited ops). Terminal failure text always comes from `genericFailureMessage(kind)` / a generic client string — raw error detail never reaches the user. The same holds for a failed generated document's persisted `errorMessage` (#52): `generationFailureMessage(err)` (`server/src/lib/docs-gen/generation-failure-message.ts`) maps the error to one of a fixed set of user-safe reasons (restart, provider 402 balance, project budget, rate limit, credentials, generic), and `GET`/`PATCH /projects/:id/docs/:docId` re-classify rows written before #52 on read.
+Client surfaces use `useJobToast` (`ui/src/hooks/use-job-toast.ts`) for the fire-and-forget case (subscribe to one `jobId` → live progress + a terminal toast fired at most once) and the shared accessible `<JobProgress>` component (`ui/src/components/realtime/job-progress.tsx`, `role="progressbar"`; determinate bar from a 0-100 progress event, indeterminate animated bar for awaited ops). Terminal failure text comes from `genericFailureMessage(kind)` / a generic client string — raw error detail never reaches the user. One exception, still a fixed string: a document generation that fails with `NoDocumentableCodeError` (code `NO_DOCUMENTABLE_CODE`, #2369) sends `generationFailureMessage(err)` — "connect source code" or "nothing documentable" — because the remedy is the user's. That error is also marked `permanentTaskFailure` (#2377, `server/src/lib/scheduler/permanent-failure.ts`), so the task queue fails an automatic regeneration on its first attempt rather than retrying identical inputs. The Generate form's pre-flight `GET /projects/:id/docs/source-code[?repoConnectorId=]` answers for the chosen scope with the synthesizer's junk-path filter (`lib/docs-gen/indexed-source-code.ts`), and a failed document that never published reports `indexing: null` (no indexing badge). The same holds for a failed generated document's persisted `errorMessage` (#52): `generationFailureMessage(err)` (`server/src/lib/docs-gen/generation-failure-message.ts`) maps the error to one of a fixed set of user-safe reasons (restart, provider 402 balance, project budget, rate limit, credentials, generic), and `GET`/`PATCH /projects/:id/docs/:docId` re-classify rows written before #52 on read.
 
 #### 7.6.2 Personal user rooms and notification center (Issue #416, epic #405)
 
@@ -5123,6 +5123,43 @@ inside the `<<<SOURCE … SOURCE>>>` fence with the quote, in both the extractio
 question prompt. The approval cards and the panel's "addressed" count include
 `setAsideAmbiguities`, as the server's `addressedAmbiguities` does.
 Impact Analysis and the portfolio check do not yet raise questions in this dialog (#2270).
+
+#### Clarification answers as project knowledge (#2236, epic #2227)
+
+Every answered clarifying question is a `ClarificationRecord` row (`clarification_records`,
+`server/src/lib/clarifications/`): question, answer, `answeredById`, `answeredAt`, the cited
+source paragraph (document, heading path, quote), the requirement ids and the project's product.
+One row per `(projectId, questionKey)`. `clarification-key.ts` makes the key without a model:
+the cited paragraph plus the ambiguous field, else the governing rule ids plus the question,
+else the requirement title plus the field. A Spec Kit `/clarify` answer is keyed by its feature
+slug and question. The route records the round once it is committed
+(`persistClarificationKnowledge`, off the request path, metered to the project). New or changed
+answers are then:
+
+- **indexed** as a Markdown document in the project's RAG store (`clarification-knowledge.ts`:
+  `documents` row by the person who answered, queued for ingest like an uploaded text, so the
+  quarantine policy and ACLs apply). A changed answer deletes its earlier document;
+- **reused**: the dialog takes a `PriorAnswerSource` (`priorAnswerSourceFor`). Before a round
+  is grounded, each selected question is looked up by key among the project's `settled` records.
+  A hit is not asked: it lands on `ClarificationState.reused`, counts as answered (the #1104
+  real-field guard applies), reaches the requirement body with provenance `reused`, and a
+  governing one is settled onto its rules by `governing.settle`. A record asked about the same
+  document, section and field under another key (its paragraph changed) is marked `reopened`
+  first, so the changed paragraph is asked about again;
+- **re-run** (`clarification-rerun.ts`): stored requirements whose clarifications block holds a
+  changed answer are mapped to code again (`mapRequirementToCode`, persisted). Each answered
+  requirement's governing applicability entry (by id, else the one entry its title matches) is
+  re-decided on its text with the answers appended. The fresh findings are produced in the same
+  findings run, through the run's new `prepare` step. So the findings response reads
+  `refreshing` (the panel's "Re-checking" note) from the answer until the new findings are
+  stored. Re-extraction is the dialog's own resolution call. The persisted per-finding stale
+  marker and **Re-check this requirement** are #2222's.
+
+Answers are untrusted text in every later prompt. The resolution prompt fences the Q&A
+(`<<<ANSWERS … ANSWERS>>>`, markers stripped from the text). `/specify`, `/plan` (both forms) and
+`/tasks` read the set's `clarify.md` (`spec-kit/clarifications.ts`) into a
+`<<<CLARIFICATIONS … CLARIFICATIONS>>>` block that says it is data. The indexed document reaches
+prompts only as a retrieved chunk.
 
 #### Online eval — scoring sampled live production runs (#1321, epic #1316)
 

@@ -263,6 +263,8 @@ import {
   GENERATION_NO_SOURCE_CODE_MESSAGE,
 } from "../src/lib/docs-gen/generation-failure-message.js";
 import { dispatchGeneratedDocTask } from "../src/lib/docs-gen/generated-doc-outbox.js";
+import { NoDocumentableCodeError } from "../src/lib/docs-gen/no-documentable-code.js";
+import { isPermanentTaskFailure } from "../src/lib/scheduler/permanent-failure.js";
 
 const GROUPS = sectionGroupsFor("architecture");
 const sectionCalls = () =>
@@ -1399,6 +1401,21 @@ describe("#2369 — a run with no documentable code fails, and nothing is publis
     );
     // No model was called: there was nothing to read.
     expect(state.stream).not.toHaveBeenCalled();
+  });
+
+  // #2377 — the scheduler retries what an automatic run rethrows, unless it is
+  // marked permanent. No code now means no code on the next attempt too.
+  it("an automatic regeneration with no code rethrows a failure the queue never retries", async () => {
+    state.doc.autoUpdate = true;
+    state.symbols = [];
+
+    const err = await automaticRun(0).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(NoDocumentableCodeError);
+    expect(isPermanentTaskFailure(err)).toBe(true);
+    expect(state.doc.status).toBe("failed");
+    expect(state.doc.errorMessage).toBe(GENERATION_NO_SOURCE_CODE_MESSAGE);
+    expect(state.versions).toHaveLength(0);
   });
 
   it("indexed code that forms no module fails with the 'nothing documentable' message", async () => {
