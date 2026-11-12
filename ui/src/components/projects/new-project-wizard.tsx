@@ -327,12 +327,12 @@ export function NewProjectWizard({
                 ) : null}
               </div>
               <div className="space-y-1">
-                <Label htmlFor="wizard-secret">Secret ref (optional)</Label>
+                <Label htmlFor="wizard-secret">Access token (vault secret)</Label>
                 <VaultPicker
                   id="wizard-secret"
                   value={secretRef}
                   onChange={setSecretRef}
-                  placeholder="${vault:my-pat}"
+                  placeholder="Choose a vault secret"
                 />
                 <p className="text-xs text-muted-foreground">Needed for a private repository.</p>
               </div>

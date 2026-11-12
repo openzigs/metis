@@ -199,8 +199,8 @@ function UploadHint() {
     <Card className="p-4" data-testid="documents-top-upload-hint">
       <h2 className="text-sm font-semibold">Upload a document</h2>
       <p className="text-xs text-muted-foreground">
-        Documents are uploaded into a specific project so RAG embeddings, access controls, and audit
-        log entries inherit that project&apos;s scope. Open a project from{" "}
+        Documents are uploaded into a specific project so search indexing, access controls, and
+        audit log entries inherit that project&apos;s scope. Open a project from{" "}
         <Link href="/projects" className="underline">
           /projects
         </Link>{" "}

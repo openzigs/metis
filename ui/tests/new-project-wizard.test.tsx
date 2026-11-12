@@ -316,6 +316,14 @@ describe("NewProjectWizard", () => {
     });
   });
 
+  it("labels the repository credential in plain language, not 'Secret ref' (#2337)", async () => {
+    const user = userEvent.setup();
+    renderWizard();
+    await fillName(user);
+    expect(screen.getByLabelText("Access token (vault secret)")).toBeInTheDocument();
+    expect(screen.queryByText(/secret ref/i)).not.toBeInTheDocument();
+  });
+
   it("goes Back without losing what was typed", async () => {
     const user = userEvent.setup();
     renderWizard();

@@ -5352,8 +5352,8 @@ Above the document preview, you'll find export buttons:
 
 When you enable **Auto Update** on a document:
 
-1. After successful **Full re-read** (formerly Deep Ingest) or **Update** (including background Deep
-  Ingest and configured scheduled repository refresh), METIS checks the document's
+1. After successful **Full re-read** (formerly Deep Ingest) or **Update** (including the background
+  full re-read and configured scheduled repository refresh), METIS checks the document's
   inputs. The graph, source-knowledge, and applicable metadata steps must succeed;
   a partial ingest does not trigger regeneration. This is not a watcher on every
   commit, and there is no fixed 15-minute documentation timer.

@@ -318,12 +318,12 @@ export function ProjectCreateForm({
               />
             </div>
             <div className="space-y-1">
-              <Label htmlFor="repoSecret">Secret Ref (optional)</Label>
+              <Label htmlFor="repoSecret">Access token (vault secret)</Label>
               <VaultPicker
                 id="repoSecret"
                 value={repoSecret}
                 onChange={setRepoSecret}
-                placeholder="${vault:my-pat}"
+                placeholder="Choose a vault secret"
               />
             </div>
           </div>

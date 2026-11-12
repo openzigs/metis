@@ -174,6 +174,14 @@ describe("ProjectCreateForm", () => {
     }
   });
 
+  it("labels the repository credential in plain language, not 'Secret Ref' (#2337)", async () => {
+    const user = userEvent.setup();
+    renderForm();
+    await user.click(screen.getByTestId("toggle-repo-section"));
+    expect(screen.getByLabelText("Access token (vault secret)")).toBeInTheDocument();
+    expect(screen.queryByText(/secret ref/i)).not.toBeInTheDocument();
+  });
+
   it("resets to deriving after a successful create", async () => {
     const user = userEvent.setup();
     create.mockResolvedValueOnce({ id: "p1", name: "Acme", slug: "x" });

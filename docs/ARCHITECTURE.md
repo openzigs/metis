@@ -7686,6 +7686,7 @@ The v1.2 shell ships **30+ user-facing routes** plus the auth proxy handlers. Th
 | `/eval/leaderboard` | Eval Leaderboard | SWE-bench-Pro + TAU-bench results, sparklines, admin "Run now" triggers. |
 | `/eval/leaderboard/[id]` | Eval Run Detail | Per-task diffs via `BenchDiffViewer` for failing tasks. |
 | `/runs/[id]/review` | PR Review | AC matrix, verdict, inline comments, sandbox results for a reviewed PR. |
+| `/help` | Help | Plain-language glossary of METIS terms with links to the pages that use them. |
 | `/settings` | Settings Hub | Navigation card grid linking to all settings sub-pages. |
 | `/settings/profile` | Profile | Account info (read-only in v1.2). |
 | `/settings/appearance` | Appearance | Theme + density controls. |

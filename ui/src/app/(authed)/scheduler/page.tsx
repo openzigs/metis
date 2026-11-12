@@ -107,7 +107,7 @@ export default function SchedulerPage() {
               <DialogHeader>
                 <DialogTitle>Create scheduled job</DialogTitle>
                 <DialogDescription>
-                  Define a cron-driven job: a key, schedule, task type, and JSON payload.
+                  Define a scheduled job: a key, schedule, task type, and JSON payload.
                 </DialogDescription>
               </DialogHeader>
               <JobForm
