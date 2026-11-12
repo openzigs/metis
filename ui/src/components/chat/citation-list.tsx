@@ -5,6 +5,12 @@
  * turn retrieved or read. A verified citation of the project's code links to
  * the file on GitHub at the lines it cites; one that does not resolve is
  * marked, so a fabricated `file:line` no longer reads like a real one.
+ *
+ * #2325 — a citation of code names the version it was read at: the short SHA
+ * of the indexed commit (the link is pinned to it), "version unknown" when
+ * none was recorded (every reply before #2325), and a visible marker when the
+ * index is behind the repository. A stale citation is shown and counted like
+ * any other.
  */
 import { isVerifiedCitation } from "@metis/shared";
 import type { ChatCitation } from "@/lib/ai-client";
@@ -39,11 +45,22 @@ export function citationSummary(citations: readonly ChatCitation[]): string {
 /** A link to a verified citation of the project's code, or `null` when it cannot have one. */
 export function citationHref(c: ChatCitation, repo: CodeCitationRepo | null): string | null {
   if (!isVerifiedCitation(c.status) || c.source !== "repo") return null;
-  return buildCodeCitationBlobUrl(repo, {
+  // #2325 — pinned to the commit the code was read at, when the reply recorded it.
+  const pinned = repo && c.commitSha ? { ...repo, ref: c.commitSha } : repo;
+  return buildCodeCitationBlobUrl(pinned, {
     filePath: c.path,
     startLine: c.lines?.[0] ?? 0,
     endLine: c.lines?.[1] ?? 0,
   });
+}
+
+/**
+ * #2325 — the version a code citation was read at: `@<short sha>`, "version
+ * unknown", or `null` for a citation that is not code.
+ */
+export function citationVersion(c: ChatCitation): string | null {
+  if (c.source !== "repo") return null;
+  return c.commitSha ? `@${c.commitSha.slice(0, 7)}` : "version unknown";
 }
 
 /**
@@ -112,6 +129,26 @@ export function CitationListView({
                 <span className="font-mono"> → {c.path}</span>
               ) : null}
               {` — ${NOTE[c.status]}`}
+              {citationVersion(c) ? (
+                <>
+                  {" "}
+                  <span
+                    className="font-mono text-muted-foreground"
+                    data-testid="chat-citation-version"
+                    title={c.commitSha ? `Indexed commit ${c.commitSha}` : undefined}
+                  >
+                    {citationVersion(c)}
+                  </span>
+                </>
+              ) : null}
+              {c.stale ? (
+                <>
+                  {" "}
+                  <span className="text-warning" data-testid="chat-citation-stale">
+                    ⚠ index is behind the repository
+                  </span>
+                </>
+              ) : null}
             </li>
           );
         })}
