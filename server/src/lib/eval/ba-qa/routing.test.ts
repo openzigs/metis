@@ -158,9 +158,20 @@ describe("parseRoutingFixture", () => {
     expect(f.questions).toHaveLength(20);
     expect(f.products).toHaveLength(9);
     expect(f.scopeSizes).toEqual([2, 5, 9]);
-    // Every answerable question of the set is taken, so the paid arm asks all of them.
-    const answerable = questions.questions.filter((q) => q.expect === "answer").map((q) => q.id);
-    expect(f.questions.flatMap((q) => (q.from ? [q.from] : []))).toEqual(answerable);
+    // The 10 answerable questions the routing measurement ran on. Questions added to
+    // the set since (S7 to S11, #2198) are not taken: the recorded numbers stay comparable.
+    expect(f.questions.flatMap((q) => (q.from ? [q.from] : []))).toEqual([
+      "S1",
+      "S2",
+      "S3",
+      "S4",
+      "S5",
+      "S6",
+      "M1",
+      "M2",
+      "M3",
+      "M4",
+    ]);
     // Every question is answerable in the widest scope.
     const widest = scopeOf(f, 9);
     expect(f.questions.every((q) => answerableIn(q, widest))).toBe(true);

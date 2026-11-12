@@ -1039,7 +1039,7 @@ of nine products: the two Acme Reader products, then seven distractors from othe
 The distractors are the three fixture-portfolio repositories (`localization-02`: orders,
 billing, notify) and the four synthetic requirement documents (`docunderstanding-01` to `-04`),
 each its own project. Each product carries the one-line description, tags and names a project
-admin would curate. It has 20 questions: the 10 answerable questions of `questions.json`, whose
+admin would curate. It has 20 questions: the 10 answerable questions `questions.json` had then (S1 to S6, M1 to M4), whose
 answer products are the products their expected sources name; 8 questions answered by one
 product, 6 of them by a distractor; and 2 no product answers (a gibberish string, and "What is
 the capital of France?"). Scopes are the first 2, 5 and 9 products of the pool.
