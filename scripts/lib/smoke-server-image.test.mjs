@@ -738,3 +738,73 @@ describe("runSmoke", () => {
     expect(envs.filter((e) => e && Object.values(e).includes("s3cr3t")).length).toBeGreaterThan(0);
   });
 });
+
+/**
+ * #2395 — the `git` probe, RUN rather than string-matched. Repository connectors
+ * clone through `simple-git`, which spawns the `git` binary; the slim base image
+ * ships none, so an image without it failed the first ingest while `/healthz`
+ * stayed green. The probe runs here with the server package's own `simple-git`
+ * (the cwd it is given resolves the import, as the container's WORKDIR does), and
+ * a PATH that holds no git, a fake git of a given version, or the real one.
+ */
+describe("git probe (#2395)", () => {
+  const serverDir = join(import.meta.dirname, "..", "..", "server");
+  const probe = MODULE_PROBES.find((p) => p.name === "git");
+  const scratch = mkdtempSync(join(tmpdir(), "metis-smoke-2395-"));
+  const empty = join(scratch, "empty");
+  mkdirSync(empty);
+  afterAll(() => rmSync(scratch, { recursive: true, force: true }));
+
+  /** @param {string} path */
+  const runProbe = (path) =>
+    spawnSync(process.execPath, ["--input-type=module", "-e", probe?.code ?? ""], {
+      cwd: serverDir,
+      encoding: "utf-8",
+      env: { ...process.env, PATH: path },
+    });
+
+  /** A directory whose `git` prints `git version <v>`. @param {string} v */
+  const fakeGit = (v) => {
+    const dir = mkdtempSync(join(scratch, "v"));
+    writeFileSync(join(dir, "git"), `#!/bin/sh\necho "git version ${v}"\n`, { mode: 0o755 });
+    return dir;
+  };
+
+  it("runs in every arm: every configuration can create a repository connector", () => {
+    expect(probe).toBeDefined();
+    for (const arm of ARMS) expect(probesFor(arm).map((p) => p.name)).toContain("git");
+  });
+
+  it("asks simple-git, the client the clone goes through", () => {
+    expect(probe?.code).toContain('import("simple-git")');
+    expect(probe?.code).toMatch(/\.raw\(\["--version"\]\)/);
+  });
+
+  it("passes with the git on this machine's PATH", () => {
+    const r = runProbe(process.env.PATH ?? "");
+    expect(r.stderr).toBe("");
+    expect(r.status).toBe(0);
+  });
+
+  it("fails when no git is on PATH, as in the slim base image", () => {
+    const r = runProbe(empty);
+    expect(r.status).not.toBe(0);
+  });
+
+  it("fails on a git older than 2.36, which the clone's --filter=blob:limit needs", () => {
+    const r = runProbe(fakeGit("2.35.9"));
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toMatch(/older than 2\.36/);
+  });
+
+  it("fails when git --version prints something it cannot read", () => {
+    const r = runProbe(fakeGit("unknown"));
+    expect(r.status).not.toBe(0);
+  });
+
+  it.each(["2.36.0", "2.47.3", "3.0.0"])("accepts git %s", (v) => {
+    const r = runProbe(fakeGit(v));
+    expect(r.stderr).toBe("");
+    expect(r.status).toBe(0);
+  });
+});

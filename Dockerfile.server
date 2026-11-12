@@ -433,6 +433,16 @@ COPY --from=oracle-client /opt/oracle/instantclient /opt/oracle/instantclient
 RUN echo /opt/oracle/instantclient > /etc/ld.so.conf.d/oracle-instantclient.conf \
  && ldconfig
 
+# #2395 — repository connectors clone through simple-git
+# (server/src/lib/connectors/repo/repo-service.ts), which spawns the `git` binary,
+# and the slim base image ships none: every ingest from a repository connector
+# failed in this image while working in local development. Trixie's git is 2.47,
+# above the 2.36 the clone's `--filter=blob:limit` needs. The smoke's `git` probe
+# (scripts/lib/smoke-server-image.mjs) runs it in every arm.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git \
+ && rm -rf /var/lib/apt/lists/*
+
 # Compiled application code.
 COPY --from=builder    --chown=metis:metis /app/server/dist             ./server/dist
 # #45 — the Postgres Prisma client (generated in prod-deps); server/src/lib/prisma.ts

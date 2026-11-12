@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { HELM_DEFAULT_WRITABLE_PATHS, HELM_RUN_AS } from "./smoke-server-image.mjs";
+import { HELM_DEFAULT_WRITABLE_PATHS, HELM_RUN_AS, MODULE_PROBES } from "./smoke-server-image.mjs";
 
 /**
  * #34 and #3 — the image builds' WIRING, which no unit test of a helper can see.
@@ -190,6 +190,36 @@ describe("Dockerfile.server runs where its default data paths are writable (#54)
     const mk = runner.indexOf("mkdir -p /app/server/data && chown metis:metis /app/server/data");
     expect(mk).toBeGreaterThan(-1);
     expect(mk).toBeLessThan(runner.indexOf("USER metis"));
+  });
+});
+
+/**
+ * #2395 — repository connectors clone through `simple-git`, which spawns `git`, and
+ * `node:22-trixie-slim` ships no git. The smoke's `git` probe proves the binary runs
+ * in the built image; this proves where it comes from.
+ */
+describe("Dockerfile.server ships git in the runtime image (#2395)", () => {
+  const dockerfile = read("Dockerfile.server");
+  const runner = dockerfile.slice(dockerfile.indexOf("AS runner"));
+  /** Every package the runner stage installs. */
+  const installed = [
+    ...runner.matchAll(/apt-get install -y --no-install-recommends ([^\\\n]+)/g),
+  ].flatMap((m) => m[1].trim().split(/\s+/));
+
+  it("installs git in the runner stage, without recommends", () => {
+    expect(installed).toContain("git");
+  });
+
+  it("installs it before dropping to the runtime user", () => {
+    const at = runner.search(/--no-install-recommends [^\n]*\bgit\b/);
+    expect(at).toBeGreaterThan(-1);
+    expect(at).toBeLessThan(runner.indexOf("USER metis"));
+  });
+
+  it("is checked by a smoke probe that runs in every arm", () => {
+    const git = MODULE_PROBES.find((p) => p.name === "git");
+    expect(git).toBeDefined();
+    expect(git?.arms).toBeUndefined();
   });
 });
 
