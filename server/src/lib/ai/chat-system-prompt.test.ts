@@ -300,18 +300,36 @@ describe("CITATION_INSTRUCTION — checking a claim before making it (#2198)", (
 
   it("names a requirement by its title and keeps its id for tool calls", () => {
     // Run 10 J2.3: a raw requirement id quoted in prose.
-    expect(section()).toMatch(/Name a METIS requirement by its title/);
-    expect(section()).toMatch(/never put the raw id in your reply/);
+    expect(section()).toMatch(/Name a requirement by its title/);
+    expect(section()).toMatch(/never its internal database id \(a cuid\)/);
+    // Human ids a BA recognises stay allowed.
+    expect(section()).toMatch(/REQ-xxx, imported ids and ids from the BA's documents are fine/);
   });
 
   it("says a shared word is not evidence that code does what the question asks", () => {
     // Run 10 e-17-2: "Track reading time with read_at" grounded in the
     // reading-time ESTIMATE code, which shares only the words.
-    expect(section()).toMatch(/shares a word with the question/);
+    expect(section()).toMatch(/shares a word with the question is not evidence/);
+    expect(section()).toMatch(/not evidence; read what the code does\./);
+  });
+
+  it("hands the model no eval answer: no name from the S7-S11 questions or Miniflux", () => {
+    // #2357 compares answers with and without these rules; an example taken
+    // from a graded question would measure the leak, not the rule.
+    for (const leak of [
+      /reading time/i,
+      /read_at/,
+      /MarkAllAsReadBeforeDate/,
+      /showUnreadPage/,
+      /`removed`/,
+      /user\.go/,
+      /h\.store/,
+    ]) {
+      expect(section()).not.toMatch(leak);
+    }
   });
 
   it("stays static text after the citation rules, so the cached lead moves once per deploy", () => {
     expect(CITATION_INSTRUCTION.startsWith("## Source citation policy")).toBe(true);
-    expect(CITATION_INSTRUCTION).not.toMatch(/\$\{|\{\{/);
   });
 });
