@@ -33,6 +33,7 @@ vi.mock("../lib/prisma.js", () => ({
 
 import type { ChatMessage } from "../lib/ai/types.js";
 import {
+  ANSWER_POLICY_INSTRUCTION,
   assembleChatSystem,
   stableLeadText,
   CITATION_INSTRUCTION,
@@ -51,10 +52,12 @@ import type {
 
 // Imported after the mocks are registered.
 let buildAutoRagContext: typeof BuildAutoRagContextType;
+let RETRIEVAL_FAILED_BLOCK: string;
 let buildLibrarySystemMessages: typeof BuildLibrarySystemMessagesType;
 
 beforeEach(async () => {
-  ({ buildAutoRagContext, buildLibrarySystemMessages } = await import("./ai.js"));
+  ({ buildAutoRagContext, buildLibrarySystemMessages, RETRIEVAL_FAILED_BLOCK } =
+    await import("./ai.js"));
   search.mockReset();
   findUnique.mockReset();
   findUnique.mockResolvedValue({ name: "ETAG" });
@@ -250,6 +253,37 @@ describe("caching placement — fused block lands in the volatile tail (#700/#69
     expect(stableLeadText(assembled)).toContain("## Source citation policy");
   });
 
+  // #2241 — the answering policy goes to a session with a project to answer from.
+  it("gives a project session the answering policy, in the stable lead, and an unscoped one none", async () => {
+    const scoped = await buildLibrarySystemMessages({
+      agentId: null,
+      loadedSkillIds: "[]",
+      projectId: "p1",
+    });
+    expect(scoped.stable.map((m) => m.content)).toContain(ANSWER_POLICY_INSTRUCTION);
+    const unscoped = await buildLibrarySystemMessages({
+      agentId: null,
+      loadedSkillIds: "[]",
+      projectId: null,
+    });
+    expect(unscoped.all.map((m) => m.content)).not.toContain(ANSWER_POLICY_INSTRUCTION);
+    // #2238 — a chat scoped to several products answers from their sources too.
+    const multi = await buildLibrarySystemMessages({
+      agentId: null,
+      loadedSkillIds: "[]",
+      projectId: null,
+      scopeProjectIds: JSON.stringify(["p1", "p2"]),
+    });
+    expect(multi.stable.map((m) => m.content)).toContain(ANSWER_POLICY_INSTRUCTION);
+    const workspace = await buildLibrarySystemMessages({
+      agentId: null,
+      loadedSkillIds: "[]",
+      projectId: null,
+      scopeWorkspaceId: "w1",
+    });
+    expect(workspace.stable.map((m) => m.content)).toContain(ANSWER_POLICY_INSTRUCTION);
+  });
+
   it("keeps the citation-bearing lead byte-identical across two same-config requests", async () => {
     const session = { agentId: null, loadedSkillIds: "[]", projectId: null };
     const first = await buildLibrarySystemMessages(session);
@@ -369,13 +403,45 @@ describe("buildAutoRagContext — #1321 context capture", () => {
     ]);
   });
 
+  it("#2242/#2241 — numbers the fused entries on from the excerpts the floor KEPT", async () => {
+    process.env.CHAT_FUSED_CODE_RETRIEVAL = "true";
+    __resetConfigSingleton();
+    const calibrated = "Alibaba-NLP/gte-modernbert-base";
+    search.mockResolvedValue({
+      hits: [
+        { ...docHit, score: 0.9, embeddingModel: calibrated },
+        {
+          ...docHit,
+          chunkId: "c2",
+          filename: "weak.md",
+          source: "upload",
+          score: 0.2,
+          embeddingModel: calibrated,
+        },
+      ],
+    });
+    const deps = fusedDeps(
+      [{ symbolId: "s2", filePath: "y", name: "Validator", kind: "class", score: 1 }],
+      { s2: { filePath: "src/Validator.java", startLine: 3, endLine: 40 } },
+    );
+    const capture: Parameters<typeof buildAutoRagContext>[4] = { contexts: [], sources: 0 };
+    const out = await buildAutoRagContext("p1", [userTurn], "u1", deps, capture);
+
+    expect(out).not.toContain("weak.md");
+    expect(capture!.belowFloor).toBe(1);
+    expect(out).toContain("[2] Validator (class) — src/Validator.java:3-40");
+    expect(capture!.excerpts!.map((e) => e.n)).toEqual([1]);
+    expect(capture!.codeEntries).toEqual([{ n: 2, path: "src/Validator.java", lines: [3, 40] }]);
+  });
+
   it("leaves the capture empty when retrieval throws mid-way", async () => {
     __resetConfigSingleton();
     search.mockRejectedValue(new Error("lancedb down"));
     const capture = { contexts: ["stale"], sources: 3 };
     const out = await buildAutoRagContext("p1", [userTurn], "u1", fusedDeps([], {}), capture);
 
-    expect(out).toBe("");
+    // #2241 — no excerpt, and the model is told the search failed.
+    expect(out).toBe(RETRIEVAL_FAILED_BLOCK);
     expect(capture.contexts).toEqual([]);
     expect(capture.sources).toBe(0);
   });
@@ -434,8 +500,12 @@ describe("buildAutoRagContext — hit naming and scores (#717)", () => {
     __resetConfigSingleton();
     search.mockResolvedValue({
       hits: [
+        // #2241 — a keyword-only hit is kept only beside a dense hit that
+        // cleared the relevance floor.
+        docHit,
         {
           ...docHit,
+          chunkId: "c-lexical",
           filename: "connector:repo:cid1:src/internal/model/feed.go",
           path: "internal/model/feed.go",
           score: 0,
@@ -445,7 +515,7 @@ describe("buildAutoRagContext — hit naming and scores (#717)", () => {
       ],
     });
     const out = await buildAutoRagContext("p1", [userTurn], "u1", fusedDeps([], {}));
-    expect(out).toContain("[1] internal/model/feed.go#0 (score=0.500, keyword match)");
+    expect(out).toContain("[2] internal/model/feed.go#0 (score=0.500, keyword match)");
     expect(out).not.toContain("connector:repo:cid1:src/internal");
   });
 });

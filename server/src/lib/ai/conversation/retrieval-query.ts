@@ -267,6 +267,8 @@ export interface CitableExcerpt {
   locator: string;
   /** #2242 — the hit's `documents.source` (`repo`, `upload`, …), so a citation of it can link. */
   source?: string;
+  /** #2241 — its dense cosine, for the grounding label; absent when it has none. */
+  relevance?: number;
 }
 
 /**

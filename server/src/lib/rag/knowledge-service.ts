@@ -903,6 +903,8 @@ export class KnowledgeService {
         text: m.text,
         score: m.score,
         rankScore: rankScoreByChunk.get(m.chunkId) ?? m.score,
+        // #2241 — the cosine survives a rerank, which rewrites `score`.
+        ...(denseIds.has(m.chunkId) ? { denseScore: meta.get(m.chunkId)!.score } : {}),
         matchedBy,
         ...(path ? { path } : {}),
         embeddingModel: m.embeddingModel,
@@ -962,6 +964,8 @@ export class KnowledgeService {
         data: { ord: -1 },
       });
       await tx.quarantineChunk.deleteMany({ where: { documentId, ord: { gte: 0 } } });
+      // #2280 — the delete is soft, so the cascade never fires: its saved readings go here.
+      await tx.savedDocumentReading.deleteMany({ where: { documentId } });
     });
     await prisma.knowledgeChunk.deleteMany({ where: { documentId } });
     await this.store.deleteByDocument(doc.projectId, documentId);

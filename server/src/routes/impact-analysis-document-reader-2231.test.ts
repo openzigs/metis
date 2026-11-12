@@ -6,13 +6,42 @@
  * The reader here is the REAL one (`document-reader/reader.ts`), answering a
  * scripted provider, so the changes a run analyses are the statements the
  * reader verified against the document.
+ *
+ * #2280 — and through the saved-reading cache (`reading-cache.ts`), whose
+ * table is an in-memory double here: a second run on the unchanged document
+ * reads nothing, and its ledger has no `impact.document-read` row.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AIProvider, ChatMessage, ChatOptions, ChatResponse } from "../lib/ai/types.js";
 import type { ImpactLlmRuntime } from "../lib/impact-analysis/impact-llm-runtime.js";
 
 const tokenRows: Array<Record<string, unknown>> = [];
+/** #2280 — the saved readings, keyed as the table is. */
+const savedRows: Array<Record<string, unknown>> = [];
+const sameKey = (row: Record<string, unknown>, where: Record<string, unknown>) =>
+  Object.entries(where).every(([k, v]) => row[k] === v);
 const prismaMock = {
+  savedDocumentReading: {
+    findFirst: vi.fn(
+      async ({ where }: { where: Record<string, unknown> }) =>
+        savedRows.find((r) => sameKey(r, where)) ?? null,
+    ),
+    upsert: vi.fn(
+      async (args: {
+        where: { documentId_checksum_readerVersion_model_textHash: Record<string, unknown> };
+        create: Record<string, unknown>;
+        update: Record<string, unknown>;
+      }) => {
+        const row = savedRows.find((r) =>
+          sameKey(r, args.where.documentId_checksum_readerVersion_model_textHash),
+        );
+        if (row) return Object.assign(row, args.update);
+        const created = { ...args.create, createdAt: new Date("2026-11-02T09:00:00Z") };
+        savedRows.push(created);
+        return created;
+      },
+    ),
+  },
   aISession: { create: vi.fn(async () => ({ id: "sess-doc-1" })) },
   aITokenUsage: {
     create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
@@ -130,6 +159,8 @@ function servicePrismaMock() {
       impactAffectedTable: { createMany: vi.fn(async () => ({ count: 0 })) },
       document: {
         findUnique: vi.fn(async () => ({
+          projectId: "proj-docs",
+          checksum: "sum-frd",
           filename: "frd.md",
           title: "Clinic booking FRD",
           mimeType: "text/markdown",
@@ -183,6 +214,7 @@ async function flushTokenWrites(): Promise<void> {
 
 beforeEach(() => {
   tokenRows.length = 0;
+  savedRows.length = 0;
   __resetTokenTrackerSingleton();
   providerFactory = () => readerProvider();
   for (const flag of [
@@ -259,6 +291,56 @@ describe("#2231 — the route wires the document reader into an impact run", () 
       "AI enrichment did not run for this analysis (no AI provider is configured).",
     );
     expect(summary).toContain("Not applied: document reading.");
+  });
+});
+
+describe("#2280 — a second run on the unchanged document reuses its reading", () => {
+  async function run(options: { rereadDocument?: boolean } = {}) {
+    tokenRows.length = 0;
+    __resetTokenTrackerSingleton();
+    const { prisma, analyses, items } = servicePrismaMock();
+    await executeImpactAnalysis("ia-doc", ["proj-1"], {
+      ...impactRunDeps("user-1", ["proj-1"], options),
+      ...RUN_DEPS,
+      prisma: prisma as never,
+    });
+    await flushTokenWrites();
+    return {
+      summary: String(analyses.get("ia-doc")?.summary),
+      changes: items.map((i) => i.requirementTitle),
+      documentReadRows: tokenRows.filter((r) => r.agentStep === "impact.document-read").length,
+    };
+  }
+
+  it("reads once, then makes no document-read call, analyses the same changes and says whose reading it reused", async () => {
+    vi.stubEnv("ANALYSIS_DOCUMENT_READER", "true");
+    const first = await run();
+    expect(first.documentReadRows).toBeGreaterThan(0);
+    expect(first.summary).not.toContain("reused");
+    // Saved under the document's own project, not the run's.
+    expect(savedRows).toHaveLength(1);
+    expect(savedRows[0]).toMatchObject({
+      projectId: "proj-docs",
+      documentId: "doc-1",
+      checksum: "sum-frd",
+      model: "claude-sonnet-5",
+    });
+
+    const second = await run();
+    expect(second.documentReadRows).toBe(0);
+    expect(second.changes).toEqual(first.changes);
+    expect(second.summary).toContain(
+      'This reading was saved on 2026-11-02 (read with claude-sonnet-5) and reused, because the document\'s file has not changed; re-run with "Read the document again" for a fresh reading.',
+    );
+  });
+
+  it('"Read the document again" reads it again, through the metered stage', async () => {
+    vi.stubEnv("ANALYSIS_DOCUMENT_READER", "true");
+    await run();
+    const again = await run({ rereadDocument: true });
+    expect(again.documentReadRows).toBeGreaterThan(0);
+    expect(again.summary).not.toContain("reused");
+    expect(savedRows).toHaveLength(1);
   });
 });
 

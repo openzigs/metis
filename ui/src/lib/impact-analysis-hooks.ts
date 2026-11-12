@@ -166,8 +166,9 @@ export function useDeleteTableFeedback(analysisId: string | null | undefined) {
  * navigate to it and watch it complete.
  */
 export function useRerunImpactAnalysis() {
-  return useAppMutation<ImpactRerunResponse, { id: string }>({
-    mutationFn: ({ id }) => impactAnalysisApi.rerun(id),
+  return useAppMutation<ImpactRerunResponse, { id: string; rereadDocument?: boolean }>({
+    mutationFn: ({ id, rereadDocument }) =>
+      impactAnalysisApi.rerun(id, rereadDocument ? { rereadDocument } : {}),
     successMessage: "Re-run started",
     invalidateKeys: [impactAnalysisKeys.list()],
   });

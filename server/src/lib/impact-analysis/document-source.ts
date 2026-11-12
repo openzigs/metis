@@ -22,11 +22,16 @@
  *      short text and for issue shapes ({@link shouldReadWithModel}).
  *   3. {@link documentReadingNotice} — what the reading covered, on the run's
  *      summary, so nothing it left out is left out silently.
+ *
+ * #2280 — a document source carries its key (`saved`), so the reader reuses
+ * a saved reading of the same file instead of paying to read it again
+ * (`document-reader/reading-cache.ts`); the notice then says whose.
  */
 import type { PrismaClient } from "@prisma/client";
 import { parseDocument } from "../documents/parsers.js";
 import type { StorageBackend } from "../documents/storage.js";
 import type { DocumentReading } from "../document-reader/reader.js";
+import type { SavedDocumentKey } from "../document-reader/reading-cache.js";
 import { REQUIREMENT_STATEMENT_KINDS, type StatementKind } from "../document-reader/prompts.js";
 import { formatHeadingPath } from "../document-reader/sections.js";
 import { detectChangeType, type ChangedRequirement } from "./extract-changes.js";
@@ -55,6 +60,8 @@ export interface ImpactDocumentText {
   from: "file" | "chunks";
   /** The document's title (else filename), for the reader's prompt. */
   title: string;
+  /** #2280 — the stored document's key, under which its reading is saved; absent when no row was found. */
+  saved?: SavedDocumentKey;
 }
 
 /**
@@ -116,13 +123,23 @@ export async function loadImpactDocumentText(
   storage: ReadStoredFile,
 ): Promise<ImpactDocumentText> {
   let title = documentId;
+  let saved: SavedDocumentKey | undefined;
   try {
     const doc = await prisma.document.findUnique({
       where: { id: documentId },
-      select: { filename: true, title: true, mimeType: true, storagePath: true },
+      select: {
+        projectId: true,
+        checksum: true,
+        filename: true,
+        title: true,
+        mimeType: true,
+        storagePath: true,
+      },
     });
     if (doc) {
       title = doc.title ?? doc.filename;
+      // Saved under the document's OWN project: the route checked the user may read it.
+      saved = { projectId: doc.projectId, documentId, checksum: doc.checksum };
       const buffer = await storage.read(doc.storagePath);
       const parsed = await parseDocument({
         buffer,
@@ -136,17 +153,24 @@ export async function loadImpactDocumentText(
         // re-parse lost images and the chunks exist, read the chunks instead —
         // they hold what ingest saw, and describing again would be paid twice.
         if (!IMAGE_NOT_DESCRIBED.test(parsed.text)) {
-          return { text: parsed.text, from: "file", title };
+          return { text: parsed.text, from: "file", title, ...(saved ? { saved } : {}) };
         }
         const fromChunks = await storedChunkText(prisma, documentId);
-        if (fromChunks.trim().length > 0) return { text: fromChunks, from: "chunks", title };
-        return { text: parsed.text, from: "file", title };
+        if (fromChunks.trim().length > 0) {
+          return { text: fromChunks, from: "chunks", title, ...(saved ? { saved } : {}) };
+        }
+        return { text: parsed.text, from: "file", title, ...(saved ? { saved } : {}) };
       }
     }
   } catch {
     // The file is gone or unreadable: the stored chunks below are what is left.
   }
-  return { text: await storedChunkText(prisma, documentId), from: "chunks", title };
+  return {
+    text: await storedChunkText(prisma, documentId),
+    from: "chunks",
+    title,
+    ...(saved ? { saved } : {}),
+  };
 }
 
 /** The placeholder a re-parse without an image describer writes for each image. */
@@ -272,7 +296,16 @@ export function documentReadingNotice(reading: DocumentReading, fromDocument: bo
       `${counted(reading.droppedUnverified, "statement was", "statements were")} dropped because ${reading.droppedUnverified === 1 ? "its" : "their"} quote is not in ${sourceName(fromDocument)}.`,
     );
   }
+  if (reading.reused) sentences.push(reusedReadingSentence(reading.reused));
   return sentences.join(" ");
+}
+
+/**
+ * #2280 — the notice's sentence when the reading was reused: when and with
+ * which model it was made, and how to get a fresh one.
+ */
+export function reusedReadingSentence(reused: { readAt: Date; model: string }): string {
+  return `This reading was saved on ${reused.readAt.toISOString().slice(0, 10)} (read with ${reused.model}) and reused, because the document's file has not changed; re-run with "Read the document again" for a fresh reading.`;
 }
 
 /**

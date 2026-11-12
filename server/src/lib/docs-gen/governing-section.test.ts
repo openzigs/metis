@@ -827,3 +827,87 @@ describe("the Preview mark (#2109)", () => {
     expect(renderGoverningSection(section())[2]).toMatch(LEAD_IN);
   });
 });
+
+describe("a re-checked requirement in the BRD — #2281", () => {
+  /** REQ-001's analysed finding, and req-1's own after a re-check of its v2. */
+  const RECHECKED = [
+    row(),
+    row({
+      id: "gf-own",
+      requirementId: "req-1",
+      ruleId: "rule-audit",
+      controlId: "AL-02",
+      requirementVersions: JSON.stringify({ "req-1": 2 }),
+    }),
+  ];
+  const withRecheck = (entries: Array<Record<string, unknown>>) => ({
+    ...APPLICABILITY,
+    requirements: [...APPLICABILITY.requirements, ...entries],
+  });
+
+  it("labels the re-checked wording as re-checked, without repeating the heading's title", async () => {
+    withFindings(
+      RECHECKED,
+      withRecheck([
+        {
+          requirementId: "req-1",
+          text: "Save a card\n\nA customer can save a card for later.",
+          decisions: [],
+          versions: { "req-1": 2 },
+        },
+      ]),
+      { scoped: [req({ version: 2 })] },
+    );
+    const { markdown } = await synthesizeRequirementsDocument("p1", { analysisId: "run-1" }, "BRD");
+    expect(markdown).toContain(
+      "### Save a card\n\n_As re-checked:_ A customer can save a card for later.",
+    );
+    expect(markdown).not.toContain("_As analysed:_ Save a card");
+    // The analysed requirement keeps its own label.
+    expect(markdown).toContain(
+      "### REQ-001\n\n_As analysed:_ Saved cards keep only the last four digits.",
+    );
+  });
+
+  it("a re-checked wording that is the title alone adds no line; one under a since-renamed title is quoted whole", () => {
+    const run = (text: string): GoverningSection => ({
+      runs: [
+        {
+          analysisId: "run-1",
+          startedAt: NOW,
+          findings: [
+            {
+              ...(row({ requirementId: "req-1" }) as unknown as GoverningFinding),
+              createdAt: NOW.toISOString(),
+              updatedAt: NOW.toISOString(),
+            },
+          ],
+          requirementText: new Map([["req-1", text]]),
+          requirementTitles: new Map([["req-1", "Save a card"]]),
+          revisions: [],
+          omitted: 0,
+        },
+      ],
+    });
+    const alone = renderGoverningSection(run("Save a card")).join("\n");
+    expect(alone).toContain("### Save a card");
+    expect(alone).not.toContain("_As re-checked:_");
+    expect(alone).not.toContain("_As analysed:_");
+    const renamed = renderGoverningSection(run("Keep a card\n\nBody.")).join("\n");
+    expect(renamed).toContain("_As re-checked:_ Keep a card");
+  });
+
+  it("leaves out a deleted requirement's re-check, and does not count it as left out", async () => {
+    withFindings(
+      [...THREE, row({ id: "gf-gone", requirementId: "req-gone", controlId: "XX-99" })],
+      withRecheck([
+        { requirementId: "req-gone", text: "Gone", decisions: [], versions: { "req-gone": 1 } },
+      ]),
+    );
+    const { markdown } = await synthesizeRequirementsDocument("p1", { analysisId: "run-1" }, "BRD");
+    expect(markdown).not.toContain("XX-99");
+    expect(markdown).not.toContain("req-gone");
+    expect(markdown).not.toContain("not listed or counted here");
+    expect(markdown).toContain("so every finding of the run is listed");
+  });
+});

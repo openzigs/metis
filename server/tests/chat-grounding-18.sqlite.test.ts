@@ -31,6 +31,8 @@ const state = vi.hoisted(() => {
       text: string;
       path?: string;
       source?: string;
+      /** #2241 — the relevance floor's default applies only to a calibrated embedder. */
+      embeddingModel?: string;
     }>,
     searched: [] as string[],
     /** #2225 — the ACL actor each search ran for, in order. */
@@ -292,6 +294,11 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         projectId: PROJECT,
         projectName: "Payments",
         sources: 2,
+        // #2241 — the label lists the files the excerpts came from.
+        sourcesUsed: [
+          { name: "ssrf.ts", excerpts: 1, relevance: 0.9 },
+          { name: "dns.ts", excerpts: 1, relevance: 0.8 },
+        ],
       };
       expect(groundingFrames(res.text)).toEqual([expected]);
       expect(state.searched).toEqual([PROJECT]);
@@ -306,13 +313,64 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     it("a project reply with nothing retrieved says so rather than claiming grounding", async () => {
       const sessionId = await newSession(PROJECT);
       const res = await post("/api/ai/stream", { sessionId, message: "hello" });
-      const expected = { status: "no-context", projectId: PROJECT, projectName: "Payments" };
+      const expected = {
+        status: "no-context",
+        projectId: PROJECT,
+        projectName: "Payments",
+        reason: "nothing-found",
+      };
       expect(groundingFrames(res.text)).toEqual([expected]);
       expect(await replyGroundings(sessionId)).toEqual([expected]);
     });
 
+    // #2241 — embedded by the model the default floor was calibrated on, and
+    // well under that floor.
+    const weakCalibratedHit = {
+      filename: "weak.md",
+      position: 0,
+      score: 0.2,
+      text: "unrelated-text",
+      embeddingModel: "Alibaba-NLP/gte-modernbert-base",
+    };
+
+    it("#2241 — a reply whose matches were all too weak says the evidence was insufficient, live and on reload", async () => {
+      state.hits = [weakCalibratedHit];
+      const sessionId = await newSession(PROJECT);
+      const res = await post("/api/ai/stream", { sessionId, message: "What is the SLA?" });
+      const expected = {
+        status: "no-context",
+        projectId: PROJECT,
+        projectName: "Payments",
+        reason: "insufficient-evidence",
+        belowFloor: 1,
+      };
+      expect(groundingFrames(res.text)).toEqual([expected]);
+      expect(await replyGroundings(sessionId)).toEqual([expected]);
+      // The weak excerpt never reached the model; it was told the sources don't show this.
+      const prompt = JSON.stringify(model.prompts[0]);
+      expect(prompt).not.toContain("unrelated-text");
+      expect(prompt).toContain("sources don't show this");
+    });
+
+    it("#2241 — an attached document's weak matches still reach the model: the user chose it", async () => {
+      state.hits = [weakCalibratedHit];
+      const sessionId = await newSession(PROJECT);
+      const res = await post("/api/ai/stream", {
+        sessionId,
+        message: "Summarise this",
+        documentIds: ["doc-frd"],
+      });
+      const [frame] = groundingFrames(res.text) as Array<Record<string, unknown>>;
+      expect(frame).toMatchObject({ status: "grounded", sources: 1 });
+      expect(frame).not.toHaveProperty("belowFloor");
+      const prompt = JSON.stringify(model.prompts[0]);
+      expect(prompt).toContain("unrelated-text");
+      expect(prompt).toContain("The user attached documents to this question");
+      expect(prompt).not.toContain("nothing in it was relevant enough to use");
+    });
+
     it("the non-streaming /chat turn records and returns its grounding too", async () => {
-      state.hits = [{ filename: "a.md", position: 0, score: 0.5, text: "alpha" }];
+      state.hits = [{ filename: "a.md", position: 0, score: 0.9, text: "alpha" }];
       const sessionId = await newSession(PROJECT);
       const res = await post("/api/ai/chat", { sessionId, message: "what is alpha?" });
       expect(res.status, res.text).toBe(200);
@@ -321,6 +379,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         projectId: PROJECT,
         projectName: "Payments",
         sources: 1,
+        sourcesUsed: [{ name: "a.md", excerpts: 1, relevance: 0.9 }],
       };
       expect(res.body.data.grounding).toEqual(expected);
       expect(await replyGroundings(sessionId)).toEqual([expected]);
@@ -330,23 +389,40 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     it("a reply that fails mid-stream keeps its grounding on reload", async () => {
       // PR #437 panel: the failed-turn write (recordFailedTurn) had no test —
       // the scripted stream never errored.
-      state.hits = [{ filename: "a.md", position: 0, score: 0.5, text: "alpha" }];
+      state.hits = [{ filename: "a.md", position: 0, score: 0.9, text: "alpha" }];
       model.failMidStream = true;
       const sessionId = await newSession(PROJECT);
       await post("/api/ai/stream", { sessionId, message: "what is alpha?" });
       expect(await replyGroundings(sessionId)).toEqual([
-        { status: "grounded", projectId: PROJECT, projectName: "Payments", sources: 1 },
+        {
+          status: "grounded",
+          projectId: PROJECT,
+          projectName: "Payments",
+          sources: 1,
+          sourcesUsed: [{ name: "a.md", excerpts: 1, relevance: 0.9 }],
+        },
       ]);
     });
 
     it("each reply carries its own turn's grounding", async () => {
       const sessionId = await newSession(PROJECT);
       await post("/api/ai/stream", { sessionId, message: "first" });
-      state.hits = [{ filename: "a.md", position: 0, score: 0.5, text: "alpha" }];
+      state.hits = [{ filename: "a.md", position: 0, score: 0.9, text: "alpha" }];
       await post("/api/ai/stream", { sessionId, message: "second" });
       expect(await replyGroundings(sessionId)).toEqual([
-        { status: "no-context", projectId: PROJECT, projectName: "Payments" },
-        { status: "grounded", projectId: PROJECT, projectName: "Payments", sources: 1 },
+        {
+          status: "no-context",
+          projectId: PROJECT,
+          projectName: "Payments",
+          reason: "nothing-found",
+        },
+        {
+          status: "grounded",
+          projectId: PROJECT,
+          projectName: "Payments",
+          sources: 1,
+          sourcesUsed: [{ name: "a.md", excerpts: 1, relevance: 0.9 }],
+        },
       ]);
     });
 
@@ -361,6 +437,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       }
 
       it("marks a retrieved file verified and a fabricated one not read, live and on reload", async () => {
+        // #2243 — the code tools are on by default; this is the non-loop stream path.
+        process.env.CHAT_CODE_SEARCH_TOOLS = "false";
         state.hits = [
           {
             filename: "connector:repo:c1:src/net/ssrf.ts",
@@ -390,6 +468,52 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(citationFrames(res.text)).toEqual([expected]);
         // Sent before the turn is done, so the client has it when the answer ends.
         expect(res.text.indexOf("event: citations")).toBeLessThan(res.text.indexOf("event: done"));
+        expect(await replyCitations(sessionId)).toEqual([expected]);
+      });
+
+      it("#2241 — an excerpt the relevance floor set aside is not evidence: citing it is not-read", async () => {
+        // #2243 — the code tools are on by default; this is the non-loop stream path.
+        process.env.CHAT_CODE_SEARCH_TOOLS = "false";
+        state.hits = [
+          {
+            filename: "kept.md",
+            position: 0,
+            score: 0.9,
+            text: "kept-text",
+            embeddingModel: "Alibaba-NLP/gte-modernbert-base",
+          },
+          { ...weakCalibratedHit, filename: "floored.md" },
+        ];
+        model.streamText = "Per [1] and [2]; `floored.md:1` says so.";
+        const sessionId = await newSession(PROJECT);
+        const res = await post("/api/ai/stream", { sessionId, message: "What is the SLA?" });
+        // Only the kept excerpt reached the prompt, so only `[1]` names one.
+        expect(JSON.stringify(model.prompts[0])).not.toContain("unrelated-text");
+        const expected = [
+          { text: "[1]", path: "kept.md", status: "verified", source: "document" },
+          { text: "[2]", path: "", status: "not-read" },
+          { text: "floored.md:1", path: "floored.md", lines: [1, 1], status: "not-read" },
+        ];
+        expect(citationFrames(res.text)).toEqual([expected]);
+        expect(await replyCitations(sessionId)).toEqual([expected]);
+      });
+
+      it("#2241 — an attached document's excerpt under the floor still reached the model, so citing it is verified", async () => {
+        // #2243 — the code tools are on by default; this is the non-loop stream path.
+        process.env.CHAT_CODE_SEARCH_TOOLS = "false";
+        state.hits = [weakCalibratedHit];
+        model.streamText = "Summarised from [1] in `weak.md`.";
+        const sessionId = await newSession(PROJECT);
+        const res = await post("/api/ai/stream", {
+          sessionId,
+          message: "Summarise this",
+          documentIds: ["doc-frd"],
+        });
+        const expected = [
+          { text: "[1]", path: "weak.md", status: "verified", source: "document" },
+          { text: "weak.md", path: "weak.md", status: "verified", source: "document" },
+        ];
+        expect(citationFrames(res.text)).toEqual([expected]);
         expect(await replyCitations(sessionId)).toEqual([expected]);
       });
 
@@ -497,7 +621,12 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         };
         // First what auto-retrieval supplied, then — after the tool read — the update.
         expect(groundingFrames(res.text)).toEqual([
-          { status: "no-context", projectId: PROJECT, projectName: "Payments" },
+          {
+            status: "no-context",
+            projectId: PROJECT,
+            projectName: "Payments",
+            reason: "nothing-found",
+          },
           grounded,
         ]);
         // The tool really returned the project's symbol to the model.
@@ -525,13 +654,18 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         model.chatReplies = [MISS, "I could not find it."];
         const sessionId = await newSession(PROJECT);
         const res = await post("/api/ai/stream", { sessionId, message: "Where is it?" });
-        const expected = { status: "no-context", projectId: PROJECT, projectName: "Payments" };
+        const expected = {
+          status: "no-context",
+          projectId: PROJECT,
+          projectName: "Payments",
+          reason: "nothing-found",
+        };
         expect(groundingFrames(res.text)).toEqual([expected]);
         expect(await replyGroundings(sessionId)).toEqual([expected]);
       });
 
       it("the /chat turn adds its tool reads to the excerpts it retrieved", async () => {
-        state.hits = [{ filename: "a.md", position: 0, score: 0.5, text: "alpha" }];
+        state.hits = [{ filename: "a.md", position: 0, score: 0.9, text: "alpha" }];
         model.chatReplies = [SEARCH, "answer"];
         const sessionId = await newSession(PROJECT);
         const res = await post("/api/ai/chat", { sessionId, message: "where is validation?" });
@@ -542,6 +676,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           projectName: "Payments",
           sources: 1,
           toolReads: 1,
+          sourcesUsed: [{ name: "a.md", excerpts: 1, relevance: 0.9 }],
         };
         expect(res.body.data.grounding).toEqual(expected);
         expect(await replyGroundings(sessionId)).toEqual([expected]);
@@ -572,7 +707,12 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         sources: 0,
         toolReads: 1,
       };
-      const noContext = { status: "no-context", projectId: PROJECT, projectName: "Payments" };
+      const noContext = {
+        status: "no-context",
+        projectId: PROJECT,
+        projectName: "Payments",
+        reason: "nothing-found",
+      };
 
       it("a scoped streamed reply grounded only by search-knowledge is labelled grounded, live and on reload", async () => {
         native.toolCalls = [searchKnowledge(PROJECT)];

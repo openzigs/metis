@@ -14,6 +14,7 @@ import type {
   GoverningFindingDecisionInput,
   GoverningRecheckInput,
   GoverningRecheckResult,
+  GoverningStaleRequirement,
 } from "@metis/shared";
 import { apiFetch } from "@/lib/api-client";
 import { isGoverningUnavailable } from "@/lib/governing-api";
@@ -43,6 +44,12 @@ export interface GoverningFindingsPayload {
    * wording, by the id its findings are keyed by. Absent from older servers.
    */
   requirementTitles?: Record<string, string>;
+  /**
+   * #2281 — the stored requirements edited since the check whose analysed
+   * requirement produced no finding, so no stale group offers them a re-check.
+   * Absent from older servers.
+   */
+  editedWithoutFindings?: GoverningStaleRequirement[];
 }
 
 const base = (projectId: string, analysisId: string) =>

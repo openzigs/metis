@@ -99,7 +99,7 @@ export interface SessionToolRuntime {
 export interface SessionToolsFlags {
   /** `CHAT_TOOLS` — offer METIS + MCP tools natively (default on). */
   chatTools: boolean;
-  /** `CHAT_CODE_SEARCH_TOOLS` — offer the curated code-search tools (default off). */
+  /** `CHAT_CODE_SEARCH_TOOLS` — offer the curated code-search tools (default on, #2243). */
   codeSearchTools: boolean;
   /** #146 `CHAT_PROGRESSIVE_SKILLS` — catalog + `load_skill` (default on). */
   progressiveSkills?: boolean;
@@ -111,7 +111,8 @@ export function loadSessionToolsFlags(): SessionToolsFlags {
   const cfg = getConfigService();
   return {
     chatTools: cfg.getBool("CHAT_TOOLS", true),
-    codeSearchTools: cfg.getBool("CHAT_CODE_SEARCH_TOOLS", false),
+    // #2243 — on by default: measured on the #2237 BA question set.
+    codeSearchTools: cfg.getBool("CHAT_CODE_SEARCH_TOOLS", true),
     progressiveSkills: cfg.getBool("CHAT_PROGRESSIVE_SKILLS", true),
     subAgents: cfg.getBool("CHAT_SUBAGENTS", true),
   };

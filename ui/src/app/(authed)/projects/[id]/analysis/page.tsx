@@ -415,6 +415,7 @@ export default function AnalysisPage(): React.ReactElement {
       enableWebResearch?: boolean;
       enableClarification?: boolean;
       importedRequirementIds?: string[];
+      rereadDocuments?: boolean;
     }) => analysisApi.start(projectId, input),
     successMessage: "Analysis started",
     invalidateKeys: [queryKeys.analyses.forProject(projectId), ["analyses", "cost-cap"]],
@@ -698,6 +699,8 @@ export default function AnalysisPage(): React.ReactElement {
   // toggle below still lets users opt out. Deliberate: decided in #95, which
   // retired the original "both enhancement toggles default off" AC.
   const [enableClarification, setEnableClarification] = useState(true);
+  // #2280 — a saved reading of an unchanged document is reused unless this is ticked.
+  const [rereadDocuments, setRereadDocuments] = useState(false);
   // Issue #907 — free-text new requirements (requirements→code gap evaluation).
   const [extraInstructions, setExtraInstructions] = useState("");
   // Issue #1006 — imported requirements the run starts from.
@@ -932,6 +935,15 @@ export default function AnalysisPage(): React.ReactElement {
                 />
                 <span>Ask clarifying questions</span>
               </label>
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={rereadDocuments}
+                  onChange={(e) => setRereadDocuments(e.target.checked)}
+                  data-testid="analysis-reread-documents"
+                />
+                <span>Read the documents again</span>
+              </label>
             </div>
             {(enableWebResearch || enableClarification) &&
               !start.isPending &&
@@ -975,6 +987,7 @@ export default function AnalysisPage(): React.ReactElement {
                     enableClarification: enableClarification || undefined,
                     importedRequirementIds:
                       importedRequirementIds.length > 0 ? importedRequirementIds : undefined,
+                    rereadDocuments: rereadDocuments || undefined,
                   })
                 }
                 disabled={
@@ -1611,11 +1624,11 @@ export default function AnalysisPage(): React.ReactElement {
                             <FindingBody body={f.body} />
                             {(staleNotesOf.get(f.id) ?? []).map((note) => (
                               <p
-                                key={note}
+                                key={note.requirementId}
                                 className="mt-1 text-xs text-warning"
                                 data-testid="finding-stale"
                               >
-                                {note}
+                                {note.text}
                               </p>
                             ))}
                             {f.citations.length > 0 ? (

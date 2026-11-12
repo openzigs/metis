@@ -233,6 +233,19 @@ function ImpactAnalysisDetailView({
           >
             {rerun.isPending ? "Re-running…" : "Re-run"}
           </Button>
+          {/* #2280 — a re-run reuses the saved reading of an unchanged document;
+              this one reads the document again. */}
+          {data.documentId ? (
+            <Button
+              variant="outline"
+              size="sm"
+              data-testid="impact-rerun-reread"
+              disabled={!canExport || rerun.isPending}
+              onClick={() => rerun.mutate({ id: data.id, rereadDocument: true })}
+            >
+              Re-run, reading the document again
+            </Button>
+          ) : null}
           {rerun.isSuccess ? (
             <Link
               href={`/impact-analyses/${rerun.data.id}`}
