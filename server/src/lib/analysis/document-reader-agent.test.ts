@@ -692,6 +692,7 @@ describe("runDocumentReaderAgent", () => {
       provider: reading,
       projectId: "p1",
       documentIds: ["d1"],
+      actor: MEMBER,
       load: async () => [{ ...doc("d1"), document: { ...doc("d1").document, filename: long } }],
     });
     const output = read!.result.output as unknown as {
