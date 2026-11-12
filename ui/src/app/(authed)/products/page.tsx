@@ -22,6 +22,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { PageHeader } from "@/components/ui/page-header";
+import { EmptyState } from "@/components/ui/empty-state";
 
 export default function ProductsPage() {
   const qc = useQueryClient();
@@ -132,11 +133,11 @@ export default function ProductsPage() {
       {list.isLoading && <SkeletonText lines={3} />}
 
       {list.data && list.data.items.length === 0 && (
-        <Card className="p-8 text-center">
-          <p className="text-muted-foreground">
-            No products yet. Create one to start grouping repositories and generating documentation.
-          </p>
-        </Card>
+        <EmptyState
+          data-testid="products-empty"
+          title="No products yet."
+          description="Create one to start grouping repositories and generating documentation."
+        />
       )}
 
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">

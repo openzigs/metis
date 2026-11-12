@@ -67,6 +67,7 @@ import {
   type BatchWithIssues,
 } from "@/components/publishing/published-issues";
 import { PageHeader } from "@/components/ui/page-header";
+import { EmptyState } from "@/components/ui/empty-state";
 
 const keys = {
   drafts: (pid: string) => ["publishing", "drafts", pid] as const,
@@ -861,7 +862,13 @@ export default function PublishingPage() {
               </li>
             ))}
             {!drafts.data?.length && (
-              <li className="py-2 text-xs text-muted-foreground">No drafts yet.</li>
+              <li>
+                <EmptyState
+                  className="p-4"
+                  data-testid="publish-drafts-empty"
+                  title="No drafts yet."
+                />
+              </li>
             )}
           </ul>
         )}

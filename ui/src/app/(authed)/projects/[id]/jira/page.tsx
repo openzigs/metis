@@ -22,6 +22,7 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import type { JiraConnectionDetail, JiraIssue, JiraIssueDetail } from "@metis/shared";
 import { PageHeader } from "@/components/ui/page-header";
+import { EmptyState } from "@/components/ui/empty-state";
 
 // ---- Status badge helper ---------------------------------------------------
 
@@ -425,12 +426,14 @@ export default function JiraPage() {
               </Card>
             </li>
           ))}
-          {!connections.isLoading && (connections.data ?? []).length === 0 && (
-            <p className="text-sm text-muted-foreground">
-              No Jira connections yet. Click &quot;Add Connection&quot; to get started.
-            </p>
-          )}
         </ul>
+        {!connections.isLoading && (connections.data ?? []).length === 0 && (
+          <EmptyState
+            data-testid="jira-connections-empty"
+            title="No Jira connections yet."
+            description={<>Click &quot;Add Connection&quot; to get started.</>}
+          />
+        )}
       </section>
 
       {/* ── Issue viewer (#563) ──────────────────────────────────────── */}

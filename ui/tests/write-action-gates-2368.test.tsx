@@ -13,7 +13,7 @@
  * A role without the key sees nothing, or a one-line reason in its place.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { PermissionKey } from "@metis/shared";
 import { makeWrapper, userWith } from "./test-utils";
@@ -159,17 +159,23 @@ describe("/projects New project is gated on project.create (#2368)", () => {
   it("does not tell a role without project.create to create the first project", async () => {
     vi.mocked(projectsApi.list).mockResolvedValue(NO_PROJECTS);
     render(<ProjectsPage />, { wrapper: as("project.read") });
-    expect(await screen.findByText(/No projects yet/)).toHaveTextContent(
-      "No projects yet. Ask an admin or coordinator to create one.",
-    );
+    // #2382 — the shared EmptyState: a title, then what to do.
+    const empty = await screen.findByTestId("projects-empty");
+    expect(empty).toHaveAttribute("data-slot", "empty-state");
+    expect(within(empty).getByText("No projects yet.")).toBeInTheDocument();
+    expect(
+      within(empty).getByText("Ask an admin or coordinator to create one."),
+    ).toBeInTheDocument();
   });
 
   it("invites a role with project.create to create the first project", async () => {
     vi.mocked(projectsApi.list).mockResolvedValue(NO_PROJECTS);
     render(<ProjectsPage />, { wrapper: as("project.read", "project.create") });
-    expect(await screen.findByText(/No projects yet/)).toHaveTextContent(
-      "No projects yet. Create one to get started.",
-    );
+    // #2382 — the shared EmptyState: a title, then what to do.
+    const empty = await screen.findByTestId("projects-empty");
+    expect(empty).toHaveAttribute("data-slot", "empty-state");
+    expect(within(empty).getByText("No projects yet.")).toBeInTheDocument();
+    expect(within(empty).getByText("Create one to get started.")).toBeInTheDocument();
   });
 });
 

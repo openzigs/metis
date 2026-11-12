@@ -55,8 +55,12 @@ export function VaultPicker({ id, value, onChange, placeholder, className }: Vau
   const auth = useOptionalAuth();
   const attachesOwnOnly = !(auth?.user?.permissions.includes("vault.reveal") ?? false);
 
-  const entries = data?.items ?? [];
+  const all = data?.items ?? [];
   const parsedLabel = parseVaultLabel(value);
+  // #2382 — offer only what the caller may attach (the server's `bindable`),
+  // plus the secret already chosen here: a binding stays usable where it is.
+  const entries = all.filter((e) => e.bindable !== false || e.label === parsedLabel);
+  const noneBindable = all.length > 0 && !all.some((e) => e.bindable !== false);
 
   // Tracks whether the user explicitly chose free-text ("custom") entry. This
   // is needed because the custom <Input> would otherwise never appear for a
@@ -112,19 +116,27 @@ export function VaultPicker({ id, value, onChange, placeholder, className }: Vau
               Your role cannot list the vault&apos;s secrets. Ask an admin to add a secret, or to
               bind one for you.
             </div>
-          ) : entries.length === 0 ? (
+          ) : all.length === 0 ? (
             <div
               className="max-w-xs px-2 py-1.5 text-xs text-muted-foreground"
               data-testid="vault-picker-empty"
             >
               No secrets in the vault yet. Ask an admin to add one.
             </div>
+          ) : noneBindable ? (
+            <div
+              className="max-w-xs px-2 py-1.5 text-xs text-muted-foreground"
+              data-testid="vault-picker-none-bindable"
+            >
+              None of the vault&apos;s secrets are yours to attach. Ask an admin to bind one for
+              you.
+            </div>
           ) : attachesOwnOnly ? (
             <div
               className="max-w-xs px-2 py-1.5 text-xs text-muted-foreground"
               data-testid="vault-picker-own-only"
             >
-              You can attach only secrets you created. For any other, ask an admin to bind it.
+              This list shows only secrets you created. For any other, ask an admin to bind it.
             </div>
           ) : null}
           {entries.map((entry) => (

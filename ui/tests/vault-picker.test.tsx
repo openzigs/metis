@@ -148,6 +148,51 @@ describe("VaultPicker", () => {
     expect(screen.queryByTestId("vault-picker-own-only")).toBeNull();
   });
 
+  // #2382 — the list flags what the caller may attach; the picker offers only those.
+  describe("per-secret filtering (#2382)", () => {
+    const items = [
+      { id: "v1", label: "mine", description: null, bindable: true },
+      { id: "v2", label: "admins", description: null, bindable: false },
+    ];
+
+    it("offers only the secrets the caller may attach", async () => {
+      list.mockResolvedValue({ items });
+      renderWithUser([]);
+      await userEvent.setup().click(screen.getByRole("combobox"));
+      expect(await screen.findByRole("option", { name: /mine/ })).toBeInTheDocument();
+      expect(screen.queryByRole("option", { name: /admins/ })).toBeNull();
+      expect(screen.getByTestId("vault-picker-own-only")).toHaveTextContent(
+        "This list shows only secrets you created. For any other, ask an admin to bind it.",
+      );
+    });
+
+    it("keeps a secret already chosen here even when the caller could not attach it anew", async () => {
+      list.mockResolvedValue({ items });
+      renderWithUser([], "${vault:admins}");
+      await waitFor(() => expect(screen.getByRole("combobox")).toHaveTextContent("admins"));
+      expect(screen.queryByPlaceholderText("${vault:my-label}")).not.toBeInTheDocument();
+    });
+
+    it("says so when none of the vault's secrets are the caller's", async () => {
+      list.mockResolvedValue({ items: [items[1]] });
+      renderWithUser([]);
+      await userEvent.setup().click(screen.getByRole("combobox"));
+      expect(await screen.findByTestId("vault-picker-none-bindable")).toHaveTextContent(
+        "None of the vault's secrets are yours to attach. Ask an admin to bind one for you.",
+      );
+      expect(screen.queryByTestId("vault-picker-empty")).toBeNull();
+      expect(screen.queryByTestId("vault-picker-own-only")).toBeNull();
+      expect(screen.queryByRole("option", { name: /admins/ })).toBeNull();
+    });
+
+    it("lists an entry with no flag (an older server) as before", async () => {
+      list.mockResolvedValue({ items: [{ id: "v1", label: "gh-pat", description: null }] });
+      renderWithUser(["vault.reveal"]);
+      await userEvent.setup().click(screen.getByRole("combobox"));
+      expect(await screen.findByRole("option", { name: /gh-pat/ })).toBeInTheDocument();
+    });
+  });
+
   // #2337 panel — the picker must keep production's "never retry a 4xx". The
   // default test client has retry:false, so this one uses the real client.
   it.each([403, 404])(
@@ -168,11 +213,11 @@ describe("VaultPicker", () => {
   );
 });
 
-function renderWithUser(permissions: typeof TEST_USER.permissions) {
+function renderWithUser(permissions: typeof TEST_USER.permissions, value = "") {
   const Wrapper = makeWrapper({ initialUser: { ...TEST_USER, permissions } });
   render(
     <Wrapper>
-      <VaultPicker id="repoSecret" value="" onChange={vi.fn()} />
+      <VaultPicker id="repoSecret" value={value} onChange={vi.fn()} />
     </Wrapper>,
   );
 }

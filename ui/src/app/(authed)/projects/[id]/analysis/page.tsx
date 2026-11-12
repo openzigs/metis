@@ -195,6 +195,7 @@ import {
 import { runTokensLabel } from "@/lib/run-tokens";
 import { REQUIRES_CONNECTOR_WRITE, REQUIRES_PROJECT_UPDATE } from "@/lib/permission-hints";
 import { PortfolioCheckLink } from "@/components/portfolio/portfolio-check-link";
+import { EmptyState } from "@/components/ui/empty-state";
 
 const SPECIALIST_AGENTS: AnalysisAgentKey[] = ["document", "code", "database", "web"];
 
@@ -1019,7 +1020,12 @@ export default function AnalysisPage(): React.ReactElement {
           <h3 className="mb-3 text-base font-semibold">Past runs</h3>
           {list.isLoading ? <p className="text-sm">Loading…</p> : null}
           {list.data?.items?.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No analyses yet.</p>
+            <EmptyState
+              className="p-4"
+              data-testid="analysis-runs-empty"
+              title="No analyses yet."
+              description="Each analysis you run is listed here."
+            />
           ) : null}
           <ul className="space-y-1">
             {list.data?.items?.map((item) => (

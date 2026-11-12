@@ -23,6 +23,7 @@ import { useSocket } from "@/lib/socket-client";
 import { keepSubscribed } from "@/lib/socket-subscription";
 import { projectJoin } from "@/lib/socket-rooms";
 import { PageHeader } from "@/components/ui/page-header";
+import { EmptyState } from "@/components/ui/empty-state";
 
 export default function DiscussionsListPage() {
   const params = useParams<{ id: string }>();
@@ -128,9 +129,11 @@ export default function DiscussionsListPage() {
       ) : isLoading ? (
         <p className="text-sm text-muted-foreground">Loading discussions…</p>
       ) : threads.length === 0 ? (
-        <p className="text-sm text-muted-foreground">
-          No discussions yet. Start one above to bring the team together.
-        </p>
+        <EmptyState
+          data-testid="discussions-empty"
+          title="No discussions yet."
+          description="Start one above to bring the team together."
+        />
       ) : (
         <ul className="space-y-2">
           {threads.map((t) => (

@@ -109,6 +109,10 @@ describe("<ReviewsPage />", () => {
     expect(await screen.findByText(/No reviews assigned to you/i)).toBeInTheDocument();
     fireEvent.mouseDown(screen.getByTestId("reviews-tab-requested"));
     expect(await screen.findByText(/You haven't requested any reviews/i)).toBeInTheDocument();
+    // #2382 — the shared EmptyState, with the way forward as its description.
+    const empty = screen.getByTestId("reviews-empty");
+    expect(empty).toHaveAttribute("data-slot", "empty-state");
+    expect(empty).toHaveTextContent("Request one from a project's Requirements page.");
   });
 
   it("shows an error state when the queue fails to load", async () => {
