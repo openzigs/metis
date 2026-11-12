@@ -3756,8 +3756,11 @@ describe("runEnhancementPipeline (Epic #922)", () => {
         },
       ],
     });
-    expect(seen[0]).toContain("[REQ-001] Section: frd.docx › 4 Search");
-    expect(seen[0]).toContain("<<<SOURCE\nSearch shall be fast, if possible.\nSOURCE>>>");
+    // #2275 — the section and statement are fenced with the quote.
+    expect(seen[0]).toContain(
+      "[REQ-001]\n<<<SOURCE\nSection: frd.docx › 4 Search\nStatement: Search is quick.\n" +
+        "Search shall be fast, if possible.\nSOURCE>>>",
+    );
     const meta = JSON.parse(analyses.get(analysisId)!.metadata!);
     const [req] = meta.structuredRequirements.requirements;
     expect(req.sources).toEqual([

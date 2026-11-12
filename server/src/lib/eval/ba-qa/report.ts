@@ -11,6 +11,23 @@ export interface ReportSession {
   projectId: string | null;
   ragChars: number;
   toolCalls: number;
+  /**
+   * #2243 — the tool loop spent its turn budget (`CHAT_TOOL_MAX_TURNS`) before
+   * answering. Absent in a run recorded before #2243.
+   */
+  turnsExhausted?: boolean;
+  /** #2243 — tool results cut to `CHAT_TOOL_RESULT_MAX_TOKENS` in the model's copy. */
+  truncatedToolResults?: number;
+}
+
+/** `n/of` over the sessions that recorded `field`, or n/a when none did. */
+function capCount(
+  own: readonly ReportSession[],
+  count: (s: ReportSession) => number | undefined,
+): string {
+  const seen = own.map(count).filter((n): n is number => n !== undefined);
+  if (seen.length === 0) return "n/a";
+  return `${seen.reduce((a, n) => a + n, 0)} in ${seen.filter((n) => n > 0).length}/${seen.length} sessions`;
 }
 
 const pct = (x: number | null): string => (x === null ? "n/a" : `${(x * 100).toFixed(0)}%`);
@@ -73,6 +90,19 @@ export function formatBaQaReport(input: {
     row("Unneeded follow-up on answerable", (a) => r(a.unneededFollowUp)),
     row("Right behaviour: single-product", (a) => r(a.byCategory["single-product"].behaviourOk)),
     row("Right behaviour: multi-product", (a) => r(a.byCategory["multi-product"].behaviourOk)),
+    // #2243 — whether code reading runs into the tool loop's two caps.
+    row("Tool loop out of turns", (a) =>
+      capCount(
+        input.sessions.filter((s) => s.arm === a.arm),
+        (s) => (s.turnsExhausted === undefined ? undefined : Number(s.turnsExhausted)),
+      ),
+    ),
+    row("Tool results truncated", (a) =>
+      capCount(
+        input.sessions.filter((s) => s.arm === a.arm),
+        (s) => s.truncatedToolResults,
+      ),
+    ),
     row("Answer spend", (a) => usd(a.cost.answerUsd)),
     row("Answer spend per question", (a) => usd(a.cost.perQuestionUsd)),
     row("Judge spend", (a) => usd(a.cost.judgeUsd)),

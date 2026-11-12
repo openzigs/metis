@@ -27,6 +27,12 @@
  * quarantine fallback. A selected document that is not one of them, or that
  * cannot be loaded or read, is listed in the coverage report as unread with
  * the reason, never left out silently.
+ *
+ * #2262 — and only documents the requester may see: the document's ACL
+ * (`Document.aclSubjects`, mirrored onto its chunks) is checked against the
+ * requester (`isVisibleTo`), as #2225 did for retrieval. A document they may
+ * not see reads as unavailable, with the same reason as one that is not
+ * ready, so the report is no oracle for a restricted document's existence.
  */
 import type {
   AgentFindingPayload,
@@ -36,13 +42,21 @@ import type {
   DocumentRequirement,
 } from "@metis/shared";
 import type { AIProvider, TokenUsage } from "../ai/types.js";
+import { CONNECTOR_CODE_SOURCES } from "../documents/document-source.js";
 import { parseDocument } from "../documents/parsers.js";
 import { getDocumentStorage, type StorageBackend } from "../documents/storage.js";
-import { DocumentReaderError, type DocumentReading } from "../document-reader/reader.js";
+import {
+  DocumentReaderError,
+  addUsage,
+  spentUsageOf,
+  withSpentUsage,
+  type DocumentReading,
+} from "../document-reader/reader.js";
 import { readDocumentOnce, type ReadingCacheDeps } from "../document-reader/reading-cache.js";
 import { REQUIREMENT_STATEMENT_KINDS, type StatementKind } from "../document-reader/prompts.js";
 import { formatHeadingPath } from "../document-reader/sections.js";
 import { prisma } from "../prisma.js";
+import { isVisibleTo, parseAclSubjects, type AclActor } from "../rag/acl.js";
 import type { AgentRunResult } from "./agent-runner.js";
 import type { SourceStatement } from "./requirements-extractor.js";
 
@@ -59,22 +73,34 @@ export interface ReaderDocument {
 
 export type ReaderDocumentLoad =
   | { ok: true; document: ReaderDocument }
-  | { ok: false; documentId: string; filename: string; reason: string };
+  | {
+      ok: false;
+      documentId: string;
+      filename: string;
+      reason: string;
+      /** #2262 — withheld by its ACL: never fall back to retrieving it instead. */
+      withheld?: true;
+    };
 
-/** Loads the selected documents of a project, in selection order. */
+/** Loads the selected documents of a project the actor may see, in selection order. */
 export type ReaderDocumentLoader = (
   projectId: string,
   documentIds: readonly string[],
+  actor: AclActor,
 ) => Promise<ReaderDocumentLoad[]>;
 
-const NOT_READY =
-  "It is not ready to read (still processing, failed, rejected or deleted), or is not in this project.";
+/** One reason for not-ready, not-in-project and not-yours alike (#2262): no existence oracle. */
+const NOT_AVAILABLE =
+  "It is not available to read: still processing, failed, rejected or deleted, not in this project, or not shared with you.";
 
-/** The production loader: the project's ready documents, from storage, parsed as ingest parses them. */
+/**
+ * The production loader: the project's ready documents the actor may see,
+ * from storage, parsed as ingest parses them.
+ */
 export function createReaderDocumentLoader(
   storage: StorageBackend = getDocumentStorage(),
 ): ReaderDocumentLoader {
-  return async (projectId, documentIds) => {
+  return async (projectId, documentIds, actor) => {
     const rows = await prisma.document.findMany({
       where: {
         projectId,
@@ -89,6 +115,7 @@ export function createReaderDocumentLoader(
         title: true,
         mimeType: true,
         storagePath: true,
+        aclSubjects: true,
         checksum: true,
       },
     });
@@ -97,7 +124,17 @@ export function createReaderDocumentLoader(
     for (const documentId of documentIds) {
       const row = byId.get(documentId);
       if (!row) {
-        out.push({ ok: false, documentId, filename: documentId, reason: NOT_READY });
+        out.push({ ok: false, documentId, filename: documentId, reason: NOT_AVAILABLE });
+        continue;
+      }
+      if (!isVisibleTo({ subjects: parseAclSubjects(row.aclSubjects) }, actor)) {
+        out.push({
+          ok: false,
+          documentId,
+          filename: documentId,
+          reason: NOT_AVAILABLE,
+          withheld: true,
+        });
         continue;
       }
       let buffer: Buffer;
@@ -159,6 +196,72 @@ async function storedChunks(
     orderBy: { ord: "asc" },
   });
   return quarantined.map((c) => ({ index: c.ord, text: c.text }));
+}
+
+/**
+ * #2262 — with no document selected, the reader reads at most this many: the
+ * most recently uploaded. Reading every ready upload in full made one
+ * unselected analysis cost as much as the project is long.
+ */
+export const READER_IMPLICIT_MAX_DOCUMENTS = 5;
+
+export interface ImplicitReaderSelection {
+  documentIds: string[];
+  /** Readable documents past the bound, each unread with the reason. */
+  leftOut: DocumentReadingDocument[];
+  /** Ready documents the actor may not see: not listed, and never retrieved instead. */
+  withheld: number;
+}
+
+/**
+ * The documents read when none is selected: the ready, unrejected uploads
+ * (not repository or database rows, as `defaultAnalysisDocumentIds`) the actor
+ * may see, newest first, at most {@link READER_IMPLICIT_MAX_DOCUMENTS}. The
+ * rest are named in the coverage report, never cut silently (#2233).
+ */
+export async function implicitReaderSelection(
+  projectId: string,
+  actor: AclActor,
+): Promise<ImplicitReaderSelection> {
+  const rows = await prisma.document.findMany({
+    where: {
+      projectId,
+      deletedAt: null,
+      status: "ready",
+      indexState: { not: "rejected" },
+      source: { notIn: [...CONNECTOR_CODE_SOURCES] },
+    },
+    select: { id: true, filename: true, aclSubjects: true },
+    orderBy: [{ uploadedAt: "desc" }, { id: "asc" }],
+  });
+  const visible = rows.filter((r) =>
+    isVisibleTo({ subjects: parseAclSubjects(r.aclSubjects) }, actor),
+  );
+  const reason = `Not read: with no document selected, the analysis reads the ${READER_IMPLICIT_MAX_DOCUMENTS} most recently uploaded. Select it to have it read.`;
+  return {
+    documentIds: visible.slice(0, READER_IMPLICIT_MAX_DOCUMENTS).map((r) => r.id),
+    leftOut: visible
+      .slice(READER_IMPLICIT_MAX_DOCUMENTS)
+      .map((r) => unreadDocument(r.id, r.filename, reason)),
+    withheld: rows.length - visible.length,
+  };
+}
+
+function unreadDocument(
+  documentId: string,
+  filename: string,
+  reason: string,
+): DocumentReadingDocument {
+  return {
+    documentId,
+    filename,
+    status: "unread",
+    reason,
+    sections: [],
+    statements: 0,
+    requirements: 0,
+    droppedUnverified: 0,
+  };
 }
 
 /**
@@ -251,14 +354,23 @@ export interface DocumentReaderAgentResult {
 }
 
 /**
- * Read the selected documents and build the document agent's result, or
- * `null` when none could be loaded (the caller then retrieves, as today).
- * A provider error or a cancellation throws, as the agent call it replaces did.
+ * Read the selected documents (with none selected, the bounded
+ * {@link implicitReaderSelection}) the actor may see, and build the document
+ * agent's result. `null` when none could be loaded and none was withheld by
+ * its ACL: the caller then retrieves, as today. A withheld document never
+ * sends the caller to retrieval, which would read it unchecked.
+ *
+ * A provider error or a cancellation throws, as the agent call it replaces
+ * did, carrying every token spent before it ({@link spentUsageOf}).
  */
 export async function runDocumentReaderAgent(input: {
   provider: AIProvider;
   projectId: string;
   documentIds: readonly string[];
+  /** #2262 — the requester, whose ACL decides which documents are read. */
+  actor: AclActor;
+  /** #2262 (#1237) — the operator's notes, given to every reading call. */
+  operatorNotes?: string;
   model?: string;
   signal?: AbortSignal;
   load?: ReaderDocumentLoader;
@@ -268,11 +380,20 @@ export async function runDocumentReaderAgent(input: {
   cache?: ReadingCacheDeps;
 }): Promise<DocumentReaderAgentResult | null> {
   const started = Date.now();
-  const loads = await (input.load ?? createReaderDocumentLoader())(
-    input.projectId,
-    input.documentIds,
-  );
-  if (!loads.some((l) => l.ok)) return null;
+  const selection: ImplicitReaderSelection =
+    input.documentIds.length > 0
+      ? { documentIds: [...input.documentIds], leftOut: [], withheld: 0 }
+      : await implicitReaderSelection(input.projectId, input.actor);
+  const loads =
+    selection.documentIds.length > 0
+      ? await (input.load ?? createReaderDocumentLoader())(
+          input.projectId,
+          selection.documentIds,
+          input.actor,
+        )
+      : [];
+  const withheld = selection.withheld + loads.filter((l) => !l.ok && l.withheld).length;
+  if (!loads.some((l) => l.ok) && withheld === 0) return null;
 
   const coverage: DocumentReadingDocument[] = [];
   const requirements: DocumentRequirement[] = [];
@@ -284,16 +405,7 @@ export async function runDocumentReaderAgent(input: {
 
   for (const load of loads) {
     if (!load.ok) {
-      coverage.push({
-        documentId: load.documentId,
-        filename: load.filename,
-        status: "unread",
-        reason: load.reason,
-        sections: [],
-        statements: 0,
-        requirements: 0,
-        droppedUnverified: 0,
-      });
+      coverage.push(unreadDocument(load.documentId, load.filename, load.reason));
       continue;
     }
     const doc = load.document;
@@ -304,6 +416,8 @@ export async function runDocumentReaderAgent(input: {
           title: doc.title,
           text: doc.text,
           provider: input.provider,
+          // The notes are part of the saved reading's key (`readingTextHash`).
+          ...(input.operatorNotes ? { operatorNotes: input.operatorNotes } : {}),
           ...(input.model ? { model: input.model } : {}),
           ...(input.signal ? { signal: input.signal } : {}),
           // The loader read only this project's documents, so the reading is saved under it.
@@ -315,27 +429,15 @@ export async function runDocumentReaderAgent(input: {
         input.cache,
       );
     } catch (err) {
-      if (!(err instanceof DocumentReaderError)) throw err;
+      // #2262 — what this document's read spent counts, whether it fails the agent or not.
+      const spent = spentUsageOf(err);
+      if (spent) usage = addUsage(usage, spent);
+      if (!(err instanceof DocumentReaderError)) throw withSpentUsage(err, usage);
       lastError = err;
-      coverage.push({
-        documentId: doc.documentId,
-        filename: doc.filename,
-        status: "unread",
-        reason: err.message,
-        sections: [],
-        statements: 0,
-        requirements: 0,
-        droppedUnverified: 0,
-      });
+      coverage.push(unreadDocument(doc.documentId, doc.filename, err.message));
       continue;
     }
-    usage = {
-      promptTokens: usage.promptTokens + reading.usage.promptTokens,
-      completionTokens: usage.completionTokens + reading.usage.completionTokens,
-      totalTokens: usage.totalTokens + reading.usage.totalTokens,
-      cacheReadTokens: (usage.cacheReadTokens ?? 0) + (reading.usage.cacheReadTokens ?? 0),
-      cacheWriteTokens: (usage.cacheWriteTokens ?? 0) + (reading.usage.cacheWriteTokens ?? 0),
-    };
+    usage = addUsage(usage, reading.usage);
     readings.push({ documentId: doc.documentId, reading });
     if (reading.reused) reused.push({ filename: doc.filename, ...reading.reused });
     coverage.push(coverageOf(doc, reading));
@@ -381,15 +483,15 @@ export async function runDocumentReaderAgent(input: {
   }
 
   // Every loaded document failed to read: the agent fails, as an unreadable reply did before.
-  if (readings.length === 0 && lastError) throw lastError;
+  if (readings.length === 0 && lastError) throw withSpentUsage(lastError, usage);
+  coverage.push(...selection.leftOut);
 
   const read = coverage.filter((d) => d.status === "read");
   const sections = read.reduce((n, d) => n + d.sections.length, 0);
   const unread = coverage.length - read.length;
   const summary = clip(
     `Read ${read.length} of ${coverage.length} selected document${coverage.length === 1 ? "" : "s"} in full ` +
-      `(${sections} section${sections === 1 ? "" : "s"}): ${requirements.length} requirement${requirements.length === 1 ? "" : "s"}, ` +
-      `constraint${requirements.length === 1 ? "" : "s"} and business rule${requirements.length === 1 ? "" : "s"}, each with its source.` +
+      `(${sections} section${sections === 1 ? "" : "s"}): ${requirements.length} statement${requirements.length === 1 ? "" : "s"} to analyse, each with its source.` +
       (unread > 0 ? ` ${unread} could not be read; the coverage report says why.` : "") +
       reusedReadingsSentence(reused),
     MAX_SUMMARY,

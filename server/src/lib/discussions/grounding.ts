@@ -5,9 +5,9 @@
  * a project-scoped question was answered from the model's background knowledge
  * and it invented paths. It now gets the same grounding chat has (#736, #772):
  * the project's auto-RAG block (supplied by the route) and the project-scoped
- * READ tools chat offers — `search-knowledge` and, when the deployment enables
- * them (`CHAT_CODE_SEARCH_TOOLS`), the curated code tools including
- * `read_file_slice`.
+ * READ tools chat offers — `search-knowledge` and, unless the deployment turns
+ * them off (`CHAT_CODE_SEARCH_TOOLS`, on by default since #2243), the curated
+ * code tools including `read_file_slice`.
  *
  * Narrower than a chat session, deliberately:
  *   - Only the tools in {@link DISCUSSION_TOOL_ALLOWLIST}. Nobody in a thread

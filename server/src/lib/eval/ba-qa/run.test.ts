@@ -14,10 +14,15 @@ import {
 } from "./run.js";
 
 describe("arms", () => {
-  it("parses off and on only", () => {
-    expect(parseArm("off")).toBe("off");
-    expect(parseArm("on")).toBe("on");
-    expect(() => parseArm("both")).toThrow(/off or on/);
+  it("parses the named arms only", () => {
+    for (const arm of ["default", "off", "on", "no-tools", "no-fused", "no-rerank", "tools-only"]) {
+      expect(parseArm(arm)).toBe(arm);
+    }
+    expect(() => parseArm("both")).toThrow(
+      /default, off, on, no-tools, no-fused, no-rerank, tools-only/,
+    );
+    // An inherited Object key is not an arm.
+    expect(() => parseArm("toString")).toThrow(/not toString/);
   });
 
   it("reads --arm before parseArgs runs, and picks the embedder runtime from it", () => {
@@ -25,12 +30,19 @@ describe("arms", () => {
     expect(armArgument(["--arm=off"])).toBe("off");
     expect(armArgument(["--arm"])).toBeNull();
     expect(armArgument(["--budget", "1"])).toBeNull();
+    // #222: inline exactly when the arm turns the cross-encoder on.
     expect(embedRuntimeFor("on")).toBe("inline");
+    expect(embedRuntimeFor("no-tools")).toBe("inline");
+    expect(embedRuntimeFor("no-fused")).toBe("inline");
+    expect(embedRuntimeFor("no-rerank")).toBe("worker");
+    expect(embedRuntimeFor("tools-only")).toBe("worker");
     expect(embedRuntimeFor("off")).toBe("worker");
+    expect(embedRuntimeFor("default")).toBe("worker");
+    expect(embedRuntimeFor("nonsense")).toBe("worker");
     expect(embedRuntimeFor(null)).toBe("worker");
   });
 
-  it("off unsets every flag a shell or .env set, on sets all three", () => {
+  it("off turns every flag off whatever a shell or .env set, on sets all three", () => {
     const env: NodeJS.ProcessEnv = {
       CHAT_CODE_SEARCH_TOOLS: "true",
       CHAT_FUSED_CODE_RETRIEVAL: "true",
@@ -39,8 +51,9 @@ describe("arms", () => {
     };
     const off = applyArmEnv(env, "off");
     for (const k of ARM_FLAGS) {
-      expect(env[k]).toBeUndefined();
-      expect(off[k]).toBe("(unset: off)");
+      // Explicitly off, not unset: unset now reads the server's default.
+      expect(env[k]).toBe("0");
+      expect(off[k]).toBe("0");
     }
     expect(env.OTHER).toBe("kept");
     const on = applyArmEnv(env, "on");
@@ -48,6 +61,26 @@ describe("arms", () => {
       expect(env[k]).toBe("1");
       expect(on[k]).toBe("1");
     }
+  });
+
+  it("default unsets every flag, and each no-* arm turns exactly its one flag off", () => {
+    const env: NodeJS.ProcessEnv = { CHAT_CODE_SEARCH_TOOLS: "0", RAG_RERANK: "1" };
+    const dflt = applyArmEnv(env, "default");
+    for (const k of ARM_FLAGS) {
+      expect(env[k]).toBeUndefined();
+      expect(dflt[k]).toBe("(unset: default)");
+    }
+    const dropped = {
+      "no-tools": "CHAT_CODE_SEARCH_TOOLS",
+      "no-fused": "CHAT_FUSED_CODE_RETRIEVAL",
+      "no-rerank": "RAG_RERANK",
+    } as const;
+    for (const [arm, flag] of Object.entries(dropped)) {
+      applyArmEnv(env, arm as keyof typeof dropped);
+      for (const k of ARM_FLAGS) expect(env[k]).toBe(k === flag ? "0" : "1");
+    }
+    applyArmEnv(env, "tools-only");
+    for (const k of ARM_FLAGS) expect(env[k]).toBe(k === "CHAT_CODE_SEARCH_TOOLS" ? "1" : "0");
   });
 });
 
