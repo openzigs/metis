@@ -4942,13 +4942,26 @@ document context once (purpose, scope, actors, glossary) from the full outline a
 as fits, then reads each batch with it. A cross-section pass over the statements names repeats
 (dropped) and cross-references (kept); if it fails, every statement is kept and the report says
 so. Every quote is checked with the governing `clauseLocator` and the stored quote and offsets
-are the source's own; a quote not in the source is dropped and counted. A batch whose reply
-cannot be read is reported `unread`; a provider error fails the read.
+are the source's own; a quote not in the source, or found only outside the batch the call was
+asked about, is dropped and counted (#2262). A batch whose reply cannot be read is reported
+`unread`; a provider error fails the read, and the error carries the tokens already spent
+(`spentUsageOf`), which the failed agent row and the run's total count.
+
+Cost (#2262): the system message names no batch, and each statements call's user message is
+the document (and the operator's notes) followed by the batch it asks about, so every batch call
+of one document shares a prefix sent with `promptCaching` (`system` plus `userPrefix`). A
+document over `READER_WHOLE_MAX_DOCUMENT_TOKENS` (20,000, about 80 KB) is read sectioned, whose
+cost grows in step with its length rather than with its square.
 
 Requirements Analysis uses it behind `ANALYSIS_DOCUMENT_READER` (off by default):
 `runOneAgent("document")` calls `readSelectedDocuments` instead of `retrieveContext`
-(`analysis/document-reader-agent.ts`). It loads the selected documents (or every ready
-upload) of the run's project from storage, parses them as ingest does, and writes the reading
+(`analysis/document-reader-agent.ts`). It reads as the requester: `resolveAclActor` (an
+inactive requester fails the agent), and each document's `aclSubjects` checked with
+`isVisibleTo`; a document the requester may not see is reported with the same reason as one
+that is not ready, and never sends the agent back to retrieval. The operator's notes reach every
+statements call as fenced data (#1237). It loads the selected documents (or, with none
+selected, the `READER_IMPLICIT_MAX_DOCUMENTS` (5) most recently uploaded ones the requester may
+see, the rest listed unread with the reason) of the run's project from storage, parses them as ingest does, and writes the reading
 as the document agent's output: `requirements` (`REQ-001`, ... for requirements, constraints and
 business rules, each with its document and stored chunk), one cited finding per requirement,
 and the full `reading`. The coverage report goes on the capability record
@@ -4979,7 +4992,10 @@ is the document id, `Document.checksum`, `READER_VERSION` (bump it when the read
 schemas, batching or verification change), the model, and the SHA-256 of the exact text read —
 which changes when the image describer's descriptions are in that text (impact reads the chunks
 then) and when the parser changes, and keeps the saved offsets pointing into the caller's text.
-A failed, partial (a batch `unread`, or the cross-section pass `failed`) or empty reading is
+Requirements Analysis's operator notes (#2262) are folded into that hash (`readingTextHash`),
+so a reading made with other notes, or none, is never reused; without notes it is the text's
+own hash. A read that throws reaches the caller unchanged, with its spent usage attached
+(`spentUsageOf`), so the document agent still counts it. A failed, partial (a batch `unread`, or the cross-section pass `failed`) or empty reading is
 never saved, and pasted text is never saved. Every lookup filters on the document's own
 `projectId` as well as its id, and runs only after the caller's existing access check (impact:
 `assertDocumentReadable`; Requirements Analysis loads only its own project's documents). Rows
@@ -5020,6 +5036,23 @@ Only missing knowledge (and an unclassified or governing question) goes through 
 search; an ambiguity or a silence is the author's intent and is asked directly. A question's
 `citation` is copied from its requirement's source (the paragraph holding a flagged term),
 never from the model. A reply without the new fields is asked and grounded as before #2235.
+
+**Only with the reader on (#2275).** The classifying prompt, the set-asides, the per-round cap and
+the missing-knowledge-only search were measured only with `ANALYSIS_DOCUMENT_READER` on. So the
+dialog applies them only then: `ClarificationDialogDeps.sourceQuestions`, which defaults to the
+flag. With the flag off, the dialog uses the pre-#2235 prompt (`LEGACY_QUESTION_SYSTEM_PROMPT`),
+and every question raised is asked unclassified and uncapped, in the order raised, and searched
+for (`askEveryQuestion`). The `#1873 — flag off` snapshot is again the pre-#2235 one. A question
+carries `searched: true` only when the grounding search ran for it and did not fail. The panel
+says "searched your documents and code" only then.
+
+The GtWR rules scan every reader statement (`attachUncitedQualityFlags`). The hits of a
+statement no requirement cites go to the one requirement whose title and description hold at
+least half of the statement's words, and the statement becomes one of its sources. A tie or no
+match attaches nothing, and is logged. The section line and the reader's statement now sit
+inside the `<<<SOURCE … SOURCE>>>` fence with the quote, in both the extraction input and the
+question prompt. The approval cards and the panel's "addressed" count include
+`setAsideAmbiguities`, as the server's `addressedAmbiguities` does.
 Impact Analysis and the portfolio check do not yet raise questions in this dialog (#2270).
 
 #### Online eval — scoring sampled live production runs (#1321, epic #1316)
