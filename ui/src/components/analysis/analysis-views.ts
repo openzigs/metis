@@ -518,6 +518,25 @@ export function approvalsNoneMessage(
 }
 
 /**
+ * The run's clarifying questions still open — the Questions tab's count, and
+ * (#2367) what the Overview's Review step waits on. `undefined` = no count:
+ * the run asked none, or extraction failed.
+ */
+export function openQuestionCount(
+  metadata: Record<string, unknown> | null | undefined,
+): number | undefined {
+  const enhancement = enhancementOf(metadata);
+  const clarification = enhancement.enhancement?.enableClarification ?? false;
+  // Issue #1081 (from the #1084 review) — when extraction failed there is no
+  // count of open questions to show: "0" read as "nothing to clarify". The tab
+  // shows no number and its content says the step failed.
+  const extractionFailed = Boolean(enhancement.structuredExtractionFailure);
+  return clarification && !extractionFailed
+    ? (enhancement.structuredRequirements?.totalAmbiguities ?? 0)
+    : undefined;
+}
+
+/**
  * The number shown on each tab. Questions and Approvals count what is still
  * OUTSTANDING (open ambiguities, pending approvals) rather than a total, since
  * that is what a reader goes there to clear. `undefined` = no count to show.
@@ -526,19 +545,10 @@ export function analysisTabCounts(
   snapshot: Pick<AnalysisSnapshot, "agentResults" | "requirements" | "metadata">,
   ticketStatus: TicketStatus | undefined,
 ): Partial<Record<AnalysisTab, number>> {
-  const enhancement = enhancementOf(snapshot.metadata);
-  const clarification = enhancement.enhancement?.enableClarification ?? false;
-  // Issue #1081 (from the #1084 review) — when extraction failed there is no
-  // count of open questions to show: "0" read as "nothing to clarify". The tab
-  // shows no number and its content says the step failed.
-  const extractionFailed = Boolean(enhancement.structuredExtractionFailure);
   return {
     requirements: snapshot.requirements.length,
     findings: collectFindings(snapshot).length,
-    questions:
-      clarification && !extractionFailed
-        ? (enhancement.structuredRequirements?.totalAmbiguities ?? 0)
-        : undefined,
+    questions: openQuestionCount(snapshot.metadata),
     approvals: ticketStatus?.pendingCount,
     agents: snapshot.agentResults.length,
   };
