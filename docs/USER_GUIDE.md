@@ -957,11 +957,19 @@ Press **⌘K** (or **Ctrl+K** on Windows/Linux) anywhere in the app to open the 
 
 ## 8.1 Dashboard
 
-The Dashboard summarises live activity across four widgets that poll independently:
+The Dashboard (Home) opens with **My work**: what needs you. [#2348]
 
-- **Projects** — your most recent projects with status chips. Empty? Click **Open projects** to create your first one.
-- **Active analyses & tasks** — anything currently running, refreshed every 15 seconds.
-- **Scheduled jobs** — upcoming and recently fired cron jobs. Open the **Scheduler** surface to add one.
+- **Your change requests, by state.** Each analysis run you started is listed under the state it is in, if it needs something: **Waiting on your answers** (the run finished with clarifying questions still open, whether or not you have opened its Questions tab yet; the row says how many, the same number the Questions tab shows), **In review** (the latest review of its requirements is open, timed from when it was sent), **Rejected** (that review was rejected) or **Ready to hand off** (that review approved). A ready change request leaves My work once any of its requirements is published as an issue; a rejected or ready one leaves 30 days after the verdict. Each row shows the title (the source document's file name until change requests carry their own titles), the project, and how long it has been in that state. A row opens where the work is: the run's **Questions** tab, the review, or **Publish** for that run.
+- **Reviews assigned to me.** Reviews in review where your own decision is still pending (one you have decided leaves the list, even while other reviewers have not), with who requested each; a row opens the review.
+- A group with nothing in it is left out. With nothing at all, Home offers **New change request** (pick a project and start an analysis), or **New project** — the first-run wizard — when you have no project yet and your role can create one; otherwise it tells you to ask an admin or coordinator to add you to a project.
+- Only work in projects you can open is listed; the server does the filtering. The list refreshes every 30 seconds.
+
+Below My work everyone sees **Projects** and **Recent activity**; admins also keep the operations widgets, marked (admins) below. The widgets poll independently:
+
+- **Projects** — your most recent projects with status chips. Empty? Click **Open projects**, or **New project** if your role can create one.
+- **Active analyses & tasks** (admins) — anything currently running, refreshed every 15 seconds.
+- **Active runs** (admins) — queued, running and paused background runs, with Cancel, Pause and Resume.
+- **Scheduled jobs** (admins) — upcoming and recently fired cron jobs. Open the **Scheduler** surface to add one.
 - **Recent activity** — your own recent chat sessions and analyses, drawn from a per-browser `localStorage` log capped at 10 entries per kind. A chat session is listed only while **Activity → Sessions** lists it (your own sessions that can still be resumed), under the title it has there. [#2187]
 
 Each widget shows a skeleton while loading, an actionable empty state with a deep link, and a compact list when populated.

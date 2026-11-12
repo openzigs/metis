@@ -9,7 +9,11 @@
  * Everything here is pure so the page — a thin wiring layer excluded from
  * coverage — keeps no logic of its own worth measuring.
  */
-import { AGENT_DEGRADED_NOTE_PREFIX, type AnalysisLiveAgent } from "@metis/shared";
+import {
+  AGENT_DEGRADED_NOTE_PREFIX,
+  openQuestionCount,
+  type AnalysisLiveAgent,
+} from "@metis/shared";
 import type {
   AnalysisAgentStatus,
   AnalysisFinding,
@@ -526,19 +530,14 @@ export function analysisTabCounts(
   snapshot: Pick<AnalysisSnapshot, "agentResults" | "requirements" | "metadata">,
   ticketStatus: TicketStatus | undefined,
 ): Partial<Record<AnalysisTab, number>> {
-  const enhancement = enhancementOf(snapshot.metadata);
-  const clarification = enhancement.enhancement?.enableClarification ?? false;
-  // Issue #1081 (from the #1084 review) — when extraction failed there is no
-  // count of open questions to show: "0" read as "nothing to clarify". The tab
-  // shows no number and its content says the step failed.
-  const extractionFailed = Boolean(enhancement.structuredExtractionFailure);
   return {
     requirements: snapshot.requirements.length,
     findings: collectFindings(snapshot).length,
-    questions:
-      clarification && !extractionFailed
-        ? (enhancement.structuredRequirements?.totalAmbiguities ?? 0)
-        : undefined,
+    // #2348 — the same function Home's "Waiting on your answers" counts with.
+    // Issue #1081 (from the #1084 review) — when extraction failed there is no
+    // count of open questions to show: "0" read as "nothing to clarify". The
+    // tab shows no number and its content says the step failed.
+    questions: openQuestionCount(snapshot.metadata),
     approvals: ticketStatus?.pendingCount,
     agents: snapshot.agentResults.length,
   };
