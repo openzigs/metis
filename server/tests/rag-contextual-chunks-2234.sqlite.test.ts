@@ -39,6 +39,9 @@ const { KnowledgeService } = await import("../src/lib/rag/knowledge-service.js")
 const { BM25Index } = await import("../src/lib/rag/bm25-index.js");
 const { LocalVectorStore } = await import("../src/lib/rag/vector-store.js");
 const { chunkMarkdown } = await import("../src/lib/rag/chunker.js");
+const { modelChunkContextGenerator } = await import("../src/lib/rag/contextual-chunks.js");
+type AIProvider = import("../src/lib/ai/types.js").AIProvider;
+type ChatResponse = import("../src/lib/ai/types.js").ChatResponse;
 type Embedder = import("../src/lib/rag/embedder.js").Embedder;
 type StorageBackend = import("../src/lib/documents/storage-backend.js").StorageBackend;
 type ContextualChunksMode = import("../src/lib/rag/contextual-chunks.js").ContextualChunksMode;
@@ -267,7 +270,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const calls: Parameters<ChunkContextGenerator>[0][] = [];
       const generator: ChunkContextGenerator = async (input) => {
         calls.push(input);
-        return input.chunks.map((_, i) => (i === 0 ? null : `Model context ${i}.`));
+        return input.chunks.map((_, i) =>
+          i === 0 ? null : { text: `Model context ${i}.`, key: `k${i}` },
+        );
       };
       const { knowledge, embedder } = service("model", recordingEmbedder(), generator);
       await knowledge.ingestDocument("doc-m");
@@ -289,6 +294,118 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const { knowledge, embedder } = service("headings");
       await knowledge.ingestDocument("doc-repo");
       expect(embedder.seen).toEqual(expected.map((c) => c.text));
+    });
+
+    /**
+     * #2268 — the REAL `model` generator over a scripted provider, so the reuse key,
+     * the stop check and the prompt are production code; only the reply is scripted.
+     */
+    function scriptedModel(onCall: (call: number) => Promise<void> = async () => {}) {
+      let calls = 0;
+      const provider = {
+        key: "anthropic",
+        model: "claude-2268",
+        chat: async () => {
+          const call = calls;
+          calls += 1;
+          await onCall(call);
+          return {
+            content: `Model context ${call}.`,
+            usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+          } as ChatResponse;
+        },
+      } as unknown as AIProvider;
+      return {
+        calls: () => calls,
+        generator: modelChunkContextGenerator({ provider: () => provider, concurrency: 1 }),
+      };
+    }
+
+    it("#2268 model: re-ingesting an unchanged document reuses every saved context, with no call", async () => {
+      await seedDocument("doc-reuse", "leave-policy.md");
+      const model = scriptedModel();
+      const { knowledge } = service("model", recordingEmbedder(), model.generator);
+      await knowledge.ingestDocument("doc-reuse");
+      expect(model.calls()).toBe(expected.length);
+      const first = (await storedChunks("doc-reuse")).map((r) => JSON.parse(r.metadata ?? "{}"));
+      expect(first[tailIndex].chunkContext).toEqual({
+        key: expect.stringMatching(/^[0-9a-f]{64}$/),
+        text: `Model context ${tailIndex}.`,
+      });
+
+      // A NEW service (nothing in memory) re-ingests the same bytes: no model call,
+      // and every chunk is indexed with exactly the context it had.
+      const again = scriptedModel();
+      const second = service("model", recordingEmbedder(), again.generator);
+      const result = await second.knowledge.ingestDocument("doc-reuse");
+      expect(result.status).toBe("ready");
+      expect(again.calls()).toBe(0);
+      const reread = (await storedChunks("doc-reuse")).map((r) => JSON.parse(r.metadata ?? "{}"));
+      expect(reread.map((m) => m.contextPrefix)).toEqual(first.map((m) => m.contextPrefix));
+      expect(reread.map((m) => m.chunkContext)).toEqual(first.map((m) => m.chunkContext));
+    });
+
+    it("#2268 model: a changed document is asked again", async () => {
+      await seedDocument("doc-change", "leave-policy.md");
+      const model = scriptedModel();
+      await service("model", recordingEmbedder(), model.generator).knowledge.ingestDocument(
+        "doc-change",
+      );
+      blobs.set("mem://doc-change", Buffer.from(`${DOC}\nA new closing line.\n`, "utf8"));
+      const again = scriptedModel();
+      await service("model", recordingEmbedder(), again.generator).knowledge.ingestDocument(
+        "doc-change",
+      );
+      // Every chunk's context depends on the whole document, so none is reused.
+      expect(again.calls()).toBe(chunkMarkdown(`${DOC}\nA new closing line.\n`, CHUNKING).length);
+    });
+
+    it("#2268 model: deleting the document mid-ingest stops the remaining calls", async () => {
+      await seedDocument("doc-del", "leave-policy.md");
+      const box: { knowledge?: InstanceType<typeof KnowledgeService> } = {};
+      const model = scriptedModel(async (call) => {
+        if (call === 0) await box.knowledge?.deleteDocument("doc-del");
+      });
+      box.knowledge = service("model", recordingEmbedder(), model.generator).knowledge;
+      await box.knowledge.ingestDocument("doc-del").catch(() => undefined);
+      expect(expected.length).toBeGreaterThan(1);
+      expect(model.calls()).toBe(1);
+      expect(await storedChunks("doc-del")).toEqual([]);
+    });
+
+    it("#2268 the contextual mode is in the chunker identity, so a flag change needs a re-ingest", async () => {
+      await seedDocument("doc-id", "leave-policy.md");
+      await seedDocument("doc-id-repo", "connector:repo:r1:src/docs/leave-policy.md");
+      const headings = service("headings").knowledge;
+      await headings.ingestDocument("doc-id");
+      await headings.ingestDocument("doc-id-repo");
+      const identities = async (id: string) =>
+        new Set((await storedChunks(id)).map((r) => r.chunkerIdentity));
+      expect(await identities("doc-id")).toEqual(new Set(["doc:v3:256/0;ctx=headings"]));
+      expect(await identities("doc-id-repo")).toEqual(new Set(["doc:v3:256/0;ctx=none"]));
+
+      // Read back through the report `embeddings:migrate status` prints.
+      const sameMode = await headings.coverageReport(PROJECT);
+      expect(sameMode.currentChunkerIdentity).toBe("doc:v3:256/0;ctx=headings");
+      expect(sameMode.needsReingest).toBe(false);
+      const flippedOff = await service("off").knowledge.coverageReport(PROJECT);
+      expect(flippedOff.needsReingest).toBe(true);
+      // Only the prefixed document is behind: the repository file matches every mode.
+      expect(flippedOff.matchingChunkerChunks).toBe((await storedChunks("doc-id-repo")).length);
+      const deployment = await service("model").knowledge.deploymentCoverage();
+      expect(deployment.projects.find((p) => p.projectId === PROJECT)?.needsReingest).toBe(true);
+    });
+
+    it("#2268 off: the chunker identity is unchanged from before", async () => {
+      await seedDocument("doc-id-off", "leave-policy.md");
+      await seedDocument("doc-id-off-repo", "connector:repo:r1:src/docs/leave-policy.md");
+      const off = service("off").knowledge;
+      await off.ingestDocument("doc-id-off");
+      await off.ingestDocument("doc-id-off-repo");
+      for (const id of ["doc-id-off", "doc-id-off-repo"]) {
+        for (const r of await storedChunks(id)) expect(r.chunkerIdentity).toBe("doc:v3:256/0");
+      }
+      expect((await off.coverageReport(PROJECT)).needsReingest).toBe(false);
     });
 
     afterEach(() => {

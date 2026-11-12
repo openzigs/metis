@@ -46,6 +46,9 @@ export type CacheTelemetryCallType =
   // #1329 — the docs-gen prefix-cache warm-up: one short call per section
   // written in parts, kept out of the "synthesis" share it exists to raise.
   | "warmup"
+  // #2268 — contextual chunks' `model` mode: one short call per document chunk at
+  // ingest, its own bucket rather than the "grounding" share it used to inflate.
+  | "chunk-context"
   | "chat"
   | "discussion"
   | "spec-kit"
