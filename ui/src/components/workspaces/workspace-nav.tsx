@@ -50,7 +50,8 @@ export function WorkspaceNav({ workspaceId }: { workspaceId: string }): React.Re
   const pathname = usePathname();
   const governingVisible = useGoverningTabVisible(workspaceId);
   const workspaces = useQuery(workspaceListQuery);
-  const name = workspaces.data?.find((w) => w.id === workspaceId)?.name ?? "Workspace";
+  // A workspace missing from the caller's list has no name to show: say only "Workspace".
+  const name = workspaces.data?.find((w) => w.id === workspaceId)?.name ?? null;
 
   const projectId = useSyncExternalStore(noSubscription, readStoredActiveProjectId, () => null);
   // Shared with the project switcher and Overview: usually already cached.
@@ -59,7 +60,9 @@ export function WorkspaceNav({ workspaceId }: { workspaceId: string }): React.Re
     queryFn: () => projectsApi.get(projectId as string),
     enabled: Boolean(projectId),
   });
-  const backTo = project.isError ? null : (project.data ?? null);
+  // The stored project may belong to another workspace: lead back only to one in this one.
+  const backTo =
+    !project.isError && project.data?.workspaceId === workspaceId ? project.data : null;
 
   return (
     <div className="border-b px-6 pt-3">
@@ -74,10 +77,16 @@ export function WorkspaceNav({ workspaceId }: { workspaceId: string }): React.Re
       ) : null}
       <p className="mt-1 flex items-center gap-1.5 text-sm text-muted-foreground">
         <Building2 className="h-4 w-4" aria-hidden />
-        <span>Workspace:</span>{" "}
-        <span className="font-medium text-foreground" data-testid="workspace-nav-name">
-          {name}
-        </span>
+        {name ? (
+          <>
+            <span>Workspace:</span>{" "}
+            <span className="font-medium text-foreground" data-testid="workspace-nav-name">
+              {name}
+            </span>
+          </>
+        ) : (
+          <span data-testid="workspace-nav-name">Workspace</span>
+        )}
       </p>
       <nav aria-label="Workspace" className="flex gap-2 py-2">
         {workspaceTabs(workspaceId, governingVisible).map((t) => {

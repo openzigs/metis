@@ -21,6 +21,7 @@ import {
   type GoverningStaleRequirement,
 } from "@metis/shared";
 import { createQueryClient } from "@/lib/query-client";
+import { queryKeys } from "@/lib/query-keys";
 import type { ClarificationStatePayload, ClarifyingQuestion } from "@/lib/analysis-api";
 import type { GoverningFindingRevision } from "@/lib/governing-findings-api";
 import {
@@ -162,6 +163,8 @@ class FakeServer {
   requests: { method: string; path: string; body: unknown }[] = [];
   /** #2339 — the workspace the project belongs to; null for a project in none. */
   workspaceId: string | null = "ws-1";
+  /** #2339 — the project read fails (e.g. the project was deleted or access revoked). */
+  projectError = false;
 
   handle = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = new URL(String(input), "http://localhost");
@@ -175,6 +178,7 @@ class FakeServer {
 
     // #2339 — the project, for the workspace its governing documents belong to.
     if (url.pathname === `/api/projects/${PROJECT}` && method === "GET") {
+      if (this.projectError) return err(404, "NOT_FOUND", "Project not found");
       return json(200, { id: PROJECT, name: "Card vault", workspaceId: this.workspaceId });
     }
     const prefix = `/api/projects/${PROJECT}/analyses/${ANALYSIS}/`;
@@ -939,6 +943,21 @@ describe("GoverningFindingsPanel — the way to the workspace's governing docume
       await new Promise((r) => setTimeout(r, 0));
     });
     expect(screen.queryByRole("link", { name: LINK })).toBeNull();
+  });
+
+  it("drops the link once a re-read of the project fails, though the earlier read is cached", async () => {
+    const qc = mount();
+    const panel = await screen.findByTestId("governing-findings");
+    await within(panel).findByRole("link", { name: LINK });
+    server.projectError = true;
+    const before = server.requests.length;
+    await act(async () => {
+      await qc.invalidateQueries({ queryKey: queryKeys.projects.detail(PROJECT) });
+    });
+    expect(server.requests.slice(before).some((r) => r.path === `/api/projects/${PROJECT}`)).toBe(
+      true,
+    );
+    await waitFor(() => expect(screen.queryByRole("link", { name: LINK })).toBeNull());
   });
 
   it("shows no link, and reads no project, while the feature is off", async () => {

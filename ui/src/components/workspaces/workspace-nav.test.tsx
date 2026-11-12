@@ -41,6 +41,9 @@ async function handle(input: RequestInfo | URL): Promise<Response> {
   if (url.pathname === "/api/projects/p-1") {
     return respond(200, { id: "p-1", name: "Card vault", slug: "card-vault", workspaceId: WS });
   }
+  if (url.pathname === "/api/projects/p-2") {
+    return respond(200, { id: "p-2", name: "Ledger", slug: "ledger", workspaceId: "ws-other" });
+  }
   return respond(404, null);
 }
 
@@ -103,6 +106,17 @@ describe("WorkspaceNav (#2339)", () => {
       await new Promise((r) => setTimeout(r, 0));
     });
     expect(screen.getByTestId("workspace-nav-name")).toHaveTextContent(/^Workspace$/);
+    // Not "Workspace: Workspace".
+    expect(screen.getByTestId("workspace-nav-name").parentElement).toHaveTextContent(/^Workspace$/);
+  });
+
+  it("does not mark Overview current on a sub-page", async () => {
+    vi.mocked(usePathname).mockReturnValue(`/workspaces/${WS}/governing`);
+    mount();
+    const nav = screen.getByRole("navigation", { name: "Workspace" });
+    const governing = await within(nav).findByRole("link", { name: "Governing documents" });
+    expect(governing).toHaveAttribute("aria-current", "page");
+    expect(within(nav).getByRole("link", { name: "Overview" })).not.toHaveAttribute("aria-current");
   });
 
   it("puts Traceability and Governing documents one click away, the current page marked", async () => {
@@ -134,6 +148,16 @@ describe("WorkspaceNav (#2339)", () => {
     expect(back).toHaveAttribute("href", "/projects/p-1");
   });
 
+  it("offers no back link to a stored project from another workspace", async () => {
+    window.localStorage.setItem(ACTIVE_PROJECT_STORAGE_KEY, "p-2");
+    mount();
+    await waitFor(() => expect(paths).toContain("/api/projects/p-2"));
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(screen.queryByRole("link", { name: /^Back to/ })).toBeNull();
+  });
+
   it("offers no back link when no project is known", async () => {
     mount();
     await screen.findByText("Payments");
@@ -152,7 +176,11 @@ describe("WorkspaceNav (#2339)", () => {
   it("drops a back link to a cached project once a fresh read fails (deleted since)", async () => {
     window.localStorage.setItem(ACTIVE_PROJECT_STORAGE_KEY, "p-gone");
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    qc.setQueryData(queryKeys.projects.detail("p-gone"), { id: "p-gone", name: "Old project" });
+    qc.setQueryData(queryKeys.projects.detail("p-gone"), {
+      id: "p-gone",
+      name: "Old project",
+      workspaceId: WS,
+    });
     mount(WS, qc);
     expect(screen.getByRole("link", { name: "Back to Old project" })).toBeInTheDocument();
     await waitFor(() =>

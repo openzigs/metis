@@ -7,6 +7,10 @@
  *     are each one click away — no URL typed;
  *   - both pages name the workspace and lead back to the project.
  *
+ * Runs as the mock-auth `developer` — the non-admin analyst #2339's Definition
+ * of Done names — invited into an admin-seeded workspace, as
+ * `portfolio-gap-impact.spec.ts` does.
+ *
  * Governing documents are on by default (#1878), as on the e2e stack. The
  * analysis panel's link to the same page is covered in
  * `analysis-governing-findings.spec.ts`, which seeds findings.
@@ -19,6 +23,20 @@ import { WorkspaceSwitcherPage } from "../pages/workspace-switcher.page.js";
 import { WorkspaceNavPage } from "../pages/workspace-nav.page.js";
 
 const API_BASE = apiBase();
+const ANALYST = { username: "developer", password: "password", email: "developer@metis.local" };
+
+/** An API context signed in as `username` through the real login route. */
+async function apiAs(username: string, password: string): Promise<APIRequestContext> {
+  const login = await request.newContext({ baseURL: API_BASE });
+  const res = await login.post("/api/auth/login", { data: { username, password } });
+  expect(res.status(), `login ${username}: ${await res.text()}`).toBe(200);
+  const { accessToken } = (await res.json()).data as { accessToken: string };
+  await login.dispose();
+  return request.newContext({
+    baseURL: API_BASE,
+    extraHTTPHeaders: { Authorization: `Bearer ${accessToken}` },
+  });
+}
 
 async function created<T>(res: Awaited<ReturnType<APIRequestContext["post"]>>, what: string) {
   expect(res.status(), `${what}: ${await res.text()}`).toBe(201);
@@ -65,7 +83,24 @@ test.describe("Workspace pages have a way in (#2339)", () => {
     projectId = (project.project?.id ?? project.id) as string;
     expect(projectId).toBeTruthy();
 
-    await new LoginPage(page).loginAsAdmin();
+    // The analyst is a plain member of the workspace, not an admin.
+    const invite = await created<{ token: string }>(
+      await api.post(`/api/workspaces/${workspaceId}/invites`, {
+        data: { email: ANALYST.email, role: "member" },
+      }),
+      "invite the analyst",
+    );
+    const analystApi = await apiAs(ANALYST.username, ANALYST.password);
+    try {
+      const accepted = await analystApi.post(`/api/workspaces/invites/${invite.token}/accept`);
+      expect(accepted.ok(), `accept the invite: ${await accepted.text()}`).toBe(true);
+    } finally {
+      await analystApi.dispose();
+    }
+
+    const login = new LoginPage(page);
+    await login.goto();
+    await login.login(ANALYST.username, ANALYST.password);
   });
 
   // Best-effort, as workspaces.spec.ts: a failed delete is annotated, not a failure.
