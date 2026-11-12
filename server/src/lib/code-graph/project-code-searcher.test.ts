@@ -95,6 +95,28 @@ describe("createDefaultCodeSearcher", () => {
     expect(top.kind).toBe("class");
   });
 
+  it("#2327: reads each symbol's language and hands search_code_symbols's filters to the searcher", async () => {
+    findMany.mockResolvedValue([
+      { ...sym("s1", "login"), language: "ts" },
+      { ...sym("s2", "login"), filePath: "internal/login.go", language: "go" },
+      { ...sym("s3", "login"), filePath: "internal/login_test.go", language: "go", kind: "method" },
+    ]);
+    const searcher = lexicalOnlySearcher();
+
+    const go = await searcher.search("login", "p1", {
+      limit: 5,
+      fileGlob: "internal/**",
+      symbolKind: "function",
+      language: "go",
+    });
+
+    expect(findMany.mock.calls[0]![0]).toMatchObject({ select: { language: true } });
+    expect(go.map((r) => r.symbolId)).toEqual(["s2"]);
+    expect(
+      (await searcher.search("login", "p1", { language: "ts" })).map((r) => r.symbolId),
+    ).toEqual(["s1"]);
+  });
+
   it("#372: lexically finds a symbol whose id sorts LAST in a project larger than the old 5,000 cap", async () => {
     // 6,000 distractors plus the target, whose id sorts after every other one.
     // The mock behaves like the database: it honours `orderBy: { id: "asc" }` and

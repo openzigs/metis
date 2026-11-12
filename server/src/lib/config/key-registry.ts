@@ -971,6 +971,15 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
       "Master enable for agentic code-search TOOLS in chat + stream (#713). ON by default since #2243, measured on the #2237 BA question set (single-product questions: facts stated 51% → 73–84%, citation precision 28% → 80–83%, about 4x the input tokens per question; eval-data/README.md); set false to turn them off. When on, project-scoped sessions may call search_code_graph (exact graph traversal), search_code_symbols (hybrid BM25+vector symbol search) and read_file_slice (up to 200 lines from the project's own repo clones, #736) — offered and EXECUTED on every provider path (Copilot SDK, native-Anthropic, bedrock-direct) via the shared textual agent loop, even without loaded skills. Tool schemas render deterministically into the byte-stable prompt lead, so the flag flips the cached prefix ONCE per deploy (expected); the per-turn latency cost is one extra bounded model round-trip per executed tool call (loop capped at a few turns). When off, no code tools are offered and, with CHAT_TOOLS also off or the model not tool-capable, no loop runs. Distinct from CHAT_FUSED_CODE_RETRIEVAL (#714), which is PASSIVE per-request retrieval into the volatile tail.",
     sensitive: false,
   },
+  // ── #2327 — sharper search primitives for chat ─────────────────────────
+  CHAT_CODE_SEARCH_PRIMITIVES: {
+    tier: "tunable",
+    valueType: "bool",
+    schema: z.coerce.boolean(),
+    description:
+      "With CHAT_CODE_SEARCH_TOOLS on, also offer chat grep_files (a literal, case-insensitive text search over the project's repository clones: at most 50 lines of 200 characters and 5,000 characters shown, 5,000 files of at most 512 KB and 64 MB read, with totals when cut), list_files (a glob over the same clones: at most 100 paths shown, with the total) and search_code_symbols's fileGlob / symbolKind / language filters (#2327). Every path is repository-relative (absolute paths, '..' and symlinks out of a clone refused; .git, .env* and credential files never read) and every result is filtered on the caller's document ACLs. OFF by default: measured on the #2237 BA question set and the localization corpus, it did not clear the bar to default on (eval-data/README.md, #2327).",
+    sensitive: false,
+  },
   // ── Epic #128 — one tool runtime + enforced approval gate ─────────────
   CHAT_TOOLS: {
     tier: "tunable",

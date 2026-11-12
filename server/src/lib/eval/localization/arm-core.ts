@@ -41,6 +41,11 @@ import type { StalenessOp } from "./staleness.js";
 export type AgentToolset =
   /** Production's `assembleAgenticCodeTools` and seeded blocks. */
   | "graph"
+  /**
+   * #2327 — `graph` plus chat's search primitives: `search_code_symbols` with
+   * its filters, and `grep_files` with a working tree.
+   */
+  | "graph-primitives"
   /** `list_files`, `read_file_slice`, `grep_files`; no seeded blocks. */
   | "files";
 

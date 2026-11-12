@@ -300,6 +300,50 @@ describe("HybridCodeSearch", () => {
     expect(results[0].kind).toBe("class");
   });
 
+  it("filters by language (#2327), on BM25 and vector hits alike", async () => {
+    symbolIndex.symbols = [
+      makeSearchableSymbol({ symbolId: "s1", name: "login", language: "ts" }),
+      makeSearchableSymbol({ symbolId: "s2", name: "login", language: "go", filePath: "a.go" }),
+    ];
+    vectorStore.results = symbolIndex.symbols.map((s) => ({
+      metadata: {
+        symbolId: s.symbolId,
+        filePath: s.filePath,
+        kind: s.kind,
+        name: s.name,
+        qualifiedName: s.qualifiedName,
+        contentHash: "h",
+      },
+      score: 0.9,
+    }));
+
+    const results = await search.search("login", "proj-1", { language: "go" });
+
+    expect(results.map((r) => r.symbolId)).toEqual(["s2"]);
+    // The same set unfiltered still has both: the filter keyed its own index.
+    expect((await search.search("login", "proj-1")).map((r) => r.symbolId).sort()).toEqual([
+      "s1",
+      "s2",
+    ]);
+  });
+
+  it("matches a model-written glob without backtracking (#2327)", async () => {
+    symbolIndex.symbols = [
+      makeSearchableSymbol({ symbolId: "s1", name: "login", filePath: `${"a".repeat(3000)}.ts` }),
+      makeSearchableSymbol({ symbolId: "s2", name: "login", filePath: "src/auth.ts" }),
+    ];
+    const started = performance.now();
+    const results = await search.search("login", "proj-1", { fileGlob: `${"*a".repeat(30)}*b` });
+    expect(results).toEqual([]);
+    expect(performance.now() - started).toBeLessThan(5_000);
+    // `**/` is zero or more directories.
+    expect(
+      (await search.search("login", "proj-1", { fileGlob: "src/**/auth.ts" })).map(
+        (r) => r.symbolId,
+      ),
+    ).toEqual(["s2"]);
+  });
+
   it("respects limit option", async () => {
     symbolIndex.symbols = Array.from({ length: 50 }, (_, i) =>
       makeSearchableSymbol({ symbolId: `s${i}`, name: `fn${i}`, signature: `function fn${i}()` }),

@@ -12,11 +12,20 @@ import {
 
 describe("arms", () => {
   it("parses the named arms only", () => {
-    for (const arm of ["default", "off", "on", "no-tools", "no-fused", "no-rerank", "tools-only"]) {
+    for (const arm of [
+      "default",
+      "off",
+      "on",
+      "no-tools",
+      "no-fused",
+      "no-rerank",
+      "tools-only",
+      "tools-primitives",
+    ]) {
       expect(parseArm(arm)).toBe(arm);
     }
     expect(() => parseArm("both")).toThrow(
-      /default, off, on, no-tools, no-fused, no-rerank, tools-only/,
+      /default, off, on, no-tools, no-fused, no-rerank, tools-only, tools-primitives/,
     );
     // An inherited Object key is not an arm.
     expect(() => parseArm("toString")).toThrow(/not toString/);
@@ -33,6 +42,7 @@ describe("arms", () => {
     expect(embedRuntimeFor("no-fused")).toBe("inline");
     expect(embedRuntimeFor("no-rerank")).toBe("worker");
     expect(embedRuntimeFor("tools-only")).toBe("worker");
+    expect(embedRuntimeFor("tools-primitives")).toBe("worker");
     expect(embedRuntimeFor("off")).toBe("worker");
     expect(embedRuntimeFor("default")).toBe("worker");
     expect(embedRuntimeFor("nonsense")).toBe("worker");
@@ -78,6 +88,13 @@ describe("arms", () => {
     }
     applyArmEnv(env, "tools-only");
     for (const k of ARM_FLAGS) expect(env[k]).toBe(k === "CHAT_CODE_SEARCH_TOOLS" ? "1" : "0");
+    // #2327 — the primitives' arm is tools-only plus exactly the primitives.
+    applyArmEnv(env, "tools-primitives");
+    for (const k of ARM_FLAGS) {
+      expect(env[k]).toBe(
+        k === "CHAT_CODE_SEARCH_TOOLS" || k === "CHAT_CODE_SEARCH_PRIMITIVES" ? "1" : "0",
+      );
+    }
   });
 });
 
