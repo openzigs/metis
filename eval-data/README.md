@@ -761,19 +761,20 @@ change is a gain. The fourth (#2255) is the 60 KB size the epic's definition of 
 
 | Corpus | Kind | Word file | Converted text | Sections | Requirements | Ambiguities |
 |---|---|---|---|---|---|---|
-| `docunderstanding-01-clinic-booking` | FRD | 18 KB | 22,129 chars | 26 | 46 | 11 |
-| `docunderstanding-02-freight-claims` | BRD | 18 KB | 23,478 chars | 36 | 58 | 12 |
-| `docunderstanding-03-community-grants` | FRD | 22 KB | 35,075 chars | 53 | 102 | 14 |
-| `docunderstanding-04-library-lending` | FRD | 31 KB | 60,624 chars | 81 | 214 | 28 |
+| `docunderstanding-01-clinic-booking` | FRD | 18 KB | 22,129 chars | 26 | 56 | 12 |
+| `docunderstanding-02-freight-claims` | BRD | 18 KB | 23,478 chars | 36 | 60 | 18 |
+| `docunderstanding-03-community-grants` | FRD | 22 KB | 35,075 chars | 53 | 106 | 17 |
+| `docunderstanding-04-library-lending` | FRD | 31 KB | 60,624 chars | 81 | 216 | 30 |
 
 Document 04 does not write its requirements only as "shall" statements. Most of what a member
 experiences is written to the member, as in the library's own leaflets ("You can renew…",
 "You will receive…"), and many rules are plain or passive statements ("Overdue notices are
-sent…"). Of its 214 requirements, 74 are in the second person, 66 use neither "shall" nor
-"must", and 74 use "shall" or "must". All of them are labelled, so a reader that only
-picks out "shall" sentences loses recall. Its 28 ambiguities cover all six kinds (eight
-contradictions, four of each other kind). Three of the contradictions are between a table and
-the body, and several are between distant sections. It has no results yet.
+sent…"). Of its 216 requirements, 74 are in the second person, 67 use neither "shall" nor
+"must", and 75 use "shall" or "must". All of them are labelled, so a reader that only
+picks out "shall" sentences loses recall. Its 30 ambiguities cover all six kinds (nine
+contradictions, five undefined terms, four of each other kind). Three of the contradictions are
+between a table and the body, and several are between distant sections. Its results are in
+[docs/DOCUMENT_UNDERSTANDING_BASELINE.md](../docs/DOCUMENT_UNDERSTANDING_BASELINE.md).
 
 Each item holds `frd.src.md` (the authored document, labels marked inline as
 `[[R12 ...]]` and `[[A3 ...]]` with an ambiguity trailer; see
@@ -784,9 +785,13 @@ escape clauses, contradictions (several of them between distant sections, and on
 between a summary table and the body), gaps the document is silent on, and decisions
 it leaves open.
 
-**Labels are author-labelled and not yet reviewed by a second person**
-(`labelStatus` in each `labels.json`): the same author wrote the document and its
-labels. A reviewer who disagrees with a label edits `frd.src.md` and rebuilds.
+**The labels were written by the document's author, then cross-checked (#2255)**
+(`labelStatus` in each `labels.json`). Two AI reviewers labelled every document blind and
+independently of each other; an AI judge recommended an answer for each place they
+disagreed with the key, and a person confirmed every recommendation. That review added 18
+requirements and 12 ambiguities across the four documents and re-kinded five ambiguities from
+contradiction to gap; it was not a second human labelling. A reviewer who disagrees with a
+label edits `frd.src.md` and rebuilds.
 
 ```bash
 pnpm --filter server eval:doc-understanding:build            # after editing a frd.src.md; commit all three files
@@ -812,12 +817,12 @@ say so in the write-up (#2229 did this for two strings).
 `corpus/baqa-01-acme-reader/` is Phase 0 of #2228: the questions a business analyst asks
 chat, over a two-product sample called Acme Reader. The two products are the Miniflux server
 (`miniflux/v2` at 2.3.3, Apache-2.0) and its Python client (`miniflux/python-client` at
-1.1.6, MIT). `questions.json` holds 18 questions in four categories, and the category fixes
+1.1.6, MIT). `questions.json` holds 23 questions in four categories, and the category fixes
 what a good reply does:
 
 | Category | Questions | A good reply |
 |---|---:|---|
-| `single-product`: "how does rule X work in product Y" | 6 | answers; carries facts and expected code and doc sources |
+| `single-product`: "how does rule X work in product Y" | 11 | answers; carries facts and expected code and doc sources |
 | `multi-product`: "what does FRD-12 change in A and B" | 4 | answers from both products and `frd-12.md`; carries facts, expected requirements and the files an impact analysis should name |
 | `ambiguous` | 4 | asks a follow-up question |
 | `unanswerable` | 4 | says the sources don't show this |
@@ -825,6 +830,21 @@ what a good reply does:
 Every fact and line range was read from the pinned commits by the agent that wrote the
 set. No person has reviewed them yet (`authoredBy`). `frd-12.md` is a synthetic CC0
 FRD with two requirements, uploaded to both products.
+
+S7 to S11 (#2198) are walkthrough run 10's wrong chat answers, asked again as BA questions.
+Each `why` names the run step and the wrong claim, and each lists the source that disproves
+it, so a contradicted fact is what a recurrence looks like:
+
+| Question | Run 10's wrong claim | The source that disproves it |
+|---|---|---|
+| S7 | cited `storage/user.go:13-16` (the imports) and missed the unique username | `migrations.go:25`, `storage/user.go:72` |
+| S8 | the `removed` status is still used | `migrations.go:1489-1495` |
+| S9 | `MarkAllAsReadBeforeDate` has no callers | `googlereader/handler.go:1225` |
+| S10 | `showUnreadPage` has the paging bug; missed the category page | `ui/unread_entries.go:38`, `ui/category_entries.go` |
+| S11 | the `read_at` requirement is the reading-time estimate | `readingtime/readingtime.go`, `storage/entry.go:412-427` |
+
+The baseline below predates them and covers the first 18 questions only. To measure the
+five on their own, add `--questions S7,S8,S9,S10,S11`.
 
 ```bash
 pnpm eval:materialize baqa-01-acme-reader     # clones, projects, code graph, symbol vectors ($0)
@@ -878,28 +898,46 @@ Every number below is computed from those verdicts in code (`server/src/lib/eval
 
 - **Correctness**: the mean share of facts stated, and "fully correct" when every fact is
   stated and none is contradicted.
-- **Citation precision**: supporting citations over all citations. A citation with lines is
-  judged against that span's text. One without lines is counted as supporting only when its
-  file is an expected source. Lines that are not in the file support nothing.
+- **Citation precision**, reported as two rates because they are two different tests. A
+  citation with lines is judged against that span's text, and lines that are not in the file
+  support nothing. A citation without lines has no span to read, so it is counted as
+  supporting only when its file is an expected source. An arm that cites no lines is graded
+  only by the looser file test, so one rate over both would compare unlike things (#2265).
+  A path both products hold, such as a README, is read in each of them, and the citation
+  supports its claim when either product's lines do.
 - **Citation recall**: the expected source files an answer cites.
 - **Abstention, follow-up and confident-guess rates**, plus false abstention and unneeded
   follow-ups on answerable questions.
 - **Spend**: the answers and the judge, apart, priced by the ledger.
 
-A judge reply that cannot be parsed leaves the question unscored, never scored as zero.
+A judge reply that cannot be parsed leaves the question unscored, never scored as zero. The
+answer and the cited spans reach the judge fenced between markers that carry a random token
+per call, labelled as data to grade rather than instructions.
+
+`--budget` is checked between questions. The run stops before a question once the cap is
+reached, or once the costliest question so far would carry the spend past it. A question
+costlier than any before it can still cross the cap. `--include` refuses a run with another
+fixture, answer model or judge model, or an arm already in the report. The included run is
+re-summarized from its per-question scores, so both columns are computed by the same code.
 
 ### Baseline, 2026-11-11 (Sonnet 5.5 answers and judge, 18 questions per arm)
 
-Run 2 was run on the code that merged (after #2225's ACL actor). Run 1 was run the day
+Run 2 was run on #2256's branch after #2225's ACL actor had landed. Run 1 was run the day
 before and differs only where shown.
+
+These runs predate #2265 and report citation precision as one rate over both checks. The
+`off` arm cited no lines, so its 30% is the file test alone. The `on` arm's 83% is mostly
+span-judged. The two figures are different tests, not one rate rising from 30% to 83%.
+Their "checked against the span" count also includes cited lines that are not in the file.
+From the next run on, the report gives the two rates apart.
 
 | | off (today) | on (three flags) |
 |---|---:|---:|
 | Sessions chat left unscoped (no retrieval) | 9/18 | 9/18 |
 | Correctness: mean facts stated | 29% (run 1: 27%) | 49% (48%) |
 | Fully correct answers | 0/10 | 2/10 |
-| Citation precision | 30% (6/20) (run 1: 33%) | 83% (34/41) (89%) |
-| … checked against the span | 0/20 | 35/41 (44/47) |
+| Citation precision, both checks in one rate | 30% (6/20) (run 1: 33%) | 83% (34/41) (89%) |
+| … with lines (span-judged, or not in the file) | 0/20 | 35/41 (44/47) |
 | Citation recall | 19% (6/32) | 31% (10/32) (28%) |
 | Abstention on unanswerable | 4/4 | 4/4 |
 | Follow-up on ambiguous | 3/4 | 3/4 |
@@ -1089,3 +1127,116 @@ One run per arm (Sonnet 5.5 answers and judge), compared with run 2 above:
   multi-product questions, which chat still runs unscoped (#2238).
 - The #2241 runs spent $0.772870 across both arms. These are single runs, so a difference of one
   question is within run-to-run noise (compare runs 1 and 2 above).
+
+### Routing multi-product chat (#2336), 2026-11-12: measured, not needed
+
+Multi-product chat (#2238) searches every project in scope on every turn. #2336 asked whether
+chat should first pick the likely projects and search only those, and asked for the
+measurement first. `routing.json` beside `questions.json` is the routing set. It holds a pool
+of nine products: the two Acme Reader products, then seven distractors from other eval corpora.
+The distractors are the three fixture-portfolio repositories (`localization-02`: orders,
+billing, notify) and the four synthetic requirement documents (`docunderstanding-01` to `-04`),
+each its own project. Each product carries the one-line description, tags and names a project
+admin would curate. It has 20 questions: the 10 answerable questions `questions.json` had then (S1 to S6, M1 to M4), whose
+answer products are the products their expected sources name; 8 questions answered by one
+product, 6 of them by a distractor; and 2 no product answers (a gibberish string, and "What is
+the capital of France?"). Scopes are the first 2, 5 and 9 products of the pool.
+
+```bash
+pnpm eval:materialize baqa-01-acme-reader
+pnpm eval:materialize localization-02-fixture-portfolio
+pnpm eval:ba-qa --routing-sweep                                # $0: no model is called
+pnpm eval:ba-qa --arm default --budget 1 --routing-scope 9 --route all   # all | routed | oracle
+```
+
+`--routing-sweep` gives the distractors their knowledge (the repositories' source chunks, and
+an upload per document), then, for every question and scope, runs the offline router and
+retrieves the way chat would (the federated search and the multi-product block) in four ways.
+`all` is today's search-all. `routed` is the router's choice. `oracle` is exactly the answer's
+products. `ranked` is every project's probe hits merged on cosine alone: a ranking
+counterfactual, not a proposal (ranking is #2264's). `--routing-scope n --route r` asks the 10
+answerable questions in a chat scoped to the first `n` products, retrieving `r`'s way, and
+scores the answers as the other arms are. A session scoped to several products binds no single
+project, so it gets no code-search tools: these answers rest on the 8 retrieved excerpts.
+
+The router (`server/src/lib/eval/ba-qa/routing.ts`, offline only) ranks the projects on two
+signals. The profile signal is the share of the question's words that a project's names,
+description and tags hold. The evidence signal comes from a probe search per project and counts
+only hits the keyword retriever matched, each question word weighted by how few projects hold
+it. A dense search returns neighbours for any text, so a floor on vector scores never trips. A
+product the question names is always chosen. The router falls back to every project when no
+project has keyword evidence, when the best score is below 0.25, or when the two signals point
+at different projects.
+
+**Is the right project in the router's top k** (answerable questions in scope):
+
+| Scope | Top 1 | Top 2 | Top 3 | Top 1 / 2 / 3, product names ignored | Routed choice holds the answer | Projects searched (mean) |
+|---:|---:|---:|---:|---|---:|---:|
+| 2 | 8/12 | 12/12 | 12/12 | 5/12, 12/12, 12/12 | 12/12 | 2.0 |
+| 5 | 11/15 | 15/15 | 15/15 | 8/15, 15/15, 15/15 | 15/15 | 2.5 |
+| 9 | 14/18 | 17/18 | 18/18 | 11/18, 17/18, 18/18 | 17/17 (1 fell back) | 2.9 |
+
+The gibberish question fell back at every scope. The France question was routed to the
+Miniflux server, whose test data and code comments hold "France" and "capital".
+
+**What reaches the prompt** (offline, the same questions; time is warm, in-process):
+
+| Scope | Way | Projects searched | Excerpts from an answer product | Expected files retrieved | Mean ms |
+|---:|---|---:|---:|---:|---:|
+| 2 | all | 2.0 | 67% (64/96) | 9/32 | 151 |
+| 2 | oracle | 1.3 | 100% (96/96) | 11/32 | 109 |
+| 5 | all | 5.0 | 43% (51/120) | 8/32 | 251 |
+| 5 | ranked | 5.0 | 63% (76/120) | 8/32 | 247 |
+| 5 | routed | 2.5 | 58% (70/120) | 9/32 | 411 |
+| 9 | all | 9.0 | **31% (44/144)** | **4/32** | 181 |
+| 9 | ranked | 9.0 | 68% (98/144) | 8/32 | 199 |
+| 9 | routed | 2.9 | 61% (88/144) | 8/32 | 296 |
+| 9 | oracle | 1.2 | 100% (141/141) | 11/32 | 64 |
+
+The multi-product block held 11,300 to 12,200 characters in every row: it carries 8 excerpts,
+whatever the number of projects. `routed` time includes the probe.
+
+**Answers** (Sonnet 5.5 answers and judge, the 10 answerable questions, one run per column,
+two for routed):
+
+| | 2, all | 5, all | 9, all | 9, routed | 9, oracle |
+|---|---:|---:|---:|---:|---:|
+| Correctness: mean facts stated | 33% | 30% | **17%** | 42%, 35% | 44% |
+| Citation precision | 40% (10/25) | 42% (8/19) | 29% (5/17) | 36% (9/25), 39% (9/23) | 39% (12/31) |
+| Citation recall | 10/32 | 8/32 | 5/32 | 9/32, 9/32 | 12/32 |
+| False abstention on answerable | 4/10 | 5/10 | 6/10 | 4/10, 4/10 | 2/10 |
+| Input tokens per question | 4,950 | 4,788 | 4,489 | 4,882, 4,882 | 5,414 |
+| Seconds per question | 10.4 | 10.8 | 10.2 | 11.1, 10.4 | 10.9 |
+| Retrieval ms per question | 1,165 | 1,202 | 1,505 | 1,008 (probe included) | 1,124 |
+
+Retrieval takes about a second here, against 0.2 s in the sweep: between questions the model
+call takes 10 s and the search runs cold. The first routed run timed retrieval without its
+probe, so only the second run's time is given. The runs cost **$1.566** (answers and judge),
+including a scope-5 run whose results were lost to a bad `--include` path and run again.
+
+**Decision: no-go. #2336 is closed as measured-not-needed, and the accuracy loss goes to #2264.**
+
+- **Cost does not call for routing.** Input tokens and latency stay flat from 2 to 9 projects:
+  the block holds 8 excerpts whatever the scope, the parallel per-project search takes 0.2 s
+  warm, and the model takes 10 s. Routing cannot improve either one, because its probe is a
+  search per project of its own. Part B's own bar for turning it on ("tokens or latency
+  improve") could not be met.
+- **Search-all does lose accuracy as projects are added, but routing is not the fix.** From 2
+  to 9 projects, the share of excerpts from an answer product falls from 67% to 31%, the
+  expected files retrieved from 9 to 4 of 32, and the facts stated from 33% to 17%. The cause
+  is the merge: `fuseByRelevance` keeps every project within 0.75 of the best project's
+  relevance and hands each one an equal turn at the 8 slots. Merging the same per-project hits
+  on cosine alone (`ranked`) keeps as many expected files as the router (8/32) and more
+  excerpts from the answer's products (68% against 61%), with no extra search and no new
+  per-project data to curate. That is #2264's change (sort kept projects by relevance), with
+  #2294's absolute floor beside it. Routing would add a probe, a confidence floor, a
+  description and tags to keep current on every project, and a silent-narrowing risk, to get
+  what ranking gets alone.
+- **The product mention does most of the router's work.** Most questions in the set name
+  their product the way an analyst does ("the Acme Reader server"). With the names ignored,
+  top 1 drops to 11 of 18 at nine projects. The keyword evidence alone separates the two Acme
+  Reader products poorly: both hold most words of a question about either.
+- These are single runs of 10 questions. The two routed runs, with identical retrieval,
+  differ by 7 points of facts stated, so differences under about 10 points are noise. The
+  fall at 9 projects (33% to 17%) and the recovery (35–44%) are larger than that, and the
+  retrieval counts, which carry no model noise, show the same thing.

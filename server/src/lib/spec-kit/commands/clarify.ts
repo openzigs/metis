@@ -11,6 +11,10 @@
  *     updates the originating artifact when the answer materially
  *     changes a section (in v1.2 this just records the answer; the
  *     follow-up edit is left to the operator).
+ *
+ * #2236 — an answer is also kept as project knowledge (a clarification record,
+ * indexed in the project's RAG store), and `/specify`, `/plan` and `/tasks`
+ * read the set's answered questions (`../clarifications.ts`).
  */
 import { SpecKitArtifactError } from "../artifacts.js";
 import {
@@ -22,6 +26,8 @@ import {
 } from "../artifact-scope.js";
 import { runSpecKitAgent, loadProjectContext, type RunDeps } from "./runner.js";
 import { fenceSourceRequirementsInSpec } from "../requirements-seed.js";
+import { CLARIFY_A_PREFIX, CLARIFY_Q_PREFIX, parseClarifyMarkdown } from "../clarifications.js";
+import { recordSpecKitClarification } from "../../clarifications/spec-kit-clarifications.js";
 
 const SYSTEM_PROMPT = [
   "You are a Business Analyst running the Spec Kit /clarify loop.",
@@ -30,8 +36,8 @@ const SYSTEM_PROMPT = [
   "Do not output anything else.",
 ].join("\n");
 
-const Q_PREFIX = "- **Q:**";
-const A_PREFIX = "- **A:**";
+const Q_PREFIX = CLARIFY_Q_PREFIX;
+const A_PREFIX = CLARIFY_A_PREFIX;
 
 export interface ClarifyInput {
   projectId: string;
@@ -42,6 +48,8 @@ export interface ClarifyInput {
   deps?: RunDeps;
   /** #786 — the artifact set to read and write. Defaults to the project's `.specify/`. */
   scope?: ArtifactScope;
+  /** #2236 — where an answer is kept as project knowledge. Default: a clarification record. */
+  recordAnswer?: typeof recordSpecKitClarification;
 }
 
 export interface ClarifyResult {
@@ -76,6 +84,17 @@ export async function runClarify(input: ClarifyInput): Promise<ClarifyResult> {
     const block = `${A_PREFIX} ${trimmedInput}`;
     const next = appendBlock(prev, block);
     const artifact = await scope.write("clarify.md", next, input.actorId ?? null);
+    // #2236 — the answer to the question it follows, kept as project knowledge.
+    const answered = parseClarifyMarkdown(next).at(-1);
+    if (answered?.answer) {
+      await (input.recordAnswer ?? recordSpecKitClarification)({
+        projectId: input.projectId,
+        feature: scope.featureSlug,
+        question: answered.question,
+        answer: answered.answer,
+        answeredById: input.actorId ?? null,
+      });
+    }
     return {
       artifact,
       questioned: false,

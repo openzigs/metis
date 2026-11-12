@@ -75,6 +75,16 @@ vi.mock("../src/lib/rag/knowledge-service.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/lib/rag/knowledge-service.js")>()),
   getKnowledgeService: vi.fn(() => ({ search: vi.fn(async () => ({ hits: [] })) })),
 }));
+// #2236 — every analysis here is of one project asking the same governing
+// question, so a later start would reuse an earlier test's answer and ask
+// nothing. These tests are about one answer's round trip; reuse is
+// `clarification-knowledge-2236.sqlite.test.ts`'s.
+vi.mock("../src/lib/clarifications/analysis-clarifications.js", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("../src/lib/clarifications/analysis-clarifications.js")
+  >()),
+  priorAnswerSourceFor: () => ({ find: async () => new Map() }),
+}));
 
 const { initAnalysisRouter } = await import("../src/routes/analysis.js");
 const { errorHandler, notFoundHandler } = await import("../src/middleware/error-handler.js");

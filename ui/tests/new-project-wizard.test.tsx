@@ -7,7 +7,7 @@ import { render, renderHook, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useRouter } from "next/navigation";
 import { ApiError } from "@/lib/api-client";
-import { makeWrapper } from "./test-utils";
+import { makeWrapper, userWith } from "./test-utils";
 
 vi.mock("sonner", () => ({
   toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn(), info: vi.fn() },
@@ -361,7 +361,7 @@ describe("NewProjectDialog", () => {
   async function createThroughDialog() {
     const user = userEvent.setup();
     create.mockResolvedValue({ ...PROJECT, primaryRepo: null } as never);
-    const Wrapper = makeWrapper({});
+    const Wrapper = makeWrapper({ initialUser: userWith("project.create") });
     render(
       <Wrapper>
         <NewProjectDialog />
@@ -385,7 +385,7 @@ describe("NewProjectDialog", () => {
     const user = userEvent.setup();
     window.localStorage.setItem("metis.activeWorkspaceId", "ws-9");
     create.mockResolvedValue({ ...PROJECT, primaryRepo: null } as never);
-    const Wrapper = makeWrapper({});
+    const Wrapper = makeWrapper({ initialUser: userWith("project.create") });
     render(
       <Wrapper>
         <NewProjectDialog />

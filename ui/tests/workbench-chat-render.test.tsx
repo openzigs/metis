@@ -131,6 +131,27 @@ describe("WorkbenchPage — chat rendering & RAG scope", () => {
     expect(screen.queryByText(/## Business Rules/)).not.toBeInTheDocument();
   });
 
+  it("#2242 — lists the reply's checked citations under it", async () => {
+    const user = userEvent.setup();
+    async function* cited(): AsyncGenerator<StreamEvent> {
+      yield { type: "delta", content: "See src/made/up.ts:3." };
+      yield {
+        type: "citations",
+        citations: [{ text: "src/made/up.ts:3", path: "src/made/up.ts", status: "not-read" }],
+      };
+      yield { type: "done" };
+    }
+    streamChatMock.mockReturnValue(cited());
+    const Wrapper = makeWrapper({ withAuth: false });
+    render(<WorkbenchPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByTestId("workbench-input")).not.toBeDisabled());
+    await user.type(screen.getByTestId("workbench-input"), "where?");
+    await user.click(screen.getByTestId("workbench-send"));
+    const item = await screen.findByTestId("chat-citation");
+    expect(item).toHaveAttribute("data-status", "not-read");
+    expect(within(screen.getByTestId("chat-citations")).getByText(/not in anything/)).toBeTruthy();
+  });
+
   it("opens the session scoped to the active project so RAG is project-bound", async () => {
     async function* reply(): AsyncGenerator<StreamEvent> {
       yield { type: "done" };

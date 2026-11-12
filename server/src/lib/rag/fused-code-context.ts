@@ -249,11 +249,15 @@ function fitSnippet(snippet: string, room: number): string | undefined {
  * `hits` carry the snippet AS PLACED (shortened, or `null` when it was left
  * out), so a caller that renders the hits itself — the analysis code agent —
  * stays inside the same budget.
+ *
+ * #2242 — `firstIndex` is the `[n]` of the first entry (default 1). Chat sets
+ * it past the retrieved excerpts' numbers, so an answer's `[2]` names one
+ * entry of the prompt, never both an excerpt and a symbol.
  */
 export function fuseCodeContext(
   symbolHits: FusedSymbolHit[],
   ragChunks: FusedRagChunkRef[],
-  opts: { tokenBudget: number },
+  opts: { tokenBudget: number; firstIndex?: number },
 ): FuseCodeContextResult {
   const empty: FuseCodeContextResult = {
     block: "",
@@ -288,7 +292,7 @@ export function fuseCodeContext(
       droppedBudget += 1;
       continue;
     }
-    const head = renderHead(hit, entries.length + 1);
+    const head = renderHead(hit, (opts.firstIndex ?? 1) + entries.length);
     const cost = estTokens(head);
     if (total + cost > opts.tokenBudget) {
       stopped = true;
@@ -349,6 +353,8 @@ export async function buildFusedCodeBlock(opts: {
   maxSymbols: number;
   searcher: FusedCodeSearcher;
   lineLookup: SymbolLineLookup;
+  /** #2242 — the `[n]` of the first entry; see {@link fuseCodeContext}. */
+  firstIndex?: number;
 }): Promise<FuseCodeContextResult> {
   const empty: FuseCodeContextResult = {
     block: "",
@@ -407,5 +413,8 @@ export async function buildFusedCodeBlock(opts: {
   }
   if (hits.length === 0) return empty;
 
-  return fuseCodeContext(hits, opts.ragChunks, { tokenBudget: opts.tokenBudget });
+  return fuseCodeContext(hits, opts.ragChunks, {
+    tokenBudget: opts.tokenBudget,
+    ...(opts.firstIndex ? { firstIndex: opts.firstIndex } : {}),
+  });
 }

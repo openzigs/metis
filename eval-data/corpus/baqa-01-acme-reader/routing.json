@@ -1,0 +1,181 @@
+{
+  "id": "baqa-01-routing",
+  "version": 1,
+  "issue": 2336,
+  "description": "Routing set for multi-product chat (#2336, Part A): which projects hold the answer to a question asked over a scope of up to nine products. The first two are the Acme Reader products of questions.json; the other seven are distractors from other eval corpora: the three fixture-portfolio repositories (localization-02) and four synthetic requirement documents (docunderstanding-01 to -04), each its own project. Each product carries the one-line description and tags a project admin would curate. A question taken from questions.json ('from') answers from the products its expected sources name; the others list them in 'answerIn'. An empty 'answerIn' is a question no product answers: the router should fall back to searching every project.",
+  "license": "CC0-1.0",
+  "authoredBy": "agent (issue #2336); the answerIn labels of the from-questions are derived from questions.json's expected sources; not yet reviewed by a person",
+  "products": [
+    {
+      "name": "miniflux",
+      "title": "Acme Reader server",
+      "aliases": ["Acme Reader server", "Miniflux"],
+      "description": "The Acme Reader feed reader server: subscriptions, feed refresh, entries, users, API keys and the REST API.",
+      "tags": ["feeds", "rss", "refresh", "entries", "users", "api keys", "rest api", "go"],
+      "source": { "kind": "baqa" }
+    },
+    {
+      "name": "python-client",
+      "title": "Acme Reader Python client",
+      "aliases": ["Acme Reader Python client", "Python client", "miniflux-python"],
+      "description": "The Python library scripts use to call the Acme Reader server's REST API.",
+      "tags": ["python", "client", "sdk", "rest api", "authentication", "errors"],
+      "source": { "kind": "baqa" }
+    },
+    {
+      "name": "library-lending",
+      "title": "Kestrel Vale library lending platform",
+      "aliases": ["library lending platform", "Kestrel Vale"],
+      "description": "Requirements for a public library's membership, loans, renewals, reservations and fines.",
+      "tags": ["library", "members", "loans", "renewals", "reservations", "catalogue"],
+      "source": {
+        "kind": "documents",
+        "files": [
+          {
+            "file": "eval-data/corpus/docunderstanding-04-library-lending/frd.src.md",
+            "uploadAs": "library-lending-frd.md"
+          }
+        ]
+      }
+    },
+    {
+      "name": "notify",
+      "title": "Notify service",
+      "aliases": ["notify service", "metis-fixture-notify"],
+      "description": "Emails customers a receipt for every issued invoice.",
+      "tags": ["notifications", "email", "receipts", "invoice.issued"],
+      "source": {
+        "kind": "materialized",
+        "corpus": "localization-02-fixture-portfolio",
+        "repo": "notify"
+      }
+    },
+    {
+      "name": "billing",
+      "title": "Billing service",
+      "aliases": ["billing service", "metis-fixture-billing"],
+      "description": "Issues invoices for created orders and publishes invoice.issued.",
+      "tags": ["billing", "invoices", "order.created", "payments"],
+      "source": {
+        "kind": "materialized",
+        "corpus": "localization-02-fixture-portfolio",
+        "repo": "billing"
+      }
+    },
+    {
+      "name": "orders",
+      "title": "Orders service",
+      "aliases": ["orders service", "metis-fixture-orders"],
+      "description": "Owns the Orders API and the customers and orders tables, and publishes order.created.",
+      "tags": ["orders", "customers", "orders api", "order.created"],
+      "source": {
+        "kind": "materialized",
+        "corpus": "localization-02-fixture-portfolio",
+        "repo": "orders"
+      }
+    },
+    {
+      "name": "clinic-booking",
+      "title": "Riverside clinic booking",
+      "aliases": ["clinic booking portal", "Riverside"],
+      "description": "Requirements for online booking, rescheduling and cancelling of clinic appointments.",
+      "tags": ["appointments", "patients", "booking", "reminders", "waiting list"],
+      "source": {
+        "kind": "documents",
+        "files": [
+          {
+            "file": "eval-data/corpus/docunderstanding-01-clinic-booking/frd.src.md",
+            "uploadAs": "clinic-booking-frd.md"
+          }
+        ]
+      }
+    },
+    {
+      "name": "freight-claims",
+      "title": "Northgate freight claims",
+      "aliases": ["freight claims system", "Northgate"],
+      "description": "Requirements for handling cargo loss and damage claims from first report to settlement.",
+      "tags": ["claims", "cargo", "damage", "settlement", "freight"],
+      "source": {
+        "kind": "documents",
+        "files": [
+          {
+            "file": "eval-data/corpus/docunderstanding-02-freight-claims/frd.src.md",
+            "uploadAs": "freight-claims-brd.md"
+          }
+        ]
+      }
+    },
+    {
+      "name": "community-grants",
+      "title": "Harbour City community grants",
+      "aliases": ["community grants system", "Harbour City"],
+      "description": "Requirements for running community grant rounds: applications, assessment, payment and reporting.",
+      "tags": ["grants", "applications", "assessment", "funding rounds"],
+      "source": {
+        "kind": "documents",
+        "files": [
+          {
+            "file": "eval-data/corpus/docunderstanding-03-community-grants/frd.src.md",
+            "uploadAs": "community-grants-frd.md"
+          }
+        ]
+      }
+    }
+  ],
+  "scopeSizes": [2, 5, 9],
+  "questions": [
+    { "id": "R1", "from": "S1" },
+    { "id": "R2", "from": "S2" },
+    { "id": "R3", "from": "S3" },
+    { "id": "R4", "from": "S4" },
+    { "id": "R5", "from": "S5" },
+    { "id": "R6", "from": "S6" },
+    { "id": "R7", "from": "M1" },
+    { "id": "R8", "from": "M2" },
+    { "id": "R9", "from": "M3" },
+    { "id": "R10", "from": "M4" },
+    {
+      "id": "R11",
+      "text": "Who gets an email after an invoice is issued, and what does the email say?",
+      "answerIn": ["notify"]
+    },
+    {
+      "id": "R12",
+      "text": "Which event does the billing service listen for before it creates an invoice?",
+      "answerIn": ["billing"]
+    },
+    {
+      "id": "R13",
+      "text": "How many items may an institutional member have on loan, and for how long?",
+      "answerIn": ["library-lending"]
+    },
+    {
+      "id": "R14",
+      "text": "What happens to a slot when a patient cancels an appointment online?",
+      "answerIn": ["clinic-booking"]
+    },
+    {
+      "id": "R15",
+      "text": "What documents does a handler ask a customer for when a delivery arrives damaged?",
+      "answerIn": ["freight-claims"]
+    },
+    {
+      "id": "R16",
+      "text": "Can an application ask for more than the round's maximum grant?",
+      "answerIn": ["community-grants"]
+    },
+    {
+      "id": "R17",
+      "text": "In the Python client, which exception does a script get when the server answers 404?",
+      "answerIn": ["python-client"]
+    },
+    {
+      "id": "R18",
+      "text": "Does the Acme Reader server let a user create two API keys with the same description?",
+      "answerIn": ["miniflux"]
+    },
+    { "id": "R19", "text": "xqzv blorf wibble frandle", "answerIn": [] },
+    { "id": "R20", "text": "What is the capital of France?", "answerIn": [] }
+  ]
+}

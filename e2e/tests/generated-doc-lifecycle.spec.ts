@@ -191,4 +191,87 @@ test.describe("Generated document lifecycle (#1350, #1351-#1358)", () => {
       await expect(docPage.card("Lifecycle Generation Failed")).toHaveCount(0);
     });
   });
+
+  // #2369 — this project has no repository, so a Business Requirements document
+  // has no code to read. The form says so up front; a run anyway ends failed
+  // with an error toast that says why, never "Documentation ready" over a stub
+  // that is then indexed.
+  test("a documents-only project: BRD warns first, then fails with a reason", async ({ page }) => {
+    const docPage = new DocumentationPage(page);
+    // #2377 — the symptom #2369 reported: the Overview's document count grew
+    // and a document waited in quarantine. The Overview reads both from
+    // `GET /documents`, so that is what is compared before and after.
+    const knowledge = async () => {
+      const res = await apiCtx.get(`/api/projects/${projectId}/documents?limit=100`);
+      expect(res.status()).toBe(200);
+      const body = (await res.json()) as {
+        data: { total: number; items: Array<{ indexState?: string | null }> };
+      };
+      return {
+        total: body.data.total,
+        quarantined: body.data.items.filter((d) => d.indexState === "quarantined").length,
+      };
+    };
+    const before = await knowledge();
+    await docPage.goto(projectId);
+
+    await test.step("the form warns that the document type needs source code", async () => {
+      await docPage.openGenerateForm();
+      await expect(docPage.noSourceCodeWarning).toBeVisible();
+      await expect(docPage.noSourceCodeWarning).toContainText(
+        "Business Requirements needs connected source code",
+      );
+    });
+
+    await test.step("generating anyway fails with an error toast, not a success", async () => {
+      await docPage.titleInput.fill("Lifecycle No Source Code");
+      await docPage.submitGenerate.click();
+      const failure = page
+        .locator("[data-sonner-toast]")
+        .filter({ hasText: "This document type needs connected source code" });
+      await expect(failure).toBeVisible({ timeout: 30_000 });
+      await expect(failure).toHaveAttribute("data-type", "error");
+      await expect(
+        page.locator("[data-sonner-toast]").filter({ hasText: "Documentation ready" }),
+      ).toHaveCount(0);
+    });
+
+    await test.step("the document reads failed, with no content and the reason", async () => {
+      const list = await apiCtx.get(`/api/projects/${projectId}/docs`);
+      expect(list.status()).toBe(200);
+      const docs = ((await list.json()) as { data: Array<{ id: string; title: string }> }).data;
+      const created = docs.find((d) => d.title === "Lifecycle No Source Code");
+      expect(created, "the generated document row").toBeDefined();
+      const detailUrl = `/api/projects/${projectId}/docs/${created!.id}`;
+      await expect
+        .poll(
+          async () =>
+            ((await (await apiCtx.get(detailUrl)).json()) as { data: { status: string } }).data
+              .status,
+        )
+        .toBe("failed");
+      const detail = (await (await apiCtx.get(detailUrl)).json()) as {
+        data: { content: string; errorMessage: string | null };
+      };
+      expect(detail.data.content).toBe("");
+      expect(detail.data.errorMessage).toContain("needs connected source code");
+      // #2377 — never queued for indexing, so no indexing state at all.
+      expect((detail.data as { indexing?: unknown }).indexing).toBeNull();
+    });
+
+    await test.step("the project's knowledge does not grow and nothing waits in quarantine", async () => {
+      // At most equal, not equal: the delete test before this one removes its
+      // document's index entry asynchronously, which can only lower the count.
+      const after = await knowledge();
+      expect(after.total).toBeLessThanOrEqual(before.total);
+      expect(after.quarantined).toBeLessThanOrEqual(before.quarantined);
+    });
+
+    await test.step("the failed document's card shows no indexing badge", async () => {
+      await docPage.goto(projectId);
+      const card = docPage.card("Lifecycle No Source Code");
+      await expect(card).toContainText("failed");
+      await expect(card.getByTestId("doc-indexing-badge")).toHaveCount(0);
+    });
+  });
 });

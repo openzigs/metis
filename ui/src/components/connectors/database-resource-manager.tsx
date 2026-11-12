@@ -61,6 +61,13 @@ export interface DatabaseResourceManagerProps {
    * omitted the manager renders normally (no workspace assertion made).
    */
   workspaceId?: string | null;
+  /**
+   * #2368 — whether the viewer holds `connector.write`, which link, unlink and
+   * re-resolve all require. Without it those controls are hidden and the empty
+   * state points at the "ask an admin or coordinator" notice instead of a form.
+   * Defaults to `true` so existing callers keep their behaviour.
+   */
+  canWrite?: boolean;
 }
 
 /**
@@ -298,6 +305,7 @@ function LinkDialog({
 export function DatabaseResourceManager({
   projectId,
   workspaceId,
+  canWrite = true,
 }: DatabaseResourceManagerProps): React.ReactElement {
   const qc = useQueryClient();
 
@@ -494,8 +502,9 @@ export function DatabaseResourceManager({
       <section data-testid="db-resource-manager" className="space-y-3">
         {heading}
         <p data-testid="db-identity-empty" className="text-sm text-muted-foreground">
-          No database connectors in this project yet. Add one above to manage its shared-database
-          identity.
+          {canWrite
+            ? "No database connectors in this project yet. Add one above to manage its shared-database identity."
+            : "No database connectors in this project yet. Ask an admin or coordinator to add one."}
         </p>
       </section>
     );
@@ -558,15 +567,17 @@ export function DatabaseResourceManager({
                           </div>
                         ) : null}
                       </div>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        disabled={busy}
-                        aria-label={`Unlink ${connectionLabel(joined)}`}
-                        onClick={() => setUnlinkTarget(joined)}
-                      >
-                        Unlink
-                      </Button>
+                      {canWrite ? (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          disabled={busy}
+                          aria-label={`Unlink ${connectionLabel(joined)}`}
+                          onClick={() => setUnlinkTarget(joined)}
+                        >
+                          Unlink
+                        </Button>
+                      ) : null}
                     </li>
                   ))}
                 </ul>
@@ -605,7 +616,7 @@ export function DatabaseResourceManager({
                       {unlinkedReason(conn, joined.identity, workspaceId)}
                     </div>
                   </div>
-                  {linkable ? (
+                  {canWrite && linkable ? (
                     <div className="flex items-center gap-2">
                       <Button
                         size="sm"
