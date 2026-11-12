@@ -112,7 +112,10 @@ describe("resolveDiscussionTools", () => {
       native: false,
     });
     expect(rt!.native).toBe(false);
-    expect(rt!.toolset.tools.map((t) => t.name)).toEqual([...DISCUSSION_TOOL_ALLOWLIST.slice(1)]);
+    // #2329 — search_code_context is allowlisted but off by default (CHAT_CODE_CONTEXT_TOOL).
+    expect(rt!.toolset.tools.map((t) => t.name)).toEqual(
+      DISCUSSION_TOOL_ALLOWLIST.slice(1).filter((n) => n !== "search_code_context"),
+    );
     expect(rt!.note).toContain("read_file_slice");
   });
 

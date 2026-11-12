@@ -3324,7 +3324,7 @@ can use tools to look things up or act for you:
 | **Inspect Database** | Examines a connected database's schema |
 | **Query Database** | Runs read-only SQL against a connected database |
 | **MCP tools** | Tools from MCP servers this project is allowed to use (see §20.7) |
-| **Code search** | Searches the project's code graph and symbols, and reads up to 200 lines of a file from the project's repository so an answer can quote the code it cites. On unless your administrator has turned it off with `CHAT_CODE_SEARCH_TOOLS=false`. A source file whose document is restricted to other people is not read or listed for you, and a discussion reply leaves out every restricted file |
+| **Code search** | Searches the project's code graph and symbols, and reads up to 200 lines of a file from the project's repository so an answer can quote the code it cites. On unless your administrator has turned it off with `CHAT_CODE_SEARCH_TOOLS=false`. A source file whose document is restricted to other people is not read or listed for you, and a discussion reply leaves out every restricted file. An administrator can also turn on `CHAT_CODE_CONTEXT_TOOL`, which lets the model get the whole functions and classes behind a question in one call, instead of fragments it then has to read one by one. It is off by default until it is measured [#2329] |
 
 A chat that is not scoped to a project is offered no tools. Administrators can
 turn the METIS and MCP tools off with `CHAT_TOOLS=false`. A chat can be scoped

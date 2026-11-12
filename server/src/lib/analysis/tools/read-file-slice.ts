@@ -82,6 +82,33 @@ async function resolveSafePath(cloneDir: string, relativePath: string): Promise<
   return realResolved;
 }
 
+/** The reply's prefix when the file is not in the clone. */
+export const FILE_NOT_FOUND = "Error: File not found:";
+
+/**
+ * #2329 — a repository file's lines, read from a clone with the containment and
+ * symlink-escape checks above. Shared by `read_file_slice` and
+ * `search_code_context`, so both refuse exactly the same paths with the same
+ * replies.
+ */
+export async function readCloneFileLines(
+  cloneDir: string,
+  filePath: string,
+): Promise<{ lines: string[] } | { error: string }> {
+  const absPath = await resolveSafePath(cloneDir, filePath);
+  if (!absPath) {
+    return { error: "Error: Path traversal detected. filePath must be within the repository." };
+  }
+  try {
+    return { lines: (await fs.readFile(absPath, "utf-8")).split("\n") };
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return { error: `${FILE_NOT_FOUND} ${filePath}` };
+    if (code === "EISDIR") return { error: `Error: Path is a directory, not a file: ${filePath}` };
+    return { error: `Error reading file: ${(err as Error).message}` };
+  }
+}
+
 async function execute(args: unknown, context: ToolContext): Promise<ToolResult> {
   const validated = validateArgs(args);
   if (!validated) {
@@ -105,32 +132,10 @@ async function execute(args: unknown, context: ToolContext): Promise<ToolResult>
     };
   }
 
-  const absPath = await resolveSafePath(context.cloneDir, validated.filePath);
-  if (!absPath) {
-    return {
-      content: "Error: Path traversal detected. filePath must be within the repository.",
-      isError: true,
-    };
-  }
+  const read = await readCloneFileLines(context.cloneDir, validated.filePath);
+  if ("error" in read) return { content: read.error, isError: true };
 
-  let content: string;
-  try {
-    content = await fs.readFile(absPath, "utf-8");
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code === "ENOENT") {
-      return { content: `Error: File not found: ${validated.filePath}`, isError: true };
-    }
-    if (code === "EISDIR") {
-      return {
-        content: `Error: Path is a directory, not a file: ${validated.filePath}`,
-        isError: true,
-      };
-    }
-    return { content: `Error reading file: ${(err as Error).message}`, isError: true };
-  }
-
-  const lines = content.split("\n");
+  const lines = read.lines;
   const startLine = validated.startLine ?? 1;
   let endLine = validated.endLine ?? startLine + MAX_LINES - 1;
 

@@ -237,5 +237,43 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         await db.repoConnection.update({ where: { id: REPO }, data: { deletedAt: null } });
       }
     });
+
+    it("#2329 — search_code_context returns the whole symbol with the contract, through production's line lookup", async () => {
+      setHead(INDEXED);
+      // Production's line lookup, version read and ACL read; the clone's
+      // location is the only thing given.
+      const { createSearchCodeContextTool } =
+        await import("../src/lib/analysis/tools/search-code-context.js");
+      const real = createSearchCodeContextTool({
+        searcher: {
+          search: async () => [
+            {
+              symbolId: "s-feed",
+              filePath: "internal/feed.go",
+              name: "refreshFeed",
+              kind: "function",
+              score: 0.9,
+              matchedBy: ["lexical"],
+            },
+          ],
+        },
+        resolveCloneDir: async () => clone,
+      });
+      const r = await codeRuntimeTool(real, real.name).execute({ query: "refresh" }, ctx);
+      expect(r.text).toContain("[1] internal/feed.go:2-4 — function refreshFeed");
+      expect(r.text).toContain("2| func refreshFeed() {");
+      expect(r.text).toContain("4| }");
+      expect(r.citations).toEqual([
+        expect.objectContaining({
+          path: "internal/feed.go",
+          startLine: 2,
+          endLine: 4,
+          commitSha: INDEXED,
+          permalink: `${LINK}/internal/feed.go#L2-L4`,
+          matchedBy: ["lexical"],
+          stale: false,
+        }),
+      ]);
+    });
   },
 );

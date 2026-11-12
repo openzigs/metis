@@ -294,6 +294,8 @@ describe("#727 agentSelectableTools — the authoring picker offers the code too
       "search_code_graph",
       "search_code_symbols",
       "read_file_slice",
+      // #2329 — nameable whether or not CHAT_CODE_CONTEXT_TOOL offers it.
+      "search_code_context",
     ]);
     for (const t of listed.slice(1)) {
       expect(t.risk).toBe("low");

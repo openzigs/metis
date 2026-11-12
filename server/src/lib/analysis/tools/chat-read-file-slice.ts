@@ -37,6 +37,7 @@ import {
   formatCodeVersionLine,
   loadCodeVersions,
   type CodeVersionIndex,
+  type RepoCodeVersion,
 } from "../../code-graph/code-version.js";
 import { shortCommitSha } from "@metis/shared";
 import type { AgentTool, ToolContext, ToolResult } from "./types.js";
@@ -52,9 +53,33 @@ export interface ChatReadFileSliceDeps {
   readHead?: (cloneDir: string) => Promise<string | null>;
 }
 
-async function readCloneHead(cloneDir: string): Promise<string | null> {
+/** The commit a clone's working tree is at (`readCloneHeadSha`, loaded on first use). */
+export async function readCloneHead(cloneDir: string): Promise<string | null> {
   const { readCloneHeadSha } = await import("../../connectors/repo/repo-service.js");
   return readCloneHeadSha(cloneDir);
+}
+
+/**
+ * #2325 — whether a read of `cloneDir` is stale against `version`: the index
+ * names a commit and the working tree is not at it (or its commit cannot be
+ * read). `head` is the working tree's commit when it was read.
+ */
+export async function cloneStaleness(
+  version: RepoCodeVersion,
+  cloneDir: string,
+  readHead: (cloneDir: string) => Promise<string | null>,
+): Promise<{ stale: boolean; head: string | null }> {
+  const head = version.commitSha ? await readHead(cloneDir) : null;
+  return { stale: version.commitSha !== null && head !== version.commitSha, head };
+}
+
+/** #2325 — the model-facing note on a stale read. */
+export function staleNote(indexed: string, head: string | null): string {
+  return (
+    `⚠ Stale: the index is behind the repository. These lines are the working tree ` +
+    `(${head ? `commit ${shortCommitSha(head)}` : "commit unknown"}); the index, and the line ` +
+    `numbers search returned, are at commit ${shortCommitSha(indexed)}.`
+  );
 }
 
 /**
@@ -70,8 +95,7 @@ async function withVersion(
 ): Promise<ToolResult> {
   if (result.isError || !result.citations) return result;
   const version = versions.forRepo(repoId);
-  const head = version.commitSha ? await readHead(cloneDir) : null;
-  const stale = version.commitSha !== null && head !== version.commitSha;
+  const { stale, head } = await cloneStaleness(version, cloneDir, readHead);
   const citations = result.citations.map((c) =>
     codeCitationRef({
       path: c.path,
@@ -85,11 +109,7 @@ async function withVersion(
       workingTreeSha: head,
     }),
   );
-  const note = stale
-    ? `⚠ Stale: the index is behind the repository. These lines are the working tree ` +
-      `(${head ? `commit ${shortCommitSha(head)}` : "commit unknown"}); the index, and the line ` +
-      `numbers search returned, are at commit ${shortCommitSha(version.commitSha!)}.`
-    : formatCodeVersionLine(citations);
+  const note = stale ? staleNote(version.commitSha!, head) : formatCodeVersionLine(citations);
   return { ...result, content: `${result.content}\n${note}`, citations };
 }
 
@@ -133,7 +153,7 @@ export function isSensitiveRepoPath(filePath: string): boolean {
  * repository (`public.ts -> secret.ts`) cannot read a hidden file under
  * another name.
  */
-async function isHiddenInClone(
+export async function isHiddenInClone(
   access: CodeAccessFilter,
   repoId: string,
   cloneDir: string,

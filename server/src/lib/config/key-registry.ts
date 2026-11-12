@@ -971,6 +971,31 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
       "Master enable for agentic code-search TOOLS in chat + stream (#713). ON by default since #2243, measured on the #2237 BA question set (single-product questions: facts stated 51% → 73–84%, citation precision 28% → 80–83%, about 4x the input tokens per question; eval-data/README.md); set false to turn them off. When on, project-scoped sessions may call search_code_graph (exact graph traversal), search_code_symbols (hybrid BM25+vector symbol search) and read_file_slice (up to 200 lines from the project's own repo clones, #736) — offered and EXECUTED on every provider path (Copilot SDK, native-Anthropic, bedrock-direct) via the shared textual agent loop, even without loaded skills. Tool schemas render deterministically into the byte-stable prompt lead, so the flag flips the cached prefix ONCE per deploy (expected); the per-turn latency cost is one extra bounded model round-trip per executed tool call (loop capped at a few turns). When off, no code tools are offered and, with CHAT_TOOLS also off or the model not tool-capable, no loop runs. Distinct from CHAT_FUSED_CODE_RETRIEVAL (#714), which is PASSIVE per-request retrieval into the volatile tail.",
     sensitive: false,
   },
+  // ── #2329 — answer-oriented code context (whole symbols) ───────────────
+  CHAT_CODE_CONTEXT_TOOL: {
+    tier: "tunable",
+    valueType: "bool",
+    schema: z.coerce.boolean(),
+    description:
+      "Offer search_code_context in chat beside the other code tools (#2329): one call returns up to 6 whole functions/classes for a question, adjacent matches in a file merged into one span, ranked exactly as search_code_symbols ranks them, read from the project's clones under the same path and access checks as read_file_slice. OFF by default: it becomes a default only once the paired `pnpm eval:ba-qa` tools-only arms show turns per answer falling without facts stated or citation precision regressing. Needs CHAT_CODE_SEARCH_TOOLS on.",
+    sensitive: false,
+  },
+  CHAT_CODE_CONTEXT_MERGE_GAP: {
+    tier: "tunable",
+    valueType: "int",
+    schema: z.coerce.number().int().min(0).max(50),
+    description:
+      "search_code_context (#2329): two matches in one file this many lines apart, or closer, are returned as one span. Default 3.",
+    sensitive: false,
+  },
+  CHAT_CODE_CONTEXT_TOKEN_BUDGET: {
+    tier: "tunable",
+    valueType: "int",
+    schema: z.coerce.number().int().positive(),
+    description:
+      "search_code_context (#2329): the most tokens (≈4 chars/token) one result may hold. Spans are placed best-ranked first while they fit; the result says how many were left out. Default 4000.",
+    sensitive: false,
+  },
   // ── Epic #128 — one tool runtime + enforced approval gate ─────────────
   CHAT_TOOLS: {
     tier: "tunable",

@@ -46,6 +46,7 @@ const CODE_GRAPH_TOOLS: ReadonlySet<string> = new Set([
   "search_code_graph",
   "search_code_symbols",
   "read_file_slice",
+  "search_code_context",
 ]);
 
 /** The read tools whose results are cached (canonical names). */
@@ -53,6 +54,7 @@ export const CACHEABLE_TOOLS: ReadonlySet<string> = new Set([
   "search_code_graph",
   "search_code_symbols",
   "read_file_slice",
+  "search_code_context",
   "search-knowledge",
 ]);
 

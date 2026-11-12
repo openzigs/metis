@@ -202,6 +202,63 @@ function rangesOverlap(aStart: number, aEnd: number, bStart: number, bEnd: numbe
   return aStart <= bEnd && bStart <= aEnd;
 }
 
+/** #2329 — one located hit: a line range in one file (`file` names repo and path), at a rank. */
+export interface LocatedHit {
+  file: string;
+  startLine: number;
+  endLine: number;
+  /** Position in the ranked list (0 = best). */
+  rank: number;
+}
+
+/** #2329 — a contiguous run of lines in one file and the hits it covers, best-ranked first. */
+export interface MergedSpan<H extends LocatedHit> {
+  file: string;
+  startLine: number;
+  endLine: number;
+  /** The best rank among its hits: where the span sits in the ranked output. */
+  rank: number;
+  hits: H[];
+}
+
+/**
+ * #2329 — merge hits in the same file whose line ranges overlap or sit within
+ * `gap` lines of each other (`gap` 0: only overlapping or touching ranges)
+ * into one span, so no line is covered twice. Spans come back in the order of
+ * their best hit, so the ranking that chose the hits is kept.
+ */
+export function mergeAdjacentSpans<H extends LocatedHit>(
+  hits: readonly H[],
+  gap: number,
+): MergedSpan<H>[] {
+  const byFile = new Map<string, H[]>();
+  for (const h of hits) {
+    const list = byFile.get(h.file);
+    if (list) list.push(h);
+    else byFile.set(h.file, [h]);
+  }
+  const spans: MergedSpan<H>[] = [];
+  for (const [file, list] of byFile) {
+    const sorted = [...list].sort((a, b) => a.startLine - b.startLine || a.endLine - b.endLine);
+    let cur: MergedSpan<H> | null = null;
+    for (const h of sorted) {
+      if (
+        cur &&
+        rangesOverlap(cur.startLine, cur.endLine + Math.max(0, gap) + 1, h.startLine, h.endLine)
+      ) {
+        cur.endLine = Math.max(cur.endLine, h.endLine);
+        cur.rank = Math.min(cur.rank, h.rank);
+        cur.hits.push(h);
+        continue;
+      }
+      cur = { file, startLine: h.startLine, endLine: h.endLine, rank: h.rank, hits: [h] };
+      spans.push(cur);
+    }
+  }
+  for (const s of spans) s.hits.sort((a, b) => a.rank - b.rank);
+  return spans.sort((a, b) => a.rank - b.rank);
+}
+
 /** Whether a RAG doc chunk already covers the same source as this symbol hit. */
 function isCoveredByRag(hit: FusedSymbolHit, ragChunks: FusedRagChunkRef[]): boolean {
   const hitPath = normalizePath(hit.filePath);
