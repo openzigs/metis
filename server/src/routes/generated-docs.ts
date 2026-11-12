@@ -87,6 +87,7 @@ import {
   type SectionSynthesisRecord,
 } from "../lib/docs-gen/section-reuse.js";
 import { NO_DOCUMENTABLE_CODE } from "../lib/docs-gen/no-documentable-code.js";
+import { scopeHasIndexedSourceCode } from "../lib/docs-gen/indexed-source-code.js";
 import {
   PATH_SCOPE_EMPTY_CODE,
   pathPrefixesSchema,
@@ -239,6 +240,17 @@ function unpublishedIndex(outbox?: PublicationState | null) {
 }
 
 /**
+ * #2377 — what `indexing` reports for a document with no synthetic (indexed)
+ * row. A failed document with no publication task was never queued for
+ * indexing: it reports none (`null`, no badge), not `pending`, which the UI
+ * showed as "Queued for indexing". One whose earlier version was published
+ * keeps that publication's real state.
+ */
+function indexWithoutSyntheticDocument(status: string, outbox?: PublicationState | null) {
+  return status === "failed" && !outbox ? null : unpublishedIndex(outbox);
+}
+
+/**
  * Rate limiter for the expensive /generate endpoint (LLM calls).
  * 5 requests per 15 minutes per authenticated user.
  */
@@ -338,6 +350,11 @@ const generateSchema = z
 const updateSchema = z.object({
   title: z.string().min(1).max(200).optional(),
   autoUpdate: z.boolean().optional(),
+});
+
+/** #2377 — `GET /source-code`: the repository a By Repository document would read. */
+const sourceCodeQuerySchema = z.object({
+  repoConnectorId: z.string().min(1).max(200).optional(),
 });
 
 /** #190 — a version's stored manifest, read only when a caller needs it. */
@@ -554,13 +571,14 @@ export function generatedDocsRouter(): Router {
   // code, so the form can say before a run that a code-based document type
   // (full-project or repository scope) has nothing to read. Registered before
   // `/:docId`, which would otherwise take the path as a document id.
+  // #2377 — `?repoConnectorId=` narrows it to that repository's code graph,
+  // and junk paths do not count: the answer matches what generation would read.
   r.get("/source-code", requirePermission("project.read"), async (req: Request, res: Response) => {
     const projectId = getProjectId(req);
-    const symbol = await prisma.codeSymbol.findFirst({
-      where: { projectId },
-      select: { id: true },
-    });
-    res.json({ data: { indexed: symbol !== null } });
+    const query = sourceCodeQuerySchema.safeParse(req.query);
+    if (!query.success) throw new AppError(400, "VALIDATION_ERROR", query.error.message);
+    const indexed = await scopeHasIndexedSourceCode(projectId, query.data.repoConnectorId);
+    res.json({ data: { indexed } });
   });
 
   // GET / — list documents
@@ -641,7 +659,7 @@ export function generatedDocsRouter(): Router {
             ((await canUseLegacyIndex(latest && rowKey(projectId, doc.id, latest), outbox))
               ? indexByGeneratedDocId.get(generatedDocSyntheticDocumentId(doc.id))
               : undefined) ??
-            unpublishedIndex(outbox),
+            indexWithoutSyntheticDocument(doc.status, outbox),
         };
       }),
     );
@@ -725,7 +743,9 @@ export function generatedDocsRouter(): Router {
         // #50 — lets the UI explain a restart and offer a one-click regenerate.
         interrupted: doc.status === "failed" && doc.errorMessage === GENERATION_INTERRUPTED_MESSAGE,
         // #98 / #489 — same projection as the list handler.
-        indexing: syntheticDocument ? syntheticIndex(syntheticDocument) : unpublishedIndex(outbox),
+        indexing: syntheticDocument
+          ? syntheticIndex(syntheticDocument)
+          : indexWithoutSyntheticDocument(doc.status, outbox),
         // #1252 — a reader BRD without auto-update whose approved requirements
         // changed since its latest version: the UI says so and offers a regenerate.
         approvedRequirementsOutOfDate: await approvedRequirementsOutOfDate(doc),

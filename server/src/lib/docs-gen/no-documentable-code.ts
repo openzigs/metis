@@ -18,6 +18,12 @@ export const NO_DOCUMENTABLE_CODE = "NO_DOCUMENTABLE_CODE";
 export class NoDocumentableCodeError extends Error {
   readonly code = NO_DOCUMENTABLE_CODE;
   /**
+   * #2377 — not retried by the task queue (`scheduler/permanent-failure.ts`):
+   * the same inputs hold the same code, so an automatic regeneration would
+   * fail identically on every attempt. A later ingest enqueues a new task.
+   */
+  readonly permanentTaskFailure = true;
+  /**
    * The code symbols indexed for the scope before modules were formed: 0 for
    * a project with no source code at all, more when everything indexed was
    * excluded (test, generated or build files) or too small to summarize.

@@ -8,6 +8,8 @@ vi.mock("../src/lib/prisma.js", () => ({ prisma: {} }));
 import { TaskQueue, type TaskStore } from "../src/lib/scheduler/task-queue.js";
 import { InMemoryTaskHandlerRegistry } from "../src/lib/scheduler/task-handlers.js";
 import { TaskAbortError, taskAbortSource } from "../src/lib/scheduler/task-abort.js";
+import { NoDocumentableCodeError } from "../src/lib/docs-gen/no-documentable-code.js";
+import { isPermanentTaskFailure } from "../src/lib/scheduler/permanent-failure.js";
 import {
   TASK_RETRY_WINDOW_MS,
   VAULT_REFERENCING_TASK_TYPE as WEBHOOK,
@@ -732,6 +734,52 @@ describe("TaskQueue retry semantics", () => {
     expect(final?.status).toBe("failed");
   }, 10_000);
 
+  it("#2377 — a permanent failure ends the task failed on its first attempt, never retried", async () => {
+    const { store, rows } = makeStore();
+    const registry = new InMemoryTaskHandlerRegistry();
+    const handler = vi.fn<TaskHandlerFn>(async () => {
+      // An automatic regeneration whose scope holds no documentable code.
+      throw new NoDocumentableCodeError(0);
+    });
+    registry.register({ type: "regenerate-generated-document", description: "", handler });
+    const retrying = vi.spyOn(store, "markRetrying");
+    const queue = new TaskQueue(store, registry, makeEmitter().emitter, {
+      ...baseConfig,
+      retryBackoffMs: 1,
+    });
+    try {
+      const task = await queue.enqueue({ type: "regenerate-generated-document", maxAttempts: 3 });
+      await vi.waitFor(() => expect(rows.get(task.id)?.status).toBe("failed"));
+      await new Promise((r) => setTimeout(r, 20));
+      expect(handler).toHaveBeenCalledOnce();
+      expect(retrying).not.toHaveBeenCalled();
+      expect(rows.get(task.id)).toMatchObject({ status: "failed", attempts: 1 });
+    } finally {
+      await queue.shutdown();
+    }
+  });
+
+  it("#2377 — an ordinary failure is still retried (only the permanent mark stops it)", async () => {
+    const { store, rows } = makeStore();
+    const registry = new InMemoryTaskHandlerRegistry();
+    const handler = vi.fn<TaskHandlerFn>(async () => {
+      throw Object.assign(new Error("flaky"), { permanentTaskFailure: "yes" });
+    });
+    registry.register({ type: "flaky", description: "", handler });
+    const queue = new TaskQueue(store, registry, makeEmitter().emitter, {
+      ...baseConfig,
+      retryBackoffMs: 1,
+      retryBackoffMaxMs: 2,
+    });
+    try {
+      const task = await queue.enqueue({ type: "flaky", maxAttempts: 2 });
+      await vi.waitFor(() => expect(rows.get(task.id)?.status).toBe("failed"));
+      expect(handler).toHaveBeenCalledTimes(2);
+    } finally {
+      await queue.shutdown();
+    }
+  });
+
   it("succeeds without retry when handler resolves", async () => {
     const { store, rows } = makeStore();
     const registry = new InMemoryTaskHandlerRegistry();
@@ -1257,5 +1305,15 @@ describe("TaskQueue deleted-project gate (#1438)", () => {
       errorMessage: "db down",
     });
     await queue.shutdown();
+  });
+});
+
+describe("isPermanentTaskFailure (#2377)", () => {
+  it("is true only for an error that marks itself permanent with `true`", () => {
+    expect(isPermanentTaskFailure(new NoDocumentableCodeError(3))).toBe(true);
+    expect(isPermanentTaskFailure(new Error("timeout"))).toBe(false);
+    expect(isPermanentTaskFailure({ permanentTaskFailure: "true" })).toBe(false);
+    expect(isPermanentTaskFailure(null)).toBe(false);
+    expect(isPermanentTaskFailure("permanentTaskFailure")).toBe(false);
   });
 });
