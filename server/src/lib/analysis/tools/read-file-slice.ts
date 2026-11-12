@@ -167,7 +167,10 @@ async function execute(args: unknown, context: ToolContext): Promise<ToolResult>
 
   const numbered = slice.map((line, i) => `${startLine + i}| ${line}`);
   const header = `${validated.filePath} (lines ${startLine}-${clampedEnd} of ${lines.length})`;
-  // #2325 — a cut read names the range to ask for next.
+  // #2325 — a cut read names the range to ask for next. In the HEAD, before the
+  // lines: chat caps the model's copy of a result by keeping its start
+  // (`capForModel`, #138), and a 200-line read is routinely longer than that
+  // cap, so a hint after the lines would be cut away with them.
   const next = truncated
     ? { startLine: clampedEnd + 1, endLine: Math.min(clampedEnd + MAX_LINES, lines.length) }
     : undefined;
@@ -176,13 +179,14 @@ async function execute(args: unknown, context: ToolContext): Promise<ToolResult>
     : "";
 
   return {
-    content: `${header}\n${numbered.join("\n")}${paging}`,
+    content: `${header}${paging}\n${numbered.join("\n")}`,
     truncated,
     resultCount: slice.length,
     // #2325 — the citation contract. The version is the caller's to state: this
-    // tool reads a directory and knows no commit.
+    // tool reads a directory and knows no commit, nor which repository it is.
     citations: [
       {
+        repoConnectionId: null,
         path: repoRelative(validated.filePath),
         startLine,
         endLine: clampedEnd,

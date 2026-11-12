@@ -25,6 +25,9 @@
  *     it would mean a credentialed network call per chat read. A HEAD that
  *     cannot be read while the index names a commit counts as a mismatch: a
  *     read is never served as the indexed version unless it is known to be.
+ *     The version line (or the stale warning) is the second line of the
+ *     result, before the numbered lines, so chat's model-context cap cannot
+ *     cut it.
  */
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -74,6 +77,7 @@ async function withVersion(
   const stale = version.commitSha !== null && head !== version.commitSha;
   const citations = result.citations.map((c) =>
     codeCitationRef({
+      repoConnectionId: repoId,
       path: c.path,
       startLine: c.startLine,
       endLine: c.endLine,
@@ -90,7 +94,20 @@ async function withVersion(
       `(${head ? `commit ${shortCommitSha(head)}` : "commit unknown"}); the index, and the line ` +
       `numbers search returned, are at commit ${shortCommitSha(version.commitSha!)}.`
     : formatCodeVersionLine(citations);
-  return { ...result, content: `${result.content}\n${note}`, citations };
+  return { ...result, content: afterHeader(result.content, note), citations };
+}
+
+/**
+ * `note` as the second line of a read: after its `path (lines a-b of n)`
+ * header, BEFORE the numbered lines. Chat caps the model's copy of a tool
+ * result by keeping its start (`capForModel`, #138), and a 200-line read is
+ * routinely longer than the cap, so a note after the lines would be cut away
+ * and the model would read stale lines unmarked.
+ */
+function afterHeader(content: string, note: string): string {
+  const nl = content.indexOf("\n");
+  if (nl < 0) return `${content}\n${note}`;
+  return `${content.slice(0, nl)}\n${note}${content.slice(nl)}`;
 }
 
 async function projectRepoIds(projectId: string): Promise<string[]> {

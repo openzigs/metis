@@ -6,6 +6,16 @@
  * validation contracts are exercised in isolation.
  */
 import { describe, expect, it, vi } from "vitest";
+// #2325 review — which line lookup the tool builds by default (#1636: the
+// analysis surface skips the repo read; chat needs it for a hit's version).
+vi.mock("../../code-graph/project-code-searcher.js", async (original) => {
+  const actual = await original<typeof import("../../code-graph/project-code-searcher.js")>();
+  return {
+    ...actual,
+    createDefaultSymbolLineLookup: vi.fn(actual.createDefaultSymbolLineLookup),
+  };
+});
+import { createDefaultSymbolLineLookup } from "../../code-graph/project-code-searcher.js";
 import { createSearchSymbolsTool } from "./search-symbols.js";
 import type {
   FusedCodeSearcher,
@@ -219,6 +229,7 @@ describe("search_code_symbols — the citation contract (#2325)", () => {
     expect(loadVersions).toHaveBeenCalledWith("proj-1");
     expect(res.citations).toEqual([
       {
+        repoConnectionId: "r1",
         path: "src/a.ts",
         startLine: 10,
         endLine: 40,
@@ -230,6 +241,7 @@ describe("search_code_symbols — the citation contract (#2325)", () => {
         stale: false,
       },
       {
+        repoConnectionId: "r2",
         path: "lib/b.go",
         startLine: 5,
         endLine: 8,
@@ -240,7 +252,8 @@ describe("search_code_symbols — the citation contract (#2325)", () => {
         stale: false,
       },
     ]);
-    expect(res.content).toMatch(/Code version: indexed commits 0123456789ab, fedcba987654\.$/);
+    // First, so chat's model-context cap (which keeps a result's start) cannot cut it.
+    expect(res.content).toMatch(/^Code version: indexed commits 0123456789ab, fedcba987654\.\n/);
   });
 
   it("marks a snippet the cap cut truncated, with the symbol's span as the next read", async () => {
@@ -277,5 +290,14 @@ describe("search_code_symbols — the citation contract (#2325)", () => {
     );
     expect(res.citations).toBeUndefined();
     expect(res.content).not.toContain("Code version");
+  });
+
+  it("reads a hit's repository only for chat: the analysis surface keeps #1636's skip", () => {
+    const lookup = vi.mocked(createDefaultSymbolLineLookup);
+    lookup.mockClear();
+    createSearchSymbolsTool({ searcher: mockSearcher([]) });
+    expect(lookup).toHaveBeenLastCalledWith({ withRepo: false });
+    createSearchSymbolsTool({ searcher: mockSearcher([]), loadVersions: async () => versions });
+    expect(lookup).toHaveBeenLastCalledWith({ withRepo: true });
   });
 });

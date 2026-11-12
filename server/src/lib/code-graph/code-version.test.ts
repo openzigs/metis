@@ -122,6 +122,24 @@ describe("codeVersionIndexOf", () => {
     expect(idx.forRepo(undefined).commitSha).toBe(SHA);
   });
 
+  it("does not lend the only graph's version to a repository the index does not hold", () => {
+    // Repo A is indexed; repo B is still indexing (or its ingest failed).
+    const idx = codeVersionIndexOf([{ repoConnectionId: "repoA", commitSha: SHA, repo: github }]);
+    expect(idx.forRepo("repoA")).toEqual({ commitSha: SHA, repo: github });
+    expect(idx.forRepo("repoB")).toEqual({ commitSha: null, repo: null });
+    // So B's file gets no commit and no link into repo A.
+    const ref = codeCitationRef({
+      repoConnectionId: "repoB",
+      path: "src/b-only.ts",
+      startLine: 1,
+      endLine: 5,
+      version: idx.forRepo("repoB"),
+    });
+    expect(ref).toMatchObject({ repoConnectionId: "repoB", commitSha: null, permalink: null });
+    // A hit whose repository was not read still resolves to the only graph.
+    expect(idx.forRepo(null).commitSha).toBe(SHA);
+  });
+
   it("knows nothing for a project with no index", () => {
     expect(NO_CODE_VERSIONS.forRepo("r1")).toEqual({ commitSha: null, repo: null });
   });
@@ -175,6 +193,7 @@ describe("codeCitationRef", () => {
   it("builds the contract, with the permalink from the version", () => {
     expect(
       codeCitationRef({
+        repoConnectionId: "r1",
         path: "src/a.ts",
         startLine: 1,
         endLine: 5,
@@ -182,6 +201,7 @@ describe("codeCitationRef", () => {
         matchedBy: ["lexical"],
       }),
     ).toEqual({
+      repoConnectionId: "r1",
       path: "src/a.ts",
       startLine: 1,
       endLine: 5,
@@ -196,7 +216,14 @@ describe("codeCitationRef", () => {
 
   it("carries the working tree's commit only on a stale ref", () => {
     const v = { commitSha: SHA, repo: null };
-    const base = { path: "a.ts", startLine: 1, endLine: 1, version: v, workingTreeSha: OTHER };
+    const base = {
+      repoConnectionId: null,
+      path: "a.ts",
+      startLine: 1,
+      endLine: 1,
+      version: v,
+      workingTreeSha: OTHER,
+    };
     expect(codeCitationRef({ ...base, stale: true })).toMatchObject({
       stale: true,
       workingTreeSha: OTHER,
@@ -208,6 +235,7 @@ describe("codeCitationRef", () => {
 describe("formatCodeVersionLine", () => {
   const ref = (commitSha: string | null) =>
     codeCitationRef({
+      repoConnectionId: null,
       path: "a.ts",
       startLine: 1,
       endLine: 1,

@@ -50,7 +50,7 @@ vi.mock("../../prisma.js", () => ({
   },
 }));
 
-import { searchCodeGraphTool } from "./search-code-graph.js";
+import { chatSearchCodeGraphTool, searchCodeGraphTool } from "./search-code-graph.js";
 
 const ctx = { projectId: "p1" };
 
@@ -536,9 +536,10 @@ describe("search_code_graph — the citation contract (#2325)", () => {
       },
     });
     mockCodeSymbol.findMany.mockResolvedValue([symbol]);
-    const res = await searchCodeGraphTool.execute({ query: "Foo" }, ctx);
+    const res = await chatSearchCodeGraphTool.execute({ query: "Foo" }, ctx);
     expect(res.citations).toEqual([
       {
+        repoConnectionId: "r1",
         path: "src/foo.ts",
         startLine: 3,
         endLine: 30,
@@ -549,7 +550,8 @@ describe("search_code_graph — the citation contract (#2325)", () => {
         stale: false,
       },
     ]);
-    expect(res.content).toContain("Code version: indexed commit 0123456789ab.");
+    // First, so chat's model-context cap (which keeps a result's start) cannot cut it.
+    expect(res.content.split("\n")[0]).toBe("Code version: indexed commit 0123456789ab.");
     // Read from the graph row the tool already loads.
     expect(mockCodeGraph.findFirst).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -566,8 +568,22 @@ describe("search_code_graph — the citation contract (#2325)", () => {
       commitSha: null,
     });
     mockCodeSymbol.findMany.mockResolvedValue([symbol]);
-    const res = await searchCodeGraphTool.execute({ query: "Foo" }, ctx);
+    const res = await chatSearchCodeGraphTool.execute({ query: "Foo" }, ctx);
     expect(res.citations?.[0]).toMatchObject({ commitSha: null, permalink: null });
     expect(res.content).toContain("Code version: unknown");
+  });
+
+  it("leaves the analysis surface's result as it was: no contract, no version line", async () => {
+    mockCodeGraph.findFirst.mockResolvedValue({
+      id: "g1",
+      repoConnectionId: "r1",
+      commitSha: SHA,
+      repoConnection: null,
+    });
+    mockCodeSymbol.findMany.mockResolvedValue([symbol]);
+    const res = await searchCodeGraphTool.execute({ query: "Foo" }, ctx);
+    expect(res.citations).toBeUndefined();
+    expect(res.content).not.toContain("Code version");
+    expect(res.content).toContain("src/foo.ts:3");
   });
 });

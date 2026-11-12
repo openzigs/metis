@@ -63,8 +63,32 @@ interface EvidenceFile {
   ranges: Array<[number, number]>;
   /** Line ranges earlier turns' tools read. */
   earlierRanges: Array<[number, number]>;
-  /** #2325 — the indexed commit a tool stated for this file, and whether a read was stale. */
-  version?: { commitSha: string | null; stale: boolean };
+  /**
+   * #2325 — the version tools stated for this path, PER REPOSITORY (keyed by
+   * connection id; `""` when the producer did not know it): a file is its
+   * repository and its path (#1965), and two repositories can both hold
+   * `src/index.ts` at different commits, one of them stale.
+   */
+  versions: Map<string, RepoVersionEvidence>;
+}
+
+/** What tools stated about one repository's copy of a path. */
+interface RepoVersionEvidence {
+  /** The first commit stated wins. */
+  commitSha: string | null;
+  /** One stale read marks this repository's copy stale. */
+  stale: boolean;
+  /** The line ranges the stating results covered, to tell repositories apart. */
+  ranges: Array<[number, number]>;
+}
+
+/** One version statement: a tool's citation ref, or a fused block entry. */
+export interface VersionStatement {
+  repoConnectionId?: string | null;
+  commitSha: string | null;
+  stale: boolean;
+  startLine?: number | null;
+  endLine?: number | null;
 }
 
 /** One entry of the fused code block (#714), by its `[n]` number. */
@@ -74,6 +98,8 @@ export interface CodeEntryEvidence {
   lines: [number, number];
   /** #2325 — the indexed commit the entry was read at (absent: not stated). */
   commitSha?: string | null;
+  /** #2325 — the repository the entry is in (absent or `null`: not stated). */
+  repoConnectionId?: string | null;
 }
 
 export class CitationEvidence {
@@ -86,7 +112,13 @@ export class CitationEvidence {
   add(path: string, source: ChatCitationSource, range?: [number, number], earlier = false): void {
     const key = normalizePath(path);
     if (!key) return;
-    const entry = this.files.get(key) ?? { source, now: false, ranges: [], earlierRanges: [] };
+    const entry = this.files.get(key) ?? {
+      source,
+      now: false,
+      ranges: [],
+      earlierRanges: [],
+      versions: new Map(),
+    };
     // A file read as code anywhere in the conversation is a repository file.
     if (source === "repo") entry.source = "repo";
     if (!earlier) entry.now = true;
@@ -95,17 +127,25 @@ export class CitationEvidence {
   }
 
   /**
-   * #2325 — record the version a tool stated for `path`: the first commit
-   * stated wins, and one stale read marks the file stale.
+   * #2325 — record the version a tool stated for `path` in repository
+   * `v.repoConnectionId`. Per repository: the first commit stated wins, and
+   * one stale read marks that repository's copy stale — never another
+   * repository's file of the same path.
    */
-  addVersion(path: string, v: { commitSha: string | null; stale: boolean }): void {
+  addVersion(path: string, v: VersionStatement): void {
     const entry = this.files.get(normalizePath(path));
     if (!entry) return;
-    const prior = entry.version;
-    entry.version = {
-      commitSha: prior?.commitSha ?? v.commitSha,
+    const repo = v.repoConnectionId ?? "";
+    const prior = entry.versions.get(repo);
+    const span =
+      v.startLine != null && v.endLine != null
+        ? range(String(v.startLine), String(v.endLine))
+        : null;
+    entry.versions.set(repo, {
+      commitSha: prior ? (prior.commitSha ?? v.commitSha) : v.commitSha,
       stale: (prior?.stale ?? false) || v.stale,
-    };
+      ranges: span ? [...(prior?.ranges ?? []), span] : (prior?.ranges ?? []),
+    });
   }
 }
 
@@ -268,7 +308,15 @@ export function collectCitationEvidence(
     }
   }
   for (const c of retrieved?.codeEntries ?? []) {
-    if (c.commitSha !== undefined) ev.addVersion(c.path, { commitSha: c.commitSha, stale: false });
+    if (c.commitSha !== undefined) {
+      ev.addVersion(c.path, {
+        repoConnectionId: c.repoConnectionId ?? null,
+        commitSha: c.commitSha,
+        stale: false,
+        startLine: c.lines[0],
+        endLine: c.lines[1],
+      });
+    }
   }
   for (const t of tools) addToolEvidence(ev, t, false);
   for (const t of earlierTools) addToolEvidence(ev, t, true);
@@ -367,7 +415,7 @@ export function verifyCitations(answer: string, ev: CitationEvidence): ChatCitat
       path: best.path,
       status: best.status,
       source: best.file.source,
-      ...versionOf(best.file),
+      ...versionOf(best.file, lines),
     });
   }
 
@@ -385,7 +433,7 @@ export function verifyCitations(answer: string, ev: CitationEvidence): ChatCitat
             path: excerpt.name,
             status: "verified",
             source: excerpt.source,
-            ...(file ? versionOf(file) : {}),
+            ...(file ? versionOf(file, null) : {}),
           });
         } else if (code) {
           push(m.index!, {
@@ -410,15 +458,28 @@ export function verifyCitations(answer: string, ev: CitationEvidence): ChatCitat
 }
 
 /**
- * #2325 — the version fields of a citation resolved to `file`: a repository
- * file always states its commit (`null`: none was stated); a document states
- * one only when a tool gave it.
+ * #2325 — the version fields of a citation (of `lines`, if any) resolved to
+ * `file`: a repository file always states its commit (`null`: none was
+ * stated, or not one commit); a document states one only when a tool gave it.
+ *
+ * When repositories stated versions for the same path, the ones whose stated
+ * lines cover the citation decide; when that is still more than one (or none
+ * covers it), every repository that stated one does: the commit is stated
+ * only if they agree, and the citation is stale if any of them was, because
+ * a citation that may describe stale lines is never shown as current.
  */
-function versionOf(file: EvidenceFile): Pick<ChatCitation, "commitSha" | "stale"> {
-  if (!file.version && file.source !== "repo") return {};
+function versionOf(
+  file: EvidenceFile,
+  lines: [number, number] | null,
+): Pick<ChatCitation, "commitSha" | "stale"> {
+  const all = [...file.versions.values()];
+  if (all.length === 0) return file.source === "repo" ? { commitSha: null } : {};
+  const covering = lines ? all.filter((v) => covered(lines, v.ranges)) : [];
+  const pick = covering.length > 0 ? covering : all;
+  const shas = new Set(pick.map((v) => v.commitSha));
   return {
-    commitSha: file.version?.commitSha ?? null,
-    ...(file.version?.stale ? { stale: true } : {}),
+    commitSha: shas.size === 1 ? pick[0]!.commitSha : null,
+    ...(pick.some((v) => v.stale) ? { stale: true } : {}),
   };
 }
 

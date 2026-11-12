@@ -626,6 +626,8 @@ export interface RagContextCapture {
     lines: [number, number];
     /** #2325 — the indexed commit the entry was read at (absent: unversioned block). */
     commitSha?: string | null;
+    /** #2325 — the repository the entry is in (absent: unversioned block). */
+    repoConnectionId?: string | null;
   }>;
   /** #2241 — retrieved excerpts the relevance floor kept out of the prompt. */
   belowFloor?: number;
@@ -871,7 +873,9 @@ export async function buildAutoRagContext(
         path: h.filePath,
         lines: [h.startLine, h.endLine],
         // #2325 — the entry's version, carried onto a citation of it.
-        ...(h.citation ? { commitSha: h.citation.commitSha } : {}),
+        ...(h.citation
+          ? { commitSha: h.citation.commitSha, repoConnectionId: h.citation.repoConnectionId }
+          : {}),
       }));
     }
     if (!ragBlock && !fused.block) {

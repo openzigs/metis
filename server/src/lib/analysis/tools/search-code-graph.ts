@@ -5,10 +5,12 @@
  * graph without receiving full source files. Returns formatted symbol
  * references with file:line locations.
  *
- * #2325 — each listed symbol carries the citation contract (its span at the
- * graph's indexed commit, a permalink where the connector has one), and the
- * result ends with the commit it describes. Read from the graph row the tool
- * already loads: no extra query.
+ * #2325 — CHAT's copy ({@link chatSearchCodeGraphTool}): each listed symbol
+ * carries the citation contract (its span at the graph's indexed commit, a
+ * permalink where the connector has one), and the result opens with the
+ * commit it describes. Read from the graph row the tool already loads: no
+ * extra query. The analysis surface's {@link searchCodeGraphTool} returns
+ * what it returned before #2325.
  */
 import type { AgentTool, ToolContext, ToolResult, JSONSchema } from "./types.js";
 import { describeReceivedKeys } from "./arg-errors.js";
@@ -318,7 +320,11 @@ function validateArgs(args: unknown): SearchCodeGraphArgs {
   };
 }
 
-async function execute(args: unknown, context: ToolContext): Promise<ToolResult> {
+async function execute(
+  args: unknown,
+  context: ToolContext,
+  withVersion: boolean,
+): Promise<ToolResult> {
   const { query, kind, filePath, calledBy, calls } = validateArgs(args);
 
   // #774 — refuse to answer a query with NO filters. Checked before any DB work
@@ -446,31 +452,50 @@ async function execute(args: unknown, context: ToolContext): Promise<ToolResult>
   const lines = symbols.map(renderSymbol);
   if (unresolvedNote) lines.push(`(plus ${unresolvedNote})`);
   if (probableNote) lines.push(probableNote);
+  if (!withVersion) {
+    return { content: lines.join("\n"), truncated, resultCount: symbols.length };
+  }
+
+  // #2325 — chat only: the contract per symbol, and the commit FIRST, so
+  // chat's model-context cap (which keeps a result's start) cannot cut it.
   const version = versionOfGraph(codeGraph, context.projectId);
   const citations = symbols.map((sym) =>
     codeCitationRef({
+      repoConnectionId: codeGraph.repoConnectionId,
       path: sym.filePath,
       startLine: sym.startLine,
       endLine: sym.endLine,
       version,
     }),
   );
-  lines.push(formatCodeVersionLine(citations));
-
   return {
-    content: lines.join("\n"),
+    content: [formatCodeVersionLine(citations), ...lines].join("\n"),
     truncated,
     resultCount: symbols.length,
     citations,
   };
 }
 
+const description =
+  "Search the project's code graph for symbols (classes, functions, methods, interfaces). " +
+  "Returns qualified names with file:line locations. Use to discover relevant code before reading file slices. " +
+  `At least one filter is required (${FILTERS.join(", ")}) — an unfiltered call is rejected.`;
+
+/** The analysis surface's `search_code_graph`: its prompt output is unchanged by #2325. */
 export const searchCodeGraphTool: AgentTool = {
   name: "search_code_graph",
-  description:
-    "Search the project's code graph for symbols (classes, functions, methods, interfaces). " +
-    "Returns qualified names with file:line locations. Use to discover relevant code before reading file slices. " +
-    `At least one filter is required (${FILTERS.join(", ")}) — an unfiltered call is rejected.`,
+  description,
   parameters,
-  execute,
+  execute: (args, context) => execute(args, context, false),
+};
+
+/**
+ * #2325 — chat's `search_code_graph`: the same search, whose result carries
+ * the citation contract and opens with the indexed commit it describes.
+ */
+export const chatSearchCodeGraphTool: AgentTool = {
+  name: "search_code_graph",
+  description,
+  parameters,
+  execute: (args, context) => execute(args, context, true),
 };
