@@ -9,6 +9,10 @@
  * to the living-spec sync (#192/A.5) on `pull_request.closed+merged` and
  * the PR-reviewer agent (#192/A.4 → #394 MVP) on `pull_request.opened|synchronize`.
  *
+ * #2335 — `POST github/push` and `github/push/c/:connectorId` refresh the
+ * connectors that track the pushed branch (incremental re-ingest, queued when
+ * one is already running).
+ *
  * Always responds 2xx (even on "no-op" actions) so GitHub does not retry —
  * non-handling reasons are surfaced in the response body for observability.
  */
@@ -31,10 +35,19 @@ import { deliveryDedupKey } from "../lib/webhooks/delivery-key.js";
 import {
   claimPayload,
   isStaleSignedEvent,
+  isStaleSignedTriggerEvent,
   releasePayload,
   signedGithubEvent,
+  signedTriggerEvent,
+  signedTriggerEventTime,
+  UNTIMED_RECEIVER_PREFIX,
   type PayloadClaim,
 } from "../lib/webhooks/payload-replay.js";
+import { parsePushEvent, type ParsedPush } from "../lib/webhooks/push-event.js";
+import {
+  allowRepoRefreshRequest,
+  requestRepoConnectorRefresh,
+} from "../lib/connectors/repo/refresh-trigger.js";
 import type { IssueAttribution } from "../lib/webhooks/issue-attribution.js";
 import { githubIssuesWebhookRateLimiter } from "../middleware/github-issues-webhook-rate-limit.js";
 import { webhookReceiverRateLimiter } from "../middleware/webhook-receiver-rate-limit.js";
@@ -432,7 +445,203 @@ export function githubPrWebhookRouter(deps: GithubPrRouterDeps = {}): Router {
   r.post("/github/issues", issuesLimiters, handleIssuesDelivery);
   r.post("/github/issues/c/:connectorId", issuesLimiters, handleIssuesDelivery);
 
+  // #2335 — re-ingest on push. Two receivers, as for pull requests:
+  // `/github/push` takes the deployment secret only (no lookup before the
+  // HMAC), `/github/push/c/:connectorId` that connector's own secret only (the
+  // one lookup, by the id in the URL, is what yields the secret). The same
+  // signed call is the documented CI / git-hook trigger for hosts that cannot
+  // send webhooks. A push to a connector's tracked branch requests its
+  // incremental refresh, which starts in the background or queues one
+  // follow-up; the answer never waits for the work.
+  const handlePushDelivery = async (req: Request, res: Response) => {
+    const connectorId = typeof req.params.connectorId === "string" ? req.params.connectorId : null;
+    const verdict =
+      connectorId === null
+        ? verifyDeploymentDelivery(req, deps)
+        : await verifyConnectorDelivery(req, connectorId);
+    if (!verdict.ok) {
+      res.status(401).json({ ok: false, reason: verdict.reason });
+      return;
+    }
+    const signer = verdict.signer;
+    const payload: unknown = req.body;
+    const deliveryId = (req.header("x-github-delivery") ?? "").trim();
+    // The event is the one the SIGNED body is (a `ping` on hook creation, or a
+    // body captured at another receiver, does nothing here and is not claimed).
+    if (signedTriggerEvent(payload) !== "push") {
+      res.status(200).json({ ok: true, handled: false, reason: "NOT_PUSH_EVENT" });
+      return;
+    }
+    // #1484 / #1492 — a push's signed `repository.pushed_at` past the window is a replay.
+    if (isStaleSignedTriggerEvent(payload)) {
+      res.status(200).json({ ok: true, handled: false, reason: "STALE_DELIVERY" });
+      return;
+    }
+    const push = parsePushEvent(payload);
+    if (push.kind === "ignored") {
+      log.info("push_webhook.ignored", { deliveryId, reason: push.reason });
+      res.status(200).json({ ok: true, handled: false, reason: push.reason });
+      return;
+    }
+    // Replay protection, as on the other receivers: the delivery id (GitHub's
+    // own redeliveries; rows purged after 24 h), then the signed body itself.
+    const dedupKey = deliveryDedupKey("github-push", signer, deliveryId);
+    if (dedupKey && !deps.skipDedup) {
+      try {
+        const dedup = await recordDelivery({ deliveryId: dedupKey, eventType: "push" });
+        if (dedup.duplicate) {
+          res.status(200).json({ ok: true, handled: false, reason: "DUPLICATE_DELIVERY" });
+          return;
+        }
+      } catch (err) {
+        log.warn("push_webhook.dedup_failed", { deliveryId, error: (err as Error).message });
+      }
+    }
+    const receiver =
+      signer.kind === "connector" ? `github-push:c:${signer.connectorId}` : "github-push";
+    const claim: PayloadClaim = {
+      // A body with no signed time (a hand-built CI call without `pushed_at`)
+      // is kept the untimed retention, as on the trigger receiver.
+      receiver:
+        signedTriggerEventTime(payload) === null
+          ? `${UNTIMED_RECEIVER_PREFIX}${receiver}`
+          : receiver,
+      eventType: "push",
+      rawBody: rawBody(req),
+    };
+    const claimed = await claimSignedPayload(claim, deps, deliveryId, dedupKey);
+    if (claimed === "unavailable") {
+      replayGuardUnavailable(res);
+      return;
+    }
+    if (claimed === "duplicate") {
+      res.status(200).json({ ok: true, handled: false, reason: "DUPLICATE_PAYLOAD" });
+      return;
+    }
+    // Nothing was requested: give both claims back, so a redelivery is processed.
+    const releaseClaims = async () => {
+      await Promise.allSettled([
+        claimed === "claimed" ? releasePayload(claim) : Promise.resolve(),
+        dedupKey && !deps.skipDedup ? releaseDelivery(dedupKey) : Promise.resolve(),
+      ]);
+    };
+    let match: PushMatch;
+    try {
+      match = await matchPushConnectors(signer, push);
+    } catch (err) {
+      log.warn("push_webhook.match_failed", { deliveryId, error: (err as Error).message });
+      await releaseClaims();
+      res.status(503).json({ ok: false, reason: "MATCH_UNAVAILABLE" });
+      return;
+    }
+    // A deployment-signed delivery is answered the same whatever matched: GitHub
+    // shows the answer to the repository's admins, and which (or whether) other
+    // workspaces connect the repository is not theirs to learn (as on the
+    // connection cards, #1475). The log keeps the detail.
+    const answer = (status: number, body: Record<string, unknown>) => {
+      if (signer.kind === "deployment") res.status(200).json({ ok: true });
+      else res.status(status).json(body);
+    };
+    if (match.targets.length === 0) {
+      const reason = match.candidates === 0 ? "NO_MATCHING_CONNECTOR" : "UNTRACKED_BRANCH";
+      log.info("push_webhook.ignored", { deliveryId, reason, repo: push.repoFullName });
+      answer(200, { ok: true, handled: false, reason });
+      return;
+    }
+    const outcome = { started: 0, queued: 0, rateLimited: 0 };
+    for (const id of match.targets) {
+      if (!allowRepoRefreshRequest(id)) {
+        outcome.rateLimited += 1;
+        log.warn("push_webhook.rate_limited", { deliveryId, connectorId: id });
+        continue;
+      }
+      const requested = requestRepoConnectorRefresh(id, {
+        trigger: "push",
+        commitSha: push.commitSha,
+      });
+      outcome[requested.status] += 1;
+    }
+    log.info("push_webhook.handled", { deliveryId, repo: push.repoFullName, ...outcome });
+    if (outcome.rateLimited === match.targets.length) {
+      await releaseClaims();
+      answer(429, { ok: false, reason: "RATE_LIMITED" });
+      return;
+    }
+    answer(200, { ok: true, handled: true, ...outcome });
+  };
+  r.post("/github/push", webhookReceiverRateLimiter, handlePushDelivery);
+  r.post("/github/push/c/:connectorId", webhookReceiverRateLimiter, handlePushDelivery);
+
   return r;
+}
+
+/** #2335 — at most this many connectors are refreshed for one push. */
+const MAX_PUSH_FANOUT = 50;
+
+/** #2335 — the connectors a verified push is for. */
+interface PushMatch {
+  /** Live connectors to the repository the signer may refresh, on any branch. */
+  candidates: number;
+  /** Those whose tracked branch is the pushed one. */
+  targets: string[];
+}
+
+/**
+ * #2335 — which connectors a verified push refreshes.
+ *
+ * - Connector-signed: that connector (its repository already matched the
+ *   payload's exactly in `verifyConnectorDelivery`), if it is still live.
+ * - Deployment-signed: every live GitHub connector to the repository, for the
+ *   delivery's host, in a live project that did not take its own secret for the
+ *   repository (#1475: such a project takes only what that secret signs).
+ *   Unlike a pull-request review, a refresh carries nothing from the payload
+ *   into the project (it pulls the connector's own remote with its own token),
+ *   so every such project's connector is refreshed, not only the earliest one.
+ *
+ * Then only those whose tracked branch (`defaultBranch`) is the pushed one.
+ */
+async function matchPushConnectors(
+  signer: DeliverySigner,
+  push: Extract<ParsedPush, { kind: "branch" }>,
+): Promise<PushMatch> {
+  const [owner, name] = push.repoFullName.split("/");
+  const conns = await prisma.repoConnection.findMany({
+    where:
+      signer.kind === "connector"
+        ? { id: signer.connectorId, deletedAt: null, project: { deletedAt: null } }
+        : {
+            ownerOrOrg: owner,
+            repoName: name,
+            deletedAt: null,
+            provider: { in: [...GITHUB_PROVIDERS] },
+            project: { deletedAt: null },
+          },
+    select: {
+      id: true,
+      projectId: true,
+      provider: true,
+      apiBaseUrl: true,
+      defaultBranch: true,
+      webhookSecretNonce: true,
+      webhookSecretCheck: true,
+    },
+    orderBy: { id: "asc" },
+    take: MAX_PUSH_FANOUT,
+  });
+  let candidates = conns;
+  if (signer.kind === "deployment") {
+    const host = githubHost(push.repoHtmlUrl) ?? "github.com";
+    const root = webhookSecretRootKey();
+    const sameHost = conns.filter((c) => connectorHost(c) === host);
+    const ownSecretProjects = new Set(
+      sameHost.filter((c) => connectorSecretState(c, root) === "active").map((c) => c.projectId),
+    );
+    candidates = sameHost.filter((c) => !ownSecretProjects.has(c.projectId));
+  }
+  return {
+    candidates: candidates.length,
+    targets: candidates.filter((c) => c.defaultBranch === push.branch).map((c) => c.id),
+  };
 }
 
 /** Issue #433 — spec-kit issue → `tasks.md` sync; never throws. */

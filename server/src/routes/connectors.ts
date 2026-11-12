@@ -57,6 +57,7 @@ import { fileTooLargeMessage } from "../lib/documents/upload.js";
 import { ConnectorError } from "../lib/connectors/types.js";
 import {
   INGEST_IN_PROGRESS,
+  acquireOrQueueConnectorIngest,
   tryAcquireConnectorIngest,
   type ConnectorIngestLease,
 } from "../lib/connectors/ingest-guard.js";
@@ -830,7 +831,8 @@ export function connectorsRouter(): Router {
   // POST /repos/:id/refresh-ingest — git pull (or re-clone) + incremental
   // code-graph + RAG re-ingest.  Designed for both manual "sync now" triggers
   // from the UI and scheduled refresh tasks.  Only re-parses files whose
-  // content hash changed since the last run.
+  // content hash changed since the last run. While another run holds the
+  // connector it answers 202 { status: "queued" } (#2335).
   r.post(
     "/repos/:id/refresh-ingest",
     requireAuth,
@@ -846,8 +848,22 @@ export function connectorsRouter(): Router {
         const conn = await getRepoConnector(projectId, id);
         // #217 — claimed once the connector is known to be this project's, and
         // before the pull, so a concurrent refresh never races this one's clone.
-        lease = tryAcquireConnectorIngest(id, "refresh-ingest");
-        if (!lease) throw ingestInProgress();
+        // #2335 — a busy connector is not refused: this request folds into its
+        // single queued re-run, which runs (in the background) when the current
+        // run ends. 202, because nothing has run yet.
+        const claim = acquireOrQueueConnectorIngest(id, "refresh-ingest", { trigger: "manual" });
+        if ("queued" in claim) {
+          res.status(202).json(
+            ok({
+              status: "queued" as const,
+              connectorId: id,
+              trigger: claim.queued.trigger,
+              requests: claim.queued.requests,
+            }),
+          );
+          return;
+        }
+        lease = claim.lease;
         const isNonGit =
           conn.provider === REPO_PROVIDER_LOCAL || conn.provider === REPO_PROVIDER_UPLOAD;
         let clone: {

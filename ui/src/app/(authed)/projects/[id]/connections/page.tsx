@@ -428,6 +428,12 @@ export default function ConnectionsPage() {
   const refreshIngestRepo = useMutation({
     mutationFn: (id: string) => repoConnectorsApi.refreshIngest(projectId, id),
     onSuccess: (data, id) => {
+      // #2335 — another run (a push, the schedule, a Deep Ingest) holds the
+      // repository: this Sync is queued and runs once that one ends.
+      if ("status" in data) {
+        toast.info("A sync is already running. This one is queued and runs when it finishes.");
+        return;
+      }
       setRefreshIngestResult({ connectorId: id, summary: data });
       deepIngest.clearOutcome();
       qc.invalidateQueries({ queryKey: repoKeys.list(projectId) });
