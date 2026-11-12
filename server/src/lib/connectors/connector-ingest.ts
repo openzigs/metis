@@ -28,6 +28,7 @@ import { prisma } from "../prisma.js";
 import { getDocumentStorage } from "../documents/storage.js";
 import { getKnowledgeService } from "../rag/knowledge-service.js";
 import { redactString } from "./pii-redactor.js";
+import { redactSecrets } from "../safety/secret-patterns.js";
 import type { ConnectorEmitter } from "./types.js";
 import { NOOP_EMITTER, ConnectorError } from "./types.js";
 import { isJunkSourcePath } from "@metis/shared";
@@ -94,10 +95,12 @@ export function repoMetadataToUnits(connectorId: string, meta: RepoMetadata): In
       body: redactString(meta.readme),
     });
   }
+  // #2333 — a manifest is repository source: secrets only. The PII set read a
+  // Go pseudo-version's timestamp in `go.mod` as a phone number (#1138).
   for (const [name, content] of Object.entries(meta.manifests)) {
     units.push({
       filename: `${REPO_FILENAME_PREFIX}:${connectorId}:${name}`,
-      body: `\`\`\`\n${redactString(content)}\n\`\`\`\n`,
+      body: `\`\`\`\n${redactSecrets(content).text}\n\`\`\`\n`,
     });
   }
   return units;
@@ -395,6 +398,22 @@ async function ingestUnit(ctx: UnitContext, unit: IngestionUnit): Promise<UnitOu
 }
 
 // ---- Source code → RAG ingestion -------------------------------------------
+
+/**
+ * The document a repository source file is stored as: its path, then its
+ * (already redacted) content in a fenced block.
+ *
+ * #2333 — re-ingest. An unchanged file is skipped when the checksum of THIS
+ * body matches the stored one, and the body is built from the redacted
+ * content. So a file indexed before #2333 with a secret in it now yields a
+ * different body: the next sync re-embeds it and replaces its chunks. A file
+ * with no secret yields the same bytes and is skipped, correctly — nothing in
+ * its chunks needs removing. The same holds for any later change to the
+ * pattern set: no fingerprint to bump by hand.
+ */
+function sourceUnitBody(relPath: string, ext: string, redactedContent: string): string {
+  return `# ${relPath}\n\n\`\`\`${ext.slice(1)}\n${redactedContent}\n\`\`\`\n`;
+}
 
 /**
  * Walks a cloned repo directory and ingests source file content into the RAG
@@ -1026,11 +1045,22 @@ async function runSourceIngest(
         }
         return;
       }
-      const content = read.content;
+      // #2333 — secrets (not PII) out before the body is stored, chunked or
+      // embedded; in place, so every line keeps its number. The log names the
+      // file and how many of each class, never a match.
+      const redacted = redactSecrets(read.content);
+      if (redacted.count > 0) {
+        log.info("repository source file: secrets redacted before ingest", {
+          connectorId,
+          path: file.relPath,
+          count: redacted.count,
+          byClass: redacted.byClass,
+        });
+      }
       const ext = path.extname(file.relPath).toLowerCase();
       const outcome = await ingestUnit(ctx, {
         filename: `${REPO_FILENAME_PREFIX}:${connectorId}:src/${file.relPath}`,
-        body: `# ${file.relPath}\n\n\`\`\`${ext.slice(1)}\n${content}\n\`\`\`\n`,
+        body: sourceUnitBody(file.relPath, ext, redacted.text),
       });
       state.processed += 1;
       if (outcome.action === "created") state.created += 1;

@@ -5,36 +5,26 @@
  * save when they carry a HIGH-CONFIDENCE credential shape. The error names the
  * kind of credential, never the value.
  *
- * Deliberately narrow (vendor prefixes and key blocks, not "long random
- * strings"): a false positive blocks a legitimate save, so only shapes with a
- * vendor-specific prefix are matched. Documentation placeholders that end in
- * `EXAMPLE` (the form AWS's own docs use) are allowed.
+ * Deliberately narrow: only the shared set's high-confidence shapes (vendor
+ * prefixes and key blocks, not "long random strings") — a false positive blocks
+ * a legitimate save. Documentation placeholders that end in `EXAMPLE` (the form
+ * AWS's own docs use) are allowed.
+ *
+ * #2333 — the shapes live in `safety/secret-patterns.ts`, the one set the
+ * connector redactor and every repository read path use too; this file keeps
+ * no copy of them.
  */
+import { SECRET_PATTERNS, secretMatches } from "../safety/secret-patterns.js";
 
-interface SecretPattern {
-  kind: string;
-  re: RegExp;
-}
-
-const PATTERNS: readonly SecretPattern[] = [
-  { kind: "AWS access key id", re: /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g },
-  { kind: "GitHub token", re: /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{30,}\b/g },
-  { kind: "GitHub token", re: /\bgithub_pat_[A-Za-z0-9_]{40,}\b/g },
-  { kind: "Anthropic API key", re: /\bsk-ant-[A-Za-z0-9_-]{20,}/g },
-  { kind: "OpenAI API key", re: /\bsk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{32,}/g },
-  { kind: "Slack token", re: /\bxox[abposr]-[A-Za-z0-9-]{10,}/g },
-  { kind: "private key", re: /-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----/g },
-  { kind: "Google API key", re: /\bAIza[0-9A-Za-z_-]{35}\b/g },
-];
+const REFUSED = SECRET_PATTERNS.filter((p) => p.highConfidence);
 
 /** The kinds of credential found in `text` (deduplicated), `[]` when clean. */
 export function findSecretKinds(text: string): string[] {
   if (!text) return [];
   const kinds = new Set<string>();
-  for (const p of PATTERNS) {
-    p.re.lastIndex = 0;
-    for (const m of text.matchAll(p.re)) {
-      if (/EXAMPLE$/i.test(m[0])) continue;
+  for (const p of REFUSED) {
+    for (const m of secretMatches(p, text)) {
+      if (/EXAMPLE$/i.test(m)) continue;
       kinds.add(p.kind);
     }
   }
