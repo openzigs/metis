@@ -686,6 +686,37 @@ describe("runDocumentReaderAgent", () => {
     expect(read!.result.usage.totalTokens).toBe(220);
   });
 
+  it("#2361 — names the section a dropped overview's content was merged into", async () => {
+    const merged = provider((system) =>
+      system.includes("combining the statements")
+        ? JSON.stringify({ duplicates: [{ id: "T1", of: "T2" }], crossReferences: [] })
+        : READ_REPLY,
+    );
+    const read = await runDocumentReaderAgent({
+      provider: merged,
+      projectId: "p1",
+      documentIds: ["d1"],
+      actor: MEMBER,
+      load: async () => [doc("d1")],
+    });
+    expect(read!.coverage.documents[0]!.sections).toEqual([
+      { heading: "Grants FRD", status: "read", statements: 0, kinds: {} },
+      {
+        heading: "Grants FRD › 1 Eligibility",
+        status: "read",
+        statements: 0,
+        kinds: {},
+        mergedInto: ["Grants FRD › 2 Payment"],
+      },
+      {
+        heading: "Grants FRD › 2 Payment",
+        status: "read",
+        statements: 2,
+        kinds: { "business-rule": 1, assumption: 1 },
+      },
+    ]);
+  });
+
   it("#2275 — clips a long filename to the source schema's 512 characters", async () => {
     const long = "f".repeat(700);
     const read = await runDocumentReaderAgent({

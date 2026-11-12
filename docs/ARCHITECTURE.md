@@ -4960,12 +4960,17 @@ document context once (purpose, scope, actors, glossary) from the full outline a
 as fits, then reads each batch with it. One sentence is one statement (#2361): statements whose
 quotes lie in the same sentence (`sentenceSpan`; a line break also ends one, so a table row is
 its own) are folded into one, quoting the span of all of them, because #2255's measurement found
-most of the reader's repeats were one sentence written as several statements. A cross-section
-pass over the statements then names repeats (dropped) and cross-references (kept); the repeat
-dropped is the statement that says less, whichever comes first, so an overview restated in full
-by a later section goes and the later one stays. If the pass fails, every statement is kept and
-the report says so; each section's `repeats` counts both kinds. Every quote is checked with the governing `clauseLocator` and the stored quote and offsets
-are the source's own; a quote not in the source, or found only outside the batch the call was
+most of the reader's repeats were one sentence written as several statements. Each statement is
+keyed by its own sentence's span, never a group widened by another, so folding cannot cascade
+along a paragraph; a quote over several sentences folds only with another over exactly those
+sentences. A cross-section pass over the statements then names repeats (dropped) and
+cross-references (kept); the repeat dropped is the statement that says less, whichever comes
+first, so an overview restated in full by a later section goes and the later one stays. A
+reference to a dropped repeat is redirected to the statement it repeats, and a section whose
+statements went that way records the sections they were merged into (`mergedInto`), which the
+coverage panel shows instead of "nothing extracted". If the pass fails, every statement is kept
+and the report says so; each section's `repeats` counts both kinds. Every quote is checked with
+the governing `clauseLocator` and the stored quote and offsets are the source's own; a quote not in the source, or found only outside the batch the call was
 asked about, is dropped and counted (#2262). A batch whose reply cannot be read is reported
 `unread`; a provider error fails the read, and the error carries the tokens already spent
 (`spentUsageOf`), which the failed agent row and the run's total count.

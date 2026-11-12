@@ -320,6 +320,14 @@ function coverageOf(
       status: s.status,
       statements: s.statements,
       kinds: { ...s.kinds },
+      ...(s.mergedInto?.length
+        ? {
+            mergedInto: s.mergedInto.flatMap((id) => {
+              const into = reading.sections.find((t) => t.sectionId === id);
+              return into ? [formatHeadingPath(into.headingPath)] : [];
+            }),
+          }
+        : {}),
     })),
     statements: reading.statements.length,
     requirements: reading.statements.filter((s) => REQUIREMENT_STATEMENT_KINDS.has(s.kind)).length,

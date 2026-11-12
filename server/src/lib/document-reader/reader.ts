@@ -131,6 +131,12 @@ export interface SectionCoverage {
    * full by another, or one of several cut from the same sentence (#2361).
    */
   repeats: number;
+  /**
+   * #2361 — sections that hold, in full, a statement dropped from this one as
+   * a repeat (an overview set out later), by `sectionId`, each once. A section
+   * whose every statement went this way was read: its content is there.
+   */
+  mergedInto?: string[];
 }
 
 export interface DocumentReading {
@@ -422,6 +428,8 @@ async function read(
 
   // The cross-section pass: repeats and cross-references.
   const dropped = new Set<number>();
+  /** A dropped repeat -> the statement it repeats, which may itself be dropped. */
+  const keptAs = new Map<number, number>();
   const refs = new Map<number, Set<number>>();
   let merge: DocumentReading["merge"] = "skipped";
   if (kept.length >= 2) {
@@ -452,7 +460,12 @@ async function read(
         if (i === undefined || of === undefined || i === of || dropped.has(i) || dropped.has(of))
           continue;
         dropped.add(i);
-        coverage.get(kept[i]!.section.id)!.repeats++;
+        keptAs.set(i, of);
+        const cov = coverage.get(kept[i]!.section.id)!;
+        cov.repeats++;
+        const into = kept[of]!.section.id;
+        if (into !== cov.sectionId && !cov.mergedInto?.includes(into))
+          cov.mergedInto = [...(cov.mergedInto ?? []), into];
       }
       for (const r of outcome.verdict.crossReferences) {
         const from = indexOf.get(r.from.toUpperCase());
@@ -486,11 +499,17 @@ async function read(
       end: k.end,
       sectionId: k.section.id,
       headingPath: k.section.headingPath,
-      // A reference to a dropped repeat points at nothing kept, so it goes.
-      refersTo: [...(refs.get(i) ?? [])].flatMap((to) => {
-        const target = finalId.get(to);
-        return target ? [target] : [];
-      }),
+      // A reference to a dropped repeat points at the statement it repeats.
+      refersTo: [
+        ...new Set(
+          [...(refs.get(i) ?? [])].flatMap((to) => {
+            let at = to;
+            while (dropped.has(at)) at = keptAs.get(at)!;
+            const target = finalId.get(at);
+            return target && at !== i ? [target] : [];
+          }),
+        ),
+      ],
     });
   });
 
@@ -531,41 +550,58 @@ export function sentenceSpan(
 }
 
 /**
- * #2361 — statements whose quotes lie in one sentence, folded into one: the
- * quote spans them all, the statements are joined, and the kind is the first
- * requirement kind among them (else the first's). One sentence is one
- * statement, as #2229's whole-document read wrote it; `onFolded` is told of
- * every statement folded into another. `kept` is in document order.
+ * #2361 — statements whose quotes lie in one and the same sentence, folded
+ * into one: the quote spans them all, the statements are joined, and the kind
+ * is the first requirement kind among them (else the first's). One sentence is
+ * one statement, as #2229's whole-document read wrote it; `onFolded` is told
+ * of every statement folded into another. `kept` is in document order.
+ *
+ * Only the same single sentence folds: a statement is compared with its own
+ * sentence's span, never with a group widened by another, so folding cannot
+ * cascade along a paragraph. A statement whose quote runs over several
+ * sentences folds only with another quoting exactly those sentences (the same
+ * passage, read twice): a statement from one of its sentences stays apart, as
+ * it may be a separate requirement.
  */
 function foldSentences(text: string, kept: Kept[], onFolded: (k: Kept) => void): Kept[] {
-  const groups: Array<{ members: Kept[]; sentenceEnd: number }> = [];
+  const groups = new Map<string, Kept[]>();
   for (const k of kept) {
     const sentence = sentenceSpan(text, k.start, k.end);
-    const last = groups[groups.length - 1];
-    if (last && sentence.start < last.sentenceEnd) {
-      last.members.push(k);
-      last.sentenceEnd = Math.max(last.sentenceEnd, sentence.end);
+    const key = `${sentence.start}:${sentence.end}`;
+    const members = groups.get(key);
+    if (members) {
+      members.push(k);
       onFolded(k);
     } else {
-      groups.push({ members: [k], sentenceEnd: sentence.end });
+      groups.set(key, [k]);
     }
   }
-  return groups.map(({ members }) => {
+  return [...groups.values()].map((members) => {
     const first = members[0]!;
     if (members.length === 1) return first;
     const start = Math.min(...members.map((m) => m.start));
     const end = Math.max(...members.map((m) => m.end));
     const said = new Map<string, string>();
-    for (const m of members) said.set(m.statement.replace(/\s+/g, " ").toLowerCase(), m.statement);
+    for (const m of members) {
+      const statement = m.statement.trim();
+      said.set(statement.replace(/\s+/g, " ").toLowerCase(), statement);
+    }
     return {
       kind: (members.find((m) => REQUIREMENT_STATEMENT_KINDS.has(m.kind)) ?? first).kind,
-      statement: [...said.values()].join(" "),
+      statement: [...said.values()].map(asSentence).join(" "),
       quote: text.slice(start, end),
       start,
       end,
       section: first.section,
     };
   });
+}
+
+/** A statement written to stand as a sentence: capitalised and closed with a full stop. */
+function asSentence(statement: string): string {
+  const body = statement.replace(/[,;:\s]+$/, "");
+  const capital = body.charAt(0).toUpperCase() + body.slice(1);
+  return /[.!?]["')\]]*$/.test(capital) ? capital : `${capital}.`;
 }
 
 function startsIn(clause: { clauseStart: number }, span: { start: number; end: number }): boolean {

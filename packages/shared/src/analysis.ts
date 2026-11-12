@@ -3062,6 +3062,12 @@ export interface DocumentReadingSection {
   /** Statements kept from it; 0 on a read section means it produced nothing. */
   statements: number;
   kinds: Partial<Record<DocumentStatementKind, number>>;
+  /**
+   * #2361 — headings of the later sections that set out, in full, statements
+   * dropped from this one as repeats (an overview). A read section with no
+   * statements and this set had its content merged there, not missed.
+   */
+  mergedInto?: string[];
 }
 
 /** Issue #2230 — the document reader's account of one selected document. */
