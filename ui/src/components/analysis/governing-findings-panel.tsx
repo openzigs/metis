@@ -19,6 +19,7 @@
  * and what is shown is what the server read back, decider's name included.
  */
 import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   GOVERNING_FINDING_NOTE_MAX,
@@ -38,6 +39,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { renderedClarifyingQuestionIds } from "@/components/analysis/ClarificationDialog";
 import { GoverningPreviewNotice } from "@/components/governing/governing-preview-notice";
 import { analysisApi, type ClarificationStatePayload } from "@/lib/analysis-api";
+import { projectsApi } from "@/lib/projects-api";
+import { queryKeys } from "@/lib/query-keys";
 import {
   governingFindingsApi,
   governingFindingsKeys,
@@ -295,6 +298,7 @@ export function GoverningFindingsPanel({
           Governing rules
         </h4>
         <GoverningPreviewNotice className="mt-1" />
+        <WorkspaceGoverningLink projectId={projectId} />
         <p className="text-sm text-muted-foreground">
           {findingsQuery.data.checked
             ? "Governing rules were checked against this analysis's requirements. None produced a finding."
@@ -325,6 +329,7 @@ export function GoverningFindingsPanel({
           Governing rules
         </h4>
         <GoverningPreviewNotice className="mt-1" />
+        <WorkspaceGoverningLink projectId={projectId} />
         {sentences.map(({ revisionId, sentence }) => (
           <p
             key={revisionId}
@@ -607,5 +612,31 @@ function GoverningFindingItem({
         </div>
       ) : null}
     </article>
+  );
+}
+
+/**
+ * #2339 — the way to the workspace's governing documents, where an analyst who
+ * sees no rules checked can go and add one. The page decides what they may do
+ * there (read-only for a member). Rendered only inside the panel, which is
+ * itself absent while the feature is off; none for a project in no workspace.
+ */
+function WorkspaceGoverningLink({ projectId }: { projectId: string }): React.ReactElement | null {
+  // Shared with the project switcher and Overview: usually already cached.
+  const project = useQuery({
+    queryKey: queryKeys.projects.detail(projectId),
+    queryFn: () => projectsApi.get(projectId),
+  });
+  const workspaceId = project.isError ? null : project.data?.workspaceId;
+  if (!workspaceId) return null;
+  return (
+    <p className="mt-1 text-sm">
+      <Link
+        href={`/workspaces/${workspaceId}/governing`}
+        className="text-primary underline underline-offset-2"
+      >
+        Open this workspace&apos;s governing documents
+      </Link>
+    </p>
   );
 }

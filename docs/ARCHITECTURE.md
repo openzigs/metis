@@ -2566,7 +2566,7 @@ replay (`lib/governing/__fixtures__/`).
 
 `ui/src/app/(authed)/workspaces/[id]/governing/` renders
 `components/governing/governing-documents-panel.tsx` over `ui/src/lib/governing-api.ts`. The
-workspace nav shows its **Governing documents** tab only once the list route answers
+workspace nav (`components/workspaces/workspace-nav.tsx`, #2339) shows its **Governing documents** tab only once the list route answers
 (`useGoverningTabVisible`), so a 404 (flag off) hides it. The list shows each document's
 current revision: label, effective date, extraction state (a `failed` one with its
 `extractionError`, plus Retry extraction and Re-upload for an admin), rule count and
@@ -7680,6 +7680,7 @@ The v1.2 shell ships **30+ user-facing routes** plus the auth proxy handlers. Th
 | `/settings/mcp` | MCP Servers | The one home for MCP servers (#31): Connected, **Servers** (register / start / stop, filtered by scope — mine / project / workspace; was `/admin/mcp`), Registry, Federated (Smithery + Official), Import-Export tabs. `?tab=` selects one. |
 | `/settings/usage` | Usage & cost | The one home for usage (#31). Scope tabs: **Project** (was `/projects/:id/usage`), **Workspace** — FinOps forecast, budget, alerts (was `/workspaces/:id/finops`), **All projects** (admins; was `/admin/usage`). State in `?scope=&projectId=&workspaceId=`. |
 | `/settings/workspaces`, `/settings/workspaces/[id]` | Workspaces | Admin-only (#31; was `/admin/workspaces`, `/admin/workspaces/[id]/settings`). |
+| `/workspaces/[id]` and its `traceability`, `governing`, `agents/new` | Workspace | A workspace's own pages, for every member (#2339). Reached from the workspace switcher's **Open workspace** and the analysis Governing rules panel's link. The layout renders `components/workspaces/workspace-nav.tsx`: the workspace's name, **Back to** the project the top bar last had active, and the section tabs (Governing documents only while its list route answers). The landing page is `workspace-overview.tsx`. Each section's API checks workspace membership itself (404 for a non-member). |
 | `/settings/auth` | SSO & authentication | Admin-only (#31; was `/admin/auth`). |
 | `/settings/embeddings` | Embeddings | Admin-only (#31; was `/admin/embeddings`). |
 | `/settings/triggers` | Triggers | Webhook/cron trigger management. |

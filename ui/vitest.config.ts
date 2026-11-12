@@ -99,6 +99,9 @@ export default defineConfig({
         // Epic #1866 (#1871) — the governing documents page is the same thin
         // wrapper; components/governing/* carries the logic (measured).
         "src/app/*/workspaces/*/governing/page.tsx",
+        // #2339 — the workspace landing page is the same thin wrapper;
+        // components/workspaces/workspace-overview carries the logic (measured).
+        "src/app/*/workspaces/*/page.tsx",
         // Epic #260 (#84) — the agent authoring wizard route is a thin wrapper;
         // the wizard itself (AgentAuthoringWizard) is covered by component tests.
         "src/app/*/workspaces/*/agents/new/page.tsx",
