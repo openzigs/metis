@@ -17,6 +17,7 @@ vi.mock("../src/lib/prisma.js", () => ({
 
 import {
   filterAccessible,
+  isAdminBypass,
   isVisibleTo,
   parseAclSubjects,
   propagateAcl,
@@ -131,6 +132,36 @@ describe("isVisibleTo", () => {
   it("a shared audience has no admin bypass and no groups", () => {
     const actor = { ...sharedAudienceActor("root"), role: "admin", groups: ["alpha"] };
     expect(isVisibleTo(restricted, actor)).toBe(false);
+  });
+});
+
+describe("isAdminBypass (#2297)", () => {
+  const admin = { userId: "root", role: "admin", groups: ["ops"] };
+  const acl = (...subjects: Array<{ kind: "user" | "role" | "group"; value: string }>) => ({
+    subjects,
+  });
+
+  it("is an admin seeing a restricted list that names them nowhere", () => {
+    expect(isAdminBypass(acl({ kind: "user", value: "alice" }), admin)).toBe(true);
+  });
+
+  it("is not a bypass when a user, role or group subject names the admin", () => {
+    expect(isAdminBypass(acl({ kind: "user", value: "root" }), admin)).toBe(false);
+    expect(isAdminBypass(acl({ kind: "role", value: "admin" }), admin)).toBe(false);
+    expect(isAdminBypass(acl({ kind: "group", value: "ops" }), admin)).toBe(false);
+  });
+
+  it("is never one for an unrestricted list, a non-admin or a shared audience", () => {
+    expect(isAdminBypass(acl(), admin)).toBe(false);
+    expect(
+      isAdminBypass(acl({ kind: "user", value: "alice" }), { userId: "bob", role: "member" }),
+    ).toBe(false);
+    expect(
+      isAdminBypass(acl({ kind: "user", value: "alice" }), {
+        ...sharedAudienceActor("root"),
+        role: "admin",
+      }),
+    ).toBe(false);
   });
 });
 
