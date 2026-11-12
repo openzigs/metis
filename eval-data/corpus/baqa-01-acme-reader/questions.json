@@ -4,7 +4,7 @@
   "issue": 2237,
   "description": "Phase 0 of #2228: business-analyst questions over the Acme Reader sample, two products (the Miniflux server and its Python client). Single-product rule questions and multi-product FRD impact questions carry the facts a correct answer states and the sources that support them; ambiguous questions expect a follow-up question and unanswerable ones expect 'the sources don't show this'.",
   "license": "Questions, facts and frd-12.md: CC0-1.0 (written for METIS). Cited sources: miniflux/v2 (Apache-2.0) and miniflux/python-client (MIT) at the pinned commits.",
-  "authoredBy": "claude-opus-5-5 (an AI coding agent), dispatched on issue #2237, 2026-11-10. Every fact and line range was read from the pinned commits; none was reviewed by a person yet.",
+  "authoredBy": "claude-opus-5-5 (an AI coding agent), dispatched on issue #2237, 2026-11-10. Every fact and line range was read from the pinned commits; none was reviewed by a person yet. S7 to S11 were added on issue #2198 (2026-11-11) by the same kind of agent, from walkthrough run 10's wrong answers, and read from the same pinned commit.",
   "products": [
     {
       "name": "miniflux",
@@ -298,6 +298,221 @@
           "lines": [109, 128]
         }
       ]
+    },
+    {
+      "id": "S7",
+      "category": "single-product",
+      "scope": ["miniflux"],
+      "text": "Can two Acme Reader users have the same username, and what stops it?",
+      "expect": "answer",
+      "facts": [
+        {
+          "id": "S7.a",
+          "text": "No: the server refuses a new user, or a rename, whose username another user already has."
+        },
+        {
+          "id": "S7.b",
+          "text": "The database enforces it too: the users table declares the username unique."
+        },
+        {
+          "id": "S7.c",
+          "text": "Usernames are stored and compared in lower case, so two usernames that differ only in letter case count as the same."
+        }
+      ],
+      "sources": [
+        {
+          "product": "miniflux",
+          "path": "internal/validator/user.go",
+          "lines": [22, 24]
+        },
+        {
+          "product": "miniflux",
+          "path": "internal/validator/user.go",
+          "lines": [40, 43]
+        },
+        {
+          "product": "miniflux",
+          "path": "internal/storage/user.go",
+          "lines": [43, 55]
+        },
+        {
+          "product": "miniflux",
+          "path": "internal/storage/user.go",
+          "lines": [69, 73]
+        },
+        {
+          "product": "miniflux",
+          "path": "internal/database/migrations.go",
+          "lines": [24, 26]
+        }
+      ],
+      "why": "Walkthrough run 10, BA Q1 (#2198): the answer cited the file's imports (internal/storage/user.go:13-16) for the insert at :72 and missed the database's unique constraint."
+    },
+    {
+      "id": "S8",
+      "category": "single-product",
+      "scope": ["miniflux"],
+      "text": "What states can an article be in on the Acme Reader server, and what happens to an article when it is deleted?",
+      "expect": "answer",
+      "facts": [
+        {
+          "id": "S8.a",
+          "text": "An article is either unread or read."
+        },
+        {
+          "id": "S8.b",
+          "text": "The removed status is no longer used: a migration recorded every removed article as a tombstone and then deleted it."
+        },
+        {
+          "id": "S8.c",
+          "text": "Deleting an article deletes its row and records a tombstone, so the same article is not imported again."
+        }
+      ],
+      "sources": [
+        {
+          "product": "miniflux",
+          "path": "internal/model/entry.go",
+          "lines": [10, 14]
+        },
+        {
+          "product": "miniflux",
+          "path": "internal/database/migrations.go",
+          "lines": [1470, 1501]
+        },
+        {
+          "product": "miniflux",
+          "path": "internal/storage/entry.go",
+          "lines": [368, 398]
+        }
+      ],
+      "why": "Walkthrough run 10, BA Q8 (#2198): the answer said the removed status is still used; a later migration (internal/database/migrations.go:1489-1495) dropped it."
+    },
+    {
+      "id": "S9",
+      "category": "single-product",
+      "scope": ["miniflux"],
+      "text": "Can the Acme Reader server already mark every article published before a given date as read, and what uses that today?",
+      "expect": "answer",
+      "facts": [
+        {
+          "id": "S9.a",
+          "text": "Yes: the server can already mark every unread article published before a given date as read (MarkAllAsReadBeforeDate)."
+        },
+        {
+          "id": "S9.b",
+          "text": "The Google Reader API uses it: its mark-all-as-read request on the reading list calls it."
+        },
+        {
+          "id": "S9.c",
+          "text": "The web interface's mark all as read takes no date: it marks every unread article in the globally visible feeds as read."
+        }
+      ],
+      "sources": [
+        {
+          "product": "miniflux",
+          "path": "internal/storage/entry.go",
+          "lines": [522, 545]
+        },
+        {
+          "product": "miniflux",
+          "path": "internal/googlereader/handler.go",
+          "lines": [61, 61]
+        },
+        {
+          "product": "miniflux",
+          "path": "internal/googlereader/handler.go",
+          "lines": [1224, 1228]
+        },
+        {
+          "product": "miniflux",
+          "path": "internal/ui/unread_mark_all_read.go",
+          "lines": [13, 20]
+        }
+      ],
+      "why": "Walkthrough run 10, e-16-5 (#2198): chat said MarkAllAsReadBeforeDate has no callers; the Google Reader handler calls it at internal/googlereader/handler.go:1225, through a receiver."
+    },
+    {
+      "id": "S10",
+      "category": "single-product",
+      "scope": ["miniflux"],
+      "text": "On the Acme Reader server, what does a user see after marking the last page of a feed's unread articles as read, and do the category and unread pages behave the same way?",
+      "expect": "answer",
+      "facts": [
+        {
+          "id": "S10.a",
+          "text": "The feed page keeps the page offset it was asked for, so once the last page is marked read it can come back empty."
+        },
+        {
+          "id": "S10.b",
+          "text": "The category page keeps the offset the same way and has the same problem."
+        },
+        {
+          "id": "S10.c",
+          "text": "The unread page does not: when the offset is past the number of unread articles it goes back to the first page."
+        }
+      ],
+      "sources": [
+        {
+          "product": "miniflux",
+          "path": "internal/ui/feed_entries.go",
+          "lines": [34, 46]
+        },
+        {
+          "product": "miniflux",
+          "path": "internal/ui/category_entries.go",
+          "lines": [34, 47]
+        },
+        {
+          "product": "miniflux",
+          "path": "internal/ui/unread_entries.go",
+          "lines": [38, 53]
+        }
+      ],
+      "why": "Walkthrough run 10, e-16-6 (#2198): chat missed the category page and said showUnreadPage has the same paging bug; it restarts at offset 0 (internal/ui/unread_entries.go:38)."
+    },
+    {
+      "id": "S11",
+      "category": "single-product",
+      "scope": ["miniflux"],
+      "text": "Does the Acme Reader server record when a user read an article?",
+      "expect": "answer",
+      "facts": [
+        {
+          "id": "S11.a",
+          "text": "No: an article has no field for the time it was read."
+        },
+        {
+          "id": "S11.b",
+          "text": "Changing an article's status updates its changed_at time, but starring or unstarring it updates changed_at too, so changed_at does not say when it was read."
+        },
+        {
+          "id": "S11.c",
+          "text": "The reading time shown for an article is an estimate of how many minutes it takes to read, computed from its content; it is not when the article was read."
+        }
+      ],
+      "sources": [
+        {
+          "product": "miniflux",
+          "path": "internal/model/entry.go",
+          "lines": [27, 48]
+        },
+        {
+          "product": "miniflux",
+          "path": "internal/storage/entry.go",
+          "lines": [412, 427]
+        },
+        {
+          "product": "miniflux",
+          "path": "internal/storage/entry.go",
+          "lines": [457, 470]
+        },
+        {
+          "product": "miniflux",
+          "path": "internal/reader/readingtime/readingtime.go",
+          "lines": [15, 26]
+        }
+      ],
+      "why": "Walkthrough run 10, e-17-2 (#2198): the requirement 'Track reading time with read_at timestamp' was grounded in the reading-time estimate code (internal/reader/readingtime/readingtime.go:16-26), which shares only the words."
     },
     {
       "id": "M1",

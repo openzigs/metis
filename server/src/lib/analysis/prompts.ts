@@ -286,6 +286,9 @@ const CODE_CITATION_RULE = [
   'citations ({ "documentId": "<id>", "chunkIndex": <int> }) for document/schema evidence.',
   "A finding's `citations` array may mix both kinds. If you cannot ground a claim in",
   "retrieved code, cite no file:line and lower the severity.",
+  // #2198 — a citation becomes the requirement's code link, and Tested by follows it.
+  "Cite code because it does what the requirement is about, not because its name shares a",
+  "word with the requirement.",
 ].join(" ");
 
 /**

@@ -173,4 +173,30 @@ describe("the committed question set", () => {
     );
     expect([...singles].sort()).toEqual(["miniflux", "python-client"]);
   });
+
+  // #2198 — walkthrough run 10's wrong chat answers, kept as questions so a run
+  // can tell whether they recur. Each expects the source that disproves the
+  // wrong claim, at lines that contain it in the pinned miniflux commit.
+  it.each([
+    // BA Q1: cited the imports (`storage/user.go:13-16`) and missed the DB constraint.
+    ["S7", "internal/database/migrations.go", 25],
+    ["S7", "internal/storage/user.go", 72],
+    // BA Q8: said the `removed` status is still used; this migration drops it.
+    ["S8", "internal/database/migrations.go", 1493],
+    // e-16-5: said MarkAllAsReadBeforeDate has no callers.
+    ["S9", "internal/googlereader/handler.go", 1225],
+    // e-16-6: said showUnreadPage has the paging bug; it restarts at offset 0.
+    ["S10", "internal/ui/unread_entries.go", 38],
+    ["S10", "internal/ui/category_entries.go", 34],
+    // e-17-2: the read_at requirement mapped to the reading-time estimate.
+    ["S11", "internal/reader/readingtime/readingtime.go", 16],
+    ["S11", "internal/storage/entry.go", 418],
+  ])("%s expects %s at a span holding line %i (#2198)", async (id, file, line) => {
+    const f = await loadBaQaFixture(baQaCorpusDir(REPO_ROOT, BAQA_CORPUS));
+    const q = f.questions.find((x) => x.id === id);
+    expect(q?.category).toBe("single-product");
+    expect(q?.why).toMatch(/run 10/);
+    const spans = (q?.sources ?? []).filter((s) => s.path === file && s.lines);
+    expect(spans.some((s) => s.lines![0] <= line && line <= s.lines![1])).toBe(true);
+  });
 });
