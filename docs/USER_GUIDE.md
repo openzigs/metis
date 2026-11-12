@@ -935,20 +935,20 @@ After logging in you land on the **Dashboard** inside the persistent app shell:
 
 A **skip-to-content** link is the first focusable element on every authenticated page so keyboard users can bypass the navigation.
 
-**Project sections.** Inside a project, the tab bar follows the pipeline from left to right: **Overview · Sources · Analyze · Requirements · Docs · Publish · Code · ⚙**. Each tab opens its section's first step in one click, and the section's other pages appear in a row underneath:
+**Project sections.** Inside a project, the tab bar follows an analyst's work from left to right: **Overview · Knowledge · Change requests · Requirements · Deliverables · ⚙**. Each tab opens its section's first page in one click, and the section's other pages appear in a row underneath, so every page is at most two clicks from the project:
 
 | Tab | Pages |
 |---|---|
 | Overview | Where each stage stands and what to do next; a numbered **Get started** checklist on a new project |
-| Sources | Connections (including Deep Ingest), Documents, Import, Jira |
-| Analyze | Requirements Analysis, Impact Analysis (this project), Spec Kit |
-| Requirements | Review (what is awaiting review), Baselines, Discussions |
-| Docs | Documentation, Templates |
-| Publish | Issue drafts and publish batches |
-| Code | Code Overview, Changes, Pull Requests |
-| ⚙ | Project settings, Models, Plugins, Usage |
+| Knowledge | Connections (including Deep Ingest), Documents: what METIS knows about the system |
+| Change requests | Requirements Analysis, Import, Jira (requirements brought in from another system), Impact Analysis (this project) |
+| Requirements | Review (what is awaiting review), Baselines, Discussions, Compare analyses |
+| Deliverables | Documentation, Templates, Publish (issue drafts and publish batches) |
+| ⚙ Project settings | General, Models, Plugins, Usage, Code Overview, Pull Requests, Spec Kit |
 
-There is no "More" menu. Project settings (AI provider and model, safety, budget, autopilot, quarantine, archive, …) are behind **⚙**, not on the Overview. Per-project skills are managed from **Library**, which has a project picker. Every existing project URL still works. Below `md` the whole bar collapses into a single dropdown so there's no horizontal scrolling on mobile. **Settings** sub-pages share a persistent left sub-navigation.
+**Compare analyses** (it used to be called Changes) compares the requirements of two analysis runs; it is not a change request. The code views (Code Overview, Pull Requests) and Spec Kit sit behind **⚙** because they are not where an analyst works day to day; there is no Code tab. [#2334]
+
+The ⚙ tab is a gear icon; it is named **Project settings** for screen readers and shows that name as a tooltip. There is no "More" menu. Project settings (AI provider and model, safety, budget, autopilot, quarantine, archive, …) are behind **⚙**, not on the Overview. Per-project skills are managed from **Library**, which has a project picker. Every existing project URL still works. Below `md` the whole bar collapses into a single dropdown so there's no horizontal scrolling on mobile. **Settings** sub-pages share a persistent left sub-navigation.
 
 Press **⌘K** (or **Ctrl+K** on Windows/Linux) anywhere in the app to open the **command palette**. Type to fuzzy-search navigation targets, recently opened items, and project actions; ↑/↓ to move, **↵** to invoke, **Esc** to dismiss.
 
@@ -1209,7 +1209,7 @@ instead of the work being queued.
 
 After METIS ingests a repository for **Code Discovery**, you can view a deterministic, AI-free summary of the codebase computed straight from the AST CodeGraph.
 
-**How to view it.** Open the project's **Code** tab — it lands on **Code Overview** (the project's own **Overview** tab links to it too). The page shows:
+**How to view it.** Open the project's **⚙** (Project settings) tab, then **Code Overview** (the project's own **Overview** tab links to it too). The page shows:
 
 - **Summary** — a 500-word paragraph composed from the rationale comments (`// WHY:`, `// NOTE:`, JSDoc, Python docstrings) attached to the project's most-referenced symbols. If no rationale is available, METIS renders a deterministic three-sentence boilerplate so the section is never blank.
 - **Top Symbols by In-Degree** — the top 20 functions/classes/modules sorted by how many other symbols call or reference them. Symbols in test files (`*.test.*`, `*.spec.*`, `tests/`, `e2e/`, `_test.go`, `*Test.java`, …) are not ranked. A call counts toward a symbol only with evidence that it targets that symbol: `items.join(",")` is not a call to a project function named `join`, and `describe`/`beforeEach`/`vi.mock` or a name imported from `node:path` never bind to project code by name.
@@ -2554,7 +2554,7 @@ You don't have to configure any of this manually; it's tuned for safe, predictab
 
 Compare two analysis snapshots to see what requirements changed between versions.
 
-1. Navigate to your project and click the **Changes** tab.
+1. Navigate to your project, click the **Requirements** tab, then **Compare analyses**. (The page is titled **Compare analyses** so it is not confused with the **Change requests** tab.)
 2. Select a **Base analysis** (the older snapshot) and a **Head analysis** (the newer one).
 3. Click **Run Change Analysis**. METIS compares every requirement in both snapshots and detects:
    - **Added** — new requirements that didn't exist in the base
@@ -4762,7 +4762,7 @@ The **Spec Kit** turns METIS into a structured specification tool. Rather than f
 
 ### Where to find it: the BA/PM "author the intent" front-door
 
-Spec Kit is the **business-analyst / product-manager front-door** for authoring intent. It sits under the **Analyze** tab beside Requirements Analysis — not under "Docs" — because it is a planning/requirements surface, not documentation. Open a project, click **Analyze**, then **Spec Kit**.
+Spec Kit is the **business-analyst / product-manager front-door** for authoring intent. It sits behind the project's **⚙** (Project settings) tab, beside the code views, because most analysts do not work in it day to day (#2334). Open a project, click **⚙**, then **Spec Kit**.
 
 The mental model is **author the intent here, then hand it off**:
 

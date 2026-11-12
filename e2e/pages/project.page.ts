@@ -112,7 +112,10 @@ export class ProjectsPage {
    */
   async openProjectSettings(slug: string): Promise<void> {
     await this.openProject(slug);
-    await this.page.getByTestId("project-tabs").getByRole("link", { name: "Settings" }).click();
+    await this.page
+      .getByTestId("project-tabs")
+      .getByRole("link", { name: "Project settings", exact: true })
+      .click();
     await this.page.waitForURL(/\/projects\/[^/]+\/settings$/, { timeout: 15_000 });
   }
 }
@@ -164,18 +167,21 @@ export class ProjectDetailPage {
   }
 
   /**
-   * Walk the real project navigation from the landing page to Sources →
+   * Walk the real project navigation from the landing page to Knowledge →
    * Documents, where the uploader lives (#28 moved it off the landing page).
    */
   async openDocumentsViaTabs(): Promise<void> {
-    await this.page.getByTestId("project-tabs").getByRole("link", { name: "Sources" }).click();
+    await this.page
+      .getByTestId("project-tabs")
+      .getByRole("link", { name: "Knowledge", exact: true })
+      .click();
     await this.page.getByTestId("project-subnav").getByRole("link", { name: "Documents" }).click();
     await this.page.waitForURL(/\/projects\/[^/]+\/documents$/, { timeout: 15_000 });
     await expect(this.dropzone).toBeVisible({ timeout: 30_000 });
   }
 
   /**
-   * Open the project's Sources → Documents page, where the uploader lives.
+   * Open the project's Knowledge → Documents page, where the uploader lives.
    * The project landing page is the pipeline Overview (#28/#29) and carries
    * no dropzone.
    */

@@ -281,6 +281,11 @@ describe("stage grid", () => {
     const link = await screen.findByTestId("pipeline-code-overview-link");
     expect(link).toHaveAttribute("href", "/projects/p1/overview");
     expect(link).toHaveTextContent("Code Overview");
+    // #2334 — there is no Code tab any more; the copy names where it now lives.
+    expect(link.parentElement).toHaveTextContent(
+      "The code summary lives under Project settings: Code Overview.",
+    );
+    expect(link.parentElement).not.toHaveTextContent(/under Code\b/);
   });
 
   it("reports generated docs from the docs endpoint", async () => {

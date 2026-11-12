@@ -252,7 +252,7 @@ export function ProjectPipelineOverview({ projectId }: { projectId: string }) {
         <StageGrid stages={stages} projectId={projectId} driftCount={driftCount} />
       )}
       <p className="text-sm text-muted-foreground">
-        The code summary lives under Code:{" "}
+        The code summary lives under Project settings:{" "}
         <Link
           href={`/projects/${projectId}/overview`}
           className="underline"
