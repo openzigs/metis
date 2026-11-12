@@ -2880,6 +2880,8 @@ export const ANALYSIS_CAPABILITY_REASONS = [
    * Issue #2233 — a stage that reads at most `MAX_REQUIREMENTS_FOR_RETRIEVAL`
    * requirements (requirement-grounded code retrieval, governing-rule
    * applicability) was given more, so the rest were not analysed there.
+   * #2276 — also when the code search's vector half could not embed every
+   * requirement (`fused-code-semantic`).
    * {@link AnalysisCapability.requirementsLeftOut} names each one.
    */
   "requirements-left-out",
@@ -2990,10 +2992,15 @@ export function hasDiscardedRequirementInputs(
  * `requirement-grounded-code` — evidence retrieval and the code agent's prompt
  *                               when the project has no code graph.
  * `governing-applicability`   — deciding which governing rules apply.
+ * `fused-code-semantic`       — #2276: the meaning-based (vector) half of the
+ *                               code agent's symbol search, which embeds at most
+ *                               the embedder's per-text limit of the combined
+ *                               query. Keyword search still reads every requirement.
  */
 export const REQUIREMENT_LIMIT_STAGES = [
   "requirement-grounded-code",
   "governing-applicability",
+  "fused-code-semantic",
 ] as const;
 export type RequirementLimitStage = (typeof REQUIREMENT_LIMIT_STAGES)[number];
 

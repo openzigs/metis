@@ -143,7 +143,31 @@ const REPAIRED = JSON.stringify({
 
 type Recorded = { messages: ChatMessage[]; opts: ChatOptions };
 
-function makeProvider(repaired: string = REPAIRED) {
+/**
+ * #2276 — the evidence salvage (#766) goes through `callJsonLlm`: a system
+ * message and ONE user message (task + evidence + the final-answer
+ * instruction). The final-answer retry re-sends the transcript instead.
+ */
+const isEvidenceCall = (c: Recorded): boolean =>
+  c.messages.length === 2 &&
+  c.messages[0]!.role === "system" &&
+  typeof c.messages[1]!.content === "string" &&
+  c.messages[1]!.content.includes("STOP INVESTIGATING");
+
+/** #2276 — what each salvage call answers; unset ones keep the #1218 defaults. */
+interface Replies {
+  repaired?: string;
+  /** The loop's final-answer retry (the transcript, with the tool manifest). */
+  retry?: string;
+  /** #766's tool-free evidence call (no tool manifest). */
+  evidence?: string;
+}
+
+function makeProvider({
+  repaired = REPAIRED,
+  retry = TRUNCATED_RETRY,
+  evidence = TRUNCATED_RETRY,
+}: Replies = {}) {
   const recorded: Recorded[] = [];
   let turns = 0;
   const chat = vi.fn(async (messages: ChatMessage[], opts: ChatOptions = {}) => {
@@ -160,7 +184,9 @@ function makeProvider(repaired: string = REPAIRED) {
     const askedToStop = messages.some(
       (m) => typeof m.content === "string" && m.content.includes("STOP INVESTIGATING"),
     );
-    if (askedToStop) return text(TRUNCATED_RETRY);
+    if (askedToStop) {
+      return text(isEvidenceCall({ messages, opts }) ? evidence : retry);
+    }
     turns += 1;
     // Call 1 is the single-shot document agent; everything after is the code loop.
     return text(turns === 1 ? AGENT_ANSWER : TOOL_CALL);
@@ -168,8 +194,8 @@ function makeProvider(repaired: string = REPAIRED) {
   return { provider: { chat } as never, recorded };
 }
 
-async function runPipeline(repaired?: string): Promise<Recorded[]> {
-  const { provider, recorded } = makeProvider(repaired);
+async function runPipeline(replies: Replies = {}): Promise<Recorded[]> {
+  const { provider, recorded } = makeProvider(replies);
   const orch = new AnalysisOrchestrator({
     provider,
     retrieve: async () => [],
@@ -260,22 +286,22 @@ describe("#1218 — the orchestrator salvages from the PRESERVED source", () => 
 });
 
 describe("#2276 — a salvage that keeps 50 findings names the rest on the run", () => {
-  it("records the valid findings past the 50th as left out by the code agent", async () => {
-    const finding = (i: number) => ({
+  /** A complete answer with 52 valid findings: over the 50 `agentOutputSchema` allows. */
+  const OVER_CAP = JSON.stringify({
+    agentKey: "code",
+    summary: "code summary",
+    findings: Array.from({ length: 52 }, (_, i) => ({
       category: "architecture",
       severity: "medium",
-      title: `Code finding ${i}`,
+      title: `Code finding ${i + 1}`,
       body: "body",
       tags: [],
       citations: [],
-    });
-    const repaired = JSON.stringify({
-      agentKey: "code",
-      summary: "code summary",
-      findings: Array.from({ length: 52 }, (_, i) => finding(i + 1)),
-      notes: [],
-    });
-    await runPipeline(repaired);
+    })),
+    notes: [],
+  });
+
+  async function expectLeftOutNamed(): Promise<void> {
     const { persistAnalysisCapability } = await import("./analysis-service.js");
     const calls = vi.mocked(persistAnalysisCapability).mock.calls;
     expect(calls.length).toBeGreaterThan(0);
@@ -292,6 +318,34 @@ describe("#2276 — a salvage that keeps 50 findings names the rest on the run",
       },
     ]);
     expect(capability.reasons).toContain("findings-left-out");
+  }
+
+  it("repair route: records the valid findings past the 50th as left out by the code agent", async () => {
+    await runPipeline({ repaired: OVER_CAP });
+    await expectLeftOutNamed();
+  });
+
+  it("direct route: a retry answer the schema rejects for its 52 findings is salvaged without repair, and the cut is named", async () => {
+    const recorded = await runPipeline({ retry: OVER_CAP });
+    // Salvaged straight from the retry's answer: no repair call, no evidence call.
+    expect(retryCalls(recorded).filter((c) => !isEvidenceCall(c))).toHaveLength(1);
+    expect(recorded.filter(isEvidenceCall)).toHaveLength(0);
+    expect(repairCalls(recorded)).toHaveLength(0);
+    await expectLeftOutNamed();
+  });
+
+  it("evidence route: the retry yields nothing, the evidence call's 52 findings are salvaged, and the cut is named", async () => {
+    // Room for the loop to RUN a tool call before the budget stops it: the
+    // evidence salvage is skipped when no tool result exists to digest.
+    process.env.ANALYSIS_AGENT_TOKEN_BUDGET = "300";
+    __resetConfigSingleton();
+    const recorded = await runPipeline({
+      retry: "I ran out of budget before I could write the answer.",
+      evidence: OVER_CAP,
+    });
+    expect(recorded.filter(isEvidenceCall), "the evidence salvage ran").toHaveLength(1);
+    expect(repairCalls(recorded)).toHaveLength(0);
+    await expectLeftOutNamed();
   });
 });
 

@@ -26,6 +26,8 @@
  *   - **Never throws**: searcher/lookup failures and projects without a built
  *     code graph degrade to `[]` inside `buildFusedCodeBlock`.
  */
+import { requirementInputExcerpt, type RequirementsLeftOutNotice } from "@metis/shared";
+import { MAX_VECTOR_QUERY_CHARS } from "../code-graph/hybrid-search.js";
 import {
   createDefaultCodeSearcher,
   createDefaultSymbolLineLookup,
@@ -40,7 +42,7 @@ import {
   type SymbolLineLookup,
 } from "../rag/fused-code-context.js";
 import type { RetrievalContextChunk } from "./agent-runner.js";
-import { MAX_FUSED_QUERY_CHARS, requirementQueryText } from "./requirement-query.js";
+import { requirementQueryText } from "./requirement-query.js";
 import { deriveRetrievalQuery, RETRIEVAL_QUERIES } from "./retrieval.js";
 
 /**
@@ -148,24 +150,65 @@ export function buildCodeAgentFusedQuery(input: {
   extraInstructions?: string | null;
   requirementTexts?: string[];
 }): string {
+  return composeCodeAgentFusedQuery(input).query;
+}
+
+/**
+ * {@link buildCodeAgentFusedQuery}, plus where each requirement's text ends in
+ * the query (`requirementEnds[i]`, or `null` for an empty text that is not in
+ * it). The query is NOT bounded (#2276): BM25 scores all of it, and only the
+ * embedder's copy is cut, at `MAX_VECTOR_QUERY_CHARS` (`hybrid-search.ts`).
+ */
+export function composeCodeAgentFusedQuery(input: {
+  projectName?: string | null;
+  projectDescription?: string | null;
+  extraInstructions?: string | null;
+  requirementTexts?: string[];
+}): { query: string; requirementEnds: Array<number | null> } {
   const metadata = deriveRetrievalQuery({
     projectName: input.projectName,
     projectDescription: input.projectDescription,
     extraInstructions: input.extraInstructions,
     fallback: "",
   });
-  const reqText = (input.requirementTexts ?? [])
-    .map((t) => t.trim())
-    .filter((t) => t.length > 0)
-    .join(". ");
-  const composed = [metadata, reqText].filter((s) => s.length > 0).join(". ");
-  // #2276 — each requirement is bounded, but 24 long ones joined can still pass
-  // the embeddings sidecar's 32,768-character limit; the query is bounded too,
-  // at its own larger bound so ordinary runs lose nothing.
-  if (composed.length === 0) return RETRIEVAL_QUERIES.code;
-  return composed.length <= MAX_FUSED_QUERY_CHARS
-    ? composed
-    : composed.slice(0, MAX_FUSED_QUERY_CHARS);
+  const requirementEnds: Array<number | null> = [];
+  let query = metadata;
+  for (const raw of input.requirementTexts ?? []) {
+    const t = raw.trim();
+    if (t.length === 0) {
+      requirementEnds.push(null);
+      continue;
+    }
+    query = query.length > 0 ? `${query}. ${t}` : t;
+    requirementEnds.push(query.length);
+  }
+  return { query: query.length > 0 ? query : RETRIEVAL_QUERIES.code, requirementEnds };
+}
+
+/**
+ * #2276 — the requirements whose text does not fit whole inside the
+ * embedder's copy of the fused query (its first `maxChars`). Keyword search
+ * still read them; the meaning-based half did not, and the run says so
+ * (`fused-code-semantic` on the limits panel). `null` when every one fits.
+ */
+export function fusedSemanticLeftOut(
+  requirements: ReadonlyArray<{ id: string; text: string }>,
+  requirementEnds: ReadonlyArray<number | null>,
+  maxChars: number = MAX_VECTOR_QUERY_CHARS,
+): RequirementsLeftOutNotice | null {
+  const withText: Array<{ id: string; text: string; end: number }> = [];
+  requirements.forEach((r, i) => {
+    const end = requirementEnds[i];
+    if (typeof end === "number") withText.push({ ...r, end });
+  });
+  const leftOut = withText.filter((r) => r.end > maxChars);
+  if (leftOut.length === 0) return null;
+  return {
+    stage: "fused-code-semantic",
+    analysedCount: withText.length - leftOut.length,
+    totalCount: withText.length,
+    leftOut: leftOut.map((r) => ({ id: r.id, excerpt: requirementInputExcerpt(r.text) })),
+  };
 }
 
 /** 4 chars ≈ 1 token, matching `estTokens` in `../rag/fused-code-context.ts`. */
@@ -196,6 +239,12 @@ export interface FusedCodeContext {
   /** Estimated token cost of `block` (0 when empty) — carve this OUT of the
    * consuming agent's token budget rather than adding it on top. */
   tokens: number;
+  /**
+   * #2276 — requirements the vector half of the symbol search did not read
+   * (past the embedder's limit), for the run's limits. `null` when none, and
+   * always when fused retrieval is off.
+   */
+  semanticLeftOut: RequirementsLeftOutNotice | null;
 }
 
 /**
@@ -220,21 +269,30 @@ export async function retrieveFusedCodeContext(opts: {
   maxSymbols?: number;
   deps?: AnalysisFusedCodeDeps;
 }): Promise<FusedCodeContext> {
+  const enabled = opts.enabled ?? getConfigService().getBool("ANALYSIS_FUSED_CODE_RETRIEVAL", true);
+  const composed = composeCodeAgentFusedQuery({
+    projectName: opts.projectName,
+    projectDescription: opts.projectDescription,
+    extraInstructions: opts.extraInstructions,
+    // #2233 — each requirement's bounded text, not an imported item's whole body.
+    requirementTexts: opts.requirements.map((r) => requirementQueryText(r.text)),
+  });
   const chunks = await retrieveFusedCodeChunks({
     projectId: opts.projectId,
-    query: buildCodeAgentFusedQuery({
-      projectName: opts.projectName,
-      projectDescription: opts.projectDescription,
-      extraInstructions: opts.extraInstructions,
-      // #2233 — each requirement's bounded text, not an imported item's whole body.
-      requirementTexts: opts.requirements.map((r) => requirementQueryText(r.text)),
-    }),
+    query: composed.query,
     ragChunks: opts.ragChunks,
-    enabled: opts.enabled,
+    enabled,
     tokenBudget: opts.tokenBudget,
     maxSymbols: opts.maxSymbols,
     deps: opts.deps,
   });
   const block = renderFusedCodeContextBlock(chunks);
-  return { chunks, block, tokens: estimateFusedBlockTokens(block) };
+  return {
+    chunks,
+    block,
+    tokens: estimateFusedBlockTokens(block),
+    semanticLeftOut: enabled
+      ? fusedSemanticLeftOut(opts.requirements, composed.requirementEnds)
+      : null,
+  };
 }

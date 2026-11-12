@@ -15,7 +15,7 @@
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { __resetConfigSingleton } from "../config/config-service.js";
-import { MAX_FUSED_QUERY_CHARS, MAX_REQUIREMENT_QUERY_CHARS } from "./requirement-query.js";
+import { MAX_REQUIREMENT_QUERY_CHARS } from "./requirement-query.js";
 import { RETRIEVAL_QUERIES } from "./retrieval.js";
 import type {
   FusedCodeSearcher,
@@ -381,14 +381,16 @@ describe("buildCodeAgentFusedQuery (#729)", () => {
     expect(buildCodeAgentFusedQuery({ requirementTexts: [] })).toBe(RETRIEVAL_QUERIES.code);
   });
 
-  it("#2276 — 24 requirements each at the per-requirement bound still make a bounded query, metadata first", () => {
-    const long = "x".repeat(MAX_REQUIREMENT_QUERY_CHARS);
+  it("#2276 — 24 requirements at the per-requirement bound are all in the query (only the embedder's copy is bounded)", () => {
     const query = buildCodeAgentFusedQuery({
       projectName: "Acme",
-      requirementTexts: Array.from({ length: 24 }, () => long),
+      requirementTexts: Array.from(
+        { length: 24 },
+        (_, i) => `R${i}-${"x".repeat(MAX_REQUIREMENT_QUERY_CHARS - 4)}`,
+      ),
     });
-    expect(query).toHaveLength(MAX_FUSED_QUERY_CHARS);
-    expect(query.startsWith("Acme. x")).toBe(true);
+    expect(query.startsWith("Acme. R0-")).toBe(true);
+    expect(query).toContain("R23-");
   });
 
   it("#2276 — an ordinary run (24 requirements of ~300 characters) keeps every requirement", () => {
@@ -439,7 +441,7 @@ describe("retrieveFusedCodeContext (#729) — shared agentic/req-grounded helper
       ragChunks: [],
       deps: { searcher, lineLookup: makeLineLookup(spans) },
     });
-    expect(ctx).toEqual({ chunks: [], block: "", tokens: 0 });
+    expect(ctx).toEqual({ chunks: [], block: "", tokens: 0, semanticLeftOut: null });
     expect(searcher.search).not.toHaveBeenCalled();
   });
 

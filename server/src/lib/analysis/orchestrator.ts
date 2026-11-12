@@ -3790,6 +3790,8 @@ export class AnalysisOrchestrator {
           ragChunks: [],
           deps: this.deps.fusedCode,
         });
+        // #2276 — requirements past the embedder's limit reach keyword search only.
+        this.noteRequirementsLeftOut(input.analysisId, fused.semanticLeftOut);
 
         const agentBudget = input.tokenBudget ?? resolveAgentTokenBudget();
         // #774 — every tool call the loop makes, across every pass, so the run's
@@ -4766,6 +4768,8 @@ export class AnalysisOrchestrator {
           ragChunks: perRequirement.flatMap((r) => r.chunks).map(toFusedRagChunkRef),
           deps: this.deps.fusedCode,
         });
+        // #2276 — requirements past the embedder's limit reach keyword search only.
+        this.noteRequirementsLeftOut(input.analysisId, fused.semanticLeftOut);
 
         // All retrieved chunks across requirements PLUS the fused symbol chunks,
         // for citation enrichment (so a model citing a code-graph symbol resolves

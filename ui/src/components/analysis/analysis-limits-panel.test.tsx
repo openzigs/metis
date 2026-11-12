@@ -65,6 +65,28 @@ describe("AnalysisLimitsPanel (#2233)", () => {
     expect(block).toHaveTextContent("REQ-026");
   });
 
+  it("#2276 — names the code search's meaning-based half, and says keyword search read them", () => {
+    render(
+      <AnalysisLimitsPanel
+        capability={capability({
+          requirementsLeftOut: [
+            {
+              stage: "fused-code-semantic",
+              analysedCount: 8,
+              totalCount: 9,
+              leftOut: [{ id: "REQ-009", excerpt: "Reconcile the ledger." }],
+            },
+          ],
+        })}
+      />,
+    );
+    const block = screen.getByTestId("requirements-left-out-fused-code-semantic");
+    expect(block).toHaveTextContent(
+      "Analyzed 8 of 9 requirements by meaning in the code search (the keyword search read all of them).",
+    );
+    expect(block).toHaveTextContent("REQ-009");
+  });
+
   it("names the governing-rule step separately", () => {
     render(
       <AnalysisLimitsPanel

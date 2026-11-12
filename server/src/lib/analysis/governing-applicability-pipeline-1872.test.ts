@@ -277,9 +277,11 @@ const SIDECAR_MAX_INPUT_CHARS = 32_768;
 async function runPipeline(
   made: ReturnType<typeof makeProvider> = makeProvider(),
   extra: Record<string, unknown> = {},
+  deps: Record<string, unknown> = {},
 ) {
   const { provider, calls, timeline } = made;
   const orch = new AnalysisOrchestrator({
+    ...deps,
     provider,
     retrieve: async () => [],
     knowledge: {
@@ -894,6 +896,44 @@ describe("#2233 — analysis limits on the requirement-grounded path", () => {
     await runPipeline();
     expect(persistedCapability()).not.toHaveProperty("requirementsLeftOut");
     expect(persistedCapability().reasons).not.toContain("requirements-left-out");
+  });
+
+  it("#2276 — fused retrieval on, requirements past the embedder's limit: the run names them for the code search's vector half", async () => {
+    process.env.ANALYSIS_FUSED_CODE_RETRIEVAL = "true";
+    __resetConfigSingleton();
+    // 12 requirements at the 4,000-character query bound: about 48k characters.
+    state.requirements = Array.from({ length: 12 }, (_, i) => ({
+      id: `REQ-${String(i + 1).padStart(3, "0")}`,
+      text: `Export dataset ${i + 1} as a CSV. ${"Every column goes into the file. ".repeat(130)}`.slice(
+        0,
+        MAX_REQUIREMENT_QUERY_CHARS,
+      ),
+    }));
+    const queries: string[] = [];
+    await runPipeline(
+      makeProvider(),
+      {},
+      {
+        fusedCode: {
+          searcher: {
+            search: async (q: string) => {
+              queries.push(q);
+              return [];
+            },
+          },
+          lineLookup: { resolve: async () => new Map() },
+        },
+      },
+    );
+    // The symbol search was given every requirement (BM25 reads the whole query)...
+    expect(queries).toHaveLength(1);
+    expect(queries[0]).toContain("Export dataset 12 as a CSV.");
+    // ...and the run names the ones the vector half could not embed.
+    const notices = persistedCapability().requirementsLeftOut ?? [];
+    expect(notices.map((n) => [n.stage, n.leftOut.map((r) => r.id)])).toEqual([
+      ["fused-code-semantic", ["REQ-009", "REQ-010", "REQ-011", "REQ-012"]],
+    ]);
+    expect(persistedCapability().reasons).toContain("requirements-left-out");
   });
 
   it("#2233 — an imported item whose body is over 32,768 characters: the search query is bounded and the code agent still runs", async () => {

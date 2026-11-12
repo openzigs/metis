@@ -26,6 +26,8 @@ interface Props {
 const STAGE_TEXT: Record<RequirementLimitStage, string> = {
   "requirement-grounded-code": "searched for evidence and checked against the code",
   "governing-applicability": "checked against the governing rules",
+  // #2276 — only the meaning-based half of the code search; keyword search read them all.
+  "fused-code-semantic": "by meaning in the code search (the keyword search read all of them)",
 };
 
 function plural(n: number, one: string, many: string): string {
