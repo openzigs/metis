@@ -5020,6 +5020,16 @@ never saved, and pasted text is never saved. Every lookup filters on the documen
 cascade with a hard-deleted document; `KnowledgeService.deleteDocument` (a soft delete) deletes
 them in its transaction. A store error is logged and the document is read as before.
 
+Keeping the table small and scoped (#2293): the save is project-scoped, so it overwrites only
+its own project's row (another project's row of the same key fails the create and is logged,
+never replaced). After a save, `tidyAfterSave` checks the document is still live, in that
+project and still the file that was read (its `checksum`). If it was deleted (or is not that
+project's) while being read, every reading of it is dropped; if its file changed in place (a
+connector re-sync) since this run read it, nothing is pruned, so a late run cannot delete the
+newer file's reading; otherwise the document's readings of an earlier file or reader are
+deleted, and other models' readings of the same file stay. Runs with pasted text hide the
+"Read the document again" button, since pasted text is never saved.
+
 "Read the document again" bypasses the saved reading and replaces it: `rereadDocuments` on
 `POST /projects/:id/analyses`, `rereadDocument` on `POST /impact-analyses` and on
 `POST /impact-analyses/:id/rerun`. A regenerate of the document agent always reads again. A
