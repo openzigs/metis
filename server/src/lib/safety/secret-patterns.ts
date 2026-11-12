@@ -62,14 +62,14 @@ export interface SecretPattern {
   readonly refuse?: (match: string) => boolean;
 }
 
-type PatternSpec = Omit<SecretPattern, "re"> & { readonly re: RegExp };
+/** A spec's `re` returns its regex LITERAL, so each call evaluates a new RegExp object. */
+type PatternSpec = Omit<SecretPattern, "re"> & { readonly re: () => RegExp };
 
-/** Freeze a spec, exposing `re` as a fresh copy on every read. */
+/** Freeze a spec, exposing `re` as a fresh RegExp on every read. */
 function secretPattern(spec: PatternSpec): SecretPattern {
   const { re, ...rest } = spec;
-  const { source, flags } = re;
   const p = { ...rest } as SecretPattern;
-  Object.defineProperty(p, "re", { get: () => new RegExp(source, flags), enumerable: true });
+  Object.defineProperty(p, "re", { get: re, enumerable: true });
   return Object.freeze(p);
 }
 
@@ -152,7 +152,8 @@ const SPECS: readonly PatternSpec[] = [
     // one block; PGP armor (`PRIVATE KEY BLOCK`) is the same shape.
     id: "private_key",
     kind: "private key",
-    re: /-----BEGIN (?:[A-Z0-9]{1,20} ){0,4}PRIVATE KEY(?: BLOCK)?-----(?:[A-Za-z0-9+/=\s:,"']|\\[nr]|-(?!----))*(?:-----END (?:[A-Z0-9]{1,20} ){0,4}PRIVATE KEY(?: BLOCK)?-----)?/g,
+    re: () =>
+      /-----BEGIN (?:[A-Z0-9]{1,20} ){0,4}PRIVATE KEY(?: BLOCK)?-----(?:[A-Za-z0-9+/=\s:,"']|\\[nr]|-(?!----))*(?:-----END (?:[A-Z0-9]{1,20} ){0,4}PRIVATE KEY(?: BLOCK)?-----)?/g,
     highConfidence: true,
     accept: hasKeyBody,
   },
@@ -162,14 +163,15 @@ const SPECS: readonly PatternSpec[] = [
     // the last `@` that is followed by a host and then a delimiter.
     id: "url_credentials",
     kind: "credentials in a URL",
-    re: /(?<=\b[A-Za-z][A-Za-z0-9+.-]{0,30}:\/\/)[^\s:/@"'<>]{0,256}:[^\s/"'<>]{1,256}(?=@[^\s@/"'<>]{0,256}(?:[\s/:?#"'<>]|$))/g,
+    re: () =>
+      /(?<=\b[A-Za-z][A-Za-z0-9+.-]{0,30}:\/\/)[^\s:/@"'<>]{0,256}:[^\s/"'<>]{1,256}(?=@[^\s@/"'<>]{0,256}(?:[\s/:?#"'<>]|$))/g,
     highConfidence: false,
     accept: isUrlCredential,
   },
   {
     id: "aws_key",
     kind: "AWS access key id",
-    re: /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g,
+    re: () => /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g,
     highConfidence: true,
   },
   {
@@ -177,49 +179,50 @@ const SPECS: readonly PatternSpec[] = [
     // value after `aws_secret_access_key` is.
     id: "aws_secret",
     kind: "AWS secret access key",
-    re: /(?<=aws_secret_access_key["']?[ \t]{0,8}[=:][ \t]{0,8}["']?)[A-Za-z0-9/+=]{40}(?![A-Za-z0-9/+=])/gi,
+    re: () =>
+      /(?<=aws_secret_access_key["']?[ \t]{0,8}[=:][ \t]{0,8}["']?)[A-Za-z0-9/+=]{40}(?![A-Za-z0-9/+=])/gi,
     highConfidence: false,
   },
   {
     id: "github_pat",
     kind: "GitHub token",
-    re: /\b(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{22,})\b/g,
+    re: () => /\b(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{22,})\b/g,
     highConfidence: true,
   },
   {
     id: "anthropic_key",
     kind: "Anthropic API key",
-    re: /(?<![\w-])sk-ant-[A-Za-z0-9_-]{20,}/g,
+    re: () => /(?<![\w-])sk-ant-[A-Za-z0-9_-]{20,}/g,
     highConfidence: true,
   },
   {
     id: "openai_key",
     kind: "OpenAI API key",
-    re: /(?<![\w-])sk-(?!ant-)(?:proj-|svcacct-|admin-)?[A-Za-z0-9_-]{32,}/g,
+    re: () => /(?<![\w-])sk-(?!ant-)(?:proj-|svcacct-|admin-)?[A-Za-z0-9_-]{32,}/g,
     highConfidence: true,
   },
   {
     id: "slack_token",
     kind: "Slack token",
-    re: /(?<![\w-])xox[abposr]-[A-Za-z0-9-]{10,}/g,
+    re: () => /(?<![\w-])xox[abposr]-[A-Za-z0-9-]{10,}/g,
     highConfidence: true,
   },
   {
     id: "slack_webhook",
     kind: "Slack webhook URL",
-    re: /https:\/\/hooks\.slack\.com\/services\/[A-Za-z0-9_/]{20,}/g,
+    re: () => /https:\/\/hooks\.slack\.com\/services\/[A-Za-z0-9_/]{20,}/g,
     highConfidence: true,
   },
   {
     id: "google_api_key",
     kind: "Google API key",
-    re: /\bAIza[0-9A-Za-z_-]{35}(?![\w-])/g,
+    re: () => /\bAIza[0-9A-Za-z_-]{35}(?![\w-])/g,
     highConfidence: true,
   },
   {
     id: "stripe_key",
     kind: "Stripe key",
-    re: /\b(?:(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}|whsec_[A-Za-z0-9]{24,})\b/g,
+    re: () => /\b(?:(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}|whsec_[A-Za-z0-9]{24,})\b/g,
     highConfidence: true,
     // Stripe publishes an `sk_test_` key in its own docs, so a definition that
     // quotes it is not refused. Redacted all the same: a test-mode key still
@@ -229,63 +232,63 @@ const SPECS: readonly PatternSpec[] = [
   {
     id: "npm_token",
     kind: "npm token",
-    re: /\bnpm_[A-Za-z0-9]{36}\b/g,
+    re: () => /\bnpm_[A-Za-z0-9]{36}\b/g,
     highConfidence: true,
   },
   {
     id: "gitlab_token",
     kind: "GitLab token",
-    re: /(?<![\w-])glpat-[A-Za-z0-9_-]{20,}/g,
+    re: () => /(?<![\w-])glpat-[A-Za-z0-9_-]{20,}/g,
     highConfidence: true,
   },
   {
     id: "sendgrid_key",
     kind: "SendGrid API key",
-    re: /\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}(?![\w-])/g,
+    re: () => /\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}(?![\w-])/g,
     highConfidence: true,
   },
   {
     id: "huggingface_token",
     kind: "Hugging Face token",
-    re: /\bhf_[A-Za-z0-9]{34,}\b/g,
+    re: () => /\bhf_[A-Za-z0-9]{34,}\b/g,
     highConfidence: true,
   },
   {
     id: "pypi_token",
     kind: "PyPI token",
-    re: /(?<![\w-])pypi-AgEIcHlwaS5vcmc[A-Za-z0-9_-]{50,}/g,
+    re: () => /(?<![\w-])pypi-AgEIcHlwaS5vcmc[A-Za-z0-9_-]{50,}/g,
     highConfidence: true,
   },
   {
     id: "digitalocean_token",
     kind: "DigitalOcean token",
-    re: /\bdo[por]_v1_[a-f0-9]{64}\b/g,
+    re: () => /\bdo[por]_v1_[a-f0-9]{64}\b/g,
     highConfidence: true,
   },
   {
     // The value of `AccountKey=` in an Azure Storage connection string.
     id: "azure_storage_key",
     kind: "Azure Storage account key",
-    re: /(?<=AccountKey=)[A-Za-z0-9+/]{86}==/g,
+    re: () => /(?<=AccountKey=)[A-Za-z0-9+/]{86}==/g,
     highConfidence: true,
   },
   {
     id: "bearer",
     kind: "bearer token",
-    re: /\bBearer\s+[A-Za-z0-9._\-/+=]{16,}/g,
+    re: () => /\bBearer\s+[A-Za-z0-9._\-/+=]{16,}/g,
     highConfidence: false,
   },
   {
     // Header and payload are base64url JSON, so both start `eyJ` (`{"`).
     id: "jwt",
     kind: "JSON Web Token",
-    re: /(?<![\w-])eyJ[A-Za-z0-9_-]{5,}\.eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{8,}/g,
+    re: () => /(?<![\w-])eyJ[A-Za-z0-9_-]{5,}\.eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{8,}/g,
     highConfidence: false,
   },
   {
     id: "long_hex",
     kind: "hex-encoded secret",
-    re: /\b[a-f0-9]{32,}\b/gi,
+    re: () => /\b[a-f0-9]{32,}\b/gi,
     highConfidence: false,
     accept: isHexSecret,
   },
@@ -304,7 +307,8 @@ const SPECS: readonly PatternSpec[] = [
     // references and bare words.
     id: "assigned_secret",
     kind: "secret assigned to a password, token or key name",
-    re: /(?<=(?:passw(?:or)?d|secret(?:[_-]?key)?|api[_-]?key|token|private[_-]?key)["']?[ \t]{0,8}(?::=|=>|[=:])[ \t]{0,8}["'`])[^\s"'`]{6,200}(?=["'`])|(?<=^[ \t]{0,40}(?:(?:export|-)[ \t]{1,8})?["']?[\w.-]{0,60}(?:passw(?:or)?d|secret(?:[_-]?key)?|api[_-]?key|token|private[_-]?key)["']?[ \t]{0,8}[=:][ \t]{0,8})[^\s"'`#;,\(\)\{\}[\]<>=*&!][^\s"'`#;,\(\)\{\}[\]<>]{5,199}(?=[ \t]{0,40}(?:#|\r?$))/gim,
+    re: () =>
+      /(?<=(?:passw(?:or)?d|secret(?:[_-]?key)?|api[_-]?key|token|private[_-]?key)["']?[ \t]{0,8}(?::=|=>|[=:])[ \t]{0,8}["'`])[^\s"'`]{6,200}(?=["'`])|(?<=^[ \t]{0,40}(?:(?:export|-)[ \t]{1,8})?["']?[\w.-]{0,60}(?:passw(?:or)?d|secret(?:[_-]?key)?|api[_-]?key|token|private[_-]?key)["']?[ \t]{0,8}[=:][ \t]{0,8})[^\s"'`#;,\(\)\{\}[\]<>=*&!][^\s"'`#;,\(\)\{\}[\]<>]{5,199}(?=[ \t]{0,40}(?:#|\r?$))/gim,
     highConfidence: false,
     accept: isAssignedSecret,
   },
