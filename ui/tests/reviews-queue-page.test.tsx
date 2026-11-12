@@ -67,6 +67,31 @@ beforeEach(() => {
 });
 
 describe("<ReviewsPage />", () => {
+  it("#2341 — names the change request(s) a review is about, as text", async () => {
+    listMock.mockResolvedValueOnce(
+      page([
+        makeReview({
+          changeRequests: [
+            { id: "an-1", title: "Checkout v2" },
+            { id: "an-2", title: "<i>Refunds</i>" },
+          ],
+        }),
+        makeReview({ id: "rev-2", title: "Older review" }),
+      ]),
+    );
+    const Wrapper = makeWrapper({});
+    render(
+      <Wrapper>
+        <ReviewsPage />
+      </Wrapper>,
+    );
+    const line = await screen.findByTestId("review-change-requests-rev-1");
+    expect(line).toHaveTextContent("Change request: Checkout v2, <i>Refunds</i>");
+    expect(line.querySelector("i")).toBeNull();
+    // A review without the field (an older server) shows no line.
+    expect(screen.queryByTestId("review-change-requests-rev-2")).not.toBeInTheDocument();
+  });
+
   it("loads the assigned-to-me queue by default", async () => {
     listMock.mockResolvedValueOnce(page([makeReview()]));
     const Wrapper = makeWrapper({});

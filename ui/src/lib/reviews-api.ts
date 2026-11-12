@@ -66,6 +66,11 @@ export interface ReviewRequest {
   items: ReviewItem[];
   assignments: ReviewerAssignment[];
   baseline: { id: string; name: string; createdAt: string } | null;
+  /**
+   * #2341 — the change request(s) the review's requirements come from, by
+   * title. Present on the list; absent from older servers and the detail read.
+   */
+  changeRequests?: Array<{ id: string; title: string }>;
 }
 
 export interface ReviewListPage {

@@ -1425,6 +1425,12 @@ model Analysis {
   id           String    @id @default(cuid())
   projectId    String
   status       String    @default("pending") // pending|running|completed|failed|cancelled
+  /// #2341 — the change request's name, set when the run starts (the analyst's,
+  /// or the first source document's / imported item's) and renamed later. NULL
+  /// on a run from before #2341 or started by the system: the read path
+  /// generates a title from the run's sources (`generatedChangeRequestTitle`), so no run
+  /// is ever listed blank. Plain text, at most 200 characters.
+  title        String?
   /// The user who started the run. #1528 — NULL for a run the system started
   /// (a scheduled `rerun-analysis` task), which has no user: the orchestrator
   /// is handed `SYSTEM_ACTOR_ID` and `createAnalysis` stores it as NULL, as the

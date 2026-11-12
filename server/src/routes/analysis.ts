@@ -23,6 +23,7 @@ import {
   ANALYSIS_SPECIALIST_AGENT_KEYS,
   specKitHandoffLabelsNotInContext,
   startAnalysisSchema,
+  renameAnalysisSchema,
   regenerateAgentSchema,
   updateRequirementSchema,
   deepDiveFindingSchema,
@@ -52,6 +53,7 @@ import {
   criteriaProposalUserRateLimiter,
 } from "../middleware/criteria-proposal-rate-limit.js";
 import { dismissAllCriteriaProposals } from "../lib/analysis/analysis-service.js";
+import { defaultChangeRequestTitle, renameChangeRequest } from "../lib/analysis/change-request.js";
 import {
   governingQuestionRequirementLabel,
   governingQuestionSourceFor,
@@ -649,10 +651,22 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
         ));
       }
       const actor = actorFromReq(req);
+      // #2341 — a change request always has a name: the analyst's, else the
+      // first chosen document's, else the first imported item's.
+      const title =
+        parsed.data.title ??
+        (await defaultChangeRequestTitle({
+          projectId,
+          documentIds: parsed.data.documentIds,
+          importedTitles: sourceRequirements?.map((r) => r.title),
+          extraInstructions: parsed.data.extraInstructions,
+        }));
       try {
         const result = await ensureOrch().start({
           projectId,
           startedById: actor.id,
+          title,
+          ...(parsed.data.startedWithDefaults ? { startedWithDefaults: true } : {}),
           agentKeys: parsed.data.agentKeys,
           documentIds: parsed.data.documentIds,
           model: parsed.data.model,
@@ -686,6 +700,38 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
         }
         throw err;
       }
+    },
+  );
+
+  // Issue #2341 — rename a change request. `analysis.run` is the permission
+  // that starts (and so names) one; a reader, who holds only `analysis.read`,
+  // is refused 403. The project-access gate above runs first, and the update
+  // is scoped on the project AND the id, so a run of another project is the
+  // same 404 as an unknown one and its title is never read or written.
+  projectScoped.patch(
+    "/:id",
+    requireAuth,
+    requirePermission("analysis.run"),
+    async (req: Request, res: Response) => {
+      const projectId = String(req.params.projectId);
+      const id = String(req.params.id);
+      const parsed = renameAnalysisSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        throw new AppError(400, "VALIDATION_ERROR", "Invalid change request title", {
+          issues: parsed.error.flatten(),
+        });
+      }
+      const renamed = await renameChangeRequest(projectId, id, parsed.data.title);
+      if (!renamed) throw new AppError(404, "ANALYSIS_NOT_FOUND", "Analysis not found");
+      const actor = actorFromReq(req);
+      audit({
+        actor: { id: actor.id },
+        action: "analysis.rename",
+        target: { type: "analysis", id },
+        // The title itself is not audited: it is user text, and the row holds it.
+        metadata: { projectId, titleLength: parsed.data.title.length },
+      });
+      res.json(ok({ id, title: parsed.data.title }));
     },
   );
 

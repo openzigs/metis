@@ -7,6 +7,7 @@ import { describe, it, expect } from "vitest";
 import {
   formatChangeRunLabel,
   formatChangeRunLabels,
+  formatRunOptionLabel,
   formatRunTimestamp,
   shortRunId,
 } from "@/lib/format-change-run-label";
@@ -106,5 +107,27 @@ describe("formatChangeRunLabels", () => {
     const { byId, ordered } = formatChangeRunLabels([]);
     expect(byId.size).toBe(0);
     expect(ordered).toEqual([]);
+  });
+});
+
+describe("#2341 — a titled change request", () => {
+  it("leads with the title and keeps the sequence and date as secondary detail", () => {
+    const label = formatChangeRunLabel(
+      { id: "cmqpu6znabcdef", startedAt: "2026-06-22T14:14:00Z", title: "  Checkout v2 " },
+      3,
+    );
+    expect(label.primary).toBe("Checkout v2");
+    expect(label.titled).toBe(true);
+    expect(label.detail).toMatch(/^Run #3 — .*2026/);
+    expect(formatRunOptionLabel(label)).toBe(`Checkout v2 · ${label.detail}`);
+  });
+
+  it("keeps the sequence-and-date label for a run with no or a blank title", () => {
+    for (const title of [undefined, null, "   "]) {
+      const label = formatChangeRunLabel({ id: "x", startedAt: "2026-06-22T14:14:00Z", title }, 2);
+      expect(label.titled).toBe(false);
+      expect(label.primary).toBe(label.detail);
+      expect(formatRunOptionLabel(label)).toBe(label.detail);
+    }
   });
 });

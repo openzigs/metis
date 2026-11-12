@@ -291,10 +291,12 @@ describe("AnalysisPage — screen-reader affordances (#58)", () => {
       await screen.findByRole("heading", { level: 1, name: /Requirements Analysis/i }),
     ).toBeInTheDocument();
     // Issue #30 — with runs on the project the start form is collapsed; open it.
-    fireEvent.click(await screen.findByRole("button", { name: "New analysis" }));
+    fireEvent.click(await screen.findByRole("button", { name: "New change request" }));
     expect(
-      screen.getByRole("heading", { level: 2, name: "Start a new analysis" }),
+      screen.getByRole("heading", { level: 2, name: "New change request" }),
     ).toBeInTheDocument();
+    // #2341 — the agents sit behind Options; "Run with defaults" needs none of them.
+    fireEvent.click(screen.getByRole("button", { name: "Options" }));
     // Each specialist-agent checkbox carries an accessible name from its label.
     // With empty personas the label renders as "{avatar} {key} — {role}"; the
     // "— {key}" role fragment uniquely names each agent checkbox (the enhancement

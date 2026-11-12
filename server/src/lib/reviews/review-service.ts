@@ -31,6 +31,7 @@ import { dispatchReviewDecision, dispatchReviewSubmitted } from "./notify.js";
 import { emitReviewChanged } from "./review-events.js";
 import { noteRequirementsChanged } from "../docs-gen/approved-requirements-staleness.js";
 import { attachSharedCriteria } from "./review-shared-criteria.js";
+import { attachChangeRequests } from "./review-change-requests.js";
 import { awaitingDecisionWhere } from "./awaiting-decision.js";
 import {
   REVIEW_STATUSES,
@@ -1047,7 +1048,13 @@ export async function listReviews(
     prisma.reviewRequest.count({ where }),
   ]);
 
-  return { reviews, total, page: filters.page, pageSize: filters.pageSize };
+  // #2341 — each review names the change request(s) its requirements come from.
+  return {
+    reviews: await attachChangeRequests(reviews),
+    total,
+    page: filters.page,
+    pageSize: filters.pageSize,
+  };
 }
 
 export async function getReviewDetail(

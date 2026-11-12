@@ -1325,9 +1325,46 @@ When you click **"Run Analysis"** on a project, here's what happens behind the s
 
    **A step whose answer could not be read says so (#1081).** When the model's answer for a step cannot be read even after METIS asks it once more, the screen says that step could not be read rather than showing an empty result: the cross-document panel names the completeness or contradiction check that could not be read (so "no gaps" there is not a clean result), the clarifying-questions panel says the questions could not be read instead of "nothing to clarify", a question METIS could not check against your project's documents says so, a web search that used the evidence need's own wording is labelled, an impact analysis names the AI stages whose answer could not be read, and data-mapping suggestions say which table batches were not checked.
 
+### 11.1a Change requests: a named unit of work
+
+Each analysis run is a **change request**: the run, the document(s) or imported tracker items it
+was started from, a title and a status. Change requests live on the project's **Change
+requests** tab and are listed by title everywhere a run is chosen: the run list on the analysis
+page, the **Analysis run** dropdown under Documentation and on the Requirements page, the
+**Analysis** dropdown on Publish, and each review on the **Reviews** page. The run number and
+start time follow the title as secondary detail.
+
+**Starting one.** Click **New change request**. Give it a title, or keep the one proposed (the
+first chosen document's name). Left blank, METIS names it after the first chosen document, else
+the first imported item. Choose or upload the document(s), tick imported tracker items, or type
+new requirements, then click **Run with defaults**. The defaults are every specialist agent, the
+model chosen automatically, clarifying questions on, web research off, and saved document
+readings reused. The agents, the model and those switches are behind **Options**; open it and
+click **Run analysis** to start with your own choices instead.
+
+**Its page.** A change request's page opens with:
+
+- its **title**: click the pencil to rename it. Renaming needs permission to run analyses; a
+  reader cannot rename. A title is one line of at most 200 characters, shown exactly as typed
+  (markup is not rendered);
+- **Started from**: the documents and imported items it was started from (or "all of the
+  project's documents");
+- the **settings** it ran with, headed **Run with defaults** when it was started that way;
+- a **step header** of eight steps: Read, Questions, Requirements, Policy check, Impact,
+  Portfolio, Review, Hand-off. Each step says, in words, *Not started*, *In progress*, *Needs
+  you*, *Done* or *Not applicable*, and links to the screen where that step is done. A step
+  whose feature is off or does not apply to the run (no governing documents, no portfolio, no
+  code analysed) reads *Not applicable*. Questions reads *Needs you* while the run has open
+  clarifying questions, even once the run has completed. Portfolio never reads *Done*: METIS
+  keeps no record of a portfolio check per change request yet.
+
+A run made before change requests had titles gets one from its sources (its first document's
+name, else its first imported item's title, else the start of its typed requirements, else its
+date), until someone renames it.
+
 ### 11.2 Adding Documents and New Requirements Before a Run
 
-You no longer need to leave the Analysis page to feed a run. The **Start a new analysis** card has two optional panels that let you shape what the agents look at.
+You no longer need to leave the Analysis page to feed a run. The **New change request** card has two optional panels that let you shape what the agents look at.
 
 **Add documents (inline upload)**
 
@@ -1372,7 +1409,7 @@ The rule filters only the links this panel **stores and shows**. It does not nar
 
 The link is made by the analysis model, which names the imported items each requirement restates; METIS only accepts items that belong to that run, and the title and link always come from the imported item itself. The list of everything the run was started from is still shown in **Imported requirements analyzed in this run** on the Summary tab.
 
-Just above the **Run analysis** button, a one-line summary confirms what the run will use — for example, *"This run uses 3 documents + requirements provided: yes."*
+Just above the **Run with defaults** button, a one-line summary confirms what the run will use — for example, *"This run uses 3 documents + requirements provided: yes."*
 
 ### 11.3 Understanding Analysis Results
 

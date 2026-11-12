@@ -4,6 +4,7 @@
 import { ApiError, apiFetch, streamFetch } from "@/lib/api-client";
 import { filenameFromDisposition, parseStreamError } from "@/lib/plugins-api";
 import type {
+  ChangeRequestSources,
   AnalysisAgentSource,
   AnalysisResultAgentKey,
   AnalysisCapability,
@@ -292,6 +293,16 @@ export interface RequirementSummary {
 export interface AnalysisListItem {
   id: string;
   projectId: string;
+  /**
+   * #2341 — the change request's title: stored, or generated from its sources
+   * for a run with none. Plain text; render it as text, never as HTML/Markdown.
+   * Optional only for a payload from an older server.
+   */
+  title?: string;
+  /** #2341 — true when `title` was generated, not set by anyone. */
+  titleGenerated?: boolean;
+  /** #2341 — the documents and imported items the run was started from. */
+  sources?: ChangeRequestSources;
   /** #1528 — null for a run the system started (a scheduled re-run). */
   startedById: string | null;
   status: AnalysisStatus;
@@ -435,6 +446,10 @@ export interface AnalysisCostCapStatus {
 }
 
 export interface StartAnalysisInput {
+  /** #2341 — the change request's title; absent, the server names it after its sources. */
+  title?: string;
+  /** #2341 — started with "Run with defaults"; the change request says so afterwards. */
+  startedWithDefaults?: boolean;
   agentKeys?: AnalysisAgentKey[];
   documentIds?: string[];
   model?: string;
@@ -475,6 +490,13 @@ export const analysisApi = {
       method: "POST",
       body,
     }),
+
+  /** #2341 — rename a change request (`analysis.run`; 404 for another project's run). */
+  rename: (projectId: string, id: string, title: string) =>
+    apiFetch<{ id: string; title: string }>(
+      `/projects/${encodeURIComponent(projectId)}/analyses/${encodeURIComponent(id)}`,
+      { method: "PATCH", body: { title } },
+    ),
 
   get: (id: string) =>
     apiFetch<AnalysisSnapshotPayload>(`/analyses/${id}`).then((snapshot) => ({

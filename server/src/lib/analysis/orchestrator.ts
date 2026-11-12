@@ -814,6 +814,10 @@ const NO_WITHHELD_TOOLS: ReadonlySet<string> = new Set();
 export interface StartAnalysisOptions {
   projectId: string;
   startedById: string;
+  /** Issue #2341 — the change request's title; absent, the read path generates one. */
+  title?: string;
+  /** Issue #2341 — started with "Run with defaults"; recorded on the run. */
+  startedWithDefaults?: boolean;
   agentKeys?: AnalysisSpecialistAgentKey[];
   documentIds?: string[];
   model?: string;
@@ -1022,6 +1026,8 @@ export class AnalysisOrchestrator {
       sourceRequirements: opts.sourceRequirements,
       ...(opts.specKitHandoff ? { specKitHandoff: opts.specKitHandoff } : {}),
       ...(opts.agentContext ? { agentContext: opts.agentContext } : {}),
+      ...(opts.title ? { title: opts.title } : {}),
+      ...(opts.startedWithDefaults ? { startedWithDefaults: true } : {}),
     });
 
     audit({
