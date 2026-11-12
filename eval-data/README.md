@@ -1014,3 +1014,116 @@ One run per arm (Sonnet 5.5 answers and judge), compared with run 2 above:
   multi-product questions, which chat still runs unscoped (#2238).
 - The #2241 runs spent $0.772870 across both arms. These are single runs, so a difference of one
   question is within run-to-run noise (compare runs 1 and 2 above).
+
+### Routing multi-product chat (#2336), 2026-11-12: measured, not needed
+
+Multi-product chat (#2238) searches every project in scope on every turn. #2336 asked whether
+chat should first pick the likely projects and search only those, and asked for the
+measurement first. `routing.json` beside `questions.json` is the routing set. It holds a pool
+of nine products: the two Acme Reader products, then seven distractors from other eval corpora.
+The distractors are the three fixture-portfolio repositories (`localization-02`: orders,
+billing, notify) and the four synthetic requirement documents (`docunderstanding-01` to `-04`),
+each its own project. Each product carries the one-line description, tags and names a project
+admin would curate. It has 20 questions: the 10 answerable questions of `questions.json`, whose
+answer products are the products their expected sources name; 8 questions answered by one
+product, 6 of them by a distractor; and 2 no product answers (a gibberish string, and "What is
+the capital of France?"). Scopes are the first 2, 5 and 9 products of the pool.
+
+```bash
+pnpm eval:materialize baqa-01-acme-reader
+pnpm eval:materialize localization-02-fixture-portfolio
+pnpm eval:ba-qa --routing-sweep                                # $0: no model is called
+pnpm eval:ba-qa --arm default --budget 1 --routing-scope 9 --route all   # all | routed | oracle
+```
+
+`--routing-sweep` gives the distractors their knowledge (the repositories' source chunks, and
+an upload per document), then, for every question and scope, runs the offline router and
+retrieves the way chat would (the federated search and the multi-product block) in four ways.
+`all` is today's search-all. `routed` is the router's choice. `oracle` is exactly the answer's
+products. `ranked` is every project's probe hits merged on cosine alone: a ranking
+counterfactual, not a proposal (ranking is #2264's). `--routing-scope n --route r` asks the 10
+answerable questions in a chat scoped to the first `n` products, retrieving `r`'s way, and
+scores the answers as the other arms are. A session scoped to several products binds no single
+project, so it gets no code-search tools: these answers rest on the 8 retrieved excerpts.
+
+The router (`server/src/lib/eval/ba-qa/routing.ts`, offline only) ranks the projects on two
+signals. The profile signal is the share of the question's words that a project's names,
+description and tags hold. The evidence signal comes from a probe search per project and counts
+only hits the keyword retriever matched, each question word weighted by how few projects hold
+it. A dense search returns neighbours for any text, so a floor on vector scores never trips. A
+product the question names is always chosen. The router falls back to every project when no
+project has keyword evidence, when the best score is below 0.25, or when the two signals point
+at different projects.
+
+**Is the right project in the router's top k** (answerable questions in scope):
+
+| Scope | Top 1 | Top 2 | Top 3 | Top 1 / 2 / 3, product names ignored | Routed choice holds the answer | Projects searched (mean) |
+|---:|---:|---:|---:|---|---:|---:|
+| 2 | 8/12 | 12/12 | 12/12 | 5/12, 12/12, 12/12 | 12/12 | 2.0 |
+| 5 | 11/15 | 15/15 | 15/15 | 8/15, 15/15, 15/15 | 15/15 | 2.5 |
+| 9 | 14/18 | 17/18 | 18/18 | 11/18, 17/18, 18/18 | 17/17 (1 fell back) | 2.9 |
+
+The gibberish question fell back at every scope. The France question was routed to the
+Miniflux server, whose test data and code comments hold "France" and "capital".
+
+**What reaches the prompt** (offline, the same questions; time is warm, in-process):
+
+| Scope | Way | Projects searched | Excerpts from an answer product | Expected files retrieved | Mean ms |
+|---:|---|---:|---:|---:|---:|
+| 2 | all | 2.0 | 67% (64/96) | 9/32 | 151 |
+| 2 | oracle | 1.3 | 100% (96/96) | 11/32 | 109 |
+| 5 | all | 5.0 | 43% (51/120) | 8/32 | 251 |
+| 5 | ranked | 5.0 | 63% (76/120) | 8/32 | 247 |
+| 5 | routed | 2.5 | 58% (70/120) | 9/32 | 411 |
+| 9 | all | 9.0 | **31% (44/144)** | **4/32** | 181 |
+| 9 | ranked | 9.0 | 68% (98/144) | 8/32 | 199 |
+| 9 | routed | 2.9 | 61% (88/144) | 8/32 | 296 |
+| 9 | oracle | 1.2 | 100% (141/141) | 11/32 | 64 |
+
+The multi-product block held 11,300 to 12,200 characters in every row: it carries 8 excerpts,
+whatever the number of projects. `routed` time includes the probe.
+
+**Answers** (Sonnet 5.5 answers and judge, the 10 answerable questions, one run per column,
+two for routed):
+
+| | 2, all | 5, all | 9, all | 9, routed | 9, oracle |
+|---|---:|---:|---:|---:|---:|
+| Correctness: mean facts stated | 33% | 30% | **17%** | 42%, 35% | 44% |
+| Citation precision | 40% (10/25) | 42% (8/19) | 29% (5/17) | 36% (9/25), 39% (9/23) | 39% (12/31) |
+| Citation recall | 10/32 | 8/32 | 5/32 | 9/32, 9/32 | 12/32 |
+| False abstention on answerable | 4/10 | 5/10 | 6/10 | 4/10, 4/10 | 2/10 |
+| Input tokens per question | 4,950 | 4,788 | 4,489 | 4,882, 4,882 | 5,414 |
+| Seconds per question | 10.4 | 10.8 | 10.2 | 11.1, 10.4 | 10.9 |
+| Retrieval ms per question | 1,165 | 1,202 | 1,505 | 1,008 (probe included) | 1,124 |
+
+Retrieval takes about a second here, against 0.2 s in the sweep: between questions the model
+call takes 10 s and the search runs cold. The first routed run timed retrieval without its
+probe, so only the second run's time is given. The runs cost **$1.566** (answers and judge),
+including a scope-5 run whose results were lost to a bad `--include` path and run again.
+
+**Decision: no-go. #2336 is closed as measured-not-needed, and the accuracy loss goes to #2264.**
+
+- **Cost does not call for routing.** Input tokens and latency stay flat from 2 to 9 projects:
+  the block holds 8 excerpts whatever the scope, the parallel per-project search takes 0.2 s
+  warm, and the model takes 10 s. Routing cannot improve either one, because its probe is a
+  search per project of its own. Part B's own bar for turning it on ("tokens or latency
+  improve") could not be met.
+- **Search-all does lose accuracy as projects are added, but routing is not the fix.** From 2
+  to 9 projects, the share of excerpts from an answer product falls from 67% to 31%, the
+  expected files retrieved from 9 to 4 of 32, and the facts stated from 33% to 17%. The cause
+  is the merge: `fuseByRelevance` keeps every project within 0.75 of the best project's
+  relevance and hands each one an equal turn at the 8 slots. Merging the same per-project hits
+  on cosine alone (`ranked`) keeps as many expected files as the router (8/32) and more
+  excerpts from the answer's products (68% against 61%), with no extra search and no new
+  per-project data to curate. That is #2264's change (sort kept projects by relevance), with
+  #2294's absolute floor beside it. Routing would add a probe, a confidence floor, a
+  description and tags to keep current on every project, and a silent-narrowing risk, to get
+  what ranking gets alone.
+- **The product mention does most of the router's work.** Most questions in the set name
+  their product the way an analyst does ("the Acme Reader server"). With the names ignored,
+  top 1 drops to 11 of 18 at nine projects. The keyword evidence alone separates the two Acme
+  Reader products poorly: both hold most words of a question about either.
+- These are single runs of 10 questions. The two routed runs, with identical retrieval,
+  differ by 7 points of facts stated, so differences under about 10 points are noise. The
+  fall at 9 projects (33% to 17%) and the recovery (35–44%) are larger than that, and the
+  retrieval counts, which carry no model noise, show the same thing.
