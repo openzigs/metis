@@ -245,6 +245,7 @@ import {
 import {
   acquireConnectorIngest,
   isConnectorIngestActive,
+  setIngestRerunRunner,
 } from "../src/lib/connectors/ingest-guard.js";
 import { discoverAndUpsertConnections } from "../src/lib/connectors/repo/connection-discovery.js";
 import { buildCodeGraphSchemaWiring } from "../src/lib/connectors/db/db-service.js";
@@ -600,24 +601,58 @@ describe("provider routing on deep-ingest", () => {
 // #217 — one per-connector guard shared by the sync routes, the scheduled
 // refresh and the eval runner. The routes take it before any clone/graph work.
 describe("per-connector ingest guard on the sync routes (#217)", () => {
-  for (const route of ["deep-ingest", "refresh-ingest"] as const) {
-    it(`${route} answers 409 INGEST_IN_PROGRESS while another entry point holds the connector`, async () => {
-      const token = await login("admin");
-      const lease = acquireConnectorIngest("repo_github_x", "scheduled-refresh");
-      try {
-        const res = await request(app)
-          .post(`/api/projects/proj_1/connectors/repos/repo_github_x/${route}`)
-          .set("Authorization", `Bearer ${token}`);
-        expect(res.status).toBe(409);
-        expect(res.body.error.code).toBe("INGEST_IN_PROGRESS");
-        expect(ingestSourceAsKnowledge).not.toHaveBeenCalled();
-        // The refusal leaves the holder's claim intact.
-        expect(isConnectorIngestActive("repo_github_x")).toBe(true);
-      } finally {
-        lease.release();
-      }
-    });
+  it("deep-ingest answers 409 INGEST_IN_PROGRESS while another entry point holds the connector", async () => {
+    const token = await login("admin");
+    const lease = acquireConnectorIngest("repo_github_x", "scheduled-refresh");
+    try {
+      const res = await request(app)
+        .post(`/api/projects/proj_1/connectors/repos/repo_github_x/deep-ingest`)
+        .set("Authorization", `Bearer ${token}`);
+      expect(res.status).toBe(409);
+      expect(res.body.error.code).toBe("INGEST_IN_PROGRESS");
+      expect(ingestSourceAsKnowledge).not.toHaveBeenCalled();
+      // The refusal leaves the holder's claim intact.
+      expect(isConnectorIngestActive("repo_github_x")).toBe(true);
+    } finally {
+      lease.release();
+    }
+  });
 
+  // #2335 — a Sync on a busy connector is queued, not refused, and the one
+  // follow-up runs when the holder releases.
+  it("refresh-ingest answers 202 queued while another entry point holds the connector, and the follow-up runs once", async () => {
+    const token = await login("admin");
+    const reruns: Array<{ holder: string; trigger: string; requests: number }> = [];
+    setIngestRerunRunner((rerunLease, rerun) => {
+      reruns.push({ holder: rerunLease.holder, trigger: rerun.trigger, requests: rerun.requests });
+      rerunLease.release();
+    });
+    const lease = acquireConnectorIngest("repo_github_x", "scheduled-refresh");
+    try {
+      for (const expected of [1, 2]) {
+        const res = await request(app)
+          .post(`/api/projects/proj_1/connectors/repos/repo_github_x/refresh-ingest`)
+          .set("Authorization", `Bearer ${token}`);
+        expect(res.status).toBe(202);
+        expect(res.body.data).toEqual({
+          status: "queued",
+          connectorId: "repo_github_x",
+          trigger: "manual",
+          requests: expected,
+        });
+      }
+      expect(ingestSourceAsKnowledge).not.toHaveBeenCalled();
+      expect(isConnectorIngestActive("repo_github_x")).toBe(true);
+      expect(reruns).toEqual([]);
+    } finally {
+      lease.release();
+      setIngestRerunRunner(null);
+    }
+    expect(reruns).toEqual([{ holder: "rerun:manual", trigger: "manual", requests: 2 }]);
+    expect(isConnectorIngestActive("repo_github_x")).toBe(false);
+  });
+
+  for (const route of ["deep-ingest", "refresh-ingest"] as const) {
     it(`${route} answers 404 — not 409 — for another project's connector while it ingests`, async () => {
       // The project-scoped lookup runs before the lease is tried, so a caller
       // outside the project learns neither that the id exists nor that it is busy.

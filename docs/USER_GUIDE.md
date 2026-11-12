@@ -3722,6 +3722,84 @@ Each sync records:
 - Whether the sync succeeded or failed
 - When it happened
 
+**A sync asked for while another runs is queued (#2335).** Clicking **Sync** while a
+sync, a Deep Ingest, a scheduled refresh or a push-triggered sync is already running for
+that repository no longer fails with "An ingest is already running". METIS answers *A sync
+is already running. This one is queued and runs when it finishes.* However many syncs are
+asked for during one run, exactly one more runs after it, in the background, so a burst of
+pushes never piles up work. If that follow-up sync fails, it is not retried on its own; the
+next push, **Sync** or scheduled refresh runs it again. A queued **Sync** does everything
+**Sync** does, including the scan for database connections and its notification, even if a
+push was also asked for during the run. A push or scheduled sync that waited runs the same
+work as the scheduled refresh. The queue is kept in the server's
+memory: a server restart forgets a queued sync, and the next push or scheduled refresh
+catches the repository up.
+
+#### Sync on push: a GitHub webhook, or a call from CI (admins)
+
+To keep the index current without anyone pressing **Sync**, have GitHub tell METIS about
+each push. A push to the branch the connection tracks (its **branch**, `main` by default)
+starts the same incremental sync as **Sync**; pushes to other branches, tag pushes and
+branch deletions are ignored (the reason is in the server log as `push_webhook.ignored`).
+METIS answers at once and syncs in the background.
+
+On the repository in GitHub, open **Settings › Webhooks › Add webhook**, set **Content
+type** to `application/json`, choose **Just the push event**, and use one of:
+
+- **The connection's own secret (recommended).** On the repository's card in
+  **Connections**, click **Create webhook secret** (the same secret its pull-request webhook
+  uses, if it has one). **Payload URL**: `https://<your-metis-host>/api/webhooks/github/push/c/<connection id>`
+  (the card's pull-request path, with `pr` replaced by `push`). **Secret**: the secret
+  shown. Pushes to that URL sync this connection only.
+- **The server's shared secret.** **Payload URL**:
+  `https://<your-metis-host>/api/webhooks/github/push`; **Secret**: the server's
+  `GITHUB_WEBHOOK_SECRET`. Every GitHub connection to that repository (on that GitHub or
+  GitHub Enterprise server) that tracks the pushed branch is synced, except in a project
+  that gave one of its connections to the repository its own secret: that project syncs
+  only from its own webhook. At most 50 connections that track the pushed branch are synced
+  for one push; any beyond that are logged as `push_webhook.fanout_capped` and catch up on the
+  next scheduled refresh.
+
+The secret is checked (HMAC-SHA256 over the exact request body) before METIS reads
+anything in the delivery; a delivery with a missing or wrong signature gets `401` and
+does nothing. Keep the secret in GitHub and in the server's configuration only: never in
+a repository, a CI log or a ticket. A delivery GitHub sends twice (same
+`X-GitHub-Delivery`), or the same signed body sent again, is acknowledged and not acted on
+again; a delivery whose push is more than four days old is ignored. Each connection's URL,
+and each repository on the shared-secret URL, takes at most 20 signed push requests a minute
+per pushed branch, so pushes to branches no connection tracks never use up the tracked branch's budget
+(`REPO_REFRESH_REQUEST_LIMIT_MAX`, `REPO_REFRESH_REQUEST_LIMIT_WINDOW_MS`). The limit is
+checked as soon as the signature verifies, before METIS records or looks anything up; past
+it the push is not synced (logged as `push_webhook.rate_limited`), and on a connection's own
+URL METIS answers `429`, so GitHub's **Redeliver** can send it again later. The shared-secret URL answers every signed push to a
+repository it accepts with the same `{"ok": true}`, whether or not any connection matched:
+GitHub shows that answer to the repository's admins, and it never says whether other
+workspaces connect the repository. The server log (`push_webhook.handled`,
+`push_webhook.ignored`) has the detail.
+
+**From CI or a git hook, where the host cannot send webhooks.** Send the same signed request
+yourself, with the connection's own secret, to its push URL. The body needs the pushed
+branch, the commit, the repository's `owner/name` exactly as the connection has it, and the
+push time in Unix seconds:
+
+```bash
+SECRET="$METIS_WEBHOOK_SECRET"   # the connection's own webhook secret, from a CI secret
+URL="https://metis.example.com/api/webhooks/github/push/c/<connection id>"
+BODY=$(printf '{"ref":"refs/heads/%s","before":"%s","after":"%s","commits":[],"pusher":{"name":"ci"},"repository":{"full_name":"%s","pushed_at":%s}}' \
+  "main" "0000000000000000000000000000000000000000" "$(git rev-parse HEAD)" "acme/app" "$(date +%s)")
+SIG="sha256=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$SECRET" | sed 's/^.* //')"
+curl -fsS -X POST "$URL" -H "Content-Type: application/json" \
+  -H "X-Hub-Signature-256: $SIG" --data-binary "$BODY"
+```
+
+A `200` answer with `"handled": true` says whether the sync `started` or was `queued`
+behind a running one; `"handled": false` gives the reason (for example
+`UNTRACKED_BRANCH`). This works for GitHub and GitHub Enterprise connections with their own
+secret. For any other connection, a CI job can call **Sync** itself:
+`POST /api/projects/<project id>/connectors/repos/<connection id>/refresh-ingest` with a
+METIS access token of a user who has `connector.write`; it waits for the sync, or answers
+`202` `"status": "queued"` when one is running.
+
 **"Go call binding is not finished"** (Go repositories): after a sync or a Deep Ingest of a
 very large Go repository, the result may end with *Go call binding is not finished: N Go
 calls in M files are not yet bound by type*. METIS stops working out which function each Go

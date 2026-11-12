@@ -6,7 +6,7 @@
  * fire-time. This module produces real implementations bound to the live
  * service layer:
  *
- *   - refresh-repo-connector       → fetchRepoMetadata + testRepoConnector
+ *   - refresh-repo-connector       → runRepoConnectorRefresh (connectors/repo/repo-refresh.ts)
  *   - refresh-db-connector-schema  → inspectDbConnector + ingestDbSchema
  *   - rerun-analysis               → AnalysisOrchestrator.start
  *   - publish-batch                → publishing.runBatch
@@ -20,22 +20,13 @@
  */
 import { SYSTEM_ACTOR_ID } from "../audit/system-actor.js";
 import {
-  fetchRepoMetadata,
-  pullOrCloneRepo,
-  testRepoConnector,
-} from "../connectors/repo/repo-service.js";
-import {
   publishGeneratedDocRevision,
   settleCancelledGeneratedDocPublication,
 } from "../docs-gen/generated-doc-publication.js";
-import { buildCodeGraphSchemaWiring, inspectDbConnector } from "../connectors/db/db-service.js";
-import {
-  ingestDbSchema,
-  ingestRepoMetadata,
-  ingestSourceAsKnowledge,
-} from "../connectors/connector-ingest.js";
-import { ingestCodeGraph } from "../code-graph/ingest.js";
-import { acquireConnectorIngest } from "../connectors/ingest-guard.js";
+import { inspectDbConnector } from "../connectors/db/db-service.js";
+import { ingestDbSchema } from "../connectors/connector-ingest.js";
+import { acquireOrQueueConnectorIngest } from "../connectors/ingest-guard.js";
+import { runRepoConnectorRefresh } from "../connectors/repo/repo-refresh.js";
 import { runBatch } from "../publishing/publisher.js";
 import { AnalysisOrchestrator, getOrchestrator } from "../analysis/orchestrator.js";
 import { buildProvider, loadAIConfig } from "../ai/index.js";
@@ -43,16 +34,7 @@ import { prisma } from "../prisma.js";
 import { runAutopilot } from "../autopilot/index.js";
 import type { BuiltInHandlerDeps } from "./task-handlers.js";
 import { runRegenerationTask } from "../docs-gen/incremental.js";
-import {
-  retryRegenerationScheduling,
-  scheduleIncrementalRegeneration,
-} from "../docs-gen/regeneration-scheduling.js";
-
-async function fetchRepoConnectorProjectId(connectorId: string): Promise<string> {
-  const row = await prisma.repoConnection.findUnique({ where: { id: connectorId } });
-  if (!row) throw new Error(`repo connector ${connectorId} not found`);
-  return row.projectId;
-}
+import { retryRegenerationScheduling } from "../docs-gen/regeneration-scheduling.js";
 
 async function fetchDbConnectorProjectId(connectorId: string): Promise<string> {
   const row = await prisma.databaseConnection.findUnique({ where: { id: connectorId } });
@@ -102,87 +84,15 @@ export function buildSchedulerHandlerOverrides(
       opts.refreshRepoConnector ??
       (async (connectorId, signal) => {
         abortGuard(signal);
-        const projectId = await fetchRepoConnectorProjectId(connectorId);
         // #217 — the per-connector ingest guard shared with the sync routes and the
-        // eval runner; a refresh that finds a sync running is refused (409) before
-        // it pulls, rather than racing the clone and the recorded ingest state.
-        const lease = acquireConnectorIngest(connectorId, "scheduled-refresh");
-        try {
-          // Step 1 — pull latest commits (or re-clone if clone is missing/corrupt)
-          const clone = await pullOrCloneRepo(projectId, connectorId, SYSTEM_ACTOR_ID);
-          abortGuard(signal);
-          // Step 2 — incremental code-graph re-ingest (only changed files).
-          // Best-effort SQL-lineage wiring from the project's DB connector
-          // (#316/#317); never blocks the scheduled refresh if unavailable.
-          const schemaWiring = await buildCodeGraphSchemaWiring(projectId, SYSTEM_ACTOR_ID);
-          const graphStats = await ingestCodeGraph(prisma, {
-            projectId,
-            rootDir: clone.path,
-            repoConnectionId: connectorId,
-            // #714/#758 — label the graph with the pulled commit; ingestCodeGraph
-            // records it as lastCommitSha too, once the graph is complete.
-            commitSha: clone.commitSha ?? undefined,
-            introspectedSchema: schemaWiring.introspectedSchema,
-            introspectionFailed: schemaWiring.introspectionFailed,
-            routines: schemaWiring.routines,
-            fetchRoutineBody: schemaWiring.fetchRoutineBody,
-            routineDialect: schemaWiring.routineDialect,
-            packages: schemaWiring.packages,
-            fetchPackageBody: schemaWiring.fetchPackageBody,
-            dependencies: schemaWiring.dependencies,
-            sqlLineageOverride: schemaWiring.sqlLineageOverride,
-            embedSymbols: true, // #797 — the scheduled refresh re-embeds changed symbols
-          });
-          abortGuard(signal);
-          // Step 3 — incremental RAG knowledge ingest
-          const srcSummary = await ingestSourceAsKnowledge(
-            projectId,
-            connectorId,
-            SYSTEM_ACTOR_ID,
-            clone.path,
-            { lease },
-          );
-          abortGuard(signal);
-          // Step 4 — refresh metadata (README, manifests, connectivity check)
-          const meta = await fetchRepoMetadata(projectId, connectorId, SYSTEM_ACTOR_ID);
-          const metadataSummary = await ingestRepoMetadata(
-            projectId,
-            connectorId,
-            SYSTEM_ACTOR_ID,
-            meta,
-          );
-          abortGuard(signal);
-          const test = await testRepoConnector(projectId, connectorId, SYSTEM_ACTOR_ID);
-          // #449 — a scheduling failure no longer fails the refresh: the ingest
-          // landed, and a `schedule-regeneration` task retries the scheduling
-          // alone. Only when that retry could not be queued does the refresh
-          // fail, so the task queue's own retry is the fallback.
-          const scheduling =
-            srcSummary.failures === 0 && metadataSummary.failures === 0
-              ? await scheduleIncrementalRegeneration(projectId, connectorId)
-              : null;
-          if (scheduling && !scheduling.regenerationScheduled && !scheduling.retryQueued)
-            throw new Error(scheduling.warning);
-          return {
-            repo: meta.repo.full_name,
-            headSha: meta.headSha,
-            latencyMs: test.latencyMs,
-            pulled: clone.pulled,
-            filesChanged: clone.filesChanged,
-            filesParsed: graphStats.filesParsed,
-            // #856 — a same-SHA refresh that still did work says why: a lineage
-            // backfill re-extracts lineage without re-parsing (filesParsed 0).
-            lineageBackfill: graphStats.lineageBackfill,
-            filesLineageRefreshed: graphStats.filesLineageRefreshed,
-            symbolsUpserted: graphStats.symbolsUpserted,
-            chunksIngested: srcSummary.chunkCount,
-            ...(scheduling && !scheduling.regenerationScheduled
-              ? { regenerationScheduled: false, warning: scheduling.warning }
-              : {}),
-          };
-        } finally {
-          lease.release();
-        }
+        // eval runner. #2335 — a refresh that finds a sync running no longer fails
+        // (409): it folds into that connector's single queued re-run, which runs
+        // once the current one ends.
+        const claim = acquireOrQueueConnectorIngest(connectorId, "scheduled-refresh", {
+          trigger: "scheduled",
+        });
+        if ("queued" in claim) return { connectorId, queued: true, trigger: "scheduled" };
+        return runRepoConnectorRefresh(connectorId, claim.lease, signal);
       }),
     refreshDbConnectorSchema:
       opts.refreshDbConnectorSchema ??

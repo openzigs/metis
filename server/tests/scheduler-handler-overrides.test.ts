@@ -5,7 +5,7 @@
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-const repoConnections = new Map<string, { id: string; projectId: string }>();
+const repoConnections = new Map<string, { id: string; projectId: string; provider?: string }>();
 const dbConnections = new Map<string, { id: string; projectId: string }>();
 
 const mocks = vi.hoisted(() => {
@@ -19,6 +19,15 @@ const mocks = vi.hoisted(() => {
       headSha: "abc",
     })),
     testRepoConnector: vi.fn(async () => ({ ok: true, latencyMs: 12 })),
+    // #2335 — the shared refresh's `local`/`upload` branch.
+    resolveNonGitIngestRoot: vi.fn(async () => ({ path: "/srv/code", boundary: "/srv/code" })),
+    pullOrCloneRepo: vi.fn(async () => ({
+      path: "/tmp/fake-clone",
+      pulled: true,
+      filesChanged: 3,
+      headSha: "abc",
+      commitSha: "sha-after-pull",
+    })),
     inspectDbConnector: vi.fn(async () => ({
       connectorId: "db1",
       driver: "postgres",
@@ -87,13 +96,8 @@ vi.mock("../src/lib/prisma.js", () => ({
 vi.mock("../src/lib/connectors/repo/repo-service.js", () => ({
   fetchRepoMetadata: mocks.fetchRepoMetadata,
   testRepoConnector: mocks.testRepoConnector,
-  pullOrCloneRepo: vi.fn(async () => ({
-    path: "/tmp/fake-clone",
-    pulled: true,
-    filesChanged: 3,
-    headSha: "abc",
-    commitSha: "sha-after-pull",
-  })),
+  resolveNonGitIngestRoot: mocks.resolveNonGitIngestRoot,
+  pullOrCloneRepo: mocks.pullOrCloneRepo,
 }));
 vi.mock("../src/lib/connectors/db/db-service.js", () => ({
   inspectDbConnector: mocks.inspectDbConnector,
@@ -142,9 +146,10 @@ import {
   retryRegenerationScheduling,
 } from "../src/lib/docs-gen/regeneration-scheduling.js";
 import {
-  INGEST_IN_PROGRESS,
   acquireConnectorIngest,
   isConnectorIngestActive,
+  queuedConnectorIngest,
+  setIngestRerunRunner,
 } from "../src/lib/connectors/ingest-guard.js";
 
 /**
@@ -164,19 +169,22 @@ afterEach(() => {
 });
 
 describe("scheduled repo refresh takes the per-connector ingest guard (#217)", () => {
-  it("refuses while another entry point holds the connector, without pulling or ingesting", async () => {
+  it("queues one re-run while another entry point holds the connector, without pulling or ingesting (#2335)", async () => {
     repoConnections.set("rc1", { id: "rc1", projectId: "p-alpha" });
     const lease = acquireConnectorIngest("rc1", "sync-route");
     try {
       await expect(
         buildSchedulerHandlerOverrides().refreshRepoConnector!("rc1", new AbortController().signal),
-      ).rejects.toMatchObject({ status: 409, code: INGEST_IN_PROGRESS });
+      ).resolves.toEqual({ connectorId: "rc1", queued: true, trigger: "scheduled" });
       expect(mocks.ingestCodeGraph).not.toHaveBeenCalled();
       expect(mocks.ingestSourceAsKnowledge).not.toHaveBeenCalled();
       expect(isConnectorIngestActive("rc1")).toBe(true);
+      expect(queuedConnectorIngest("rc1")).toMatchObject({ trigger: "scheduled", requests: 1 });
     } finally {
+      setIngestRerunRunner(null);
       lease.release();
     }
+    expect(queuedConnectorIngest("rc1")).toBeNull();
   });
 
   it("holds the guard for the whole refresh, hands its lease to the source ingest, and releases it", async () => {
@@ -545,5 +553,88 @@ describe("buildSchedulerHandlerOverrides", () => {
     await expect(
       overrides.refreshRepoConnector!("missing", new AbortController().signal),
     ).rejects.toThrow(/not found/);
+  });
+});
+
+// #2335 — the shared refresh (scheduled task and queued follow-ups) also runs a
+// `local`/`upload` connector, as the manual Sync does: no pull, metadata or test.
+describe("shared repository refresh on a non-git connector (#2335)", () => {
+  it.each(["local", "upload"])(
+    "re-resolves a %s connector's directory instead of pulling",
+    async (provider) => {
+      repoConnections.set("rc-ng", { id: "rc-ng", projectId: "p-ng", provider });
+      const out = await buildSchedulerHandlerOverrides().refreshRepoConnector!(
+        "rc-ng",
+        new AbortController().signal,
+      );
+      expect(mocks.resolveNonGitIngestRoot).toHaveBeenCalledWith("p-ng", "rc-ng");
+      expect(mocks.pullOrCloneRepo).not.toHaveBeenCalled();
+      expect(mocks.fetchRepoMetadata).not.toHaveBeenCalled();
+      expect(mocks.testRepoConnector).not.toHaveBeenCalled();
+      expect(mocks.ingestCodeGraph).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ rootDir: "/srv/code", commitSha: undefined }),
+      );
+      expect(mocks.ingestSourceAsKnowledge).toHaveBeenCalledWith(
+        "p-ng",
+        "rc-ng",
+        "system",
+        "/srv/code",
+        expect.objectContaining({ boundary: "/srv/code" }),
+      );
+      expect(mocks.checkIncrementalRegeneration).toHaveBeenCalledExactlyOnceWith("p-ng", "rc-ng");
+      expect(out).toEqual({
+        pulled: false,
+        filesChanged: 0,
+        filesParsed: 2,
+        symbolsUpserted: 10,
+        chunksIngested: 5,
+      });
+      expect(isConnectorIngestActive("rc-ng")).toBe(false);
+    },
+  );
+
+  it("does not schedule after a partial source ingest, and says nothing of scheduling", async () => {
+    repoConnections.set("rc-ng", { id: "rc-ng", projectId: "p-ng", provider: "local" });
+    mocks.ingestSourceAsKnowledge.mockResolvedValueOnce({ chunkCount: 5, failures: 1 });
+    const out = await buildSchedulerHandlerOverrides().refreshRepoConnector!(
+      "rc-ng",
+      new AbortController().signal,
+    );
+    expect(mocks.checkIncrementalRegeneration).not.toHaveBeenCalled();
+    expect(out).not.toHaveProperty("regenerationScheduled");
+  });
+
+  it("completes with a warning when scheduling fails but its retry was queued", async () => {
+    repoConnections.set("rc-ng", { id: "rc-ng", projectId: "p-ng", provider: "upload" });
+    mocks.checkIncrementalRegeneration.mockRejectedValueOnce(new Error("outbox unavailable"));
+    const out = await buildSchedulerHandlerOverrides().refreshRepoConnector!(
+      "rc-ng",
+      new AbortController().signal,
+    );
+    expect(out).toMatchObject({
+      regenerationScheduled: false,
+      warning: REGENERATION_SCHEDULING_FAILED_MESSAGE,
+    });
+  });
+
+  it("fails when scheduling fails and no retry could be queued", async () => {
+    repoConnections.set("rc-ng", { id: "rc-ng", projectId: "p-ng", provider: "local" });
+    mocks.checkIncrementalRegeneration.mockRejectedValueOnce(new Error("outbox unavailable"));
+    mocks.taskUpsert.mockRejectedValueOnce(new Error("task store unavailable"));
+    await expect(
+      buildSchedulerHandlerOverrides().refreshRepoConnector!("rc-ng", new AbortController().signal),
+    ).rejects.toThrow(REGENERATION_SCHEDULING_RETRY_UNAVAILABLE_MESSAGE);
+    expect(isConnectorIngestActive("rc-ng")).toBe(false);
+  });
+
+  it("fails, and frees the connector, when the connector row is gone", async () => {
+    await expect(
+      buildSchedulerHandlerOverrides().refreshRepoConnector!(
+        "rc-gone",
+        new AbortController().signal,
+      ),
+    ).rejects.toThrow("repo connector rc-gone not found");
+    expect(isConnectorIngestActive("rc-gone")).toBe(false);
   });
 });
