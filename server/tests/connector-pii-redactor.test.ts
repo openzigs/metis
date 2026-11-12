@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { timeIsolated } from "./helpers/isolated-timing.js";
 import { redactRows, redactString, redactValue } from "../src/lib/connectors/pii-redactor.js";
 
 const ORIG_ENV = { ...process.env };
@@ -106,9 +107,13 @@ describe("redactString", () => {
   });
 
   it("#2333 — the email shape is linear: 1 MB with no @ in well under a second", () => {
-    const t0 = performance.now();
-    redactString("a".repeat(1024 * 1024));
-    expect(performance.now() - t0).toBeLessThan(1500);
+    // `g` is a word character but not hex: `a` would be consumed whole by the
+    // secret set's `long_hex` before EMAIL ever saw it, so the test could not
+    // fail. Run in a child killed after 10 s: a quadratic EMAIL takes minutes.
+    const [ms] = timeIsolated("src/lib/connectors/pii-redactor.ts", "redactString", [
+      { unit: "g", length: 1024 * 1024 },
+    ]);
+    expect(ms).toBeLessThan(1500);
   });
 });
 

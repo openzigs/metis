@@ -204,12 +204,38 @@ describe("#2333 — secrets out of repository source before ingest", () => {
           connectorId: "c1",
           path: "src/config.ts",
           count: 2,
-          byClass: { github_pat: 1, private_key: 1 },
+          byClass: [
+            { class: "private_key", count: 1 },
+            { class: "github_pat", count: 1 },
+          ],
         },
       },
     ]);
     expect(JSON.stringify(h.logs)).not.toContain(GH_TOKEN);
     expect(JSON.stringify(h.logs)).not.toContain("MIIEvQIBADANBgkq");
+  });
+
+  it("the per-class counts survive the real logger's key redaction", async () => {
+    // A class whose id the logger reads as a secret key: `private_key`,
+    // `assigned_secret`, `slack_token`.
+    await fs.writeFile(
+      path.join(root, "src/env.ts"),
+      `export const DB_PASSWORD = "${k("s3cr3t", "-Pa55w0rd")}";\n`,
+    );
+    await ingestSourceAsKnowledge("p1", "c1", "u1", root);
+    const { redactInfo } =
+      await vi.importActual<typeof import("../src/lib/logger.js")>("../src/lib/logger.js");
+    const logged = h.logs
+      .filter((l) => l.msg.includes("secrets redacted"))
+      .map((l) => redactInfo({ level: l.level, message: l.msg, ...structuredClone(l.meta) }));
+    const counts = logged.flatMap((l) => l.byClass as Array<{ class: string; count: number }>);
+    expect(counts).toEqual(
+      expect.arrayContaining([
+        { class: "private_key", count: 1 },
+        { class: "assigned_secret", count: 1 },
+      ]),
+    );
+    expect(JSON.stringify(logged)).not.toContain('[REDACTED]"');
   });
 
   it("re-embeds a file indexed before #2333 instead of skipping it as unchanged", async () => {

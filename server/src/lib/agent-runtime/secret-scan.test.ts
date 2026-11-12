@@ -51,6 +51,18 @@ describe("findSecretKinds", () => {
     expect(findSecretKinds(STRIPE)).toEqual(["Stripe key"]);
   });
 
+  it("does not refuse Slack's documented webhook placeholder, but refuses a real webhook (#2333)", () => {
+    // Assembled at runtime: the shape Slack's own docs print, and a real-shaped one.
+    const hook = (path: string) => ["https://hooks.slack.com", "/services/", path].join("");
+    const placeholder = hook(["T00000000", "B00000000", "X".repeat(24)].join("/"));
+    expect(findSecretKinds(`curl -X POST ${placeholder}`)).toEqual([]);
+    const real = hook(["T024BE7LD", "B01ABCDEF2G", "q8Lr2vWnZk4TbY7hM1sPx3Ce"].join("/"));
+    expect(findSecretKinds(`curl -X POST ${real}`)).toEqual(["Slack webhook URL"]);
+    // A real secret segment behind zeroed ids is still refused.
+    const half = hook(["T00000000", "B00000000", "q8Lr2vWnZk4TbY7hM1sPx3Ce"].join("/"));
+    expect(findSecretKinds(half)).toEqual(["Slack webhook URL"]);
+  });
+
   it("does not refuse a key-block header with no key in it (#2333)", () => {
     expect(findSecretKinds(`Paste a key that starts with ${KEY_HEADER} here.`)).toEqual([]);
   });

@@ -11,7 +11,14 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { gunzipSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
-import { redactSecrets, SECRET_PATTERNS, secretMarker, secretMatches } from "./secret-patterns.js";
+import { timeIsolated } from "../../../tests/helpers/isolated-timing.js";
+import {
+  redactSecrets,
+  secretClassCounts,
+  SECRET_PATTERNS,
+  secretMarker,
+  secretMatches,
+} from "./secret-patterns.js";
 
 const EVAL_CORPUS = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -260,6 +267,29 @@ describe("SECRET_PATTERNS", () => {
     ]);
   });
 
+  it("Slack's documented webhook placeholder is redacted but never refuses a save", () => {
+    const p = SECRET_PATTERNS.find((x) => x.id === "slack_webhook")!;
+    const hook = (path: string) => k("https://hooks.slack.com", "/services/", path);
+    const placeholder = hook(["T00000000", "B00000000", "X".repeat(24)].join("/"));
+    expect(redactSecrets(placeholder).text).toBe("[REDACTED:slack_webhook]");
+    expect(p.refuse!(placeholder)).toBe(false);
+    expect(p.refuse!(hook(["T00000000", "B00000000", "0".repeat(24)].join("/")))).toBe(false);
+    expect(
+      p.refuse!(hook(["T024BE7LD", "B01ABCDEF2G", "q8Lr2vWnZk4TbY7hM1sPx3Ce"].join("/"))),
+    ).toBe(true);
+    expect(p.refuse!(hook(["T00000000", "B00000000", "q8Lr2vWnZk4TbY7hM1sPx3Ce"].join("/")))).toBe(
+      true,
+    );
+  });
+
+  it("secretClassCounts lists each class with its count, for a log line", () => {
+    expect(secretClassCounts({ assigned_secret: 2, slack_token: 1 })).toEqual([
+      { class: "assigned_secret", count: 2 },
+      { class: "slack_token", count: 1 },
+    ]);
+    expect(secretClassCounts({})).toEqual([]);
+  });
+
   it("returns the input untouched and counts nothing for empty input", () => {
     expect(redactSecrets("")).toEqual({ text: "", count: 0, byClass: {} });
   });
@@ -470,8 +500,6 @@ describe("linear time", () => {
     ["whitespace", fill(" \t")],
     ["repeated quoted assignments", fill('password="')],
     ["repeated unquoted assignments", fill("token=")],
-    ["an assignment then 1 MB of value", "api_key=" + fill("a1")],
-    ["a quoted assignment then 1 MB with no closing quote", 'secret: "' + fill("a1")],
     ["a long name before the keyword", fill("a.") + "password=" + "a1".repeat(20)],
   ];
 
@@ -481,6 +509,17 @@ describe("linear time", () => {
     const ms = performance.now() - t0;
     expect(ms).toBeLessThan(BOUND_MS);
     expect(out.text.split("\n")).toHaveLength(line.split("\n").length);
+  });
+
+  it(`an assignment then 1 MB of value, quoted or not, within ${BOUND_MS} ms`, () => {
+    // `g1` is not hex: a hex fill (`a1`) is consumed whole by `long_hex` first,
+    // so `assigned_secret` never saw it and the case could not fail. In a child
+    // killed after 10 s, so a quadratic `assigned_secret` fails, not hangs.
+    const ms = timeIsolated("src/lib/safety/secret-patterns.ts", "redactSecrets", [
+      { prefix: "api_key=", unit: "g1", length: MB },
+      { prefix: 'secret: "', unit: "g1", length: MB },
+    ]);
+    for (const t of ms) expect(t).toBeLessThan(BOUND_MS);
   });
 
   it("no pattern quantifies a group that itself holds an unbounded quantifier", () => {

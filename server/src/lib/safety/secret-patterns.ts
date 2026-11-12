@@ -138,6 +138,9 @@ function isHexSecret(match: string, input: string, offset: number): boolean {
   return !HEX_CONTEXT_PREFIX_RE.test(input.slice(Math.max(0, offset - 24), offset));
 }
 
+/** Slack's documented webhook placeholder: all-zero workspace and channel ids, an all-X (or all-zero) secret. */
+const SLACK_WEBHOOK_PLACEHOLDER_RE = /\/services\/T0+\/B0+\/(?:X+|0+)$/i;
+
 /**
  * The set, most specific first: a key block or a vendor key is replaced before
  * a generic shape (a long hex run, `Bearer …`) could take part of it.
@@ -212,6 +215,10 @@ const SPECS: readonly PatternSpec[] = [
     kind: "Slack webhook URL",
     re: () => /https:\/\/hooks\.slack\.com\/services\/[A-Za-z0-9_/]{20,}/g,
     highConfidence: true,
+    // Slack's own docs print `…/services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXXXX`,
+    // so a definition that quotes that placeholder is not refused. Redacted all
+    // the same, like every other match.
+    refuse: (match) => !SLACK_WEBHOOK_PLACEHOLDER_RE.test(match),
   },
   {
     id: "google_api_key",
@@ -353,6 +360,18 @@ export interface SecretRedaction {
   count: number;
   /** How many of each class (`SecretPattern.id`); never a matched value. */
   byClass: Record<string, number>;
+}
+
+/**
+ * {@link SecretRedaction.byClass} as `{ class, count }` entries, for a log line.
+ * The logger blanks any meta KEY that names a secret (`/secret/`, `/token/`,
+ * `/private[-_]?key/`, `/credential/`), so a class id used as a key
+ * (`assigned_secret`, `slack_token`) would log as `[REDACTED]`, not a number.
+ */
+export function secretClassCounts(
+  byClass: Readonly<Record<string, number>>,
+): Array<{ class: string; count: number }> {
+  return Object.entries(byClass).map(([id, count]) => ({ class: id, count }));
 }
 
 /**
