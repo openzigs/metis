@@ -183,6 +183,14 @@ export interface ClarifyingQuestion {
    * it open, and the panel says so. Absent when the check ran.
    */
   groundingFailed?: boolean;
+  /**
+   * #2275 — true when METIS actually searched the project's documents and
+   * code for this question (the grounding pass ran and did not fail). Absent
+   * when no search ran: an ambiguity or silence is asked directly, and with
+   * no retriever, or offline, nothing is searched. The panel says "searched"
+   * only on this.
+   */
+  searched?: boolean;
   /** Suggested answer text; absent when status is "open". */
   groundedAnswer?: string;
   /** Supporting citations; never empty when an answer is present. */

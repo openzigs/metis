@@ -584,6 +584,42 @@ describe("hybrid retrieval", () => {
     );
   });
 
+  // #2241 — chat's relevance floor reads the cosine; a rerank rewrites `score`
+  // with a cross-encoder logit, so the cosine travels as `denseScore`.
+  it("keeps each dense hit's cosine as denseScore when a reranker rewrites score", async () => {
+    await seedDocument("d1", "pcos", "alpha alpha alpha");
+    await seedDocument("d2", "pcos", "alpha bravo", "b.md");
+    await svc.ingestDocument("d1");
+    await svc.ingestDocument("d2");
+    const plain = await svc.search("pcos", "alpha", { mode: "dense" });
+    const cosine = new Map(plain.hits.map((h) => [h.chunkId, h.score]));
+    const stub: Reranker = {
+      enabled: true,
+      async rerank(_query, cands) {
+        return [...cands].reverse().map((c, i) => ({ ...c, score: -11 - i }));
+      },
+    };
+    svc = new KnowledgeService({
+      storage,
+      vectorStore: store,
+      embedder: new Embedder(),
+      chunkOptions: { chunkSize: 80, overlap: 0 },
+      bm25,
+      reranker: stub,
+    });
+    const res = await svc.search("pcos", "alpha");
+    expect(res.reranked).toBe(true);
+    const dense = res.hits.filter((h) => h.matchedBy?.includes("dense"));
+    expect(dense.length).toBeGreaterThan(0);
+    for (const h of dense) {
+      expect(h.score).toBeLessThan(0);
+      expect(h.denseScore).toBeCloseTo(cosine.get(h.chunkId)!, 6);
+    }
+    for (const h of res.hits.filter((x) => !x.matchedBy?.includes("dense"))) {
+      expect(h.denseScore).toBeUndefined();
+    }
+  });
+
   it("a reranker that falls back keeps the fused rankScore and is not reported as reranked", async () => {
     const seedAndSearch = async (reranker: Reranker | undefined) => {
       svc = new KnowledgeService({

@@ -259,6 +259,12 @@ export const retrievedChunkSchema = z.object({
    * reranked.
    */
   rankScore: z.number().optional(),
+  /**
+   * #2241 — the hit's dense cosine, kept when a reranker has replaced `score`
+   * with its own (a cross-encoder logit on another scale). Present only for a
+   * hit the dense retriever found; chat's relevance floor reads it.
+   */
+  denseScore: z.number().optional(),
   /** #717 — which retriever(s) surfaced the hit; `["lexical"]` explains a `score` of 0. */
   matchedBy: z.array(z.enum(RETRIEVAL_MATCHERS)).optional(),
   /**
