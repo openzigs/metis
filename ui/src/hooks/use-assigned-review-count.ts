@@ -10,21 +10,25 @@ import { useSocket } from "@/lib/socket-client";
 export const ASSIGNED_REVIEW_COUNT_KEY = queryKeys.reviews.list({
   assignee: "me",
   status: "in_review",
+  decision: "pending",
   countOnly: true,
 });
 
-/** Fallback for a decision this user's socket does not hear (another reviewer's, elsewhere). */
+/** Fallback for a change this user's socket does not hear (a dropped connection). */
 const REFRESH_MS = 60_000;
 
 /**
- * #2332 — how many reviews are waiting on me: in review, with me among the
- * assigned reviewers. The same filter the Reviews page's "Assigned to me" tab
- * uses, plus the in-review status, so a decided or withdrawn review drops off.
- * Reads the list's `total` with a page of one, so it costs one row.
+ * #2332 — how many reviews are waiting on me: in review, with my own decision
+ * on it still pending (#2370). In a multi-reviewer review, deciding takes it
+ * off my count while the others have not decided. The server builds that
+ * filter from the predicate Home's "My work" uses (`awaitingDecisionWhere`,
+ * #2348), so the two counts agree. Reads the list's `total` with a page of
+ * one, so it costs one row.
  *
  * Refreshes when this user is assigned (`review:notification`, sent to their
- * own room), when a review in a project room they have joined changes state
- * (`review:changed`), on any review mutation in this tab (they invalidate
+ * own room), when a review they are a reviewer of changes state
+ * (`review:changed`, sent to each reviewer's own room as well as the
+ * project's, #2370), on any review mutation in this tab (they invalidate
  * `reviews.all`), and every minute otherwise. `undefined` until it first loads
  * and on an error, so the caller shows no number rather than a wrong one.
  */
@@ -35,7 +39,14 @@ export function useAssignedReviewCount(): number | undefined {
   const query = useQuery({
     queryKey: ASSIGNED_REVIEW_COUNT_KEY,
     queryFn: async () =>
-      (await reviewsApi.list({ assignee: "me", status: "in_review", pageSize: 1 })).total,
+      (
+        await reviewsApi.list({
+          assignee: "me",
+          status: "in_review",
+          decision: "pending",
+          pageSize: 1,
+        })
+      ).total,
     refetchInterval: REFRESH_MS,
   });
 
@@ -50,5 +61,6 @@ export function useAssignedReviewCount(): number | undefined {
     };
   }, [socket, qc]);
 
+  // After a failed re-read `data` still holds the last number: show none.
   return query.isError ? undefined : query.data;
 }
