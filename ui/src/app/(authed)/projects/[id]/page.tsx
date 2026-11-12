@@ -3,8 +3,8 @@
 /**
  * Project Overview (#29, epic #26) — where each pipeline stage stands and what
  * to do next, plus knowledge search. The settings form that used to live here
- * moved behind the ⚙ tab (`/projects/[id]/settings`); the code summary is Code →
- * Code Overview. This is the only page in a project named "Overview".
+ * moved behind the ⚙ tab (`/projects/[id]/settings`); the code summary is ⚙ →
+ * Code Overview (#2334). This is the only page in a project named "Overview".
  */
 import { notFound, useParams } from "next/navigation";
 import { useState } from "react";
