@@ -397,18 +397,21 @@ describe("ingestTeamsActivity", () => {
   // ---- #552 AI participant wiring -----------------------------------------
 
   it("runs the AI participant after ingesting, with the thread's mode + trigger", async () => {
-    const h = harness({ aiResponseMode: "auto" });
+    // #2282 — and when the channel was linked, where the reply's history starts.
+    const linkedAt = new Date("2026-11-01T09:00:00.000Z");
+    const h = harness({ aiResponseMode: "auto", link: link({ createdAt: linkedAt }) });
     const { context } = fakeContext({ text: "@AI summarize" });
     const res = await ingestTeamsActivity(context, h.opts);
 
     expect(res.outcome).toBe("ingested");
     expect(h.respondAsAI).toHaveBeenCalledTimes(1);
-    expect(h.respondAsAI.mock.calls[0][1]).toMatchObject({
+    expect(h.respondAsAI.mock.calls[0][1]).toEqual({
       threadId: THREAD,
       projectId: "pr-1",
       aiResponseMode: "auto",
       messageId: "msg-7",
       authorUserId: "u-99",
+      linkedAt,
     });
   });
 

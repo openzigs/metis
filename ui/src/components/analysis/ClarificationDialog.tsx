@@ -126,6 +126,22 @@ const UNCERTAINTY_LABEL: Record<NonNullable<ClarifyingQuestion["uncertainty"]>, 
   unanswerable: "No one can answer this yet",
 };
 
+/**
+ * #2275 — the label for `q`. "Searched" is said only when the search ran
+ * (`searched`): with no project knowledge to search, offline, or when the
+ * search failed, nothing was searched, and the label says what is missing
+ * without claiming a search.
+ */
+export function uncertaintyLabel(
+  q: Pick<ClarifyingQuestion, "uncertainty" | "searched">,
+): string | null {
+  if (!q.uncertainty) return null;
+  if (q.uncertainty === "missing-knowledge" && !q.searched) {
+    return "Missing project knowledge: your documents or code may answer this";
+  }
+  return UNCERTAINTY_LABEL[q.uncertainty];
+}
+
 /** #2235 — the paragraph of the source document a question is about. */
 export function QuestionCitation({
   citation,
@@ -244,6 +260,7 @@ export function NotAskedNote({
   if (count === 0) return null;
   const more = `${count} more question${count === 1 ? "" : "s"}`;
   const lastRound = (last?.round ?? 0) >= state.maxRounds;
+  const were = count === 1 ? "was" : "were";
   return (
     <p
       role="status"
@@ -251,8 +268,11 @@ export function NotAskedNote({
       data-testid="clarification-not-asked"
     >
       {lastRound
-        ? `${more} did not fit in the last round and ${count === 1 ? "was" : "were"} not asked.`
-        : `${more} of lower impact ${count === 1 ? "is" : "are"} waiting for the next round.`}
+        ? `${more} did not fit in the last round and ${were} not asked.`
+        : // #2275 — a completed dialog has no next round to wait for.
+          state.completed
+          ? `${more} of lower impact ${were} not asked.`
+          : `${more} of lower impact ${count === 1 ? "is" : "are"} waiting for the next round.`}
     </p>
   );
 }
@@ -393,9 +413,12 @@ export function ClarificationDialogPanel({
   // round 2 opened at "0 addressed" after round 1's only answer, a governing
   // one, was accepted. Keyed by question id, so the same rule asked again in a
   // later round is still remaining until that question is answered.
+  // #2275 — and the ambiguities set aside as not worth asking (#2235), as the
+  // server's `addressedAmbiguities` counts them.
   const addressedFields = new Set([
     ...state.resolvedAmbiguities,
     ...(state.answeredAmbiguities ?? []),
+    ...(state.setAsideAmbiguities ?? []),
     ...state.rounds
       .flatMap((r) => r.questions ?? [])
       .filter((q) => q.governing && q.answer?.trim())
@@ -660,7 +683,7 @@ export function ClarificationDialogPanel({
                   className="mb-2 text-xs text-muted-foreground"
                   data-testid="question-uncertainty"
                 >
-                  {UNCERTAINTY_LABEL[q.uncertainty]}
+                  {uncertaintyLabel(q)}
                 </p>
               )}
               {q.citation && <QuestionCitation citation={q.citation} />}
