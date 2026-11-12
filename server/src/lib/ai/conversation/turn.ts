@@ -139,6 +139,12 @@ export interface PrepareTurnInput {
 
 export interface PreparedTurn {
   userRow: StoredMessage;
+  /**
+   * #2242 — the earlier rows the prompt's history was built from (after any
+   * compaction): the window the #773 tool digest covers, so the reply's
+   * citations can count what those turns read.
+   */
+  historyRows?: readonly StoredMessage[];
   /** The full prompt to send: prefix, history, RAG, new user message. */
   messages: ChatMessage[];
   compaction: CompactionOutcome | null;
@@ -336,6 +342,7 @@ export async function prepareTurn(input: PrepareTurnInput): Promise<PreparedTurn
   ]);
   return {
     userRow,
+    historyRows: compaction ? compaction.activeRows : history,
     messages,
     compaction,
     compactionError,

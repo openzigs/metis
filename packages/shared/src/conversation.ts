@@ -6,6 +6,7 @@
  * message on each turn and renders the conversation from
  * `GET /api/ai/sessions/:id/messages`; it never holds history of its own.
  */
+import type { ChatCitation } from "./chat-citations.js";
 import type { SdkReasoningEffort } from "./sdk-alignment.js";
 
 /** The title a chat session carries until its first question names it (#980). */
@@ -352,6 +353,12 @@ export interface TranscriptMessageDto {
    * semantic-cache hit (generated against another request's retrieval).
    */
   grounding?: ChatGrounding | null;
+  /**
+   * #2242 — assistant replies only: the citations the reply made, each checked
+   * against what its turn retrieved or read. Empty when it cited nothing, or
+   * was written before #2242.
+   */
+  citations?: ChatCitation[];
   createdAt: string;
 }
 

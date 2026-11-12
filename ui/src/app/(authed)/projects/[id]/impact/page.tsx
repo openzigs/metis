@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * Project-scoped Impact Analysis (#28, epic #26) — the Analyze tab's entry to
+ * Project-scoped Impact Analysis (#28, epic #26) — the Change requests tab's entry to
  * impact analysis, which is otherwise a cross-project tool in the sidebar.
  * #61 — lists this project's own runs (`GET /impact-analyses?projectId=`).
  */

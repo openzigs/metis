@@ -181,7 +181,7 @@ test.describe("UI IA — accessibility affordances (#133)", () => {
     const tabs = new ProjectTabsPage(page);
     await tabs.expectVisible();
 
-    await expect(tabs.primaryLink("Settings")).toBeVisible();
+    await expect(tabs.primaryLink("Project settings")).toBeVisible();
     await expect(page.getByRole("button", { name: "More project sections" })).toHaveCount(0);
   });
 
@@ -197,7 +197,7 @@ test.describe("UI IA — accessibility affordances (#133)", () => {
     });
 
     await test.step("the ⚙ settings tab is keyboard-focusable", async () => {
-      const gear = new ProjectTabsPage(page).primaryLink("Settings");
+      const gear = new ProjectTabsPage(page).primaryLink("Project settings");
       await gear.focus();
       await expect(gear).toBeFocused();
       await expectMinTarget(gear);

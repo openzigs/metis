@@ -8,8 +8,10 @@
  */
 import {
   MAX_ATTACHED_DOCUMENTS,
+  parseChatCitations,
   parseChatGrounding,
   type AiToolEvent,
+  type ChatCitation,
   type ChatGrounding,
   type CompactionEventDto,
   type ForkSessionResponse,
@@ -19,7 +21,7 @@ import {
   type TranscriptResponse,
 } from "@metis/shared";
 
-export type { ChatGrounding };
+export type { ChatCitation, ChatGrounding };
 import { apiFetch, ApiError, streamFetch } from "./api-client";
 import { stripToolTags } from "./strip-tool-tags";
 
@@ -64,6 +66,8 @@ export type StreamEvent =
   | { type: "delta"; content: string }
   /** #18 — what this turn's reply is grounded in; sent before the answer. */
   | { type: "grounding"; grounding: ChatGrounding }
+  /** #2242 — the answer's citations, each checked against what the turn read; sent before `done`. */
+  | { type: "citations"; citations: ChatCitation[] }
   /** #138 — older turns were summarised before this answer (kept in the transcript). */
   | { type: "compaction"; compaction: CompactionEventDto }
   | { type: "tool_call"; name: string; arguments: unknown; risk: RiskLevel }
@@ -278,6 +282,8 @@ export interface DisplayTurn {
   toolCalls?: TranscriptToolCall[];
   /** #18 — assistant replies: what the reply was grounded in (absent: not known). */
   grounding?: ChatGrounding;
+  /** #2242 — assistant replies: their citations, as checked when answered. */
+  citations?: ChatCitation[];
 }
 
 /** One recorded tool call as the chat page renders it (collapsed by default). */
@@ -348,6 +354,7 @@ export function transcriptToDisplay(rows: readonly TranscriptMessageDto[]): Disp
       .map((p) => (p as { name: string }).name);
     const toolCalls = transcriptToolCalls(r.parts);
     const grounding = r.role === "assistant" ? parseChatGrounding(r.grounding) : null;
+    const citations = r.role === "assistant" ? parseChatCitations(r.citations) : [];
     out.push({
       role: r.role,
       content: text,
@@ -357,6 +364,7 @@ export function transcriptToDisplay(rows: readonly TranscriptMessageDto[]): Disp
       ...(tools.length > 0 ? { tools } : {}),
       ...(toolCalls.length > 0 ? { toolCalls } : {}),
       ...(grounding ? { grounding } : {}),
+      ...(citations.length > 0 ? { citations } : {}),
     });
   }
   return out;
@@ -783,6 +791,10 @@ export function parseSseFrame(frame: string): StreamEvent | null {
     case "grounding": {
       const grounding = parseChatGrounding((payload as { grounding?: unknown }).grounding);
       return grounding ? { type: "grounding", grounding } : null;
+    }
+    case "citations": {
+      const citations = parseChatCitations((payload as { citations?: unknown }).citations);
+      return citations.length > 0 ? { type: "citations", citations } : null;
     }
     case "usage":
       return { type: "usage", usage: payload as TokenUsage };

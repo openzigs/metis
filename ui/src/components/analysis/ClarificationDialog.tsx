@@ -246,6 +246,47 @@ export function SetAsideQuestions({
 }
 
 /**
+ * #2236 — the questions METIS did not ask because the project had already
+ * answered them, with the answer that was reused. Listed so the analyst sees
+ * what was carried over and can tell a settled question from a skipped one.
+ */
+export function ReusedAnswers({
+  state,
+}: {
+  state: ClarificationStatePayload;
+}): React.ReactElement | null {
+  const reused = state.reused ?? [];
+  if (reused.length === 0) return null;
+  return (
+    <details className="text-sm" data-testid="clarification-reused">
+      <summary className="cursor-pointer text-xs text-muted-foreground">
+        {reused.length} question{reused.length === 1 ? "" : "s"} already answered in this project,
+        not asked again
+      </summary>
+      <div className="mt-2 space-y-2">
+        {reused.map((r) => (
+          <div
+            key={`${r.recordId}:${r.requirementId}:${r.round}`}
+            className="rounded border border-border p-2"
+          >
+            <p className="text-sm text-foreground">{r.question}</p>
+            <p className="text-sm text-foreground">
+              <span className="font-medium">Answer: </span>
+              {r.answer}
+            </p>
+            <p className="text-xs text-muted-foreground">
+              Answered {new Date(r.answeredAt).toLocaleDateString()}
+              {r.fromAnalysisId ? " in an earlier analysis" : ""}
+            </p>
+            {r.citation && <QuestionCitation citation={r.citation} />}
+          </div>
+        ))}
+      </div>
+    </details>
+  );
+}
+
+/**
  * #2235 — a round asks at most a fixed number of questions, the highest-impact
  * first. Say how many more are waiting, or, on the last round, that they will
  * not be asked.
@@ -576,6 +617,7 @@ export function ClarificationDialogPanel({
             analysis record, so show them. A bare "complete" summary is how a
             dozen hand-written answers became unreachable through the UI. */}
         <AnsweredRounds state={state} />
+        <ReusedAnswers state={state} />
         <SetAsideQuestions state={state} />
       </Card>
     );
@@ -776,6 +818,7 @@ export function ClarificationDialogPanel({
       {submitMutation.isError && (
         <p className="text-sm text-destructive">Failed to submit answers. Please try again.</p>
       )}
+      <ReusedAnswers state={state} />
       <SetAsideQuestions state={state} />
     </Card>
   );

@@ -67,6 +67,20 @@ describe("fuseCodeContext — rendering + locators (AC a)", () => {
     expect(res.block).toContain("## Retrieved Code Symbols (project-scoped code graph)");
   });
 
+  it("#2242 — numbers its entries from firstIndex, so they continue the excerpts' [n]", () => {
+    const res = fuseCodeContext(
+      [
+        hit({ symbolId: "s1", filePath: "src/A.ts", startLine: 5, endLine: 9, name: "A" }),
+        hit({ symbolId: "s2", filePath: "src/B.ts", startLine: 1, endLine: 3, name: "B" }),
+      ],
+      [],
+      { tokenBudget: 10_000, firstIndex: 4 },
+    );
+    expect(res.block).toContain("[4] A (class) — src/A.ts:5-9");
+    expect(res.block).toContain("[5] B (class) — src/B.ts:1-3");
+    expect(res.block).not.toMatch(/^\[1\]/m);
+  });
+
   it("returns an empty block when there are no symbol hits", () => {
     expect(fuseCodeContext([], [], { tokenBudget: 10_000 })).toEqual({
       block: "",
