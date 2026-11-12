@@ -9,7 +9,11 @@
  * a `filePath:startLine-endLine` locator (which #715 citations reuse).
  *
  * A project without a built code graph yields zero symbols → a clean "no code
- * graph symbols" result, never an error (matching `searchCodeGraphTool`). The
+ * graph symbols" result, never an error (matching `searchCodeGraphTool`).
+ *
+ * #2325 — every hit carries the citation contract: its span at the indexed
+ * commit of its repository, a permalink where the connector has one, and the
+ * retrievers that matched it; the result opens with the commit it describes. The
  * searcher / line-lookup are injectable so unit tests never touch a live
  * embedder, LanceDB table, or Prisma.
  */
@@ -22,6 +26,12 @@ import {
   createDefaultCodeSearcher,
   createDefaultSymbolLineLookup,
 } from "../../code-graph/project-code-searcher.js";
+import {
+  codeCitationRef,
+  formatCodeVersionLine,
+  type CodeVersionIndex,
+} from "../../code-graph/code-version.js";
+import type { CodeCitationRef } from "@metis/shared";
 
 /**
  * The cut-off the agent actually sees. EXPORTED because it is a retrieval
@@ -74,6 +84,12 @@ function validateArgs(args: unknown): SearchSymbolsArgs | null {
 export interface SearchSymbolsDeps {
   searcher: FusedCodeSearcher;
   lineLookup: SymbolLineLookup;
+  /**
+   * #2325 — the project's indexed versions. Chat passes it (`getChatCodeTools`);
+   * without it (the analysis surface) the result carries no citation contract
+   * and reads as before.
+   */
+  loadVersions: (projectId: string) => Promise<CodeVersionIndex>;
 }
 
 /**
@@ -82,8 +98,12 @@ export interface SearchSymbolsDeps {
  */
 export function createSearchSymbolsTool(deps?: Partial<SearchSymbolsDeps>): AgentTool {
   const searcher = deps?.searcher ?? createDefaultCodeSearcher();
-  // #1636 — the tool renders `path:start-end` only, so it skips the repo read.
-  const lineLookup = deps?.lineLookup ?? createDefaultSymbolLineLookup({ withRepo: false });
+  const loadVersions = deps?.loadVersions;
+  // #1636 — the analysis surface renders `path:start-end` only, so it skips the
+  // repo read. #2325 — chat (given `loadVersions`) reads it: a hit's commit is
+  // its repository's.
+  const lineLookup =
+    deps?.lineLookup ?? createDefaultSymbolLineLookup({ withRepo: Boolean(loadVersions) });
 
   async function execute(args: unknown, context: ToolContext): Promise<ToolResult> {
     const validated = validateArgs(args);
@@ -130,19 +150,44 @@ export function createSearchSymbolsTool(deps?: Partial<SearchSymbolsDeps>): Agen
       context.projectId,
     );
 
+    const versions = loadVersions ? await loadVersions(context.projectId) : null;
+    const citations: CodeCitationRef[] = [];
     const lines = raw.map((hit) => {
       const span = spans.get(hit.symbolId);
       const locator = span ? `${span.filePath}:${span.startLine}-${span.endLine}` : hit.filePath;
       const head = `${hit.kind} ${hit.name} — ${locator} (score=${hit.score.toFixed(3)})`;
       // Cut first, then quote: a cut cannot expose a line the quoting defused.
+      const cut = (hit.snippet?.length ?? 0) > MAX_SNIPPET_CHARS;
       const snippet = quotableSnippet(hit.snippet?.slice(0, MAX_SNIPPET_CHARS));
+      if (versions)
+        citations.push(
+          codeCitationRef({
+            repoConnectionId: span?.repoConnectionId,
+            path: span?.filePath ?? hit.filePath,
+            startLine: span?.startLine ?? null,
+            endLine: span?.endLine ?? null,
+            version: versions.forRepo(span?.repoConnectionId),
+            ...(hit.matchedBy ? { matchedBy: hit.matchedBy } : {}),
+            // A snippet the cap cut: the symbol's whole span is the next read.
+            truncated: cut,
+            ...(cut && span
+              ? {
+                  totalLines: span.endLine - span.startLine + 1,
+                  next: { startLine: span.startLine, endLine: span.endLine },
+                }
+              : {}),
+          }),
+        );
       return snippet ? `${head}\n${snippet}` : head;
     });
 
+    // #2325 — the commit FIRST: chat's model-context cap keeps a result's start.
+    const version = formatCodeVersionLine(citations);
     return {
-      content: lines.join("\n\n"),
+      content: version ? `${version}\n\n${lines.join("\n\n")}` : lines.join("\n\n"),
       truncated: found.length >= limit,
       resultCount: raw.length,
+      ...(versions ? { citations } : {}),
     };
   }
 

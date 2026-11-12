@@ -128,7 +128,7 @@ export const CAPABILITY_REASON_COPY: Record<AnalysisCapabilityReason, Capability
     title:
       "The repository is indexed but not checked out on the server, so code was analyzed from the code graph alone — without reading the source files.",
     action:
-      "Findings from this run are still grounded in the code graph. For deeper, line-level evidence, re-sync the repository connector so a working copy is available, then re-run.",
+      "Findings from this run are still grounded in the code graph. For deeper, line-level evidence, update the repository on its Connections page so a working copy is available, then re-run.",
   },
   // Issue #1143 — the findings were kept; only the unreadable citations went.
   // The run header names each agent and how many it lost.

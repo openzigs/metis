@@ -11,7 +11,7 @@
  *      (#137), including a reply that ended early (it is marked incomplete, not
  *      dropped), then refresh the derived session snapshot.
  */
-import type { SdkReasoningEffort, TranscriptPart } from "@metis/shared";
+import type { CodeCitationRef, SdkReasoningEffort, TranscriptPart } from "@metis/shared";
 import { DEFAULT_SESSION_TITLE, titleFromQuestion } from "@metis/shared";
 import type { ChatMessage, ChatToolSpec, TokenUsage } from "../types.js";
 import { prisma } from "../../prisma.js";
@@ -375,6 +375,8 @@ export interface ReplyToolCall {
   executed?: boolean;
   /** #147 — the sub-agent run this call started (its stored transcript). */
   subAgentRunId?: string;
+  /** #2325 — the citation contract the tool returned, kept for later turns' citations. */
+  citations?: CodeCitationRef[];
 }
 
 export interface RecordReplyInput {
@@ -410,6 +412,7 @@ export async function recordReply(input: RecordReplyInput): Promise<StoredMessag
       ...(c.executed === false ? { executed: false } : {}),
       // #147 — the link from this turn to the sub-agent's stored transcript.
       ...(c.subAgentRunId ? { subAgentRunId: c.subAgentRunId } : {}),
+      ...(c.citations && c.citations.length > 0 ? { citations: c.citations } : {}),
     });
   });
   if (input.text) parts.push({ type: "text", text: input.text });

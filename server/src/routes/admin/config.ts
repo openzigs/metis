@@ -61,6 +61,11 @@ interface RedactedKeyView {
   source: "vault" | "db" | "env" | "unset";
   /** Redacted to `[REDACTED]` for sensitive keys, otherwise the live value. */
   value: string | null;
+  /**
+   * #2295 — what the code applies while the key is unset (`null` when the key
+   * registers no default), so an unset flag that is effectively on reads on.
+   */
+  defaultValue: string | null;
 }
 
 function projectKey(svc: ConfigService, key: string): RedactedKeyView {
@@ -82,6 +87,7 @@ function projectKey(svc: ConfigService, key: string): RedactedKeyView {
     sensitive: def.sensitive,
     source: desc.source,
     value,
+    defaultValue: def.default ?? null,
   };
 }
 

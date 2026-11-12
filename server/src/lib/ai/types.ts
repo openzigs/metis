@@ -11,6 +11,7 @@
  * one shape regardless of backend.
  */
 import type { z } from "zod";
+import type { CodeCitationRef } from "@metis/shared";
 import type { ProviderCapabilities } from "./capabilities.js";
 
 export type {
@@ -605,6 +606,8 @@ export interface ToolResult {
    * result). Chat grounding counts a project read only when this is positive.
    */
   resultCount?: number;
+  /** #2325 — the citation contract of the code-derived locations it returned. */
+  citations?: CodeCitationRef[];
 }
 
 /** Provider implementations live in `providers/`. */

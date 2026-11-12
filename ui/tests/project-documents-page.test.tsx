@@ -89,6 +89,10 @@ describe("ProjectDocumentsPage", () => {
     expect(screen.getByRole("heading", { name: "Documents", level: 1 })).toBeInTheDocument();
     await waitFor(() => expect(screen.getByTestId("mock-uploader")).toBeInTheDocument());
     await waitFor(() => expect(screen.getByText("No documents yet.")).toBeInTheDocument());
+    // #2337 — the shared EmptyState, saying what belongs here and what to do.
+    const empty = screen.getByTestId("project-documents-empty");
+    expect(empty).toHaveAttribute("data-slot", "empty-state");
+    expect(empty).toHaveTextContent(/belong here\. Upload a file/);
   });
 
   it("lists existing documents", async () => {
@@ -266,6 +270,6 @@ describe("ProjectDocumentsPage", () => {
     onDocumentStatus({ projectId: "p1", documentId: "d1", status: "ready", chunkCount: 12 });
 
     await waitFor(() => expect(list.mock.calls.length).toBeGreaterThan(callsBefore));
-    await waitFor(() => expect(screen.getByText(/12 chunks/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/12 sections indexed/)).toBeInTheDocument());
   });
 });

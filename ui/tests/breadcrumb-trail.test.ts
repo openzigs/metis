@@ -52,7 +52,7 @@ describe("pageCrumbs (#271)", () => {
   it("a route reached from inside a section (issue sync) ends at its own label", () => {
     expect(pageCrumbs("/projects/p1/sync")).toEqual([
       { label: "Deliverables", href: "/projects/p1/documentation" },
-      { label: "Sync" },
+      { label: "Issue updates" },
     ]);
   });
 

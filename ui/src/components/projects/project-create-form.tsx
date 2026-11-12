@@ -46,7 +46,7 @@ import { WorkspaceStatusNotice } from "@/components/projects/workspace-status-no
 import type { ActiveWorkspaceStatus } from "@/lib/active-workspace";
 
 const REQUIRED_FIELDS = ["name", "slug"] as const;
-const FIELD_LABELS: Record<string, string> = { name: "Name", slug: "Slug" };
+const FIELD_LABELS: Record<string, string> = { name: "Name", slug: "Short name" };
 
 // Mirrors the Slug field's `pattern` (lowercase alphanumerics + hyphens, leading
 // alphanumeric). A non-empty value that fails this has a *detectable* cause, so
@@ -228,7 +228,7 @@ export function ProjectCreateForm({
       </div>
 
       <div className="space-y-2">
-        <Label htmlFor="slug">Slug</Label>
+        <Label htmlFor="slug">Short name</Label>
         <Input
           id="slug"
           value={slug}
@@ -318,12 +318,12 @@ export function ProjectCreateForm({
               />
             </div>
             <div className="space-y-1">
-              <Label htmlFor="repoSecret">Secret Ref (optional)</Label>
+              <Label htmlFor="repoSecret">Access token (vault secret)</Label>
               <VaultPicker
                 id="repoSecret"
                 value={repoSecret}
                 onChange={setRepoSecret}
-                placeholder="${vault:my-pat}"
+                placeholder="Choose a vault secret"
               />
             </div>
           </div>

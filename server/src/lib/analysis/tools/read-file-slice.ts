@@ -14,6 +14,14 @@ import { redactSecrets } from "../../safety/secret-patterns.js";
 
 const MAX_LINES = 200;
 
+/** A repository-relative path as the index stores it: `/`-separated, no `./` or leading `/`. */
+function repoRelative(filePath: string): string {
+  return path.posix
+    .normalize(filePath.replace(/\\/g, "/"))
+    .replace(/^(?:\.\/)+/, "")
+    .replace(/^\/+/, "");
+}
+
 export interface ReadFileSliceArgs {
   filePath: string;
   startLine?: number;
@@ -165,11 +173,37 @@ async function execute(args: unknown, context: ToolContext): Promise<ToolResult>
 
   const numbered = slice.map((line, i) => `${startLine + i}| ${line}`);
   const header = `${validated.filePath} (lines ${startLine}-${clampedEnd} of ${lines.length})`;
+  // #2325 — a cut read names the range to ask for next. In the HEAD, before the
+  // lines: chat caps the model's copy of a result by keeping its start
+  // (`capForModel`, #138), and a 200-line read is routinely longer than that
+  // cap, so a hint after the lines would be cut away with them.
+  const next = truncated
+    ? { startLine: clampedEnd + 1, endLine: Math.min(clampedEnd + MAX_LINES, lines.length) }
+    : undefined;
+  const paging = next
+    ? `\n[Cut at ${MAX_LINES} lines per call: request lines ${next.startLine}-${next.endLine} next.]`
+    : "";
 
   return {
-    content: `${header}\n${numbered.join("\n")}`,
+    content: `${header}${paging}\n${numbered.join("\n")}`,
     truncated,
     resultCount: slice.length,
+    // #2325 — the citation contract. The version is the caller's to state: this
+    // tool reads a directory and knows no commit, nor which repository it is.
+    citations: [
+      {
+        repoConnectionId: null,
+        path: repoRelative(validated.filePath),
+        startLine,
+        endLine: clampedEnd,
+        commitSha: null,
+        permalink: null,
+        truncated,
+        totalLines: lines.length,
+        ...(next ? { next } : {}),
+        stale: false,
+      },
+    ],
   };
 }
 

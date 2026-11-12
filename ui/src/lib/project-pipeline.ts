@@ -219,7 +219,9 @@ function ingestStage(base: string, f: PipelineFacts): PipelineStage {
       parts.push(
         plural(
           ready.reduce((n, d) => n + d.chunkCount, 0),
-          "chunk",
+          // #2337 — "chunks" is system jargon.
+          "section indexed",
+          "sections indexed",
         ),
       );
     }

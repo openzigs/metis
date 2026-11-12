@@ -97,7 +97,7 @@ export default function TasksPage() {
     <div className="space-y-6 p-2 md:p-0">
       <PageHeader
         title="Tasks"
-        description="Task queue across the platform — scheduled fires, manual triggers, retries, and webhook callbacks. Live status streams in over Socket.IO."
+        description="Every queued task across METIS — scheduled runs, manual starts, retries and webhook callbacks. Status updates live."
       />
 
       {/* #268 — Radix Tabs: arrow keys / Home / End, roving tabindex, aria-controls. */}

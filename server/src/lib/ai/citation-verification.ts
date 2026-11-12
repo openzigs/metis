@@ -36,13 +36,21 @@
  * the turn never read and that cites no line ("add a `config.yaml`") is a
  * mention, not a citation, and is left alone. Fenced code blocks and URLs are
  * skipped: an import path or a link is not a source.
+ *
+ * #2325 — a citation of code also records WHICH VERSION was read: the indexed
+ * commit the code tools' citation contract (and the fused block's entries)
+ * stated for that file (`null` when none was stated), and `stale` when a read
+ * of it came from a working tree the index is behind. A stale citation keeps
+ * its status: it is flagged, never dropped or downgraded.
  */
 import {
   MAX_CHAT_CITATIONS,
+  parseCodeCitationRefs,
   type TranscriptPart,
   type ChatCitation,
   type ChatCitationSource,
   type ChatCitationStatus,
+  type CodeCitationRef,
 } from "@metis/shared";
 import { CHAT_CODE_TOOL_NAMES } from "../analysis/tools/chat-code-tool-names.js";
 
@@ -55,6 +63,32 @@ interface EvidenceFile {
   ranges: Array<[number, number]>;
   /** Line ranges earlier turns' tools read. */
   earlierRanges: Array<[number, number]>;
+  /**
+   * #2325 — the version tools stated for this path, PER REPOSITORY (keyed by
+   * connection id; `""` when the producer did not know it): a file is its
+   * repository and its path (#1965), and two repositories can both hold
+   * `src/index.ts` at different commits, one of them stale.
+   */
+  versions: Map<string, RepoVersionEvidence>;
+}
+
+/** What tools stated about one repository's copy of a path. */
+interface RepoVersionEvidence {
+  /** The first commit stated wins. */
+  commitSha: string | null;
+  /** One stale read marks this repository's copy stale. */
+  stale: boolean;
+  /** The line ranges the stating results covered, to tell repositories apart. */
+  ranges: Array<[number, number]>;
+}
+
+/** One version statement: a tool's citation ref, or a fused block entry. */
+export interface VersionStatement {
+  repoConnectionId?: string | null;
+  commitSha: string | null;
+  stale: boolean;
+  startLine?: number | null;
+  endLine?: number | null;
 }
 
 /** One entry of the fused code block (#714), by its `[n]` number. */
@@ -62,6 +96,10 @@ export interface CodeEntryEvidence {
   n: number;
   path: string;
   lines: [number, number];
+  /** #2325 — the indexed commit the entry was read at (absent: not stated). */
+  commitSha?: string | null;
+  /** #2325 — the repository the entry is in (absent or `null`: not stated). */
+  repoConnectionId?: string | null;
 }
 
 export class CitationEvidence {
@@ -74,12 +112,40 @@ export class CitationEvidence {
   add(path: string, source: ChatCitationSource, range?: [number, number], earlier = false): void {
     const key = normalizePath(path);
     if (!key) return;
-    const entry = this.files.get(key) ?? { source, now: false, ranges: [], earlierRanges: [] };
+    const entry = this.files.get(key) ?? {
+      source,
+      now: false,
+      ranges: [],
+      earlierRanges: [],
+      versions: new Map(),
+    };
     // A file read as code anywhere in the conversation is a repository file.
     if (source === "repo") entry.source = "repo";
     if (!earlier) entry.now = true;
     if (range) (earlier ? entry.earlierRanges : entry.ranges).push(range);
     this.files.set(key, entry);
+  }
+
+  /**
+   * #2325 — record the version a tool stated for `path` in repository
+   * `v.repoConnectionId`. Per repository: the first commit stated wins, and
+   * one stale read marks that repository's copy stale — never another
+   * repository's file of the same path.
+   */
+  addVersion(path: string, v: VersionStatement): void {
+    const entry = this.files.get(normalizePath(path));
+    if (!entry) return;
+    const repo = v.repoConnectionId ?? "";
+    const prior = entry.versions.get(repo);
+    const span =
+      v.startLine != null && v.endLine != null
+        ? range(String(v.startLine), String(v.endLine))
+        : null;
+    entry.versions.set(repo, {
+      commitSha: prior ? (prior.commitSha ?? v.commitSha) : v.commitSha,
+      stale: (prior?.stale ?? false) || v.stale,
+      ranges: span ? [...(prior?.ranges ?? []), span] : (prior?.ranges ?? []),
+    });
   }
 }
 
@@ -100,6 +166,8 @@ export interface ToolEvidence {
   executed: boolean;
   isError?: boolean;
   result?: string;
+  /** #2325 — the tool's citation contract, when it returned one. */
+  citations?: readonly CodeCitationRef[];
 }
 
 /** The METIS tools whose results are the project's own files and documents. */
@@ -162,9 +230,7 @@ function addToolEvidence(ev: CitationEvidence, t: ToolEvidence, earlier: boolean
   if (slice) {
     const r = range(slice[2]!, slice[3]);
     if (r) ev.add(slice[1]!, "repo", r, earlier);
-    return;
-  }
-  if (t.source === "code") {
+  } else if (t.source === "code") {
     for (const m of text.matchAll(LOCATOR)) {
       const r = range(m[2]!, m[3]);
       if (r) ev.add(m[1]!, "repo", r, earlier);
@@ -172,6 +238,8 @@ function addToolEvidence(ev: CitationEvidence, t: ToolEvidence, earlier: boolean
   } else {
     for (const m of text.matchAll(EXCERPT_HEADER)) ev.add(m[1]!, "document", undefined, earlier);
   }
+  // #2325 — the version the tool's citation contract stated, for what it returned.
+  for (const ref of t.citations ?? []) ev.addVersion(ref.path, ref);
 }
 
 /** A stored transcript row, by the shape this module reads. */
@@ -195,12 +263,14 @@ export function priorToolEvidence(rows: readonly PriorRow[]): ToolEvidence[] {
     if (r.role !== "assistant" || r.kind !== "message" || r.compactedAt) continue;
     for (const p of r.parts) {
       if (p.type !== "tool_result") continue;
+      const citations = parseCodeCitationRefs(p.citations);
       out.push({
         tool: p.name,
         source: CODE_TOOLS.has(p.name) ? "code" : "metis",
         executed: p.executed !== false,
         ...(p.isError ? { isError: true } : {}),
         result: p.text,
+        ...(citations.length > 0 ? { citations } : {}),
       });
     }
   }
@@ -235,6 +305,17 @@ export function collectCitationEvidence(
     for (const m of text.matchAll(LOCATOR)) {
       const r = range(m[2]!, m[3]);
       if (r) ev.add(m[1]!, "repo", r);
+    }
+  }
+  for (const c of retrieved?.codeEntries ?? []) {
+    if (c.commitSha !== undefined) {
+      ev.addVersion(c.path, {
+        repoConnectionId: c.repoConnectionId ?? null,
+        commitSha: c.commitSha,
+        stale: false,
+        startLine: c.lines[0],
+        endLine: c.lines[1],
+      });
     }
   }
   for (const t of tools) addToolEvidence(ev, t, false);
@@ -329,7 +410,13 @@ export function verifyCitations(answer: string, ev: CitationEvidence): ChatCitat
       push(m.index!, { ...cited, path: normalizePath(token), status: "ambiguous" });
       continue;
     }
-    push(m.index!, { ...cited, path: best.path, status: best.status, source: best.file.source });
+    push(m.index!, {
+      ...cited,
+      path: best.path,
+      status: best.status,
+      source: best.file.source,
+      ...versionOf(best.file, lines),
+    });
   }
 
   if (ev.excerpts.length > 0 || ev.codeEntries.size > 0) {
@@ -340,11 +427,13 @@ export function verifyCitations(answer: string, ev: CitationEvidence): ChatCitat
         const excerpt = ev.excerpts[n - 1];
         const code = ev.codeEntries.get(n);
         if (excerpt) {
+          const file = ev.files.get(excerpt.name);
           push(m.index!, {
             text: label,
             path: excerpt.name,
             status: "verified",
             source: excerpt.source,
+            ...(file ? versionOf(file, null) : {}),
           });
         } else if (code) {
           push(m.index!, {
@@ -353,6 +442,7 @@ export function verifyCitations(answer: string, ev: CitationEvidence): ChatCitat
             lines: code.lines,
             status: "verified",
             source: "repo",
+            commitSha: code.commitSha ?? null,
           });
         } else {
           push(m.index!, { text: label, path: "", status: "not-read" });
@@ -365,6 +455,32 @@ export function verifyCitations(answer: string, ev: CitationEvidence): ChatCitat
     .sort((x, y) => x.at - y.at)
     .slice(0, MAX_CHAT_CITATIONS)
     .map((f) => f.citation);
+}
+
+/**
+ * #2325 — the version fields of a citation (of `lines`, if any) resolved to
+ * `file`: a repository file always states its commit (`null`: none was
+ * stated, or not one commit); a document states one only when a tool gave it.
+ *
+ * When repositories stated versions for the same path, the ones whose stated
+ * lines cover the citation decide; when that is still more than one (or none
+ * covers it), every repository that stated one does: the commit is stated
+ * only if they agree, and the citation is stale if any of them was, because
+ * a citation that may describe stale lines is never shown as current.
+ */
+function versionOf(
+  file: EvidenceFile,
+  lines: [number, number] | null,
+): Pick<ChatCitation, "commitSha" | "stale"> {
+  const all = [...file.versions.values()];
+  if (all.length === 0) return file.source === "repo" ? { commitSha: null } : {};
+  const covering = lines ? all.filter((v) => covered(lines, v.ranges)) : [];
+  const pick = covering.length > 0 ? covering : all;
+  const shas = new Set(pick.map((v) => v.commitSha));
+  return {
+    commitSha: shas.size === 1 ? pick[0]!.commitSha : null,
+    ...(pick.some((v) => v.stale) ? { stale: true } : {}),
+  };
 }
 
 /** The reply-row `meta` entry for `citations`; empty when the answer cited nothing. */

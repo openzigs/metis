@@ -157,7 +157,7 @@ describe("ingest stage", () => {
     );
     expect(s.state).toBe("done");
     expect(s.status).toContain("2 documents ready");
-    expect(s.status).toContain("1,203 chunks");
+    expect(s.status).toContain("1,203 sections indexed");
   });
 
   it("omits the chunk total when only a page of documents was listed", () => {
@@ -165,7 +165,7 @@ describe("ingest stage", () => {
       facts({ documents: { total: 40, items: [{ status: "ready", chunkCount: 5 }] } }),
       "ingest",
     );
-    expect(s.status).not.toContain("chunks");
+    expect(s.status).not.toContain("sections indexed");
   });
 
   // Review of #63 — `GET /documents` returns one page (at most 100), and a
@@ -185,7 +185,7 @@ describe("ingest stage", () => {
     expect(s.status).toContain("1,234 documents");
     expect(s.status).not.toMatch(/100 documents/);
     expect(s.status).not.toContain("ready");
-    expect(s.status).not.toContain("chunks");
+    expect(s.status).not.toContain("sections indexed");
   });
 
   it("states failures and processing on a partial list as lower bounds", () => {
@@ -235,7 +235,7 @@ describe("ingest stage", () => {
       }),
       "ingest",
     );
-    expect(s.status).toBe("2 documents ready · 2 chunks · 1 document failed");
+    expect(s.status).toBe("2 documents ready · 2 sections indexed · 1 document failed");
   });
 
   it("counts a repository ingest as done and dates it", () => {
@@ -478,7 +478,7 @@ describe("quarantined documents (#66)", () => {
     );
     expect(s.state).toBe("done");
     expect(s.status).not.toMatch(/ingesting|processing/i);
-    expect(s.status).toBe("1 document ready · 4 chunks · 3 documents awaiting review");
+    expect(s.status).toBe("1 document ready · 4 sections indexed · 3 documents awaiting review");
   });
 
   it("do not hide a document that is really still processing", () => {
