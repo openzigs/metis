@@ -380,6 +380,24 @@ describe("buildCodeAgentFusedQuery (#729)", () => {
   it("falls back to the static code bag when everything is empty", () => {
     expect(buildCodeAgentFusedQuery({ requirementTexts: [] })).toBe(RETRIEVAL_QUERIES.code);
   });
+
+  it("#2276 — 24 requirements at the per-requirement bound are all in the query (only the embedder's copy is bounded)", () => {
+    const query = buildCodeAgentFusedQuery({
+      projectName: "Acme",
+      requirementTexts: Array.from(
+        { length: 24 },
+        (_, i) => `R${i}-${"x".repeat(MAX_REQUIREMENT_QUERY_CHARS - 4)}`,
+      ),
+    });
+    expect(query.startsWith("Acme. R0-")).toBe(true);
+    expect(query).toContain("R23-");
+  });
+
+  it("#2276 — an ordinary run (24 requirements of ~300 characters) keeps every requirement", () => {
+    const texts = Array.from({ length: 24 }, (_, i) => `REQ-${i} ${"y".repeat(290)}`);
+    const query = buildCodeAgentFusedQuery({ projectName: "Acme", requirementTexts: texts });
+    for (let i = 0; i < 24; i++) expect(query).toContain(`REQ-${i} `);
+  });
 });
 
 describe("renderFusedCodeContextBlock + estimateFusedBlockTokens (#729)", () => {
@@ -423,7 +441,7 @@ describe("retrieveFusedCodeContext (#729) — shared agentic/req-grounded helper
       ragChunks: [],
       deps: { searcher, lineLookup: makeLineLookup(spans) },
     });
-    expect(ctx).toEqual({ chunks: [], block: "", tokens: 0 });
+    expect(ctx).toEqual({ chunks: [], block: "", tokens: 0, semanticLeftOut: null });
     expect(searcher.search).not.toHaveBeenCalled();
   });
 

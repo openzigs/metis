@@ -65,6 +65,28 @@ describe("AnalysisLimitsPanel (#2233)", () => {
     expect(block).toHaveTextContent("REQ-026");
   });
 
+  it("#2276 — names the code search's meaning-based half, and says keyword search read them", () => {
+    render(
+      <AnalysisLimitsPanel
+        capability={capability({
+          requirementsLeftOut: [
+            {
+              stage: "fused-code-semantic",
+              analysedCount: 8,
+              totalCount: 9,
+              leftOut: [{ id: "REQ-009", excerpt: "Reconcile the ledger." }],
+            },
+          ],
+        })}
+      />,
+    );
+    const block = screen.getByTestId("requirements-left-out-fused-code-semantic");
+    expect(block).toHaveTextContent(
+      "Analyzed 8 of 9 requirements by meaning in the code search (the keyword search read all of them).",
+    );
+    expect(block).toHaveTextContent("REQ-009");
+  });
+
   it("names the governing-rule step separately", () => {
     render(
       <AnalysisLimitsPanel
@@ -106,6 +128,36 @@ describe("AnalysisLimitsPanel (#2233)", () => {
     );
     expect(block).toHaveTextContent("Retention period is undefined");
     expect(block).toHaveTextContent("No owner for the export");
+  });
+
+  it("#2276 — a malformed stored entry is skipped, not thrown on, and the well-formed one still renders", () => {
+    const stored = {
+      ...capability({}),
+      requirementsLeftOut: [
+        null,
+        { stage: "requirement-grounded-code", leftOut: 3 },
+        CODE_LEFT_OUT,
+      ],
+      findingsLeftOut: [
+        "x",
+        { agentKey: "web", producedCount: 51, keptCount: 50, leftOutTitles: null },
+      ],
+    } as unknown as AnalysisCapability;
+    render(<AnalysisLimitsPanel capability={stored} />);
+    expect(screen.getByTestId("requirements-left-out-requirement-grounded-code")).toHaveTextContent(
+      "REQ-025",
+    );
+    expect(screen.queryByTestId("findings-left-out-web")).toBeNull();
+  });
+
+  it("#2276 — renders nothing when every stored entry is malformed", () => {
+    const stored = {
+      ...capability({}),
+      requirementsLeftOut: "not a list",
+      findingsLeftOut: [{ agentKey: "web", producedCount: "many" }],
+    } as unknown as AnalysisCapability;
+    const { container } = render(<AnalysisLimitsPanel capability={stored} />);
+    expect(container).toBeEmptyDOMElement();
   });
 
   it("raises the capability banner for each limit", () => {

@@ -277,9 +277,11 @@ const SIDECAR_MAX_INPUT_CHARS = 32_768;
 async function runPipeline(
   made: ReturnType<typeof makeProvider> = makeProvider(),
   extra: Record<string, unknown> = {},
+  deps: Record<string, unknown> = {},
 ) {
   const { provider, calls, timeline } = made;
   const orch = new AnalysisOrchestrator({
+    ...deps,
     provider,
     retrieve: async () => [],
     knowledge: {
@@ -807,6 +809,47 @@ describe("#2113 — the agentic path (a project with ingested code)", () => {
     expect(persistedCapability().reasons).toContain("requirements-left-out");
   });
 
+  it("flag off: the agentic path reads no workspace or rule, and stores nothing", async () => {
+    const run = await runAgentic();
+    expect(run.seen).toHaveLength(1);
+    expect(run.calls.some(isGoverning)).toBe(false);
+    expect(vi.mocked(prisma.project.findFirst)).not.toHaveBeenCalled();
+    expect(vi.mocked(prisma.governingRule.findMany)).not.toHaveBeenCalled();
+    expect(vi.mocked(analysisService.updateGoverningApplicabilityMetadata)).not.toHaveBeenCalled();
+    expect(vi.mocked(findingsStore.produceGoverningFindingsForAnalysis)).not.toHaveBeenCalled();
+    expect(vi.mocked(analysisService.markAnalysisCompleted)).toHaveBeenCalledTimes(1);
+  });
+
+  it("a run that fails before the join ends with the agentic path's unjoined work aborted", async () => {
+    process.env.GOVERNING_DOCS_ENABLED = "1";
+    state.workspaceId = "ws_1872";
+    state.rules = [AUDIT_RULE];
+    const signals: AbortSignal[] = [];
+    const made = makeProvider();
+    const chat = vi.mocked((made.provider as unknown as { chat: ChatFn }).chat);
+    const specialists = chat.getMockImplementation()!;
+    chat.mockImplementation(async (messages: ChatMessage[], o: ChatOptions = {}) => {
+      const user = messages.map((m) => String(m.content)).join("\n");
+      if (!user.includes("governing_rule")) return specialists(messages, o);
+      signals.push(o.signal!);
+      return untilAborted(o.signal!);
+    });
+    vi.mocked(analysisService.readFlattenedFindings).mockRejectedValueOnce(
+      new Error("database is locked"),
+    );
+    await runAgentic(made);
+    expect(vi.mocked(analysisService.markAnalysisFailed)).toHaveBeenCalledTimes(1);
+    expect(signals.length).toBeGreaterThan(0);
+    expect(signals.every((s) => s.aborted)).toBe(true);
+    expect(vi.mocked(analysisService.updateGoverningApplicabilityMetadata)).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * #2233 — the limits on the requirement-grounded path (no code graph). These
+ * use `runPipeline` directly, so they sit apart from the agentic path above.
+ */
+describe("#2233 — analysis limits on the requirement-grounded path", () => {
   it("#2233 — no code graph: the run names the requirements past the limit for code retrieval and governing rules", async () => {
     process.env.GOVERNING_DOCS_ENABLED = "1";
     state.workspaceId = "ws_1872";
@@ -853,6 +896,44 @@ describe("#2113 — the agentic path (a project with ingested code)", () => {
     await runPipeline();
     expect(persistedCapability()).not.toHaveProperty("requirementsLeftOut");
     expect(persistedCapability().reasons).not.toContain("requirements-left-out");
+  });
+
+  it("#2276 — fused retrieval on, requirements past the embedder's limit: the run names them for the code search's vector half", async () => {
+    process.env.ANALYSIS_FUSED_CODE_RETRIEVAL = "true";
+    __resetConfigSingleton();
+    // 12 requirements at the 4,000-character query bound: about 48k characters.
+    state.requirements = Array.from({ length: 12 }, (_, i) => ({
+      id: `REQ-${String(i + 1).padStart(3, "0")}`,
+      text: `Export dataset ${i + 1} as a CSV. ${"Every column goes into the file. ".repeat(130)}`.slice(
+        0,
+        MAX_REQUIREMENT_QUERY_CHARS,
+      ),
+    }));
+    const queries: string[] = [];
+    await runPipeline(
+      makeProvider(),
+      {},
+      {
+        fusedCode: {
+          searcher: {
+            search: async (q: string) => {
+              queries.push(q);
+              return [];
+            },
+          },
+          lineLookup: { resolve: async () => new Map() },
+        },
+      },
+    );
+    // The symbol search was given every requirement (BM25 reads the whole query)...
+    expect(queries).toHaveLength(1);
+    expect(queries[0]).toContain("Export dataset 12 as a CSV.");
+    // ...and the run names the ones the vector half could not embed.
+    const notices = persistedCapability().requirementsLeftOut ?? [];
+    expect(notices.map((n) => [n.stage, n.leftOut.map((r) => r.id)])).toEqual([
+      ["fused-code-semantic", ["REQ-009", "REQ-010", "REQ-011", "REQ-012"]],
+    ]);
+    expect(persistedCapability().reasons).toContain("requirements-left-out");
   });
 
   it("#2233 — an imported item whose body is over 32,768 characters: the search query is bounded and the code agent still runs", async () => {
@@ -906,40 +987,5 @@ describe("#2113 — the agentic path (a project with ingested code)", () => {
     await runPipeline();
     expect(persistedCapability().findingsLeftOut).toEqual([leftOut]);
     expect(persistedCapability().reasons).toContain("findings-left-out");
-  });
-
-  it("flag off: the agentic path reads no workspace or rule, and stores nothing", async () => {
-    const run = await runAgentic();
-    expect(run.seen).toHaveLength(1);
-    expect(run.calls.some(isGoverning)).toBe(false);
-    expect(vi.mocked(prisma.project.findFirst)).not.toHaveBeenCalled();
-    expect(vi.mocked(prisma.governingRule.findMany)).not.toHaveBeenCalled();
-    expect(vi.mocked(analysisService.updateGoverningApplicabilityMetadata)).not.toHaveBeenCalled();
-    expect(vi.mocked(findingsStore.produceGoverningFindingsForAnalysis)).not.toHaveBeenCalled();
-    expect(vi.mocked(analysisService.markAnalysisCompleted)).toHaveBeenCalledTimes(1);
-  });
-
-  it("a run that fails before the join ends with the agentic path's unjoined work aborted", async () => {
-    process.env.GOVERNING_DOCS_ENABLED = "1";
-    state.workspaceId = "ws_1872";
-    state.rules = [AUDIT_RULE];
-    const signals: AbortSignal[] = [];
-    const made = makeProvider();
-    const chat = vi.mocked((made.provider as unknown as { chat: ChatFn }).chat);
-    const specialists = chat.getMockImplementation()!;
-    chat.mockImplementation(async (messages: ChatMessage[], o: ChatOptions = {}) => {
-      const user = messages.map((m) => String(m.content)).join("\n");
-      if (!user.includes("governing_rule")) return specialists(messages, o);
-      signals.push(o.signal!);
-      return untilAborted(o.signal!);
-    });
-    vi.mocked(analysisService.readFlattenedFindings).mockRejectedValueOnce(
-      new Error("database is locked"),
-    );
-    await runAgentic(made);
-    expect(vi.mocked(analysisService.markAnalysisFailed)).toHaveBeenCalledTimes(1);
-    expect(signals.length).toBeGreaterThan(0);
-    expect(signals.every((s) => s.aborted)).toBe(true);
-    expect(vi.mocked(analysisService.updateGoverningApplicabilityMetadata)).not.toHaveBeenCalled();
   });
 });

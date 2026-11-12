@@ -923,7 +923,8 @@ Open the user menu in the top-right of the header and click **Sign out**. The au
 
 After logging in you land on the **Dashboard** inside the persistent app shell:
 
-- **Sidebar** (left, 16 rem) — six destinations, one level deep: **Home** (the dashboard), **Projects**, **Chat**, **Activity**, **Library** and **Settings**. Each one opens a row of page tabs above the content for the pages it groups: **Projects** → All projects, Products, Documents, Repositories, Databases, Impact analyses (the cross-project views, all in one place); **Chat** → Chat, Workbench (the same chat sessions, in a project-scoped layout); **Activity** → Tasks, Runs, Sessions, Scheduler, Reviews; **Settings** → Settings, Vault, Eval, and Admin (Admin shown to system admins only). The sidebar entry stays highlighted on every page it groups, announced via `aria-current="page"`. Every page kept its address, so bookmarks and shared links still work; the command palette (⌘K / Ctrl+K) searches all of them by name. On viewports smaller than 768 px the sidebar collapses into a slide-in drawer; tap the menu button in the header to open it. [#27]
+- **Sidebar** (left, 16 rem) — seven destinations, one level deep: **Home** (the dashboard), **Projects**, **Chat**, **Activity**, **Reviews**, **Library** and **Settings**. Each one opens a row of page tabs above the content for the pages it groups: **Projects** → All projects, Products, Documents, Repositories, Databases, Impact analyses (the cross-project views, all in one place); **Chat** → Chat, Workbench (the same chat sessions, in a project-scoped layout); **Activity** → Tasks, Runs, Sessions, Scheduler; **Settings** → Settings, Vault, Eval. **Reviews** shows how many reviews are waiting on you (in review, with you as a reviewer); the number updates when you are assigned one or a review is decided, a screen reader announces each change, and no number shows when none are waiting. [#2332]
+- **What a non-admin sees** — the operations and developer pages are for system admins: **Tasks**, **Runs**, **Scheduler**, **Vault** and **Eval**, and the Settings sections **Configuration**, **MCP servers**, **ACP tokens**, **Hooks** and **Triggers**. Anyone else does not see them in the sidebar, the tab bars, the Settings pages or the command palette, and **Activity** opens on **Sessions**. A hub left with one page shows no tab bar. Opening one of those pages from an old link says *You don't have access to this page*, with a **Back to dashboard** button. A single run's page (`/runs/<id>`), linked from a project's PR reviews, still opens. [#2332] The sidebar entry stays highlighted on every page it groups, announced via `aria-current="page"`. Every page kept its address, so bookmarks and shared links still work; the command palette (⌘K / Ctrl+K) searches all of them by name. On viewports smaller than 768 px the sidebar collapses into a slide-in drawer; tap the menu button in the header to open it. [#27]
 - **Header** (top, sticky) — a **Workspace › Project breadcrumb** on the left (each crumb opens a switcher menu; degrades to workspace-only when no project is selected); on the right, the **activity indicator**, theme toggle (light / dark / system), the **notifications bell** (with an unread-count badge), and the user menu.
 - **Activity indicator** — a small **"N jobs running"** control that appears in the header **only while something is actually running**, and disappears automatically when everything finishes. It reflects *any* long-running operation — documentation generation, analysis, PR reviews, imports/syncs, and more — not just one kind. Click it to open a drawer that lists each in-progress job with its type, project, and live progress bar. The count and announcements are accessible to screen readers (announced politely as jobs start and complete). For documentation specifically, you no longer have to open a document to watch it build: a doc that is generating now shows a live progress bar and an "N of M sections" counter **directly on its card in the documentation list**, and clicking **Generate Documentation** takes you straight to the new document's live progress (with a "View progress" toast) instead of leaving you on a static badge. [Epic #406] The **Import Requirements** page (`Projects › Import`) likewise streams live progress: after you click **Import** or **Run now** on a saved source, the page shows a live progress bar with the current step ("Fetched 5/10 issues") for the active run instead of going silent, and a toast announces the result when the run finishes ("Imported 5 new, 2 updated" on success, or a generic "The import sync failed. Please try again." on failure — raw error detail is never shown). The import history below still refreshes on its own as a fallback if the live connection drops, and the ongoing-sync toggle, interval, and **Run now** controls are unchanged. [Epic #406, #424]
 - **Consistent completion feedback** — every long-running operation now ends with a clear **success or failure toast**, and you get it **even when you are not on the operation's detail page**. Previously, if you started documentation generation or an analysis and then navigated to a list view (or simply looked away), a *failure* was recorded silently on the row but never announced — you had to notice the badge had changed. Now a single app-wide layer watches the realtime job bus and shows the terminal result wherever you are: a green toast on success (carrying the operation's own message, e.g. the Spec Kit "Generated spec.md (v3) … grounded on N retrieved chunks" line) and a red toast on failure with a **generic, non-revealing message** ("The … operation failed. Please try again.") — raw error detail and stack traces are never shown. Each operation toasts **exactly once**: the surfaces that already announce their own outcome (PR re-review, embeddings reindex, import/sync, Spec Kit, overview regenerate) are reconciled with this global layer so you never see a duplicate. [Epic #406, #425]
@@ -956,11 +957,19 @@ Press **⌘K** (or **Ctrl+K** on Windows/Linux) anywhere in the app to open the 
 
 ## 8.1 Dashboard
 
-The Dashboard summarises live activity across four widgets that poll independently:
+The Dashboard (Home) opens with **My work**: what needs you. [#2348]
 
-- **Projects** — your most recent projects with status chips. Empty? Click **Open projects** to create your first one.
-- **Active analyses & tasks** — anything currently running, refreshed every 15 seconds.
-- **Scheduled jobs** — upcoming and recently fired cron jobs. Open the **Scheduler** surface to add one.
+- **Your change requests, by state.** Each analysis run you started is listed under the state it is in, if it needs something: **Waiting on your answers** (the run finished with clarifying questions still open, whether or not you have opened its Questions tab yet; the row says how many, the same number the Questions tab shows), **In review** (the latest review of its requirements is open, timed from when it was sent), **Rejected** (that review was rejected) or **Ready to hand off** (that review approved). A ready change request leaves My work once any of its requirements is published as an issue; a rejected or ready one leaves 30 days after the verdict. Each row shows the title (the source document's file name until change requests carry their own titles), the project, and how long it has been in that state. A row opens where the work is: the run's **Questions** tab, the review, or **Publish** for that run.
+- **Reviews assigned to me.** Reviews in review where your own decision is still pending (one you have decided leaves the list, even while other reviewers have not), with who requested each; a row opens the review.
+- A group with nothing in it is left out. With nothing at all, Home offers **New change request** (pick a project and start an analysis), or **New project** — the first-run wizard — when you have no project yet and your role can create one; otherwise it tells you to ask an admin or coordinator to add you to a project.
+- Only work in projects you can open is listed; the server does the filtering. The list refreshes every 30 seconds.
+
+Below My work everyone sees **Projects** and **Recent activity**; admins also keep the operations widgets, marked (admins) below. The widgets poll independently:
+
+- **Projects** — your most recent projects with status chips. Empty? Click **Open projects**, or **New project** if your role can create one.
+- **Active analyses & tasks** (admins) — anything currently running, refreshed every 15 seconds.
+- **Active runs** (admins) — queued, running and paused background runs, with Cancel, Pause and Resume.
+- **Scheduled jobs** (admins) — upcoming and recently fired cron jobs. Open the **Scheduler** surface to add one.
 - **Recent activity** — your own recent chat sessions and analyses, drawn from a per-browser `localStorage` log capped at 10 entries per kind. A chat session is listed only while **Activity → Sessions** lists it (your own sessions that can still be resumed), under the title it has there. [#2187]
 
 Each widget shows a skeleton while loading, an actionable empty state with a deep link, and a compact list when populated.
@@ -989,7 +998,7 @@ The **Library** surface is a searchable index of every skill and agent registere
 
 ## 8.4 Settings
 
-Open **Settings** from the sidebar to see a navigation hub that cards every settings sub-page:
+Open **Settings** from the sidebar to see a navigation hub that cards every settings sub-page you may open. API Keys (Configuration), MCP, ACP tokens, Hooks, Triggers and Vault are shown to system admins only [#2332]:
 
 - **Profile** (`/settings/profile`) — view account info.
 - **Appearance** (`/settings/appearance`) — theme + density controls.
@@ -1010,7 +1019,7 @@ The bell icon in the header opens a side **notifications drawer** with these ale
 - **Mention** — someone @mentioned you in a comment, e.g. *Alex mentioned you on "Login lockout"*, with the start of the comment underneath. Click **Open →** to open that requirement (or Spec Kit artifact) with its comments showing. The quote follows the comment: if its author edits it, the notification quotes the new text (or reads *The comment was edited.* if you can no longer open the project); if they delete it, the notification keeps who and where but reads *The comment was deleted.* An item already showing in an open drawer updates on the next reload.
 - **Discussion mention** — someone @mentioned you in a project discussion, e.g. *Alex mentioned you in "Feed refresh schedule"*, with the start of the message underneath. Click **Open →** to go to that discussion thread.
 - **SLA deadline expired** — an assignment's SLA deadline has passed. Click **Open →** to navigate to the requirement. It goes only to people who can still open the project. A requirement can be assigned only to someone the assignee picker offers: an active member of the project's workspace, or a system admin. Anyone else gets "Assignee not found" (#1432).
-- **Review lifecycle** — for the formal review workflow (the Reviews page, sidebar → Activity → Reviews): as an **assigned reviewer** you are notified when a review is submitted and awaits your decision; as the **requester** you are notified of each reviewer's decision; the decision that settles the review arrives as one notification giving the final outcome (approved — including when a baseline was auto-created — or rejected) and who decided it. Each notification deep-links to the review's detail page. These are governed by the **Requirements approved × In-app** toggle in Settings → Notifications.
+- **Review lifecycle** — for the formal review workflow (the Reviews page, sidebar → Reviews): as an **assigned reviewer** you are notified when a review is submitted and awaits your decision; as the **requester** you are notified of each reviewer's decision; the decision that settles the review arrives as one notification giving the final outcome (approved — including when a baseline was auto-created — or rejected) and who decided it. Each notification deep-links to the review's detail page. These are governed by the **Requirements approved × In-app** toggle in Settings → Notifications.
 
 The badge shows your unread count; opening the drawer marks all items read. Use **Clear all** to dismiss the list. Comment mentions, discussion mentions and review notifications arrive **live** while you are signed in: the badge updates without a reload, and the item reads the same as it will after a reload. Notifications are **persisted server-side**, so they survive page reloads and reconnects and you do not miss an alert sent while you were offline. Each notification links to the item it is about where there is one. If you lose access to a notification's project — you are removed from its workspace, it moves to a workspace you are not in, or it is deleted — the notification stays in your list (so the unread count still adds up) but reads *Notification unavailable*, with no text or link.
 
@@ -2064,14 +2073,17 @@ Section 15.5), and the check reads the code in those repositories. [#1608]
 1. Open **Projects › Portfolio coverage** (`/portfolio`).
 2. Describe what the business needs in plain language, up to 8,000 characters. For example:
    *"Customers can pay an invoice by bank transfer."*
-3. Under **Where to look**, choose **All products I can access**, or **One product** and pick
-   it. **Find a product** searches all your products by name.
+3. Under **Where to look**, choose **All products I can access**, **One product** and pick
+   it, or **Several products** and tick each one (up to 50). **Find a product** searches all
+   your products by name; a product you ticked stays ticked when a search hides it.
 4. Click **Check coverage**.
 
-You can also start a check from two other places. Every **approved** requirement on a
+You can also start a check from three other places. Every **approved** requirement on a
 project's **Requirements** tab has a **Check across portfolio** button, which checks that
 requirement, including its acceptance criteria. A product's page has a **Check across
-portfolio** button too, which starts with that product chosen.
+portfolio** button too, which starts with that product chosen. And every ready document on
+a project's **Documents** page has a **Check requirements across portfolio** button, which
+checks each requirement the document holds (see *Checking a document* below). [#2272]
 
 The check runs in the background. Its page (`/portfolio/<id>`) shows progress, and you can
 leave it or reload it: the same check picks up where it is. Your recent checks are listed
@@ -2079,11 +2091,46 @@ under **Recent checks**. You can start 10 checks in 15 minutes.
 
 What METIS does in a check:
 
-1. It splits the requirement into at most 8 acceptance criteria. A requirement that already
-   has acceptance criteria uses its own.
-2. It searches each product's repositories for code that bears on them.
+1. It splits the requirement into acceptance criteria (it asks the AI model for at most 8).
+   A requirement that already has acceptance criteria uses its own.
+2. It searches each product's repositories for code that bears on them. Criteria that do
+   not fit one search are searched in groups, so every criterion is searched for, however
+   long the requirement.
 3. For each repository, it asks the AI model whether each criterion is already there, and
    cites the code that shows it.
+
+#### Checking a document
+
+A check started from a document reads the document and checks **each requirement in it on
+its own**, rather than treating the whole document as one requirement. [#2272]
+
+- With the document reader on (the `ANALYSIS_DOCUMENT_READER` setting, off by default; an
+  administrator turns it on), the AI model reads the whole document, and every requirement,
+  constraint and business rule it finds is one requirement to check, with the section it
+  sits in. With the reader off, or when the model
+  cannot read it, the document is split by paragraph and bullet instead, and the check's
+  statement says so.
+- Under the answer, **Requirements checked** lists each requirement with the products found
+  implementing it, or *no product found implementing it*. A requirement checked against
+  several acceptance criteria lists them the same way.
+- Only someone who can read the document's project can open the check, because it shows the
+  document's own words.
+- A repository's file, or a document that has not finished processing, cannot be checked.
+  If the document has no text, holds nothing that reads as a requirement, or is deleted
+  before the check reads it, the check fails, and its statement says which.
+
+#### Not checked
+
+Nothing is left out without saying so. **Not checked** on the check's page, and in the
+Markdown export, lists everything the check did not check, and why: [#2272]
+
+| Reason | What it means |
+|---|---|
+| *One check takes 100 requirements* | The document (or requirement) has more than 100 requirements or criteria; the ones past the first 100 are listed. |
+| *Not checked in full* | A requirement's text is longer than one check reads (8,000 characters for the requirement, 2,000 for each criterion); the number of characters left out is given. |
+| *The model could not read this section* | A section of the document the AI model could not read. |
+| *Statements were dropped* | Statements the model read whose quote is not in the document, so they were not kept. |
+| *Not checked in N repositories* | The check's budget ran out before those repositories were checked for this requirement. |
 
 A claim that something is implemented is accepted only with cited code from that
 repository, and the repository is named next to every citation. The repositories must be
@@ -2158,6 +2205,17 @@ reaches.
 | **Restricted** | A product you can read, but whose impact cannot be shown in full. Either the change reaches it along a path that runs through a repository or product you cannot read, so the path is withheld (*"Its impact path goes through a repository or product you cannot read"*). Or the change may reach it through a repository or product that the person who ran the check cannot read, so the check could not follow the change there, and whether it reaches this product at all is not known (*"The change may reach it through a repository or product that the person who ran the check cannot read…"*). That is so when the change would reach this product if the check could follow it everywhere, as far as the check looks, whether the way runs through a product that person cannot read, through a repository of a readable product that they cannot read, or along a coupling recorded on a product they cannot read, even one between two repositories they can read. It does not depend on where else the check stopped. A product the change cannot reach, such as one that only provides something to that product, stays **Not affected**. Older checks read differently. A check run before METIS looked for a connection to the product it stopped at relabelled every product the change did not reach; such a product's note says the check stopped at a product it could not read. A check run under the older connection rule relabelled the products connected to that product; such a product's note says it is connected to it, and the **Not affected** group says a product listed there may still be reached. A check run before METIS followed the change past a repository or a coupling that person cannot read, and that stopped at no product they cannot read, relabelled nothing; its **Not affected** group says the same. Running any of these checks again gives the current answer. |
 | **Not affected** | Nothing reaches it. These products are listed in the collapsed **Not affected** group. |
 
+Every product the change reaches also shows how sure that is, in one of five tiers (the
+Markdown export has it in an **Impact tier** column): [#2272]
+
+| Tier | What it means |
+|---|---|
+| **Found in code** | Must change: the check found its code covers or partly covers the requirement. This comes from reading the product's code, not from a path through the graph. |
+| **Verified by graph path** | Downstream only: every coupling on the path to it was declared (or corrected) by a person, or detected with a confidence of at least 0.8. |
+| **Likely** | Downstream: every coupling on the path was detected with a confidence of at least 0.5. Must change: it was chosen to build the requirement (or holds that product's repository), and no code of it was found yet. |
+| **Possible** | A coupling on the path was detected with a confidence below 0.5. |
+| **Needs review** | The path cannot be shown to you: it runs through a product or repository you cannot read, or the change may reach the product through one the person who ran the check cannot read. |
+
 Each product's **Technical deep dive** lists its repositories and files, the contract items
 that changed, and the shared resources the coupling goes through, grouped as databases,
 tables and columns, topics, identity providers and buckets. It also draws the path of
@@ -2171,7 +2229,8 @@ If nothing covers the requirement yet, no product's code changes until one is ch
 build it, so there is nothing to work the impact out from. Choose that product under
 **Which product will build this? (optional)** when you start the check (the API takes
 `hostProductId` on `POST /api/portfolio-assessments`). In **One product** scope, only that
-product can be chosen. The check then names it (**Product that will build it**, and
+product can be chosen; in **Several products** scope, any one of those ticked. The check
+then names it (**Product that will build it**, and
 **Built by** above the impact, with a **Chosen to build this** badge on its card). It reads
 **Must change**, and so does every product that holds one of its repositories, such as an
 umbrella product that includes it: that repository's code is that product's code too. The
@@ -5217,6 +5276,8 @@ After clicking **Generate**, METIS will:
 
 Generation and indexing are reported separately. A document can be `ready` or `degraded` to read while indexing remains `pending` (with a processing status of `pending` or `processing`), `quarantined` awaiting approval, or `reconciling` after approval while index cleanup is incomplete. Only completed indexing and cleanup report `indexed`. Rejection reports `rejected`; failed publication reports indexing `failed` with an error. A publication you cancelled reports indexing `cancelled` (a neutral, not an error, badge) with a message saying it was cancelled before it finished and was not indexed (#489). Complex codebases may take 30–60 seconds to generate, and indexing may continue afterwards. A `quarantined` document shows a **Review in quarantine** link to the project's Quarantine list (Project settings), where it is approved or rejected. **Export PDF**, **Export Word** and **Export Markdown** appear only on a `ready` or `degraded` document: a generating, cancelled or failed one has nothing to export.
 
+**A project with no source code (#2369).** **Full Project** and **By Repository** documents (Business Requirements, Architecture, User Guide) are written from the project's indexed source code. On a project that has only uploaded documents, or whose repository has not finished ingesting, the form says so before you generate: "Business Requirements needs connected source code today, and this project has none indexed". If you generate anyway, the document is marked **failed** and an error toast says why and what to do: connect a repository and let its ingestion finish, or choose the scope **Requirements (analysis run)** to write up a change request's requirements. If the project has code but all of it is test, generated or build output, the message says that instead. A failed document has no content and is never added to the project's knowledge, so it does not appear among the project's documents or wait for review in quarantine.
+
 **Live progress (Epic #238).** You no longer need to refresh to see completion. While a document is generating, the panel shows **live per-section progress** — each section appears as it moves from `Generating…` to `Done`, `Degraded`, or `Failed`, with any degraded/failed-section warnings surfaced inline as they happen rather than only after the run finishes. When generation completes, the document list and preview update automatically. The same push-driven live status applies to **Running an Analysis** (§11) and **Impact Analysis** — their status updates in real time over the websocket, with polling kept only as a fallback if the connection drops. Every action you take (start analysis, generate docs, submit clarifications, run impact analysis, edit a requirement) now shows a spinner/disabled button while in flight and a success-or-error toast on completion, so failures are never silent.
 
 **Interrupted generation (#50).** Documentation generation runs inside the server process. If the server restarts or stops while a document is generating (a deploy, a crash, a dev reload), the document no longer spins as "Generating" forever: within about five minutes of the server coming back it is marked **Failed** with an "interrupted" explanation and a **Regenerate** button that reruns the same document in place. Modules already analysed before the interruption are reused from the fact cache, so they are not paid for twice.
@@ -6040,7 +6101,8 @@ set of requirement-version pins) is created automatically.
 
 ### Finding your reviews
 
-Open **Reviews** in the sidebar (Work section). The queue has two tabs:
+Open **Reviews** in the sidebar; its number is how many reviews are in review with you as
+a reviewer [#2332]. The queue has two tabs:
 
 - **Assigned to me** — reviews where you are a reviewer. Each row shows a
   status badge (`Draft`, `In review`, `Approved`, `Rejected`, `Closed`),

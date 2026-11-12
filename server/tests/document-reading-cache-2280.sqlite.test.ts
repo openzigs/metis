@@ -250,7 +250,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       await db.document.update({ where: { id: docA }, data: { checksum: "sum-v2" } });
       await analyse(model.provider, PA);
       expect(model.calls()).toBe(4);
-      expect((await saved()).map((r) => r.checksum).sort()).toEqual(["sum-v1", "sum-v2"]);
+      // #2293 — the earlier file's reading can never match again, so the save deleted it.
+      expect((await saved()).map((r) => r.checksum)).toEqual(["sum-v2"]);
     });
 
     it("a user in another workspace cannot reach the saved reading: the impact route refuses, and their own project cannot load it", async () => {
@@ -280,6 +281,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       findFirst.mockRestore();
 
       // And a lookup under another project misses: the key alone is not enough.
+      const before = await saved();
       const read = await readDocumentOnce({
         title: "frd.md",
         text: FRD,
@@ -288,6 +290,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
       expect(read.reused).toBeUndefined();
       expect(model.calls()).toBe(2);
+      // #2293 — and its save, under the wrong project, leaves alice's reading as it was.
+      expect(await saved()).toEqual(before);
     });
 
     it("the alice-started run on the same document reaches the engine", async () => {
@@ -298,6 +302,44 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         .send({ documentId: docA, projectIds: [PA], rereadDocument: true });
       expect(res.status).toBe(202);
       expect(triggerSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it("#2293 — a reading that finishes after its document was deleted is not kept", async () => {
+      const doc = await db.document.create({
+        data: {
+          projectId: PA,
+          filename: "late.md",
+          mimeType: "text/markdown",
+          sizeBytes: FRD.length,
+          storagePath: "pa/late.md",
+          checksum: "sum-late",
+          uploadedById: "alice",
+          status: "ready",
+          indexState: "indexed",
+        },
+      });
+      const svc = new KnowledgeService({
+        storage,
+        vectorStore: { deleteByDocument: vi.fn(async () => undefined) },
+        bm25: { removeDocument: vi.fn(async () => undefined) },
+      } as never);
+      const model = countingProvider();
+      const slow = {
+        ...model.provider,
+        chat: async (m: ChatMessage[], o?: ChatOptions) => {
+          // The document is deleted while its reading is in flight.
+          await svc.deleteDocument(doc.id);
+          return model.provider.chat(m, o);
+        },
+      } as AIProvider;
+      const read = await readDocumentOnce({
+        title: "late.md",
+        text: FRD,
+        provider: slow,
+        document: { projectId: PA, documentId: doc.id, checksum: "sum-late" },
+      });
+      expect(read.statements.length).toBeGreaterThan(0);
+      expect(await db.savedDocumentReading.findMany({ where: { documentId: doc.id } })).toEqual([]);
     });
 
     it("deleting the document deletes its saved readings", async () => {

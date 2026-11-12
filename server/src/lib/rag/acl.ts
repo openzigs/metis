@@ -35,6 +35,7 @@ import { aclSubjectSchema, type AclSubject } from "@metis/shared";
 import { prisma } from "../prisma.js";
 import { createChildLogger } from "../logger.js";
 import { resolveDurableRole } from "../auth/durable-roles.js";
+import { AppError } from "../../middleware/error-handler.js";
 
 const log = createChildLogger("rag-acl");
 
@@ -80,6 +81,29 @@ export class InactiveAclActorError extends Error {
     super("ACL actor unavailable: the user is not active");
     this.name = "InactiveAclActorError";
   }
+}
+
+/**
+ * #2261 — the HTTP form of {@link InactiveAclActorError} for a route whose
+ * caller IS the actor: their token outlived their account, so it is a 401
+ * `TOKEN_INVALID`, as `refreshAuthenticatedUser` answers, not a 500. Any other
+ * error is returned unchanged. Use as `.catch((err) => { throw ... })`.
+ */
+export function inactiveCallerAsUnauthenticated(err: unknown): unknown {
+  if (!(err instanceof InactiveAclActorError)) return err;
+  return new AppError(401, "TOKEN_INVALID", "Access token is malformed or invalid");
+}
+
+/**
+ * #2261 — the `group` subjects in `next` that `current` does not already hold.
+ * METIS stores no group membership (IdP group claims are read at login, never
+ * persisted), so a group subject matches no one; `PATCH /documents/:id/acl`
+ * rejects a new one. One a document already carries may stay, so the ACL
+ * editor can still save the document's other subjects.
+ */
+export function newGroupSubjects(current: AclSubject[], next: AclSubject[]): string[] {
+  const held = new Set(current.filter((s) => s.kind === "group").map((s) => s.value));
+  return next.filter((s) => s.kind === "group" && !held.has(s.value)).map((s) => s.value);
 }
 
 /**

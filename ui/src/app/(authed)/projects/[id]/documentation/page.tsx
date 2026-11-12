@@ -962,6 +962,17 @@ function GenerateForm({
 
   const connectedDbs = dbConnectorsQuery.data?.filter((db) => db.status === "connected") ?? [];
 
+  // #2369 — a full-project or repository document is written from the code
+  // graph; on a project with no indexed code it produces nothing. Say so before
+  // the run rather than after it fails.
+  const codeBasedScope = scope === "full" || scope === "repository";
+  const sourceCodeQuery = useQuery<{ indexed: boolean }>({
+    queryKey: ["generated-docs", projectId, "source-code"],
+    queryFn: () => apiFetch<{ indexed: boolean }>(`/projects/${projectId}/docs/source-code`),
+    enabled: codeBasedScope && Boolean(projectId),
+  });
+  const noSourceCode = codeBasedScope && sourceCodeQuery.data?.indexed === false;
+
   // #991 — completed analysis runs, newest first, when scope is "requirements".
   const analysesQuery = useQuery({
     queryKey: ["analyses", projectId],
@@ -1234,6 +1245,19 @@ function GenerateForm({
             </p>
           )}
         </div>
+      )}
+
+      {noSourceCode && (
+        <p
+          className="rounded-md border border-warning/40 bg-warning-muted p-3 text-sm"
+          role="note"
+          data-testid="no-source-code-warning"
+        >
+          {defaultTitles[docType] ?? "This document"} needs connected source code today, and this
+          project has none indexed, so it would not produce a document. Connect a repository to the
+          project first, or choose the scope <strong>Requirements (analysis run)</strong> to write
+          up a change request&rsquo;s requirements.
+        </p>
       )}
 
       {/* #283 — opt-in domain web-research grounding (business-requirements only). */}
