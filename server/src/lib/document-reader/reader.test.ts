@@ -906,6 +906,57 @@ describe("#2361 — repeats", () => {
     ]);
   });
 
+  it("drops nothing into a statement several others are named repeats of: it is a summary of them", async () => {
+    const reply = statements(
+      {
+        section: "S4",
+        kind: "requirement",
+        statement: "Lock after five failures.",
+        quote: "The portal shall lock an account after five failed attempts.",
+      },
+      {
+        section: "S5",
+        kind: "business-rule",
+        statement: "A patient holds at most two future appointments.",
+        quote: "A patient shall hold at most two future appointments at any time.",
+      },
+      {
+        section: "S5",
+        kind: "example",
+        statement: "A patient with two bookings cancels one first.",
+        quote: "For example, a patient with two bookings must cancel one first.",
+      },
+      {
+        section: "S6",
+        kind: "definition",
+        statement: "Locks and limits apply at every clinic.",
+        quote: "A clinic means any site run by the trust.",
+      },
+    );
+    const merge = JSON.stringify({
+      // T1 and T2 are named repeats of T4, which combines them: both stay.
+      // T3 repeats T2 alone, and goes.
+      duplicates: [
+        { id: "T1", of: "T4" },
+        { id: "T2", of: "T4" },
+        { id: "T3", of: "T2" },
+      ],
+      crossReferences: [],
+    });
+    const { provider } = routedProvider([
+      [WHOLE, reply],
+      [MERGE, merge],
+    ]);
+    const reading = await readDocument({ title: "Booking FRD", text: TEXT, provider });
+    expect(reading.statements.map((s) => [s.id, s.sectionId, s.kind])).toEqual([
+      ["T1", "S4", "requirement"],
+      ["T2", "S5", "business-rule"],
+      ["T3", "S6", "definition"],
+    ]);
+    expect(reading.sections.find((s) => s.sectionId === "S4")).toMatchObject({ repeats: 0 });
+    expect(reading.sections.find((s) => s.sectionId === "S5")).toMatchObject({ repeats: 1 });
+  });
+
   it("points a reference to a dropped repeat at the statement it repeats, through a chain", async () => {
     const reply = statements(
       {

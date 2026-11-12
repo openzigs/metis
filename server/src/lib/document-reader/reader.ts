@@ -451,14 +451,23 @@ async function read(
     if (hasVerdict(outcome)) {
       merge = "done";
       const indexOf = new Map(draftIds.map((id, i) => [id, i]));
-      for (const d of outcome.verdict.duplicates) {
+      const pairs = outcome.verdict.duplicates.flatMap((d) => {
         const i = indexOf.get(d.id.toUpperCase());
         const of = indexOf.get(d.of.toUpperCase());
+        return i === undefined || of === undefined || i === of ? [] : [{ i, of }];
+      });
+      // #2361 review — a statement that several others are named repeats of is a
+      // summary combining them (a table of entitlements, a list of notices), not
+      // a fuller restatement of any one: each says something it only abridges,
+      // so none of them is dropped into it. Measured on 04: two sentences of
+      // 6 and 11.2 were dropped as repeats of one summary row each, and lost.
+      const absorbs = new Map<number, Set<number>>();
+      for (const { i, of } of pairs) absorbs.set(of, (absorbs.get(of) ?? new Set()).add(i));
+      for (const { i, of } of pairs) {
         // #2361 — either order: the one named is the one that says less, and an
         // overview comes before the section that sets it out. The statement it
         // repeats must still be kept, so a pair named both ways never drops both.
-        if (i === undefined || of === undefined || i === of || dropped.has(i) || dropped.has(of))
-          continue;
+        if (absorbs.get(of)!.size > 1 || dropped.has(i) || dropped.has(of)) continue;
         dropped.add(i);
         keptAs.set(i, of);
         const cov = coverage.get(kept[i]!.section.id)!;
