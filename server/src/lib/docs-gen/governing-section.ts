@@ -214,17 +214,20 @@ export async function loadGoverningSection(
   );
   const runs = await Promise.all(
     analyses.map(async (a): Promise<GoverningSectionRun | null> => {
-      const all = await listGoverningFindings(a.id);
+      const stored = await listGoverningFindings(a.id);
       const scope = covered.get(a.id) ?? "all";
-      const scoped = scope === "all" ? all : all.filter((f) => scope.has(f.requirementId));
-      if (scoped.length === 0) return null;
-      const [applicability, revisions, states] = await Promise.all([
+      const inScope = (f: GoverningFinding) => scope === "all" || scope.has(f.requirementId);
+      if (!stored.some(inScope)) return null;
+      const [applicability, states] = await Promise.all([
         readGoverningApplicability(a.id),
-        governingFindingRevisions(scoped),
         storedRequirementStates(a.id, projectId),
       ]);
       // #2222 — a finding that judged an earlier wording says so, as the analysis view does.
-      const findings = withGoverningStaleness(scoped, states, applicability);
+      // #2281 — and a deleted requirement's re-check is no finding of the run's, listed or not.
+      const all = withGoverningStaleness(stored, states, applicability);
+      const findings = all.filter(inScope);
+      if (findings.length === 0) return null;
+      const revisions = await governingFindingRevisions(findings);
       return {
         analysisId: a.id,
         startedAt: a.startedAt,
@@ -358,6 +361,20 @@ function omittedLine(run: GoverningSectionRun): string[] {
   ];
 }
 
+/**
+ * The wording the findings under a heading judged. #2281 — a re-checked
+ * requirement's wording was checked on its own (`recheck.ts`), not analysed,
+ * and opens with its title, which the heading already gives.
+ */
+function judgedWordingLines(run: GoverningSectionRun, requirementId: string): string[] {
+  const judged = run.requirementText.get(requirementId)?.trim();
+  if (!judged) return [];
+  const title = run.requirementTitles?.get(requirementId)?.trim();
+  if (title === undefined) return ["", `_As analysed:_ ${text(judged)}`];
+  const rest = judged.startsWith(title) ? judged.slice(title.length).trim() : judged;
+  return rest ? ["", `_As re-checked:_ ${text(rest)}`] : [];
+}
+
 function runLines(run: GoverningSectionRun, requirementLevel: string): string[] {
   const out: string[] = [...summaryLines(run), ...omittedLine(run), "", ...findingTable(run)];
   let current: string | null = null;
@@ -365,8 +382,7 @@ function runLines(run: GoverningSectionRun, requirementLevel: string): string[] 
     if (f.requirementId !== current) {
       current = f.requirementId;
       out.push("", `${requirementLevel} ${requirementName(run, f.requirementId)}`);
-      const analysed = run.requirementText.get(f.requirementId);
-      if (analysed?.trim()) out.push("", `_As analysed:_ ${text(analysed)}`);
+      out.push(...judgedWordingLines(run, f.requirementId));
     }
     out.push("", ...findingEntry(f));
   }

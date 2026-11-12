@@ -48,7 +48,12 @@
  * 6. THREAD HISTORY (#2249). The reply reads the same recent history the in-app
  *    reply does (`loadRecentHistory`: the last 20 live messages before the
  *    trigger), so it can see the answer a BA just gave. The thread's anchors
- *    are added by the responder itself, for both paths.
+ *    are added by the responder itself, for both paths. #2282 — only the
+ *    messages written since the channel was linked: nothing backfills the
+ *    channel, so an earlier in-app message is one its participants never saw,
+ *    and the reply is posted to all of them (as #2248 grounds it for a shared
+ *    audience). A history read that fails degrades to no history, as a failed
+ *    anchor or retrieval read does; it never cancels the reply.
  *
  * SECURITY: the triggering body is UNTRUSTED Teams content. It flows only into
  * the responder's injection-isolated message array (a fixed system prompt + the
@@ -96,6 +101,8 @@ export interface TeamsAITrigger {
   messageId: string;
   /** The resolved METIS user who sent it (rate-limit + session attribution). */
   authorUserId: string;
+  /** #2282 — when the thread's channel link was made: history starts here. */
+  linkedAt: Date;
 }
 
 /** Injectable collaborators (defaults wire the real singletons/factories). */
@@ -217,8 +224,17 @@ export async function maybeRespondAsAI(
   //    AITokenUsage row, exactly as the REST path.
   try {
     // #2249 — the same recent history the in-app reply sees, ending at the
-    // trigger, so a Teams reply can read the answer a BA just gave.
-    const history = await deps.loadHistory(trigger.threadId, trigger.messageId);
+    // trigger, so a Teams reply can read the answer a BA just gave. #2282 —
+    // starting at the link, and none rather than no reply when it cannot be read.
+    const history = await deps
+      .loadHistory(trigger.threadId, trigger.messageId, { since: trigger.linkedAt })
+      .catch((err: unknown) => {
+        log.warn("Teams @AI reply history could not be read; answering without it", {
+          threadId: trigger.threadId,
+          error: (err as Error).message,
+        });
+        return [];
+      });
     const result = await deps.streamReply({
       thread: {
         id: trigger.threadId,

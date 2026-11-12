@@ -2,8 +2,8 @@
  * #2237 — imported FIRST by `eval-ba-qa.ts`: bind the database, clones, vectors
  * and uploads to the materialized eval layout before any module that reads them
  * is evaluated, whatever a loaded `.env` said. The embedder is the local one the
- * materialization embedded the symbols with; the `on` arm runs it inline so its
- * cross-encoder reranker can share the main thread (#222).
+ * materialization embedded the symbols with; an arm with `RAG_RERANK` on runs it
+ * inline so its cross-encoder reranker can share the main thread (#222).
  */
 import path from "node:path";
 import { bindMaterializedEnv } from "../src/lib/eval/localization/agent-env.js";

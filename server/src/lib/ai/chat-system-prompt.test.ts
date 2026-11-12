@@ -11,7 +11,13 @@
  *     model, carrying the same content, only reordered.
  */
 import { describe, expect, it } from "vitest";
-import { assembleChatSystem, stableLeadText, CITATION_INSTRUCTION } from "./chat-system-prompt.js";
+import {
+  ANSWER_POLICY_INSTRUCTION,
+  ANSWER_POLICY_SENTENCES,
+  assembleChatSystem,
+  stableLeadText,
+  CITATION_INSTRUCTION,
+} from "./chat-system-prompt.js";
 
 const PERSONA = "You are the METIS session agent. Follow the operator's policy.";
 const SKILL_A = "[skill:review@1.0] Code Review\nReview diffs for defects.";
@@ -252,6 +258,46 @@ describe("assembleChatSystem", () => {
     expect(CITATION_INSTRUCTION).toContain("reconstructed from the knowledge base");
   });
 
+  // ── #2241 — the answering policy: abstain when unsupported, ask when ambiguous ──
+
+  it("places the answering policy in the stable lead, after the citation policy", () => {
+    const a = assembleChatSystem({
+      persona: PERSONA,
+      citationInstruction: CITATION_INSTRUCTION,
+      answerPolicy: ANSWER_POLICY_INSTRUCTION,
+      chronicle: CHRONICLE,
+    });
+    expect(a.stable.map((m) => m.content)).toEqual([
+      PERSONA,
+      CITATION_INSTRUCTION,
+      ANSWER_POLICY_INSTRUCTION,
+    ]);
+    expect(a.volatile.map((m) => m.content)).toEqual([CHRONICLE]);
+  });
+
+  it("an absent answering policy leaves the lead as it was", () => {
+    const without = assembleChatSystem({
+      persona: PERSONA,
+      citationInstruction: CITATION_INSTRUCTION,
+    });
+    const blank = assembleChatSystem({
+      persona: PERSONA,
+      citationInstruction: CITATION_INSTRUCTION,
+      answerPolicy: " ",
+    });
+    expect(stableLeadText(blank)).toBe(stableLeadText(without));
+  });
+
+  it("the answering policy says to abstain and name what is missing, and to ask one specific follow-up", () => {
+    expect(ANSWER_POLICY_INSTRUCTION).toContain("## Answering from the sources");
+    expect(ANSWER_POLICY_SENTENCES).toContain("the sources don't show this");
+    expect(ANSWER_POLICY_SENTENCES).toContain("what is missing");
+    expect(ANSWER_POLICY_SENTENCES).toContain("ask ONE specific follow-up question");
+    expect(ANSWER_POLICY_SENTENCES).toMatch(/product, rule, version/);
+    // A discussion reply may have neither excerpts nor tools (PR #850 review).
+    expect(ANSWER_POLICY_SENTENCES).not.toMatch(/excerpt|tool/i);
+  });
+
   it("an absent citation instruction does not perturb the lead (mechanical part-ordering)", () => {
     const withInstr = assembleChatSystem({ persona: PERSONA, skillBlocks: [SKILL_A] });
     const withEmpty = assembleChatSystem({
@@ -260,5 +306,76 @@ describe("assembleChatSystem", () => {
       citationInstruction: "  ",
     });
     expect(stableLeadText(withEmpty)).toBe(stableLeadText(withInstr));
+  });
+});
+
+// #2198 — walkthrough run 10's wrong chat answers were claims the model made
+// without the check that would have caught them. The policy names each check.
+describe("CITATION_INSTRUCTION — checking a claim before making it (#2198)", () => {
+  const section = () => {
+    const at = CITATION_INSTRUCTION.indexOf("## Checking a claim before you make it");
+    expect(at).toBeGreaterThan(0);
+    return CITATION_INSTRUCTION.slice(at);
+  };
+
+  it("says a 'no callers' claim needs a caller lookup, and to say when none was run", () => {
+    // Run 10 e-16-5: "no callers" for a method a handler calls through a receiver.
+    expect(section()).toMatch(/has no callers/);
+    expect(section()).toContain("search_code_graph");
+    expect(section()).toContain("`calls`");
+    expect(section()).toMatch(/through a receiver/);
+    expect(section()).toMatch(/were not checked/);
+  });
+
+  it("says a 'same bug elsewhere' claim needs that code read first", () => {
+    // Run 10 e-16-6: "showUnreadPage has the same bug", which it does not have.
+    expect(section()).toMatch(/same behaviour or the same bug/);
+    expect(section()).toMatch(/read that code in this conversation/);
+  });
+
+  it("says a schema element defined once may have been dropped by a later migration", () => {
+    // Run 10 BA Q8: the `removed` status "is still used"; a later migration dropped it.
+    expect(section()).toMatch(/dropped or replaced by a later migration/);
+    expect(section()).toMatch(/before saying it is still used/);
+  });
+
+  it("asks for the lines that hold the claim, not the file's header", () => {
+    // Run 10 BA Q1: `storage/user.go:13-16` (the imports) for the INSERT at :72.
+    expect(section()).toMatch(/not the file's imports or header/);
+  });
+
+  it("names a requirement by its title and keeps its id for tool calls", () => {
+    // Run 10 J2.3: a raw requirement id quoted in prose.
+    expect(section()).toMatch(/Name a requirement by its title/);
+    expect(section()).toMatch(/never its internal database id \(a cuid\)/);
+    // Human ids a BA recognises stay allowed.
+    expect(section()).toMatch(/REQ-xxx, imported ids and ids from the BA's documents are fine/);
+  });
+
+  it("says a shared word is not evidence that code does what the question asks", () => {
+    // Run 10 e-17-2: "Track reading time with read_at" grounded in the
+    // reading-time ESTIMATE code, which shares only the words.
+    expect(section()).toMatch(/shares a word with the question is not evidence/);
+    expect(section()).toMatch(/not evidence; read what the code does\./);
+  });
+
+  it("hands the model no eval answer: no name from the S7-S11 questions or Miniflux", () => {
+    // #2357 compares answers with and without these rules; an example taken
+    // from a graded question would measure the leak, not the rule.
+    for (const leak of [
+      /reading time/i,
+      /read_at/,
+      /MarkAllAsReadBeforeDate/,
+      /showUnreadPage/,
+      /`removed`/,
+      /user\.go/,
+      /h\.store/,
+    ]) {
+      expect(section()).not.toMatch(leak);
+    }
+  });
+
+  it("stays static text after the citation rules, so the cached lead moves once per deploy", () => {
+    expect(CITATION_INSTRUCTION.startsWith("## Source citation policy")).toBe(true);
   });
 });

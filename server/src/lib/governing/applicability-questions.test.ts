@@ -13,6 +13,7 @@ const db = vi.hoisted(() => ({
   analysis: { findFirst: vi.fn() },
   governingRule: { findMany: vi.fn() },
   governingFinding: { findMany: vi.fn() },
+  requirement: { findMany: vi.fn() },
 }));
 vi.mock("../prisma.js", () => ({ prisma: db, resolveDatabaseProvider: () => "sqlite" }));
 
@@ -1629,5 +1630,36 @@ describe("governingQuestionSourceFor — the flag gate", () => {
     expect(await source.open(undefined)).toEqual([]);
     expect(db.governingRule.findMany).not.toHaveBeenCalled();
     expect(chat).not.toHaveBeenCalled();
+  });
+
+  it("#2281 — asks nothing about a re-checked requirement that has since been deleted", async () => {
+    process.env.GOVERNING_DOCS_ENABLED = "1";
+    const { provider, chat } = stubModel({});
+    const source = governingQuestionSourceFor({ analysisId: "a", projectId: "p", provider })!;
+    // A re-check of stored requirement r1 stored its own entry, with open pairs.
+    const rechecked = structuredClone(STORED);
+    rechecked.requirements[0] = {
+      ...rechecked.requirements[0]!,
+      requirementId: "r1",
+      versions: { r1: 2 },
+    };
+    db.analysis.findFirst.mockResolvedValue({
+      metadata: JSON.stringify({ governingApplicability: rechecked }),
+    });
+    db.project.findFirst.mockResolvedValue({ workspaceId: null });
+    db.requirement.findMany.mockResolvedValue([]);
+    expect(await source.open(undefined)).toEqual([]);
+    expect(db.requirement.findMany).toHaveBeenCalledWith({
+      where: { id: { in: ["r1"] }, analysisId: "a", projectId: "p", deletedAt: null },
+      select: { id: true },
+    });
+    // No pair was left to ask, so no rule was looked up.
+    expect(db.project.findFirst).not.toHaveBeenCalled();
+    expect(chat).not.toHaveBeenCalled();
+
+    // While r1 is live, its pairs are open as before.
+    db.requirement.findMany.mockResolvedValue([{ id: "r1" }]);
+    await source.open(undefined);
+    expect(db.project.findFirst).toHaveBeenCalled();
   });
 });
