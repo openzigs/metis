@@ -409,6 +409,8 @@ export function createDefaultCodeSearcher(deps: CodeSearcherDeps = {}): FusedCod
         snippet: snippets.get(r.symbolId) ?? quotableSnippet(r.snippet),
         // #1784 — the cosine compares across searches; the fused score does not.
         ...(r.vectorScore !== undefined ? { vectorScore: r.vectorScore } : {}),
+        // #2325 — which channels found it, for the citation contract.
+        ...(r.matchedBy ? { matchedBy: r.matchedBy } : {}),
       }));
     },
   };

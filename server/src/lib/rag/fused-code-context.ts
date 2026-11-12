@@ -37,7 +37,13 @@
  * interpolated into shell/SQL, and the header instructs the model to treat them
  * as reference material that must not override system instructions.
  */
+import type { CodeCitationRef } from "@metis/shared";
 import { quotableSnippet } from "../code-graph/symbol-context.js";
+import {
+  codeCitationRef,
+  formatCodeVersionLine,
+  type CodeVersionIndex,
+} from "../code-graph/code-version.js";
 import type { DocumentSource } from "../documents/document-source.js";
 import { createChildLogger } from "../logger.js";
 
@@ -78,6 +84,13 @@ export interface FusedSymbolHit {
    * do not read it).
    */
   repoConnectionId?: string;
+  /** #2325 — the channels that returned it. */
+  matchedBy?: Array<"dense" | "lexical">;
+  /**
+   * #2325 — the citation contract of the entry as placed: set on the hits a
+   * versioned fuse returns (`fuseCodeContext` given `versions`).
+   */
+  citation?: CodeCitationRef;
 }
 
 /** Result of a fused merge. `block` is `""` when no symbol hit survives. */
@@ -115,6 +128,8 @@ export interface RawCodeSymbolHit {
   snippet?: string;
   /** #1784 — the vector channel's cosine, when it returned this hit (#1097). */
   vectorScore?: number;
+  /** #2325 — the channels that returned it (`dense`, `lexical`). */
+  matchedBy?: Array<"dense" | "lexical">;
 }
 
 /** Injectable code searcher — matches `HybridCodeSearch.search`'s signature. */
@@ -253,11 +268,16 @@ function fitSnippet(snippet: string, room: number): string | undefined {
  * #2242 — `firstIndex` is the `[n]` of the first entry (default 1). Chat sets
  * it past the retrieved excerpts' numbers, so an answer's `[2]` names one
  * entry of the prompt, never both an excerpt and a symbol.
+ *
+ * #2325 — given `versions`, every placed hit carries its citation contract
+ * (`citation`: the indexed commit of its repository, `truncated` when its
+ * snippet was cut) and the block ends with the commit it describes. That line
+ * is costed before any head line is placed, so the budget still holds.
  */
 export function fuseCodeContext(
   symbolHits: FusedSymbolHit[],
   ragChunks: FusedRagChunkRef[],
-  opts: { tokenBudget: number; firstIndex?: number },
+  opts: { tokenBudget: number; firstIndex?: number; versions?: CodeVersionIndex },
 ): FuseCodeContextResult {
   const empty: FuseCodeContextResult = {
     block: "",
@@ -281,8 +301,30 @@ export function fuseCodeContext(
   const droppedDuplicate = covered.length;
   if (deduped.length === 0) return { ...empty, droppedDuplicate, covered };
 
+  // #2325 — the version line, costed up front from every candidate's version:
+  // the placed hits name no more commits than that, so the line only shrinks.
+  const refOf = (hit: FusedSymbolHit, cut: boolean): CodeCitationRef =>
+    codeCitationRef({
+      repoConnectionId: hit.repoConnectionId,
+      path: hit.filePath,
+      startLine: hit.startLine,
+      endLine: hit.endLine,
+      version: opts.versions!.forRepo(hit.repoConnectionId),
+      ...(hit.matchedBy ? { matchedBy: hit.matchedBy } : {}),
+      truncated: cut,
+      ...(cut
+        ? {
+            totalLines: hit.endLine - hit.startLine + 1,
+            next: { startLine: hit.startLine, endLine: hit.endLine },
+          }
+        : {}),
+    });
+  const reserved = opts.versions
+    ? ENTRY_SEPARATOR.length + formatCodeVersionLine(deduped.map((h) => refOf(h, false))).length
+    : 0;
+
   // 2. Place the head lines (header + heads). Truncate the ranked tail.
-  let total = estTokens(HEADER);
+  let total = estTokens(HEADER) + Math.ceil(reserved / CHARS_PER_TOKEN);
   const entries: string[] = [];
   const usedHits: FusedSymbolHit[] = [];
   let droppedBudget = 0;
@@ -293,7 +335,9 @@ export function fuseCodeContext(
       continue;
     }
     const head = renderHead(hit, (opts.firstIndex ?? 1) + entries.length);
-    const cost = estTokens(head);
+    // #2325 — the separator that joins the entry is part of its cost: costing
+    // the head alone let a block of many short heads run past the budget.
+    const cost = estTokens(ENTRY_SEPARATOR + head);
     if (total + cost > opts.tokenBudget) {
       stopped = true;
       droppedBudget += 1;
@@ -313,6 +357,7 @@ export function fuseCodeContext(
   //    the budget.
   let room =
     opts.tokenBudget * CHARS_PER_TOKEN -
+    reserved -
     (HEADER.length + entries.reduce((n, e) => n + ENTRY_SEPARATOR.length + e.length, 0));
   for (let i = 0; i < usedHits.length; i += 1) {
     const hit = usedHits[i];
@@ -325,10 +370,15 @@ export function fuseCodeContext(
     }
     if ((hit.snippet ?? null) !== (placed ?? null))
       usedHits[i] = { ...hit, snippet: placed ?? null };
+    if (opts.versions) {
+      const cut = Boolean(wanted) && placed !== wanted;
+      usedHits[i] = { ...usedHits[i]!, citation: refOf(hit, cut) };
+    }
   }
+  const versionLine = opts.versions ? formatCodeVersionLine(usedHits.map((h) => h.citation!)) : "";
 
   return {
-    block: [HEADER, ...entries].join(ENTRY_SEPARATOR),
+    block: [HEADER, ...entries, ...(versionLine ? [versionLine] : [])].join(ENTRY_SEPARATOR),
     usedSymbols: entries.length,
     droppedDuplicate,
     droppedBudget,
@@ -355,6 +405,12 @@ export async function buildFusedCodeBlock(opts: {
   lineLookup: SymbolLineLookup;
   /** #2242 — the `[n]` of the first entry; see {@link fuseCodeContext}. */
   firstIndex?: number;
+  /**
+   * #2325 — the project's indexed versions. Given, every entry carries its
+   * citation contract and the block names its commit; a failed read degrades
+   * to the unversioned block, like any other failure here.
+   */
+  loadVersions?: (projectId: string) => Promise<CodeVersionIndex>;
 }): Promise<FuseCodeContextResult> {
   const empty: FuseCodeContextResult = {
     block: "",
@@ -409,12 +465,26 @@ export async function buildFusedCodeBlock(opts: {
       score: r.score,
       snippet: r.snippet ?? null,
       ...(li.repoConnectionId ? { repoConnectionId: li.repoConnectionId } : {}),
+      ...(r.matchedBy ? { matchedBy: r.matchedBy } : {}),
     });
   }
   if (hits.length === 0) return empty;
 
+  let versions: CodeVersionIndex | undefined;
+  if (opts.loadVersions) {
+    try {
+      versions = await opts.loadVersions(opts.projectId);
+    } catch (err) {
+      log.debug("Code version lookup failed, the fused block names no commit", {
+        projectId: opts.projectId,
+        error: (err as Error).message,
+      });
+    }
+  }
+
   return fuseCodeContext(hits, opts.ragChunks, {
     tokenBudget: opts.tokenBudget,
     ...(opts.firstIndex ? { firstIndex: opts.firstIndex } : {}),
+    ...(versions ? { versions } : {}),
   });
 }

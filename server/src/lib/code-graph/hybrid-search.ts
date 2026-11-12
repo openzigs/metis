@@ -95,6 +95,12 @@ export interface HybridSearchResult {
    * scores the same for every query. Absent for a hit only BM25 found.
    */
   vectorScore?: number;
+  /**
+   * #2325 — which channels returned this symbol (`lexical`: BM25, `dense`:
+   * vector), the field knowledge hits carry. Reported only: it plays no part
+   * in the ranking.
+   */
+  matchedBy?: Array<"dense" | "lexical">;
 }
 
 export interface HybridSearchOptions {
@@ -812,9 +818,14 @@ export class HybridCodeSearch {
 
     // Build results
     const results: HybridSearchResult[] = [];
+    const lexicalIds = new Set(bm25Ranked.map((r) => r.id));
     for (const { id, score } of ranked) {
       const sym = symbolMap.get(id);
       if (!sym) continue;
+      const matchedBy: Array<"dense" | "lexical"> = [
+        ...(vectorScores.has(id) ? (["dense"] as const) : []),
+        ...(lexicalIds.has(id) ? (["lexical"] as const) : []),
+      ];
 
       results.push({
         symbolId: sym.symbolId,
@@ -824,6 +835,7 @@ export class HybridCodeSearch {
         score,
         snippet: sym.snippet ?? sym.signature,
         ...(vectorScores.has(id) ? { vectorScore: vectorScores.get(id) } : {}),
+        ...(matchedBy.length > 0 ? { matchedBy } : {}),
       });
     }
 

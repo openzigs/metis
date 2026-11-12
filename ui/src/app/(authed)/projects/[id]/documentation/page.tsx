@@ -1553,7 +1553,7 @@ function formatIndexingSummary(indexing?: NonNullable<GeneratedDoc["indexing"]>)
   if (!indexing) return "Queued for indexing.";
   switch (indexing.state) {
     case "indexed":
-      return `${indexing.chunkCount} chunks indexed.`;
+      return `${indexing.chunkCount} ${indexing.chunkCount === 1 ? "section" : "sections"} indexed.`;
     case "quarantined":
       return "Awaiting approval before indexing.";
     case "rejected":

@@ -99,6 +99,7 @@ import { repoConnectorsApi, dbConnectorsApi, suggestedConnectorsApi } from "@/li
 import { projectsApi } from "@/lib/projects-api";
 import { toast } from "sonner";
 import ConnectionsPage from "@/app/(authed)/projects/[id]/connections/page";
+import { analystCopy } from "@/lib/analyst-copy";
 
 const repoList = repoConnectorsApi.list as unknown as ReturnType<typeof vi.fn>;
 const dbList = dbConnectorsApi.list as unknown as ReturnType<typeof vi.fn>;
@@ -150,21 +151,23 @@ describe("ConnectionsPage — vault ref validation", () => {
     await waitFor(() => expect(document.getElementById("repo-secret")).toBeInTheDocument());
     // Open the vault picker and switch to free-text ("custom") entry.
     await user.click(document.getElementById("repo-secret")!);
-    await user.click(await screen.findByText(/Enter custom ref/i));
+    await user.click(await screen.findByText(/Type a secret name/i));
     const secretInput = await waitFor(() => {
       const el = document.getElementById("repo-secret-custom");
       expect(el).toBeInTheDocument();
       return el!;
     });
     fireEvent.change(secretInput, { target: { value: "not-a-vault-ref" } });
-    await waitFor(() => expect(screen.getByText(/Secret ref must look like/i)).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByText(/Choose a vault secret, or type its name/i)).toBeInTheDocument(),
+    );
   });
 
   it("no warning when secret ref is empty (valid: empty = no auth)", async () => {
     renderPage();
     await waitFor(() => expect(document.getElementById("repo-secret")).toBeInTheDocument());
     // Empty secret ref should not show a warning
-    expect(screen.queryByText(/Secret ref must look like/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Choose a vault secret, or type its name/i)).not.toBeInTheDocument();
   });
 
   it("no warning for valid vault ref ${vault:name}", async () => {
@@ -172,7 +175,7 @@ describe("ConnectionsPage — vault ref validation", () => {
     await waitFor(() => expect(document.getElementById("repo-secret")).toBeInTheDocument());
     const secretInput = document.getElementById("repo-secret")!;
     fireEvent.change(secretInput, { target: { value: "${vault:gh-token}" } });
-    expect(screen.queryByText(/Secret ref must look like/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Choose a vault secret, or type its name/i)).not.toBeInTheDocument();
   });
 });
 
@@ -236,9 +239,9 @@ describe("ConnectionsPage — deep ingest and refresh ingest", () => {
     repoList.mockResolvedValue([makeRepo({ id: "r1" })]);
     renderPage();
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: /Deep Ingest/i })).toBeInTheDocument(),
+      expect(screen.getByRole("button", { name: /Full re-read/i })).toBeInTheDocument(),
     );
-    expect(screen.getByRole("button", { name: /^Sync$/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Update$/ })).toBeInTheDocument();
   });
 
   it("runs Deep Ingest as a job: Ingesting… after the 202, then the result from the bus (#373)", async () => {
@@ -246,16 +249,16 @@ describe("ConnectionsPage — deep ingest and refresh ingest", () => {
     repoList.mockResolvedValue([makeRepo({ id: "r1" })]);
     renderPage();
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: /Deep Ingest/i })).toBeInTheDocument(),
+      expect(screen.getByRole("button", { name: /Full re-read/i })).toBeInTheDocument(),
     );
-    fireEvent.click(screen.getByRole("button", { name: /Deep Ingest/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Full re-read/i }));
     await waitFor(() => expect(deepIngest).toHaveBeenCalledWith("proj-1", "r1"));
     await waitFor(() =>
       expect(fakeSocket.emit).toHaveBeenCalledWith("subscribe:job", { jobId: "job-373" }),
     );
     // The request answered, but the ingest is still running.
-    expect(screen.getByRole("button", { name: /Ingesting/i })).toBeDisabled();
-    expect(screen.queryByText(/Deep ingest complete/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Reading/i })).toBeDisabled();
+    expect(screen.queryByText(/Full re-read complete/i)).not.toBeInTheDocument();
 
     act(() =>
       fireSocket("job:lifecycle", {
@@ -270,10 +273,12 @@ describe("ConnectionsPage — deep ingest and refresh ingest", () => {
     );
     await waitFor(() =>
       expect(
-        screen.getByText("Deep ingest complete: 8 of 10 files parsed, 150 symbols, 45 RAG chunks."),
+        screen.getByText(
+          "Full re-read complete: 8 of 10 files parsed, 150 symbols, 45 sections indexed.",
+        ),
       ).toBeInTheDocument(),
     );
-    expect(screen.getByRole("button", { name: /Deep Ingest/i })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /Full re-read/i })).toBeEnabled();
   });
 
   it("shows a failed Deep Ingest job's generic error (#373)", async () => {
@@ -281,9 +286,9 @@ describe("ConnectionsPage — deep ingest and refresh ingest", () => {
     repoList.mockResolvedValue([makeRepo({ id: "r1" })]);
     renderPage();
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: /Deep Ingest/i })).toBeInTheDocument(),
+      expect(screen.getByRole("button", { name: /Full re-read/i })).toBeInTheDocument(),
     );
-    fireEvent.click(screen.getByRole("button", { name: /Deep Ingest/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Full re-read/i }));
     await waitFor(() =>
       expect(fakeSocket.emit).toHaveBeenCalledWith("subscribe:job", { jobId: "job-373f" }),
     );
@@ -298,7 +303,7 @@ describe("ConnectionsPage — deep ingest and refresh ingest", () => {
       }),
     );
     const alert = (await screen.findAllByRole("alert")).find((el) =>
-      el.textContent?.includes("Deep ingest failed"),
+      el.textContent?.includes("Full re-read failed"),
     );
     expect(alert).toBeDefined();
     expect(alert).toHaveTextContent("Repository ingestion failed.");
@@ -321,10 +326,12 @@ describe("ConnectionsPage — deep ingest and refresh ingest", () => {
     });
     repoList.mockResolvedValue([makeRepo({ id: "r1" })]);
     renderPage();
-    await waitFor(() => expect(screen.getByRole("button", { name: /^Sync$/ })).toBeInTheDocument());
-    fireEvent.click(screen.getByRole("button", { name: /^Sync$/ }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /^Update$/ })).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^Update$/ }));
     await waitFor(() => expect(refreshIngest).toHaveBeenCalledWith("proj-1", "r1"));
-    await waitFor(() => expect(screen.getByText(/Sync complete/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/Update complete/i)).toBeInTheDocument());
   });
 
   it("#2335 — a Sync queued behind a running one says so, and shows no result summary", async () => {
@@ -336,8 +343,10 @@ describe("ConnectionsPage — deep ingest and refresh ingest", () => {
     });
     repoList.mockResolvedValue([makeRepo({ id: "r1" })]);
     renderPage();
-    await waitFor(() => expect(screen.getByRole("button", { name: /^Sync$/ })).toBeInTheDocument());
-    fireEvent.click(screen.getByRole("button", { name: /^Sync$/ }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /^Update$/ })).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^Update$/ }));
     await waitFor(() =>
       expect(toast.info).toHaveBeenCalledExactlyOnceWith(
         "A sync is already running. This one is queued and runs when it finishes.",
@@ -368,8 +377,10 @@ describe("ConnectionsPage — deep ingest and refresh ingest", () => {
     });
     repoList.mockResolvedValue([makeRepo({ id: "r1" })]);
     renderPage();
-    await waitFor(() => expect(screen.getByRole("button", { name: /^Sync$/ })).toBeInTheDocument());
-    fireEvent.click(screen.getByRole("button", { name: /^Sync$/ }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /^Update$/ })).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^Update$/ }));
     const totals = await screen.findByTestId("sync-graph-totals");
     expect(totals).toHaveTextContent(/421 files · 4,?252 symbols · 28,?636 edges/);
     expect(screen.getByText("Changed files re-parsed")).toBeInTheDocument();
@@ -400,24 +411,26 @@ describe("ConnectionsPage — deep ingest and refresh ingest", () => {
     refreshIngest.mockResolvedValueOnce(summary({ files: 262, calls: 12430 }));
     repoList.mockResolvedValue([makeRepo({ id: "r1" })]);
     renderPage();
-    await waitFor(() => expect(screen.getByRole("button", { name: /^Sync$/ })).toBeInTheDocument());
-    fireEvent.click(screen.getByRole("button", { name: /^Sync$/ }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /^Update$/ })).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^Update$/ }));
     const note = await screen.findByTestId("sync-go-binding-incomplete");
     expect(note).toHaveTextContent(
       /Go call binding is not finished: 12,?430 calls in 262 Go files not yet bound by type/,
     );
     expect(note).toHaveTextContent(
-      "Nothing already bound was changed; the next Sync continues from there.",
+      "Nothing already bound was changed; the next Update continues from there.",
     );
 
     // A Sync that finished the binding: the note is gone.
     refreshIngest.mockResolvedValueOnce(summary(null));
-    fireEvent.click(screen.getByRole("button", { name: /^Sync$/ }));
+    fireEvent.click(screen.getByRole("button", { name: /^Update$/ }));
     await waitFor(() => expect(refreshIngest).toHaveBeenCalledTimes(2));
     await waitFor(() =>
       expect(screen.queryByTestId("sync-go-binding-incomplete")).not.toBeInTheDocument(),
     );
-    expect(screen.getByText(/Sync complete/i)).toBeInTheDocument();
+    expect(screen.getByText(/Update complete/i)).toBeInTheDocument();
   });
 
   it("warns instead of reporting success when the sync landed but scheduling failed (#449)", async () => {
@@ -441,11 +454,13 @@ describe("ConnectionsPage — deep ingest and refresh ingest", () => {
     });
     repoList.mockResolvedValue([makeRepo({ id: "r1" })]);
     renderPage();
-    await waitFor(() => expect(screen.getByRole("button", { name: /^Sync$/ })).toBeInTheDocument());
-    fireEvent.click(screen.getByRole("button", { name: /^Sync$/ }));
-    expectAnnouncedOnce(await screen.findByText(warning), warning);
-    expect(screen.getByText(/Sync finished with a warning/)).toBeInTheDocument();
-    expect(screen.queryByText(/Sync complete\b/)).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /^Update$/ })).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^Update$/ }));
+    expectAnnouncedOnce(await screen.findByText(analystCopy(warning)), analystCopy(warning));
+    expect(screen.getByText(/Update finished with a warning/)).toBeInTheDocument();
+    expect(screen.queryByText(/Update complete\b/)).not.toBeInTheDocument();
   });
 
   /**
@@ -482,11 +497,13 @@ describe("ConnectionsPage — deep ingest and refresh ingest", () => {
     });
     repoList.mockResolvedValue([makeRepo({ id: "r1" })]);
     renderPage();
-    await waitFor(() => expect(screen.getByRole("button", { name: /^Sync$/ })).toBeInTheDocument());
-    fireEvent.click(screen.getByRole("button", { name: /^Sync$/ }));
-    expectAnnouncedOnce(await screen.findByText(warning), warning);
-    expect(screen.getByText(/Sync finished with a warning/)).toBeInTheDocument();
-    expect(screen.queryByText(/Sync complete\b/)).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /^Update$/ })).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^Update$/ }));
+    expectAnnouncedOnce(await screen.findByText(analystCopy(warning)), analystCopy(warning));
+    expect(screen.getByText(/Update finished with a warning/)).toBeInTheDocument();
+    expect(screen.queryByText(/Update complete\b/)).not.toBeInTheDocument();
   });
 });
 

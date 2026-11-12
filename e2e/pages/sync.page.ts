@@ -30,11 +30,14 @@ export class SyncPage {
 
   constructor(page: Page) {
     this.page = page;
-    this.heading = page.getByRole("heading", { name: "Issue Sync", exact: true });
+    this.heading = page.getByRole("heading", { name: "Issue updates", exact: true });
     this.pendingBadge = page.getByText(/\d+ pending/);
-    this.emptyStateCard = page.getByText("All synced up!");
-    this.emptyStateHeading = page.getByRole("heading", { name: "All synced up!", exact: true });
-    this.emptyStateMessage = page.getByText("No drift detected between your published issues");
+    this.emptyStateCard = page.getByText("Everything is up to date");
+    this.emptyStateHeading = page.getByRole("heading", {
+      name: "Everything is up to date",
+      exact: true,
+    });
+    this.emptyStateMessage = page.getByText("Your published issues match the trackers");
 
     // Drift rows — card elements that are clickable
     this.driftRows = page.locator("[class*='cursor-pointer']").filter({ hasText: "changed" });

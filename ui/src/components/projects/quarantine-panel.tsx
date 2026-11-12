@@ -125,7 +125,8 @@ export function QuarantinePanel({ projectId }: { projectId: string }) {
               <div>
                 <p className="font-medium">{row.filename}</p>
                 <p className="text-xs text-muted-foreground">
-                  {row.chunkCount} chunks · uploaded {new Date(row.uploadedAt).toLocaleString()}
+                  {row.chunkCount} {row.chunkCount === 1 ? "section" : "sections"} · uploaded{" "}
+                  {new Date(row.uploadedAt).toLocaleString()}
                 </p>
                 {row.indexState === "reconciling" && (
                   <div className="text-xs text-muted-foreground">

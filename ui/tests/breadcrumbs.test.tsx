@@ -144,7 +144,7 @@ describe("<Breadcrumbs />", () => {
     it("a route reached from inside a section ends at its own label", async () => {
       const { current, links } = await crumbsAt("/projects/p1/sync");
       expect(links).toEqual([["Deliverables", "/projects/p1/documentation"]]);
-      expect(current[0]).toHaveTextContent("Sync");
+      expect(current[0]).toHaveTextContent("Issue updates");
     });
 
     it("outside a project, the page is the sidebar entry and is the only current crumb", async () => {

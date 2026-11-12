@@ -97,7 +97,7 @@ export default function SchedulerPage() {
     <div className="space-y-6 p-2 md:p-0">
       <PageHeader
         title="Scheduler"
-        description="Cron-driven jobs that enqueue tasks. Pause, resume, edit, or fire a job manually. Live status streams in over Socket.IO."
+        description="Jobs that run on a schedule and queue tasks. Pause, resume, edit, or run a job now. Status updates live."
         actions={
           <Dialog open={createOpen} onOpenChange={setCreateOpen}>
             <DialogTrigger asChild>
@@ -107,7 +107,7 @@ export default function SchedulerPage() {
               <DialogHeader>
                 <DialogTitle>Create scheduled job</DialogTitle>
                 <DialogDescription>
-                  Define a cron-driven job: a key, schedule, task type, and JSON payload.
+                  Define a scheduled job: a key, schedule, task type, and JSON payload.
                 </DialogDescription>
               </DialogHeader>
               <JobForm

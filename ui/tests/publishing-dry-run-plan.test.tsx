@@ -624,7 +624,7 @@ describe("#1103 — the Jira leg of a dry run", () => {
     expect(screen.getByTestId("dry-run-jira-source")).toHaveTextContent(
       "Each issue also gets the issue property metis.source",
     );
-    expect(screen.queryByText(/vault secret ref/)).toBeNull();
+    expect(screen.queryByText(/vault secret/i)).toBeNull();
     expect(screen.queryByTestId("dry-run-row")).toBeNull();
   });
 

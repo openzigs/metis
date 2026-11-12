@@ -49,7 +49,7 @@ async function planThenOpen() {
     />,
     { wrapper: makeWrapper({ withAuth: false }) },
   );
-  fireEvent.change(screen.getByLabelText("Vault secret ref"), { target: { value: SECRET } });
+  fireEvent.change(screen.getByLabelText("Vault secret"), { target: { value: SECRET } });
   fireEvent.click(screen.getByRole("button", { name: "Plan (dry run)" }));
   await screen.findByTestId("draft-pr-plan");
   fireEvent.click(screen.getByRole("button", { name: "Open draft PR" }));
