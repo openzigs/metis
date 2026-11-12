@@ -494,7 +494,10 @@ describe("#140 native tools in chat", () => {
       const sid = await newSession(app);
       await stream(app, sid);
       const offered = (model.requests[0]!.opts.tools ?? []).map((t) => t.name).sort();
-      expect(offered).toEqual([...CHAT_CODE_TOOL_NAMES].sort());
+      // #2329 — search_code_context is a chat code tool, but off until measured.
+      expect(offered).toEqual(
+        [...CHAT_CODE_TOOL_NAMES].filter((n) => n !== "search_code_context").sort(),
+      );
     } finally {
       delete process.env.CHAT_TOOLS;
     }
