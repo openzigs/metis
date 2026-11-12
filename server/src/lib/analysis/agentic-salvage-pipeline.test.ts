@@ -22,6 +22,11 @@ import { DEFAULT_REPAIR_MAX_OUTPUT_TOKENS, repairMaxOutputTokens } from "./agent
 import { DEFAULT_FINAL_ANSWER_MAX_OUTPUT_TOKENS } from "./agent-loop.js";
 
 const ANALYSIS_ID = "an_1218";
+
+/** #2276 — the document agent's requirements; one unless a test sets more. */
+const docRequirements = vi.hoisted(() => ({
+  list: null as Array<{ id: string; text: string }> | null,
+}));
 const PROJECT_ID = "pr_1218";
 
 /** The system message `repairAgentJson` sends — how we spot a repair call. */
@@ -51,7 +56,9 @@ vi.mock("../prisma.js", () => ({
         if (where.agentKey === "document") {
           return {
             output: JSON.stringify({
-              requirements: [{ id: "REQ-001", text: "Sessions must expire after 30 minutes." }],
+              requirements: docRequirements.list ?? [
+                { id: "REQ-001", text: "Sessions must expire after 30 minutes." },
+              ],
             }),
           };
         }
@@ -194,12 +201,16 @@ function makeProvider({
   return { provider: { chat } as never, recorded };
 }
 
-async function runPipeline(replies: Replies = {}): Promise<Recorded[]> {
+async function runPipeline(
+  replies: Replies = {},
+  deps: Record<string, unknown> = {},
+): Promise<Recorded[]> {
   const { provider, recorded } = makeProvider(replies);
   const orch = new AnalysisOrchestrator({
     provider,
     retrieve: async () => [],
     knowledge: {} as never,
+    ...deps,
   });
   await (
     orch as unknown as {
@@ -253,6 +264,7 @@ const singleShotCalls = (recorded: Recorded[]) =>
 
 beforeEach(() => {
   vi.clearAllMocks();
+  docRequirements.list = null;
   // Isolate the loop: the passive fused-code seed (#729) is a separate path.
   process.env.ANALYSIS_FUSED_CODE_RETRIEVAL = "false";
   // One turn of the loop costs 200 tokens, so the pass stops on budget.
@@ -401,5 +413,47 @@ describe("#1218 — both bounded calls carry an explicit, configurable OUTPUT ca
         repairCalls(recorded).length +
         singleShot.length,
     );
+  });
+});
+
+describe("#2276 — the agentic path names requirements the code search's vector half could not read", () => {
+  it("records a fused-code-semantic notice when the fused query passes the embedder's limit", async () => {
+    process.env.ANALYSIS_FUSED_CODE_RETRIEVAL = "true";
+    __resetConfigSingleton();
+    // 12 requirements of 4,000 characters: about 48k, past the 32,768 limit.
+    docRequirements.list = Array.from({ length: 12 }, (_, i) => ({
+      id: `REQ-${String(i + 1).padStart(3, "0")}`,
+      text: `Sessions rule ${i + 1}. ${"Every session expires on time. ".repeat(140)}`.slice(
+        0,
+        4_000,
+      ),
+    }));
+    const queries: string[] = [];
+    await runPipeline(
+      {},
+      {
+        fusedCode: {
+          searcher: {
+            search: async (q: string) => {
+              queries.push(q);
+              return [];
+            },
+          },
+          lineLookup: { resolve: async () => new Map() },
+        },
+      },
+    );
+    expect(queries.some((q) => q.includes("Sessions rule 12."))).toBe(true);
+    const { persistAnalysisCapability } = await import("./analysis-service.js");
+    const capability = vi.mocked(persistAnalysisCapability).mock.calls.at(-1)![1] as {
+      requirementsLeftOut?: Array<{ stage: string; leftOut: Array<{ id: string }> }>;
+    };
+    const semantic = capability.requirementsLeftOut?.find((n) => n.stage === "fused-code-semantic");
+    expect(semantic?.leftOut.map((r) => r.id)).toEqual([
+      "REQ-009",
+      "REQ-010",
+      "REQ-011",
+      "REQ-012",
+    ]);
   });
 });
