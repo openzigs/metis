@@ -1,9 +1,13 @@
 /**
- * #273 — the first-run New-project wizard: name → source → ingest in one dialog,
- * landing on the new project's Overview with the ingest running.
+ * #273 — the New-project wizard: name → source → create in one dialog, the
+ * ingest started in the background.
+ *
+ * #2349 — the one project-creation flow: it starts on "Documents only" (an
+ * analyst with no repository or database is asked for nothing they lack), and
+ * its last step offers "New change request" or the project's Overview.
  */
 import { afterEach, describe, it, expect, vi, beforeEach } from "vitest";
-import { render, renderHook, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useRouter } from "next/navigation";
 import { ApiError } from "@/lib/api-client";
@@ -24,7 +28,11 @@ vi.mock("@/lib/socket-client", async (orig) => ({
   useSocket: () => null,
 }));
 
-import { NewProjectDialog, NewProjectWizard } from "@/components/projects/new-project-wizard";
+import {
+  NewProjectDialog,
+  NewProjectWizard,
+  deriveSlug,
+} from "@/components/projects/new-project-wizard";
 import { projectsApi } from "@/lib/projects-api";
 import { repoConnectorsApi } from "@/lib/connectors-api";
 import {
@@ -56,46 +64,116 @@ function renderWizard(props: { workspaceId?: string | null; onDone?: () => void 
   );
 }
 
+type User = ReturnType<typeof userEvent.setup>;
 const next = () => screen.getByRole("button", { name: "Next" });
 
-async function fillName(user: ReturnType<typeof userEvent.setup>, name = "Acme") {
+async function fillName(user: User, name = "Acme") {
   await user.type(screen.getByLabelText("Name"), name);
   await user.click(next());
 }
 
-async function fillRepo(user: ReturnType<typeof userEvent.setup>) {
+async function fillRepo(user: User) {
+  await user.click(screen.getByLabelText("A GitHub repository"));
   await user.type(screen.getByLabelText("Owner / Org"), "acme-corp");
   await user.type(screen.getByLabelText("Repository"), "legacy-app");
   await user.click(next());
 }
 
+/** The documents-only path, through Create, to the last step. */
+async function createDocumentsOnly(user: User) {
+  await fillName(user);
+  await user.click(next());
+  await user.click(screen.getByRole("button", { name: "Create project" }));
+  return screen.findByTestId("wizard-next-step");
+}
+
+const current = () =>
+  screen.getByRole("list", { name: "New project steps" }).querySelector("[aria-current]");
+
 describe("NewProjectWizard", () => {
-  it("walks name → source → ingest, marking the current step", async () => {
+  it("walks name → source → create → change request, marking the current step", async () => {
     const user = userEvent.setup();
+    create.mockResolvedValue({ ...PROJECT, primaryRepo: { id: "c-1" } } as never);
+    deepIngest.mockResolvedValue({ jobId: "job-1", connectorId: "c-1", status: "started" });
     renderWizard();
-    const current = () =>
-      screen.getByRole("list", { name: "New project steps" }).querySelector("[aria-current]");
     expect(current()).toHaveTextContent("Name");
     expect(next()).toBeDisabled();
     await fillName(user);
     expect(current()).toHaveTextContent("Source");
     await fillRepo(user);
-    expect(current()).toHaveTextContent("Ingest");
+    expect(current()).toHaveTextContent("Create");
     expect(screen.getByTestId("wizard-summary")).toHaveTextContent("acme-corp/legacy-app");
     expect(screen.getByTestId("wizard-summary")).toHaveTextContent("acme");
+    await user.click(screen.getByRole("button", { name: "Create and start ingest" }));
+    await screen.findByTestId("wizard-next-step");
+    expect(current()).toHaveTextContent("Change request");
   });
 
-  it("creates the project, starts the ingest and lands on the Overview", async () => {
+  // #2349 — an analyst with only documents is asked for nothing they lack.
+  it("starts on Documents only, asking for no repository or database", async () => {
+    const user = userEvent.setup();
+    renderWizard();
+    await fillName(user);
+    expect(screen.getByLabelText("Documents only")).toBeChecked();
+    expect(screen.queryByLabelText("Owner / Org")).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+    expect(next()).toBeEnabled();
+    await user.click(next());
+    expect(screen.getByTestId("wizard-summary")).toHaveTextContent("Documents only");
+    expect(screen.getByRole("button", { name: "Create project" })).toBeEnabled();
+  });
+
+  it("creates a documents-only project, starts no ingest, and offers the next step", async () => {
     const user = userEvent.setup();
     const onDone = vi.fn();
+    create.mockResolvedValue({ ...PROJECT, primaryRepo: null } as never);
+    renderWizard({ onDone });
+    const last = await createDocumentsOnly(user);
+
+    expect(create.mock.calls[0][0].primaryRepo).toBeUndefined();
+    expect(create.mock.calls[0][0].workspaceId).toBeUndefined();
+    expect(deepIngest).not.toHaveBeenCalled();
+    expect(applyJobLifecycleEvent).not.toHaveBeenCalled();
+    expect(toast.success).toHaveBeenCalledWith("Project created");
+    expect(last).toHaveTextContent("Acme is created.");
+    expect(last).not.toHaveTextContent("being ingested");
+    // Nothing navigates until the user picks where to go.
+    expect(push()).not.toHaveBeenCalled();
+    expect(onDone).not.toHaveBeenCalled();
+  });
+
+  it("goes to New change request from the last step", async () => {
+    const user = userEvent.setup();
+    const onDone = vi.fn();
+    create.mockResolvedValue({ ...PROJECT, primaryRepo: null } as never);
+    renderWizard({ onDone });
+    await createDocumentsOnly(user);
+    await user.click(screen.getByRole("button", { name: "New change request" }));
+    expect(onDone).toHaveBeenCalledTimes(1);
+    expect(push()).toHaveBeenCalledWith("/projects/p-new/analysis");
+  });
+
+  it("lands on the project's Overview when the last step is skipped", async () => {
+    const user = userEvent.setup();
+    const onDone = vi.fn();
+    create.mockResolvedValue({ ...PROJECT, primaryRepo: null } as never);
+    renderWizard({ onDone });
+    await createDocumentsOnly(user);
+    await user.click(screen.getByRole("button", { name: "Skip — open the Overview" }));
+    expect(onDone).toHaveBeenCalledTimes(1);
+    expect(push()).toHaveBeenCalledWith("/projects/p-new");
+  });
+
+  it("creates the project with its repository and starts the ingest", async () => {
+    const user = userEvent.setup();
     create.mockResolvedValue({ ...PROJECT, primaryRepo: { id: "c-1" } } as never);
     deepIngest.mockResolvedValue({ jobId: "job-1", connectorId: "c-1", status: "started" });
-    renderWizard({ workspaceId: "ws-1", onDone });
+    renderWizard({ workspaceId: "ws-1" });
     await fillName(user);
     await fillRepo(user);
     await user.click(screen.getByRole("button", { name: "Create and start ingest" }));
 
-    await waitFor(() => expect(push()).toHaveBeenCalledWith("/projects/p-new"));
+    const last = await screen.findByTestId("wizard-next-step");
     expect(create).toHaveBeenCalledWith({
       name: "Acme",
       slug: "acme",
@@ -119,7 +197,7 @@ describe("NewProjectWizard", () => {
       }),
     );
     expect(toast.success).toHaveBeenCalledWith("Project created — ingest started");
-    expect(onDone).toHaveBeenCalled();
+    expect(last).toHaveTextContent("Its repository is being ingested.");
   });
 
   it("leaves a job in the real store that the Overview counts as this project's ingest", async () => {
@@ -130,7 +208,7 @@ describe("NewProjectWizard", () => {
     await fillName(user);
     await fillRepo(user);
     await user.click(screen.getByRole("button", { name: "Create and start ingest" }));
-    await waitFor(() => expect(push()).toHaveBeenCalledWith("/projects/p-new"));
+    await screen.findByTestId("wizard-next-step");
 
     // The same read + predicate `ProjectPipelineOverview` uses for its Ingest stage.
     const jobs = renderHook(() => useActiveJobs()).result.current;
@@ -140,23 +218,19 @@ describe("NewProjectWizard", () => {
     expect(jobs.filter((j) => isProjectRepoIngestJob(j, "p-other"))).toEqual([]);
   });
 
-  it("creates without a source when the user skips it, and starts no ingest", async () => {
+  it("drops the repository when the user switches back to Documents only", async () => {
     const user = userEvent.setup();
     create.mockResolvedValue({ ...PROJECT, primaryRepo: null } as never);
     renderWizard();
     await fillName(user);
-    await user.click(screen.getByLabelText("Skip — add a source later"));
+    await user.click(screen.getByLabelText("A GitHub repository"));
+    await user.type(screen.getByLabelText("Owner / Org"), "acme-corp");
+    await user.click(screen.getByLabelText("Documents only"));
     expect(screen.queryByLabelText("Owner / Org")).not.toBeInTheDocument();
     await user.click(next());
-    expect(screen.getByTestId("wizard-summary")).toHaveTextContent("None");
     await user.click(screen.getByRole("button", { name: "Create project" }));
-
-    await waitFor(() => expect(push()).toHaveBeenCalledWith("/projects/p-new"));
+    await waitFor(() => expect(create).toHaveBeenCalled());
     expect(create.mock.calls[0][0].primaryRepo).toBeUndefined();
-    expect(create.mock.calls[0][0].workspaceId).toBeUndefined();
-    expect(deepIngest).not.toHaveBeenCalled();
-    expect(applyJobLifecycleEvent).not.toHaveBeenCalled();
-    expect(toast.success).toHaveBeenCalledWith("Project created");
   });
 
   // #448 — the wizard used to show a generic "could not be connected" and drop
@@ -176,7 +250,7 @@ describe("NewProjectWizard", () => {
     await fillRepo(user);
     await user.click(screen.getByRole("button", { name: "Create and start ingest" }));
 
-    await waitFor(() => expect(push()).toHaveBeenCalledWith("/projects/p-new"));
+    await screen.findByTestId("wizard-next-step");
     expect(deepIngest).not.toHaveBeenCalled();
     expect(toast.success).not.toHaveBeenCalled();
     expect(toast.warning).toHaveBeenCalledTimes(1);
@@ -187,7 +261,6 @@ describe("NewProjectWizard", () => {
     expect(title).toMatch(/repository was not linked/i);
     expect(opts.description).toBe("vault secret 'gh-pat' not found");
     expect(opts.duration).toBeGreaterThanOrEqual(10_000);
-    push().mockClear();
     opts.action.onClick();
     expect(push()).toHaveBeenCalledWith("/projects/p-new/connections");
   });
@@ -211,7 +284,7 @@ describe("NewProjectWizard", () => {
     );
   });
 
-  it("still lands on the new project when the ingest fails to start", async () => {
+  it("still offers the next step when the ingest fails to start", async () => {
     const user = userEvent.setup();
     create.mockResolvedValue({ ...PROJECT, primaryRepo: { id: "c-1" } } as never);
     deepIngest.mockRejectedValue(new ApiError(403, "Forbidden"));
@@ -220,7 +293,8 @@ describe("NewProjectWizard", () => {
     await fillRepo(user);
     await user.click(screen.getByRole("button", { name: "Create and start ingest" }));
 
-    await waitFor(() => expect(push()).toHaveBeenCalledWith("/projects/p-new"));
+    const last = await screen.findByTestId("wizard-next-step");
+    expect(last).not.toHaveTextContent("being ingested");
     expect(applyJobLifecycleEvent).not.toHaveBeenCalled();
     expect(toast.error).toHaveBeenCalledWith(
       expect.stringMatching(/ingest did not start: Forbidden/),
@@ -241,22 +315,22 @@ describe("NewProjectWizard", () => {
 
     expect(await screen.findByText("Slug already in use")).toBeInTheDocument();
     expect(screen.getByLabelText("Short name")).toHaveAttribute("aria-invalid", "true");
+    expect(screen.queryByTestId("wizard-next-step")).not.toBeInTheDocument();
     expect(push()).not.toHaveBeenCalled();
     expect(deepIngest).not.toHaveBeenCalled();
   });
 
-  it("shows a top-level alert and stays on Ingest for a non-field failure", async () => {
+  it("shows a top-level alert and stays on Create for a non-field failure", async () => {
     const user = userEvent.setup();
     create.mockRejectedValue(new ApiError(500, "Server exploded"));
     renderWizard();
     await fillName(user);
-    await user.click(screen.getByLabelText("Skip — add a source later"));
     await user.click(next());
     await user.click(screen.getByRole("button", { name: "Create project" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("Server exploded");
     expect(screen.getByTestId("wizard-summary")).toBeInTheDocument();
-    expect(push()).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("wizard-next-step")).not.toBeInTheDocument();
   });
 
   it("derives the slug from the name and keeps a hand-edited one", async () => {
@@ -270,23 +344,56 @@ describe("NewProjectWizard", () => {
     expect(screen.getByLabelText("Short name")).toHaveValue("custom");
   });
 
-  it("blocks Next on a malformed slug", async () => {
+  it("refills a cleared Slug from the Name on blur (#23)", async () => {
+    const user = userEvent.setup();
+    renderWizard();
+    await user.type(screen.getByLabelText("Name"), "Acme Two");
+    await user.clear(screen.getByLabelText("Short name"));
+    fireEvent.blur(screen.getByLabelText("Short name"));
+    expect(screen.getByLabelText("Short name")).toHaveValue("acme-two");
+  });
+
+  // #23, carried over from the removed Create form.
+  it("caps the derived Slug at the schema's 64 characters, with no trailing hyphen", () => {
+    // 63 × "a", then a space: an uncapped cut at 64 would end in a hyphen.
+    expect(deriveSlug(`${"a".repeat(63)} ${"b".repeat(40)}`)).toBe("a".repeat(63));
+    expect(deriveSlug("c".repeat(100))).toBe("c".repeat(64));
+  });
+
+  it("says why Next is disabled when the Name yields no Slug (#23)", async () => {
+    const user = userEvent.setup();
+    renderWizard();
+    await user.type(screen.getByLabelText("Name"), "!!!");
+    expect(screen.getByLabelText("Short name")).toHaveValue("");
+    expect(next()).toBeDisabled();
+    expect(screen.getByRole("alert")).toHaveTextContent("Short name is required");
+  });
+
+  it("blocks Next on a malformed slug, suggesting a fix", async () => {
     const user = userEvent.setup();
     renderWizard();
     await user.type(screen.getByLabelText("Name"), "Acme");
     await user.clear(screen.getByLabelText("Short name"));
     await user.type(screen.getByLabelText("Short name"), "bad slug");
     expect(next()).toBeDisabled();
+    expect(screen.getByRole("alert")).toHaveTextContent("bad-slug");
   });
 
-  it("requires both Owner and Repository, and a URL for the API base", async () => {
+  it("requires both Owner and Repository, saying so, and a URL for the API base", async () => {
     const user = userEvent.setup();
     renderWizard();
     await fillName(user);
+    await user.click(screen.getByLabelText("A GitHub repository"));
+    expect(next()).toBeDisabled();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     await user.type(screen.getByLabelText("Owner / Org"), "acme-corp");
     expect(next()).toBeDisabled();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Both Owner and Repository are required when specifying a repo.",
+    );
     await user.type(screen.getByLabelText("Repository"), "legacy-app");
     expect(next()).toBeEnabled();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     await user.type(screen.getByLabelText("API base URL (optional)"), "not a url");
     expect(next()).toBeDisabled();
     expect(screen.getByText(/https:\/\//)).toBeInTheDocument();
@@ -300,6 +407,7 @@ describe("NewProjectWizard", () => {
     await user.type(screen.getByLabelText("Name"), "Acme");
     await user.type(screen.getByLabelText("Description"), "  Legacy estate ");
     await user.click(next());
+    await user.click(screen.getByLabelText("A GitHub repository"));
     await user.type(screen.getByLabelText("Owner / Org"), "acme-corp");
     await user.type(screen.getByLabelText("Repository"), "legacy-app");
     await user.type(
@@ -316,10 +424,25 @@ describe("NewProjectWizard", () => {
     });
   });
 
+  // WCAG SC 1.3.5 (#659), carried over from the removed Create form: project
+  // metadata is not information about the user, so these inputs carry no
+  // `autocomplete` token ("Owner / Org" is the repository's owner, not the user's).
+  it("omits autocomplete on project-metadata inputs (#659)", async () => {
+    const user = userEvent.setup();
+    renderWizard();
+    expect(screen.getByLabelText("Name")).not.toHaveAttribute("autocomplete");
+    expect(screen.getByLabelText("Short name")).not.toHaveAttribute("autocomplete");
+    await fillName(user);
+    await user.click(screen.getByLabelText("A GitHub repository"));
+    expect(screen.getByLabelText("Owner / Org")).not.toHaveAttribute("autocomplete");
+    expect(screen.getByLabelText("Repository")).not.toHaveAttribute("autocomplete");
+  });
+
   it("labels the repository credential in plain language, not 'Secret ref' (#2337)", async () => {
     const user = userEvent.setup();
     renderWizard();
     await fillName(user);
+    await user.click(screen.getByLabelText("A GitHub repository"));
     expect(screen.getByLabelText("Access token (vault secret)")).toBeInTheDocument();
     expect(screen.queryByText(/secret ref/i)).not.toBeInTheDocument();
   });
@@ -366,49 +489,91 @@ describe("NewProjectDialog", () => {
     window.localStorage.clear();
   });
 
-  async function createThroughDialog() {
-    const user = userEvent.setup();
-    create.mockResolvedValue({ ...PROJECT, primaryRepo: null } as never);
+  function renderDialog(props: Parameters<typeof NewProjectDialog>[0] = {}) {
     const Wrapper = makeWrapper({ initialUser: userWith("project.create") });
-    render(
+    return render(
       <Wrapper>
-        <NewProjectDialog />
+        <NewProjectDialog {...props} />
       </Wrapper>,
     );
+  }
+
+  async function createThroughDialog(user: User) {
+    create.mockResolvedValue({ ...PROJECT, primaryRepo: null } as never);
     await user.click(screen.getByRole("button", { name: "New project" }));
-    await fillName(user);
-    await user.click(screen.getByLabelText("Skip — add a source later"));
-    await user.click(next());
-    await user.click(screen.getByRole("button", { name: "Create project" }));
-    await waitFor(() => expect(create).toHaveBeenCalled());
+    await createDocumentsOnly(user);
     return create.mock.calls[0][0].workspaceId;
   }
 
   it("never sends a stored workspace the caller is not in (#2197)", async () => {
+    const user = userEvent.setup();
     window.localStorage.setItem("metis.activeWorkspaceId", "ws-previous-user");
-    expect(await createThroughDialog()).toBe("ws-1");
+    renderDialog();
+    expect(await createThroughDialog(user)).toBe("ws-1");
   });
 
-  it("opens the wizard, creates in the active workspace, and closes on success", async () => {
+  it("creates in the active workspace and closes on New change request", async () => {
     const user = userEvent.setup();
     window.localStorage.setItem("metis.activeWorkspaceId", "ws-9");
-    create.mockResolvedValue({ ...PROJECT, primaryRepo: null } as never);
-    const Wrapper = makeWrapper({ initialUser: userWith("project.create") });
-    render(
-      <Wrapper>
-        <NewProjectDialog />
-      </Wrapper>,
-    );
+    renderDialog();
     expect(screen.queryByTestId("new-project-wizard")).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "New project" }));
-    expect(await screen.findByRole("dialog")).toBeInTheDocument();
-    await fillName(user);
-    await user.click(screen.getByLabelText("Skip — add a source later"));
-    await user.click(next());
-    await user.click(screen.getByRole("button", { name: "Create project" }));
-
+    expect(await createThroughDialog(user)).toBe("ws-9");
+    // Still open: the last step is offered, not skipped.
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "New change request" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
-    expect(create.mock.calls[0][0].workspaceId).toBe("ws-9");
-    window.localStorage.clear();
+    expect(push()).toHaveBeenCalledTimes(1);
+    expect(push()).toHaveBeenCalledWith("/projects/p-new/analysis");
+  });
+
+  it("lands on the Overview when closed on the last step", async () => {
+    const user = userEvent.setup();
+    renderDialog();
+    await createThroughDialog(user);
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(push()).toHaveBeenCalledWith("/projects/p-new");
+  });
+
+  it("goes nowhere when closed before anything is created", async () => {
+    const user = userEvent.setup();
+    renderDialog();
+    await user.click(screen.getByRole("button", { name: "New project" }));
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(push()).not.toHaveBeenCalled();
+  });
+
+  it("starts fresh, and goes nowhere on close, when reopened after a project was made", async () => {
+    const user = userEvent.setup();
+    renderDialog();
+    await createThroughDialog(user);
+    await user.click(screen.getByRole("button", { name: "Skip — open the Overview" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    push().mockClear();
+
+    await user.click(screen.getByRole("button", { name: "New project" }));
+    expect(screen.getByLabelText("Name")).toHaveValue("");
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(push()).not.toHaveBeenCalled();
+  });
+
+  it("names its trigger as the caller asks", async () => {
+    renderDialog({ triggerTestId: "new-project-button" });
+    expect(screen.getByTestId("new-project-button")).toHaveTextContent("New project");
+    expect(screen.queryByTestId("new-project-wizard-button")).not.toBeInTheDocument();
+    // Let the auth provider's first read settle inside the test.
+    await act(async () => {});
+  });
+
+  it("renders no trigger when controlled, and reports its close", async () => {
+    const user = userEvent.setup();
+    const onOpenChange = vi.fn();
+    renderDialog({ open: true, onOpenChange });
+    expect(await screen.findByRole("dialog", { name: "New project" })).toBeInTheDocument();
+    expect(screen.queryByTestId("new-project-wizard-button")).not.toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    expect(onOpenChange).toHaveBeenCalledWith(false);
   });
 });

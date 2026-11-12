@@ -216,11 +216,20 @@ test.describe("Project navigation follows the analyst's job (#2334, #28, #29)", 
     const root = page.getByTestId("project-overview-root");
     await expect(root).toBeVisible({ timeout: 30_000 });
 
-    const checklist = page.getByTestId("first-run-checklist");
+    // #2349 — five numbered steps of the analyst's job, then Publish (optional).
+    const checklist = page.getByTestId("project-checklist");
     await expect(
       checklist.getByRole("heading", { name: "Get started", exact: true }),
     ).toBeVisible();
-    await expect(checklist.getByRole("listitem")).toHaveCount(5);
+    await expect(checklist.getByRole("listitem")).toHaveCount(6);
+    await expect(checklist.getByRole("heading", { level: 3 })).toHaveText([
+      "1.Add knowledge",
+      "2.Ready: ask a question",
+      "3.New change request",
+      "4.Review",
+      "5.Deliverable",
+      "Publish (optional)",
+    ]);
 
     await test.step("no settings controls on the Overview", async () => {
       await expect(page.getByTestId("ai-provider-picker")).toHaveCount(0);
@@ -240,6 +249,7 @@ test.describe("Project navigation follows the analyst's job (#2334, #28, #29)", 
         ["ingest", "/connections"],
         ["analyze", "/analysis"],
         ["review", "/requirements"],
+        ["docs", "/documentation"],
         ["publish", "/publish"],
       ];
       for (const [step, suffix] of targets) {

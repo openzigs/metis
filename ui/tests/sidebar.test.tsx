@@ -149,10 +149,17 @@ describe("<Sidebar /> — by role (#2332)", () => {
 describe("<Sidebar /> — Reviews count (#2332)", () => {
   const reviewsLink = () => screen.getByRole("link", { name: "Reviews" });
 
-  it("asks for in-review reviews assigned to me, one row", async () => {
+  it("asks for in-review reviews waiting on my decision, one row (#2370)", async () => {
     renderSidebar();
     await waitFor(() => expect(list).toHaveBeenCalled());
-    expect(list).toHaveBeenCalledWith({ assignee: "me", status: "in_review", pageSize: 1 });
+    // `decision: "pending"` leaves out a review I already decided while the
+    // other reviewers have not: the predicate Home's "My work" uses (#2348).
+    expect(list).toHaveBeenCalledWith({
+      assignee: "me",
+      status: "in_review",
+      decision: "pending",
+      pageSize: 1,
+    });
   });
 
   it("shows the count, and describes it to screen readers without renaming the link", async () => {
@@ -179,6 +186,18 @@ describe("<Sidebar /> — Reviews count (#2332)", () => {
     await act(async () => {});
     expect(screen.queryByTestId("reviews-count")).not.toBeInTheDocument();
     expect(reviewsLink()).toHaveAccessibleName("Reviews");
+  });
+
+  it("drops a number it showed when a later re-read fails, rather than keep a stale one (#2370)", async () => {
+    list.mockResolvedValue({ reviews: [], total: 3, page: 1, pageSize: 1 });
+    renderSidebar();
+    expect(await screen.findByTestId("reviews-count")).toHaveTextContent("3");
+
+    list.mockRejectedValue(new Error("boom"));
+    emit("review:changed");
+    await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByTestId("reviews-count")).not.toBeInTheDocument());
+    expect(reviewsLink()).not.toHaveAttribute("aria-describedby");
   });
 
   it("caps the badge at 99+", async () => {

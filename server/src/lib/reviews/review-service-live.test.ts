@@ -89,28 +89,49 @@ describe("review state changes reach the project room (#1574)", () => {
   it("submit", async () => {
     mockPrisma.reviewRequest.findUnique.mockResolvedValue(makeReview({ status: "draft" }));
     await submitReview("user-req", "rev-1", false);
-    expect(emitReviewChanged).toHaveBeenCalledWith("proj-1", "rev-1");
+    expect(emitReviewChanged).toHaveBeenCalledWith("proj-1", "rev-1", ["rev-a"]);
     expect(emittedInTx).toEqual([false]);
   });
 
   it("a decision, including the outcome it reached", async () => {
     mockPrisma.reviewRequest.findUnique.mockResolvedValue(makeReview());
     await recordDecision("rev-a", "rev-1", "rejected", "Change the refresh requirement");
-    expect(emitReviewChanged).toHaveBeenCalledWith("proj-1", "rev-1");
+    expect(emitReviewChanged).toHaveBeenCalledWith("proj-1", "rev-1", ["rev-a"]);
     expect(emittedInTx).toEqual([false]);
   });
 
   it("withdraw", async () => {
     mockPrisma.reviewRequest.findUnique.mockResolvedValue(makeReview());
     await withdrawReview("user-req", "rev-1", false);
-    expect(emitReviewChanged).toHaveBeenCalledWith("proj-1", "rev-1");
+    expect(emitReviewChanged).toHaveBeenCalledWith("proj-1", "rev-1", ["rev-a"]);
     expect(emittedInTx).toEqual([false]);
   });
 
   it("close", async () => {
     mockPrisma.reviewRequest.findUnique.mockResolvedValue(makeReview({ status: "approved" }));
     await closeReview("user-req", "rev-1", false);
-    expect(emitReviewChanged).toHaveBeenCalledWith("proj-1", "rev-1");
+    expect(emitReviewChanged).toHaveBeenCalledWith("proj-1", "rev-1", ["rev-a"]);
+  });
+
+  // #2370 — the other reviewers' sidebar counts hear it in their own rooms,
+  // whichever project page (if any) they have open.
+  it("a settling decision reaches every reviewer, not only the one who decided", async () => {
+    const base = makeReview();
+    mockPrisma.reviewRequest.findUnique.mockResolvedValue(
+      makeReview({
+        assignments: [
+          ...base.assignments,
+          {
+            id: "asg-2",
+            reviewerId: "rev-b",
+            decision: "pending",
+            reviewer: { id: "rev-b", username: "bob", displayName: "Bob Reviewer" },
+          },
+        ],
+      }),
+    );
+    await recordDecision("rev-a", "rev-1", "rejected");
+    expect(emitReviewChanged).toHaveBeenCalledWith("proj-1", "rev-1", ["rev-a", "rev-b"]);
   });
 
   it("not a decision whose transaction rolled back", async () => {
