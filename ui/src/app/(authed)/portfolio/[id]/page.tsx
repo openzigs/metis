@@ -26,6 +26,7 @@ import { PortfolioCoverageMatrix } from "@/components/portfolio/portfolio-covera
 import { PortfolioAssessmentProgress } from "@/components/portfolio/portfolio-assessment-progress";
 import { PortfolioBaSummary } from "@/components/portfolio/portfolio-ba-summary";
 import { PortfolioImpactView } from "@/components/portfolio/portfolio-impact-view";
+import { PortfolioRequirementsChecked } from "@/components/portfolio/portfolio-requirements-checked";
 
 /**
  * #1627 — the #1624 Markdown export; off until the run has finished.
@@ -106,7 +107,8 @@ export default function PortfolioAssessmentPage() {
 
       <section aria-labelledby="portfolio-statement-heading" className="space-y-1">
         <h2 id="portfolio-statement-heading" className="text-sm font-medium text-muted-foreground">
-          Requirement
+          {/* #2272 — a check of a document checks each requirement read from it. */}
+          {view.sourceDocumentId ? "Document" : "Requirement"}
         </h2>
         <p className="whitespace-pre-wrap text-sm" data-testid="portfolio-detail-statement">
           {view.statement}
@@ -155,6 +157,9 @@ export default function PortfolioAssessmentPage() {
           </p>
         )}
       </section>
+
+      {/* #2272 — each requirement checked, and everything not checked. */}
+      {view.status === "completed" ? <PortfolioRequirementsChecked view={view} /> : null}
 
       {impact ? (
         <PortfolioImpactView

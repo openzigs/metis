@@ -441,7 +441,7 @@ export function createArmR(model: string): DocArm {
     id: "R",
     label: "R — the document reader (readDocument): whole document, statements by section batch",
     configuration: {
-      conversion: "parseDocument (mammoth + htmlToMarkdown)",
+      conversion: "parseDocument (docxToMarkdown)",
       reader: "readDocument (document-reader/reader.ts), mode chosen by the model's window",
       requirements: "statements labelled requirement, constraint or business-rule",
       questions: "none (Phase 2)",

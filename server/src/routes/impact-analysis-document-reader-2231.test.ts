@@ -41,7 +41,11 @@ const prismaMock = {
         return created;
       },
     ),
+    // #2293 — the save's tidy-up: nothing here is superseded.
+    deleteMany: vi.fn(async () => ({ count: 0 })),
   },
+  // #2293 — the document is live and in the project the reading is saved under.
+  document: { findFirst: vi.fn(async () => ({ id: "doc-1" })) },
   aISession: { create: vi.fn(async () => ({ id: "sess-doc-1" })) },
   aITokenUsage: {
     create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {

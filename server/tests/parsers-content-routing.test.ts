@@ -63,21 +63,17 @@ describe("MAX_PDF_PAGES binds on every route that can end in PDF parsing", () =>
 
 /**
  * Per-type verdicts for the sniff-and-re-dispatch class, established by running the
- * libraries rather than by reading them. These assertions are tripwires: if `mammoth` or
- * `exceljs` ever gains content sniffing the way `officeparser` has, they go red.
+ * libraries rather than by reading them. These assertions are tripwires: if the docx
+ * converter or `exceljs` ever gains content sniffing the way `officeparser` has, they go red.
  */
 describe("other declared types: does the library re-dispatch on content?", () => {
   const pdfBytes = createPdf(1, "CrossTypeProbe");
 
-  it("mammoth (docx) requires a zip container and never re-dispatches to a PDF parser", async () => {
-    const mammoth = (await import("mammoth")) as {
-      convertToHtml(input: { buffer: Buffer }): Promise<{ value: string }>;
-    };
+  it("docxToMarkdown (docx) requires a zip container and never re-dispatches to a PDF parser", async () => {
+    const { docxToMarkdown } = await import("../src/lib/documents/docx-to-markdown.js");
 
-    // Called directly, bypassing our gate: the verdict is about the LIBRARY.
-    await expect(mammoth.convertToHtml({ buffer: pdfBytes })).rejects.toThrow(
-      /end of central directory|zip/i,
-    );
+    // Called directly, bypassing our gate: the verdict is about the CONVERTER (JSZip).
+    await expect(docxToMarkdown(pdfBytes)).rejects.toThrow(/end of central directory|zip/i);
   });
 
   it("exceljs (xlsx) requires a zip container and never re-dispatches to a PDF parser", async () => {

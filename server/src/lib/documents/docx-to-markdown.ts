@@ -49,11 +49,30 @@ export interface DocxImage {
 }
 
 /**
+ * #2292 — lets a describer keep time it spends waiting for the project's budget off the image's
+ * own deadline. A describer that never calls either method runs under the plain deadline.
+ */
+export interface DescriptionClock {
+  /**
+   * The call must wait for budget room before it is sent: the image's deadline stops, and the
+   * bounded wait for room ({@link IMAGE_BUDGET_WAIT_TIMEOUT_MS}) runs instead.
+   */
+  waiting(): void;
+  /** The call is admitted after a wait: the image's own deadline starts afresh. */
+  admitted(): void;
+}
+
+/**
  * Describe one image, or answer `null` when no vision-capable model is available. A throw is
  * reported as a failed description for that image; the rest of the document still converts.
- * `signal` aborts when the image's deadline passes ({@link IMAGE_DESCRIPTION_TIMEOUT_MS}).
+ * `signal` aborts when the image's deadline passes ({@link IMAGE_DESCRIPTION_TIMEOUT_MS}), or
+ * when a wait reported through `clock` outlasts {@link IMAGE_BUDGET_WAIT_TIMEOUT_MS}.
  */
-export type ImageDescriber = (image: DocxImage, signal?: AbortSignal) => Promise<string | null>;
+export type ImageDescriber = (
+  image: DocxImage,
+  signal?: AbortSignal,
+  clock?: DescriptionClock,
+) => Promise<string | null>;
 
 /**
  * #2263 — thrown by a describer that declined to describe an image for a reason the analyst
@@ -71,6 +90,8 @@ export interface DocxToMarkdownOptions {
   describeImage?: ImageDescriber;
   /** Deadline per image description, in ms; defaults to {@link IMAGE_DESCRIPTION_TIMEOUT_MS}. */
   imageTimeoutMs?: number;
+  /** #2292 — longest wait for budget room per image, in ms; defaults to {@link IMAGE_BUDGET_WAIT_TIMEOUT_MS}. */
+  imageBudgetWaitMs?: number;
 }
 
 export interface DocxConversion {
@@ -92,6 +113,14 @@ export const MAX_DOCX_PART_BYTES = 64 * 1024 * 1024;
 export const IMAGE_DESCRIPTION_CONCURRENCY = 4;
 /** #2263 — how long one image description may take before it is abandoned as not read. */
 export const IMAGE_DESCRIPTION_TIMEOUT_MS = 45_000;
+/**
+ * #2292 — how long one image may wait for the project's budget to have room for its call,
+ * before it is listed as not read. Kept apart from {@link IMAGE_DESCRIPTION_TIMEOUT_MS}: a wait
+ * behind another image's slow call is not this image's call being slow.
+ */
+export const IMAGE_BUDGET_WAIT_TIMEOUT_MS = 180_000;
+/** What an analyst reads for an image whose wait for budget room ran out. */
+export const BUDGET_WAIT_REASON = "the project's token budget had no room for it in time";
 /** The reason shown when the caller passed no describer at all (governing documents, Jira). */
 const NO_DESCRIBER = "images are not described for this kind of document";
 /** Deleted (tracked) text quoted per deletion in the notes. */
@@ -918,8 +947,14 @@ function plain(text: string): Segment {
   return { text, bold: false, italic: false };
 }
 
+/**
+ * Every whitespace run that holds a line break becomes one space; other runs are kept.
+ * #2292 — matched a run at a time, in linear time. The previous pattern (optional whitespace,
+ * a line break, optional whitespace) rescanned a long run of spaces from each of its
+ * positions, so 60,000 spaces in an uploaded heading took seconds.
+ */
 function oneLine(text: string): string {
-  return text.replace(/\s*\n\s*/g, " ");
+  return text.replace(/\s+/g, (run) => (run.includes("\n") ? " " : run));
 }
 
 /**
@@ -964,14 +999,20 @@ function renderSegments(segs: Segment[]): string {
   return out;
 }
 
+/**
+ * Wrap the run's text, outside its leading and trailing whitespace, in its formatting.
+ * #2292 — split with `trim`, in linear time: a lazy-core regex took seconds on a run holding
+ * 60,000 spaces before its last word, and every paragraph's text passes through here.
+ */
 function wrap(text: string, s: Segment): string {
-  const m = /^(\s*)([\s\S]*?)(\s*)$/.exec(text)!;
-  let core = m[2];
+  let core = text.trim();
   if (core.length === 0) return text;
+  const lead = text.slice(0, text.length - text.trimStart().length);
+  const trail = text.slice(text.trimEnd().length);
   if (s.italic) core = `*${core}*`;
   if (s.bold) core = `**${core}**`;
   if (s.href) core = `[${core}](${s.href})`;
-  return `${m[1]}${core}${m[3]}`;
+  return `${lead}${core}${trail}`;
 }
 
 function quote(text: string): string {
@@ -1022,26 +1063,60 @@ class DescriptionTimeout extends Error {
   }
 }
 
+/** #2292 — an image's wait for budget room outlasted its bound. */
+class BudgetWaitTimeout extends Error {
+  constructor() {
+    super("image description waited too long for budget room");
+    this.name = "BudgetWaitTimeout";
+  }
+}
+
 /**
  * Run `describeImage` under a deadline: the signal it is handed aborts when the deadline
  * passes, and the result is abandoned then whether or not the describer honours the signal.
+ *
+ * #2292 — while the describer reports it is waiting for budget room (`clock.waiting`), the
+ * image's deadline is replaced by the bound on that wait; once it is admitted, the deadline
+ * starts afresh, so only the image's own call counts against it.
  */
 async function withDeadline(
   describeImage: ImageDescriber,
   image: DocxImage,
   timeoutMs: number,
+  budgetWaitMs: number,
 ): Promise<string | null> {
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const deadline = new Promise<never>((_resolve, reject) => {
+  let fail!: (err: Error) => void;
+  const deadline = new Promise<never>((_resolve, reject) => (fail = reject));
+  let settled = false;
+  const arm = (ms: number, err: () => Error) => {
+    clearTimeout(timer);
+    if (settled || controller.signal.aborted) return;
     timer = setTimeout(() => {
       controller.abort();
-      reject(new DescriptionTimeout());
-    }, timeoutMs);
-  });
+      fail(err());
+    }, ms);
+  };
+  const timeout = () => new DescriptionTimeout();
+  let waiting = false;
+  const clock: DescriptionClock = {
+    waiting: () => {
+      if (waiting) return;
+      waiting = true;
+      arm(budgetWaitMs, () => new BudgetWaitTimeout());
+    },
+    admitted: () => {
+      if (!waiting) return;
+      waiting = false;
+      arm(timeoutMs, timeout);
+    },
+  };
+  arm(timeoutMs, timeout);
   try {
-    return await Promise.race([describeImage(image, controller.signal), deadline]);
+    return await Promise.race([describeImage(image, controller.signal, clock), deadline]);
   } finally {
+    settled = true;
     clearTimeout(timer);
   }
 }
@@ -1051,6 +1126,7 @@ async function describe(
   slot: ImageSlot,
   describeImage: ImageDescriber | undefined,
   timeoutMs: number,
+  budgetWaitMs: number,
 ): Promise<{ described: boolean; text: string }> {
   const unread = (why: string) => ({ described: false, text: `image not read: ${why}.` });
   const tooLarge = () =>
@@ -1083,6 +1159,7 @@ async function describe(
         data,
       },
       timeoutMs,
+      budgetWaitMs,
     );
     if (description === null) return unread("no vision-capable model is configured");
     if (description.trim().length === 0) return unread("the model returned no description");
@@ -1090,6 +1167,7 @@ async function describe(
   } catch (err) {
     if (err instanceof ImageNotRead) return unread(err.reason);
     if (err instanceof DescriptionTimeout) return unread("the description timed out");
+    if (err instanceof BudgetWaitTimeout) return unread(BUDGET_WAIT_REASON);
     // The provider's raw message is not written into the converted text: that
     // text is stored as knowledge, shown to every project member and fed to
     // models (#1059). The cause is logged instead.
@@ -1139,8 +1217,9 @@ export async function docxToMarkdown(
   // #2263 — every image is described before the text is assembled, a few at a time, each
   // under its own deadline; the results are placed back in reading order.
   const timeoutMs = opts.imageTimeoutMs ?? IMAGE_DESCRIPTION_TIMEOUT_MS;
+  const budgetWaitMs = opts.imageBudgetWaitMs ?? IMAGE_BUDGET_WAIT_TIMEOUT_MS;
   const results = await mapBounded(conv.images, IMAGE_DESCRIPTION_CONCURRENCY, (slot) =>
-    describe(pkg, slot, opts.describeImage, timeoutMs),
+    describe(pkg, slot, opts.describeImage, timeoutMs, budgetWaitMs),
   );
   const described = results.filter((r) => r.described).length;
 
