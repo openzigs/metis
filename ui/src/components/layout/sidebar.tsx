@@ -142,9 +142,16 @@ export function Sidebar({ mobileOpen, onMobileClose }: SidebarProps) {
       {/*
        * #2332 — announces a change in the Reviews count. One region for both
        * lists, outside the desktop column, which is display:none on a narrow
-       * viewport and would silence it.
+       * viewport and would silence it. A live region without `role="status"`:
+       * it is on every page, and a page's own status message must stay the
+       * only `status` there.
        */}
-      <p role="status" aria-live="polite" className="sr-only" data-testid="reviews-count-status">
+      <p
+        aria-live="polite"
+        aria-atomic="true"
+        className="sr-only"
+        data-testid="reviews-count-status"
+      >
         {announcement}
       </p>
       {/* Persistent sidebar — desktop only. */}

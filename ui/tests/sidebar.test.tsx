@@ -206,12 +206,14 @@ describe("<Sidebar /> — Reviews count (#2332)", () => {
     renderSidebar();
     expect(await screen.findByTestId("reviews-count")).toHaveTextContent("1");
     // The first value is not announced: nothing changed.
-    expect(screen.getByRole("status")).toHaveTextContent("");
+    expect(screen.getByTestId("reviews-count-status")).toHaveTextContent("");
 
     list.mockResolvedValue({ reviews: [], total: 2, page: 1, pageSize: 1 });
     emit("review:notification");
     await waitFor(() => expect(screen.getByTestId("reviews-count")).toHaveTextContent("2"));
-    expect(screen.getByRole("status")).toHaveTextContent("2 reviews assigned to you");
+    expect(screen.getByTestId("reviews-count-status")).toHaveTextContent(
+      "2 reviews assigned to you",
+    );
   });
 
   it("re-reads the count when a review changes state, and announces 0 when it is done", async () => {
@@ -222,7 +224,9 @@ describe("<Sidebar /> — Reviews count (#2332)", () => {
     list.mockResolvedValue({ reviews: [], total: 0, page: 1, pageSize: 1 });
     emit("review:changed");
     await waitFor(() => expect(screen.queryByTestId("reviews-count")).not.toBeInTheDocument());
-    expect(screen.getByRole("status")).toHaveTextContent("No reviews assigned to you");
+    expect(screen.getByTestId("reviews-count-status")).toHaveTextContent(
+      "No reviews assigned to you",
+    );
   });
 
   it("stops listening when it unmounts", async () => {

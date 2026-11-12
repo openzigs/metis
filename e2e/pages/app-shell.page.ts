@@ -79,7 +79,10 @@ export class AppShellPage {
 
   /** #2332 — the refusal a non-admin gets on a page hidden from them. */
   get noAccess(): Locator {
-    return this.page.getByRole("heading", { name: "You don't have access to this page" });
+    return this.page.getByRole("heading", {
+      name: "You don't have access to this page",
+      exact: true,
+    });
   }
 
   /** #2332 — the count badge on the Reviews sidebar entry (absent at 0). */
