@@ -10,7 +10,7 @@
 # The container entrypoint is `jbang`, so the first arg is the script /
 # Maven coordinate. We pre-trust the quarkiverse org so unattended runs
 # don't stall waiting for a y/n prompt.
-FROM eclipse-temurin:21-jre-alpine AS base
+FROM eclipse-temurin:24-jre-alpine AS base
 
 ENV LANG=C.UTF-8 \
     JBANG_DIR=/home/app/.jbang
