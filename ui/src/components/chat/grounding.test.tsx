@@ -144,7 +144,7 @@ describe("GroundingBadge — sources and coverage (#2241)", () => {
     expect(badge).toHaveAttribute("data-reason", "insufficient-evidence");
     expect(badge.className).toContain("text-warning");
     expect(screen.getByTestId("chat-grounding-coverage").textContent).toBe(
-      "Partial coverage — only 6 of 10 chunks in Payments are searchable with the current embedding model; re-index to search the rest",
+      "Partial coverage — only 6 of 10 indexed sections in Payments are searchable with the current embedding model; re-index to search the rest",
     );
   });
 

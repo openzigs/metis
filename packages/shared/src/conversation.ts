@@ -6,6 +6,7 @@
  * message on each turn and renders the conversation from
  * `GET /api/ai/sessions/:id/messages`; it never holds history of its own.
  */
+import type { ChatCitation, CodeCitationRef } from "./chat-citations.js";
 import type { SdkReasoningEffort } from "./sdk-alignment.js";
 
 /** The title a chat session carries until its first question names it (#980). */
@@ -57,6 +58,12 @@ export type TranscriptPart =
       executed?: boolean;
       /** #147 — the sub-agent run this call started (its stored transcript). */
       subAgentRunId?: string;
+      /**
+       * #2325 — a code or knowledge tool's citation contract: the locations it
+       * returned, at which indexed commit, and whether the read was stale. Kept
+       * so a later turn's citation of them still knows the version.
+       */
+      citations?: CodeCitationRef[];
     };
 
 export type TranscriptRole = "user" | "assistant" | "system";
@@ -461,6 +468,12 @@ export interface TranscriptMessageDto {
    * semantic-cache hit (generated against another request's retrieval).
    */
   grounding?: ChatGrounding | null;
+  /**
+   * #2242 — assistant replies only: the citations the reply made, each checked
+   * against what its turn retrieved or read. Empty when it cited nothing, or
+   * was written before #2242.
+   */
+  citations?: ChatCitation[];
   createdAt: string;
 }
 

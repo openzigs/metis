@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { makeWrapper } from "../test-utils";
 import SettingsApiKeysPage from "@/app/(authed)/settings/api-keys/page";
+import { ApiError } from "@/lib/api-client";
 import { configApi, settingsApi } from "@/lib/settings-api";
 
 vi.mock("@/lib/settings-api", async () => {
@@ -162,6 +163,96 @@ describe("Configuration page (#259)", () => {
     fireEvent.click(screen.getByTestId("config-tunable-SCHEDULER_ENABLED-input"));
     fireEvent.click(screen.getByTestId("config-tunable-SCHEDULER_ENABLED-save"));
     await waitFor(() => expect(setMock).toHaveBeenCalledWith("SCHEDULER_ENABLED", false));
+  });
+
+  it("#2295: an unset bool that defaults on reads on, with a 'default' source", async () => {
+    listMock.mockResolvedValue({
+      items: [
+        {
+          key: "CHAT_CODE_SEARCH_TOOLS",
+          tier: "tunable",
+          valueType: "bool",
+          description: "Code-search tools in chat",
+          sensitive: false,
+          source: "unset",
+          value: null,
+          defaultValue: "true",
+        },
+        {
+          key: "SCHEDULER_ENABLED",
+          tier: "tunable",
+          valueType: "bool",
+          description: "Master enable for scheduler",
+          sensitive: false,
+          source: "unset",
+          value: null,
+          defaultValue: null,
+        },
+      ],
+    });
+    renderPage();
+    await waitFor(() =>
+      expect(screen.getByTestId("config-tunable-CHAT_CODE_SEARCH_TOOLS-input")).toBeInTheDocument(),
+    );
+    expect(screen.getByTestId("config-tunable-CHAT_CODE_SEARCH_TOOLS-input")).toBeChecked();
+    expect(screen.getByTestId("config-tunable-CHAT_CODE_SEARCH_TOOLS-source").textContent).toBe(
+      "default",
+    );
+    // No registered default: still unset, still unchecked.
+    expect(screen.getByTestId("config-tunable-SCHEDULER_ENABLED-input")).not.toBeChecked();
+    expect(screen.getByTestId("config-tunable-SCHEDULER_ENABLED-source").textContent).toBe("unset");
+  });
+
+  it("Clear on a db override removes it via configApi.clear", async () => {
+    const clearMock = vi.mocked(configApi.clear);
+    clearMock.mockResolvedValue({
+      key: "AI_DEFAULT_MODEL",
+      tier: "tunable",
+      valueType: "string",
+      description: "Default model id",
+      sensitive: false,
+      source: "unset",
+      value: null,
+    });
+    renderPage();
+    await waitFor(() =>
+      expect(screen.getByTestId("config-tunable-AI_DEFAULT_MODEL-clear")).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByTestId("config-tunable-AI_DEFAULT_MODEL-clear"));
+    await waitFor(() => expect(clearMock).toHaveBeenCalledWith("AI_DEFAULT_MODEL"));
+  });
+
+  it("a refused Clear shows the API's message on the row", async () => {
+    vi.mocked(configApi.clear).mockRejectedValue(
+      new ApiError(500, "The configuration store could not complete the request."),
+    );
+    renderPage();
+    await waitFor(() =>
+      expect(screen.getByTestId("config-tunable-AI_DEFAULT_MODEL-clear")).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByTestId("config-tunable-AI_DEFAULT_MODEL-clear"));
+    await waitFor(() =>
+      expect(screen.getByTestId("config-tunable-AI_DEFAULT_MODEL-error").textContent).toBe(
+        "The configuration store could not complete the request.",
+      ),
+    );
+  });
+
+  it("a rejected Save shows the server's message on the row", async () => {
+    setMock.mockRejectedValue(new Error("value out of range"));
+    renderPage();
+    await waitFor(() =>
+      expect(screen.getByTestId("config-tunable-DB_ALLOWED_HOSTS-input")).toBeInTheDocument(),
+    );
+    fireEvent.change(screen.getByTestId("config-tunable-DB_ALLOWED_HOSTS-input"), {
+      target: { value: "not a host" },
+    });
+    fireEvent.click(screen.getByTestId("config-tunable-DB_ALLOWED_HOSTS-save"));
+    await waitFor(() =>
+      expect(screen.getByTestId("config-tunable-DB_ALLOWED_HOSTS-error").textContent).toBe(
+        "value out of range",
+      ),
+    );
   });
 
   it("Clear is disabled when the source is not 'db'", async () => {

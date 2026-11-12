@@ -16,6 +16,10 @@ export class ProjectsPage {
   readonly slugInput: Locator;
   readonly submitButton: Locator;
   readonly list: Locator;
+  /** #2368 — shown in New project's place to a role without `project.create`. */
+  readonly createForbidden: Locator;
+  /** Each card's overflow menu; its only item is Delete (`project.delete`). */
+  readonly projectActions: Locator;
 
   // Primary repo section in create-project dialog (Epic #640)
   readonly toggleRepoSection: Locator;
@@ -33,6 +37,8 @@ export class ProjectsPage {
     this.slugInput = page.getByTestId("project-slug-input");
     this.submitButton = page.getByTestId("project-create-submit");
     this.list = page.getByTestId("project-list");
+    this.createForbidden = page.getByText("Ask an admin or coordinator to create projects.");
+    this.projectActions = page.getByRole("button", { name: "Project actions" });
 
     // Epic #640 — source repository fields in create-project dialog
     this.toggleRepoSection = page.getByTestId("toggle-repo-section");
@@ -112,7 +118,10 @@ export class ProjectsPage {
    */
   async openProjectSettings(slug: string): Promise<void> {
     await this.openProject(slug);
-    await this.page.getByTestId("project-tabs").getByRole("link", { name: "Settings" }).click();
+    await this.page
+      .getByTestId("project-tabs")
+      .getByRole("link", { name: "Project settings", exact: true })
+      .click();
     await this.page.waitForURL(/\/projects\/[^/]+\/settings$/, { timeout: 15_000 });
   }
 }
@@ -164,18 +173,21 @@ export class ProjectDetailPage {
   }
 
   /**
-   * Walk the real project navigation from the landing page to Sources →
+   * Walk the real project navigation from the landing page to Knowledge →
    * Documents, where the uploader lives (#28 moved it off the landing page).
    */
   async openDocumentsViaTabs(): Promise<void> {
-    await this.page.getByTestId("project-tabs").getByRole("link", { name: "Sources" }).click();
+    await this.page
+      .getByTestId("project-tabs")
+      .getByRole("link", { name: "Knowledge", exact: true })
+      .click();
     await this.page.getByTestId("project-subnav").getByRole("link", { name: "Documents" }).click();
     await this.page.waitForURL(/\/projects\/[^/]+\/documents$/, { timeout: 15_000 });
     await expect(this.dropzone).toBeVisible({ timeout: 30_000 });
   }
 
   /**
-   * Open the project's Sources → Documents page, where the uploader lives.
+   * Open the project's Knowledge → Documents page, where the uploader lives.
    * The project landing page is the pipeline Overview (#28/#29) and carries
    * no dropzone.
    */

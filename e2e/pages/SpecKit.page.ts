@@ -56,14 +56,14 @@ export class SpecKitPage {
   }
 
   /**
-   * Reach the Spec Kit workspace the way a BA/PM does: open the project, click
-   * the Analyze tab, then Spec Kit in its sub-nav (#28) — rather than a direct
-   * URL hit.
+   * Reach the Spec Kit workspace through the real navigation: open the project,
+   * click the ⚙ Project settings tab, then Spec Kit in its sub-nav (#2334) —
+   * rather than a direct URL hit.
    */
   async openViaPrimaryTab(projectId: string): Promise<void> {
     await this.page.goto(`/projects/${projectId}`, { waitUntil: "load" });
     await expect(this.tabs).toBeVisible({ timeout: 30_000 });
-    await this.tabs.getByRole("link", { name: "Analyze", exact: true }).click();
+    await this.tabs.getByRole("link", { name: "Project settings", exact: true }).click();
     await this.specKitTab.click();
     await this.page.waitForURL((url) => url.pathname.endsWith("/spec-kit"), { timeout: 30_000 });
     await expect(this.root).toBeVisible({ timeout: 30_000 });

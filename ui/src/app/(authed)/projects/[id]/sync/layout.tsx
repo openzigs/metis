@@ -4,7 +4,7 @@
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
-  title: "Issue Sync - METIS",
+  title: "Issue updates - METIS",
 };
 
 export default function SyncLayout({ children }: { children: React.ReactNode }) {

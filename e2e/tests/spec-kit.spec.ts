@@ -209,23 +209,33 @@ test.describe("Epic #370 Phase 4 — Spec Kit placement & BA/PM framing (#377)",
     await login.login(ADMIN_USER.username, ADMIN_USER.password);
   });
 
-  // #28 moved Spec Kit under Analyze (beside Requirements Analysis) — still a
-  // planning surface, still not documentation.
-  test("Spec Kit sits under Analyze beside Requirements Analysis, not under Docs", async ({
+  // #2334 moved Spec Kit behind ⚙ with the code views — an analyst does not
+  // work in it day to day, and it is not a deliverable either.
+  test("Spec Kit sits behind ⚙ Project settings, not under Change requests or Deliverables", async ({
     page,
   }) => {
     const tabs = new ProjectTabsPage(page);
-    await page.goto(`/projects/${projectId}/analysis`, { waitUntil: "load" });
+    await page.goto(`/projects/${projectId}/settings`, { waitUntil: "load" });
     await tabs.expectVisible();
 
     await expect(
-      page.getByRole("navigation", { name: "Analyze pages" }).getByRole("link"),
-    ).toHaveText(["Requirements Analysis", "Impact Analysis", "Spec Kit"]);
+      page.getByRole("navigation", { name: "Project settings pages" }).getByRole("link"),
+    ).toHaveText([
+      "General",
+      "Models",
+      "Plugins",
+      "Usage",
+      "Code Overview",
+      "Pull Requests",
+      "Spec Kit",
+    ]);
 
-    await tabs.primaryLink("Docs").click();
-    await expect(page.getByRole("navigation", { name: "Docs pages" }).getByRole("link")).toHaveText(
-      ["Documentation", "Templates"],
-    );
+    await tabs.primaryLink("Change requests").click();
+    await expect(tabs.subnavLink("Spec Kit")).toHaveCount(0);
+    await tabs.primaryLink("Deliverables").click();
+    await expect(
+      page.getByRole("navigation", { name: "Deliverables pages" }).getByRole("link"),
+    ).toHaveText(["Documentation", "Templates", "Publish"]);
   });
 
   test("clicking the Spec Kit link opens the canonical /spec-kit route (no redirect)", async ({

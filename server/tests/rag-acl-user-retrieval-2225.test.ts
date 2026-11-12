@@ -35,19 +35,36 @@ const state = vi.hoisted(() => ({
   /** userId → durable role key; a user absent here has no role rows (reader). */
   roles: {} as Record<string, string>,
   roleReadFails: false,
-  /** #2248 — users that are deprovisioned (inactive or soft-deleted). */
-  inactive: new Set<string>(),
+  /**
+   * #2248/#2261 — user rows by id; an id absent here is an active, undeleted
+   * user. The mock evaluates the query's `where` against the row, so the live
+   * check's predicate is what decides, not the shape of the call.
+   */
+  users: {} as Record<string, { status: string; deletedAt: Date | null }>,
 }));
+
+/** Deprovision `ids` the way SCIM does: disabled and soft-deleted. */
+function deprovision(...ids: string[]): void {
+  for (const id of ids) state.users[id] = { status: "disabled", deletedAt: new Date() };
+}
 
 vi.mock("../src/lib/prisma.js", () => ({
   prisma: {
     project: { findUnique: vi.fn(async () => ({ name: "Scheduler" })) },
     user: {
-      // The live check filters on `status: "active", deletedAt: null`; the role
-      // read (`resolveEffectiveRole`) filters on the id only.
-      findFirst: vi.fn(async (args: { where: { id: string; status?: string } }) => {
-        if (args.where.status && state.inactive.has(args.where.id)) return null;
-        return { id: args.where.id, authRoleAuthority: null };
+      // The live check filters on `status` and `deletedAt`; the role read
+      // (`resolveEffectiveRole`) filters on the id only. Every `where` key must
+      // equal the row's value, as the database would evaluate it.
+      findFirst: vi.fn(async (args: { where: Record<string, unknown> & { id: string } }) => {
+        const row = {
+          id: args.where.id,
+          authRoleAuthority: null,
+          ...(state.users[args.where.id] ?? { status: "active", deletedAt: null }),
+        };
+        const matches = Object.entries(args.where).every(
+          ([key, value]) => (row as Record<string, unknown>)[key] === value,
+        );
+        return matches ? row : null;
       }),
     },
     userRole: {
@@ -124,7 +141,7 @@ beforeEach(() => {
   state.service = realService();
   state.roles = { alice: "reader", carol: "coordinator", root: "admin" };
   state.roleReadFails = false;
-  state.inactive = new Set();
+  state.users = {};
 });
 
 describe("resolveAclActor (#2225)", () => {
@@ -277,22 +294,43 @@ describe("shared-audience actor (#2248)", () => {
 
 describe("deprovisioned users (#2248)", () => {
   it("resolveAclActor rejects an inactive user, even one holding admin", async () => {
-    state.inactive = new Set(["root"]);
+    deprovision("root");
     await expect(resolveAclActor("root")).rejects.toBeInstanceOf(InactiveAclActorError);
     // A live admin still resolves to admin.
-    state.inactive = new Set();
+    state.users = {};
     await expect(resolveAclActor("root")).resolves.toEqual({ userId: "root", role: "admin" });
   });
 
+  // #2261 — each half of the liveness predicate is pinned on its own: a user
+  // who fails only one of them must still be rejected.
+  it("rejects a soft-deleted admin whose status still reads active", async () => {
+    state.users = { root: { status: "active", deletedAt: new Date() } };
+    await expect(resolveAclActor("root")).rejects.toBeInstanceOf(InactiveAclActorError);
+  });
+
+  it("rejects a disabled admin who is not soft-deleted", async () => {
+    state.users = { root: { status: "disabled", deletedAt: null } };
+    await expect(resolveAclActor("root")).rejects.toBeInstanceOf(InactiveAclActorError);
+  });
+
+  it("asks for exactly an active, undeleted user by id", async () => {
+    const { prisma } = await import("../src/lib/prisma.js");
+    await resolveAclActor("carol");
+    expect(prisma.user.findFirst).toHaveBeenCalledWith({
+      where: { id: "carol", status: "active", deletedAt: null },
+      select: { id: true },
+    });
+  });
+
   it("a deprovisioned admin's chat retrieves nothing: no bypass, no access", async () => {
-    state.inactive = new Set(["root"]);
+    deprovision("root");
     await expect(buildAutoRagContext("p1", question, "root")).resolves.toContain(
       RETRIEVAL_FAILED_BLOCK,
     );
   });
 
   it("a deprovisioned user's search-knowledge call fails, never searching", async () => {
-    state.inactive = new Set(["alice"]);
+    deprovision("alice");
     await expect(
       buildSearchKnowledgeTool().exec(
         { query: "scheduler" },
@@ -302,7 +340,7 @@ describe("deprovisioned users (#2248)", () => {
   });
 
   it("federated search rejects for a deprovisioned user", async () => {
-    state.inactive = new Set(["carol"]);
+    deprovision("carol");
     const service = new FederatedSearchService({
       knowledgeService: state.service as KnowledgeServiceType,
     });

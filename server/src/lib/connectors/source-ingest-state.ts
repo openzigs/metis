@@ -309,7 +309,7 @@ export async function repositoryIndexWarnings(
       message:
         `The search index for repository "${row.label}" is incomplete: ${gap}. Sections were ` +
         `grounded only against the indexed files, so statements about the rest of the code ` +
-        `could not be checked. Re-sync the repository, then regenerate.`,
+        `could not be checked. Update the repository, then regenerate.`,
       severity: "warning",
     });
   }

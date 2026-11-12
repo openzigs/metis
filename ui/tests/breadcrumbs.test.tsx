@@ -96,7 +96,7 @@ describe("<Breadcrumbs />", () => {
       const { current, links } = await crumbsAt("/projects/p1/connections");
       expect(current).toHaveLength(1);
       expect(current[0]).toHaveTextContent("Connections");
-      expect(links).toEqual([["Sources", "/projects/p1/connections"]]);
+      expect(links).toEqual([["Knowledge", "/projects/p1/connections"]]);
     });
 
     it("never marks the project switcher as the current page", async () => {
@@ -111,18 +111,18 @@ describe("<Breadcrumbs />", () => {
       const { nav, current } = await crumbsAt("/projects/p1/settings/templates");
       const items = Array.from(nav.querySelectorAll('[data-slot="breadcrumb-item"]'));
       expect(items[items.length - 1]).toContainElement(current[0] as HTMLElement);
-      // /settings/templates belongs to Docs, not to ⚙ Settings.
+      // /settings/templates belongs to Deliverables, not to ⚙ Project settings.
       expect(current[0]).toHaveTextContent("Templates");
-      expect(screen.getByRole("link", { name: "Docs" })).toHaveAttribute(
+      expect(screen.getByRole("link", { name: "Deliverables" })).toHaveAttribute(
         "href",
         "/projects/p1/documentation",
       );
     });
 
-    it("a one-page section ends at the section", async () => {
-      const { current, links } = await crumbsAt("/projects/p1/publish");
-      expect(current[0]).toHaveTextContent("Publish");
-      expect(links).toEqual([]);
+    it("a section's landing page still names its section", async () => {
+      const { current, links } = await crumbsAt("/projects/p1/documentation");
+      expect(current[0]).toHaveTextContent("Documentation");
+      expect(links).toEqual([["Deliverables", "/projects/p1/documentation"]]);
     });
 
     it("the project index ends at Overview", async () => {
@@ -134,7 +134,7 @@ describe("<Breadcrumbs />", () => {
     it("a detail page links its list page and ends at the detail", async () => {
       const { current, links } = await crumbsAt("/projects/p1/pulls/42");
       expect(links).toEqual([
-        ["Code", "/projects/p1/overview"],
+        ["Project settings", "/projects/p1/settings"],
         ["Pull Requests", "/projects/p1/pulls"],
       ]);
       expect(current).toHaveLength(1);
@@ -143,8 +143,8 @@ describe("<Breadcrumbs />", () => {
 
     it("a route reached from inside a section ends at its own label", async () => {
       const { current, links } = await crumbsAt("/projects/p1/sync");
-      expect(links).toEqual([["Publish", "/projects/p1/publish"]]);
-      expect(current[0]).toHaveTextContent("Sync");
+      expect(links).toEqual([["Deliverables", "/projects/p1/documentation"]]);
+      expect(current[0]).toHaveTextContent("Issue updates");
     });
 
     it("outside a project, the page is the sidebar entry and is the only current crumb", async () => {

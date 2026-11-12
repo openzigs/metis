@@ -16,6 +16,11 @@ import { describeOutputBudget, type OutputTokenBudget } from "../output-caps.js"
 export type DocWarningKind =
   | "section-failed"
   | "section-ungrounded"
+  /**
+   * No longer written: since #2369 a scope with no documentable module fails
+   * the run (`NoDocumentableCodeError`). Documents degraded before then still
+   * carry it, so it is still read.
+   */
   | "no-modules"
   | "source-unavailable"
   | "facts-truncated"
@@ -669,27 +674,6 @@ export function groundingModeRunWarning(
       `with DOCS_GEN_GROUNDING=on for a full check.`,
     severity: "warning",
     runLevel: true,
-  };
-}
-
-/**
- * Build a warning for the case where the project HAS indexed code symbols but
- * none of them survived the documentable-module filter, so synthesis produced an
- * empty document. Previously this returned a clean `ready` with zero warnings,
- * silently hiding the failure (e.g. SAS-only projects whose `function`-only
- * symbols were dropped by the class/interface-oriented filter). Surfacing a
- * warning forces {@link deriveDocStatus} to report `degraded`.
- */
-export function noModulesWarning(symbolCount: number): DocWarning {
-  return {
-    kind: "no-modules",
-    section: "Document",
-    message:
-      `The project has ${symbolCount} indexed code symbol(s) but none qualified as a ` +
-      `documentable module, so an empty document was produced. This can happen when ` +
-      `the code is composed entirely of small units (e.g. SAS macros/steps) or lives ` +
-      `under excluded test/generated/build directories.`,
-    severity: "warning",
   };
 }
 

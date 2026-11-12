@@ -20,9 +20,9 @@ export interface ProjectTabLink {
 }
 
 export type ProjectSectionId =
-  "overview" | "sources" | "analyze" | "requirements" | "docs" | "publish" | "code" | "settings";
+  "overview" | "knowledge" | "change-requests" | "requirements" | "deliverables" | "settings";
 
-/** One primary tab: a pipeline stage and the pages that belong to it. */
+/** One primary tab: a stage of the analyst's job and the pages that belong to it. */
 export interface ProjectSection {
   id: ProjectSectionId;
   label: string;
@@ -44,13 +44,19 @@ export interface ProjectTabModel {
 }
 
 /**
- * #28 (epic #26) — the project tabs follow the pipeline, left to right:
- * Overview · Sources · Analyze · Requirements · Docs · Publish · Code · ⚙.
+ * #2334 (epic #2328) — the project tabs follow the analyst's job, not the
+ * system: Overview · Knowledge · Change requests · Requirements · Deliverables · ⚙.
+ *
+ * This partly reverses #28, which made Code a peer tab: Code Overview, Pull
+ * Requests and Spec Kit are not where an analyst works, so they sit behind ⚙
+ * with the project's settings. Change Analysis (`/changes`) compares the
+ * requirements of two analysis runs; its label is "Compare analyses" so it
+ * cannot be read as the "Change requests" tab.
  *
  * Every primary tab is a direct link to its section's first step, so nothing on
  * the primary path is more than one click from the tab bar; a section's other
- * pages sit in a visible sub-nav under the bar. The former "More" overflow menu
- * is gone. No project route moved, so every existing URL still works.
+ * pages sit in a visible sub-nav under the bar. There is no "More" overflow.
+ * No project route moved, so every existing URL still works.
  *
  * Skills are not linked from here — the per-project skill allowlist is reached
  * from Library, which has a project picker (#28).
@@ -61,27 +67,27 @@ export function getProjectTabModel(projectId: string): ProjectTabModel {
     sections: [
       { id: "overview", label: "Overview", href: base, items: [] },
       {
-        id: "sources",
-        label: "Sources",
+        id: "knowledge",
+        label: "Knowledge",
         href: `${base}/connections`,
         items: [
           { href: `${base}/connections`, label: "Connections" },
           { href: `${base}/documents`, label: "Documents" },
-          { href: `${base}/import`, label: "Import" },
-          { href: `${base}/jira`, label: "Jira" },
         ],
         // #1371 — `/repositories` redirects to Connections; old links still
         // land there.
         routes: [`${base}/repositories`],
       },
       {
-        id: "analyze",
-        label: "Analyze",
+        id: "change-requests",
+        label: "Change requests",
         href: `${base}/analysis`,
         items: [
           { href: `${base}/analysis`, label: "Requirements Analysis" },
+          // Intake: requirements brought in from another system.
+          { href: `${base}/import`, label: "Import" },
+          { href: `${base}/jira`, label: "Jira" },
           { href: `${base}/impact`, label: "Impact Analysis" },
-          { href: `${base}/spec-kit`, label: "Spec Kit" },
         ],
       },
       {
@@ -92,38 +98,24 @@ export function getProjectTabModel(projectId: string): ProjectTabModel {
           { href: `${base}/requirements`, label: "Review" },
           { href: `${base}/baselines`, label: "Baselines" },
           { href: `${base}/discussions`, label: "Discussions" },
+          { href: `${base}/changes`, label: "Compare analyses" },
         ],
       },
       {
-        id: "docs",
-        label: "Docs",
+        id: "deliverables",
+        label: "Deliverables",
         href: `${base}/documentation`,
         items: [
           { href: `${base}/documentation`, label: "Documentation" },
           { href: `${base}/settings/templates`, label: "Templates" },
+          { href: `${base}/publish`, label: "Publish" },
         ],
-      },
-      {
-        id: "publish",
-        label: "Publish",
-        href: `${base}/publish`,
-        items: [],
         // Issue-sync drift dashboard — reached from published issues' badges.
         routes: [`${base}/sync`],
       },
       {
-        id: "code",
-        label: "Code",
-        href: `${base}/overview`,
-        items: [
-          { href: `${base}/overview`, label: "Code Overview" },
-          { href: `${base}/changes`, label: "Changes" },
-          { href: `${base}/pulls`, label: "Pull Requests" },
-        ],
-      },
-      {
         id: "settings",
-        label: "Settings",
+        label: "Project settings",
         href: `${base}/settings`,
         items: [
           { href: `${base}/settings`, label: "General" },
@@ -134,6 +126,10 @@ export function getProjectTabModel(projectId: string): ProjectTabModel {
             href: `/settings/usage?scope=project&projectId=${encodeURIComponent(projectId)}`,
             label: "Usage",
           },
+          // #2334 — code views are not an analyst's daily work; they sit here.
+          { href: `${base}/overview`, label: "Code Overview" },
+          { href: `${base}/pulls`, label: "Pull Requests" },
+          { href: `${base}/spec-kit`, label: "Spec Kit" },
         ],
       },
     ],
@@ -164,8 +160,8 @@ export interface ActiveProjectTab {
 
 /**
  * Resolve which section (and sub-nav page) a pathname belongs to. The longest
- * matching href wins, which is what puts `/settings/templates` under Docs rather
- * than under ⚙'s `/settings`. The project index matches only exactly.
+ * matching href wins, which is what puts `/settings/templates` under Deliverables
+ * rather than under ⚙'s `/settings`. The project index matches only exactly.
  */
 export function resolveActiveProjectTab(
   pathname: string,
@@ -223,7 +219,12 @@ export function ProjectTabs({ projectId }: ProjectTabsProps) {
   const pathname = usePathname() ?? "";
   const model = getProjectTabModel(projectId);
   const active = resolveActiveProjectTab(pathname, model);
-  const activeHref = active ? (active.item?.href ?? active.section.href) : null;
+  // The page showing, as a link href. A route outside the sub-nav (issue sync)
+  // is none of the section's links, so it marks none of them "page" (#2334:
+  // Deliverables' sub-nav is visible there, and Documentation is not the page).
+  const activeHref = !active
+    ? null
+    : (active.item?.href ?? (active.section.items.length === 0 ? active.section.href : null));
   // The current page's own label; a route outside the sub-nav shows its section.
   const currentLabel = active ? (active.item?.label ?? active.section.label) : "Overview";
   const subnavSection = active && active.section.items.length > 1 ? active.section : null;
@@ -284,7 +285,8 @@ export function ProjectTabs({ projectId }: ProjectTabsProps) {
                   className={tabClass(isActive)}
                   aria-current={current}
                   data-testid={`project-tab-${section.id}`}
-                  title={isGear ? "Project settings" : undefined}
+                  // ⚙ is a glyph: its name is text for assistive tech, and a tooltip for sight.
+                  title={isGear ? section.label : undefined}
                 >
                   {isGear ? (
                     <>

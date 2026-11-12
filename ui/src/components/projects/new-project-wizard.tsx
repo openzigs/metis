@@ -26,6 +26,7 @@ import { repoConnectorsApi } from "@/lib/connectors-api";
 import { applyJobLifecycleEvent } from "@/hooks/use-active-jobs";
 import { queryKeys } from "@/lib/query-keys";
 import { useValidatedActiveWorkspaceId, type ActiveWorkspaceStatus } from "@/lib/active-workspace";
+import { useAuth } from "@/lib/auth-context";
 import { WorkspaceStatusNotice } from "@/components/projects/workspace-status-notice";
 import { mapFieldErrors, type FieldErrorMap } from "@/lib/form-validation";
 import { isHttpUrl, slugSuggestionMessage, urlSuggestionMessage } from "@/lib/error-suggestion";
@@ -137,7 +138,7 @@ export function NewProjectWizard({
           jobId: ingest.jobId,
           projectId: project.id,
           status: "started",
-          message: "Deep ingest started",
+          message: "Full re-read started",
           ts: Date.now(),
         });
         toast.success("Project created — ingest started");
@@ -218,7 +219,7 @@ export function NewProjectWizard({
             ) : null}
           </div>
           <div className="space-y-2">
-            <Label htmlFor="wizard-slug">Slug</Label>
+            <Label htmlFor="wizard-slug">Short name</Label>
             <Input
               id="wizard-slug"
               value={slug}
@@ -327,12 +328,12 @@ export function NewProjectWizard({
                 ) : null}
               </div>
               <div className="space-y-1">
-                <Label htmlFor="wizard-secret">Secret ref (optional)</Label>
+                <Label htmlFor="wizard-secret">Access token (vault secret)</Label>
                 <VaultPicker
                   id="wizard-secret"
                   value={secretRef}
                   onChange={setSecretRef}
-                  placeholder="${vault:my-pat}"
+                  placeholder="Choose a vault secret"
                 />
                 <p className="text-xs text-muted-foreground">Needed for a private repository.</p>
               </div>
@@ -414,12 +415,28 @@ export function NewProjectWizard({
   );
 }
 
+/**
+ * #2368 — what a role without `project.create` sees where New project would be:
+ * who can create one, instead of a form `POST /api/projects` refuses on submit.
+ */
+export function ProjectCreateForbiddenNotice() {
+  return (
+    <p className="text-sm text-muted-foreground" data-testid="new-project-forbidden">
+      Ask an admin or coordinator to create projects.
+    </p>
+  );
+}
+
 /** The wizard behind a "New project" button — the Home empty state's action. */
 export function NewProjectDialog() {
   const [open, setOpen] = useState(false);
   // #2197 — the active workspace the top bar shows, validated: a stored id the
   // caller is not a member of is never sent as the new project's workspace.
   const workspace = useValidatedActiveWorkspaceId();
+  const { user } = useAuth();
+  if (!(user?.permissions.includes("project.create") ?? false)) {
+    return <ProjectCreateForbiddenNotice />;
+  }
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>

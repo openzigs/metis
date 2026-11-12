@@ -234,4 +234,41 @@ describe("DocumentationPage — indexing state", () => {
     expect(link).toHaveTextContent("Review in quarantine");
     expect(link).toHaveAttribute("href", "/projects/proj_test/settings#quarantine");
   });
+
+  // #2377 — a failed document that never published was never queued for
+  // indexing; "Queued for indexing" contradicted "never added to the project's
+  // knowledge". The server reports `indexing: null`, and nothing is shown.
+  it("shows no indexing badge or summary when the document has no indexing state", async () => {
+    const doc = {
+      id: "doc_1",
+      title: "Business Requirements",
+      scope: "full",
+      status: "failed",
+      errorMessage: "This document type needs connected source code.",
+      indexing: null,
+      autoUpdate: false,
+      generatedAt: null,
+      createdAt: "2026-06-01T00:00:00.000Z",
+    };
+    mockApiFetch.mockImplementation(async (path: string) => {
+      if (typeof path === "string" && path.endsWith("/docs/doc_1")) {
+        return { ...doc, content: "", versions: [] };
+      }
+      if (typeof path === "string" && path.endsWith("/docs")) return [doc];
+      return [];
+    });
+
+    renderPage();
+
+    const card = await screen.findByTestId("doc-card-doc_1");
+    expect(card).toHaveTextContent("failed");
+    expect(card.querySelector('[data-testid="doc-indexing-badge"]')).toBeNull();
+
+    fireEvent.click(card);
+
+    expect(await screen.findByText("Generation")).toBeInTheDocument();
+    expect(screen.queryByTestId("doc-indexing-summary")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("doc-indexing-badge")).not.toBeInTheDocument();
+    expect(screen.queryByText("Queued for indexing.")).not.toBeInTheDocument();
+  });
 });

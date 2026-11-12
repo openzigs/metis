@@ -1,13 +1,13 @@
 /**
- * #28 (epic #26) — the project tab bar follows the pipeline, left to right:
+ * #2334 (epic #2328) — the project tab bar follows the analyst's job:
  *
- *   Overview · Sources · Analyze · Requirements · Docs · Publish · Code · ⚙
+ *   Overview · Knowledge · Change requests · Requirements · Deliverables · ⚙
  *
  * Every primary tab is a direct link (one click lands on the section), the
- * section's other pages sit in a visible sub-nav, and the "More" overflow menu
- * is gone. No project route moved, so every existing URL still resolves — the
- * route-inventory test below reads the real `app/` tree to prove each one maps
- * to a section.
+ * section's other pages sit in a visible sub-nav (a second click), and there is
+ * no "More" overflow menu. No project route moved, so every existing URL still
+ * resolves — the route-inventory test below reads the real `app/` tree to prove
+ * each one maps to a section.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -33,19 +33,28 @@ function renderTabs(projectId = "p1") {
 }
 
 const B = "/projects/p1";
+const USAGE = "/settings/usage?scope=project&projectId=p1";
 
-describe("getProjectTabModel — pipeline order (#28)", () => {
-  it("orders the primary tabs by the pipeline, left to right", () => {
+const SIX_TABS = [
+  "Overview",
+  "Knowledge",
+  "Change requests",
+  "Requirements",
+  "Deliverables",
+  "Project settings",
+];
+
+describe("getProjectTabModel — the analyst's job (#2334)", () => {
+  it("has exactly six primary tabs, in the job's order", () => {
     const model = getProjectTabModel("p1");
-    expect(model.sections.map((s) => s.label)).toEqual([
-      "Overview",
-      "Sources",
-      "Analyze",
-      "Requirements",
-      "Docs",
-      "Publish",
-      "Code",
-      "Settings",
+    expect(model.sections.map((s) => s.label)).toEqual(SIX_TABS);
+    expect(model.sections.map((s) => s.id)).toEqual([
+      "overview",
+      "knowledge",
+      "change-requests",
+      "requirements",
+      "deliverables",
+      "settings",
     ]);
   });
 
@@ -60,53 +69,72 @@ describe("getProjectTabModel — pipeline order (#28)", () => {
       model.sections.map((s) => [s.id, s.items.map((i) => [i.label, i.href])]),
     );
     expect(items.overview).toEqual([]);
-    expect(items.sources).toEqual([
+    expect(items.knowledge).toEqual([
       ["Connections", `${B}/connections`],
       ["Documents", `${B}/documents`],
+    ]);
+    expect(items["change-requests"]).toEqual([
+      ["Requirements Analysis", `${B}/analysis`],
       ["Import", `${B}/import`],
       ["Jira", `${B}/jira`],
-    ]);
-    expect(items.analyze).toEqual([
-      ["Requirements Analysis", `${B}/analysis`],
       ["Impact Analysis", `${B}/impact`],
-      ["Spec Kit", `${B}/spec-kit`],
     ]);
     expect(items.requirements).toEqual([
       ["Review", `${B}/requirements`],
       ["Baselines", `${B}/baselines`],
       ["Discussions", `${B}/discussions`],
+      ["Compare analyses", `${B}/changes`],
     ]);
-    expect(items.docs).toEqual([
+    expect(items.deliverables).toEqual([
       ["Documentation", `${B}/documentation`],
       ["Templates", `${B}/settings/templates`],
-    ]);
-    expect(items.publish).toEqual([]);
-    expect(items.code).toEqual([
-      ["Code Overview", `${B}/overview`],
-      ["Changes", `${B}/changes`],
-      ["Pull Requests", `${B}/pulls`],
+      ["Publish", `${B}/publish`],
     ]);
     expect(items.settings).toEqual([
       ["General", `${B}/settings`],
       ["Models", `${B}/settings/models`],
       ["Plugins", `${B}/plugins`],
-      ["Usage", "/settings/usage?scope=project&projectId=p1"],
+      ["Usage", USAGE],
+      ["Code Overview", `${B}/overview`],
+      ["Pull Requests", `${B}/pulls`],
+      ["Spec Kit", `${B}/spec-kit`],
     ]);
   });
 
-  it("lands each primary tab on the first step of its section (one click)", () => {
+  it("lands each primary tab on the first page of its section (one click)", () => {
     const model = getProjectTabModel("p1");
     const hrefs = Object.fromEntries(model.sections.map((s) => [s.id, s.href]));
     expect(hrefs).toEqual({
       overview: B,
-      sources: `${B}/connections`,
-      analyze: `${B}/analysis`,
+      knowledge: `${B}/connections`,
+      "change-requests": `${B}/analysis`,
       requirements: `${B}/requirements`,
-      docs: `${B}/documentation`,
-      publish: `${B}/publish`,
-      code: `${B}/overview`,
+      deliverables: `${B}/documentation`,
       settings: `${B}/settings`,
     });
+    for (const section of model.sections.slice(1)) {
+      expect(section.items[0].href, section.id).toBe(section.href);
+    }
+  });
+
+  it("puts the code views and planning tools under ⚙ and nowhere else", () => {
+    const model = getProjectTabModel("p1");
+    for (const label of ["Code Overview", "Pull Requests", "Models", "Plugins", "Spec Kit"]) {
+      const owners = model.sections.filter((s) => s.items.some((i) => i.label === label));
+      expect(
+        owners.map((s) => s.id),
+        label,
+      ).toEqual(["settings"]);
+    }
+    expect(model.sections.map((s) => s.label)).not.toContain("Code");
+  });
+
+  it("labels Change Analysis so it cannot be read as a change request", () => {
+    const model = getProjectTabModel("p1");
+    const requirements = model.sections.find((s) => s.id === "requirements");
+    const changes = requirements?.items.find((i) => i.href === `${B}/changes`);
+    expect(changes?.label).toBe("Compare analyses");
+    expect(changes?.label).not.toMatch(/change/i);
   });
 
   it("does not link Skills from any project tab — Skills live in Library", () => {
@@ -121,28 +149,37 @@ describe("getProjectTabModel — pipeline order (#28)", () => {
     expect(labels).toContain("Code Overview");
   });
 
-  it("keeps every pre-#28 destination reachable from the tab bar", () => {
-    const hrefs = flattenProjectTabs(getProjectTabModel("p1")).map((l) => l.href);
+  it("keeps every page the old tab bar reached, at the same URL, two clicks away", () => {
+    const model = getProjectTabModel("p1");
+    // A primary tab is one click; a sub-nav item under it is the second.
+    const withinTwoClicks = new Set(
+      model.sections.flatMap((s) => [s.href, ...s.items.map((i) => i.href)]),
+    );
     for (const suffix of [
       "",
+      "/connections",
       "/documents",
+      "/import",
+      "/jira",
       "/analysis",
+      "/impact",
       "/spec-kit",
+      "/requirements",
+      "/baselines",
       "/discussions",
+      "/documentation",
+      "/settings/templates",
+      "/publish",
       "/overview",
       "/changes",
       "/pulls",
-      "/documentation",
-      "/settings/templates",
-      "/baselines",
-      "/connections",
-      "/jira",
-      "/import",
-      "/publish",
+      "/settings",
+      "/settings/models",
       "/plugins",
     ]) {
-      expect(hrefs).toContain(`${B}${suffix}`);
+      expect(withinTwoClicks, suffix || "/").toContain(`${B}${suffix}`);
     }
+    expect(withinTwoClicks).toContain(USAGE);
   });
 
   it("flattens without duplicate hrefs", () => {
@@ -163,24 +200,41 @@ describe("resolveActiveProjectTab", () => {
     expect(active(`${B}/`)).toEqual(["overview", null]);
   });
 
-  it("maps section pages and their sub-paths to the owning section", () => {
-    expect(active(`${B}/documents`)).toEqual(["sources", "Documents"]);
-    expect(active(`${B}/jira`)).toEqual(["sources", "Jira"]);
-    expect(active(`${B}/spec-kit/spec.md`)).toEqual(["analyze", "Spec Kit"]);
-    expect(active(`${B}/baselines/b1`)).toEqual(["requirements", "Baselines"]);
-    expect(active(`${B}/discussions/d1`)).toEqual(["requirements", "Discussions"]);
-    expect(active(`${B}/pulls/12`)).toEqual(["code", "Pull Requests"]);
+  // Every project route that exists today, with the tab and sub-item it lights.
+  it.each([
+    ["/connections", "knowledge", "Connections"],
+    ["/documents", "knowledge", "Documents"],
+    ["/repositories", "knowledge", null],
+    ["/analysis", "change-requests", "Requirements Analysis"],
+    ["/import", "change-requests", "Import"],
+    ["/jira", "change-requests", "Jira"],
+    ["/impact", "change-requests", "Impact Analysis"],
+    ["/requirements", "requirements", "Review"],
+    ["/baselines", "requirements", "Baselines"],
+    ["/baselines/b1", "requirements", "Baselines"],
+    ["/discussions", "requirements", "Discussions"],
+    ["/discussions/d1", "requirements", "Discussions"],
+    ["/changes", "requirements", "Compare analyses"],
+    ["/documentation", "deliverables", "Documentation"],
+    ["/settings/templates", "deliverables", "Templates"],
+    ["/publish", "deliverables", "Publish"],
+    ["/sync", "deliverables", null],
+    ["/settings", "settings", "General"],
+    ["/settings/models", "settings", "Models"],
+    ["/plugins", "settings", "Plugins"],
+    ["/overview", "settings", "Code Overview"],
+    ["/pulls", "settings", "Pull Requests"],
+    ["/pulls/12", "settings", "Pull Requests"],
+    ["/spec-kit", "settings", "Spec Kit"],
+    ["/spec-kit/spec.md", "settings", "Spec Kit"],
+  ])("%s lights %s › %s", (suffix, section, item) => {
+    expect(active(`${B}${suffix}`)).toEqual([section, item]);
   });
 
-  it("prefers the longest match, so Templates is Docs even under /settings", () => {
-    expect(active(`${B}/settings/templates`)).toEqual(["docs", "Templates"]);
+  it("prefers the longest match, so Templates is Deliverables even under /settings", () => {
+    expect(active(`${B}/settings/templates`)).toEqual(["deliverables", "Templates"]);
     expect(active(`${B}/settings/models`)).toEqual(["settings", "Models"]);
     expect(active(`${B}/settings`)).toEqual(["settings", "General"]);
-  });
-
-  it("maps routes that are not in the sub-nav to their section", () => {
-    expect(active(`${B}/repositories`)).toEqual(["sources", null]);
-    expect(active(`${B}/sync`)).toEqual(["publish", null]);
   });
 
   it("does not match a sibling that merely shares a prefix", () => {
@@ -228,33 +282,33 @@ describe("isProjectTabActive", () => {
 });
 
 describe("<ProjectTabs />", () => {
-  it("renders the eight primary tabs as links, in order, with no More menu", () => {
+  it("renders the six primary tabs as links, in order, with no More menu", () => {
     usePathnameMock.mockReturnValue(B);
     renderTabs();
     const nav = screen.getByRole("navigation", { name: "Project sections" });
     const links = within(nav).getAllByRole("link");
-    expect(links.map((l) => l.textContent?.trim())).toEqual([
-      "Overview",
-      "Sources",
-      "Analyze",
-      "Requirements",
-      "Docs",
-      "Publish",
-      "Code",
-      "Settings",
-    ]);
+    expect(links.map((l) => l.textContent?.trim())).toEqual(SIX_TABS);
     expect(screen.queryByRole("button", { name: /more project sections/i })).toBeNull();
     expect(screen.queryByTestId("project-tabs-more")).toBeNull();
     expect(nav.querySelector(".overflow-x-auto")).toBeNull();
   });
 
-  it("renders the settings tab as a gear icon with an accessible name", () => {
+  it("renders ⚙ as a gear with a text accessible name and a tooltip", () => {
     usePathnameMock.mockReturnValue(B);
     renderTabs();
     const gear = screen.getByTestId("project-tab-settings");
-    expect(gear).toHaveAccessibleName("Settings");
+    expect(gear).toHaveAccessibleName("Project settings");
+    expect(gear).toHaveAttribute("title", "Project settings");
     expect(gear.querySelector("svg")).not.toBeNull();
     expect(gear).toHaveAttribute("href", `${B}/settings`);
+  });
+
+  it("gives no other tab a tooltip", () => {
+    usePathnameMock.mockReturnValue(B);
+    renderTabs();
+    for (const id of ["overview", "knowledge", "change-requests", "requirements", "deliverables"]) {
+      expect(screen.getByTestId(`project-tab-${id}`)).not.toHaveAttribute("title");
+    }
   });
 
   it("marks Overview as the current page on the index and shows no sub-nav", () => {
@@ -268,41 +322,51 @@ describe("<ProjectTabs />", () => {
     usePathnameMock.mockReturnValue(`${B}/changes`);
     renderTabs();
     // The section tab is marked current-within-set, the page itself as "page".
-    expect(screen.getByTestId("project-tab-code")).toHaveAttribute("aria-current", "true");
-    const sub = screen.getByRole("navigation", { name: "Code pages" });
+    expect(screen.getByTestId("project-tab-requirements")).toHaveAttribute("aria-current", "true");
+    const sub = screen.getByRole("navigation", { name: "Requirements pages" });
     const names = within(sub)
       .getAllByRole("link")
       .map((l) => l.textContent);
-    expect(names).toEqual(["Code Overview", "Changes", "Pull Requests"]);
-    expect(within(sub).getByRole("link", { name: "Changes" })).toHaveAttribute(
+    expect(names).toEqual(["Review", "Baselines", "Discussions", "Compare analyses"]);
+    expect(within(sub).getByRole("link", { name: "Compare analyses" })).toHaveAttribute(
       "aria-current",
       "page",
     );
-    expect(within(sub).getByRole("link", { name: "Pull Requests" })).not.toHaveAttribute(
-      "aria-current",
-    );
+    expect(within(sub).getByRole("link", { name: "Review" })).not.toHaveAttribute("aria-current");
   });
 
   it("marks a section tab 'page' when its landing page is the current page", () => {
     usePathnameMock.mockReturnValue(`${B}/connections`);
     renderTabs();
-    expect(screen.getByTestId("project-tab-sources")).toHaveAttribute("aria-current", "page");
+    expect(screen.getByTestId("project-tab-knowledge")).toHaveAttribute("aria-current", "page");
     expect(screen.getByTestId("project-tab-overview")).not.toHaveAttribute("aria-current");
   });
 
-  it("lights Docs, not Settings, on /settings/templates", () => {
+  it("lights Deliverables, not ⚙, on /settings/templates", () => {
     usePathnameMock.mockReturnValue(`${B}/settings/templates`);
     renderTabs();
-    expect(screen.getByTestId("project-tab-docs")).toHaveAttribute("aria-current", "true");
+    expect(screen.getByTestId("project-tab-deliverables")).toHaveAttribute("aria-current", "true");
     expect(screen.getByTestId("project-tab-settings")).not.toHaveAttribute("aria-current");
-    expect(screen.getByRole("navigation", { name: "Docs pages" })).toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: "Deliverables pages" })).toBeInTheDocument();
   });
 
-  it("shows no sub-nav for a single-page section", () => {
-    usePathnameMock.mockReturnValue(`${B}/publish`);
+  it("shows the ⚙ sub-nav, code views included, on a code page", () => {
+    usePathnameMock.mockReturnValue(`${B}/pulls/7`);
     renderTabs();
-    expect(screen.getByTestId("project-tab-publish")).toHaveAttribute("aria-current", "page");
-    expect(screen.queryByTestId("project-subnav")).toBeNull();
+    expect(screen.getByTestId("project-tab-settings")).toHaveAttribute("aria-current", "true");
+    const sub = screen.getByRole("navigation", { name: "Project settings pages" });
+    expect(within(sub).getByRole("link", { name: "Pull Requests" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+  });
+
+  it("keeps the section's sub-nav on a route reached from inside it", () => {
+    usePathnameMock.mockReturnValue(`${B}/sync`);
+    renderTabs();
+    expect(screen.getByTestId("project-tab-deliverables")).toHaveAttribute("aria-current", "true");
+    const sub = screen.getByRole("navigation", { name: "Deliverables pages" });
+    expect(sub.querySelector("[aria-current]")).toBeNull();
   });
 
   it("renders no current tab on an unknown path", () => {
@@ -314,19 +378,19 @@ describe("<ProjectTabs />", () => {
   });
 });
 
-describe("<ProjectTabs /> — mobile collapse (R1 #156)", () => {
-  it("labels the single mobile trigger with the current page", () => {
+describe("<ProjectTabs /> — narrow-viewport collapse (R1 #156)", () => {
+  it("labels the single trigger with the current page", () => {
     usePathnameMock.mockReturnValue(`${B}/changes`);
     renderTabs();
     const mobile = screen.getByTestId("project-tabs-mobile");
     expect(mobile).toHaveAccessibleName("Project section menu");
-    expect(mobile).toHaveTextContent("Changes");
+    expect(mobile).toHaveTextContent("Compare analyses");
   });
 
   it("falls back to the section label, then to Overview", () => {
     usePathnameMock.mockReturnValue(`${B}/sync`);
     const { unmount } = renderTabs();
-    expect(screen.getByTestId("project-tabs-mobile")).toHaveTextContent("Publish");
+    expect(screen.getByTestId("project-tabs-mobile")).toHaveTextContent("Deliverables");
     unmount();
     usePathnameMock.mockReturnValue(`${B}/nope`);
     renderTabs();
@@ -347,7 +411,10 @@ describe("<ProjectTabs /> — mobile collapse (R1 #156)", () => {
       "page",
     );
     // Section headings group the menu.
-    expect(within(screen.getByRole("menu")).getByText("Sources")).toBeInTheDocument();
+    const menu = screen.getByRole("menu");
+    for (const label of SIX_TABS.slice(1)) {
+      expect(within(menu).getByText(label)).toBeInTheDocument();
+    }
     const count = flattenProjectTabs(getProjectTabModel("p1")).length;
     expect(screen.getAllByRole("menuitem")).toHaveLength(count);
   });

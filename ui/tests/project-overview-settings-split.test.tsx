@@ -3,7 +3,7 @@
  * and the settings form it used to be now lives behind the ⚙ tab.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { makeWrapper, TEST_USER } from "./test-utils";
 
 vi.mock("next/navigation", async (orig) => ({
@@ -145,6 +145,56 @@ describe("project Settings page (⚙)", () => {
     );
     // Not an "Overview" page: exactly one project page carries that name.
     expect(screen.queryByText(/overview/i)).toBeNull();
+  });
+
+  // #2337 — General / AI & cost / Advanced, Advanced collapsed; nothing removed.
+  it("groups the settings as General, AI & cost and Advanced", async () => {
+    render(<ProjectSettingsPage />, { wrapper: makeWrapper({ initialUser: TEST_USER }) });
+    await screen.findByTestId("card-provider");
+    const groups: Record<string, string[]> = {
+      "project-settings-general": ["repo"],
+      "project-settings-ai-cost": [
+        "provider",
+        "model",
+        "safety",
+        "budget",
+        "autopilot",
+        "auto-review",
+      ],
+      "project-settings-advanced": ["inference", "db-aware", "sql-lineage", "agents-md"],
+    };
+    const placed = Object.values(groups).flat();
+    // Every settings card is in exactly one group.
+    expect([...placed].sort()).toEqual([...SETTINGS_CARDS].sort());
+    for (const [group, cards] of Object.entries(groups)) {
+      const el = screen.getByTestId(group);
+      for (const c of cards) expect(within(el).getByTestId(`card-${c}`), c).toBeInTheDocument();
+    }
+    expect(
+      within(screen.getByTestId("project-settings-general")).getByRole("heading", {
+        name: "General",
+      }),
+    ).toBeInTheDocument();
+    expect(
+      within(screen.getByTestId("project-settings-ai-cost")).getByRole("heading", {
+        name: "AI & cost",
+      }),
+    ).toBeInTheDocument();
+    expect(
+      within(screen.getByTestId("project-settings-ai-cost")).getByTestId("model-settings-link"),
+    ).toBeInTheDocument();
+    // No catch-all "Settings" card any more.
+    expect(screen.queryByRole("heading", { name: "Settings" })).toBeNull();
+  });
+
+  it("starts with Advanced collapsed, and opens it from its summary", async () => {
+    render(<ProjectSettingsPage />, { wrapper: makeWrapper({ initialUser: TEST_USER }) });
+    const advanced = (await screen.findByTestId("project-settings-advanced")) as HTMLDetailsElement;
+    expect(advanced.tagName).toBe("DETAILS");
+    expect(advanced.open).toBe(false);
+    expect(advanced).not.toHaveAttribute("open");
+    fireEvent.click(screen.getByTestId("project-settings-advanced-toggle"));
+    expect(advanced.open).toBe(true);
   });
 
   it("links the project's skills in Library only for project.update holders", async () => {

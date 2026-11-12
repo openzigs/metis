@@ -63,15 +63,28 @@ describe("HelpMenu (#661 — SC 3.2.6 Consistent Help)", () => {
 
     const dialog = await screen.findByRole("dialog", { name: /help/i });
 
-    // Self-help / documentation link.
+    // Self-help / documentation link — #2337: in-app, not a GitHub page.
     const docs = within(dialog).getByRole("link", { name: /user guide|documentation/i });
-    expect(docs).toHaveAttribute("href");
-    // External links must be safe (OWASP — no reverse tabnabbing).
-    expect(docs).toHaveAttribute("rel", expect.stringContaining("noopener"));
+    expect(docs).toHaveAttribute("href", "/help");
 
-    // Contact mechanism (issue tracker / support).
+    // Contact mechanism — the deployment's administrator, on the same page.
     const contact = within(dialog).getByRole("link", { name: /support|issue|contact/i });
-    expect(contact).toHaveAttribute("href");
+    expect(contact).toHaveAttribute("href", "/help#contact");
+
+    for (const link of within(dialog).getAllByRole("link")) {
+      expect(link.getAttribute("href")).toMatch(/^\//);
+      expect(link).not.toHaveAttribute("target");
+    }
+    expect(dialog.innerHTML).not.toMatch(/github\.com/);
+  });
+
+  it("closes the dialog when a help link is followed", async () => {
+    const user = userEvent.setup();
+    render(<HelpMenu />);
+    await user.click(screen.getByRole("button", { name: "Help" }));
+    const dialog = await screen.findByRole("dialog", { name: /help/i });
+    await user.click(within(dialog).getByRole("link", { name: /user guide/i }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
   it("closes on Escape, restoring the Radix dialog contract", async () => {

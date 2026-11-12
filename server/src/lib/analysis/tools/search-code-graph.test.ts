@@ -50,7 +50,7 @@ vi.mock("../../prisma.js", () => ({
   },
 }));
 
-import { searchCodeGraphTool } from "./search-code-graph.js";
+import { chatSearchCodeGraphTool, searchCodeGraphTool } from "./search-code-graph.js";
 
 const ctx = { projectId: "p1" };
 
@@ -502,5 +502,88 @@ describe("search_code_graph calledBy — unresolved callees (#740)", () => {
     useEdgeTable([]);
     const res = await searchCodeGraphTool.execute({ calledBy: "Leaf" }, ctx);
     expect(res.content).toBe('"Leaf" does not call any other symbols.');
+  });
+});
+
+describe("search_code_graph — the citation contract (#2325)", () => {
+  const SHA = "0123456789abcdef0123456789abcdef01234567";
+  const symbol = {
+    qualifiedName: "src/foo.ts::Foo",
+    kind: "class",
+    filePath: "src/foo.ts",
+    startLine: 3,
+    endLine: 30,
+    language: "typescript",
+  };
+  beforeEach(() => {
+    mockCodeGraph.findFirst.mockReset();
+    mockCodeSymbol.findMany.mockReset();
+    mockCodeEdge.count.mockResolvedValue(0);
+  });
+
+  it("states the graph's indexed commit and a pinned link on every symbol", async () => {
+    mockCodeGraph.findFirst.mockResolvedValue({
+      id: "g1",
+      repoConnectionId: "r1",
+      commitSha: SHA,
+      repoConnection: {
+        provider: "github",
+        ownerOrOrg: "acme",
+        repoName: "app",
+        apiBaseUrl: null,
+        deletedAt: null,
+        projectId: "p1",
+      },
+    });
+    mockCodeSymbol.findMany.mockResolvedValue([symbol]);
+    const res = await chatSearchCodeGraphTool.execute({ query: "Foo" }, ctx);
+    expect(res.citations).toEqual([
+      {
+        repoConnectionId: "r1",
+        path: "src/foo.ts",
+        startLine: 3,
+        endLine: 30,
+        commitSha: SHA,
+        permalink: `https://github.com/acme/app/blob/${SHA}/src/foo.ts#L3-L30`,
+        truncated: false,
+        totalLines: null,
+        stale: false,
+      },
+    ]);
+    // First, so chat's model-context cap (which keeps a result's start) cannot cut it.
+    expect(res.content.split("\n")[0]).toBe("Code version: indexed commit 0123456789ab.");
+    // Read from the graph row the tool already loads.
+    expect(mockCodeGraph.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { projectId: "p1" },
+        select: expect.objectContaining({ commitSha: true }),
+      }),
+    );
+  });
+
+  it("says the version is unknown for a graph with no commit, and links nothing", async () => {
+    mockCodeGraph.findFirst.mockResolvedValue({
+      id: "g1",
+      repoConnectionId: null,
+      commitSha: null,
+    });
+    mockCodeSymbol.findMany.mockResolvedValue([symbol]);
+    const res = await chatSearchCodeGraphTool.execute({ query: "Foo" }, ctx);
+    expect(res.citations?.[0]).toMatchObject({ commitSha: null, permalink: null });
+    expect(res.content).toContain("Code version: unknown");
+  });
+
+  it("leaves the analysis surface's result as it was: no contract, no version line", async () => {
+    mockCodeGraph.findFirst.mockResolvedValue({
+      id: "g1",
+      repoConnectionId: "r1",
+      commitSha: SHA,
+      repoConnection: null,
+    });
+    mockCodeSymbol.findMany.mockResolvedValue([symbol]);
+    const res = await searchCodeGraphTool.execute({ query: "Foo" }, ctx);
+    expect(res.citations).toBeUndefined();
+    expect(res.content).not.toContain("Code version");
+    expect(res.content).toContain("src/foo.ts:3");
   });
 });
