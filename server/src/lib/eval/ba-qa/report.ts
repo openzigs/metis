@@ -18,6 +18,31 @@ export interface ReportSession {
   turnsExhausted?: boolean;
   /** #2243 — tool results cut to `CHAT_TOOL_RESULT_MAX_TOKENS` in the model's copy. */
   truncatedToolResults?: number;
+  /**
+   * #2336 — a session scoped to several products (a routing arm): which of
+   * them it retrieved from. Such a session binds no single project but is not
+   * unscoped. Absent for every other session.
+   */
+  searchScope?: string;
+  /** #2336 — the retrieval step's time, in ms. Absent in a run recorded before #2336. */
+  retrievalMs?: number;
+  /** Seconds for the whole question: retrieval, the tool loop and the answer. */
+  seconds?: number;
+  /** Prompt tokens over the session's model calls, cache reads included. */
+  usage?: { promptTokens: number };
+}
+
+/** The mean of `f` over the sessions that recorded it, or n/a when none did. */
+function meanOf(
+  own: readonly ReportSession[],
+  f: (s: ReportSession) => number | undefined,
+  digits: number,
+): string {
+  const xs = own.map(f).filter((n): n is number => n !== undefined);
+  if (xs.length === 0) return "n/a";
+  return (xs.reduce((a, n) => a + n, 0) / xs.length).toLocaleString("en-US", {
+    maximumFractionDigits: digits,
+  });
 }
 
 /** `n/of` over the sessions that recorded `field`, or n/a when none did. */
@@ -71,7 +96,7 @@ export function formatBaQaReport(input: {
     // retrieval, so its follow-up or abstention can come from having nothing.
     row("Sessions chat left unscoped (no retrieval)", (a) => {
       const own = input.sessions.filter((s) => s.arm === a.arm);
-      return `${own.filter((s) => s.projectId === null).length}/${own.length}`;
+      return `${own.filter((s) => s.projectId === null && !s.searchScope).length}/${own.length}`;
     }),
     row("Correctness: mean facts stated", (a) => pct(a.correctness)),
     row("Fully correct answers", (a) => r(a.fullyCorrect)),
@@ -103,6 +128,28 @@ export function formatBaQaReport(input: {
         (s) => s.truncatedToolResults,
       ),
     ),
+    // #2336 — what a turn costs besides dollars, from the sessions that recorded it.
+    row("Input tokens per question (cache reads included)", (a) =>
+      meanOf(
+        input.sessions.filter((s) => s.arm === a.arm),
+        (s) => s.usage?.promptTokens,
+        0,
+      ),
+    ),
+    row("Seconds per question", (a) =>
+      meanOf(
+        input.sessions.filter((s) => s.arm === a.arm),
+        (s) => s.seconds,
+        1,
+      ),
+    ),
+    row("Retrieval ms per question", (a) =>
+      meanOf(
+        input.sessions.filter((s) => s.arm === a.arm),
+        (s) => s.retrievalMs,
+        0,
+      ),
+    ),
     row("Answer spend", (a) => usd(a.cost.answerUsd)),
     row("Answer spend per question", (a) => usd(a.cost.perQuestionUsd)),
     row("Judge spend", (a) => usd(a.cost.judgeUsd)),
@@ -115,14 +162,16 @@ export function formatBaQaReport(input: {
     "",
     "| Arm | Question | Expect | Got | Facts | Cites (support) | Expected cited | Scope bound | RAG chars | Tools | Cost |",
     "|---|---|---|---|---|---|---|---|---|---|---|",
-    ...input.sessions.map(({ arm, score: s, costUsd, projectId, ragChars, toolCalls }) => {
-      const facts = s.facts ? `${s.facts.stated}/${s.facts.total}` : "-";
-      const support = `${s.citations.length} (${s.citations.filter((c) => c.supports).length})`;
-      const expected = s.expectedFiles.length
-        ? `${s.citedExpectedFiles.length}/${s.expectedFiles.length}`
-        : "-";
-      return `| ${arm} | ${s.questionId} | ${s.expect} | ${s.behaviour ?? "unscored"} | ${facts} | ${support} | ${expected} | ${projectId ? "yes" : "no"} | ${ragChars} | ${toolCalls} | ${usd(costUsd)} |`;
-    }),
+    ...input.sessions.map(
+      ({ arm, score: s, costUsd, projectId, searchScope, ragChars, toolCalls }) => {
+        const facts = s.facts ? `${s.facts.stated}/${s.facts.total}` : "-";
+        const support = `${s.citations.length} (${s.citations.filter((c) => c.supports).length})`;
+        const expected = s.expectedFiles.length
+          ? `${s.citedExpectedFiles.length}/${s.expectedFiles.length}`
+          : "-";
+        return `| ${arm} | ${s.questionId} | ${s.expect} | ${s.behaviour ?? "unscored"} | ${facts} | ${support} | ${expected} | ${projectId ? "yes" : (searchScope ?? "no")} | ${ragChars} | ${toolCalls} | ${usd(costUsd)} |`;
+      },
+    ),
   ];
   return lines.join("\n");
 }

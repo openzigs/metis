@@ -110,4 +110,50 @@ describe("formatBaQaReport", () => {
     expect(md).toContain("| Tool loop out of turns | n/a | 1 in 1/3 sessions |");
     expect(md).toContain("| Tool results truncated | n/a | 3 in 2/3 sessions |");
   });
+
+  it("#2336: counts a multi-product session as scoped and averages tokens, seconds and retrieval", () => {
+    const s = scoreQuestion(q, [], new Map(), null);
+    const base = { score: s, costUsd: 0, projectId: null, ragChars: 1, toolCalls: 0 };
+    const md = formatBaQaReport({
+      title: "T",
+      provider: "p",
+      model: "m",
+      judgeModel: "m",
+      arms: [
+        summarizeArm("old", [s], { answerUsd: 0, judgeUsd: 0 }),
+        summarizeArm("all", [s, s], { answerUsd: 0, judgeUsd: 0 }),
+      ],
+      armFlags: {},
+      sessions: [
+        // A run recorded before #2336: unscoped, and no timings.
+        { ...base, arm: "old" },
+        {
+          ...base,
+          arm: "all",
+          searchScope: "9 of 9 products (all)",
+          seconds: 10,
+          retrievalMs: 1000,
+          usage: { promptTokens: 4000 },
+        },
+        {
+          ...base,
+          arm: "all",
+          searchScope: "1 of 9 products (oracle)",
+          seconds: 11,
+          retrievalMs: 1500,
+          usage: { promptTokens: 6000 },
+        },
+      ],
+      spentUsd: 0,
+      stoppedEarly: null,
+    });
+    expect(md).toContain("| Sessions chat left unscoped (no retrieval) | 1/1 | 0/2 |");
+    expect(md).toContain("| Input tokens per question (cache reads included) | n/a | 5,000 |");
+    expect(md).toContain("| Seconds per question | n/a | 10.5 |");
+    expect(md).toContain("| Retrieval ms per question | n/a | 1,250 |");
+    expect(md).toContain(
+      "| all | M1 | answer | unscored | - | 0 (0) | 0/1 | 1 of 9 products (oracle) |",
+    );
+    expect(md).toContain("| old | M1 | answer | unscored | - | 0 (0) | 0/1 | no |");
+  });
 });
