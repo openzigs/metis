@@ -15,7 +15,14 @@
  * The server's 403s are unchanged and covered by the server suite; what is
  * under test is what each role is offered in the browser.
  */
-import { test, expect, request, type Browser, type Page } from "@playwright/test";
+import {
+  test,
+  expect,
+  request,
+  type APIRequestContext,
+  type Browser,
+  type Page,
+} from "@playwright/test";
 import { ADMIN_USER } from "../fixtures/seed-user.js";
 import { apiBase } from "../fixtures/api-base.js";
 import { LoginPage } from "../pages/login.page.js";
@@ -41,6 +48,7 @@ async function signedIn(
 test.describe("Write actions follow the caller's permissions (#2368)", () => {
   const stamp = Date.now().toString(36);
   let projectId: string;
+  let admin: APIRequestContext | undefined;
 
   test.beforeAll(async () => {
     const login = await request.newContext({ baseURL: apiBase() });
@@ -50,7 +58,7 @@ test.describe("Write actions follow the caller's permissions (#2368)", () => {
     expect(res.status(), await res.text()).toBe(200);
     const { accessToken } = (await res.json()).data as { accessToken: string };
     await login.dispose();
-    const admin = await request.newContext({
+    admin = await request.newContext({
       baseURL: apiBase(),
       extraHTTPHeaders: { Authorization: `Bearer ${accessToken}` },
     });
@@ -60,7 +68,14 @@ test.describe("Write actions follow the caller's permissions (#2368)", () => {
     });
     expect(created.status(), await created.text()).toBe(201);
     projectId = (await created.json()).data.id as string;
-    await admin.dispose();
+  });
+
+  test.afterAll(async () => {
+    if (admin && projectId) {
+      const res = await admin.delete(`/api/projects/${projectId}`);
+      expect([200, 204, 404], await res.text()).toContain(res.status());
+    }
+    await admin?.dispose();
   });
 
   test("a developer is offered no New project and no connector add forms", async ({ browser }) => {

@@ -148,7 +148,7 @@ export default function ProjectsPage() {
         <Card className="p-6 text-center text-sm text-muted-foreground">
           {canCreate
             ? "No projects yet. Create one to get started."
-            : "No projects yet. Ask an admin to create one."}
+            : "No projects yet. Ask an admin or coordinator to create one."}
         </Card>
       )}
 

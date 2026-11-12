@@ -37,7 +37,7 @@ export class ProjectsPage {
     this.slugInput = page.getByTestId("project-slug-input");
     this.submitButton = page.getByTestId("project-create-submit");
     this.list = page.getByTestId("project-list");
-    this.createForbidden = page.getByText("Ask an admin to create projects.");
+    this.createForbidden = page.getByText("Ask an admin or coordinator to create projects.");
     this.projectActions = page.getByRole("button", { name: "Project actions" });
 
     // Epic #640 — source repository fields in create-project dialog

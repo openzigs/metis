@@ -146,7 +146,7 @@ beforeEach(() => {
 });
 
 function renderPage() {
-  const Wrapper = makeWrapper({ initialUser: userWith("connector.write") });
+  const Wrapper = makeWrapper({ initialUser: userWith("connector.write", "project.update") });
   return render(
     <Wrapper>
       <ConnectionsPage />

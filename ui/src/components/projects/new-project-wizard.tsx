@@ -422,7 +422,7 @@ export function NewProjectWizard({
 export function ProjectCreateForbiddenNotice() {
   return (
     <p className="text-sm text-muted-foreground" data-testid="new-project-forbidden">
-      Ask an admin to create projects.
+      Ask an admin or coordinator to create projects.
     </p>
   );
 }

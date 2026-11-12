@@ -47,7 +47,7 @@ vi.mock("@/lib/projects-api", () => ({
 
 vi.mock("@/lib/connectors-api", () => ({
   repoConnectorsApi: { list: vi.fn() },
-  dbConnectorsApi: { list: vi.fn() },
+  dbConnectorsApi: { list: vi.fn(), identities: vi.fn() },
   suggestedConnectorsApi: { list: vi.fn(), updateStatus: vi.fn() },
 }));
 
@@ -73,6 +73,7 @@ import { dbConnectorsApi, repoConnectorsApi, suggestedConnectorsApi } from "@/li
 import ProjectsPage from "@/app/(authed)/projects/page";
 import ConnectionsPage from "@/app/(authed)/projects/[id]/connections/page";
 import { NewProjectDialog } from "@/components/projects/new-project-wizard";
+import { DatabaseResourceManager } from "@/components/connectors/database-resource-manager";
 
 /**
  * The signed-in user, holding exactly `permissions`. `userWith` keeps
@@ -116,6 +117,7 @@ beforeEach(() => {
   } as never);
   vi.mocked(repoConnectorsApi.list).mockResolvedValue([]);
   vi.mocked(dbConnectorsApi.list).mockResolvedValue([]);
+  vi.mocked(dbConnectorsApi.identities).mockResolvedValue([]);
   vi.mocked(suggestedConnectorsApi.list).mockResolvedValue({
     count: 1,
     suggestions: [
@@ -142,7 +144,7 @@ describe("/projects New project is gated on project.create (#2368)", () => {
     expect(screen.queryByRole("button", { name: "New project" })).not.toBeInTheDocument();
     expect(screen.queryByTestId("new-project-button")).not.toBeInTheDocument();
     expect(screen.getByTestId("new-project-forbidden")).toHaveTextContent(
-      "Ask an admin to create projects.",
+      "Ask an admin or coordinator to create projects.",
     );
   });
 
@@ -158,7 +160,7 @@ describe("/projects New project is gated on project.create (#2368)", () => {
     vi.mocked(projectsApi.list).mockResolvedValue(NO_PROJECTS);
     render(<ProjectsPage />, { wrapper: as("project.read") });
     expect(await screen.findByText(/No projects yet/)).toHaveTextContent(
-      "No projects yet. Ask an admin to create one.",
+      "No projects yet. Ask an admin or coordinator to create one.",
     );
   });
 
@@ -192,7 +194,7 @@ describe("the Home New project wizard is gated on project.create (#2368)", () =>
     render(<NewProjectDialog />, { wrapper: as("project.read") });
     expect(screen.queryByRole("button", { name: "New project" })).not.toBeInTheDocument();
     expect(screen.getByTestId("new-project-forbidden")).toHaveTextContent(
-      "Ask an admin to create projects.",
+      "Ask an admin or coordinator to create projects.",
     );
   });
 
@@ -207,10 +209,10 @@ describe("Connections add forms are gated on connector.write (#2368)", () => {
   it("shows a developer neither add form, no vault picker and no Configure, but says who can", async () => {
     render(<ConnectionsPage />, { wrapper: as("connector.read", "connector.test") });
     expect(await screen.findByTestId("repo-connector-forbidden")).toHaveTextContent(
-      "Ask an admin to add repository connectors.",
+      "Ask an admin or coordinator to add repository connectors.",
     );
     expect(screen.getByTestId("db-connector-forbidden")).toHaveTextContent(
-      "Ask an admin to add database connectors.",
+      "Ask an admin or coordinator to add database connectors.",
     );
     expect(screen.queryByRole("button", { name: /Add repo connector/ })).not.toBeInTheDocument();
     expect(
@@ -233,5 +235,172 @@ describe("Connections add forms are gated on connector.write (#2368)", () => {
     expect(screen.queryByTestId("db-connector-forbidden")).not.toBeInTheDocument();
     await waitFor(() => expect(screen.getByRole("button", { name: "Configure" })).toBeEnabled());
     expect(screen.getByRole("button", { name: "Dismiss" })).toBeEnabled();
+  });
+});
+
+/**
+ * Every per-row write action on the Connections page is refused by the server
+ * without `connector.write` (repo PATCH / set-primary / refresh-ingest /
+ * deep-ingest / DELETE; db ingest / DELETE / link / unlink / reresolve), and
+ * the credential-scan toggle without `project.update`. Test and Query stay.
+ */
+const REPOS = [
+  {
+    id: "r1",
+    label: "main-repo",
+    provider: "github_enterprise",
+    ownerOrOrg: "acme",
+    repoName: "app",
+    defaultBranch: "main",
+    secretRef: "${vault:gh}",
+    apiBaseUrl: "https://git.acme.test/api/v3",
+    isPrimary: true,
+    status: "active",
+  },
+  {
+    id: "r2",
+    label: "second-repo",
+    provider: "github",
+    ownerOrOrg: "acme",
+    repoName: "lib",
+    defaultBranch: "dev",
+    secretRef: null,
+    apiBaseUrl: null,
+    isPrimary: false,
+    status: "active",
+  },
+];
+const DBS = [
+  {
+    id: "d1",
+    label: "warehouse",
+    driver: "postgres",
+    host: "db.local",
+    port: 5432,
+    databaseName: "app",
+    status: "active",
+    lastTestedAt: null,
+    lastIngestAt: null,
+    errorMessage: null,
+  },
+];
+
+function withRows() {
+  vi.mocked(repoConnectorsApi.list).mockResolvedValue(REPOS as never);
+  vi.mocked(dbConnectorsApi.list).mockResolvedValue(DBS as never);
+}
+
+describe("Connections row actions are gated on the route's key (#2368)", () => {
+  it("offers a role without connector.write or project.update only the read-only row actions", async () => {
+    withRows();
+    // Neighbouring keys: every connector key but write, and project.read.
+    render(<ConnectionsPage />, {
+      wrapper: as("connector.read", "connector.test", "connector.query", "project.read"),
+    });
+    expect(await screen.findByText("main-repo")).toBeInTheDocument();
+    expect(await screen.findByText("warehouse")).toBeInTheDocument();
+    // Read-only actions stay.
+    expect(screen.getAllByRole("button", { name: "Test" })).toHaveLength(3);
+    expect(screen.getByRole("button", { name: "Query" })).toBeInTheDocument();
+    // Writes are gone.
+    for (const name of ["Delete", "Sync", "Deep Ingest", "Ingest", "Set as primary"]) {
+      expect(screen.queryByRole("button", { name })).not.toBeInTheDocument();
+    }
+    expect(screen.queryByTitle("Click to change branch")).not.toBeInTheDocument();
+    expect(screen.queryByTitle(/Click to set vault secret reference/)).not.toBeInTheDocument();
+    expect(screen.queryByTitle(/Click to change API base URL/)).not.toBeInTheDocument();
+    expect(screen.queryByTestId("allow-credential-scan-toggle")).not.toBeInTheDocument();
+    // The values those editors held are still shown as text.
+    expect(screen.getByText("dev")).toBeInTheDocument();
+    expect(screen.getByText("https://git.acme.test/api/v3")).toBeInTheDocument();
+  });
+
+  it("offers every row write action to a role with connector.write", async () => {
+    withRows();
+    render(<ConnectionsPage />, { wrapper: as("connector.read", "connector.write") });
+    expect(await screen.findByText("main-repo")).toBeInTheDocument();
+    expect(await screen.findByText("warehouse")).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Delete" })).toHaveLength(3);
+    expect(screen.getAllByRole("button", { name: "Sync" })).toHaveLength(2);
+    expect(screen.getAllByRole("button", { name: "Deep Ingest" })).toHaveLength(2);
+    expect(screen.getByRole("button", { name: "Ingest" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Set as primary" })).toBeInTheDocument();
+    expect(screen.getAllByTitle("Click to change branch")).toHaveLength(2);
+    expect(screen.getAllByTitle(/Click to set vault secret reference/)).toHaveLength(2);
+    expect(screen.getByTitle(/Click to change API base URL/)).toBeInTheDocument();
+    // connector.write does not carry the project setting.
+    expect(screen.queryByTestId("allow-credential-scan-toggle")).not.toBeInTheDocument();
+  });
+
+  it("offers the credential-scan toggle only with project.update", async () => {
+    render(<ConnectionsPage />, { wrapper: as("connector.read", "project.update") });
+    expect(await screen.findByTestId("allow-credential-scan-toggle")).toBeInTheDocument();
+  });
+});
+
+describe("Shared-database manager follows connector.write (#2368)", () => {
+  beforeEach(() => {
+    // A project in a workspace, so the manager renders its empty state rather
+    // than "no workspace".
+    vi.mocked(projectsApi.get).mockResolvedValue({
+      id: "proj-1",
+      workspaceId: "ws-1",
+      allowCredentialScan: false,
+    } as never);
+  });
+
+  it("points a role without connector.write at an admin or coordinator when there are none", async () => {
+    render(<ConnectionsPage />, { wrapper: as("connector.read", "connector.test") });
+    expect(await screen.findByTestId("db-identity-empty")).toHaveTextContent(
+      "Ask an admin or coordinator to add one.",
+    );
+    expect(screen.getByTestId("db-identity-empty")).not.toHaveTextContent("Add one above");
+  });
+
+  it("keeps 'Add one above' for a role with connector.write", async () => {
+    render(<ConnectionsPage />, { wrapper: as("connector.read", "connector.write") });
+    expect(await screen.findByTestId("db-identity-empty")).toHaveTextContent("Add one above");
+  });
+
+  function withIdentities() {
+    vi.mocked(dbConnectorsApi.list).mockResolvedValue([
+      { ...DBS[0], id: "c-linked", label: "linked-db" },
+      { ...DBS[0], id: "c-free", label: "free-db" },
+    ] as never);
+    vi.mocked(dbConnectorsApi.identities).mockResolvedValue([
+      {
+        connectionId: "c-linked",
+        databaseResourceId: "res-1",
+        insufficientIdentity: false,
+        sharingProjects: [],
+      },
+      {
+        connectionId: "c-free",
+        databaseResourceId: null,
+        insufficientIdentity: false,
+        sharingProjects: [],
+      },
+    ]);
+  }
+
+  it("hides Unlink, Re-resolve and Link without connector.write", async () => {
+    withIdentities();
+    render(<DatabaseResourceManager projectId="proj-1" workspaceId="ws-1" canWrite={false} />, {
+      wrapper: as("connector.read"),
+    });
+    expect(await screen.findByTestId("db-unlinked-connection")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Unlink / })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Re-resolve / })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Link / })).not.toBeInTheDocument();
+  });
+
+  it("shows Unlink, Re-resolve and Link with connector.write", async () => {
+    withIdentities();
+    render(<DatabaseResourceManager projectId="proj-1" workspaceId="ws-1" canWrite />, {
+      wrapper: as("connector.read", "connector.write"),
+    });
+    expect(await screen.findByRole("button", { name: /^Unlink / })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Re-resolve / })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Link / })).toBeInTheDocument();
   });
 });

@@ -170,6 +170,9 @@ export default function ConnectionsPage() {
   // Hiding is not access control: the server refuses either way.
   const { user } = useAuth();
   const canWriteConnectors = user?.permissions.includes("connector.write") ?? false;
+  // The credential-scan toggle is a project setting: PATCH /projects/:id/allow-credential-scan
+  // requires `project.update`, not `connector.write`.
+  const canUpdateProject = user?.permissions.includes("project.update") ?? false;
 
   // Socket.IO real-time progress + discovery (#664, #669)
   // #762 — a run that ends (the auto-ingest a new connector starts has no job
@@ -581,23 +584,25 @@ export default function ConnectionsPage() {
         }
         description="Repo and database connectors for this project. Secrets are stored as vault references — never as plaintext."
       >
-        <div className="mt-3 flex items-center gap-2">
-          <input
-            id="allow-credential-scan"
-            type="checkbox"
-            className="h-4 w-4 cursor-pointer accent-success"
-            data-testid="allow-credential-scan-toggle"
-            checked={project.data?.allowCredentialScan === true}
-            disabled={!project.data || toggleAllowCredentialScan.isPending}
-            onChange={(e) => toggleAllowCredentialScan.mutate(e.target.checked)}
-          />
-          <label htmlFor="allow-credential-scan" className="cursor-pointer text-sm">
-            Allow credential scan during repo discovery
-            <span className="ml-2 text-xs text-muted-foreground">
-              (passwords from <span className="font-mono">.env*</span> are vaulted; opt-in only)
-            </span>
-          </label>
-        </div>
+        {canUpdateProject ? (
+          <div className="mt-3 flex items-center gap-2">
+            <input
+              id="allow-credential-scan"
+              type="checkbox"
+              className="h-4 w-4 cursor-pointer accent-success"
+              data-testid="allow-credential-scan-toggle"
+              checked={project.data?.allowCredentialScan === true}
+              disabled={!project.data || toggleAllowCredentialScan.isPending}
+              onChange={(e) => toggleAllowCredentialScan.mutate(e.target.checked)}
+            />
+            <label htmlFor="allow-credential-scan" className="cursor-pointer text-sm">
+              Allow credential scan during repo discovery
+              <span className="ml-2 text-xs text-muted-foreground">
+                (passwords from <span className="font-mono">.env*</span> are vaulted; opt-in only)
+              </span>
+            </label>
+          </div>
+        ) : null}
       </PageHeader>
 
       {/* ── Suggested connectors (Epic #467) ────────────────────────── */}
@@ -809,7 +814,7 @@ export default function ConnectionsPage() {
           </Card>
         ) : (
           <p className="text-sm text-muted-foreground" data-testid="repo-connector-forbidden">
-            Ask an admin to add repository connectors.
+            Ask an admin or coordinator to add repository connectors.
           </p>
         )}
 
@@ -878,6 +883,8 @@ export default function ConnectionsPage() {
                               ✕
                             </Button>
                           </span>
+                        ) : !canWriteConnectors ? (
+                          <span>{r.defaultBranch}</span>
                         ) : (
                           <button
                             className="underline decoration-dotted hover:text-foreground"
@@ -945,6 +952,8 @@ export default function ConnectionsPage() {
                               ✕
                             </Button>
                           </span>
+                        ) : !canWriteConnectors ? (
+                          <span>{r.secretRef || <span className="italic">not set</span>}</span>
                         ) : (
                           <button
                             className="underline decoration-dotted hover:text-foreground"
@@ -1006,6 +1015,12 @@ export default function ConnectionsPage() {
                               ✕
                             </Button>
                           </span>
+                        ) : !canWriteConnectors ? (
+                          <span>
+                            {r.apiBaseUrl || (
+                              <span className="italic text-muted-foreground/60">not set</span>
+                            )}
+                          </span>
                         ) : (
                           <button
                             className="underline decoration-dotted hover:text-foreground"
@@ -1030,7 +1045,7 @@ export default function ConnectionsPage() {
                     >
                       {repoStatusLabel(r as RepoConnectorWithIngest)}
                     </span>
-                    {!r.isPrimary && (repos.data ?? []).length > 1 && (
+                    {canWriteConnectors && !r.isPrimary && (repos.data ?? []).length > 1 && (
                       <Button
                         size="sm"
                         variant="outline"
@@ -1044,30 +1059,40 @@ export default function ConnectionsPage() {
                     <Button size="sm" variant="outline" onClick={() => testRepo.mutate(r.id)}>
                       Test
                     </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => refreshIngestRepo.mutate(r.id)}
-                      disabled={isRepoIngesting}
-                      title="Pull latest commits and re-ingest changed files"
-                    >
-                      {refreshIngestRepo.isPending && refreshIngestRepo.variables === r.id
-                        ? "Syncing…"
-                        : "Sync"}
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => deepIngest.start(r.id)}
-                      disabled={isRepoIngesting}
-                      title="Fresh clone and full re-ingest (first-time setup)"
-                    >
-                      {deepIngest.runningConnectorId === r.id ? "Ingesting…" : "Deep Ingest"}
-                    </Button>
+                    {canWriteConnectors ? (
+                      <>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => refreshIngestRepo.mutate(r.id)}
+                          disabled={isRepoIngesting}
+                          title="Pull latest commits and re-ingest changed files"
+                        >
+                          {refreshIngestRepo.isPending && refreshIngestRepo.variables === r.id
+                            ? "Syncing…"
+                            : "Sync"}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => deepIngest.start(r.id)}
+                          disabled={isRepoIngesting}
+                          title="Fresh clone and full re-ingest (first-time setup)"
+                        >
+                          {deepIngest.runningConnectorId === r.id ? "Ingesting…" : "Deep Ingest"}
+                        </Button>
+                      </>
+                    ) : null}
                     <RebuildCacheButton projectId={projectId} repoId={r.id} />
-                    <Button size="sm" variant="destructive" onClick={() => removeRepo.mutate(r.id)}>
-                      Delete
-                    </Button>
+                    {canWriteConnectors ? (
+                      <Button
+                        size="sm"
+                        variant="destructive"
+                        onClick={() => removeRepo.mutate(r.id)}
+                      >
+                        Delete
+                      </Button>
+                    ) : null}
                   </div>
                 </div>
                 {progressMap[r.id] && (
@@ -1296,7 +1321,7 @@ export default function ConnectionsPage() {
           </Card>
         ) : (
           <p className="text-sm text-muted-foreground" data-testid="db-connector-forbidden">
-            Ask an admin to add database connectors.
+            Ask an admin or coordinator to add database connectors.
           </p>
         )}
 
@@ -1344,15 +1369,19 @@ export default function ConnectionsPage() {
                   <Button size="sm" variant="outline" onClick={() => testDb.mutate(d.id)}>
                     Test
                   </Button>
-                  <Button size="sm" variant="outline" onClick={() => ingestDb.mutate(d.id)}>
-                    Ingest
-                  </Button>
+                  {canWriteConnectors ? (
+                    <Button size="sm" variant="outline" onClick={() => ingestDb.mutate(d.id)}>
+                      Ingest
+                    </Button>
+                  ) : null}
                   <Button size="sm" variant="outline" onClick={() => setQueryDbId(d.id)}>
                     Query
                   </Button>
-                  <Button size="sm" variant="destructive" onClick={() => removeDb.mutate(d.id)}>
-                    Delete
-                  </Button>
+                  {canWriteConnectors ? (
+                    <Button size="sm" variant="destructive" onClick={() => removeDb.mutate(d.id)}>
+                      Delete
+                    </Button>
+                  ) : null}
                 </div>
                 {testResults[`db:${d.id}`] ? (
                   <ConnectorTestResultLine
@@ -1396,6 +1425,7 @@ export default function ConnectionsPage() {
         <DatabaseResourceManager
           projectId={projectId}
           workspaceId={project.data ? (project.data.workspaceId ?? null) : undefined}
+          canWrite={canWriteConnectors}
         />
       </section>
       {wizardSuggestion ? (

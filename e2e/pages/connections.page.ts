@@ -78,8 +78,10 @@ export class ConnectionsPage {
     this.dbAllowColumnsInput = page.getByLabel("Allowed columns (optional)");
     this.addDbButton = page.getByRole("button", { name: "Add database connector" });
     // #2368 — what a role without `connector.write` sees in place of each form.
-    this.repoForbidden = page.getByText("Ask an admin to add repository connectors.");
-    this.dbForbidden = page.getByText("Ask an admin to add database connectors.");
+    this.repoForbidden = page.getByText(
+      "Ask an admin or coordinator to add repository connectors.",
+    );
+    this.dbForbidden = page.getByText("Ask an admin or coordinator to add database connectors.");
 
     // Epic #640 — primary badge
     this.primaryBadge = page.getByTestId("primary-badge");
