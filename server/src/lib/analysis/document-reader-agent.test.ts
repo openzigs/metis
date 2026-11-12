@@ -461,6 +461,21 @@ describe("runDocumentReaderAgent", () => {
     expect(read!.result.usage.totalTokens).toBe(220);
   });
 
+  it("#2275 — clips a long filename to the source schema's 512 characters", async () => {
+    const long = "f".repeat(700);
+    const read = await runDocumentReaderAgent({
+      provider: reading,
+      projectId: "p1",
+      documentIds: ["d1"],
+      load: async () => [{ ...doc("d1"), document: { ...doc("d1").document, filename: long } }],
+    });
+    const output = read!.result.output as unknown as {
+      requirements: Array<{ source: { filename: string } }>;
+    };
+    expect(output.requirements[0]!.source.filename.length).toBeLessThanOrEqual(512);
+    expect(output.requirements[0]!.source.filename.startsWith("fff")).toBe(true);
+  });
+
   it("cites a statement by its quote alone when no stored chunk covers it", async () => {
     const read = await runDocumentReaderAgent({
       provider: reading,
