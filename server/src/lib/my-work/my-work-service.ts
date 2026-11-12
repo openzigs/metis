@@ -7,69 +7,83 @@
  * request's own header can read ONE derivation instead of three queries that
  * can disagree:
  *
- * - `waiting_on_me` — its clarification dialog is not complete and the current
- *   round has questions with no answer ({@link countOpenQuestions});
+ * - `waiting_on_me` — a completed run with open clarifying questions, counted
+ *   by `openQuestionCount` (`@metis/shared`), the function the run's own
+ *   Questions tab counts with. No run pauses for its questions (#2330, live):
+ *   it completes with them open, and the analyst may never have opened the
+ *   Questions tab, so the run's metadata decides, not a dialog row;
  * - otherwise the LATEST non-closed formal review covering any of its
  *   requirements decides: `in_review`, `rejected`, or `approved` →
  *   `ready_to_hand_off`. A review being revised (back in `draft`) lists the
  *   change request under nothing, as an older verdict no longer stands.
  *
+ * Settled states leave Home (panel finding on PR #2365): a ready change
+ * request leaves once any of its requirements is published as an issue (an
+ * issue draft `published`, or a non-failed `PublishedIssue` row), and a
+ * rejected or ready one leaves {@link SETTLED_STATE_MAX_AGE_DAYS} days after
+ * its verdict.
+ *
  * Access (OWASP A01): the caller comes from the session and every query is
- * filtered in the database on `startedById` / `reviewerId` AND the project
- * visibility rule (`workspaceScopeWhere`), plus `deletedAt: null` on the
- * project for admins, whom that rule does not constrain.
+ * filtered in the database on `startedById` / the caller's assignment AND the
+ * project visibility rule (`workspaceScopeWhere`), plus `deletedAt: null` on
+ * the project for admins, whom that rule does not constrain.
  */
-import type { MyWorkChangeRequest, MyWorkResponse, MyWorkReview, MyWorkState } from "@metis/shared";
+import {
+  openQuestionCount,
+  type MyWorkChangeRequest,
+  type MyWorkResponse,
+  type MyWorkReview,
+  type MyWorkState,
+} from "@metis/shared";
 import { prisma } from "../prisma.js";
 import { workspaceScopeWhere, type ProjectScopeActor } from "../auth/project-scope.js";
+import { awaitingDecisionWhere } from "../reviews/awaiting-decision.js";
 
 /** Rows returned per list: Home shows what needs the caller, not an archive. */
 export const MY_WORK_LIMIT = 100;
 
 /**
- * Most recent dialogs / reviews read to derive states. A bound on the work one
- * request does; a change request untouched behind this many newer ones is not
- * what Home is for.
+ * Most recent reviews read to derive states. A bound on the work one request
+ * does; a change request untouched behind this many newer ones is not what
+ * Home is for.
  */
 const SCAN_LIMIT = 500;
+
+/**
+ * Most recent clarification-enabled runs read for open questions. Each carries
+ * its metadata JSON, so this bound is tighter than {@link SCAN_LIMIT}.
+ */
+const QUESTION_SCAN_LIMIT = 200;
+
+/**
+ * A rejected or ready-to-hand-off change request is listed this many days
+ * after its verdict, then leaves Home. Neither state ends on its own: a
+ * rejection someone abandoned, or an approval handed off by a route METIS does
+ * not record (a copy-paste, a document export), would otherwise stay forever.
+ */
+export const SETTLED_STATE_MAX_AGE_DAYS = 30;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** Review statuses that can decide a change request's state. */
 const DECIDING_REVIEW_STATUSES = ["draft", "in_review", "rejected", "approved"] as const;
 
-interface QuestionRound {
-  questions?: Array<{ id?: unknown }>;
-  answers?: Array<{ questionId?: unknown; answer?: unknown }>;
-}
+/** Audit actions that put a review into `in_review` (`review-service.ts`). */
+const SUBMIT_ACTIONS = ["review.submit", "review.reopen"] as const;
 
 /**
- * Unanswered questions in a persisted clarification dialog
- * (`ClarificationDialogState.state`, a JSON `ClarificationState`): 0 once the
- * dialog is complete, otherwise the current round's questions with no
- * non-blank answer. Unreadable state counts as nothing waiting.
+ * Prefilter for runs that asked for clarification. Run metadata is written by
+ * `JSON.stringify` (`persistAnalysisEnhancement`), so the flag appears exactly
+ * like this; `openQuestionCount` then reads the parsed object.
  */
-export function countOpenQuestions(rawState: string): number {
-  let state: { completed?: unknown; rounds?: unknown };
-  try {
-    state = JSON.parse(rawState) as typeof state;
-  } catch {
-    return 0;
-  }
-  if (!state || typeof state !== "object" || state.completed === true) return 0;
-  if (!Array.isArray(state.rounds) || state.rounds.length === 0) return 0;
-  const round = state.rounds[state.rounds.length - 1] as QuestionRound;
-  const answered = new Set(
-    (round.answers ?? [])
-      .filter((a) => typeof a.answer === "string" && a.answer.trim() !== "")
-      .map((a) => a.questionId),
-  );
-  return (round.questions ?? []).filter((q) => !answered.has(q.id)).length;
-}
+const CLARIFICATION_FLAG = '"enableClarification":true';
 
 export interface ReviewSignal {
   id: string;
   status: string;
   updatedAt: Date;
   decidedAt: Date | null;
+  /** When the review last entered `in_review` (its submit or re-review). */
+  submittedAt?: Date | null;
 }
 
 export interface DerivedState {
@@ -88,6 +102,9 @@ export function deriveChangeRequestState(input: {
   openQuestions: number;
   questionsSince: Date | null;
   reviews: ReviewSignal[];
+  /** Any of its requirements published as an issue: handed off. */
+  handedOff?: boolean;
+  now?: Date;
 }): DerivedState | null {
   if (input.openQuestions > 0 && input.questionsSince) {
     return {
@@ -100,14 +117,22 @@ export function deriveChangeRequestState(input: {
     (a, b) => b.updatedAt.getTime() - a.updatedAt.getTime(),
   )[0];
   if (!latest) return null;
-  const since = latest.decidedAt ?? latest.updatedAt;
+  const decided = latest.decidedAt ?? latest.updatedAt;
+  const now = input.now ?? new Date();
+  const settledTooLong = now.getTime() - decided.getTime() > SETTLED_STATE_MAX_AGE_DAYS * DAY_MS;
   switch (latest.status) {
     case "in_review":
-      return { state: "in_review", since: latest.updatedAt, reviewId: latest.id };
+      return {
+        state: "in_review",
+        since: latest.submittedAt ?? latest.updatedAt,
+        reviewId: latest.id,
+      };
     case "rejected":
-      return { state: "rejected", since, reviewId: latest.id };
+      return settledTooLong ? null : { state: "rejected", since: decided, reviewId: latest.id };
     case "approved":
-      return { state: "ready_to_hand_off", since, reviewId: latest.id };
+      return settledTooLong || input.handedOff
+        ? null
+        : { state: "ready_to_hand_off", since: decided, reviewId: latest.id };
     default:
       return null;
   }
@@ -144,41 +169,48 @@ export function changeRequestTitle(
   return `Analysis of ${createdAt.toISOString().slice(0, 10)}`;
 }
 
+/** Open questions on a run, from its raw metadata JSON (0 when unreadable). */
+export function runOpenQuestions(metadata: string | null): number {
+  let parsed: unknown;
+  try {
+    parsed = metadata ? JSON.parse(metadata) : null;
+  } catch {
+    return 0;
+  }
+  return openQuestionCount(parsed) ?? 0;
+}
+
 /** The projects `actor` may open, live ones only (admins included). */
 function projectScope(actor: ProjectScopeActor) {
   return { ...workspaceScopeWhere(actor), deletedAt: null };
 }
 
-/**
- * Reviews waiting on `actor`'s decision: assigned to them, still pending, in a
- * review that is `in_review`, in a project they can open. Exported so any
- * other count of "reviews assigned to me" (the sidebar, #2332) uses the same
- * predicate as Home.
- */
-export function assignedReviewWhere(actor: ProjectScopeActor) {
-  return {
-    reviewerId: actor.userId,
-    decision: "pending",
-    reviewRequest: { status: "in_review", project: projectScope(actor) },
-  };
-}
-
-export async function getMyWork(actor: ProjectScopeActor): Promise<MyWorkResponse> {
+export async function getMyWork(
+  actor: ProjectScopeActor,
+  now: Date = new Date(),
+): Promise<MyWorkResponse> {
   const project = projectScope(actor);
   const mine = { startedById: actor.userId, deletedAt: null, project };
+  const liveRequirementOfMine = { deletedAt: null, analysis: mine };
 
-  const [dialogs, reviews, assignments, projectCount] = await Promise.all([
+  const [questionRuns, reviews, assignedReviews, projectCount] = await Promise.all([
     prisma.analysis.findMany({
-      where: { ...mine, clarificationDialog: { isNot: null } },
-      orderBy: { clarificationDialog: { updatedAt: "desc" } },
-      take: SCAN_LIMIT,
-      select: { id: true, clarificationDialog: { select: { state: true, updatedAt: true } } },
+      where: { ...mine, status: "completed", metadata: { contains: CLARIFICATION_FLAG } },
+      orderBy: { createdAt: "desc" },
+      take: QUESTION_SCAN_LIMIT,
+      select: {
+        id: true,
+        metadata: true,
+        completedAt: true,
+        updatedAt: true,
+        clarificationDialog: { select: { updatedAt: true } },
+      },
     }),
     prisma.reviewRequest.findMany({
       where: {
         status: { in: [...DECIDING_REVIEW_STATUSES] },
         project,
-        items: { some: { requirement: { is: { deletedAt: null, analysis: mine } } } },
+        items: { some: { requirement: { is: liveRequirementOfMine } } },
       },
       orderBy: { updatedAt: "desc" },
       take: SCAN_LIMIT,
@@ -188,47 +220,60 @@ export async function getMyWork(actor: ProjectScopeActor): Promise<MyWorkRespons
         updatedAt: true,
         decidedAt: true,
         items: {
-          where: { requirement: { is: { deletedAt: null, analysis: mine } } },
+          where: { requirement: { is: liveRequirementOfMine } },
           select: { requirement: { select: { analysisId: true } } },
         },
       },
     }),
-    prisma.reviewerAssignment.findMany({
-      where: assignedReviewWhere(actor),
+    prisma.reviewRequest.findMany({
+      where: awaitingDecisionWhere(actor.userId, project),
       orderBy: { updatedAt: "desc" },
       take: MY_WORK_LIMIT,
       select: {
+        id: true,
+        title: true,
+        projectId: true,
         updatedAt: true,
-        reviewRequest: {
-          select: {
-            id: true,
-            title: true,
-            projectId: true,
-            project: { select: { name: true } },
-            requestedBy: { select: { displayName: true, username: true } },
-          },
-        },
+        project: { select: { name: true } },
+        requestedBy: { select: { displayName: true, username: true } },
+        assignments: { where: { reviewerId: actor.userId }, select: { updatedAt: true } },
       },
     }),
     prisma.project.count({ where: project }),
   ]);
 
   const openByRun = new Map<string, { count: number; since: Date }>();
-  for (const run of dialogs) {
-    const dialog = run.clarificationDialog;
-    if (!dialog) continue;
-    const count = countOpenQuestions(dialog.state);
-    if (count > 0) openByRun.set(run.id, { count, since: dialog.updatedAt });
+  for (const run of questionRuns) {
+    const count = runOpenQuestions(run.metadata);
+    if (count <= 0) continue;
+    // Since the analyst last answered, else since the run finished.
+    const since = run.clarificationDialog?.updatedAt ?? run.completedAt ?? run.updatedAt;
+    openByRun.set(run.id, { count, since });
   }
+
+  const submittedAt = await loadSubmittedAt(
+    reviews.filter((r) => r.status === "in_review").map((r) => r.id),
+  );
   const reviewsByRun = new Map<string, ReviewSignal[]>();
   for (const review of reviews) {
+    const signal: ReviewSignal = {
+      id: review.id,
+      status: review.status,
+      updatedAt: review.updatedAt,
+      decidedAt: review.decidedAt,
+      submittedAt: submittedAt.get(review.id) ?? null,
+    };
     const runIds = new Set(review.items.map((i) => i.requirement?.analysisId).filter(Boolean));
     for (const runId of runIds as Set<string>) {
       const list = reviewsByRun.get(runId) ?? [];
-      list.push(review);
+      list.push(signal);
       reviewsByRun.set(runId, list);
     }
   }
+
+  const handedOff = await loadHandedOffRuns(
+    [...reviewsByRun.keys()].filter((id) => !openByRun.has(id)),
+  );
 
   const derived = new Map<string, DerivedState>();
   for (const runId of new Set([...openByRun.keys(), ...reviewsByRun.keys()])) {
@@ -237,6 +282,8 @@ export async function getMyWork(actor: ProjectScopeActor): Promise<MyWorkRespons
       openQuestions: open?.count ?? 0,
       questionsSince: open?.since ?? null,
       reviews: reviewsByRun.get(runId) ?? [],
+      handedOff: handedOff.has(runId),
+      now,
     });
     if (state) derived.set(runId, state);
   }
@@ -278,16 +325,63 @@ export async function getMyWork(actor: ProjectScopeActor): Promise<MyWorkRespons
     })
     .sort((a, b) => b.since.localeCompare(a.since));
 
-  const assigned: MyWorkReview[] = assignments.map((a) => ({
-    id: a.reviewRequest.id,
-    title: a.reviewRequest.title,
-    projectId: a.reviewRequest.projectId,
-    projectName: a.reviewRequest.project.name,
-    requestedBy: a.reviewRequest.requestedBy.displayName || a.reviewRequest.requestedBy.username,
-    since: a.updatedAt.toISOString(),
-  }));
+  const assigned: MyWorkReview[] = assignedReviews
+    .map((r) => ({
+      id: r.id,
+      title: r.title,
+      projectId: r.projectId,
+      projectName: r.project.name,
+      requestedBy: r.requestedBy.displayName || r.requestedBy.username,
+      // The assignment is reset to pending on every (re-)submit: when the
+      // caller was asked to decide.
+      since: (r.assignments[0]?.updatedAt ?? r.updatedAt).toISOString(),
+    }))
+    .sort((a, b) => b.since.localeCompare(a.since));
 
   return { changeRequests, reviews: assigned, projectCount };
+}
+
+/**
+ * When each review last entered `in_review`: its latest submit or re-review
+ * in the audit log. `ReviewRequest.updatedAt` moves on any edit, so it is only
+ * the fallback.
+ */
+async function loadSubmittedAt(reviewIds: string[]): Promise<Map<string, Date>> {
+  if (reviewIds.length === 0) return new Map();
+  const rows = await prisma.auditLog.findMany({
+    where: {
+      targetType: "review_request",
+      targetId: { in: reviewIds },
+      action: { in: [...SUBMIT_ACTIONS] },
+    },
+    orderBy: { ts: "desc" },
+    select: { targetId: true, ts: true },
+  });
+  const latest = new Map<string, Date>();
+  for (const row of rows) if (!latest.has(row.targetId)) latest.set(row.targetId, row.ts);
+  return latest;
+}
+
+/** Runs with a live requirement published as an issue (GitHub or Jira). */
+async function loadHandedOffRuns(runIds: string[]): Promise<Set<string>> {
+  if (runIds.length === 0) return new Set();
+  const rows = await prisma.requirement.findMany({
+    where: {
+      analysisId: { in: runIds },
+      deletedAt: null,
+      drafts: {
+        some: {
+          deletedAt: null,
+          OR: [
+            { status: "published" },
+            { publishedIssues: { some: { status: { not: "failed" } } } },
+          ],
+        },
+      },
+    },
+    select: { analysisId: true },
+  });
+  return new Set(rows.map((r) => r.analysisId));
 }
 
 /** File names of the runs' source documents, from each run's own project only. */

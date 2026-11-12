@@ -174,6 +174,17 @@ describe("<MyWork />", () => {
     expect(screen.queryByRole("button", { name: "New project" })).not.toBeInTheDocument();
   });
 
+  it("names the next step instead of New project for a role that cannot create one", async () => {
+    fetchMock.mockResolvedValue({ changeRequests: [], reviews: [], projectCount: 0 });
+    renderWith(<MyWork />, { ...TEST_USER, role: "developer" });
+    expect(
+      await screen.findByText(
+        "You are not in any project yet. Ask an admin or coordinator to add you to one.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "New project" })).not.toBeInTheDocument();
+  });
+
   it("offers the New-project wizard when I have no projects", async () => {
     fetchMock.mockResolvedValue({ changeRequests: [], reviews: [], projectCount: 0 });
     renderWith(<MyWork />);
@@ -197,14 +208,49 @@ describe("Home layout (#2348)", () => {
 
   beforeEach(() => fetchMock.mockResolvedValue(FULL));
 
-  it("shows a non-admin My work and no Tasks, Runs, Scheduler or Projects widget", async () => {
+  it("shows a non-admin My work, Projects and Recent, and no Tasks, Runs or Scheduler", async () => {
     renderWith(<DashboardPage />, ANALYST);
     expect(await screen.findByTestId("my-work-group-waiting_on_me")).toBeInTheDocument();
     expect(screen.getByRole("heading", { level: 2, name: "My work" })).toBeInTheDocument();
-    for (const id of ["widget-tasks", "widget-bg-runs", "widget-scheduler", "widget-projects"]) {
+    for (const id of ["widget-tasks", "widget-bg-runs", "widget-scheduler"]) {
       expect(screen.queryByTestId(id)).not.toBeInTheDocument();
     }
+    // The issue removes only the three operations widgets.
+    expect(screen.getByTestId("widget-projects")).toBeInTheDocument();
     expect(screen.getByTestId("widget-recent")).toBeInTheDocument();
+    // #2364 deferred — no link to an operator page a non-admin is refused.
+    await waitFor(() => expect(screen.queryByTestId("widget-projects-empty-cta")).toBeTruthy());
+    for (const link of screen.getAllByRole("link")) {
+      expect(link.getAttribute("href")).not.toMatch(/^\/(tasks|scheduler)\b/);
+    }
+  });
+
+  it("does not offer New project in an empty Projects widget to a role that cannot create one", async () => {
+    renderWith(<DashboardPage />, ANALYST);
+    const widget = await screen.findByTestId("widget-projects");
+    await waitFor(() => expect(within(widget).getByText("No projects yet")).toBeInTheDocument());
+    expect(
+      within(widget).getByText("Ask an admin or coordinator to add you to a project."),
+    ).toBeInTheDocument();
+    expect(within(widget).queryByRole("button", { name: "New project" })).not.toBeInTheDocument();
+  });
+
+  it("renders no widgets until the session is known, then an admin's", async () => {
+    let resolveMe: (v: unknown) => void = () => {};
+    fetchMock.mockImplementation(((path: string) =>
+      path === "/auth/me"
+        ? new Promise<unknown>((r) => {
+            resolveMe = r;
+          })
+        : Promise.resolve(FULL)) as typeof apiFetch);
+    renderWith(<DashboardPage />, null as unknown as typeof TEST_USER);
+    await screen.findByTestId("my-work-group-waiting_on_me");
+    for (const id of ["widget-projects", "widget-recent", "widget-tasks"]) {
+      expect(screen.queryByTestId(id)).not.toBeInTheDocument();
+    }
+    await act(async () => resolveMe({ user: TEST_USER }));
+    expect(await screen.findByTestId("widget-tasks")).toBeInTheDocument();
+    expect(screen.getByTestId("widget-scheduler")).toBeInTheDocument();
   });
 
   it("keeps an admin's operations widgets, below My work", async () => {

@@ -94,3 +94,4 @@ export function describePackage(meta: PackageMetadata): string {
 export * from "./schema-check.js";
 // #2348 — Home "My work": change requests by state and reviews assigned to me.
 export * from "./my-work.js";
+export * from "./analysis-open-questions.js";

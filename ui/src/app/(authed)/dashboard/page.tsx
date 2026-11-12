@@ -26,11 +26,12 @@ import { PageHeader } from "@/components/ui/page-header";
 import { NewProjectDialog } from "@/components/projects/new-project-wizard";
 import { MyWork } from "@/components/dashboard/my-work";
 import { useAuth } from "@/lib/auth-context";
+import { hasPermission } from "@metis/shared";
 
 const REFRESH_MS = 30_000;
 
 export default function DashboardPage() {
-  const { user } = useAuth();
+  const { user, isLoading } = useAuth();
   const isAdmin = user?.role === "admin";
   return (
     <div className="space-y-6 p-2 md:p-0" data-testid="dashboard-root">
@@ -39,27 +40,34 @@ export default function DashboardPage() {
         description={
           isAdmin
             ? "What needs you, then project health, recent activity, and quick actions."
-            : "What needs you, and your recent activity."
+            : "What needs you, your projects, and your recent activity."
         }
       />
 
       <MyWork />
 
-      <section
-        aria-label="Dashboard widgets"
-        className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3"
-      >
-        {/* #2348 — operations widgets are an admin's; the rest see My work. */}
-        {isAdmin ? (
-          <>
-            <ProjectsWidget />
-            <ActiveTasksWidget />
-            <ActiveRunsWidget />
-            <ScheduledJobsWidget />
-          </>
-        ) : null}
-        <RecentActivityWidget />
-      </section>
+      {/* #2348 — the widgets wait for the session, so an admin's Home does
+          not first render the analyst's layout and then grow (as
+          `settings/layout.tsx` waits before deciding on an admin section). */}
+      {isLoading ? null : (
+        <section
+          aria-label="Dashboard widgets"
+          className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3"
+        >
+          <ProjectsWidget />
+          {/* #2348 — operations widgets are an admin's: Tasks, Runs and
+            Scheduler are operator pages (#2332), so their "Open tasks" and
+            "Open scheduler" links are never shown to anyone they refuse. */}
+          {isAdmin ? (
+            <>
+              <ActiveTasksWidget />
+              <ActiveRunsWidget />
+              <ScheduledJobsWidget />
+            </>
+          ) : null}
+          <RecentActivityWidget />
+        </section>
+      )}
     </div>
   );
 }
@@ -125,6 +133,9 @@ function WidgetShell({
 }
 
 function ProjectsWidget() {
+  const { user } = useAuth();
+  // #2348 — the first-run wizard only for a role the server lets create one.
+  const canCreate = user ? hasPermission(user.role, "project.create") : false;
   const q = useQuery({
     queryKey: ["dashboard", "projects"],
     queryFn: () => projectsApi.list({ limit: 5 }),
@@ -138,11 +149,15 @@ function ProjectsWidget() {
       loading={q.isLoading}
       empty={!q.isLoading && items.length === 0}
       emptyTitle="No projects yet"
-      emptyCta="Create your first project to get started."
+      emptyCta={
+        canCreate
+          ? "Create your first project to get started."
+          : "Ask an admin or coordinator to add you to a project."
+      }
       emptyHref="/projects"
       emptyHrefLabel="Open projects"
       // #273 — first run: create, connect and ingest without leaving Home.
-      emptyAction={<NewProjectDialog />}
+      emptyAction={canCreate ? <NewProjectDialog /> : undefined}
     >
       <ul className="space-y-1 text-sm" data-testid="widget-projects-list">
         {items.map((p) => (

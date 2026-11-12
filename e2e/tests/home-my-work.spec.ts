@@ -8,9 +8,10 @@
  * | an admin keeps them, below "My work"                                   | admin: My work above the operations widgets |
  * | the server derives the user from the session                          | the endpoint answers the session user       |
  *
- * A change request waiting on answers needs a completed analysis run with a
- * clarification dialog, which the deterministic stack cannot produce without a
- * model, so the browser tests answer `GET /api/me/work` with a fixed payload.
+ * A change request waiting on answers needs a completed analysis run that
+ * extracted clarifying questions, which the deterministic stack cannot produce
+ * without a model, so the browser tests answer `GET /api/me/work` with a fixed
+ * payload.
  * The server's derivation and access filter are proven against a real
  * database in `server/tests/my-work-2348.sqlite.test.ts`; the last test here
  * calls the real endpoint.

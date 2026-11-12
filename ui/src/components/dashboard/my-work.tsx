@@ -9,7 +9,13 @@
 
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
-import type { MyWorkChangeRequest, MyWorkResponse, MyWorkReview } from "@metis/shared";
+import {
+  hasPermission,
+  type MyWorkChangeRequest,
+  type MyWorkResponse,
+  type MyWorkReview,
+} from "@metis/shared";
+import { useAuth } from "@/lib/auth-context";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -71,16 +77,28 @@ function MyWorkSkeleton() {
 }
 
 function MyWorkContent({ data }: { data: MyWorkResponse }) {
+  const { user } = useAuth();
+  const canCreateProject = user ? hasPermission(user.role, "project.create") : false;
   const groups = groupChangeRequests(data.changeRequests);
   if (groups.length === 0 && data.reviews.length === 0) {
     return data.projectCount === 0 ? (
-      <EmptyState
-        title="Nothing needs you yet"
-        description="Create a project to start your first change request."
-        // #273 — the first-run wizard opens in place.
-        action={<NewProjectDialog />}
-        data-testid="my-work-empty"
-      />
+      canCreateProject ? (
+        <EmptyState
+          title="Nothing needs you yet"
+          description="Create a project to start your first change request."
+          // #273 — the first-run wizard opens in place.
+          action={<NewProjectDialog />}
+          data-testid="my-work-empty"
+        />
+      ) : (
+        // A role without project.create would be refused by the server
+        // (#2368): name the step that works instead.
+        <EmptyState
+          title="Nothing needs you yet"
+          description="You are not in any project yet. Ask an admin or coordinator to add you to one."
+          data-testid="my-work-empty"
+        />
+      )
     ) : (
       <EmptyState
         title="Nothing needs you right now"

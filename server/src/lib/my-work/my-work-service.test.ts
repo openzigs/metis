@@ -1,51 +1,43 @@
 /**
  * #2348 — the pure parts of "My work": open-question counting, the state a
- * change request is listed under, and its interim title.
+ * change request is listed under, its interim title, and the shared
+ * "waiting on my decision" predicate.
  */
 import { describe, expect, it } from "vitest";
+import { awaitingDecisionWhere } from "../reviews/awaiting-decision.js";
 import {
-  assignedReviewWhere,
   changeRequestTitle,
-  countOpenQuestions,
   deriveChangeRequestState,
+  runOpenQuestions,
+  SETTLED_STATE_MAX_AGE_DAYS,
 } from "./my-work-service.js";
 
 const t = (iso: string) => new Date(iso);
+const NOW = t("2026-11-11T00:00:00Z");
+const DAY = 24 * 60 * 60 * 1000;
 
-function dialog(rounds: unknown[], completed = false): string {
-  return JSON.stringify({ analysisId: "a", currentRound: rounds.length, rounds, completed });
-}
+describe("runOpenQuestions", () => {
+  const meta = (extra: Record<string, unknown>) =>
+    JSON.stringify({ enhancement: { enableClarification: true }, ...extra });
 
-describe("countOpenQuestions", () => {
-  const questions = [{ id: "q1" }, { id: "q2" }, { id: "q3" }];
-
-  it("counts the current round's questions without an answer", () => {
-    const raw = dialog([{ round: 1, questions, answers: [{ questionId: "q2", answer: "Yes" }] }]);
-    expect(countOpenQuestions(raw)).toBe(2);
+  it("is the Questions tab's count: the run's remaining ambiguities", () => {
+    expect(runOpenQuestions(meta({ structuredRequirements: { totalAmbiguities: 12 } }))).toBe(12);
   });
 
-  it("does not count a blank answer as an answer", () => {
-    const raw = dialog([{ round: 1, questions, answers: [{ questionId: "q1", answer: "  " }] }]);
-    expect(countOpenQuestions(raw)).toBe(3);
-  });
-
-  it("reads only the latest round", () => {
-    const raw = dialog([
-      { round: 1, questions, answers: [] },
-      { round: 2, questions: [{ id: "q9" }], answers: [{ questionId: "q9", answer: "done" }] },
-    ]);
-    expect(countOpenQuestions(raw)).toBe(0);
-  });
-
-  it("is 0 for a completed dialog even with unanswered questions", () => {
-    expect(countOpenQuestions(dialog([{ round: 1, questions, answers: [] }], true))).toBe(0);
-  });
-
-  it("is 0 for no rounds, no questions, or unreadable state", () => {
-    expect(countOpenQuestions(dialog([]))).toBe(0);
-    expect(countOpenQuestions(dialog([{ round: 1 }]))).toBe(0);
-    expect(countOpenQuestions("{not json")).toBe(0);
-    expect(countOpenQuestions("null")).toBe(0);
+  it("is 0 without clarification, after a failed extraction, or for unreadable metadata", () => {
+    expect(
+      runOpenQuestions(JSON.stringify({ structuredRequirements: { totalAmbiguities: 3 } })),
+    ).toBe(0);
+    expect(
+      runOpenQuestions(
+        meta({
+          structuredExtractionFailure: { reason: "unparseable" },
+          structuredRequirements: { totalAmbiguities: 3 },
+        }),
+      ),
+    ).toBe(0);
+    expect(runOpenQuestions("{broken")).toBe(0);
+    expect(runOpenQuestions(null)).toBe(0);
   });
 });
 
@@ -56,6 +48,7 @@ describe("deriveChangeRequestState", () => {
     updatedAt: t(updatedAt),
     decidedAt: decidedAt ? t(decidedAt) : null,
   });
+  const base = { openQuestions: 0, questionsSince: null, now: NOW };
 
   it("lists open questions as waiting on me, with the count, ahead of any review", () => {
     expect(
@@ -63,12 +56,12 @@ describe("deriveChangeRequestState", () => {
         openQuestions: 2,
         questionsSince: t("2026-11-01T00:00:00Z"),
         reviews: [review("rejected", "2026-11-05T00:00:00Z")],
+        now: NOW,
       }),
     ).toEqual({ state: "waiting_on_me", since: t("2026-11-01T00:00:00Z"), openQuestions: 2 });
   });
 
   it("maps the latest review: in review, rejected, approved -> ready to hand off", () => {
-    const base = { openQuestions: 0, questionsSince: null };
     expect(
       deriveChangeRequestState({ ...base, reviews: [review("in_review", "2026-11-02T00:00:00Z")] }),
     ).toMatchObject({ state: "in_review", since: t("2026-11-02T00:00:00Z") });
@@ -86,10 +79,51 @@ describe("deriveChangeRequestState", () => {
     ).toMatchObject({ state: "ready_to_hand_off", reviewId: "rev-approved-2026-11-04T00:00:00Z" });
   });
 
+  it("dates in review from the submit, not from a later edit of the review", () => {
+    expect(
+      deriveChangeRequestState({
+        ...base,
+        reviews: [
+          {
+            ...review("in_review", "2026-11-09T00:00:00Z"),
+            submittedAt: t("2026-11-02T00:00:00Z"),
+          },
+        ],
+      }),
+    ).toMatchObject({ state: "in_review", since: t("2026-11-02T00:00:00Z") });
+  });
+
+  it("drops ready to hand off once a requirement is published", () => {
+    expect(
+      deriveChangeRequestState({
+        ...base,
+        handedOff: true,
+        reviews: [review("approved", "2026-11-04T00:00:00Z", "2026-11-04T00:00:00Z")],
+      }),
+    ).toBeNull();
+  });
+
+  it(`drops rejected and ready ${SETTLED_STATE_MAX_AGE_DAYS} days after the verdict`, () => {
+    const at = (days: number) => new Date(NOW.getTime() - days * DAY).toISOString();
+    const stale = at(SETTLED_STATE_MAX_AGE_DAYS + 1);
+    const fresh = at(SETTLED_STATE_MAX_AGE_DAYS - 1);
+    for (const status of ["rejected", "approved"]) {
+      expect(
+        deriveChangeRequestState({ ...base, reviews: [review(status, stale, stale)] }),
+      ).toBeNull();
+      expect(
+        deriveChangeRequestState({ ...base, reviews: [review(status, fresh, fresh)] }),
+      ).not.toBeNull();
+    }
+    // In review is still waiting on someone: never aged out.
+    expect(
+      deriveChangeRequestState({ ...base, reviews: [review("in_review", stale)] }),
+    ).toMatchObject({ state: "in_review" });
+  });
+
   it("uses the most recently updated review, whatever the input order", () => {
     const d = deriveChangeRequestState({
-      openQuestions: 0,
-      questionsSince: null,
+      ...base,
       reviews: [
         review("approved", "2026-11-01T00:00:00Z"),
         review("rejected", "2026-11-09T00:00:00Z"),
@@ -101,8 +135,7 @@ describe("deriveChangeRequestState", () => {
   it("lists nothing while the latest review is being revised (draft)", () => {
     expect(
       deriveChangeRequestState({
-        openQuestions: 0,
-        questionsSince: null,
+        ...base,
         reviews: [
           review("rejected", "2026-11-01T00:00:00Z"),
           review("draft", "2026-11-02T00:00:00Z"),
@@ -112,9 +145,7 @@ describe("deriveChangeRequestState", () => {
   });
 
   it("lists nothing with no questions and no review", () => {
-    expect(
-      deriveChangeRequestState({ openQuestions: 0, questionsSince: null, reviews: [] }),
-    ).toBeNull();
+    expect(deriveChangeRequestState({ ...base, reviews: [] })).toBeNull();
   });
 });
 
@@ -153,17 +184,17 @@ describe("changeRequestTitle", () => {
   });
 });
 
-describe("assignedReviewWhere", () => {
-  it("filters on the caller, a pending decision, an open review and the project scope", () => {
-    const where = assignedReviewWhere({ userId: "u1", role: "developer", workspaces: ["ws"] });
-    expect(where.reviewerId).toBe("u1");
-    expect(where.decision).toBe("pending");
-    expect(where.reviewRequest.status).toBe("in_review");
-    expect(where.reviewRequest.project).toMatchObject({ deletedAt: null, OR: expect.any(Array) });
+describe("awaitingDecisionWhere (shared with the review queue's decision=pending)", () => {
+  it("filters on an in-review review, the caller's pending decision and the project scope", () => {
+    const scope = { deletedAt: null, OR: [{ workspaceId: null }] };
+    expect(awaitingDecisionWhere("u1", scope)).toEqual({
+      status: "in_review",
+      project: { deletedAt: null, OR: [{ workspaceId: null }] },
+      assignments: { some: { reviewerId: "u1", decision: "pending" } },
+    });
   });
 
-  it("constrains an admin to live projects only", () => {
-    const where = assignedReviewWhere({ userId: "a1", role: "admin" });
-    expect(where.reviewRequest.project).toEqual({ deletedAt: null });
+  it("constrains an admin's empty scope to live projects", () => {
+    expect(awaitingDecisionWhere("a1", {}).project).toEqual({ deletedAt: null });
   });
 });
