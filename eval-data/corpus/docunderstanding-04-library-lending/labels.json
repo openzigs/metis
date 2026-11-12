@@ -2,8 +2,8 @@
   "corpusId": "docunderstanding-04-library-lending",
   "title": "Kestrel Vale Libraries: Membership and Lending Platform, Functional Requirements Document",
   "license": "CC0-1.0",
-  "labelStatus": "author-labelled while writing the synthetic document; not yet reviewed by a second person",
-  "sourceSha256": "bed075ceadb331c85558d8ad77cd4e6bbc3c9b962ba43233ee1480bbe07261e3",
+  "labelStatus": "author-labelled while writing the synthetic document; cross-checked by two independent blind AI reviewers; disagreements judged by an AI and each judgement confirmed by a person (#2255)",
+  "sourceSha256": "6ed92ce645c5183f577433bba501754b480742b6a11b2aa18f9847ea405b69db",
   "sections": [
     "Kestrel Vale Libraries: Membership and Lending Platform, Functional Requirements Document",
     "About this document",
@@ -419,6 +419,11 @@
       "span": "Items that are for reference only, such as most of the local studies collection, are shown in search results but cannot be reserved or borrowed."
     },
     {
+      "id": "R215",
+      "section": "8.1 Self-service kiosks",
+      "span": "The kiosks are owned by the council and will be kept; the platform must drive them through the standard self-service protocol that the current kiosks already use."
+    },
+    {
       "id": "R67",
       "section": "8.1 Self-service kiosks",
       "span": "You can borrow, return and renew items at any kiosk in any branch, and you will be given a receipt, printed or emailed as you choose, listing your due dates."
@@ -832,6 +837,11 @@
       "id": "R149",
       "section": "14.2 Mobile libraries",
       "span": "As a mobile library crew member, you must be able to see, before setting off, the reservations waiting to be delivered to each stop on the day's route."
+    },
+    {
+      "id": "R216",
+      "section": "15.1 Extended-hours access",
+      "span": "The platform is responsible for deciding who may enter."
     },
     {
       "id": "R150",
@@ -1484,6 +1494,29 @@
         "Institutional members may have up to 60 items on loan for a loan period of eight weeks, and the platform shall record the named member of staff responsible for each institutional card."
       ],
       "sections": ["23.2 Open issues", "6. Borrower categories and entitlements"]
+    },
+    {
+      "id": "A29",
+      "kind": "conflict",
+      "description": "volunteers select items beforehand but can only access member details on delivery day and the day after",
+      "question": "How can volunteers select items before the delivery day?",
+      "requirements": ["R141", "R139"],
+      "spans": [
+        "Volunteers are given access only to the details of the members on their own round, and only on the day of the delivery and the day after it.",
+        "The platform shall warn a volunteer selecting items for a home library member when an item has been lent to that member before."
+      ],
+      "sections": ["14.1 Home library service"]
+    },
+    {
+      "id": "A30",
+      "kind": "undefined-term",
+      "description": "library manager is not in the users list and the role is undefined",
+      "question": "Which role is a library manager, and how does it map to platform roles?",
+      "requirements": ["R119"],
+      "spans": [
+        "As a branch supervisor, you must be able to waive or reduce a charge, recording your reason, and a waiver of more than 50 must be approved by a library manager."
+      ],
+      "sections": ["11.4 Lost and damaged items"]
     }
   ]
 }

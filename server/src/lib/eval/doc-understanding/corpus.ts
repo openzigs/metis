@@ -37,7 +37,7 @@ export type DocUnderstandingCorpusName = (typeof DOC_UNDERSTANDING_CORPORA)[numb
 export const DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 
 export const LABEL_STATUS =
-  "author-labelled while writing the synthetic document; not yet reviewed by a second person";
+  "author-labelled while writing the synthetic document; cross-checked by two independent blind AI reviewers; disagreements judged by an AI and each judgement confirmed by a person (#2255)";
 
 const labelsFileSchema = z.object({
   corpusId: z.string().min(1),

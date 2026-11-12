@@ -465,12 +465,13 @@ test.describe("Epic #557 — Change Analysis UI", () => {
     await loginPage.login(ADMIN_USER.username, ADMIN_USER.password);
   });
 
-  // AC #568-1: "Change Analysis" tab accessible from project navigation
-  test("should show Changes tab in project navigation", async ({ page }) => {
+  // AC #568-1: Change Analysis accessible from project navigation (#2334:
+  // Requirements → Compare analyses)
+  test("should show Compare analyses in project navigation", async ({ page }) => {
     const ca = new ChangeAnalysisPage(page);
     await page.goto(`/projects/${projectId}`);
     await expect(ca.projectTabs).toBeVisible();
-    await ca.codeTab.click();
+    await ca.requirementsTab.click();
     await expect(ca.changesTab).toBeVisible();
 
     await ca.changesTab.click();
@@ -770,17 +771,21 @@ test.describe("Epic #557 — Publishing Destination Config UI", () => {
   });
 
   // AC #567-5: Publishing section visible on project settings page
-  test("should navigate to project settings and see Changes tab", async ({ page }) => {
+  test("should navigate to project settings and see Compare analyses", async ({ page }) => {
     await page.goto(`/projects/${projectId}`);
     const tabs = page.getByTestId("project-tabs");
     await expect(tabs).toBeVisible();
 
-    // Verify key tabs exist (#28: Changes is a Code page, in its sub-nav)
-    await expect(tabs.getByRole("link", { name: "Settings" })).toBeVisible();
-    await expect(tabs.getByRole("link", { name: "Publish" })).toBeVisible();
-    await tabs.getByRole("link", { name: "Code", exact: true }).click();
+    // Verify key tabs exist (#2334: Publish is a Deliverables page, Change
+    // Analysis is "Compare analyses" under Requirements)
+    await expect(tabs.getByRole("link", { name: "Project settings" })).toBeVisible();
+    await tabs.getByRole("link", { name: "Deliverables", exact: true }).click();
     await expect(
-      page.getByTestId("project-subnav").getByRole("link", { name: "Changes" }),
+      page.getByTestId("project-subnav").getByRole("link", { name: "Publish", exact: true }),
+    ).toBeVisible();
+    await tabs.getByRole("link", { name: "Requirements", exact: true }).click();
+    await expect(
+      page.getByTestId("project-subnav").getByRole("link", { name: "Compare analyses" }),
     ).toBeVisible();
   });
 

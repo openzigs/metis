@@ -1921,6 +1921,12 @@ model PortfolioAssessment {
   /// #1725 — the product the starter chose to build the requirement (a scalar
   /// soft-link, no FK, like `productIds`); null when none was chosen.
   hostProductId       String?
+  /// #2272 — the document whose requirements were checked (a scalar soft-link,
+  /// no FK, so the record outlives the document); null for any other source.
+  sourceDocumentId    String?
+  /// #2272 — JSON array: what the check did not check, each with why
+  /// (`portfolioNotCheckedSchema`). `[]` on every row before #2272.
+  notChecked          String   @default("[]")
   costUsd             Float    @default(0)
   createdById         String
   createdAt           DateTime @default(now())

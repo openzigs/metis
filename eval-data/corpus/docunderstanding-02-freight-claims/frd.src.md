@@ -117,7 +117,7 @@ The documents required depend on the loss type and the amount claimed. Today the
 
 [[R12 The application shall not allow a claim to proceed to approval until every required document has been received or the handler has recorded why it is not needed.]]
 
-[[R13 If the required documents have not been received 21 days after the request, the application shall send a reminder to the claimant, and if they have still not been received 21 days after the reminder, the claim shall be closed as abandoned.]] An abandoned claim can be reopened if the documents arrive later.
+[[R13 If the required documents have not been received 21 days after the request, the application shall send a reminder to the claimant, and if they have still not been received 21 days after the reminder, the claim shall be closed as abandoned.]] [[R59 An abandoned claim can be reopened if the documents arrive later.]]
 
 ### 6.2 Photographs and inspection
 
@@ -180,7 +180,7 @@ Payments are approved by people with the authority to commit the amount. The mat
 
 [[R32 The approval limits in the matrix shall be configurable by the claims operations manager, and every change shall be recorded with the name of the person who made it and the date.]]
 
-Approvers are expected to deal with approvals promptly so that settlement times can be met.
+[[A4 Approvers are expected to deal with approvals promptly so that settlement times can be met.]]
 
 ### 8.2 Settlement and payment
 
@@ -244,7 +244,7 @@ Management reporting today is assembled by hand from the regional spreadsheets. 
 
 [[R53 Claim records and their documents shall be retained for seven years after the claim is closed and then deleted, unless the claim is subject to litigation.]]
 
-Documents attached to claims can include invoices that show customers' prices and occasionally photographs that include people. The legal department has asked that access to documents be no wider than access to claims.
+Documents attached to claims can include invoices that show customers' prices and occasionally photographs that include people. [[R60 The legal department has asked that access to documents be no wider than access to claims.]]
 
 ## 13. Migration
 
@@ -296,9 +296,15 @@ A4 [vague-term] @R31: approvers are to deal with approvals "promptly", with no t
 A5 [conflict] @R27,R28: the approval bands overlap at exactly 1,000, 10,000 and 50,000, so it is unclear who approves a settlement of exactly those amounts => Who approves a settlement of exactly 1,000, 10,000 or 50,000?
 A6 [missing] @R35: a disputed settlement returns to the handler, but nothing says whether it needs re-approval, how many times it can be disputed, or when a dispute ends => After a claimant disputes a settlement, does a revised offer need approval again, and is there a limit on disputes or a final position?
 A7 [missing] @R13,R36: a claim closed as abandoned can be reopened, but there is no rule on how late it can be reopened or whether the notification time limits still apply => Is there a deadline after which an abandoned claim can no longer be reopened?
-A8 [conflict] @R51,R46: handlers see every region's claims, while legal asks that document access be no wider than claim access and the role model is not described; it is unclear whether customer service sees documents => Which roles may see the documents attached to a claim, including invoices and photographs of people?
+A8 [missing] @R51,R46: handlers see every region's claims, while legal asks that document access be no wider than claim access and the role model is not described; it is unclear whether customer service sees documents => Which roles may see the documents attached to a claim, including invoices and photographs of people?
 A9 [missing] @R4,R31: a claim covers several consignments but the approval matrix uses the total amount on the claim; it is not said whether splitting consignments across claims is prevented => Should the approval level be based on the claim total, and how is a claim split into several claims to stay under a limit prevented?
 A10 [missing] @R40,R39: deducting a recovery from a haulier's next payment has no stated rule for a disputed recovery or a haulier with no further payments due => Can a recovery be deducted from a haulier's payment while the haulier disputes it, and what happens when no further payment is due?
 A11 [tbd] @R1: whether customer service may register claims directly is undecided, which changes who can perform R1 => May customer service staff register claims themselves, or must they continue to pass them to the claims mailbox?
 A12 [conflict] @R26,R25: delay claims are payable up to the carriage charge with a guaranteed service, while consequential losses are excluded; the document does not say whether delay compensation counts as a consequential loss under special terms => For a delay claim under special terms, is compensation still capped at the carriage charge, and is any delay loss treated as consequential?
+A13 [undefined-term] @R41: the policy excess amount and whether it varies by policy or period is not given => What is the excess, and how is it maintained in the application?
+A14 [undefined-term] @R23: proven value and how salvage value is determined and recorded are not defined => What evidence establishes proven value, and how is salvage value captured?
+A15 [undefined-term] @R1: the customer claim form is never described, and the portal is out of scope, so its format and submission route are unclear => What is the claim form, in what format does it arrive, and what fields does it hold?
+A16 [vague-term] @R58: usable and standard remote access arrangements are not defined or measurable => Which remote access method applies and what acceptance criteria define usable?
+A17 [escape-clause] @R12: a handler can bypass the document gate by recording a reason, with no limit or approval => Are there document types that can never be waived, and does a waiver need approval?
+A18 [missing] @R6: delay claims are in scope but no notification time limit is given for them, and the flag has no stated consequence or audience => What notice period applies to delay claims, and who sees the late flag?
 -->

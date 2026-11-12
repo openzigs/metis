@@ -55,7 +55,7 @@ The first release includes patient sign-in, viewing availability, booking, resch
 
 ### 2.2 Out of scope
 
-The following are explicitly out of scope for the first release: video consultations, repeat prescription requests, access to medical records or test results, online payment for travel vaccines, and booking appointments with external providers such as hospital outpatient departments. Urgent and same-day appointments remain telephone-only in the first release because the clinics triage those calls clinically. The portal will not offer a symptom checker or any form of clinical advice.
+The following are explicitly out of scope for the first release: video consultations, repeat prescription requests, access to medical records or test results, online payment for travel vaccines, and booking appointments with external providers such as hospital outpatient departments. [[R47 Urgent and same-day appointments remain telephone-only in the first release because the clinics triage those calls clinically.]] The portal will not offer a symptom checker or any form of clinical advice.
 
 ## 3. Glossary
 
@@ -69,7 +69,7 @@ The following are explicitly out of scope for the first release: video consultat
 
 ## 4. Patient access and identity
 
-Patients must already be registered at one of the six clinics to use the portal. Registration itself is not part of the portal; new patients continue to register in person or through the existing paper form.
+[[R48 Patients must already be registered at one of the six clinics to use the portal.]] Registration itself is not part of the portal; new patients continue to register in person or through the existing paper form.
 
 [[R1 A registered patient shall be able to create a portal account by verifying their identity against the details held in the PMS, using their date of birth, surname, postcode and a one-time code sent to the mobile number held in the PMS.]] The one-time code is the patient's evidence that they control the phone number the clinic already holds for them, which the information governance lead considers sufficient for booking access but not for record access.
 
@@ -77,7 +77,7 @@ Patients must already be registered at one of the six clinics to use the portal.
 
 [[R3 A patient shall sign in with an email address and password, and the portal shall require a second factor on every sign-in from a device it has not seen before.]] Patients told the representative group that they did not want to enter a code every time they booked, so the second factor is only required on new devices.
 
-[[R4 The portal shall lock an account after five consecutive failed sign-in attempts and shall unlock it automatically after thirty minutes.]] Front-desk staff will not be able to unlock accounts manually in the first release; this was discussed and deliberately left out to avoid creating a social engineering route.
+[[R4 The portal shall lock an account after five consecutive failed sign-in attempts and shall unlock it automatically after thirty minutes.]] [[R49 Front-desk staff will not be able to unlock accounts manually in the first release; this was discussed and deliberately left out to avoid creating a social engineering route.]]
 
 [[R5 A signed-in session shall end after a period of inactivity, and the patient shall be warned before it ends.]] The workshop did not reach a conclusion on how long the period should be.
 
@@ -89,7 +89,7 @@ Many bookings are made by parents for children and by adult children for elderly
 
 [[R7 A link between a carer and a dependant shall only be created by front-desk staff after they have checked the carer's authority, and the portal shall not let a patient create such a link themselves.]]
 
-[[R8 A carer link for a dependant under the age of sixteen shall end automatically on the dependant's sixteenth birthday, and the portal shall notify the carer thirty days beforehand.]] [[A1 Links for adult dependants, for example a patient with a lasting power of attorney in place, are reviewed periodically.]]
+[[R8 A carer link for a dependant under the age of sixteen shall end automatically on the dependant's sixteenth birthday, and the portal shall notify the carer thirty days beforehand.]] [[R50 Links for adult dependants, for example a patient with a lasting power of attorney in place, are reviewed periodically.]]
 
 ## 5. Viewing availability and booking
 
@@ -103,7 +103,7 @@ Many bookings are made by parents for children and by adult children for elderly
 
 [[R12 Availability shown in the portal shall reflect the PMS appointment book in near real time.]] Front-desk staff are concerned that a slot booked by telephone might still appear free in the portal and be booked twice.
 
-[[R13 When a patient selects a slot, the portal shall place a hold on it for five minutes so that no other patient or staff member can book it while the patient completes the booking.]] If the patient does not confirm within the hold period the slot is released.
+[[R13 When a patient selects a slot, the portal shall place a hold on it for five minutes so that no other patient or staff member can book it while the patient completes the booking.]] [[R51 If the patient does not confirm within the hold period the slot is released.]]
 
 ### 5.2 Booking rules
 
@@ -115,11 +115,11 @@ Some rules exist to protect clinical capacity and to keep the appointment book f
 
 [[R16 Childhood immunisation appointments shall only be bookable by a carer for a dependant whose age is within the range set for that immunisation type in the PMS.]]
 
-[[R17 Before confirming a booking, the portal shall ask the patient to state the reason for the appointment in a free-text field of up to 200 characters, which shall be passed to the PMS with the booking.]] The clinical leads asked for this so that clinicians can prepare. Patients will be told that the field is not monitored and that urgent problems must be telephoned in.
+[[R17 Before confirming a booking, the portal shall ask the patient to state the reason for the appointment in a free-text field of up to 200 characters, which shall be passed to the PMS with the booking.]] The clinical leads asked for this so that clinicians can prepare. [[R52 Patients will be told that the field is not monitored and that urgent problems must be telephoned in.]]
 
 [[R18 The portal shall show a clear warning on every booking screen that it must not be used for urgent medical problems, with the telephone number of the clinic and the national urgent care number.]]
 
-[[R19 When a booking is confirmed, the portal shall write it to the PMS and shall show the patient a confirmation only after the PMS has accepted it.]] [[A2 If the PMS is unavailable, the booking should be handled appropriately.]]
+[[R19 When a booking is confirmed, the portal shall write it to the PMS and shall show the patient a confirmation only after the PMS has accepted it.]] [[R53 If the PMS is unavailable, the booking should be handled appropriately.]]
 
 ### 5.3 Rescheduling and cancelling
 
@@ -137,9 +137,9 @@ Missed appointments are the second business objective of the project. The remind
 
 [[R24 The portal shall send each patient a reminder by text message 48 hours before every appointment, whether it was booked online or by telephone.]] The finance team's analysis suggests most missed appointments are booked more than a week in advance, so an early reminder is the most effective intervention.
 
-[[R25 A reminder shall let the patient cancel the appointment by replying to the message or by following a link, without signing in.]] Cancelling through a reminder releases the slot in the same way as cancelling in the portal.
+[[R25 A reminder shall let the patient cancel the appointment by replying to the message or by following a link, without signing in.]] [[R54 Cancelling through a reminder releases the slot in the same way as cancelling in the portal.]]
 
-[[R26 The portal shall send a confirmation by email when an appointment is booked, moved or cancelled, to the email address on the account that made the change.]] Where a carer makes the change, the confirmation goes to the carer.
+[[R26 The portal shall send a confirmation by email when an appointment is booked, moved or cancelled, to the email address on the account that made the change.]] [[R55 Where a carer makes the change, the confirmation goes to the carer.]]
 
 [[R27 Patients shall be able to choose not to receive text reminders, and the choice shall be recorded in the PMS so that it also applies to reminders the PMS sends.]]
 
@@ -150,7 +150,7 @@ The following table summarises the notifications. It repeats some of the stateme
 | Appointment booked, moved or cancelled | Email | At the time of the change | The account holder who made the change |
 | Upcoming appointment | Text message | [[A4 24 hours before the appointment]] | The patient, or the carer for a dependant |
 | Physiotherapy follow-up on the day | Text message | [[R28 A same-day text reminder is sent at 7am for physiotherapy appointments starting after 10am.]] | The patient |
-| Waiting list offer | Text message and email | When a matching slot is released | The patient on the waiting list |
+| Waiting list offer | [[R56 Text message and email]] | When a matching slot is released | The patient on the waiting list |
 
 ## 7. Waiting list
 
@@ -219,8 +219,8 @@ The following points were raised during the workshops and are not yet resolved. 
 - [[A11 The clinical leads have asked whether the reason for appointment should be visible to front-desk staff at all.]] The staff list described in section 8 assumes that it is.
 
 <!-- labels
-A1 [missing] @R7: the document says adult carer links are reviewed periodically but never says how often, by whom, or what happens to the link when a review is not done => How often are carer links for adult dependants reviewed, who reviews them, and does the link lapse if the review is missed?
-A2 [vague-term] @R19: the behaviour when the PMS is unavailable is left as "handled appropriately", so it is unclear whether the portal refuses the booking, queues it or shows a slot it cannot confirm => When the PMS is unavailable, should the portal refuse new bookings, queue them for later, or stop showing availability?
+A1 [missing] @R7,R50: the document says adult carer links are reviewed periodically but never says how often, by whom, or what happens to the link when a review is not done => How often are carer links for adult dependants reviewed, who reviews them, and does the link lapse if the review is missed?
+A2 [vague-term] @R19,R53: the behaviour when the PMS is unavailable is left as "handled appropriately", so it is unclear whether the portal refuses the booking, queues it or shows a slot it cannot confirm => When the PMS is unavailable, should the portal refuse new bookings, queue them for later, or stop showing availability?
 A3 [tbd] @R31: the waiting list offer expiry period is undefined; R31 says only "a short period" => How long does a patient have to accept a waiting list offer before it passes to the next person?
 A4 [conflict] @R24: R24 says the text reminder is sent 48 hours before every appointment, while the notification table says 24 hours => Is the standard text reminder sent 48 hours or 24 hours before the appointment, or both?
 A5 [vague-term] @R12: "near real time" is not quantified, and staff are worried about double booking => What is the longest acceptable delay between a telephone booking in the PMS and the slot disappearing from the portal?
@@ -230,4 +230,5 @@ A8 [conflict] @R20,R25: cancelling in the portal stops two hours before the star
 A9 [missing] @R14,R23: the two-appointment GP limit is stated for portal bookings, but the document is silent on whether telephone bookings count towards it => Do routine GP appointments booked by telephone count towards the limit of two future appointments?
 A10 [tbd] @R9,R10: the document does not decide whether a patient may book routine GP appointments at a site other than their registered one; R9 implies not, and the open issue says it is undecided => May a patient book a routine GP appointment at a site other than the one they are registered at?
 A11 [conflict] @R17,R34: R34 shows the reason for appointment to front-desk staff, while the clinical leads question whether staff should see it at all, and patients are told it is for clinicians => Should front-desk staff see the reason for appointment a patient enters, or only clinicians?
+A12 [missing] @R3: the second factor type, how a device is recognised and how long it is remembered are not specified, nor password rules or reset => What is the second factor, how are known devices recognised and expired, and what are the password and reset rules?
 -->

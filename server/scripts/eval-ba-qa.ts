@@ -28,7 +28,10 @@
  * Each answer is graded by one judge call (`judge.ts`); every rate is computed
  * from its verdicts in code (`metrics.ts`). Spend is ledger-priced, answers and
  * judge apart, and held under `--budget` (USD): the run stops before a question
- * once the cap is reached, or on an unpriced call.
+ * once the cap is reached, once the costliest question so far would carry the
+ * spend past it, or on an unpriced call (`budgetStop`). The cap is checked
+ * between questions, not within one, so a question costlier than any before it
+ * can still cross it.
  * Results: `eval-results/ba-qa/<runId>.{json,md}`.
  *
  * #2241 — `--floor-sweep` asks no model: after the knowledge step it runs chat's
@@ -72,9 +75,12 @@ import {
 import { formatBaQaReport, type ReportSession } from "../src/lib/eval/ba-qa/report.js";
 import {
   applyArmEnv,
+  assertComparable,
+  budgetStop,
   buildJudgedSpans,
   chatSessionScope,
   parseArm,
+  unknownSources,
 } from "../src/lib/eval/ba-qa/run.js";
 
 const SERVER_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -104,6 +110,7 @@ interface Envelope {
   runId: string;
   provider: string;
   model: string;
+  judgeModel: string;
   fixture: { id: string; version: number };
   arm: string;
   flags: Record<string, string>;
@@ -132,7 +139,7 @@ async function main(): Promise<void> {
   const arm = floorSweep ? parseArm("off") : parseArm(values.arm!);
   const budget = Number(values.budget);
   if (!floorSweep && (!values.budget || !Number.isFinite(budget) || budget <= 0)) {
-    throw new Error("--budget <usd> is required: the run's hard spend cap");
+    throw new Error("--budget <usd> is required: the run's spend cap");
   }
   // Before any module reads a flag.
   const flags = applyArmEnv(process.env, arm);
@@ -160,6 +167,26 @@ async function main(): Promise<void> {
       throw new Error(`the ${p.name} clone moved off ${p.sha}: re-run pnpm eval:materialize`);
     }
     repos.set(p.name, repo);
+  }
+
+  // What each product's answer can cite: its repository files and its uploads.
+  const citable = new Map<string, CitableProduct>(
+    fixture.products.map((p) => [
+      p.name,
+      {
+        name: p.name,
+        files: git(repos.get(p.name)!.cloneDir, ["ls-files"]).split("\n").filter(Boolean),
+        documents: new Map(
+          p.documents.map((d) => [d.uploadAs, d.fromCorpus ? d.uploadAs : d.file] as const),
+        ),
+      },
+    ]),
+  );
+  // Before anything is spent: a source no citation can resolve to would only
+  // lower its question's recall, silently.
+  const unknown = unknownSources(fixture.questions, citable);
+  if (unknown.length > 0) {
+    throw new Error(`expected sources that name no file or document: ${unknown.join(", ")}`);
   }
 
   const { prisma, boundDatabaseUrl } = await import("../src/lib/prisma.js");
@@ -297,19 +324,6 @@ async function main(): Promise<void> {
   const judgeMeter = new LedgerCostMeter();
   const answerMeter = new LedgerCostMeter();
 
-  // What each product's answer can cite: its repository files and its uploads.
-  const citable = new Map<string, CitableProduct>(
-    fixture.products.map((p) => [
-      p.name,
-      {
-        name: p.name,
-        files: git(repos.get(p.name)!.cloneDir, ["ls-files"]).split("\n").filter(Boolean),
-        documents: new Map(
-          p.documents.map((d) => [d.uploadAs, d.fromCorpus ? d.uploadAs : d.file] as const),
-        ),
-      },
-    ]),
-  );
   async function readCited(product: string, file: string): Promise<string | null> {
     const p = fixture.products.find((x) => x.name === product);
     const doc = p?.documents.find((d) => d.fromCorpus && d.uploadAs === file);
@@ -326,16 +340,17 @@ async function main(): Promise<void> {
   const sessions: Session[] = [];
   let stoppedEarly: string | null = null;
   const startedAt = new Date();
+  const questionCosts: number[] = [];
 
   for (const [i, q] of questions.entries()) {
-    if (meter.unpricedCalls() > 0) {
-      stoppedEarly = "an unpriced call: the cap cannot be enforced";
-      break;
-    }
-    if (meter.spentUsd() >= budget) {
-      stoppedEarly = `the $${budget} cap was reached`;
-      break;
-    }
+    stoppedEarly = budgetStop({
+      budgetUsd: budget,
+      spentUsd: meter.spentUsd(),
+      unpricedCalls: meter.unpricedCalls(),
+      questionCosts,
+    });
+    if (stoppedEarly) break;
+    const spentBefore = meter.spentUsd();
     const t0 = performance.now();
     const scope = chatSessionScope(q.scope.map((name) => repos.get(name)!.projectId));
     const row = await prisma.aISession.create({
@@ -437,6 +452,7 @@ async function main(): Promise<void> {
     const verdict = parseJudgeVerdict(judged.content, q, spans);
     const score = scoreQuestion(q, citations, index, verdict);
     const costUsd = sessionMeter.unpricedCalls() > 0 ? null : sessionMeter.spentUsd();
+    questionCosts.push(meter.spentUsd() - spentBefore);
     sessions.push({
       arm,
       questionId: q.id,
@@ -477,7 +493,9 @@ async function main(): Promise<void> {
   const runId = `${startedAt.toISOString().replace(/[:.]/g, "-")}-${arm}`;
   const envelope: Envelope & Record<string, unknown> = {
     kind: "ba-qa",
-    version: 1,
+    // 2 (#2265): a citation's check can be `no-such-lines`, and the summary
+    // reports citation precision per check instead of one blended rate.
+    version: 2,
     issue: 2237,
     runId,
     startedAt: startedAt.toISOString(),
@@ -501,19 +519,28 @@ async function main(): Promise<void> {
     sessions,
   };
 
-  // An arm run by an earlier invocation, reported beside this one.
+  // An arm run by an earlier invocation, reported beside this one: same fixture,
+  // answer model and judge, and an arm not already in the report.
   const all: Envelope[] = [envelope];
   for (const file of values.include ?? []) {
     const prior = JSON.parse(await fs.readFile(path.resolve(file), "utf8")) as Envelope;
-    if (prior.kind !== "ba-qa" || prior.fixture.id !== fixture.id || prior.model !== model) {
-      throw new Error(`${file} is another fixture or model: not comparable`);
-    }
-    if (prior.fixture.version !== fixture.version) {
-      throw new Error(
-        `${file} scored fixture version ${prior.fixture.version}, not ${fixture.version}`,
-      );
-    }
-    all.push(prior);
+    assertComparable(
+      prior,
+      envelope,
+      all.map((e) => e.arm),
+      file,
+    );
+    // Re-summarized from its per-question scores by this code, so both columns
+    // are computed alike — a file written before a metric was added has it too.
+    const { answerUsd, judgeUsd } = prior.summary.cost;
+    all.push({
+      ...prior,
+      summary: summarizeArm(
+        prior.arm,
+        prior.sessions.map((s) => s.score),
+        { answerUsd, judgeUsd },
+      ),
+    });
   }
   all.sort((a, b) => a.arm.localeCompare(b.arm));
   const markdown = formatBaQaReport({

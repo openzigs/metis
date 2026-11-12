@@ -86,6 +86,7 @@ import {
   buildGenerationCheckpoint,
   type SectionSynthesisRecord,
 } from "../lib/docs-gen/section-reuse.js";
+import { NO_DOCUMENTABLE_CODE } from "../lib/docs-gen/no-documentable-code.js";
 import {
   PATH_SCOPE_EMPTY_CODE,
   pathPrefixesSchema,
@@ -548,6 +549,19 @@ export function generatedDocsRouter(): Router {
       res.status(202).json({ data: doc });
     },
   );
+
+  // #2369 — GET /source-code — whether the project has any indexed source
+  // code, so the form can say before a run that a code-based document type
+  // (full-project or repository scope) has nothing to read. Registered before
+  // `/:docId`, which would otherwise take the path as a document id.
+  r.get("/source-code", requirePermission("project.read"), async (req: Request, res: Response) => {
+    const projectId = getProjectId(req);
+    const symbol = await prisma.codeSymbol.findFirst({
+      where: { projectId },
+      select: { id: true },
+    });
+    res.json({ data: { indexed: symbol !== null } });
+  });
 
   // GET / — list documents
   r.get("/", requirePermission("project.read"), async (req: Request, res: Response) => {
@@ -2257,8 +2271,17 @@ export async function generateDocumentAsync(
     // #239 — broadcast the failure so the UI leaves the "generating" state.
     // #254 — send a generic, user-safe message over the socket; full error
     // detail is retained in the server log above (log.error), never the client.
+    // #2369 — except a run that found no code to document: that is the user's
+    // to fix, so the toast says why and what to do (a fixed message).
     if (failed?.count)
-      jobEvents.failed("doc-generation", docId, projectId, genericFailureMessage("doc-generation"));
+      jobEvents.failed(
+        "doc-generation",
+        docId,
+        projectId,
+        (err as { code?: unknown } | null)?.code === NO_DOCUMENTABLE_CODE
+          ? generationFailureMessage(err)
+          : genericFailureMessage("doc-generation"),
+      );
     if (automatic) throw err;
   } finally {
     stopHeartbeat?.();

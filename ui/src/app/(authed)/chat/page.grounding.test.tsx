@@ -6,6 +6,7 @@
  */
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 const getTranscriptSince = vi.fn();
 const state = vi.hoisted(() => ({
@@ -62,6 +63,11 @@ vi.mock("@/components/chat/project-scope-selector", () => ({
   }),
 }));
 vi.mock("@/lib/recent-tracker", () => ({ recentTracker: { touch: vi.fn() } }));
+// #2242 — a cited reply looks up the project's repo to link its code citations.
+vi.mock("@/lib/connectors-api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/connectors-api")>()),
+  repoConnectorsApi: { list: async () => [] },
+}));
 
 const { default: ChatPage } = await import("./page");
 
@@ -113,6 +119,46 @@ describe("chat page — grounding (#18)", () => {
     await send("q");
     const badge = await screen.findByTestId("chat-grounding");
     expect(badge.textContent).toBe("Grounded in Payments · 2 sources");
+  });
+
+  it("#2242 — lists the reply's checked citations, live and after the transcript re-read", async () => {
+    state.projectId = "p1";
+    const fabricated = { text: "src/made/up.ts:3", path: "src/made/up.ts", status: "not-read" };
+    state.events = [
+      { type: "delta", content: "answer" },
+      { type: "citations", citations: [fabricated] },
+      { type: "done" },
+    ];
+    let reread: (v: unknown) => void = () => undefined;
+    getTranscriptSince.mockReturnValue(new Promise((r) => (reread = r)));
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <ChatPage />
+      </QueryClientProvider>,
+    );
+    await send("q");
+    const live = await screen.findByTestId("chat-citation");
+    expect(live).toHaveAttribute("data-status", "not-read");
+    reread({
+      afterOrdinal: 0,
+      rows: [
+        { role: "user", content: "q", ordinal: 1, compacted: false },
+        {
+          role: "assistant",
+          content: "server answer",
+          ordinal: 2,
+          compacted: false,
+          citations: [{ ...fabricated, status: "span-unverified" }],
+        },
+      ],
+      compactionUpdates: [],
+    });
+    const reply = (await screen.findByText("server answer")).closest("li")!;
+    expect(within(reply).getByTestId("chat-citation")).toHaveAttribute(
+      "data-status",
+      "span-unverified",
+    );
   });
 
   it("keeps each reply's label after the transcript re-read, from the persisted rows", async () => {

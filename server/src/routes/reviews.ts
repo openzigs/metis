@@ -4,7 +4,7 @@
  * Routes:
  *   POST /api/projects/:projectId/reviews      — create a draft review (review.create)
  *   GET  /api/projects/:projectId/reviews      — project-scoped list      (review.read)
- *   GET  /api/reviews                          — queue (assignee=me, requester=me,
+ *   GET  /api/reviews                          — queue (assignee=me [&decision=pending], requester=me,
  *                                                status, projectId)       (review.read)
  *   GET  /api/reviews/:reviewId                — detail incl. audit history (review.read)
  *   POST /api/reviews/:reviewId/submit         — draft → in_review, pins versions
@@ -115,6 +115,7 @@ function parsePositiveInt(value: unknown, fallback: number): number {
 function parseListQuery(req: Request): {
   status?: string;
   assignee?: string;
+  decision?: string;
   requester?: string;
   projectId?: string;
   page: number;
@@ -123,6 +124,7 @@ function parseListQuery(req: Request): {
   return {
     status: req.query.status === undefined ? undefined : String(req.query.status),
     assignee: req.query.assignee === undefined ? undefined : String(req.query.assignee),
+    decision: req.query.decision === undefined ? undefined : String(req.query.decision),
     requester: req.query.requester === undefined ? undefined : String(req.query.requester),
     projectId: req.query.projectId === undefined ? undefined : String(req.query.projectId),
     page: parsePositiveInt(req.query.page, 1),
