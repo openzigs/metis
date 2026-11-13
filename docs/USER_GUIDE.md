@@ -2162,9 +2162,12 @@ Section 15.5), and the check reads the code in those repositories. [#1608]
    the top bar's workspace you can read, with how many that is; with no workspace open, every
    product you can read), or tick **Chosen products** (up to 50). Opened from no project, it
    reads **Every product you can read** and checks all of them, as before; opened from a
-   product, that product is ticked. **Find
-   products** searches all your products by name; a product you ticked stays ticked when a
-   search hides it. A product you cannot read is refused by the server, never checked.
+   product, that product is ticked. Untick every chosen product to go back to **Every product
+   you can read**. **Whole workspace** stays unavailable, and says why, until the workspace's
+   products are read; **Check coverage** waits while the project's product is looked up. **Find
+   products** searches all your products by name (and the product list for who will build it);
+   a product you ticked stays ticked when a search hides it. A product you cannot read is
+   refused by the server, never checked.
 4. Click **Check coverage**.
 
 You can also start a check from three other places. Every **approved** requirement on a

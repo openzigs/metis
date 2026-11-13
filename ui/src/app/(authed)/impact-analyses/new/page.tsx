@@ -15,10 +15,7 @@ import { useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { useQueries, useQuery } from "@tanstack/react-query";
-import type { CreateImpactAnalysisInput } from "@metis/shared";
-
-/** The most projects one impact run takes (`createImpactAnalysisSchema`). */
-const MAX_PROJECTS = 50;
+import { IMPACT_MAX_PROJECTS, type CreateImpactAnalysisInput } from "@metis/shared";
 import { Card } from "@/components/ui/card";
 import { projectsApi, documentsApi, type Project } from "@/lib/projects-api";
 import { useCreateImpactAnalysis } from "@/lib/impact-analysis-hooks";
@@ -97,20 +94,32 @@ export default function NewImpactAnalysisPage() {
     return p ? { id: p.id, name: p.name } : null;
   })();
   // #2351 — "Whole workspace": the top bar's workspace, and its projects the
-  // analyst can read (this list is theirs), at most what one run takes.
+  // analyst can read (the server filters `/projects` by both), counted by the
+  // server rather than from the first page of every project. A workspace with
+  // more than one run takes is refused and said, as the portfolio check does,
+  // never cut to its first projects.
   const { workspaceId: activeWorkspaceId } = useValidatedActiveWorkspaceId();
   const { data: workspaces = [] } = useQuery(workspaceListQuery);
   const activeWorkspace = workspaces.find((w) => w.id === activeWorkspaceId) ?? null;
-  const workspaceProjectIds = activeWorkspace
-    ? projects.filter((p) => p.workspaceId === activeWorkspace.id).map((p) => p.id)
-    : [];
-  const workspaceScope = activeWorkspace
-    ? {
-        id: activeWorkspace.id,
-        name: activeWorkspace.name,
-        count: projectsQuery.isSuccess ? workspaceProjectIds.length : null,
-      }
-    : null;
+  const workspaceProjects = useQuery({
+    queryKey: ["impact", "workspace-projects", activeWorkspace?.id ?? null],
+    queryFn: () => projectsApi.list({ workspaceId: activeWorkspace!.id, limit: 100 }),
+    enabled: activeWorkspace !== null,
+    retry: false,
+  });
+  const workspaceTotal = workspaceProjects.data?.total ?? null;
+  const workspaceTooBig = workspaceTotal !== null && workspaceTotal > IMPACT_MAX_PROJECTS;
+  const workspaceProjectIds = (workspaceProjects.data?.items ?? []).map((p) => p.id);
+  // Disabled, with the reason, until the workspace's projects are read.
+  const workspaceScope =
+    activeWorkspace && workspaceProjects.isSuccess
+      ? { id: activeWorkspace.id, name: activeWorkspace.name, count: workspaceTotal }
+      : null;
+  const workspaceNote = !activeWorkspace
+    ? "No workspace is open in the top bar."
+    : workspaceProjects.isError
+      ? "Could not read the workspace's projects."
+      : "Loading the workspace's projects…";
 
   // Fan out to the documents of the selected projects only.
   const documentQueries = useQueries({
@@ -261,7 +270,7 @@ export default function NewImpactAnalysisPage() {
           current={currentProject}
           currentNote="Open this from a project or a change request to start there."
           workspace={workspaceScope}
-          workspaceNote="No workspace is open in the top bar."
+          workspaceNote={workspaceNote}
           onPickThis={() => {
             if (!currentProject) return;
             setScopeKind("this");
@@ -270,19 +279,21 @@ export default function NewImpactAnalysisPage() {
           onPickWorkspace={() => {
             if (!workspaceScope) return;
             setScopeKind("workspace");
-            setSelected(workspaceProjectIds.slice(0, MAX_PROJECTS));
+            setSelected(workspaceTooBig ? [] : workspaceProjectIds);
           }}
           onToggle={(p) => {
             const base = scopeKind === "chosen" ? selected : [];
             setScopeKind("chosen");
             setSelected(base.includes(p.id) ? base.filter((id) => id !== p.id) : [...base, p.id]);
           }}
-          maxChosen={MAX_PROJECTS}
+          maxChosen={IMPACT_MAX_PROJECTS}
           testIdBase="impact-scope"
           ariaLabel="Projects to analyse"
         />
         <p className="text-xs text-muted-foreground" data-testid="multi-project-count">
-          {selected.length} selected
+          {scopeKind === "workspace" && workspaceTooBig
+            ? `The workspace has more than ${IMPACT_MAX_PROJECTS} projects: choose up to ${IMPACT_MAX_PROJECTS}.`
+            : `${selected.length} selected`}
         </p>
       </div>
 

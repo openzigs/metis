@@ -159,7 +159,7 @@ describe("the host picker", () => {
       screen.getByLabelText("Which product will build this? (optional)"),
       "p-billing",
     );
-    await user.type(screen.getByLabelText("Find a product to build it"), "o");
+    await user.type(screen.getByLabelText("Find products"), "o");
     expect(onProductQueryChange).toHaveBeenLastCalledWith("o");
     rerender(
       <PortfolioAssessmentForm

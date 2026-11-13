@@ -144,10 +144,16 @@ export function productsRouter(): Router {
     const search = typeof req.query.search === "string" ? req.query.search : undefined;
     // #2351 — `?workspaceId=` narrows the list to one workspace's products; the
     // access filter still applies, so a workspace the caller is not in lists none.
+    // An over-long one is refused rather than dropped: dropping it would answer
+    // a caller asking for one workspace with every product it can read.
     const workspaceId =
-      typeof req.query.workspaceId === "string" && req.query.workspaceId.length <= 120
-        ? req.query.workspaceId
-        : undefined;
+      typeof req.query.workspaceId === "string" ? req.query.workspaceId : undefined;
+    if (workspaceId !== undefined && workspaceId.length > 120) {
+      res.status(400).json({
+        error: { code: "VALIDATION_ERROR", message: "workspaceId is too long" },
+      });
+      return;
+    }
     const accessWhere = await buildProductAccessWhere(req.user!);
     const result = await listProducts({ page, pageSize, search, workspaceId, accessWhere });
     // #1258 — each listed product shows only the repos the caller can open.

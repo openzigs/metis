@@ -253,6 +253,12 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(mallory).not.toContain(product.a);
       });
 
+      it("#2351 — refuses an over-long workspaceId instead of listing every product", async () => {
+        const res = await get(`/api/products?workspaceId=${"w".repeat(121)}`, "bob");
+        expect(res.status).toBe(400);
+        expect(res.body.error.code).toBe("VALIDATION_ERROR");
+      });
+
       it("never lists a product of a soft-deleted project or workspace", async () => {
         expect(await listedIds("bob")).not.toContain(product.d);
         expect(await listedIds("wendy")).not.toContain(product.w);

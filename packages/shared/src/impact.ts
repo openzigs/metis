@@ -438,6 +438,9 @@ export type ImpactAffectedSymbol = z.infer<typeof impactAffectedSymbolSchema>;
 /** #1754 — the most stored requirements one impact run may be asked about. */
 export const MAX_IMPACT_REQUIREMENT_IDS = 50;
 
+/** #2351 — the most projects one impact run takes; the UI's scope picker reads it too. */
+export const IMPACT_MAX_PROJECTS = 50;
+
 /**
  * Create an impact analysis. At least one change source must be supplied:
  * `documentId`, `text`, or `requirementIds` (#1754). `projectIds` must contain
@@ -461,7 +464,10 @@ export const createImpactAnalysisSchema = z
       .max(MAX_IMPACT_REQUIREMENT_IDS)
       .transform((ids) => [...new Set(ids)])
       .optional(),
-    projectIds: z.array(idSchema).min(1, "at least one projectId is required").max(50),
+    projectIds: z
+      .array(idSchema)
+      .min(1, "at least one projectId is required")
+      .max(IMPACT_MAX_PROJECTS),
     /**
      * Epic #168 — when true, the engine also crosses code → mapper/entity →
      * table → column and reports affected tables/columns + suggested DDL.

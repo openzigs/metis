@@ -87,7 +87,8 @@ export function loadStoredScope(): ProjectScope | null {
 /**
  * #1139 — the scope `/chat` opens on: the project active in the top bar. The
  * scope stored by this selector is used only when no project is active (the
- * user has none, or their list cannot be read); with neither, "All projects".
+ * user has none, or their list cannot be read); with neither, no product is
+ * chosen (#2351: the chat answers without searching).
  *
  * Before, a stored scope always won, so chat opened on whichever project was
  * last picked HERE — in the walkthrough, a different project from the one the
@@ -197,10 +198,13 @@ export function ProjectScopeSelector({ value, onChange, disabled }: Props) {
           ? "this"
           : "chosen"
         : null;
-  const workspaceOfScope =
-    value.mode === "workspace"
+  // The option names, and picks, the top bar's workspace; a stored scope on
+  // another workspace names the button only. With no workspace open the option
+  // is disabled and says why, rather than taking a click that does nothing.
+  const storedWorkspace =
+    value.mode === "workspace" && value.workspaceId !== activeWorkspace?.id
       ? (workspaces.find((w) => w.id === value.workspaceId) ?? null)
-      : activeWorkspace;
+      : null;
 
   return (
     <ScopePicker
@@ -211,15 +215,12 @@ export function ProjectScopeSelector({ value, onChange, disabled }: Props) {
       current={current}
       currentNote="No project is open in the top bar."
       workspace={
-        workspaceOfScope
-          ? {
-              id: workspaceOfScope.id,
-              name: workspaceOfScope.name,
-              count: workspaceOfScope.id === activeWorkspace?.id ? workspaceCount : null,
-            }
+        activeWorkspace
+          ? { id: activeWorkspace.id, name: activeWorkspace.name, count: workspaceCount }
           : null
       }
       workspaceNote="No workspace is open in the top bar."
+      scopeWorkspace={storedWorkspace ? { name: storedWorkspace.name, count: null } : null}
       onPickThis={() => {
         if (current) pick({ mode: "selected", projectIds: [current.id] });
       }}

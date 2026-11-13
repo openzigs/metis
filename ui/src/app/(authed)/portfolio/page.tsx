@@ -150,14 +150,26 @@ function PortfolioEntry({
   const current = projectProduct.data
     ? { id: projectProduct.data.id, name: projectProduct.data.name }
     : null;
+  // Until the project and its product are read, the form holds its default and
+  // its submit: a quick submit would otherwise go out over every product.
+  const currentLoading =
+    backProjectId !== null &&
+    (project.isPending || (projectProductId !== null && projectProduct.isPending));
   const currentNote = !backProjectId
     ? "Open this from a change request to check its project's product."
-    : project.isSuccess && !projectProductId
-      ? `${project.data.name} is not part of a product, so it is not in the portfolio.`
-      : undefined;
+    : currentLoading
+      ? "Looking up this project's product…"
+      : project.isError
+        ? "Could not read this project, so its product is not offered."
+        : !projectProductId
+          ? `${project.data?.name ?? "This project"} is not part of a product, so it is not in the portfolio.`
+          : projectProduct.isError
+            ? "Could not read this project's product, so it is not offered."
+            : undefined;
   // #2351 — "Whole workspace": the top bar's workspace's products the analyst
   // can read (the list is access-filtered on the server).
-  const { workspaceId: activeWorkspaceId } = useValidatedActiveWorkspaceId();
+  const { workspaceId: activeWorkspaceId, status: workspaceStatus } =
+    useValidatedActiveWorkspaceId();
   const { data: workspaces = [] } = useQuery(workspaceListQuery);
   const activeWorkspace = workspaces.find((w) => w.id === activeWorkspaceId) ?? null;
   const workspaceProducts = useQuery({
@@ -171,10 +183,33 @@ function PortfolioEntry({
       ? {
           id: activeWorkspace.id,
           name: activeWorkspace.name,
-          productIds: workspaceProducts.data.items.map((p) => p.id),
+          products: workspaceProducts.data.items.map((p) => ({ id: p.id, name: p.name })),
           count: workspaceProducts.data.total,
         }
       : undefined;
+  // With a workspace open, "Whole workspace" waits for its products: while
+  // they load, or when they cannot be read, it is disabled and says why, never
+  // silently every product the analyst can read.
+  const workspaceNote =
+    workspaceStatus === "loading"
+      ? "Loading your workspaces…"
+      : workspaceStatus === "error"
+        ? "Could not read your workspaces."
+        : !activeWorkspace
+          ? undefined
+          : workspaceProducts.isError
+            ? "Could not read the workspace's products."
+            : workspaceProducts.isSuccess
+              ? undefined
+              : "Loading the workspace's products…";
+  // #2351 — "every product you can read" counts all of them, not the search's
+  // matches: the unsearched list, shared with the picker's own first page.
+  const allProducts = useQuery({
+    queryKey: ["portfolio", "products", ""],
+    queryFn: () => productsApi.list({ pageSize: MAX_PAGE_SIZE }),
+    enabled: activeWorkspace === null,
+    retry: false,
+  });
   const recent = usePortfolioAssessments(initialProductId ?? undefined);
   const create = useCreatePortfolioAssessment();
 
@@ -210,6 +245,7 @@ function PortfolioEntry({
         productQuery={productQuery}
         onProductQueryChange={setProductQuery}
         productTotal={productsQuery.data?.total}
+        allProductTotal={allProducts.data?.total}
         initialProductId={initialProductId}
         initialProductName={initialProduct.data?.name ?? null}
         initialProductIds={initialProductIds}
@@ -222,7 +258,9 @@ function PortfolioEntry({
         onClearChangeRequest={() => setChangeRequest(null)}
         current={current}
         currentNote={currentNote}
+        scopeLoading={currentLoading}
         workspace={workspace}
+        workspaceNote={workspaceNote}
         pending={create.isPending}
         error={error}
         onSubmit={(input) =>

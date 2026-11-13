@@ -271,11 +271,13 @@ describe("index status on the label (#2326)", () => {
 });
 
 describe("UngroundedScopeNotice (#18)", () => {
-  it("states that 'All projects' does not search projects", () => {
+  it("states that with no product chosen nothing is searched, in the picker's words (#2351)", () => {
     render(<UngroundedScopeNotice show />);
-    expect(screen.getByTestId("chat-ungrounded-notice").textContent).toMatch(
-      /nothing of yours is searched/,
-    );
+    const text = screen.getByTestId("chat-ungrounded-notice").textContent ?? "";
+    expect(text).toMatch(/nothing of yours is searched/);
+    expect(text).toMatch(/No product is chosen/);
+    // #2351 — "All" is no longer an option anywhere; the notice must not name it.
+    expect(text).not.toMatch(/All projects/);
   });
 
   it("renders nothing when hidden", () => {

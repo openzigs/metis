@@ -92,6 +92,12 @@ export interface ScopePickerProps {
   /** "Whole workspace", when there is one; otherwise `workspaceNote` says why not. */
   workspace?: { id: string; name: string; count: number | null } | null;
   workspaceNote?: string;
+  /**
+   * The workspace the scope already is, when it is not `workspace` (chat: a
+   * stored scope on another workspace than the top bar's). Names the button;
+   * the option still names, and picks, `workspace`.
+   */
+  scopeWorkspace?: { name: string; count: number | null } | null;
   onPickThis: () => void;
   onPickWorkspace: () => void;
   onToggle: (item: ScopeItem) => void;
@@ -119,6 +125,7 @@ export function ScopePicker({
   currentNote,
   workspace = null,
   workspaceNote,
+  scopeWorkspace,
   onPickThis,
   onPickWorkspace,
   onToggle,
@@ -159,7 +166,7 @@ export function ScopePicker({
     chosenIds: chosen,
     nameOf,
     current,
-    workspace,
+    workspace: scopeWorkspace ?? workspace,
     loading: itemsLoading,
     noneLabel,
   });

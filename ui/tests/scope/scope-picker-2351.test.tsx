@@ -161,7 +161,7 @@ describe("#2351 — the portfolio form's defaults per launch context", () => {
     form({
       current: null,
       currentNote: "Spike is not part of a product, so it is not in the portfolio.",
-      workspace: { id: "w", name: "Payments", productIds: ["a", "c"], count: 2 },
+      workspace: { id: "w", name: "Payments", products: [items[0], items[2]], count: 2 },
     });
     expect(screen.getByTestId("portfolio-scope-selector")).toHaveTextContent(
       "Every product you can read",
@@ -179,7 +179,7 @@ describe("#2351 — the portfolio form's defaults per launch context", () => {
   it("over the whole workspace, sends the workspace's products", async () => {
     const user = userEvent.setup();
     const onSubmit = form({
-      workspace: { id: "w", name: "Payments", productIds: ["a", "c"], count: 2 },
+      workspace: { id: "w", name: "Payments", products: [items[0], items[2]], count: 2 },
     });
     await user.click(screen.getByTestId("portfolio-scope-selector"));
     await user.click(screen.getByTestId("portfolio-scope-workspace"));
@@ -202,7 +202,7 @@ describe("#2351 — the portfolio form's defaults per launch context", () => {
       workspace: {
         id: "w",
         name: "Big",
-        productIds: Array.from({ length: n }, (_, i) => `p${i}`),
+        products: Array.from({ length: n }, (_, i) => ({ id: `p${i}`, name: `P${i}` })),
         count: n,
       },
     });
@@ -229,5 +229,71 @@ describe("#2351 — the portfolio form's defaults per launch context", () => {
       statement: "Pay by transfer",
       scope: "all-accessible",
     });
+  });
+
+  // #2351 review — the cheap follow-ups.
+  it("emptying Chosen products goes back to every product the analyst can read", async () => {
+    const user = userEvent.setup();
+    const onSubmit = form({
+      workspace: { id: "w", name: "Payments", products: [items[0]], count: 1 },
+    });
+    await user.click(screen.getByTestId("portfolio-scope-selector"));
+    await user.click(screen.getByLabelText("Beta"));
+    expect(screen.getByTestId("portfolio-scope-selector")).toHaveTextContent("Beta");
+    await user.click(screen.getByLabelText("Beta"));
+    expect(screen.getByTestId("portfolio-scope-selector")).toHaveTextContent(
+      "Every product you can read",
+    );
+    expect(screen.getByTestId("portfolio-scope-hint")).toHaveTextContent(
+      "Every product you can read is checked.",
+    );
+    await user.click(screen.getByRole("button", { name: "Check coverage" }));
+    expect(onSubmit.mock.calls[0][0]).toEqual({
+      statement: "Pay by transfer",
+      scope: "all-accessible",
+    });
+  });
+
+  it("over the whole workspace, names each host by the workspace's own names, not 'Selected product'", async () => {
+    const user = userEvent.setup();
+    // The search has narrowed the list to Alpha; the workspace holds two others.
+    form({
+      products: [items[0]],
+      productQuery: "al",
+      workspace: {
+        id: "w",
+        name: "Payments",
+        products: [
+          { id: "w1", name: "Ledger" },
+          { id: "w2", name: "Payouts" },
+        ],
+        count: 2,
+      },
+    });
+    await user.click(screen.getByTestId("portfolio-scope-selector"));
+    await user.click(screen.getByTestId("portfolio-scope-workspace"));
+    const host = screen.getByLabelText("Which product will build this? (optional)");
+    expect(Array.from(host.querySelectorAll("option")).map((o) => o.textContent)).toEqual([
+      "Not decided yet",
+      "Ledger",
+      "Payouts",
+    ]);
+  });
+
+  it("holds the submit while this project's product is looked up, and says so", () => {
+    form({ scopeLoading: true });
+    expect(screen.getByTestId("portfolio-scope-hint")).toHaveTextContent(
+      "Looking up this project's product…",
+    );
+    expect(screen.getByRole("button", { name: "Check coverage" })).toBeDisabled();
+  });
+
+  it("with no workspace open, leaves the count out while a search is typed and the full count is unknown", async () => {
+    const user = userEvent.setup();
+    form({ productQuery: "al", productTotal: 1, onProductQueryChange: vi.fn() });
+    await user.click(screen.getByTestId("portfolio-scope-selector"));
+    expect(screen.getByTestId("portfolio-scope-workspace")).toHaveTextContent(
+      /^Whole workspace: every product you can read$/,
+    );
   });
 });

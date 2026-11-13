@@ -413,4 +413,61 @@ describe("ProjectScopeSelector — workspace scope (#2238)", () => {
     await user.click(screen.getByLabelText("Alpha"));
     expect(onChange).toHaveBeenCalledWith({ mode: "selected", projectIds: ["p-1"] });
   });
+
+  // #2351 review — the option names the workspace it picks: the top bar's.
+  it("a stored scope on another workspace names the button; the option names and picks the top bar's", async () => {
+    vi.mocked(apiFetch).mockImplementation(
+      async (path: string) =>
+        (path === "/workspaces"
+          ? [
+              { id: "w-1", name: "Payments", slug: "payments", logoUrl: null, role: "member" },
+              { id: "w-2", name: "Lending", slug: "lending", logoUrl: null, role: "member" },
+            ]
+          : [{ id: "p-1", name: "Alpha" }]) as never,
+    );
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(
+      <ProjectScopeSelector
+        value={{ mode: "workspace", projectIds: [], workspaceId: "w-2" }}
+        onChange={onChange}
+      />,
+      { wrapper: makeWrapper() },
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("project-scope-selector")).toHaveTextContent(
+        "Whole workspace: Lending",
+      ),
+    );
+    await waitFor(() => expect(screen.getByTestId("project-scope-selector")).toBeEnabled());
+    await user.click(screen.getByTestId("project-scope-selector"));
+    const option = await screen.findByTestId("project-scope-workspace");
+    await waitFor(() => expect(option).toHaveTextContent("Whole workspace: Payments"));
+    await user.click(option);
+    expect(onChange).toHaveBeenCalledWith({
+      mode: "workspace",
+      projectIds: [],
+      workspaceId: "w-1",
+    });
+  });
+
+  it("with no workspace open the option is disabled and says why, even over a stored workspace scope", async () => {
+    localStorage.removeItem("metis.activeWorkspaceId");
+    vi.mocked(apiFetch).mockImplementation(
+      async (path: string) =>
+        (path === "/workspaces" ? [] : [{ id: "p-1", name: "Alpha" }]) as never,
+    );
+    const user = userEvent.setup();
+    render(
+      <ProjectScopeSelector
+        value={{ mode: "workspace", projectIds: [], workspaceId: "w-2" }}
+        onChange={vi.fn()}
+      />,
+      { wrapper: makeWrapper() },
+    );
+    await waitFor(() => expect(screen.getByTestId("project-scope-selector")).toBeEnabled());
+    await user.click(screen.getByTestId("project-scope-selector"));
+    expect(await screen.findByTestId("project-scope-workspace")).toBeDisabled();
+    expect(screen.getByText("No workspace is open in the top bar.")).toBeInTheDocument();
+  });
 });

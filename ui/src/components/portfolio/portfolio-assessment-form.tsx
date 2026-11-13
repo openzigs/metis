@@ -75,8 +75,8 @@ export const EVERY_PRODUCT = "Every product you can read";
 export interface PortfolioFormWorkspace {
   id: string;
   name: string;
-  /** Its products the analyst can read (the first page of them). */
-  productIds: string[];
+  /** Its products the analyst can read (the first page of them), named. */
+  products: PortfolioFormProduct[];
   /** How many it has in all; more than a check takes is said, not cut. */
   count: number;
 }
@@ -97,8 +97,10 @@ export function PortfolioAssessmentForm({
   productQuery = "",
   onProductQueryChange,
   productTotal,
+  allProductTotal,
   current,
   currentNote,
+  scopeLoading = false,
   workspace,
   workspaceNote,
   pending,
@@ -112,6 +114,11 @@ export function PortfolioAssessmentForm({
   onProductQueryChange?: (query: string) => void;
   /** How many products match in all, when `products` may be only the first page. */
   productTotal?: number;
+  /**
+   * #2351 — how many products the analyst can read in all, whatever is typed in
+   * the search: the count "Whole workspace" shows with no workspace open.
+   */
+  allProductTotal?: number;
   initialProductId?: string | null;
   /** #1680 — the name of `initialProductId`, for when the list does not hold it. */
   initialProductName?: string | null;
@@ -131,7 +138,17 @@ export function PortfolioAssessmentForm({
   current?: PortfolioFormProduct | null;
   /** Why there is no "This project" (e.g. the project is in no product). */
   currentNote?: string;
-  /** #2351 — "Whole workspace": the top bar's workspace and its products. */
+  /**
+   * #2351 — "This project" is still being looked up: the form holds its
+   * default, and its submit, until it is known.
+   */
+  scopeLoading?: boolean;
+  /**
+   * #2351 — "Whole workspace": the top bar's workspace and its products. With
+   * none and no `workspaceNote`, no workspace is open, and the option is every
+   * product the analyst can read. With none and a note (its products are
+   * loading, or could not be read), the option is disabled and the note says why.
+   */
   workspace?: PortfolioFormWorkspace | null;
   workspaceNote?: string;
   pending: boolean;
@@ -149,19 +166,33 @@ export function PortfolioAssessmentForm({
       : initialProductId
         ? [initialProductId]
         : [];
-  const [picked, setPicked] = useState<ScopeKind | null>(arrivedWith.length > 0 ? "chosen" : null);
+  // `"none"`: the analyst emptied Chosen products, which goes back to every
+  // product they can read (as chat's emptied selection goes back to none).
+  const [picked, setPicked] = useState<ScopeKind | "none" | null>(
+    arrivedWith.length > 0 ? "chosen" : null,
+  );
   // With no workspace open (none, or a workspace-less install), "Whole workspace"
   // is every product the analyst can read: the `all-accessible` scope, as before.
-  const ws: PortfolioFormWorkspace & { all?: boolean } = workspace ?? {
-    id: "",
-    name: "every product you can read",
-    productIds: [],
-    count: productTotal ?? products.length,
-    all: true,
-  };
+  // Its count is of every one of them, not of what the search box matches.
+  // While an open workspace's products are loading or could not be read, it is
+  // unavailable (`workspaceNote` says why) rather than silently every product.
+  const workspaceUnavailable = !workspace && workspaceNote !== undefined;
+  const ws:
+    (Omit<PortfolioFormWorkspace, "count"> & { count: number | null; all?: boolean }) | null =
+    workspace ??
+    (workspaceUnavailable
+      ? null
+      : {
+          id: "",
+          name: "every product you can read",
+          products: [],
+          count:
+            allProductTotal ?? (productQuery.trim() ? null : (productTotal ?? products.length)),
+          all: true,
+        });
   // From elsewhere nothing is chosen, which checks every product the analyst
   // can read: the default it has always had ("defaults as it does today").
-  const kind: ScopeKind | null = picked ?? (current ? "this" : null);
+  const kind: ScopeKind | null = picked === "none" ? null : (picked ?? (current ? "this" : null));
   // #2272 — the products ticked, and the names of those the list may drop.
   const [chosen, setChosen] = useState<string[]>(arrivedWith);
   const [chosenNames, setChosenNames] = useState<Record<string, string>>({});
@@ -179,26 +210,27 @@ export function PortfolioAssessmentForm({
     products.find((p) => p.id === id)?.name ??
     chosenNames[id] ??
     (id === current?.id ? current.name : null) ??
+    ws?.products.find((p) => p.id === id)?.name ??
     (id === initialProductId ? initialProductName : null) ??
     "Selected product";
   const toggle = (p: PortfolioFormProduct) => {
     setChosenNames((cur) => ({ ...cur, [p.id]: p.name }));
-    setChosen((cur) => {
-      const base = kind === "chosen" ? cur : [];
-      return base.includes(p.id) ? base.filter((id) => id !== p.id) : [...base, p.id];
-    });
-    setPicked("chosen");
+    const base = kind === "chosen" ? chosen : [];
+    const next = base.includes(p.id) ? base.filter((id) => id !== p.id) : [...base, p.id];
+    setChosen(next);
+    setPicked(next.length > 0 ? "chosen" : "none");
   };
-  const allAccessible = kind === null || (kind === "workspace" && ws.all === true);
-  const workspaceTooBig = !ws.all && ws.count > PORTFOLIO_ASSESSMENT_MAX_PRODUCTS;
+  const allAccessible = kind === null || (kind === "workspace" && ws?.all === true);
+  const workspaceTooBig =
+    !!ws && !ws.all && ws.count !== null && ws.count > PORTFOLIO_ASSESSMENT_MAX_PRODUCTS;
   // The products the check is scoped to; the server checks each one again.
   const scopeIds =
     kind === "this" && current
       ? [current.id]
       : kind === "chosen"
         ? chosen
-        : kind === "workspace" && !ws.all && !workspaceTooBig
-          ? ws.productIds
+        : kind === "workspace" && ws && !ws.all && !workspaceTooBig
+          ? ws.products.map((p) => p.id)
           : [];
 
   // #1725 — the host picked. A `product` scope hosts only on its own products
@@ -228,7 +260,9 @@ export function PortfolioAssessmentForm({
 
   const hasSource = changeRequest || requirement || document ? true : statement.trim().length > 0;
   const hasScope = allAccessible || scopeIds.length > 0;
-  const canSubmit = hasSource && hasScope && !pending;
+  // #2351 — while "This project" is looked up, the scope is not known yet: a
+  // quick submit would go out over every product.
+  const canSubmit = hasSource && hasScope && !pending && !scopeLoading;
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -359,7 +393,7 @@ export function PortfolioAssessmentForm({
           currentNote={
             currentNote ?? "Open this from a change request to check its project's product."
           }
-          workspace={{ id: ws.id, name: ws.name, count: ws.count }}
+          workspace={ws ? { id: ws.id, name: ws.name, count: ws.count } : null}
           workspaceNote={workspaceNote ?? "No workspace is open in the top bar."}
           onPickThis={() => setPicked("this")}
           onPickWorkspace={() => setPicked("workspace")}
@@ -370,11 +404,13 @@ export function PortfolioAssessmentForm({
           ariaLabel="Products to check"
         />
         <p className="text-xs text-muted-foreground" data-testid="portfolio-scope-hint">
-          {kind === "workspace" && workspaceTooBig
-            ? `The workspace has more than ${PORTFOLIO_ASSESSMENT_MAX_PRODUCTS} products: choose up to ${PORTFOLIO_ASSESSMENT_MAX_PRODUCTS}.`
-            : allAccessible
-              ? "Every product you can read is checked."
-              : `${scopeIds.length} product${scopeIds.length === 1 ? "" : "s"} to check.`}
+          {scopeLoading
+            ? "Looking up this project's product…"
+            : kind === "workspace" && workspaceTooBig
+              ? `The workspace has more than ${PORTFOLIO_ASSESSMENT_MAX_PRODUCTS} products: choose up to ${PORTFOLIO_ASSESSMENT_MAX_PRODUCTS}.`
+              : allAccessible
+                ? "Every product you can read is checked."
+                : `${scopeIds.length} product${scopeIds.length === 1 ? "" : "s"} to check.`}
           {productTotal !== undefined && productTotal > products.length
             ? ` Showing ${products.length} of ${productTotal} products${onProductQueryChange ? "; type part of a name to find another" : ""}.`
             : ""}
@@ -382,19 +418,6 @@ export function PortfolioAssessmentForm({
       </div>
 
       <div className="space-y-1">
-        {allAccessible && onProductQueryChange ? (
-          <div className="space-y-1 pb-1">
-            <Label htmlFor="portfolio-host-search">Find a product to build it</Label>
-            <Input
-              id="portfolio-host-search"
-              type="search"
-              className="max-w-sm"
-              value={productQuery}
-              placeholder="Type part of a product's name"
-              onChange={(e) => onProductQueryChange(e.target.value)}
-            />
-          </div>
-        ) : null}
         <Label htmlFor={HOST_PICKER_ID}>Which product will build this? (optional)</Label>
         <select
           ref={hostRef}
@@ -419,6 +442,9 @@ export function PortfolioAssessmentForm({
         <p id="portfolio-host-hint" className="text-xs text-muted-foreground">
           If no product does this yet, choose the one that will build it to see which other products
           the change reaches.
+          {allAccessible && onProductQueryChange
+            ? " Type in Find products above to find one past this list."
+            : ""}
         </p>
       </div>
 

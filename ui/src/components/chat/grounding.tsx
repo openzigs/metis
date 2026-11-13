@@ -4,7 +4,7 @@
  * #18 — say plainly what a chat answer is based on.
  *
  * Retrieval runs for a chat bound to one project, or (#2238) scoped to several
- * products or a workspace. With the scope on "All projects" the model answers
+ * products or a workspace. With no product chosen (#2351) the model answers
  * from its own knowledge — and before #18 nothing on screen said so, so a
  * confident answer naming files that do not exist read like one drawn from the
  * user's code.
