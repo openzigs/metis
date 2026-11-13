@@ -790,8 +790,11 @@ it leaves open.
 independently of each other; an AI judge recommended an answer for each place they
 disagreed with the key, and a person confirmed every recommendation. That review added 18
 requirements and 12 ambiguities across the four documents and re-kinded five ambiguities from
-contradiction to gap; it was not a second human labelling. A reviewer who disagrees with a
-label edits `frd.src.md` and rebuilds.
+contradiction to gap; it was not a second human labelling. #2374 added six more requirements
+to 01 and 02 (R57 to R59, R61 to R63): label gaps found among the document reader's false
+requirements, judged by an AI and not yet confirmed by a person. Two of them are table cells
+that were marked only as one side of a conflict. A reviewer who disagrees with a label edits
+`frd.src.md` and rebuilds.
 
 ```bash
 pnpm --filter server eval:doc-understanding:build            # after editing a frd.src.md; commit all three files

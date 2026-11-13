@@ -5045,7 +5045,9 @@ path added (`sections.ts`). Two modes, chosen from the model's window (`resolveC
 and output cap (`resolveFinalAnswerMaxOutputTokens`): **whole** (the document fits) sends the
 whole document in every call and asks for one batch of sections' statements at a time
 (`READER_BATCH_CHARS`, 8,000 source characters), which keeps #2229's whole-document recall
-without one reply having to hold every requirement; **sectioned** (it does not fit) builds the
+without one reply having to hold every requirement; each such call is told the section after
+its batch and to stop before it (#2374: a call on the 60 KB document had written the next five
+sections, which verification drops and the next call writes again); **sectioned** (it does not fit) builds the
 document context once (purpose, scope, actors, glossary) from the full outline and as much text
 as fits, then reads each batch with it. One sentence is one statement (#2361): statements whose
 quotes lie in the same sentence of the same section (`sentenceSpan`; a line break also ends one)
@@ -5057,8 +5059,9 @@ folds, so a fold never spans lines or sections. A cross-section pass over the st
 names repeats (dropped) and cross-references (kept); the repeat dropped is the statement that
 says less, whichever comes first, so an overview restated in full by a later section goes and
 the later one stays; a statement that several others are named repeats of is a summary of them
-(an entitlements table), so none is dropped into it, and a prose statement is never dropped as
-a repeat of a table row, since a summary table restates the body. A reference to a dropped
+(an entitlements table), so none is dropped into it, unless they are table rows and it is prose
+(#2374: a summary table's rows that each restate part of one body sentence go); and a prose
+statement is never dropped as a repeat of a table row, since a summary table restates the body. A reference to a dropped
 repeat is redirected to the statement it repeats, and a section whose statements went that way
 records the sections they were merged into (`mergedInto`), which the coverage panel shows
 instead of "nothing extracted". If the pass fails, every statement is kept and the report says
