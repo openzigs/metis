@@ -1942,6 +1942,12 @@ model PortfolioAssessment {
   /// #2272 — JSON array: what the check did not check, each with why
   /// (`portfolioNotCheckedSchema`). `[]` on every row before #2272.
   notChecked          String   @default("[]")
+  /// #2345 — the change request (analysis run) whose requirements were checked
+  /// (a scalar soft-link, no FK, like `sourceDocumentId`); null for any other source.
+  sourceAnalysisId    String?
+  /// #2345 — true when a requirement checked was not approved when the check
+  /// started: the result is labelled as run on unapproved requirements.
+  preApproval         Boolean  @default(false)
   costUsd             Float    @default(0)
   createdById         String
   createdAt           DateTime @default(now())
@@ -1954,6 +1960,7 @@ model PortfolioAssessment {
   @@index([sourceRequirementId])
   @@index([sourceProjectId])
   @@index([createdById])
+  @@index([sourceAnalysisId])
   @@map("portfolio_assessments")
 }
 
@@ -2598,6 +2605,11 @@ model ImpactAnalysis {
   /// links; a re-run reads it back. Null for a run sourced from text or a
   /// document only. No foreign key: the run outlives a deleted requirement.
   requirementIds       String?
+  /// Issue #2345 — the change request (analysis run) this impact analysis was
+  /// started from, so its Impact step can show the latest result and the result
+  /// can link back. A scalar soft-link (no FK) like `requirementIds`: the run
+  /// outlives a deleted change request. Null for a run started anywhere else.
+  sourceAnalysisId     String?
   createdAt            DateTime  @default(now())
   updatedAt            DateTime  @updatedAt
 
@@ -2623,6 +2635,7 @@ model ImpactAnalysis {
   @@index([startedById])
   @@index([status])
   @@index([rerunOfId])
+  @@index([sourceAnalysisId])
   @@map("impact_analyses")
 }
 

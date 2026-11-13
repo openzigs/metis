@@ -93,6 +93,7 @@ export const STOP_BEFORE_MIGRATIONS: readonly string[] = [
   "20261124002236_issue2236_clarification_records",
   "20261124002272_issue2272_portfolio_document_check",
   "20261125002341_issue2341_change_request_title",
+  "20261126002345_issue2345_change_request_checks",
 ];
 
 /** The database files `globalSetup` builds for workers to copy. */

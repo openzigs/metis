@@ -198,6 +198,7 @@ import { PortfolioCheckLink } from "@/components/portfolio/portfolio-check-link"
 import { ChangeRequestSummary } from "@/components/analysis/change-request-summary";
 import { proposedChangeRequestTitle } from "@/components/analysis/change-request-steps";
 import { ChangeRequestStepHeader } from "@/components/analysis/change-request-step-header";
+import { ChangeRequestChecks } from "@/components/analysis/change-request-checks";
 import { CHANGE_REQUEST_TITLE_MAX, normaliseChangeRequestTitle } from "@metis/shared";
 import { EmptyState } from "@/components/ui/empty-state";
 
@@ -1194,6 +1195,18 @@ export default function AnalysisPage(): React.ReactElement {
                 projectId={projectId}
                 snapshot={detail.data}
                 pendingApprovals={approvals.data?.ticketStatus?.pendingCount}
+              />
+              {/* #2345 — impact and the portfolio check, started from here with
+              this change request's requirements, and their results. */}
+              <ChangeRequestChecks
+                projectId={projectId}
+                snapshot={detail.data}
+                title={
+                  detail.data.title?.trim() ||
+                  runLabels.get(detail.data.id)?.primary ||
+                  "Change request"
+                }
+                canRun={canRunAnalysis}
               />
 
               {/* Issue #994 — what a Spec Kit handoff sent and left out, on every

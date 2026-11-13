@@ -20,6 +20,8 @@
  * requirement the document holds is checked (the title is display-only; the
  * server reads the document itself, with access). Several `productId`s start
  * "Several products" with each one chosen.
+ * #2345 — `?analysisId=&title=` arrives from a change request: each of its
+ * draft and approved requirements is checked, before approval too (labelled).
  */
 "use client";
 
@@ -27,7 +29,11 @@ import { useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import { MAX_PAGE_SIZE, type PortfolioAssessmentListItem } from "@metis/shared";
+import {
+  MAX_PAGE_SIZE,
+  PORTFOLIO_PRE_APPROVAL_LABEL,
+  type PortfolioAssessmentListItem,
+} from "@metis/shared";
 import { Card } from "@/components/ui/card";
 import { PageHeader } from "@/components/ui/page-header";
 import { ApiError } from "@/lib/api-client";
@@ -36,6 +42,7 @@ import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { useCreatePortfolioAssessment, usePortfolioAssessments } from "@/lib/portfolio-hooks";
 import { PortfolioAssessmentForm } from "@/components/portfolio/portfolio-assessment-form";
 import { EmptyState } from "@/components/ui/empty-state";
+import { ChangeRequestBackLink } from "@/components/analysis/change-request-back-link";
 
 const TITLE_MAX = 200;
 
@@ -75,6 +82,21 @@ function PortfolioEntry({
       ? {
           id: documentId,
           title: (searchParams?.get("title") ?? "").slice(0, TITLE_MAX) || "Selected document",
+        }
+      : null,
+  );
+  // #2345 — `?analysisId=&title=&projectId=` arrives from a change request: each
+  // of its draft and approved requirements is checked (the title is
+  // display-only; the server reads the change request itself, with access), and
+  // `projectId` is only where the link back goes.
+  const analysisId = searchParams?.get("analysisId") ?? null;
+  const backProjectId = searchParams?.get("projectId") ?? null;
+  const [changeRequest, setChangeRequest] = useState(() =>
+    analysisId
+      ? {
+          id: analysisId,
+          title:
+            (searchParams?.get("title") ?? "").slice(0, TITLE_MAX) || "Selected change request",
         }
       : null,
   );
@@ -119,6 +141,19 @@ function PortfolioEntry({
   return (
     <div className="space-y-6 p-2 md:p-0" data-testid="portfolio-root">
       <PageHeader
+        eyebrow={
+          analysisId && backProjectId ? (
+            <ChangeRequestBackLink
+              changeRequest={{
+                id: analysisId,
+                projectId: backProjectId,
+                title: changeRequest?.title ?? "Selected change request",
+              }}
+              className="text-xs text-muted-foreground hover:underline"
+              testId="portfolio-back-to-change-request"
+            />
+          ) : undefined
+        }
         title="Portfolio coverage"
         description="Check whether a product in your portfolio already does what a requirement asks, before anyone builds it again."
       />
@@ -137,6 +172,8 @@ function PortfolioEntry({
         onClearRequirement={() => setRequirement(null)}
         document={document}
         onClearDocument={() => setDocument(null)}
+        changeRequest={changeRequest}
+        onClearChangeRequest={() => setChangeRequest(null)}
         pending={create.isPending}
         error={error}
         onSubmit={(input) =>
@@ -171,6 +208,8 @@ function PortfolioEntry({
                       : "Running"}{" "}
                   · {a.productCount} product{a.productCount === 1 ? "" : "s"} · {hostLabel(a)} ·{" "}
                   {new Date(a.createdAt).toLocaleString()}
+                  {/* #2345 — a check before approval says so wherever it is cited. */}
+                  {a.preApproval ? ` · ${PORTFOLIO_PRE_APPROVAL_LABEL}` : ""}
                 </p>
               </li>
             ))}

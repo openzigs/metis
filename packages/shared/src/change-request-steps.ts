@@ -67,25 +67,58 @@ export interface DraftFacts {
   published: number;
 }
 
+/**
+ * #2345 — the newest impact analysis or portfolio check started from this
+ * change request: the step shows its state, and links to it.
+ */
+export interface LatestResult {
+  id: string;
+  /** pending | running | completed | failed; anything else reads as unknown. */
+  status: string;
+  /** A portfolio check run on requirements not all approved (#2345). */
+  preApproval?: boolean;
+}
+
 /** This run's portfolio checks, once read, by status. */
 export interface PortfolioCheckFacts {
   completed: number;
   /** Pending or running. */
   inFlight: number;
   failed: number;
+  /** #2345 — the newest check, whose state the step shows; absent when there is none. */
+  latest?: LatestResult;
 }
 
-/** A run's portfolio checks tallied by status (an unknown status counts as none). */
+/**
+ * A run's portfolio checks tallied by status (an unknown status counts as
+ * none). #2345 — `checks` arrive newest first, so the first is the latest.
+ */
 export function portfolioCheckTally(
-  checks: ReadonlyArray<{ status: string }>,
+  checks: ReadonlyArray<{ id?: string; status: string; preApproval?: boolean }>,
 ): PortfolioCheckFacts {
-  const tally = { completed: 0, inFlight: 0, failed: 0 };
+  const tally: PortfolioCheckFacts = { completed: 0, inFlight: 0, failed: 0 };
   for (const c of checks) {
     if (c.status === "completed") tally.completed += 1;
     else if (c.status === "pending" || c.status === "running") tally.inFlight += 1;
     else if (c.status === "failed") tally.failed += 1;
   }
+  const first = checks[0];
+  if (first?.id) {
+    tally.latest = {
+      id: first.id,
+      status: first.status,
+      ...(first.preApproval ? { preApproval: true } : {}),
+    };
+  }
   return tally;
+}
+
+/** #2345 — the newest of a change request's results, or null when it has none. */
+export function latestResult(
+  results: ReadonlyArray<{ id: string; status: string }>,
+): LatestResult | null {
+  const first = results[0];
+  return first ? { id: first.id, status: first.status } : null;
 }
 
 /** The facts the steps are derived from. */
@@ -114,6 +147,12 @@ export interface ChangeRequestFacts {
   portfolioChecks: PortfolioCheckFacts | UnknownFact;
   /** This run's issue drafts. */
   drafts: DraftFacts | UnknownFact;
+  /**
+   * #2345 — the newest impact analysis started from this change request: `null`
+   * when there is none, absent when the reader does not look (the step then
+   * reads from the run's code agent alone).
+   */
+  latestImpact?: LatestResult | null | UnknownFact;
 }
 
 export interface ChangeRequestStep {
@@ -199,7 +238,28 @@ function policyStep(f: ChangeRequestFacts): Derived {
   return { state: "not-applicable", reason: "No governing documents to check against." };
 }
 
+/** #2345 — a step's state from its newest result, in words. */
+function fromLatest(latest: LatestResult, what: string, qualifier = ""): Derived {
+  switch (latest.status) {
+    case "completed":
+      return { state: "done", reason: `The latest ${what} is complete${qualifier}.` };
+    case "pending":
+    case "running":
+      return { state: "in-progress", reason: `The latest ${what} is running${qualifier}.` };
+    case "failed":
+      return { state: "needs-you", reason: `The latest ${what} failed.` };
+    default:
+      return { state: "unknown", reason: `Couldn't read the latest ${what}.` };
+  }
+}
+
 function impactStep(f: ChangeRequestFacts): Derived {
+  const latest = f.latestImpact;
+  if (latest === "loading" || latest === "failed")
+    return unknownStep(latest, "the impact analyses");
+  if (latest) return fromLatest(latest, "impact analysis");
+  if (latest === null && !f.agentKeys.includes("code"))
+    return { state: "not-started", reason: "Run an impact analysis from this change request." };
   if (!f.agentKeys.includes("code"))
     return { state: "not-applicable", reason: "This run did not look at code." };
   if (f.status === "pending") return { state: "not-started", reason: "The run has not started." };
@@ -216,6 +276,13 @@ function portfolioStep(f: ChangeRequestFacts): Derived {
     return { state: "not-applicable", reason: "There is no portfolio of products." };
   const c = f.portfolioChecks;
   if (c === "loading" || c === "failed") return unknownStep(c, "the portfolio");
+  // #2345 — the newest check decides; one run on unapproved requirements says so.
+  if (c.latest)
+    return fromLatest(
+      c.latest,
+      "portfolio check",
+      c.latest.preApproval ? " (run on unapproved requirements)" : "",
+    );
   if (c.completed > 0)
     return {
       state: "done",
@@ -223,10 +290,12 @@ function portfolioStep(f: ChangeRequestFacts): Derived {
     };
   if (c.inFlight > 0) return { state: "in-progress", reason: "Checking across the portfolio." };
   if (c.failed > 0) return { state: "needs-you", reason: "The portfolio check failed." };
+  // #2345 — a check may run before approval; it is then labelled as such.
   if (f.requirementCounts.approved === 0)
     return {
       state: "not-started",
-      reason: "Approve a requirement to check it across the portfolio.",
+      reason:
+        "Run a portfolio check; before approval it is labelled as on unapproved requirements.",
     };
   return {
     state: "not-started",

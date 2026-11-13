@@ -15,6 +15,7 @@ import {
   createMigratedSqlite,
   type MigratedSqlite,
   MIGRATED_SQLITE_HOOK_TIMEOUT_MS,
+  onSeededColumns,
 } from "./helpers/sqlite-migrated-db.js";
 
 const MIGRATION = "20261124002272_issue2272_portfolio_document_check";
@@ -103,7 +104,11 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         sqlite.applyRemaining();
         expect(columns()).toContain("sourceDocumentId");
         expect(columns()).toContain("notChecked");
-        expect(assessment()).toEqual({ ...seeded, sourceDocumentId: null, notChecked: "[]" });
+        // Later migrations may add columns to this table (#2345).
+        const expected = { ...seeded, sourceDocumentId: null, notChecked: "[]" };
+        expect(onSeededColumns({ t: [assessment()] }, { t: [expected] })).toEqual({
+          t: [expected],
+        });
       },
       MIGRATED_SQLITE_HOOK_TIMEOUT_MS,
     );

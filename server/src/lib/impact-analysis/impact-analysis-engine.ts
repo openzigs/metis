@@ -1460,6 +1460,8 @@ export interface TriggerImpactAnalysisInput {
    * `requirementId`. The route has checked the caller may read every one.
    */
   requirementIds?: readonly string[] | null;
+  /** #2345 — the change request the run was started from; the route has checked access. */
+  sourceAnalysisId?: string | null;
   includeSchemaImpact?: boolean;
   /** #922 — expand mapper/DAO sibling tables (reduced confidence). Default true when crossing runs. */
   expandDaoSiblings?: boolean;
@@ -1550,6 +1552,8 @@ export async function triggerImpactAnalysis(
       rerunOfId: input.rerunOfId ?? null,
       // #1754 — the stored requirements asked about, read back by the run and a re-run.
       ...(requirementIds.length > 0 ? { requirementIds: JSON.stringify(requirementIds) } : {}),
+      // #2345 — the change request it was started from, so it lists there.
+      ...(input.sourceAnalysisId ? { sourceAnalysisId: input.sourceAnalysisId } : {}),
       // #70 — record the selection HERE, in the same write as the run. The
       // executor below is fire-and-forget and `ImpactItem` rows arrive much
       // later (or never), so a run whose projects were only passed to the
