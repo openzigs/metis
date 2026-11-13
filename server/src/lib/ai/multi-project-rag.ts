@@ -30,6 +30,13 @@
  * #2294 — chat's absolute relevance floor (#2241) applies here too, per
  * project before the merge, and the turn's grounding says what single-project
  * grounding says: the sources used, or why nothing was supplied.
+ *
+ * #2264 — the excerpts go to the most relevant products' hits rather than one
+ * per product in turn (`share: "relevance"`; attached documents keep the
+ * turns), and the block tells the model apart a product left out because the
+ * excerpts ran out, one left out because the scope is over
+ * `CHAT_MULTI_PROJECT_MAX_PROJECTS`, an archived one, and one whose sources
+ * matched nothing. Two products of the same name get distinct labels.
  */
 import type {
   ChatGrounding,
@@ -70,6 +77,16 @@ const log = createChildLogger("multi-project-rag");
 /** The excerpts one multi-product turn puts in the prompt (single-project chat: 8). */
 export const MULTI_PROJECT_K = 8;
 
+/**
+ * #2264 — the most projects one multi-product turn searches by default
+ * (`CHAT_MULTI_PROJECT_MAX_PROJECTS`). A workspace scope searched every
+ * project it held on every turn, with no bound on the fan-out.
+ */
+export const DEFAULT_MULTI_PROJECT_MAX_PROJECTS = 20;
+
+/** #2264 — how many of the projects left out by that limit the block names. */
+const OVER_LIMIT_NAMED = 10;
+
 /** A chunk read back by id, as `loadChunksById` returns it. */
 type CarriedChunk = Awaited<ReturnType<typeof loadChunksById>>[number];
 
@@ -80,6 +97,8 @@ export interface MultiProjectRagDeps {
   role?: (userId: string) => Promise<RoleKey>;
   /** 0..1; defaults to `CHAT_MULTI_PROJECT_RELEVANCE_FLOOR_PCT` / 100. */
   relevanceFloor?: number;
+  /** #2264 — defaults to `CHAT_MULTI_PROJECT_MAX_PROJECTS`. */
+  maxProjects?: number;
   /** #2294 — chat's absolute floor for the hits' embedders; defaults to `readRelevanceFloor`. */
   absoluteFloor?: (embeddingModels: readonly string[]) => number;
   /** #2279 — the caller as the chunk-ACL actor of a carried excerpt's read. */
@@ -134,6 +153,28 @@ function configuredFloor(): number {
     DEFAULT_RELEVANCE_FLOOR * 100,
   );
   return Number.isFinite(pct) ? Math.min(100, Math.max(0, pct)) / 100 : DEFAULT_RELEVANCE_FLOOR;
+}
+
+function configuredMaxProjects(): number {
+  const n = getConfigService().getNumber(
+    "CHAT_MULTI_PROJECT_MAX_PROJECTS",
+    DEFAULT_MULTI_PROJECT_MAX_PROJECTS,
+  );
+  return Number.isFinite(n) && n >= 1 ? Math.floor(n) : DEFAULT_MULTI_PROJECT_MAX_PROJECTS;
+}
+
+/**
+ * #2264 — each project's label in the block and the grounding: its name, or,
+ * when two projects in the turn share a name, the name and the end of its id,
+ * so the model cannot merge two products into one `[Product]`.
+ */
+function projectLabels(names: Readonly<Record<string, string>>): (id: string) => string {
+  const count = new Map<string, number>();
+  for (const name of Object.values(names)) count.set(name, (count.get(name) ?? 0) + 1);
+  return (id) => {
+    const name = names[id] ?? id;
+    return (count.get(name) ?? 0) > 1 ? `${name} (${id.slice(-6)})` : name;
+  };
 }
 
 /** The project ids a scope names this turn, re-checked against the caller's access now. */
@@ -255,6 +296,10 @@ export async function buildMultiProjectRagContext(
       // Attached documents are the source the user chose: every product holding
       // one contributes, however its relevance compares with the others'.
       relevanceFloor: documentIds ? 0 : (deps.relevanceFloor ?? configuredFloor()),
+      // #2264 — and they share the excerpts in turns; otherwise the most
+      // relevant products' hits take them.
+      share: documentIds ? "turns" : "relevance",
+      maxProjects: deps.maxProjects ?? configuredMaxProjects(),
       // #2294 — and chat's absolute floor (#2241), as single-project chat
       // applies it; not on attachments, which the user chose as the source.
       ...(documentIds ? {} : { absoluteFloor: deps.absoluteFloor ?? readRelevanceFloor }),
@@ -272,7 +317,7 @@ export async function buildMultiProjectRagContext(
     };
   }
 
-  const nameOf = (id: string) => result.projectNames[id] ?? id;
+  const nameOf = projectLabels(result.projectNames);
   const carried = await carriedExcerpts(input, result, documentIds, deps);
   const sourcesBy = new Map<string, number>();
   for (const h of [...result.hits, ...carried]) {
@@ -285,7 +330,7 @@ export async function buildMultiProjectRagContext(
   }));
   const unsearched: ChatGroundingUnsearched[] = result.failures.map((f) => ({
     projectId: f.projectId,
-    projectName: f.projectName,
+    projectName: nameOf(f.projectId),
     reason: f.reason,
   }));
   const belowFloor = result.belowFloor ?? 0;
@@ -322,10 +367,16 @@ export async function buildMultiProjectRagContext(
     ...(reason === "insufficient-evidence" ? { belowFloor } : {}),
   };
 
+  const archived = result.projectsArchived ?? [];
   const inScope = [...projects.map((p) => p.projectName), ...unsearched.map((u) => u.projectName)];
   if (inScope.length === 0) {
     return {
-      block: nothingSearchedBlock("none of its projects is available to you"),
+      block: nothingSearchedBlock(
+        // #2264 — an archived project is not one the user lost access to.
+        archived.length > 0 && result.projectsRejected === 0
+          ? "its projects are archived"
+          : "none of its projects is available to you",
+      ),
       grounding,
     };
   }
@@ -333,7 +384,7 @@ export async function buildMultiProjectRagContext(
   const chunkList = [
     ...result.hits.map(
       (h, i) =>
-        `[${i + 1}] [${h.projectName}] ${formatHitLocator(h)}${formatDerivedLabel(h.derived)} ` +
+        `[${i + 1}] [${nameOf(h.projectId)}] ${formatHitLocator(h)}${formatDerivedLabel(h.derived)} ` +
         `(${formatHitScore({ score: h.score, matchedBy: h.matchedBy }, 3)})\n${h.text}`,
     ),
     ...carried.map(
@@ -401,7 +452,24 @@ export async function buildMultiProjectRagContext(
         `knowledge as what their documents or code say.`,
     );
   }
-  const without = projects.filter((p) => p.sources === 0).map((p) => p.projectName);
+  // #2264 — a product left out only because the excerpts ran out is not one
+  // whose sources showed nothing relevant.
+  const cappedIds = new Set(result.projectsCapped ?? []);
+  const capped = projects
+    .filter((p) => p.sources === 0 && cappedIds.has(p.projectId))
+    .map((p) => p.projectName);
+  const without = projects
+    .filter((p) => p.sources === 0 && !cappedIds.has(p.projectId))
+    .map((p) => p.projectName);
+  if (capped.length > 0) {
+    const one = capped.length === 1;
+    lines.push(
+      `Searched and relevant, but left out because the ${MULTI_PROJECT_K} excerpts went to ` +
+        `closer matches: ${quoteList(capped)}. If the question concerns ${one ? "it" : "them"}, ` +
+        `say that ${one ? "its" : "their"} sources may hold more than is shown here; do not ` +
+        `describe ${one ? "it" : "them"} from another product's excerpts.`,
+    );
+  }
   if (chunkList.length > 0 && without.length > 0) {
     lines.push(
       documentIds
@@ -424,6 +492,27 @@ export async function buildMultiProjectRagContext(
       `Could not be searched this turn: ${named.join(", ")}. Name ${
         unsearched.length === 1 ? "it" : "each of them"
       } in your answer and say its sources could not be searched, rather than answering for it.`,
+    );
+  }
+  const overLimit = result.projectsOverLimit ?? [];
+  if (overLimit.length > 0) {
+    // #2264 — the scope is over the per-turn limit: name what was left out
+    // (the first few), so the answer can say so rather than imply it looked.
+    const shown = overLimit.slice(0, OVER_LIMIT_NAMED).map(nameOf);
+    const more = overLimit.length - shown.length;
+    lines.push(
+      `This chat's scope holds more products than one turn searches, so ${overLimit.length} ` +
+        `were not searched: ${shown.map((n) => `"${n}"`).join(", ")}` +
+        `${more > 0 ? ` and ${more} more` : ""}. If the question may concern one of them, say ` +
+        `it was not searched and suggest narrowing the chat's scope to the products it is about.`,
+    );
+  }
+  // #2264 — an archived project the user chose is named as archived; a
+  // workspace's archived projects are simply not part of its live scope.
+  if (archived.length > 0 && input.scope.kind === "projects") {
+    lines.push(
+      `Archived, so not searched: ${quoteList(archived.map(nameOf))}. If the question concerns ` +
+        `${archived.length === 1 ? "it" : "them"}, say so.`,
     );
   }
   if (result.projectsRejected > 0) {

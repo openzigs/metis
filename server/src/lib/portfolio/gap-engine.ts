@@ -711,8 +711,9 @@ async function retrieveShared(
       k: ctx.limits.hitsPerProduct,
       // #2238 — every project's evidence decides its repos' coverage, so none
       // is left out for being less relevant than another: the rank-fusion
-      // result this engine was built on.
+      // result this engine was built on. #2264 — and they share `k` in turns.
       relevanceFloor: 0,
+      share: "turns",
     });
     fileHits(result.hits, new Map(repos.map((r) => [r.repoConnectionId, r])), hitsByRepo);
     return { hitsByRepo, searched: new Set(result.projectsSearched) };

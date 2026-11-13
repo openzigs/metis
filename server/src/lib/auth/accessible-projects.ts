@@ -79,3 +79,28 @@ export async function getUserAccessibleProjects(userId: string): Promise<Accessi
 
   return projects;
 }
+
+/**
+ * #2264 — of `projectIds`, the archived projects the given user may still
+ * reach under the same scope rule. A chat scoped to an archived project said it
+ * was "no longer available to you" on every turn; this lets the caller name it
+ * as archived instead. An id the user cannot reach is never returned, so the
+ * answer discloses nothing about another tenant's projects (#1052).
+ */
+export async function getUserArchivedProjects(
+  userId: string,
+  projectIds: readonly string[],
+): Promise<AccessibleProject[]> {
+  if (!userId || projectIds.length === 0) return [];
+
+  const actor = await resolveActor(userId);
+
+  return prisma.project.findMany({
+    where: {
+      ...accessibleProjectWhere(actor),
+      id: { in: [...projectIds] },
+      status: "archived",
+    },
+    select: { id: true, name: true },
+  });
+}

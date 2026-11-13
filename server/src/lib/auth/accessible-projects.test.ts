@@ -5,7 +5,7 @@
  * in the deployment; these tests pin the workspace-membership scope.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { getUserAccessibleProjects } from "./accessible-projects.js";
+import { getUserAccessibleProjects, getUserArchivedProjects } from "./accessible-projects.js";
 
 vi.mock("../prisma.js", () => ({
   prisma: {
@@ -157,5 +157,42 @@ describe("getUserAccessibleProjects", () => {
     mockFindMany.mockResolvedValue([] as never);
     const result = await getUserAccessibleProjects("user-b");
     expect(result).toEqual([]);
+  });
+});
+
+describe("getUserArchivedProjects (#2264)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockFindMany.mockResolvedValue([] as never);
+  });
+
+  it("reads only the requested archived projects, under the same workspace scope", async () => {
+    actor("reader", ["ws-b"]);
+    mockFindMany.mockResolvedValue([{ id: "proj-old", name: "Old" }] as never);
+
+    const result = await getUserArchivedProjects("user-b", ["proj-old", "proj-x"]);
+
+    expect(mockFindMany).toHaveBeenCalledWith({
+      where: {
+        deletedAt: null,
+        OR: [
+          { workspaceId: null },
+          {
+            workspaceId: { in: ["ws-b"] },
+            workspace: { deletedAt: null, members: { some: { userId: "user-b" } } },
+          },
+        ],
+        id: { in: ["proj-old", "proj-x"] },
+        status: "archived",
+      },
+      select: { id: true, name: true },
+    });
+    expect(result).toEqual([{ id: "proj-old", name: "Old" }]);
+  });
+
+  it("reads nothing for no ids or no user", async () => {
+    expect(await getUserArchivedProjects("user-b", [])).toEqual([]);
+    expect(await getUserArchivedProjects("", ["proj-old"])).toEqual([]);
+    expect(mockFindMany).not.toHaveBeenCalled();
   });
 });

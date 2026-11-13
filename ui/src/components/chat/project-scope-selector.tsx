@@ -139,7 +139,7 @@ export function ProjectScopeSelector({ value, onChange, disabled }: Props) {
   });
   // #2238 — the workspace the top bar is on, offered as a scope of its own.
   const { workspaceId: activeWorkspaceId } = useValidatedActiveWorkspaceId();
-  const { data: workspaces = [] } = useQuery(workspaceListQuery);
+  const { data: workspaces = [], isSuccess: workspacesLoaded } = useQuery(workspaceListQuery);
   const activeWorkspace = workspaces.find((w) => w.id === activeWorkspaceId) ?? null;
   // #2351 — "This project" is the top bar's, and "Whole workspace" says how
   // many projects it searches: the top bar's own list of that workspace.
@@ -166,6 +166,17 @@ export function ProjectScopeSelector({ value, onChange, disabled }: Props) {
     onChange(next);
     storeScope(next);
   }, [isLoading, projects, value, onChange]);
+
+  // #2264 — the same for a stored workspace scope: once the caller's workspace
+  // list has loaded, a workspace they have left (or that was deleted) is
+  // dropped, rather than sent to the session API to fail the first send (404).
+  useEffect(() => {
+    if (!workspacesLoaded || value.mode !== "workspace") return;
+    if (workspaces.some((w) => w.id === value.workspaceId)) return;
+    const next: ProjectScope = { mode: "all", projectIds: [] };
+    onChange(next);
+    storeScope(next);
+  }, [workspacesLoaded, workspaces, value, onChange]);
 
   function isThisProject(scope: ProjectScope): boolean {
     return scope.projectIds.length === 1 && scope.projectIds[0] === current?.id;
