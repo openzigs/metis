@@ -22,6 +22,7 @@ import {
   agentState,
   deriveChangeRequestSteps,
   portfolioCheckTally,
+  questionsWaitingLabel,
   requirementTally,
   runOptionsFromMetadata,
   type ChangeRequestFacts,
@@ -140,6 +141,7 @@ export function ChangeRequestStepHeader({ projectId, snapshot, pendingApprovals 
     drafts: handoff,
   };
   const steps = deriveChangeRequestSteps(facts);
+  const waitingQuestions = options.openQuestions ?? 0;
   const current = steps.find((s) => s.state === "needs-you" || s.state === "in-progress");
 
   return (
@@ -167,7 +169,10 @@ export function ChangeRequestStepHeader({ projectId, snapshot, pendingApprovals 
                 </span>
                 <span className="flex items-center gap-1">
                   <Icon className="h-3 w-3" aria-hidden />
-                  {STEP_STATE_LABELS[step.state]}
+                  {/* #2343 — open questions read as the state they are, with the count. */}
+                  {step.key === "questions" && waitingQuestions > 0
+                    ? questionsWaitingLabel(waitingQuestions)
+                    : STEP_STATE_LABELS[step.state]}
                 </span>
                 <span className="sr-only">: {step.reason}</span>
               </Link>

@@ -14,7 +14,7 @@
  * `analyze` is "New change request", `docs` is "Deliverable"); they stay because
  * deep links, test ids and the drift badge are keyed on them.
  */
-import { openQuestionCount } from "@metis/shared";
+import { openQuestionCount, questionsWaitingLabel } from "@metis/shared";
 
 export type PipelineStageId = "sources" | "ingest" | "analyze" | "review" | "docs" | "publish";
 
@@ -396,7 +396,8 @@ function requirementsReview(base: string, f: PipelineFacts): PipelineStage {
     });
   } else if (f.openQuestions > 0) {
     waiting.push({
-      status: `${plural(f.openQuestions, "clarifying question")} open`,
+      // #2343 — the one wording every surface uses for open questions.
+      status: questionsWaitingLabel(f.openQuestions),
       action: {
         label: `Answer ${plural(f.openQuestions, "question")}`,
         href: `${run}&tab=questions`,

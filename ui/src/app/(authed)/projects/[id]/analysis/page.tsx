@@ -151,7 +151,7 @@ import {
   type ConflictState,
 } from "@/components/requirements/MergeConflictModal";
 import { requirementUpdateApi, assignmentApi } from "@/lib/collaboration-api";
-import { MessageSquare } from "lucide-react";
+import { AlertCircle, MessageSquare } from "lucide-react";
 import { HoverHint } from "@/components/spec-kit/hover-hint";
 import { PageHeader } from "@/components/ui/page-header";
 import { TabsContent } from "@/components/ui/tabs";
@@ -198,7 +198,12 @@ import { PortfolioCheckLink } from "@/components/portfolio/portfolio-check-link"
 import { ChangeRequestSummary } from "@/components/analysis/change-request-summary";
 import { proposedChangeRequestTitle } from "@/components/analysis/change-request-steps";
 import { ChangeRequestStepHeader } from "@/components/analysis/change-request-step-header";
-import { CHANGE_REQUEST_TITLE_MAX, normaliseChangeRequestTitle } from "@metis/shared";
+import { ChangeRequestReviewState } from "@/components/analysis/change-request-review-state";
+import {
+  CHANGE_REQUEST_TITLE_MAX,
+  normaliseChangeRequestTitle,
+  questionsWaitingLabel,
+} from "@metis/shared";
 import { EmptyState } from "@/components/ui/empty-state";
 
 const SPECIALIST_AGENTS: AnalysisAgentKey[] = ["document", "code", "database", "web"];
@@ -1139,6 +1144,16 @@ export default function AnalysisPage(): React.ReactElement {
                       {runLabels.get(item.id)?.shortId}
                     </span>
                   </div>
+                  {/* #2343 — a completed run whose clarifying questions wait on the analyst. */}
+                  {(item.openQuestions ?? 0) > 0 ? (
+                    <span
+                      className="mt-1 inline-flex items-center gap-1 rounded border border-warning/60 px-1.5 py-0.5 text-xs font-medium text-warning"
+                      data-testid="analysis-run-questions-waiting"
+                    >
+                      <AlertCircle className="h-3 w-3" aria-hidden />
+                      {questionsWaitingLabel(item.openQuestions ?? 0)}
+                    </span>
+                  ) : null}
                 </button>
               </li>
             ))}
@@ -1195,6 +1210,8 @@ export default function AnalysisPage(): React.ReactElement {
                 snapshot={detail.data}
                 pendingApprovals={approvals.data?.ticketStatus?.pendingCount}
               />
+              {/* #2343 — its formal review as a state: assigned to you, rejected, … */}
+              <ChangeRequestReviewState projectId={projectId} analysisId={detail.data.id} />
 
               {/* Issue #994 — what a Spec Kit handoff sent and left out, on every
               tab and while the run is still going. Nothing for other runs. */}

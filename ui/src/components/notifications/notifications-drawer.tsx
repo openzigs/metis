@@ -10,15 +10,21 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { Bell } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
 import { useSocket } from "@/lib/socket-client";
 import { onReconnect } from "@/lib/socket-subscription";
-import type { DiscussionMentionEvent, ReviewNotificationEvent } from "@metis/shared";
+import type {
+  DiscussionMentionEvent,
+  JobNotificationEvent,
+  ReviewNotificationEvent,
+} from "@metis/shared";
 import {
   discussionMentionEventToNotification,
   getNotificationStore,
+  jobEventToNotification,
   mentionEventToNotification,
   reviewEventToNotification,
   slaEventToNotification,
@@ -27,6 +33,7 @@ import {
   type SlaDeadlineEventPayload,
 } from "@/lib/notifications";
 import { apiFetch } from "@/lib/api-client";
+import { fireJobNotificationToast, setTerminalToastNavigator } from "@/lib/terminal-toast";
 
 type NotificationsResponse = {
   notifications: Array<{
@@ -56,6 +63,12 @@ export function NotificationsDrawer() {
   const store = getNotificationStore();
   const [items, setItems] = useState<Notification[]>(() => store.list());
   const [open, setOpen] = useState(false);
+  const router = useRouter();
+
+  // #2343 — a job toast's "Open" navigates inside the app, not by a full load.
+  useEffect(() => {
+    setTerminalToastNavigator((href) => router.push(href));
+  }, [router]);
 
   // Subscribe to store changes.
   useEffect(() => store.subscribe(setItems), [store]);
@@ -84,11 +97,18 @@ export function NotificationsDrawer() {
     const onReview = (event: ReviewNotificationEvent) => {
       store.push(reviewEventToNotification(event));
     };
+    // #2343 — a job the user started ended: one bell item (by the saved row's
+    // id, so the hydrate merges it) and one toast (deduped by job, across tabs).
+    const onJob = (event: JobNotificationEvent) => {
+      store.push(jobEventToNotification(event));
+      fireJobNotificationToast(event);
+    };
 
     socket.on("comment:mention", onMention);
     socket.on("sla:deadline_expired", onSlaExpired);
     socket.on("discussion:mention", onDiscussionMention);
     socket.on("review:notification", onReview);
+    socket.on("job:notification", onJob);
     // #646 — a mention sent while the socket was down is lost; it is persisted
     // server-side, so re-read the history on reconnect (hydrate merges by id).
     const release = onReconnect(socket, () => hydrateFromServer(store));
@@ -99,6 +119,7 @@ export function NotificationsDrawer() {
       socket.off("sla:deadline_expired", onSlaExpired);
       socket.off("discussion:mention", onDiscussionMention);
       socket.off("review:notification", onReview);
+      socket.off("job:notification", onJob);
     };
   }, [socket, store]);
 
@@ -148,7 +169,7 @@ export function NotificationsDrawer() {
         >
           <SheetTitle>Notifications</SheetTitle>
           <SheetDescription>
-            Mentions, review requests and decisions, and SLA alerts.
+            Mentions, review requests and decisions, finished and failed jobs, and SLA alerts.
           </SheetDescription>
           <div className="flex items-center justify-between">
             <span className="text-xs text-muted-foreground">{items.length} item(s)</span>

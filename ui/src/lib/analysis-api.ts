@@ -323,8 +323,23 @@ export interface AnalysisListItem {
   failedAgents?: string[];
   /** #1143 — malformed citations each agent lost; non-empty on a run that completed with warnings. */
   droppedCitations?: AnalysisDroppedCitations[];
+  /** #2343 — open clarifying questions on a completed run; absent from an older server. */
+  openQuestions?: number;
   /** #999 — how many of this run's requirements sit in each review status. */
   requirementCounts: Record<RequirementReviewStatus, number>;
+}
+
+/** #2343 — the change request's formal review, as the caller sees it. */
+export interface ChangeRequestReviewState {
+  /** The latest standing review of its requirements; null when none. */
+  review: {
+    id: string;
+    title: string;
+    status: "draft" | "in_review" | "rejected" | "approved";
+    requestedByMe: boolean;
+  } | null;
+  /** A review of it waiting on the caller's own decision. */
+  assignedToMe: { id: string; title: string } | null;
 }
 
 /**
@@ -483,6 +498,12 @@ export interface UpdateRequirementInput {
 }
 
 export const analysisApi = {
+  /** #2343 — the change request's formal review for the caller (needs `review.read`). */
+  reviewState: (projectId: string, analysisId: string) =>
+    apiFetch<ChangeRequestReviewState>(
+      `/projects/${encodeURIComponent(projectId)}/analyses/${encodeURIComponent(analysisId)}/review-state`,
+    ),
+
   listForProject: (projectId: string) =>
     apiFetch<{ items?: AnalysisListItem[] }>(`/projects/${projectId}/analyses`).then((res) => ({
       items: res.items ?? [],

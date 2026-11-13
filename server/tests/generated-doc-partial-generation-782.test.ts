@@ -241,6 +241,9 @@ vi.mock("../src/lib/socket/job-events.js", () => ({
   },
   genericFailureMessage: () => "failed",
 }));
+// #2343 — who is told when a run ends; the notifier's own suites cover the writes.
+const dispatchJobOutcome = vi.hoisted(() => vi.fn());
+vi.mock("../src/lib/notifications/job-notify.js", () => ({ dispatchJobOutcome }));
 
 import { generateDocumentAsync } from "../src/routes/generated-docs.js";
 import { stopGeneration } from "../src/lib/docs-gen/generation-control.js";
@@ -1399,6 +1402,18 @@ describe("#2369 — a run with no documentable code fails, and nothing is publis
       "p",
       GENERATION_NO_SOURCE_CODE_MESSAGE,
     );
+    // #2343 — the person who asked for it is told it failed, by the document's name.
+    expect(dispatchJobOutcome).toHaveBeenCalledTimes(1);
+    expect(dispatchJobOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "doc-generation",
+        jobId: "d",
+        projectId: "p",
+        userId: "u",
+        outcome: "failed",
+        subject: state.doc.title,
+      }),
+    );
     // No model was called: there was nothing to read.
     expect(state.stream).not.toHaveBeenCalled();
   });
@@ -1414,6 +1429,8 @@ describe("#2369 — a run with no documentable code fails, and nothing is publis
     expect(err).toBeInstanceOf(NoDocumentableCodeError);
     expect(isPermanentTaskFailure(err)).toBe(true);
     expect(state.doc.status).toBe("failed");
+    // #2343 — nobody asked for an automatic run: nobody is notified.
+    expect(dispatchJobOutcome).not.toHaveBeenCalled();
     expect(state.doc.errorMessage).toBe(GENERATION_NO_SOURCE_CODE_MESSAGE);
     expect(state.versions).toHaveLength(0);
   });

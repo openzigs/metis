@@ -402,7 +402,7 @@ describe("review stage", () => {
       "review",
     );
     expect(s.state).toBe("attention");
-    expect(s.status).toBe("1 clarifying question open");
+    expect(s.status).toBe("Questions waiting (1)");
     expect(s.action).toEqual({
       label: "Answer 1 question",
       href: `${B}/analysis?analysisId=a1&tab=questions`,
@@ -433,9 +433,7 @@ describe("review stage", () => {
       }),
       "review",
     );
-    expect(s.status).toBe(
-      "6 approvals pending · 12 clarifying questions open · 1 requirement rejected",
-    );
+    expect(s.status).toBe("6 approvals pending · Questions waiting (12) · 1 requirement rejected");
     expect(s.action.href).toBe(`${B}/analysis?analysisId=a1&tab=approvals`);
   });
 

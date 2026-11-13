@@ -19,7 +19,9 @@ export type NotificationEvent =
   | "issuesPublished"
   | "systemAlerts"
   | "mention"
-  | "slaDeadline";
+  | "slaDeadline"
+  // #2343 — analysis, ingest and document-generation results (toast + bell).
+  | "jobFinished";
 
 export class SettingsNotificationsPage {
   readonly page: Page;

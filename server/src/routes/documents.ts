@@ -93,7 +93,14 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
   // behavior); `undefined` falls through to the singleton.
   const ingestQueue = deps.ingestQueue === null ? null : (deps.ingestQueue ?? getIngestQueue());
 
-  async function handleIngest(documentId: string): Promise<{
+  /**
+   * `uploaderId` (#2343) is told when a queued ingest ends. A synchronous
+   * ingest answers the request itself, so the uploader is already looking.
+   */
+  async function handleIngest(
+    documentId: string,
+    uploaderId: string,
+  ): Promise<{
     documentId: string;
     status: string;
     chunkCount: number;
@@ -102,7 +109,7 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
   }> {
     if (ingestQueue) {
       try {
-        await ingestQueue.enqueue(documentId, { priority: "manual" });
+        await ingestQueue.enqueue(documentId, { priority: "manual", notifyUserId: uploaderId });
         return { documentId, status: "queued", chunkCount: 0, queued: true };
       } catch (err) {
         log.warn("document enqueue failed", { documentId, error: String(err) });
@@ -192,7 +199,7 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
       // 202 immediately so the HTTP latency stays bounded. Tests can opt out
       // by passing `ingestQueue: null` to documentsRouter for synchronous
       // behavior + a 201.
-      const ingest = await handleIngest(document.id);
+      const ingest = await handleIngest(document.id, actor.id);
       const refreshed = await prisma.document.findUnique({ where: { id: document.id } });
       const httpStatus = ingest.queued ? 202 : 201;
       res.status(httpStatus).json(ok({ document: publicDocumentRow(refreshed), ingest }));
@@ -265,7 +272,7 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
           deduplicated: stored.deduplicated,
         },
       });
-      const ingest = await handleIngest(document.id);
+      const ingest = await handleIngest(document.id, actor.id);
       const refreshed = await prisma.document.findUnique({ where: { id: document.id } });
       const httpStatus = ingest.queued ? 202 : 201;
       res
@@ -327,7 +334,7 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
           deduplicated: stored.deduplicated,
         },
       });
-      const ingest = await handleIngest(document.id);
+      const ingest = await handleIngest(document.id, actor.id);
       const refreshed = await prisma.document.findUnique({ where: { id: document.id } });
       const httpStatus = ingest.queued ? 202 : 201;
       res.status(httpStatus).json(ok({ document: publicDocumentRow(refreshed), ingest }));

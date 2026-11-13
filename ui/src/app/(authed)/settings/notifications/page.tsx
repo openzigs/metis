@@ -46,6 +46,9 @@ const EVENT_LABELS: Record<NotificationEvent, string> = {
   systemAlerts: "System alerts",
   mention: "Mentions",
   slaDeadline: "SLA deadlines",
+  // #2343 — the toast and bell item when an analysis, ingest or document generation you
+  // started finishes, fails or waits for review.
+  jobFinished: "Analysis, ingest and document results",
 };
 
 /** Draft/saved state: one boolean per (channel, event) cell. */

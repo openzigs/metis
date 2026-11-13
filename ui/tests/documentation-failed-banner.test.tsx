@@ -125,6 +125,20 @@ describe("DocumentationPage — failed document (#50)", () => {
     );
   });
 
+  // #2343 — a failed generation's toast and bell item land on `?doc=<id>`,
+  // which opens that document and its Regenerate without a click.
+  it("opens the document named by ?doc= (where a job notification lands)", async () => {
+    window.history.pushState({}, "", `/projects/proj_test/documentation?doc=${DOC_ID}`);
+    try {
+      setup(detail({ interrupted: true }));
+      expect(await screen.findByText(/generation was interrupted/i)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /^regenerate$/i })).toBeInTheDocument();
+      expect(mockApiFetch).toHaveBeenCalledWith(`/projects/proj_test/docs/${DOC_ID}`);
+    } finally {
+      window.history.pushState({}, "", "/");
+    }
+  });
+
   it("shows no failure banner for a ready document", async () => {
     setup(detail({ status: "ready", errorMessage: null, content: "# Doc" }));
     fireEvent.click(await screen.findByTestId(`doc-card-${DOC_ID}`));

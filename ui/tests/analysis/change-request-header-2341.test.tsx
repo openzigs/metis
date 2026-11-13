@@ -236,7 +236,8 @@ describe("ChangeRequestStepHeader", () => {
     const links = within(nav).getAllByRole("link");
     expect(links.map((l) => l.textContent?.split(":")[0])).toEqual([
       "1. ReadDone",
-      "2. QuestionsNeeds you",
+      // #2343 — open questions read as "Questions waiting", with the count.
+      "2. QuestionsQuestions waiting (2)",
       "3. RequirementsNeeds you",
       "4. Policy checkNot applicable",
       "5. ImpactDone",

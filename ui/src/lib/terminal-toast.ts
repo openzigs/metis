@@ -27,8 +27,9 @@
  * ("Generated spec.md (v3) … grounded on 8 retrieved chunks.") verbatim.
  */
 import { toast } from "sonner";
-import type { JobLifecycleEvent } from "@metis/shared";
+import type { JobLifecycleEvent, JobNotificationEvent } from "@metis/shared";
 import { analystCopy } from "./analyst-copy";
+import { safeInAppHref } from "./notifications";
 
 /** Generic, user-safe fallbacks used when the event omits a message/error. */
 export const GENERIC_SUCCESS_TOAST = "Done.";
@@ -42,6 +43,55 @@ export const GENERIC_FAILURE_TOAST = "The operation failed. Please try again.";
  * per-instance `useRef` guard cannot achieve.
  */
 const toastedJobIds = new Set<string>();
+
+/**
+ * #2343 — the sonner id of the toast each job fired, so the job's
+ * `job:notification` (which names the change request or document and links to
+ * it) can rewrite that toast in place instead of adding a second one.
+ */
+const toastIdByJob = new Map<string, string | number>();
+
+/** #2343 — the `job:notification`s already shown, by saved row id. */
+const seenNotifications = new Set<string>();
+
+/**
+ * #2343 — one toast per job across TABS too. The module-level set dedupes
+ * within one tab; two tabs of the same user each hear the job (the project
+ * room in one, the personal `user:{id}` room in both), so the first tab to
+ * toast claims the job in `localStorage`, which every tab of the origin
+ * shares, and the others stay quiet. A claim expires, because a document's id
+ * is the job id of every regeneration of it.
+ */
+export const CROSS_TAB_CLAIM_PREFIX = "metis.jobToast.";
+export const CROSS_TAB_CLAIM_TTL_MS = 10 * 60_000;
+
+function claimAcrossTabs(jobId: string, now = Date.now()): boolean {
+  try {
+    const storage = window.localStorage;
+    const key = `${CROSS_TAB_CLAIM_PREFIX}${jobId}`;
+    const held = Number(storage.getItem(key));
+    if (Number.isFinite(held) && held > 0 && now - held < CROSS_TAB_CLAIM_TTL_MS) return false;
+    storage.setItem(key, String(now));
+    return true;
+  } catch {
+    // No storage (private mode, a server render): this tab's own dedup only.
+    return true;
+  }
+}
+
+/** Where a toast's "Open" goes. The header registers the app router (#2343). */
+let navigate: (href: string) => void = (href) => {
+  window.location.assign(href);
+};
+
+/** #2343 — route a toast's "Open" through the app router rather than a full load. */
+export function setTerminalToastNavigator(fn: (href: string) => void): void {
+  navigate = fn;
+}
+
+function remember(jobId: string, id: unknown): void {
+  if (typeof id === "string" || typeof id === "number") toastIdByJob.set(jobId, id);
+}
 
 /**
  * #1580 — how old a REPLAYED terminal event may be and still toast. The server
@@ -105,10 +155,51 @@ export function fireTerminalToast(event: JobLifecycleEvent | null | undefined): 
   // requirement(s) awaiting approval" long after the checkpoint was resolved.
   // The job is still marked, so a later re-delivery stays quiet too.
   if (isStaleReplay(event)) return false;
+  if (!claimAcrossTabs(event.jobId)) return false;
   const { kind, text } = terminalToastText(event);
-  if (kind === "success") toast.success(text);
-  else if (kind === "warning") toast.warning(text);
-  else toast.error(text);
+  if (kind === "success") remember(event.jobId, toast.success(text));
+  else if (kind === "warning") remember(event.jobId, toast.warning(text));
+  else remember(event.jobId, toast.error(text));
+  return true;
+}
+
+/**
+ * #2343 — the toast for a job the user started: its `job:notification` names
+ * the change request or document, says how it ended in plain words, and links
+ * to the result (or, after a failure, to where it can be run again).
+ *
+ * The same job may already have toasted from its `job:lifecycle` (the project
+ * room usually delivers first): that toast is rewritten in place, so there is
+ * still one. Otherwise this is the job's one toast, deduped by `jobId` in this
+ * tab and across tabs exactly like {@link fireTerminalToast}. Returns whether a
+ * toast was shown or rewritten.
+ */
+export function fireJobNotificationToast(event: JobNotificationEvent | null | undefined): boolean {
+  if (!event || typeof event.jobId !== "string" || !event.jobId) return false;
+  // A re-delivery of the same notification is not news.
+  const seenKey = event.notificationId ?? `${event.jobId}:${event.kind}:${event.ts}`;
+  if (seenNotifications.has(seenKey)) return false;
+  seenNotifications.add(seenKey);
+  const href = safeInAppHref(event.href);
+  const options = {
+    description: event.message,
+    ...(href ? { action: { label: "Open", onClick: () => navigate(href) } } : {}),
+  };
+  const show =
+    event.kind === "job_failed"
+      ? toast.error
+      : event.kind === "job_awaiting_review"
+        ? toast.warning
+        : toast.success;
+  if (toastedJobIds.has(event.jobId)) {
+    const id = toastIdByJob.get(event.jobId);
+    if (id === undefined) return false;
+    show(event.title, { ...options, id });
+    return true;
+  }
+  toastedJobIds.add(event.jobId);
+  if (!claimAcrossTabs(event.jobId)) return false;
+  remember(event.jobId, show(event.title, options));
   return true;
 }
 
@@ -144,4 +235,13 @@ export function releaseTerminalToast(jobId: string | null | undefined): void {
 /** Test-only reset so specs start from an empty dedup set. */
 export function __resetTerminalToastsForTests(): void {
   toastedJobIds.clear();
+  toastIdByJob.clear();
+  seenNotifications.clear();
+  try {
+    for (const key of Object.keys(window.localStorage)) {
+      if (key.startsWith(CROSS_TAB_CLAIM_PREFIX)) window.localStorage.removeItem(key);
+    }
+  } catch {
+    /* no storage */
+  }
 }

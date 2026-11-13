@@ -9,7 +9,7 @@
  * - Rich markdown preview with TOC
  * - Export buttons (PDF, Word, Markdown)
  */
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useParams } from "next/navigation";
@@ -205,6 +205,13 @@ export default function DocumentationPage(): React.ReactElement {
   const params = useParams<{ id: string }>();
   const projectId = params?.id ?? "";
   const [selectedDoc, setSelectedDoc] = useState<string | null>(null);
+  // #2343 — `?doc=<id>` opens that document: where a finished or failed
+  // generation's toast and bell item land. Read after mount (no hydration
+  // mismatch); the document read is project-scoped server-side.
+  useEffect(() => {
+    const requested = new URLSearchParams(window.location.search).get("doc");
+    if (requested) setSelectedDoc(requested);
+  }, []);
   const [showGenerate, setShowGenerate] = useState(false);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");

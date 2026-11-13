@@ -22,6 +22,7 @@ describe("notification vocabulary", () => {
       "systemAlerts",
       "mention",
       "slaDeadline",
+      "jobFinished",
     ]);
   });
 

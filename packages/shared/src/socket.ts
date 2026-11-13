@@ -494,6 +494,13 @@ export interface ServerToClientEvents {
    * Delivered to the recipient's personal `user:{id}` room only.
    */
   "review:notification": (data: ReviewNotificationEvent) => void;
+  /**
+   * #2343 — an analysis, document generation or document ingest the recipient
+   * started finished, failed or is waiting for review. Delivered to the
+   * starter's personal `user:{id}` room only, so it reaches them on any page
+   * and in a fresh tab; the persisted bell row rides along by id.
+   */
+  "job:notification": (data: JobNotificationEvent) => void;
   /** Epic #728 — client exceeded the per-socket presence room cap. */
   "presence:error": (data: { message: string }) => void;
   /** Epic #728 — SLA deadline has passed for an assignment. */
@@ -581,6 +588,21 @@ export interface ReviewNotificationEvent extends InAppNotificationFields {
   requirementId?: string;
   pinnedVersion?: number;
   currentVersion?: number;
+}
+
+/**
+ * #2343 — payload of `job:notification`: the bell item (id, title, message,
+ * link) and the job it is about, so the client can also show one toast for it
+ * (deduped by `jobId` with the `job:lifecycle` toast of the same job).
+ */
+export interface JobNotificationEvent extends InAppNotificationFields {
+  kind: "job_completed" | "job_failed" | "job_awaiting_review";
+  jobKind: "analysis" | "doc-generation" | "document-ingest";
+  jobId: string;
+  projectId: string;
+  /** The change request's or document's name, already flattened and cut. */
+  subject: string | null;
+  ts: number;
 }
 
 export interface ConnectorRoomEvent {

@@ -186,6 +186,10 @@ vi.mock("../../src/lib/socket/job-events.js", () => ({
   genericFailureMessage: () => "Generation failed",
 }));
 
+// #2343 — who is told when a run ends; the notifier's own suites cover the writes.
+const dispatchJobOutcome = vi.hoisted(() => vi.fn());
+vi.mock("../../src/lib/notifications/job-notify.js", () => ({ dispatchJobOutcome }));
+
 vi.mock("express-rate-limit", () => ({
   default: () => (_req: unknown, _res: unknown, next: () => void) => next(),
   ipKeyGenerator: (ip: string) => ip,
@@ -607,6 +611,19 @@ describe("generated-docs routes", () => {
         "doc-1",
         "proj-1",
         "Documentation ready",
+      );
+      // #2343 — the person who asked for it is told it is ready, once, by name.
+      expect(dispatchJobOutcome).toHaveBeenCalledTimes(1);
+      expect(dispatchJobOutcome).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: "doc-generation",
+          jobId: "doc-1",
+          projectId: "proj-1",
+          userId: "user_admin",
+          outcome: "completed",
+          subject: "Doc",
+          dedupeKey: expect.stringMatching(/^doc-generation:doc-1:regenerating:.+:completed$/),
+        }),
       );
     });
 
