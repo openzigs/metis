@@ -3343,9 +3343,9 @@ tells it to:
 - when nothing turns up, say what it searched.
 
 When a code-graph search finds the symbol but has no list of results to give
-(the name matches several symbols, only probable call sites are known, or
-nothing calls the symbol), the guidance says what to do next instead of telling
-the chat to search again.
+(the name matches several symbols, only probable call sites are known, a filter
+left no call to list, or nothing calls the symbol), the guidance says what to do
+next instead of telling the chat to search again.
 
 It is off by default. On METIS's own business-analyst question set it did not
 make answers more complete, and citation precision did not improve.

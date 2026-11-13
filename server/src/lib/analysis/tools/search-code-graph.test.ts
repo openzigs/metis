@@ -140,6 +140,18 @@ describe("search_code_graph tool — file:line provenance (#715)", () => {
     );
   });
 
+  it("#2390: a callee the listing does not return, with no user filter, is not tagged a filter miss", async () => {
+    // Only the caller's visibility can drop a resolved callee here; nothing
+    // may hint that a hidden one exists, so the zero is a plain miss.
+    mockCodeGraph.findFirst.mockResolvedValue({ id: "g1" });
+    mockCodeSymbol.named.mockResolvedValue({ id: "caller1" });
+    mockCodeEdge.findMany.mockResolvedValue([{ toSymbolId: "hidden1" }]);
+    mockCodeSymbol.findMany.mockResolvedValue([]);
+    const res = await searchCodeGraphTool.execute({ calledBy: "Foo.bar" }, ctx);
+    expect(res.resultCount).toBe(0);
+    expect(res.zeroResultKind).toBeUndefined();
+  });
+
   it("calledBy: reports cleanly when the named caller does not exist", async () => {
     mockCodeGraph.findFirst.mockResolvedValue({ id: "g1" });
     mockCodeSymbol.named.mockResolvedValue(null);
@@ -442,6 +454,9 @@ describe("search_code_graph calledBy — unresolved callees (#740)", () => {
     expect(res.content).toContain("No symbols found matching the query.");
     expect(res.content).toContain("1 call to external or unresolved symbols");
     expect(res.content).toContain("fmt.Errorf");
+    // #2390 — a filter dropped the resolved callee: a filter miss, not "calls nothing".
+    expect(res.resultCount).toBe(0);
+    expect(res.zeroResultKind).toBe("filtered-out");
   });
 
   it("caps DISTINCT callees: repeated calls to one callee do not use up the slots, and truncation is flagged", async () => {

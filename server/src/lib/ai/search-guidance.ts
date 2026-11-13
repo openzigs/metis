@@ -119,8 +119,10 @@ export const EMPTY_RESULT_INSTRUCTIONS =
 /**
  * #2390 — carried with a zero-count result that is NOT a miss, one per
  * {@link ZeroResultKind}. `search_code_graph` counts 0 for a name that matched
- * several symbols, for probable call sites, and for a found symbol with no call
- * edges; "nothing was found; search again" contradicted what each one says.
+ * several symbols, for probable call sites, for a found symbol with no call
+ * edges, and for call edges a filter dropped; "nothing was found; search
+ * again" contradicted what each one says. No text claims a resolved edge
+ * exists, since one the caller may not see must not be revealed (#2243).
  */
 export const ZERO_RESULT_INSTRUCTIONS: Readonly<Record<ZeroResultKind, string>> = {
   "ambiguous-name":
@@ -134,7 +136,13 @@ export const ZERO_RESULT_INSTRUCTIONS: Readonly<Record<ZeroResultKind, string>> 
   "no-call-edges":
     "Instructions from METIS, not the tool: the symbol was found, and the code graph records no " +
     "calls in the direction asked. That answers the question as far as the graph goes; do not " +
-    "search again for the symbol. Say that calls the graph could not resolve are not counted.",
+    "repeat this graph search. Say that calls the graph could not resolve are not counted; " +
+    "another tool may still find those.",
+  "filtered-out":
+    "Instructions from METIS, not the tool: the symbol was found, and the query, kind or " +
+    "filePath filter you gave left no call relation to list. That is a filter miss, not proof " +
+    "that nothing calls it. Repeat the call without that filter, and read any call sites this " +
+    "result lists (read_file_slice), before you say what calls it or what it calls.",
 };
 
 /**

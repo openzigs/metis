@@ -38,6 +38,8 @@ vi.mock("../src/lib/prisma.js", async () => {
 });
 
 const { searchCodeGraphTool } = await import("../src/lib/analysis/tools/search-code-graph.js");
+const { resultInstructions, ZERO_RESULT_INSTRUCTIONS } =
+  await import("../src/lib/ai/search-guidance.js");
 const { buildSpecKitRagContext } = await import("../src/lib/spec-kit/rag-context.js");
 
 interface Sym {
@@ -309,7 +311,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(res.zeroResultKind).toBe("probable-call-sites");
     });
 
-    it("#2390 — a filter that drops every resolved caller still reports the probable call sites as such", async () => {
+    it("#2390 — a filter that drops every resolved caller is a filter miss, not 'no resolved caller'", async () => {
+      // ScheduleNextCheck HAS a resolved caller (TestFeedScheduleNextCheckDefault);
+      // `query` drops it. "No resolved caller is recorded" would be false.
       const res = await searchCodeGraphTool.execute(
         { calls: "ScheduleNextCheck", query: "NoSuchCaller" },
         ctx(),
@@ -317,7 +321,11 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(res.content).toContain("No symbols found matching the query.");
       expect(res.content).toContain("Probable (unresolved) call sites");
       expect(res.resultCount).toBe(0);
-      expect(res.zeroResultKind).toBe("probable-call-sites");
+      expect(res.zeroResultKind).toBe("filtered-out");
+      const said = resultInstructions("search_code_graph", res);
+      expect(said).toBe(ZERO_RESULT_INSTRUCTIONS["filtered-out"]);
+      expect(said).not.toMatch(/no resolved caller/i);
+      expect(said).toMatch(/without that filter/);
     });
 
     it("calls: the filePath filter also scopes the probable call sites", async () => {

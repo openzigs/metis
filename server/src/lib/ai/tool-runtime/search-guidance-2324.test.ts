@@ -135,7 +135,7 @@ describe("grounding tools with the search guidance on (#2324)", () => {
   });
 
   // #2390 — a zero count that is not a miss reaches the model with its own instruction.
-  it.each(["ambiguous-name", "probable-call-sites", "no-call-edges"] as const)(
+  it.each(["ambiguous-name", "probable-call-sites", "no-call-edges", "filtered-out"] as const)(
     "a %s graph result carries its own instruction, not 'nothing was found'",
     async (kind) => {
       const set = buildSessionToolset({

@@ -157,6 +157,10 @@ describe("resultInstructions (#2324)", () => {
     expect(ZERO_RESULT_INSTRUCTIONS["ambiguous-name"]).toMatch(/qualified name/);
     expect(ZERO_RESULT_INSTRUCTIONS["probable-call-sites"]).toMatch(/read_file_slice/);
     expect(ZERO_RESULT_INSTRUCTIONS["no-call-edges"]).toMatch(/was found/);
+    expect(ZERO_RESULT_INSTRUCTIONS["no-call-edges"]).toMatch(/do not repeat this graph search/);
+    expect(ZERO_RESULT_INSTRUCTIONS["no-call-edges"]).not.toMatch(/search again/);
+    expect(ZERO_RESULT_INSTRUCTIONS["filtered-out"]).toMatch(/filter miss/);
+    expect(ZERO_RESULT_INSTRUCTIONS["filtered-out"]).not.toMatch(/no resolved caller/i);
   });
 
   it("reads the kind only on a zero count, and never on a failed call", () => {

@@ -34,9 +34,13 @@ export interface ToolContext {
  *   - `probable-call-sites`: no resolved caller, but call sites the parser could
  *     not resolve are listed;
  *   - `no-call-edges`: the symbol was found and the graph records no calls in
- *     the direction asked (any unresolved external calls are listed).
+ *     the direction asked (any unresolved external calls are listed);
+ *   - `filtered-out`: `calls`/`calledBy` found call edges, and a `query`,
+ *     `kind` or `filePath` filter dropped every one (any probable call sites
+ *     or unresolved calls are listed).
  */
-export type ZeroResultKind = "ambiguous-name" | "probable-call-sites" | "no-call-edges";
+export type ZeroResultKind =
+  "ambiguous-name" | "probable-call-sites" | "no-call-edges" | "filtered-out";
 
 export interface ToolResult {
   content: string;
