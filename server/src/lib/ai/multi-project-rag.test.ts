@@ -473,6 +473,10 @@ describe("buildMultiProjectRagContext reads the conversation (#2279)", () => {
       status: "multi",
       projects: [{ projectId: "pa", projectName: "Alpha", sources: 2 }],
       unsearched: [{ projectId: "pb", projectName: "Beta", reason: "timeout" }],
+      sourcesUsed: [
+        { name: "[Alpha] a1.md", excerpts: 1, relevance: 0.8 },
+        { name: "[Alpha] a7.md", excerpts: 1 },
+      ],
     });
     expect(capture.sources).toBe(2);
   });
@@ -520,6 +524,22 @@ describe("buildMultiProjectRagContext reads the conversation (#2279)", () => {
     expect(out.block).not.toContain("b9.md");
     // #2294 — the user chose the source: no absolute floor either.
     expect(search.mock.calls[0]![0].absoluteFloor).toBeUndefined();
+  });
+
+  it("says a product the attached documents do not cover has no excerpt for that reason", async () => {
+    const out = await buildMultiProjectRagContext({
+      userId: "u1",
+      scope: twoProducts,
+      query: "Summarise these",
+      documentIds: ["doc-a1"],
+      deps: { search: async () => searched(["pa", "pb"], [hit("pa", "Alpha", "a1", "Alpha.")]) },
+    });
+    expect(out.block).toContain(
+      'Only the attached documents were searched, and none of them from "Beta" is included above',
+    );
+    expect(out.block).toContain("say that the attached documents do not cover it");
+    expect(out.block).not.toContain("Searched, but no excerpt");
+    expect(out.block).not.toContain("showed nothing relevant");
   });
 });
 
@@ -663,21 +683,5 @@ describe("buildMultiProjectRagContext — relevance floor (#2294)", () => {
     expect(out.grounding).toMatchObject({
       sourcesUsed: [{ name: "[Alpha] a1.md", excerpts: 1, relevance: 0.62 }],
     });
-  });
-
-  it("says a product the attached documents do not cover has no excerpt for that reason", async () => {
-    const out = await buildMultiProjectRagContext({
-      userId: "u1",
-      scope: twoProducts,
-      query: "Summarise these",
-      documentIds: ["doc-a1"],
-      deps: { search: async () => searched(["pa", "pb"], [hit("pa", "Alpha", "a1", "Alpha.")]) },
-    });
-    expect(out.block).toContain(
-      'Only the attached documents were searched, and none of them from "Beta" is included above',
-    );
-    expect(out.block).toContain("say that the attached documents do not cover it");
-    expect(out.block).not.toContain("Searched, but no excerpt");
-    expect(out.block).not.toContain("showed nothing relevant");
   });
 });
