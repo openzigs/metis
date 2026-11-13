@@ -125,6 +125,7 @@ import {
   updateRequirementRow,
   // Epic #597 — requirements enhancement pipeline.
   ClarificationDialog,
+  readFromSources,
   getDialogState,
   listApprovalRequests,
   reopenApprovalRequest,
@@ -1232,6 +1233,11 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
       // projectId so it can ground each clarifying question against the
       // project's ingested knowledge before asking. Grounding only runs on the
       // START branch; submitAnswers is unaffected.
+      // Epic #922 — prefer the server-sourced structured requirements that the
+      // enhancement pipeline persisted (#924). The client may still override by
+      // passing `requirements` in the body, but it no longer has to reconstruct
+      // them. Falls back to the request body when nothing was persisted.
+      const stored = (await getStructuredRequirements(analysisId)) ?? undefined;
       const dialog = new ClarificationDialog({
         provider,
         retriever: getKnowledgeService(),
@@ -1243,13 +1249,11 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
         governingQuestions: governingQuestionSourceFor({ analysisId, projectId, provider }),
         // #2236 — a question the project has already settled is not asked again.
         priorAnswers: priorAnswerSourceFor(projectId),
+        // #2296 — the mode is the server's: decided from the list the
+        // analysis stored, never from a client override's `sources`. Only an
+        // analysis with nothing stored falls back to the override's.
+        ...(stored ? { sourceQuestions: readFromSources(stored.requirements) } : {}),
       });
-
-      // Epic #922 — prefer the server-sourced structured requirements that the
-      // enhancement pipeline persisted (#924). The client may still override by
-      // passing `requirements` in the body, but it no longer has to reconstruct
-      // them. Falls back to the request body when nothing was persisted.
-      const stored = (await getStructuredRequirements(analysisId)) ?? undefined;
       const override = body.requirements as StructuredRequirements | undefined;
       const requirements = override
         ? // The schema checks every field the dialog reads; the remaining

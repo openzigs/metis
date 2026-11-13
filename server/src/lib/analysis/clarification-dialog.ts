@@ -115,11 +115,14 @@ Respond ONLY with a JSON object: { "questions": [...] }
 Do not include markdown fences or commentary.`;
 
 /**
- * #2275 — the question prompt from before #2235, used while the document
- * reader (`ANALYSIS_DOCUMENT_READER`) is off: #2235's classification (kind of
- * uncertainty, readings, divergence, impact) and what the dialog does with it
- * were measured only with the reader on, so an analysis without it asks as it
- * did before.
+ * #2275 — the question prompt from before #2235, used for an analysis the
+ * document reader (`ANALYSIS_DOCUMENT_READER`) did not read: #2235's
+ * classification (kind of uncertainty, readings, divergence, impact) and what
+ * the dialog does with it were measured only on reader-read analyses, so one
+ * without it asks as it did before. #2296 — "not read by the reader" is
+ * decided from the analysis ({@link readFromSources}: none of its stored
+ * requirements carries `sources`), never from the flag read live, so an
+ * analysis keeps its mode when the flag is toggled.
  */
 export const LEGACY_QUESTION_SYSTEM_PROMPT = `You are a requirements analyst conducting a clarification session. Given requirements with identified ambiguities, generate targeted clarifying questions.
 
@@ -214,8 +217,9 @@ export function buildAmbiguitySummary(
 
 /**
  * Build the `chat()` messages for the question-generation call. #2275 —
- * `sourceQuestions` (the document reader is on) asks #2235's classified
- * questions; otherwise the pre-#2235 prompt.
+ * `sourceQuestions` (the analysis was read by the document reader, #2296
+ * {@link readFromSources}) asks #2235's classified questions; otherwise the
+ * pre-#2235 prompt.
  */
 export function buildQuestionMessages(
   requirements: StructuredRequirement[],
@@ -294,7 +298,9 @@ export interface ClarificationDialogDeps {
    *
    * #2296 — decided from the analysis, never from the flag read live: an
    * analysis keeps the mode it was read in, so toggling the flag between
-   * rounds cannot mix the two behaviours in one dialog.
+   * rounds cannot mix the two behaviours in one dialog. The clarify route
+   * passes it from the list the analysis stored, so a client's `requirements`
+   * override cannot pick the mode by adding or leaving out `sources`.
    */
   sourceQuestions?: boolean;
 }

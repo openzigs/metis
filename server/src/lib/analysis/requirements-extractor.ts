@@ -96,26 +96,47 @@ function sourceSpan(s: SourceStatement): RequirementSourceSpan {
  * #2235 — the statements a requirement names, in its order, each once. A label
  * the input did not list is ignored: a requirement is never given a paragraph
  * the reader did not verify. #2296 — {@link MAX_SOURCES_PER_REQUIREMENT}
- * bounds the paragraphs the GtWR rules flag nothing in; a flagged one is kept
- * past it, so the question its flag raises can cite it and the uncited scan
- * never takes it for a statement no requirement rests on.
+ * bounds the paragraphs the GtWR rules flag nothing in, counted on their own
+ * so the result does not depend on where the flagged ones sit in the
+ * citation order. A flagged one is kept past it, so the question its flag
+ * raises can cite it and the uncited scan never takes it for a statement no
+ * requirement rests on. {@link MAX_TOTAL_SOURCES_PER_REQUIREMENT} bounds the
+ * whole list, flagged paragraphs first, so the question prompt that quotes
+ * every source cannot grow without limit. The kept ones stay in citation order.
  */
 function citedSources(
   raw: unknown,
   byRef: ReadonlyMap<string, SourceStatement>,
 ): RequirementSourceSpan[] {
   if (!Array.isArray(raw)) return [];
-  const out: RequirementSourceSpan[] = [];
+  const cited: { s: SourceStatement; flagged: boolean }[] = [];
   const seen = new Set<string>();
   for (const id of raw) {
     if (typeof id !== "string") continue;
     const s = byRef.get(id.trim());
     if (!s || seen.has(s.ref)) continue;
     seen.add(s.ref);
-    if (out.length >= MAX_SOURCES_PER_REQUIREMENT && findQualityFlags(s.quote).length === 0) {
-      continue;
-    }
+    cited.push({ s, flagged: findQualityFlags(s.quote).length > 0 });
+  }
+  const flaggedKept = Math.min(
+    cited.filter((c) => c.flagged).length,
+    MAX_TOTAL_SOURCES_PER_REQUIREMENT,
+  );
+  let flaggedRoom = flaggedKept;
+  let unflaggedRoom = Math.min(
+    MAX_SOURCES_PER_REQUIREMENT,
+    MAX_TOTAL_SOURCES_PER_REQUIREMENT - flaggedKept,
+  );
+  const out: RequirementSourceSpan[] = [];
+  for (const { s, flagged } of cited) {
+    if (flagged ? flaggedRoom-- <= 0 : unflaggedRoom-- <= 0) continue;
     out.push(sourceSpan(s));
+  }
+  if (out.length < cited.length) {
+    log.info("requirement cites more source paragraphs than it keeps", {
+      cited: cited.length,
+      kept: out.length,
+    });
   }
   return out;
 }
@@ -167,10 +188,20 @@ export function buildSourceExtractionInput(
 
 /**
  * The most source paragraphs one requirement keeps that the GtWR rules flag
- * nothing in. #2296 — a flagged paragraph is always kept: it is what the
- * flag's question cites.
+ * nothing in, however many flagged ones it also cites. #2296 — a flagged
+ * paragraph is kept past it: it is what the flag's question cites.
  */
-const MAX_SOURCES_PER_REQUIREMENT = 5;
+export const MAX_SOURCES_PER_REQUIREMENT = 5;
+
+/**
+ * The most source paragraphs one requirement keeps in all, flagged ones
+ * included. Every source is quoted into the clarification question prompt on
+ * every round, and GtWR hits are lexical ("fast", "etc."), so a long FRD can
+ * flag dozens of paragraphs: without a ceiling the prompt grows with the
+ * document. Flagged paragraphs fill it first; unflagged ones take what is
+ * left, up to {@link MAX_SOURCES_PER_REQUIREMENT}.
+ */
+export const MAX_TOTAL_SOURCES_PER_REQUIREMENT = 2 * MAX_SOURCES_PER_REQUIREMENT;
 
 /**
  * #2296 — words that say nothing about what a requirement is about: English
@@ -269,6 +300,7 @@ export function attachUncitedQualityFlags(
   const words = requirements.map((r) => contentWords(`${r.title} ${r.description}`));
   let added = 0;
   let unmatched = 0;
+  let overCap = 0;
   for (const statement of sourcesByRef.values()) {
     if (cited.has(statement.ref)) continue;
     const flags = qualityFlagAmbiguities(findQualityFlags(statement.quote));
@@ -296,6 +328,12 @@ export function attachUncitedQualityFlags(
       continue;
     }
     const target = requirements[best]!;
+    // #2296 — the ceiling holds here too: a full requirement takes no more
+    // paragraphs, and a flag whose paragraph it cannot cite is not raised.
+    if ((target.sources?.length ?? 0) >= MAX_TOTAL_SOURCES_PER_REQUIREMENT) {
+      overCap++;
+      continue;
+    }
     const fields = new Set(target.ambiguities.map((a) => a.field));
     for (const flagged of flags) {
       if (fields.has(flagged.field)) continue;
@@ -303,11 +341,17 @@ export function attachUncitedQualityFlags(
       target.ambiguities.push(flagged);
       added++;
     }
-    // #2296 — past the cap too: the flags just added cite this paragraph.
+    // #2296 — past the unflagged cap too: the flags just added cite this paragraph.
     target.sources = [...(target.sources ?? []), sourceSpan(statement)];
   }
   if (unmatched > 0) {
     log.info("flagged statements no requirement rests on or matches", { statements: unmatched });
+  }
+  if (overCap > 0) {
+    log.info("flagged statements left out: the matching requirement has no source room", {
+      statements: overCap,
+      cap: MAX_TOTAL_SOURCES_PER_REQUIREMENT,
+    });
   }
   return added;
 }

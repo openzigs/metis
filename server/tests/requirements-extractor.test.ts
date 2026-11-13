@@ -3,6 +3,8 @@
  */
 import { describe, expect, it, vi } from "vitest";
 import {
+  MAX_SOURCES_PER_REQUIREMENT,
+  MAX_TOTAL_SOURCES_PER_REQUIREMENT,
   RequirementsExtractionError,
   RequirementsExtractor,
   SOURCE_EXTRACTION_SUFFIX,
@@ -670,5 +672,112 @@ describe("extract — source mode (#2235)", () => {
     expect(result.requirements[0]?.sources?.map((s) => s.ref)).toEqual(
       statements.slice(0, 5).map((s) => s.ref),
     );
+  });
+
+  /** `n` statements each flagged by GtWR R7 ("fast"), refs `FLG-<i>`. */
+  const flagged = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      ref: `FLG-${i}`,
+      statement: `Search part ${i} loads quickly.`,
+      documentId: "doc-1",
+      filename: "frd.docx",
+      headingPath: ["4 Search"],
+      quote: `Search part ${i} shall load fast.`,
+    }));
+
+  /** Extract one requirement citing `sourceIds` over `statements`; its kept refs. */
+  const keptRefs = async (
+    statements: ReturnType<typeof plain>,
+    sourceIds: string[],
+  ): Promise<string[] | undefined> => {
+    const provider = sequenceProvider([
+      JSON.stringify({
+        requirements: [
+          { title: "Catalogue search", description: "Search the catalogue.", sourceIds },
+        ],
+      }),
+    ]);
+    const result = await new RequirementsExtractor({ provider }).extract(
+      buildSourceExtractionInput(statements),
+      undefined,
+      statements,
+    );
+    return result.requirements[0]?.sources?.map((s) => s.ref);
+  };
+
+  // Review of #2426 — the cap counts unflagged paragraphs on their own, so
+  // where the flagged ones sit in the citation order does not matter.
+  it("#2296 — the unflagged cap holds whatever the citation order: [F,F,F,F,F,U] and [U,U,U,U,U,F]", async () => {
+    const f = flagged(5);
+    const u = plain(5);
+    const statements = [...f, ...u];
+    // Five flagged first: the one unflagged paragraph is still kept.
+    expect(await keptRefs(statements, [...f.map((s) => s.ref), u[0]!.ref])).toEqual([
+      ...f.map((s) => s.ref),
+      u[0]!.ref,
+    ]);
+    // Five unflagged first: the flagged one is kept too.
+    expect(await keptRefs(statements, [...u.map((s) => s.ref), f[0]!.ref])).toEqual([
+      ...u.map((s) => s.ref),
+      f[0]!.ref,
+    ]);
+    // Flagged ones interleaved do not let a sixth unflagged one in.
+    const extra = plain(6);
+    const interleaved = [
+      f[0]!.ref,
+      ...extra.slice(0, 3).map((s) => s.ref),
+      f[1]!.ref,
+      ...extra.slice(3).map((s) => s.ref),
+    ];
+    const kept = await keptRefs([...f, ...extra], interleaved);
+    expect(kept?.filter((r) => r.startsWith("REQ-"))).toEqual(
+      extra.slice(0, MAX_SOURCES_PER_REQUIREMENT).map((s) => s.ref),
+    );
+    expect(kept?.filter((r) => r.startsWith("FLG-"))).toEqual([f[0]!.ref, f[1]!.ref]);
+  });
+
+  // Review of #2426 — every source is quoted into the question prompt each
+  // round, so the whole list has a ceiling, flagged paragraphs first.
+  it("#2296 — a requirement keeps at most MAX_TOTAL_SOURCES_PER_REQUIREMENT sources, flagged ones first", async () => {
+    expect(MAX_TOTAL_SOURCES_PER_REQUIREMENT).toBe(10);
+    const f = flagged(12);
+    const u = plain(5);
+    // Unflagged cited first: the flagged ones still take the room.
+    const kept = await keptRefs([...f, ...u], [...u.map((s) => s.ref), ...f.map((s) => s.ref)]);
+    expect(kept).toEqual(f.slice(0, MAX_TOTAL_SOURCES_PER_REQUIREMENT).map((s) => s.ref));
+
+    // Seven flagged leave room for three unflagged, in citation order.
+    const seven = flagged(7);
+    const mixed = await keptRefs(
+      [...seven, ...u],
+      [...u.map((s) => s.ref), ...seven.map((s) => s.ref)],
+    );
+    expect(mixed).toEqual([...u.slice(0, 3), ...seven].map((s) => s.ref));
+  });
+
+  it("#2296 — an uncited flagged statement is not added to a requirement already at the ceiling", async () => {
+    const f = flagged(MAX_TOTAL_SOURCES_PER_REQUIREMENT);
+    const statements = [...f, STATEMENTS[0]!];
+    const provider = sequenceProvider([
+      JSON.stringify({
+        requirements: [
+          {
+            title: "Search results load",
+            description: "Search results load quickly.",
+            sourceIds: f.map((s) => s.ref),
+          },
+        ],
+      }),
+    ]);
+    const result = await new RequirementsExtractor({ provider }).extract(
+      buildSourceExtractionInput(statements),
+      undefined,
+      statements,
+    );
+    const [search] = result.requirements;
+    expect(search?.sources).toHaveLength(MAX_TOTAL_SOURCES_PER_REQUIREMENT);
+    expect(search?.sources?.map((s) => s.ref)).not.toContain("REQ-001");
+    // R8 is raised only by REQ-001's quote, which was left out with it.
+    expect(search?.ambiguities.map((a) => a.field)).toEqual(["R7:fast"]);
   });
 });
