@@ -504,6 +504,26 @@ describe("#2407 a reply that corrects its own first object", () => {
     expect(() => extractJsonObject(fenced)).toThrow(AMBIGUOUS_JSON_MESSAGE);
   });
 
+  it("never keeps a fenced first draft when a correction follows (three fenced shapes)", () => {
+    const first = JSON.stringify(FIRST);
+    const full = JSON.stringify(FULL);
+    const fence = (body: string): string => `\`\`\`json\n${body}\n\`\`\``;
+    // 1. a bare fence, then the correction as prose-plus-object.
+    expect(() => extractJsonObject(`${fence(first)}\n${CORRECTION}\n${full}`)).toThrow(
+      AMBIGUOUS_JSON_MESSAGE,
+    );
+    // 2. prose, a fenced first draft, then a fenced correction.
+    expect(() =>
+      extractJsonObject(`Here you go:\n${fence(first)}\n${CORRECTION}\n${fence(full)}`),
+    ).toThrow(AMBIGUOUS_JSON_MESSAGE);
+    // 3. a fenced first draft and a bare correction after prose.
+    expect(() => extractJsonObject(`Answer:\n${fence(first)}\nActually:\n${full}`)).toThrow(
+      AMBIGUOUS_JSON_MESSAGE,
+    );
+    // A fenced answer with no rival still reads.
+    expect(extractJsonObject(`${fence(full)}\nDone.`)).toEqual(FULL);
+  });
+
   it("is ambiguous when the correction stops partway (cut off by the output cap)", () => {
     const full = JSON.stringify(FULL);
     const cut = `${JSON.stringify(FIRST)}\n${CORRECTION}\n${full.slice(0, Math.floor(full.length * 0.6))}`;

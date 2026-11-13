@@ -216,7 +216,16 @@ export function extractJsonObject(raw: string): unknown {
   const fenceMatch = trimmed.match(/```(?:json)?([\s\S]*?)```/);
   if (fenceMatch && fenceMatch[1]) {
     const inner = fenceMatch[1].trim();
-    if (inner.startsWith("{")) return JSON.parse(inner);
+    if (inner.startsWith("{")) {
+      // #2407 — a fenced first draft followed by a correction. The fence match
+      // takes the FIRST block, so ask the balanced scan whether a different
+      // object sits anywhere in the reply before keeping it.
+      const rival = parseBalancedJsonObject(trimmed);
+      if (!rival.found && rival.ambiguous) {
+        throw new SyntaxError(AMBIGUOUS_JSON_MESSAGE);
+      }
+      return JSON.parse(inner);
+    }
   }
   // #1002 — the balanced `{...}` that parses, wherever it sits. This replaces
   // the first-`{`-to-LAST-`}` slice as the extraction step: that slice broke on

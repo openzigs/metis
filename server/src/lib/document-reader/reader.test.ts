@@ -383,7 +383,12 @@ describe("readDocument — whole mode", () => {
     const { provider, calls } = routedProvider([[WHOLE, one]]);
     const reading = await readDocument({ title: "Booking FRD", text: TEXT, provider });
     expect(reading.merge).toBe("skipped");
-    expect(calls.filter((c) => c.system.includes(MERGE))).toHaveLength(0);
+    // Exactly the read and its one re-ask (#2407: a section left out is asked
+    // again); no merge call, and nothing else.
+    expect(calls.map((c) => (c.system.includes(WHOLE) ? "read" : "other"))).toEqual([
+      "read",
+      "read",
+    ]);
   });
 
   it("keeps a statement returned twice once", async () => {
