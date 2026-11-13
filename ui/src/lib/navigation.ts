@@ -29,6 +29,11 @@ export interface NavTab {
   /** Prefix that marks the tab active when it differs from `href` (e.g. `/eval`). */
   match?: string;
   /**
+   * Other prefixes this tab owns: pages that kept their URL when the tab
+   * absorbed them (#2353: a product's page, `/products/<id>`, under Portfolio).
+   */
+  routes?: readonly string[];
+  /**
    * Shown only to system admins, and refused to anyone else who opens it by
    * URL (`isAdminOnlyTabPath`). Hiding is not authorization: the server
    * enforces every route the page calls (#2332).
@@ -64,13 +69,13 @@ export const NAV_ITEMS: readonly NavItem[] = [
     icon: FolderKanban,
     tabs: [
       { href: "/projects", label: "All projects", exact: true },
-      { href: "/products", label: "Products" },
+      // #2353 — the products and the coverage check across them (#1626) are one
+      // tab. `/products` redirects here; a product's own page keeps its URL.
+      // The global Repositories and Databases catalogues are gone: each
+      // project's Knowledge tab lists its own (lib/legacy-routes).
+      { href: "/portfolio", label: "Portfolio", routes: ["/products"] },
       { href: "/documents", label: "Documents" },
-      { href: "/repositories", label: "Repositories" },
-      { href: "/databases", label: "Databases" },
       { href: "/impact-analyses", label: "Impact analyses" },
-      // #1626 — a requirement checked across every product in the portfolio.
-      { href: "/portfolio", label: "Portfolio coverage" },
     ],
   },
   {
@@ -165,7 +170,10 @@ export function isActiveRoute(pathname: string, href: string): boolean {
 
 export function isTabActive(pathname: string, tab: NavTab): boolean {
   if (tab.exact) return pathname === tab.href;
-  return isActiveRoute(pathname, tab.match ?? tab.href);
+  return (
+    isActiveRoute(pathname, tab.match ?? tab.href) ||
+    (tab.routes ?? []).some((route) => isActiveRoute(pathname, route))
+  );
 }
 
 /** A sidebar entry is active on its own subtree and on any of its tabs. */

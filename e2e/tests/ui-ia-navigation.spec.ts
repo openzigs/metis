@@ -97,10 +97,19 @@ test.describe("UI IA — navigation & layout (#133)", () => {
     await page.goto("/projects", { waitUntil: "load" });
     await shell.expectLoaded();
 
+    // #2353 — exactly these four: one Portfolio tab, no Products, Portfolio
+    // coverage, Repositories or Databases tab.
+    await expect(shell.hubTabs("Projects").getByRole("link")).toHaveText([
+      "All projects",
+      "Portfolio",
+      "Documents",
+      "Impact analyses",
+    ]);
+
     for (const [tab, urlRe] of [
+      ["Portfolio", /\/portfolio$/],
       ["Documents", /\/documents$/],
-      ["Repositories", /\/repositories$/],
-      ["Databases", /\/databases$/],
+      ["Impact analyses", /\/impact-analyses$/],
       ["All projects", /\/projects$/],
     ] as const) {
       await test.step(`open "${tab}"`, async () => {
@@ -117,7 +126,8 @@ test.describe("UI IA — navigation & layout (#133)", () => {
   test("former sidebar routes still resolve inside their hub", async ({ page }) => {
     const shell = new AppShellPage(page);
     const cases: Array<[string, "Projects" | "Chat" | "Activity" | "Settings", string]> = [
-      ["/products", "Projects", "Products"],
+      // #2353 — Products is a section of the Portfolio tab.
+      ["/products", "Projects", "Portfolio"],
       ["/impact-analyses", "Projects", "Impact analyses"],
       ["/workbench", "Chat", "Workbench"],
       ["/runs", "Activity", "Runs"],
@@ -162,12 +172,65 @@ test.describe("UI IA — navigation & layout (#133)", () => {
       /live under Projects/i,
     );
 
-    // …and those homes really are one tab away (#27).
+    // …and those homes really are one tab away (#27). #2353 — repositories and
+    // databases are a project's own, in its Knowledge tab, not a Projects tab.
     const shell = new AppShellPage(page);
     await expect(shell.hubTab("Settings", "Vault")).toBeVisible();
-    await page.goto("/projects", { waitUntil: "load" });
-    await expect(shell.hubTab("Projects", "Repositories")).toBeVisible();
-    await expect(shell.hubTab("Projects", "Databases")).toBeVisible();
+    await page.goto(`/projects/${projectId}`, { waitUntil: "load" });
+    await expect(page.getByTestId("project-tab-knowledge")).toHaveAttribute(
+      "href",
+      `/projects/${projectId}/connections`,
+    );
+  });
+
+  // #2353 — the four retired Projects tabs' URLs still land somewhere sensible:
+  // Products and Portfolio coverage on the merged Portfolio tab, Repositories
+  // and Databases on the project list, or on the Knowledge tab of a project
+  // the link names.
+  test("old Projects tab URLs land on Portfolio or a project's Knowledge tab", async ({ page }) => {
+    const shell = new AppShellPage(page);
+
+    await test.step("/products opens Portfolio's Products section", async () => {
+      await page.goto("/products", { waitUntil: "load" });
+      await expect(page).toHaveURL(/\/portfolio\?tab=products$/);
+      await shell.expectLoaded();
+      await expect(shell.hubTab("Projects", "Portfolio")).toHaveAttribute("aria-current", "page");
+      await expect(page.getByRole("tab", { name: "Products" })).toHaveAttribute(
+        "aria-selected",
+        "true",
+      );
+      await expect(page.getByTestId("new-product-button")).toBeVisible();
+    });
+
+    await test.step("/portfolio opens the coverage check", async () => {
+      await page.goto("/portfolio", { waitUntil: "load" });
+      await shell.expectLoaded();
+      await expect(page.getByRole("heading", { level: 1, name: "Portfolio" })).toBeVisible();
+      await expect(shell.hubTab("Projects", "Portfolio")).toHaveAttribute("aria-current", "page");
+      await expect(page.getByLabel("Requirement statement")).toBeVisible();
+    });
+
+    for (const path of ["/repositories", "/databases"]) {
+      await test.step(`${path} lands on the project list`, async () => {
+        await page.goto(path, { waitUntil: "load" });
+        await expect(page).toHaveURL(/\/projects$/);
+        await shell.expectLoaded();
+        await expect(shell.hubTab("Projects", "All projects")).toHaveAttribute(
+          "aria-current",
+          "page",
+        );
+      });
+
+      await test.step(`${path}?projectId= lands on that project's Knowledge tab`, async () => {
+        await page.goto(`${path}?projectId=${projectId}`, { waitUntil: "load" });
+        await expect(page).toHaveURL(new RegExp(`/projects/${projectId}/connections$`));
+        await shell.expectLoaded();
+        await expect(page.getByTestId("project-tab-knowledge")).toHaveAttribute(
+          "aria-current",
+          "page",
+        );
+      });
+    }
   });
 
   // N6 #154: the nested settings layout keeps a persistent secondary nav
@@ -335,6 +398,48 @@ test.describe("#2332 — a non-admin analyst's navigation", () => {
     // A page the analyst keeps is still found.
     await input.fill("Reviews");
     await expect(page.locator('[role="option"][data-href="/reviews"]')).toHaveCount(1);
+  });
+
+  // #2353 — an analyst's Projects hub: one Portfolio tab holding the products
+  // and the coverage check, offered by the palette too; none of the four tabs
+  // it replaced, in the tab bar or the palette.
+  test("the Projects hub and the palette offer Portfolio and none of the retired tabs", async ({
+    page,
+  }) => {
+    const shell = new AppShellPage(page);
+    await page.goto("/projects", { waitUntil: "load" });
+    await shell.expectLoaded();
+    await expect(shell.hubTabs("Projects").getByRole("link")).toHaveText([
+      "All projects",
+      "Portfolio",
+      "Documents",
+      "Impact analyses",
+    ]);
+
+    await test.step("Portfolio holds the check and the products", async () => {
+      await shell.hubTab("Projects", "Portfolio").click();
+      await expect(page).toHaveURL(/\/portfolio$/);
+      await expect(page.getByLabel("Requirement statement")).toBeVisible();
+      await page.getByRole("tab", { name: "Products" }).click();
+      await expect(page.getByRole("heading", { level: 2, name: "Products" })).toBeVisible();
+    });
+
+    await test.step("the palette", async () => {
+      await openCommandPalette(page);
+      const input = page.getByTestId("command-palette-input");
+      await input.fill("Portfolio");
+      await expect(page.locator('[role="option"][data-href="/portfolio"]')).toHaveCount(1);
+      for (const [label, path] of [
+        ["Products", "/products"],
+        ["Repositories", "/repositories"],
+        ["Databases", "/databases"],
+      ] as const) {
+        await input.fill(label);
+        await expect(page.locator(`[role="option"][data-href="${path}"]`)).toHaveCount(0);
+      }
+      await input.fill("Portfolio coverage");
+      await expect(page.getByRole("option", { name: "Portfolio coverage" })).toHaveCount(0);
+    });
   });
 
   test("Reviews counts the reviews assigned to me, and drops one when I decide it", async ({

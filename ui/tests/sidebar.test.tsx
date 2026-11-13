@@ -77,7 +77,7 @@ describe("<Sidebar /> — desktop column", () => {
   });
 
   it("marks the hub as the current location, not the page, on a page it absorbed", () => {
-    renderSidebar({ pathname: "/repositories" });
+    renderSidebar({ pathname: "/portfolio" });
     // The hub tab carries aria-current=page; the sidebar entry must not repeat it.
     expect(screen.getByRole("link", { name: "Projects" })).toHaveAttribute("aria-current", "true");
   });

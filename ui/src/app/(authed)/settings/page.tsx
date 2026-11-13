@@ -78,7 +78,7 @@ const HUB_LINKS: HubLink[] = [
     href: "/settings/integrations",
     title: "Integrations",
     description:
-      "MCP servers, hooks, and triggers. Repositories and databases live under Projects; the vault has its own tab above.",
+      "MCP servers, hooks, and triggers. Repositories and databases live under Projects, in each project's Knowledge tab; the vault has its own tab above.",
     icon: Cable,
     testId: "settings-hub-link-integrations",
   },

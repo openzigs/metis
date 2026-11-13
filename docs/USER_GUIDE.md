@@ -2124,12 +2124,17 @@ In the header, open the workspace menu (the workspace's name), choose **Open wor
 
 Before anyone builds a requirement, check whether a product you already have does it, and
 which other products a change for it would reach. Your *portfolio* is the products you can
-access under **Projects › Products**. A product groups the repositories that make it up (see
-Section 15.5), and the check reads the code in those repositories. [#1608]
+access, listed under **Projects › Portfolio › Products**. A product groups the repositories
+that make it up (see Section 15.5), and the check reads the code in those repositories. [#1608]
+
+The **Portfolio** tab (`/portfolio`) holds both: **Coverage**, where you run a check, and
+**Products**, where you list, open and create products. It opens on Coverage. The old
+`/products` and `/portfolio` addresses still work: `/products` opens the Products section, and
+a product's own page keeps its address. [#2353]
 
 #### Running a check
 
-1. Open **Projects › Portfolio coverage** (`/portfolio`).
+1. Open **Projects › Portfolio** (`/portfolio`). It opens on **Coverage**.
 2. Describe what the business needs in plain language, up to 8,000 characters. For example:
    *"Customers can pay an invoice by bank transfer."*
 3. Under **Where to look**, choose **All products I can access**, **One product** and pick
@@ -3747,13 +3752,12 @@ The list opens by itself when any citation did not check out. A file name mentio
 
 ## 15. Managing Git Repositories
 
-> **v1.2.0 update.** Repositories are now reachable two ways: (a) the
-> per-project **Connections** tab (still the source of truth for connector
-> CRUD — see §15.4), and (b) a top-level `/repositories` page in the sidebar
-> that aggregates every repo across every project the operator can see, with
-> a project-name filter and one-click "open in project" links. Both surfaces
-> hit the same `/api/projects/:id/connectors/repos` endpoints — no new
-> server routes were added (`#196 / #224`).
+> **Where repositories live.** A project's repositories are on its
+> **Knowledge › Connections** tab, which is where you add, edit and remove
+> them (see §15.4). The cross-project **Projects › Repositories** list is
+> gone (#2353): `/repositories` now opens the project list, or a project's
+> Knowledge tab when the link names one (`/repositories?projectId=<id>`).
+> To find a repository, open its project from **Projects**.
 
 ### 15.1 Why Connect Repositories?
 
@@ -3892,7 +3896,7 @@ then, impact analysis and "Tested by" may miss some Go call paths in that reposi
 
 ### 15.5 Products that span repositories you can't access
 
-A product (**Projects › Products**) can include repositories from projects you don't
+A product (**Projects › Portfolio › Products**) can include repositories from projects you don't
 have access to. You won't see those repositories; instead the product page says
 **"N repos hidden"**. **Generate Documentation** still works, but it builds the documents
 from the repositories you *can* access, and every document affected says so: *"Built
@@ -3962,12 +3966,12 @@ Without edit rights the list is read-only and marked **Restricted**.
 
 ## 16. Database Connections
 
-> **v1.2.0 update.** As with repositories, the per-project **Connections**
-> tab remains the source of truth for database connector CRUD, and a new
-> top-level `/databases` sidebar page surfaces the full inventory across
-> projects with the same filter / link-back pattern (`#196 / #224`). The
-> read-only SQL panel still lives only on the per-project page so RBAC
-> stays project-scoped.
+> **Where database connections live.** As with repositories, a project's
+> database connections are on its **Knowledge › Connections** tab, with the
+> read-only SQL panel, so access stays project-scoped. The cross-project
+> **Projects › Databases** list is gone (#2353): `/databases` now opens the
+> project list, or a project's Knowledge tab when the link names one
+> (`/databases?projectId=<id>`).
 
 ### 16.1 Why Connect Databases?
 
@@ -4435,7 +4439,8 @@ Single admin home for AI provider preferences and runtime configuration. The rou
 ### 20.5 Integrations (`/settings/integrations`)
 
 A navigation index that cards every third-party integration surface:
-**Repositories**, **Databases**, **MCP servers**, **Hooks**, **Triggers**,
+**Repositories and databases** (to the project list: each project's Knowledge
+tab holds its own, #2353), **MCP servers**, **Hooks**, **Triggers**,
 **Notifications** (Slack + PagerDuty), and the **Vault**. Connections
 themselves remain project-scoped (see §15 and §16); the Integrations page just
 gives operators a single jumping-off point.

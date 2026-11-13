@@ -116,10 +116,16 @@ function trailFor(pathname: string): Crumb[] {
     return withLeaf(path, matched, trail);
   }
 
-  const nav = NAV_DESTINATIONS.filter((n) => isActiveRoute(path, n.href)).sort(
-    (a, b) => b.href.length - a.href.length,
-  )[0];
-  if (!nav) return [];
+  // #2353 — a page a tab absorbed under its old URL (`/products/<id>` under
+  // Portfolio) matches through the tab's `routes`, and its leaf is read below
+  // that route.
+  const match = NAV_DESTINATIONS.flatMap((n) =>
+    [n.href, ...(n.routes ?? [])]
+      .filter((prefix) => isActiveRoute(path, prefix))
+      .map((prefix) => ({ nav: n, prefix })),
+  ).sort((a, b) => b.prefix.length - a.prefix.length)[0];
+  if (!match) return [];
+  const { nav, prefix } = match;
   // #545 — a Settings section is named by the settings nav ("MCP servers"),
   // not by its URL segment ("Mcp").
   const section =
@@ -127,5 +133,5 @@ function trailFor(pathname: string): Crumb[] {
       ? SETTINGS_NAV.find((item) => item.href === path && item.href !== "/settings")
       : undefined;
   if (section) return [{ label: nav.label, href: nav.href }, { label: section.label }];
-  return withLeaf(path, nav.href, [{ label: nav.label, href: nav.href }]);
+  return withLeaf(path, prefix, [{ label: nav.label, href: nav.href }]);
 }
