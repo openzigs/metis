@@ -98,8 +98,9 @@ import {
 const log = createChildLogger("knowledge");
 
 /**
- * #2356 — why an ingest ended `failed` when the document's access list lost a
- * legacy group while it was being indexed. Shown on the document as its error.
+ * #2356 — why an ingest ended `failed` when the document's access list kept
+ * losing a legacy group while it was being indexed (see `quarantineOrFail`).
+ * Shown on the document as its error.
  */
 export const ACL_CHANGED_DURING_INGEST =
   "The document's access list changed while it was being indexed. Index it again to apply the new list.";
@@ -2253,17 +2254,30 @@ export class KnowledgeService {
   }
 
   /**
-   * #2356 — park the ingest's chunks, or end the ingest as `failed` when the
-   * quarantine write refuses the ACL ingest read: a legacy group it carries was
-   * removed while the document was being indexed. A retry cannot help within
-   * this run, so this is terminal (the queue does not retry a returned
-   * failure); the person re-runs indexing, which reads the new list.
+   * #2356 — park the ingest's chunks. The quarantine write refuses the ACL
+   * ingest read when a legacy group it carries was removed while the document
+   * was being indexed. Ingest only echoes the document's own list, so it reads
+   * the list again and writes that, keeping the chunks it already embedded
+   * rather than throwing into the queue's retry (a full re-parse and re-embed).
+   * If the list changes under that second write too, the ingest ends `failed`
+   * with {@link ACL_CHANGED_DURING_INGEST}, as the queue's other terminal
+   * failures do, and the person re-runs indexing.
    */
   private async quarantineOrFail(
     input: QuarantineWriteInput & { ingestGeneration: string },
   ): Promise<IngestResult | null> {
     try {
       await writeQuarantine(input);
+      return null;
+    } catch (err) {
+      if (!(err instanceof AclGroupUnsupportedError)) throw err;
+    }
+    const current = await prisma.document.findFirst({
+      where: { id: input.documentId, deletedAt: null },
+      select: { aclSubjects: true },
+    });
+    try {
+      await writeQuarantine({ ...input, aclSubjects: parseAclSubjects(current?.aclSubjects) });
       return null;
     } catch (err) {
       if (!(err instanceof AclGroupUnsupportedError)) throw err;

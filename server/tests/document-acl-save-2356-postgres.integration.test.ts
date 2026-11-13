@@ -18,6 +18,7 @@
  * `RUN_INTEGRATION_TESTS=1` AND `DATABASE_URL` is Postgres-shaped.
  */
 import { randomUUID } from "node:crypto";
+import type { AclSubject } from "@metis/shared";
 import { PrismaClient } from "@prisma/client";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -38,6 +39,7 @@ vi.mock("../src/lib/prisma.js", async (importOriginal) => {
 
 const { selectPrismaAdapter } = await import("../src/lib/prisma.js");
 const { saveDocumentAcl, AclGroupUnsupportedError } = await import("../src/lib/rag/acl.js");
+const { writeQuarantine } = await import("../src/lib/rag/quarantine.js");
 
 const SUFFIX = randomUUID().slice(0, 8);
 const USER = `u-2356pg-${SUFFIX}`;
@@ -52,31 +54,47 @@ const LEGACY = JSON.stringify([
 type Gate = { holding: Promise<void>; release: () => void };
 
 /**
- * A client whose FIRST interactive transaction pauses right before its chunk
- * UPDATE (after the document UPDATE, so it holds the row lock) until released.
- * Every later transaction runs untouched.
+ * A client whose FIRST interactive transaction pauses at one call until
+ * released: before `knowledgeChunk.updateMany` (a save, after its document
+ * UPDATE, so it holds the row lock), or after `document.findFirst` (the
+ * quarantine write, right after it read the ACL). Later transactions run
+ * untouched.
  */
-function holdFirstSave(db: PrismaClient): { client: PrismaClient; gate: Gate } {
+function holdFirstTransaction(
+  db: PrismaClient,
+  at: "save-chunk-update" | "quarantine-acl-read" = "save-chunk-update",
+): { client: PrismaClient; gate: Gate } {
   let signalHolding!: () => void;
   let release!: () => void;
   const holding = new Promise<void>((r) => (signalHolding = r));
   const released = new Promise<void>((r) => (release = r));
   let first = true;
 
+  const [model, method] =
+    at === "save-chunk-update"
+      ? (["knowledgeChunk", "updateMany"] as const)
+      : (["document", "findFirst"] as const);
   const wrapTx = (tx: PrismaClient) => {
-    const knowledgeChunk = new Proxy(tx.knowledgeChunk, {
+    const delegate = new Proxy(tx[model], {
       get(target, prop, receiver) {
-        if (prop !== "updateMany") return Reflect.get(target, prop, receiver);
+        if (prop !== method) return Reflect.get(target, prop, receiver);
+        const call = Reflect.get(target, prop, receiver) as (a: unknown) => Promise<unknown>;
         return async (args: unknown) => {
+          if (at === "save-chunk-update") {
+            signalHolding();
+            await released;
+            return call.call(target, args);
+          }
+          const row = await call.call(target, args);
           signalHolding();
           await released;
-          return (target.updateMany as (a: unknown) => Promise<unknown>)(args);
+          return row;
         };
       },
     });
     return new Proxy(tx, {
       get: (target, prop, receiver) =>
-        prop === "knowledgeChunk" ? knowledgeChunk : Reflect.get(target, prop, receiver),
+        prop === model ? delegate : Reflect.get(target, prop, receiver),
     });
   };
 
@@ -96,10 +114,17 @@ function holdFirstSave(db: PrismaClient): { client: PrismaClient; gate: Gate } {
   return { client, gate: { holding, release } };
 }
 
-/** Resolve once some session is waiting on a lock for an UPDATE of `documents`. */
-async function untilUpdateWaitsOnLock(db: PrismaClient): Promise<void> {
+/**
+ * Resolve once some session is waiting on a lock for an UPDATE of `documents`,
+ * or as soon as `stop()` is true (the other side finished without waiting).
+ */
+async function untilUpdateWaitsOnLock(
+  db: PrismaClient,
+  stop: () => boolean = () => false,
+): Promise<void> {
   const deadline = Date.now() + 20_000;
   while (Date.now() < deadline) {
+    if (stop()) return;
     const [row] = await db.$queryRaw<Array<{ n: number }>>`
       SELECT count(*)::int AS n FROM pg_stat_activity
       WHERE datname = current_database()
@@ -191,7 +216,7 @@ describe.skipIf(!enabled)("#2356 — concurrent document ACL saves (Postgres)", 
       { kind: "group" as const, value: "legacy" },
       { kind: "user" as const, value: "bob" },
     ];
-    const { client, gate } = holdFirstSave(db);
+    const { client, gate } = holdFirstTransaction(db);
     state.db = client;
 
     const aliceSave = saveDocumentAcl({ documentId: DOC, projectId: PROJECT, aclSubjects: alice });
@@ -218,7 +243,7 @@ describe.skipIf(!enabled)("#2356 — concurrent document ACL saves (Postgres)", 
   it("re-reads after losing the compare-and-set and lands one list on the document and every chunk", async () => {
     const alice = [{ kind: "user" as const, value: "alice" }];
     const bob = [{ kind: "user" as const, value: "bob" }];
-    const { client, gate } = holdFirstSave(db);
+    const { client, gate } = holdFirstTransaction(db);
     state.db = client;
 
     const aliceSave = saveDocumentAcl({ documentId: DOC, projectId: PROJECT, aclSubjects: alice });
@@ -231,5 +256,40 @@ describe.skipIf(!enabled)("#2356 — concurrent document ACL saves (Postgres)", 
     await expect(bobSave).resolves.toEqual({ chunkCount: 2 });
     expect(await acl()).toBe(JSON.stringify(bob));
     expect(await chunkAcls()).toEqual([JSON.stringify(bob), JSON.stringify(bob)]);
+  });
+
+  // The ingest-time ACL write without an ingest generation (generated-doc
+  // publication) still takes the document row lock before it reads the ACL, so
+  // the read it checks groups against is the ACL its write replaces. Without
+  // the lock, a save removing the legacy group commits between that read and
+  // the write, and the write puts the group back.
+  it("holds the row lock across the quarantine write's ACL read, so a removed group never comes back", async () => {
+    const alice = [{ kind: "user" as const, value: "alice" }];
+    const { client, gate } = holdFirstTransaction(db, "quarantine-acl-read");
+    state.db = client;
+
+    const quarantined = writeQuarantine({
+      documentId: DOC,
+      projectId: PROJECT,
+      filename: "policy.md",
+      chunks: [],
+      embeddingModel: "test",
+      aclSubjects: JSON.parse(LEGACY) as AclSubject[],
+    });
+    await gate.holding;
+    let saved = false;
+    const save = saveDocumentAcl({ documentId: DOC, projectId: PROJECT, aclSubjects: alice }).then(
+      (r) => {
+        saved = true;
+        return r;
+      },
+    );
+    await untilUpdateWaitsOnLock(db, () => saved);
+    gate.release();
+
+    await quarantined;
+    await expect(save).resolves.toEqual({ chunkCount: 2 });
+    expect(await acl()).toBe(JSON.stringify(alice));
+    expect(await chunkAcls()).toEqual([JSON.stringify(alice), JSON.stringify(alice)]);
   });
 });
