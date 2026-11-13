@@ -15,6 +15,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { apiFetch } from "@/lib/api-client";
 import { ProjectScopeSelector, normaliseScope, type ProjectScope } from "./project-scope-selector";
 
 const PROJECTS = [
@@ -127,5 +128,40 @@ describe("ProjectScopeSelector (#1368)", () => {
     await openDropdown();
     fireEvent.click(await screen.findByRole("checkbox", { name: /OrderBatch/ }));
     expect(onChange).toHaveBeenCalledWith({ mode: "all", projectIds: [] });
+  });
+
+  // #2351 review — when the scope is the top bar's project ("This project"), the
+  // shared picker shows no ticks, so a click must not act on a hidden selection.
+  describe("when the scope is the top bar's project", () => {
+    beforeEach(() => {
+      window.localStorage.setItem("metis.activeProjectId", "p1");
+      vi.mocked(apiFetch).mockImplementation((async (path: string) =>
+        path.startsWith("/search/projects")
+          ? PROJECTS
+          : path.startsWith("/workspaces")
+            ? []
+            : { items: PROJECTS, total: PROJECTS.length }) as never);
+    });
+    afterEach(() => {
+      vi.mocked(apiFetch).mockImplementation((async () => PROJECTS) as never);
+    });
+
+    it("shows no box ticked and ticking another product chooses only that one", async () => {
+      const onChange = vi.fn();
+      renderSelector({ mode: "selected", projectIds: ["p1"] }, onChange);
+      await openDropdown();
+      const orderBatch = await screen.findByRole("checkbox", { name: /OrderBatch/ });
+      expect(orderBatch).not.toBeChecked();
+      fireEvent.click(await screen.findByRole("checkbox", { name: /Invoicing/ }));
+      expect(onChange).toHaveBeenCalledWith({ mode: "selected", projectIds: ["p2"] });
+    });
+
+    it("clicking the unticked current project chooses it, not an ungrounded 'all'", async () => {
+      const onChange = vi.fn();
+      renderSelector({ mode: "selected", projectIds: ["p1"] }, onChange);
+      await openDropdown();
+      fireEvent.click(await screen.findByRole("checkbox", { name: /OrderBatch/ }));
+      expect(onChange).toHaveBeenCalledWith({ mode: "selected", projectIds: ["p1"] });
+    });
   });
 });

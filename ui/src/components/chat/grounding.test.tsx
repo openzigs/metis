@@ -274,7 +274,7 @@ describe("UngroundedScopeNotice (#18)", () => {
   it("states that 'All projects' does not search projects", () => {
     render(<UngroundedScopeNotice show />);
     expect(screen.getByTestId("chat-ungrounded-notice").textContent).toMatch(
-      /does not search your projects/,
+      /nothing of yours is searched/,
     );
   });
 

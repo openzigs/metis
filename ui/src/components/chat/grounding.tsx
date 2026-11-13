@@ -238,8 +238,8 @@ export function UngroundedScopeNotice({ show }: { show: boolean }) {
       data-testid="chat-ungrounded-notice"
       className="rounded border border-warning/40 bg-warning-muted px-3 py-2 text-sm text-warning"
     >
-      &ldquo;All projects&rdquo; does not search your projects — answers come from the model&apos;s
-      general knowledge, not your code or documents. Pick one or more projects, or your workspace,
+      No product is chosen, so nothing of yours is searched — answers come from the model&apos;s
+      general knowledge, not your code or documents. Pick one or more products, or your workspace,
       to ground answers in them.
     </p>
   );

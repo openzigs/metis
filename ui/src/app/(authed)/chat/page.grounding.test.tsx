@@ -92,7 +92,7 @@ describe("chat page — grounding (#18)", () => {
   it("tells the user before the turn that an unscoped chat is not grounded", async () => {
     render(<ChatPage />);
     const notice = await screen.findByTestId("chat-ungrounded-notice");
-    expect(notice.textContent).toMatch(/does not search your projects/);
+    expect(notice.textContent).toMatch(/nothing of yours is searched/);
   });
 
   it("shows no such notice for a session bound to a project", async () => {

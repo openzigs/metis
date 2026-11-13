@@ -166,6 +166,10 @@ export function ProjectScopeSelector({ value, onChange, disabled }: Props) {
     storeScope(next);
   }, [isLoading, projects, value, onChange]);
 
+  function isThisProject(scope: ProjectScope): boolean {
+    return scope.projectIds.length === 1 && scope.projectIds[0] === current?.id;
+  }
+
   function pick(next: ProjectScope) {
     onChange(next);
     storeScope(next);
@@ -173,8 +177,9 @@ export function ProjectScopeSelector({ value, onChange, disabled }: Props) {
 
   function toggleProject(projectId: string) {
     // #2238 — ticking adds the project to the scope, unticking removes it; an
-    // emptied selection is "all" (no search). From a workspace, it starts afresh.
-    const currentIds = value.mode === "selected" ? value.projectIds : [];
+    // emptied selection is "all" (no search). From a workspace, or from "This
+    // project" (which the picker shows unticked), it starts afresh.
+    const currentIds = value.mode === "selected" && !isThisProject(value) ? value.projectIds : [];
     const ids = currentIds.includes(projectId)
       ? currentIds.filter((id) => id !== projectId)
       : [...currentIds, projectId];
@@ -188,7 +193,7 @@ export function ProjectScopeSelector({ value, onChange, disabled }: Props) {
     value.mode === "workspace"
       ? "workspace"
       : value.mode === "selected"
-        ? value.projectIds.length === 1 && value.projectIds[0] === current?.id
+        ? isThisProject(value)
           ? "this"
           : "chosen"
         : null;
