@@ -17,7 +17,7 @@ import { hasPermission } from "@metis/shared";
 import { ApiError } from "@/lib/api-client";
 import { useAuth } from "@/lib/auth-context";
 import { reviewGateApi } from "@/lib/publishing-api";
-import { reviewGateKey } from "@/lib/query-keys";
+import { queryKeys, reviewGateKey } from "@/lib/query-keys";
 import type { ReviewGateConfigPatch } from "@metis/shared";
 import { APPROVAL_GATE_UNAVAILABLE, type ApprovalGateBlock } from "@/lib/approval-gate";
 import { Card } from "@/components/ui/card";
@@ -42,7 +42,13 @@ export function ApprovalGateSettingsCard({ projectId }: { projectId: string }) {
 
   const update = useMutation({
     mutationFn: (patch: ReviewGateConfigPatch) => reviewGateApi.update(projectId, patch),
-    onSuccess: () => qc.invalidateQueries({ queryKey: gateKey(projectId) }),
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: gateKey(projectId) });
+      // #2452 — the Requirements list flags rows by this setting
+      // (`selfApprovalForbidden`): re-read it, so turning self-approval on
+      // re-enables Approve now, not when the cached list goes stale.
+      await qc.invalidateQueries({ queryKey: queryKeys.analyses.requirementsList(projectId) });
+    },
   });
 
   const enabled = gate.data?.requireApprovedReview ?? false;

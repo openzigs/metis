@@ -66,7 +66,7 @@ export const ROW_REVIEW_LABELS: Record<string, string> = {
 
 /** The query key of one page of the list; under `analyses` so a review or approval refreshes it. */
 export function requirementsListKey(projectId: string, filters: Record<string, unknown>) {
-  return [...queryKeys.analyses.all, "requirements-list", projectId, filters] as const;
+  return [...queryKeys.analyses.requirementsList(projectId), filters] as const;
 }
 
 function useDebounced<T>(value: T, ms: number): T {
