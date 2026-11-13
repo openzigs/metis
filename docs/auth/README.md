@@ -267,6 +267,13 @@ retries up to three times, and runs once more (three more attempts) only when
 the first round ends on a unique-key race with another first sign-in; role
 reconciliation is a further three (#1977).
 
+Between attempts it waits 100 to 200 ms, then 200 to 400 ms, so the three
+attempts span at least 300 ms. Postgres refuses the loser of a conflict while
+the winner's commit is still being written to disk, and a retry that starts
+before that write finishes is refused again. Under the earlier 20 to 60 ms
+waits, one slow disk flush was enough to send a sign-in that collided with
+nobody still running to `503 SIGN_IN_CONFLICT` (#2425).
+
 Role reconciliation also runs again when its provider-role grant hits the
 `(userId, roleId)` key: two first sign-ins of the same person at once (two
 tabs, a double-submitted SSO form) both read "no roles", and the second grant
