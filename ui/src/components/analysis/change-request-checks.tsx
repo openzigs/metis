@@ -23,6 +23,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Network, Radar } from "lucide-react";
 import {
   MAX_IMPACT_REQUIREMENT_IDS,
+  NO_CODE_IMPACT_REASON,
   PORTFOLIO_PRE_APPROVAL_LABEL,
   type ImpactAnalysisSummary,
   type PortfolioAssessmentListItem,
@@ -35,6 +36,7 @@ import { impactAnalysisApi } from "@/lib/impact-analysis-api";
 import { impactAnalysisKeys, useCreateImpactAnalysis } from "@/lib/impact-analysis-hooks";
 import { portfolioApi } from "@/lib/portfolio-api";
 import { portfolioKeys, useCreatePortfolioAssessment } from "@/lib/portfolio-hooks";
+import { useCodeConnected } from "@/lib/use-code-connected";
 import { portfolioCheckHref } from "@/components/portfolio/portfolio-check-link";
 import { CHANGE_REQUEST_CHECKS_ID } from "@/components/analysis/change-request-steps";
 
@@ -119,6 +121,9 @@ export function ChangeRequestChecks({ projectId, snapshot, title, canRun }: Prop
         ? CHECKS_POLL_MS
         : false,
   });
+  // #2454 — a Documents-only project: the one-click run would map no code, so
+  // only Options (other projects) is offered, as the Impact step says.
+  const codeConnected = useCodeConnected(projectId, snapshot);
   const runImpact = useCreateImpactAnalysis();
   const runPortfolio = useCreatePortfolioAssessment();
 
@@ -156,15 +161,17 @@ export function ChangeRequestChecks({ projectId, snapshot, title, canRun }: Prop
             </h4>
             {canRun ? (
               <>
-                <Button
-                  size="sm"
-                  disabled={nothing || runImpact.isPending}
-                  onClick={() => runImpact.mutate({ analysisId, projectIds: [projectId] })}
-                  data-testid="change-request-run-impact"
-                >
-                  <Radar className="mr-1 h-3.5 w-3.5" aria-hidden />
-                  {runImpact.isPending ? "Starting…" : "Run impact analysis"}
-                </Button>
+                {codeConnected ? (
+                  <Button
+                    size="sm"
+                    disabled={nothing || runImpact.isPending}
+                    onClick={() => runImpact.mutate({ analysisId, projectIds: [projectId] })}
+                    data-testid="change-request-run-impact"
+                  >
+                    <Radar className="mr-1 h-3.5 w-3.5" aria-hidden />
+                    {runImpact.isPending ? "Starting…" : "Run impact analysis"}
+                  </Button>
+                ) : null}
                 {nothing ? null : (
                   <Link
                     href={hrefs.impact}
@@ -177,6 +184,14 @@ export function ChangeRequestChecks({ projectId, snapshot, title, canRun }: Prop
               </>
             ) : null}
           </div>
+          {codeConnected ? null : (
+            <p
+              className="text-xs text-muted-foreground"
+              data-testid="change-request-impact-no-code"
+            >
+              {NO_CODE_IMPACT_REASON}
+            </p>
+          )}
           <ImpactResults query={impacts} />
         </section>
 

@@ -79,7 +79,7 @@ let repoSourceExists = false;
 type RepoConnectorRow = { id: string; label: string; isPrimary: boolean; createdAt: Date };
 let repoConnectors: RepoConnectorRow[] = [];
 // #2454 — the capability probe asks whether the project has any repository
-// connection (`take: 1`). These tests model a project that has one even when
+// connection (its own `findFirst`). These tests model a project that has one even when
 // `repoConnectors` lists none for the run (graph and source not built yet);
 // set this for a project created "Documents only", with no code at all.
 let projectHasNoCode = false;
@@ -342,12 +342,14 @@ vi.mock("../src/lib/prisma.js", () => ({
       }),
     },
     repoConnection: {
-      findMany: vi.fn(async (args?: { take?: number }) =>
-        args?.take === 1 && repoConnectors.length === 0
-          ? projectHasNoCode
-            ? []
-            : [{ id: "rc-probe" }]
-          : repoConnectors,
+      findMany: vi.fn(async () => repoConnectors),
+      // #2454 — the capability probe's read, stubbed apart from the pipeline's.
+      findFirst: vi.fn(async () =>
+        repoConnectors.length > 0
+          ? { id: repoConnectors[0].id }
+          : projectHasNoCode
+            ? null
+            : { id: "rc-probe" },
       ),
     },
     quarantineChunk: {

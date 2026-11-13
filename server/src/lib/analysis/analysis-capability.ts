@@ -46,7 +46,7 @@ export async function detectStaticCapability(
   projectId: string,
 ): Promise<AnalysisCapabilityPreview> {
   const cfg = getConfigService();
-  const [codeGraph, repoSourceDoc, repoConnections] = await Promise.all([
+  const [codeGraph, repoSourceDoc, repoConnection] = await Promise.all([
     prisma.codeGraph.findFirst({
       where: { projectId },
       select: { id: true },
@@ -56,16 +56,17 @@ export async function detectStaticCapability(
       where: { projectId, deletedAt: null, source: "repo" },
       select: { id: true },
     }),
-    prisma.repoConnection.findMany({
+    // A `findFirst` of its own, so a test can stub the probe apart from the
+    // pipeline's `findMany` reads of the same table.
+    prisma.repoConnection.findFirst({
       where: { projectId, deletedAt: null },
       select: { id: true },
-      take: 1,
     }),
   ]);
   return {
     codeGraphPresent: codeGraph !== null,
     repoSourceIngested: repoSourceDoc !== null,
-    codeConnected: codeGraph !== null || repoSourceDoc !== null || repoConnections.length > 0,
+    codeConnected: codeGraph !== null || repoSourceDoc !== null || repoConnection !== null,
     fusedCodeRetrievalEnabled: cfg.getBool("ANALYSIS_FUSED_CODE_RETRIEVAL", true),
     schemaContextEnabled: cfg.getBool("ANALYSIS_SCHEMA_CONTEXT", true),
   };

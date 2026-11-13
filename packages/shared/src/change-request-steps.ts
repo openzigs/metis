@@ -43,6 +43,14 @@ export const STEP_STATE_LABELS: Record<ChangeRequestStepState, string> = {
   unknown: "Unknown",
 };
 
+/**
+ * #2454 — the Impact step on a Documents-only project. The Impact and portfolio
+ * card shows the same sentence and offers Options, not a one-click run over a
+ * project with no code.
+ */
+export const NO_CODE_IMPACT_REASON =
+  "This project has no code connected. Run an impact analysis over projects with code from Options.";
+
 /** An agent's result on the run, or `absent` when it has none (yet). */
 export type AgentState = "absent" | "running" | "completed" | "failed";
 
@@ -263,9 +271,11 @@ function impactStep(f: ChangeRequestFacts): Derived {
   if (latest === "loading" || latest === "failed")
     return unknownStep(latest, "the impact analyses");
   if (latest) return fromLatest(latest, "impact analysis");
-  // #2454 — a Documents-only project has no code to map, whatever the code agent did.
-  if (f.codeConnected === false)
-    return { state: "not-applicable", reason: "This project has no code connected." };
+  // #2454 — a Documents-only project has no code to map, whatever the code agent
+  // did. An impact analysis can still run over other projects that have code
+  // (the Impact and portfolio card offers that under Options), so the step is
+  // not started rather than not applicable: the step and the card agree.
+  if (f.codeConnected === false) return { state: "not-started", reason: NO_CODE_IMPACT_REASON };
   if (latest === null && !f.agentKeys.includes("code"))
     return { state: "not-started", reason: "Run an impact analysis from this change request." };
   if (!f.agentKeys.includes("code"))

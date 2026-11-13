@@ -70,12 +70,11 @@ vi.mock("../prisma.js", () => ({
       findFirst: vi.fn(async () => null),
       findMany: vi.fn(async () => []),
     },
-    // #2454 — only the capability probe asks for one row (`take: 1`); the
-    // pipeline's own repository reads get none, as before.
+    // #2454 — the capability probe has its own `findFirst`; the pipeline's own
+    // repository reads (`findMany`) get none, as before.
     repoConnection: {
-      findMany: vi.fn(async (args?: { take?: number }) =>
-        args?.take === 1 && state.repoConnected ? [{ id: "rc_768" }] : [],
-      ),
+      findMany: vi.fn(async () => []),
+      findFirst: vi.fn(async () => (state.repoConnected ? { id: "rc_768" } : null)),
     },
   },
 }));

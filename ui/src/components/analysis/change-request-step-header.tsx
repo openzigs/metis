@@ -38,6 +38,7 @@ import { portfolioApi } from "@/lib/portfolio-api";
 import { portfolioKeys } from "@/lib/portfolio-hooks";
 import { productsApi } from "@/lib/products-api";
 import { publishingApi } from "@/lib/publishing-api";
+import { useCodeConnected } from "@/lib/use-code-connected";
 import { cn } from "@/lib/utils";
 import { stepHref } from "@/components/analysis/change-request-steps";
 
@@ -95,6 +96,8 @@ export function ChangeRequestStepHeader({ projectId, snapshot, pendingApprovals 
     retry: false,
   });
 
+  // #2454 — the run's record, or the live probe while the run has not written it.
+  const codeConnected = useCodeConnected(projectId, snapshot);
   const options = runOptionsFromMetadata(snapshot.metadata);
   const requirementIds = new Set(snapshot.requirements.map((r) => r.id));
   const productTotal = typeof products.data?.total === "number" ? products.data.total : null;
@@ -161,7 +164,7 @@ export function ChangeRequestStepHeader({ projectId, snapshot, pendingApprovals 
     drafts: handoff,
     latestImpact,
     // #2454 — a Documents-only project's Impact step does not say code was mapped.
-    codeConnected: snapshot.capability?.codeConnected !== false,
+    codeConnected,
   };
   const steps = deriveChangeRequestSteps(facts);
   const waitingQuestions = options.openQuestions ?? 0;
