@@ -35,9 +35,10 @@ export class PortfolioEntryPage {
    * by name first (the list holds one page of the analyst's products).
    */
   async chooseHost(name: string): Promise<void> {
-    // Across every product, the host picker has a search of its own (#1725);
-    // over a workspace's products it lists those products already (#2351).
-    const search = this.page.getByLabel("Find a product to build it");
+    // Across every product, the host picker lists what **Find products**
+    // matches (#1725; one search since #2351); over a workspace's products it
+    // lists those products already.
+    const search = this.page.getByLabel("Find products", { exact: true });
     if (await search.isVisible()) await search.fill(name);
     const host = this.page.getByLabel("Which product will build this? (optional)");
     await expect(host.getByRole("option", { name, exact: true })).toBeAttached();
