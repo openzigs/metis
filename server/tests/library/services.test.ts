@@ -148,6 +148,39 @@ describe("SkillService", () => {
   });
 });
 
+describe("SkillService — Slack's documented webhook placeholder (#2333)", () => {
+  const hook = (secret: string) =>
+    ["https://hooks.slack.com", "/services/", ["T00000000", "B00000000", secret].join("/")].join(
+      "",
+    );
+  const withBody = (line: string) => `${skillSrc("slacky")}\n${line}\n`;
+
+  it("saves a skill whose body and supporting file quote the placeholder", async () => {
+    const placeholder = hook("X".repeat(24));
+    const created = await svcSkill().create(
+      {
+        source: withBody(`Post to ${placeholder}`),
+        files: [{ path: "references/slack.md", content: `Example: ${placeholder}` }],
+      },
+      ACTOR,
+    );
+    expect(created.key).toBe("slacky");
+  });
+
+  it("still refuses a real webhook in the body or a supporting file", async () => {
+    const real = hook("q8Lr2vWnZk4TbY7hM1sPx3Ce");
+    await expect(
+      svcSkill().create({ source: withBody(`Post to ${real}`) }, ACTOR),
+    ).rejects.toMatchObject({ code: "SKILL_CONTAINS_SECRET" });
+    await expect(
+      svcSkill().create(
+        { source: skillSrc("slacky"), files: [{ path: "s.md", content: real }] },
+        ACTOR,
+      ),
+    ).rejects.toMatchObject({ code: "SKILL_BUNDLE_INVALID" });
+  });
+});
+
 describe("AgentService", () => {
   it("creates and fetches an agent with default skill links", async () => {
     const skillSvc = svcSkill();

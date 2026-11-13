@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { timeIsolated } from "./helpers/isolated-timing.js";
 import { redactRows, redactString, redactValue } from "../src/lib/connectors/pii-redactor.js";
 
 const ORIG_ENV = { ...process.env };
@@ -77,6 +78,42 @@ describe("redactString", () => {
 
   it("noop on empty input", () => {
     expect(redactString("")).toBe("");
+  });
+
+  // #2333 — the secret half is the shared set; these pin that it is wired in.
+  it("#2333 — redacts the shared set's newer shapes: key blocks and URL credentials", () => {
+    const key = [
+      ["-----BEGIN ", "PRIVATE KEY-----"].join(""),
+      "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7MIIEvQIBADANBgkqhkiG9w0BAQEF",
+      ["-----END ", "PRIVATE KEY-----"].join(""),
+    ].join("\n");
+    expect(redactString(`page body\n${key}\nend`)).toBe(
+      "page body\n[REDACTED:private_key]\n[REDACTED:private_key]\n[REDACTED:private_key]\nend",
+    );
+    expect(redactString(["jdbc:postgresql://svc:", "Pa55w0rdPa55", "@db/app"].join(""))).toBe(
+      "jdbc:postgresql://[REDACTED:url_credentials]@db/app",
+    );
+  });
+
+  it("#2333 — secrets run before PII, so a phone shape cannot take part of a key", () => {
+    const aws = ["AKIA", "1234567890123456"].join("");
+    expect(redactString(`key ${aws}`)).toBe("key [REDACTED:aws_key]");
+  });
+
+  it("#2333 — PII_REDACT_DISABLE_PATTERNS also names a secret class", () => {
+    process.env.PII_REDACT_DISABLE_PATTERNS = "aws_key";
+    const aws = ["AKIA", "Q3EGRTXXXXZ7Y2WB"].join("");
+    expect(redactString(`key ${aws}`)).toBe(`key ${aws}`);
+  });
+
+  it("#2333 — the email shape is linear: 1 MB with no @ in well under a second", () => {
+    // `g` is a word character but not hex: `a` would be consumed whole by the
+    // secret set's `long_hex` before EMAIL ever saw it, so the test could not
+    // fail. Run in a child killed after 10 s: a quadratic EMAIL takes minutes.
+    const [ms] = timeIsolated("src/lib/connectors/pii-redactor.ts", "redactString", [
+      { unit: "g", length: 1024 * 1024 },
+    ]);
+    expect(ms).toBeLessThan(1500);
   });
 });
 

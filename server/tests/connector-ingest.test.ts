@@ -134,6 +134,31 @@ describe("repoMetadataToUnits", () => {
     expect(pkg?.body).toContain('"name"');
   });
 
+  // #2333 — a manifest is source: secrets only, so #1138's Go pseudo-version
+  // survives, and a token in a manifest does not.
+  it("redacts a manifest for secrets only: a Go pseudo-version is not a phone number (#1138)", () => {
+    const token = ["ghp_", "Wm2".repeat(12)].join("");
+    const units = repoMetadataToUnits("conn_1", {
+      repo: { full_name: "o/r", default_branch: "main", size: 10 },
+      ref: "main",
+      refFoundUpstream: true,
+      languages: {},
+      topLevel: [],
+      readme: null,
+      manifests: {
+        "go.mod": "require golang.org/x/net v0.0.0-20210817142637-a7dc8b61c822\n",
+        ".npmrc": `//registry.npmjs.org/:_authToken=${token}\n`,
+      },
+      headSha: null,
+    });
+    const goMod = units.find((u) => u.filename.endsWith("go.mod"))?.body ?? "";
+    expect(goMod).toContain("v0.0.0-20210817142637-a7dc8b61c822");
+    expect(goMod).not.toContain("[REDACTED:phone]");
+    const npmrc = units.find((u) => u.filename.endsWith(".npmrc"))?.body ?? "";
+    expect(npmrc).not.toContain(token);
+    expect(npmrc).toContain("[REDACTED:github_pat]");
+  });
+
   // #1056 — the OVERVIEW names the ref the documents were read at, not just the
   // upstream default branch, and does not present languages as the ref's.
   it("names the pinned ref and its commit; labels languages repo-wide", () => {
