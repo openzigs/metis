@@ -125,6 +125,11 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         .put(`/api/projects/${PROJECT}/analyses/${analysisId}/approvals/${approvalId}`)
         .set("Authorization", bearer(userId))
         .send({ status: "approved" });
+    const call = (userId: string, method: "get" | "post" | "put", path: string, body = {}) =>
+      request(app())
+        [method](`/api/projects/${PROJECT}/analyses/${path}`)
+        .set("Authorization", bearer(userId))
+        .send(body);
     const approveRow = (userId: string, id: string) =>
       request(app())
         .put(`/api/requirements/${id}`)
@@ -325,6 +330,79 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(rows["REQ-1"]!.reviewStatus).toBe("draft");
       expect(rows["REQ-2"]!.reviewStatus).toBe("approved");
       expect((await metadataOf(id))[CHECKPOINT_APPROVED_IDS_KEY]).toEqual([rows["REQ-2"]!.id]);
+    });
+
+    // #723 — a rejection reopened and approved after the set was promoted is
+    // appended; the append holds its own editor's sign-off the same way.
+    it("a requirement appended after a reopened rejection is held when its editor approves it", async () => {
+      const { id, approvals } = await seedCheckpoint();
+      await editInCheckpoint(MAKER, id, approvals["REQ-1"]!);
+      await call(MAKER, "put", `${id}/approvals/${approvals["REQ-1"]!}`, { status: "rejected" });
+      await review(MAKER, id, approvals["REQ-2"]!);
+      expect(Object.keys(await rowsOf(id))).toEqual(["REQ-2"]);
+
+      expect(
+        (await call(MAKER, "post", `${id}/approvals/${approvals["REQ-1"]!}/reopen`)).status,
+      ).toBe(200);
+      const res = await review(MAKER, id, approvals["REQ-1"]!);
+
+      expect(res.body.data.promotion).toEqual({
+        status: "promoted",
+        requirementCount: 1,
+        heldForReviewCount: 1,
+        heldForReviewReason: CHECKPOINT_HELD_REASON,
+      });
+      const rows = await rowsOf(id);
+      expect(rows["REQ-1"]).toMatchObject({ title: REWORDED, reviewStatus: "draft" });
+      expect((await metadataOf(id))[CHECKPOINT_APPROVED_IDS_KEY]).toEqual([rows["REQ-2"]!.id]);
+    });
+
+    // #780 — a re-save withheld to protect review work, then applied: the
+    // held requirement is re-inserted awaiting review, not approved.
+    it("applying a withheld re-save keeps the held requirement awaiting review", async () => {
+      const { id, approvals } = await seedCheckpoint();
+      await editInCheckpoint(MAKER, id, approvals["REQ-1"]!);
+      await review(MAKER, id, approvals["REQ-1"]!);
+      await review(MAKER, id, approvals["REQ-2"]!);
+      // Review work on REQ-2 (a person's verdict), so a re-save is withheld.
+      const before = await rowsOf(id);
+      await db.requirement.update({
+        where: { id: before["REQ-2"]!.id },
+        data: { reviewStatus: "rejected" },
+      });
+
+      const items = [item(REWORDED), item(R2.title)];
+      let at = "";
+      await persistRequirements({
+        analysisId: id,
+        projectId: PROJECT,
+        synthesis: { summary: "Two requirements.", requirements: items } as never,
+        findingIdsByIndex: [],
+        reviewStatus: "approved",
+        promotedFrom: {
+          runId: RUN_ID,
+          pairings: [
+            { structuredId: "REQ-1", synthesisKeys: [synthesisItemKey(items[0]!)] },
+            { structuredId: "REQ-2", synthesisKeys: [synthesisItemKey(items[1]!)] },
+          ],
+        },
+        onWithheld: (w) => {
+          at = w.at;
+        },
+      });
+      expect(at).not.toBe("");
+
+      const diff = await call(MAKER, "get", `${id}/withheld-replacement`);
+      expect(diff.status).toBe(200);
+      const applied = await call(MAKER, "post", `${id}/withheld-replacement/apply`, {
+        at,
+        fingerprint: diff.body.data.fingerprint,
+      });
+      expect(applied.status).toBe(200);
+
+      const rows = await rowsOf(id);
+      expect(rows["REQ-1"]!.reviewStatus).toBe("draft");
+      expect((await metadataOf(id))[CHECKPOINT_APPROVED_IDS_KEY]).not.toContain(rows["REQ-1"]!.id);
     });
   },
 );
