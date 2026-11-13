@@ -228,6 +228,58 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect((await items("?q=merger")).total).toBe(0);
     });
 
+    // #2347 review — the filter agrees with the status a row SHOWS (#1016): a
+    // null column with a legacy `review:*` label reads as that label.
+    it("files a legacy-labelled row under the status its row shows", async () => {
+      const P_L = "proj-2347-legacy";
+      // Seeded once, so a retry of this test reads the same rows.
+      if (!(await db.project.findUnique({ where: { id: P_L } }))) await seedLegacy();
+      async function seedLegacy() {
+        await db.project.create({
+          data: { id: P_L, name: P_L, slug: P_L, createdById: "u-ana", workspaceId: "ws-a" },
+        });
+        await db.analysis.create({
+          data: { id: "cr-legacy", projectId: P_L, startedById: "u-ana", status: "completed" },
+        });
+        const legacy = (id: string, reviewStatus: string | null, labels: string[]) =>
+          db.requirement.create({
+            data: {
+              id,
+              analysisId: "cr-legacy",
+              projectId: P_L,
+              title: id,
+              body: "",
+              reviewStatus,
+              labels: JSON.stringify(labels),
+            },
+          });
+        await legacy("l-approved", null, ["billing", "review:approved"]);
+        await legacy("l-rejected", null, ["review:rejected"]);
+        await legacy("l-label-draft", null, ["review:draft"]);
+        await legacy("l-plain", null, ["billing"]);
+        // The typed column wins over a stale label, as every reader has it.
+        await legacy("l-column-wins", "draft", ["review:approved"]);
+      }
+
+      const filtered = async (status: string) => {
+        const res = await list(`?status=${status}`, ANA(), P_L);
+        expect(res.status).toBe(200);
+        const page = res.body.data as { items: Row[]; total: number };
+        // Every row listed under a status SHOWS that status.
+        for (const r of page.items) expect(r.reviewStatus, r.id).toBe(status);
+        return page.items.map((r) => r.id).sort();
+      };
+      expect(await filtered("approved")).toEqual(["l-approved"]);
+      expect(await filtered("rejected")).toEqual(["l-rejected"]);
+      expect(await filtered("draft")).toEqual(["l-column-wins", "l-label-draft", "l-plain"]);
+      expect(await filtered("deferred")).toEqual([]);
+    });
+
+    it("searches titles in the list's order, and says nothing is capped below the cap", async () => {
+      const page = await items("?q=e");
+      expect(page).toMatchObject({ totalIsLowerBound: false });
+    });
+
     it("refuses a caller who cannot open the project, and bad queries", async () => {
       expect((await list("", OUT())).status).toBe(404);
       expect((await list("?status=done")).status).toBe(400);

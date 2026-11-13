@@ -12,7 +12,7 @@
  * (`GET /api/users?projectId=`); the requester is left out, since the server
  * refuses a self-review.
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError, apiFetch } from "@/lib/api-client";
@@ -66,6 +66,16 @@ interface Props {
    * `PUT /api/requirements/:id` requires; a `developer` may not, #1566).
    */
   canApprove?: boolean;
+  /**
+   * #2347 — the trigger's text and test id, and the form's heading. A page
+   * with two cards over different scopes (the Requirements list's ticked rows,
+   * the summary's whole change request) names each for its scope.
+   */
+  triggerLabel?: string;
+  heading?: string;
+  testId?: string;
+  /** #2347 — called with the new review's id once it is submitted. */
+  onRequested?: (reviewId: string) => void;
 }
 
 /** #2347 — the defined outcome for someone with no one else to review, by role. */
@@ -85,19 +95,28 @@ export function RequestReviewCard({
   approvedCount: approvedCountProp = 0,
   canBaseline = false,
   canApprove = false,
+  triggerLabel = "Request review",
+  heading = "Request review",
+  testId = "request-review",
+  onRequested,
 }: Props) {
   const qc = useQueryClient();
   const [open, setOpen] = useState(false);
-  // #1129 — the chosen subset; every requirement to start with.
-  const [chosen, setChosen] = useState<ReadonlySet<string>>(() => new Set(allRequirementIds));
+  // #1129 — the chosen subset; every requirement to start with. Held as the
+  // ones left OUT, so a requirement the caller adds to `requirementIds` later
+  // (#2347: a row ticked in the list) is chosen without remounting the form,
+  // which would drop the reviewers picked and the title typed.
+  const [excluded, setExcluded] = useState<ReadonlySet<string>>(() => new Set());
+  const chosen: ReadonlySet<string> = new Set(allRequirementIds.filter((id) => !excluded.has(id)));
   const requirementIds = allRequirementIds.filter((id) => chosen.has(id));
+  const scopeKey = allRequirementIds.join(",");
   const ticked = requirements ? tickedRequirementIds(requirements) : [];
   const approvedCount =
     requirements && requirements.some((r) => r.reviewStatus !== undefined)
       ? requirements.filter((r) => chosen.has(r.id) && r.reviewStatus === "approved").length
       : approvedCountProp;
   const choose = (next: ReadonlySet<string>): void => {
-    setChosen(next);
+    setExcluded(new Set(allRequirementIds.filter((id) => !next.has(id))));
     setDraftId(null);
   };
   const [title, setTitle] = useState("Requirements review");
@@ -108,6 +127,8 @@ export function RequestReviewCard({
   // A draft whose submit failed: a retry submits it instead of opening another.
   // Editing the title or reviewers drops it, so the retry carries the edit.
   const [draftId, setDraftId] = useState<string | null>(null);
+  // A draft opened over another set of requirements is not this request.
+  useEffect(() => setDraftId(null), [scopeKey]);
 
   const term = search.trim();
   const hits = useQuery({
@@ -149,6 +170,7 @@ export function RequestReviewCard({
       setError(null);
       setReviewers([]);
       setSearch("");
+      onRequested?.(reviewId);
       // #989 — the submit moves requirements to awaiting review, so the
       // hub's counts (read from the analysis) are stale too.
       await Promise.all([
@@ -176,9 +198,9 @@ export function RequestReviewCard({
             setCreatedId(null);
             setOpen(true);
           }}
-          data-testid="request-review"
+          data-testid={testId}
         >
-          Request review
+          {triggerLabel}
         </Button>
         {createdId ? (
           <p role="status" className="text-sm" data-testid="request-review-done">
@@ -201,7 +223,7 @@ export function RequestReviewCard({
           request.mutate();
         }}
       >
-        <h3 className="text-sm font-semibold">Request review</h3>
+        <h3 className="text-sm font-semibold">{heading}</h3>
         <p className="text-sm font-medium" data-testid="request-review-scope">
           This review covers {count} of {total} requirement{total === 1 ? "" : "s"}.
         </p>
@@ -257,9 +279,9 @@ export function RequestReviewCard({
           {approvedCount > 0
             ? `${approvedCount} of them ${approvedCount === 1 ? "is" : "are"} already approved and stay${approvedCount === 1 ? "s" : ""} approved unless the review is rejected. `
             : ""}
-          The rest show as awaiting review until it is decided. Withdrawing the review puts every
-          status back, except on a requirement another open review still covers: that one waits for
-          the other review.
+          The rest show as awaiting review until it is decided. Withdrawing the review puts back the
+          status each had when the review was sent, except on a requirement another open review
+          still covers: that one waits for the other review.
         </p>
         <div className="space-y-1">
           <Label htmlFor="review-title">Title</Label>

@@ -170,6 +170,23 @@ function assertNotDecidingReviewer(review: ReviewRow, actorId: string): void {
   }
 }
 
+/**
+ * #2347 — 403 when the caller is an assigned reviewer of the review, in ANY
+ * state. "Revise and resubmit" is the author's next round: a reviewer who
+ * rejected it (a coordinator holds `review.admin`) must not be the one to
+ * reopen it, whatever its status. Unlike {@link assertNotDecidingReviewer},
+ * which lapses once a verdict is in, this never lapses.
+ */
+function assertNotAssignedReviewer(review: ReviewRow, actorId: string): void {
+  if (review.assignments.some((a) => a.reviewerId === actorId)) {
+    throw new AppError(
+      403,
+      "REVIEWER_CANNOT_REVISE",
+      "You are a reviewer of this review: only its requester, or a review administrator who is not one of its reviewers, may revise it",
+    );
+  }
+}
+
 function requirementIdsInScope(items: ReviewItemRow[]): string[] {
   return items.map((i) => i.requirementId).filter((id): id is string => id !== null);
 }
@@ -926,6 +943,7 @@ async function transitionReview(
 ): Promise<unknown> {
   const review = await loadReviewOr404(reviewId);
   assertRequesterOrAdmin(review, actorId, isAdmin);
+  if (event === "revise") assertNotAssignedReviewer(review, actorId);
   assertNotDecidingReviewer(review, actorId);
 
   const nextStatus = transition(review.status as ReviewRequestStatus, event);
@@ -979,7 +997,13 @@ export async function withdrawReview(
  * reviewers. The requirements keep the rejection until the review is submitted
  * again (a submit re-pins their current versions and resets every reviewer's
  * decision), so the analyst can edit them in between. Requester or
- * `review.admin`, as withdraw is.
+ * `review.admin`, as withdraw is, and never an assigned reviewer of it, in any
+ * state (`assertNotAssignedReviewer`).
+ *
+ * The resubmit captures each requirement's status as it then stands, which is
+ * the rejection; so a later withdraw of the resubmitted review puts back
+ * `rejected`, not the status from before the first round. The rejection is a
+ * standing verdict until the reviewers decide again.
  */
 export async function reviseReview(
   actorId: string,

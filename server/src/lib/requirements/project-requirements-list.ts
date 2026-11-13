@@ -58,6 +58,12 @@ export interface ProjectRequirementRow {
 export interface ProjectRequirementsPage {
   items: ProjectRequirementRow[];
   total: number;
+  /**
+   * True when the title search matched more than {@link SEARCH_ID_CAP}
+   * requirements: the list then holds the most recently updated of them, and
+   * `total` counts only those, so the true total is at least `total`.
+   */
+  totalIsLowerBound: boolean;
   page: number;
   pageSize: number;
 }
@@ -66,16 +72,47 @@ function escapeLike(term: string): string {
   return term.replace(/[\\%_]/g, (c) => `\\${c}`);
 }
 
-/** The status filter as a `where`: an unset status reads as `draft` (awaiting review). */
-function statusWhere(status: RequirementListStatus): Prisma.RequirementWhereInput {
-  return status === "draft"
-    ? { OR: [{ reviewStatus: "draft" }, { reviewStatus: null }] }
-    : { reviewStatus: status };
+/** The statuses other than `draft`, which an unset or unknown status reads as. */
+const DECIDED_STATUSES = ["approved", "rejected", "deferred"] as const;
+
+/** A legacy `review:<status>` label in the `labels` JSON column (#1016). */
+function hasLegacyLabel(status: string): Prisma.RequirementWhereInput {
+  return { labels: { contains: `"review:${status}"` } };
 }
 
-/** The ids of the project's live requirements whose title contains `q`, any case. */
-async function idsMatchingTitle(projectId: string, q: string): Promise<string[]> {
+/**
+ * The status filter as a `where`, agreeing with the status each row SHOWS
+ * (`resolveRequirementReviewStatus`): the typed column, else a legacy
+ * `review:*` label (#1016, as `heldReviewStatus` and the hub's counts read
+ * it), else `draft` (awaiting review). So a legacy-approved row (null column,
+ * `review:approved` label) is listed under Approved, never Awaiting review.
+ */
+function statusWhere(status: RequirementListStatus): Prisma.RequirementWhereInput {
+  if (status === "draft") {
+    return {
+      OR: [
+        // A set column that is not a decided status (`draft`, or unknown) reads as draft.
+        { reviewStatus: { notIn: [...DECIDED_STATUSES] } },
+        // An unset column reads as draft unless a legacy label decides it.
+        { reviewStatus: null, NOT: DECIDED_STATUSES.map(hasLegacyLabel) },
+      ],
+    };
+  }
+  return { OR: [{ reviewStatus: status }, { reviewStatus: null, ...hasLegacyLabel(status) }] };
+}
+
+/**
+ * The ids of the project's live requirements whose title contains `q`, any
+ * case: at most {@link SEARCH_ID_CAP}, the most recently updated first (the
+ * order the list shows), and whether more matched than that.
+ */
+async function idsMatchingTitle(
+  projectId: string,
+  q: string,
+): Promise<{ ids: string[]; capped: boolean }> {
   const pattern = `%${escapeLike(q)}%`;
+  // One past the cap, to tell "exactly the cap" from "more than it".
+  const limit = SEARCH_ID_CAP + 1;
   const rows =
     resolveDatabaseProvider() === "postgresql"
       ? await prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
@@ -83,16 +120,21 @@ async function idsMatchingTitle(projectId: string, q: string): Promise<string[]>
           WHERE "projectId" = ${projectId}
             AND "deletedAt" IS NULL
             AND "title" ILIKE ${pattern}
-          LIMIT ${SEARCH_ID_CAP}
+          ORDER BY "updatedAt" DESC, "id" ASC
+          LIMIT ${limit}
         `)
       : await prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
           SELECT "id" FROM "requirements"
           WHERE "projectId" = ${projectId}
             AND "deletedAt" IS NULL
             AND "title" LIKE ${pattern} ESCAPE '\\'
-          LIMIT ${SEARCH_ID_CAP}
+          ORDER BY "updatedAt" DESC, "id" ASC
+          LIMIT ${limit}
         `);
-  return rows.map((r) => r.id);
+  return {
+    ids: rows.slice(0, SEARCH_ID_CAP).map((r) => r.id),
+    capped: rows.length > SEARCH_ID_CAP,
+  };
 }
 
 export async function listProjectRequirements(
@@ -100,16 +142,14 @@ export async function listProjectRequirements(
   query: ProjectRequirementsQuery,
 ): Promise<ProjectRequirementsPage> {
   const q = query.q?.trim() ?? "";
-  const titleWhere: Prisma.RequirementWhereInput = q
-    ? { id: { in: await idsMatchingTitle(projectId, q) } }
-    : {};
+  const search = q ? await idsMatchingTitle(projectId, q) : null;
   const where: Prisma.RequirementWhereInput = {
     projectId,
     deletedAt: null,
     analysis: { is: { projectId, deletedAt: null } },
     ...(query.analysisId ? { analysisId: query.analysisId } : {}),
-    ...(query.status ? statusWhere(query.status) : {}),
-    ...titleWhere,
+    ...(query.status ? { AND: [statusWhere(query.status)] } : {}),
+    ...(search ? { id: { in: search.ids } } : {}),
   };
   const [total, rows] = await Promise.all([
     prisma.requirement.count({ where }),
@@ -152,11 +192,15 @@ export async function listProjectRequirements(
       changeRequest: {
         id: r.analysis.id,
         // Every run stores a title since #2341; the date is the last resort.
-        title: r.analysis.title ?? `Analysis of ${r.analysis.startedAt.toISOString().slice(0, 10)}`,
+        // The UI's filter names it the same way (`changeRequestName`).
+        title:
+          r.analysis.title?.trim() ||
+          `Analysis of ${r.analysis.startedAt.toISOString().slice(0, 10)}`,
       },
       review: r.reviewItems[0]?.reviewRequest ?? null,
     })),
     total,
+    totalIsLowerBound: search?.capped ?? false,
     page: query.page,
     pageSize: query.pageSize,
   };

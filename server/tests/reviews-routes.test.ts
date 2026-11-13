@@ -944,6 +944,51 @@ describe("POST /reviews/:reviewId/revise", () => {
     expect(res.status).toBe(403);
   });
 
+  // #2347 review — "never an assigned reviewer of it", enforced on the server.
+  it("403s a coordinator who reviewed and rejected it, although review.admin", async () => {
+    testUser.userId = "user-rev-1"; // the assignment that rejected it
+    testUser.role = "coordinator";
+    mockPrisma.reviewRequest.findUnique.mockResolvedValue(rejected());
+
+    const res = await request(app).post("/reviews/rev-1/revise").send({});
+
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe("REVIEWER_CANNOT_REVISE");
+    expect(mockPrisma.reviewRequest.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("403s an assigned reviewer who approved, while another rejected", async () => {
+    testUser.userId = "user-rev-2";
+    testUser.role = "admin";
+    mockPrisma.reviewRequest.findUnique.mockResolvedValue(
+      makeReview({
+        status: "rejected",
+        decidedAt: new Date(),
+        assignments: [
+          makeAssignment({ decision: "rejected", note: "No" }),
+          makeAssignment({ id: "asg-2", reviewerId: "user-rev-2", decision: "approved" }),
+        ],
+      }),
+    );
+
+    const res = await request(app).post("/reviews/rev-1/revise").send({});
+
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe("REVIEWER_CANNOT_REVISE");
+  });
+
+  it("403s an assigned reviewer in every state, not only in_review", async () => {
+    testUser.userId = "user-rev-1";
+    testUser.role = "coordinator";
+    for (const status of ["draft", "in_review", "approved", "rejected", "closed"]) {
+      mockPrisma.reviewRequest.findUnique.mockResolvedValue(makeReview({ status }));
+      const res = await request(app).post("/reviews/rev-1/revise").send({});
+      expect(res.status, status).toBe(403);
+      expect(res.body.error.code, status).toBe("REVIEWER_CANNOT_REVISE");
+    }
+    expect(mockPrisma.reviewRequest.updateMany).not.toHaveBeenCalled();
+  });
+
   it("409s a review that is not rejected (only a rejection is revised)", async () => {
     testUser.userId = "user-req";
     for (const status of ["in_review", "approved", "draft", "closed"]) {

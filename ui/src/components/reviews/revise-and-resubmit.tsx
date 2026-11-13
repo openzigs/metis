@@ -63,6 +63,8 @@ export function roundErrorMessage(error: unknown, fallback: string): string {
         return "A requirement in this review no longer exists. Request a new review from the Requirements tab.";
       case "NOT_REQUESTER":
         return "Only the person who requested this review, or a review administrator, can do this.";
+      case "REVIEWER_CANNOT_REVISE":
+        return "You are a reviewer of this review, so you cannot revise it. Its requester revises and resubmits it.";
       case "FORBIDDEN":
         return "Your role is not allowed to request reviews.";
     }
@@ -101,6 +103,10 @@ export function RejectedReviewNotice({
       <p className="text-xs text-muted-foreground">
         Revise and resubmit puts the same items back in a draft for the same reviewers: edit the
         requirements, then resubmit.
+      </p>
+      <p className="text-xs text-muted-foreground" data-testid="review-rejected-withdraw-note">
+        The rejection stands until the reviewers decide again: withdrawing the resubmitted review
+        leaves the requirements rejected, not as they were before this review.
       </p>
     </section>
   );

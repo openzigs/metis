@@ -18,7 +18,7 @@
  */
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { analysisApi } from "@/lib/analysis-api";
 import { requirementUpdateApi } from "@/lib/collaboration-api";
 import { queryKeys } from "@/lib/query-keys";
@@ -81,6 +81,30 @@ function analysisHref(projectId: string, analysisId: string): string {
   return `/projects/${projectId}/analysis?analysisId=${encodeURIComponent(analysisId)}`;
 }
 
+/**
+ * A change request's name: its title, else the date it started, the same way
+ * the server names it on a row (`project-requirements-list.ts`), so the filter
+ * and the rows name one change request alike.
+ */
+export function changeRequestName(run: { title?: string | null; startedAt: string }): string {
+  const title = run.title?.trim();
+  if (title) return title;
+  const started = new Date(run.startedAt);
+  return Number.isNaN(started.getTime())
+    ? "Untitled change request"
+    : `Analysis of ${started.toISOString().slice(0, 10)}`;
+}
+
+function isConflict(err: unknown): boolean {
+  return (err as { status?: number } | null)?.status === 409;
+}
+
+/** What a 409 on a row's write means, and what to do next. */
+export const EDIT_CONFLICT_MESSAGE =
+  "Someone changed this requirement since the list was read. The list has been read again. Your text is still here to copy: close this and edit the requirement once more.";
+export const APPROVE_CONFLICT_MESSAGE =
+  "Someone changed this requirement since the list was read. The list has been read again: check it, then approve it once more.";
+
 /** Edit a requirement's title and description from the list (#2219 warning first). */
 function EditRequirementDialog({
   row,
@@ -91,12 +115,16 @@ function EditRequirementDialog({
   onClose: () => void;
   invalidate: readonly unknown[][];
 }) {
+  const qc = useQueryClient();
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
+  // A failed save keeps the dialog, and what was typed, open (#2347 review).
+  const [failure, setFailure] = useState<{ message: string; conflict: boolean } | null>(null);
   useEffect(() => {
     if (!row) return;
     setTitle(row.title);
     setBody(row.body);
+    setFailure(null);
   }, [row]);
   const save = useAppMutation({
     mutationFn: (input: { id: string; version: number; title: string; body: string }) =>
@@ -107,12 +135,22 @@ function EditRequirementDialog({
       }),
     successMessage: "Requirement saved",
     errorMessage: (err) =>
-      (err as { status?: number })?.status === 409
-        ? "Someone changed this requirement since the list was read. It has been read again; open it and edit once more."
-        : "Saving the requirement failed. Try again.",
+      isConflict(err) ? EDIT_CONFLICT_MESSAGE : "Saving the requirement failed. Try again.",
     invalidateKeys: invalidate,
     onSuccess: () => onClose(),
-    onError: () => onClose(),
+    onError: (err) => {
+      const conflict = isConflict(err);
+      setFailure({
+        conflict,
+        message: conflict
+          ? EDIT_CONFLICT_MESSAGE
+          : "Saving the requirement failed. Your text is kept; try again.",
+      });
+      // The 409 says the list has been read again, so read it again.
+      if (conflict) {
+        for (const key of invalidate) void qc.invalidateQueries({ queryKey: key });
+      }
+    },
   });
   return (
     <Dialog open={row !== null} onOpenChange={(o) => (!o ? onClose() : undefined)}>
@@ -164,8 +202,19 @@ function EditRequirementDialog({
               className="w-full rounded border border-border bg-muted/40 p-2 text-sm"
             />
           </div>
+          {failure ? (
+            <p role="alert" className="text-sm text-destructive" data-testid="req-list-edit-error">
+              {failure.message}
+            </p>
+          ) : null}
           <div className="flex gap-2">
-            <Button type="submit" size="sm" disabled={!title.trim() || save.isPending}>
+            <Button
+              type="submit"
+              size="sm"
+              // After a 409 the version read is stale: a second save would only
+              // be refused again, so it waits for the requirement to be reopened.
+              disabled={!title.trim() || save.isPending || Boolean(failure?.conflict)}
+            >
               {save.isPending ? "Saving…" : "Save"}
             </Button>
             <Button type="button" size="sm" variant="outline" onClick={onClose}>
@@ -221,22 +270,41 @@ export function RequirementsList({ projectId }: { projectId: string }) {
     placeholderData: (previous) => previous,
   });
   const invalidate = [[...queryKeys.analyses.all]] as unknown[][];
+  const qc = useQueryClient();
 
   const approve = useAppMutation({
     mutationFn: (row: RequirementListRow) =>
       requirementUpdateApi.update(row.id, { reviewStatus: "approved", version: row.version }),
     successMessage: "Requirement approved",
+    errorMessage: (err) =>
+      isConflict(err) ? APPROVE_CONFLICT_MESSAGE : "Approving the requirement failed. Try again.",
     invalidateKeys: invalidate,
+    onError: (err) => {
+      // The 409 says the list has been read again, so read it again.
+      if (isConflict(err)) {
+        for (const key of invalidate) void qc.invalidateQueries({ queryKey: key });
+      }
+    },
   });
 
   const rows = list.data?.items ?? [];
   const total = list.data?.total ?? 0;
+  // #2347 review — past the search cap the server counts only the rows it kept.
+  const totalIsLowerBound = list.data?.totalIsLowerBound ?? false;
   const pages = Math.max(1, Math.ceil(total / REQUIREMENTS_PAGE_SIZE));
+  // When the total shrinks under the page (its last row approved away under a
+  // status filter, say), go to the last page that exists.
+  const settled = list.data !== undefined && !list.isPlaceholderData;
+  useEffect(() => {
+    if (settled && page > pages) setPage(pages);
+  }, [settled, page, pages]);
+  const [requestedId, setRequestedId] = useState<string | null>(null);
   const toggle = (row: RequirementListRow, on: boolean) => {
     const next = new Map(selected);
     if (on) next.set(row.id, row);
     else next.delete(row.id);
     setSelected(next);
+    setRequestedId(null);
   };
   const chosen = [...selected.values()];
 
@@ -268,7 +336,7 @@ export function RequirementsList({ projectId }: { projectId: string }) {
               <option value="">All change requests</option>
               {(runs.data?.items ?? []).map((a) => (
                 <option key={a.id} value={a.id}>
-                  {a.title?.trim() || new Date(a.startedAt).toLocaleString()}
+                  {changeRequestName(a)}
                 </option>
               ))}
             </select>
@@ -368,7 +436,10 @@ export function RequirementsList({ projectId }: { projectId: string }) {
                       <Button
                         size="sm"
                         variant="outline"
-                        disabled={!canEdit || approve.isPending}
+                        // Only the row being approved waits, not every row.
+                        disabled={
+                          !canEdit || (approve.isPending && approve.variables?.id === row.id)
+                        }
                         onClick={() => approve.mutate(row)}
                         data-testid={`requirements-approve-${row.id}`}
                       >
@@ -395,7 +466,9 @@ export function RequirementsList({ projectId }: { projectId: string }) {
 
         <div className="flex items-center justify-between text-sm">
           <span className="text-muted-foreground" data-testid="requirements-list-count">
-            {total} requirement{total === 1 ? "" : "s"}
+            {totalIsLowerBound
+              ? `${total.toLocaleString("en-US")}+ requirements (the search shows the ${total.toLocaleString("en-US")} most recently updated matches)`
+              : `${total} requirement${total === 1 ? "" : "s"}`}
             {pages > 1 ? ` · page ${page} of ${pages}` : ""}
           </span>
           {pages > 1 ? (
@@ -422,8 +495,9 @@ export function RequirementsList({ projectId }: { projectId: string }) {
 
         {canRequestReview && user ? (
           chosen.length > 0 ? (
+            // Not re-keyed on the selection: ticking one more row keeps the
+            // reviewers picked and the title typed (the card reconciles its scope).
             <RequestReviewCard
-              key={chosen.map((r) => r.id).join(",")}
               projectId={projectId}
               requirementIds={chosen.map((r) => r.id)}
               requirements={chosen.map((r) => ({
@@ -434,7 +508,25 @@ export function RequirementsList({ projectId }: { projectId: string }) {
               currentUserId={user.id}
               canBaseline={user.permissions.includes("review.admin")}
               canApprove={canEdit}
+              // #2347 review — named for its scope: the summary below has its own
+              // card for the whole change request.
+              triggerLabel={`Request review of ${chosen.length} selected`}
+              heading={`Review ${chosen.length} selected requirement${chosen.length === 1 ? "" : "s"}`}
+              testId="requirements-list-request-review"
+              // A requested review clears the ticks, so the same rows are not
+              // offered for a second, duplicate review.
+              onRequested={(reviewId) => {
+                setSelected(new Map());
+                setRequestedId(reviewId);
+              }}
             />
+          ) : requestedId ? (
+            <p role="status" className="text-sm" data-testid="requirements-list-review-done">
+              Review requested.{" "}
+              <Link href={`/reviews/${encodeURIComponent(requestedId)}`} className="underline">
+                Open the review
+              </Link>
+            </p>
           ) : (
             <p className="text-xs text-muted-foreground" data-testid="requirements-review-hint">
               Tick requirements to request a formal review of them.

@@ -130,18 +130,29 @@ test.describe("Requirements tab and the approval ladder (#2347)", () => {
 
     await test.step("the analyst ticks a row and requests a review of it", async () => {
       // The per-change-request summary below the list has its own run-wide
-      // Request review card (#732), so every form locator is scoped to the list.
+      // card (#732), named apart: "Request review of this change request"
+      // (`requirements-hub-request-review`). The form locators stay scoped to
+      // the list.
       const list = page.getByTestId("requirements-list");
       const rowB = list.getByTestId(`requirements-row-${reqB}`);
       await rowB.getByRole("checkbox").check();
-      await list.getByTestId("request-review").click();
+      const trigger = list.getByTestId("requirements-list-request-review");
+      await expect(trigger).toHaveText("Request review of 1 selected");
+      await expect(page.getByTestId("requirements-hub-request-review")).toHaveText(
+        "Request review of this change request",
+      );
+      await trigger.click();
       await expect(list.getByTestId("request-review-scope")).toHaveText(
         "This review covers 1 of 1 requirement.",
       );
       await list.getByLabel("Reviewers").fill("coordinator");
       await list.getByRole("button", { name: /^Add / }).first().click();
       await list.getByRole("button", { name: /^Request review of 1 requirement$/ }).click();
-      await expect(list.getByTestId("request-review-done")).toBeVisible({ timeout: 30_000 });
+      // The ticks are cleared once it is requested (no duplicate review).
+      await expect(list.getByTestId("requirements-list-review-done")).toBeVisible({
+        timeout: 30_000,
+      });
+      await expect(rowB.getByRole("checkbox")).not.toBeChecked();
       await expect(page.getByTestId(`requirements-review-${reqB}`)).toHaveText("In review", {
         timeout: 30_000,
       });

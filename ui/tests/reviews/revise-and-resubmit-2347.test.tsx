@@ -138,4 +138,22 @@ describe("Revise and resubmit buttons (#2347)", () => {
     expect(roundErrorMessage(new ApiError(403, "x", "FORBIDDEN"), "f")).toMatch(/not allowed/);
     expect(roundErrorMessage(undefined, "fallback")).toBe("fallback");
   });
+
+  // #2347 review — the server refuses an assigned reviewer's revise in any state.
+  it("says why a reviewer may not revise it", () => {
+    expect(roundErrorMessage(new ApiError(403, "x", "REVIEWER_CANNOT_REVISE"), "f")).toBe(
+      "You are a reviewer of this review, so you cannot revise it. Its requester revises and resubmits it.",
+    );
+  });
+});
+
+// #2347 review — after revise and resubmit, a withdraw restores the rejection
+// (the resubmit captured it), not the status from before the first round.
+describe("what a withdraw after a resubmit restores (#2347)", () => {
+  it("says the rejection stands, so the copy promises nothing the server does not do", () => {
+    renderWith(<RejectedReviewNotice review={review()} />);
+    expect(screen.getByTestId("review-rejected-withdraw-note")).toHaveTextContent(
+      "withdrawing the resubmitted review leaves the requirements rejected, not as they were before this review.",
+    );
+  });
 });

@@ -22,6 +22,8 @@ export interface RequirementListRow {
 export interface RequirementListPage {
   items: RequirementListRow[];
   total: number;
+  /** The title search matched more than the server keeps: `total` is a floor. */
+  totalIsLowerBound?: boolean;
   page: number;
   pageSize: number;
 }

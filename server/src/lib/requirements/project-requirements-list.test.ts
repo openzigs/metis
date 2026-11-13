@@ -40,9 +40,33 @@ describe("listProjectRequirements title search (#2347)", () => {
     await listProjectRequirements("p-1", { q: " 50%_off\\ ", page: 1, pageSize: 25 });
     const sql = queryRaw.mock.calls[0][0] as { sql: string; values: unknown[] };
     expect(sql.sql).toMatch(/"title" ILIKE \?/);
-    expect(sql.values).toEqual(["p-1", "%50\\%\\_off\\\\%", 5000]);
+    // #2347 review — the cap keeps the rows the list shows first, deterministically.
+    expect(sql.sql).toMatch(/ORDER BY "updatedAt" DESC, "id" ASC\s+LIMIT \?/);
+    // One past the cap, to tell "exactly the cap" from "more than it".
+    expect(sql.values).toEqual(["p-1", "%50\\%\\_off\\\\%", 5001]);
     const where = count.mock.calls[0][0].where;
     expect(where).toMatchObject({ projectId: "p-1", deletedAt: null, id: { in: ["r-1"] } });
+  });
+
+  it("past the cap: keeps the first 5,000 and says the total is a lower bound", async () => {
+    provider = "postgresql";
+    const many = Array.from({ length: 5001 }, (_, i) => ({ id: `r-${i}` }));
+    queryRaw.mockResolvedValue(many);
+    count.mockResolvedValue(5000);
+    const page = await listProjectRequirements("p-1", { q: "a", page: 1, pageSize: 25 });
+    expect(page.totalIsLowerBound).toBe(true);
+    const ids = count.mock.calls[0][0].where.id.in as string[];
+    expect(ids).toHaveLength(5000);
+    expect(ids[0]).toBe("r-0");
+    expect(ids).not.toContain("r-5000");
+  });
+
+  it("exactly at the cap: the total is exact", async () => {
+    provider = "sqlite";
+    queryRaw.mockResolvedValue(Array.from({ length: 5000 }, (_, i) => ({ id: `r-${i}` })));
+    const page = await listProjectRequirements("p-1", { q: "a", page: 1, pageSize: 25 });
+    expect(page.totalIsLowerBound).toBe(false);
+    expect(count.mock.calls[0][0].where.id.in).toHaveLength(5000);
   });
 
   it("on SQLite: LIKE with an explicit escape", async () => {

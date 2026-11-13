@@ -2019,14 +2019,21 @@ An approved requirement shows **Approved** and offers no Approve or Reject; to c
 across its change requests: its title, its change request (linked), its status, and the state of
 its latest formal review (linked to the review). Filter by change request and by status, search
 by title, and page through. From a row you can **Approve** it, **Edit** its title and description
-(an approved one shows the warning first and goes back for review), or tick rows and **Request
-review** of them. The per-change-request summary follows the list.
+(an approved one shows the warning first and goes back for review), or tick rows and click
+**Request review of N selected**. Ticking another row keeps the reviewers and title you have
+entered, and the ticks clear once the review is requested. The per-change-request summary follows
+the list; its **Request review of this change request** covers every requirement of the selected
+change request, not just the ticked rows. If a save or an approval meets someone else's change,
+the list is read again and the edit dialog keeps your text so you can copy it.
 
 **After a rejection.** A rejected review says, at the top, that every item in it is now rejected
 and what each rejecting reviewer gave as the reason. Its requester (or a review administrator)
 clicks **Revise and resubmit**: the review goes back to a draft with the same requirements and
 reviewers. Edit the requirements, then **Resubmit for review**, which pins their new versions and
-asks the reviewers again. The change request's page links the rejection straight to it.
+asks the reviewers again. The change request's page links the rejection straight to it. An
+assigned reviewer of the review cannot revise it, even with a coordinator or admin role. The
+rejection stands until the reviewers decide again, so withdrawing the resubmitted review leaves
+the requirements rejected, not as they were before the first round.
 
 **Working alone.** You cannot review your own request. When the reviewer search finds no one
 else, it says so (*"You can't review your own request; add a colleague who can open this
@@ -2058,7 +2065,7 @@ When a review of requirements is **approved**, METIS automatically creates a **b
 - **List:** every baseline in the project, newest first, showing how many requirements it pins and which review produced it (or who created it manually).
 - **Contents:** open a baseline to see each requirement **as it was at its pinned version** — even if it has been edited or deleted since. A drift note ("now at v5", "deleted since") tells you where the requirement is today, but the baseline itself never changes.
 - **Compare:** with two or more baselines, pick two in the compare picker to see what changed between sign-offs: requirements **added**, **removed**, **unchanged**, and **changed** — the changed ones with a field-by-field before/after diff (title, body, priority, type, story points, …).
-- **Requesting a review:** on the project's **Requirements** page, **Request review** (anyone with `review.create`: developer, coordinator, admin) opens a review of the latest analysis's requirements. Search for reviewers among the people who can open the project (you cannot review your own request), adjust the title, and send it. The review is submitted straight away, pinning each requirement's current version, and appears in the reviewers' **Reviews** queue.
+- **Requesting a review:** on the project's **Requirements** page (anyone with `review.create`: developer, coordinator, admin), **Request review of N selected** opens a review of the rows you ticked in the list, and **Request review of this change request** in the summary below opens one of the selected change request's requirements. Search for reviewers among the people who can open the project (you cannot review your own request), adjust the title, and send it. The review is submitted straight away, pinning each requirement's current version, and appears in the reviewers' **Reviews** queue.
 - **Manual baselines:** review administrators (coordinator or admin) can also pin a baseline without a review: **New baseline** on the Baselines page takes a name (and an optional description) and pins the current version of the project's requirements, which is useful for milestone freezes outside a formal review. It leaves out items imported from a tracker (for example GitHub issues) that nobody has approved; an imported item you approved is pinned. Before you create it, the form says how many requirements it will pin, how many of those are approved, and how many imported items it leaves out. The API (`POST /api/projects/:id/baselines`) also accepts a chosen subset of requirements, which is pinned whatever its status.
 - **Immutability:** baselines cannot be edited or deleted — there is no such button and no such API. They are audit artifacts: what was approved stays exactly as approved.
 
