@@ -137,7 +137,8 @@ test.describe("Telling the analyst when something needs them (#2343)", () => {
         .locator("li", { hasText: `Change request "${title}"` })
         .getByRole("link", { name: /Open/ })
         .click();
-      await expect(page).toHaveURL(new RegExp(href.replace(/[?]/g, "\\?")));
+      // Compared as a URL, not a pattern: the link is data, not a regular expression.
+      await expect(page).toHaveURL((url) => `${url.pathname}${url.search}` === href);
       await expect(page.getByTestId("change-request-title")).toHaveText(title, {
         timeout: 30_000,
       });

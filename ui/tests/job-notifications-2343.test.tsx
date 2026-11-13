@@ -177,6 +177,43 @@ describe("fireJobNotificationToast (#2343)", () => {
     );
   });
 
+  it("keeps a failure's specific reason when it rewrites the lifecycle toast (#2369)", () => {
+    const reason = "This document type needs connected source code. Connect a repository.";
+    fireTerminalToast(
+      lifecycle({ kind: "doc-generation", jobId: "doc-1", status: "failed", error: reason }),
+    );
+    expect(toast.error).toHaveBeenCalledWith(reason);
+    fireJobNotificationToast(
+      jobEvent({
+        kind: "job_failed",
+        jobKind: "doc-generation",
+        jobId: "doc-1",
+        notificationId: "n-doc",
+        title: 'Document "BRD" failed to generate',
+        message: "The document could not be generated. Open it to regenerate.",
+      }),
+    );
+    expect(toast.error).toHaveBeenLastCalledWith(
+      'Document "BRD" failed to generate',
+      expect.objectContaining({
+        id: "t-1",
+        description: `${reason} The document could not be generated. Open it to regenerate.`,
+      }),
+    );
+  });
+
+  it("ends a lifecycle line with a full stop before the next step", () => {
+    fireTerminalToast(lifecycle({ message: "Analysis complete" }));
+    fireJobNotificationToast(jobEvent());
+    expect(toast.success).toHaveBeenLastCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        description:
+          "Analysis complete. Questions waiting (3): open the change request to answer them.",
+      }),
+    );
+  });
+
   it("the Open action navigates through the registered router", () => {
     const go = vi.fn();
     setTerminalToastNavigator(go);

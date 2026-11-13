@@ -89,8 +89,24 @@ export function setTerminalToastNavigator(fn: (href: string) => void): void {
   navigate = fn;
 }
 
-function remember(jobId: string, id: unknown): void {
+/**
+ * #2343 — the text each job's lifecycle toast showed. A rewrite keeps it: a
+ * failure's lifecycle text can be its specific, user-safe reason (#2369, "This
+ * document type needs connected source code"), which the bell item's generic
+ * line does not carry.
+ */
+const toastTextByJob = new Map<string, string>();
+
+function remember(jobId: string, id: unknown, text?: string): void {
   if (typeof id === "string" || typeof id === "number") toastIdByJob.set(jobId, id);
+  if (text) toastTextByJob.set(jobId, text);
+}
+
+/** Two lines as one description, each ending its sentence. */
+function sentences(first: string, second: string): string {
+  const a = first.trim();
+  if (!a) return second;
+  return `${/[.!?]$/.test(a) ? a : `${a}.`} ${second}`;
 }
 
 /**
@@ -157,9 +173,9 @@ export function fireTerminalToast(event: JobLifecycleEvent | null | undefined): 
   if (isStaleReplay(event)) return false;
   if (!claimAcrossTabs(event.jobId)) return false;
   const { kind, text } = terminalToastText(event);
-  if (kind === "success") remember(event.jobId, toast.success(text));
-  else if (kind === "warning") remember(event.jobId, toast.warning(text));
-  else remember(event.jobId, toast.error(text));
+  if (kind === "success") remember(event.jobId, toast.success(text), text);
+  else if (kind === "warning") remember(event.jobId, toast.warning(text), text);
+  else remember(event.jobId, toast.error(text), text);
   return true;
 }
 
@@ -194,7 +210,13 @@ export function fireJobNotificationToast(event: JobNotificationEvent | null | un
   if (toastedJobIds.has(event.jobId)) {
     const id = toastIdByJob.get(event.jobId);
     if (id === undefined) return false;
-    show(event.title, { ...options, id });
+    // Keep what the lifecycle toast said (a failure's reason), then the next step.
+    const said = toastTextByJob.get(event.jobId);
+    show(event.title, {
+      ...options,
+      description: said ? sentences(said, event.message) : event.message,
+      id,
+    });
     return true;
   }
   toastedJobIds.add(event.jobId);
@@ -236,6 +258,7 @@ export function releaseTerminalToast(jobId: string | null | undefined): void {
 export function __resetTerminalToastsForTests(): void {
   toastedJobIds.clear();
   toastIdByJob.clear();
+  toastTextByJob.clear();
   seenNotifications.clear();
   try {
     for (const key of Object.keys(window.localStorage)) {
