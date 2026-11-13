@@ -51,7 +51,7 @@ import {
 } from "@/components/publishing/approval-gate-card";
 
 const SELF_APPROVAL_MESSAGE =
-  "You wrote or edited this requirement, so someone else must approve it. A coordinator or admin can allow self-approval in the project's Publishing settings.";
+  "You wrote or edited this requirement, so someone else must approve it. A coordinator or admin can allow self-approval in Project settings → Approval gate.";
 
 function renderList(...permissions: Parameters<typeof userWith>) {
   const Wrapper = makeWrapper({ initialUser: userWith(...permissions) });

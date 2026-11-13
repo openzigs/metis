@@ -17,6 +17,11 @@ export interface RequirementListRow {
   changeRequest: { id: string; title: string };
   /** The latest standing formal review covering it; null when none. */
   review: { id: string; title: string; status: string } | null;
+  /**
+   * #2452 — the viewer wrote or edited it and the project does not allow
+   * self-approval, so their Approve would be refused. Omitted otherwise.
+   */
+  selfApprovalForbidden?: true;
 }
 
 export interface RequirementListPage {

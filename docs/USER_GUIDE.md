@@ -2048,6 +2048,8 @@ the requirements rejected, not as they were before the first round.
   wrote has no author, so whoever ran the analysis may approve it. Editing a requirement and
   approving it in one save is refused too. METIS says *"You wrote or edited this requirement, so
   someone else must approve it"*, and a colleague approves it instead. Rejecting is not limited.
+  On the Requirements list, **Approve** on such a row is already disabled, with that reason on
+  hover, before you click it (#2452).
 - **Approval checkpoint.** If you edit a requirement's wording in an analysis's approval
   checkpoint and then approve it there, it is promoted **awaiting review**, not approved, and
   METIS says so. A colleague approves it on the Requirements page; you cannot.
@@ -2058,7 +2060,8 @@ the requirements rejected, not as they were before the first round.
 - **Formal review.** You cannot name yourself as a reviewer of your own request, or record a
   decision on it.
 - **Allow self-approval.** A team of one can turn this off for a project: tick **Allow
-  self-approval** on the **Approval gate** card of the project's **Publishing** page. Only review
+  self-approval** on the **Approval gate** card in the project's **⚙ Project settings** (the
+  same card is also on **Deliverables → Publish**). Only review
   administrators (coordinator or admin) can change it, and it is **off by default**. With it on,
   someone holding `requirement.approve` may approve what they wrote, and may name themselves as
   a reviewer of their own request (the reviewer search offers you) and decide it. Each change of the setting is recorded in the
