@@ -291,6 +291,38 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect((await get("bob", `?analysisId=${"x".repeat(65)}`)).status).toBe(400);
     });
 
+    it("checks the first 50 requirements of a larger change request, oldest first", async () => {
+      const CR_MANY = "cr-many-2345-xxx";
+      await db.analysis.create({
+        data: {
+          id: CR_MANY,
+          projectId: PA,
+          title: "Large change",
+          startedById: "alice",
+          status: "completed",
+        },
+      });
+      const base = Date.parse("2026-11-02T00:00:00Z");
+      const ids = Array.from({ length: 51 }, (_, i) => `req-many-${String(i).padStart(2, "0")}`);
+      for (const [i, id] of ids.entries()) {
+        await db.requirement.create({
+          data: {
+            id,
+            projectId: PA,
+            analysisId: CR_MANY,
+            title: id,
+            body: "The body.",
+            reviewStatus: "draft",
+            createdAt: new Date(base + i * 1000),
+          },
+        });
+      }
+      const res = await post("bob", { analysisId: CR_MANY, projectIds: [PA] });
+      expect(res.status).toBe(202);
+      const sent = (triggerSpy.mock.calls[0] as [TriggerImpactAnalysisInput])[0];
+      expect(sent.requirementIds).toEqual(ids.slice(0, 50));
+    });
+
     it("lists nothing to a reader of only a project co-selected in a run started from the change request", async () => {
       // Bob starts a run from project A's change request and adds project C.
       const run = (await post("bob", { analysisId: CR_A, projectIds: [PA, PC] })).body.data.id;
