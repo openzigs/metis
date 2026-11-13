@@ -58,6 +58,8 @@ export function scopeLabel(opts: {
   current?: ScopeItem | null;
   workspace?: { name: string; count: number | null } | null;
   loading?: boolean;
+  /** What nothing chosen does, in words (chat: no search). */
+  noneLabel?: string;
 }): { lead: string | null; detail: string } {
   const { kind, chosenIds, nameOf, current, workspace, loading } = opts;
   if (kind === "this") return { lead: `${SCOPE_WORDS.this}:`, detail: current?.name ?? "…" };
@@ -67,7 +69,7 @@ export function scopeLabel(opts: {
       detail: workspace ? workspaceText(workspace.name, workspace.count) : "…",
     };
   }
-  if (chosenIds.length === 0) return { lead: null, detail: SCOPE_WORDS.nothing };
+  if (chosenIds.length === 0) return { lead: null, detail: opts.noneLabel ?? SCOPE_WORDS.nothing };
   // #1368 — name the product instead of counting it.
   const first = nameOf(chosenIds[0]) ?? (loading ? "Loading…" : "1 product");
   const more = chosenIds.length - 1;
@@ -100,6 +102,12 @@ export interface ScopePickerProps {
   testIdBase: string;
   /** The button's accessible name. */
   ariaLabel?: string;
+  /**
+   * What the scope is while no option is chosen, in words: chat answers
+   * without searching ("No product chosen"); the portfolio check searches every
+   * product the analyst can read, as it always has by default.
+   */
+  noneLabel?: string;
 }
 
 export function ScopePicker({
@@ -118,6 +126,7 @@ export function ScopePicker({
   disabled,
   testIdBase,
   ariaLabel = "Scope",
+  noneLabel,
 }: ScopePickerProps) {
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -152,6 +161,7 @@ export function ScopePicker({
     current,
     workspace,
     loading: itemsLoading,
+    noneLabel,
   });
   // A ticked product the list no longer holds (a search narrowed it) stays listed.
   const listed: ScopeItem[] = [

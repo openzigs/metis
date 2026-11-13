@@ -2161,7 +2161,8 @@ Section 15.5), and the check reads the code in those repositories. [#1608]
    a change request's; a project in no product says so), **Whole workspace** (every product of
    the top bar's workspace you can read, with how many that is; with no workspace open, every
    product you can read), or tick **Chosen products** (up to 50). Opened from no project, it
-   starts on **Whole workspace**; opened from a product, that product is ticked. **Find
+   reads **Every product you can read** and checks all of them, as before; opened from a
+   product, that product is ticked. **Find
    products** searches all your products by name; a product you ticked stays ticked when a
    search hides it. A product you cannot read is refused by the server, never checked.
 4. Click **Check coverage**.

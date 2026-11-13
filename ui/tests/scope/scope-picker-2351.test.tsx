@@ -4,7 +4,7 @@
  * in the portfolio form the defaults per launch context.
  */
 import { describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { PORTFOLIO_ASSESSMENT_MAX_PRODUCTS, createPortfolioAssessmentSchema } from "@metis/shared";
 import {
@@ -157,13 +157,21 @@ describe("#2351 — the portfolio form's defaults per launch context", () => {
     expect(createPortfolioAssessmentSchema.safeParse(sent).success).toBe(true);
   });
 
-  it("says when the project is in no product, and starts on the workspace", () => {
+  it("says when the project is in no product, and starts on every product the analyst can read", () => {
     form({
       current: null,
       currentNote: "Spike is not part of a product, so it is not in the portfolio.",
       workspace: { id: "w", name: "Payments", productIds: ["a", "c"], count: 2 },
     });
     expect(screen.getByTestId("portfolio-scope-selector")).toHaveTextContent(
+      "Every product you can read",
+    );
+    fireEvent.click(screen.getByTestId("portfolio-scope-selector"));
+    expect(screen.getByTestId("portfolio-scope-this")).toBeDisabled();
+    expect(
+      screen.getByText("Spike is not part of a product, so it is not in the portfolio."),
+    ).toBeVisible();
+    expect(screen.getByTestId("portfolio-scope-workspace")).toHaveTextContent(
       "Whole workspace: Payments (2 products)",
     );
   });
@@ -173,6 +181,8 @@ describe("#2351 — the portfolio form's defaults per launch context", () => {
     const onSubmit = form({
       workspace: { id: "w", name: "Payments", productIds: ["a", "c"], count: 2 },
     });
+    await user.click(screen.getByTestId("portfolio-scope-selector"));
+    await user.click(screen.getByTestId("portfolio-scope-workspace"));
     expect(screen.getByTestId("portfolio-scope-hint")).toHaveTextContent("2 products to check.");
     await user.click(screen.getByRole("button", { name: "Check coverage" }));
     expect(onSubmit.mock.calls[0][0]).toEqual({
@@ -184,6 +194,10 @@ describe("#2351 — the portfolio form's defaults per launch context", () => {
 
   it("says a workspace with more products than a check takes, and waits for a choice", () => {
     const n = PORTFOLIO_ASSESSMENT_MAX_PRODUCTS + 1;
+    const pickWorkspace = () => {
+      fireEvent.click(screen.getByTestId("portfolio-scope-selector"));
+      fireEvent.click(screen.getByTestId("portfolio-scope-workspace"));
+    };
     form({
       workspace: {
         id: "w",
@@ -192,16 +206,22 @@ describe("#2351 — the portfolio form's defaults per launch context", () => {
         count: n,
       },
     });
+    pickWorkspace();
     expect(screen.getByTestId("portfolio-scope-hint")).toHaveTextContent(
       `The workspace has more than ${PORTFOLIO_ASSESSMENT_MAX_PRODUCTS} products`,
     );
     expect(screen.getByRole("button", { name: "Check coverage" })).toBeDisabled();
   });
 
-  it("with no workspace open, the whole workspace is every product the analyst can read", async () => {
+  it("from elsewhere, checks every product the analyst can read, as before", async () => {
     const user = userEvent.setup();
     const onSubmit = form({ productTotal: 7 });
     expect(screen.getByTestId("portfolio-scope-selector")).toHaveTextContent(
+      "Every product you can read",
+    );
+    // With no workspace open, Whole workspace is the same set, and says how many.
+    await user.click(screen.getByTestId("portfolio-scope-selector"));
+    expect(screen.getByTestId("portfolio-scope-workspace")).toHaveTextContent(
       "Whole workspace: every product you can read (7 products)",
     );
     await user.click(screen.getByRole("button", { name: "Check coverage" }));

@@ -52,8 +52,8 @@ export class PortfolioEntryPage {
    */
   async checkAcrossPortfolio(statement: string, host?: string): Promise<string> {
     if (statement) await this.statement.fill(statement);
-    // #2351 — opened from no project, the check starts on the whole workspace.
-    await expect(this.scope).toContainText("Whole workspace");
+    // #2351 — opened from no project, the check covers every product the user can read.
+    await expect(this.scope).toContainText("Every product you can read");
     if (host) await this.chooseHost(host);
     await Promise.all([
       this.page.waitForURL(/\/portfolio\/[^/]+$/, { timeout: 30_000 }),

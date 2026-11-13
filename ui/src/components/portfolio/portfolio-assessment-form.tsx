@@ -68,6 +68,9 @@ export interface PortfolioFormChangeRequest {
   title: string;
 }
 
+/** #2351 — what the check covers while no option is chosen (the default from elsewhere). */
+export const EVERY_PRODUCT = "Every product you can read";
+
 /** #2351 — the shared picker's "Whole workspace": the workspace's products the analyst can read. */
 export interface PortfolioFormWorkspace {
   id: string;
@@ -156,7 +159,9 @@ export function PortfolioAssessmentForm({
     count: productTotal ?? products.length,
     all: true,
   };
-  const kind: ScopeKind | null = picked ?? (current ? "this" : "workspace");
+  // From elsewhere nothing is chosen, which checks every product the analyst
+  // can read: the default it has always had ("defaults as it does today").
+  const kind: ScopeKind | null = picked ?? (current ? "this" : null);
   // #2272 — the products ticked, and the names of those the list may drop.
   const [chosen, setChosen] = useState<string[]>(arrivedWith);
   const [chosenNames, setChosenNames] = useState<Record<string, string>>({});
@@ -184,7 +189,7 @@ export function PortfolioAssessmentForm({
     });
     setPicked("chosen");
   };
-  const allAccessible = kind === "workspace" && ws.all === true;
+  const allAccessible = kind === null || (kind === "workspace" && ws.all === true);
   const workspaceTooBig = !ws.all && ws.count > PORTFOLIO_ASSESSMENT_MAX_PRODUCTS;
   // The products the check is scoped to; the server checks each one again.
   const scopeIds =
@@ -361,6 +366,7 @@ export function PortfolioAssessmentForm({
           onToggle={toggle}
           maxChosen={PORTFOLIO_ASSESSMENT_MAX_PRODUCTS}
           testIdBase="portfolio-scope"
+          noneLabel={EVERY_PRODUCT}
           ariaLabel="Products to check"
         />
         <p className="text-xs text-muted-foreground" data-testid="portfolio-scope-hint">
