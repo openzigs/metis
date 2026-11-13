@@ -585,4 +585,161 @@ describe("FederatedSearchService", () => {
       expect(result.hits.map((h) => h.chunkId)).toEqual(["proj-a-1"]);
     });
   });
+
+  describe("chat's absolute relevance floor (#2294)", () => {
+    const floorAt = (f: number) => vi.fn((_models: readonly string[]) => f);
+    const scored = (id: string, score: number, extra: Record<string, unknown> = {}) => ({
+      ...makeChunk(id, { score }),
+      ...extra,
+    });
+
+    it("drops a weak hit before the merge, so the next one takes its slot", async () => {
+      mockGetAccessible.mockResolvedValue([{ id: "proj-a", name: "A" }]);
+      const mockKS = buildMockKnowledgeService({
+        "proj-a": [scored("a1", 0.8), scored("a2", 0.3), scored("a3", 0.7)],
+      });
+      const svc = new FederatedSearchService({ knowledgeService: mockKS as never });
+      const absoluteFloor = floorAt(0.55);
+      const result = await svc.searchAcrossProjects({
+        userId: "user-1",
+        query: "q",
+        k: 2,
+        absoluteFloor,
+      });
+      expect(result.hits.map((h) => h.chunkId)).toEqual(["a1", "a3"]);
+      // Of the two the merge would have returned, one fell below the floor.
+      expect(result.belowFloor).toBe(1);
+      // The floor is read for the embedders the hits were scored with.
+      expect(absoluteFloor).toHaveBeenCalledWith([
+        "text-embedding-3-small",
+        "text-embedding-3-small",
+        "text-embedding-3-small",
+      ]);
+    });
+
+    it("leaves out a product whose every hit is below it, and compares the rest on what remains", async () => {
+      mockGetAccessible.mockResolvedValue([
+        { id: "proj-a", name: "A" },
+        { id: "proj-b", name: "B" },
+      ]);
+      const mockKS = buildMockKnowledgeService({
+        "proj-a": [scored("a1", 0.6)],
+        // B's best is weak; without the floor it would set the relative bar.
+        "proj-b": [scored("b1", 0.5)],
+      });
+      const svc = new FederatedSearchService({ knowledgeService: mockKS as never });
+      const result = await svc.searchAcrossProjects({
+        userId: "user-1",
+        query: "q",
+        absoluteFloor: floorAt(0.55),
+      });
+      expect(result.hits.map((h) => h.chunkId)).toEqual(["a1"]);
+      expect(result.projectsWithoutHits).toEqual(["proj-b"]);
+      expect(result.belowFloor).toBe(1);
+    });
+
+    it("reads a reranked project's dense cosine, not the cross-encoder's verdict", async () => {
+      mockGetAccessible.mockResolvedValue([{ id: "proj-a", name: "A" }]);
+      const mockKS = {
+        search: vi.fn(async () => ({
+          hits: [
+            scored("strong", 3, { denseScore: 0.7 }),
+            // A confident cross-encoder, but a weak dense match.
+            scored("weak", 4, { denseScore: 0.3 }),
+          ],
+          mode: "hybrid" as const,
+          reranked: true,
+        })),
+      };
+      const svc = new FederatedSearchService({ knowledgeService: mockKS as never });
+      const result = await svc.searchAcrossProjects({
+        userId: "user-1",
+        query: "q",
+        absoluteFloor: floorAt(0.55),
+      });
+      expect(result.hits.map((h) => h.chunkId)).toEqual(["strong"]);
+      expect(result.hits[0]!.denseScore).toBe(0.7);
+    });
+
+    it("compares the products on the relevance of the hits the floor kept", async () => {
+      mockGetAccessible.mockResolvedValue([
+        { id: "proj-a", name: "A" },
+        { id: "proj-b", name: "B" },
+      ]);
+      const mockKS = {
+        search: vi.fn(async (projectId: string) =>
+          projectId === "proj-a"
+            ? {
+                // The cross-encoder's favourite is a weak dense match; what is
+                // left of A is far less relevant than B.
+                hits: [
+                  scored("a-top", 6, { denseScore: 0.3 }),
+                  scored("a-rest", -1, { denseScore: 0.7 }),
+                ],
+                mode: "hybrid" as const,
+                reranked: true,
+              }
+            : { hits: [scored("b1", 0.6)], mode: "hybrid" as const, reranked: false },
+        ),
+      };
+      const svc = new FederatedSearchService({ knowledgeService: mockKS as never });
+      const result = await svc.searchAcrossProjects({
+        userId: "user-1",
+        query: "q",
+        absoluteFloor: floorAt(0.55),
+      });
+      expect(result.hits.map((h) => h.chunkId)).toEqual(["b1"]);
+      expect(result.projectsWithoutHits).toEqual(["proj-a"]);
+    });
+
+    it("keeps a keyword-only hit only when a dense hit cleared the floor", async () => {
+      mockGetAccessible.mockResolvedValue([
+        { id: "proj-a", name: "A" },
+        { id: "proj-b", name: "B" },
+      ]);
+      const lexical = (id: string) => scored(id, 0, { matchedBy: ["lexical"] });
+      const mockKS = buildMockKnowledgeService({
+        "proj-a": [lexical("a-kw"), scored("a1", 0.7)],
+        "proj-b": [lexical("b-kw")],
+      });
+      const svc = new FederatedSearchService({ knowledgeService: mockKS as never });
+      const kept = await svc.searchAcrossProjects({
+        userId: "user-1",
+        query: "q",
+        relevanceFloor: 0,
+        absoluteFloor: floorAt(0.55),
+      });
+      expect(kept.hits.map((h) => h.chunkId).sort()).toEqual(["a-kw", "a1", "b-kw"]);
+
+      const weak = buildMockKnowledgeService({
+        "proj-a": [lexical("a-kw"), scored("a1", 0.3)],
+        "proj-b": [lexical("b-kw")],
+      });
+      const none = await new FederatedSearchService({
+        knowledgeService: weak as never,
+      }).searchAcrossProjects({
+        userId: "user-1",
+        query: "q",
+        relevanceFloor: 0,
+        absoluteFloor: floorAt(0.55),
+      });
+      expect(none.hits).toEqual([]);
+      expect(none.belowFloor).toBe(3);
+    });
+
+    it("changes nothing when the floor is off for these embedders", async () => {
+      mockGetAccessible.mockResolvedValue([{ id: "proj-a", name: "A" }]);
+      const mockKS = buildMockKnowledgeService({
+        "proj-a": [scored("a1", 0.8), scored("a2", 0.1)],
+      });
+      const svc = new FederatedSearchService({ knowledgeService: mockKS as never });
+      const result = await svc.searchAcrossProjects({
+        userId: "user-1",
+        query: "q",
+        absoluteFloor: floorAt(0),
+      });
+      expect(result.hits.map((h) => h.chunkId)).toEqual(["a1", "a2"]);
+      expect(result.belowFloor).toBe(0);
+    });
+  });
 });

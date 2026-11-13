@@ -223,8 +223,15 @@ export function fuseRetrievalHits<T extends { chunkId: string }>(
   userLists: readonly T[][],
   contextualList: readonly T[] | null,
   k: number,
+  /**
+   * #2294 — a hit failing it is passed over and takes no slot, so the next one
+   * fills it: chat's relevance floor applied before the cut, not after.
+   */
+  keep?: (hit: T) => boolean,
 ): T[] {
-  if (!contextualList && userLists.length === 1) return userLists[0]!.slice(0, k);
+  if (!contextualList && userLists.length === 1) {
+    return (keep ? userLists[0]!.filter(keep) : userLists[0]!).slice(0, k);
+  }
   const weighted: Array<[readonly T[], number]> = [
     ...userLists.map((l): [readonly T[], number] => [l, 1]),
     ...(contextualList ? [[contextualList, CONTEXTUAL_WEIGHT] as [readonly T[], number]] : []),
@@ -247,6 +254,7 @@ export function fuseRetrievalHits<T extends { chunkId: string }>(
   let contextualOnly = 0;
   for (const { hit } of ranked) {
     if (out.length >= k) break;
+    if (keep && !keep(hit)) continue;
     if (!userFound.has(hit.chunkId)) {
       if (contextualOnly >= maxContextualOnly) continue;
       contextualOnly++;
