@@ -45,7 +45,7 @@ export function PromoteApprovedRequirementsButton({
   const mutation = useMutation({
     mutationFn: () => analysisApi.promoteApprovedRequirements(projectId, analysisId),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["approvals", analysisId] });
+      qc.invalidateQueries({ queryKey: queryKeys.approvals.forAnalysis(analysisId) });
       qc.invalidateQueries({ queryKey: queryKeys.analyses.detail(analysisId) });
     },
   });

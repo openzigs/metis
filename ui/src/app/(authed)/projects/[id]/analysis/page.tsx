@@ -677,7 +677,7 @@ export default function AnalysisPage(): React.ReactElement {
     // Issue #30 — the SAME key ApprovalsPanel reads and invalidates. Under its
     // own key this copy was never invalidated, so resolving an approval left
     // the Deep Dive gate (and now the tab's pending count) stale until reload.
-    queryKey: ["approvals", selectedAnalysisId ?? ""],
+    queryKey: queryKeys.approvals.forAnalysis(selectedAnalysisId ?? ""),
     queryFn: () => analysisApi.listApprovals(projectId, selectedAnalysisId!),
     enabled: Boolean(projectId && selectedAnalysisId) && detail.data?.status === "completed",
   });

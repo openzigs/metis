@@ -119,7 +119,7 @@ export function CheckpointRequirementEditor({
       // Someone approved or rejected it meanwhile: show where it went. The
       // refresh moves the card to Resolved, where `resolved` keeps the text.
       if (err instanceof ApiError && err.code === "APPROVAL_ALREADY_REVIEWED") {
-        void qc.invalidateQueries({ queryKey: ["approvals", analysisId] });
+        void qc.invalidateQueries({ queryKey: queryKeys.approvals.forAnalysis(analysisId) });
       }
     },
   });
