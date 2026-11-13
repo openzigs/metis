@@ -81,10 +81,24 @@ const SOURCE_EXTRACTION_SHAPE =
   '"ambiguities": [ { "field": string, "description": string, "suggestedQuestion": string } ], ' +
   '"evidenceNeeds": [ { "description": string, "domain": string, "searchHints": string[] } ] } ] }';
 
+/** A statement as a requirement's source span. */
+function sourceSpan(s: SourceStatement): RequirementSourceSpan {
+  return {
+    ref: s.ref,
+    ...(s.documentId ? { documentId: s.documentId } : {}),
+    ...(s.filename ? { filename: s.filename } : {}),
+    headingPath: [...s.headingPath],
+    quote: s.quote,
+  };
+}
+
 /**
  * #2235 — the statements a requirement names, in its order, each once. A label
  * the input did not list is ignored: a requirement is never given a paragraph
- * the reader did not verify.
+ * the reader did not verify. #2296 — {@link MAX_SOURCES_PER_REQUIREMENT}
+ * bounds the paragraphs the GtWR rules flag nothing in; a flagged one is kept
+ * past it, so the question its flag raises can cite it and the uncited scan
+ * never takes it for a statement no requirement rests on.
  */
 function citedSources(
   raw: unknown,
@@ -92,18 +106,16 @@ function citedSources(
 ): RequirementSourceSpan[] {
   if (!Array.isArray(raw)) return [];
   const out: RequirementSourceSpan[] = [];
+  const seen = new Set<string>();
   for (const id of raw) {
     if (typeof id !== "string") continue;
     const s = byRef.get(id.trim());
-    if (!s || out.some((o) => o.ref === s.ref)) continue;
-    out.push({
-      ref: s.ref,
-      ...(s.documentId ? { documentId: s.documentId } : {}),
-      ...(s.filename ? { filename: s.filename } : {}),
-      headingPath: [...s.headingPath],
-      quote: s.quote,
-    });
-    if (out.length >= MAX_SOURCES_PER_REQUIREMENT) break;
+    if (!s || seen.has(s.ref)) continue;
+    seen.add(s.ref);
+    if (out.length >= MAX_SOURCES_PER_REQUIREMENT && findQualityFlags(s.quote).length === 0) {
+      continue;
+    }
+    out.push(sourceSpan(s));
   }
   return out;
 }
@@ -153,16 +165,87 @@ export function buildSourceExtractionInput(
   return [extraInstructions?.trim() ?? "", ...blocks].filter((b) => b.length > 0).join("\n\n");
 }
 
-/** The most source paragraphs one requirement keeps. */
+/**
+ * The most source paragraphs one requirement keeps that the GtWR rules flag
+ * nothing in. #2296 — a flagged paragraph is always kept: it is what the
+ * flag's question cites.
+ */
 const MAX_SOURCES_PER_REQUIREMENT = 5;
 
-/** Lowercased content words of `text` (length >= 3), for matching a statement to a requirement. */
+/**
+ * #2296 — words that say nothing about what a requirement is about: English
+ * function words, and the boilerplate every requirement statement shares
+ * ("The system shall …"). Matching on them attached "The system shall respond
+ * fast." to an audit-log requirement at 3 of 5 words. Only words of three or
+ * more letters are listed: {@link contentWords} drops shorter ones already.
+ */
+const MATCH_STOP_WORDS: ReadonlySet<string> = new Set([
+  "all",
+  "and",
+  "any",
+  "are",
+  "been",
+  "but",
+  "can",
+  "could",
+  "does",
+  "each",
+  "for",
+  "from",
+  "has",
+  "have",
+  "into",
+  "its",
+  "may",
+  "might",
+  "must",
+  "not",
+  "only",
+  "other",
+  "our",
+  "per",
+  "shall",
+  "should",
+  "some",
+  "such",
+  "system",
+  "than",
+  "that",
+  "the",
+  "their",
+  "them",
+  "then",
+  "there",
+  "these",
+  "they",
+  "this",
+  "those",
+  "via",
+  "was",
+  "were",
+  "what",
+  "when",
+  "where",
+  "which",
+  "while",
+  "who",
+  "will",
+  "with",
+  "would",
+  "you",
+  "your",
+]);
+
+/**
+ * Lowercased content words of `text` (length >= 3, stop words left out), for
+ * matching a statement to a requirement.
+ */
 function contentWords(text: string): Set<string> {
   return new Set(
     text
       .toLowerCase()
       .split(/[^\p{L}\p{N}]+/u)
-      .filter((w) => w.length >= 3),
+      .filter((w) => w.length >= 3 && !MATCH_STOP_WORDS.has(w)),
   );
 }
 
@@ -220,19 +303,8 @@ export function attachUncitedQualityFlags(
       target.ambiguities.push(flagged);
       added++;
     }
-    const sources = target.sources ?? [];
-    if (sources.length < MAX_SOURCES_PER_REQUIREMENT) {
-      target.sources = [
-        ...sources,
-        {
-          ref: statement.ref,
-          ...(statement.documentId ? { documentId: statement.documentId } : {}),
-          ...(statement.filename ? { filename: statement.filename } : {}),
-          headingPath: [...statement.headingPath],
-          quote: statement.quote,
-        },
-      ];
-    }
+    // #2296 — past the cap too: the flags just added cite this paragraph.
+    target.sources = [...(target.sources ?? []), sourceSpan(statement)];
   }
   if (unmatched > 0) {
     log.info("flagged statements no requirement rests on or matches", { statements: unmatched });

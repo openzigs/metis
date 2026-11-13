@@ -552,4 +552,123 @@ describe("extract — source mode (#2235)", () => {
     }).extract(buildSourceExtractionInput(STATEMENTS), undefined, STATEMENTS);
     expect(both.requirements.flatMap((r) => r.ambiguities)).toEqual([]);
   });
+
+  // #2296 — filler words alone never attach a statement to a requirement.
+  it("#2296 — does not attach a flagged statement on stop words and boilerplate alone", async () => {
+    const statements = [
+      {
+        ref: "REQ-010",
+        statement: "The system shall respond fast.",
+        documentId: "doc-1",
+        filename: "frd.docx",
+        headingPath: ["7 Performance"],
+        quote: "The system shall respond fast.",
+      },
+    ];
+    const provider = sequenceProvider([
+      JSON.stringify({
+        requirements: [
+          {
+            title: "Audit log",
+            description: "The system shall keep an audit log of every change.",
+          },
+        ],
+      }),
+    ]);
+    const result = await new RequirementsExtractor({ provider }).extract(
+      buildSourceExtractionInput(statements),
+      undefined,
+      statements,
+    );
+    const [audit] = result.requirements;
+    expect(audit?.ambiguities).toEqual([]);
+    expect(audit?.sources).toBeUndefined();
+    expect(result.totalAmbiguities).toBe(0);
+  });
+
+  /** `n` unflagged statements a requirement can cite. */
+  const plain = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      ref: `REQ-1${i}`,
+      statement: `Search covers part ${i}.`,
+      documentId: "doc-1",
+      filename: "frd.docx",
+      headingPath: ["4 Search"],
+      quote: `Search covers part ${i} of the catalogue.`,
+    }));
+
+  it("#2296 — an uncited flagged statement attached to a requirement with five sources is still added as its source", async () => {
+    const statements = [...plain(5), STATEMENTS[0]!];
+    const provider = sequenceProvider([
+      JSON.stringify({
+        requirements: [
+          {
+            title: "Search results load",
+            description: "Search results load quickly.",
+            sourceIds: plain(5).map((s) => s.ref),
+          },
+        ],
+      }),
+    ]);
+    const result = await new RequirementsExtractor({ provider }).extract(
+      buildSourceExtractionInput(statements),
+      undefined,
+      statements,
+    );
+    const [search] = result.requirements;
+    expect(search?.ambiguities.map((a) => a.field)).toEqual(["R7:fast", "R8:where possible"]);
+    // The paragraph the flags were raised on is one of its sources, so the
+    // question cites it rather than an unrelated paragraph.
+    expect(search?.sources?.map((s) => s.ref)).toEqual([...plain(5).map((s) => s.ref), "REQ-001"]);
+  });
+
+  it("#2296 — a flagged statement cited past the fifth stays with the requirement that cites it", async () => {
+    const statements = [...plain(5), STATEMENTS[0]!];
+    const provider = sequenceProvider([
+      JSON.stringify({
+        requirements: [
+          {
+            title: "Catalogue search",
+            description: "Search the catalogue.",
+            sourceIds: [...plain(5).map((s) => s.ref), "REQ-001"],
+          },
+          // Shares the statement's words, so an "uncited" statement would go here.
+          { title: "Search results load", description: "Search results load quickly." },
+        ],
+      }),
+    ]);
+    const result = await new RequirementsExtractor({ provider }).extract(
+      buildSourceExtractionInput(statements),
+      undefined,
+      statements,
+    );
+    const [catalogue, results] = result.requirements;
+    expect(catalogue?.ambiguities.map((a) => a.field)).toEqual(["R7:fast", "R8:where possible"]);
+    expect(catalogue?.sources?.map((s) => s.ref)).toContain("REQ-001");
+    expect(results?.ambiguities).toEqual([]);
+    expect(results?.sources).toBeUndefined();
+  });
+
+  it("#2296 — the cap still bounds the unflagged paragraphs a requirement keeps", async () => {
+    const statements = plain(7);
+    const provider = sequenceProvider([
+      JSON.stringify({
+        requirements: [
+          {
+            title: "Catalogue search",
+            description: "Search the catalogue.",
+            sourceIds: statements.map((s) => s.ref),
+          },
+        ],
+      }),
+    ]);
+    const result = await new RequirementsExtractor({ provider }).extract(
+      buildSourceExtractionInput(statements),
+      undefined,
+      statements,
+    );
+    expect(result.requirements[0]?.sources?.map((s) => s.ref)).toEqual(
+      statements.slice(0, 5).map((s) => s.ref),
+    );
+  });
 });

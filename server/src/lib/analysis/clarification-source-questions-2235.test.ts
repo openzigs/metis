@@ -376,8 +376,11 @@ describe("#2275 — #2235's question handling only with the document reader on",
     expect(search).toHaveBeenCalledTimes(many.length);
   });
 
-  it("follows ANALYSIS_DOCUMENT_READER when not told", async () => {
-    vi.stubEnv("ANALYSIS_DOCUMENT_READER", "true");
+  // #2296 — the mode is what the analysis has (requirements the document
+  // reader gave source paragraphs), never the flag read live: toggling
+  // ANALYSIS_DOCUMENT_READER mid-dialog must not mix behaviours across rounds.
+  it("follows whether the requirements carry their source paragraphs, not the live flag", async () => {
+    vi.stubEnv("ANALYSIS_DOCUMENT_READER", "false");
     try {
       const { provider, chat } = makeProvider(CLASSIFIED);
       const state = await new ClarificationDialog({ provider }).startOrContinue("a1", REQUIREMENTS);
@@ -386,10 +389,80 @@ describe("#2275 — #2235's question handling only with the document reader on",
     } finally {
       vi.unstubAllEnvs();
     }
+
+    const NO_SOURCES: StructuredRequirements = {
+      ...REQUIREMENTS,
+      requirements: REQUIREMENTS.requirements.map(({ sources: _sources, ...r }) => r),
+    };
     store.clear();
-    const { provider } = makeProvider(CLASSIFIED);
-    const off = await new ClarificationDialog({ provider }).startOrContinue("a1", REQUIREMENTS);
-    expect(off.setAside).toBeUndefined();
+    vi.stubEnv("ANALYSIS_DOCUMENT_READER", "true");
+    try {
+      const { provider, chat } = makeProvider(CLASSIFIED);
+      const off = await new ClarificationDialog({ provider }).startOrContinue("a1", NO_SOURCES);
+      expect(systemOf(chat)).not.toContain("divergent");
+      expect(off.setAside).toBeUndefined();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("decides the mode from every requirement, not only the ones still open", async () => {
+    // r1 (the one with sources) has nothing left to ask; r2 has no sources.
+    const state: ClarificationState = {
+      analysisId: "a1",
+      currentRound: 2,
+      maxRounds: 3,
+      rounds: [{ round: 1, questions: [], answers: [] }],
+      resolvedAmbiguities: ["r1:R7:fast", "r1:scope", "r1:term"],
+      escalatedToSonnet: false,
+      completed: false,
+    };
+    store.set("a1", state);
+    const { provider, chat } = makeProvider(CLASSIFIED);
+    await new ClarificationDialog({ provider }).startOrContinue("a1", REQUIREMENTS);
+    expect(systemOf(chat)).toContain("divergent");
+  });
+
+  it("#2296 — reader off: the re-prompt asks for the pre-#2235 shape", async () => {
+    const replies = ["not json", JSON.stringify({ questions: [q("r2", "limit")] })];
+    const chat = vi.fn(
+      async (): Promise<ChatResponse> =>
+        ({ content: replies.shift() ?? '{"status":"open"}' }) as ChatResponse,
+    );
+    const provider = { ...makeProvider([]).provider, chat } as AIProvider;
+    await new ClarificationDialog({ provider, sourceQuestions: false }).startOrContinue(
+      "a1",
+      REQUIREMENTS,
+    );
+    const reprompt = JSON.stringify((chat.mock.calls[1] as unknown as [ChatMessage[]])[0]);
+    expect(reprompt).toContain('\\"requirementId\\": string');
+    for (const field of ["uncertainty", "options", "divergent", "impact"]) {
+      expect(reprompt).not.toContain(field);
+    }
+
+    store.clear();
+    replies.push("not json", JSON.stringify({ questions: [q("r2", "limit")] }));
+    chat.mockClear();
+    await new ClarificationDialog({ provider, sourceQuestions: true }).startOrContinue(
+      "a1",
+      REQUIREMENTS,
+    );
+    expect(JSON.stringify((chat.mock.calls[1] as unknown as [ChatMessage[]])[0])).toContain(
+      "divergent",
+    );
+  });
+
+  it("#2296 — reader off: a question asked carries no readings", async () => {
+    const { provider } = makeProvider([
+      q("r2", "limit", { options: ["10 per page", "50 per page"], impact: "high" }),
+    ]);
+    const state = await new ClarificationDialog({
+      provider,
+      sourceQuestions: false,
+    }).startOrContinue("a1", REQUIREMENTS);
+    const asked = state.rounds[0]!.questions[0]!;
+    expect(asked).not.toHaveProperty("options");
+    expect(asked).not.toHaveProperty("impact");
   });
 
   it("marks a question searched only when the search ran", async () => {
