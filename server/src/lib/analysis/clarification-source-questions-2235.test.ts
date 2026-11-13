@@ -274,10 +274,18 @@ describe("#2235 — ask only when it matters", () => {
       provider,
       sourceQuestions: true,
     }).startOrContinue("a1", REQUIREMENTS);
-    // r1's ambiguities were never raised, so they are still open.
+    // r1's ambiguities were never raised, so they are still open. #2451 — the
+    // round asks them as written rather than showing "3 remaining" and nothing
+    // to answer (recall-first, #1101).
     expect(state.completed).toBe(false);
     expect(state.rounds).toHaveLength(1);
-    expect(state.rounds[0]!.questions).toEqual([]);
+    expect(
+      state.rounds[0]!.questions.map((x) => [`${x.requirementId}:${x.ambiguityField}`, x.question]),
+    ).toEqual([
+      ["r1:R7:fast", 'Can you clarify: Vague term "fast"'],
+      ["r1:scope", "Can you clarify: scope unclear"],
+      ["r1:term", "Can you clarify: term undefined"],
+    ]);
     expect(state.setAside).toHaveLength(2);
   });
 
@@ -355,7 +363,7 @@ describe("#2275 — #2235's question handling only with the document reader on",
   const systemOf = (chat: ReturnType<typeof makeProvider>["chat"]) =>
     (chat.mock.calls[0] as unknown as [ChatMessage[]])[0][0]!.content as string;
 
-  it("reader off: the pre-#2235 prompt, and every question raised is asked and searched, unclassified and uncapped", async () => {
+  it("reader off: the pre-#2235 prompt, and every question with an open ambiguity of its own is asked and searched, unclassified and uncapped", async () => {
     const extras = Array.from({ length: MAX_QUESTIONS_PER_ROUND }, (_, i) => `extra${i}`);
     const many = [...CLASSIFIED, ...extras.map((f) => q("r2", f))];
     // #2451 — one question per ambiguity, so every extra question has one.

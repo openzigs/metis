@@ -106,14 +106,100 @@ describe("matchQuestionsToAmbiguities (#2451)", () => {
   });
 
   it("does not file by guesswork a question that names no ambiguity and shares no word", () => {
+    const two = {
+      id: "r1",
+      ambiguities: [
+        { field: "scope", description: "Scope unclear.", suggestedQuestion: "" },
+        { field: "owner", description: "Approver unnamed.", suggestedQuestion: "" },
+      ],
+    };
+    expect(matchQuestionsToAmbiguities([q("r1", "zzz", "Who?")], [two], new Set())).toEqual([]);
+    // One shared word is enough.
+    const matched = matchQuestionsToAmbiguities([q("r1", "zzz", "Whose scope?")], [two], new Set());
+    expect(matched.map((m) => m.ambiguityField)).toEqual(["scope"]);
+  });
+
+  it("pairs the one leftover question with the one leftover open ambiguity (recall-first, #1101)", () => {
+    // A paraphrase under an invented field that shares no content word.
     const one = {
       id: "r1",
-      ambiguities: [{ field: "scope", description: "Scope unclear.", suggestedQuestion: "" }],
+      ambiguities: [
+        {
+          field: "description",
+          description: "Delivery mechanism of the reset link is not specified.",
+          suggestedQuestion: "",
+        },
+      ],
     };
-    expect(matchQuestionsToAmbiguities([q("r1", "zzz", "Who?")], [one], new Set())).toEqual([]);
-    // One shared word is enough.
-    const matched = matchQuestionsToAmbiguities([q("r1", "zzz", "Whose scope?")], [one], new Set());
-    expect(matched.map((m) => m.ambiguityField)).toEqual(["scope"]);
+    const matched = matchQuestionsToAmbiguities(
+      [q("r1", "zzz", "Which channel sends it?")],
+      [one],
+      new Set(),
+    );
+    expect(matched.map((m) => m.ambiguityField)).toEqual(["description"]);
+  });
+
+  it("pairs the leftover after the greedy pass, when exactly one of each is left", () => {
+    const two = {
+      id: "r1",
+      ambiguities: [
+        { field: "scope", description: "Scope of the export is unclear.", suggestedQuestion: "" },
+        { field: "owner", description: "Nobody named approves it.", suggestedQuestion: "" },
+      ],
+    };
+    const matched = matchQuestionsToAmbiguities(
+      [q("r1", "a", "What does the export scope cover?"), q("r1", "b", "Who signs off?")],
+      [two],
+      new Set(),
+    );
+    expect(matched.map((m) => m.ambiguityField)).toEqual(["scope", "owner"]);
+  });
+
+  it("still files nothing by guesswork when two questions share no word with two ambiguities", () => {
+    const two = {
+      id: "r1",
+      ambiguities: [
+        { field: "scope", description: "Scope unclear.", suggestedQuestion: "" },
+        { field: "owner", description: "Approver unnamed.", suggestedQuestion: "" },
+      ],
+    };
+    expect(
+      matchQuestionsToAmbiguities([q("r1", "a", "Who?"), q("r1", "b", "When?")], [two], new Set()),
+    ).toEqual([]);
+  });
+
+  it("ignores the words every open sibling ambiguity shares when choosing between them", () => {
+    // `reset`, `link` and `password` are in both: they say nothing about which
+    // one a question is about. Counted, they made the generic question outrank
+    // the specific one and take the expiry ambiguity, so answering it closed
+    // the wrong one and the expiry question came back (#2451's symptom).
+    const siblings = {
+      id: "r1",
+      ambiguities: [
+        {
+          field: "description",
+          description: "The password reset link expiry window is not given.",
+          suggestedQuestion: "",
+        },
+        {
+          field: "description",
+          description: "Whether a password reset link email goes to secondary addresses.",
+          suggestedQuestion: "",
+        },
+      ],
+    };
+    const matched = matchQuestionsToAmbiguities(
+      [
+        q("r1", "x", "Is the password reset link needed at all?"),
+        q("r1", "y", "What expiry applies?"),
+      ],
+      [siblings],
+      new Set(),
+    );
+    expect(matched.map((m) => [m.question.slice(0, 7), m.ambiguityField])).toEqual([
+      ["Is the ", "description#2"],
+      ["What ex", "description"],
+    ]);
   });
 
   it("leaves a question about an unknown requirement as it was", () => {

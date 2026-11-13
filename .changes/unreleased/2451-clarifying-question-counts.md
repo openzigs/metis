@@ -13,3 +13,10 @@ section: Fixed
   screen (13) and everything else counted the open questions (12).
 - A change request's settings line says "Clarifying questions: on" from the
   moment the run starts. Until part-way through the run it said "off".
+- A round of clarifying questions no longer opens with nothing to answer while
+  questions are still open. When none of the model's questions can be tied to
+  an open question, the round asks the open questions in their own words.
+- On a run started before this release, the Clarifying Questions panel can
+  show more open questions than the Questions tab and the Summary until answers
+  are next submitted: an answer used to close every question about the same
+  part of a requirement, and the panel now counts each one on its own.

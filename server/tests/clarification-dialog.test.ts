@@ -201,13 +201,19 @@ describe("ClarificationDialog", () => {
       expect(await getDialogState("test-analysis")).toBeUndefined();
     });
 
-    it("keeps a legitimately empty question list as an empty round", async () => {
+    // #2451 — an empty list is still a real answer (no re-prompt, no error), but
+    // a round with nothing to answer while ambiguities are open read "N
+    // remaining" with no box: the open ambiguities are asked as written.
+    it("reads a legitimately empty question list as no error, and asks the open ambiguities", async () => {
       const provider = mockProvider('{"questions":[]}');
       const dialog = new ClarificationDialog({ provider });
       const state = await dialog.startOrContinue("test-analysis", makeRequirements());
       expect(provider.chat).toHaveBeenCalledTimes(1);
       expect(state.rounds).toHaveLength(1);
-      expect(state.rounds[0]!.questions).toEqual([]);
+      expect(state.rounds[0]!.questions.map((q) => [q.ambiguityField, q.question])).toEqual([
+        ["field-0", "What about field 0?"],
+        ["field-1", "What about field 1?"],
+      ]);
     });
 
     it("rethrows a provider failure unchanged", async () => {

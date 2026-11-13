@@ -42,7 +42,7 @@ import type {
   UncertaintyKind,
 } from "./types/requirements.js";
 import { citationFor, selectQuestionsToAsk, type GeneratedQuestion } from "./question-selection.js";
-import { matchQuestionsToAmbiguities } from "./question-ambiguity-match.js";
+import { fallbackQuestionsFor, matchQuestionsToAmbiguities } from "./question-ambiguity-match.js";
 
 const log = createChildLogger("clarification-dialog");
 
@@ -704,27 +704,43 @@ export class ClarificationDialog {
       requirements,
       signal,
     );
-    const ask = selection.ask.filter((q) => !reused.has(q.id));
+    let ask = selection.ask.filter((q) => !reused.has(q.id));
+    let notAsked = selection.notAsked.length;
     const governingAsk = governingQuestions.filter((q) => !reused.has(q.id));
-    if (
-      (generated.length > 0 || reused.size > 0) &&
-      ask.length === 0 &&
-      governingAsk.length === 0
-    ) {
+    if (ask.length === 0 && governingAsk.length === 0) {
       // Everything raised was set aside (or, #2236, answered before in the
-      // project): there is nothing worth asking — but
-      // only when no ambiguity is left open. A set-aside field the model made
-      // up, or an ambiguity it never raised a question about (a deterministic
-      // GtWR hit), is still open, so the round is kept (empty, as #1081 left a
-      // reply that raised nothing) and a later round asks again (#1104 guard).
+      // project), or the model raised nothing: there is nothing worth asking —
+      // but only when no ambiguity is left open. A set-aside field the model
+      // made up, or an ambiguity it never raised a question about (a
+      // deterministic GtWR hit), is still open (#1104 guard).
       const stillOpen = addressedAmbiguities(state);
-      const leftOpen = requirements.requirements.some((r) =>
-        ambiguityKeys(r).some((key) => !stillOpen.has(key)),
-      );
-      if (!leftOpen) {
+      const fallback = fallbackQuestionsFor(requirements.requirements, stillOpen, randomUUID);
+      if (fallback.length === 0) {
         state.completed = true;
         return this.writeStart(analysisId, revision, state);
       }
+      // #2451 — recall-first (#1101): never a round with nothing to answer
+      // while ambiguities are open. That round read "N remaining" with no box
+      // to answer in; it now asks the open ambiguities themselves, each under
+      // its own key, capped as any round is.
+      log.info("No question to ask while ambiguities are open: asking them as written", {
+        analysisId,
+        round: state.currentRound,
+        open: fallback.length,
+      });
+      const byId = new Map(requirements.requirements.map((r) => [r.id, r]));
+      const cited = fallback.map((q) => {
+        const citation = citationFor(byId.get(q.requirementId), q.ambiguityField);
+        return citation ? { ...q, citation } : q;
+      });
+      const fallbackSelection = sourceQuestions
+        ? selectQuestionsToAsk(cited, {
+            askFirst: this.askFirst,
+            priorityOf: (id) => priorities.get(id),
+          })
+        : askEveryQuestion(cited);
+      ask = fallbackSelection.ask;
+      notAsked = fallbackSelection.notAsked.length;
     }
 
     // Self-resolution pass (clarify-self-resolve): before surfacing questions,
@@ -748,7 +764,7 @@ export class ClarificationDialog {
       // #1129 — the ticked items' questions lead the round.
       questions: orderQuestionsAskFirst(groundedQuestions, this.askFirst),
       answers: [],
-      ...(selection.notAsked.length > 0 ? { notAsked: selection.notAsked.length } : {}),
+      ...(notAsked > 0 ? { notAsked } : {}),
     };
 
     state.rounds.push(round);

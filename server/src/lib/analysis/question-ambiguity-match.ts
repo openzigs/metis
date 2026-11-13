@@ -14,11 +14,19 @@
  * So the dialog does not trust the model's key. Per requirement, each pairing of
  * a question with an open ambiguity is scored: the exact key wins outright, a
  * bare field name the requirement uses more than once is a weak hint, and
- * otherwise the words the question shares with the ambiguity decide. Pairs are
- * taken best first, each question and each ambiguity once. A question left
- * over (more questions than open ambiguities, or one that names none and shares
- * no word with any) is not asked: its answer could close nothing, and the count
- * would never fall. Its ambiguity, if it had one, stays open for a later round.
+ * otherwise the words the question shares with the ambiguity decide. A word
+ * every open ambiguity of the requirement has (its own vocabulary: `reset`,
+ * `link`) says nothing about which one a question is about, so it does not
+ * count. Pairs are taken best first, each question and each ambiguity once.
+ *
+ * Recall-first (#1101): when that leaves exactly one question and exactly one
+ * open ambiguity of a requirement unpaired, they are paired, since there is
+ * nothing else either could be about. Otherwise a question left over (more
+ * questions than open ambiguities, or one that names none and shares no word
+ * with any while several are open) is not asked: filed by guesswork, its
+ * answer could close the wrong ambiguity (the #1104 guard), and the count
+ * would not fall. Its ambiguity stays open, and the dialog never shows a round
+ * with nothing to answer while one is open (`fallbackQuestionsFor`).
  * A question about a requirement not in the list is left as it is.
  */
 import { ambiguityFieldKeys } from "@metis/shared";
@@ -92,6 +100,12 @@ export function matchQuestionsToAmbiguities<Q extends MatchableQuestion>(
           ],
     );
 
+    // A word every open sibling has is no evidence for any one of them.
+    if (open.length > 1) {
+      const common = [...open[0]!.words].filter((w) => open.every((o) => o.words.has(w)));
+      for (const o of open) for (const w of common) o.words.delete(w);
+    }
+
     const pairs: Array<{ question: number; ambiguity: number; score: number }> = [];
     for (const at of asked) {
       const q = questions[at]!;
@@ -117,6 +131,10 @@ export function matchQuestionsToAmbiguities<Q extends MatchableQuestion>(
       filed.set(p.question, open[p.ambiguity]!.key);
       taken.add(p.ambiguity);
     }
+    // Recall-first: one question and one ambiguity left can only be about each other.
+    const unfiled = asked.filter((at) => !filed.has(at));
+    const untaken = open.flatMap((o, i) => (taken.has(i) ? [] : [o]));
+    if (unfiled.length === 1 && untaken.length === 1) filed.set(unfiled[0]!, untaken[0]!.key);
     for (const at of asked) if (!filed.has(at)) filed.set(at, null);
   }
 
@@ -125,5 +143,46 @@ export function matchQuestionsToAmbiguities<Q extends MatchableQuestion>(
     const key = filed.get(at);
     if (key == null) return [];
     return [key === q.ambiguityField ? q : { ...q, ambiguityField: key }];
+  });
+}
+
+/**
+ * #2451 — a question for each open ambiguity, in its own words, filed under its
+ * own key. The dialog asks these only when a round would otherwise have nothing
+ * to answer while ambiguities are still open (every question the model raised
+ * was dropped, set aside or answered before, or it raised none): a round with
+ * no question showed "N remaining" and no box to answer in. Recall-first
+ * (#1101): the analyst sees every open question rather than none.
+ */
+export function fallbackQuestionsFor(
+  requirements: readonly { id: string; ambiguities: readonly Ambiguity[] }[],
+  addressed: ReadonlySet<string>,
+  newId: () => string,
+): Array<{
+  id: string;
+  requirementId: string;
+  ambiguityField: string;
+  question: string;
+  context: string;
+}> {
+  return requirements.flatMap((requirement) => {
+    const keys = ambiguityFieldKeys(requirement.ambiguities);
+    return requirement.ambiguities.flatMap((a, i) => {
+      if (addressed.has(`${requirement.id}:${keys[i]}`)) return [];
+      const description = (a.description ?? "").trim();
+      const question =
+        (a.suggestedQuestion ?? "").trim() ||
+        (description ? `Can you clarify: ${description}` : "");
+      if (!question) return [];
+      return [
+        {
+          id: newId(),
+          requirementId: requirement.id,
+          ambiguityField: keys[i]!,
+          question,
+          context: description,
+        },
+      ];
+    });
   });
 }

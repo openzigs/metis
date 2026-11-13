@@ -13,6 +13,13 @@
  * requirement: the first ambiguity on a field keeps the field as its key, which
  * every key stored before #2451 already is, and each later one on the same
  * field gets `#2`, `#3`, and so on, in the order the requirement lists them.
+ *
+ * The `#n` keys are positional, so a stored key names the same ambiguity only
+ * while the requirement's ambiguities keep their order and length. The
+ * clarification round rewrites a requirement's description, never its
+ * ambiguities (pinned in server `clarify-duplicate-fields-2451.test.ts`). Any
+ * new writer of a requirement's `ambiguities` must keep that, or re-key what
+ * the dialog has stored.
  */
 
 interface HasField {

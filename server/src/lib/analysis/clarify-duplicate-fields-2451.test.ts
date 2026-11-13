@@ -65,7 +65,7 @@ const REQUIREMENTS = {
 } as unknown as StructuredRequirements;
 
 /** Round 1 of the live run: invented field names, and one question too many. */
-const ROUND_1 = [
+const ROUND_1: ReadonlyArray<readonly [string, string, string]> = [
   ["req-request", "delivery_mechanism", "How is the reset link delivered? Email only?"],
   ["req-request", "email_validation", "What happens when a malformed address is typed?"],
   ["req-request", "user_scope", "Which user types may reset, admins included?"],
@@ -73,22 +73,24 @@ const ROUND_1 = [
   ["req-single", "abandoned_flow", "What if a user opens the link and abandons the flow?"],
 ];
 
-function makeProvider(): { provider: AIProvider; prompts: string[] } {
+function makeProvider(
+  round: ReadonlyArray<readonly [string, string, string]> = ROUND_1,
+  resolution: { resolvedFields: string[]; updatedDescription: string } = {
+    resolvedFields: [],
+    updatedDescription: "",
+  },
+): { provider: AIProvider; prompts: string[] } {
   const prompts: string[] = [];
   const chat = vi.fn(async (messages: Array<{ content: string }>): Promise<ChatResponse> => {
     const prompt = messages.map((m) => m.content).join("\n");
     if (!prompt.includes("Generate clarifying questions")) {
       return {
-        content: JSON.stringify({
-          resolvedFields: [],
-          updatedDescription: "",
-          remainingUncertainty: 1,
-        }),
+        content: JSON.stringify({ ...resolution, remainingUncertainty: 1 }),
       } as ChatResponse;
     }
     prompts.push(prompt);
     // A model that echoes nothing it was told: the same five questions each round.
-    const questions = ROUND_1.map(([requirementId, ambiguityField, question]) => ({
+    const questions = round.map(([requirementId, ambiguityField, question]) => ({
       requirementId,
       ambiguityField,
       question,
@@ -157,6 +159,55 @@ describe("clarifying questions on a requirement with several ambiguities on one 
     expect(prompts[1]).not.toContain("how the reset link is delivered");
     expect(prompts[1]).not.toContain("'Used' is not defined");
     expect(prompts[1]).toContain("description#2:");
+  });
+
+  it("never opens a round with nothing to answer while ambiguities are open", async () => {
+    // Every question is under an invented field and shares no word with any
+    // ambiguity, so none can be filed: the round asks the open ambiguities
+    // themselves, each under its own key, rather than "4 remaining" and no box.
+    const { provider } = makeProvider([
+      ["req-request", "x", "Who?"],
+      ["req-request", "y", "When?"],
+      ["req-single", "z", "Why?"],
+      ["req-single", "w", "Where?"],
+    ]);
+    const state = await new ClarificationDialog({ provider }).startOrContinue(
+      ANALYSIS_ID,
+      REQUIREMENTS,
+    );
+    const round = state.rounds[0]!.questions;
+    expect(state.completed).toBe(false);
+    expect(round.map((q) => `${q.requirementId}:${q.ambiguityField}`)).toEqual([
+      "req-request:description",
+      "req-request:description#2",
+      "req-single:description",
+      "req-single:description#2",
+    ]);
+    expect(round[0]!.question).toContain("how the reset link is delivered");
+  });
+
+  it("keeps each requirement's ambiguities in order and length across a round, so positional keys hold", async () => {
+    // `description#2` names the second `description` ambiguity by position. A
+    // resolution that rewrote, dropped or reordered the list would move every
+    // key after it onto a different ambiguity, crediting answers to the wrong
+    // one. The round rewrites the description only.
+    const { provider } = makeProvider(ROUND_1, {
+      resolvedFields: ["description"],
+      updatedDescription: "A customer requests a reset link, sent by email only.",
+    });
+    const dialog = new ClarificationDialog({ provider });
+    const started = await dialog.startOrContinue(ANALYSIS_ID, REQUIREMENTS);
+    const delivery = started.rounds[0]!.questions.find((q) => q.question.startsWith("How is"))!;
+    const { updatedRequirements } = await dialog.submitAnswers(
+      ANALYSIS_ID,
+      [{ questionId: delivery.id, answer: "Email only." }],
+      REQUIREMENTS,
+    );
+    const updated = updatedRequirements.requirements[0]!;
+    expect(updated.description).toContain("email only");
+    expect(updatedRequirements.requirements.map((r) => r.ambiguities)).toEqual(
+      REQUIREMENTS.requirements.map((r) => r.ambiguities),
+    );
   });
 
   it("lists each ambiguity to the model under its own key", () => {
