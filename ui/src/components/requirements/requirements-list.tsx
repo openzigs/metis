@@ -48,8 +48,13 @@ import { APPROVAL_LADDER_RUNGS, ApprovalLadderNote } from "./approval-ladder";
 export const REQUIREMENTS_PAGE_SIZE = 25;
 const SEARCH_DEBOUNCE_MS = 300;
 
+/**
+ * #2454 — a draft reads "Draft", not "Awaiting review": most drafts are in no
+ * review, and a row a review covers already says so beside it ("In review"),
+ * so only those read as waiting on someone.
+ */
 export const STATUS_LABELS: Record<RequirementListStatus, string> = {
-  draft: "Awaiting review",
+  draft: "Draft",
   approved: "Approved",
   rejected: "Rejected",
   deferred: "Deferred",

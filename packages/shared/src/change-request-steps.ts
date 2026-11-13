@@ -153,6 +153,11 @@ export interface ChangeRequestFacts {
    * reads from the run's code agent alone).
    */
   latestImpact?: LatestResult | null | UnknownFact;
+  /**
+   * #2454 — `false` when the project had no code at run start (created
+   * "Documents only"): no code was there to map. Absent reads as having code.
+   */
+  codeConnected?: boolean;
 }
 
 export interface ChangeRequestStep {
@@ -258,6 +263,9 @@ function impactStep(f: ChangeRequestFacts): Derived {
   if (latest === "loading" || latest === "failed")
     return unknownStep(latest, "the impact analyses");
   if (latest) return fromLatest(latest, "impact analysis");
+  // #2454 — a Documents-only project has no code to map, whatever the code agent did.
+  if (f.codeConnected === false)
+    return { state: "not-applicable", reason: "This project has no code connected." };
   if (latest === null && !f.agentKeys.includes("code"))
     return { state: "not-started", reason: "Run an impact analysis from this change request." };
   if (!f.agentKeys.includes("code"))

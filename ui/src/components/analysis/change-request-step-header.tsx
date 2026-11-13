@@ -160,6 +160,8 @@ export function ChangeRequestStepHeader({ projectId, snapshot, pendingApprovals 
     portfolioChecks,
     drafts: handoff,
     latestImpact,
+    // #2454 — a Documents-only project's Impact step does not say code was mapped.
+    codeConnected: snapshot.capability?.codeConnected !== false,
   };
   const steps = deriveChangeRequestSteps(facts);
   const waitingQuestions = options.openQuestions ?? 0;

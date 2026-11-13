@@ -29,6 +29,12 @@ const PROJECT_ID = "pr_768";
 const state = {
   /** Whether the project has a built code graph. */
   codeGraphPresent: true,
+  /**
+   * #2454 — whether the project has a repository connection. A project with
+   * none (and no graph or ingested source) has no code, and is not told its
+   * code was not graphed.
+   */
+  repoConnected: true,
   /** `requirements` the document agent persisted (the live repro: none). */
   documentRequirements: [] as Array<{ id: string; text: string }>,
 };
@@ -64,7 +70,13 @@ vi.mock("../prisma.js", () => ({
       findFirst: vi.fn(async () => null),
       findMany: vi.fn(async () => []),
     },
-    repoConnection: { findMany: vi.fn(async () => []) },
+    // #2454 — only the capability probe asks for one row (`take: 1`); the
+    // pipeline's own repository reads get none, as before.
+    repoConnection: {
+      findMany: vi.fn(async (args?: { take?: number }) =>
+        args?.take === 1 && state.repoConnected ? [{ id: "rc_768" }] : [],
+      ),
+    },
   },
 }));
 
@@ -257,6 +269,7 @@ const NEW_REQUIREMENTS = [
 beforeEach(() => {
   vi.clearAllMocks();
   state.codeGraphPresent = true;
+  state.repoConnected = true;
   state.documentRequirements = [];
   persisted.capability = [];
   persisted.affectedCode = [];
@@ -322,6 +335,17 @@ describe("#768 — extraInstructions drive deep code analysis", () => {
     // The deterministic mapping is NOT gated on `agentic`: it runs (and persists)
     // in this mode too, driven only by the operator's free text.
     expect(persisted.affectedCode.at(-1)?.candidates.map((c) => c.id)).toEqual(["NR-1", "NR-2"]);
+  });
+
+  it("#2454 — a project with no code at all persists codeConnected: false and no graph warning", async () => {
+    state.codeGraphPresent = false;
+    state.repoConnected = false;
+
+    const { capability } = await runPipeline({ extraInstructions: NEW_REQUIREMENTS });
+
+    expect(capability.codeConnected).toBe(false);
+    expect(capability.reasons).not.toContain("no-code-graph");
+    expect(capability.reasons).not.toContain("source-not-ingested");
   });
 
   it("stays SINGLE-SHOT with the untouched reason when no requirements exist anywhere", async () => {

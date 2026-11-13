@@ -54,6 +54,24 @@ describe("AnalysisCapabilityHint", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("#2454 — does not warn a Documents-only project about code it chose not to have", async () => {
+    capabilityPreview.mockResolvedValue({
+      codeGraphPresent: false,
+      repoSourceIngested: false,
+      codeConnected: false,
+      // Kept off so the hint still renders: the assertions below cannot pass
+      // just because the preview had not loaded yet.
+      fusedCodeRetrievalEnabled: false,
+      schemaContextEnabled: true,
+    });
+    renderHint(["document", "code"]);
+    expect(
+      await screen.findByTestId("capability-hint-fused-code-retrieval-disabled"),
+    ).toBeVisible();
+    expect(screen.queryByTestId("capability-hint-no-code-graph")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("capability-hint-source-not-ingested")).not.toBeInTheDocument();
+  });
+
   it("shows no hint when code analysis is not selected and no DB gap exists", async () => {
     capabilityPreview.mockResolvedValue({
       codeGraphPresent: false,

@@ -474,6 +474,41 @@ describe("ChangeRequestStepHeader", () => {
     expect(listForChangeRequest).toHaveBeenCalledWith("an-1");
   });
 
+  it("#2454 — on a Documents-only project, Impact says there is no code, not that code was mapped", async () => {
+    const completedCode = {
+      agentResults: [{ id: "ar-c", agentKey: "code", status: "completed", findings: [] }],
+    } as unknown as Partial<AnalysisSnapshot>;
+    const { unmount } = renderWith(
+      <ChangeRequestStepHeader
+        projectId="p1"
+        snapshot={snapshot({
+          ...completedCode,
+          capability: { codeConnected: false } as AnalysisSnapshot["capability"],
+        })}
+        pendingApprovals={0}
+      />,
+    );
+    const impact = screen.getByTestId("change-request-step-impact");
+    await waitFor(() => expect(impact).toHaveAttribute("data-state", "not-applicable"));
+    expect(impact).toHaveAttribute("title", "This project has no code connected.");
+    unmount();
+
+    // The control: the same run on a project with code reads as mapped.
+    renderWith(
+      <ChangeRequestStepHeader
+        projectId="p1"
+        snapshot={snapshot(completedCode)}
+        pendingApprovals={0}
+      />,
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("change-request-step-impact")).toHaveAttribute(
+        "title",
+        "The affected code was mapped.",
+      ),
+    );
+  });
+
   it("#2345 — with no result yet, Impact and Portfolio link to the change request's own checks card", async () => {
     productsList.mockResolvedValue({ items: [], total: 2 });
     renderWith(

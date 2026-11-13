@@ -70,6 +70,17 @@ describe("deriveCapabilityReasons", () => {
     ]);
   });
 
+  it("#2454 — does not warn a project with no code that its code was not graphed or ingested", () => {
+    const noCode = { ...fullyCapable, codeGraphPresent: false, repoSourceIngested: false };
+    expect(deriveCapabilityReasons({ ...noCode, codeConnected: false })).toEqual([]);
+    // A project that has code (or a record from before #2454) still hears both.
+    expect(deriveCapabilityReasons({ ...noCode, codeConnected: true })).toEqual([
+      "no-code-graph",
+      "source-not-ingested",
+    ]);
+    expect(deriveCapabilityReasons(noCode)).toEqual(["no-code-graph", "source-not-ingested"]);
+  });
+
   it("gates all code reasons behind codeAnalysisRequested", () => {
     const reasons = deriveCapabilityReasons({
       ...fullyCapable,

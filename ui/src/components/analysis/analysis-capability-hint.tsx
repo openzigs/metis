@@ -48,6 +48,8 @@ export function AnalysisCapabilityHint({
     databaseAnalysisRequested: selectedAgents.includes("database"),
     codeGraphPresent: preview.data.codeGraphPresent,
     repoSourceIngested: preview.data.repoSourceIngested,
+    // #2454 — a Documents-only project is not warned about code it chose not to have.
+    codeConnected: preview.data.codeConnected,
     fusedCodeRetrievalEnabled: preview.data.fusedCodeRetrievalEnabled,
     schemaContextEnabled: preview.data.schemaContextEnabled,
     // agentMode intentionally omitted pre-run.
