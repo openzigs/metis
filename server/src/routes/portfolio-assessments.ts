@@ -122,7 +122,13 @@ function ok<T>(data: T): ApiResponse<T> {
 
 const notFound = () => new AppError(404, "NOT_FOUND", "Portfolio assessment not found");
 
-const listQuerySchema = z.object({ productId: z.string().min(1).max(64).optional() });
+const listQuerySchema = z
+  .object({
+    productId: z.string().min(1).max(64).optional(),
+    // #2341 — the checks started from one change request's requirements.
+    analysisId: z.string().min(1).max(64).optional(),
+  })
+  .refine((q) => !(q.productId && q.analysisId), "Filter by a product or a run, not both");
 const exportQuerySchema = z.object({ format: z.literal("md").default("md") });
 
 export interface PortfolioAssessmentsRouterDeps {
@@ -317,7 +323,7 @@ async function resolveDocumentSource(
  */
 async function readablePage(
   access: Awaited<ReturnType<typeof resolveReaderAccess>>,
-  filter: { productId: string } | { createdById: string },
+  filter: { productId: string } | { analysisId: string } | { createdById: string },
 ): Promise<PortfolioAssessmentListItem[]> {
   const items: PortfolioAssessmentListItem[] = [];
   let before: { createdAt: Date; id: string } | undefined;
@@ -506,16 +512,21 @@ export function portfolioAssessmentsRouter(deps: PortfolioAssessmentsRouterDeps 
     async (req, res, next) => {
       try {
         const user = req.user!;
-        const { productId } = listQuerySchema.parse(req.query);
+        const { productId, analysisId } = listQuerySchema.parse(req.query);
         const access = await resolveReaderAccess(user);
         // A product the caller cannot read lists nothing, like one with no assessments.
         if (productId && !access.admin && !access.products.has(productId)) {
           res.json(ok([]));
           return;
         }
-        res.json(
-          ok(await readablePage(access, productId ? { productId } : { createdById: user.userId })),
-        );
+        // #2341 — a run's checks are re-filtered per row like any other list:
+        // a check of a project the caller cannot read now is not listed.
+        const filter = productId
+          ? { productId }
+          : analysisId
+            ? { analysisId }
+            : { createdById: user.userId };
+        res.json(ok(await readablePage(access, filter)));
       } catch (err) {
         next(err);
       }

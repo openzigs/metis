@@ -35,6 +35,7 @@ import {
 } from "@/lib/ai-client";
 import { analysisApi } from "@/lib/analysis-api";
 import { runStatusText } from "@/components/analysis/analysis-status-badge";
+import { formatChangeRunLabels, formatRunTimestamp } from "@/lib/format-change-run-label";
 import { tasksApi } from "@/lib/scheduler-api";
 import {
   loadLayout,
@@ -136,6 +137,12 @@ export default function WorkbenchPage() {
     queryFn: () => analysisApi.listForProject(activeProjectId ?? ""),
     enabled: Boolean(activeProjectId),
   });
+  // #2341 — each run by its change request's title, the date after it: a
+  // timestamp is never a run's only label.
+  const analysisLabels = useMemo(
+    () => formatChangeRunLabels(analyses.data?.items ?? []).byId,
+    [analyses.data],
+  );
 
   // Recent tasks (cross-project).
   const tasks = useQuery({
@@ -679,17 +686,28 @@ export default function WorkbenchPage() {
               <p className="text-xs text-muted-foreground">No analyses yet.</p>
             ) : (
               <ul className="space-y-1 text-xs" data-testid="workbench-analyses">
-                {(analyses.data?.items ?? []).slice(0, 10).map((a) => (
-                  <li key={a.id} className="flex items-center justify-between gap-2">
-                    <a
-                      href={`/projects/${a.projectId}/analysis`}
-                      className="truncate underline-offset-2 hover:underline"
-                    >
-                      {new Date(a.startedAt).toLocaleString()}
-                    </a>
-                    <span className="rounded bg-muted px-1.5 py-0.5">{runStatusText(a)}</span>
-                  </li>
-                ))}
+                {(analyses.data?.items ?? []).slice(0, 10).map((a) => {
+                  const label = analysisLabels.get(a.id);
+                  return (
+                    <li key={a.id} className="flex items-center justify-between gap-2">
+                      <a
+                        href={`/projects/${a.projectId}/analysis`}
+                        title={label?.detail}
+                        data-testid={`workbench-analysis-${a.id}`}
+                        className="min-w-0 truncate underline-offset-2 hover:underline"
+                      >
+                        {label?.primary ?? formatRunTimestamp(a.startedAt)}
+                        {label?.titled ? (
+                          <span className="text-muted-foreground">
+                            {" "}
+                            · {formatRunTimestamp(a.startedAt)}
+                          </span>
+                        ) : null}
+                      </a>
+                      <span className="rounded bg-muted px-1.5 py-0.5">{runStatusText(a)}</span>
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </div>

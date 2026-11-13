@@ -587,6 +587,20 @@ describe("DocumentationPage — GenerateForm scope selection", () => {
       expect(option.textContent).not.toContain(formatRunTimestamp("2026-10-01T10:05:00Z"));
     });
 
+    it("#2341 — leads with the change request's title, its number and start time after it", async () => {
+      analyses.items[0] = { ...analyses.items[0]!, title: "Checkout v2" } as never;
+      try {
+        await chooseRequirementsScope();
+        const select = screen.getByTestId("analysis-run-select") as HTMLSelectElement;
+        const option = Array.from(select.options).find((o) => o.value === "run_done")!;
+        expect(option.textContent).toBe(
+          `Checkout v2 · Run #1 — ${formatRunTimestamp("2026-10-01T10:00:00Z")} · run_done`,
+        );
+      } finally {
+        delete (analyses.items[0] as { title?: string }).title;
+      }
+    });
+
     it("says the runs could not be loaded, not that there are none, when the query errors", async () => {
       mockApiFetch.mockImplementation(async (path: string) => {
         if (typeof path === "string" && path.endsWith("/analyses")) throw new Error("500");

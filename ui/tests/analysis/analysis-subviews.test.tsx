@@ -969,12 +969,12 @@ describe("starting a run is separate from reading one", () => {
     renderPage();
     const toggle = await screen.findByTestId("start-analysis-toggle");
     expect(toggle).toHaveAttribute("aria-expanded", "false");
-    expect(screen.queryByRole("heading", { name: "Start a new analysis" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "New change request" })).not.toBeInTheDocument();
     await userEvent.click(toggle);
-    expect(screen.getByRole("heading", { name: "Start a new analysis" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "New change request" })).toBeInTheDocument();
     expect(toggle).toHaveAttribute("aria-expanded", "true");
     await userEvent.click(toggle);
-    expect(screen.queryByRole("heading", { name: "Start a new analysis" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "New change request" })).not.toBeInTheDocument();
   });
 
   it("opens the run form on a project with no runs", async () => {
@@ -984,7 +984,7 @@ describe("starting a run is separate from reading one", () => {
       "aria-expanded",
       "true",
     );
-    expect(screen.getByRole("heading", { name: "Start a new analysis" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "New change request" })).toBeInTheDocument();
   });
 });
 
@@ -1488,6 +1488,29 @@ describe("past runs are named by sequence and date, not id", () => {
     const newer = await screen.findByRole("button", { name: /Run #2 — / });
     expect(newer).toHaveTextContent("an-1");
     expect(screen.getByRole("button", { name: /Run #1 — / })).toHaveTextContent("an-0");
-    expect(await screen.findByRole("heading", { name: /^Run #2\b/ })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { level: 3, name: /^Run #2\b/ })).toBeInTheDocument();
+  });
+
+  it("#2341 — leads with the change request's title, the sequence and date after it", async () => {
+    apiMock.listForProject.mockResolvedValue({
+      items: [
+        {
+          id: "an-1",
+          title: "<b>Checkout</b> v2",
+          status: "completed",
+          startedAt: "2026-04-02T00:00:00.000Z",
+          totalTokens: 1,
+        },
+      ],
+    });
+    renderPage();
+    const title = await screen.findByTestId("analysis-past-run-title");
+    // Text, not markup: the angle brackets are shown, no <b> element is made.
+    expect(title).toHaveTextContent("<b>Checkout</b> v2");
+    expect(title.querySelector("b")).toBeNull();
+    expect(screen.getByRole("button", { name: /<b>Checkout<\/b> v2/ })).toHaveTextContent(
+      /Run #1 — /,
+    );
+    apiMock.listForProject.mockResolvedValue(DEFAULT_RUNS);
   });
 });

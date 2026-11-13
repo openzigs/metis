@@ -29,6 +29,13 @@ export const portfolioApi = {
       : apiFetch<PortfolioAssessmentListItem[]>(BASE),
 
   /**
+   * #2341 — the checks started from a requirement of the run `analysisId`, as
+   * far as the caller may read them (newest first, at most a page).
+   */
+  listForRun: (analysisId: string) =>
+    apiFetch<PortfolioAssessmentListItem[]>(BASE, { params: { analysisId } }),
+
+  /**
    * #1627 — the reader's view as Markdown (#1624): `GET …/:id/export?format=md`.
    * The body is raw Markdown, not the `{ success, data }` envelope, so it is
    * read as a blob.

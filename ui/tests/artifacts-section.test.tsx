@@ -59,6 +59,13 @@ describe("<ArtifactsSection />", () => {
     expect(screen.getByTestId(`artifact-download-${baseAnalysis.id}`)).toBeEnabled();
   });
 
+  it("names an artifact by its change request's title (#2341)", async () => {
+    listMock.mockResolvedValue({ items: [{ ...baseAnalysis, title: "Refunds" }] });
+    renderWith("p-1");
+    await waitFor(() => expect(screen.getByText(/Refunds/)).toBeInTheDocument());
+    expect(screen.queryByText(/Analysis an-1/)).not.toBeInTheDocument();
+  });
+
   // #1155 review — the artifact list showed the raw status, so a run that
   // completed with errors or warnings read as a plain `completed`. The
   // download stays enabled: the run did complete.

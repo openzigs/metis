@@ -92,6 +92,7 @@ export const STOP_BEFORE_MIGRATIONS: readonly string[] = [
   "20261123002280_issue2280_saved_document_readings",
   "20261124002236_issue2236_clarification_records",
   "20261124002272_issue2272_portfolio_document_check",
+  "20261125002341_issue2341_change_request_title",
 ];
 
 /** The database files `globalSetup` builds for workers to copy. */
@@ -350,4 +351,26 @@ export function createMigratedSqlite(
     },
     cleanup,
   };
+}
+
+/**
+ * #2341 — rows read back after `applyRemaining()`, projected onto the columns
+ * each seeded row had. `applyRemaining` applies every LATER migration too, and
+ * one may add a column to a seeded table (#2341: `analyses.title`, NULL on an
+ * old row); "the rows still read back unchanged" is about the seeded columns.
+ * Tables and row order come from `now`, so a lost or extra row still fails.
+ */
+export function onSeededColumns(
+  now: Record<string, unknown[]>,
+  seeded: Record<string, unknown[]>,
+): Record<string, unknown[]> {
+  return Object.fromEntries(
+    Object.entries(now).map(([table, rows]) => [
+      table,
+      (rows as Array<Record<string, unknown>>).map((row, i) => {
+        const before = seeded[table]?.[i] as Record<string, unknown> | undefined;
+        return before ? Object.fromEntries(Object.keys(before).map((k) => [k, row[k]])) : row;
+      }),
+    ]),
+  );
 }

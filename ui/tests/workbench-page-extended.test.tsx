@@ -75,6 +75,7 @@ import { projectsApi, documentsApi } from "@/lib/projects-api";
 import { analysisApi } from "@/lib/analysis-api";
 import { tasksApi } from "@/lib/scheduler-api";
 import { consumeRunPayload } from "@/lib/templates";
+import { formatRunTimestamp } from "@/lib/format-change-run-label";
 
 const projectsListMock = projectsApi.list as unknown as ReturnType<typeof vi.fn>;
 const documentsListMock = documentsApi.list as unknown as ReturnType<typeof vi.fn>;
@@ -238,6 +239,31 @@ describe("WorkbenchPage — recent analyses and tasks", () => {
     expect(rows[0]).toHaveTextContent("completed with errors");
     expect(rows[1]).toHaveTextContent("completed with warnings");
     expect(rows[2]!.querySelector("span")).toHaveTextContent(/^completed$/);
+  });
+
+  // #2341 — a run is labelled by its change request's title, with the date
+  // after it; the timestamp is never its only label.
+  it("labels each recent analysis by its title, then the date", async () => {
+    projectsListMock.mockResolvedValueOnce({ items: [{ id: "p1", name: "Alpha" }] });
+    const at = new Date("2026-01-01T10:00:00Z").toISOString();
+    const later = new Date("2026-01-02T10:00:00Z").toISOString();
+    analysisListMock.mockResolvedValueOnce({
+      items: [
+        { id: "a-new", projectId: "p1", status: "completed", startedAt: later, title: "Refunds" },
+        // A payload from an older server, with no title.
+        { id: "a-old", projectId: "p1", status: "completed", startedAt: at },
+      ],
+    });
+    renderPage();
+    const titled = await screen.findByTestId("workbench-analysis-a-new");
+    const date = formatRunTimestamp(later);
+    expect(titled).toHaveTextContent(`Refunds · ${date}`);
+    expect(titled.textContent!.indexOf("Refunds")).toBeLessThan(titled.textContent!.indexOf(date));
+    expect(titled).toHaveAttribute("title", `Run #2 — ${date}`);
+    // No title: the sequence names it, so the date is still not the only label.
+    const untitled = screen.getByTestId("workbench-analysis-a-old");
+    expect(untitled).toHaveTextContent(`Run #1 — ${formatRunTimestamp(at)}`);
+    expect(untitled.textContent).not.toBe(new Date(at).toLocaleString());
   });
 
   it("renders task items in the right panel", async () => {

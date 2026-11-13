@@ -195,9 +195,24 @@ import {
 import { runTokensLabel } from "@/lib/run-tokens";
 import { REQUIRES_CONNECTOR_WRITE, REQUIRES_PROJECT_UPDATE } from "@/lib/permission-hints";
 import { PortfolioCheckLink } from "@/components/portfolio/portfolio-check-link";
+import { ChangeRequestSummary } from "@/components/analysis/change-request-summary";
+import { proposedChangeRequestTitle } from "@/components/analysis/change-request-steps";
+import { ChangeRequestStepHeader } from "@/components/analysis/change-request-step-header";
+import { CHANGE_REQUEST_TITLE_MAX, normaliseChangeRequestTitle } from "@metis/shared";
 import { EmptyState } from "@/components/ui/empty-state";
 
 const SPECIALIST_AGENTS: AnalysisAgentKey[] = ["document", "code", "database", "web"];
+
+/**
+ * #2341 — "Run with defaults": every specialist agent, the model chosen
+ * automatically, clarifying questions on, web research off, saved readings
+ * reused. The same values the Options start at.
+ */
+const ANALYSIS_DEFAULTS = {
+  agentKeys: SPECIALIST_AGENTS,
+  enableClarification: true,
+  startedWithDefaults: true,
+} as const;
 
 export default function AnalysisPage(): React.ReactElement {
   const params = useParams<{ id: string }>();
@@ -409,6 +424,8 @@ export default function AnalysisPage(): React.ReactElement {
   // #241 — analysis trigger with loading + success/error toasts.
   const start = useAppMutation({
     mutationFn: (input: {
+      title?: string;
+      startedWithDefaults?: boolean;
       agentKeys: AnalysisAgentKey[];
       documentIds?: string[];
       model?: string;
@@ -418,11 +435,12 @@ export default function AnalysisPage(): React.ReactElement {
       importedRequirementIds?: string[];
       rereadDocuments?: boolean;
     }) => analysisApi.start(projectId, input),
-    successMessage: "Analysis started",
+    successMessage: "Change request started",
     invalidateKeys: [queryKeys.analyses.forProject(projectId), ["analyses", "cost-cap"]],
     onSuccess: (res) => {
       // Starting a run and reading one stay separate: close the form (PR #416 review).
       setStartFormOpen(false);
+      setTitleDraft(null);
       selectRun(res.id);
     },
   });
@@ -706,6 +724,12 @@ export default function AnalysisPage(): React.ReactElement {
   const [extraInstructions, setExtraInstructions] = useState("");
   // Issue #1006 — imported requirements the run starts from.
   const [importedRequirementIds, setImportedRequirementIds] = useState<string[]>([]);
+  // #2341 — the change request's title. Until the analyst types one, the form
+  // proposes the first chosen document's name; left blank, the server names it.
+  const [titleDraft, setTitleDraft] = useState<string | null>(null);
+  // #2341 — agents, model and the enhancement switches sit behind "Options";
+  // "Run with defaults" starts without any of them.
+  const [optionsOpen, setOptionsOpen] = useState(false);
 
   // Issue #906 — auto-select a freshly-ingested doc after the documents cache
   // has been invalidated/refetched so the new row exists before it is checked.
@@ -718,6 +742,17 @@ export default function AnalysisPage(): React.ReactElement {
   const selectedHasPending = allDocs.some(
     (d) => selectedDocs.includes(d.id) && d.status !== "ready",
   );
+  const proposedTitle = proposedChangeRequestTitle(selectedDocs, allDocs);
+  // A pasted TAB or newline becomes a space, as the server normalises it.
+  const changeRequestTitle = normaliseChangeRequestTitle(titleDraft ?? proposedTitle);
+  /** What both start buttons send: the title and the change request's inputs. */
+  const intake = {
+    title: changeRequestTitle || undefined,
+    documentIds: selectedDocs.length > 0 ? selectedDocs : undefined,
+    extraInstructions: extraInstructions.trim().length > 0 ? extraInstructions.trim() : undefined,
+    importedRequirementIds: importedRequirementIds.length > 0 ? importedRequirementIds : undefined,
+  };
+  const startDisabled = start.isPending || costCap.data?.exceeded || selectedHasPending;
 
   // Issue #30 — the findings and requirements the active tabs page through.
   const allFindings = detail.data ? orderFindingsByConfidence(collectFindings(detail.data)) : [];
@@ -835,7 +870,7 @@ export default function AnalysisPage(): React.ReactElement {
                 data-testid="start-analysis-toggle"
                 onClick={() => setStartFormOpen(!showStartForm)}
               >
-                {showStartForm ? "Hide new analysis" : "New analysis"}
+                {showStartForm ? "Hide new change request" : "New change request"}
               </Button>
             ) : null}
             {/* #977 \u2014 this project's own budget first; the deployment-wide
@@ -849,49 +884,33 @@ export default function AnalysisPage(): React.ReactElement {
       {showStartForm ? (
         <Card id="start-analysis-form" className="space-y-4 p-4">
           <div>
-            <h2 className="text-lg font-semibold">Start a new analysis</h2>
+            <h2 className="text-lg font-semibold">New change request</h2>
             <p className="text-sm text-muted-foreground">
-              Pick the specialist agents and (optionally) constrain to specific documents.
+              Upload or choose the document(s), or import tracker items, then start. Run with
+              defaults, or open Options to pick the agents, model and enhancements.
             </p>
           </div>
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-            <div>
-              <Label className="mb-2 block">Agents</Label>
-              <div className="space-y-1">
-                {SPECIALIST_AGENTS.map((agent) => {
-                  const p = personaByKey.get(agent);
-                  const checked = selectedAgents.includes(agent);
-                  return (
-                    <label key={agent} className="flex items-center gap-2 text-sm">
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={(e) => {
-                          setSelectedAgents((prev) =>
-                            e.target.checked
-                              ? [...new Set([...prev, agent])]
-                              : prev.filter((a) => a !== agent),
-                          );
-                        }}
-                      />
-                      <span>{p?.avatar ?? "\ud83e\udd16"}</span>
-                      <span className="font-medium">{p?.name ?? agent}</span>
-                      <span className="text-muted-foreground">— {p?.role ?? agent}</span>
-                    </label>
-                  );
-                })}
-              </div>
-            </div>
-            <div>
-              <AddDocumentsPanel
-                projectId={projectId}
-                docs={allDocs}
-                selectedDocs={selectedDocs}
-                onSelectedDocsChange={setSelectedDocs}
-                onInvalidateDocs={invalidateDocs}
-                loading={docs.isLoading}
-              />
-            </div>
+          <div className="max-w-xl space-y-1">
+            <Label htmlFor="change-request-title-input">Title</Label>
+            <Input
+              id="change-request-title-input"
+              data-testid="change-request-title-input"
+              value={titleDraft ?? proposedTitle}
+              maxLength={CHANGE_REQUEST_TITLE_MAX}
+              placeholder="Named after the first document or imported item"
+              onChange={(e) => setTitleDraft(e.target.value)}
+            />
+            <p className="text-xs text-muted-foreground">You can rename it later.</p>
+          </div>
+          <div>
+            <AddDocumentsPanel
+              projectId={projectId}
+              docs={allDocs}
+              selectedDocs={selectedDocs}
+              onSelectedDocsChange={setSelectedDocs}
+              onInvalidateDocs={invalidateDocs}
+              loading={docs.isLoading}
+            />
           </div>
 
           <ImportedRequirementsPicker
@@ -906,59 +925,106 @@ export default function AnalysisPage(): React.ReactElement {
             projectId={projectId}
           />
 
-          <ModelRecommendation
-            projectId={projectId}
-            override={modelOverride}
-            onOverrideChange={setModelOverride}
-            // #1095 — the panel must be told what run it is sizing, or it can only
-            // ever report a constant.
-            agentKeys={selectedAgents}
-            requirementText={extraInstructions}
-          />
-
-          {/* Epic #597 — Enhancement options */}
-          <div className="rounded border border-border p-3">
-            <Label className="mb-2 block text-sm font-medium">Enhancement Options</Label>
-            <div className="flex items-center gap-6">
-              <label className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={enableWebResearch}
-                  onChange={(e) => setEnableWebResearch(e.target.checked)}
-                />
-                <span>Enhance with web research</span>
-              </label>
-              <label className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={enableClarification}
-                  onChange={(e) => setEnableClarification(e.target.checked)}
-                />
-                <span>Ask clarifying questions</span>
-              </label>
-              <label className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={rereadDocuments}
-                  onChange={(e) => setRereadDocuments(e.target.checked)}
-                  data-testid="analysis-reread-documents"
-                />
-                <span>Read the documents again</span>
-              </label>
-            </div>
-            {(enableWebResearch || enableClarification) &&
-              !start.isPending &&
-              !selectedAnalysisId && (
-                <div className="mt-2">
-                  <EnhancementStatus
-                    currentStep="extraction"
-                    stepsCompleted={[]}
-                    enableWebResearch={enableWebResearch}
-                    enableClarification={enableClarification}
-                  />
-                </div>
-              )}
+          <div>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              aria-expanded={optionsOpen}
+              aria-controls="change-request-options"
+              data-testid="change-request-options-toggle"
+              onClick={() => setOptionsOpen(!optionsOpen)}
+            >
+              {optionsOpen ? "Hide options" : "Options"}
+            </Button>
           </div>
+          {optionsOpen ? (
+            <div id="change-request-options" className="space-y-4">
+              <div>
+                <div>
+                  <Label className="mb-2 block">Agents</Label>
+                  <div className="space-y-1">
+                    {SPECIALIST_AGENTS.map((agent) => {
+                      const p = personaByKey.get(agent);
+                      const checked = selectedAgents.includes(agent);
+                      return (
+                        <label key={agent} className="flex items-center gap-2 text-sm">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={(e) => {
+                              setSelectedAgents((prev) =>
+                                e.target.checked
+                                  ? [...new Set([...prev, agent])]
+                                  : prev.filter((a) => a !== agent),
+                              );
+                            }}
+                          />
+                          <span>{p?.avatar ?? "\ud83e\udd16"}</span>
+                          <span className="font-medium">{p?.name ?? agent}</span>
+                          <span className="text-muted-foreground">— {p?.role ?? agent}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+
+              <ModelRecommendation
+                projectId={projectId}
+                override={modelOverride}
+                onOverrideChange={setModelOverride}
+                // #1095 — the panel must be told what run it is sizing, or it can only
+                // ever report a constant.
+                agentKeys={selectedAgents}
+                requirementText={extraInstructions}
+              />
+
+              {/* Epic #597 — Enhancement options */}
+              <div className="rounded border border-border p-3">
+                <Label className="mb-2 block text-sm font-medium">Enhancement Options</Label>
+                <div className="flex items-center gap-6">
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={enableWebResearch}
+                      onChange={(e) => setEnableWebResearch(e.target.checked)}
+                    />
+                    <span>Enhance with web research</span>
+                  </label>
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={enableClarification}
+                      onChange={(e) => setEnableClarification(e.target.checked)}
+                    />
+                    <span>Ask clarifying questions</span>
+                  </label>
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={rereadDocuments}
+                      onChange={(e) => setRereadDocuments(e.target.checked)}
+                      data-testid="analysis-reread-documents"
+                    />
+                    <span>Read the documents again</span>
+                  </label>
+                </div>
+                {(enableWebResearch || enableClarification) &&
+                  !start.isPending &&
+                  !selectedAnalysisId && (
+                    <div className="mt-2">
+                      <EnhancementStatus
+                        currentStep="extraction"
+                        stepsCompleted={[]}
+                        enableWebResearch={enableWebResearch}
+                        enableClarification={enableClarification}
+                      />
+                    </div>
+                  )}
+              </div>
+            </div>
+          ) : null}
 
           <div className="space-y-2">
             {/* Issue #733 — warn which capabilities the run will have before starting. */}
@@ -975,31 +1041,34 @@ export default function AnalysisPage(): React.ReactElement {
                 extraInstructions.trim().length > 0 || importedRequirementIds.length > 0
               }
             />
-            <div className="flex items-center gap-3">
+            <div className="flex flex-wrap items-center gap-3">
+              {/* #2341 — the defaults, whatever the Options say: the change
+                  request records that it ran with them, and shows them. */}
               <Button
-                onClick={() =>
-                  start.mutate({
-                    agentKeys: selectedAgents,
-                    documentIds: selectedDocs.length > 0 ? selectedDocs : undefined,
-                    model: modelOverride !== "auto" ? modelOverride : undefined,
-                    extraInstructions:
-                      extraInstructions.trim().length > 0 ? extraInstructions.trim() : undefined,
-                    enableWebResearch: enableWebResearch || undefined,
-                    enableClarification: enableClarification || undefined,
-                    importedRequirementIds:
-                      importedRequirementIds.length > 0 ? importedRequirementIds : undefined,
-                    rereadDocuments: rereadDocuments || undefined,
-                  })
-                }
-                disabled={
-                  start.isPending ||
-                  selectedAgents.length === 0 ||
-                  costCap.data?.exceeded ||
-                  selectedHasPending
-                }
+                data-testid="run-with-defaults"
+                variant={optionsOpen ? "outline" : "default"}
+                onClick={() => start.mutate({ ...intake, ...ANALYSIS_DEFAULTS })}
+                disabled={startDisabled}
               >
-                {start.isPending ? "Starting\u2026" : "Run analysis"}
+                {start.isPending ? "Starting\u2026" : "Run with defaults"}
               </Button>
+              {optionsOpen ? (
+                <Button
+                  onClick={() =>
+                    start.mutate({
+                      ...intake,
+                      agentKeys: selectedAgents,
+                      model: modelOverride !== "auto" ? modelOverride : undefined,
+                      enableWebResearch: enableWebResearch || undefined,
+                      enableClarification: enableClarification || undefined,
+                      rereadDocuments: rereadDocuments || undefined,
+                    })
+                  }
+                  disabled={startDisabled || selectedAgents.length === 0}
+                >
+                  {start.isPending ? "Starting\u2026" : "Run analysis"}
+                </Button>
+              ) : null}
               {selectedHasPending ? (
                 <p className="text-sm text-warning">
                   Wait for selected documents to finish ingesting.
@@ -1017,14 +1086,14 @@ export default function AnalysisPage(): React.ReactElement {
 
       <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
         <Card className="md:col-span-1 p-4">
-          <h3 className="mb-3 text-base font-semibold">Past runs</h3>
+          <h3 className="mb-3 text-base font-semibold">Change requests</h3>
           {list.isLoading ? <p className="text-sm">Loading…</p> : null}
           {list.data?.items?.length === 0 ? (
             <EmptyState
               className="p-4"
               data-testid="analysis-runs-empty"
-              title="No analyses yet."
-              description="Each analysis you run is listed here."
+              title="No change requests yet."
+              description="Each change request you start is listed here."
             />
           ) : null}
           <ul className="space-y-1">
@@ -1040,7 +1109,11 @@ export default function AnalysisPage(): React.ReactElement {
                   }`}
                 >
                   <div className="flex items-center justify-between gap-2">
-                    <span className="text-xs font-medium text-foreground">
+                    {/* #2341 — the change request by title; text, never markup. */}
+                    <span
+                      className="min-w-0 break-words text-xs font-medium text-foreground"
+                      data-testid="analysis-past-run-title"
+                    >
                       {runLabels.get(item.id)?.primary}
                     </span>
                     {/* #1143 — a completed run whose agents failed, or lost citations, says so here. */}
@@ -1051,6 +1124,9 @@ export default function AnalysisPage(): React.ReactElement {
                     />
                   </div>
                   <div className="mt-1 text-xs text-muted-foreground">
+                    {runLabels.get(item.id)?.titled ? (
+                      <span className="block">{runLabels.get(item.id)?.detail}</span>
+                    ) : null}
                     <span data-testid="analysis-past-run-tokens">
                       {runTokensLabel({
                         tokens: item.ledgerTokens,
@@ -1103,6 +1179,22 @@ export default function AnalysisPage(): React.ReactElement {
                   </Button>
                 ) : null}
               </div>
+
+              {/* #2341 — the change request: its name, what it was started from,
+              the settings it ran with, and where it stands. */}
+              <ChangeRequestSummary
+                key={detail.data.id}
+                projectId={projectId}
+                snapshot={detail.data}
+                fallbackTitle={runLabels.get(detail.data.id)?.primary ?? "Change request"}
+                canRename={canRunAnalysis}
+                agentName={(key) => personaByKey.get(key as AnalysisAgentKey)?.name ?? key}
+              />
+              <ChangeRequestStepHeader
+                projectId={projectId}
+                snapshot={detail.data}
+                pendingApprovals={approvals.data?.ticketStatus?.pendingCount}
+              />
 
               {/* Issue #994 — what a Spec Kit handoff sent and left out, on every
               tab and while the run is still going. Nothing for other runs. */}

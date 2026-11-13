@@ -22,6 +22,7 @@ vi.mock("@/lib/analysis-api", async (importActual) => {
 });
 
 import { RequirementDiff, diffWords } from "./requirement-diff";
+import { formatRunTimestamp } from "@/lib/format-change-run-label";
 
 const MODIFIED: TRequirementDiff = {
   projectId: "proj-1",
@@ -133,6 +134,28 @@ describe("RequirementDiff component", () => {
     });
     renderPanel();
     await waitFor(() => expect(screen.getByTestId("diff-no-base")).toBeInTheDocument());
+  });
+
+  // #2341 — the "Compare to" picker names each base run by its change
+  // request's title, the date after it: never a bare timestamp.
+  it("labels each base run by its title, then the date", async () => {
+    getRequirementDiff.mockResolvedValue({ ...MODIFIED, entries: [] });
+    const at = "2026-11-01T10:00:00.000Z";
+    const runs = [
+      { id: "an-head", status: "completed", startedAt: "2026-11-03T10:00:00.000Z", title: "Head" },
+      { id: "an-titled", status: "completed", startedAt: at, title: "Refunds" },
+      { id: "an-old", status: "completed", startedAt: "2026-10-01T10:00:00.000Z" },
+    ];
+    renderPanel(runs as never[]);
+    const options = Array.from(
+      screen.getByTestId("diff-base-picker").querySelectorAll("option"),
+    ).map((o) => o.textContent);
+    expect(options).toEqual([
+      "Previous run (auto)",
+      `Refunds · Run #2 — ${formatRunTimestamp(at)}`,
+      `Run #1 — ${formatRunTimestamp("2026-10-01T10:00:00.000Z")}`,
+    ]);
+    expect(options).not.toContain(new Date(at).toLocaleString());
   });
 
   it("shows the no-changes state when a base resolved but nothing changed", async () => {

@@ -203,16 +203,18 @@ describe("Analysis page — imported requirements (#1006)", () => {
     listForProject.mockResolvedValue({ items: [] });
     renderPage();
     fireEvent.click(await screen.findByRole("checkbox", { name: /Mark all as read/ }));
-    fireEvent.click(screen.getByRole("button", { name: "Run analysis" }));
+    fireEvent.click(screen.getByRole("button", { name: "Run with defaults" }));
     await waitFor(() => expect(analysisApi.start).toHaveBeenCalled());
     expect(vi.mocked(analysisApi.start).mock.calls[0][1]).toMatchObject({
       importedRequirementIds: ["req-3401"],
+      startedWithDefaults: true,
     });
   });
 
   it("#2280 — sends 'Read the documents again' only when it is ticked", async () => {
     listForProject.mockResolvedValue({ items: [] });
     renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: "Options" }));
     fireEvent.click(await screen.findByRole("button", { name: "Run analysis" }));
     await waitFor(() => expect(analysisApi.start).toHaveBeenCalledTimes(1));
     expect(vi.mocked(analysisApi.start).mock.calls[0][1].rereadDocuments).toBeUndefined();
@@ -221,6 +223,7 @@ describe("Analysis page — imported requirements (#1006)", () => {
   it("#2280 — sends 'Read the documents again' when it is ticked", async () => {
     listForProject.mockResolvedValue({ items: [] });
     renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: "Options" }));
     fireEvent.click(await screen.findByTestId("analysis-reread-documents"));
     fireEvent.click(screen.getByRole("button", { name: "Run analysis" }));
     await waitFor(() => expect(analysisApi.start).toHaveBeenCalledTimes(1));
@@ -237,5 +240,96 @@ describe("Analysis page — imported requirements (#1006)", () => {
     expect(await screen.findByTestId("source-requirement-NR-1")).toHaveTextContent(
       "Mark all as read",
     );
+  });
+});
+
+describe("#2341 — one intake action: a titled change request, run with defaults", () => {
+  it("sends the typed title, trimmed, with the defaults and that they were the defaults", async () => {
+    listForProject.mockResolvedValue({ items: [] });
+    renderPage();
+    fireEvent.change(await screen.findByTestId("change-request-title-input"), {
+      target: { value: "  Checkout v2  " },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Run with defaults" }));
+    await waitFor(() => expect(analysisApi.start).toHaveBeenCalledTimes(1));
+    const body = vi.mocked(analysisApi.start).mock.calls[0][1];
+    expect(body).toEqual({
+      title: "Checkout v2",
+      agentKeys: ["document", "code", "database", "web"],
+      enableClarification: true,
+      startedWithDefaults: true,
+    });
+  });
+
+  it("sends a pasted title's TAB as one space, as the server stores it", async () => {
+    listForProject.mockResolvedValue({ items: [] });
+    renderPage();
+    fireEvent.change(await screen.findByTestId("change-request-title-input"), {
+      target: { value: "Q3\t\tcheckout\u0007refunds " },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Run with defaults" }));
+    await waitFor(() => expect(analysisApi.start).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(analysisApi.start).mock.calls[0][1].title).toBe("Q3 checkout refunds");
+  });
+
+  it("leaves the title to the server when the analyst clears it", async () => {
+    listForProject.mockResolvedValue({ items: [] });
+    renderPage();
+    fireEvent.change(await screen.findByTestId("change-request-title-input"), {
+      target: { value: "   " },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Run with defaults" }));
+    await waitFor(() => expect(analysisApi.start).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(analysisApi.start).mock.calls[0][1].title).toBeUndefined();
+  });
+
+  it("keeps the seven decisions behind Options, and Run with defaults ignores what they say", async () => {
+    listForProject.mockResolvedValue({ items: [] });
+    renderPage();
+    await screen.findByRole("button", { name: "Run with defaults" });
+    // Closed: no agent choice, no enhancement switches, no options-run button.
+    expect(screen.queryByTestId("analysis-reread-documents")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Run analysis" })).not.toBeInTheDocument();
+    const toggle = screen.getByRole("button", { name: "Options" });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(toggle);
+    expect(screen.getByRole("button", { name: "Hide options" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+    // Every Option set away from its default: clarification off, re-read on,
+    // the code agent unticked and web research ticked.
+    fireEvent.click(screen.getByRole("checkbox", { name: /Ask clarifying questions/ }));
+    fireEvent.click(screen.getByTestId("analysis-reread-documents"));
+    const codeAgent = screen.getByRole("checkbox", { name: /— code$/ });
+    fireEvent.click(codeAgent);
+    expect(codeAgent).not.toBeChecked();
+    const web = screen.getByRole("checkbox", { name: /Enhance with web research/ });
+    fireEvent.click(web);
+    expect(web).toBeChecked();
+    fireEvent.click(screen.getByRole("button", { name: "Run with defaults" }));
+    await waitFor(() => expect(analysisApi.start).toHaveBeenCalledTimes(1));
+    const body = vi.mocked(analysisApi.start).mock.calls[0][1];
+    expect(body).toMatchObject({
+      enableClarification: true,
+      startedWithDefaults: true,
+      // All four specialists, whatever the Options' agent list says.
+      agentKeys: ["document", "code", "database", "web"],
+    });
+    expect(body.rereadDocuments).toBeUndefined();
+    expect(body.enableWebResearch).toBeUndefined();
+    expect(body.model).toBeUndefined();
+  });
+
+  it("a run with the chosen options does not say it used the defaults", async () => {
+    listForProject.mockResolvedValue({ items: [] });
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: "Options" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /Ask clarifying questions/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Run analysis" }));
+    await waitFor(() => expect(analysisApi.start).toHaveBeenCalledTimes(1));
+    const body = vi.mocked(analysisApi.start).mock.calls[0][1];
+    expect(body.startedWithDefaults).toBeUndefined();
+    expect(body.enableClarification).toBeUndefined();
   });
 });
