@@ -7,7 +7,11 @@
  * determined by the tool, its arguments, the project, the caller and the
  * project's content. The key covers all five, with the content as the version
  * key from `projects/content-version.ts`. A re-ingest therefore makes every
- * older entry unreachable: there is no invalidation to forget.
+ * older entry unreachable: there is no invalidation to forget. #2314 — on a
+ * project with a restricted document the caller is their user id, durable role
+ * and groups (groups are not resolved yet: `resolveAclActor` sets none, so that
+ * part is always empty), read once per chat turn, so a role change reaches the
+ * next turn without an invalidation to forget either.
  *
  * In-process only: an LRU bounded by entry count and by bytes, and every entry
  * expires after a TTL. Not cached:
@@ -29,6 +33,8 @@
 import crypto from "node:crypto";
 import { createChildLogger } from "../../logger.js";
 import { recordToolResultCache } from "../../metrics/index.js";
+import { prisma } from "../../prisma.js";
+import { parseAclSubjects, resolveAclActor, type AclActor } from "../../rag/acl.js";
 import {
   getProjectContentVersion,
   type ProjectContentVersion,
@@ -210,6 +216,7 @@ export function getToolResultCache(): ToolResultCache {
 
 export function __resetToolResultCacheForTests(): void {
   singleton = null;
+  restrictedByVersion.clear();
 }
 
 export function toolResultCacheEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -220,6 +227,85 @@ export interface ToolResultCacheDeps {
   cache?: () => ToolResultCache;
   version?: (projectId: string) => Promise<ProjectContentVersion>;
   enabled?: () => boolean;
+  /**
+   * #2314 — the caller's ACL actor. Defaults to `resolveAclActor`; read once
+   * per chat turn (`RuntimeToolContext.aclActorMemo`), and only on a project
+   * with a restricted document.
+   */
+  actor?: (userId: string) => Promise<AclActor>;
+  /**
+   * #2314 — whether the project has any document with ACL subjects. Defaults
+   * to {@link projectHasRestrictedDocument}; read once per content version.
+   */
+  restricted?: (projectId: string) => Promise<boolean>;
+}
+
+/**
+ * #2314 — a user's cache scope: the user AND what their document access is
+ * decided on (`isVisibleTo`: their durable role and their groups). A role
+ * change does not move the project's content version, so with the user id
+ * alone a result filtered under the old role was served under the new one
+ * until the entry expired (up to the TTL, 30 minutes). Groups are part of the
+ * key for when they are resolved; `resolveAclActor` sets none today.
+ */
+export function userCacheScope(actor: AclActor): string {
+  return JSON.stringify([actor.userId, actor.role, [...(actor.groups ?? [])].sort()]);
+}
+
+/**
+ * #2314 — the scope of a user on a project with no restricted document: every
+ * result is the same whatever their role, so their role is not read. Its form
+ * (one element) differs from {@link userCacheScope}'s (three), so the two
+ * never collide.
+ */
+function unrestrictedUserScope(userId: string): string {
+  return JSON.stringify([userId]);
+}
+
+/** Rows read before a project counts as restricted without parsing more. */
+const RESTRICTED_SCAN_LIMIT = 100;
+
+/**
+ * #2314 — whether `projectId` has a document with ACL subjects (soft-deleted
+ * ones included: erring towards "restricted" only costs a role read).
+ */
+export async function projectHasRestrictedDocument(projectId: string): Promise<boolean> {
+  const rows = await prisma.document.findMany({
+    where: { projectId, aclSubjects: { notIn: ["[]", ""] } },
+    select: { aclSubjects: true },
+    take: RESTRICTED_SCAN_LIMIT,
+  });
+  return (
+    rows.length >= RESTRICTED_SCAN_LIMIT ||
+    rows.some((r) => parseAclSubjects(r.aclSubjects).length > 0)
+  );
+}
+
+/**
+ * #2314 — {@link projectHasRestrictedDocument} per (project, content version).
+ * An ACL edit moves the content version (`projects/content-version.ts` hashes
+ * every document's `aclSubjects` and its latest write), so the answer for one
+ * version never changes. Bounded; a failed read is not kept.
+ */
+const restrictedByVersion = new Map<string, Promise<boolean>>();
+const RESTRICTED_MEMO_MAX = 1000;
+
+function restrictedAt(
+  projectId: string,
+  versionKey: string,
+  read: (projectId: string) => Promise<boolean>,
+): Promise<boolean> {
+  const key = `${projectId}\u0000${versionKey}`;
+  let hit = restrictedByVersion.get(key);
+  if (!hit) {
+    if (restrictedByVersion.size >= RESTRICTED_MEMO_MAX) {
+      restrictedByVersion.delete(restrictedByVersion.keys().next().value as string);
+    }
+    hit = read(projectId);
+    restrictedByVersion.set(key, hit);
+    hit.catch(() => restrictedByVersion.delete(key));
+  }
+  return hit;
 }
 
 /**
@@ -234,7 +320,27 @@ export function withToolResultCache(
   const cacheOf = deps.cache ?? getToolResultCache;
   const versionOf = deps.version ?? ((id: string) => getProjectContentVersion(id));
   const enabled = deps.enabled ?? (() => toolResultCacheEnabled());
+  const actorOf = deps.actor ?? resolveAclActor;
+  const restrictedOf = deps.restricted ?? projectHasRestrictedDocument;
   const run = tool.execute.bind(tool);
+  /**
+   * #2314 — a scope read at the start of the turn may be stale by the time a
+   * miss has run: the tool reads the role afresh, so a result computed under
+   * a newer role must not be stored under the old role's key. Only on a miss
+   * under a turn's memo, so a hit still reads no role.
+   */
+  const scopeStillHolds = async (
+    roleScoped: boolean,
+    ctx: RuntimeToolContext,
+    scope: string,
+  ): Promise<boolean> => {
+    if (!roleScoped || !ctx.aclActorMemo) return true;
+    try {
+      return userCacheScope(await actorOf(ctx.userId)) === scope;
+    } catch {
+      return false;
+    }
+  };
   return {
     ...tool,
     async execute(args: unknown, ctx: RuntimeToolContext): Promise<RuntimeToolResult> {
@@ -255,16 +361,45 @@ export function withToolResultCache(
         cache.count(tool.name, "bypass");
         return run(args, ctx);
       }
+      // The caller's access scope: per user, so no entry crosses users. #2248 —
+      // a shared audience is a scope of its own: a user's own result (which may
+      // hold chunks restricted to them) never answers a shared reply's call.
+      // #2314 — on a project with a restricted document, also per role and
+      // groups, read once per turn, so a role change reaches the next turn.
+      // Without one, every role reads the same results and no role is read.
+      // An actor that cannot be read (an inactive user) is not served from the
+      // cache: the tool runs, and refuses them itself. A failed restriction
+      // read counts as restricted.
+      let scope = SHARED_AUDIENCE_SCOPE;
+      let roleScoped = false;
+      if (ctx.aclAudience !== "shared") {
+        try {
+          const restricted = await restrictedAt(ctx.projectId, version.key, restrictedOf).catch(
+            () => true,
+          );
+          if (restricted) {
+            const memo = ctx.aclActorMemo;
+            const actor = memo ? (memo.actor ??= actorOf(ctx.userId)) : actorOf(ctx.userId);
+            scope = userCacheScope(await actor);
+            roleScoped = true;
+          } else {
+            scope = unrestrictedUserScope(ctx.userId);
+          }
+        } catch (err) {
+          log.debug("ACL actor unavailable; tool result not cached", {
+            tool: tool.name,
+            error: err instanceof Error ? err.message : String(err),
+          });
+          cache.count(tool.name, "bypass");
+          return run(args, ctx);
+        }
+      }
       const key = toolResultCacheKey({
         tool: tool.name,
         args,
         projectId: ctx.projectId,
         versionKey: version.key,
-        // The caller's access scope: per user, so no entry crosses users even
-        // if a read tool starts filtering on the caller. #2248 — a shared
-        // audience is a scope of its own: a user's own result (which may hold
-        // chunks restricted to them) never answers a shared reply's call.
-        scope: ctx.aclAudience === "shared" ? SHARED_AUDIENCE_SCOPE : ctx.userId,
+        scope,
       });
       const hit = cache.get(key);
       if (hit) {
@@ -273,7 +408,9 @@ export function withToolResultCache(
       }
       cache.count(tool.name, "miss");
       const result = await run(args, ctx);
-      if (!result.isError) cache.set(key, result);
+      if (!result.isError && (await scopeStillHolds(roleScoped, ctx, scope))) {
+        cache.set(key, result);
+      }
       return result;
     },
   };

@@ -262,6 +262,7 @@ import {
   type AgentTool,
   type ToolContext,
 } from "./tools/index.js";
+import { hiddenSymbolsFor, loadSharedCodeAccess } from "./tools/code-access.js";
 import { buildRequirementGroundedPrompt, normalizeAgentContext } from "./prompts.js";
 import { clearUnknownRequirementIds } from "./requirement-id-guard.js";
 import {
@@ -3796,11 +3797,19 @@ export class AnalysisOrchestrator {
         // to offer says nothing about whether code retrieval works.
         const withheldTools = fileToolsAvailable ? NO_WITHHELD_TOOLS : REPO_FILE_TOOLS;
 
+        // #2314 — an analysis's findings, citations and snippets are persisted
+        // and read by every project member, so the code agent reads as a
+        // shared audience (#2248), never as its requester: a file any document
+        // ACL restricts (#2243) is neither read, listed nor searched by the
+        // tools, nor seeded below.
+        const codeAccess = await loadSharedCodeAccess(input.projectId);
+
         // Build tool context
         const toolContext: ToolContext = {
           projectId: input.projectId,
           connectorId: input.connectorId,
           cloneDir,
+          codeAccess,
         };
 
         // Assemble available tools. `search_code_symbols` (#730) rides the same
@@ -3851,6 +3860,7 @@ export class AnalysisOrchestrator {
           requirements: input.requirements,
           ragChunks: [],
           deps: this.deps.fusedCode,
+          hiddenSymbols: hiddenSymbolsFor(async () => codeAccess),
         });
         // #2276 — requirements past the embedder's limit reach keyword search only.
         this.noteRequirementsLeftOut(input.analysisId, fused.semanticLeftOut);
@@ -4829,6 +4839,9 @@ export class AnalysisOrchestrator {
           requirements: input.requirements,
           ragChunks: perRequirement.flatMap((r) => r.chunks).map(toFusedRagChunkRef),
           deps: this.deps.fusedCode,
+          // #2314 — only symbols every project member may see (#2243): the
+          // findings are persisted for all of them.
+          hiddenSymbols: hiddenSymbolsFor(() => loadSharedCodeAccess(input.projectId)),
         });
         // #2276 — requirements past the embedder's limit reach keyword search only.
         this.noteRequirementsLeftOut(input.analysisId, fused.semanticLeftOut);
@@ -5870,6 +5883,9 @@ export class AnalysisOrchestrator {
         }),
         ragChunks: combined.map(toFusedRagChunkRef),
         deps: this.deps.fusedCode,
+        // #2314 — only symbols every project member may see (#2243): the
+        // findings are persisted for all of them.
+        hiddenSymbols: hiddenSymbolsFor(() => loadSharedCodeAccess(input.projectId)),
       });
       return fusedChunks.length > 0 ? [...combined, ...fusedChunks] : combined;
     }

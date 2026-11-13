@@ -36,8 +36,10 @@ import {
   extractRepoRelPath,
   type FusedCodeSearcher,
   type FusedRagChunkRef,
+  type HiddenSymbolsLookup,
   type SymbolLineLookup,
 } from "../rag/fused-code-context.js";
+import { hiddenSymbolsFor, loadSharedCodeAccess } from "../analysis/tools/code-access.js";
 import {
   createDefaultCodeSearcher,
   createDefaultSymbolLineLookup,
@@ -75,6 +77,12 @@ export interface SpecKitKnowledgeService {
 export interface SpecKitFusedCodeDeps {
   searcher: FusedCodeSearcher;
   lineLookup: SymbolLineLookup;
+  /**
+   * #2314 — the symbols whose file a project member may not see. Defaults to
+   * the shared audience's (`loadSharedCodeAccess`): a Spec Kit artifact is read
+   * by the whole project, so no restricted file (#2243) reaches it.
+   */
+  hiddenSymbols?: HiddenSymbolsLookup;
 }
 
 /**
@@ -304,6 +312,9 @@ export async function buildSpecKitRagContext(
       maxSymbols: cfg.getNumber("CHAT_FUSED_CODE_MAX_SYMBOLS", 12),
       searcher: fusedDeps.searcher,
       lineLookup: fusedDeps.lineLookup,
+      // #2314 — the anchors of the siblings, callers and localisation below too.
+      hiddenSymbols:
+        fusedDeps.hiddenSymbols ?? hiddenSymbolsFor(() => loadSharedCodeAccess(projectId)),
     });
 
     if (!docContext && !fused.block) {

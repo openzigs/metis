@@ -149,6 +149,22 @@ export interface FusedCodeSearcher {
   ): Promise<RawCodeSymbolHit[]>;
 }
 
+/**
+ * #2314 — the ids among `hits` whose file the reader may not see. Each hit
+ * carries the file and repository the {@link SymbolLineLookup} already
+ * resolved, so the check needs no second symbol read. Kept a seam so this
+ * module stays free of database and ACL code.
+ */
+export type HiddenSymbolsLookup = (
+  hits: ReadonlyArray<{ symbolId: string; filePath: string; repoConnectionId?: string | null }>,
+) => Promise<ReadonlySet<string>>;
+
+/**
+ * #2314 — how many times a search is widened to replace hits the reader may
+ * not see, so a restricted reader still gets up to `maxSymbols` symbols.
+ */
+const MAX_HIDDEN_REFILLS = 2;
+
 /** Injectable line resolver — reads authoritative spans from `CodeSymbol`. */
 export interface SymbolLineLookup {
   resolve(
@@ -468,6 +484,16 @@ export async function buildFusedCodeBlock(opts: {
    * to the unversioned block, like any other failure here.
    */
   loadVersions?: (projectId: string) => Promise<CodeVersionIndex>;
+  /**
+   * #2314 — the ids among the hits whose file the reader may not see (document
+   * ACLs, #2243; `hiddenSymbolsFor` in `analysis/tools/code-access.ts`). Those
+   * hits are dropped before the dedupe and the budget, so the block neither
+   * shows nor counts them, and `maxSymbols` caps the hits that remain (the
+   * search is widened to replace dropped ones). A rejection returns the empty
+   * result: the block is never built without the reader's restrictions.
+   * Omitted, nothing is hidden.
+   */
+  hiddenSymbols?: HiddenSymbolsLookup;
 }): Promise<FuseCodeContextResult> {
   const empty: FuseCodeContextResult = {
     block: "",
@@ -482,34 +508,72 @@ export async function buildFusedCodeBlock(opts: {
   const query = (opts.query ?? "").trim();
   if (!opts.projectId || query.length === 0) return empty;
 
-  let raw: RawCodeSymbolHit[];
-  try {
-    raw = await opts.searcher.search(query, opts.projectId, { limit: opts.maxSymbols });
-  } catch (err) {
-    log.debug("Fused code search failed, continuing without symbol grounding", {
-      projectId: opts.projectId,
-      error: (err as Error).message,
-    });
-    return empty;
-  }
-  if (!raw || raw.length === 0) return empty; // no code graph / no hits → no-op
+  let raw: RawCodeSymbolHit[] = [];
+  let lines: Awaited<ReturnType<SymbolLineLookup["resolve"]>> = new Map();
+  let hidden: ReadonlySet<string> = new Set();
+  // #2314 — when hits the reader may not see are dropped, the search is
+  // widened by that many (at most MAX_HIDDEN_REFILLS times), so `maxSymbols`
+  // caps the VISIBLE hits. An unrestricted reader searches exactly once.
+  let limit = opts.maxSymbols;
+  for (let attempt = 0; attempt <= MAX_HIDDEN_REFILLS; attempt += 1) {
+    try {
+      raw = await opts.searcher.search(query, opts.projectId, { limit });
+    } catch (err) {
+      log.debug("Fused code search failed, continuing without symbol grounding", {
+        projectId: opts.projectId,
+        error: (err as Error).message,
+      });
+      return empty;
+    }
+    if (!raw || raw.length === 0) return empty; // no code graph / no hits → no-op
 
-  let lines: Awaited<ReturnType<SymbolLineLookup["resolve"]>>;
-  try {
-    lines = await opts.lineLookup.resolve(
-      raw.map((r) => r.symbolId),
-      opts.projectId,
-    );
-  } catch (err) {
-    log.debug("Fused symbol line lookup failed, continuing without symbol grounding", {
-      projectId: opts.projectId,
-      error: (err as Error).message,
-    });
-    return empty;
+    try {
+      lines = await opts.lineLookup.resolve(
+        raw.map((r) => r.symbolId),
+        opts.projectId,
+      );
+    } catch (err) {
+      log.debug("Fused symbol line lookup failed, continuing without symbol grounding", {
+        projectId: opts.projectId,
+        error: (err as Error).message,
+      });
+      return empty;
+    }
+
+    if (!opts.hiddenSymbols) break;
+    try {
+      hidden = await opts.hiddenSymbols(
+        raw.flatMap((r) => {
+          const li = lines.get(r.symbolId);
+          return li
+            ? [
+                {
+                  symbolId: r.symbolId,
+                  filePath: li.filePath,
+                  repoConnectionId: li.repoConnectionId,
+                },
+              ]
+            : [];
+        }),
+      );
+    } catch (err) {
+      log.debug("Fused symbol access check failed, continuing without symbol grounding", {
+        projectId: opts.projectId,
+        error: (err as Error).message,
+      });
+      return empty;
+    }
+    const visible = raw.length - raw.filter((r) => hidden.has(r.symbolId)).length;
+    // Enough visible hits, or the searcher has no more to give.
+    if (visible >= opts.maxSymbols || raw.length < limit) break;
+    limit = opts.maxSymbols + (raw.length - visible);
   }
 
   const hits: FusedSymbolHit[] = [];
   for (const r of raw) {
+    // #2314 — a widened search may return more: the cap is on visible hits.
+    if (opts.hiddenSymbols && hits.length >= opts.maxSymbols) break;
+    if (hidden.has(r.symbolId)) continue; // #2314 — the reader may not see its file
     const li = lines.get(r.symbolId);
     if (!li) continue; // no authoritative span → cannot render a locator
     hits.push({

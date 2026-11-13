@@ -45,6 +45,8 @@ function exportRowMatches(row: any, where: Record<string, unknown>): boolean {
 vi.mock("../src/lib/prisma.js", () => ({
   prisma: {
     auditLog: { create: vi.fn(async () => ({})) },
+    // #2314 — the fused block's access check: no restricted repository document.
+    document: { findMany: vi.fn(async () => []) },
     project: {
       findUnique: vi.fn(async ({ where }: any) => projects.get(where.id) ?? null),
     },

@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 import {
   codeAccessFilterOf,
   hiddenSymbolIds,
+  hiddenSymbolsFor,
   normalizeRepoPath,
   repoDocumentPath,
   UNRESTRICTED_CODE_ACCESS,
@@ -99,5 +100,35 @@ describe("hiddenSymbolIds", () => {
     );
     const f = codeAccessFilterOf([{ connectorId: "rc1", path: "a.ts" }]);
     await expect(hiddenSymbolIds(f, "p1", [])).resolves.toEqual(new Set());
+  });
+});
+
+// #2314 review — the fused block's check judges each hit on the file and
+// repository its line lookup resolved: no symbol is read a second time.
+describe("hiddenSymbolsFor", () => {
+  const hits = [
+    { symbolId: "s1", filePath: "src/secret.ts", repoConnectionId: "rc1" },
+    { symbolId: "s2", filePath: "src/secret.ts", repoConnectionId: "rc2" },
+    { symbolId: "s3", filePath: "src/secret.ts", repoConnectionId: null },
+    { symbolId: "s4", filePath: "./src/secret.ts" },
+    { symbolId: "s5", filePath: "src/open.ts", repoConnectionId: "rc1" },
+  ];
+
+  it("hides a hit in a hidden file of its own repository, or of any when its repository is unknown", async () => {
+    const lookup = hiddenSymbolsFor(async () =>
+      codeAccessFilterOf([{ connectorId: "rc1", path: "src/secret.ts" }]),
+    );
+    expect([...(await lookup(hits))].sort()).toEqual(["s1", "s3", "s4"]);
+  });
+
+  it("loads the filter once, and hides nothing when it is unrestricted", async () => {
+    let loads = 0;
+    const lookup = hiddenSymbolsFor(async () => {
+      loads += 1;
+      return UNRESTRICTED_CODE_ACCESS;
+    });
+    expect(await lookup(hits)).toEqual(new Set());
+    await lookup(hits);
+    expect(loads).toBe(1);
   });
 });

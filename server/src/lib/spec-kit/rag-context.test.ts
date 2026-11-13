@@ -35,7 +35,8 @@ function fused(
   const lineLookup: SymbolLineLookup = {
     resolve: vi.fn().mockResolvedValue(new Map(Object.entries(lines))),
   };
-  return { searcher, lineLookup };
+  // #2314 — nothing hidden unless a test says so (the default reads the database).
+  return { searcher, lineLookup, hiddenSymbols: async () => new Set<string>() };
 }
 
 const docHit: RetrievedChunk = {

@@ -765,3 +765,103 @@ describe("mergeAdjacentSpans (#2329)", () => {
     ]);
   });
 });
+
+// #2314 review — the access check reuses the line lookup's resolved file and
+// repository (no second symbol read), and `maxSymbols` caps the VISIBLE hits.
+describe("buildFusedCodeBlock — hidden symbols (#2314)", () => {
+  const ranked: RawCodeSymbolHit[] = [
+    { symbolId: "s-secret", filePath: "x", name: "Secret", kind: "function", score: 3 },
+    { symbolId: "s-a", filePath: "x", name: "Alpha", kind: "function", score: 2 },
+    { symbolId: "s-b", filePath: "x", name: "Beta", kind: "function", score: 1 },
+  ];
+  /** A searcher that honours `limit`, as the real one does. */
+  const limitedSearcher = () => ({
+    search: vi.fn(async (_q: string, _p: string, o?: { limit?: number }) =>
+      ranked.slice(0, o?.limit ?? ranked.length),
+    ),
+  });
+  const lines = mockLineLookup({
+    "s-secret": { filePath: "src/secret.ts", startLine: 1, endLine: 2, repoConnectionId: "rc1" },
+    "s-a": { filePath: "src/a.ts", startLine: 1, endLine: 2, repoConnectionId: "rc1" },
+    "s-b": { filePath: "src/b.ts", startLine: 1, endLine: 2 },
+  });
+  const base = {
+    projectId: "p1",
+    query: "fee",
+    ragChunks: [] as FusedRagChunkRef[],
+    enabled: true,
+    tokenBudget: 1500,
+    lineLookup: lines,
+  };
+
+  it("hands the lookup the resolved file and repository of each hit", async () => {
+    const hiddenSymbols = vi.fn(async () => new Set(["s-secret"]));
+    const res = await buildFusedCodeBlock({
+      ...base,
+      maxSymbols: 12,
+      searcher: limitedSearcher(),
+      hiddenSymbols,
+    });
+    expect(hiddenSymbols).toHaveBeenCalledTimes(1);
+    expect(hiddenSymbols).toHaveBeenCalledWith([
+      { symbolId: "s-secret", filePath: "src/secret.ts", repoConnectionId: "rc1" },
+      { symbolId: "s-a", filePath: "src/a.ts", repoConnectionId: "rc1" },
+      { symbolId: "s-b", filePath: "src/b.ts", repoConnectionId: undefined },
+    ]);
+    expect(res.hits.map((h) => h.symbolId)).toEqual(["s-a", "s-b"]);
+  });
+
+  it("caps the visible hits at maxSymbols, widening the search past a hidden one", async () => {
+    const searcher = limitedSearcher();
+    const res = await buildFusedCodeBlock({
+      ...base,
+      maxSymbols: 1,
+      searcher,
+      hiddenSymbols: async () => new Set(["s-secret"]),
+    });
+    expect(res.hits.map((h) => h.symbolId)).toEqual(["s-a"]);
+    expect(searcher.search.mock.calls.map((c) => c[2])).toEqual([{ limit: 1 }, { limit: 2 }]);
+  });
+
+  it("stops widening when the searcher has no more hits", async () => {
+    const searcher = limitedSearcher();
+    const res = await buildFusedCodeBlock({
+      ...base,
+      maxSymbols: 3,
+      searcher,
+      hiddenSymbols: async () => new Set(["s-secret"]),
+    });
+    expect(res.hits.map((h) => h.symbolId)).toEqual(["s-a", "s-b"]);
+    // One widened search finds the searcher exhausted; no third.
+    expect(searcher.search.mock.calls.map((c) => c[2])).toEqual([{ limit: 3 }, { limit: 4 }]);
+  });
+
+  it("never places more than maxSymbols, even when the widened search ranks differently", async () => {
+    // Hybrid ranking need not be stable across limits: the wider search may
+    // return more visible hits than were hidden.
+    const searcher = {
+      search: vi.fn(async (_q: string, _p: string, o?: { limit?: number }) =>
+        o?.limit === 1 ? ranked.slice(0, 1) : ranked.slice(1),
+      ),
+    };
+    const res = await buildFusedCodeBlock({
+      ...base,
+      maxSymbols: 1,
+      searcher,
+      hiddenSymbols: async () => new Set(["s-secret"]),
+    });
+    expect(res.hits.map((h) => h.symbolId)).toEqual(["s-a"]);
+  });
+
+  it("searches exactly once when nothing is hidden", async () => {
+    const searcher = limitedSearcher();
+    const res = await buildFusedCodeBlock({
+      ...base,
+      maxSymbols: 2,
+      searcher,
+      hiddenSymbols: async () => new Set<string>(),
+    });
+    expect(res.hits.map((h) => h.symbolId)).toEqual(["s-secret", "s-a"]);
+    expect(searcher.search).toHaveBeenCalledTimes(1);
+  });
+});

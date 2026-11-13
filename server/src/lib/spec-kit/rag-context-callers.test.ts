@@ -22,6 +22,8 @@ const fusedCode = {
       async () => new Map([["s-mark", { filePath: ENTRY, startLine: 506, endLine: 520 }]]),
     ),
   },
+  // #2314 — nothing hidden (the default reads the database).
+  hiddenSymbols: async () => new Set<string>(),
 };
 const siblings = {
   lookup: {
