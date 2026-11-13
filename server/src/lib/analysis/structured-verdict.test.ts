@@ -180,6 +180,28 @@ describe("requestStructuredVerdict — retry once", () => {
     expect(metrics.snapshot("verifier-panel")?.retrySuccesses).toBe(1);
   });
 
+  it("#2407 — re-prompts a reply that corrects its first object, and never keeps the first", async () => {
+    // Both objects pass the schema: only the parser can stop the first winning.
+    const first = JSON.stringify({ supported: false, rationale: "incomplete draft" });
+    const corrected =
+      `${first}\n\nCorrection: the object above is incomplete. Here is the full response.\n\n` +
+      VALID;
+    const provider = new ScriptedProvider([corrected, VALID]);
+    const outcome = await requestStructuredVerdict(provider, makeRequest());
+    if (!hasVerdict(outcome)) throw new Error("expected a verdict");
+    expect(outcome.verdict).toEqual(JSON.parse(VALID));
+    expect(outcome.attempts).toBe(2);
+    expect(String(provider.calls[1]!.messages.at(-1)!.content)).toContain(
+      "an earlier version you then corrected",
+    );
+    // Written the same way twice, it is no signal, not the first object.
+    const twice = await requestStructuredVerdict(
+      new ScriptedProvider([corrected, corrected]),
+      makeRequest(),
+    );
+    expect(isNoSignal(twice) && twice.reason).toBe("unparseable");
+  });
+
   it("never re-prompts more than once", async () => {
     const provider = new ScriptedProvider(["nope", "still nope", VALID]);
     const outcome = await requestStructuredVerdict(provider, makeRequest());

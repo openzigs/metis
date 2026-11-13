@@ -7,6 +7,7 @@ import {
   READER_BATCH_CHARS,
   READER_WHOLE_MAX_DOCUMENT_TOKENS,
   chooseReadingMode,
+  hasBody,
   isTableRow,
   readDocument,
   sentenceSpan,
@@ -88,6 +89,35 @@ function askedSections(call: Call): string[] {
 
 const statements = (...items: unknown[]) => JSON.stringify({ statements: items });
 const noMerge = JSON.stringify({ duplicates: [], crossReferences: [] });
+
+/** One statement from each of TEXT's sections with text (S1 and S3 are headings alone). */
+const TEXT_STATEMENTS = [
+  {
+    section: "S2",
+    kind: "background",
+    statement: "The document describes the booking portal.",
+    quote: "This document describes the clinic booking portal for patients.",
+  },
+  {
+    section: "S4",
+    kind: "requirement",
+    statement: "Lock an account after five failed logins.",
+    quote: "The portal shall lock an account after five failed attempts.",
+  },
+  {
+    section: "S5",
+    kind: "requirement",
+    statement: "Two future appointments at most.",
+    quote: "A patient shall hold at most two future appointments at any time.",
+  },
+  {
+    section: "S6",
+    kind: "definition",
+    statement: "A clinic is a trust site.",
+    quote: "A clinic means any site run by the trust.",
+  },
+];
+const everySection = statements(...TEXT_STATEMENTS);
 
 describe("outlineSections", () => {
   it("cuts at every heading and keeps the heading path, outermost first", () => {
@@ -353,7 +383,7 @@ describe("readDocument — whole mode", () => {
     const { provider, calls } = routedProvider([[WHOLE, one]]);
     const reading = await readDocument({ title: "Booking FRD", text: TEXT, provider });
     expect(reading.merge).toBe("skipped");
-    expect(calls).toHaveLength(1);
+    expect(calls.filter((c) => c.system.includes(MERGE))).toHaveLength(0);
   });
 
   it("keeps a statement returned twice once", async () => {
@@ -552,9 +582,13 @@ describe("readDocument — a document longer than one batch", () => {
       ],
     ]);
     const reading = await readDocument({ title: "Invoices", text: doc, provider });
+    // #2407 — each batch's reply leaves a section out (S1, then S2), which is
+    // asked for once more on its own. S2's second reply quotes S1: dropped.
     expect(calls.filter((c) => c.system.includes(WHOLE)).map(askedSections)).toEqual([
       ["S1"],
+      ["S1"],
       ["S2", "S3"],
+      ["S2"],
     ]);
     expect(reading.statements.map((s) => [s.statement, s.sectionId])).toEqual([
       ["Two approvers.", "S3"],
@@ -597,10 +631,11 @@ describe("readDocument — a document longer than one batch", () => {
 
   it("#2297 — caches nothing for a document read in one batch: no later call would read it back", async () => {
     const context = JSON.stringify({ purpose: "Booking.", scope: "", actors: [], glossary: [] });
+    // A reply for every section with text, so no section is asked for again (#2407).
     const { provider, calls } = routedProvider([
-      [WHOLE, statements()],
+      [WHOLE, everySection],
       [CONTEXT, context],
-      [SECTIONED, statements()],
+      [SECTIONED, everySection],
     ]);
     await readDocument({ title: "Booking FRD", text: TEXT, provider });
     await readDocument({ title: "Booking FRD", text: TEXT, provider, mode: "sectioned" });
@@ -717,8 +752,10 @@ describe("readDocument — sectioned mode", () => {
     expect(reading.mode).toBe("sectioned");
     const [ctx] = calls.filter((c) => c.system.includes(CONTEXT));
     expect(ctx!.system).toContain("the rest of the text follows in later calls");
-    // Every read section is reported, each producing nothing.
-    expect(reading.sections.every((s) => s.status === "read" && s.statements === 0)).toBe(true);
+    // Every section is reported. #2407: the replies said nothing of any of
+    // them, though each has text, so none is reported read.
+    expect(reading.sections.length).toBeGreaterThan(1);
+    expect(reading.sections.every((s) => s.status === "unread" && s.statements === 0)).toBe(true);
   });
 
   it("still reads the sections when the context reply cannot be read", async () => {
@@ -1350,6 +1387,164 @@ describe("#2361 — repeats", () => {
   it("tells the cross-section pass to name the statement that says less", () => {
     const { systemMessage } = buildMergePrompt({ title: "Booking FRD", statements: [] });
     expect(systemMessage).toContain("name the one that says less");
+  });
+});
+
+/**
+ * #2407 — re-measuring #2361 on Sonnet 5.5, a statements reply held a short
+ * object, then "Correction: the object above is incomplete. Here is the full
+ * response." and the full one. The first was kept: nine sections came back
+ * with one statement between them, every one of them reported read.
+ */
+describe("#2407 — a reply that corrects itself, or stops partway", () => {
+  const CORRECTION = "Correction: the object above is incomplete. Here is the full response.";
+  const corrected = `${statements(TEXT_STATEMENTS[0])}\n\n${CORRECTION}\n\n${everySection}`;
+  const isRePrompt = (call: Call): boolean => call.user.includes("could not be parsed");
+  const reads = (calls: Call[]): Call[] => calls.filter((c) => c.system.includes(WHOLE));
+  const statusOf = (reading: { sections: Array<{ sectionId: string; status: string }> }) =>
+    Object.fromEntries(reading.sections.map((s) => [s.sectionId, s.status]));
+
+  it("keeps the corrected object, not the first, by asking for the one answer", async () => {
+    const { provider, calls } = routedProvider([
+      [WHOLE, (call) => (isRePrompt(call) ? everySection : corrected)],
+      [MERGE, noMerge],
+    ]);
+    const reading = await readDocument({ title: "Booking FRD", text: TEXT, provider });
+    expect(reading.statements.map((s) => s.sectionId)).toEqual(["S2", "S4", "S5", "S6"]);
+    expect(Object.values(statusOf(reading)).every((s) => s === "read")).toBe(true);
+    // The re-prompt, and no second ask: the corrected reply covers every section.
+    expect(reads(calls).map(isRePrompt)).toEqual([false, true]);
+    expect(reads(calls)[1]!.user).toContain("more than one different JSON object");
+  });
+
+  it("does not report a section read when the model corrects itself twice", async () => {
+    // Before #2407 this read one statement and called all six sections read.
+    const { provider } = routedProvider([[WHOLE, corrected]]);
+    await expect(
+      readDocument({ title: "Booking FRD", text: TEXT, provider }),
+    ).rejects.toBeInstanceOf(DocumentReaderError);
+  });
+
+  it("re-prompts a reply cut off partway through its object, and reads the answer", async () => {
+    const cut = everySection.slice(0, Math.floor(everySection.length * 0.6));
+    const { provider, calls } = routedProvider([
+      [WHOLE, (call) => (isRePrompt(call) ? everySection : cut)],
+      [MERGE, noMerge],
+    ]);
+    const reading = await readDocument({ title: "Booking FRD", text: TEXT, provider });
+    expect(reading.statements).toHaveLength(4);
+    expect(reads(calls)).toHaveLength(2);
+  });
+
+  it("asks once more for the sections a reply left out, and reads them", async () => {
+    const { provider, calls } = routedProvider([
+      [
+        WHOLE,
+        (call) =>
+          statements(
+            ...TEXT_STATEMENTS.filter((t) => askedSections(call).includes(t.section)).slice(0, 2),
+          ),
+      ],
+      [MERGE, noMerge],
+    ]);
+    const reading = await readDocument({ title: "Booking FRD", text: TEXT, provider });
+    // The first reply stops after S2 and S4; S1 and S3 are headings alone.
+    expect(reads(calls).map(askedSections)).toEqual([
+      ["S1", "S2", "S3", "S4", "S5", "S6"],
+      ["S5", "S6"],
+    ]);
+    expect(reading.statements.map((s) => s.sectionId)).toEqual(["S2", "S4", "S5", "S6"]);
+    expect(Object.values(statusOf(reading)).every((s) => s === "read")).toBe(true);
+  });
+
+  it("reports unread a section the second reply leaves out too, never read", async () => {
+    // Asked again for S5 and S6, the reply stops after S5.
+    const { provider, calls } = routedProvider([
+      [
+        WHOLE,
+        (call) =>
+          askedSections(call).length === 2
+            ? statements(TEXT_STATEMENTS[2])
+            : statements(TEXT_STATEMENTS[0], TEXT_STATEMENTS[1]),
+      ],
+      [MERGE, noMerge],
+    ]);
+    const partly = await readDocument({ title: "Booking FRD", text: TEXT, provider });
+    expect(reads(calls)).toHaveLength(2);
+    // S1 and S3 are headings with nothing under them: read, and asked nothing.
+    expect(statusOf(partly)).toEqual({
+      S1: "read",
+      S2: "read",
+      S3: "read",
+      S4: "read",
+      S5: "read",
+      S6: "unread",
+    });
+    expect(partly.sections.find((s) => s.sectionId === "S6")).toMatchObject({ statements: 0 });
+  });
+
+  it("reports unread every section left out when the second reply cannot be read", async () => {
+    const { provider } = routedProvider([
+      [
+        WHOLE,
+        (call) =>
+          askedSections(call).length === 2
+            ? "garbage"
+            : statements(TEXT_STATEMENTS[0], TEXT_STATEMENTS[1]),
+      ],
+      [MERGE, noMerge],
+    ]);
+    const reading = await readDocument({ title: "Booking FRD", text: TEXT, provider });
+    expect(statusOf(reading)).toMatchObject({ S2: "read", S4: "read", S5: "unread", S6: "unread" });
+  });
+
+  it("does not ask again for a section the reply named with a quote it could not verify", async () => {
+    const misquoted = statements(
+      ...TEXT_STATEMENTS.map((t) =>
+        t.section === "S5" ? { ...t, quote: "A patient may hold any number of appointments." } : t,
+      ),
+    );
+    const { provider, calls } = routedProvider([
+      [WHOLE, misquoted],
+      [MERGE, noMerge],
+    ]);
+    const reading = await readDocument({ title: "Booking FRD", text: TEXT, provider });
+    expect(reads(calls)).toHaveLength(1);
+    expect(reading.sections.find((s) => s.sectionId === "S5")).toMatchObject({
+      status: "read",
+      statements: 0,
+      unverified: 1,
+    });
+  });
+
+  it("keeps from a second ask only quotes in the sections asked for again", async () => {
+    // Asked again for S2 and S5, which are not contiguous, the reply also
+    // writes S4 again: S4 lies between them, but was not asked for.
+    const { provider } = routedProvider([
+      [
+        WHOLE,
+        (call) =>
+          askedSections(call).length === 2
+            ? everySection
+            : statements(TEXT_STATEMENTS[1], TEXT_STATEMENTS[3]),
+      ],
+      [MERGE, noMerge],
+    ]);
+    const reading = await readDocument({ title: "Booking FRD", text: TEXT, provider });
+    expect(reading.statements.map((s) => s.sectionId)).toEqual(["S2", "S4", "S5", "S6"]);
+    expect(reading.sections.find((s) => s.sectionId === "S4")).toMatchObject({ repeats: 0 });
+    // S4 and S6 again, from outside the sections asked for.
+    expect(reading.droppedUnverified).toBe(2);
+  });
+});
+
+describe("hasBody", () => {
+  it("is false for a heading alone and true for a heading with text, or text alone", () => {
+    expect(hasBody({ text: "## 2 Access\n\n" })).toBe(false);
+    expect(hasBody({ text: "# Title" })).toBe(false);
+    expect(hasBody({ text: "## 2 Access\n\nThe portal shall lock an account." })).toBe(true);
+    expect(hasBody({ text: "Preamble text before any heading." })).toBe(true);
+    expect(hasBody({ text: "## 4 Glossary\n\n---\n" })).toBe(false);
   });
 });
 

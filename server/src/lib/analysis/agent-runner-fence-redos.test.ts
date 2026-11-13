@@ -73,6 +73,8 @@ function extractJsonObjectViaOldFence(raw: string): unknown {
   const trimmed = raw.trim();
   const leading = leadingObject(trimmed);
   if (leading.found) return leading.value;
+  // #2407 — tracks production: an ambiguous leading object throws before the fence.
+  if (leading.ambiguous) throw new SyntaxError(AMBIGUOUS_JSON_MESSAGE);
   const fenceMatch = trimmed.match(OLD_FENCE_PATTERN);
   if (fenceMatch && fenceMatch[1]) {
     const inner = fenceMatch[1].trim();

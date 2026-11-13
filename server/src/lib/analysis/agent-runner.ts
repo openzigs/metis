@@ -189,6 +189,9 @@ export function extractJsonObject(raw: string): unknown {
     // string value, which the fence pattern would otherwise match.
     const leading = parseBalancedJsonObject(trimmed, { leadingOnly: true });
     if (leading.found) return leading.value;
+    // #2407 — a leading object and a different one after it (a correction).
+    // Thrown here, before the fence branch below could pick a fenced one.
+    if (leading.ambiguous) throw new SyntaxError(AMBIGUOUS_JSON_MESSAGE);
   }
   // Strip ```json ... ``` style fences.
   //

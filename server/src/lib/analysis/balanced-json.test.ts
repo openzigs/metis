@@ -174,6 +174,10 @@ describe("#1002 parseBalancedJsonObject", () => {
       found: false,
     });
     expect(parseBalancedJsonObject('{"a":1} then {"b":2}', { leadingOnly: true })).toEqual({
+      found: false,
+      ambiguous: true,
+    });
+    expect(parseBalancedJsonObject('{"a":1} then nothing', { leadingOnly: true })).toEqual({
       found: true,
       value: { a: 1 },
     });
@@ -285,9 +289,12 @@ describe("#1355 a preamble example followed by the real answer", () => {
     expect(parseBalancedJsonObject(after)).toEqual({ found: false, ambiguous: true });
   });
 
-  it("still returns the leading object when the reply starts with the answer", () => {
+  it("#2407 — is ambiguous when the reply starts with the answer and a different object follows", () => {
+    // Before #2407 the leading object was returned whatever followed it, which
+    // is how a model's corrected answer lost to its first draft.
     const leading = `${JSON.stringify(ANSWER)}\nThe shape was ${JSON.stringify(EXAMPLE)}`;
-    expect(extractJsonObject(leading)).toEqual(ANSWER);
+    expect(() => extractJsonObject(leading)).toThrow(AMBIGUOUS_JSON_MESSAGE);
+    expect(extractJsonObject(`${JSON.stringify(ANSWER)}\nThe shape is as asked.`)).toEqual(ANSWER);
   });
 
   it("accepts the same object written twice", () => {
@@ -433,5 +440,103 @@ describe("#1355 a preamble example followed by the real answer", () => {
     expect(large.result).toEqual({ found: true, value: { a: 1 } });
     expectLinear(small, large);
     expectLinearCpu("identical objects", make);
+  });
+});
+
+/**
+ * #2407 — a model's corrected answer. Re-measuring #2361 on Sonnet 5.5, a
+ * statements reply read: a short object, then "Correction: the object above is
+ * incomplete. Here is the full response." and a second, full object. The
+ * leading object was kept, and sections S1–S9 came back with one statement.
+ * The diagnostic reply was not saved; this one is rebuilt from that account,
+ * with the statements of document 01's sections 1.4 and 2.2 (R45, R46, R47).
+ */
+describe("#2407 a reply that corrects its own first object", () => {
+  const FIRST = {
+    statements: [
+      {
+        section: "S7",
+        kind: "requirement",
+        statement: "Receptionists can see whether a patient has a portal account.",
+        quote:
+          "Receptionists shall be able to see, for any patient, whether the patient has a portal account",
+      },
+    ],
+  };
+  const FULL = {
+    statements: [
+      ...FIRST.statements,
+      {
+        section: "S7",
+        kind: "requirement",
+        statement: "The portal keeps no copy of the appointment book.",
+        quote: "The portal shall not keep its own copy of the appointment book",
+      },
+      {
+        section: "S9",
+        kind: "business-rule",
+        statement: "Urgent and same-day appointments stay telephone-only.",
+        quote: "Urgent and same-day appointments remain telephone-only in the first release",
+      },
+    ],
+  };
+  const CORRECTION = "Correction: the object above is incomplete. Here is the full response.";
+  const RECORDED = `${JSON.stringify(FIRST)}\n\n${CORRECTION}\n\n${JSON.stringify(FULL)}`;
+
+  it("never returns the first object", () => {
+    expect(parseBalancedJsonObject(RECORDED, { leadingOnly: true })).toEqual({
+      found: false,
+      ambiguous: true,
+    });
+    expect(parseBalancedJsonObject(RECORDED)).toEqual({ found: false, ambiguous: true });
+  });
+
+  it("extractJsonObject throws the error the re-prompt quotes, which names the correction", () => {
+    expect(() => extractJsonObject(RECORDED)).toThrow(SyntaxError);
+    expect(() => extractJsonObject(RECORDED)).toThrow(AMBIGUOUS_JSON_MESSAGE);
+    expect(AMBIGUOUS_JSON_MESSAGE).toMatch(/corrected/);
+  });
+
+  it("does not fall through to a fenced correction either", () => {
+    // The fence branch runs after the leading-object check; it must not turn a
+    // reply that cannot be told apart into whichever object was fenced.
+    const fenced = `${JSON.stringify(FIRST)}\n${CORRECTION}\n\`\`\`json\n${JSON.stringify(FULL)}\n\`\`\``;
+    expect(() => extractJsonObject(fenced)).toThrow(AMBIGUOUS_JSON_MESSAGE);
+  });
+
+  it("is ambiguous when the correction stops partway (cut off by the output cap)", () => {
+    const full = JSON.stringify(FULL);
+    const cut = `${JSON.stringify(FIRST)}\n${CORRECTION}\n${full.slice(0, Math.floor(full.length * 0.6))}`;
+    expect(parseBalancedJsonObject(cut, { leadingOnly: true })).toEqual({
+      found: false,
+      ambiguous: true,
+    });
+    expect(() => extractJsonObject(cut)).toThrow(AMBIGUOUS_JSON_MESSAGE);
+    // The same after a prefaced answer, where the general scan holds it.
+    expect(parseBalancedJsonObject(`Here: ${cut}`)).toEqual({ found: false, ambiguous: true });
+  });
+
+  it("still reads one object, a repeat of it, a leading {} and a stray opener as before", () => {
+    const one = JSON.stringify(FULL);
+    expect(extractJsonObject(`${one}\nThat is everything.`)).toEqual(FULL);
+    expect(extractJsonObject(`${one}\nAgain: ${JSON.stringify(FULL, null, 2)}`)).toEqual(FULL);
+    // `{}` is never a rival, so a full object after it is the answer.
+    expect(parseBalancedJsonObject(`{}\n${CORRECTION}\n${one}`, { leadingOnly: true })).toEqual({
+      found: true,
+      value: FULL,
+    });
+    // An opener that no JSON key follows is prose, not a cut-off object.
+    expect(extractJsonObject(`${one}\nclose it with {`)).toEqual(FULL);
+    expect(extractJsonObject(`${one}\nuse {name here`)).toEqual(FULL);
+  });
+
+  it("stays linear on an answer followed by an unclosed object", () => {
+    const make = (n: number): string =>
+      `${JSON.stringify(FULL)} ${CORRECTION} {"statements":[${'{"a":"b"},'.repeat(Math.floor(n / 10))}`;
+    const small = measureWork(make(2_000));
+    const large = measureWork(make(30_000));
+    expect(small.result).toEqual({ found: false, ambiguous: true });
+    expect(large.result).toEqual({ found: false, ambiguous: true });
+    expectLinear(small, large);
   });
 });

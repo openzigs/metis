@@ -28,6 +28,14 @@
  * array in the prose. Once an answer is held, nothing discards it as
  * not-found: a later span either is ignored or makes the reply ambiguous.
  *
+ * #2407 — that holds when the reply STARTS with an object, too. "The leading
+ * object is the answer" kept a model's short first object when it went on
+ * "Correction: the object above is incomplete. Here is the full response." and
+ * wrote a second, full one: the document reader lost whole batches of
+ * sections while reporting them read. Two different objects are ambiguous
+ * wherever the first one stands, and so is an answer followed by an object
+ * that is opened and never closed (the correction, cut off by the output cap).
+ *
  * Linear by construction: every character is visited once by the scan, and the
  * spans passed to `JSON.parse` are disjoint, so parsing is bounded by the input
  * length too. In particular an unbalanced prefix (`{{{{…`, or an object cut off
@@ -79,15 +87,15 @@ const AMBIGUOUS: BalancedJsonResult = { found: false, ambiguous: true };
 export const AMBIGUOUS_JSON_MESSAGE =
   "Model response contained more than one different JSON object, so which one is the answer " +
   "cannot be told; reply with only the one JSON object that is the answer, unchanged, and " +
-  "drop the others (examples, illustrations)";
+  "drop the others (examples, illustrations, and an earlier version you then corrected)";
 
 /**
  * Parse the top-level balanced `{…}` span in `text` that is valid JSON —
  * provided it is the only one (or every other one is the same object).
  *
- * @param leadingOnly consider only a span that starts at index 0 — used when
- *   the text itself begins with `{`, where the leading object is the answer and
- *   anything after it is commentary.
+ * @param leadingOnly the answer must be a span that starts at index 0 — used
+ *   when the text itself begins with `{`. Prose after it is commentary; a
+ *   different object after it makes the reply ambiguous (#2407).
  * @param onWork test instrumentation (#1422): receives the call's work counts
  *   once, as it returns. Production callers pass nothing; the counting itself
  *   (integer increments on one object per call) is within benchmark noise of
@@ -166,10 +174,11 @@ function scan(text: string, leadingOnly: boolean, work: BalancedJsonWork): Balan
               // that may be the real answer cut short — never a reason to
               // discard the held one as NOT_FOUND (PR #1409 review).
               return answer === null ? NOT_FOUND : AMBIGUOUS;
-            } else if (leadingOnly) {
-              // The leading object IS the answer when the text starts with it.
-              return { found: true, value };
             } else if (answer === null || isEmptyObject(answer.value)) {
+              // #2407 — under `leadingOnly` the leading object is held like any
+              // other answer, not returned at once: a model that writes a short
+              // object, then "Correction: the object above is incomplete" and a
+              // second, full one, lost whole batches of sections to the first.
               // PR #1409 review — `{}` ("return {} when there are none") is
               // neither an answer to prefer over a real one nor a rival to it.
               answer = { value };
@@ -190,11 +199,15 @@ function scan(text: string, leadingOnly: boolean, work: BalancedJsonWork): Balan
             }
           }
         }
-        if (leadingOnly) return NOT_FOUND;
+        if (leadingOnly && answer === null) return NOT_FOUND;
       }
     }
   }
   if (answer === null) return NOT_FOUND;
+  // #2407 — an object opened after the answer and never closed: the reply
+  // stopped partway through a second object, which may be the corrected
+  // answer cut off by the output cap. The held one is not safe to return.
+  if (depth > 0 && couldBeJsonObject(text, start, work)) return AMBIGUOUS;
   return elementBeforeAnswer ? AMBIGUOUS : { found: true, value: answer.value };
 }
 
