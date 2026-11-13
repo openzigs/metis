@@ -25,6 +25,7 @@ import {
   createCapabilityTracker,
   detectStaticCapability,
   finalizeCapability,
+  recordRestrictedLeftOut,
 } from "./analysis-capability.js";
 import { __resetConfigSingleton } from "../config/config-service.js";
 
@@ -210,5 +211,47 @@ describe("finalizeCapability", () => {
       expect("codeAgentStoppedEarly" in cap).toBe(false);
       expect(cap.reasons).toContain("code-retrieval-degraded");
     });
+  });
+});
+
+// #2437 — what the run's code reads left out because of access restrictions:
+// counts and the reason, never a path, and nothing at all when none was.
+describe("restrictedLeftOut", () => {
+  const capable = () => {
+    const tracker = createCapabilityTracker({
+      static: {
+        codeGraphPresent: true,
+        repoSourceIngested: true,
+        fusedCodeRetrievalEnabled: true,
+        schemaContextEnabled: true,
+      },
+      codeAnalysisRequested: true,
+      databaseAnalysisRequested: false,
+    });
+    tracker.agentMode = "agentic";
+    return tracker;
+  };
+
+  it("is absent when nothing was left out", () => {
+    const tracker = capable();
+    recordRestrictedLeftOut(tracker, { files: 0, symbolIds: [] });
+    expect(finalizeCapability(tracker)).not.toHaveProperty("restrictedLeftOut");
+  });
+
+  it("counts the files once and each dropped symbol once, over every check", () => {
+    const tracker = capable();
+    recordRestrictedLeftOut(tracker, { files: 3 });
+    recordRestrictedLeftOut(tracker, { files: 3, symbolIds: ["s1", "s2"] });
+    recordRestrictedLeftOut(tracker, { files: 2, symbolIds: ["s2", "s3"] });
+    const cap = finalizeCapability(tracker);
+    expect(cap.restrictedLeftOut).toEqual({ reason: "shared-audience", files: 3, symbols: 3 });
+    // It reports a gap; it is not a degraded run.
+    expect(cap.reasons).toEqual([]);
+  });
+
+  it("persists counts only, never a symbol id", () => {
+    const tracker = capable();
+    recordRestrictedLeftOut(tracker, { files: 1, symbolIds: ["s-secret"] });
+    expect(JSON.stringify(finalizeCapability(tracker))).not.toContain("s-secret");
   });
 });

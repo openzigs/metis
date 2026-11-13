@@ -64,6 +64,11 @@ export interface CodeAccessFilter {
    * case.
    */
   isHidden(repoConnectionId: string | null, filePath: string): boolean;
+  /**
+   * #2437 — how many files are hidden, over every repository: a path hidden in
+   * two repositories is two files. Counted, never listed, on what a run left out.
+   */
+  readonly hiddenFileCount: number;
 }
 
 /** The filter for a caller nothing is hidden from. */
@@ -71,6 +76,7 @@ export const UNRESTRICTED_CODE_ACCESS: CodeAccessFilter = {
   unrestricted: true,
   hiddenPaths: () => [],
   isHidden: () => false,
+  hiddenFileCount: 0,
 };
 
 /** A repository-relative path in its ingested form: `/`-separated, no `./` or leading `/`. */
@@ -117,6 +123,7 @@ export function codeAccessFilterOf(
     unrestricted: false,
     hiddenPaths: (repo) => [...pick(repo)],
     isHidden: (repo, filePath) => pick(repo).has(normalizeRepoPath(filePath)),
+    hiddenFileCount: [...byRepo.values()].reduce((n, paths) => n + paths.size, 0),
   };
 }
 
@@ -218,22 +225,40 @@ export async function isHiddenInClone(
 }
 
 /**
+ * #2437 — what one access check left out: how many files the filter hides,
+ * and the ids of the symbols it dropped (an id, never a path or a name).
+ */
+export interface RestrictedLeftOut {
+  files: number;
+  symbolIds: string[];
+}
+
+/**
  * #2314 — `buildFusedCodeBlock`'s `hiddenSymbols` for the filter `load`
  * resolves. `load` runs at most once, and only when the searcher returned a
  * hit, so a fused block with nothing to filter costs no query. Each hit is
  * judged on the file and repository its line lookup already resolved, so no
  * symbol is read twice; a hit whose repository is unknown is matched against
  * every repository's restrictions, as a legacy graph is.
+ *
+ * #2437 — `onLeftOut` is told, on each check under a restricted filter, how
+ * many files it hides and which hits it dropped, so a run can say how much it
+ * left out.
  */
-export function hiddenSymbolsFor(load: () => Promise<CodeAccessFilter>): HiddenSymbolsLookup {
+export function hiddenSymbolsFor(
+  load: () => Promise<CodeAccessFilter>,
+  onLeftOut?: (left: RestrictedLeftOut) => void,
+): HiddenSymbolsLookup {
   let filter: Promise<CodeAccessFilter> | undefined;
   return async (hits) => {
     filter ??= load();
     const f = await filter;
     if (f.unrestricted) return new Set();
-    return new Set(
-      hits.filter((h) => f.isHidden(h.repoConnectionId ?? null, h.filePath)).map((h) => h.symbolId),
-    );
+    const hidden = hits
+      .filter((h) => f.isHidden(h.repoConnectionId ?? null, h.filePath))
+      .map((h) => h.symbolId);
+    onLeftOut?.({ files: f.hiddenFileCount, symbolIds: hidden });
+    return new Set(hidden);
   };
 }
 

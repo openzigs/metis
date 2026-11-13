@@ -161,6 +161,7 @@ import {
   recordDroppedCitations,
   recordFindingsLeftOut,
   recordRequirementsLeftOut,
+  recordRestrictedLeftOut,
 } from "./analysis-capability.js";
 // #777 — the file tools are gated on the clone EXISTING, not on a path string.
 import { cloneDirPath, resolveExistingCloneDir } from "./clone-availability.js";
@@ -262,7 +263,11 @@ import {
   type AgentTool,
   type ToolContext,
 } from "./tools/index.js";
-import { hiddenSymbolsFor, loadSharedCodeAccess } from "./tools/code-access.js";
+import {
+  hiddenSymbolsFor,
+  loadSharedCodeAccess,
+  type RestrictedLeftOut,
+} from "./tools/code-access.js";
 import { buildRequirementGroundedPrompt, normalizeAgentContext } from "./prompts.js";
 import { clearUnknownRequirementIds } from "./requirement-id-guard.js";
 import {
@@ -3803,6 +3808,8 @@ export class AnalysisOrchestrator {
         // ACL restricts (#2243) is neither read, listed nor searched by the
         // tools, nor seeded below.
         const codeAccess = await loadSharedCodeAccess(input.projectId);
+        // #2437 — every file that filter hides is a file this run cannot read.
+        this.noteRestrictedLeftOut(input.analysisId, { files: codeAccess.hiddenFileCount });
 
         // Build tool context
         const toolContext: ToolContext = {
@@ -3860,7 +3867,10 @@ export class AnalysisOrchestrator {
           requirements: input.requirements,
           ragChunks: [],
           deps: this.deps.fusedCode,
-          hiddenSymbols: hiddenSymbolsFor(async () => codeAccess),
+          hiddenSymbols: hiddenSymbolsFor(
+            async () => codeAccess,
+            (left) => this.noteRestrictedLeftOut(input.analysisId, left),
+          ),
         });
         // #2276 — requirements past the embedder's limit reach keyword search only.
         this.noteRequirementsLeftOut(input.analysisId, fused.semanticLeftOut);
@@ -4840,8 +4850,11 @@ export class AnalysisOrchestrator {
           ragChunks: perRequirement.flatMap((r) => r.chunks).map(toFusedRagChunkRef),
           deps: this.deps.fusedCode,
           // #2314 — only symbols every project member may see (#2243): the
-          // findings are persisted for all of them.
-          hiddenSymbols: hiddenSymbolsFor(() => loadSharedCodeAccess(input.projectId)),
+          // findings are persisted for all of them. #2437 — counted.
+          hiddenSymbols: hiddenSymbolsFor(
+            () => loadSharedCodeAccess(input.projectId),
+            (left) => this.noteRestrictedLeftOut(input.analysisId, left),
+          ),
         });
         // #2276 — requirements past the embedder's limit reach keyword search only.
         this.noteRequirementsLeftOut(input.analysisId, fused.semanticLeftOut);
@@ -5884,8 +5897,11 @@ export class AnalysisOrchestrator {
         ragChunks: combined.map(toFusedRagChunkRef),
         deps: this.deps.fusedCode,
         // #2314 — only symbols every project member may see (#2243): the
-        // findings are persisted for all of them.
-        hiddenSymbols: hiddenSymbolsFor(() => loadSharedCodeAccess(input.projectId)),
+        // findings are persisted for all of them. #2437 — counted.
+        hiddenSymbols: hiddenSymbolsFor(
+          () => loadSharedCodeAccess(input.projectId),
+          (left) => this.noteRestrictedLeftOut(input.analysisId, left),
+        ),
       });
       return fusedChunks.length > 0 ? [...combined, ...fusedChunks] : combined;
     }
@@ -6074,6 +6090,20 @@ export class AnalysisOrchestrator {
     });
     const tracker = this.capabilities.get(analysisId);
     if (tracker) recordRequirementsLeftOut(tracker, notice);
+  }
+
+  /**
+   * #2437 — record what the run's code reads left out because of access
+   * restrictions (#2314: it reads as a shared audience) on the run's
+   * capability (`restrictedLeftOut`). Counts only. No-op without a tracker.
+   */
+  private noteRestrictedLeftOut(
+    analysisId: string | undefined,
+    left: Pick<RestrictedLeftOut, "files"> & Partial<RestrictedLeftOut>,
+  ): void {
+    if (!analysisId) return;
+    const tracker = this.capabilities.get(analysisId);
+    if (tracker) recordRestrictedLeftOut(tracker, left);
   }
 
   /**

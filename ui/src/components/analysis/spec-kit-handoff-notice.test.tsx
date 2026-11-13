@@ -4,6 +4,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { render, screen } from "@testing-library/react";
+import type { AnalysisCapability } from "@metis/shared";
 import { SpecKitHandoffNotice, specKitHandoffOf } from "./spec-kit-handoff-notice";
 
 const HANDOFF = {
@@ -13,6 +14,30 @@ const HANDOFF = {
 };
 
 describe("SpecKitHandoffNotice (#994)", () => {
+  // #2437 — the handoff summary carries the run's restricted-files line too.
+  it("adds how many restricted files the run left out, and nothing when none (#2437)", () => {
+    const { rerender } = render(
+      <SpecKitHandoffNotice
+        metadata={{ specKitHandoff: HANDOFF }}
+        capability={
+          {
+            restrictedLeftOut: { reason: "shared-audience", files: 1, symbols: 2 },
+          } as unknown as AnalysisCapability
+        }
+      />,
+    );
+    expect(screen.getByTestId("spec-kit-handoff-restricted")).toHaveTextContent(
+      "1 restricted file wasn't analysed, and 2 matching code symbols in it were left out: results are shared with the whole project, so they include only what everyone on it can see.",
+    );
+    rerender(
+      <SpecKitHandoffNotice
+        metadata={{ specKitHandoff: HANDOFF }}
+        capability={{ reasons: [] } as unknown as AnalysisCapability}
+      />,
+    );
+    expect(screen.queryByTestId("spec-kit-handoff-restricted")).toBeNull();
+  });
+
   it("names the artifacts, what was sent, and what was left out", () => {
     render(<SpecKitHandoffNotice metadata={{ specKitHandoff: HANDOFF }} />);
     const notice = screen.getByTestId("spec-kit-handoff-notice");

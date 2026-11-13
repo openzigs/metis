@@ -63,6 +63,8 @@ const { retrieveFusedCodeChunks } = await import("../src/lib/analysis/fused-code
 const { buildSpecKitRagContext } = await import("../src/lib/spec-kit/rag-context.js");
 const { codeRuntimeTool } = await import("../src/lib/ai/tool-runtime/toolset.js");
 const { AnalysisOrchestrator } = await import("../src/lib/analysis/orchestrator.js");
+const { createCapabilityTracker, finalizeCapability } =
+  await import("../src/lib/analysis/analysis-capability.js");
 const { createSearchSymbolsTool } = await import("../src/lib/analysis/tools/search-symbols.js");
 const { __resetToolResultCacheForTests } =
   await import("../src/lib/ai/tool-runtime/tool-result-cache.js");
@@ -436,6 +438,119 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         const symbols = chunks.map((c) => c.symbolId).filter(Boolean);
         expect(symbols).toEqual(["s-public"]);
       });
+    });
+
+    // #2437 — each run counts what access restrictions left out, on its
+    // capability record: counts and the reason only, never a path or a name,
+    // and nothing at all when nothing was left out. Every analysis path that
+    // reads code: the agentic pass, the requirement-grounded agent and the
+    // single-shot context.
+    describe("#2437 — what a run left out is counted, never named", () => {
+      const ANSWER = JSON.stringify({ agentKey: "code", summary: "done", findings: [], notes: [] });
+      type Orch = {
+        capabilities: Map<string, ReturnType<typeof createCapabilityTracker>>;
+      } & Record<string, (input: Record<string, unknown>) => Promise<unknown>>;
+      /** An orchestrator with a capability tracker for `analysisId`, as a pipeline run has. */
+      const withTracker = (analysisId: string, codeSearcher: FusedCodeSearcher = searcher) => {
+        const orch = new AnalysisOrchestrator({
+          provider: {
+            key: "offline-stub",
+            model: "stub",
+            offline: true,
+            chat: vi.fn(async () => ({
+              content: ANSWER,
+              usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+              model: "stub",
+              provider: "offline-stub",
+            })),
+          } as never,
+          knowledge: { search: async () => ({ hits: [] }) } as never,
+          fusedCode: { searcher: codeSearcher, lineLookup },
+          prepareRepoClone: async () => "healthy",
+        }) as unknown as Orch;
+        const tracker = createCapabilityTracker({
+          static: {
+            codeGraphPresent: true,
+            repoSourceIngested: true,
+            fusedCodeRetrievalEnabled: true,
+            schemaContextEnabled: true,
+          },
+          codeAnalysisRequested: true,
+          databaseAnalysisRequested: false,
+        });
+        orch.capabilities.set(analysisId, tracker);
+        return { orch, capability: () => finalizeCapability(tracker) };
+      };
+      const runs: Record<string, (orch: Orch, analysisId: string) => Promise<unknown>> = {
+        agentic: (orch, analysisId) => {
+          process.env.REPO_CLONE_DIR = cloneRoot;
+          return orch.runAgenticCodeAgent!({
+            analysisId,
+            projectId: PROJECT,
+            projectName: "Code",
+            projectDescription: "fees",
+            requirements: [{ id: "REQ-1", text: "Compute the fee." }],
+            signal: new AbortController().signal,
+            connectorId: REPO,
+            actorId: ALICE,
+          });
+        },
+        "requirement-grounded": (orch, analysisId) =>
+          orch.runRequirementGroundedCodeAgent!({
+            analysisId,
+            projectId: PROJECT,
+            projectName: "Code",
+            projectDescription: "fees",
+            requirements: [{ id: "REQ-1", text: "Compute the fee." }],
+            documentIds: ["d-none"],
+            signal: new AbortController().signal,
+          }),
+        "single-shot": (orch, analysisId) =>
+          orch.retrieveContext!({
+            analysisId,
+            projectId: PROJECT,
+            agentKey: "code",
+            documentIds: ["d-none"],
+            projectName: "Code",
+            projectDescription: "fees",
+          }),
+      };
+
+      // The agentic pass's tools could not read the file even when its code
+      // search matched nothing, so the file is counted all the same.
+      it("the agentic path counts the restricted file when its code search finds nothing", async () => {
+        const { orch, capability } = withTracker("an-2437-no-hits", { search: async () => [] });
+        await runs.agentic!(orch, "an-2437-no-hits");
+        expect(capability().restrictedLeftOut).toEqual({
+          reason: "shared-audience",
+          files: 1,
+          symbols: 0,
+        });
+      });
+
+      for (const [path, run] of Object.entries(runs)) {
+        it(`the ${path} path counts the restricted file and its symbol, and names neither`, async () => {
+          const { orch, capability } = withTracker(`an-2437-${path}`);
+          await run(orch, `an-2437-${path}`);
+          const cap = capability();
+          expect(cap.restrictedLeftOut).toEqual({
+            reason: "shared-audience",
+            files: 1,
+            symbols: 1,
+          });
+          const stored = JSON.stringify(cap);
+          for (const named of ["secret", "computeSecretFee", "s-secret", SECRET_DOC]) {
+            expect(stored).not.toContain(named);
+          }
+        });
+
+        it(`the ${path} path records nothing once no file is restricted`, async () => {
+          await restrict([]);
+          const { orch, capability } = withTracker(`an-2437-${path}-open`);
+          await run(orch, `an-2437-${path}-open`);
+          expect(capability()).not.toHaveProperty("restrictedLeftOut");
+        });
+      }
     });
 
     describe("fused symbol retrieval", () => {

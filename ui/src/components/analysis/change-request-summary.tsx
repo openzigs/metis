@@ -6,6 +6,8 @@
  * start a run), the documents and imported items it was started from, and the
  * settings it ran with, saying so when they were the defaults.
  *
+ * #2437 — and how many restricted files the run left out, and why.
+ *
  * Every string here is rendered as React text, never as HTML or Markdown: a
  * title or a document name holding markup shows the markup as typed.
  */
@@ -18,6 +20,7 @@ import { ApiError } from "@/lib/api-client";
 import { analysisApi, type AnalysisSnapshot } from "@/lib/analysis-api";
 import { queryKeys } from "@/lib/query-keys";
 import { useAppMutation } from "@/lib/use-app-mutation";
+import { RestrictedLeftOutNotice } from "./restricted-left-out-notice";
 
 /** The settings a run used, in words, from its stored metadata. */
 export function runSettingsSummary(
@@ -166,6 +169,8 @@ export function ChangeRequestSummary({
         </span>
         {settings.lines.join(" · ")}
       </p>
+      {/* #2437 — the restricted files the run left out, counted, never named. */}
+      <RestrictedLeftOutNotice capability={snapshot.capability} />
     </div>
   );
 }

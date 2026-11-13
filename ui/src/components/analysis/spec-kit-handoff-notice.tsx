@@ -10,6 +10,9 @@
  * titles as context for the code agent. They are shown as context, apart from
  * the requirements from spec.md, with what did not fit the context limit.
  *
+ * Issue #2437 — and, as the change request does, how many restricted files the
+ * run left out.
+ *
  * Reads `metadata.specKitHandoff` (persisted when the run started), so it shows
  * while the run is still going and on every later visit. Renders nothing for a
  * run that was not started from a Spec Kit handoff.
@@ -24,9 +27,11 @@
 import {
   MAX_ANALYSIS_AGENT_CONTEXT,
   specKitHandoffSchema,
+  type AnalysisCapability,
   type SpecKitHandoffRecord,
 } from "@metis/shared";
 import { notSentPhrase } from "@/lib/spec-kit-handoff";
+import { RestrictedLeftOutNotice } from "./restricted-left-out-notice";
 
 /** The persisted record, or null when absent or malformed. */
 export function specKitHandoffOf(
@@ -54,8 +59,11 @@ function contextSummary(context: NonNullable<SpecKitHandoffRecord["context"]>): 
 
 export function SpecKitHandoffNotice({
   metadata,
+  capability,
 }: {
   metadata: Record<string, unknown> | null | undefined;
+  /** #2437 — the run's capability record: the restricted files it left out. */
+  capability?: AnalysisCapability | null;
 }): React.ReactElement | null {
   const handoff = specKitHandoffOf(metadata);
   if (!handoff) return null;
@@ -105,6 +113,8 @@ export function SpecKitHandoffNotice({
           {omitted.join(", ")}. This run did not evaluate {omitted.length === 1 ? "it" : "them"}.
         </p>
       ) : null}
+      {/* #2437 — the code the run read from is the shared audience's too. */}
+      <RestrictedLeftOutNotice capability={capability} testId="spec-kit-handoff-restricted" />
     </div>
   );
 }

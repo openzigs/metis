@@ -3129,6 +3129,29 @@ export interface FindingsLeftOutNotice {
   leftOutTitles: string[];
 }
 
+/**
+ * Issue #2437 — why a run left restricted sources out. `shared-audience`
+ * (#2314): an analysis's results are read by the whole project, so its code
+ * reads see only what every member may see.
+ */
+export const RESTRICTED_LEFT_OUT_REASONS = ["shared-audience"] as const;
+export type RestrictedLeftOutReason = (typeof RESTRICTED_LEFT_OUT_REASONS)[number];
+
+/**
+ * Issue #2437 — how many restricted sources a run left out, and why. Counts
+ * only, never paths or names: the readers of the result may not see those
+ * files, so naming them would leak what the restriction hides.
+ *
+ * `files` are the restricted repository files the run could not read (every
+ * one hidden from its audience, in a run that read code); `symbols` the
+ * code-search matches dropped because their file is one of them.
+ */
+export interface RestrictedLeftOutNotice {
+  reason: RestrictedLeftOutReason;
+  files: number;
+  symbols: number;
+}
+
 /** A repository skipped from a multi-repo run because the per-repo token budget was too low. */
 export interface AnalysisSkippedRepo {
   connectorId: string;
@@ -3323,6 +3346,11 @@ export interface AnalysisCapability {
   requirementsLeftOut?: RequirementsLeftOutNotice[];
   /** Issue #2233 — per agent, the findings cut from its answer. Absent when none were. */
   findingsLeftOut?: FindingsLeftOutNotice[];
+  /**
+   * Issue #2437 — the restricted files and symbols the run left out. Absent
+   * when it left none out (and on every run persisted before #2437).
+   */
+  restrictedLeftOut?: RestrictedLeftOutNotice;
   /** Derived, enumerated degradation reasons. Empty ⇒ fully capable run. */
   reasons: AnalysisCapabilityReason[];
 }
@@ -3547,6 +3575,56 @@ export function readFindingsLeftOut(value: unknown): FindingsLeftOutNotice[] {
     });
   }
   return out;
+}
+
+/**
+ * Issue #2437 — a stored `restrictedLeftOut` value, shape-checked on read as
+ * the readers above are. `null` unless the reason is known, both counts are
+ * whole numbers and at least one is positive: a run that left nothing out
+ * shows nothing. Only the counts and the reason are kept, whatever else the
+ * stored value holds.
+ */
+export function readRestrictedLeftOut(value: unknown): RestrictedLeftOutNotice | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+  const { reason, files, symbols } = value as Record<string, unknown>;
+  if (!(RESTRICTED_LEFT_OUT_REASONS as readonly unknown[]).includes(reason)) return null;
+  if (!isCount(files) || !isCount(symbols) || files + symbols === 0) return null;
+  return { reason: reason as RestrictedLeftOutReason, files, symbols };
+}
+
+/** Issue #2437 — why, in the analyst's words, per reason. */
+const RESTRICTED_LEFT_OUT_WHY: Record<RestrictedLeftOutReason, string> = {
+  "shared-audience":
+    "results are shared with the whole project, so they include only what everyone on it can see.",
+};
+
+/**
+ * Issue #2437 — the one line a run, its change request and a Spec Kit handoff
+ * show: "3 restricted files weren't analysed: results are shared with the
+ * whole project, so they include only what everyone on it can see." `null`
+ * when nothing was left out. Counts only: it never names a file.
+ */
+export function restrictedLeftOutSentence(value: unknown): string | null {
+  const notice = readRestrictedLeftOut(value);
+  if (!notice) return null;
+  const { files, symbols } = notice;
+  const parts: string[] = [];
+  if (files > 0) {
+    parts.push(
+      files === 1
+        ? "1 restricted file wasn't analysed"
+        : `${files} restricted files weren't analysed`,
+    );
+  }
+  if (symbols > 0) {
+    const where = files === 0 ? "restricted files" : files === 1 ? "it" : "them";
+    parts.push(
+      symbols === 1
+        ? `1 matching code symbol in ${where} was left out`
+        : `${symbols} matching code symbols in ${where} were left out`,
+    );
+  }
+  return `${parts.join(", and ")}: ${RESTRICTED_LEFT_OUT_WHY[notice.reason]}`;
 }
 
 /**
