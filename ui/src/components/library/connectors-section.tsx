@@ -94,6 +94,7 @@ export function ConnectorsSection({ projectId }: ConnectorsSectionProps) {
   }
 
   const configured = status.data?.configured === true;
+  const omitted = lastRun ? omittedMessage(lastRun) : null;
   const canSubmit =
     mode === "confluence"
       ? spaceKey.trim().length > 0
@@ -143,15 +144,15 @@ export function ConnectorsSection({ projectId }: ConnectorsSectionProps) {
             {lastRun.summary.failures}
           </p>
         )}
-        {lastRun && omittedMessage(lastRun) && (
-          <p
-            className="mt-1 text-xs text-warning"
-            role="status"
-            data-testid="connectors-last-omitted"
-          >
-            {omittedMessage(lastRun)}
-          </p>
-        )}
+        {/* #2260 — the live region is always mounted, so a screen reader announces the
+            note when it arrives; a region that mounts with its text is not reliably read. */}
+        <div role="status" data-testid="connectors-last-omitted-region">
+          {omitted && (
+            <p className="mt-1 text-xs text-warning" data-testid="connectors-last-omitted">
+              {omitted}
+            </p>
+          )}
+        </div>
       </Card>
 
       {/* #268 — Radix Dialog: focus trap, Escape, focus return. */}

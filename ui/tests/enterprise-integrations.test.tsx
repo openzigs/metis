@@ -134,12 +134,17 @@ describe("ConnectorsSection (#96)", () => {
     await waitFor(() => expect(screen.getByTestId("add-from-jira")).not.toBeDisabled());
     fireEvent.click(screen.getByTestId("add-from-jira"));
     fireEvent.change(screen.getByTestId("jira-jql"), { target: { value: "project = ENG" } });
+    // #2260 — the status region is mounted, empty, before the run, so the note is announced.
+    const region = screen.getByTestId("connectors-last-omitted-region");
+    expect(region).toHaveAttribute("role", "status");
+    expect(region).toBeEmptyDOMElement();
     fireEvent.click(screen.getByTestId("connector-submit"));
     const note = await screen.findByTestId("connectors-last-omitted");
     expect(note).toHaveTextContent(
       "590 of 640 matching issues were not ingested. The search returned only 50.",
     );
-    expect(note).toHaveAttribute("role", "status");
+    expect(screen.getByTestId("connectors-last-omitted-region")).toBe(region);
+    expect(region).toContainElement(note);
   });
 
   it("submits a Jira ingest with the provided JQL", async () => {
