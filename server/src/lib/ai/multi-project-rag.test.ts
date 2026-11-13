@@ -811,8 +811,38 @@ describe("buildMultiProjectRagContext — ranking past the excerpt limit (#2264)
           result({ projectsArchived: ["pa", "pb"], projectNames: { pa: "Alpha", pb: "Beta" } }),
       },
     });
-    expect(out.block).toContain("but its projects are archived");
+    expect(out.block).toContain('but its projects are archived ("Alpha" and "Beta")');
     expect(out.block).not.toContain("available to you");
+  });
+
+  it("still names the chosen archived products when others are out of reach", async () => {
+    const out = await buildMultiProjectRagContext({
+      userId: "u1",
+      scope: { kind: "projects", projectIds: ["pa", "gone"] },
+      query: "q",
+      deps: {
+        search: async () =>
+          result({ projectsArchived: ["pa"], projectsRejected: 1, projectNames: { pa: "Alpha" } }),
+      },
+    });
+    expect(out.block).toContain(
+      'but its projects are archived ("Alpha") or no longer available to you',
+    );
+  });
+
+  it("does not name a workspace's archived projects when nothing was searched", async () => {
+    const out = await buildMultiProjectRagContext({
+      userId: "u1",
+      scope: { kind: "workspace", workspaceId: "w1" },
+      query: "q",
+      deps: {
+        role: async () => "reader",
+        workspaceProjects: async () => ["old"],
+        search: async () => result({ projectsArchived: ["old"], projectNames: { old: "Legacy" } }),
+      },
+    });
+    expect(out.block).toContain("but its projects are archived.");
+    expect(out.block).not.toContain("Legacy");
   });
 
   it("gives two products of the same name distinct labels", async () => {

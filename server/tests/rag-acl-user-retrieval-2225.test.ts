@@ -89,6 +89,10 @@ vi.mock("../src/lib/prisma.js", () => ({
 vi.mock("../src/lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
 vi.mock("../src/lib/auth/accessible-projects.js", () => ({
   getUserAccessibleProjects: vi.fn(async () => [{ id: "p1", name: "Scheduler" }]),
+  getUserProjectScope: vi.fn(async () => ({
+    accessible: [{ id: "p1", name: "Scheduler" }],
+    archived: async () => [],
+  })),
 }));
 vi.mock("../src/lib/rag/knowledge-service.js", async (original) => ({
   ...(await original<typeof import("../src/lib/rag/knowledge-service.js")>()),

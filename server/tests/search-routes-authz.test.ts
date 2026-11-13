@@ -96,6 +96,9 @@ function matchesWhere(row: ProjectRow, where: Record<string, unknown>): boolean 
   return true;
 }
 
+/** #2264 — the caller's workspace memberships, read once per resolution of the caller. */
+const memberFindMany = vi.fn(async () => currentWorkspaces.map((workspaceId) => ({ workspaceId })));
+
 const projectFindMany = vi.fn(async ({ where }: { where: Record<string, unknown> }) =>
   PROJECTS.filter((p) => matchesWhere(p, where)).map((p) => ({ id: p.id, name: p.name })),
 );
@@ -105,7 +108,7 @@ vi.mock("../src/lib/prisma.js", async () => {
   const prisma = withRouteAuth({
     $queryRawUnsafe: vi.fn(async () => 1),
     workspaceMember: {
-      findMany: vi.fn(async () => currentWorkspaces.map((workspaceId) => ({ workspaceId }))),
+      findMany: () => memberFindMany(),
     },
     user: {
       upsert: vi.fn(async ({ create }: { create: Record<string, unknown> }) => ({
@@ -316,6 +319,22 @@ describe("POST /api/search/federated — cross-tenant chunk disclosure (#1052)",
     expect(res.body.data.projectNames["proj-arch"]).toBe("Archived (workspace B)");
     expect(JSON.stringify(res.body)).not.toContain("ARCHIVED-CHUNK");
     expect(knowledgeSearch.mock.calls.map((c) => c[0])).not.toContain("proj-arch");
+  });
+
+  it("#2264 — reads the archived project for the caller it already resolved", async () => {
+    const token = await loginAs("reader", ["ws-b"]);
+    memberFindMany.mockClear();
+    projectFindMany.mockClear();
+    const res = await request(app)
+      .post("/api/search/federated")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ query: "password", projectIds: ["proj-b", "proj-arch"] });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.projectsArchived).toEqual(["proj-arch"]);
+    // The live and the archived read: two project queries, one caller resolution.
+    expect(projectFindMany).toHaveBeenCalledTimes(2);
+    expect(memberFindMany).toHaveBeenCalledTimes(1);
   });
 
   it("#2264 — never names another workspace's archived project", async () => {

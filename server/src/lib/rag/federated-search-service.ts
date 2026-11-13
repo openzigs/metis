@@ -26,7 +26,7 @@
  * failed is reported by name and reason (`failures`), never just dropped.
  *
  * #2264 — and the projects that clear the floor no longer take equal turns:
- * their hits are merged on relevance, each project's own order kept, so a
+ * their hits are merged on relevance (see `byRelevance`), so a
  * distractor that clears the floor cannot claim one slot in every round from
  * the product that holds the answer. A project the merge leaves out only
  * because `k` was full is reported apart from one that matched nothing
@@ -36,7 +36,7 @@
  * unavailable.
  */
 import type { DocumentSource, RetrievalMatcher, RetrievedChunk } from "@metis/shared";
-import { getUserAccessibleProjects, getUserArchivedProjects } from "../auth/accessible-projects.js";
+import { getUserProjectScope } from "../auth/accessible-projects.js";
 import {
   getKnowledgeService,
   type KnowledgeService,
@@ -97,8 +97,8 @@ export interface FederatedSearchOptions {
   absoluteFloor?: (embeddingModels: readonly string[]) => number;
   /**
    * #2264 — how the projects that clear the floor share the `k` slots.
-   * `"relevance"` (default): their hits are merged on relevance, each project's
-   * own order kept, so a less relevant project gets fewer slots or none.
+   * `"relevance"` (default): their hits are merged on relevance, so a less
+   * relevant project gets fewer slots or none.
    * `"turns"`: they take one slot each in turn, in the order asked for — the
    * portfolio gap engine's and attached documents' "every project counts" share.
    */
@@ -229,7 +229,15 @@ interface ProjectRanking {
 }
 
 /** A hit's relevance on the scale the projects are compared on; `null` when it has none. */
-type Relevance = (hit: FederatedHit) => number | null;
+type Relevance = ((hit: FederatedHit) => number | null) & {
+  /**
+   * Whether each project's own ranking was made on this scale: true for the
+   * cross-encoder's verdict, which ordered every reranked project; false for
+   * the dense cosine, which a hybrid project's fusion (dense and keyword ranks)
+   * did not follow.
+   */
+  readonly ranksProjects: boolean;
+};
 
 /**
  * #2264 — the one scale every project with a hit is compared on. When every
@@ -241,11 +249,16 @@ type Relevance = (hit: FederatedHit) => number | null;
  */
 function relevanceScale(rankings: readonly ProjectRanking[]): Relevance {
   const withHits = rankings.filter((r) => r.hits.length > 0);
-  if (withHits.length > 0 && withHits.every((r) => r.reranked === true)) return (h) => h.score;
-  return (h) => {
-    const cosine = denseCosine(h);
-    return cosine !== null && cosine > 0 ? Math.min(1, cosine) : null;
-  };
+  if (withHits.length > 0 && withHits.every((r) => r.reranked === true)) {
+    return Object.assign((h: FederatedHit) => h.score, { ranksProjects: true });
+  }
+  return Object.assign(
+    (h: FederatedHit) => {
+      const cosine = denseCosine(h);
+      return cosine !== null && cosine > 0 ? Math.min(1, cosine) : null;
+    },
+    { ranksProjects: false },
+  );
 }
 
 /** A project's relevance: its best hit's. */
@@ -293,11 +306,24 @@ function inTurns(kept: readonly ProjectRanking[]): FederatedHit[] {
 }
 
 /**
- * #2264 — the kept projects' hits merged on relevance, each project's own order
- * kept. A hit's place is the lowest relevance of it and of every hit its
- * project ranked above it, so a project's list is never reordered, and a hit
- * with no relevance (keyword-only) stands where its project's fusion put it.
- * Every place starts at most at the best the user's own words found (`best`),
+ * #2264 — the kept projects' hits merged on relevance.
+ *
+ * On the verdict scale every project was ranked by that verdict, so a hit's
+ * place is the lowest relevance of it and of every hit its project ranked
+ * above it: the project's list is never reordered.
+ *
+ * On the cosine scale it is the hit's own cosine. A hybrid project's order is
+ * its fusion of dense and keyword ranks, which the cosine does not follow, so
+ * the running minimum let one weak-cosine hit near the top of a project cap
+ * every hit below it; a project holding the best cosine of all then lost every
+ * slot to a project whose order happened to agree with the scale. The places
+ * now only decide how many slots each project gets, and when: the project
+ * fills them from the top of its own ranking, so its order still stands (and
+ * one project alone keeps exactly its own ranking).
+ *
+ * On either scale a hit with no relevance (keyword-only) takes the place of
+ * the hit its project ranked just above it, so it stands where its project's
+ * fusion put it. Every place starts at most at the best the user's own words found (`best`),
  * so a hit only a follow-up's conversational search found ranks no higher
  * than that, as it cannot raise the floor's bar either. Ties go to the
  * shallower hit, then to the more relevant project, then to the order asked
@@ -324,12 +350,16 @@ function byRelevance(
     let key = top;
     r.hits.forEach((hit, depth) => {
       const own = rel(hit);
-      if (own !== null) key = Math.min(key, own);
+      if (own !== null) key = Math.min(rel.ranksProjects ? key : top, own);
       placed.push({ hit, key, depth, order });
     });
   });
   placed.sort((a, b) => b.key - a.key || a.depth - b.depth || a.order - b.order);
-  return placed.map((p) => p.hit);
+  // The places decide how many slots each project gets and when; the project
+  // fills them in its own order. On the verdict scale that is the placed hit
+  // itself (its keys never rise down its list).
+  const next = projects.map(() => 0);
+  return placed.map((p) => projects[p.order]!.r.hits[next[p.order]!++]!);
 }
 
 /** The merged order, one copy of each chunk, cut to `topK`. */
@@ -354,8 +384,8 @@ function take(order: readonly FederatedHit[], topK: number): FederatedHit[] {
  *    rank fusion its first hit scored as high as the relevant project's first
  *    hit.
  * 2. #2264 — the projects that remain share `topK` by relevance
- *    ({@link byRelevance}): each project's own ranking stands, and the next
- *    slot goes to whichever project's next hit is most relevant. Equal turns
+ *    ({@link byRelevance}): relevance decides how many slots each project
+ *    gets, and each project fills them in its own order. Equal turns
  *    (`share: "turns"`) gave a distractor that cleared the floor one slot in
  *    every round, so with nine products in scope under a third of the excerpts
  *    came from the products holding the answer (#2336's sweep).
@@ -475,7 +505,8 @@ export class FederatedSearchService {
     if (!query || query.trim().length === 0) return emptyResult();
 
     // 1. Resolve accessible projects for this user
-    const accessible = await getUserAccessibleProjects(userId);
+    const scope = await getUserProjectScope(userId);
+    const accessible = scope.accessible;
     const accessibleMap = new Map(accessible.map((p) => [p.id, p.name]));
 
     // 2. Determine target projects — intersect with accessible
@@ -488,8 +519,10 @@ export class FederatedSearchService {
       if (rejected.length > 0) {
         // #2264 — an archived project the caller can still reach is not
         // "unavailable": it is named as archived. Read through the same access
-        // rule, so an unreachable id stays an anonymous count (#1052).
-        archived.push(...(await getUserArchivedProjects(userId, rejected)));
+        // rule, so an unreachable id stays an anonymous count (#1052), and for
+        // the caller already resolved: a workspace scope lists its archived
+        // projects, so this runs on most of its turns.
+        archived.push(...(await scope.archived(rejected)));
         const archivedIds = new Set(archived.map((p) => p.id));
         rejected = rejected.filter((id) => !archivedIds.has(id));
       }
@@ -600,9 +633,17 @@ export class FederatedSearchService {
     const belowFloor = floored ? merge(rankings).filter((h) => !floored.keep(h)).length : 0;
     const contributing = new Set(fused.map((h) => h.projectId));
     const without = projectsSearched.filter((id) => !contributing.has(id));
-    // #2264 — relevant enough to contribute, but the slots were all taken.
+    // #2264 — relevant enough to contribute, but the slots were all taken. A
+    // project whose only hits a follow-up's conversational search found is
+    // not: the user's own words matched nothing in it, and the conversational
+    // cap, not closer matches, may be what left it out.
     const relevant = clearingFloor(merged, floor);
-    const capped = without.filter((id) => relevant.has(id));
+    const userWordHit = new Set(
+      merged
+        .filter((r) => r.hits.some((h) => !r.contextualOnly?.has(h.chunkId)))
+        .map((r) => r.projectId),
+    );
+    const capped = without.filter((id) => relevant.has(id) && userWordHit.has(id));
 
     return {
       hits: fused,

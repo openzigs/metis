@@ -368,17 +368,19 @@ export async function buildMultiProjectRagContext(
   };
 
   const archived = result.projectsArchived ?? [];
+  // #2264 — an archived project is not one the user lost access to. The ones
+  // the user chose are named even beside unreachable ones; a workspace's
+  // archived projects are not part of its live scope, so they go unnamed.
+  const nothingSearchedReason = (): string => {
+    if (archived.length === 0) return "none of its projects is available to you";
+    const which = input.scope.kind === "projects" ? ` (${quoteList(archived.map(nameOf))})` : "";
+    return result.projectsRejected === 0
+      ? `its projects are archived${which}`
+      : `its projects are archived${which} or no longer available to you`;
+  };
   const inScope = [...projects.map((p) => p.projectName), ...unsearched.map((u) => u.projectName)];
   if (inScope.length === 0) {
-    return {
-      block: nothingSearchedBlock(
-        // #2264 — an archived project is not one the user lost access to.
-        archived.length > 0 && result.projectsRejected === 0
-          ? "its projects are archived"
-          : "none of its projects is available to you",
-      ),
-      grounding,
-    };
+    return { block: nothingSearchedBlock(nothingSearchedReason()), grounding };
   }
 
   const chunkList = [

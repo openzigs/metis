@@ -15,11 +15,14 @@ vi.mock("../logger.js", () => ({
   createChildLogger: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }),
 }));
 vi.mock("../auth/accessible-projects.js", () => ({
-  getUserAccessibleProjects: async () => [
-    { id: "pa", name: "Alpha" },
-    { id: "pb", name: "Beta" },
-    { id: "pc", name: "Gamma" },
-  ],
+  getUserProjectScope: async () => ({
+    accessible: [
+      { id: "pa", name: "Alpha" },
+      { id: "pb", name: "Beta" },
+      { id: "pc", name: "Gamma" },
+    ],
+    archived: async () => [],
+  }),
 }));
 vi.mock("./acl.js", async (original) => ({
   ...(await original<typeof import("./acl.js")>()),

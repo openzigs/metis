@@ -65,10 +65,11 @@ async function resolveActor(userId: string): Promise<AuthPayload> {
  */
 export async function getUserAccessibleProjects(userId: string): Promise<AccessibleProject[]> {
   if (!userId) return [];
+  return accessibleFor(await resolveActor(userId));
+}
 
-  const actor = await resolveActor(userId);
-
-  const projects = await prisma.project.findMany({
+function accessibleFor(actor: AuthPayload): Promise<AccessibleProject[]> {
+  return prisma.project.findMany({
     where: {
       ...accessibleProjectWhere(actor),
       status: { not: "archived" },
@@ -76,8 +77,6 @@ export async function getUserAccessibleProjects(userId: string): Promise<Accessi
     select: { id: true, name: true },
     orderBy: { updatedAt: "desc" },
   });
-
-  return projects;
 }
 
 /**
@@ -92,9 +91,14 @@ export async function getUserArchivedProjects(
   projectIds: readonly string[],
 ): Promise<AccessibleProject[]> {
   if (!userId || projectIds.length === 0) return [];
+  return archivedFor(await resolveActor(userId), projectIds);
+}
 
-  const actor = await resolveActor(userId);
-
+async function archivedFor(
+  actor: AuthPayload,
+  projectIds: readonly string[],
+): Promise<AccessibleProject[]> {
+  if (projectIds.length === 0) return [];
   return prisma.project.findMany({
     where: {
       ...accessibleProjectWhere(actor),
@@ -103,4 +107,27 @@ export async function getUserArchivedProjects(
     },
     select: { id: true, name: true },
   });
+}
+
+/** A caller's projects, read under one resolution of their role and workspaces. */
+export interface UserProjectScope {
+  /** As {@link getUserAccessibleProjects}: most recently updated first. */
+  accessible: AccessibleProject[];
+  /** As {@link getUserArchivedProjects}, for the same caller. */
+  archived(projectIds: readonly string[]): Promise<AccessibleProject[]>;
+}
+
+/**
+ * #2264 — {@link getUserAccessibleProjects} and {@link getUserArchivedProjects}
+ * for one caller, resolving the caller once. A workspace scope lists its
+ * archived projects too, so every multi-product turn read them, and each read
+ * resolved the caller's role and workspaces again.
+ */
+export async function getUserProjectScope(userId: string): Promise<UserProjectScope> {
+  if (!userId) return { accessible: [], archived: async () => [] };
+  const actor = await resolveActor(userId);
+  return {
+    accessible: await accessibleFor(actor),
+    archived: (projectIds) => archivedFor(actor, projectIds),
+  };
 }
