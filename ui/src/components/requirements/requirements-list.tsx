@@ -23,6 +23,7 @@ import { analysisApi } from "@/lib/analysis-api";
 import { requirementUpdateApi } from "@/lib/collaboration-api";
 import { queryKeys } from "@/lib/query-keys";
 import { useAuth } from "@/lib/auth-context";
+import { defaultRolesHolding } from "@/lib/permission-hints";
 import { useAppMutation } from "@/lib/use-app-mutation";
 import {
   requirementsListApi,
@@ -109,8 +110,7 @@ function selfApprovalRefusal(err: unknown): string | null {
 }
 
 /** #2436 — why Approve is disabled for a role without `requirement.approve`. */
-export const APPROVE_HINT =
-  "Approving needs the requirement.approve permission (coordinator or admin by default). You can still request a review.";
+export const APPROVE_HINT = `Approving needs the requirement.approve permission (${defaultRolesHolding("requirement.approve")} by default). You can still request a review.`;
 /**
  * #2452 — why Approve is disabled on a row the viewer wrote or edited, in a
  * project that does not allow self-approval: said before the click, as the
