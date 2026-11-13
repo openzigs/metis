@@ -1,0 +1,836 @@
+{
+  "kind": "ba-qa",
+  "version": 2,
+  "issue": 2237,
+  "runId": "2026-11-13T15-49-01-057Z-default-scope9-all",
+  "startedAt": "2026-11-13T15:49:01.057Z",
+  "finishedAt": "2026-11-13T15:50:33.629Z",
+  "provider": "anthropic",
+  "model": "claude-sonnet-5-5",
+  "judgeModel": "claude-sonnet-5-5",
+  "fixture": {
+    "id": "baqa-01-acme-reader",
+    "version": 1
+  },
+  "products": [
+    {
+      "name": "miniflux",
+      "sha": "c4d54f87a81b30aa173fddf05d7ff83ae7da5796",
+      "projectId": "cmwf56f2r0001s89k9nsx8sin"
+    },
+    {
+      "name": "python-client",
+      "sha": "058897eb0ee6e203981134dec1e250879d2435c6",
+      "projectId": "cmwf58l8a0qaos89kuk6ptk11"
+    }
+  ],
+  "arm": "default-scope9-all",
+  "retrievalMode": "conversation",
+  "flags": {
+    "CHAT_CODE_SEARCH_TOOLS": "(unset: default)",
+    "CHAT_FUSED_CODE_RETRIEVAL": "(unset: default)",
+    "RAG_RERANK": "(unset: default)",
+    "CHAT_CODE_SEARCH_PRIMITIVES": "(unset: default)",
+    "routingScope": "9",
+    "route": "all"
+  },
+  "sessionToolFlags": {
+    "chatTools": true,
+    "codeSearchTools": true,
+    "codeSearchPrimitives": false,
+    "codeSearchToolsOnTextProtocol": false,
+    "progressiveSkills": true,
+    "subAgents": true,
+    "searchGuidance": false,
+    "indexStatus": true
+  },
+  "budgetUsd": 1,
+  "spentUsd": 0.275918,
+  "stoppedEarly": null,
+  "summary": {
+    "arm": "default-scope9-all",
+    "questions": 10,
+    "unscored": 0,
+    "correctness": 0.2261904761904762,
+    "fullyCorrect": {
+      "n": 0,
+      "of": 10,
+      "rate": 0
+    },
+    "citationPrecisionLines": {
+      "n": 0,
+      "of": 0,
+      "rate": null
+    },
+    "citationPrecisionFile": {
+      "n": 10,
+      "of": 27,
+      "rate": 0.37037037037037035
+    },
+    "citationRecall": {
+      "n": 10,
+      "of": 32,
+      "rate": 0.3125
+    },
+    "spanChecked": {
+      "n": 0,
+      "of": 27,
+      "rate": 0
+    },
+    "abstention": {
+      "n": 0,
+      "of": 0,
+      "rate": null
+    },
+    "followUp": {
+      "n": 0,
+      "of": 0,
+      "rate": null
+    },
+    "falseAbstention": {
+      "n": 5,
+      "of": 10,
+      "rate": 0.5
+    },
+    "unneededFollowUp": {
+      "n": 0,
+      "of": 10,
+      "rate": 0
+    },
+    "confidentGuess": {
+      "n": 0,
+      "of": 0,
+      "rate": null
+    },
+    "byCategory": {
+      "single-product": {
+        "questions": 6,
+        "behaviourOk": {
+          "n": 2,
+          "of": 6,
+          "rate": 0.3333333333333333
+        }
+      },
+      "multi-product": {
+        "questions": 4,
+        "behaviourOk": {
+          "n": 3,
+          "of": 4,
+          "rate": 0.75
+        }
+      },
+      "ambiguous": {
+        "questions": 0,
+        "behaviourOk": {
+          "n": 0,
+          "of": 0,
+          "rate": null
+        }
+      },
+      "unanswerable": {
+        "questions": 0,
+        "behaviourOk": {
+          "n": 0,
+          "of": 0,
+          "rate": null
+        }
+      }
+    },
+    "cost": {
+      "answerUsd": 0.24167750000000002,
+      "judgeUsd": 0.03424000000000001,
+      "totalUsd": 0.27591750000000004,
+      "perQuestionUsd": 0.02416775
+    }
+  },
+  "sessions": [
+    {
+      "arm": "default-scope9-all",
+      "searchScope": "9 of 9 products (all)",
+      "retrievalMs": 125,
+      "questionId": "S1",
+      "score": {
+        "questionId": "S1",
+        "category": "single-product",
+        "expect": "answer",
+        "behaviour": "answer",
+        "behaviourOk": true,
+        "facts": {
+          "stated": 3,
+          "contradicted": 0,
+          "missing": 3,
+          "total": 6
+        },
+        "factRecall": 0.5,
+        "fullyCorrect": false,
+        "citations": [
+          {
+            "path": "internal/model/feed.go",
+            "products": ["miniflux"],
+            "lines": null,
+            "check": "file",
+            "supports": true
+          },
+          {
+            "path": "internal/ui/feed_refresh.go",
+            "products": ["miniflux"],
+            "lines": null,
+            "check": "file",
+            "supports": false
+          }
+        ],
+        "citationPrecision": 0.5,
+        "expectedFiles": [
+          "miniflux:internal/config/options.go",
+          "miniflux:internal/model/feed.go",
+          "miniflux:miniflux.1"
+        ],
+        "citedExpectedFiles": ["miniflux:internal/model/feed.go"],
+        "citationRecall": 0.3333333333333333
+      },
+      "costUsd": 0.025010499999999998,
+      "projectId": null,
+      "ragChars": 11481,
+      "toolCalls": 0,
+      "toolNames": [],
+      "turnsExhausted": false,
+      "truncatedToolResults": 0,
+      "sessionId": "cmwf5jeo2000f8w9kr2ezhn9h",
+      "seconds": 10.1,
+      "turnsUsed": 1,
+      "hasFinalAnswer": true,
+      "response": "In eval-baqa-01-acme-reader-miniflux, the next check time is set by `Feed.ScheduleNextCheck` in `internal/model/feed.go`. I can only cite the file name, because the excerpt has no line-range locator, and the excerpt cuts off partway through the function.\n\n**What the visible code does**\n1. **Default interval:** it starts from `config.Opts.SchedulerRoundRobinMinInterval()`, the global polling setting.\n2. **Entry-frequency scheduler:** this applies only if `config.Opts.PollingScheduler()` equals `SchedulerEntryFrequency`.\n   - If `weeklyCount <= 0`, the interval is `SchedulerEntryFrequencyMaxInterval()`.\n   - Otherwise the interval is `(7 * 24h) / (weeklyCount * SchedulerEntryFrequencyFactor())`. It is then capped at `SchedulerEntryFrequencyMaxInterval()` and raised to at least `SchedulerEntryFrequencyMinInterval()`. A feed that publishes more often is therefore checked more often, within those bounds.\n3. **Server hints:** the comment says the RSS TTL field, `Retry-After`, `Cache-Control` or `Expires` headers are honoured. The code does `interval = max(interval, refreshDelay)`, so the interval is never shorter than the delay the feed or server asks for.\n\n**Not shown:** the rest of the function is cut off. I can't tell from these excerpts how the final interval becomes the stored `next_check_at` value. I also can't see where `weeklyCount` and `refreshDelay` are computed.\n\n**Related, but manual:** `refreshAllFeeds` in `internal/ui/feed_refresh.go` is the manual path from the web UI. It rate-limits forced refreshes with `ForceRefreshInterval`. It also builds jobs with `WithLimitPerHost(config.Opts.PollingLimitPerHost())` and `WithoutDisabledFeeds()`. This is a user-triggered refresh, not the automatic scheduling above.",
+      "ambiguousCitations": [],
+      "judgeReply": "{\"behaviour\":\"answer\",\"facts\":{\"S1.a\":\"missing\",\"S1.b\":\"missing\",\"S1.c\":\"stated\",\"S1.d\":\"missing\",\"S1.e\":\"stated\",\"S1.f\":\"stated\"},\"spans\":{}}",
+      "usage": {
+        "promptTokens": 5493,
+        "completionTokens": 1128,
+        "calls": 1
+      }
+    },
+    {
+      "arm": "default-scope9-all",
+      "searchScope": "9 of 9 products (all)",
+      "retrievalMs": 105,
+      "questionId": "S2",
+      "score": {
+        "questionId": "S2",
+        "category": "single-product",
+        "expect": "answer",
+        "behaviour": "abstain",
+        "behaviourOk": false,
+        "facts": {
+          "stated": 0,
+          "contradicted": 0,
+          "missing": 5,
+          "total": 5
+        },
+        "factRecall": 0,
+        "fullyCorrect": false,
+        "citations": [
+          {
+            "path": "FRD-12.md",
+            "products": ["miniflux"],
+            "lines": null,
+            "check": "file",
+            "supports": false
+          },
+          {
+            "path": "internal/locale/translations/fr_FR.json",
+            "products": ["miniflux"],
+            "lines": null,
+            "check": "file",
+            "supports": false
+          }
+        ],
+        "citationPrecision": 0,
+        "expectedFiles": [
+          "miniflux:internal/cli/cleanup_tasks.go",
+          "miniflux:internal/config/options.go",
+          "miniflux:internal/storage/entry.go",
+          "miniflux:miniflux.1"
+        ],
+        "citedExpectedFiles": [],
+        "citationRecall": 0
+      },
+      "costUsd": 0.020328,
+      "projectId": null,
+      "ragChars": 11583,
+      "toolCalls": 0,
+      "toolNames": [],
+      "turnsExhausted": false,
+      "truncatedToolResults": 0,
+      "sessionId": "cmwf5jmgg000i8w9kfmszdf8z",
+      "seconds": 7.8,
+      "turnsUsed": 1,
+      "hasFinalAnswer": true,
+      "response": "The sources I have don't say when the Acme Reader server (eval-baqa-01-acme-reader-miniflux) deletes old articles, or which articles are exempt.\n\n- **FRD-12.md** (in both eval-baqa-01-acme-reader-miniflux and eval-baqa-01-acme-reader-python-client) covers expiring API keys and a reading-time filter. Its background section says nothing about retention or cleanup of articles.\n- **internal/locale/translations/fr_FR.json** in eval-baqa-01-acme-reader-miniflux has UI strings such as \"menu.flush_history\" (\"Supprimer l'historique\"). That is only a menu label for a user-triggered action. It gives no schedule, age threshold, or exemption rule, and I have no code locator for what it does.\n- I found nothing on article deletion for eval-baqa-01-acme-reader-python-client.\n\nTo answer this I would need the server's cleanup or housekeeping code, its configuration options or documentation for retention periods, or a requirements document that covers article retention. I won't guess the rule from general knowledge of how feed readers usually behave.\n\nIf you can point me to one of those, or if the relevant files exist in the product but were not retrieved, I can look again.",
+      "ambiguousCitations": [],
+      "judgeReply": "{\"behaviour\":\"abstain\",\"facts\":{\"S2.a\":\"missing\",\"S2.b\":\"missing\",\"S2.c\":\"missing\",\"S2.d\":\"missing\",\"S2.e\":\"missing\"},\"spans\":{}}",
+      "usage": {
+        "promptTokens": 5288,
+        "completionTokens": 711,
+        "calls": 1
+      }
+    },
+    {
+      "arm": "default-scope9-all",
+      "searchScope": "9 of 9 products (all)",
+      "retrievalMs": 80,
+      "questionId": "S3",
+      "score": {
+        "questionId": "S3",
+        "category": "single-product",
+        "expect": "answer",
+        "behaviour": "abstain",
+        "behaviourOk": false,
+        "facts": {
+          "stated": 1,
+          "contradicted": 0,
+          "missing": 3,
+          "total": 4
+        },
+        "factRecall": 0.25,
+        "fullyCorrect": false,
+        "citations": [
+          {
+            "path": "client/client.go",
+            "products": ["miniflux"],
+            "lines": null,
+            "check": "file",
+            "supports": false
+          },
+          {
+            "path": "FRD-12.md",
+            "products": ["miniflux"],
+            "lines": null,
+            "check": "file",
+            "supports": false
+          },
+          {
+            "path": "internal/model/feed_test.go",
+            "products": ["miniflux"],
+            "lines": null,
+            "check": "file",
+            "supports": false
+          },
+          {
+            "path": "internal/model/feed.go",
+            "products": ["miniflux"],
+            "lines": null,
+            "check": "file",
+            "supports": true
+          },
+          {
+            "path": "internal/reader/handler/handler.go",
+            "products": ["miniflux"],
+            "lines": null,
+            "check": "file",
+            "supports": false
+          },
+          {
+            "path": "internal/ui/feed_refresh.go",
+            "products": ["miniflux"],
+            "lines": null,
+            "check": "file",
+            "supports": false
+          }
+        ],
+        "citationPrecision": 0.16666666666666666,
+        "expectedFiles": [
+          "miniflux:internal/config/options.go",
+          "miniflux:internal/model/feed.go",
+          "miniflux:internal/storage/batch.go",
+          "miniflux:miniflux.1"
+        ],
+        "citedExpectedFiles": ["miniflux:internal/model/feed.go"],
+        "citationRecall": 0.25
+      },
+      "costUsd": 0.029810500000000004,
+      "projectId": null,
+      "ragChars": 16542,
+      "toolCalls": 0,
+      "toolNames": [],
+      "turnsExhausted": false,
+      "truncatedToolResults": 0,
+      "sessionId": "cmwf5jshh000l8w9kh07fxdti",
+      "seconds": 9,
+      "turnsUsed": 1,
+      "hasFinalAnswer": true,
+      "response": "The excerpts don't state a failure threshold, so I can't give you a number. All of this is from eval-baqa-01-acme-reader-miniflux; the excerpts carry no line ranges, so I cite files only.\n\n**What the excerpts show**\n- Each failed refresh increments a per-feed error counter and stores the error message. `WithTranslatedErrorMessage` does `ParsingErrorCount++` and sets `ParsingErrorMsg`, and `ResetErrorCounter` sets both back to zero (`internal/model/feed.go`, chunk #2). `internal/model/feed_test.go` tests the same behaviour.\n- The \"refresh all feeds\" action in the web UI builds its job list with `WithoutDisabledFeeds()`, so disabled feeds are skipped (`internal/ui/feed_refresh.go`). A comment there says this manual refresh is done \"without taking into consideration the number of errors\".\n\n**What the excerpts don't show**\n- The error count at which a feed is skipped, or whether it is flagged as disabled. The `ParsingErrorCount` threshold, the `WithoutDisabledFeeds` filter and the batch builder's `FetchJobs` query aren't in what I retrieved.\n- What happens to a feed after that point (for example, whether it is flagged in the UI or can be re-enabled). The `RefreshFeed` excerpt in `internal/reader/handler/handler.go` (chunk #6) is cut off before its error-handling branch.\n- The Acme Reader Python client's `refresh_feed` only issues a PUT to `/feeds/{id}/refresh` and raises `ClientError` on a status of 400 or above (`miniflux.py`, chunk #25). The Go client's `RefreshFeed` also just issues a PUT (`client/client.go`, chunk #13). Neither says anything about a failure limit.\n- The `FRD-12.md` excerpt contains only its header, so it gives no requirement on this.\n\nThe answer is most likely in the batch/query code behind `NewBatchBuilder()`, the storage layer, or the configuration options for polling errors. I haven't seen those, so I won't guess a value. If you can share those files, or let me search for them, I can confirm the number and the behaviour.",
+      "ambiguousCitations": [],
+      "judgeReply": "{\"behaviour\":\"abstain\",\"facts\":{\"S3.a\":\"missing\",\"S3.b\":\"stated\",\"S3.c\":\"missing\",\"S3.d\":\"missing\"},\"spans\":{}}",
+      "usage": {
+        "promptTokens": 7933,
+        "completionTokens": 998,
+        "calls": 1
+      }
+    },
+    {
+      "arm": "default-scope9-all",
+      "searchScope": "9 of 9 products (all)",
+      "retrievalMs": 135,
+      "questionId": "S4",
+      "score": {
+        "questionId": "S4",
+        "category": "single-product",
+        "expect": "answer",
+        "behaviour": "abstain",
+        "behaviourOk": false,
+        "facts": {
+          "stated": 0,
+          "contradicted": 0,
+          "missing": 3,
+          "total": 3
+        },
+        "factRecall": 0,
+        "fullyCorrect": false,
+        "citations": [
+          {
+            "path": "internal/storage/user.go",
+            "products": ["miniflux"],
+            "lines": null,
+            "check": "file",
+            "supports": false
+          },
+          {
+            "path": "internal/ui/form/settings.go",
+            "products": ["miniflux"],
+            "lines": null,
+            "check": "file",
+            "supports": false
+          }
+        ],
+        "citationPrecision": 0,
+        "expectedFiles": ["miniflux:internal/validator/user.go"],
+        "citedExpectedFiles": [],
+        "citationRecall": 0
+      },
+      "costUsd": 0.032612999999999996,
+      "projectId": null,
+      "ragChars": 15486,
+      "toolCalls": 0,
+      "toolNames": [],
+      "turnsExhausted": false,
+      "truncatedToolResults": 0,
+      "sessionId": "cmwf5jzgs000o8w9k12qcjzcn",
+      "seconds": 12.1,
+      "turnsUsed": 1,
+      "hasFinalAnswer": true,
+      "response": "The excerpts don't show the rules for creating a new user, so I can't give you that rule set. They only cover editing an existing user, and a few storage behaviours that touch usernames and passwords.\n\n**What the excerpts show (eval-baqa-01-acme-reader-miniflux):**\n- **Required username (settings form):** in `internal/ui/form/settings.go` (chunk #2, line numbers not available), `SettingsForm.Validate` rejects the form with `error.settings_mandatory_fields` if the username is empty. This applies only when local auth is not disabled (`config.Opts.DisableLocalAuth()`). The same check requires theme, language, timezone, entry direction, display mode and default home page. The excerpt is cut off after this check, so any further rules are not visible. This validates the settings form for an existing user, not account creation.\n- **Username changes (settings form):** `SettingsForm.Merge` only copies the username onto the user when local auth is enabled.\n- **Password changes (settings form):** `Merge` only sets a password if the form's password is non-empty.\n- **Username case:** in `internal/storage/user.go` (chunks #4 and #7), the update query stores `username=LOWER($1)`. Lookups by username also use `LOWER($1)`, and `CheckPassword` lowercases the username. Usernames therefore appear to be case-insensitive.\n- **Password hashing:** the update path passes a `hashedPassword` value. `CheckPassword` verifies passwords with bcrypt, and runs a dummy bcrypt comparison for unknown users so response timing doesn't reveal whether the user exists (chunk #11).\n- **Uniqueness helper:** `AnotherUserWithFieldExists` checks whether another user already has a given value in a column. I did not check what calls it, so I can't say it enforces username uniqueness at creation.\n\n**What the sources don't show:**\n- The creation-time validation, such as the user creation form or API creation request, minimum or maximum lengths, allowed characters, and password strength or length requirements.\n- The `CreateUser` storage function.\n- The rest of `SettingsForm.Validate`, which is truncated.\n\nTo answer fully I'd need the user creation validator (probably under `internal/validator` or the create-user form) and `CreateUser` in `internal/storage/user.go`. The FRD-12 excerpt in eval-baqa-01-acme-reader-python-client is only a title and introduction and says nothing on this.",
+      "ambiguousCitations": [],
+      "judgeReply": "{\"behaviour\": \"abstain\", \"facts\": {\"S4.a\": \"missing\", \"S4.b\": \"missing\", \"S4.c\": \"missing\"}, \"spans\": {}}",
+      "usage": {
+        "promptTokens": 7954,
+        "completionTokens": 1273,
+        "calls": 1
+      }
+    },
+    {
+      "arm": "default-scope9-all",
+      "searchScope": "9 of 9 products (all)",
+      "retrievalMs": 105,
+      "questionId": "S5",
+      "score": {
+        "questionId": "S5",
+        "category": "single-product",
+        "expect": "answer",
+        "behaviour": "abstain",
+        "behaviourOk": false,
+        "facts": {
+          "stated": 0,
+          "contradicted": 0,
+          "missing": 4,
+          "total": 4
+        },
+        "factRecall": 0,
+        "fullyCorrect": false,
+        "citations": [
+          {
+            "path": "FRD-12.md",
+            "products": ["python-client"],
+            "lines": null,
+            "check": "file",
+            "supports": false
+          },
+          {
+            "path": "README.md",
+            "products": ["python-client"],
+            "lines": null,
+            "check": "file",
+            "supports": true
+          }
+        ],
+        "citationPrecision": 0.5,
+        "expectedFiles": ["python-client:README.md", "python-client:miniflux.py"],
+        "citedExpectedFiles": ["python-client:README.md"],
+        "citationRecall": 0.5
+      },
+      "costUsd": 0.024443000000000003,
+      "projectId": null,
+      "ragChars": 14322,
+      "toolCalls": 0,
+      "toolNames": [],
+      "turnsExhausted": false,
+      "truncatedToolResults": 0,
+      "sessionId": "cmwf5k8sm000r8w9k8g7pw1k3",
+      "seconds": 6.7,
+      "turnsUsed": 1,
+      "hasFinalAnswer": true,
+      "response": "The sources don't show how the Acme Reader Python client signs in.\n\n- **eval-baqa-01-acme-reader-python-client:** the only excerpt retrieved is the title and intro of `FRD-12.md`. It names the Python client as part of the product line but says nothing about authentication. No client source code was retrieved, so I can't describe its login flow.\n- **eval-baqa-01-acme-reader-miniflux (README):** `README.md` says the server has a REST API with client libraries in Go and Python. It doesn't say which credentials those libraries use.\n- **eval-baqa-01-acme-reader-miniflux (Google Reader handler):** `internal/googlereader/handler.go` implements a Google Reader-compatible endpoint. `POST /accounts/ClientLogin` takes `Email` and `Passwd` form fields, and the other routes sit behind API-key middleware (`validateApiKey`). The README lists this compatibility for existing mobile apps. Nothing I retrieved shows that the Python client uses this endpoint, so I can't tie it to the client.\n\nTo answer this properly I would need the Python client's own source, such as its client or constructor code, or its README or docs. The excerpts also don't show the server's REST API authentication code, and `FRD-12` may cover API key handling, but only its header was retrieved. If you want, I can look for those.",
+      "ambiguousCitations": [],
+      "judgeReply": "{\"behaviour\": \"abstain\", \"facts\": {\"S5.a\": \"missing\", \"S5.b\": \"missing\", \"S5.c\": \"missing\", \"S5.d\": \"missing\"}, \"spans\": {}}",
+      "usage": {
+        "promptTokens": 7038,
+        "completionTokens": 685,
+        "calls": 1
+      }
+    },
+    {
+      "arm": "default-scope9-all",
+      "searchScope": "9 of 9 products (all)",
+      "retrievalMs": 79,
+      "questionId": "S6",
+      "score": {
+        "questionId": "S6",
+        "category": "single-product",
+        "expect": "answer",
+        "behaviour": "answer",
+        "behaviourOk": true,
+        "facts": {
+          "stated": 1,
+          "contradicted": 1,
+          "missing": 2,
+          "total": 4
+        },
+        "factRecall": 0.25,
+        "fullyCorrect": false,
+        "citations": [
+          {
+            "path": "miniflux.py",
+            "products": ["python-client"],
+            "lines": null,
+            "check": "file",
+            "supports": true
+          }
+        ],
+        "citationPrecision": 1,
+        "expectedFiles": ["python-client:miniflux.py"],
+        "citedExpectedFiles": ["python-client:miniflux.py"],
+        "citationRecall": 1
+      },
+      "costUsd": 0.026043000000000004,
+      "projectId": null,
+      "ragChars": 13925,
+      "toolCalls": 0,
+      "toolNames": [],
+      "turnsExhausted": false,
+      "truncatedToolResults": 0,
+      "sessionId": "cmwf5kdyo000u8w9kpfny87lr",
+      "seconds": 9.1,
+      "turnsUsed": 1,
+      "hasFinalAnswer": true,
+      "response": "In eval-baqa-01-acme-reader-python-client, the client reports server errors as exceptions that carry the HTTP status and the server's error message. I could only see the exception classes, not the code that raises them.\n\n**What the excerpts show** (`miniflux.py`, chunks #17–#18; no line-range locator was provided, so I can't cite line numbers):\n\n- **Base exception:** `ClientError` is built from the `requests.Response`. It stores `status_code` and keeps the response. Its message comes from `get_error_reason()`.\n- **Error message:** If the response `Content-Type` starts with `application/json` and the body is a dict, the message is its `error_message` field. Otherwise it falls back to `\"status_code=<code>\"`.\n- **Subclasses:** Their docstrings tie each one to a status code:\n\n| Exception | Status code |\n|---|---|\n| `BadRequest` | 400 |\n| `AccessUnauthorized` | 401 |\n| `AccessForbidden` | 403 |\n| `ResourceNotFound` | 404 |\n| `ServerError` | 500 |\n\nThe module also imports `NoReturn`, which suggests a helper that always raises. I did not see it, though.\n\n**What the excerpts don't show:** The code that inspects a response and chooses which exception to raise isn't in the retrieved chunks. I can't confirm from the sources how other status codes are handled, such as 502 or 429, or whether the client retries. That would need the rest of `miniflux.py`, specifically the request and response handling inside `Client`.\n\nI didn't use the Go `client/request.go` from eval-baqa-01-acme-reader-miniflux, since it is a different client from the Python one you asked about.",
+      "ambiguousCitations": [],
+      "judgeReply": "{\"behaviour\":\"answer\",\"facts\":{\"S6.a\":\"stated\",\"S6.b\":\"contradicted\",\"S6.c\":\"missing\",\"S6.d\":\"missing\"},\"spans\":{}}",
+      "usage": {
+        "promptTokens": 6686,
+        "completionTokens": 933,
+        "calls": 1
+      }
+    },
+    {
+      "arm": "default-scope9-all",
+      "searchScope": "9 of 9 products (all)",
+      "retrievalMs": 78,
+      "questionId": "M1",
+      "score": {
+        "questionId": "M1",
+        "category": "multi-product",
+        "expect": "answer",
+        "behaviour": "answer",
+        "behaviourOk": true,
+        "facts": {
+          "stated": 3,
+          "contradicted": 0,
+          "missing": 4,
+          "total": 7
+        },
+        "factRecall": 0.42857142857142855,
+        "fullyCorrect": false,
+        "citations": [
+          {
+            "path": "FRD-12.md",
+            "products": ["miniflux", "python-client"],
+            "lines": null,
+            "check": "file",
+            "supports": true
+          }
+        ],
+        "citationPrecision": 1,
+        "expectedFiles": [
+          "miniflux:FRD-12.md",
+          "miniflux:internal/api/api_key_handlers.go",
+          "miniflux:internal/api/entry_handlers.go",
+          "miniflux:internal/model/api_key.go",
+          "miniflux:internal/storage/api_key.go",
+          "miniflux:internal/storage/entry_query_builder.go",
+          "miniflux:internal/storage/user.go",
+          "python-client:miniflux.py"
+        ],
+        "citedExpectedFiles": ["miniflux:FRD-12.md"],
+        "citationRecall": 0.125
+      },
+      "costUsd": 0.021093,
+      "projectId": null,
+      "ragChars": 8232,
+      "toolCalls": 0,
+      "toolNames": [],
+      "turnsExhausted": false,
+      "truncatedToolResults": 0,
+      "sessionId": "cmwf5kl0i000x8w9kg8njbdqf",
+      "seconds": 11.4,
+      "turnsUsed": 1,
+      "hasFinalAnswer": true,
+      "response": "FRD-12 covers two changes: expiring API keys and a reading-time filter. The excerpts only say outright which component does one of them (the client setting an expiry). I could not read the code, so this comes from the document alone, `FRD-12.md`. The same FRD text is indexed under both eval-baqa-01-acme-reader-miniflux (the server) and eval-baqa-01-acme-reader-python-client.\n\n**FRD-12.1: API keys can expire** (`FRD-12.md`, section 12.1, from eval-baqa-01-acme-reader-miniflux)\n- **Optional expiry date:** the person creating a key may give an expiry date. A key created without one never expires, as today.\n- **Expired keys refused:** once the date has passed, the key is refused exactly as an unknown key is.\n- **Key list:** the list of API keys shows each key's expiry date, or that it never expires.\n- **Python client:** a script using the client can set the expiry date when it creates a key. This is the only item that names the client.\n- **Acceptance criteria:**\n  - A key created with yesterday's expiry date cannot be used to read entries.\n  - A key created with no expiry date still works a year later.\n  - The expiry date appears in the API keys list returned by the server.\n\nThe first three items describe server behaviour. The excerpts don't say which code implements them.\n\n**FRD-12.2: filter entries by reading time** (`FRD-12.md`, section 12.2, shown under both products)\n- **Maximum reading time:** the entries list can be limited to articles whose estimated reading time is at most a given number of minutes.\n- **Combines with existing filters:** it works together with the status, category and feed filters.\n- **Acceptance criteria:**\n  - Asking for entries of at most 5 minutes returns no entry of 6 minutes or more.\n  - Leaving the filter out returns the same entries as today.\n\nThe excerpts don't say whether the client must expose this filter, or how. The \"Python client\" is named only in 12.1, item 4. The FRD's background says analysts want to pull only articles they can read in a short break.\n\n**What the sources don't show:** the file-level changes in either repository, such as the server's API key storage or the client's method signatures. No code symbols were retrieved, so I can't cite source locations for the implementation. Searching the code would be needed to answer that.",
+      "ambiguousCitations": [],
+      "judgeReply": "{\"behaviour\":\"answer\",\"facts\":{\"M1.a\":\"stated\",\"M1.b\":\"missing\",\"M1.g\":\"missing\",\"M1.c\":\"stated\",\"M1.d\":\"missing\",\"M1.e\":\"stated\",\"M1.f\":\"missing\"},\"spans\":{}}",
+      "usage": {
+        "promptTokens": 4094,
+        "completionTokens": 1086,
+        "calls": 1
+      }
+    },
+    {
+      "arm": "default-scope9-all",
+      "searchScope": "9 of 9 products (all)",
+      "retrievalMs": 79,
+      "questionId": "M2",
+      "score": {
+        "questionId": "M2",
+        "category": "multi-product",
+        "expect": "answer",
+        "behaviour": "abstain",
+        "behaviourOk": false,
+        "facts": {
+          "stated": 0,
+          "contradicted": 0,
+          "missing": 2,
+          "total": 2
+        },
+        "factRecall": 0,
+        "fullyCorrect": false,
+        "citations": [
+          {
+            "path": "internal/reader/processor/reading_time.go",
+            "products": ["miniflux"],
+            "lines": null,
+            "check": "file",
+            "supports": false
+          },
+          {
+            "path": "FRD-12.md",
+            "products": ["miniflux", "python-client"],
+            "lines": null,
+            "check": "file",
+            "supports": false
+          }
+        ],
+        "citationPrecision": 0,
+        "expectedFiles": [
+          "miniflux:internal/api/entry_handlers.go",
+          "miniflux:internal/storage/entry_query_builder.go",
+          "python-client:miniflux.py"
+        ],
+        "citedExpectedFiles": [],
+        "citationRecall": 0
+      },
+      "costUsd": 0.0180255,
+      "projectId": null,
+      "ragChars": 7525,
+      "toolCalls": 0,
+      "toolNames": [],
+      "turnsExhausted": false,
+      "truncatedToolResults": 0,
+      "sessionId": "cmwf5ktu900108w9kbz95iwyk",
+      "seconds": 8.3,
+      "turnsUsed": 1,
+      "hasFinalAnswer": true,
+      "response": "**The sources don't settle this.** FRD-12.2 doesn't say whether the Python client changes.\n\n- **What FRD-12.2 says:** it only requires that the entries list can be limited to articles with an estimated reading time of at most N minutes. The filter must combine with the existing status, category and feed filters, and omitting it must return the same entries as today. It names no client, script or Python-client behaviour (FRD-12.md, section FRD-12.2, in both eval-baqa-01-acme-reader-miniflux and eval-baqa-01-acme-reader-python-client).\n- **Contrast with FRD-12.1:** the API-key expiry requirement explicitly says \"A script using the Python client can set the expiry date when it creates a key\" (FRD-12.1, item 4). The reading-time filter has no equivalent line.\n- **Server side:** the filter clearly needs a server change, since it limits the entries list. In eval-baqa-01-acme-reader-miniflux, `internal/reader/processor/reading_time.go` shows where each entry's reading time is set, but no line range was retrieved. That excerpt doesn't show the entries query or the filter itself.\n- **Client side:** I have no code from eval-baqa-01-acme-reader-python-client, only the shared FRD text. I can't tell how its entries method passes filters.\n\nSo the FRD requires a server change and is silent on the client. Whether the Python client also needs a change depends on whether its entries call already accepts arbitrary query parameters or has a fixed list of filters. To settle it, I would need the client's entries-listing method, or a statement in the FRD's scope or test plan.",
+      "ambiguousCitations": [],
+      "judgeReply": "{\"behaviour\":\"abstain\",\"facts\":{\"M2.a\":\"missing\",\"M2.b\":\"missing\"},\"spans\":{}}",
+      "usage": {
+        "promptTokens": 3667,
+        "completionTokens": 886,
+        "calls": 1
+      }
+    },
+    {
+      "arm": "default-scope9-all",
+      "searchScope": "9 of 9 products (all)",
+      "retrievalMs": 96,
+      "questionId": "M3",
+      "score": {
+        "questionId": "M3",
+        "category": "multi-product",
+        "expect": "answer",
+        "behaviour": "answer",
+        "behaviourOk": true,
+        "facts": {
+          "stated": 1,
+          "contradicted": 0,
+          "missing": 2,
+          "total": 3
+        },
+        "factRecall": 0.3333333333333333,
+        "fullyCorrect": false,
+        "citations": [
+          {
+            "path": "internal/api/api_integration_test.go",
+            "products": ["miniflux"],
+            "lines": null,
+            "check": "file",
+            "supports": false
+          },
+          {
+            "path": "FRD-12.md",
+            "products": ["miniflux", "python-client"],
+            "lines": null,
+            "check": "file",
+            "supports": true
+          },
+          {
+            "path": "README.md",
+            "products": ["miniflux", "python-client"],
+            "lines": null,
+            "check": "file",
+            "supports": false
+          },
+          {
+            "path": "miniflux.py",
+            "products": ["python-client"],
+            "lines": null,
+            "check": "file",
+            "supports": true
+          }
+        ],
+        "citationPrecision": 0.5,
+        "expectedFiles": [
+          "miniflux:FRD-12.md",
+          "miniflux:internal/api/middleware.go",
+          "python-client:miniflux.py"
+        ],
+        "citedExpectedFiles": ["miniflux:FRD-12.md", "python-client:miniflux.py"],
+        "citationRecall": 0.6666666666666666
+      },
+      "costUsd": 0.017558,
+      "projectId": null,
+      "ragChars": 7252,
+      "toolCalls": 0,
+      "toolNames": [],
+      "turnsExhausted": false,
+      "truncatedToolResults": 0,
+      "sessionId": "cmwf5l09c00138w9kxnrpindc",
+      "seconds": 8.1,
+      "turnsUsed": 1,
+      "hasFinalAnswer": true,
+      "response": "**Short answer:** according to FRD-12, the script's expired key is refused in exactly the same way an unknown key is refused. The sources I have don't say what that refusal looks like to the script.\n\n**What FRD-12 says**\n- FRD-12.1, point 2, says \"Once its expiry date has passed, a key is refused exactly as an unknown key is refused.\" The same text appears in the FRD-12.md excerpts for both eval-baqa-01-acme-reader-miniflux and eval-baqa-01-acme-reader-python-client.\n- The acceptance criteria say a key with an expiry date of yesterday \"cannot be used to read entries.\"\n\n**What the sources don't show**\n- The retrieved excerpts don't show the HTTP status, the error body, or the Python exception an unknown key produces. I can't say what the script receives without guessing.\n- The Python client excerpt from README.md (API Keys section) lists only `get_api_keys()`, `create_api_key(description: str)` and `delete_api_key(api_key_id: int)`. It says nothing about error handling.\n- The eval-baqa-01-acme-reader-miniflux integration test excerpt (`internal/api/api_integration_test.go`) covers creating and listing keys. The part retrieved doesn't test an unknown or invalid key.\n- To answer precisely, I'd need the server's API authentication middleware and the Python client's error handling (`miniflux.py`). Neither was retrieved.\n\n**Related gap:** FRD-12.1, point 4, says scripts can set the expiry date when they create a key. The README's `create_api_key(description: str)` has no expiry parameter, so that client change isn't visible in the sources yet.",
+      "ambiguousCitations": [],
+      "judgeReply": "{\"behaviour\":\"answer\",\"facts\":{\"M3.a\":\"stated\",\"M3.b\":\"missing\",\"M3.c\":\"missing\"},\"spans\":{}}",
+      "usage": {
+        "promptTokens": 3652,
+        "completionTokens": 843,
+        "calls": 1
+      }
+    },
+    {
+      "arm": "default-scope9-all",
+      "searchScope": "9 of 9 products (all)",
+      "retrievalMs": 78,
+      "questionId": "M4",
+      "score": {
+        "questionId": "M4",
+        "category": "multi-product",
+        "expect": "answer",
+        "behaviour": "answer",
+        "behaviourOk": true,
+        "facts": {
+          "stated": 1,
+          "contradicted": 0,
+          "missing": 1,
+          "total": 2
+        },
+        "factRecall": 0.5,
+        "fullyCorrect": false,
+        "citations": [
+          {
+            "path": "internal/api/api_integration_test.go",
+            "products": ["miniflux"],
+            "lines": null,
+            "check": "file",
+            "supports": false
+          },
+          {
+            "path": "internal/api/api_key_handlers.go",
+            "products": ["miniflux"],
+            "lines": null,
+            "check": "file",
+            "supports": true
+          },
+          {
+            "path": "internal/storage/api_key.go",
+            "products": ["miniflux"],
+            "lines": null,
+            "check": "file",
+            "supports": false
+          },
+          {
+            "path": "internal/validator/api_key.go",
+            "products": ["miniflux"],
+            "lines": null,
+            "check": "file",
+            "supports": true
+          },
+          {
+            "path": "miniflux.py",
+            "products": ["python-client"],
+            "lines": null,
+            "check": "file",
+            "supports": true
+          }
+        ],
+        "citationPrecision": 0.6,
+        "expectedFiles": [
+          "miniflux:internal/api/api_key_handlers.go",
+          "miniflux:internal/validator/api_key.go",
+          "python-client:miniflux.py"
+        ],
+        "citedExpectedFiles": [
+          "miniflux:internal/api/api_key_handlers.go",
+          "miniflux:internal/validator/api_key.go",
+          "python-client:miniflux.py"
+        ],
+        "citationRecall": 1
+      },
+      "costUsd": 0.026753,
+      "projectId": null,
+      "ragChars": 13032,
+      "toolCalls": 0,
+      "toolNames": [],
+      "turnsExhausted": false,
+      "truncatedToolResults": 0,
+      "sessionId": "cmwf5l6ha00168w9k36o6fp48",
+      "seconds": 9.9,
+      "turnsUsed": 1,
+      "hasFinalAnswer": true,
+      "response": "**eval-baqa-01-acme-reader-miniflux** is the product that checks this. **eval-baqa-01-acme-reader-python-client** does not check it itself.\n\n**eval-baqa-01-acme-reader-miniflux (server)**\n- `ValidateAPIKeyCreation` in `internal/validator/api_key.go` rejects a request with an empty description (`error.fields_mandatory`). It also rejects one where `store.APIKeyExists(userID, request.Description)` is true (`error.api_key_already_exists`).\n- `APIKeyExists` in `internal/storage/api_key.go` runs `SELECT true FROM api_keys WHERE user_id=$1 AND lower(description)=lower($2)`. So the duplicate check is per user and case-insensitive.\n- `createAPIKeyHandler` in `internal/api/api_key_handlers.go` calls the validator before `CreateAPIKey`. On a validation error it returns a JSON bad-request response and creates nothing.\n- The integration test in `internal/api/api_integration_test.go` confirms this. Creating a second key with the description \"Test API Key\" must return an error.\n\n**eval-baqa-01-acme-reader-python-client**\n- `create_api_key(description)` in `miniflux.py` does no validation. It POSTs `{\"description\": description}` to `/api-keys` and returns the JSON if the status is 201.\n- Any other status goes to `self._handle_error_response(response)`, and the docstring says it raises `ClientError` if the request fails. So a duplicate or empty description is caught by the server, and the client only passes the failure on as an error.\n- I did not see the body of `_handle_error_response`, so I can't say exactly how the server's message is surfaced.\n\nThe excerpts don't give line ranges, so I've cited file paths only. I also only saw part of `miniflux.py`, so I can't rule out a check elsewhere in that file. I also haven't checked whether a database constraint backs up the duplicate check.",
+      "ambiguousCitations": [],
+      "judgeReply": "{\"behaviour\": \"answer\", \"facts\": {\"M4.a\": \"stated\", \"M4.b\": \"missing\"}, \"spans\": {}}",
+      "usage": {
+        "promptTokens": 6518,
+        "completionTokens": 1046,
+        "calls": 1
+      }
+    }
+  ]
+}
