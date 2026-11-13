@@ -1244,6 +1244,23 @@ including a scope-5 run whose results were lost to a bad `--include` path and ru
   fall at 9 projects (33% to 17%) and the recovery (35–44%) are larger than that, and the
   retrieval counts, which carry no model noise, show the same thing.
 
+**After #2264 (2026-11-13, `--routing-sweep`, $0).** #2264 replaced the equal turns with a
+merge on relevance (`fuseByRelevance`, `share: "relevance"`). The same sweep, on the branch,
+on a freshly materialized corpus. The `ranked` counterfactual reads exactly as before (68%,
+8/32 at 9), so the corpus and probes match the run above:
+
+| Scope | Way | Excerpts from an answer product, before → after | Expected files retrieved, before → after |
+|---:|---|---:|---:|
+| 2 | all | 67% → 73% (70/96) | 9/32 → 9/32 |
+| 5 | all | 43% → 67% (80/120) | 8/32 → 9/32 |
+| 9 | all | **31% → 70% (101/144)** | **4/32 → 9/32** |
+| 9 | routed | 61% → 77% (111/144) | 8/32 → 9/32 |
+| 9 | oracle | 100% → 100% (138/138) | 11/32 → 12/32 |
+
+Search-all at nine products now retrieves as many expected files as routing (9/32), and more
+than the cosine-only counterfactual, so the retrieval loss #2336 measured is recovered. The
+answer-level re-run (`--routing-scope 9 --route all`, paid) is still to be done.
+
 ### Secret redaction in repository source (#2333), 2026-11-12
 
 #2333 redacts secrets in repository files before they are indexed, stored in the code graph or
