@@ -10,10 +10,11 @@
  *     against the ACL it replaces (#2356).
  *
  * Storage representation:
- *   - SQLite: `aclSubjects` is a TEXT column holding a JSON array.
- *   - Postgres: a `Json` column. Prisma reads it as a parsed value already.
- *   - We normalize everything to a string array on the way in/out so
- *     downstream code never has to branch on the dialect.
+ *   - Both dialects: `aclSubjects` is a `String` column (TEXT) holding a JSON
+ *     array (`aclSubjects String @default("[]")` in each schema). The
+ *     compare-and-set in `saveDocumentAcl` relies on that: it filters on the
+ *     exact string it read, which a `Json` column could not do.
+ *   - We normalize everything to a subject array on the way in/out.
  *
  * Visibility rule:
  *   - Empty ACL list  ⇒ visible to every project member (most chunks).

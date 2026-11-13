@@ -94,6 +94,8 @@ export const POSTGRES_PATTERNS = Object.freeze([
   "server/src/lib/products/edge-detection.ts",
   "server/src/lib/products/relationship-detector.ts",
   "server/src/lib/publishing/cross-project-guard.ts",
+  // #2356 — document-acl-save-2356-postgres runs the real ACL compare-and-set.
+  "server/src/lib/rag/acl.ts",
   "server/src/lib/rag/embedder.ts",
   "server/src/lib/rag/knowledge-service.ts",
   "server/src/lib/rag/reindex-lease.ts",

@@ -297,6 +297,7 @@ import { DocumentStorage } from "../src/lib/documents/storage.js";
 import {
   KnowledgeService,
   __resetKnowledgeServiceSingleton,
+  ACL_CHANGED_DURING_INGEST,
 } from "../src/lib/rag/knowledge-service.js";
 import { approveDocument } from "../src/lib/rag/quarantine.js";
 import { Embedder } from "../src/lib/rag/embedder.js";
@@ -522,6 +523,51 @@ describe("KnowledgeService.ingestDocument", () => {
     const r = await svc.ingestDocument("ghost");
     expect(r.status).toBe("failed");
     expect(documents.get("ghost")?.status).toBe("failed");
+  });
+
+  // #2356 — ingest read an ACL holding a legacy group; an editor removed the
+  // group while the document was being embedded. The quarantine write refuses
+  // to put it back, and that must end the ingest (resolved, not thrown, so the
+  // queue does not re-parse and re-embed only to land on the same refusal).
+  it("fails the ingest with a clear reason when a legacy group is removed mid-ingest", async () => {
+    const legacy = JSON.stringify([
+      { kind: "group", value: "legacy" },
+      { kind: "user", value: "alice" },
+    ]);
+    const edited = JSON.stringify([{ kind: "user", value: "alice" }]);
+    class EditingEmbedder extends Embedder {
+      override async embed(texts: string[]) {
+        const doc = documents.get("d-acl");
+        if (doc) documents.set("d-acl", { ...doc, aclSubjects: edited });
+        return super.embed(texts);
+      }
+    }
+    svc = new KnowledgeService({
+      storage,
+      vectorStore: store,
+      embedder: new EditingEmbedder(),
+      chunkOptions: { chunkSize: 100, overlap: 8 },
+    });
+    await seedDocument("d-acl", "p1", "# Policy\n\nparagraph one.\n\nparagraph two.");
+    documents.set("d-acl", { ...documents.get("d-acl")!, aclSubjects: legacy });
+
+    const result = await svc.ingestDocument("d-acl");
+
+    expect(result).toEqual({
+      documentId: "d-acl",
+      status: "failed",
+      chunkCount: 0,
+      errorMessage: ACL_CHANGED_DURING_INGEST,
+    });
+    const doc = documents.get("d-acl");
+    expect(doc?.status).toBe("failed");
+    expect(doc?.errorMessage).toBe(ACL_CHANGED_DURING_INGEST);
+    // The editor's list stands; nothing was indexed under the old one.
+    expect(doc?.aclSubjects).toBe(edited);
+    expect([...chunks.values()].filter((c) => c.documentId === "d-acl")).toEqual([]);
+    expect([...quarantine.values()].filter((q) => q.documentId === "d-acl" && q.ord >= 0)).toEqual(
+      [],
+    );
   });
 
   it("leaves document pending when PDF parser fails on malformed bytes", async () => {
