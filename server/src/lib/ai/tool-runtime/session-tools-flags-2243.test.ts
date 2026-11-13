@@ -109,10 +109,14 @@ describe("codeToolsOnTextProtocol — the one text-protocol gate (#2402)", () =>
     expect(codeToolsOnTextProtocol({ chatTools: true, codeSearchTools: false })).toBe(false);
   });
 
-  it("the registry words the unset default as native-only, since that is what applies", () => {
+  it("the registry words the unset default as what the loader applies", () => {
     delete process.env[KEY];
     const flags = loadSessionToolsFlags();
-    expect(flags.codeSearchTools && !codeToolsOnTextProtocol(flags)).toBe(true);
-    expect(getKeyDef(KEY)?.defaultNote).toBe("on (native tool models only)");
+    // Derive the wording from the loader's unset behaviour, so the registry
+    // note cannot drift from what the code applies on either protocol.
+    const native = flags.codeSearchTools ? "on" : "off";
+    const text = codeToolsOnTextProtocol(flags) ? "on" : "off";
+    const expected = native === text ? native : `${native} (native tool models only)`;
+    expect(getKeyDef(KEY)?.defaultNote).toBe(expected);
   });
 });
