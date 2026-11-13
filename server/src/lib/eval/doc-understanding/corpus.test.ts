@@ -30,7 +30,9 @@ describe("the committed document-understanding corpus", () => {
 
   it("holds documents larger than ten retrieved chunks, each with requirements and ambiguities", () => {
     for (const item of items) {
-      // Ten 2,048-character chunks is today's whole read; every document must exceed it.
+      // 20,000 characters is ten full 2,048-character chunks, the most today's
+      // ten-chunk read could cover; chunkMarkdown cuts at every heading, so it
+      // covered 8,170 to 9,611 on #2229's three documents. Every document exceeds it.
       expect(item.text.length).toBeGreaterThan(20_000);
       expect(item.labels.requirements.length).toBeGreaterThanOrEqual(30);
       expect(item.labels.ambiguities.length).toBeGreaterThanOrEqual(8);

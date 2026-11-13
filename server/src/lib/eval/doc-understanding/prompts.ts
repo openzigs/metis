@@ -28,9 +28,15 @@ export const READER_REPLY_SHAPE =
   '{"requirements":[{"statement":"<the requirement in plain words>","section":"<the heading it sits under>","quote":"<the sentence that states it, copied word for word>"}],' +
   '"questions":[{"question":"<the question for the author>","section":"<the heading it concerns>","quote":"<the passage it is about, copied word for word>"}]}';
 
-const WHAT_TO_EXTRACT = [
-  "A requirement is one thing the document says the system, its users or the business must, shall or will do, or must not do, including business rules, limits, time periods and non-functional requirements. List each one the document states, once, in the order it appears. Background, goals and objectives, definitions, assumptions, illustrations and items stated to be out of scope are not requirements.",
-  "Raise a question only where a business analyst would need to go back to the document's author before the requirement could be built or tested: a term that is vague or undefined, an escape clause, a decision the document leaves open, two statements that contradict each other, or something the document is silent on that a requirement needs. Make each question specific, and do not ask what the document already answers.",
+/**
+ * #2250 — a plain analyst's instruction. It used to list what the labels count
+ * as a requirement and not, and the six kinds of ambiguity the labels are
+ * sorted into: the labelling convention of the documents' own author, which
+ * leaned arms B and C toward the key they are scored against.
+ */
+export const WHAT_TO_EXTRACT = [
+  "A requirement is something the document says the system, its users or the business must do or must not do. List each one the document states, once, in the order it appears.",
+  "Raise a question only where a business analyst would need to go back to the document's author before a requirement could be built or tested. Make each question specific, and do not ask what the document already answers.",
   "For each requirement and question, quote the passage it rests on word for word, so it can be found in the document.",
 ].join("\n");
 

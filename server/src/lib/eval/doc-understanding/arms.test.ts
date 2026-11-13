@@ -307,6 +307,36 @@ describe("helpers", () => {
     expect(await mapLimited([], 4, async () => 1)).toEqual([]);
   });
 
+  it("starts nothing after a call rejects, and rejects only once the calls in flight settle (#2250)", async () => {
+    const started: number[] = [];
+    let inFlight = 0;
+    const run = mapLimited([0, 1, 2, 3, 4, 5], 2, async (n) => {
+      started.push(n);
+      inFlight++;
+      try {
+        await new Promise((r) => setTimeout(r, n === 0 ? 1 : 15));
+        if (n === 0) throw new Error("section 0 failed");
+        return n;
+      } finally {
+        inFlight--;
+      }
+    });
+    await expect(run).rejects.toThrow("section 0 failed");
+    // The sibling's call was still metered into the reading when it rejected.
+    expect(inFlight).toBe(0);
+    await new Promise((r) => setTimeout(r, 60));
+    // No new call was started once one had failed: spend stops with the reading.
+    expect(started).toEqual([0, 1]);
+  });
+
+  it("rejects with the first failure when several calls fail (#2250)", async () => {
+    const run = mapLimited([5, 1], 2, async (n) => {
+      await new Promise((r) => setTimeout(r, n));
+      throw new Error(`failed after ${n}`);
+    });
+    await expect(run).rejects.toThrow("failed after 1");
+  });
+
   it("R reads through the production document reader and keeps only requirement-like statements", async () => {
     const { provider, calls } = routedProvider([
       [
