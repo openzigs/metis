@@ -88,6 +88,26 @@ describe("specSummary", () => {
       ].join("\n"),
     );
   });
+
+  // #2309 — a fence closes only on its own character, at least as long as the
+  // opener, with no info string (CommonMark); anything else is code inside it.
+  it("does not close a backtick fence on a `~~~` line", () => {
+    const fenced = ["```md", "~~~", "# inside the code block", "```"];
+    const spec = ["# Spec", "The goal.", ...fenced, "## Stakeholders", "- Analysts"].join("\n");
+    expect(specSummary(spec)).toBe(["The goal.", ...fenced].join("\n"));
+  });
+
+  it("does not close a four-backtick fence on a three-backtick line", () => {
+    const fenced = ["````md", "```", "# inside the code block", "```", "````"];
+    const spec = ["# Spec", "The goal.", ...fenced, "## Stakeholders", "- Analysts"].join("\n");
+    expect(specSummary(spec)).toBe(["The goal.", ...fenced].join("\n"));
+  });
+
+  it("does not close a fence on a line with an info string, and does on a longer run", () => {
+    const fenced = ["~~~", "~~~sh", "# inside the code block", "~~~~~"];
+    const spec = ["# Spec", "The goal.", ...fenced, "## Stakeholders", "- Analysts"].join("\n");
+    expect(specSummary(spec)).toBe(["The goal.", ...fenced].join("\n"));
+  });
 });
 
 describe("renderAnchorContext", () => {
