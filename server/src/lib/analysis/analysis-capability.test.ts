@@ -21,8 +21,8 @@ vi.mock("../prisma.js", () => ({
     },
     // #2454 — a live (not soft-deleted) repository connection of the project.
     repoConnection: {
-      findFirst: vi.fn(async ({ where }: { where: { deletedAt?: null } }) =>
-        where.deletedAt === null && repoConnectionRow ? repoConnectionRow : null,
+      findMany: vi.fn(async ({ where }: { where: { deletedAt?: null } }) =>
+        where.deletedAt === null && repoConnectionRow ? [repoConnectionRow] : [],
       ),
     },
   },
