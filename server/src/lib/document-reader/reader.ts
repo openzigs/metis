@@ -501,7 +501,13 @@ async function read(
         // A summary table restates the body, not the other way round: a prose
         // statement is never dropped as a repeat of a table row (measured on 04,
         // where 6's teen DVD rule went into the appendix's entitlement row).
-        if (absorbs.get(of)!.size > 1 || dropped.has(i) || dropped.has(of)) continue;
+        // #2374 — except rows into prose: a summary table's rows that each
+        // restate part of one body sentence are the table's summary of it, not
+        // the other way round (02's "documents reminder" and "closed as
+        // abandoned" rows, both kept as repeats of one sentence of 6.1).
+        const rowIntoProse = isTableRow(text, kept[i]!.start) && !isTableRow(text, kept[of]!.start);
+        if ((absorbs.get(of)!.size > 1 && !rowIntoProse) || dropped.has(i) || dropped.has(of))
+          continue;
         if (isTableRow(text, kept[of]!.start) && !isTableRow(text, kept[i]!.start)) continue;
         dropped.add(i);
         keptAs.set(i, of);

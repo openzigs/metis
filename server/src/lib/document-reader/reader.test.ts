@@ -1285,6 +1285,97 @@ describe("#2361 — repeats", () => {
     expect(reading.sections.find((s) => s.sectionId === "S5")).toMatchObject({ repeats: 1 });
   });
 
+  it("#2374 — drops a summary table's rows that each repeat part of one prose sentence", async () => {
+    const text = [
+      "# Claims",
+      "",
+      "## 1 Documents",
+      "",
+      "A reminder is sent 21 days after the request, and the claim is closed 21 days after the reminder.",
+      "",
+      "## 2 Summary",
+      "",
+      "| Rule | Limit |",
+      "| --- | --- |",
+      "| Documents reminder | 21 days after the request |",
+      "| Claim closed | 21 days after the reminder |",
+      "",
+    ].join("\n");
+    const reply = statements(
+      {
+        section: "S2",
+        kind: "requirement",
+        statement: "Remind after 21 days; close 21 days after the reminder.",
+        quote:
+          "A reminder is sent 21 days after the request, and the claim is closed 21 days after the reminder.",
+      },
+      {
+        section: "S3",
+        kind: "business-rule",
+        statement: "Reminder at 21 days.",
+        quote: "| Documents reminder | 21 days after the request |",
+      },
+      {
+        section: "S3",
+        kind: "business-rule",
+        statement: "Closed 21 days after the reminder.",
+        quote: "| Claim closed | 21 days after the reminder |",
+      },
+    );
+    const merge = JSON.stringify({
+      duplicates: [
+        { id: "T2", of: "T1" },
+        { id: "T3", of: "T1" },
+      ],
+      crossReferences: [],
+    });
+    const { provider } = routedProvider([
+      [WHOLE, reply],
+      [MERGE, merge],
+    ]);
+    const reading = await readDocument({ title: "Claims", text, provider });
+    expect(reading.statements.map((s) => s.sectionId)).toEqual(["S2"]);
+    expect(reading.sections.find((s) => s.sectionId === "S3")).toMatchObject({
+      repeats: 2,
+      mergedInto: ["S2"],
+    });
+
+    // Rows named repeats of a row that combines them keep the summary guard: both stay.
+    const intoRow = JSON.stringify({
+      duplicates: [
+        { id: "T1", of: "T3" },
+        { id: "T2", of: "T3" },
+      ],
+      crossReferences: [],
+    });
+    const rowsOnly = statements(
+      {
+        section: "S3",
+        kind: "business-rule",
+        statement: "Reminder at 21 days.",
+        quote: "| Documents reminder | 21 days after the request |",
+      },
+      {
+        section: "S3",
+        kind: "business-rule",
+        statement: "Closed 21 days after the reminder.",
+        quote: "| Claim closed | 21 days after the reminder |",
+      },
+      {
+        section: "S3",
+        kind: "business-rule",
+        statement: "The table's limits.",
+        quote: "| Rule | Limit |",
+      },
+    );
+    const second = routedProvider([
+      [WHOLE, rowsOnly],
+      [MERGE, intoRow],
+    ]);
+    const again = await readDocument({ title: "Claims", text, provider: second.provider });
+    expect(again.statements).toHaveLength(3);
+  });
+
   it("never drops a prose statement as a repeat of a summary table's row, but drops the row", async () => {
     const text = [
       "# Lending",
