@@ -309,3 +309,32 @@ describe("redactSandboxPayload — Errors are reduced at the call site (#85)", (
     expect(out.err.token).toBe("[REDACTED]");
   });
 });
+
+/**
+ * #2333 — the vendor shapes come from the one shared set
+ * (`safety/secret-patterns.ts`), collapsed to this sink's plain marker.
+ */
+describe("redactSecretsInString — the shared secret set (#2333)", () => {
+  const k = (...parts: string[]): string => parts.join("");
+
+  it("redacts shapes only the shared set knows, as a plain [REDACTED]", () => {
+    const stripe = k("sk_", "live_", "e".repeat(24));
+    const npm = k("npm_", "f".repeat(36));
+    const out = redactSecretsInString(`curl -u ${stripe}: x ; NPM=${npm}`);
+    expect(out).not.toContain(stripe);
+    expect(out).not.toContain(npm);
+    expect(out).toBe("curl -u [REDACTED]: x ; NPM=[REDACTED]");
+  });
+
+  it("never leaves a shared class marker in an audit row", () => {
+    const pem = [
+      k("-----BEGIN ", "PRIVATE KEY-----"),
+      "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7MIIEvQIBADANBg",
+      k("-----END ", "PRIVATE KEY-----"),
+    ].join("\n");
+    const out = redactSecretsInString(`echo '${pem}' > k.pem ; ${k("ghp_", "A".repeat(36))}`);
+    expect(out).not.toMatch(/\[REDACTED:/);
+    expect(out).not.toContain("MIIEvQIBADANBgkq");
+    expect(out).toContain("[REDACTED]");
+  });
+});

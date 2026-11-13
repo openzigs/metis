@@ -156,6 +156,23 @@ describe("triageSkillFiles (import: leave out and report, never fail the skill)"
   });
 });
 
+describe("Slack's documented webhook placeholder (#2333)", () => {
+  const hook = (secret: string) =>
+    ["https://hooks.slack.com", "/services/", ["T00000000", "B00000000", secret].join("/")].join(
+      "",
+    );
+
+  it("a supporting file quoting the placeholder validates; a real webhook still fails the skill", () => {
+    const doc = { path: "references/slack.md", content: `POST to ${hook("X".repeat(24))}` };
+    expect(validateSkillFiles([doc])).toHaveLength(1);
+    const real = {
+      path: "references/slack.md",
+      content: `POST to ${hook("q8Lr2vWnZk4TbY7hM1sPx3Ce")}`,
+    };
+    expect(() => validateSkillFiles([real])).toThrow(/credential \(Slack webhook URL\)/);
+  });
+});
+
 describe("groupSkillImport", () => {
   it("groups a SKILL.md directory with its supporting files, nested skills keep their own", () => {
     const out = groupSkillImport([

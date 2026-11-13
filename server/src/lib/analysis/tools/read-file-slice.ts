@@ -2,12 +2,15 @@
  * Epic #473 / Issue #475 — read_file_slice tool.
  *
  * Reads a range of lines from a file in the cloned repository. Enforces
- * path containment (SSRF prevention) and a 200-line-per-call limit.
+ * path containment (SSRF prevention) and a 200-line-per-call limit. Secrets
+ * in the file are replaced in place before any line is returned (#2333);
+ * chat's `read_file_slice` wraps this tool, so it inherits that.
  */
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
 import type { AgentTool, ToolContext, ToolResult, JSONSchema } from "./types.js";
 import { missingParamError } from "./arg-errors.js";
+import { redactSecrets } from "../../safety/secret-patterns.js";
 
 const MAX_LINES = 200;
 
@@ -87,9 +90,9 @@ export const FILE_NOT_FOUND = "Error: File not found:";
 
 /**
  * #2329 — a repository file's lines, read from a clone with the containment and
- * symlink-escape checks above. Shared by `read_file_slice` and
- * `search_code_context`, so both refuse exactly the same paths with the same
- * replies.
+ * symlink-escape checks above, with secrets redacted in place (#2333). Shared by
+ * `read_file_slice` and `search_code_context`, so both refuse exactly the same
+ * paths with the same replies and neither can return a secret.
  */
 export async function readCloneFileLines(
   cloneDir: string,
@@ -100,7 +103,11 @@ export async function readCloneFileLines(
     return { error: "Error: Path traversal detected. filePath must be within the repository." };
   }
   try {
-    return { lines: (await fs.readFile(absPath, "utf-8")).split("\n") };
+    // #2333 — secrets out of the WHOLE file before any caller slices it, so a
+    // key block that starts above a requested range is still recognised. In
+    // place: every line keeps its number, so headers, numbering and citation
+    // ranges are unchanged. Here, not in a caller, so no read path can miss it.
+    return { lines: redactSecrets(await fs.readFile(absPath, "utf-8")).text.split("\n") };
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     if (code === "ENOENT") return { error: `${FILE_NOT_FOUND} ${filePath}` };

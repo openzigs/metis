@@ -700,8 +700,11 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       // for shapes this tree does not hold (an invisible character in a comment,
       // a code line ending in a block comment above a declaration). Those are
       // pinned in `symbol-context.test.ts`; the number moved for them.
+      // Version 3 (#2333) with the same digest again: stored text is now built
+      // from the file with its secrets redacted, and this tree holds none.
+      // Pinned in `code-graph-secret-redaction-2333.sqlite.test.ts`.
       expect({ version: SYMBOL_CONTEXT_VERSION, digest }).toEqual({
-        version: 2,
+        version: 3,
         digest: "71a378cd2837a791b18fd09956e9756377d6ac747ba454305489866faff685f5",
       });
     });
