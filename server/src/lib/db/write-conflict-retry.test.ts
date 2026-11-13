@@ -34,21 +34,26 @@ describe("retryOnWriteConflict", () => {
   it.each([
     ["P2034", p2034],
     ["adapter-pg TransactionWriteConflict", adapterConflict],
-  ])("runs the transaction again after a %s, doubling the backoff each time", async (_, make) => {
-    const sleep = noWait();
-    const run = vi
-      .fn<() => Promise<string>>()
-      .mockRejectedValueOnce(make())
-      .mockRejectedValueOnce(make())
-      .mockResolvedValueOnce("won");
-    await expect(retryOnWriteConflict(run, { sleep })).resolves.toBe("won");
-    expect(run).toHaveBeenCalledTimes(3);
-    const [first, second] = sleep.mock.calls.map(([ms]) => ms);
-    expect(first).toBeGreaterThanOrEqual(WRITE_CONFLICT_BACKOFF_MS);
-    expect(first).toBeLessThan(WRITE_CONFLICT_BACKOFF_MS * 2);
-    expect(second).toBeGreaterThanOrEqual(WRITE_CONFLICT_BACKOFF_MS * 2);
-    expect(second).toBeLessThan(WRITE_CONFLICT_BACKOFF_MS * 4);
-  });
+  ])(
+    "runs the transaction again after a %s, backing off within each attempt's band",
+    async (_, make) => {
+      // Bands only: under random jitter these bounds also admit a linear schedule.
+      // The doubling itself is pinned by the jitter-fixed case below.
+      const sleep = noWait();
+      const run = vi
+        .fn<() => Promise<string>>()
+        .mockRejectedValueOnce(make())
+        .mockRejectedValueOnce(make())
+        .mockResolvedValueOnce("won");
+      await expect(retryOnWriteConflict(run, { sleep })).resolves.toBe("won");
+      expect(run).toHaveBeenCalledTimes(3);
+      const [first, second] = sleep.mock.calls.map(([ms]) => ms);
+      expect(first).toBeGreaterThanOrEqual(WRITE_CONFLICT_BACKOFF_MS);
+      expect(first).toBeLessThan(WRITE_CONFLICT_BACKOFF_MS * 2);
+      expect(second).toBeGreaterThanOrEqual(WRITE_CONFLICT_BACKOFF_MS * 2);
+      expect(second).toBeLessThan(WRITE_CONFLICT_BACKOFF_MS * 4);
+    },
+  );
 
   it("doubles the wait per lost attempt, with the same jitter added on top", async () => {
     const random = vi.spyOn(Math, "random").mockReturnValue(0.5);
