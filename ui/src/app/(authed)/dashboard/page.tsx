@@ -332,8 +332,8 @@ function RecentActivityWidget() {
       empty={entries.length === 0}
       emptyTitle="No recent items"
       emptyCta="Open a chat or run an analysis to start your activity log."
-      emptyHref="/workbench"
-      emptyHrefLabel="Open workbench"
+      emptyHref="/chat"
+      emptyHrefLabel="Open chat"
     >
       <ul className="space-y-1 text-sm" data-testid="widget-recent-list">
         {entries.slice(0, 5).map((e) => (

@@ -9,7 +9,7 @@
  * here (#142). The approval gate itself is server-side; this page only sends
  * the owner's answer.
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -50,6 +50,15 @@ import { recentTracker, sessionTitleAfterTurn } from "@/lib/recent-tracker";
 import { ToolActivityList, TranscriptToolCalls } from "@/components/chat/tool-activity";
 import { useToolApprovals } from "@/hooks/use-tool-approvals";
 import { PageHeader } from "@/components/ui/page-header";
+import { parseChatSubjectParam, type ChatSubjectDto } from "@metis/shared";
+import { ChatSubjectNotice, useChatSubject } from "@/components/chat/chat-subject";
+import { loadSessionSubject, storeSessionSubject, subjectPrompt } from "@/lib/chat-subject";
+import { ChatHistory } from "@/components/chat/chat-history";
+import {
+  AdvancedToggle,
+  assistantInPlainWords,
+  useChatAdvanced,
+} from "@/components/chat/chat-advanced";
 
 /**
  * #136 — a transcript row as rendered. Rows that came from the server carry
@@ -107,16 +116,43 @@ export default function ChatPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const projectId = searchParams.get("projectId") ?? undefined;
-  // #1367 — /sessions "Resume" navigates here with the session to rehydrate.
+  // #1367 — a chat link names the session to rehydrate (#2350: the history list).
   const resumeSessionId = searchParams.get("sessionId") ?? undefined;
+  // #2350 — "Ask about this": the item named by `?about=`, as the server
+  // answers for this user. A refusal never scopes the chat.
+  const aboutRaw = searchParams.get("about");
+  const about = useMemo(() => parseChatSubjectParam(aboutRaw), [aboutRaw]);
+  const subjectState = useChatSubject(about);
+  // #2350 — for an analyst, the developer controls sit behind "Advanced".
+  const advancedState = useChatAdvanced();
+  const showControls = advancedState.showControls;
   const [agentKey, setAgentKey] = useState<string | null>(null);
-  const { scope, setScope, hydrated: scopeHydrated } = useProjectScope();
+  const { scope, setScope, hydrated: rawScopeHydrated } = useProjectScope();
+  const [input, setInput] = useState("");
+  // #2350 — the item's project becomes the scope once, before anything keys
+  // off the scope, so the chat opens on it rather than switching to it; the
+  // composer opens with a question about the item, the analyst's to edit.
+  const [appliedSubject, setAppliedSubject] = useState<string | null>(null);
+  const subjectKey = about ? `${about.kind}:${about.id}` : null;
+  useEffect(() => {
+    if (!rawScopeHydrated || subjectState.status !== "ready" || !subjectKey) return;
+    if (appliedSubject === subjectKey) return;
+    const { subject } = subjectState;
+    setScope({ mode: "selected", projectIds: [subject.projectId] });
+    setInput((prev) => prev || subjectPrompt(subject));
+    setAppliedSubject(subjectKey);
+  }, [rawScopeHydrated, subjectState, subjectKey, appliedSubject, setScope]);
+  const subjectSettled =
+    subjectState.status === "none" ||
+    subjectState.status === "refused" ||
+    subjectState.status === "failed" ||
+    (subjectState.status === "ready" && appliedSubject === subjectKey);
+  const scopeHydrated = rawScopeHydrated && subjectSettled;
   const [session, setSession] = useState<AISession | null>(null);
   // #607 — scope metadata from session-create; drives the degradation banner
   // when the applied scope differs from the user's selection.
   const [sessionScope, setSessionScope] = useState<SessionScope | null>(null);
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
-  const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // #138 — shown when older turns were summarised to fit the model's context.
@@ -141,6 +177,17 @@ export default function ChatPage() {
   useEffect(() => {
     sessionIdRef.current = session?.id ?? null;
   }, [session]);
+  // PR #2428 review — the item the chat on screen is about ("Ask about this"),
+  // remembered per session: sent with every turn, so the model is told what it
+  // is even after the opening question was rewritten, and after a reload.
+  const [boundSubject, setBoundSubject] = useState<ChatSubjectDto | null>(null);
+  const sessionKey = session?.id ?? null;
+  useEffect(() => {
+    setBoundSubject(sessionKey ? loadSessionSubject(sessionKey) : null);
+  }, [sessionKey]);
+  // Set when the page swaps `?about=` for the chat's own `?sessionId=`: the
+  // session effect keeps the chat on screen instead of reloading it.
+  const adoptedUrlSessionRef = useRef<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   // A send in progress, known synchronously (see `handleSend`).
   const sendingRef = useRef(false);
@@ -168,11 +215,15 @@ export default function ChatPage() {
   // Hydrate the persisted agent choice once on mount. Set BEFORE the
   // session-create effect so the first session is created under the right
   // persona instead of "default-then-flip".
+  // #2350 — once the Advanced choice is known: with the controls hidden, a new
+  // chat runs on the project's configured defaults, not an agent picked before.
   const [agentHydrated, setAgentHydrated] = useState(false);
+  const advancedHydrated = advancedState.hydrated;
   useEffect(() => {
-    setAgentKey(loadStoredAgentKey());
+    if (!advancedHydrated || agentHydrated) return;
+    setAgentKey(showControls ? loadStoredAgentKey() : null);
     setAgentHydrated(true);
-  }, []);
+  }, [advancedHydrated, agentHydrated, showControls]);
 
   // #236 — the one project a new session would be scoped to (a URL project,
   // or a single project picked in the scope selector): its custom agents can
@@ -240,6 +291,13 @@ export default function ChatPage() {
       keepResumedSessionRef.current = false;
       return;
     }
+    // PR #2428 review — this run was caused by the page replacing `?about=`
+    // with the chat's own `?sessionId=` after its first turn; keep the chat.
+    if (adoptedUrlSessionRef.current !== null) {
+      const adopted = adoptedUrlSessionRef.current === resumeSessionId;
+      adoptedUrlSessionRef.current = null;
+      if (adopted) return;
+    }
     let cancelled = false;
     scopeGenRef.current += 1;
     pendingCreateRef.current = null;
@@ -261,8 +319,9 @@ export default function ChatPage() {
     mountedOnceRef.current = true;
     // #1367 — resume, never create: an explicit `?sessionId=`, or on the first
     // run the session last open here. #1139 — a session is created only when
-    // the first message is sent (see `ensureSession`).
-    const restoreId = resumeSessionId ?? (firstRun ? loadActiveSessionId() : null);
+    // the first message is sent (see `ensureSession`). #2350 — "Ask about
+    // this" opens a new chat about the item, not the one last open here.
+    const restoreId = resumeSessionId ?? (firstRun && !subjectKey ? loadActiveSessionId() : null);
     if (!restoreId) {
       setReady(true);
       return () => {
@@ -339,6 +398,7 @@ export default function ChatPage() {
     effectiveProjectId,
     scopeKey,
     resumeSessionId,
+    subjectKey,
     agentHydrated,
     scopeHydrated,
     resetToolActivity,
@@ -430,6 +490,16 @@ export default function ChatPage() {
     // #1139 — the new session is created by the first send, not here.
     inputRef.current?.focus();
   }
+  // #2350 — turning Advanced off puts the chat back on the project's defaults:
+  // a picked agent gives way to the default one (a new chat, as any agent
+  // change is). Turning it on changes nothing until the analyst picks.
+  function handleAdvancedChange(on: boolean) {
+    advancedState.setAdvanced(on);
+    if (!on && agentKey !== null) setAgentKey(null);
+  }
+  // #2350 — bumped after a turn or a fork, so the history lists the chat at once.
+  const [historyVersion, setHistoryVersion] = useState(0);
+
   function handleAgentChange(next: string | null) {
     setAgentNotice(null);
     storeAgentKey(next);
@@ -477,6 +547,7 @@ export default function ChatPage() {
       role: "assistant",
       content: "",
     };
+    const subject = subjectForTurn(active);
     setMessages([...messages, userMsg, assistantMsg]);
     resetToolActivity();
     if (text === input) setInput("");
@@ -495,6 +566,8 @@ export default function ChatPage() {
         () => {
           accepted = true;
         },
+        undefined,
+        subject ?? undefined,
       )) {
         handleEvent(ev, assistantMsg.id);
       }
@@ -557,8 +630,37 @@ export default function ChatPage() {
           href: `/chat?sessionId=${encodeURIComponent(active.id)}`,
           ...(active.projectId ? { projectId: active.projectId } : {}),
         });
+        setHistoryVersion((v) => v + 1);
+        // PR #2428 review — an "Ask about this" link names the item, not the
+        // chat: once the chat exists, the URL names the chat, so a reload
+        // resumes it instead of seeding a new one. (Only while it is on screen.)
+        if (aboutRaw && sessionIdRef.current === active.id) {
+          adoptedUrlSessionRef.current = active.id;
+          router.replace(`/chat?sessionId=${encodeURIComponent(active.id)}`);
+        }
       }
     }
+  }
+
+  /**
+   * PR #2428 review — the item this turn is about: the one the chat was opened
+   * from, remembered per session. A new chat is tied to the "Ask about this"
+   * item on its first turn, only while it is still in the item's project.
+   */
+  function subjectForTurn(active: AISession): ChatSubjectDto | null {
+    const stored = loadSessionSubject(active.id);
+    if (stored) return stored;
+    if (
+      subjectState.status !== "ready" ||
+      appliedSubject !== subjectKey ||
+      messages.some((m) => m.role === "user") ||
+      active.projectId !== subjectState.subject.projectId
+    ) {
+      return null;
+    }
+    storeSessionSubject(active.id, subjectState.subject);
+    setBoundSubject(subjectState.subject);
+    return subjectState.subject;
   }
 
   /**
@@ -582,7 +684,10 @@ export default function ChatPage() {
       const forked = await forkChatSession(session.id, ordinal);
       // The note described the source session's compaction, not the fork's.
       setCompactionNote(null);
+      // A fork of a chat about an item is about the same item.
+      if (boundSubject) storeSessionSubject(forked.session.id, boundSubject);
       storeActiveSessionId(forked.session.id);
+      setHistoryVersion((v) => v + 1);
       router.push(`/chat?sessionId=${encodeURIComponent(forked.session.id)}`);
     } catch (err) {
       setError((err as Error).message);
@@ -684,6 +789,10 @@ export default function ChatPage() {
 
   return (
     <div className="flex h-[calc(100vh-12rem)] gap-4 p-6">
+      {/* #2350 — the analyst's past conversations (Activity → Sessions folded in). */}
+      <div className="hidden w-56 shrink-0 md:block">
+        <ChatHistory activeSessionId={session?.id ?? null} refreshKey={historyVersion} />
+      </div>
       {/* #1581 — `min-w-0`: a flex item's minimum width is its content's, so a
           resumed transcript's long line (a path, a code block) widened the
           column past the page and pushed the header and Skills panel off it. */}
@@ -702,12 +811,22 @@ export default function ChatPage() {
               {!effectiveProjectId || scopeBlocked ? (
                 <ProjectScopeSelector value={scope} onChange={setScope} disabled={streaming} />
               ) : null}
-              <AgentPicker
-                value={agentKey}
-                onChange={handleAgentChange}
-                disabled={streaming}
-                projectId={pickerProjectId}
-              />
+              {/* #2350 — a developer control: an analyst sees it under Advanced. */}
+              {showControls ? (
+                <AgentPicker
+                  value={agentKey}
+                  onChange={handleAgentChange}
+                  disabled={streaming}
+                  projectId={pickerProjectId}
+                />
+              ) : null}
+              {advancedState.toggleable ? (
+                <AdvancedToggle
+                  checked={advancedState.advanced}
+                  onChange={handleAdvancedChange}
+                  disabled={streaming}
+                />
+              ) : null}
               <Button
                 type="button"
                 variant="secondary"
@@ -718,11 +837,18 @@ export default function ChatPage() {
               >
                 New chat
               </Button>
-              {session ? (
+              {session && showControls ? (
                 <span className="text-sm text-muted-foreground">
                   {session.provider} · {session.model}
                 </span>
-              ) : ready ? (
+              ) : null}
+              {/* #2350 — with the controls hidden, which assistant answers, in words. */}
+              {!showControls && (session || ready) ? (
+                <span className="text-sm text-muted-foreground" data-testid="chat-assistant">
+                  {assistantInPlainWords(session, Boolean(pickerProjectId))}
+                </span>
+              ) : null}
+              {session ? null : ready ? (
                 <span className="text-sm text-muted-foreground" data-testid="chat-new-session-hint">
                   New chat — starts when you send
                 </span>
@@ -732,6 +858,24 @@ export default function ChatPage() {
             </div>
           }
         />
+        {/* #2350 — what an "Ask about this" chat is about, while the scope is
+            still the item's project; or the server's refusal to name it. */}
+        {/* PR #2428 review — once the chat is tied to the item, the line
+            follows the chat (a reload, a history link), not the URL. */}
+        {boundSubject ? (
+          <ChatSubjectNotice
+            state={{ status: "ready", subject: boundSubject }}
+            inScope={session?.projectId === boundSubject.projectId}
+          />
+        ) : (
+          <ChatSubjectNotice
+            state={subjectState}
+            inScope={
+              subjectState.status === "ready" &&
+              scopeKey === `selected:${subjectState.subject.projectId}`
+            }
+          />
+        )}
         <ScopeDegradationNotice scope={sessionScope} />
         {/* #18 — a session with no project runs no retrieval; say so before the
             turn. A degraded scope has its own notice (and blocks the send). */}
@@ -973,9 +1117,15 @@ export default function ChatPage() {
           )}
         </form>
       </div>
-      <aside className="hidden w-72 shrink-0 lg:block" aria-label="Session skills">
-        <LoadedSkillsPanel sessionId={session?.id ?? null} projectId={session?.projectId ?? null} />
-      </aside>
+      {/* #2350 — a developer control: an analyst sees it under Advanced. */}
+      {showControls ? (
+        <aside className="hidden w-72 shrink-0 lg:block" aria-label="Session skills">
+          <LoadedSkillsPanel
+            sessionId={session?.id ?? null}
+            projectId={session?.projectId ?? null}
+          />
+        </aside>
+      ) : null}
     </div>
   );
 }

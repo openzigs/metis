@@ -923,8 +923,8 @@ Open the user menu in the top-right of the header and click **Sign out**. The au
 
 After logging in you land on the **Dashboard** inside the persistent app shell:
 
-- **Sidebar** (left, 16 rem) — seven destinations, one level deep: **Home** (the dashboard), **Projects**, **Chat**, **Activity**, **Reviews**, **Library** and **Settings**. Each one opens a row of page tabs above the content for the pages it groups: **Projects** → All projects, Products, Documents, Repositories, Databases, Impact analyses (the cross-project views, all in one place); **Chat** → Chat, Workbench (the same chat sessions, in a project-scoped layout); **Activity** → Tasks, Runs, Sessions, Scheduler; **Settings** → Settings, Vault, Eval. **Reviews** shows how many reviews are waiting on your decision: in review, with you as a reviewer who has not yet decided. A review you have decided leaves the count even while other reviewers have not, and Home's "Reviews assigned to me" counts the same reviews. The number updates when you are assigned one, and when a review you are a reviewer of is decided, withdrawn or closed, whichever page you are on; a screen reader announces each change, and no number shows when none are waiting or the count cannot be read. [#2332, #2370]
-- **What a non-admin sees** — the operations and developer pages are for system admins: **Tasks**, **Runs**, **Scheduler**, **Vault** and **Eval**, and the Settings sections **Configuration**, **MCP servers**, **ACP tokens**, **Hooks** and **Triggers**. Anyone else does not see them in the sidebar, the tab bars, the Settings pages or the command palette, and **Activity** opens on **Sessions**. A hub left with one page shows no tab bar. Opening one of those pages from an old link says *You don't have access to this page*, with a **Back to dashboard** button. A single run's page (`/runs/<id>`), linked from a project's PR reviews, still opens; its header names **Runs** in the breadcrumb without linking to it and offers no **All runs** link. [#2332, #2370] The sidebar entry stays highlighted on every page it groups, announced via `aria-current="page"`. Every page kept its address, so bookmarks and shared links still work; the command palette (⌘K / Ctrl+K) searches all of them by name. On viewports smaller than 768 px the sidebar collapses into a slide-in drawer; tap the menu button in the header to open it. [#27]
+- **Sidebar** (left, 16 rem) — seven destinations, one level deep: **Home** (the dashboard), **Projects**, **Chat**, **Activity**, **Reviews**, **Library** and **Settings**. Each one opens a row of page tabs above the content for the pages it groups: **Projects** → All projects, Products, Documents, Repositories, Databases, Impact analyses (the cross-project views, all in one place); **Chat** → Chat, Workbench (the same chat sessions, in a project-scoped layout; an administrator's tab, #2350); **Activity** → Tasks, Runs, Scheduler; **Settings** → Settings, Vault, Eval. **Reviews** shows how many reviews are waiting on your decision: in review, with you as a reviewer who has not yet decided. A review you have decided leaves the count even while other reviewers have not, and Home's "Reviews assigned to me" counts the same reviews. The number updates when you are assigned one, and when a review you are a reviewer of is decided, withdrawn or closed, whichever page you are on; a screen reader announces each change, and no number shows when none are waiting or the count cannot be read. [#2332, #2370]
+- **What a non-admin sees** — the operations and developer pages are for system admins: **Tasks**, **Runs**, **Scheduler**, **Vault** and **Eval**, and the Settings sections **Configuration**, **MCP servers**, **ACP tokens**, **Hooks** and **Triggers**. Anyone else does not see them in the sidebar, the tab bars, the Settings pages or the command palette, and has no **Activity** entry: its last page for them, **Sessions**, is now the conversation list on **Chat**, and `/sessions` opens Chat (#2350). The **Workbench** is an administrator's tab too: anyone else sees **Chat** as a single page, though a Library template's **Run** still opens the Workbench for them. A hub left with one page shows no tab bar. Opening one of those pages from an old link says *You don't have access to this page*, with a **Back to dashboard** button. A single run's page (`/runs/<id>`), linked from a project's PR reviews, still opens; its header names **Runs** in the breadcrumb without linking to it and offers no **All runs** link. [#2332, #2370] The sidebar entry stays highlighted on every page it groups, announced via `aria-current="page"`. Every page kept its address, so bookmarks and shared links still work; the command palette (⌘K / Ctrl+K) searches all of them by name. On viewports smaller than 768 px the sidebar collapses into a slide-in drawer; tap the menu button in the header to open it. [#27]
 - **Header** (top, sticky) — a **Workspace › Project breadcrumb** on the left (each crumb opens a switcher menu; degrades to workspace-only when no project is selected). The workspace menu's **Open workspace** opens the active workspace's own pages: **Overview**, **Traceability**, **Governing documents** (while that feature is on), **Usage & cost** and **New Agent**, as tabs under a line naming the workspace and a **Back to** link to the project you were in. [#2339] On the right, the **activity indicator**, theme toggle (light / dark / system), the **notifications bell** (with an unread-count badge), and the user menu.
 - **Activity indicator** — a small **"N jobs running"** control that appears in the header **only while something is actually running**, and disappears automatically when everything finishes. It reflects *any* long-running operation — documentation generation, analysis, PR reviews, imports/syncs, and more — not just one kind. Click it to open a drawer that lists each in-progress job with its type, project, and live progress bar. The count and announcements are accessible to screen readers (announced politely as jobs start and complete). For documentation specifically, you no longer have to open a document to watch it build: a doc that is generating now shows a live progress bar and an "N of M sections" counter **directly on its card in the documentation list**, and clicking **Generate Documentation** takes you straight to the new document's live progress (with a "View progress" toast) instead of leaving you on a static badge. [Epic #406] The **Import Requirements** page (`Projects › Import`) likewise streams live progress: after you click **Import** or **Run now** on a saved source, the page shows a live progress bar with the current step ("Fetched 5/10 issues") for the active run instead of going silent, and a toast announces the result when the run finishes ("Imported 5 new, 2 updated" on success, or a generic "The import sync failed. Please try again." on failure — raw error detail is never shown). The import history below still refreshes on its own as a fallback if the live connection drops, and the ongoing-sync toggle, interval, and **Run now** controls are unchanged. [Epic #406, #424]
 - **Consistent completion feedback** — every long-running operation now ends with a clear **success or failure toast**, and you get it **even when you are not on the operation's detail page**. Previously, if you started documentation generation or an analysis and then navigated to a list view (or simply looked away), a *failure* was recorded silently on the row but never announced — you had to notice the badge had changed. Now a single app-wide layer watches the realtime job bus and shows the terminal result wherever you are: a green toast on success (carrying the operation's own message, e.g. the Spec Kit "Generated spec.md (v3) … grounded on N retrieved chunks" line) and a red toast on failure with a **generic, non-revealing message** ("The … operation failed. Please try again.") — raw error detail and stack traces are never shown. Each operation toasts **exactly once**: the surfaces that already announce their own outcome (PR re-review, embeddings reindex, import/sync, Spec Kit, overview regenerate) are reconciled with this global layer so you never see a duplicate. [Epic #406, #425]
@@ -970,7 +970,7 @@ Below My work everyone sees **Projects** and **Recent activity**; admins also ke
 - **Active analyses & tasks** (admins) — anything currently running, refreshed every 15 seconds.
 - **Active runs** (admins) — queued, running and paused background runs, with Cancel, Pause and Resume.
 - **Scheduled jobs** (admins) — upcoming and recently fired cron jobs. Open the **Scheduler** surface to add one.
-- **Recent activity** — your own recent chat sessions and analyses, drawn from a per-browser `localStorage` log capped at 10 entries per kind. A chat session is listed only while **Activity → Sessions** lists it (your own sessions that can still be resumed), under the title it has there. [#2187]
+- **Recent activity** — your own recent chat sessions and analyses, drawn from a per-browser `localStorage` log capped at 10 entries per kind. A chat session is listed only while it can still be resumed (your own sessions, inside the resume window), under the title it has in Chat's conversation list. [#2187, #2350]
 
 Each widget shows a skeleton while loading, an actionable empty state with a deep link, and a compact list when populated.
 
@@ -980,7 +980,7 @@ Each widget shows a skeleton while loading, an actionable empty state with a dee
 
 The Workbench is your hands-on artifact editor. The right rail's **Recent** panel mirrors your most recently touched chat sessions and analyses for quick re-entry. Recent entries are stored client-side and validated against a same-origin allow-list — links are only honoured when they begin with a single `/`, so a poisoned `localStorage` value can never redirect you to an external URL.
 
-A Workbench chat session is opened by your first message, not by opening the page, and it is added to **Recent** only once the server has accepted that message. A message the server refuses (for example a read-only session or an exhausted project budget) adds nothing; one it accepted is added even if you switch project, press Stop, or lose the connection before the answer starts. Chat follows the same rule. Switching project or agent while the first message is still opening a session cancels it. Older builds opened an empty "Workbench" session on every page load; those entries need no cleanup. **Recent** keeps the 10 newest sessions per browser, so newer sessions push the old entries out. A session is listed under its saved title, and only while **Activity → Sessions** lists it too: a session past the resume window (24 hours by default) or one that belongs to someone else who signed in on the same browser drops out of **Recent**. While METIS is checking, or if the check fails, **Recent** shows analyses only; a session you started since the last check is shown straight away. [#2187] A Workbench session is titled from the first question you send (a session you open from the skills panel before asking anything keeps the title "Workbench"). The Workbench opens on the project active in the top bar, and says so when it asks the model again after a dropped connection. [#1139] The empty sessions themselves never appear under **Activity → Sessions**, because that list shows only sessions whose conversation snapshot has been written, which happens when a turn is stored. [#361, #390, #422]
+A Workbench chat session is opened by your first message, not by opening the page, and it is added to **Recent** only once the server has accepted that message. A message the server refuses (for example a read-only session or an exhausted project budget) adds nothing; one it accepted is added even if you switch project, press Stop, or lose the connection before the answer starts. Chat follows the same rule. Switching project or agent while the first message is still opening a session cancels it. Older builds opened an empty "Workbench" session on every page load; those entries need no cleanup. **Recent** keeps the 10 newest sessions per browser, so newer sessions push the old entries out. A session is listed under its saved title, and only while it can still be resumed: a session past the resume window (24 hours by default) or one that belongs to someone else who signed in on the same browser drops out of **Recent**. While METIS is checking, or if the check fails, **Recent** shows analyses only; a session you started since the last check is shown straight away. [#2187] A Workbench session is titled from the first question you send (a session you open from the skills panel before asking anything keeps the title "Workbench"). The Workbench opens on the project active in the top bar, and says so when it asks the model again after a dropped connection. [#1139] The empty sessions themselves never appear in **Recent**, because it lists only sessions whose conversation snapshot has been written, which happens when a turn is stored. [#361, #390, #422]
 
 **Context attachments.** Documents you attach to the Workbench chat (the chips above the conversation) limit that question's search to those documents: the excerpts the model is given come only from them, and it is told so. Your question is sent as you typed it. Before this, the attachments' file names were pasted above the question and searched for as words. With no attachments, the whole project is searched as before. You can attach up to 50 documents to a question; past that the Workbench says so and does not add the chip. [#2240]
 
@@ -3429,6 +3429,45 @@ starts.
 
 The AI responds in a chat-bubble format — your messages appear on the right in blue, and the AI's responses appear on the left in gray. While the AI is thinking, you'll see three bouncing dots (a typing indicator).
 
+### 14.1a Ask about this, your conversations, and Advanced [#2350]
+
+**Ask about this.** A project's **Overview**, a change request's page and each
+requirement card on it carry an **Ask about this** button. It opens Chat
+already scoped to the project that holds the item, with a line saying what the
+chat is about ("Asking about the change request “Checkout v2” in Alpha") and,
+for a change request or a requirement, a question about it in the message box
+for you to edit or send. The scope pill shows the project; change it there like
+any other chat, and the "Asking about" line goes away. Chat asks the server what
+the item is, and the server answers only for an item you can open: a link to a
+change request or requirement you cannot read (deleted, or in a project you are
+not a member of) says *You can't ask about that item* and scopes nothing. If
+the item could not be loaded at all (a busy server or a dropped connection),
+chat says so and offers **Try again** instead. A chat opened this way is a new
+chat, not the one you last had open.
+
+The chat stays about the item for the whole conversation: each question you
+send tells the assistant which item it is, so it still knows if you rewrite
+the suggested question. After your first message the address bar names the
+conversation, so reloading the page brings it back rather than starting over.
+
+**Your conversations.** The Chat page lists your past conversations on the
+left, newest first: each with its title, what it searches (a project's name,
+several projects, every project of a workspace, or all projects) and when it
+was last used. Click one to resume it; the one on screen is highlighted, and
+**Show more** loads older ones. Only your own conversations are listed, in
+projects you can still open. This list replaces **Activity → Sessions**:
+`/sessions` now opens Chat.
+
+**Advanced.** The agent picker, the *provider · model* line and the **Session
+skills** panel are for people who tune the assistant. Unless you are an
+administrator they sit behind an **Advanced** switch in the Chat header, off
+until you turn it on; METIS remembers your choice in this browser, per user.
+With it off, a new chat runs on the project's own settings (the default agent
+and the project's model), and the header says who answers in plain words, such
+as "Answering: the METIS assistant, with this project's settings". Turning it
+off while an agent is picked puts the next chat back on the default agent.
+Administrators see the controls as before, with no switch.
+
 ### 14.2 What the AI Can Help With
 
 You can ask the AI about anything related to your projects:
@@ -3746,7 +3785,7 @@ Both fields persist on the `Project` row and are read at session-create time. Th
 
 - **The server keeps the conversation.** Each message you send is stored with
   the session; the browser sends only your new message. Reloading the page, or
-  opening the chat from **Sessions → Resume**, shows the conversation exactly as
+  opening the chat from **Your conversations** on the Chat page, shows the conversation exactly as
   the server recorded it — including a reply that was cut off (marked
   *Incomplete answer*).
 - **Long conversations are summarised, not trimmed.** When a conversation
@@ -3793,7 +3832,7 @@ Chat answers from your projects' knowledge bases when the chat is scoped to **on
 2. Click it: the same picker as impact analysis and the portfolio check, with the same three options [#2351]. Pick **This project** (the project active in the top bar), **Whole workspace** (every project of the workspace shown in the top bar, with how many that is), or tick one or more projects under **Chosen products**. Untick them all for an unscoped chat (**No product chosen**). Tick several projects to ask one question about all of them — for example "what does this FRD change in A and B?". Escape closes the picker.
 3. Your choice is remembered in your browser. Chat opens on the project active in the top bar; a remembered selection of several projects that includes it, or the top bar's workspace, is kept. If you have never picked one, chat starts scoped to the active project, or to **No product chosen** if you have none.
 
-A new scope starts a new chat on your next message; the conversation you had open stays in Sessions.
+A new scope starts a new chat on your next message; the conversation you had open stays in **Your conversations**.
 
 Opening Chat from a project (`/chat?projectId=…`) scopes it to that project.
 

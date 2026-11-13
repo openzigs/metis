@@ -314,6 +314,20 @@ describe("AnalysisPage — screen-reader affordances (#58)", () => {
     await waitForRequirement();
     expect(screen.getByRole("button", { name: "Comments for Login screen" })).toBeInTheDocument();
   });
+
+  // #2350 — chat about the change request, and about each requirement, opened
+  // already scoped to them.
+  it("offers Ask about this on the change request and on each requirement card", async () => {
+    renderPage();
+    await waitForRequirement();
+    expect(
+      screen.getByRole("link", { name: "Ask about this change request in chat" }),
+    ).toHaveAttribute("href", "/chat?about=change-request%3Aan-1");
+    expect(screen.getByRole("link", { name: "Ask about Login screen in chat" })).toHaveAttribute(
+      "href",
+      "/chat?about=requirement%3Areq-1",
+    );
+  });
 });
 
 describe("AnalysisPage collaboration (Epic #34)", () => {

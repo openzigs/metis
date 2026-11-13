@@ -56,6 +56,7 @@ const invocations: Record<keyof typeof sdkApi, () => unknown> = {
   enableSkill: () => sdkApi.enableSkill("p1", "slug"),
   // Sessions / plan / model
   listResumable: () => sdkApi.listResumable(),
+  listSessions: () => sdkApi.listSessions(20),
   resumeSession: () => sdkApi.resumeSession("s1"),
   switchModel: () => sdkApi.switchModel("s1", { model: "m" }),
   getPlan: () => sdkApi.getPlan("s1"),

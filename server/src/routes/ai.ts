@@ -19,6 +19,8 @@
 import { Router, type Request, type Response } from "express";
 import { z } from "zod";
 import {
+  CHAT_SUBJECT_ID_MAX,
+  CHAT_SUBJECT_KINDS,
   MAX_ATTACHED_DOCUMENTS,
   patchSchemaOf,
   sessionRoom,
@@ -212,6 +214,7 @@ import {
   type ChatSearchScope,
 } from "../lib/ai/multi-project-rag.js";
 import { parseScopeProjectIds } from "../lib/ai/chat-search-scope.js";
+import { chatSubjectContextBlock } from "../lib/ai/chat-subject.js";
 import { assertSecretUsable, canUseSecret } from "../lib/vault/secret-access.js";
 import { resolveDurableRole } from "../lib/auth/durable-roles.js";
 import { getSubAgentRun } from "../lib/agent-runtime/subagents.js";
@@ -442,11 +445,40 @@ const chatBodySchema = z.object({
    * project matches nothing, as the search is scoped to that project.
    */
   documentIds: z.array(z.string().min(1).max(120)).max(MAX_ATTACHED_DOCUMENTS).optional(),
+  /**
+   * #2350 (PR #2428 review) — the item an "Ask about this" chat is about, sent
+   * with every turn. The server re-checks access and tells the model what the
+   * item is (`chatSubjectContextBlock`); an item the caller cannot read, or one
+   * outside the session's projects, is dropped.
+   */
+  subject: z
+    .object({
+      kind: z.enum(CHAT_SUBJECT_KINDS),
+      id: z.string().min(1).max(CHAT_SUBJECT_ID_MAX),
+    })
+    .optional(),
 });
 
 type ChatBody = z.infer<typeof chatBodySchema>;
 
 export const CLIENT_HISTORY_REJECTED = "CLIENT_HISTORY_REJECTED";
+
+/**
+ * The per-turn context placed just before the user's message: what retrieval
+ * found (system), then what an "Ask about this" chat is about (#2350). The item
+ * block carries analyst-editable text (a requirement's body), so — the #2226
+ * rule (`discussions/thread-context.ts`) — it goes in as a USER turn, never a
+ * system one; `joinAdjacentUserMessages` folds it into the question's turn.
+ */
+export function turnContextMessages(
+  subjectBlock: string | null,
+  ragContext: string | null | undefined,
+): ChatMessage[] {
+  const out: ChatMessage[] = [];
+  if (ragContext) out.push({ role: "system", content: ragContext });
+  if (subjectBlock) out.push({ role: "user", content: subjectBlock });
+  return out;
+}
 
 /** #1139 — the `retry` frame's note: a dropped model stream is being asked again. */
 export const STREAM_RETRY_MESSAGE =
@@ -2051,6 +2083,8 @@ export function aiRouter(): Router {
             ragCapture,
             parsed.data.documentIds,
           );
+      // #2350 — what an "Ask about this" chat is about, access re-checked.
+      const subjectBlock = await chatSubjectContextBlock(req.user!, session, parsed.data.subject);
       // #18 — what this reply is grounded in, recorded on the reply row. #439 —
       // what the code tools read of the project is folded in after the loop.
       let grounding = multi
@@ -2066,7 +2100,7 @@ export function aiRouter(): Router {
         session,
         userText,
         prefix,
-        beforeUser: ragContext ? [{ role: "system", content: ragContext }] : [],
+        beforeUser: turnContextMessages(subjectBlock, ragContext),
         provider: providerInstance.key,
         model,
         summarizer: providerSummarizer(providerInstance, {
@@ -2510,6 +2544,9 @@ export function aiRouter(): Router {
           ragCapture,
           parsed.data.documentIds,
         );
+    // #2350 — what an "Ask about this" chat is about, access re-checked
+    // before the SSE stream opens.
+    const subjectBlock = await chatSubjectContextBlock(req.user!, session, parsed.data.subject);
     // #18 — what this reply is grounded in: streamed before the answer and
     // recorded on the reply row, so the client can say so live and on reload.
     // #439 — re-sent after the tool loop when the tools read the project.
@@ -2807,7 +2844,7 @@ export function aiRouter(): Router {
         session,
         userText,
         prefix,
-        beforeUser: ragContext ? [{ role: "system", content: ragContext }] : [],
+        beforeUser: turnContextMessages(subjectBlock, ragContext),
         provider: streamProvider.key,
         model,
         summarizer: providerSummarizer(streamProvider, {

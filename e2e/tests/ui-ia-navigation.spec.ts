@@ -131,7 +131,6 @@ test.describe("UI IA — navigation & layout (#133)", () => {
       ["/impact-analyses", "Projects", "Impact analyses"],
       ["/workbench", "Chat", "Workbench"],
       ["/runs", "Activity", "Runs"],
-      ["/sessions", "Activity", "Sessions"],
       ["/scheduler", "Activity", "Scheduler"],
       ["/vault", "Settings", "Vault"],
       // #31 — Admin is part of Settings, not a tab of its own.
@@ -145,6 +144,15 @@ test.describe("UI IA — navigation & layout (#133)", () => {
         await expect(shell.hubTab(entry, tab)).toHaveAttribute("aria-current", "page");
       });
     }
+
+    // #2350 — /sessions still resolves from old links, as chat's history list.
+    await test.step("/sessions", async () => {
+      await page.goto("/sessions", { waitUntil: "load" });
+      await expect(page).toHaveURL(/\/chat$/);
+      await shell.expectLoaded();
+      await expect(shell.hubTab("Chat", "Chat")).toHaveAttribute("aria-current", "page");
+      await expect(page.getByRole("navigation", { name: "Your conversations" })).toBeVisible();
+    });
 
     // #2332 — /reviews still resolves from old links, now as its own entry.
     await test.step("/reviews", async () => {
@@ -333,16 +341,20 @@ test.describe("#2332 — a non-admin analyst's navigation", () => {
     await page.goto("/dashboard", { waitUntil: "load" });
     await shell.expectLoaded();
 
+    // #2350 — Sessions, the last Activity page an analyst kept, is chat's
+    // history list, so an analyst has no Activity entry.
     const sections = shell.sidebar.getByRole("navigation", { name: "Sections" });
-    await expect(sections.getByRole("link")).toHaveCount(SIDEBAR_ENTRIES.length);
+    await expect(sections.getByRole("link")).toHaveCount(SIDEBAR_ENTRIES.length - 1);
+    await expect(sections.getByRole("link", { name: "Activity", exact: true })).toHaveCount(0);
     for (const [path] of HIDDEN_PAGES) {
       await expect(shell.sidebar.locator(`a[href="${path}"]`)).toHaveCount(0);
     }
 
-    await test.step("Activity lands on Sessions, with no one-tab bar", async () => {
-      await shell.navLink("Activity").click();
-      await expect(page).toHaveURL(/\/sessions$/);
-      await expect(shell.hubTabs("Activity")).toHaveCount(0);
+    await test.step("Chat lands on Chat, with no Workbench tab and no one-tab bar", async () => {
+      await shell.navLink("Chat").click();
+      await expect(page).toHaveURL(/\/chat$/);
+      await expect(shell.hubTabs("Chat")).toHaveCount(0);
+      await expect(page.getByRole("navigation", { name: "Your conversations" })).toBeVisible();
     });
 
     await test.step("Settings lists no developer section, with no one-tab bar", async () => {

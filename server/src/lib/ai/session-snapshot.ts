@@ -11,6 +11,7 @@
 import { prisma } from "../prisma.js";
 import type { AuthPayload, ResumableSessionDto, SdkReasoningEffort } from "@metis/shared";
 import { workspaceScopeWhere } from "../auth/project-scope.js";
+import { parseScopeProjectIds } from "./chat-search-scope.js";
 
 const RESUMABLE_TTL_HOURS = Number(process.env.SESSION_RESUME_TTL_HOURS ?? 24);
 
@@ -25,6 +26,8 @@ interface SessionListRow {
   status: string;
   snapshotUpdatedAt: Date | null;
   updatedAt: Date;
+  scopeProjectIds?: string | null;
+  scopeWorkspaceId?: string | null;
   project?: { name: string } | null;
 }
 
@@ -44,6 +47,10 @@ function toListDto(r: SessionListRow): ResumableSessionDto {
     status: r.status,
     snapshotUpdatedAt: r.snapshotUpdatedAt ? r.snapshotUpdatedAt.toISOString() : null,
     updatedAt: r.updatedAt.toISOString(),
+    // #2350 — what a multi-product or workspace chat searches, so the chat
+    // history can name its scope instead of reading "No project".
+    scopeProjectIds: parseScopeProjectIds(r.scopeProjectIds),
+    scopeWorkspaceId: r.scopeWorkspaceId ?? null,
   };
 }
 

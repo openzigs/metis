@@ -20,6 +20,7 @@ import { ProjectPipelineOverview } from "@/components/projects/pipeline-overview
 import { KNOWLEDGE_SEARCH_ANCHOR } from "@/lib/project-pipeline";
 import { KnowledgeSearchHit } from "@/components/projects/knowledge-search-hit";
 import { PageHeader } from "@/components/ui/page-header";
+import { AskAboutThis } from "@/components/chat/ask-about-this";
 
 export default function ProjectDetailPage() {
   const params = useParams<{ id: string }>();
@@ -68,6 +69,8 @@ export default function ProjectDetailPage() {
             <code>{p.slug}</code> · {p.status}
           </>
         }
+        // #2350 — chat about this project, already scoped to it.
+        actions={<AskAboutThis kind="project" id={id} />}
       >
         {p.description ? <p className="mt-2 max-w-prose">{p.description}</p> : null}
       </PageHeader>

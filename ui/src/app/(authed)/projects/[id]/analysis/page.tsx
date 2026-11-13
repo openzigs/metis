@@ -153,6 +153,7 @@ import {
 } from "@/components/requirements/MergeConflictModal";
 import { requirementUpdateApi, assignmentApi } from "@/lib/collaboration-api";
 import { AlertCircle, MessageSquare } from "lucide-react";
+import { AskAboutThis } from "@/components/chat/ask-about-this";
 import { HoverHint } from "@/components/spec-kit/hover-hint";
 import { PageHeader } from "@/components/ui/page-header";
 import { TabsContent } from "@/components/ui/tabs";
@@ -1186,15 +1187,19 @@ export default function AnalysisPage(): React.ReactElement {
                     <span data-testid="analysis-run-spend">{runSpendLabel(detail.data)}</span>
                   </p>
                 </div>
-                {detail.data.status === "running" || detail.data.status === "pending" ? (
-                  <Button
-                    variant="outline"
-                    onClick={() => cancel.mutate()}
-                    disabled={cancel.isPending}
-                  >
-                    Cancel
-                  </Button>
-                ) : null}
+                <div className="flex items-center gap-2">
+                  {/* #2350 — chat about this change request, scoped to its project. */}
+                  <AskAboutThis kind="change-request" id={detail.data.id} />
+                  {detail.data.status === "running" || detail.data.status === "pending" ? (
+                    <Button
+                      variant="outline"
+                      onClick={() => cancel.mutate()}
+                      disabled={cancel.isPending}
+                    >
+                      Cancel
+                    </Button>
+                  ) : null}
+                </div>
               </div>
 
               {/* #2341 — the change request: its name, what it was started from,
@@ -1511,6 +1516,8 @@ export default function AnalysisPage(): React.ReactElement {
                                 <MessageSquare className="mr-1 h-3.5 w-3.5" aria-hidden />
                                 Comments
                               </Button>
+                              {/* #2350 — chat about this requirement, scoped to its project. */}
+                              <AskAboutThis kind="requirement" id={req.id} title={req.title} />
                               <Button
                                 size="sm"
                                 variant={historyReqId === req.id ? "default" : "outline"}

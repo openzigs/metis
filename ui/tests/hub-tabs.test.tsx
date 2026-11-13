@@ -66,21 +66,32 @@ describe("<HubTabs /> (#27)", () => {
     expect(screen.queryByRole("link", { name: "Eval" })).not.toBeInTheDocument();
   });
 
-  // #2332 — Activity keeps only Sessions for a non-admin: no one-tab bar.
-  it("renders no tab bar for a non-admin in Activity", () => {
-    renderAt("/sessions", "reader");
+  // #2350 — Chat keeps one page for a non-admin (the Workbench is an admin's
+  // tab), so it has no tab bar; an admin still has Chat and Workbench.
+  it("renders no tab bar for a non-admin in Chat", () => {
+    renderAt("/chat", "reader");
     expect(screen.queryByTestId("hub-tabs")).not.toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "Tasks" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Workbench" })).not.toBeInTheDocument();
   });
 
-  it("shows an admin the Activity tabs in their order, without Reviews (#2332)", () => {
-    renderAt("/sessions", "admin");
+  it("shows an admin Chat and Workbench (#2350)", () => {
+    renderAt("/chat", "admin");
+    const nav = screen.getByRole("navigation", { name: "Chat pages" });
+    expect(
+      within(nav)
+        .getAllByRole("link")
+        .map((l) => l.textContent),
+    ).toEqual(["Chat", "Workbench"]);
+  });
+
+  it("shows an admin the Activity tabs in their order, without Reviews or Sessions", () => {
+    renderAt("/scheduler", "admin");
     const nav = screen.getByRole("navigation", { name: "Activity pages" });
     expect(
       within(nav)
         .getAllByRole("link")
         .map((l) => l.textContent),
-    ).toEqual(["Tasks", "Runs", "Sessions", "Scheduler"]);
+    ).toEqual(["Tasks", "Runs", "Scheduler"]);
   });
 
   it("shows an admin the Settings tabs", () => {

@@ -13,6 +13,7 @@ import {
   type AiToolEvent,
   type ChatCitation,
   type ChatGrounding,
+  type ChatSubjectRef,
   type CompactionEventDto,
   type ForkSessionResponse,
   type ResumeSessionResponse,
@@ -669,6 +670,11 @@ export async function* streamChat(
   onAccepted?: () => void,
   /** #2240 — documents attached to this question: the server searches only these. */
   documentIds?: readonly string[],
+  /**
+   * #2350 — the item an "Ask about this" chat is about. The server re-checks
+   * access and tells the model what it is, whatever the question says.
+   */
+  subject?: ChatSubjectRef,
 ): AsyncGenerator<StreamEvent> {
   // #136 — only the new user message goes up; the server owns the history.
   const res = await streamFetch("/ai/stream", {
@@ -677,6 +683,7 @@ export async function* streamChat(
     body: JSON.stringify({
       sessionId,
       message,
+      ...(subject ? { subject: { kind: subject.kind, id: subject.id } } : {}),
       // #2240 — never more than the server accepts: a longer list would get
       // the whole question refused.
       ...(documentIds && documentIds.length > 0

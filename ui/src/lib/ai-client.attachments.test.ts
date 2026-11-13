@@ -60,6 +60,28 @@ describe("streamChat attachments (#2240)", () => {
     expect(body.documentIds).toEqual(many.slice(0, MAX_ATTACHED_DOCUMENTS));
   });
 
+  // #2350 (PR #2428 review) — the item an "Ask about this" chat is about: its
+  // kind and id only; the server looks up everything else for the caller.
+  it("sends the chat's item as kind and id only", async () => {
+    respond();
+    const subject = {
+      kind: "requirement" as const,
+      id: "r1",
+      projectId: "p1",
+      projectName: "Alpha",
+      title: "Pay by card",
+      changeRequestTitle: "Checkout v2",
+    };
+    for await (const _ of streamChat("s1", "q", undefined, 0, undefined, undefined, subject)) {
+      // drain
+    }
+    expect(JSON.parse((streamFetch.mock.calls[0]![1] as { body: string }).body)).toEqual({
+      sessionId: "s1",
+      message: "q",
+      subject: { kind: "requirement", id: "r1" },
+    });
+  });
+
   it("sends no documentIds when nothing is attached", async () => {
     expect(await sentBody([])).toEqual({ sessionId: "s1", message: "the question" });
     streamFetch.mockReset();

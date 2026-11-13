@@ -45,6 +45,12 @@ export interface NavTab {
    * reviews link to `/runs/<id>`).
    */
   openBelow?: boolean;
+  /**
+   * With `adminOnly`, hide the tab (and its palette entry) from non-admins
+   * without refusing them the page, because other flows still send a non-admin
+   * there (a Library template's Run opens the Workbench, #2350).
+   */
+  openByUrl?: boolean;
 }
 
 /** A top-level sidebar destination. */
@@ -82,22 +88,22 @@ export const NAV_ITEMS: readonly NavItem[] = [
     href: "/chat",
     label: "Chat",
     icon: MessageSquare,
+    // #2350 — the Workbench is an admin's tab; an analyst's Chat is one page.
     tabs: [
       { href: "/chat", label: "Chat" },
-      { href: "/workbench", label: "Workbench" },
+      { href: "/workbench", label: "Workbench", adminOnly: true, openByUrl: true },
     ],
   },
   {
     href: "/tasks",
     label: "Activity",
     icon: Activity,
-    // #2332 — operations pages, for admins. Sessions stays open to everyone
-    // until #2350 folds it into chat history, so a non-admin's Activity entry
-    // lands there.
+    // #2332 — operations pages, for admins: a non-admin has no Activity entry.
+    // #2350 — Sessions is folded into chat's history list; `/sessions`
+    // redirects to `/chat` (lib/legacy-routes).
     tabs: [
       { href: "/tasks", label: "Tasks", adminOnly: true },
       { href: "/runs", label: "Runs", adminOnly: true, openBelow: true },
-      { href: "/sessions", label: "Sessions" },
       { href: "/scheduler", label: "Scheduler", adminOnly: true },
     ],
   },
@@ -215,7 +221,10 @@ export function visibleNavItems(
 /** #2332 — true if `pathname` is an admin-only hub page, which a non-admin is refused. */
 export function isAdminOnlyTabPath(pathname: string): boolean {
   return NAV_DESTINATIONS.some(
-    (t) => t.adminOnly === true && (t.openBelow ? pathname === t.href : isTabActive(pathname, t)),
+    (t) =>
+      t.adminOnly === true &&
+      !t.openByUrl &&
+      (t.openBelow ? pathname === t.href : isTabActive(pathname, t)),
   );
 }
 

@@ -95,7 +95,7 @@ describe("<AppShell />", () => {
   });
 
   it("renders the hub page tabs above the page inside <main> (#27)", () => {
-    vi.mocked(usePathname).mockReturnValue("/sessions");
+    vi.mocked(usePathname).mockReturnValue("/scheduler");
     render(
       <AppShell>
         <p data-testid="content">hello</p>
@@ -104,7 +104,7 @@ describe("<AppShell />", () => {
     );
     const tabs = screen.getByRole("navigation", { name: "Activity pages" });
     expect(screen.getByRole("main")).toContainElement(tabs);
-    expect(screen.getByRole("link", { name: "Sessions" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("link", { name: "Scheduler" })).toHaveAttribute("aria-current", "page");
   });
 
   it("owns the canonical page gutter on <main> (R2 #157 single source)", () => {
@@ -188,7 +188,8 @@ describe("<AppShell /> — admin-only pages (#2332)", () => {
     },
   );
 
-  it.each(["/sessions", "/reviews", "/runs/42", "/dashboard"])(
+  // #2350 — the Workbench tab is hidden from a non-admin, not refused.
+  it.each(["/chat", "/workbench", "/reviews", "/runs/42", "/dashboard"])(
     "renders %s for a non-admin",
     (path) => {
       renderAt(path, "developer");

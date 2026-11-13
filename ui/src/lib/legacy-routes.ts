@@ -29,6 +29,8 @@ const EXACT: Readonly<Record<string, string>> = {
   // tab lists its own connections. With no project named, the project list.
   "/repositories": "/projects",
   "/databases": "/projects",
+  // #2350 — Activity → Sessions is chat's history list.
+  "/sessions": "/chat",
 };
 
 /** #2353 — retired cross-project catalogues that a named project narrows to its Knowledge tab. */
