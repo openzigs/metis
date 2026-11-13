@@ -2048,19 +2048,26 @@ the requirements rejected, not as they were before the first round.
   wrote has no author, so whoever ran the analysis may approve it. Editing a requirement and
   approving it in one save is refused too. METIS says *"You wrote or edited this requirement, so
   someone else must approve it"*, and a colleague approves it instead. Rejecting is not limited.
+- **Approval checkpoint.** If you edit a requirement's wording in an analysis's approval
+  checkpoint and then approve it there, it is promoted **awaiting review**, not approved, and
+  METIS says so. A colleague approves it on the Requirements page; you cannot.
+- **Suggested acceptance criteria.** Accepting the criteria a re-synthesis suggested for an
+  approved requirement keeps it approved only if you may approve it yourself: you hold
+  `requirement.approve` and did not write it. Otherwise it goes back to awaiting review, and
+  METIS says so.
 - **Formal review.** You cannot name yourself as a reviewer of your own request, or record a
   decision on it.
 - **Allow self-approval.** A team of one can turn this off for a project: tick **Allow
   self-approval** on the **Approval gate** card of the project's **Publishing** page. Only review
   administrators (coordinator or admin) can change it, and it is **off by default**. With it on,
   someone holding `requirement.approve` may approve what they wrote, and may name themselves as
-  a reviewer of their own request and decide it. Each change of the setting is recorded in the
+  a reviewer of their own request (the reviewer search offers you) and decide it. Each change of the setting is recorded in the
   audit log (`project.selfApproval.update`, with the old and new value), and so is each
   approval it let through (`selfApproval: true`). Turning it off stops a self-review that is
   still waiting for a decision.
 
-**Working alone.** You cannot review your own request unless the project allows self-approval. When the reviewer search finds no one
-else, it says so (*"You can't review your own request; add a colleague who can open this
+**Working alone.** You cannot review your own request unless the project allows self-approval.
+When the reviewer search finds no one else, it says so (*"You can't review your own request; add a colleague who can open this
 project"*), and then what happens for your role. A coordinator or admin working alone approves
 the requirements directly, which is where they end, and can take a baseline from them with
 **New baseline** on the Baselines page. A developer can do neither, so the form says to add a
