@@ -35,6 +35,7 @@ import { prisma } from "../prisma.js";
 import {
   ATTRIBUTION_THRESHOLD,
   clarificationBlockEntries,
+  clarificationBlockQuestion,
   containmentScore,
   sanitizeClarificationText,
   significantTokens,
@@ -234,7 +235,8 @@ async function rowsCarrying(input: ClarificationRerunInput): Promise<CarryingRow
     .filter((r) => r.ambiguityField !== null)
     .map((r) => ({
       record: r,
-      question: sanitizeClarificationText(r.question),
+      // As the block writes it: an empty question is the placeholder there.
+      question: clarificationBlockQuestion(r.question),
       answer: sanitizeClarificationText(r.answer),
     }))
     .filter((w) => w.answer.length > 0);

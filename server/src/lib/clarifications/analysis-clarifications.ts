@@ -348,7 +348,9 @@ export async function rerunReusedClarifications(
     for (const r of reused) {
       const record = stored.get(r.recordId);
       if (!record) continue;
-      await addClarificationRequirements(input.projectId, record.id, [r.requirementId]);
+      await addClarificationRequirements(input.projectId, record.id, input.analysisId, [
+        r.requirementId,
+      ]);
       // As this analysis wrote it into the requirement body, for this
       // analysis's requirement only.
       records.push({

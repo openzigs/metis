@@ -720,15 +720,23 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(call.settled).toEqual(
         expect.arrayContaining([expect.objectContaining({ key: `record:${record!.id}` })]),
       );
-      // The record now applies to the requirement that reused it too.
+      // The record now applies to the requirement that reused it too, each id
+      // qualified by its analysis (#2310: `R-1` is local to an analysis).
+      const storedIds = async () =>
+        JSON.parse(
+          (await db.clarificationRecord.findUniqueOrThrow({ where: { id: record!.id } }))
+            .requirementIds,
+        ) as string[];
+      expect(await storedIds()).toEqual([`${A1}:R-1`, `${A2}:R-9`]);
+      // Read back, a record lists its own analysis's requirements only.
       const [stored] = await listRecords(PA);
-      expect(stored!.requirementIds).toEqual(["R-1", "R-9"]);
+      expect(stored!.requirementIds).toEqual(["R-1"]);
       // Re-running again adds nothing twice.
       await rerunReusedClarifications(
         { projectId: PA, analysisId: A2, provider, round: 2 },
         { rerun },
       );
-      expect((await listRecords(PA))[0]!.requirementIds).toEqual(["R-1", "R-9"]);
+      expect(await storedIds()).toEqual([`${A1}:R-1`, `${A2}:R-9`]);
 
       // Nothing reused this round, no dialog, or another project's record: nothing re-run.
       rerun.mockClear();

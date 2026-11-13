@@ -25,6 +25,7 @@ import {
 } from "./helpers/sqlite-migrated-db.js";
 
 const ANSWER = "Only EU invoices";
+const EARLIER = "CSV, one file per region";
 
 const state = vi.hoisted(() => {
   process.env.RATE_LIMIT_MAX = "100000";
@@ -321,16 +322,61 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(row.body).toContain(ANSWER);
     });
 
-    it("a submit and a CSV import record only the round they answered", async () => {
-      const first = await seedAnalysis(OPEN_ROUND);
-      await clarify(first, { answers: [{ questionId: "q-1", answer: ANSWER }] });
-      await vi.waitFor(async () => expect(await records()).toHaveLength(1));
-      expect(clarifications.persistClarificationKnowledge).toHaveBeenLastCalledWith(
-        expect.objectContaining({ analysisId: first, rounds: [1] }),
+    /** Round 1 answered (an earlier question), round 2 open. */
+    const SECOND_ROUND_OPEN = (analysisId: string) => {
+      const open = JSON.parse(OPEN_ROUND(analysisId)) as {
+        currentRound: number;
+        rounds: Array<{ round: number; questions: object[]; answers: object[] }>;
+      };
+      const earlier = {
+        round: 1,
+        questions: [
+          {
+            id: "q-0",
+            requirementId: "REQ-1",
+            ambiguityField: "format",
+            question: "Which file format is the export?",
+            context: "",
+            groundingStatus: "open",
+            citation: CITATION,
+          },
+        ],
+        answers: [{ questionId: "q-0", answer: EARLIER }],
+      };
+      return JSON.stringify({
+        ...open,
+        currentRound: 2,
+        rounds: [earlier, { ...open.rounds[0]!, round: 2 }],
+      });
+    };
+    /** Only the answered round's question is a record; round 1's is not re-recorded. */
+    const expectOnlyRoundTwoRecorded = async (analysisId: string) => {
+      expect(clarifications.persistClarificationKnowledge).toHaveBeenCalledWith(
+        expect.objectContaining({ analysisId, rounds: [2] }),
       );
-      const second = await seedAnalysis(OPEN_ROUND);
-      await request(app())
-        .post(`${base(second)}/clarify/import`)
+      // The router's write runs off the response's path: wait for it to settle.
+      await vi.waitFor(() =>
+        expect(vi.mocked(clarifications.persistClarificationKnowledge).mock.results[0]).toEqual(
+          expect.objectContaining({ type: "return" }),
+        ),
+      );
+      await vi.mocked(clarifications.persistClarificationKnowledge).mock.results[0]!.value;
+      const rows = await records();
+      expect(rows.map((r) => r.answer)).toEqual([ANSWER]);
+      expect(rows[0]).toMatchObject({ analysisId, ambiguityField: "scope" });
+    };
+
+    it("a submit records only the round it answered", async () => {
+      const id = await seedAnalysis(SECOND_ROUND_OPEN);
+      const res = await clarify(id, { answers: [{ questionId: "q-1", answer: ANSWER }] });
+      expect(res.status).toBe(200);
+      await expectOnlyRoundTwoRecorded(id);
+    });
+
+    it("a CSV import records only the round it answered", async () => {
+      const id = await seedAnalysis(SECOND_ROUND_OPEN);
+      const res = await request(app())
+        .post(`${base(id)}/clarify/import`)
         .set("Authorization", `Bearer ${token()}`)
         .attach(
           "file",
@@ -340,11 +386,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           ),
           "answers.csv",
         );
-      await vi.waitFor(() =>
-        expect(clarifications.persistClarificationKnowledge).toHaveBeenLastCalledWith(
-          expect.objectContaining({ analysisId: second, rounds: [1] }),
-        ),
-      );
+      expect(res.status).toBe(200);
+      expect(res.body.data).toMatchObject({ applied: 1 });
+      await expectOnlyRoundTwoRecorded(id);
     });
 
     it("answers reused by a start are re-run once, not on every later view of the settled dialog", async () => {

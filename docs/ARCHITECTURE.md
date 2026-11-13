@@ -5225,7 +5225,10 @@ then:
   is re-checked through #2222's `recheckGoverningRequirement` on each stored requirement
   carrying its answers, attributed to the person who answered. An answer **reused** in a round
   is re-run the same way for the requirement that reused it (`rerunReusedClarifications`), and
-  its record's `requirementIds` gain that requirement. Re-extraction is the dialog's own
+  its record's `requirementIds` gain that requirement. Requirement ids are local to an analysis,
+  so the column stores each as `<analysisId>:<requirementId>` (`qualifyRequirementId`), a read
+  returns the record's own analysis's ids, and the extension is a compare-and-set on the list it
+  read, retried when another reuse changed it first. Re-extraction is the dialog's own
   resolution call. The persisted per-finding stale marker and **Re-check this requirement** are
   #2222's.
 

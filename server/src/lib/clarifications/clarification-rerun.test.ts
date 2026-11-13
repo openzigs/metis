@@ -563,6 +563,24 @@ describe("#2310 — the re-run's edges", () => {
     expect(result.codeMapped).toBe(1);
   });
 
+  // Review of #2430 — the block writes an empty question as a placeholder; the
+  // record side must compare the same value, or such a row never matches.
+  it("matches a row whose block holds the answer to a question with no text", async () => {
+    const blank = record({ question: "  ` ", answer: "Monthly" });
+    db.requirement.findMany.mockResolvedValue([
+      { id: "row-blank", title: "t", body: withBlock("x", [["", "Monthly"]]) },
+      { id: "row-other", title: "t", body: withBlock("x", [["How often?", "Monthly"]]) },
+    ]);
+    const mapToCode = vi.fn(async () => []);
+    await rerunAfterClarification(
+      { analysisId: "a1", projectId: "p1", provider, records: [blank] },
+      { mapToCode, applicabilityHookFor: async () => null },
+    );
+    expect(mapToCode.mock.calls.map((c) => (c as unknown as [{ id: string }])[0].id)).toEqual([
+      "row-blank",
+    ]);
+  });
+
   it("re-checks an unmatched requirement's stored rows under their own id, as the person who answered", async () => {
     structured.list = { requirements: [{ id: "R-1", title: "Invoices" }] };
     db.requirement.findMany.mockResolvedValue([

@@ -138,6 +138,19 @@ export function sanitizeClarificationText(text: string | null | undefined): stri
     : escapeMarkupForMarkdown(cleaned);
 }
 
+/** What the clarifications block writes for a question whose text is empty. */
+export const UNAVAILABLE_QUESTION = "(question text unavailable)";
+
+/**
+ * A question as the clarifications block writes it: sanitised, and
+ * {@link UNAVAILABLE_QUESTION} when nothing is left. #2310 — a reader matching
+ * a record against a block's entries compares this, so an empty question
+ * matches on both sides.
+ */
+export function clarificationBlockQuestion(text: string | null | undefined): string {
+  return sanitizeClarificationText(text) || UNAVAILABLE_QUESTION;
+}
+
 /**
  * Every non-blank answer across every round, newest write per question id.
  *
@@ -562,7 +575,7 @@ export function renderClarificationBlock(
 ): string {
   const usable = answers
     .map((a) => ({
-      question: sanitizeClarificationText(a.question),
+      question: clarificationBlockQuestion(a.question),
       answer: sanitizeClarificationText(a.answer),
       tag: PROVENANCE_TAGS[a.provenance],
     }))
@@ -575,10 +588,7 @@ export function renderClarificationBlock(
     CLARIFICATIONS_PREAMBLE,
     "",
     ...(flagCriteria ? [CRITERIA_FLAG_LINE, ""] : []),
-    ...usable.map(
-      (a) =>
-        `- **Q:** ${a.question || "(question text unavailable)"}\n  **A:** ${a.answer} ${a.tag}`,
-    ),
+    ...usable.map((a) => `- **Q:** ${a.question}\n  **A:** ${a.answer} ${a.tag}`),
     CLARIFICATIONS_END,
   ].join("\n");
 }
