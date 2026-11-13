@@ -158,9 +158,9 @@ async function idsMatchingTitle(
  * does not allow self-approval. The same reading as the approve write's
  * maker-checker (`updateRequirementWithHistory`): a version of theirs that
  * changed the wording, or an edit of theirs in the approval checkpoint. Every
- * read filters on the project.
+ * read filters on the project. Exported for its project-scoping test.
  */
-async function selfApprovalForbiddenIds(
+export async function selfApprovalForbiddenIds(
   projectId: string,
   requirementIds: string[],
   userId: string,

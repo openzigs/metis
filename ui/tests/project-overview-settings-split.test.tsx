@@ -142,6 +142,10 @@ describe("project Settings page (⚙)", () => {
   it("#2452 — hosts the Approval gate card, where self-approval is set", async () => {
     render(<ProjectSettingsPage />, { wrapper: makeWrapper({ initialUser: TEST_USER }) });
     expect(await screen.findByTestId("card-approval-gate")).toHaveTextContent("p1");
+    // Inside the General group, not a stray card between the groups.
+    expect(
+      within(screen.getByTestId("project-settings-general")).getByTestId("card-approval-gate"),
+    ).toBeInTheDocument();
   });
 
   it("hosts every settings card, quarantine, chronicle and archive", async () => {

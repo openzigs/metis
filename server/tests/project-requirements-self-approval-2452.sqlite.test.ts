@@ -43,10 +43,14 @@ vi.mock("../src/lib/audit/audit-service.js", async (importOriginal) => ({
 }));
 
 const { projectRequirementsRouter } = await import("../src/routes/project-requirements.js");
+const { selfApprovalForbiddenIds } =
+  await import("../src/lib/requirements/project-requirements-list.js");
 const { errorHandler, notFoundHandler } = await import("../src/middleware/error-handler.js");
 const { issueTokens } = await import("../src/lib/auth/jwt.js");
 
 const P = "proj-2452";
+/** A second project in the same workspace, where u-coord also wrote and edited. */
+const P2 = "proj-2452-other";
 
 interface Row {
   id: string;
@@ -106,9 +110,11 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           data: { workspaceId: "ws-2452", userId, role: "member" },
         });
       }
-      await db.project.create({
-        data: { id: P, name: P, slug: P, createdById: "u-coord", workspaceId: "ws-2452" },
-      });
+      for (const id of [P, P2]) {
+        await db.project.create({
+          data: { id, name: id, slug: id, createdById: "u-coord", workspaceId: "ws-2452" },
+        });
+      }
       // The checkpoint of run `run-1` recorded u-coord editing REQ-001.
       await db.analysis.create({
         data: {
@@ -158,6 +164,45 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       // Already approved: there is no Approve to explain.
       await req("r-approved", "approved");
       await version("r-approved", "u-coord", ["title"]);
+
+      // P2: u-coord reworded one requirement and edited another in P2's checkpoint.
+      await db.analysis.create({
+        data: {
+          id: "cr-2",
+          projectId: P2,
+          startedById: "u-other",
+          status: "completed",
+          title: "Other",
+          metadata: JSON.stringify({
+            checkpointRequirementEditors: { runId: "run-2", editors: { "REQ-002": ["u-coord"] } },
+          }),
+        },
+      });
+      const foreign = (
+        id: string,
+        projectId: string,
+        analysisId: string,
+        structuredId: string,
+        runId: string,
+      ) =>
+        db.requirement.create({
+          data: {
+            id,
+            analysisId,
+            projectId,
+            title: id,
+            body: "",
+            reviewStatus: "draft",
+            promotedStructuredId: structuredId,
+            promotedStructuredRunId: runId,
+          },
+        });
+      await foreign("r-p2", P2, "cr-2", "REQ-002", "run-2");
+      await version("r-p2", "u-coord", ["title"]);
+      // Rows whose project and change request disagree, so each of the
+      // checkpoint read's two project filters is pinned on its own.
+      await foreign("r-p2-on-p-run", P2, "cr-1", "REQ-001", "run-1");
+      await foreign("r-p-on-p2-run", P, "cr-2", "REQ-002", "run-2");
     }, MIGRATED_SQLITE_HOOK_TIMEOUT_MS);
 
     afterAll(async () => {
@@ -171,13 +216,30 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       );
     });
 
-    it("flags nothing for someone who wrote none of them", async () => {
+    it("flags only the colleague's own row for that colleague", async () => {
       expect(await flagged("u-other", "coordinator")).toEqual(["r-theirs"]);
     });
 
     it("flags nothing for a role that cannot approve at all (its reason is the permission)", async () => {
       await version("r-reworded", "u-dev", ["title"], 2);
-      expect(await flagged("u-dev", "developer")).toEqual([]);
+      try {
+        expect(await flagged("u-dev", "developer")).toEqual([]);
+      } finally {
+        await db.requirementVersion.deleteMany({
+          where: { requirementId: "r-reworded", actorId: "u-dev" },
+        });
+      }
+    });
+
+    it("never flags another project's requirement, whatever the caller did there", async () => {
+      // Control: in its own project, u-coord's P2 rows are flagged.
+      expect([...(await selfApprovalForbiddenIds(P2, ["r-p2"], "u-coord"))]).toEqual(["r-p2"]);
+      const blocked = await selfApprovalForbiddenIds(
+        P,
+        ["r-reworded", "r-p2", "r-p2-on-p-run", "r-p-on-p2-run"],
+        "u-coord",
+      );
+      expect([...blocked]).toEqual(["r-reworded"]);
     });
 
     it("flags nothing once the project allows self-approval", async () => {
