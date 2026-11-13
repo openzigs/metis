@@ -179,6 +179,11 @@ interface Session extends ReportSession {
 
 interface Envelope {
   kind: "ba-qa";
+  /**
+   * The results-file format (`BA_QA_RESULTS_VERSION`); absent before #2265.
+   * `--include` reads it to refuse a version 1 file (#2363).
+   */
+  version?: number;
   runId: string;
   provider: string;
   model: string;

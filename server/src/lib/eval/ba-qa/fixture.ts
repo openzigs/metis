@@ -91,7 +91,11 @@ const questionSchema = z.strictObject({
 
 const fixtureSchema = z.strictObject({
   id: z.string().regex(NAME),
-  /** Bumped whenever a fact or source changes, so `--include` keeps gradings apart (#2363). */
+  /**
+   * Bumped whenever a question's text, an earlier `before` turn, a fact or a
+   * source changes: each alters what is asked or graded, so `--include` keeps
+   * runs on different wordings apart (#2363).
+   */
   version: z.number().int().min(1),
   issue: z.number().int(),
   description: z.string().min(1),

@@ -299,6 +299,18 @@ describe("assertComparable", () => {
     // it would put them under the wrong check.
     ["a version 1 results file", { version: 1 }, /results file version 1/],
     ["a results file with no version", { version: undefined }, /results file version 1/],
+    // A top-level `version` means nothing outside `kind: 'ba-qa'`: another
+    // eval's file (a ba-qa-routing one carries none) is refused as another eval.
+    [
+      "another eval with no results version",
+      { kind: "other", version: undefined },
+      /not comparable/,
+    ],
+    [
+      "another fixture with no results version",
+      { fixture: { id: "g", version: 1 }, version: undefined },
+      /not comparable/,
+    ],
   ])("refuses %s", (_label, edit, message) => {
     expect(() =>
       assertComparable({ ...current, arm: "off", ...edit }, current, ["on"], "x.json"),

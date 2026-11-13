@@ -338,15 +338,17 @@ export function assertComparable(
   arms: readonly string[],
   file: string,
 ): void {
+  if (prior.kind !== current.kind || prior.fixture.id !== current.fixture.id) {
+    throw new Error(`${file} is another eval or fixture: not comparable`);
+  }
+  // Only after the kind check: a top-level `version` means nothing outside
+  // `kind: 'ba-qa'`, so another eval's file must not be refused for lacking one.
   const resultsVersion = prior.version ?? 1;
   if (resultsVersion < 2) {
     throw new Error(
       `${file} is results file version ${resultsVersion}, which labels lines not in the file ` +
         `as span-checked: re-run that arm rather than include it`,
     );
-  }
-  if (prior.kind !== current.kind || prior.fixture.id !== current.fixture.id) {
-    throw new Error(`${file} is another eval or fixture: not comparable`);
   }
   if (prior.fixture.version !== current.fixture.version) {
     throw new Error(
