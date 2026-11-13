@@ -1229,19 +1229,23 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
       // #724 — clarify rounds are project spend: meter them, billed below.
       const provider = meterAnalysisProvider(buildProvider({ config }));
       const usageScope = { projectId, sessionId: analysisId };
-      // Self-resolution (clarify-self-resolve): give the dialog a retriever +
-      // projectId so it can ground each clarifying question against the
-      // project's ingested knowledge before asking. Grounding only runs on the
-      // START branch; submitAnswers is unaffected.
       // Epic #922 — prefer the server-sourced structured requirements that the
       // enhancement pipeline persisted (#924). The client may still override by
       // passing `requirements` in the body, but it no longer has to reconstruct
       // them. Falls back to the request body when nothing was persisted.
       const stored = (await getStructuredRequirements(analysisId)) ?? undefined;
+      // Self-resolution (clarify-self-resolve): give the dialog a retriever +
+      // projectId so it can ground each clarifying question against the
+      // project's ingested knowledge before asking. Grounding only runs on the
+      // START branch; submitAnswers is unaffected.
       const dialog = new ClarificationDialog({
         provider,
         retriever: getKnowledgeService(),
         projectId,
+        // #2296 — the mode is the server's: decided from the list the
+        // analysis stored, never from a client override's `sources`. Only an
+        // analysis with nothing stored falls back to the override's.
+        ...(stored ? { sourceQuestions: readFromSources(stored.requirements) } : {}),
         // Issue #1129 — on a run from ticked items, their questions come first.
         askFirst: tickedFirst(await requirementOriginsFor(analysisId, analysis.metadata)),
         // #1873 — the business questions for uncertain governing rules, and
@@ -1249,11 +1253,8 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
         governingQuestions: governingQuestionSourceFor({ analysisId, projectId, provider }),
         // #2236 — a question the project has already settled is not asked again.
         priorAnswers: priorAnswerSourceFor(projectId),
-        // #2296 — the mode is the server's: decided from the list the
-        // analysis stored, never from a client override's `sources`. Only an
-        // analysis with nothing stored falls back to the override's.
-        ...(stored ? { sourceQuestions: readFromSources(stored.requirements) } : {}),
       });
+
       const override = body.requirements as StructuredRequirements | undefined;
       const requirements = override
         ? // The schema checks every field the dialog reads; the remaining
