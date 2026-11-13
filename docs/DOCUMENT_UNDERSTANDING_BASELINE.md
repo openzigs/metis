@@ -188,7 +188,11 @@ labelled sentence already says in full.
 
 The six additions are recorded in every `labels.json`'s `labelStatus` as added by an AI and
 not yet confirmed by a person. A reviewer who disagrees removes the `[[R…]]` marker in
-`frd.src.md` and rebuilds. Now 01 has 59 requirements and 02 has 63.
+`frd.src.md` and rebuilds. R58 on 01 and R62 and R63 on 02 replaced an ambiguity's marker, so
+for those three the reviewer also restores the `[[A…]]` marker it replaced (01's A4 on R58,
+02's A4 on R62 and A1 on R63) and removes the id from that ambiguity's `@R` list
+(`A4 [conflict] @R24,R58`, `A4 [vague-term] @R31,R62`, `A1 [conflict] @R7,R63`). Now 01 has
+59 requirements and 02 has 63.
 
 **What changed in the reader:**
 
@@ -199,6 +203,8 @@ not yet confirmed by a person. A reviewer who disagrees removes the `[[R…]]` m
   prose sentence. A diagnostic read of 02 showed that the pass named 15's "documents reminder"
   and "closed as abandoned" rows as repeats of 6.1's one sentence holding both. #2361's summary
   guard then kept both rows, because several statements were named repeats of that sentence.
+  A row is dropped this way only when the sentence says at least three quarters of the row's
+  content words, so a prose overview over a detailed table keeps the table's rows.
 - **Each whole-mode batch call** is told the section after its batch, and to stop before it.
 
 Reading `reader-sonnet-5-5-2374` (arms R and B, output cap 16,384) and

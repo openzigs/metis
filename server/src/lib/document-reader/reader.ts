@@ -504,8 +504,14 @@ async function read(
         // #2374 — except rows into prose: a summary table's rows that each
         // restate part of one body sentence are the table's summary of it, not
         // the other way round (02's "documents reminder" and "closed as
-        // abandoned" rows, both kept as repeats of one sentence of 6.1).
-        const rowIntoProse = isTableRow(text, kept[i]!.start) && !isTableRow(text, kept[of]!.start);
+        // abandoned" rows, both kept as repeats of one sentence of 6.1). Only
+        // a row the sentence actually holds: a prose overview over a detailed
+        // table ("notifications when a booking is made or moved") does not
+        // say the rows' channels and timings, so its rows keep the guard.
+        const rowIntoProse =
+          isTableRow(text, kept[i]!.start) &&
+          !isTableRow(text, kept[of]!.start) &&
+          isHeldBy(kept[i]!.quote, kept[of]!.quote);
         if ((absorbs.get(of)!.size > 1 && !rowIntoProse) || dropped.has(i) || dropped.has(of))
           continue;
         if (isTableRow(text, kept[of]!.start) && !isTableRow(text, kept[i]!.start)) continue;
@@ -580,6 +586,39 @@ async function read(
     outputTokenCap,
     usage: meter.usage,
   };
+}
+
+/** #2374 review — words that carry no content, for {@link isHeldBy}. */
+const FUNCTION_WORDS = new Set(
+  (
+    "a an the and or but nor of to in on at by for from with within into onto after before " +
+    "per as than then if when is are was were be been being it its this that these those " +
+    "shall must should will can may not no any each all"
+  ).split(" "),
+);
+
+/** The content words of `text`, lower-cased, a plural `s` dropped (`days` = `day`). */
+function contentWordsOf(text: string): string[] {
+  return (text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [])
+    .filter((w) => !FUNCTION_WORDS.has(w))
+    .map((w) => (w.length > 3 && w.endsWith("s") && !w.endsWith("ss") ? w.slice(0, -1) : w));
+}
+
+/** Share of a row's content words its prose keeper must say for the row to be held by it. */
+const ROW_HELD_SHARE = 0.75;
+
+/**
+ * #2374 review — whether the table row `row` says nothing the prose `prose`
+ * does not: at least {@link ROW_HELD_SHARE} of the row's content words are in
+ * the prose. 02's "| Documents reminder | 21 days after the request |" is held
+ * by the sentence of 6.1 that sets both out; "| Booking moved | Email |
+ * Immediately |" is not held by an overview that names only the booking.
+ */
+export function isHeldBy(row: string, prose: string): boolean {
+  const words = contentWordsOf(row);
+  if (words.length === 0) return false;
+  const said = new Set(contentWordsOf(prose));
+  return words.filter((w) => said.has(w)).length >= ROW_HELD_SHARE * words.length;
 }
 
 /** #2361 review — whether the line holding `at` is a table row (`| a | b |`). */

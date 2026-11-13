@@ -8,6 +8,7 @@ import {
   READER_WHOLE_MAX_DOCUMENT_TOKENS,
   chooseReadingMode,
   hasBody,
+  isHeldBy,
   isTableRow,
   readDocument,
   sentenceSpan,
@@ -1299,6 +1300,7 @@ describe("#2361 — repeats", () => {
       "| --- | --- |",
       "| Documents reminder | 21 days after the request |",
       "| Claim closed | 21 days after the reminder |",
+      "| All document limits | Reminder at 21 days, then closed 21 days later |",
       "",
     ].join("\n");
     const reply = statements(
@@ -1364,8 +1366,8 @@ describe("#2361 — repeats", () => {
       {
         section: "S3",
         kind: "business-rule",
-        statement: "The table's limits.",
-        quote: "| Rule | Limit |",
+        statement: "Reminder at 21 days, closed 21 days later.",
+        quote: "| All document limits | Reminder at 21 days, then closed 21 days later |",
       },
     );
     const second = routedProvider([
@@ -1373,7 +1375,84 @@ describe("#2361 — repeats", () => {
       [MERGE, intoRow],
     ]);
     const again = await readDocument({ title: "Claims", text, provider: second.provider });
-    expect(again.statements).toHaveLength(3);
+    expect(again.statements.map((s) => s.statement)).toEqual([
+      "Reminder at 21 days.",
+      "Closed 21 days after the reminder.",
+      "Reminder at 21 days, closed 21 days later.",
+    ]);
+    expect(again.sections.find((s) => s.sectionId === "S3")).toMatchObject({ repeats: 0 });
+  });
+
+  it("#2374 review — keeps a detailed table's rows named repeats of a prose overview that does not say them", async () => {
+    const text = [
+      "# Notices",
+      "",
+      "## 1 Overview",
+      "",
+      "The portal shall send notifications when a booking is made, moved or cancelled.",
+      "",
+      "## 2 Notifications",
+      "",
+      "| Event | Channel | Timing |",
+      "| --- | --- | --- |",
+      "| Booking made | Email and text message | Immediately |",
+      "| Booking moved | Email | Within 15 minutes |",
+      "",
+    ].join("\n");
+    const reply = statements(
+      {
+        section: "S2",
+        kind: "requirement",
+        statement: "Notify when a booking is made, moved or cancelled.",
+        quote: "The portal shall send notifications when a booking is made, moved or cancelled.",
+      },
+      {
+        section: "S3",
+        kind: "requirement",
+        statement: "A booking made is notified by email and text message immediately.",
+        quote: "| Booking made | Email and text message | Immediately |",
+      },
+      {
+        section: "S3",
+        kind: "requirement",
+        statement: "A booking moved is notified by email within 15 minutes.",
+        quote: "| Booking moved | Email | Within 15 minutes |",
+      },
+    );
+    const merge = JSON.stringify({
+      duplicates: [
+        { id: "T2", of: "T1" },
+        { id: "T3", of: "T1" },
+      ],
+      crossReferences: [],
+    });
+    const { provider } = routedProvider([
+      [WHOLE, reply],
+      [MERGE, merge],
+    ]);
+    const reading = await readDocument({ title: "Notices", text, provider });
+    // The overview names the events; only the rows say the channel and timing,
+    // so the summary guard keeps both rows.
+    expect(reading.statements.map((s) => [s.sectionId, s.statement])).toEqual([
+      ["S2", "Notify when a booking is made, moved or cancelled."],
+      ["S3", "A booking made is notified by email and text message immediately."],
+      ["S3", "A booking moved is notified by email within 15 minutes."],
+    ]);
+    expect(reading.sections.find((s) => s.sectionId === "S3")).toMatchObject({ repeats: 0 });
+  });
+
+  it("#2374 review — a row is held by prose that says its content words, not by prose that only names it", () => {
+    // 02's two summary rows, against the sentence of 6.1 that sets both out (R13).
+    const r13 =
+      "If the required documents have not been received 21 days after the request, the application shall send a reminder to the claimant, and if they have still not been received 21 days after the reminder, the claim shall be closed as abandoned.";
+    expect(isHeldBy("| Documents reminder | 21 days after the request |", r13)).toBe(true);
+    expect(isHeldBy("| Claim closed as abandoned | 21 days after the reminder |", r13)).toBe(true);
+    const overview =
+      "The portal shall send notifications when a booking is made, moved or cancelled.";
+    expect(isHeldBy("| Booking made | Email and text message | Immediately |", overview)).toBe(
+      false,
+    );
+    expect(isHeldBy("| --- | --- |", overview)).toBe(false);
   });
 
   it("never drops a prose statement as a repeat of a summary table's row, but drops the row", async () => {
@@ -1588,6 +1667,37 @@ describe("#2407 — a reply that corrects itself, or stops partway", () => {
       ["S5", "S6"],
     ]);
     expect(reading.statements.map((s) => s.sectionId)).toEqual(["S2", "S4", "S5", "S6"]);
+    expect(Object.values(statusOf(reading)).every((s) => s === "read")).toBe(true);
+  });
+
+  it("#2374 review — tells a re-ask for non-contiguous sections to stop before the section after the last", async () => {
+    // The first reply covers S4 and S6 only, so S2 and S5 are asked again: S4
+    // lies between them and is not named, and S6 is written by no one else here.
+    const { provider, calls } = routedProvider([
+      [
+        WHOLE,
+        (call) =>
+          askedSections(call).length === 2
+            ? statements(TEXT_STATEMENTS[0], TEXT_STATEMENTS[2])
+            : statements(TEXT_STATEMENTS[1], TEXT_STATEMENTS[3]),
+      ],
+      [MERGE, noMerge],
+    ]);
+    const reading = await readDocument({ title: "Booking FRD", text: TEXT, provider });
+    expect(reads(calls).map(askedSections)).toEqual([
+      ["S1", "S2", "S3", "S4", "S5", "S6"],
+      ["S2", "S5"],
+    ]);
+    const stops = reads(calls).map((r) =>
+      r.user.split("\n").find((l) => l.startsWith("Stop after")),
+    );
+    expect(stops).toEqual([
+      undefined,
+      "Stop after the last statement of S5: S6 and every section after it are written in another call.",
+    ]);
+    expect(reads(calls)[1]!.system).toContain(
+      "a statement of a section that is not named is discarded",
+    );
     expect(Object.values(statusOf(reading)).every((s) => s === "read")).toBe(true);
   });
 
