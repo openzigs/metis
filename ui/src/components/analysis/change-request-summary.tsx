@@ -31,7 +31,9 @@ export function runSettingsSummary(
     ? (metadata.agentKeys as unknown[]).filter((k): k is string => typeof k === "string")
     : [];
   const model = typeof metadata?.model === "string" && metadata.model ? metadata.model : null;
-  const enhancement = (metadata?.enhancement ?? {}) as {
+  // #2451 — `enhancement` is written only when the enhancement step starts,
+  // part-way through the run; until then the flags the run was started with.
+  const enhancement = (metadata?.enhancement ?? metadata?.enhancementRequested ?? {}) as {
     enableClarification?: unknown;
     enableWebResearch?: unknown;
   };

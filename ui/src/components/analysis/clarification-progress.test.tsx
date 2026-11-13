@@ -282,3 +282,51 @@ describe("#1876 — each question is an in-page anchor", () => {
     expect(document.getElementById("clarify-question-q_dsa")).toHaveTextContent("About dsa?");
   });
 });
+
+describe("#2451 — one count of open questions: the panel's remaining is the run's", () => {
+  const amb = (description: string) => ({
+    field: "description",
+    description,
+    suggestedQuestion: "",
+  });
+  // The reported run's shape: every ambiguity on `description`.
+  const requirements = [
+    {
+      id: "r1",
+      title: "Request link",
+      description: "",
+      evidenceNeeds: [],
+      ambiguities: [amb("a"), amb("b"), amb("c")],
+    },
+    { id: "r2", title: "Single use", description: "", evidenceNeeds: [], ambiguities: [amb("d")] },
+    { id: "r3", title: "Older record", description: "", evidenceNeeds: [], ambiguities: null },
+  ];
+
+  function renderWith(s: ClarificationStatePayload) {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    return render(
+      <QueryClientProvider client={qc}>
+        <ClarificationDialogPanel
+          projectId="p1"
+          analysisId="an_1"
+          state={s}
+          onComplete={vi.fn()}
+          requirements={requirements}
+        />
+      </QueryClientProvider>,
+    );
+  }
+
+  it("counts every open ambiguity of the run, not this round's questions", () => {
+    // Three questions on screen, four ambiguities open: the tab says 4, so does this.
+    renderWith(state());
+    expect(screen.getByTestId("clarification-progress")).toHaveTextContent("4 remaining");
+  });
+
+  it("falls by one for each ambiguity answered, though they share a field", () => {
+    renderWith(state({ answeredAmbiguities: ["r1:description", "r1:description#3"] }));
+    const progress = screen.getByTestId("clarification-progress");
+    expect(progress).toHaveTextContent("2 addressed");
+    expect(progress).toHaveTextContent("2 remaining");
+  });
+});

@@ -89,6 +89,7 @@ import {
   type UnreadAnalysisSteps,
   CODE_CONTINUE_BUDGET_MULTIPLIER,
   codeInvestigationContinueOffered,
+  openAmbiguityCount,
 } from "@metis/shared";
 import { resolveAgentTokenBudget } from "./agent-token-budget.js";
 import type { Prisma } from "@prisma/client";
@@ -191,6 +192,14 @@ export interface CreateAnalysisInput {
   title?: string;
   /** Issue #2341 — started with "Run with defaults"; recorded in the metadata. */
   startedWithDefaults?: boolean;
+  /**
+   * #2451 — the enhancements the run was started with, stored as
+   * `metadata.enhancementRequested` when the row is created. `enhancement`
+   * is written only once the enhancement step starts, part-way through the
+   * run, so until then the change request's settings line read "off" for a
+   * run that was going to ask clarifying questions.
+   */
+  enhancementRequested?: { enableWebResearch: boolean; enableClarification: boolean };
 }
 
 /**
@@ -295,6 +304,7 @@ export async function createAnalysis(input: CreateAnalysisInput) {
         ...(input.specKitHandoff ? { specKitHandoff: input.specKitHandoff } : {}),
         ...(input.agentContext ? { agentContext: input.agentContext } : {}),
         ...(input.startedWithDefaults ? { startedWithDefaults: true } : {}),
+        ...(input.enhancementRequested ? { enhancementRequested: input.enhancementRequested } : {}),
       }),
     },
   });
@@ -710,14 +720,8 @@ export function mergeClarifiedList(
     if (changed.length === 0) return req;
     return { ...req, ...Object.fromEntries(changed.map((key) => [key, now[key]])) };
   });
-  const totalAmbiguities = requirements.reduce(
-    (sum, r) =>
-      sum +
-      (Array.isArray(r.ambiguities)
-        ? r.ambiguities.filter((a) => !addressed.has(`${r.id}:${a.field}`)).length
-        : 0),
-    0,
-  );
+  // #2451 — counted per ambiguity, by the rule every open-question count shares.
+  const totalAmbiguities = openAmbiguityCount(requirements.map(defaulted), addressed);
   return { ...current, requirements, totalAmbiguities };
 }
 

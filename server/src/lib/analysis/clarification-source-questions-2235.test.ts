@@ -249,8 +249,11 @@ describe("#2235 — ask only when it matters", () => {
   });
 
   it("does not count a set-aside field the requirement does not have", async () => {
+    // #2451 — a question on a listed requirement is filed under one of its
+    // open ambiguities or not asked; one on a requirement not in the list
+    // keeps the field it was given, and is listed but never counted.
     const { provider } = makeProvider([
-      q("r2", "made-up", { uncertainty: "unanswerable" }),
+      q("r-gone", "made-up", { uncertainty: "unanswerable" }),
       q("r2", "limit", { uncertainty: "silence" }),
     ]);
     await new ClarificationDialog({ provider, sourceQuestions: true }).startOrContinue(
@@ -279,7 +282,7 @@ describe("#2235 — ask only when it matters", () => {
   });
 
   it("does not complete on a set-aside field that is not a real ambiguity", async () => {
-    const { provider } = makeProvider([q("r2", "fabricated", { divergent: false })]);
+    const { provider } = makeProvider([q("r-gone", "fabricated", { divergent: false })]);
     const state = await new ClarificationDialog({
       provider,
       sourceQuestions: true,
@@ -353,10 +356,16 @@ describe("#2275 — #2235's question handling only with the document reader on",
     (chat.mock.calls[0] as unknown as [ChatMessage[]])[0][0]!.content as string;
 
   it("reader off: the pre-#2235 prompt, and every question raised is asked and searched, unclassified and uncapped", async () => {
-    const many = [
-      ...CLASSIFIED,
-      ...Array.from({ length: MAX_QUESTIONS_PER_ROUND }, (_, i) => q("r2", `extra${i}`)),
-    ];
+    const extras = Array.from({ length: MAX_QUESTIONS_PER_ROUND }, (_, i) => `extra${i}`);
+    const many = [...CLASSIFIED, ...extras.map((f) => q("r2", f))];
+    // #2451 — one question per ambiguity, so every extra question has one.
+    const requirements = {
+      ...REQUIREMENTS,
+      requirements: [
+        REQUIREMENTS.requirements[0]!,
+        requirement("r2", ["limit", "budget", ...extras]),
+      ],
+    };
     const { provider, chat } = makeProvider(many);
     const { retriever, search } = makeRetriever();
     const state = await new ClarificationDialog({
@@ -364,7 +373,7 @@ describe("#2275 — #2235's question handling only with the document reader on",
       retriever,
       projectId: "p1",
       sourceQuestions: false,
-    }).startOrContinue("a1", REQUIREMENTS);
+    }).startOrContinue("a1", requirements);
     expect(systemOf(chat)).not.toContain("divergent");
     const asked = state.rounds[0]!.questions;
     // Nothing set aside, nothing capped, in the order raised.
