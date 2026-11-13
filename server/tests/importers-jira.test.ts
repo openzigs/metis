@@ -3,7 +3,7 @@
  */
 import { describe, expect, it, vi } from "vitest";
 import { JiraImporter, type JiraSearchClient } from "../src/lib/importers/jira-importer.js";
-import type { JiraSearchResult } from "@metis/shared";
+import { deriveBodyAcceptanceCriteria, type JiraSearchResult } from "@metis/shared";
 
 function result(
   issues: Array<{ id?: string; key: string; self?: string; fields: Record<string, unknown> }>,
@@ -143,6 +143,41 @@ describe("JiraImporter", () => {
     // The requirement body the importer hands on is the Markdown, through its own map().
     expect(imp.map(issues[0]).body).toContain("Export **all** rows");
     expect(imp.map(issues[0]).body).not.toContain('"type"');
+  });
+
+  // #2260 review — the body is read as plain text too: the analysis page's requirement edit
+  // field shows `requirement.body` verbatim (analysis/page.tsx `setBody(requirement.body)`),
+  // and its criteria prefill and the draft generator parse it with deriveBodyAcceptanceCriteria.
+  it("#2260: keeps an ordinary sentence with *, _, [ and & free of backslashes for the edit field", async () => {
+    const sentence = "Totals use snake_case_name, 2 * 3 rows, cite [1] and ask R&D.";
+    const text = (s: string) => ({ type: "text", text: s });
+    const description = {
+      type: "doc",
+      version: 1,
+      content: [
+        { type: "paragraph", content: [text(sentence)] },
+        { type: "heading", attrs: { level: 2 }, content: [text("Acceptance criteria")] },
+        {
+          type: "bulletList",
+          content: [
+            {
+              type: "listItem",
+              content: [{ type: "paragraph", content: [text(sentence)] }],
+            },
+          ],
+        },
+      ],
+    };
+    const searchIssues = vi.fn(async () =>
+      result([{ key: "X-1", fields: { summary: "Totals", description } }], 1),
+    );
+    const imp = new JiraImporter({ client: { searchIssues }, baseUrl: "https://jira.example.com" });
+    const issues = [];
+    for await (const i of imp.fetchAll({ connectionId: "c", jql: "x" })) issues.push(i);
+    const body = imp.map(issues[0]).body;
+    expect(body).toBe(`${sentence}\n\n## Acceptance criteria\n\n- ${sentence}`);
+    expect(body).not.toContain("\\");
+    expect(deriveBodyAcceptanceCriteria(body)).toEqual([sentence]);
   });
 
   it("#2244: converts an ADF custom field mapped to the body", async () => {

@@ -120,8 +120,10 @@ describe("adfToMarkdown", () => {
         ],
       }),
     );
-    // `C:\dir\|x` → `C:\\dir\\\|x`: two literal backslashes and an escaped pipe, still two columns.
-    expect(md.split("\n")[2]).toBe("| C:\\\\dir\\\\\\|x | ok |");
+    // `C:\dir\|x` → `C:\dir\\\|x`: `\d` is no escape, so that backslash stays as typed; the one
+    // before the pipe is escaped, then the pipe itself — still two columns.
+    expect(md.split("\n")[2]).toBe("| C:\\dir\\\\\\|x | ok |");
+    expect(html(md)).toContain("<td>C:\\dir\\|x</td>");
   });
 
   it("applies em, strike and inline code marks, keeping edge spaces outside the markers", () => {
@@ -275,6 +277,13 @@ describe("adfToMarkdown — mark closing stays linear (#2260 review)", () => {
     adfToMarkdown(doc(p(...breaks, ...flips(300))));
     expect(performance.now() - start).toBeLessThan(1_000);
   });
+
+  it("does not go quadratic on a long whitespace run inside one marked text node", () => {
+    const start = performance.now();
+    const md = adfToMarkdown(doc(p(t(`a${" ".repeat(100_000)}b`, { type: "strong" }))));
+    expect(performance.now() - start).toBeLessThan(1_000);
+    expect(md).toBe(`**a${" ".repeat(100_000)}b**`);
+  });
 });
 
 describe("adfToMarkdown — rendered by a real Markdown parser (#2260)", () => {
@@ -422,5 +431,204 @@ describe("adfToMarkdown — rendered by a real Markdown parser (#2260)", () => {
     expect(out).toContain("<td>x | y<code>a|b</code></td>");
     expect(out.match(/<td>ok<\/td>/g)).toHaveLength(2);
     expect(out).not.toContain("b`");
+  });
+});
+
+/**
+ * Each character the paragraph renders, tagged with the emphasis and link
+ * elements around it, so a delimiter that fails to parse shows up as a
+ * literal `*` or as a character with the wrong tags.
+ */
+function markedChars(rendered: string): string[] {
+  const inner = rendered.replace(/^<p>/, "").replace(/<\/p>$/, "");
+  const open: string[] = [];
+  const chars: string[] = [];
+  for (const m of inner.matchAll(/<(\/?)(strong|em|del|a)(?: [^>]*)?>|([^<]+)/g)) {
+    if (m[3] !== undefined) {
+      for (const ch of m[3]) chars.push(`${ch}:${[...open].sort().join("+")}`);
+    } else if (m[1]) open.splice(open.lastIndexOf(m[2]), 1);
+    else open.push(m[2]);
+  }
+  return chars;
+}
+
+const TAG: Record<string, string> = { strong: "strong", em: "em", strike: "del", link: "a" };
+const mark = (type: string) =>
+  type === "link" ? { type, attrs: { href: "https://x.example/" } } : { type };
+const expectedChars = (seq: string[][], letters: string) =>
+  seq.map(
+    (types, i) =>
+      `${letters[i]}:${types
+        .map((m) => TAG[m])
+        .sort()
+        .join("+")}`,
+  );
+
+/** Every sequence of `length` runs, each carrying one subset of `types`. */
+function sequences(types: string[], length: number): string[][][] {
+  const subsets = Array.from({ length: 1 << types.length }, (_, bits) =>
+    types.filter((_, i) => bits & (1 << i)),
+  );
+  let out: string[][][] = [[]];
+  for (let i = 0; i < length; i += 1) out = out.flatMap((seq) => subsets.map((s) => [...seq, s]));
+  return out;
+}
+
+describe("adfToMarkdown — marks nest whatever order they end in (#2260 review)", () => {
+  it("renders bold-italic then italic as nested emphasis, not a stray `**`", () => {
+    const md = adfToMarkdown(
+      doc(p(t("a", { type: "strong" }, { type: "em" }), t("b", { type: "em" }))),
+    );
+    expect(md).toBe("***a**b*");
+    expect(html(md)).toBe("<p><em><strong>a</strong>b</em></p>");
+  });
+
+  it("puts the ending mark inside: bold-italic then bold, italic-strike then strike", () => {
+    const strongEm = doc(p(t("a", { type: "strong" }, { type: "em" }), t("b", { type: "strong" })));
+    expect(html(adfToMarkdown(strongEm))).toBe("<p><strong><em>a</em>b</strong></p>");
+    const emStrike = doc(p(t("a", { type: "em" }, { type: "strike" }), t("b", { type: "strike" })));
+    expect(html(adfToMarkdown(emStrike))).toBe("<p><del><em>a</em>b</del></p>");
+  });
+
+  // Runs touch (`a`, `b`, `c` with no space between), so every closer meets the next opener:
+  // this is where delimiters fuse and where the order marks end in matters.
+  it("gives each character its marks for every 2- to 4-run bold/italic sequence", () => {
+    const failures: string[] = [];
+    for (const length of [2, 3, 4]) {
+      for (const seq of sequences(["strong", "em"], length)) {
+        const runs = seq.map((types, i) => t("abcd"[i], ...types.map(mark)));
+        const md = adfToMarkdown(doc(p(t("x "), ...runs, t(" y"))));
+        const expected = ["x:", " :", ...expectedChars(seq, "abcd"), " :", "y:"];
+        if (markedChars(html(md)).join("|") !== expected.join("|")) {
+          failures.push(`${JSON.stringify(seq)} → ${md}`);
+        }
+      }
+    }
+    expect(failures).toEqual([]);
+  });
+
+  // Strike joins with a space between runs. Between two word characters a group of mixed
+  // delimiters (`a~~**b`) is not flanking in CommonMark whatever the order, as with `x**(y)**`.
+  it("gives each character its marks for every 2- and 3-run bold/italic/strike sequence", () => {
+    const failures: string[] = [];
+    for (const length of [2, 3]) {
+      for (const seq of sequences(["strong", "em", "strike"], length)) {
+        const runs = seq.map((types, i) =>
+          t(i < length - 1 ? `${"abc"[i]} ` : "abc"[i], ...types.map(mark)),
+        );
+        const md = adfToMarkdown(doc(p(...runs)));
+        // Which marks the space between two runs carries is the renderer's choice: compare letters.
+        const letters = markedChars(html(md)).filter((c) => !c.startsWith(" "));
+        if (letters.join("|") !== expectedChars(seq, "abc").join("|")) {
+          failures.push(`${JSON.stringify(seq)} → ${md}`);
+        }
+      }
+    }
+    expect(failures).toEqual([]);
+  });
+
+  it("gives each character its marks for every 2-run sequence that includes a link", () => {
+    const failures: string[] = [];
+    for (const seq of sequences(["link", "strong", "em", "strike"], 2)) {
+      const md = adfToMarkdown(doc(p(...seq.map((types, i) => t("ab"[i], ...types.map(mark))))));
+      if (markedChars(html(md)).join("|") !== expectedChars(seq, "ab").join("|")) {
+        failures.push(`${JSON.stringify(seq)} → ${md}`);
+      }
+    }
+    expect(failures).toEqual([]);
+  });
+});
+
+describe("adfToMarkdown — punctuation at a mark's edge keeps intraword emphasis (#2260 review)", () => {
+  it("moves a leading escaped character outside a bold opened after a word character", () => {
+    const md = adfToMarkdown(doc(p(t("x"), t("*y", { type: "strong" }))));
+    expect(html(md)).toBe("<p>x*<strong>y</strong></p>");
+  });
+
+  it("moves a trailing escaped character outside a bold closed before a word character", () => {
+    const md = adfToMarkdown(doc(p(t("y*", { type: "strong" }), t("x"))));
+    expect(html(md)).toBe("<p><strong>y</strong>*x</p>");
+  });
+
+  it("keeps edge punctuation inside the mark when a space or punctuation sits outside it", () => {
+    const md = adfToMarkdown(doc(p(t("x "), t("*y*", { type: "strong" }), t("."))));
+    expect(html(md)).toBe("<p>x <strong>*y*</strong>.</p>");
+  });
+
+  it("moves an underscore out of an intraword italic", () => {
+    const md = adfToMarkdown(doc(p(t("a"), t("_b_", { type: "em" }), t("c"))));
+    expect(html(md)).toBe("<p>a_<em>b</em>_c</p>");
+  });
+});
+
+describe("adfToMarkdown — escapes only what would form syntax (#2260 review)", () => {
+  const SENTENCE =
+    "Use snake_case_name for 2 * 3 rows, cite [1] and [2], and ask R&D (or Q&A) about a_b * c.";
+
+  it("leaves an ordinary sentence with *, _, [ and & exactly as typed", () => {
+    const md = adfToMarkdown(doc(p(t(SENTENCE))));
+    expect(md).toBe(SENTENCE);
+    expect(html(md)).toBe(`<p>${SENTENCE.replace(/&/g, "&amp;")}</p>`);
+  });
+
+  it("still escapes those characters where they would form emphasis, a link or an entity", () => {
+    const md = adfToMarkdown(doc(p(t("*a* _b_ [c](https://x.example/) &amp; ~d~ <i>"))));
+    expect(html(md)).toBe("<p>*a* _b_ [c](https://x.example/) &amp;amp; ~d~ &lt;i&gt;</p>");
+  });
+
+  it("escapes a backslash only where it would escape the character after it", () => {
+    const md = adfToMarkdown(doc(p(t("C:\\dir\\file and a\\*b"))));
+    expect(md).toBe("C:\\dir\\file and a\\\\\\*b");
+    expect(html(md)).toBe("<p>C:\\dir\\file and a\\*b</p>");
+  });
+
+  it("escapes a `!` before a link opener and a `]` before a `(`, so neither forms", () => {
+    const href = { type: "link", attrs: { href: "https://x.example/" } };
+    const out = html(adfToMarkdown(doc(p(t("see!"), t("x", href), t(" [1]"), t("(y)", href)))));
+    expect(out).toBe(
+      '<p>see!<a href="https://x.example/">x</a> [1]<a href="https://x.example/">(y)</a></p>',
+    );
+  });
+});
+
+describe("adfToMarkdown — a hard break cannot start a block (#2260 review)", () => {
+  const afterBreak = (text: string) =>
+    html(adfToMarkdown(doc(p(t("a"), { type: "hardBreak" }, t(text)))));
+
+  it.each([
+    "- b",
+    "* b",
+    "+ b",
+    "# b",
+    "> b",
+    "1. b",
+    "2) b",
+    "---",
+    "===",
+    "***",
+    ":--",
+    "|-|",
+    "```",
+    "~~~",
+    "[x]: /target",
+  ])("keeps `%s` after a hard break as text in the same paragraph", (text) => {
+    const out = afterBreak(text);
+    expect(out).not.toMatch(/<(ul|ol|li|h\d|blockquote|hr|table|pre|code)\b/);
+    expect(out).toBe(`<p>a<br />\n${text.replace(/>/g, "&gt;")}</p>`);
+  });
+
+  it("escapes block syntax at a paragraph's start and after a newline inside text", () => {
+    const out = html(adfToMarkdown(doc(p(t("- not a list\n# not a heading")))));
+    expect(out).toBe("<p>- not a list\n# not a heading</p>");
+  });
+
+  it("escapes block syntax in a mention that starts the line after a hard break", () => {
+    const mention = { type: "mention", attrs: { text: "> q" } };
+    const out = html(adfToMarkdown(doc(p(t("a"), { type: "hardBreak" }, mention))));
+    expect(out).toBe("<p>a<br />\n&gt; q</p>");
+  });
+
+  it("does not escape the same characters mid-line", () => {
+    expect(adfToMarkdown(doc(p(t("a - b # c > d 1. e"))))).toBe("a - b # c > d 1. e");
   });
 });
