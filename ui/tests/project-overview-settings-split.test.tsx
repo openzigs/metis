@@ -73,6 +73,12 @@ vi.mock("@/components/projects/inference-profile-card", () => ({
 }));
 vi.mock("@/components/projects/quarantine-panel", () => ({ QuarantinePanel: card("quarantine") }));
 vi.mock("@/components/projects/chronicle-panel", () => ({ ChroniclePanel: card("chronicle") }));
+// #2452 — the Approval gate card, given the project it is for.
+vi.mock("@/components/publishing/approval-gate-card", () => ({
+  ApprovalGateSettingsCard: ({ projectId }: { projectId: string }) => (
+    <div data-testid="card-approval-gate">{projectId}</div>
+  ),
+}));
 
 import ProjectOverviewPage from "@/app/(authed)/projects/[id]/page";
 import ProjectSettingsPage from "@/app/(authed)/projects/[id]/settings/page";
@@ -133,6 +139,11 @@ describe("project Overview page", () => {
 });
 
 describe("project Settings page (⚙)", () => {
+  it("#2452 — hosts the Approval gate card, where self-approval is set", async () => {
+    render(<ProjectSettingsPage />, { wrapper: makeWrapper({ initialUser: TEST_USER }) });
+    expect(await screen.findByTestId("card-approval-gate")).toHaveTextContent("p1");
+  });
+
   it("hosts every settings card, quarantine, chronicle and archive", async () => {
     render(<ProjectSettingsPage />, { wrapper: makeWrapper({ initialUser: TEST_USER }) });
     expect(

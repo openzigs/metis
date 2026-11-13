@@ -50,7 +50,7 @@ export function ApprovalGateSettingsCard({ projectId }: { projectId: string }) {
   const disabled = gate.isLoading || update.isPending || !canToggle;
 
   return (
-    <Card className="p-4" data-testid="approval-gate-card">
+    <Card id="approval-gate" className="scroll-mt-4 p-4" data-testid="approval-gate-card">
       <h2 className="text-sm font-semibold">Approval gate</h2>
       <p className="mt-1 text-xs text-muted-foreground">
         When enabled, publishing issue drafts and exporting requirements or generated documents is

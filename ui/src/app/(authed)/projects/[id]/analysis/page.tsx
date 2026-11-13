@@ -1568,7 +1568,7 @@ export default function AnalysisPage(): React.ReactElement {
                           {/* #2347 — what Approve does and how a formal review
                             differs, at the point of choosing (not once approved). */}
                           {req.reviewStatus !== "approved" ? (
-                            <ApprovalLadderNote className="mt-1" />
+                            <ApprovalLadderNote className="mt-1" projectId={projectId} />
                           ) : null}
                           {/* Epic #34 (AC4) — assignee picker + SLA badge. */}
                           <RequirementCollabRow

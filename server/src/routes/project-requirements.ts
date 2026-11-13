@@ -15,6 +15,7 @@
  */
 import { Router, type Request, type Response } from "express";
 import { z } from "zod";
+import { hasPermission } from "@metis/shared";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
 import { requireProjectAccess } from "../middleware/require-project-access.js";
@@ -49,7 +50,18 @@ export function projectRequirementsRouter(): Router {
           issues: parsed.error.flatten(),
         });
       }
-      const data = await listProjectRequirements(String(req.params.projectId), parsed.data);
+      // #2452 — rows the caller wrote or edited say so when the project does
+      // not allow self-approval, so the list explains Approve before the click.
+      const data = await listProjectRequirements(
+        String(req.params.projectId),
+        parsed.data,
+        req.user
+          ? {
+              userId: req.user.userId,
+              canApprove: hasPermission(req.user.role, "requirement.approve"),
+            }
+          : undefined,
+      );
       res.json({ success: true, data });
     },
   );

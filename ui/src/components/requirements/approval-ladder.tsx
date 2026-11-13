@@ -20,9 +20,20 @@
  * it, nor sign off their own review, unless the project allows self-approval.
  */
 
-/** #2436 — the maker-checker rule, in one sentence, wherever approval is offered. */
+import Link from "next/link";
+
+/**
+ * #2436 — the maker-checker rule, in one sentence, wherever approval is offered.
+ * #2452 — it names Project settings, where an analyst looks for a project-wide
+ * rule; the setting is also on Deliverables → Publish.
+ */
 export const SELF_APPROVAL_RULE =
-  "You cannot approve a requirement you wrote or edited, unless the project allows self-approval (Publishing → Approval gate).";
+  "You cannot approve a requirement you wrote or edited, unless the project allows self-approval (Project settings → Approval gate).";
+
+/** #2452 — where the self-approval setting is, as a link: its card on Project settings. */
+export function approvalGateSettingsHref(projectId: string): string {
+  return `/projects/${encodeURIComponent(projectId)}/settings#approval-gate`;
+}
 
 /** One line at the point of choosing: what Approve does, and how a review differs. */
 export const APPROVAL_LADDER_NOTE = `Approve marks it approved yourself, with no reviewer and no baseline. ${SELF_APPROVAL_RULE} A formal review (on the Requirements tab: Request review of the rows you tick, or of a whole change request) asks colleagues to sign off a set and creates a baseline; if they reject it, every requirement in it is rejected, approved ones included.`;
@@ -43,13 +54,32 @@ export const APPROVAL_LADDER_RUNGS: ReadonlyArray<{ name: string; text: string }
   },
 ];
 
-export function ApprovalLadderNote({ className = "" }: { className?: string }) {
+export function ApprovalLadderNote({
+  className = "",
+  projectId,
+}: {
+  className?: string;
+  /** #2452 — when given, the note links straight to the self-approval setting. */
+  projectId?: string;
+}) {
   return (
     <p
       className={`text-xs text-muted-foreground ${className}`.trim()}
       data-testid="approval-ladder-note"
     >
       {APPROVAL_LADDER_NOTE}
+      {projectId ? (
+        <>
+          {" "}
+          <Link
+            href={approvalGateSettingsHref(projectId)}
+            className="underline underline-offset-2"
+            data-testid="approval-gate-settings-link"
+          >
+            Self-approval setting
+          </Link>
+        </>
+      ) : null}
     </p>
   );
 }
