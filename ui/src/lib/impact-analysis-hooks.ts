@@ -27,6 +27,9 @@ export const impactAnalysisKeys = {
   list: () => [...impactAnalysisKeys.all, "list"] as const,
   /** #61 — under `list()`, so invalidating the list refreshes every project's too. */
   projectList: (projectId: string) => [...impactAnalysisKeys.list(), projectId] as const,
+  /** #2345 — the runs started from one change request; also under `list()`. */
+  changeRequestList: (analysisId: string) =>
+    [...impactAnalysisKeys.list(), "change-request", analysisId] as const,
   detail: (id: string) => [...impactAnalysisKeys.all, "detail", id] as const,
   drift: (id: string) => [...impactAnalysisKeys.all, "drift", id] as const,
   usageClassification: (projectId: string) =>

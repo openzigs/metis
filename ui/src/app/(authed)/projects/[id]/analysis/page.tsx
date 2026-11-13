@@ -200,6 +200,7 @@ import { ChangeRequestSummary } from "@/components/analysis/change-request-summa
 import { proposedChangeRequestTitle } from "@/components/analysis/change-request-steps";
 import { ChangeRequestStepHeader } from "@/components/analysis/change-request-step-header";
 import { ChangeRequestReviewState } from "@/components/analysis/change-request-review-state";
+import { ChangeRequestChecks } from "@/components/analysis/change-request-checks";
 import {
   CHANGE_REQUEST_TITLE_MAX,
   normaliseChangeRequestTitle,
@@ -1213,6 +1214,18 @@ export default function AnalysisPage(): React.ReactElement {
               />
               {/* #2343 — its formal review as a state: assigned to you, rejected, … */}
               <ChangeRequestReviewState projectId={projectId} analysisId={detail.data.id} />
+              {/* #2345 — impact and the portfolio check, started from here with
+              this change request's requirements, and their results. */}
+              <ChangeRequestChecks
+                projectId={projectId}
+                snapshot={detail.data}
+                title={
+                  detail.data.title?.trim() ||
+                  runLabels.get(detail.data.id)?.primary ||
+                  "Change request"
+                }
+                canRun={canRunAnalysis}
+              />
 
               {/* Issue #994 — what a Spec Kit handoff sent and left out, on every
               tab and while the run is still going. Nothing for other runs. */}

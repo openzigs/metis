@@ -9,6 +9,7 @@ import {
   STEP_STATE_LABELS,
   agentState,
   deriveChangeRequestSteps,
+  latestResult,
   portfolioCheckTally,
   requirementTally,
   runOptionsFromMetadata,
@@ -108,6 +109,20 @@ const CASES: Record<ChangeRequestStepKey, Case[]> = {
     ["run cancelled first", { status: "cancelled", codeAgent: "absent" }, "needs-you"],
     ["looking at code", { status: "running", codeAgent: "running" }, "in-progress"],
     ["completed with no code row", { codeAgent: "absent" }, "not-applicable"],
+    // #2345 — the newest impact analysis started from the change request decides.
+    ["latest impact completed", { latestImpact: { id: "ia-1", status: "completed" } }, "done"],
+    [
+      "latest impact running, code agent failed",
+      { codeAgent: "failed", latestImpact: { id: "ia-2", status: "running" } },
+      "in-progress",
+    ],
+    ["latest impact pending", { latestImpact: { id: "ia-2", status: "pending" } }, "in-progress"],
+    ["latest impact failed", { latestImpact: { id: "ia-3", status: "failed" } }, "needs-you"],
+    ["latest impact of an unknown status", { latestImpact: { id: "x", status: "?" } }, "unknown"],
+    ["impact analyses loading", { latestImpact: "loading" }, "unknown"],
+    ["impact analyses refused", { latestImpact: "failed" }, "unknown"],
+    ["none started, no code agent", { agentKeys: ["document"], latestImpact: null }, "not-started"],
+    ["none started, code mapped", { codeAgent: "completed", latestImpact: null }, "done"],
   ],
   portfolio: [
     ["no products", { products: 0 }, "not-applicable"],
@@ -134,6 +149,45 @@ const CASES: Record<ChangeRequestStepKey, Case[]> = {
       "no products, whatever the checks say",
       { products: 0, portfolioChecks: { ...NO_CHECKS, completed: 1 } },
       "not-applicable",
+    ],
+    // #2345 — the newest check decides, even when an older one completed.
+    [
+      "latest check running, an older one completed",
+      {
+        products: 3,
+        portfolioChecks: {
+          ...NO_CHECKS,
+          completed: 1,
+          inFlight: 1,
+          latest: { id: "b", status: "running" },
+        },
+      },
+      "in-progress",
+    ],
+    [
+      "latest check failed, an older one completed",
+      {
+        products: 3,
+        portfolioChecks: {
+          ...NO_CHECKS,
+          completed: 1,
+          failed: 1,
+          latest: { id: "b", status: "failed" },
+        },
+      },
+      "needs-you",
+    ],
+    [
+      "latest check completed before approval",
+      {
+        products: 3,
+        portfolioChecks: {
+          ...NO_CHECKS,
+          completed: 1,
+          latest: { id: "a", status: "completed", preApproval: true },
+        },
+      },
+      "done",
     ],
   ],
   review: [
@@ -235,9 +289,56 @@ describe("#2341 — deriveChangeRequestSteps", () => {
       ]),
     ).toEqual({ completed: 2, inFlight: 2, failed: 1 });
     expect(portfolioCheckTally([])).toEqual(NO_CHECKS);
+    // #2345 — the first check (newest first) is the latest, with its pre-approval label.
+    expect(
+      portfolioCheckTally([
+        { id: "new", status: "running", preApproval: true },
+        { id: "old", status: "completed", preApproval: false },
+      ]).latest,
+    ).toEqual({ id: "new", status: "running", preApproval: true });
+    expect(
+      portfolioCheckTally([{ id: "new", status: "completed", preApproval: false }]).latest,
+    ).toEqual({ id: "new", status: "completed" });
     expect(stepOf("portfolio", { products: 2, portfolioChecks: "failed" }).reason).toBe(
       "Couldn't check the portfolio.",
     );
+  });
+
+  it("#2345 — says in words which result the Impact and Portfolio steps read", () => {
+    expect(stepOf("impact", { latestImpact: { id: "ia", status: "completed" } }).reason).toBe(
+      "The latest impact analysis is complete.",
+    );
+    expect(stepOf("impact", { latestImpact: { id: "ia", status: "failed" } }).reason).toBe(
+      "The latest impact analysis failed.",
+    );
+    expect(stepOf("impact", { latestImpact: "failed" }).reason).toBe(
+      "Couldn't check the impact analyses.",
+    );
+    expect(stepOf("impact", { agentKeys: ["document"], latestImpact: null }).reason).toBe(
+      "Run an impact analysis from this change request.",
+    );
+    const preApproval = {
+      products: 3,
+      portfolioChecks: {
+        ...NO_CHECKS,
+        completed: 1,
+        latest: { id: "a", status: "completed", preApproval: true },
+      },
+    };
+    expect(stepOf("portfolio", preApproval).reason).toBe(
+      "The latest portfolio check is complete (run on unapproved requirements).",
+    );
+    // Before approval the step offers the check rather than asking for approval first.
+    expect(stepOf("portfolio", { products: 3 }).reason).toBe(
+      "Run a portfolio check; before approval it is labelled as on unapproved requirements.",
+    );
+    expect(latestResult([])).toBeNull();
+    expect(
+      latestResult([
+        { id: "b", status: "running" },
+        { id: "a", status: "completed" },
+      ]),
+    ).toEqual({ id: "b", status: "running" });
   });
 
   it("is exported from the package barrel, for the server and the UI alike", () => {

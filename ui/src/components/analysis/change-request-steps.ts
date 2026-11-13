@@ -9,11 +9,30 @@
  */
 import { CHANGE_REQUEST_TITLE_MAX, type ChangeRequestStepKey } from "@metis/shared";
 
-/** Where each step's existing screen is. */
-export function stepHref(key: ChangeRequestStepKey, projectId: string, analysisId: string): string {
+/** #2345 — the id of the change request's "Impact and portfolio" card, the steps' anchor. */
+export const CHANGE_REQUEST_CHECKS_ID = "change-request-checks";
+
+/** #2345 — the newest impact analysis and portfolio check started from the change request. */
+export interface LatestChecks {
+  impact?: string | null;
+  portfolio?: string | null;
+}
+
+/**
+ * Where each step's existing screen is. #2345 — Impact and Portfolio go to the
+ * newest result started from this change request, and before there is one to
+ * the change request's own card that starts it: never to a global page.
+ */
+export function stepHref(
+  key: ChangeRequestStepKey,
+  projectId: string,
+  analysisId: string,
+  latest: LatestChecks = {},
+): string {
   const p = encodeURIComponent(projectId);
   const run = (tab: string) =>
     `/projects/${p}/analysis?${new URLSearchParams({ analysisId, tab }).toString()}`;
+  const checks = `/projects/${p}/analysis?${new URLSearchParams({ analysisId }).toString()}#${CHANGE_REQUEST_CHECKS_ID}`;
   switch (key) {
     case "read":
       return run("agents");
@@ -24,9 +43,9 @@ export function stepHref(key: ChangeRequestStepKey, projectId: string, analysisI
     case "policy":
       return run("findings");
     case "impact":
-      return `/projects/${p}/impact`;
+      return latest.impact ? `/impact-analyses/${encodeURIComponent(latest.impact)}` : checks;
     case "portfolio":
-      return "/portfolio";
+      return latest.portfolio ? `/portfolio/${encodeURIComponent(latest.portfolio)}` : checks;
     case "review":
       return `/projects/${p}/requirements`;
     case "handoff":

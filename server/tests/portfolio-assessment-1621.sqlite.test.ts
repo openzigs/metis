@@ -148,6 +148,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         // #2272 — none given: no document, and nothing listed as not checked.
         sourceDocumentId: null,
         notChecked: [],
+        // #2345 — none given: no change request, and not run before approval.
+        sourceAnalysisId: null,
+        preApproval: false,
         scope: "all-accessible",
         productIds: ["prod-a", "prod-b"],
         status: "completed",

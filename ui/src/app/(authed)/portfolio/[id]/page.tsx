@@ -12,10 +12,11 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useMutation } from "@tanstack/react-query";
-import type { PortfolioAssessmentView } from "@metis/shared";
+import { PORTFOLIO_PRE_APPROVAL_LABEL, type PortfolioAssessmentView } from "@metis/shared";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { PageHeader } from "@/components/ui/page-header";
+import { ChangeRequestBackLink } from "@/components/analysis/change-request-back-link";
 import { portfolioApi } from "@/lib/portfolio-api";
 import { triggerDownload } from "@/lib/plugins-api";
 import { isFinalReadError, isTerminalStatus, usePortfolioAssessment } from "@/lib/portfolio-hooks";
@@ -100,15 +101,41 @@ export default function PortfolioAssessmentPage() {
   return (
     <div className="space-y-6 p-2 md:p-0" data-testid="portfolio-detail-root">
       <PageHeader
-        eyebrow={back}
+        eyebrow={
+          // #2345 — started from a change request: one click returns to it.
+          view.changeRequest ? (
+            <ChangeRequestBackLink
+              changeRequest={view.changeRequest}
+              className="hover:underline"
+              testId="portfolio-detail-back-to-change-request"
+            />
+          ) : (
+            back
+          )
+        }
         title="Portfolio coverage"
         actions={<ExportButton view={view} />}
       />
+      {view.preApproval ? (
+        // #2345 — a check started before its requirements were approved says so.
+        <p
+          role="note"
+          className="rounded-md border border-warning/60 px-3 py-2 text-sm"
+          data-testid="portfolio-detail-pre-approval"
+        >
+          {PORTFOLIO_PRE_APPROVAL_LABEL}: some requirements checked were not approved when the check
+          started, so this result may change once they are.
+        </p>
+      ) : null}
 
       <section aria-labelledby="portfolio-statement-heading" className="space-y-1">
         <h2 id="portfolio-statement-heading" className="text-sm font-medium text-muted-foreground">
           {/* #2272 — a check of a document checks each requirement read from it. */}
-          {view.sourceDocumentId ? "Document" : "Requirement"}
+          {view.sourceDocumentId
+            ? "Document"
+            : view.sourceAnalysisId
+              ? "Change request"
+              : "Requirement"}
         </h2>
         <p className="whitespace-pre-wrap text-sm" data-testid="portfolio-detail-statement">
           {view.statement}

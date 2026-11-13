@@ -116,6 +116,34 @@ describe("portfolio assessment page", () => {
     expect(await axeViolations(container)).toEqual([]);
   });
 
+  it("#2345 — a change request's check before approval is labelled, and links back to it", async () => {
+    api.get.mockResolvedValue({
+      ...fiveStates(),
+      sourceAnalysisId: "an-1",
+      preApproval: true,
+      statement: 'Requirements of change request "Password reset"',
+      changeRequest: { id: "an-1", projectId: "p1", title: "Password reset" },
+    });
+    const { container } = render(<PortfolioAssessmentPage />, { wrapper: makeWrapper() });
+    expect(await screen.findByRole("heading", { name: "Change request" })).toBeVisible();
+    expect(screen.getByTestId("portfolio-detail-pre-approval")).toHaveTextContent(
+      "Run on unapproved requirements: some requirements checked were not approved",
+    );
+    expect(screen.getByTestId("portfolio-detail-back-to-change-request")).toHaveAttribute(
+      "href",
+      "/projects/p1/analysis?analysisId=an-1",
+    );
+    expect(await axeViolations(container)).toEqual([]);
+  });
+
+  it("#2345 — a check not started from a change request keeps the global back link, unlabelled", async () => {
+    api.get.mockResolvedValue({ ...fiveStates(), preApproval: false, changeRequest: null });
+    render(<PortfolioAssessmentPage />, { wrapper: makeWrapper() });
+    expect(await screen.findByText("← Back to portfolio coverage")).toBeVisible();
+    expect(screen.queryByTestId("portfolio-detail-pre-approval")).toBeNull();
+    expect(screen.queryByTestId("portfolio-detail-back-to-change-request")).toBeNull();
+  });
+
   it("#2272 — a check still running lists nothing as not checked yet", async () => {
     api.get.mockResolvedValue({
       ...view({ status: "running" }),
@@ -328,6 +356,47 @@ describe("portfolio entry page", () => {
     );
     await user.click(screen.getByRole("button", { name: "Type a statement instead" }));
     expect(screen.getByLabelText("Requirement statement")).toBeVisible();
+  });
+
+  it("#2345 — arrives from a change request, sends it, labels a pre-approval check in its list, and links back", async () => {
+    const user = userEvent.setup();
+    vi.mocked(useSearchParams).mockReturnValue(
+      new URLSearchParams({
+        analysisId: "an-1",
+        title: "Password reset",
+        projectId: "p1",
+      }) as never,
+    );
+    api.list.mockResolvedValue([
+      {
+        id: "pa-1",
+        statement: 'Requirements of change request "Password reset"',
+        scope: "all-accessible",
+        status: "completed",
+        verdict: "partial",
+        productCount: 2,
+        hostProductId: null,
+        hostProductName: null,
+        sourceAnalysisId: "an-1",
+        preApproval: true,
+        createdById: "u1",
+        createdAt: "2026-11-01T10:00:00.000Z",
+        updatedAt: "2026-11-01T10:00:00.000Z",
+      },
+    ]);
+    api.create.mockResolvedValue({ id: "pa-new" });
+    render(<PortfolioPage />, { wrapper: makeWrapper() });
+    expect(screen.getByTestId("portfolio-form-change-request")).toHaveTextContent("Password reset");
+    expect(screen.getByTestId("portfolio-back-to-change-request")).toHaveAttribute(
+      "href",
+      "/projects/p1/analysis?analysisId=an-1",
+    );
+    const items = await screen.findAllByTestId("portfolio-recent-item");
+    expect(items[0]).toHaveTextContent("Run on unapproved requirements");
+    await user.click(screen.getByRole("button", { name: "Check coverage" }));
+    await waitFor(() =>
+      expect(api.create).toHaveBeenCalledWith({ analysisId: "an-1", scope: "all-accessible" }),
+    );
   });
 
   it("#2272 — arrives with several products chosen", async () => {

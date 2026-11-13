@@ -18,6 +18,7 @@
 import { Router, type Request } from "express";
 import { z, ZodError } from "zod";
 import {
+  MAX_IMPACT_REQUIREMENT_IDS,
   createImpactAnalysisSchema,
   rerunImpactAnalysisSchema,
   type ApiResponse,
@@ -103,6 +104,12 @@ import { readDocumentOnce, type ReadingCacheDeps } from "../lib/document-reader/
 import type { AIProvider } from "../lib/ai/types.js";
 import { createChildLogger } from "../lib/logger.js";
 import { listImpactAnalyses } from "../lib/impact-analysis/impact-analysis-read.js";
+import {
+  assertHasRequirements,
+  changeRequestRef,
+  loadChangeRequestSource,
+  readableChangeRequest,
+} from "../lib/analysis/change-request-source.js";
 import { loadAccessibleImpactDetail } from "../lib/impact-analysis/impact-detail-access.js";
 import { diffImpactRuns } from "../lib/impact-analysis/impact-drift.js";
 import type { ImpactDriftReport } from "@metis/shared";
@@ -733,6 +740,9 @@ async function assertDocumentReadable(
   if (!allowed) throw notFound();
 }
 
+/** #2345 — `GET /?analysisId=`: the runs started from one change request. */
+const listQuerySchema = z.object({ analysisId: z.string().min(1).max(64).optional() });
+
 /** #963 — optional body for the Jira publish: an explicit run project to bill the issue to. */
 const publishImpactToJiraSchema = z.object({
   projectId: z.string().min(1).max(200).optional(),
@@ -1058,7 +1068,16 @@ export function impactAnalysisRouter(deps: UsageClassificationRouterDeps = {}): 
       const projectIds = [...new Set(body.projectIds)];
       await assertProjectsAccessible(actor, projectIds);
       if (body.documentId) await assertDocumentReadable(actor, body.documentId, "new-source");
-      const requirementIds = body.requirementIds ?? [];
+      // #2345 — a change request's own requirements, read here with access (never
+      // from the form). Its project must be in the run: a run id of a project the
+      // caller did not ask about (or cannot read) is refused.
+      const changeRequest = body.analysisId
+        ? await loadChangeRequestSource(body.analysisId, async (pid) => projectIds.includes(pid))
+        : null;
+      if (changeRequest) assertHasRequirements(changeRequest);
+      const requirementIds = changeRequest
+        ? changeRequest.requirements.slice(0, MAX_IMPACT_REQUIREMENT_IDS).map((r) => r.id)
+        : (body.requirementIds ?? []);
       await assertRequirementsReadable(actor, requirementIds, "new-source");
 
       // The flag-gated LLM collaborators (#931 seeder, #936 table filter, #1001
@@ -1071,6 +1090,7 @@ export function impactAnalysisRouter(deps: UsageClassificationRouterDeps = {}): 
           documentId: body.documentId ?? null,
           text: body.text ?? null,
           ...(requirementIds.length > 0 ? { requirementIds } : {}),
+          ...(changeRequest ? { sourceAnalysisId: changeRequest.id } : {}),
           actorId: actor.id,
           includeSchemaImpact: body.includeSchemaImpact,
           includeDependencies: body.includeDependencies,
@@ -1106,16 +1126,35 @@ export function impactAnalysisRouter(deps: UsageClassificationRouterDeps = {}): 
         ? null
         : await listMemberAccessibleProjectIds(actor);
       const projectId = typeof req.query.projectId === "string" ? req.query.projectId : "";
+      // #2345 — `?analysisId=` lists the runs started from one change request,
+      // newest first; each row is still filtered on the caller's projects.
+      const analysisId = listQuerySchema.parse(req.query).analysisId;
       if (projectId && accessibleProjectIds && !accessibleProjectIds.includes(projectId)) {
+        res.json(ok([]));
+        return;
+      }
+      // #2345 — a change request whose project the caller cannot read lists
+      // nothing, the same answer as an unknown one: a reader of only a project
+      // co-selected in a run started from it learns nothing of it.
+      if (
+        analysisId &&
+        !(await readableChangeRequest(
+          analysisId,
+          async (pid) => accessibleProjectIds === null || accessibleProjectIds.includes(pid),
+        ))
+      ) {
         res.json(ok([]));
         return;
       }
       const rows = await listImpactAnalyses(
         // #88 — `actorId` keeps a pre-#70 run with no recoverable projects
         // visible to the actor who started it, and to nobody else.
-        projectId
-          ? { accessibleProjectIds, actorId: actor.id, projectId }
-          : { accessibleProjectIds, actorId: actor.id },
+        {
+          accessibleProjectIds,
+          actorId: actor.id,
+          ...(projectId ? { projectId } : {}),
+          ...(analysisId ? { sourceAnalysisId: analysisId } : {}),
+        },
       );
       res.json(ok(rows));
     } catch (err) {
@@ -1128,7 +1167,10 @@ export function impactAnalysisRouter(deps: UsageClassificationRouterDeps = {}): 
     try {
       const actor = actorOf(req);
       const detail = await loadAccessibleImpactDetail(actor, String(req.params.id));
-      res.json(ok(detail));
+      // #2345 — the change request it was started from, for the link back: looked
+      // up among the run's projects only, every one of which the reader can read.
+      const changeRequest = await changeRequestRef(detail.sourceAnalysisId, detail.projectIds);
+      res.json(ok({ ...detail, changeRequest }));
     } catch (err) {
       next(asAppError(err));
     }
@@ -1203,6 +1245,8 @@ export function impactAnalysisRouter(deps: UsageClassificationRouterDeps = {}): 
           documentId: original.documentId,
           text: original.sourceText,
           ...(requirementIds.length > 0 ? { requirementIds } : {}),
+          // #2345 — a re-run of a change request's run is that change request's too.
+          ...(original.sourceAnalysisId ? { sourceAnalysisId: original.sourceAnalysisId } : {}),
           actorId: actor.id,
           rerunOfId: id,
         },

@@ -287,6 +287,9 @@ describe("portfolio assessment schemas", () => {
       sourceRequirementId: null,
       sourceProjectId: null,
       sourceDocumentId: null,
+      // #2345 — no change request, and not run before approval.
+      sourceAnalysisId: null,
+      preApproval: false,
       scope: "product",
       productIds: ["p"],
       status: "pending",
