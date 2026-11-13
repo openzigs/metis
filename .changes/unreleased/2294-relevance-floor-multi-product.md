@@ -8,7 +8,8 @@ section: Changed
   too weak, the answer says the sources don't show this, and the label reads
   **Insufficient evidence**. The label also lists the files the excerpts came from, each named
   with its project.
-- When the relevance floor leaves out a weak match, the next match that clears it takes the
-  freed place, so the answer still gets up to 8 usable excerpts.
+- When the relevance floor leaves out a weak match, matches that clear it fill the freed
+  places, so the answer still gets up to 8 usable excerpts. With several searches the deeper
+  results are ranked together again, so the order of the excerpts can shift.
 - When the floor leaves out every new match but excerpts from your last answer are carried
   over, the answer is told that this question's own search found nothing usable.

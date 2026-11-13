@@ -281,7 +281,7 @@ function emptyResult(projectsRejected = 0): FederatedSearchResult {
  * #2294 — each project's ranking with the hits below chat's absolute floor
  * taken out, as `applyRelevanceFloor` takes them out of one project's list: a
  * dense hit must reach the floor, and a keyword-only hit (no cosine) stays only
- * when some dense hit of the turn cleared it. `null` when the floor is off.
+ * when some dense hit of its own project cleared it. `null` when the floor is off.
  */
 function applyAbsoluteFloor(
   rankings: readonly ProjectRanking[],
@@ -291,7 +291,10 @@ function applyAbsoluteFloor(
   const all = rankings.flatMap((r) => r.hits);
   const floor = floorFor(all.flatMap((h) => (h.embeddingModel ? [h.embeddingModel] : [])));
   if (!(floor > 0)) return null;
-  const keep = floorKeep(all, floor);
+  // Per project, as for one project: a keyword-only hit is vouched for by a
+  // dense hit of its own project, never by another product's.
+  const keeps = new Map(rankings.map((r) => [r.projectId, floorKeep(r.hits, floor)]));
+  const keep = (h: FederatedHit) => keeps.get(h.projectId)?.(h) ?? true;
   return {
     keep,
     rankings: rankings.map((r) => {

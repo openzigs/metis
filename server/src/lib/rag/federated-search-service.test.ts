@@ -692,7 +692,7 @@ describe("FederatedSearchService", () => {
       expect(result.projectsWithoutHits).toEqual(["proj-a"]);
     });
 
-    it("keeps a keyword-only hit only when a dense hit cleared the floor", async () => {
+    it("keeps a keyword-only hit only when a dense hit of its own project cleared the floor", async () => {
       mockGetAccessible.mockResolvedValue([
         { id: "proj-a", name: "A" },
         { id: "proj-b", name: "B" },
@@ -709,7 +709,9 @@ describe("FederatedSearchService", () => {
         relevanceFloor: 0,
         absoluteFloor: floorAt(0.55),
       });
-      expect(kept.hits.map((h) => h.chunkId).sort()).toEqual(["a-kw", "a1", "b-kw"]);
+      // B has no dense hit of its own: A's strong hit does not vouch for B's keyword-only one.
+      expect(kept.hits.map((h) => h.chunkId).sort()).toEqual(["a-kw", "a1"]);
+      expect(kept.belowFloor).toBe(1);
 
       const weak = buildMockKnowledgeService({
         "proj-a": [lexical("a-kw"), scored("a1", 0.3)],
