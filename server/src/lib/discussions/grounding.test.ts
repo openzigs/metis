@@ -146,8 +146,9 @@ describe("resolveDiscussionTools", () => {
       native: false,
     });
     expect(rt!.native).toBe(false);
-    // The code tools, in the allowlist's order; #2327's primitives follow their key (off here).
-    expect(rt!.toolset.tools.map((t) => t.name)).toEqual(DISCUSSION_TOOL_ALLOWLIST.slice(1, 4));
+    // The code tools, in the allowlist's order (#2326's get_index_status included);
+    // #2327's primitives follow their key (off here).
+    expect(rt!.toolset.tools.map((t) => t.name)).toEqual(DISCUSSION_TOOL_ALLOWLIST.slice(1, 5));
     expect(rt!.note).toContain("read_file_slice");
   });
 
