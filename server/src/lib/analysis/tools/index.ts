@@ -36,7 +36,7 @@ export { CHAT_CODE_TOOL_NAMES } from "./chat-code-tool-names.js";
 export type ChatCodeToolDeps = Partial<SearchSymbolsDeps> & {
   /**
    * #2329 — offer `search_code_context`. Defaults to `CHAT_CODE_CONTEXT_TOOL`
-   * (off until measured).
+   * (off: measured in #2412, no gain beyond run-to-run spread).
    */
   codeContext?: boolean;
 };

@@ -23,9 +23,13 @@
  *      span larger than what is left is cut down to fit (signature first, the
  *      range to read next named), never skipped silently; one that cannot fit
  *      even its signature is COUNTED in the notes, never named by locator: the
- *      #2242 citation verifier reads every `path:a-b` in a code tool's text as
- *      lines that were read, so a locator for an unreturned span would let an
- *      answer citing it pass as verified.
+ *      #2242 citation verifier reads the `path:a-b` in a span's `[n]` head line
+ *      as lines that were read (#2412: only there, never in the quoted code), so
+ *      a locator for an unreturned span would let an answer citing it pass as
+ *      verified;
+ *   6. #2412 — each file is read once per call; a file over `maxFileBytes` is
+ *      not read (counted, never located), and a line past `MAX_LINE_CHARS` is
+ *      cut with the count of characters cut.
  *
  * A hit whose code graph names no repository (a legacy graph, `repoConnectionId`
  * null) is read as `search_code_symbols` and chat's `read_file_slice` read it:
@@ -50,9 +54,10 @@
  * (`isSensitiveInClone`: as named AND where the path really resolves). A03 — line ranges come from `CodeSymbol` rows, are
  * clamped to the file, and no path comes from model text.
  *
- * Off by default (`CHAT_CODE_CONTEXT_TOOL`): it becomes a default chat tool
- * only once the paired `pnpm eval:ba-qa` arms show turns per answer falling
- * without facts stated or citation precision regressing. It is a good first
+ * Off by default (`CHAT_CODE_CONTEXT_TOOL`): #2412 measured the paired
+ * `pnpm eval:ba-qa` arms (`tools-only`, `tools-context`), and facts stated and
+ * citation precision did not improve beyond run-to-run spread, nor did turns
+ * per answer fall (`eval-data/README.md`). It is a good first
  * call, never the only one: the other code tools stay offered beside it.
  */
 import type { CodeCitationRef, RetrievalMatcher } from "@metis/shared";
