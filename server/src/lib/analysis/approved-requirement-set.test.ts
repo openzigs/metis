@@ -827,7 +827,7 @@ describe("#2449 — an elicited NFR offered at the checkpoint is promoted as tha
     ),
     type: "non-functional",
     priority: "should-have",
-    elicitedNfr: { nfrCategory: "security", evidenceFindingIndexes: [2, 0] },
+    elicitedNfr: { nfrCategory: "security", evidenceFindingIds: ["f-c", "f-a"] },
   };
   // An item whose title the NFR would win by the title join.
   const expiry = synth("Reset link expiry after 30 minutes", {
@@ -840,6 +840,7 @@ describe("#2449 — an elicited NFR offered at the checkpoint is promoted as tha
       structured: [nfrReq],
       approvedIds: new Set(["NFR-abc"]),
       synthesis: { summary: "s", requirements: [expiry] },
+      findingIdsByIndex: ["f-a", "f-b", "f-c"],
     });
     expect(plan.output.requirements).toEqual([
       {
@@ -856,6 +857,23 @@ describe("#2449 — an elicited NFR offered at the checkpoint is promoted as tha
     ]);
     expect(plan.pairings).toEqual([{ structuredId: "NFR-abc", synthesisKeys: [] }]);
     expect(plan.ambiguous).toEqual([]);
+  });
+
+  it("cites its findings as they stand at promotion, by id: a re-run that reorders or replaces them never misattributes", () => {
+    const evidence = (findingIdsByIndex?: string[]) =>
+      planApprovedRequirementSet({
+        structured: [nfrReq],
+        approvedIds: new Set(["NFR-abc"]),
+        synthesis: { summary: "s", requirements: [] },
+        ...(findingIdsByIndex ? { findingIdsByIndex } : {}),
+      }).output.requirements[0]!.evidenceFindingIndexes;
+    // Reordered: each id follows its finding to its new index.
+    expect(evidence(["f-c", "f-x", "f-a"])).toEqual([0, 2]);
+    // Replaced: an id that names no finding now is dropped, not pointed elsewhere.
+    expect(evidence(["f-x", "f-y", "f-a"])).toEqual([2]);
+    expect(evidence(["f-x", "f-y", "f-z"])).toEqual([]);
+    // No numbering given: cites nothing rather than a guess.
+    expect(evidence()).toEqual([]);
   });
 
   it("leaves the item to the reviewed requirement it restates, and is no gap in the comparison", () => {

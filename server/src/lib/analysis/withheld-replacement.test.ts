@@ -386,6 +386,22 @@ describe("planWithheldApply / diffWithheldReplacement (#780)", () => {
     expect(planWithheldApply(rows, [reworded]).map((s) => s.kind)).toEqual(["keep"]);
   });
 
+  it("keeps an elicited NFR whose title only swaps a proposed row's roles (#2449)", () => {
+    const rows = [
+      current("nfr", "Users cannot read admin passwords", {
+        elicitedNfr: true,
+        kind: "non-functional",
+        nfrCategory: "security",
+        body: "No user can read an admin's password.",
+      }),
+    ];
+    const swapped = proposed("Admins cannot read user passwords", { kind: "functional" });
+    expect(planWithheldApply(rows, [swapped]).map((s) => s.kind)).toEqual(["keep", "insert"]);
+    expect(diffWithheldReplacement(WITHHELD, rows, [swapped]).removed[0]!.keepReason).toBe(
+      "elicited-nfr",
+    );
+  });
+
   it("keeps an elicited NFR with no category, which nothing but its title can restate (#1709)", () => {
     const rows = [tokensNfr({ nfrCategory: null })];
     expect(planWithheldApply(rows, [reworded]).map((s) => s.kind)).toEqual(["keep", "insert"]);

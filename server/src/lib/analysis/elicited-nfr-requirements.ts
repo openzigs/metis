@@ -129,48 +129,87 @@ export function sameSubjectWord(a: string, b: string): boolean {
 }
 
 /**
- * #2449 — words that join a title's phrase rather than say what it is about.
- * Deliberately not {@link GENERIC_WORDS}: "API uptime 99.9%" and "API latency
- * 99.9%" are two titles.
+ * #2449 — words a title can carry or leave out without changing what it says:
+ * articles, the copula, and the two modals of obligation ("Reset link must
+ * expire" says what "Reset link expires" says). Everything else is compared,
+ * in order. Deliberately not {@link GENERIC_WORDS}: "API uptime 99.9%" and
+ * "API latency 99.9%" are two titles. `should` is kept: it is a weaker
+ * obligation than `must`.
  */
-const TITLE_JOINERS = new Set<string>([
-  ...["a", "an", "the", "of", "for", "and", "or", "to", "in", "on", "at", "by", "with", "per"],
-  ...["is", "are", "be", "must", "should", "shall", "after", "within", "from", "its"],
+const TITLE_FILLERS = new Set<string>([
+  "a",
+  "an",
+  "the",
+  "is",
+  "are",
+  "be",
+  "must",
+  "shall",
+  "its",
 ]);
 
 /**
- * #2449 — whether two title words are one word in two forms: as
- * {@link sameSubjectWord} reads them, or one five-letter stem with endings of at
- * most three letters each (`expires` / `expiry`, `secure` / `security`).
+ * #2449 — words whose exact choice carries the meaning, so no other form or
+ * neighbour stands in for one: relations (`after` is not `within`, `from` is
+ * not `to`), negation and quantity. Each must appear as itself.
  */
-function sameTitleWord(a: string, b: string): boolean {
+const TITLE_EXACT_WORDS = new Set<string>([
+  ...["after", "before", "within", "during", "until", "from", "to", "into", "onto", "via"],
+  ...["of", "for", "in", "on", "at", "by", "with", "without", "per", "over", "under"],
+  ...["above", "below", "between", "than", "and", "or", "nor", "not", "no", "never"],
+  ...["cannot", "can", "only", "all", "any", "each", "every", "none", "more", "less"],
+  ...["least", "most", "max", "min", "should", "may"],
+]);
+
+/**
+ * #2449 — the endings by which two forms of one title word differ past a
+ * shared stem of five letters (`expir`-`es` / `expir`-`y`, `secur`-`e` /
+ * `secur`-`ity`). A closed set: an open one joins words that only share a
+ * prefix (`inter`-`nal` / `inter`-`val`, `media` / `media`-`n`).
+ */
+const TITLE_WORD_ENDINGS = new Set(["", "e", "s", "es", "y", "ies", "ity", "ed", "ing"]);
+const TITLE_STEM = 5;
+
+/**
+ * #2449 — whether two title words are one word in two forms: equal, as
+ * {@link sameSubjectWord} reads them, or one stem of at least five letters
+ * with a {@link TITLE_WORD_ENDINGS} ending each. A {@link TITLE_EXACT_WORDS}
+ * word is only ever itself.
+ */
+export function sameTitleWord(a: string, b: string): boolean {
+  if (a === b) return true;
+  if (TITLE_EXACT_WORDS.has(a) || TITLE_EXACT_WORDS.has(b)) return false;
   if (sameSubjectWord(a, b)) return true;
-  const STEM = 5;
-  const formOf = (w: string) => /^\p{L}+$/u.test(w) && w.length >= STEM && w.length <= STEM + 3;
-  return formOf(a) && formOf(b) && a.slice(0, STEM) === b.slice(0, STEM);
+  if (!/^\p{L}+$/u.test(a) || !/^\p{L}+$/u.test(b)) return false;
+  for (let k = Math.min(a.length, b.length); k >= TITLE_STEM; k--) {
+    if (a.slice(0, k) !== b.slice(0, k)) continue;
+    if (TITLE_WORD_ENDINGS.has(a.slice(k)) && TITLE_WORD_ENDINGS.has(b.slice(k))) return true;
+  }
+  return false;
 }
 
 /**
- * #2449 — whether two titles say the same thing in other word forms: every
- * word of each, joiners aside, is a word of the other ({@link sameTitleWord}),
- * numbers and signs exactly. "Reset link expiry after 30 minutes" restates
- * "Reset link expires after 30 minutes"; "… after 15 minutes" does not.
+ * #2449 — whether two titles say the same thing in other word forms: fillers
+ * aside ({@link TITLE_FILLERS}), the same words IN THE SAME ORDER, each pair
+ * one word ({@link sameTitleWord}), numbers and signs exactly. "Reset link
+ * expiry after 30 minutes" restates "Reset link expires after 30 minutes";
+ * "… after 15 minutes" and "… within 30 minutes" do not.
  *
- * A word one title adds is enough to keep them apart: "Password reset link
- * expiry" is not dropped as "Password reset link". A paraphrase ("must not
- * reveal account existence" for "account-enumeration protection") is not read
- * as one either. Both are offered at the approval checkpoint, marked as
- * elicited, where the analyst can reject them; a wider rule would drop an NFR
- * the set does not state, and nobody would see it.
+ * Recall first: a false match drops an NFR the analyst never sees, a missed
+ * one only lists a requirement the analyst can reject. So order matters
+ * ("Admins cannot read user passwords" is not "Users cannot read admin
+ * passwords", "from primary to secondary" not "from secondary to primary"), a
+ * word one title adds keeps them apart ("Password reset link expiry" is not
+ * "Password reset link"), and a paraphrase or reordering ("Session cookies are
+ * secured" for "Secure session cookies") is not read as a restatement. Each
+ * of those is offered at the approval checkpoint, marked as elicited.
  */
 export function restatesTitle(a: string, b: string): boolean {
-  const words = (title: string) => tokens(title).filter((t) => !TITLE_JOINERS.has(t));
+  const words = (title: string) => tokens(title).filter((t) => !TITLE_FILLERS.has(t));
   const x = words(a);
   const y = words(b);
-  if (x.length === 0 || y.length === 0) return false;
-  const covered = (from: string[], into: string[]) =>
-    from.every((w) => into.some((v) => sameTitleWord(w, v)));
-  return covered(x, y) && covered(y, x);
+  if (x.length === 0 || x.length !== y.length) return false;
+  return x.every((w, i) => sameTitleWord(w, y[i]!));
 }
 
 /** A requirement an elicited NFR is compared with: a synthesis row or an earlier NFR. */
@@ -352,9 +391,14 @@ export function offerElicitedNfrs(input: {
       ambiguities: [],
       evidenceNeeds: [],
       rawSource: "",
+      // By id, not index: promotion resolves them against the findings as
+      // they stand then (see `StructuredRequirement.elicitedNfr`).
       elicitedNfr: {
         nfrCategory: r.nfrCategory,
-        evidenceFindingIndexes: r.evidenceFindingIndexes,
+        evidenceFindingIds: r.evidenceFindingIndexes.flatMap((i) => {
+          const id = input.findingIdsByIndex[i];
+          return id === undefined ? [] : [id];
+        }),
       },
     });
   }

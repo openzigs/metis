@@ -1807,7 +1807,7 @@ describe("#2449 — a reviewed set writes the elicited NFRs its checkpoint liste
   });
   const tokensNfr = listed("NFR-abc", "Encrypt API tokens at rest", {
     type: "non-functional",
-    elicitedNfr: { nfrCategory: "security", evidenceFindingIndexes: [0] },
+    elicitedNfr: { nfrCategory: "security", evidenceFindingIds: ["f_1"] },
   });
   const awaiting = {
     elicitedNfrsAwaitingPromotion: [

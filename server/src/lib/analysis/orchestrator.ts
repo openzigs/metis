@@ -5529,7 +5529,12 @@ export class AnalysisOrchestrator {
         requirementApprovals.filter((a) => a.status === "approved").map((a) => a.itemId),
       );
       const plan = reviewed
-        ? planApprovedRequirementSet({ structured, approvedIds, synthesis: result.output })
+        ? planApprovedRequirementSet({
+            structured,
+            approvedIds,
+            synthesis: result.output,
+            findingIdsByIndex,
+          })
         : null;
       const toPersist = plan ? plan.output : result.output;
 

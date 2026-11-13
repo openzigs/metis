@@ -394,7 +394,67 @@ describe("restatesTitle (#2449)", () => {
     expect(
       restatesTitle("Reset link expiry after 30 minutes", "Reset link expires after 30 minutes"),
     ).toBe(true);
-    expect(restatesTitle("Secure session cookies", "Session cookies are secured")).toBe(true);
+    expect(restatesTitle("Session cookies are secure", "Session cookies secured")).toBe(true);
+    expect(restatesTitle("Reset link must expire", "Reset link expires")).toBe(true);
+    expect(restatesTitle("Data security", "Data secure")).toBe(true);
+  });
+
+  it("reads order: a title with its roles or endpoints swapped is another requirement", () => {
+    for (const [a, b] of [
+      ["Admins cannot read user passwords", "Users cannot read admin passwords"],
+      ["Replicate data from primary to secondary", "Replicate data from secondary to primary"],
+      // Recall first: a reordering may be a restatement, but it is listed for
+      // the analyst to reject rather than dropped unseen.
+      ["Secure session cookies", "Session cookies are secured"],
+    ]) {
+      expect(restatesTitle(a!, b!), `${a} !~ ${b}`).toBe(false);
+    }
+  });
+
+  it("reads relations, negation and quantity words exactly", () => {
+    for (const [a, b] of [
+      ["Session expires after 30 minutes", "Session expires within 30 minutes"],
+      ["Session expires before 30 minutes", "Session expires after 30 minutes"],
+      ["Passwords are stored", "Passwords are not stored"],
+      ["Admins can read logs", "Admins cannot read logs"],
+      ["All exports are encrypted", "Any exports are encrypted"],
+      ["Passwords must be hashed", "Passwords should be hashed"],
+    ]) {
+      expect(restatesTitle(a!, b!), `${a} !~ ${b}`).toBe(false);
+    }
+  });
+
+  it("joins two forms of a word only by a known ending, not by a shared prefix", () => {
+    for (const [a, b] of [
+      ["Internal service timeout 30 seconds", "Interval service timeout 30 seconds"],
+      ["Public API rate limit", "Publish API rate limit"],
+      ["Media load under 2 seconds", "Median load under 2 seconds"],
+    ]) {
+      expect(restatesTitle(a!, b!), `${a} !~ ${b}`).toBe(false);
+    }
+  });
+
+  it("offers, rather than drops, an NFR whose title only swaps a listed one's roles", () => {
+    const { offered, dropped } = offerElicitedNfrs({
+      structured: [
+        {
+          id: "REQ-1",
+          title: "Admins cannot read user passwords",
+          description: "Admins cannot read user passwords.",
+          type: "functional",
+          stakeholders: [],
+          priority: "must-have",
+          ambiguities: [],
+          evidenceNeeds: [],
+          rawSource: "",
+        },
+      ],
+      nfrs: [nfr({ category: "security", title: "Users cannot read admin passwords" })],
+      findingIdsByIndex: [],
+      synthesized: [],
+    });
+    expect(dropped).toEqual([]);
+    expect(offered.map((r) => r.title)).toEqual(["Users cannot read admin passwords"]);
   });
 
   it("keeps apart a title that adds a word, another number, or a paraphrase", () => {
@@ -481,7 +541,7 @@ describe("offerElicitedNfrs (#2449)", () => {
         ambiguities: [],
         evidenceNeeds: [],
         rawSource: "",
-        elicitedNfr: { nfrCategory: "security", evidenceFindingIndexes: [1] },
+        elicitedNfr: { nfrCategory: "security", evidenceFindingIds: ["f-b"] },
       },
     ]);
     expect(offered[0]!.id.startsWith(ELICITED_NFR_REQUIREMENT_ID_PREFIX)).toBe(true);

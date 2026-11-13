@@ -317,6 +317,7 @@ export function buildApprovedRequirementSet(input: {
   structured: StructuredRequirement[];
   approvedIds: ReadonlySet<string>;
   synthesis: SynthesisOutput | null;
+  findingIdsByIndex?: readonly string[];
 }): SynthesisOutput {
   return planApprovedRequirementSet(input).output;
 }
@@ -551,6 +552,13 @@ export function planApprovedRequirementSet(input: {
   synthesis: SynthesisOutput | null;
   /** #1202 — the items already-promoted rows recorded taking ({@link pairedItemIndexes}). */
   paired?: PairedItems;
+  /**
+   * #2449 — the findings' ids in synthesis order, as promotion numbers them:
+   * an elicited NFR's evidence ids are mapped through it to indexes, and an id
+   * it does not hold is dropped. Absent, such an NFR is written citing nothing
+   * (`No evidence`), never citing the wrong finding.
+   */
+  findingIdsByIndex?: readonly string[];
 }): {
   output: SynthesisOutput;
   ambiguous: AmbiguousPromotionMatch[];
@@ -572,6 +580,7 @@ export function planApprovedRequirementSet(input: {
     input.paired,
   );
   const approvedIndex = new Map(approved.map((r, i) => [r.id, i] as const));
+  const findingIndex = new Map((input.findingIdsByIndex ?? []).map((id, i) => [id, i] as const));
   const ambiguous: AmbiguousPromotionMatch[] = refused.map((r) => ({
     structuredId: r.structuredId,
     approvedIndex: approvedIndex.get(r.structuredId)!,
@@ -596,7 +605,14 @@ export function planApprovedRequirementSet(input: {
         body,
         priority: PRIORITY_BY_STRUCTURED[req.priority] ?? "medium",
         labels: [ELICITED_NFR_LABEL],
-        evidenceFindingIndexes: req.elicitedNfr.evidenceFindingIndexes.slice(0, MAX_EVIDENCE),
+        evidenceFindingIndexes: [
+          ...new Set(
+            req.elicitedNfr.evidenceFindingIds.flatMap((id) => {
+              const i = findingIndex.get(id);
+              return i === undefined ? [] : [i];
+            }),
+          ),
+        ].slice(0, MAX_EVIDENCE),
         acceptanceCriteria: [],
         kind: "non-functional",
         nfrCategory: req.elicitedNfr.nfrCategory,

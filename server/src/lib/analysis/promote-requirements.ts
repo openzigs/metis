@@ -201,7 +201,15 @@ export async function promoteApprovedRequirements(
   const approvedIds = new Set(
     requirementApprovals.filter((a) => a.status === "approved").map((a) => a.itemId),
   );
-  const plan = reviewed ? planApprovedRequirementSet({ structured, approvedIds, synthesis }) : null;
+  // #1603 — numbered as synthesis numbered them, so `evidenceFindingIndexes`
+  // (and the coverage and verdicts read through them) name the cited finding.
+  // #2449 — read before the plan, which maps an elicited NFR's evidence ids
+  // through it.
+  const flat = inSynthesisOrder(await readFlattenedFindings(analysisId));
+  const findingIdsByIndex = flat.map((f) => f.findingId);
+  const plan = reviewed
+    ? planApprovedRequirementSet({ structured, approvedIds, synthesis, findingIdsByIndex })
+    : null;
   const toPromote: SynthesisOutput = plan ? plan.output : (synthesis as SynthesisOutput);
   // #1204 — the approved requirements the title join could not decide.
   const ambiguous: AmbiguousPromotionMatch[] = plan?.ambiguous ?? [];
@@ -264,7 +272,13 @@ export async function promoteApprovedRequirements(
       );
       const appendPlan =
         paired.size > 0
-          ? planApprovedRequirementSet({ structured, approvedIds, synthesis, paired })
+          ? planApprovedRequirementSet({
+              structured,
+              approvedIds,
+              synthesis,
+              paired,
+              findingIdsByIndex,
+            })
           : plan!;
       const appended = await appendNewlyApproved({
         analysisId,
@@ -292,10 +306,6 @@ export async function promoteApprovedRequirements(
     }
   }
 
-  // #1603 — numbered as synthesis numbered them, so `evidenceFindingIndexes`
-  // (and the coverage and verdicts read through them) name the cited finding.
-  const flat = inSynthesisOrder(await readFlattenedFindings(analysisId));
-  const findingIdsByIndex = flat.map((f) => f.findingId);
   const coverages = computeCoverageForRequirements(
     toPromote.requirements,
     flat.map((f) => ({ citations: f.citations })),

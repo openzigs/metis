@@ -654,6 +654,38 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(await approvalsOf(id)).toHaveLength(once.length);
     });
 
+    // #2449 review — the offered NFR's evidence is held by finding id. A re-run
+    // while blocked replaces each agent's findings (new ids, possibly new
+    // order) and does not re-offer an NFR already listed, so an index stored at
+    // offer time would cite whichever finding sits there at promotion.
+    it("cites no finding a re-run replaced after the NFR was offered (#2449)", async () => {
+      const { id, synthesis } = await gateBlockedAnalysis(["List feeds"]);
+      await run(id, "nfrs", synthesis);
+      const before = await db.finding.findMany({
+        where: { agentResult: { analysisId: id } },
+        orderBy: { createdAt: "asc" },
+      });
+      expect(before.length).toBeGreaterThan(0);
+      // The rows a re-run writes in their place: the same findings, new ids.
+      for (const { id: oldId, ...rest } of before) {
+        await db.finding.delete({ where: { id: oldId } });
+        await db.finding.create({ data: rest });
+      }
+      const replaced = new Set(
+        (await db.finding.findMany({ where: { agentResult: { analysisId: id } } })).map(
+          (f) => f.id,
+        ),
+      );
+      await approveAll(id);
+      await promoteApprovedRequirements(id, { asApproved: true });
+
+      const tokens = elicitedRows(await readBack(id)).find(
+        (r) => r.title === "Encrypt API tokens at rest",
+      )!;
+      expect(tokens.evidenceFindingIds.filter((f) => replaced.has(f))).toEqual([]);
+      expect(tokens.coverage).toBe("no_evidence");
+    });
+
     it("writes no NFR a checkpoint never listed, as on an analysis blocked before #2449", async () => {
       const { id, synthesis } = await gateBlockedAnalysis(["List feeds"]);
       // Its NFRs waited on the analysis, unlisted: the shape before #2449.
