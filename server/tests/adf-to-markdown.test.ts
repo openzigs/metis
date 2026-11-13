@@ -2,8 +2,23 @@
  * ADF → Markdown — #2244. Jira Cloud (API v3) returns rich text as an
  * Atlassian Document Format tree; these pin the Markdown it becomes.
  */
+import { micromark } from "micromark";
+import { gfm, gfmHtml } from "micromark-extension-gfm";
 import { describe, expect, it } from "vitest";
 import { adfToMarkdown, isAdfDocument } from "../src/lib/connectors/jira/adf-to-markdown.js";
+
+/**
+ * What the Markdown renders to under CommonMark + GFM. Raw HTML and every link
+ * protocol pass through, so a test sees what the Markdown *forms*, not what a
+ * downstream sanitiser would strip.
+ */
+const html = (md: string) =>
+  micromark(md, {
+    extensions: [gfm()],
+    htmlExtensions: [gfmHtml()],
+    allowDangerousHtml: true,
+    allowDangerousProtocol: true,
+  }).trim();
 
 const doc = (...content: unknown[]) => ({ type: "doc", version: 1, content });
 const p = (...content: unknown[]) => ({ type: "paragraph", content });
@@ -160,7 +175,9 @@ describe("adfToMarkdown", () => {
         ),
       ),
     );
-    expect(md).toBe("@Dana 😄 due 2026-01-01 [IN PROGRESS]\n<https://jira.example.com/browse/X-1>");
+    expect(md).toBe(
+      "@Dana 😄 due 2026-01-01 \\[IN PROGRESS\\]  \n<https://jira.example.com/browse/X-1>",
+    );
   });
 
   it("renders task lists with their state, quotes, panels, expands and rules", () => {
@@ -239,5 +256,153 @@ describe("adfToMarkdown", () => {
     let deep: unknown = p(t("bottom"));
     for (let i = 0; i < 10_000; i += 1) deep = { type: "blockquote", content: [deep] };
     expect(() => adfToMarkdown(doc(deep))).not.toThrow();
+  });
+});
+
+describe("adfToMarkdown — rendered by a real Markdown parser (#2260)", () => {
+  it("keeps a hard break as a line break, not a soft break that renders as a space", () => {
+    const md = adfToMarkdown(doc(p(t("Line one"), { type: "hardBreak" }, t("Line two"))));
+    expect(html(md)).toBe("<p>Line one<br />\nLine two</p>");
+  });
+
+  it("keeps a list item's second paragraph as its own paragraph", () => {
+    const md = adfToMarkdown(
+      doc({ type: "bulletList", content: [li(p(t("First")), p(t("Second"))), li(p(t("Next")))] }),
+    );
+    expect(md).toBe("- First\n\n  Second\n- Next");
+    expect(html(md)).toContain("<p>First</p>\n<p>Second</p>");
+  });
+
+  it("keeps a nested list tight under its parent paragraph", () => {
+    const md = adfToMarkdown(
+      doc({
+        type: "bulletList",
+        content: [li(p(t("Parent")), { type: "bulletList", content: [li(p(t("Child")))] })],
+      }),
+    );
+    expect(md).toBe("- Parent\n  - Child");
+  });
+
+  it("escapes text so a `]` in link text cannot end the link early", () => {
+    const md = adfToMarkdown(
+      doc(p(t("see [1] here", { type: "link", attrs: { href: "https://x.example/" } }))),
+    );
+    expect(html(md)).toBe('<p><a href="https://x.example/">see [1] here</a></p>');
+  });
+
+  it("merges adjacent same-mark nodes instead of fusing their delimiters", () => {
+    const md = adfToMarkdown(doc(p(t("foo", { type: "strong" }), t("bar", { type: "strong" }))));
+    expect(md).toBe("**foobar**");
+    expect(html(md)).toBe("<p><strong>foobar</strong></p>");
+  });
+
+  it("merges adjacent inline-code nodes into one code span", () => {
+    const md = adfToMarkdown(doc(p(t("a", { type: "code" }), t("b", { type: "code" }))));
+    expect(html(md)).toBe("<p><code>ab</code></p>");
+  });
+
+  it("nests bold then bold-italic instead of fusing `**foo*****bar***`", () => {
+    const md = adfToMarkdown(
+      doc(p(t("foo", { type: "strong" }), t("bar", { type: "strong" }, { type: "em" }), t(" end"))),
+    );
+    expect(md).toBe("**foo*bar*** end");
+    expect(html(md)).toBe("<p><strong>foo<em>bar</em></strong> end</p>");
+  });
+
+  it("closes and reopens marks across a run: italic then bold, link then plain", () => {
+    const href = { type: "link", attrs: { href: "https://x.example/" } };
+    const md = adfToMarkdown(
+      doc(
+        p(
+          t("a", { type: "em" }),
+          t("b", { type: "strong" }),
+          t(" "),
+          t("in ", href),
+          t("link", href, { type: "strong" }),
+          t(" out"),
+        ),
+      ),
+    );
+    expect(html(md)).toBe(
+      '<p><em>a</em><strong>b</strong> <a href="https://x.example/">in <strong>link</strong></a> out</p>',
+    );
+  });
+
+  it("keeps a mark open across a whitespace-only node and closes it before an inline node", () => {
+    const md = adfToMarkdown(
+      doc(
+        p(
+          t("a", { type: "strong" }),
+          t(" ", { type: "strong" }, { type: "em" }),
+          t("b", { type: "strong" }, { type: "em" }),
+          { type: "mention", attrs: { text: "@Dana" } },
+        ),
+      ),
+    );
+    expect(html(md)).toBe("<p><strong>a <em>b</em></strong>@Dana</p>");
+  });
+
+  it("escapes emphasis, strike, code, entity and HTML characters typed as text", () => {
+    const md = adfToMarkdown(doc(p(t("a*b*c _d_ ~e~ `f` &amp; <b>g</b> \\ end"))));
+    expect(html(md)).toBe("<p>a*b*c _d_ ~e~ `f` &amp;amp; &lt;b&gt;g&lt;/b&gt; \\ end</p>");
+  });
+
+  it("does not let literal `[x](javascript:…)` or raw HTML text form a link or a tag", () => {
+    const md = adfToMarkdown(
+      doc(
+        p(t("[click](javascript:alert(1)) <img src=x onerror=alert(1)> <javascript:alert(1)>")),
+        p({ type: "status", attrs: { text: "OPEN" } }, t("(javascript:alert(1))")),
+      ),
+    );
+    const out = html(md);
+    expect(out).not.toContain("<a");
+    expect(out).not.toContain("<img");
+    expect(out).toContain("[click](javascript:alert(1))");
+  });
+
+  it("escapes text in mentions, emoji, panel labels, expand titles and attachment names", () => {
+    const md = adfToMarkdown(
+      doc(
+        p({ type: "mention", attrs: { text: "@*x*" } }, t(" "), {
+          type: "emoji",
+          attrs: { text: "_y_" },
+        }),
+        { type: "panel", attrs: { panelType: "*note*" }, content: [p(t("body"))] },
+        { type: "expand", attrs: { title: "<b>t</b>" }, content: [p(t("hidden"))] },
+        { type: "mediaSingle", content: [{ type: "media", attrs: { alt: "a](javascript:x)" } }] },
+        { type: "futureBlock", text: "*raw*" },
+      ),
+    );
+    const out = html(md);
+    expect(out).toContain("<p>@*x* _y_</p>");
+    expect(out).toContain("<strong>*note*:</strong> body");
+    expect(out).toContain("<strong>&lt;b&gt;t&lt;/b&gt;</strong>");
+    expect(out).toContain("[attachment: a](javascript:x)]");
+    expect(out).toContain("<p>*raw*</p>");
+    expect(out).not.toContain("<a");
+    expect(out).not.toContain("<em>");
+  });
+
+  it("keeps a pipe in text, a code span and a status inside one table cell", () => {
+    const cell = (...c: unknown[]) => ({ type: "tableCell", content: [p(...c)] });
+    const md = adfToMarkdown(
+      doc({
+        type: "table",
+        content: [
+          { type: "tableRow", content: [cell(t("A")), cell(t("B"))] },
+          {
+            type: "tableRow",
+            content: [cell(t("x | y"), t("a|b", { type: "code" })), cell(t("ok"))],
+          },
+          // A code span's own backslash-pipe is already an escaped pipe: escaping it again
+          // would leave `\\|`, an escaped backslash and a real cell boundary.
+          { type: "tableRow", content: [cell(t("a\\|b", { type: "code" })), cell(t("ok"))] },
+        ],
+      }),
+    );
+    const out = html(md);
+    expect(out).toContain("<td>x | y<code>a|b</code></td>");
+    expect(out.match(/<td>ok<\/td>/g)).toHaveLength(2);
+    expect(out).not.toContain("b`");
   });
 });

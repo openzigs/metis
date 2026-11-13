@@ -10,7 +10,9 @@
  *
  * Unknown node types degrade to their text content, never to JSON. Link
  * targets are kept only for http(s) and mailto URLs, so a `javascript:` href
- * in a Jira description never becomes a clickable Markdown link.
+ * in a Jira description never becomes a clickable Markdown link — and text
+ * from the issue is escaped (#2260), so literal `[x](javascript:…)` or `<b>`
+ * typed into Jira reads as those characters rather than forming a link or HTML.
  *
  * Reference: https://developer.atlassian.com/cloud/jira/platform/apis/document/structure/
  */
@@ -71,12 +73,23 @@ function isInline(node: AdfNode): boolean {
   return typeof node.type === "string" && INLINE_TYPES.has(node.type);
 }
 
-/** Render a run of block nodes, grouping stray inline nodes into a paragraph. */
-function renderBlocks(nodes: AdfNode[], depth: number, separator = "\n\n"): string {
-  const parts: string[] = [];
+const LIST_TYPES = new Set(["bulletList", "orderedList", "taskList", "decisionList"]);
+
+/**
+ * Render a run of block nodes, grouping stray inline nodes into a paragraph.
+ * `separator` is the text placed before each part after the first, or a
+ * function of the node that starts that part.
+ */
+function renderBlocks(
+  nodes: AdfNode[],
+  depth: number,
+  separator: string | ((next: AdfNode) => string) = "\n\n",
+): string {
+  const parts: { text: string; first: AdfNode }[] = [];
   let inlineRun: AdfNode[] = [];
   const flush = () => {
-    if (inlineRun.length > 0) parts.push(renderInline(inlineRun, depth));
+    if (inlineRun.length > 0)
+      parts.push({ text: renderInline(inlineRun, depth), first: inlineRun[0] });
     inlineRun = [];
   };
   for (const node of nodes) {
@@ -85,10 +98,14 @@ function renderBlocks(nodes: AdfNode[], depth: number, separator = "\n\n"): stri
       continue;
     }
     flush();
-    parts.push(renderBlock(node, depth));
+    parts.push({ text: renderBlock(node, depth), first: node });
   }
   flush();
-  return parts.filter((p) => p.trim().length > 0).join(separator);
+  const sep = typeof separator === "string" ? () => separator : separator;
+  return parts
+    .filter((p) => p.text.trim().length > 0)
+    .map((p, i) => (i === 0 ? p.text : sep(p.first) + p.text))
+    .join("");
 }
 
 function renderBlock(node: AdfNode, depth: number): string {
@@ -125,13 +142,13 @@ function renderBlock(node: AdfNode, depth: number): string {
     case "blockquote":
       return quote(renderBlocks(children, next));
     case "panel": {
-      const label = attrString(node, "panelType");
+      const label = escapeText(attrString(node, "panelType"));
       const body = renderBlocks(children, next);
       return quote(label ? `**${capitalise(label)}:** ${body}` : body);
     }
     case "expand":
     case "nestedExpand": {
-      const title = attrString(node, "title");
+      const title = escapeText(attrString(node, "title"));
       const body = renderBlocks(children, next);
       return title ? `**${title}**\n\n${body}` : body;
     }
@@ -150,15 +167,20 @@ function renderBlock(node: AdfNode, depth: number): string {
       return url ? `<${url}>` : "";
     }
     default:
-      if (typeof node.text === "string") return node.text;
+      if (typeof node.text === "string") return escapeText(node.text);
       return renderBlocks(children, next);
   }
 }
 
 function renderListItem(item: AdfNode, marker: string, depth: number): string {
   const children = childrenOf(item);
-  // A list item holds blocks (paragraph, nested list); a task or decision item holds inline nodes.
-  const body = renderBlocks(children, depth, "\n");
+  // A list item holds blocks (paragraph, nested list): a second paragraph needs a blank
+  // line or it merges into the first, while a nested list stays tight under its parent.
+  // A task or decision item holds inline nodes, so a single newline is enough (#2260).
+  const tight = item.type === "taskItem" || item.type === "decisionItem";
+  const body = renderBlocks(children, depth, (next) =>
+    tight || LIST_TYPES.has(next.type as string) ? "\n" : "\n\n",
+  );
   const pad = " ".repeat(marker.length);
   const [first = "", ...rest] = body.split("\n");
   return [marker + first, ...rest.map((line) => (line ? pad + line : line))].join("\n");
@@ -180,9 +202,11 @@ function renderTable(rows: AdfNode[], depth: number): string {
       childrenOf(row).map((cell) =>
         renderBlocks(childrenOf(cell), depth, " ")
           .replace(/\s*\n\s*/g, " ")
-          // Backslashes first, so a cell's own `\` cannot un-escape the `\|` after it.
-          .replace(/\\/g, "\\\\")
-          .replace(/\|/g, "\\|")
+          // Text already arrives with its own `\` escaped, so a pipe behind an even run of
+          // backslashes is a real cell boundary: escape it. An odd run already escapes it.
+          .replace(/(\\*)\|/g, (run, slashes: string) =>
+            slashes.length % 2 === 0 ? `${slashes}\\|` : run,
+          )
           .trim(),
       ),
     );
@@ -197,27 +221,171 @@ function renderTable(rows: AdfNode[], depth: number): string {
 
 function renderMedia(node: AdfNode): string {
   if (node.type !== "media") return "";
-  const alt = attrString(node, "alt");
+  const alt = escapeText(attrString(node, "alt"));
   return alt ? `[attachment: ${alt}]` : "[attachment]";
 }
 
+type MarkName = "link" | "strong" | "em" | "strike";
+const MARK_ORDER: readonly MarkName[] = ["link", "strong", "em", "strike"];
+
+interface OpenMark {
+  type: MarkName;
+  /** A link's (already safe) target; empty for the other marks. */
+  href: string;
+}
+
+interface TextRun {
+  kind: "run";
+  text: string;
+  marks: OpenMark[];
+  code: boolean;
+}
+
+/**
+ * Render a run of inline nodes. Marks are opened and closed across the run
+ * rather than per text node (#2260): two adjacent bold nodes become one
+ * `**foobar**`, and bold followed by bold-italic nests as `**foo*bar***`
+ * instead of fusing into `**foo*****bar***`.
+ */
 function renderInline(nodes: AdfNode[], depth: number): string {
   if (depth > MAX_DEPTH) return "";
-  return nodes.map((n) => renderInlineNode(n, depth)).join("");
+  let out = "";
+  const open: OpenMark[] = [];
+  // Close the marks above `keep`, moving trailing whitespace outside them: `**a **` does not render.
+  const closeTo = (keep: number) => {
+    if (open.length <= keep) return;
+    const trail = /\s*$/.exec(out)?.[0] ?? "";
+    out = out.slice(0, out.length - trail.length);
+    while (open.length > keep) out += closer(open.pop() as OpenMark);
+    out += trail;
+  };
+  for (const item of mergeTextRuns(nodes)) {
+    if (!isRun(item)) {
+      closeTo(0);
+      out += renderInlineNode(item, depth);
+      continue;
+    }
+    let keep = 0;
+    while (
+      keep < open.length &&
+      keep < item.marks.length &&
+      sameMark(open[keep], item.marks[keep])
+    ) {
+      keep += 1;
+    }
+    closeTo(keep);
+    // Markers must hug the text, so edge spaces stay outside any marker opened here.
+    const [, lead, core, trail] = /^(\s*)([\s\S]*?)(\s*)$/.exec(item.text) as RegExpExecArray;
+    if (core.length === 0) {
+      out += item.text;
+      continue;
+    }
+    out += lead;
+    for (const mark of item.marks.slice(keep)) {
+      out += opener(mark);
+      open.push(mark);
+    }
+    out += (item.code ? codeSpan(core) : escapeText(core)) + trail;
+  }
+  closeTo(0);
+  return out;
+}
+
+/** Fold adjacent text nodes carrying the same marks into one run; other nodes pass through. */
+function mergeTextRuns(nodes: AdfNode[]): Array<TextRun | AdfNode> {
+  const items: Array<TextRun | AdfNode> = [];
+  for (const node of nodes) {
+    if (node.type !== "text") {
+      items.push(node);
+      continue;
+    }
+    if (typeof node.text !== "string" || node.text.length === 0) continue;
+    const run: TextRun = { kind: "run", text: node.text, ...marksOf(node.marks) };
+    const prev = items[items.length - 1];
+    if (prev && isRun(prev) && sameMarks(prev, run)) prev.text += run.text;
+    else items.push(run);
+  }
+  return items;
+}
+
+function isRun(item: TextRun | AdfNode): item is TextRun {
+  return (item as TextRun).kind === "run";
+}
+
+function marksOf(marks: unknown): { marks: OpenMark[]; code: boolean } {
+  const byType = new Map<string, AdfNode>();
+  if (Array.isArray(marks)) {
+    for (const m of marks) {
+      if (m && typeof m === "object" && typeof (m as AdfNode).type === "string") {
+        byType.set((m as AdfNode).type as string, m as AdfNode);
+      }
+    }
+  }
+  const code = byType.has("code");
+  const out: OpenMark[] = [];
+  for (const type of MARK_ORDER) {
+    const mark = byType.get(type);
+    if (!mark) continue;
+    if (type === "link") {
+      const href = safeUrl(attrString(mark, "href"));
+      if (href) out.push({ type, href });
+    } else if (!code) {
+      // A code span's content is literal, so emphasis inside it would show as asterisks.
+      out.push({ type, href: "" });
+    }
+  }
+  return { marks: out, code };
+}
+
+function sameMark(a: OpenMark, b: OpenMark): boolean {
+  return a.type === b.type && a.href === b.href;
+}
+
+function sameMarks(a: TextRun, b: TextRun): boolean {
+  return (
+    a.code === b.code &&
+    a.marks.length === b.marks.length &&
+    a.marks.every((m, i) => sameMark(m, b.marks[i]))
+  );
+}
+
+function opener(mark: OpenMark): string {
+  if (mark.type === "link") return "[";
+  return mark.type === "strong" ? "**" : mark.type === "em" ? "*" : "~~";
+}
+
+function closer(mark: OpenMark): string {
+  return mark.type === "link" ? `](${mark.href})` : opener(mark);
+}
+
+function codeSpan(core: string): string {
+  const longestRun = Math.max(0, ...(core.match(/`+/g) ?? []).map((r) => r.length));
+  const ticks = "`".repeat(longestRun + 1);
+  const pad = core.startsWith("`") || core.endsWith("`") ? " " : "";
+  return `${ticks}${pad}${core}${pad}${ticks}`;
+}
+
+/**
+ * Escape text so Markdown reads it as the characters it is (#2260): no
+ * emphasis, strikethrough, code span, link, image, autolink or raw HTML can
+ * form from what was typed into Jira. Pipes are left to the table renderer,
+ * the only place they mean anything; `&` only where it would start an entity.
+ */
+function escapeText(text: string): string {
+  return text.replace(/[\\`*_[\]<~]/g, "\\$&").replace(/&(?=#?\w+;)/g, "\\&");
 }
 
 function renderInlineNode(node: AdfNode, depth: number): string {
   switch (node.type) {
-    case "text":
-      return typeof node.text === "string" ? applyMarks(node.text, node.marks) : "";
     case "hardBreak":
-      return "\n";
+      // Two trailing spaces: a bare newline is a soft break and renders as a space (#2260).
+      return "  \n";
     case "mention": {
       const text = attrString(node, "text");
-      return text || "@user";
+      return text ? escapeText(text) : "@user";
     }
     case "emoji":
-      return attrString(node, "text") || attrString(node, "shortName");
+      return escapeText(attrString(node, "text") || attrString(node, "shortName"));
     case "inlineCard": {
       const url = safeUrl(attrString(node, "url"));
       return url ? `<${url}>` : "";
@@ -227,46 +395,16 @@ function renderInlineNode(node: AdfNode, depth: number): string {
       return Number.isFinite(ms) ? new Date(ms).toISOString().slice(0, 10) : "";
     }
     case "status": {
+      // Escaped brackets, so a following `(url)` cannot turn the lozenge into a link.
       const text = attrString(node, "text");
-      return text ? `[${text}]` : "";
+      return text ? `\\[${escapeText(text)}\\]` : "";
     }
     case "placeholder":
       return "";
     default:
-      if (typeof node.text === "string") return node.text;
+      if (typeof node.text === "string") return escapeText(node.text);
       return renderInline(childrenOf(node), depth + 1);
   }
-}
-
-function applyMarks(text: string, marks: unknown): string {
-  if (!Array.isArray(marks) || marks.length === 0 || text.length === 0) return text;
-  const types = new Map<string, AdfNode>();
-  for (const m of marks) {
-    if (m && typeof m === "object" && typeof (m as AdfNode).type === "string") {
-      types.set((m as AdfNode).type as string, m as AdfNode);
-    }
-  }
-  // Markers must hug the text: `** bold**` does not render, so keep edge spaces outside.
-  const match = /^(\s*)([\s\S]*?)(\s*)$/.exec(text);
-  const [lead, core, trail] = match ? [match[1], match[2], match[3]] : ["", text, ""];
-  if (core.length === 0) return text;
-  let out = core;
-  if (types.has("code")) {
-    const longestRun = Math.max(0, ...(core.match(/`+/g) ?? []).map((r) => r.length));
-    const ticks = "`".repeat(longestRun + 1);
-    const pad = core.startsWith("`") || core.endsWith("`") ? " " : "";
-    out = `${ticks}${pad}${core}${pad}${ticks}`;
-  } else {
-    if (types.has("strike")) out = `~~${out}~~`;
-    if (types.has("em")) out = `*${out}*`;
-    if (types.has("strong")) out = `**${out}**`;
-  }
-  const link = types.get("link");
-  if (link) {
-    const href = safeUrl(attrString(link, "href"));
-    if (href) out = `[${out}](${href})`;
-  }
-  return `${lead}${out}${trail}`;
 }
 
 /** Keep http(s) and mailto targets only, with parentheses escaped for Markdown. */
