@@ -15,17 +15,15 @@ function renderAt(pathname: string, role: "admin" | "reader" = "admin") {
 
 describe("<HubTabs /> (#27)", () => {
   it("lists the Projects hub pages on a cross-project lookup page", () => {
-    renderAt("/repositories");
+    renderAt("/documents");
     const nav = screen.getByRole("navigation", { name: "Projects pages" });
     const links = within(nav).getAllByRole("link");
+    // #2353 — one Portfolio tab; no Products, Repositories or Databases tab.
     expect(links.map((l) => l.textContent)).toEqual([
       "All projects",
-      "Products",
+      "Portfolio",
       "Documents",
-      "Repositories",
-      "Databases",
       "Impact analyses",
-      "Portfolio coverage",
     ]);
     expect(within(nav).getByRole("link", { name: "Documents" })).toHaveAttribute(
       "href",
@@ -38,6 +36,20 @@ describe("<HubTabs /> (#27)", () => {
     const nav = screen.getByRole("navigation", { name: "Activity pages" });
     expect(within(nav).getByRole("link", { name: "Runs" })).toHaveAttribute("aria-current", "page");
     expect(within(nav).getByRole("link", { name: "Tasks" })).not.toHaveAttribute("aria-current");
+  });
+
+  // #2353 — a product's page kept its URL and sits under the Portfolio tab.
+  it("marks Portfolio current on a product's page, for an analyst too", () => {
+    renderAt("/products/p1", "reader");
+    const nav = screen.getByRole("navigation", { name: "Projects pages" });
+    expect(within(nav).getByRole("link", { name: "Portfolio" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    expect(within(nav).getByRole("link", { name: "Portfolio" })).toHaveAttribute(
+      "href",
+      "/portfolio",
+    );
   });
 
   it("shows no separate Admin tab, even to admins — Admin is part of Settings (#31)", () => {

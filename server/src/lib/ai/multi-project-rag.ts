@@ -19,8 +19,24 @@
  *   say so, and on the grounding badge — never silently dropped.
  *
  * Single-project chat keeps `buildAutoRagContext` (routes/ai.ts) unchanged.
+ *
+ * #2279 — and, as single-project chat does since #2240, a turn's retrieval
+ * reads the conversation: the searches are planned once
+ * (`planRetrievalQueries`) and every project runs all of them, merged as
+ * single-project chat merges them; the excerpts the previous answer cited are
+ * read back (scoped to the projects in scope now, ACL-checked for the caller)
+ * and kept; and documents attached to the question limit every search.
+ *
+ * #2294 — chat's absolute relevance floor (#2241) applies here too, per
+ * project before the merge, and the turn's grounding says what single-project
+ * grounding says: the sources used, or why nothing was supplied.
  */
-import type { ChatGrounding, ChatGroundingProject, ChatGroundingUnsearched } from "@metis/shared";
+import type {
+  ChatGrounding,
+  ChatGroundingProject,
+  ChatGroundingUnsearched,
+  NoContextReason,
+} from "@metis/shared";
 import type { RoleKey } from "@metis/shared";
 import { getConfigService } from "../config/config-service.js";
 import { createChildLogger } from "../logger.js";
@@ -36,6 +52,16 @@ import {
 import { formatHitLocator, formatHitScore } from "../rag/hit-locator.js";
 import { formatDerivedLabel } from "../rag/derived-label.js";
 import type { ChatSearchScope } from "./chat-search-scope.js";
+import type { ChatMessage } from "./types.js";
+import { groundingSources } from "./chat-grounding.js";
+import { carriedOnlyNote, denseCosine, readRelevanceFloor } from "./relevance-floor.js";
+import {
+  planRetrievalQueries,
+  planSearches,
+  type CitableExcerpt,
+} from "./conversation/retrieval-query.js";
+import { loadChunksById } from "../rag/chunk-lookup.js";
+import { resolveAclActor, type AclActor } from "../rag/acl.js";
 
 export { readChatSearchScope, type ChatSearchScope } from "./chat-search-scope.js";
 
@@ -43,7 +69,9 @@ const log = createChildLogger("multi-project-rag");
 
 /** The excerpts one multi-product turn puts in the prompt (single-project chat: 8). */
 export const MULTI_PROJECT_K = 8;
-const MAX_QUERY_CHARS = 2048;
+
+/** A chunk read back by id, as `loadChunksById` returns it. */
+type CarriedChunk = Awaited<ReturnType<typeof loadChunksById>>[number];
 
 export interface MultiProjectRagDeps {
   search?: (opts: FederatedSearchOptions) => Promise<FederatedSearchResult>;
@@ -52,6 +80,16 @@ export interface MultiProjectRagDeps {
   role?: (userId: string) => Promise<RoleKey>;
   /** 0..1; defaults to `CHAT_MULTI_PROJECT_RELEVANCE_FLOOR_PCT` / 100. */
   relevanceFloor?: number;
+  /** #2294 — chat's absolute floor for the hits' embedders; defaults to `readRelevanceFloor`. */
+  absoluteFloor?: (embeddingModels: readonly string[]) => number;
+  /** #2279 — the caller as the chunk-ACL actor of a carried excerpt's read. */
+  aclActor?: (userId: string) => Promise<AclActor>;
+  /** #2279 — read chunks of one project back by id (`loadChunksById`). */
+  loadChunks?: (
+    projectId: string,
+    chunkIds: readonly string[],
+    actor: AclActor,
+  ) => Promise<CarriedChunk[]>;
 }
 
 export interface MultiProjectRagInput {
@@ -59,8 +97,20 @@ export interface MultiProjectRagInput {
   scope: ChatSearchScope;
   /** The user's message; the retrieval query is its first 2,048 characters. */
   query: string;
-  /** As `buildAutoRagContext`'s: the contexts the model saw, and how many. */
-  capture?: { contexts: string[]; sources: number };
+  /**
+   * #2279 — the session's earlier user and assistant messages, oldest first
+   * (`retrievalConversation`), so a follow-up is searched with the turn before.
+   */
+  history?: readonly ChatMessage[];
+  /** #2279 — the chunk ids the previous answer cited, kept in this turn's block. */
+  carryForward?: readonly string[];
+  /** #2279 — the documents the user attached to the question: the search covers only these. */
+  documentIds?: readonly string[];
+  /**
+   * As `buildAutoRagContext`'s: the contexts the model saw, and how many; and
+   * (#2279) the numbered excerpts, so the reply records which it cited.
+   */
+  capture?: { contexts: string[]; sources: number; excerpts?: CitableExcerpt[] };
   deps?: MultiProjectRagDeps;
 }
 
@@ -111,6 +161,51 @@ function nothingSearchedBlock(reason: string): string {
 }
 
 /**
+ * #2279 — the excerpts the previous answer cited, read back as each project in
+ * scope holds them now: only from a project searched this turn, for the caller
+ * as the chunk-ACL actor, and not one this turn's search already found. A
+ * project whose search failed or timed out carries nothing: the block tells the
+ * model its sources could not be searched, so an excerpt from it there would
+ * contradict that, and its grounding would count sources it does not list. Losing them costs the turn its carry-over,
+ * never its fresh retrieval.
+ */
+async function carriedExcerpts(
+  input: MultiProjectRagInput,
+  result: FederatedSearchResult,
+  documentIds: readonly string[] | undefined,
+  deps: MultiProjectRagDeps,
+): Promise<Array<CarriedChunk & { projectId: string }>> {
+  const ids = input.carryForward ?? [];
+  const reachable = result.projectsSearched;
+  if (ids.length === 0 || reachable.length === 0) return [];
+  const found = new Set(result.hits.map((h) => h.chunkId));
+  try {
+    const actor = await (deps.aclActor ?? resolveAclActor)(input.userId);
+    const read = deps.loadChunks ?? loadChunksById;
+    const perProject = await Promise.all(
+      reachable.map(async (projectId) =>
+        (await read(projectId, ids, actor)).map((c) => ({ ...c, projectId })),
+      ),
+    );
+    const byId = new Map(perProject.flat().map((c) => [c.chunkId, c]));
+    return [...new Set(ids)]
+      .map((id) => byId.get(id))
+      .filter(
+        (c): c is CarriedChunk & { projectId: string } =>
+          c !== undefined &&
+          !found.has(c.chunkId) &&
+          // Attached documents limit the whole block, carried excerpts included.
+          (!documentIds || documentIds.includes(c.documentId)),
+      );
+  } catch (err) {
+    log.debug("Cited excerpts could not be carried forward", {
+      error: (err as Error).message,
+    });
+    return [];
+  }
+}
+
+/**
  * #2238 — retrieve for one turn of a multi-product chat: the prompt block and
  * the turn's grounding. Never throws: a failure is reported in both, so the
  * answer cannot read as grounded in sources that were never searched.
@@ -119,8 +214,15 @@ export async function buildMultiProjectRagContext(
   input: MultiProjectRagInput,
 ): Promise<MultiProjectRagResult> {
   const deps = input.deps ?? {};
-  const query = input.query.slice(0, MAX_QUERY_CHARS);
-  if (!query.trim()) return { block: "", grounding: { status: "multi", projects: [] } };
+  // #2279 — the searches come from the conversation, as single-project chat's do.
+  const plan = planRetrievalQueries([
+    ...(input.history ?? []),
+    { role: "user", content: input.query },
+  ]);
+  if (!plan) return { block: "", grounding: { status: "multi", projects: [] } };
+  const searches = planSearches(plan);
+  const documentIds =
+    input.documentIds && input.documentIds.length > 0 ? [...input.documentIds] : undefined;
 
   let ids: string[];
   try {
@@ -148,9 +250,17 @@ export async function buildMultiProjectRagContext(
     result = await (deps.search ?? ((o) => getFederatedSearchService().searchAcrossProjects(o)))({
       userId: input.userId,
       projectIds: ids,
-      query,
+      query: searches.user[0] ?? plan.primary,
       k: MULTI_PROJECT_K,
-      relevanceFloor: deps.relevanceFloor ?? configuredFloor(),
+      // Attached documents are the source the user chose: every product holding
+      // one contributes, however its relevance compares with the others'.
+      relevanceFloor: documentIds ? 0 : (deps.relevanceFloor ?? configuredFloor()),
+      // #2294 — and chat's absolute floor (#2241), as single-project chat
+      // applies it; not on attachments, which the user chose as the source.
+      ...(documentIds ? {} : { absoluteFloor: deps.absoluteFloor ?? readRelevanceFloor }),
+      ...(searches.user.length > 1 ? { moreQueries: searches.user.slice(1) } : {}),
+      ...(searches.contextual ? { contextualQuery: searches.contextual } : {}),
+      ...(documentIds ? { documentIds } : {}),
     });
   } catch (err) {
     log.debug("Multi-product retrieval failed, continuing without context", {
@@ -158,13 +268,16 @@ export async function buildMultiProjectRagContext(
     });
     return {
       block: nothingSearchedBlock("their sources could not be searched this turn"),
-      grounding: { status: "multi", projects: [] },
+      grounding: { status: "multi", projects: [], reason: "retrieval-failed" },
     };
   }
 
   const nameOf = (id: string) => result.projectNames[id] ?? id;
+  const carried = await carriedExcerpts(input, result, documentIds, deps);
   const sourcesBy = new Map<string, number>();
-  for (const h of result.hits) sourcesBy.set(h.projectId, (sourcesBy.get(h.projectId) ?? 0) + 1);
+  for (const h of [...result.hits, ...carried]) {
+    sourcesBy.set(h.projectId, (sourcesBy.get(h.projectId) ?? 0) + 1);
+  }
   const projects: ChatGroundingProject[] = result.projectsSearched.map((id) => ({
     projectId: id,
     projectName: nameOf(id),
@@ -175,11 +288,38 @@ export async function buildMultiProjectRagContext(
     projectName: f.projectName,
     reason: f.reason,
   }));
+  const belowFloor = result.belowFloor ?? 0;
+  const listed = [...result.hits, ...carried];
+  // #2294 — as `describeGrounding` says it for one project: the files the
+  // excerpts came from, named as the model saw them, with each fresh hit's
+  // dense cosine; or, when nothing reached the prompt, why.
+  const sourcesUsed = groundingSources(
+    listed.map((h, i) => {
+      const relevance = i < result.hits.length ? denseCosine(result.hits[i]!) : null;
+      return {
+        name: `[${nameOf(h.projectId)}] ${h.path ?? h.filename}`,
+        ...(relevance !== null ? { relevance } : {}),
+      };
+    }),
+  );
+  const reason: NoContextReason | null =
+    listed.length > 0
+      ? null
+      : projects.length === 0 && unsearched.length > 0
+        ? "retrieval-failed"
+        : projects.length === 0
+          ? null
+          : belowFloor > 0
+            ? "insufficient-evidence"
+            : "nothing-found";
   const grounding: ChatGrounding = {
     status: "multi",
     projects,
     ...(unsearched.length > 0 ? { unsearched } : {}),
     ...(result.projectsRejected > 0 ? { unavailable: result.projectsRejected } : {}),
+    ...(sourcesUsed.length > 0 ? { sourcesUsed } : {}),
+    ...(reason ? { reason } : {}),
+    ...(reason === "insufficient-evidence" ? { belowFloor } : {}),
   };
 
   const inScope = [...projects.map((p) => p.projectName), ...unsearched.map((u) => u.projectName)];
@@ -190,14 +330,29 @@ export async function buildMultiProjectRagContext(
     };
   }
 
-  const chunkList = result.hits.map(
-    (h, i) =>
-      `[${i + 1}] [${h.projectName}] ${formatHitLocator(h)}${formatDerivedLabel(h.derived)} ` +
-      `(${formatHitScore({ score: h.score, matchedBy: h.matchedBy }, 3)})\n${h.text}`,
-  );
+  const chunkList = [
+    ...result.hits.map(
+      (h, i) =>
+        `[${i + 1}] [${h.projectName}] ${formatHitLocator(h)}${formatDerivedLabel(h.derived)} ` +
+        `(${formatHitScore({ score: h.score, matchedBy: h.matchedBy }, 3)})\n${h.text}`,
+    ),
+    ...carried.map(
+      (h, j) =>
+        `[${result.hits.length + j + 1}] [${nameOf(h.projectId)}] ${formatHitLocator(h)}` +
+        `${formatDerivedLabel(h.derived)} (cited in your previous answer)\n${h.text}`,
+    ),
+  ];
   if (input.capture) {
     input.capture.contexts.push(...chunkList);
     input.capture.sources += chunkList.length;
+    // #2279 — numbered as the block numbers them, so the reply records what it cited.
+    input.capture.excerpts = [...result.hits, ...carried].map((h, i) => ({
+      n: i + 1,
+      chunkId: h.chunkId,
+      name: h.path ?? h.filename,
+      locator: formatHitLocator(h),
+      ...(h.source ? { source: h.source } : {}),
+    }));
   }
 
   const lines: string[] = [
@@ -207,6 +362,10 @@ export async function buildMultiProjectRagContext(
       `this chat runs on) and never any other topic raised earlier in this conversation.`,
   ];
   if (chunkList.length > 0) {
+    // #2294 — the floor set aside every fresh match and only carried excerpts
+    // remain: the turn stays grounded in them (the model is shown them), but
+    // it is told this question's own search found nothing usable.
+    if (result.hits.length === 0 && belowFloor > 0) lines.push(carriedOnlyNote(belowFloor));
     lines.push(
       `Each excerpt below is labelled with the product it was retrieved from, in square brackets. ` +
         `Answer from these excerpts, and attribute every claim to its product by name ` +
@@ -215,8 +374,26 @@ export async function buildMultiProjectRagContext(
         `product's excerpt over to another product. Prefer these excerpts over your own ` +
         `background knowledge or earlier chat history. An excerpt marked DERIVED is generated ` +
         `documentation about the product, not a primary source: use it as a pointer, prefer an ` +
-        `unmarked excerpt when they disagree, and say so when you rely on one:`,
+        `unmarked excerpt when they disagree, and say so when you rely on one` +
+        // #2279 — said only when it applies, so an ordinary turn's block is unchanged.
+        (documentIds
+          ? ". The user attached documents to this question, so every excerpt below comes from them"
+          : "") +
+        (carried.length > 0
+          ? '. An excerpt marked "cited in your previous answer" is one your last answer drew on, ' +
+            "kept so you can build on it"
+          : "") +
+        ":",
       chunkList.join("\n\n---\n\n"),
+    );
+  } else if (belowFloor > 0) {
+    // #2294 — as `insufficientEvidenceBlock` for one project.
+    lines.push(
+      `Their knowledge bases were searched for this question and nothing in them was relevant ` +
+        `enough to use: the ${belowFloor} closest ${belowFloor === 1 ? "match was" : "matches were"} ` +
+        `too weak, so no excerpt is shown. Do not answer from general knowledge: say that their ` +
+        `sources don't show this, and say what is missing (which document, rule or code would ` +
+        `answer it).`,
     );
   } else {
     lines.push(
@@ -227,9 +404,16 @@ export async function buildMultiProjectRagContext(
   const without = projects.filter((p) => p.sources === 0).map((p) => p.projectName);
   if (chunkList.length > 0 && without.length > 0) {
     lines.push(
-      `Searched, but no excerpt from it is included above: ${quoteList(without)}. If the ` +
-        `question concerns it, say that its sources showed nothing relevant; do not describe it ` +
-        `from another product's excerpts.`,
+      documentIds
+        ? // #2279 — only the attached documents were searched, so a product with no
+          // excerpt here is one they do not cover, not one whose sources matched nothing.
+          `Only the attached documents were searched, and none of them from ` +
+            `${quoteList(without)} is included above. If the question concerns it, say that ` +
+            `the attached documents do not cover it; do not describe it from another ` +
+            `product's excerpts.`
+        : `Searched, but no excerpt from it is included above: ${quoteList(without)}. If the ` +
+            `question concerns it, say that its sources showed nothing relevant; do not ` +
+            `describe it from another product's excerpts.`,
     );
   }
   if (unsearched.length > 0) {

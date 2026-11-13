@@ -57,6 +57,10 @@ const REDIRECT_ONLY = new Set([
   "app/(authed)/workspaces/[id]/finops/page.tsx",
   "app/(authed)/projects/[id]/repositories/page.tsx",
   "app/(authed)/skills/page.tsx",
+  // #2353 — Products is a Portfolio section; the global connector catalogues are gone.
+  "app/(authed)/products/page.tsx",
+  "app/(authed)/repositories/page.tsx",
+  "app/(authed)/databases/page.tsx",
 ]);
 
 const PAGES = walk(AUTHED, (n) => n === "page.tsx");

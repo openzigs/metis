@@ -157,7 +157,13 @@ import {
   retrievalConversation,
   type CitableExcerpt,
 } from "../lib/ai/conversation/retrieval-query.js";
-import { applyRelevanceFloor, denseCosine, readRelevanceFloor } from "../lib/ai/relevance-floor.js";
+import {
+  applyRelevanceFloor,
+  carriedOnlyNote,
+  denseCosine,
+  floorKeep,
+  readRelevanceFloor,
+} from "../lib/ai/relevance-floor.js";
 import {
   citationsMeta,
   collectCitationEvidence,
@@ -198,7 +204,11 @@ import { listBindableAgents, loadBoundCustomAgent } from "../lib/agent-runtime/s
 import { agentSelectableTools } from "../lib/agent-runtime/tool-refs.js";
 import { assertLiveProjectAccess } from "../lib/custom-agents/authz.js";
 import { listMemberProjectsInWorkspace } from "../lib/cross-project/cross-project-access.js";
-import { buildMultiProjectRagContext, readChatSearchScope } from "../lib/ai/multi-project-rag.js";
+import {
+  buildMultiProjectRagContext,
+  readChatSearchScope,
+  type ChatSearchScope,
+} from "../lib/ai/multi-project-rag.js";
 import { parseScopeProjectIds } from "../lib/ai/chat-search-scope.js";
 import { assertSecretUsable, canUseSecret } from "../lib/vault/secret-access.js";
 import { resolveDurableRole } from "../lib/auth/durable-roles.js";
@@ -671,6 +681,10 @@ export interface AutoRagOptions {
 
 /** Excerpts the retrieved-knowledge block lists from search (carried ones are extra). */
 const AUTO_RAG_K = 8;
+/** #2294 — how deep each search reads, so the floor's dropped hits can be replaced. */
+const AUTO_RAG_BACKFILL_K = AUTO_RAG_K * 2;
+/** #2294 — the candidate pool an 8-deep search has always had (`KnowledgeService`'s default). */
+const AUTO_RAG_POOL = Math.max(AUTO_RAG_K * 4, 20);
 
 /**
  * #2240 — a chat turn's auto-RAG, read with the conversation: the session's
@@ -686,16 +700,7 @@ export async function conversationRagContext(
   documentIds?: readonly string[],
 ): Promise<string> {
   if (!session.projectId) return "";
-  let conversation = retrievalConversation([]);
-  try {
-    conversation = retrievalConversation(await listActiveMessages(session.id));
-  } catch (err) {
-    // An unreadable transcript costs the search its context, never the turn.
-    log.debug("Transcript unreadable for retrieval; searching the new message alone", {
-      sessionId: session.id,
-      error: (err as Error).message,
-    });
-  }
+  const conversation = await sessionRetrievalConversation(session.id);
   return buildAutoRagContext(
     session.projectId,
     [...conversation.messages, { role: "user", content: userText }],
@@ -707,6 +712,46 @@ export async function conversationRagContext(
       ...(documentIds && documentIds.length > 0 ? { documentIds } : {}),
     },
   );
+}
+
+/** #2240 — the session's prior turns as retrieval reads them; none when unreadable. */
+async function sessionRetrievalConversation(sessionId: string) {
+  try {
+    return retrievalConversation(await listActiveMessages(sessionId));
+  } catch (err) {
+    // An unreadable transcript costs the search its context, never the turn.
+    log.debug("Transcript unreadable for retrieval; searching the new message alone", {
+      sessionId,
+      error: (err as Error).message,
+    });
+    return retrievalConversation([]);
+  }
+}
+
+/**
+ * #2279 — a multi-product turn's retrieval, read with the conversation as
+ * {@link conversationRagContext} reads it for one project: the earlier turns
+ * shape the searches, the excerpts the last answer cited are carried, and the
+ * documents attached to the question limit the search.
+ */
+async function multiProductRagContext(
+  sessionId: string,
+  scope: ChatSearchScope,
+  userText: string,
+  userId: string,
+  capture: RagContextCapture,
+  documentIds?: readonly string[],
+) {
+  const conversation = await sessionRetrievalConversation(sessionId);
+  return buildMultiProjectRagContext({
+    userId,
+    scope,
+    query: userText,
+    history: conversation.messages,
+    carryForward: conversation.carryForward,
+    ...(documentIds && documentIds.length > 0 ? { documentIds } : {}),
+    capture,
+  });
 }
 
 export async function buildAutoRagContext(
@@ -800,18 +845,26 @@ async function retrieveAutoRagBlock(
     const results = await Promise.all(
       queries.map((q) =>
         service.search(projectId, q, {
-          k: AUTO_RAG_K,
+          // #2294 — read deeper than the block lists, so a hit the floor sets
+          // aside can be replaced; the candidate pool (and so the rerank) is
+          // the one an 8-deep search always had.
+          k: AUTO_RAG_BACKFILL_K,
+          fusionPoolSize: AUTO_RAG_POOL,
           actor,
           ...(documentIds ? { documentIds } : {}),
         }),
       ),
     );
-    const lists = results.map((r) => r.hits);
+    const deep = results.map((r) => r.hits);
+    const userLists = deep.slice(0, searches.user.length);
+    const contextualList = searches.contextual ? deep[searches.user.length]! : null;
+    const top = <T>(l: readonly T[]) => l.slice(0, AUTO_RAG_K);
     // The user's own searches weigh more than the conversational one, whose
-    // own finds never fill a majority of the slots.
+    // own finds never fill a majority of the slots. Fused from each search's
+    // top 8, so a turn the floor does not touch is listed exactly as before.
     const fusedHits = fuseRetrievalHits(
-      lists.slice(0, searches.user.length),
-      searches.contextual ? lists[searches.user.length]! : null,
+      userLists.map(top),
+      contextualList ? top(contextualList) : null,
       AUTO_RAG_K,
     );
     // #2241 — a chunk too weak to bear on the question never reaches the prompt.
@@ -819,8 +872,16 @@ async function retrieveAutoRagBlock(
     // Not when the user attached documents: they chose the source, so a
     // question like "summarise this" must reach that document's best excerpts
     // however weakly the words match, never an "insufficient evidence" block.
-    const floor = documentIds ? 0 : readRelevanceFloor(fusedHits.map((h) => h.embeddingModel));
-    const { kept: hits, belowFloor } = applyRelevanceFloor(fusedHits, floor);
+    const candidates = deep.flat();
+    const floor = documentIds ? 0 : readRelevanceFloor(candidates.map((h) => h.embeddingModel));
+    const { kept, belowFloor } = applyRelevanceFloor(fusedHits, floor);
+    // #2294 — backfill: when the floor set some aside, the turn is fused again
+    // from the deeper lists with the floor applied before the cut, so the next
+    // hits that clear it take the freed slots.
+    const hits =
+      belowFloor > 0
+        ? fuseRetrievalHits(userLists, contextualList, AUTO_RAG_K, floorKeep(candidates, floor))
+        : kept;
     // #2241 — a partial coverage is reported, not just logged.
     const coverage = results.find((r) => r.coverageWarning)?.coverageWarning;
     if (belowFloor > 0) capture.belowFloor = belowFloor;
@@ -898,6 +959,9 @@ async function retrieveAutoRagBlock(
           : "");
       ragBlock =
         `## Retrieved Knowledge (project-scoped RAG)\n` +
+        // #2294 — only carried excerpts are left: the turn stays grounded in
+        // them, and the model is told the question's own search found nothing.
+        (hits.length === 0 && belowFloor > 0 ? `${carriedOnlyNote(belowFloor)}\n` : "") +
         `This chat session is scoped to the project "${projectName}". The excerpts below were ` +
         `retrieved from "${projectName}"'s own knowledge base and are the primary source for ` +
         `any question about "the project" or "this project" — that phrase always means "${projectName}", ` +
@@ -1960,12 +2024,14 @@ export function aiRouter(): Router {
       // #2238 — a chat scoped to several products searches each of them.
       const multiScope = readChatSearchScope(session);
       const multi = multiScope
-        ? await buildMultiProjectRagContext({
+        ? await multiProductRagContext(
+            session.id,
+            multiScope,
+            userText,
             userId,
-            scope: multiScope,
-            query: userText,
-            capture: ragCapture,
-          })
+            ragCapture,
+            parsed.data.documentIds,
+          )
         : null;
       const ragContext = multi
         ? multi.block
@@ -2417,12 +2483,14 @@ export function aiRouter(): Router {
     // #2238 — a chat scoped to several products searches each of them.
     const multiScope = readChatSearchScope(session);
     const multi = multiScope
-      ? await buildMultiProjectRagContext({
+      ? await multiProductRagContext(
+          session.id,
+          multiScope,
+          userText,
           userId,
-          scope: multiScope,
-          query: userText,
-          capture: ragCapture,
-        })
+          ragCapture,
+          parsed.data.documentIds,
+        )
       : null;
     const ragContext = multi
       ? multi.block

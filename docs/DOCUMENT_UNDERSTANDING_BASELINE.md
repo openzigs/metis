@@ -4,7 +4,7 @@
   #2255, the document reader measured on four documents
 - **Measured:** 2026-11-10, at commit `8a0601902` (#2229); 2026-11-12, at commit `658a61dc2`
   (#2255); on `claude-sonnet-5-5` (production) and `deepseek-flash` (iteration)
-- **Readings:** `eval-data/readings/doc-understanding/`
+- **Readings:** `eval-data/readings/doc-understanding/`; #2407 re-measured arm R on 2026-11-12 at commit `362294ae3` (`reader-sonnet-5-5-2407`)
 - **Harness:** `pnpm --filter server eval:doc-understanding` (`server/src/lib/eval/doc-understanding/`)
 
 ## The reader, measured (#2255)
@@ -119,6 +119,42 @@ reply. Its cross-section pass failed on documents 02 and 04, so every statement 
   document's ACL. #2321's existence oracle has to be decided with it. With no selection, a
   project whose every upload is restricted gives an empty report, while one with no uploads
   falls back to retrieval. That code comes from #2300, which has not merged either.
+
+### Recall after the corrected-reply fix (#2407)
+
+Re-measuring #2361 (PR #2371) found the reader's recall below its floor on 01, 03 and 04, and
+most of the loss was a reply parser defect, not the reader. A model would write a short
+statements object, then "Correction: the object above is incomplete. Here is the full
+response." and a second, full object. `extractJsonObject` kept the first, so a batch's sections
+came back with one statement between them and every one of them still read "read". #2407 makes
+such a reply ambiguous, so it is re-prompted. It also asks once more for any section with text
+that a reply says nothing of, and reports a section still left out as unread.
+
+Reading `reader-sonnet-5-5-2407` (arm R, claude-sonnet-5-5, output cap 16,384, two runs per
+document, commit `362294ae3`):
+
+| Document | Floor | Recall at #2371's head | **Recall now** (run 1 / run 2) | Precision now | Misses now |
+|---|---|---|---|---|---|
+| 01 clinic booking | 0.98 | 0.95 | **0.97** (0.964 / 0.982) | 0.92 (0.90 / 0.93) | R47 both runs, R51 run 1 |
+| 02 freight claims | 1.00 | 1.00 | **1.00** (1.000 / 1.000) | 0.88 (0.87 / 0.90) | none |
+| 03 community grants | 0.99 | 0.98 | **0.99** (0.981 / 0.991) | 0.95 (0.95 / 0.95) | R103 both runs, R105 run 1 |
+| 04 library lending | 1.00 | 0.92 | **1.00** (1.000 / 0.995) | 0.93 (0.92 / 0.94) | R37 run 2 |
+
+Exact means: 0.973, 1.000, 0.986, 0.998. **The floor is met on 02, and on 03 and 04 at two
+decimals; 01 is 0.01 short.** No section of any run was unread, and no run lost a batch: 04,
+which lost seven sections (R14–R49) in #2371's run 1, read every requirement in run 1 and all
+but R37 in run 2.
+
+The misses that are left are not this defect. R47 ("Urgent and same-day appointments remain
+telephone-only in the first release…") stands in 01's out-of-scope section, which the reader's
+prompt says to read as background since #2361. R103 is #2371's original miss on 03, and R105
+the statement its cross-section pass dropped as a repeat of R43. Both belong to #2374's
+precision and labelling follow-up.
+
+Four statements replies were re-prompted as unreadable (one on 01, three on 04, at 2,750 to
+14,469 characters) and every one was then read. The log keeps a reply's length and hash, not
+its body, so which of them were corrected replies is not known. Every run's call count is its
+batches (3, 4, 5 and 9), the merge and those re-prompts, so no section was asked for again.
 
 ## The Phase 0 answer (#2229)
 
@@ -327,6 +363,7 @@ documents 02 and 03 once its reduce had failed on the smallest one.
 | `reader-sonnet-5-5-B-cap21333` (B × documents 03, 04) (#2255) | claude-sonnet-5-5 | $0.7308 | $0.0688 | **$0.7996** |
 | `reader-deepseek-flash-cap21333` (B, R × 4 documents) (#2255) | deepseek-flash | $0.7376 | $0.0905 | **$0.8281** |
 | **#2255 metered total** | | | | **$5.0732** (Sonnet $4.2451, DeepSeek $0.8281) |
+| `reader-sonnet-5-5-2407` (R × 4 documents × 2 runs) (#2407) | claude-sonnet-5-5 | $2.7935 | $0.5721 | **$3.3656** |
 
 Not in the readings: a first smoke run on DeepSeek before the harness was committed, stopped
 by its time limit during arm C (A and B logged $0.0806 with their judges; C's partial spend

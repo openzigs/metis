@@ -100,13 +100,14 @@ describe("buildAutoRagContext — conversation-aware searches (#2240)", () => {
     expect(out).toContain("[3] refund-b.md#0");
   });
 
-  it("keeps at most eight fused excerpts", async () => {
+  it("keeps at most eight of the user's own excerpts, and three more of the earlier topic's", async () => {
     search.mockImplementation(async (_p: string, q: string) => ({
       hits: Array.from({ length: 8 }, (_, i) => hit(`${q.length}-${i}`)),
     }));
     const cap = capture();
     await buildAutoRagContext("p1", followUp, "u1", deps(), cap);
-    expect(cap.sources).toBe(8);
+    // #2316 — the earlier topic's finds are added, never swapped in for the user's own.
+    expect(cap.sources).toBe(11);
   });
 
   // PR #2266 panel — after a refund answer that ended on a question, a new
@@ -136,7 +137,7 @@ describe("buildAutoRagContext — conversation-aware searches (#2240)", () => {
     expect(cap.excerpts!.map((e) => e.chunkId)).toEqual(["reset-1"]);
   });
 
-  it("gives the earlier topic at most 3 of the 8 slots on a follow-up", async () => {
+  it("keeps all 8 of the user's own excerpts on a follow-up, and adds at most 3 of the earlier topic's", async () => {
     search.mockImplementation(async (_p: string, q: string) => ({
       hits: Array.from({ length: 8 }, (_, i) =>
         hit(q === "product B" ? `own-${i}` : `earlier-${i}`),
@@ -145,8 +146,9 @@ describe("buildAutoRagContext — conversation-aware searches (#2240)", () => {
     const cap = capture();
     await buildAutoRagContext("p1", followUp, "u1", deps(), cap);
     const ids = cap.excerpts!.map((e) => e.chunkId);
-    expect(ids).toHaveLength(8);
-    expect(ids.filter((id) => id.startsWith("earlier-")).length).toBeLessThanOrEqual(3);
+    // #2316 (F2) — none of the user's own 8 is pushed out.
+    expect(ids.filter((id) => id.startsWith("own-"))).toHaveLength(8);
+    expect(ids.filter((id) => id.startsWith("earlier-"))).toHaveLength(3);
     expect(ids[0]).toBe("own-0");
   });
 
@@ -272,7 +274,8 @@ describe("buildAutoRagContext — attached documents (#2240)", () => {
       documentIds: ["d-frd"],
     });
     for (const c of search.mock.calls) {
-      expect(c[2]).toMatchObject({ k: 8, documentIds: ["d-frd"] });
+      // #2294 — read 16 deep, for the floor's backfill.
+      expect(c[2]).toMatchObject({ k: 16, documentIds: ["d-frd"] });
     }
     expect(out).toContain("The user attached documents to this question");
     expect(d.searcher.search).not.toHaveBeenCalled();
@@ -400,5 +403,98 @@ describe("buildAutoRagContext — relevance floor (#2241)", () => {
     const out = await buildAutoRagContext("p1", question, "u1", deps(), cap);
     expect(out).toContain("text of weak");
     expect(cap.belowFloor).toBeUndefined();
+  });
+
+  // #2294 — no backfill after fusion: the floor ran on a list already cut to 8.
+  const ranked = (scores: number[]) => scores.map((s, i) => scored(`h${i + 1}`, s));
+
+  it("reads each search 16 deep from the candidate pool an 8-deep search had", async () => {
+    search.mockResolvedValue({ hits: [] });
+    await buildAutoRagContext("p1", question, "u1", deps(), capture());
+    expect(search.mock.calls[0]![2]).toMatchObject({ k: 16, fusionPoolSize: 32 });
+  });
+
+  it("replaces a hit the floor sets aside with the next one that clears it", async () => {
+    // h3 and h5 are weak; h9 and h10 are the next that clear the floor.
+    search.mockResolvedValue({
+      hits: ranked([0.8, 0.79, 0.3, 0.77, 0.2, 0.75, 0.74, 0.73, 0.72, 0.71, 0.4]),
+    });
+    const cap = capture();
+    const out = await buildAutoRagContext("p1", question, "u1", deps(), cap);
+    expect(cap.excerpts!.map((e) => e.chunkId)).toEqual([
+      "h1",
+      "h2",
+      "h4",
+      "h6",
+      "h7",
+      "h8",
+      "h9",
+      "h10",
+    ]);
+    expect(out).not.toContain("text of h3");
+    expect(out).not.toContain("text of h11");
+    // What the floor set aside of the 8 the turn would have shown.
+    expect(cap.belowFloor).toBe(2);
+  });
+
+  it("lists exactly the top 8 when the floor sets nothing aside", async () => {
+    search.mockResolvedValue({ hits: ranked(Array.from({ length: 16 }, (_, i) => 0.9 - i / 100)) });
+    const cap = capture();
+    await buildAutoRagContext("p1", question, "u1", deps(), cap);
+    expect(cap.excerpts!.map((e) => e.chunkId)).toEqual(
+      Array.from({ length: 8 }, (_, i) => `h${i + 1}`),
+    );
+    expect(cap.belowFloor).toBeUndefined();
+  });
+
+  it("backfills a follow-up's fused list from the deeper searches too", async () => {
+    search.mockImplementation(async (_p: string, q: string) => ({
+      hits:
+        q === "product B"
+          ? ranked([0.2, 0.81, 0.8, 0.79, 0.78, 0.77, 0.76, 0.75, 0.74, 0.73])
+          : [scored("ctx", 0.9)],
+    }));
+    const cap = capture();
+    await buildAutoRagContext("p1", followUp, "u1", deps(), cap);
+    // From 8-deep lists the weak h1 left 7 of the user's own: h9, past the
+    // 8-deep cut, takes its slot, and the earlier topic's hit is added beside
+    // the user's 8 (#2316), not swapped in.
+    expect(cap.excerpts!.map((e) => e.chunkId)).toEqual([
+      "h2",
+      "h3",
+      "h4",
+      "ctx",
+      "h5",
+      "h6",
+      "h7",
+      "h8",
+      "h9",
+    ]);
+    expect(cap.belowFloor).toBe(1);
+  });
+
+  it("grounds a turn on carried excerpts when the floor sets every fresh match aside, and says so", async () => {
+    search.mockResolvedValue({ hits: [scored("a", 0.3), scored("b", 0.2)] });
+    loadChunksById.mockResolvedValue([hit("cited", "the 30-day refund rule")]);
+    const cap = capture();
+    const out = await buildAutoRagContext("p1", followUp, "u1", deps(), cap, {
+      carryForward: ["cited"],
+    });
+    expect(out).toContain(
+      "This question's own search found nothing relevant enough to use: the 2 closest matches were too weak.",
+    );
+    expect(out).toContain("[1] cited.md#0 (cited in your previous answer)");
+    expect(out).not.toContain("text of a");
+    expect(cap.sources).toBe(1);
+    expect(cap.belowFloor).toBe(2);
+  });
+
+  it("does not add that note when fresh excerpts remain beside the carried ones", async () => {
+    search.mockResolvedValue({ hits: [scored("a", 0.8), scored("b", 0.2)] });
+    loadChunksById.mockResolvedValue([hit("cited")]);
+    const out = await buildAutoRagContext("p1", followUp, "u1", deps(), capture(), {
+      carryForward: ["cited"],
+    });
+    expect(out).not.toContain("own search found nothing");
   });
 });

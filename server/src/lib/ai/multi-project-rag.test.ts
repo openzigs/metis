@@ -9,6 +9,7 @@ import type {
 } from "../rag/federated-search-service.js";
 import { buildMultiProjectRagContext, readChatSearchScope } from "./multi-project-rag.js";
 import { parseScopeProjectIds, type ChatSearchScope } from "./chat-search-scope.js";
+import { readRelevanceFloor } from "./relevance-floor.js";
 
 vi.mock("../config/config-service.js", () => ({
   getConfigService: () => ({
@@ -89,6 +90,8 @@ describe("buildMultiProjectRagContext (#2238)", () => {
       query: "how does rule X work?",
       k: 8,
       relevanceFloor: 0.6,
+      // #2294 — chat's absolute floor, read for the hits' embedders.
+      absoluteFloor: readRelevanceFloor,
     });
   });
 
@@ -125,6 +128,12 @@ describe("buildMultiProjectRagContext (#2238)", () => {
         { projectId: "pa", projectName: "Alpha", sources: 2 },
         { projectId: "pb", projectName: "Beta", sources: 1 },
       ],
+      // #2294 — each file the excerpts came from, named as the model saw it.
+      sourcesUsed: [
+        { name: "[Alpha] a1.md", excerpts: 1, relevance: 0.8 },
+        { name: "[Beta] b1.md", excerpts: 1, relevance: 0.8 },
+        { name: "[Alpha] a2.md", excerpts: 1, relevance: 0.8 },
+      ],
     });
     expect(capture.sources).toBe(3);
     expect(capture.contexts).toHaveLength(3);
@@ -154,6 +163,7 @@ describe("buildMultiProjectRagContext (#2238)", () => {
       status: "multi",
       projects: [{ projectId: "pa", projectName: "Alpha", sources: 1 }],
       unsearched: [{ projectId: "pc", projectName: "Gamma", reason: "timeout" }],
+      sourcesUsed: [{ name: "[Alpha] a1.md", excerpts: 1, relevance: 0.8 }],
     });
   });
 
@@ -197,6 +207,8 @@ describe("buildMultiProjectRagContext (#2238)", () => {
     });
     expect(out.block).toContain("No excerpt from their sources matched this question");
     expect(out.block).not.toContain("Searched, but no excerpt");
+    expect(out.grounding).toMatchObject({ reason: "nothing-found" });
+    expect(out.grounding).not.toHaveProperty("belowFloor");
   });
 
   it("resolves a workspace scope to the projects of it the caller can open now", async () => {
@@ -268,7 +280,8 @@ describe("buildMultiProjectRagContext (#2238)", () => {
       },
     });
     expect(out.block).toContain("their sources could not be searched this turn");
-    expect(out.grounding).toEqual({ status: "multi", projects: [] });
+    // #2294 — and the label says why, as a single-project one does.
+    expect(out.grounding).toEqual({ status: "multi", projects: [], reason: "retrieval-failed" });
     expect(capture.sources).toBe(0);
   });
 
@@ -290,5 +303,385 @@ describe("buildMultiProjectRagContext (#2238)", () => {
       deps: { search },
     });
     expect(search.mock.calls[0][0].query).toHaveLength(2048);
+  });
+});
+
+describe("buildMultiProjectRagContext reads the conversation (#2279)", () => {
+  const actor = { userId: "u1", role: "reader" } as never;
+  const searched = (projectsSearched = ["pa", "pb"], hits: ReturnType<typeof hit>[] = []) =>
+    result({ hits, projectsSearched, projectNames: { pa: "Alpha", pb: "Beta" } });
+  const carriedChunk = (chunkId: string, documentId = `doc-${chunkId}`) => ({
+    chunkId,
+    documentId,
+    filename: `${chunkId}.md`,
+    position: 2,
+    text: `Text of ${chunkId}.`,
+    score: 0,
+    embeddingModel: "stub",
+    source: "upload" as const,
+  });
+
+  it("searches a follow-up with the turn before it, the user's own words first", async () => {
+    const search = vi.fn(async (_o: FederatedSearchOptions) => result());
+    await buildMultiProjectRagContext({
+      userId: "u1",
+      scope: twoProducts,
+      history: [
+        { role: "user", content: "How is annual billing done?" },
+        { role: "assistant", content: "Alpha bills annual plans up front." },
+      ],
+      query: "and in the client?",
+      deps: { search },
+    });
+    expect(search).toHaveBeenCalledWith({
+      userId: "u1",
+      projectIds: ["pa", "pb"],
+      query: "and in the client?",
+      contextualQuery: "and in the client?\nHow is annual billing done?",
+      k: 8,
+      relevanceFloor: 0.6,
+      absoluteFloor: readRelevanceFloor,
+    });
+  });
+
+  it("searches each part of a multi-part question on its own too", async () => {
+    const search = vi.fn(async (_o: FederatedSearchOptions) => result());
+    await buildMultiProjectRagContext({
+      userId: "u1",
+      scope: twoProducts,
+      query: "How does Alpha retry payments? And how does Beta refund them?",
+      deps: { search },
+    });
+    expect(search.mock.calls[0]![0].moreQueries).toEqual([
+      "How does Alpha retry payments?",
+      "And how does Beta refund them?",
+    ]);
+    expect(search.mock.calls[0]![0].contextualQuery).toBeUndefined();
+  });
+
+  it("keeps the excerpts the previous answer cited, labelled with their product, for the caller", async () => {
+    const loadChunks = vi.fn(async (projectId: string, ids: readonly string[], _actor: unknown) =>
+      projectId === "pb" ? ids.filter((id) => id === "b9").map((id) => carriedChunk(id)) : [],
+    );
+    const aclActor = vi.fn(async () => actor);
+    const capture = { contexts: [] as string[], sources: 0 };
+    const out = await buildMultiProjectRagContext({
+      userId: "u1",
+      scope: twoProducts,
+      query: "and in the client?",
+      carryForward: ["b9", "a1"],
+      capture,
+      deps: {
+        search: async () => searched(["pa", "pb"], [hit("pa", "Alpha", "a1", "Alpha client.")]),
+        loadChunks,
+        aclActor,
+      },
+    });
+    expect(aclActor).toHaveBeenCalledWith("u1");
+    expect(loadChunks.mock.calls.map((c) => c[0]).sort()).toEqual(["pa", "pb"]);
+    for (const c of loadChunks.mock.calls) expect(c[2]).toBe(actor);
+    expect(out.block).toContain("[1] [Alpha] a1.md#0");
+    expect(out.block).toContain("[2] [Beta] b9.md#2 (cited in your previous answer)\nText of b9.");
+    expect(out.block).toContain('An excerpt marked "cited in your previous answer"');
+    // The carried excerpt is one the model was shown: it counts for its product.
+    expect(out.grounding).toEqual({
+      status: "multi",
+      projects: [
+        { projectId: "pa", projectName: "Alpha", sources: 1 },
+        { projectId: "pb", projectName: "Beta", sources: 1 },
+      ],
+      // A carried excerpt has no relevance of this turn's.
+      sourcesUsed: [
+        { name: "[Alpha] a1.md", excerpts: 1, relevance: 0.8 },
+        { name: "[Beta] b9.md", excerpts: 1 },
+      ],
+    });
+    expect(capture.sources).toBe(2);
+    expect(capture).toMatchObject({
+      excerpts: [
+        { n: 1, chunkId: "a1", name: "a1.md", locator: "a1.md#0" },
+        { n: 2, chunkId: "b9", name: "b9.md", locator: "b9.md#2", source: "upload" },
+      ],
+    });
+  });
+
+  it("does not repeat a cited excerpt this turn's search found again", async () => {
+    const out = await buildMultiProjectRagContext({
+      userId: "u1",
+      scope: twoProducts,
+      query: "q",
+      carryForward: ["a1"],
+      deps: {
+        search: async () => searched(["pa", "pb"], [hit("pa", "Alpha", "a1", "Alpha client.")]),
+        loadChunks: async (projectId) => (projectId === "pa" ? [carriedChunk("a1")] : []),
+        aclActor: async () => actor,
+      },
+    });
+    expect(out.block).not.toContain("cited in your previous answer");
+    expect(out.block.match(/a1\.md/g)).toHaveLength(1);
+  });
+
+  it("reads carried excerpts only from projects the caller can still reach", async () => {
+    const loadChunks = vi.fn(async (_projectId: string) => [carriedChunk("x")]);
+    await buildMultiProjectRagContext({
+      userId: "u1",
+      scope: { kind: "projects", projectIds: ["pa", "gone"] },
+      query: "q",
+      carryForward: ["x"],
+      deps: {
+        search: async () =>
+          result({ projectsSearched: ["pa"], projectsRejected: 1, projectNames: { pa: "Alpha" } }),
+        loadChunks,
+        aclActor: async () => actor,
+      },
+    });
+    expect(loadChunks.mock.calls.map((c) => c[0])).toEqual(["pa"]);
+  });
+
+  it("carries nothing from a project whose search failed, so the block and counts agree", async () => {
+    const loadChunks = vi.fn(async (projectId: string, ids: readonly string[]) =>
+      ids
+        .filter((id) => id.startsWith(projectId === "pa" ? "a" : "b"))
+        .map((id) => carriedChunk(id)),
+    );
+    const capture = { contexts: [] as string[], sources: 0 };
+    const out = await buildMultiProjectRagContext({
+      userId: "u1",
+      scope: twoProducts,
+      query: "q",
+      carryForward: ["a7", "b9"],
+      capture,
+      deps: {
+        // Beta is reachable (named) but its search timed out this turn.
+        search: async () =>
+          result({
+            hits: [hit("pa", "Alpha", "a1", "Alpha client.")],
+            projectsSearched: ["pa"],
+            projectsFailed: ["pb"],
+            failures: [{ projectId: "pb", projectName: "Beta", reason: "timeout" }],
+            projectNames: { pa: "Alpha", pb: "Beta" },
+          }),
+        loadChunks,
+        aclActor: async () => actor,
+      },
+    });
+    expect(loadChunks.mock.calls.map((c) => c[0])).toEqual(["pa"]);
+    expect(out.block).toContain("[2] [Alpha] a7.md#2 (cited in your previous answer)");
+    expect(out.block).not.toContain("[Beta] b9.md");
+    expect(out.block).toContain('Could not be searched this turn: "Beta" (timed out)');
+    expect(out.grounding).toEqual({
+      status: "multi",
+      projects: [{ projectId: "pa", projectName: "Alpha", sources: 2 }],
+      unsearched: [{ projectId: "pb", projectName: "Beta", reason: "timeout" }],
+      sourcesUsed: [
+        { name: "[Alpha] a1.md", excerpts: 1, relevance: 0.8 },
+        { name: "[Alpha] a7.md", excerpts: 1 },
+      ],
+    });
+    expect(capture.sources).toBe(2);
+  });
+
+  it("loses only the carry-over when the cited excerpts cannot be read", async () => {
+    const out = await buildMultiProjectRagContext({
+      userId: "u1",
+      scope: twoProducts,
+      query: "q",
+      carryForward: ["b9"],
+      deps: {
+        search: async () => searched(["pa", "pb"], [hit("pa", "Alpha", "a1", "Alpha client.")]),
+        loadChunks: async () => {
+          throw new Error("db down");
+        },
+        aclActor: async () => actor,
+      },
+    });
+    expect(out.block).toContain("[1] [Alpha] a1.md#0");
+    expect(out.block).not.toContain("cited in your previous answer");
+  });
+
+  it("limits every search, and the carried excerpts, to the attached documents", async () => {
+    const search = vi.fn(async (_o: FederatedSearchOptions) =>
+      searched(["pa", "pb"], [hit("pa", "Alpha", "a1", "Alpha client.")]),
+    );
+    const out = await buildMultiProjectRagContext({
+      userId: "u1",
+      scope: twoProducts,
+      query: "Summarise these",
+      documentIds: ["doc-a1", "doc-keep"],
+      carryForward: ["b9", "b8"],
+      deps: {
+        search,
+        loadChunks: async (projectId) =>
+          projectId === "pb" ? [carriedChunk("b9"), carriedChunk("b8", "doc-keep")] : [],
+        aclActor: async () => actor,
+      },
+    });
+    expect(search).toHaveBeenCalledWith(
+      expect.objectContaining({ documentIds: ["doc-a1", "doc-keep"], relevanceFloor: 0 }),
+    );
+    expect(out.block).toContain("The user attached documents to this question");
+    expect(out.block).toContain("[2] [Beta] b8.md#2 (cited in your previous answer)");
+    expect(out.block).not.toContain("b9.md");
+    // #2294 — the user chose the source: no absolute floor either.
+    expect(search.mock.calls[0]![0].absoluteFloor).toBeUndefined();
+  });
+
+  it("says a product the attached documents do not cover has no excerpt for that reason", async () => {
+    const out = await buildMultiProjectRagContext({
+      userId: "u1",
+      scope: twoProducts,
+      query: "Summarise these",
+      documentIds: ["doc-a1"],
+      deps: { search: async () => searched(["pa", "pb"], [hit("pa", "Alpha", "a1", "Alpha.")]) },
+    });
+    expect(out.block).toContain(
+      'Only the attached documents were searched, and none of them from "Beta" is included above',
+    );
+    expect(out.block).toContain("say that the attached documents do not cover it");
+    expect(out.block).not.toContain("Searched, but no excerpt");
+    expect(out.block).not.toContain("showed nothing relevant");
+  });
+});
+
+describe("buildMultiProjectRagContext — relevance floor (#2294)", () => {
+  const actor = { userId: "u1", role: "reader" } as never;
+
+  it("passes an injected absolute floor to the search", async () => {
+    const absoluteFloor = () => 0.5;
+    const search = vi.fn(async (_o: FederatedSearchOptions) => result());
+    await buildMultiProjectRagContext({
+      userId: "u1",
+      scope: twoProducts,
+      query: "q",
+      deps: { search, absoluteFloor },
+    });
+    expect(search.mock.calls[0]![0].absoluteFloor).toBe(absoluteFloor);
+  });
+
+  it("says the sources don't support an answer when the floor set every match aside", async () => {
+    const out = await buildMultiProjectRagContext({
+      userId: "u1",
+      scope: twoProducts,
+      query: "What is the capital of France?",
+      deps: {
+        search: async () =>
+          result({
+            projectsSearched: ["pa", "pb"],
+            projectsWithoutHits: ["pa", "pb"],
+            projectNames: { pa: "Alpha", pb: "Beta" },
+            belowFloor: 5,
+          }),
+      },
+    });
+    expect(out.block).toContain(
+      "Their knowledge bases were searched for this question and nothing in them was relevant enough to use: the 5 closest matches were too weak",
+    );
+    expect(out.block).toContain("say that their sources don't show this");
+    expect(out.block).not.toContain("No excerpt from their sources matched");
+    expect(out.grounding).toEqual({
+      status: "multi",
+      projects: [
+        { projectId: "pa", projectName: "Alpha", sources: 0 },
+        { projectId: "pb", projectName: "Beta", sources: 0 },
+      ],
+      reason: "insufficient-evidence",
+      belowFloor: 5,
+    });
+  });
+
+  it("names one weak match in the singular", async () => {
+    const out = await buildMultiProjectRagContext({
+      userId: "u1",
+      scope: twoProducts,
+      query: "q",
+      deps: {
+        search: async () =>
+          result({ projectsSearched: ["pa"], projectNames: { pa: "Alpha" }, belowFloor: 1 }),
+      },
+    });
+    expect(out.block).toContain("the 1 closest match was too weak");
+  });
+
+  it("says why nothing was supplied when every product's search failed", async () => {
+    const out = await buildMultiProjectRagContext({
+      userId: "u1",
+      scope: twoProducts,
+      query: "q",
+      deps: {
+        search: async () =>
+          result({
+            failures: [
+              { projectId: "pa", projectName: "Alpha", reason: "error" },
+              { projectId: "pb", projectName: "Beta", reason: "timeout" },
+            ],
+            projectNames: { pa: "Alpha", pb: "Beta" },
+          }),
+      },
+    });
+    expect(out.grounding).toMatchObject({ reason: "retrieval-failed" });
+  });
+
+  it("grounds a turn on carried excerpts when the floor set every fresh match aside, and says so", async () => {
+    const out = await buildMultiProjectRagContext({
+      userId: "u1",
+      scope: twoProducts,
+      query: "and monthly?",
+      carryForward: ["b9"],
+      deps: {
+        search: async () =>
+          result({
+            projectsSearched: ["pa", "pb"],
+            projectNames: { pa: "Alpha", pb: "Beta" },
+            belowFloor: 3,
+          }),
+        loadChunks: async (projectId) =>
+          projectId === "pb"
+            ? [
+                {
+                  chunkId: "b9",
+                  documentId: "doc-b9",
+                  filename: "b9.md",
+                  position: 0,
+                  text: "Beta bills monthly.",
+                  score: 0,
+                  embeddingModel: "stub",
+                  source: "upload" as const,
+                },
+              ]
+            : [],
+        aclActor: async () => actor,
+      },
+    });
+    expect(out.block).toContain(
+      "This question's own search found nothing relevant enough to use: the 3 closest matches were too weak.",
+    );
+    expect(out.block).toContain("[1] [Beta] b9.md#0 (cited in your previous answer)");
+    expect(out.grounding).toEqual({
+      status: "multi",
+      projects: [
+        { projectId: "pa", projectName: "Alpha", sources: 0 },
+        { projectId: "pb", projectName: "Beta", sources: 1 },
+      ],
+      sourcesUsed: [{ name: "[Beta] b9.md", excerpts: 1 }],
+    });
+  });
+
+  it("labels a source with its dense cosine, not a reranker's verdict", async () => {
+    const out = await buildMultiProjectRagContext({
+      userId: "u1",
+      scope: twoProducts,
+      query: "q",
+      deps: {
+        search: async () =>
+          result({
+            hits: [{ ...hit("pa", "Alpha", "a1", "x", 0.98), denseScore: 0.62 }],
+            projectsSearched: ["pa"],
+            projectNames: { pa: "Alpha" },
+          }),
+      },
+    });
+    expect(out.grounding).toMatchObject({
+      sourcesUsed: [{ name: "[Alpha] a1.md", excerpts: 1, relevance: 0.62 }],
+    });
   });
 });
