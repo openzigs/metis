@@ -28,6 +28,16 @@ export interface ToolContext {
   codeAccess?: CodeAccessFilter;
 }
 
+/**
+ * #2390 — why a `resultCount: 0` result is not a miss (`search_code_graph`):
+ *   - `ambiguous-name`: the name matched several symbols, listed as candidates;
+ *   - `probable-call-sites`: no resolved caller, but call sites the parser could
+ *     not resolve are listed;
+ *   - `no-call-edges`: the symbol was found and the graph records no calls in
+ *     the direction asked (any unresolved external calls are listed).
+ */
+export type ZeroResultKind = "ambiguous-name" | "probable-call-sites" | "no-call-edges";
+
 export interface ToolResult {
   content: string;
   truncated?: boolean;
@@ -50,6 +60,13 @@ export interface ToolResult {
    * replaces the sniff; the sniff remains only as a fallback for legacy records.
    */
   resultCount?: number;
+  /**
+   * #2390 — set ONLY with `resultCount: 0`, when that zero is not a miss: the
+   * tool found what it was asked about and reports it in prose rather than as
+   * results. Chat's search guidance gives these their own instruction instead
+   * of "nothing was found; search again". Absent: a zero is a miss.
+   */
+  zeroResultKind?: ZeroResultKind;
   /**
    * #2324 — a fixed, server-authored instruction the model reads AFTER the
    * result's closing data fence (the chat runtime sets it on grounding tool

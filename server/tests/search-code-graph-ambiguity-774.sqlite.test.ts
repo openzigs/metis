@@ -260,6 +260,11 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       // No callees of either one are reported as THE answer.
       expect(res.content).not.toContain("UpdateFeedContext —");
       expect(res.resultCount).toBe(0);
+      // #2390 — the name WAS found, more than once: not a miss.
+      expect(res.zeroResultKind).toBe("ambiguous-name");
+      const callsSide = await searchCodeGraphTool.execute({ calls: "UpdateFeed" }, ctx());
+      expect(callsSide.content).toContain('"UpdateFeed" is ambiguous');
+      expect(callsSide.zeroResultKind).toBe("ambiguous-name");
     });
 
     it("a unique qualified-name suffix resolves without the full path", async () => {
@@ -299,6 +304,20 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         "internal/ui/feed_update.go:76 in internal/ui/feed_update.go::handler.updateFeed",
       );
       expect(res.content).toContain("may target internal/storage/feed.go::Storage.UpdateFeed");
+      // #2390 — probable call sites are listed: not a miss.
+      expect(res.resultCount).toBe(0);
+      expect(res.zeroResultKind).toBe("probable-call-sites");
+    });
+
+    it("#2390 — a filter that drops every resolved caller still reports the probable call sites as such", async () => {
+      const res = await searchCodeGraphTool.execute(
+        { calls: "ScheduleNextCheck", query: "NoSuchCaller" },
+        ctx(),
+      );
+      expect(res.content).toContain("No symbols found matching the query.");
+      expect(res.content).toContain("Probable (unresolved) call sites");
+      expect(res.resultCount).toBe(0);
+      expect(res.zeroResultKind).toBe("probable-call-sites");
     });
 
     it("calls: the filePath filter also scopes the probable call sites", async () => {
@@ -508,6 +527,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     it("a name matching nothing still says so", async () => {
       const res = await searchCodeGraphTool.execute({ calls: "NoSuchThing" }, ctx());
       expect(res.content).toBe('No symbol matching "NoSuchThing" found.');
+      // #2390 — a real miss carries no not-a-miss kind.
+      expect(res.zeroResultKind).toBeUndefined();
     });
   },
 );

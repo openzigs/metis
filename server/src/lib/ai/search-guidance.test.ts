@@ -15,6 +15,7 @@ import {
   SEARCH_GUIDANCE_KEY,
   SEARCH_TOOL_USAGE,
   SOURCE_RESULT_INSTRUCTIONS,
+  ZERO_RESULT_INSTRUCTIONS,
   offersGroundingTool,
   resultInstructions,
   searchGuidanceEnabled,
@@ -22,6 +23,7 @@ import {
 } from "./search-guidance.js";
 import { TOOL_RESULT_FENCE } from "./tool-runtime/fence.js";
 import { estimateTokens } from "../analysis/context-window-manager.js";
+import type { ZeroResultKind } from "../analysis/tools/types.js";
 
 /** Sentences, compared without case, whitespace or the list markup. */
 function sentences(text: string): string[] {
@@ -137,8 +139,45 @@ describe("resultInstructions (#2324)", () => {
     expect(resultInstructions("query_database", { resultCount: 2 })).toBe(undefined);
   });
 
+  // #2390 — `search_code_graph` counts 0 for answers that are not misses.
+  it.each(Object.keys(ZERO_RESULT_INSTRUCTIONS) as ZeroResultKind[])(
+    "gives a zero-count %s result its own instruction, never 'nothing was found'",
+    (kind) => {
+      const got = resultInstructions("search_code_graph", { resultCount: 0, zeroResultKind: kind });
+      expect(got).toBe(ZERO_RESULT_INSTRUCTIONS[kind]);
+      expect(got).not.toBe(EMPTY_RESULT_INSTRUCTIONS);
+      expect(got).not.toBe(SOURCE_RESULT_INSTRUCTIONS);
+      expect(got).not.toMatch(/nothing was found|Search again with other wording/);
+    },
+  );
+
+  it("gives each not-a-miss kind a different instruction, saying what to do next", () => {
+    const texts = Object.values(ZERO_RESULT_INSTRUCTIONS);
+    expect(new Set(texts).size).toBe(texts.length);
+    expect(ZERO_RESULT_INSTRUCTIONS["ambiguous-name"]).toMatch(/qualified name/);
+    expect(ZERO_RESULT_INSTRUCTIONS["probable-call-sites"]).toMatch(/read_file_slice/);
+    expect(ZERO_RESULT_INSTRUCTIONS["no-call-edges"]).toMatch(/was found/);
+  });
+
+  it("reads the kind only on a zero count, and never on a failed call", () => {
+    expect(
+      resultInstructions("search_code_graph", { resultCount: 2, zeroResultKind: "no-call-edges" }),
+    ).toBe(SOURCE_RESULT_INSTRUCTIONS);
+    expect(
+      resultInstructions("search_code_graph", {
+        isError: true,
+        resultCount: 0,
+        zeroResultKind: "ambiguous-name",
+      }),
+    ).toBe(undefined);
+  });
+
   it("is fixed text that cannot be read as a data fence", () => {
-    for (const s of [SOURCE_RESULT_INSTRUCTIONS, EMPTY_RESULT_INSTRUCTIONS]) {
+    for (const s of [
+      SOURCE_RESULT_INSTRUCTIONS,
+      EMPTY_RESULT_INSTRUCTIONS,
+      ...Object.values(ZERO_RESULT_INSTRUCTIONS),
+    ]) {
       expect(s).not.toContain(TOOL_RESULT_FENCE);
       expect(s).toMatch(/^Instructions from METIS, not the tool: /);
     }

@@ -1276,3 +1276,40 @@ CHAT_SEARCH_GUIDANCE=1 pnpm eval:ba-qa --arm tools-only --budget 2 --questions S
   is scored on five answerable questions.
 - Dollar spend is not compared, for the reason given in the #2243 section: each run reads the
   prompt cache of the run before it. The four runs spent $1.452168 in total, answers and judge.
+
+### Search guidance re-measured after the not-a-miss fix (#2390), 2026-11-12
+
+#2390 gives a `search_code_graph` result that counts 0 but is not a miss its own instruction:
+a name that matches several symbols, probable call sites only, or a found symbol with no call
+edges. Before the fix, all three got "nothing was found; search again". The measurement was
+re-run with the same commands, questions, arm and model (Sonnet 5.5 answers and judge), in two
+paired runs on a fresh materialization. Each pair ran without the guidance first, then with it.
+Since #2325, the report splits citation precision into citations with line spans (judged on
+the span) and files named without lines (judged by file), so both are shown, with their sum.
+
+| | without, run 1 | with, run 1 | without, run 2 | with, run 2 |
+|---|---:|---:|---:|---:|
+| Correctness: mean facts stated | 81% | 76% | 80% | 80% |
+| Fully correct answers | 2/5 | 1/5 | 2/6 | 2/6 |
+| Citation precision, line spans | 100% (42/42) | 100% (36/36) | 98% (39/40) | 100% (42/42) |
+| Citation precision, files without lines | 17% (1/6) | 0% (0/3) | 22% (2/9) | 0% (0/9) |
+| Citation precision, both | 90% (43/48) | 92% (36/39) | 84% (41/49) | 82% (42/51) |
+| Citation recall (expected files cited) | 8/13 | 6/11 | 10/15 | 9/15 |
+| Right behaviour, single-product | 5/5 | 5/5 | 6/6 | 6/6 |
+| Input tokens / question | 40,900 | 35,800 | 37,800 | 38,900 |
+| Model calls / question | 3.22 | 3.11 | 3.11 | 3.44 |
+| Tool calls, all nine questions | 44 | 35 | 39 | 38 |
+
+- **Facts stated did not move.** Each question that both runs of a pair scored got the same
+  count of facts in both. Run 1's means differ only because the judge's reply could not be
+  read for a different question in each arm (S5 without the guidance, S3 with it).
+- **Citation precision did not improve.** Precision on cited line spans was 100% in three runs
+  and 98% in the fourth, so it has no room to rise. Over all citations, the guidance was 2
+  points better in one pair and 2 points worse in the other, inside the 4-point spread between
+  the two runs without it. Recall was 1 or 2 files lower with the guidance in both pairs.
+- **So `CHAT_SEARCH_GUIDANCE` stays off by default**, by the issue's rule: turn it on only if
+  facts stated or citation precision improves and neither gets worse.
+- Unlike #2324's runs, the guidance added no input tokens on average: 5,100 fewer per question
+  in one pair and 1,100 more in the other. These runs do not record the text of tool results, so
+  they cannot show how many results got the new instructions.
+- The four runs spent $1.662181 in total, answers and judge.

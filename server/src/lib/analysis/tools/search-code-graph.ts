@@ -368,7 +368,11 @@ async function execute(
       return { content: `No symbol matching "${calledBy}" found.`, resultCount: 0 };
     }
     if (resolved.kind === "ambiguous") {
-      return { content: ambiguityMessage("calledBy", calledBy, resolved), resultCount: 0 };
+      return {
+        content: ambiguityMessage("calledBy", calledBy, resolved),
+        resultCount: 0,
+        zeroResultKind: "ambiguous-name",
+      };
     }
     const caller = resolved.symbol;
     // #740 — a callee the parser could not resolve (stdlib, third-party) is
@@ -389,9 +393,14 @@ async function execute(
         return {
           content: `"${calledBy}" calls no symbols resolved in this code graph; ${unresolvedNote}`,
           resultCount: 0,
+          zeroResultKind: "no-call-edges",
         };
       }
-      return { content: `"${calledBy}" does not call any other symbols.`, resultCount: 0 };
+      return {
+        content: `"${calledBy}" does not call any other symbols.`,
+        resultCount: 0,
+        zeroResultKind: "no-call-edges",
+      };
     }
     where.id = { in: targetIds };
   }
@@ -402,7 +411,11 @@ async function execute(
       return { content: `No symbol matching "${calls}" found.`, resultCount: 0 };
     }
     if (resolved.kind === "ambiguous") {
-      return { content: ambiguityMessage("calls", calls, resolved), resultCount: 0 };
+      return {
+        content: ambiguityMessage("calls", calls, resolved),
+        resultCount: 0,
+        zeroResultKind: "ambiguous-name",
+      };
     }
     const callee = resolved.symbol;
     const edges = await prisma.codeEdge.findMany({
@@ -419,9 +432,14 @@ async function execute(
         return {
           content: `No resolved symbols call "${calls}".\n${probableNote}`,
           resultCount: 0,
+          zeroResultKind: "probable-call-sites",
         };
       }
-      return { content: `No symbols call "${calls}".`, resultCount: 0 };
+      return {
+        content: `No symbols call "${calls}".`,
+        resultCount: 0,
+        zeroResultKind: "no-call-edges",
+      };
     }
     where.id = { in: callerIds };
     // `calls` replaces the id filter set by `calledBy`, so its note no longer applies.
@@ -445,7 +463,13 @@ async function execute(
   if (symbols.length === 0) {
     const none = "No symbols found matching the query.";
     const notes = [none, unresolvedNote, probableNote].filter(Boolean);
-    return { content: notes.join("\n"), resultCount: 0 };
+    // #2390 — the filters dropped every resolved caller, but probable call
+    // sites of the named symbol are listed: that is not a miss either.
+    return {
+      content: notes.join("\n"),
+      resultCount: 0,
+      ...(probableNote ? { zeroResultKind: "probable-call-sites" as const } : {}),
+    };
   }
 
   const truncated = symbols.length === MAX_RESULTS;

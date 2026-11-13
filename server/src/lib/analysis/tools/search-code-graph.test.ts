@@ -113,6 +113,9 @@ describe("search_code_graph tool — file:line provenance (#715)", () => {
     mockCodeSymbol.findMany.mockResolvedValue([]);
     const res = await searchCodeGraphTool.execute({ query: "Nope" }, ctx);
     expect(res.content).toBe("No symbols found matching the query.");
+    // #2390 — a real miss: no not-a-miss kind, so it gets "search again".
+    expect(res.resultCount).toBe(0);
+    expect(res.zeroResultKind).toBeUndefined();
     expect(res.content).not.toMatch(/:\d+-\d+/);
   });
 
@@ -142,6 +145,7 @@ describe("search_code_graph tool — file:line provenance (#715)", () => {
     mockCodeSymbol.named.mockResolvedValue(null);
     const res = await searchCodeGraphTool.execute({ calledBy: "Ghost" }, ctx);
     expect(res.content).toBe('No symbol matching "Ghost" found.');
+    expect(res.zeroResultKind).toBeUndefined();
   });
 
   it("calledBy: reports cleanly when the caller calls nothing", async () => {
@@ -150,6 +154,9 @@ describe("search_code_graph tool — file:line provenance (#715)", () => {
     mockCodeEdge.findMany.mockResolvedValue([]);
     const res = await searchCodeGraphTool.execute({ calledBy: "Leaf" }, ctx);
     expect(res.content).toBe('"Leaf" does not call any other symbols.');
+    // #2390 — the caller WAS found; it calls nothing. Not a miss.
+    expect(res.resultCount).toBe(0);
+    expect(res.zeroResultKind).toBe("no-call-edges");
   });
 
   it("calls: resolves callers and renders their locators", async () => {
@@ -179,6 +186,9 @@ describe("search_code_graph tool — file:line provenance (#715)", () => {
     mockCodeEdge.findMany.mockResolvedValue([]);
     const res = await searchCodeGraphTool.execute({ calls: "helper" }, ctx);
     expect(res.content).toBe('No symbols call "helper".');
+    // #2390 — the callee WAS found; nothing calls it. Not a miss.
+    expect(res.resultCount).toBe(0);
+    expect(res.zeroResultKind).toBe("no-call-edges");
   });
 
   it("calls: reports cleanly when the named callee does not exist", async () => {
@@ -186,6 +196,7 @@ describe("search_code_graph tool — file:line provenance (#715)", () => {
     mockCodeSymbol.named.mockResolvedValue(null);
     const res = await searchCodeGraphTool.execute({ calls: "Ghost" }, ctx);
     expect(res.content).toBe('No symbol matching "Ghost" found.');
+    expect(res.zeroResultKind).toBeUndefined();
   });
 
   it("#774: refuses an UNFILTERED query and returns filter guidance instead of symbols", async () => {
@@ -389,6 +400,8 @@ describe("search_code_graph calledBy — unresolved callees (#740)", () => {
     expect(res.content).toContain("fmt.Println");
     expect(res.content).toContain("database/sql.Open");
     expect(res.resultCount).toBe(0);
+    // #2390 — the caller was found and its unresolved calls are listed: not a miss.
+    expect(res.zeroResultKind).toBe("no-call-edges");
     expect(mockCodeSymbol.findMany).not.toHaveBeenCalled();
   });
 
