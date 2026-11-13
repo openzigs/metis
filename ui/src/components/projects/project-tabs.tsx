@@ -17,6 +17,12 @@ import {
 export interface ProjectTabLink {
   href: string;
   label: string;
+  /**
+   * Routes reached from this page rather than from the sub-nav (#2381: issue
+   * updates are opened from Publish). They light the section but mark no page,
+   * and the breadcrumb runs through this page on the way to them.
+   */
+  routes?: string[];
 }
 
 export type ProjectSectionId =
@@ -31,10 +37,9 @@ export interface ProjectSection {
   /** The section's pages, shown in the sub-nav. Empty for a one-page section. */
   items: ProjectTabLink[];
   /**
-   * Routes that belong to this section but are reached from inside a page
-   * rather than from the sub-nav (e.g. issue sync, the `/repositories`
-   * redirect). Listed so
-   * the tab still lights up there.
+   * Routes that belong to this section but to none of its pages (the
+   * `/repositories` redirect). Listed so the tab still lights up there; a
+   * route reached from one page sits in that page's `routes` instead.
    */
   routes?: string[];
 }
@@ -108,10 +113,9 @@ export function getProjectTabModel(projectId: string): ProjectTabModel {
         items: [
           { href: `${base}/documentation`, label: "Documentation" },
           { href: `${base}/settings/templates`, label: "Templates" },
-          { href: `${base}/publish`, label: "Publish" },
+          // Issue-sync drift dashboard — reached from published issues' badges.
+          { href: `${base}/publish`, label: "Publish", routes: [`${base}/sync`] },
         ],
-        // Issue-sync drift dashboard — reached from published issues' badges.
-        routes: [`${base}/sync`],
       },
       {
         id: "settings",
@@ -178,7 +182,9 @@ export function resolveActiveProjectTab(
     const candidates: Array<[string, ProjectTabLink | null]> = [
       ...section.items.map((item): [string, ProjectTabLink] => [item.href, item]),
       [section.href, null],
-      ...(section.routes ?? []).map((route): [string, null] => [route, null]),
+      ...[...(section.routes ?? []), ...section.items.flatMap((item) => item.routes ?? [])].map(
+        (route): [string, null] => [route, null],
+      ),
     ];
     for (const [href, item] of candidates) {
       if (href.length > bestLength && isProjectTabActive(path, href, base)) {

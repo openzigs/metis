@@ -50,8 +50,11 @@ describe("pageCrumbs (#271)", () => {
   });
 
   it("a route reached from inside a section (issue sync) ends at its own label", () => {
+    // #2381 — issue updates are reached from Publish, so the trail runs through it
+    // rather than jumping from Deliverables (which lands on Documentation).
     expect(pageCrumbs("/projects/p1/sync", true)).toEqual([
       { label: "Deliverables", href: "/projects/p1/documentation" },
+      { label: "Publish", href: "/projects/p1/publish" },
       { label: "Issue updates" },
     ]);
   });
