@@ -37,13 +37,8 @@ import { getKnowledgeService, type KnowledgeService } from "../lib/rag/knowledge
 import { getIngestQueue, type IngestQueue } from "../lib/rag/ingest-queue.js";
 import { getProject } from "../lib/projects/project-service.js";
 import { approveDocument, rejectDocument } from "../lib/rag/quarantine.js";
-import {
-  inactiveCallerAsUnauthenticated,
-  newGroupSubjects,
-  parseAclSubjects,
-  propagateAcl,
-  resolveAclActor,
-} from "../lib/rag/acl.js";
+import { resolveAclActor, saveDocumentAcl } from "../lib/rag/acl.js";
+import { aclSaveErrorAsHttp, inactiveCallerAsUnauthenticated } from "./acl-errors.js";
 import { createChildLogger } from "../lib/logger.js";
 import {
   approvalFailureMessage,
@@ -496,20 +491,18 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
           issues: parsed.error.flatten(),
         });
       }
-      const doc = await prisma.document.findFirst({
-        where: { id: documentId, projectId, deletedAt: null },
+      // #2261 — a NEW group subject is refused (400 ACL_GROUP_UNSUPPORTED).
+      // #2356 — checked against the ACL the write replaces, not one read
+      // earlier: a group another editor just removed is not "already held".
+      const saved = await saveDocumentAcl({
+        documentId,
+        projectId,
+        aclSubjects: parsed.data.aclSubjects,
+      }).catch((err: unknown) => {
+        throw aclSaveErrorAsHttp(err);
       });
-      if (!doc) throw new AppError(404, "DOCUMENT_NOT_FOUND", "Document not found");
-      const groups = newGroupSubjects(parseAclSubjects(doc.aclSubjects), parsed.data.aclSubjects);
-      if (groups.length > 0) {
-        throw new AppError(
-          400,
-          "ACL_GROUP_UNSUPPORTED",
-          "Group subjects are not supported: METIS does not store group membership, so a group would match no one. Use a user or role subject.",
-          { groups },
-        );
-      }
-      const chunkCount = await propagateAcl(documentId, parsed.data.aclSubjects);
+      if (!saved) throw new AppError(404, "DOCUMENT_NOT_FOUND", "Document not found");
+      const { chunkCount } = saved;
       audit({
         actor: { id: actor.id },
         action: "document.acl.update",
