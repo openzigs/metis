@@ -585,6 +585,10 @@ describe("#2407 a reply that corrects its own first object", () => {
     expect(() => extractJsonObject(`${one}\n${CORRECTION}\n{\n  "statements":[{"a":1}`)).toThrow(
       AMBIGUOUS_JSON_MESSAGE,
     );
+    // An escaped quote inside the key does not end it early.
+    expect(() => extractJsonObject(`${one}\n${CORRECTION}\n{"say \\"hi\\"": [`)).toThrow(
+      AMBIGUOUS_JSON_MESSAGE,
+    );
   });
 
   it("stays linear on an answer followed by an unclosed object", () => {

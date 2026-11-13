@@ -80,8 +80,9 @@ export function extractJson<T = unknown>(raw: string): T {
     // kept the draft. Ask the balanced scan whether a different object sits
     // anywhere in the reply; if one does, the reply is unparseable and the
     // caller takes its JsonLlmParseError path rather than the draft.
-    if (inner.startsWith("{") && parseBalancedJsonObject(trimmed).ambiguous) {
-      throw new SyntaxError(AMBIGUOUS_JSON_MESSAGE);
+    if (inner.startsWith("{")) {
+      const rival = parseBalancedJsonObject(trimmed);
+      if (!rival.found && rival.ambiguous) throw new SyntaxError(AMBIGUOUS_JSON_MESSAGE);
     }
     return JSON.parse(inner) as T;
   }

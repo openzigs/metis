@@ -248,8 +248,6 @@ function opensWithKey(text: string, start: number, work: BalancedJsonWork): bool
     const ch = text.charCodeAt(i);
     if (ch === 0x5c /* \ */) i++;
     else if (ch === 0x22 /* " */) return nextTokenCode(text, i + 1, work) === 0x3a; /* : */
-    // A JSON string never spans a raw line break: this quote opened prose.
-    else if (ch === 0x0a || ch === 0x0d) return false;
   }
   return false;
 }

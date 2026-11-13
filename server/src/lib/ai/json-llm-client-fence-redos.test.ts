@@ -87,8 +87,9 @@ function extractJsonViaOldFence(raw: string): unknown {
   if (fence) {
     const inner = fence[1].trim();
     // #2407 — tracks production: a fenced first draft with a rival is ambiguous.
-    if (inner.startsWith("{") && parseBalancedJsonObject(trimmed).ambiguous) {
-      throw new SyntaxError(AMBIGUOUS_JSON_MESSAGE);
+    if (inner.startsWith("{")) {
+      const rival = parseBalancedJsonObject(trimmed);
+      if (!rival.found && rival.ambiguous) throw new SyntaxError(AMBIGUOUS_JSON_MESSAGE);
     }
     return JSON.parse(inner);
   }
