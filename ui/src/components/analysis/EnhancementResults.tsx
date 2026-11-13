@@ -603,6 +603,8 @@ function ClarificationSection({
           projectId={projectId}
           analysisId={analysisId}
           state={dialog.data}
+          // #2451 — "remaining" counts as the Questions tab and Summary do.
+          requirements={structured?.requirements}
           // #2085 — while the next round is due, the answered round must not
           // stay answerable: a second submit there was a lost update and a
           // skipped round. The panel shows this status in its place.
@@ -732,9 +734,10 @@ function GapsPreviewPanel({
               <p className="mb-2 text-xs text-muted-foreground">{req.description}</p>
             )}
             <ul className="space-y-2">
-              {ambiguitiesOf(req).map((amb) => (
+              {ambiguitiesOf(req).map((amb, i) => (
                 <li
-                  key={`${req.id}:${amb.field}`}
+                  // #2451 — several ambiguities can share a field.
+                  key={`${req.id}:${amb.field}:${i}`}
                   className="rounded border border-border/70 bg-muted/40 p-2"
                 >
                   <p className="text-sm font-medium text-foreground">

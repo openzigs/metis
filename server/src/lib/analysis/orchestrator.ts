@@ -1060,6 +1060,15 @@ export class AnalysisOrchestrator {
       ...(opts.agentContext ? { agentContext: opts.agentContext } : {}),
       ...(opts.title ? { title: opts.title } : {}),
       ...(opts.startedWithDefaults ? { startedWithDefaults: true } : {}),
+      // #2451 — what the run will do, stated from the start. Absent, both are off.
+      ...(opts.enableClarification || opts.enableWebResearch
+        ? {
+            enhancementRequested: {
+              enableWebResearch: opts.enableWebResearch ?? false,
+              enableClarification: opts.enableClarification ?? false,
+            },
+          }
+        : {}),
     });
 
     audit({
