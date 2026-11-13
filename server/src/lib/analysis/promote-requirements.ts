@@ -28,6 +28,14 @@ import {
 } from "./analysis-service.js";
 import { canCreateTickets } from "./approval-checkpoint.js";
 import {
+  CHECKPOINT_HELD_KEY,
+  CHECKPOINT_HELD_REASON,
+  heldForReviewRecord,
+  readCheckpointEditors,
+  readHeldForReview,
+  selfAuthoredCheckpointIds,
+} from "./checkpoint-authorship.js";
+import {
   CHECKPOINT_SIGN_OFF_KEY,
   promotedReviewStatus,
   type PromotionSignOff,
@@ -64,8 +72,18 @@ import {
 const log = createChildLogger("promote-requirements");
 
 export type PromotionOutcome =
-  /** The withheld requirements are now durable `Requirement` rows. */
-  | { status: "promoted"; requirementCount: number }
+  /**
+   * The withheld requirements are now durable `Requirement` rows. #2436 —
+   * `heldForReviewCount` of them were written awaiting review rather than
+   * approved, because an author of theirs signed them off (maker-checker);
+   * `heldForReviewReason` says so.
+   */
+  | {
+      status: "promoted";
+      requirementCount: number;
+      heldForReviewCount?: number;
+      heldForReviewReason?: string;
+    }
   /** Approvals are still outstanding — nothing was persisted. */
   | {
       status: "blocked";
@@ -114,7 +132,12 @@ export async function promoteApprovedRequirements(
 ): Promise<PromotionOutcome> {
   const analysis = await prisma.analysis.findFirst({
     where: { id: analysisId },
-    select: { projectId: true, metadata: true },
+    select: {
+      projectId: true,
+      metadata: true,
+      // #2436 — maker-checker on the checkpoint sign-off.
+      project: { select: { allowSelfApproval: true } },
+    },
   });
   if (!analysis) {
     return { status: "unavailable", reason: "Analysis not found." };
@@ -134,7 +157,13 @@ export async function promoteApprovedRequirements(
     structured.length > 0
       ? await prisma.approvalRequest.findMany({
           where: { analysisId, type: "requirement" },
-          select: { itemId: true, status: true, createdAt: true, reviewedAt: true },
+          select: {
+            itemId: true,
+            status: true,
+            createdAt: true,
+            reviewedAt: true,
+            reviewerId: true,
+          },
         })
       : [];
   // Issue #909 — one deciding approval per id: the current run's, never an
@@ -181,6 +210,24 @@ export async function promoteApprovedRequirements(
   const promotedStructuredIds = reviewed
     ? structured.filter((r) => approvedIds.has(r.id)).map((r) => r.id)
     : [];
+  // #2436 — maker-checker: an approved requirement edited in the checkpoint by
+  // whoever signed it off (the promoter, or its own checkpoint reviewer) is
+  // written awaiting review, unless the project allows self-approval. A set
+  // promoted as `draft` is awaiting review already.
+  const heldForReview =
+    reviewed && signOff.asApproved
+      ? selfAuthoredCheckpointIds({
+          editors: readCheckpointEditors(parseMetadataObject(analysis.metadata), structuredRunId),
+          ids: promotedStructuredIds,
+          signerId: signOff.signerId,
+          reviewerByItem: new Map(requirementApprovals.map((a) => [a.itemId, a.reviewerId])),
+          allowSelfApproval: analysis.project?.allowSelfApproval === true,
+        })
+      : new Set<string>();
+  const heldOutcome = (written: ReadonlySet<string>) =>
+    written.size > 0
+      ? { heldForReviewCount: written.size, heldForReviewReason: CHECKPOINT_HELD_REASON }
+      : {};
 
   // Idempotence: `persistRequirements` REPLACES the set (#57), so a second call
   // would silently discard any human edits made after the first promotion.
@@ -230,9 +277,16 @@ export async function promoteApprovedRequirements(
         shared: appendPlan.shared,
         pairings: appendPlan.pairings,
         itemsGivenTo: (ids) => itemsGivenTo({ structured, ids, synthesis, paired }),
+        heldForReview,
       });
       if (appended === "superseded") return { status: "unavailable", reason: SUPERSEDED_REASON };
-      if (appended > 0) return { status: "promoted", requirementCount: appended };
+      if (appended.count > 0) {
+        return {
+          status: "promoted",
+          requirementCount: appended.count,
+          ...heldOutcome(appended.held),
+        };
+      }
       return { status: "already-promoted", requirementCount: existing };
     }
   }
@@ -283,6 +337,8 @@ export async function promoteApprovedRequirements(
     // for a second Approve per requirement on the hub was the bug. #1588 — as
     // `approved` only when the promoter holds `project.update`; else `draft`.
     ...(reviewed ? { reviewStatus: promotedReviewStatus(signOff) } : {}),
+    // #2436 — rows an author of theirs signed off are written awaiting review.
+    ...(heldForReview.size > 0 ? { heldForReview: [...heldForReview] } : {}),
     // #1202 — each row records the structured requirement it IS.
     ...(plan ? { promotedFrom: { runId: structuredRunId, pairings: plan.pairings } } : {}),
     // #780 — kept with a withheld replacement for when it is applied.
@@ -352,7 +408,11 @@ export async function promoteApprovedRequirements(
     requirements: requirementIds.length,
     analysisId,
   });
-  return { status: "promoted", requirementCount: requirementIds.length };
+  return {
+    status: "promoted",
+    requirementCount: requirementIds.length,
+    ...heldOutcome(heldForReview),
+  };
 }
 
 /**
@@ -418,11 +478,18 @@ async function appendNewlyApproved(input: {
   pairings: readonly PromotionPairing[];
   /** #1204 — the synthesis items the set promoted with `ids` gave its rows. */
   itemsGivenTo: (ids: ReadonlySet<string>) => ReadonlySet<number>;
-}): Promise<number | "superseded"> {
+  /**
+   * #2436 — structured ids to write awaiting review (`draft`) although the set
+   * is `approved`: an author of theirs signed them off. Joined with the ids an
+   * earlier promotion of the run held.
+   */
+  heldForReview: ReadonlySet<string>;
+}): Promise<{ count: number; held: ReadonlySet<string> } | "superseded"> {
   // #1603 — the same numbering synthesis used, as on the first promotion.
   const flat = inSynthesisOrder(await readFlattenedFindings(input.analysisId));
   const findingIdsByIndex = flat.map((f) => f.findingId);
   let superseded = false;
+  const heldWritten = new Set<string>();
 
   const requirementIds = await prisma.$transaction(async (tx) => {
     await lockRequirementSet(tx, input.analysisId);
@@ -461,6 +528,15 @@ async function appendNewlyApproved(input: {
     }
     const newIdx = input.toPromote.requirements.map((_, i) => i).filter(isNew);
     if (newIdx.length === 0) return [];
+    // #2436 — this promotion's held ids, and those an earlier one of the run held.
+    const held = new Set([
+      ...input.heldForReview,
+      ...readHeldForReview(parseMetadataObject(locked.metadata), input.structuredRunId),
+    ]);
+    const statusOf = (approvedIdx: number): "approved" | "draft" =>
+      input.reviewStatus === "approved" && held.has(input.promotedStructuredIds[approvedIdx] ?? "")
+        ? "draft"
+        : input.reviewStatus;
 
     const added = newIdx.map((i) => input.toPromote.requirements[i]!);
     const coverages = computeCoverageForRequirements(
@@ -500,13 +576,17 @@ async function appendNewlyApproved(input: {
           ),
           // Issue #939 — approved in the checkpoint, as on the first promotion;
           // #1588 — `draft` when the promoter does not hold `project.update`.
-          reviewStatus: input.reviewStatus,
+          // #2436 — awaiting review when an author of it signed it off.
+          reviewStatus: statusOf(newIdx[k]!),
           // Issue #1202 — the same pairing `persistRequirements` records.
           ...pairingColumns({ runId: input.structuredRunId, pairings: input.pairings }, newIdx[k]!),
         },
         select: { id: true },
       });
       ids.push(row.id);
+      if (statusOf(newIdx[k]!) !== input.reviewStatus) {
+        heldWritten.add(input.promotedStructuredIds[newIdx[k]!] ?? "");
+      }
     }
 
     // Recorded in the SAME transaction as the rows, onto the metadata read
@@ -555,8 +635,15 @@ async function appendNewlyApproved(input: {
           // without sign-off also makes the recorded sign-off `draft`.
           [CHECKPOINT_APPROVED_IDS_KEY]:
             input.reviewStatus === "approved"
-              ? [...checkpointApproved, ...ids]
+              ? [
+                  ...checkpointApproved,
+                  ...ids.filter((_, k) => statusOf(newIdx[k]!) === "approved"),
+                ]
               : checkpointApproved,
+          // #2436 — the held ids stay held for a later re-save of the run.
+          ...(held.size > 0
+            ? { [CHECKPOINT_HELD_KEY]: heldForReviewRecord(input.structuredRunId, held) }
+            : {}),
           ...(input.reviewStatus === "draft" ? { [CHECKPOINT_SIGN_OFF_KEY]: "draft" } : {}),
           promotedStructuredIds: [
             ...new Set([...(recorded ?? input.promotedStructuredIds), ...appendedIds]),
@@ -568,7 +655,7 @@ async function appendNewlyApproved(input: {
     return ids;
   });
   if (superseded) return "superseded";
-  if (requirementIds.length === 0) return 0;
+  if (requirementIds.length === 0) return { count: 0, held: heldWritten };
 
   // Best-effort enrichment of the committed rows, as on the first promotion.
   await applyClarificationsToRequirements(input.analysisId);
@@ -589,7 +676,7 @@ async function appendNewlyApproved(input: {
     analysisId: input.analysisId,
     requirements: requirementIds.length,
   });
-  return requirementIds.length;
+  return { count: requirementIds.length, held: heldWritten };
 }
 
 function parseMetadataObject(metadata: string | null): Record<string, unknown> {

@@ -14,11 +14,18 @@
  * #2330 (live) — a rejected formal review rejects EVERY requirement in it,
  * those already approved directly included, so the copy says so where the
  * analyst chooses between the two.
+ *
+ * #2436 — direct approval needs `requirement.approve`, and is maker-checker:
+ * the author of a requirement (anyone who wrote or edited it) cannot approve
+ * it, nor sign off their own review, unless the project allows self-approval.
  */
 
+/** #2436 — the maker-checker rule, in one sentence, wherever approval is offered. */
+export const SELF_APPROVAL_RULE =
+  "You cannot approve a requirement you wrote or edited, unless the project allows self-approval (Publishing → Approval gate).";
+
 /** One line at the point of choosing: what Approve does, and how a review differs. */
-export const APPROVAL_LADDER_NOTE =
-  "Approve marks it approved yourself, with no reviewer and no baseline. A formal review (on the Requirements tab: Request review of the rows you tick, or of a whole change request) asks colleagues to sign off a set and creates a baseline; if they reject it, every requirement in it is rejected, approved ones included.";
+export const APPROVAL_LADDER_NOTE = `Approve marks it approved yourself, with no reviewer and no baseline. ${SELF_APPROVAL_RULE} A formal review (on the Requirements tab: Request review of the rows you tick, or of a whole change request) asks colleagues to sign off a set and creates a baseline; if they reject it, every requirement in it is rejected, approved ones included.`;
 
 /** The three rungs, in order, as the Requirements tab lists them. */
 export const APPROVAL_LADDER_RUNGS: ReadonlyArray<{ name: string; text: string }> = [
@@ -28,7 +35,7 @@ export const APPROVAL_LADDER_RUNGS: ReadonlyArray<{ name: string; text: string }
   },
   {
     name: "Requirement approval",
-    text: "Approve a requirement yourself, here or on its card.",
+    text: `Approve a requirement yourself, here or on its card (requirement.approve). ${SELF_APPROVAL_RULE}`,
   },
   {
     name: "Formal review and baseline",

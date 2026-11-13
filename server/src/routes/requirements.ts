@@ -22,6 +22,7 @@ import { z } from "zod";
 import { isoDatetime } from "../lib/validation/iso-datetime.js";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
+import { requireRequirementWritePermission } from "../lib/requirements/requirement-write-permission.js";
 import { AppError } from "../middleware/error-handler.js";
 import { optimisticLock, sendVersionConflict } from "../middleware/optimistic-lock.js";
 import { prisma } from "../lib/prisma.js";
@@ -67,6 +68,7 @@ import {
   ACCEPTANCE_CRITERIA_CLEARED,
   ACCEPTANCE_CRITERIA_MAX_ITEMS,
   ACCEPTANCE_CRITERION_MAX_LENGTH,
+  hasPermission,
   parseAcceptanceCriteria,
   resolveCriteriaProposalSchema,
 } from "@metis/shared";
@@ -317,11 +319,13 @@ export function requirementsCollaborationRouter(): Router {
     },
   );
 
-  // PUT /api/requirements/:requirementId — update with optimistic lock
+  // PUT /api/requirements/:requirementId — update with optimistic lock.
+  // #2436 — the verdict (`reviewStatus`) needs `requirement.approve`, any other
+  // field `project.update` (a body with both needs both).
   r.put(
     "/:requirementId",
     requireAuth,
-    requirePermission("project.update"),
+    requireRequirementWritePermission(),
     optimisticLock("requirement", loadLockedRequirement),
     async (req: Request, res: Response) => {
       if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
@@ -379,8 +383,10 @@ export function requirementsCollaborationRouter(): Router {
           keepHiddenLabels: true,
           // Issue #2219 — an edit of approved wording returns it to awaiting review.
           reopenApproval: true,
+          // Issue #2436 — the author of a requirement does not approve it alone.
+          makerChecker: true,
         });
-        auditReviewStatusChange(req.user.userId, requirementId, result.untrackedChanges);
+        auditReviewStatusChange(req.user.userId, requirementId, result);
         // #2219 — post-commit: a review that pinned the replaced version is told.
         if (result.changed) {
           dispatchReviewedRequirementEdited({
@@ -397,6 +403,9 @@ export function requirementsCollaborationRouter(): Router {
       } catch (err) {
         if (err instanceof RequirementVersionError && err.code === "NOT_FOUND") {
           throw new AppError(404, "REQUIREMENT_NOT_FOUND", "Requirement not found");
+        }
+        if (err instanceof RequirementVersionError && err.code === "SELF_APPROVAL_FORBIDDEN") {
+          throw new AppError(403, "SELF_APPROVAL_FORBIDDEN", err.message);
         }
         if (
           err instanceof RequirementVersionError &&
@@ -519,6 +528,9 @@ export function requirementsCollaborationRouter(): Router {
           // Defence in depth alongside the router guard (#1118).
           projectId: requirementScopeWhere(req).projectId,
           expectedVersion: parsed.data.version,
+          // #2436 — accepting keeps an approval only for someone who may
+          // approve the new criteria; anyone else's accept reopens it.
+          canApprove: hasPermission(req.user.role, "requirement.approve"),
         });
         audit({
           actor: req.user.userId,
@@ -530,6 +542,9 @@ export function requirementsCollaborationRouter(): Router {
             choice: result.choice,
             changed: result.changed,
             version: result.version,
+            // #2436 — what the accept did to the approval, and a self-approval.
+            ...(result.approval ? { approval: result.approval } : {}),
+            ...(result.selfApproved ? { selfApproval: true } : {}),
           },
         });
         res.json({ success: true, data: result });
@@ -560,18 +575,28 @@ export function requirementsCollaborationRouter(): Router {
 /**
  * #1162 — a manual review-status change is not versioned (see `TRACKED_FIELDS`),
  * so it is recorded here instead, like the review workflow's own transitions.
+ * #2436 — an author's own approval, which the project's `allowSelfApproval` let
+ * through, says so (`selfApproval: true`), including an edit that kept the
+ * approval it was made under.
  */
 function auditReviewStatusChange(
   actorId: string,
   requirementId: string,
-  untrackedChanges: Record<string, { from: unknown; to: unknown }>,
+  result: {
+    untrackedChanges: Record<string, { from: unknown; to: unknown }>;
+    selfApproved?: true;
+  },
 ): void {
-  const change = untrackedChanges.reviewStatus;
-  if (!change) return;
+  const change = result.untrackedChanges.reviewStatus;
+  if (!change && !result.selfApproved) return;
   audit({
     actor: { id: actorId },
     action: "requirement.review_status.set",
     target: { type: "requirement", id: requirementId },
-    metadata: { from: change.from, to: change.to },
+    metadata: {
+      from: change ? change.from : "approved",
+      to: change ? change.to : "approved",
+      ...(result.selfApproved ? { selfApproval: true } : {}),
+    },
   });
 }

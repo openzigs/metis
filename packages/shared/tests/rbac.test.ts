@@ -48,3 +48,18 @@ describe("PR-review permissions (#1472)", () => {
     expect(holders("pr.review")).toEqual(["admin"]);
   });
 });
+
+describe("requirement.approve (#2436)", () => {
+  it("is held by admin and coordinator, and nobody else", () => {
+    expect(holders("requirement.approve")).toEqual(["admin", "coordinator"]);
+  });
+
+  it("went to exactly the roles that held project.update, so no default role changed", () => {
+    expect(holders("requirement.approve")).toEqual(holders("project.update"));
+  });
+
+  it("is not something a reader or a developer can do", () => {
+    expect(hasPermission("reader", "requirement.approve")).toBe(false);
+    expect(hasPermission("developer", "requirement.approve")).toBe(false);
+  });
+});

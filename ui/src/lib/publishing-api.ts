@@ -14,6 +14,7 @@ import type {
   PublishBatch,
   PublishedIssue,
   ReviewGateConfig,
+  ReviewGateConfigPatch,
 } from "@metis/shared";
 
 type Id = string;
@@ -114,11 +115,13 @@ export const publishingApi = {
 
 /**
  * Epic #609 (#619) — per-project publish/export approval gate setting.
- * Reading needs `project.read`; updating needs `review.admin`.
+ * Reading needs `project.read`; updating needs `review.admin`. #2436 — it also
+ * carries the project's `allowSelfApproval` (maker-checker) switch.
  */
+
 export const reviewGateApi = {
   get: (projectId: Id) => apiFetch<ReviewGateConfig>(`/projects/${projectId}/review-gate`),
-  update: (projectId: Id, body: ReviewGateConfig) =>
+  update: (projectId: Id, body: ReviewGateConfigPatch) =>
     apiFetch<ReviewGateConfig>(`/projects/${projectId}/review-gate`, {
       method: "PATCH",
       body,

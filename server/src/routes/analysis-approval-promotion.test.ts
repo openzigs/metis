@@ -345,7 +345,11 @@ describe("PUT .../approvals/:approvalId — #1104 promotion retry", () => {
     const res = await approve();
 
     expect(res.status).toBe(200);
-    expect(promoteApprovedRequirements).toHaveBeenCalledWith("analysis-1", { asApproved: false });
+    expect(promoteApprovedRequirements).toHaveBeenCalledWith("analysis-1", {
+      asApproved: false,
+      // #2436 — the signer, for maker-checker on checkpoint edits.
+      signerId: "user-1",
+    });
     expect(res.body.data.promotion).toEqual({ status: "promoted", requirementCount: 14 });
   });
 
@@ -439,7 +443,11 @@ describe("POST .../approvals/promote — #723", () => {
     const res = await promote();
 
     expect(res.status).toBe(200);
-    expect(promoteApprovedRequirements).toHaveBeenCalledWith("analysis-1", { asApproved: false });
+    expect(promoteApprovedRequirements).toHaveBeenCalledWith("analysis-1", {
+      asApproved: false,
+      // #2436 — the signer, for maker-checker on checkpoint edits.
+      signerId: "user-1",
+    });
     expect(res.body.data.promotion).toEqual({ status: "promoted", requirementCount: 32 });
   });
 
@@ -469,7 +477,11 @@ describe("POST .../approvals/promote — #723", () => {
       const res = await promote();
 
       expect(res.status).toBe(200);
-      expect(promoteApprovedRequirements).toHaveBeenCalledWith("analysis-1", { asApproved: false });
+      expect(promoteApprovedRequirements).toHaveBeenCalledWith("analysis-1", {
+        asApproved: false,
+        // #2436 — the signer, for maker-checker on checkpoint edits.
+        signerId: "user-1",
+      });
       expect(res.body.data.promotion).toEqual({ status: "promoted", requirementCount: 3 });
     },
   );
@@ -513,7 +525,11 @@ describe("POST .../approvals/approve-all — #939", () => {
       reviewNote: "looks right",
     });
     expect(promoteApprovedRequirements).toHaveBeenCalledTimes(1);
-    expect(promoteApprovedRequirements).toHaveBeenCalledWith("analysis-1", { asApproved: false });
+    expect(promoteApprovedRequirements).toHaveBeenCalledWith("analysis-1", {
+      asApproved: false,
+      // #2436 — the signer, for maker-checker on checkpoint edits.
+      signerId: "user-1",
+    });
     expect(res.body.data).toEqual({
       approvedCount: 37,
       promotion: { status: "promoted", requirementCount: 37 },
@@ -763,7 +779,11 @@ describe("ticked vs added requirement approvals — #1129", () => {
       expect.objectContaining({ reviewerId: "user-1" }),
     );
     expect(res.body.data.rejectedCount).toBe(1);
-    expect(promoteApprovedRequirements).toHaveBeenCalledWith("analysis-1", { asApproved: false });
+    expect(promoteApprovedRequirements).toHaveBeenCalledWith("analysis-1", {
+      asApproved: false,
+      // #2436 — the signer, for maker-checker on checkpoint edits.
+      signerId: "user-1",
+    });
   });
 
   it("rejects nothing on a run with no imported items", async () => {

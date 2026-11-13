@@ -10,13 +10,17 @@
  *
  * Reviewers are searched among the users who can open this project
  * (`GET /api/users?projectId=`); the requester is left out, since the server
- * refuses a self-review.
+ * refuses a self-review — unless (#2436) the project allows self-approval and
+ * the requester holds `requirement.approve`, when they are offered too.
  */
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError, apiFetch } from "@/lib/api-client";
 import { reviewsApi } from "@/lib/reviews-api";
+import { reviewGateApi } from "@/lib/publishing-api";
+import { reviewGateKey } from "@/lib/query-keys";
+import { SELF_APPROVAL_RULE } from "@/components/requirements/approval-ladder";
 import { queryKeys } from "@/lib/query-keys";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -52,7 +56,10 @@ interface Props {
    * them (all are chosen to start with) and says how many it covers.
    */
   requirements?: readonly ReviewableRequirement[];
-  /** The signed-in user — never offered as a reviewer. */
+  /**
+   * The signed-in user — not offered as a reviewer, unless (#2436) the project
+   * allows self-approval and `canApprove` is set.
+   */
   currentUserId: string;
   /** #989 — how many of `requirementIds` are already approved. */
   approvedCount?: number;
@@ -62,8 +69,9 @@ interface Props {
    */
   canBaseline?: boolean;
   /**
-   * #2347 — the user may approve a requirement directly (`project.update`, as
-   * `PUT /api/requirements/:id` requires; a `developer` may not, #1566).
+   * #2347 — the user may approve a requirement directly (`requirement.approve`
+   * since #2436, as `PUT /api/requirements/:id` requires; a `developer` may
+   * not, #1566).
    */
   canApprove?: boolean;
   /**
@@ -78,12 +86,16 @@ interface Props {
   onRequested?: (reviewId: string) => void;
 }
 
-/** #2347 — the defined outcome for someone with no one else to review, by role. */
+/**
+ * #2347 — the defined outcome for someone with no one else to review, by role.
+ * #2436 — one who may approve is told the maker-checker rule too: what they
+ * wrote or edited needs the project to allow self-approval.
+ */
 export function soloOutcome(canApprove: boolean, canBaseline: boolean): string {
   if (canBaseline)
-    return "Working alone? Approve the requirements directly; that is where they end. To fix a set, take a baseline from Baselines → New baseline.";
+    return `Working alone? Approve the requirements directly; that is where they end. ${SELF_APPROVAL_RULE} To fix a set, take a baseline from Baselines → New baseline.`;
   if (canApprove)
-    return "Working alone? Approve the requirements directly; that is where they end. A coordinator or admin can take a baseline from them (Baselines → New baseline).";
+    return `Working alone? Approve the requirements directly; that is where they end. ${SELF_APPROVAL_RULE} A coordinator or admin can take a baseline from them (Baselines → New baseline).`;
   return "Working alone? Your role cannot approve requirements or take a baseline. Add a colleague to this project to review, or ask a coordinator to approve them.";
 }
 
@@ -139,8 +151,17 @@ export function RequestReviewCard({
       ),
     enabled: open && term !== "",
   });
+  // #2436 — a project that allows self-approval lets someone holding
+  // `requirement.approve` review their own request (the server's rule for
+  // SELF_REVIEW_FORBIDDEN); anyone else is never offered themselves.
+  const gate = useQuery({
+    queryKey: reviewGateKey(projectId),
+    queryFn: () => reviewGateApi.get(projectId),
+    enabled: open && canApprove,
+  });
+  const selfReviewAllowed = canApprove && gate.data?.allowSelfApproval === true;
   const candidates = (hits.data ?? []).filter(
-    (u) => u.id !== currentUserId && !reviewers.some((r) => r.id === u.id),
+    (u) => (selfReviewAllowed || u.id !== currentUserId) && !reviewers.some((r) => r.id === u.id),
   );
   // #2347 — say why the picker offers nobody, instead of a silent empty list
   // and a disabled button (#2330: the server answers SELF_REVIEW_FORBIDDEN).
@@ -368,7 +389,10 @@ export function RequestReviewCard({
         ) : null}
         {reviewers.length === 0 ? (
           <p className="text-xs text-muted-foreground" data-testid="request-review-needs-reviewer">
-            Add at least one reviewer to request the review. You can&apos;t review your own request.
+            Add at least one reviewer to request the review.{" "}
+            {selfReviewAllowed
+              ? "This project allows self-approval, so you may name yourself."
+              : "You can't review your own request."}
           </p>
         ) : null}
         <div className="flex gap-2">

@@ -113,9 +113,16 @@ async function seedTenants(db: PrismaClient): Promise<{ a: string; b: string; l:
     [PB, WS2],
     [PL, null],
   ] as const) {
-    await db.project.create({
-      data: { id, name: id, slug: id, createdById: "alice", workspaceId, status: "active" },
-    });
+    // Raw SQL: the current client also WRITES `projects` columns added since this
+    // database's migration (#2436's defaulted `allowSelfApproval`).
+    await db.$executeRawUnsafe(
+      `INSERT INTO "projects" ("id","name","slug","createdById","workspaceId","status","updatedAt")
+       VALUES (?, ?, ?, 'alice', ?, 'active', CURRENT_TIMESTAMP)`,
+      id,
+      id,
+      id,
+      workspaceId,
+    );
   }
   const repo = async (projectId: string, key: string) =>
     (

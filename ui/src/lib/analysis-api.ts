@@ -835,7 +835,8 @@ export const analysisApi = {
     approvalId: string,
     body: { status: "approved" | "rejected"; reviewNote?: string },
   ) =>
-    apiFetch<ApprovalRequestPayload>(
+    // #1104 — the review that resolves the gate promotes, and reports it.
+    apiFetch<ApprovalRequestPayload & { promotion?: PromotionOutcome }>(
       `/projects/${projectId}/analyses/${analysisId}/approvals/${approvalId}`,
       { method: "PUT", body },
     ),
@@ -1425,7 +1426,16 @@ export interface TicketStatus {
 
 /** Issue #1104 / #723 — what a promotion attempt did (server `PromotionOutcome`). */
 export type PromotionOutcome =
-  | { status: "promoted"; requirementCount: number }
+  | {
+      status: "promoted";
+      requirementCount: number;
+      /**
+       * #2436 — how many were written awaiting review rather than approved
+       * (an author of theirs signed them off), and why.
+       */
+      heldForReviewCount?: number;
+      heldForReviewReason?: string;
+    }
   | {
       status: "blocked";
       pendingCount: number;

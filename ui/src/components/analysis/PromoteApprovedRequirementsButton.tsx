@@ -21,11 +21,14 @@ export function countApprovedRequirements(
   return items.filter((a) => a.type === "requirement" && a.status === "approved").length;
 }
 
-/** What a non-promoting outcome means to the reviewer; null when it promoted. */
+/**
+ * What a non-promoting outcome means to the reviewer; null when it promoted.
+ * #2436 — a promotion that held requirements for review (maker-checker) says so.
+ */
 export function describePromotionOutcome(outcome: PromotionOutcome): string | null {
   switch (outcome.status) {
     case "promoted":
-      return null;
+      return outcome.heldForReviewReason ?? null;
     case "already-promoted":
       return "These requirements were already promoted; any deleted since are not restored. Refresh to see the current set.";
     case "blocked":

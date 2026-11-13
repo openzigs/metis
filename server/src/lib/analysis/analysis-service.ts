@@ -11,6 +11,11 @@
  */
 import { SYSTEM_ACTOR_ID } from "../audit/system-actor.js";
 import { CHECKPOINT_SIGN_OFF_KEY } from "./checkpoint-sign-off.js";
+import {
+  CHECKPOINT_HELD_KEY,
+  heldForReviewRecord,
+  readHeldForReview,
+} from "./checkpoint-authorship.js";
 import { mergeHiddenRequirementLabels, parseRequirementLabels } from "./requirement-labels.js";
 import { analysedVersions } from "../governing/requirement-staleness.js";
 import { ELICITED_NFRS_AWAITING_PROMOTION_KEY } from "./elicited-nfr-requirements.js";
@@ -95,6 +100,7 @@ import {
 } from "./source-items.js";
 import { toSourceDivergence } from "../importers/source-sync.js";
 import {
+  holdsApproval,
   RequirementVersionError,
   updateRequirementWithHistory,
   updateRequirementWithHistoryInTransaction,
@@ -1187,6 +1193,14 @@ export interface PersistRequirementsInput {
    */
   reviewStatus?: "approved" | "draft";
   /**
+   * Issue #2436 — structured ids (of `promotedFrom.runId`) to write awaiting
+   * review (`draft`) although `reviewStatus` is `approved`: an author of
+   * theirs signed them off (maker-checker). Joined with the ids an earlier
+   * promotion of the same run held, so a re-save never approves them; they are
+   * left out of the checkpoint's approved ids, and recorded for the next write.
+   */
+  heldForReview?: readonly string[];
+  /**
    * Issue #1202 — the pairing promotion made, recorded on each row it writes:
    * `pairings[i]` is the structured requirement `synthesis.requirements[i]` was
    * written from and the synthesis items it took, and `runId` the extraction
@@ -1456,11 +1470,23 @@ async function replaceRequirementSet(
       ...(input.reviewStatus ? { reviewStatus: input.reviewStatus } : {}),
     };
     const record: RequirementReplacementWithheld = { ...withheld, proposalStored: true };
+    // #2436 — the rows this write would have held for review stay held when
+    // the stored proposal is applied later.
+    const heldRecord =
+      input.reviewStatus === "approved" && input.promotedFrom && input.heldForReview?.length
+        ? {
+            [CHECKPOINT_HELD_KEY]: heldForReviewRecord(input.promotedFrom.runId, [
+              ...input.heldForReview,
+              ...readHeldForReview(metadata, input.promotedFrom.runId),
+            ]),
+          }
+        : {};
     await tx.analysis.update({
       where: { id: input.analysisId },
       data: {
         metadata: JSON.stringify({
           ...metadata,
+          ...heldRecord,
           requirementReplacementWithheld: record,
           [WITHHELD_PROPOSAL_KEY]: proposal,
         }),
@@ -1504,6 +1530,15 @@ async function replaceRequirementSet(
     : new Map<string, string>();
   const proposals: Record<string, CriteriaProposal> = {};
   const proposedAt = new Date().toISOString();
+  // #2436 — read from the metadata as it was, before the keys are rewritten.
+  const held =
+    input.reviewStatus === "approved" && input.promotedFrom
+      ? new Set([
+          ...(input.heldForReview ?? []),
+          ...readHeldForReview(metadata, input.promotedFrom.runId),
+        ])
+      : new Set<string>();
+  const approvedRowIds: string[] = [];
 
   await tx.requirement.deleteMany({ where: { analysisId: input.analysisId } });
 
@@ -1529,6 +1564,8 @@ async function replaceRequirementSet(
     // them for Restore to return to.
     const anchored = plan.proposed !== null && plan.criteria.length > 0;
     const labels = evidenceLabels(r, input.findingIdsByIndex);
+    // #2436 — awaiting review when an author of it signed it off.
+    const rowStatus = structuredId && held.has(structuredId) ? "draft" : input.reviewStatus;
     const row = await tx.requirement.create({
       data: {
         analysisId: input.analysisId,
@@ -1558,7 +1595,7 @@ async function replaceRequirementSet(
         // checked `NR-*` ids. Null when the run was not started from imported
         // items or synthesis did not say.
         sourceCandidateIds: serializeSourceCandidateIds(r.sourceIds, runSources),
-        ...(input.reviewStatus ? { reviewStatus: input.reviewStatus } : {}),
+        ...(rowStatus ? { reviewStatus: rowStatus } : {}),
         // Issue #1202 — which structured requirement this row IS. Written in
         // the same insert, so the pairing exists exactly as long as the row:
         // the `deleteMany` above (a re-run's replacement) takes both.
@@ -1582,13 +1619,19 @@ async function replaceRequirementSet(
       proposals[row.id] = { structuredId, proposed: plan.proposed, at: proposedAt };
     }
     ids.push(row.id);
+    if (rowStatus === "approved") approvedRowIds.push(row.id);
   }
   const written: Record<string, unknown> = { ...next };
   // #1588 — only rows written `approved` are the checkpoint's decision (they
   // are not review work by themselves, #939). A `draft` row is not listed: a
   // coordinator approving it later is real review work. The status the set
   // was promoted with is recorded for a later re-save to carry over.
-  if (input.reviewStatus === "approved") written[CHECKPOINT_APPROVED_IDS_KEY] = ids;
+  if (input.reviewStatus === "approved") written[CHECKPOINT_APPROVED_IDS_KEY] = approvedRowIds;
+  // #2436 — the held ids stay held for a later re-save of the same run.
+  delete written[CHECKPOINT_HELD_KEY];
+  if (held.size > 0 && input.promotedFrom) {
+    written[CHECKPOINT_HELD_KEY] = heldForReviewRecord(input.promotedFrom.runId, held);
+  }
   if (input.reviewStatus) written[CHECKPOINT_SIGN_OFF_KEY] = input.reviewStatus;
   if (record) written[APPROVED_CRITERIA_KEY] = record;
   if (Object.keys(proposals).length > 0) written[CRITERIA_PROPOSALS_KEY] = proposals;
@@ -1709,6 +1752,14 @@ export interface ResolveCriteriaProposalResult {
   choice: "accept" | "dismiss";
   version: number;
   changed: boolean;
+  /**
+   * #2436 — what accepting did to an approval the requirement held: `kept`
+   * (the accepter may approve it, see {@link resolveCriteriaProposal}) or
+   * `reopened` (returned to awaiting review). Absent when it held none.
+   */
+  approval?: "kept" | "reopened";
+  /** #2436 — kept by one of its own authors, which `allowSelfApproval` let through. */
+  selfApproved?: true;
 }
 
 /**
@@ -1719,6 +1770,15 @@ export interface ResolveCriteriaProposalResult {
  * work). **Dismiss** changes no content; it is remembered so the next
  * re-synthesis does not raise the same suggestion again. Either way the
  * proposal is cleared, in the same transaction as the write.
+ *
+ * #2436 — accepting rewords the criteria, and the approval was of the old
+ * ones. On an approved requirement the approval is kept only when the accepter
+ * could approve the new wording directly: they hold `requirement.approve`
+ * (`canApprove`) and are not one of its authors, or the project allows
+ * self-approval (maker-checker, as on the list). Otherwise the requirement
+ * returns to awaiting review. The suggested criteria were written by the
+ * analysis, so accepting them does not by itself make the accepter an author
+ * here; their version row does count against a later approval of theirs.
  */
 export async function resolveCriteriaProposal(input: {
   requirementId: string;
@@ -1728,6 +1788,8 @@ export async function resolveCriteriaProposal(input: {
   projectId?: string;
   /** #871 — the version the card showed; checked when accepting. */
   expectedVersion?: number;
+  /** #2436 — the accepter holds `requirement.approve`. Omitted: they do not. */
+  canApprove?: boolean;
 }): Promise<ResolveCriteriaProposalResult> {
   const result = await prisma.$transaction(async (tx) => {
     const row = await tx.requirement.findFirst({
@@ -1736,7 +1798,15 @@ export async function resolveCriteriaProposal(input: {
         deletedAt: null,
         ...(input.projectId ? { projectId: input.projectId } : {}),
       },
-      select: { id: true, analysisId: true, projectId: true, version: true },
+      select: {
+        id: true,
+        analysisId: true,
+        projectId: true,
+        version: true,
+        // #2436 — whether accepting rewords an approval.
+        reviewStatus: true,
+        labels: true,
+      },
     });
     if (!row) throw new CriteriaProposalError("NOT_FOUND", "Requirement not found");
     await lockAnalysisRow(tx, row.analysisId);
@@ -1755,10 +1825,15 @@ export async function resolveCriteriaProposal(input: {
     }
     let version = row.version;
     let changed = false;
+    let approval: ResolveCriteriaProposalResult["approval"];
+    let selfApproved = false;
     if (input.choice === "accept") {
-      const written = await updateRequirementWithHistoryInTransaction(
-        tx as unknown as Pick<VersionPrismaClient, "requirement" | "requirementVersion">,
-        {
+      const versionTx = tx as unknown as Pick<
+        VersionPrismaClient,
+        "requirement" | "requirementVersion"
+      >;
+      const accept = (keepApproval: boolean) =>
+        updateRequirementWithHistoryInTransaction(versionTx, {
           requirementId: row.id,
           // #990 — `[]` accepted is an explicit clear, stored as the marker.
           patch: {
@@ -1770,10 +1845,42 @@ export async function resolveCriteriaProposal(input: {
           actorId: input.actorId,
           reason: ACCEPTED_CRITERIA_PROPOSAL_REASON,
           expectedVersion: input.expectedVersion,
-        },
-      );
+          // #2436 — the approval was of the old criteria: reopened, unless
+          // the accepter may keep it (maker-checker decides, in the write).
+          reopenApproval: true,
+          ...(keepApproval
+            ? {
+                untrackedData: { reviewStatus: "approved" as const },
+                makerChecker: true,
+                suggestedWording: true,
+              }
+            : {}),
+        });
+      const approved = holdsApproval(row);
+      let written: Awaited<ReturnType<typeof accept>>;
+      if (approved && input.canApprove === true) {
+        try {
+          written = await accept(true);
+        } catch (err) {
+          if (!(err instanceof RequirementVersionError) || err.code !== "SELF_APPROVAL_FORBIDDEN") {
+            throw err;
+          }
+          // An author of it, in a project that does not allow self-approval.
+          written = await accept(false);
+        }
+      } else {
+        written = await accept(false);
+      }
       version = written.version;
       changed = written.changed;
+      selfApproved = written.selfApproved === true;
+      if (approved && changed) {
+        approval =
+          written.untrackedChanges.reviewStatus?.to === "approved" ||
+          !written.untrackedChanges.reviewStatus
+            ? "kept"
+            : "reopened";
+      }
     }
     delete proposals[row.id];
     const record = readStoredApprovedCriteriaRecord(metadata);
@@ -1793,6 +1900,8 @@ export async function resolveCriteriaProposal(input: {
       choice: input.choice,
       version,
       changed,
+      ...(approval ? { approval } : {}),
+      ...(selfApproved ? { selfApproved: true as const } : {}),
     };
   });
   // Committed by now: a reader BRD listing approved requirements may be stale.
@@ -2293,6 +2402,8 @@ export async function updateRequirementRow(input: {
   changed: boolean;
   /** #1162 — set when the review status changed; it is audited, not versioned. */
   reviewStatusChange?: { from: unknown; to: unknown };
+  /** #2436 — an author's own approval the project's `allowSelfApproval` let through. */
+  selfApproved?: true;
 } | null> {
   const existing = await prisma.requirement.findFirst({
     where: {
@@ -2356,6 +2467,8 @@ export async function updateRequirementRow(input: {
       expectedVersion: input.expectedVersion,
       // Issue #2219 — an edit of approved wording returns it to awaiting review.
       reopenApproval: true,
+      // Issue #2436 — the author of a requirement does not approve it alone.
+      makerChecker: true,
     });
     const reviewStatusChange = result.untrackedChanges.reviewStatus;
     return {
@@ -2363,6 +2476,7 @@ export async function updateRequirementRow(input: {
       version: result.version,
       changed: result.changed,
       ...(reviewStatusChange ? { reviewStatusChange } : {}),
+      ...(result.selfApproved ? { selfApproved: true as const } : {}),
     };
   } catch (err) {
     // Deleted between the read above and the transaction.

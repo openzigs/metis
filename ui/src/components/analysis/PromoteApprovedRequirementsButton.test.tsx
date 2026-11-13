@@ -51,6 +51,17 @@ describe("describePromotionOutcome", () => {
     expect(describePromotionOutcome({ status: "promoted", requirementCount: 3 })).toBeNull();
   });
 
+  it("#2436 — says why when the promotion held requirements for review", () => {
+    expect(
+      describePromotionOutcome({
+        status: "promoted",
+        requirementCount: 3,
+        heldForReviewCount: 1,
+        heldForReviewReason: "held: someone else must approve them",
+      }),
+    ).toBe("held: someone else must approve them");
+  });
+
   it("never claims deleted rows will come back", () => {
     expect(describePromotionOutcome({ status: "already-promoted", requirementCount: 3 })).toContain(
       "any deleted since are not restored",

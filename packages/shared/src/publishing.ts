@@ -238,16 +238,32 @@ export function publishBatchCancelState(
  * is true, publishing IssueDrafts and exporting requirements / generated
  * documents require an APPROVED review pinned to the artifact's current
  * version. Toggling requires the `review.admin` permission.
+ *
+ * #2436 — `allowSelfApproval` (off by default) is the project's maker-checker
+ * switch. Off: the author of a requirement cannot approve it directly, and the
+ * requester of a review cannot sign it off. On: a solo analyst may do both,
+ * still only with `requirement.approve`. Same route, same `review.admin` gate,
+ * audited with its old and new value. A PATCH carries either setting or both.
  */
 export const reviewGateConfigSchema = z
   .object({
-    requireApprovedReview: z.boolean(),
+    requireApprovedReview: z.boolean().optional(),
+    allowSelfApproval: z.boolean().optional(),
   })
   // PR #638 review nit — reject typo'd/unknown keys instead of silently
-  // ignoring them (the PATCH handler only ever writes the parsed boolean,
+  // ignoring them (the PATCH handler only ever writes the parsed booleans,
   // but a strict parse surfaces client mistakes instead of no-oping).
-  .strict();
-export type ReviewGateConfig = z.infer<typeof reviewGateConfigSchema>;
+  .strict()
+  .refine((b) => b.requireApprovedReview !== undefined || b.allowSelfApproval !== undefined, {
+    message: "Set requireApprovedReview, allowSelfApproval or both",
+  });
+/** The body of `PATCH /api/projects/:id/review-gate`: either setting, or both. */
+export type ReviewGateConfigPatch = z.infer<typeof reviewGateConfigSchema>;
+/** What `GET|PATCH /api/projects/:id/review-gate` answers: both settings. */
+export interface ReviewGateConfig {
+  requireApprovedReview: boolean;
+  allowSelfApproval: boolean;
+}
 
 // ---- PublishedIssue --------------------------------------------------------
 export const publishedIssueSchema = z.object({

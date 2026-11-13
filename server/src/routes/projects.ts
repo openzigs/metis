@@ -53,7 +53,7 @@ import {
   updateProjectSqlLineage,
 } from "../lib/projects/project-service.js";
 import { summarizeUsage } from "../lib/finops/index.js";
-import { prisma } from "../lib/prisma.js";
+import { prisma, resolveDatabaseProvider } from "../lib/prisma.js";
 import { createRepoConnector } from "../lib/connectors/repo/repo-service.js";
 import { assertRepoSecretBinding } from "../lib/connectors/connector-secret-binding.js";
 import {
@@ -1301,6 +1301,9 @@ export function projectsRouter(): Router {
   // Reading the setting needs `project.read`; toggling it is a review-
   // governance action and requires `review.admin` (coordinator/admin), so a
   // developer with draft/publish permissions cannot weaken the gate.
+  // #2436 — the same route carries `allowSelfApproval` (maker-checker, off by
+  // default) under the same `review.admin` gate; a change of it is audited
+  // with its old and new value.
   r.get(
     "/:id/review-gate",
     requireAuth,
@@ -1309,10 +1312,15 @@ export function projectsRouter(): Router {
       const projectId = String(req.params.id);
       const project = await prisma.project.findUnique({
         where: { id: projectId },
-        select: { requireApprovedReview: true },
+        select: { requireApprovedReview: true, allowSelfApproval: true },
       });
       if (!project) throw new AppError(404, "PROJECT_NOT_FOUND", "Project not found");
-      res.json(ok({ requireApprovedReview: project.requireApprovedReview }));
+      res.json(
+        ok({
+          requireApprovedReview: project.requireApprovedReview,
+          allowSelfApproval: project.allowSelfApproval,
+        }),
+      );
     },
   );
 
@@ -1329,23 +1337,51 @@ export function projectsRouter(): Router {
       }
       const actor = actorFromReq(req);
       const projectId = String(req.params.id);
-      const existing = await prisma.project.findUnique({
-        where: { id: projectId },
-        select: { id: true },
+      const { requireApprovedReview, allowSelfApproval } = parsed.data;
+      // #2436 — the old value is read in the transaction that writes the new
+      // one, with the row locked on Postgres (SQLite has one writer), so two
+      // admins toggling at once are audited as a chain: each `from` is the
+      // value the other's write left.
+      const { existing, updated } = await prisma.$transaction(async (tx) => {
+        if (resolveDatabaseProvider() === "postgresql") {
+          await tx.$queryRaw`SELECT 1 FROM "projects" WHERE "id" = ${projectId} FOR UPDATE`;
+        }
+        const existing = await tx.project.findUnique({
+          where: { id: projectId },
+          select: { id: true, allowSelfApproval: true },
+        });
+        if (!existing) throw new AppError(404, "PROJECT_NOT_FOUND", "Project not found");
+        const updated = await tx.project.update({
+          where: { id: projectId },
+          data: {
+            ...(requireApprovedReview !== undefined ? { requireApprovedReview } : {}),
+            ...(allowSelfApproval !== undefined ? { allowSelfApproval } : {}),
+          },
+        });
+        return { existing, updated };
       });
-      if (!existing) throw new AppError(404, "PROJECT_NOT_FOUND", "Project not found");
-
-      const updated = await prisma.project.update({
-        where: { id: projectId },
-        data: { requireApprovedReview: parsed.data.requireApprovedReview },
-      });
-      audit({
-        actor: { id: actor.id },
-        action: "project.reviewGate.update",
-        target: { type: "project", id: projectId },
-        metadata: { requireApprovedReview: parsed.data.requireApprovedReview },
-      });
-      res.json(ok({ requireApprovedReview: updated.requireApprovedReview }));
+      if (requireApprovedReview !== undefined) {
+        audit({
+          actor: { id: actor.id },
+          action: "project.reviewGate.update",
+          target: { type: "project", id: projectId },
+          metadata: { requireApprovedReview },
+        });
+      }
+      if (allowSelfApproval !== undefined) {
+        audit({
+          actor: { id: actor.id },
+          action: "project.selfApproval.update",
+          target: { type: "project", id: projectId },
+          metadata: { from: existing.allowSelfApproval, to: allowSelfApproval },
+        });
+      }
+      res.json(
+        ok({
+          requireApprovedReview: updated.requireApprovedReview,
+          allowSelfApproval: updated.allowSelfApproval,
+        }),
+      );
     },
   );
 

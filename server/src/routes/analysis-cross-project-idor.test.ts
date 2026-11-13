@@ -364,7 +364,10 @@ describe("analyses/:id/* — cross-project scope (#1097)", () => {
       const res = await request(app).post("/api/projects/proj-b/analyses/ana-b/approvals/promote");
 
       expect(res.status).toBe(200);
-      expect(promoteApprovedRequirements).toHaveBeenCalledWith("ana-b", { asApproved: false });
+      expect(promoteApprovedRequirements).toHaveBeenCalledWith("ana-b", {
+        asApproved: false,
+        signerId: "user-b",
+      });
     });
   });
 

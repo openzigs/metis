@@ -54,15 +54,17 @@ const CALLS = 67;
 const EXACT_CENTS = CALLS * 0.075; // 5.025¢
 
 async function seedProject(db: PrismaClient, id: string, workspaceId?: string): Promise<void> {
-  await db.project.create({
-    data: {
-      id,
-      name: id,
-      slug: id,
-      createdById: USER,
-      ...(workspaceId ? { workspaceId } : {}),
-    },
-  });
+  // Raw SQL: the current client also WRITES `projects` columns added since this
+  // database's migration (#2436's defaulted `allowSelfApproval`).
+  await db.$executeRawUnsafe(
+    `INSERT INTO "projects" ("id","name","slug","createdById","workspaceId","updatedAt")
+     VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+    id,
+    id,
+    id,
+    USER,
+    workspaceId ?? null,
+  );
 }
 
 describe.skipIf(readGeneratedClientProvider() !== "sqlite")(

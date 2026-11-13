@@ -55,7 +55,11 @@ const row = (over: Record<string, unknown> = {}) => ({
 });
 
 function renderList(
-  permissions: Parameters<typeof userWith> = ["project.update", "review.create"],
+  permissions: Parameters<typeof userWith> = [
+    "project.update",
+    "requirement.approve",
+    "review.create",
+  ],
 ) {
   const Wrapper = makeWrapper({ initialUser: userWith(...permissions) });
   return render(

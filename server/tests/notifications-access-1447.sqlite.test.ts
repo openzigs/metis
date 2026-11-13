@@ -301,7 +301,13 @@ describe.skipIf(!isSqlite)("#1447 — migration backfills each notification's pr
         data: { id: "u-1", username: "u-1", displayName: "u-1", email: "u-1@example.test" },
       });
       for (const id of ["p-req", "p-spec", "p-disc", "p-review", "p-sla"]) {
-        await db.project.create({ data: { id, name: id, slug: id, createdById: "u-1" } });
+        // Raw SQL: the current client also WRITES `projects` columns added since this
+        // database's migration (#2436's defaulted `allowSelfApproval`).
+        sqlite.exec(
+          `INSERT INTO "projects" ("id","name","slug","createdById","updatedAt")
+           VALUES (?, ?, ?, 'u-1', CURRENT_TIMESTAMP)`,
+          [id, id, id],
+        );
       }
       // Raw SQL: the current client also WRITES columns added since this
       // database's migration (#2341's defaulted `titleGenerated`).

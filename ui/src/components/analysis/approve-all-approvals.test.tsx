@@ -13,6 +13,8 @@ const listApprovals = vi.fn();
 const approveAllApprovals = vi.fn();
 
 vi.mock("@/lib/socket-client", () => ({ useSocket: () => null }));
+const toast = vi.hoisted(() => ({ info: vi.fn(), success: vi.fn(), error: vi.fn() }));
+vi.mock("sonner", () => ({ toast }));
 vi.mock("@/lib/analysis-api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/analysis-api")>();
   return {
@@ -88,6 +90,36 @@ describe("#939 — Approve all pending", () => {
       }),
     );
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["approvals", ANALYSIS_ID] });
+  });
+
+  // #2436 — maker-checker held a requirement its editor signed off.
+  it("says so when the promotion held requirements for review", async () => {
+    const reason = "Requirements edited in the checkpoint by the person who approved them …";
+    approveAllApprovals.mockResolvedValueOnce({
+      approvedCount: 2,
+      promotion: {
+        status: "promoted",
+        requirementCount: 2,
+        heldForReviewCount: 1,
+        heldForReviewReason: reason,
+      },
+    });
+    renderPanel();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Approve all 2 pending" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm approve all" }));
+
+    await waitFor(() => expect(toast.info).toHaveBeenCalledWith(reason));
+  });
+
+  it("says nothing extra when nothing was held", async () => {
+    renderPanel();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Approve all 2 pending" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm approve all" }));
+
+    await waitFor(() => expect(approveAllApprovals).toHaveBeenCalledTimes(1));
+    expect(toast.info).not.toHaveBeenCalled();
   });
 
   it("backs out on cancel", async () => {

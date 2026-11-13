@@ -163,7 +163,11 @@ vi.mock("../src/lib/prisma.js", async () => {
     $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) =>
       fn((await import("../src/lib/prisma.js")).prisma),
     ),
-    requirementVersion: { create: vi.fn(async ({ data }: { data: unknown }) => data) },
+    // #2436 — `findMany`: the maker-checker reads the approver's own versions.
+    requirementVersion: {
+      create: vi.fn(async ({ data }: { data: unknown }) => data),
+      findMany: vi.fn(async () => []),
+    },
     requirement: {
       // #999 — the per-run review-status tally on the project's run list.
       findMany: vi.fn(

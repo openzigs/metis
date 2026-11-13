@@ -18,9 +18,11 @@ import {
   readEnhancementMetadata,
   type ApprovalRequestPayload,
   type ClarificationStatePayload,
+  type PromotionOutcome,
   type StructuredRequirement,
   type TicketStatus,
 } from "@/lib/analysis-api";
+import { toast } from "sonner";
 import { ApiError } from "@/lib/api-client";
 import { queryKeys } from "@/lib/query-keys";
 import { useSocket } from "@/lib/socket-client";
@@ -39,6 +41,16 @@ import {
   checkpointDraftOf,
   type CheckpointDraft,
 } from "./CheckpointRequirementEditor";
+
+/**
+ * #2436 — a promotion that wrote requirements awaiting review rather than
+ * approved (their editor signed them off; maker-checker) says so, once.
+ */
+export function announceHeldForReview(promotion: PromotionOutcome | undefined): void {
+  if (promotion?.status === "promoted" && promotion.heldForReviewReason) {
+    toast.info(promotion.heldForReviewReason);
+  }
+}
 
 interface ApprovalsPanelProps {
   projectId: string;
@@ -61,14 +73,15 @@ interface ApprovalsPanelProps {
    */
   analysisStatus?: string;
   /**
-   * #1588 — the viewer does not hold `project.update`: approving here still
+   * #1588 — the viewer does not hold `requirement.approve` (#2436; it was
+   * `project.update`): approving here still
    * completes the checkpoint, but the server promotes the requirements as
    * drafts for a coordinator to approve, and the panel says so.
    */
   approvesAsDraft?: boolean;
 }
 
-/** #1588 — what approving does for a viewer without `project.update`. */
+/** #1588 — what approving does for a viewer without `requirement.approve` (#2436). */
 export const DRAFT_APPROVAL_NOTICE =
   "Your approval adds these as drafts; a coordinator approves them.";
 
@@ -407,7 +420,8 @@ function ApprovalCard({
         status: decision,
         reviewNote: note.trim() ? note.trim() : undefined,
       }),
-    onSuccess: () => {
+    onSuccess: (data) => {
+      announceHeldForReview(data.promotion);
       onChange();
       qc.invalidateQueries({ queryKey: queryKeys.approvals.forAnalysis(analysisId) });
       // Issue #1135 — resolving the last approval promotes the requirements, and
@@ -635,7 +649,8 @@ function ApproveAllPending({
   const [confirming, setConfirming] = useState(false);
   const approveAll = useMutation({
     mutationFn: () => analysisApi.approveAllApprovals(projectId, analysisId),
-    onSuccess: () => {
+    onSuccess: (data) => {
+      announceHeldForReview(data.promotion);
       setConfirming(false);
       onChange();
       qc.invalidateQueries({ queryKey: queryKeys.approvals.forAnalysis(analysisId) });
