@@ -43,6 +43,7 @@ import {
   deriveCapabilityReasons,
   type FindingsLeftOutNotice,
   readFindingsLeftOut,
+  readRestrictedLeftOut,
   readRequirementsLeftOut,
   isCodeCitation,
   MAX_REQUIREMENTS_FOR_RETRIEVAL,
@@ -162,6 +163,8 @@ import {
   recordFindingsLeftOut,
   recordRequirementsLeftOut,
   recordRestrictedLeftOut,
+  restrictedLeftOutOf,
+  type RestrictedLeftOutCounts,
 } from "./analysis-capability.js";
 // #777 — the file tools are gated on the clone EXISTING, not on a path string.
 import { cloneDirPath, resolveExistingCloneDir } from "./clone-availability.js";
@@ -266,6 +269,7 @@ import {
 import {
   hiddenSymbolsFor,
   loadSharedCodeAccess,
+  type CodeAccessFilter,
   type RestrictedLeftOut,
 } from "./tools/code-access.js";
 import { buildRequirementGroundedPrompt, normalizeAgentContext } from "./prompts.js";
@@ -958,6 +962,15 @@ export async function defaultAnalysisDocumentIds(projectId: string): Promise<str
   return rows.map((d) => d.id);
 }
 
+/**
+ * #2437 — a tracker-less pass's restricted-left-out counts, and whether it read
+ * code at all (see `AnalysisOrchestrator.refreshRestrictedLeftOut`).
+ */
+interface RestrictedLeftOutPass {
+  checked: boolean;
+  counts: RestrictedLeftOutCounts;
+}
+
 export class AnalysisOrchestrator {
   private readonly deps: OrchestratorDeps;
   private readonly active = new Map<string, ActiveRun>();
@@ -983,6 +996,14 @@ export class AnalysisOrchestrator {
    * the regenerated agent went stale.
    */
   private readonly regenFindingsLeftOut = new Map<string, FindingsLeftOutNotice[]>();
+  /**
+   * #2437 — what a single-agent regenerate's or a skipped-repo resume's code
+   * reads left out. Neither has a capability tracker, so without this
+   * {@link noteRestrictedLeftOut} recorded nothing and the stored count went
+   * stale. `checked` says whether the pass read code at all: a pass that did
+   * not (a non-code agent) leaves the stored count alone.
+   */
+  private readonly regenRestrictedLeftOut = new Map<string, RestrictedLeftOutPass>();
 
   constructor(deps: OrchestratorDeps) {
     // #724 — every model call the analysis family makes through this provider
@@ -1257,6 +1278,8 @@ export class AnalysisOrchestrator {
     beginLiveAgent(opts.analysisId, opts.agentKey, { rerun: true });
     const findingsLeftOut: FindingsLeftOutNotice[] = [];
     this.regenFindingsLeftOut.set(opts.analysisId, findingsLeftOut);
+    const restrictedLeftOut: RestrictedLeftOutPass = { checked: false, counts: {} };
+    this.regenRestrictedLeftOut.set(opts.analysisId, restrictedLeftOut);
     try {
       reopened = await reopenForFollowUp(opts.analysisId);
       // #1145 — resolved inside the try, so a failure here is recorded and the
@@ -1365,6 +1388,12 @@ export class AnalysisOrchestrator {
           findingsLeftOut,
           continuation !== null,
         );
+        // #2437 — a continuation added to the code findings: merge its count.
+        await this.refreshRestrictedLeftOut(
+          opts.analysisId,
+          restrictedLeftOut,
+          continuation !== null,
+        );
       }
       this.emitCompleted(opts.analysisId);
     } catch (err) {
@@ -1399,6 +1428,7 @@ export class AnalysisOrchestrator {
         this.retrievalHealths.delete(opts.analysisId);
         this.passReaches.delete(opts.analysisId);
         this.regenFindingsLeftOut.delete(opts.analysisId);
+        this.regenRestrictedLeftOut.delete(opts.analysisId);
         await closeFollowUpRun(opts.analysisId, reopened, outcome, delta);
         // Atomic write — increments columns server-side so two concurrent
         // regenerates can't lose tokens to a read/modify/write race.
@@ -2010,6 +2040,9 @@ export class AnalysisOrchestrator {
     // #766 — one live entry across every resumed repository, so the card's
     // step count and elapsed time do not restart per repository.
     beginLiveAgent(opts.analysisId, "code", { rerun: true });
+    // #2437 — the resumed passes' count, merged into the stored one below.
+    const restrictedLeftOut: RestrictedLeftOutPass = { checked: false, counts: {} };
+    this.regenRestrictedLeftOut.set(opts.analysisId, restrictedLeftOut);
     try {
       reopened = await reopenForFollowUp(opts.analysisId);
       // Only resume connectors that STILL exist — a repo deleted since the
@@ -2115,6 +2148,8 @@ export class AnalysisOrchestrator {
           sourceRequirements: readSourceRequirements(analysis.metadata),
           actorId: opts.actorId,
         });
+        // #2437 — the other repositories' findings stay: merge, never replace.
+        await this.refreshRestrictedLeftOut(opts.analysisId, restrictedLeftOut, true);
       }
 
       // Update the persisted capability so the banner reflects what still
@@ -2139,6 +2174,7 @@ export class AnalysisOrchestrator {
       // them, or the next regenerate would take them for its own.
       this.retrievalHealths.delete(opts.analysisId);
       this.passReaches.delete(opts.analysisId);
+      this.regenRestrictedLeftOut.delete(opts.analysisId);
       // #1156 — release the claim even when a database write below throws.
       try {
         await closeFollowUpRun(opts.analysisId, reopened, outcome, delta);
@@ -3807,9 +3843,8 @@ export class AnalysisOrchestrator {
         // shared audience (#2248), never as its requester: a file any document
         // ACL restricts (#2243) is neither read, listed nor searched by the
         // tools, nor seeded below.
-        const codeAccess = await loadSharedCodeAccess(input.projectId);
         // #2437 — every file that filter hides is a file this run cannot read.
-        this.noteRestrictedLeftOut(input.analysisId, { files: codeAccess.hiddenFileCount });
+        const codeAccess = await this.loadCountedCodeAccess(input.analysisId, input.projectId);
 
         // Build tool context
         const toolContext: ToolContext = {
@@ -4837,6 +4872,10 @@ export class AnalysisOrchestrator {
           );
         }
 
+        // #2437 — the run read code, so every restricted file is counted as
+        // left out, whether or not the fused search below returns a hit.
+        const codeAccess = await this.loadCountedCodeAccess(input.analysisId, input.projectId);
+
         // #729 (Epic #725) — fold fused code-graph symbol context into the
         // grounded evidence. This mode runs when NO code graph exists, so fused
         // retrieval will typically no-op ([] chunks, "" block); it is wired for
@@ -4852,7 +4891,7 @@ export class AnalysisOrchestrator {
           // #2314 — only symbols every project member may see (#2243): the
           // findings are persisted for all of them. #2437 — counted.
           hiddenSymbols: hiddenSymbolsFor(
-            () => loadSharedCodeAccess(input.projectId),
+            async () => codeAccess,
             (left) => this.noteRestrictedLeftOut(input.analysisId, left),
           ),
         });
@@ -5886,6 +5925,10 @@ export class AnalysisOrchestrator {
       // into the agentic prompt before the tool loop, and
       // `runRequirementGroundedCodeAgent` (requirements, no graph) folds it into
       // the grounded evidence. Both share `retrieveFusedCodeContext`.
+      //
+      // #2437 — the pass read code, so every restricted file is counted as
+      // left out, whether or not the fused search returns a hit.
+      const codeAccess = await this.loadCountedCodeAccess(input.analysisId, input.projectId);
       const fusedChunks = await retrieveFusedCodeChunks({
         projectId: input.projectId,
         query: deriveRetrievalQuery({
@@ -5899,7 +5942,7 @@ export class AnalysisOrchestrator {
         // #2314 — only symbols every project member may see (#2243): the
         // findings are persisted for all of them. #2437 — counted.
         hiddenSymbols: hiddenSymbolsFor(
-          () => loadSharedCodeAccess(input.projectId),
+          async () => codeAccess,
           (left) => this.noteRestrictedLeftOut(input.analysisId, left),
         ),
       });
@@ -6103,7 +6146,74 @@ export class AnalysisOrchestrator {
   ): void {
     if (!analysisId) return;
     const tracker = this.capabilities.get(analysisId);
-    if (tracker) recordRestrictedLeftOut(tracker, left);
+    if (tracker) {
+      recordRestrictedLeftOut(tracker, left);
+      return;
+    }
+    // A regenerate or a resume collects its pass's counts for refreshRestrictedLeftOut.
+    const pass = this.regenRestrictedLeftOut.get(analysisId);
+    if (pass) {
+      pass.checked = true;
+      recordRestrictedLeftOut(pass.counts, left);
+    }
+  }
+
+  /**
+   * #2314 / #2437 — the shared-audience filter a pass reads code through, its
+   * hidden-file count recorded as soon as it loads: every file it hides is a
+   * file the pass could not see, whether or not a search matched it.
+   */
+  private async loadCountedCodeAccess(
+    analysisId: string | undefined,
+    projectId: string,
+  ): Promise<CodeAccessFilter> {
+    const codeAccess = await loadSharedCodeAccess(projectId);
+    this.noteRestrictedLeftOut(analysisId, { files: codeAccess.hiddenFileCount });
+    return codeAccess;
+  }
+
+  /**
+   * #2437 — after a single-agent regenerate or a skipped-repo resume, the
+   * stored `restrictedLeftOut` describes the code the analysis now rests on.
+   * A regenerate replaced the code findings, so its pass's count replaces the
+   * stored one (removed at zero). A continuation or a resume added to them, so
+   * each count is the larger of the stored and the new one: `files` is the
+   * same project-wide set every check counts, and the earlier pass's symbols
+   * survive only as a count, so they cannot be de-duplicated against this
+   * pass's ids. A pass that read no code leaves it alone. No write when
+   * nothing changed; best-effort, like every capability write.
+   */
+  private async refreshRestrictedLeftOut(
+    analysisId: string,
+    pass: RestrictedLeftOutPass,
+    merge: boolean,
+  ): Promise<void> {
+    if (!pass.checked) return;
+    let capability: AnalysisCapability | null;
+    try {
+      capability = await getAnalysisCapability(analysisId);
+    } catch (err) {
+      log.warn("Capability read failed", { analysisId, error: (err as Error).message });
+      return;
+    }
+    if (!capability) return;
+    const prev = readRestrictedLeftOut(capability.restrictedLeftOut);
+    const fresh = restrictedLeftOutOf(pass.counts);
+    const next =
+      merge && prev
+        ? {
+            reason: prev.reason,
+            files: Math.max(prev.files, fresh?.files ?? 0),
+            symbols: Math.max(prev.symbols, fresh?.symbols ?? 0),
+          }
+        : fresh;
+    const stored = capability.restrictedLeftOut !== undefined;
+    if (next === null ? !stored : prev?.files === next.files && prev.symbols === next.symbols)
+      return;
+    const updated: AnalysisCapability = { ...capability };
+    if (next) updated.restrictedLeftOut = next;
+    else delete updated.restrictedLeftOut;
+    await this.persistAndEmitCapability(analysisId, updated);
   }
 
   /**

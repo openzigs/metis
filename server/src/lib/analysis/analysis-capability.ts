@@ -185,7 +185,7 @@ export interface CapabilityTracker {
  * an analysis reads as a shared audience). Counts only; the ids stay in memory.
  */
 export function recordRestrictedLeftOut(
-  tracker: CapabilityTracker,
+  tracker: RestrictedLeftOutCounts,
   left: { files: number; symbolIds?: readonly string[] },
 ): void {
   if (left.files > (tracker.restrictedFiles ?? 0)) tracker.restrictedFiles = left.files;
@@ -195,8 +195,20 @@ export function recordRestrictedLeftOut(
   }
 }
 
+/**
+ * #2437 — what {@link recordRestrictedLeftOut} accumulates: a run's tracker, or
+ * the holder a single-agent regenerate or a skipped-repo resume (which have no
+ * tracker) collects its pass's counts in.
+ */
+export type RestrictedLeftOutCounts = Pick<
+  CapabilityTracker,
+  "restrictedFiles" | "restrictedSymbolIds"
+>;
+
 /** #2437 — the persisted notice, or `null` when the run left nothing restricted out. */
-function restrictedLeftOutOf(tracker: CapabilityTracker): RestrictedLeftOutNotice | null {
+export function restrictedLeftOutOf(
+  tracker: RestrictedLeftOutCounts,
+): RestrictedLeftOutNotice | null {
   const files = tracker.restrictedFiles ?? 0;
   const symbols = tracker.restrictedSymbolIds?.size ?? 0;
   return files + symbols > 0 ? { reason: "shared-audience", files, symbols } : null;

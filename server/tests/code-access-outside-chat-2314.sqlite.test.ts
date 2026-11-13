@@ -39,6 +39,8 @@ vi.mock("../src/lib/prisma.js", async () => {
       return state.db;
     },
     Prisma,
+    // #2437 — the capability is persisted through the metadata merge-writer.
+    resolveDatabaseProvider: () => "sqlite",
   };
 });
 // #2314 — the run test inspects the model's conversation, not the persisted
@@ -65,6 +67,8 @@ const { codeRuntimeTool } = await import("../src/lib/ai/tool-runtime/toolset.js"
 const { AnalysisOrchestrator } = await import("../src/lib/analysis/orchestrator.js");
 const { createCapabilityTracker, finalizeCapability } =
   await import("../src/lib/analysis/analysis-capability.js");
+const { getAnalysisCapability, getAnalysisSnapshot, persistAnalysisCapability } =
+  await import("../src/lib/analysis/analysis-service.js");
 const { createSearchSymbolsTool } = await import("../src/lib/analysis/tools/search-symbols.js");
 const { __resetToolResultCacheForTests } =
   await import("../src/lib/ai/tool-runtime/tool-result-cache.js");
@@ -444,14 +448,26 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     // capability record: counts and the reason only, never a path or a name,
     // and nothing at all when nothing was left out. Every analysis path that
     // reads code: the agentic pass, the requirement-grounded agent and the
-    // single-shot context.
+    // single-shot context. The record is persisted on a real Analysis row and
+    // read back through both readers the UI is served by.
     describe("#2437 — what a run left out is counted, never named", () => {
       const ANSWER = JSON.stringify({ agentKey: "code", summary: "done", findings: [], notes: [] });
       type Orch = {
         capabilities: Map<string, ReturnType<typeof createCapabilityTracker>>;
       } & Record<string, (input: Record<string, unknown>) => Promise<unknown>>;
-      /** An orchestrator with a capability tracker for `analysisId`, as a pipeline run has. */
-      const withTracker = (analysisId: string, codeSearcher: FusedCodeSearcher = searcher) => {
+      /**
+       * An orchestrator with a capability tracker for `analysisId`, as a pipeline
+       * run has, and an Analysis row the finalized record is persisted on.
+       */
+      const withTracker = async (
+        analysisId: string,
+        codeSearcher: FusedCodeSearcher = searcher,
+      ) => {
+        await db.analysis.upsert({
+          where: { id: analysisId },
+          create: { id: analysisId, projectId: PROJECT, status: "completed", startedById: ALICE },
+          update: { metadata: null },
+        });
         const orch = new AnalysisOrchestrator({
           provider: {
             key: "offline-stub",
@@ -479,7 +495,16 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           databaseAnalysisRequested: false,
         });
         orch.capabilities.set(analysisId, tracker);
-        return { orch, capability: () => finalizeCapability(tracker) };
+        /** Persist the finalized record as the pipeline does, then read it back. */
+        const capability = async () => {
+          await persistAnalysisCapability(analysisId, finalizeCapability(tracker));
+          const read = await getAnalysisCapability(analysisId);
+          // The snapshot (the analysis page) serves the same record.
+          expect((await getAnalysisSnapshot(analysisId))?.capability).toEqual(read);
+          const row = await db.analysis.findUniqueOrThrow({ where: { id: analysisId } });
+          return { read: read!, stored: row.metadata ?? "" };
+        };
+        return { orch, capability };
       };
       const runs: Record<string, (orch: Orch, analysisId: string) => Promise<unknown>> = {
         agentic: (orch, analysisId) => {
@@ -516,29 +541,31 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           }),
       };
 
-      // The agentic pass's tools could not read the file even when its code
-      // search matched nothing, so the file is counted all the same.
-      it("the agentic path counts the restricted file when its code search finds nothing", async () => {
-        const { orch, capability } = withTracker("an-2437-no-hits", { search: async () => [] });
-        await runs.agentic!(orch, "an-2437-no-hits");
-        expect(capability().restrictedLeftOut).toEqual({
-          reason: "shared-audience",
-          files: 1,
-          symbols: 0,
-        });
-      });
-
       for (const [path, run] of Object.entries(runs)) {
+        // #2437 review — a run that read code could not see the file even when
+        // its code search matched nothing, so the file is counted all the same,
+        // on every path (the requirement-grounded and single-shot paths once
+        // counted it only when the search returned a hit).
+        it(`the ${path} path counts the restricted file when its code search finds nothing`, async () => {
+          const id = `an-2437-${path}-no-hits`;
+          const { orch, capability } = await withTracker(id, { search: async () => [] });
+          await run(orch, id);
+          expect((await capability()).read.restrictedLeftOut).toEqual({
+            reason: "shared-audience",
+            files: 1,
+            symbols: 0,
+          });
+        });
+
         it(`the ${path} path counts the restricted file and its symbol, and names neither`, async () => {
-          const { orch, capability } = withTracker(`an-2437-${path}`);
+          const { orch, capability } = await withTracker(`an-2437-${path}`);
           await run(orch, `an-2437-${path}`);
-          const cap = capability();
-          expect(cap.restrictedLeftOut).toEqual({
+          const { read, stored } = await capability();
+          expect(read.restrictedLeftOut).toEqual({
             reason: "shared-audience",
             files: 1,
             symbols: 1,
           });
-          const stored = JSON.stringify(cap);
           for (const named of ["secret", "computeSecretFee", "s-secret", SECRET_DOC]) {
             expect(stored).not.toContain(named);
           }
@@ -546,9 +573,11 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
 
         it(`the ${path} path records nothing once no file is restricted`, async () => {
           await restrict([]);
-          const { orch, capability } = withTracker(`an-2437-${path}-open`);
+          const { orch, capability } = await withTracker(`an-2437-${path}-open`);
           await run(orch, `an-2437-${path}-open`);
-          expect(capability()).not.toHaveProperty("restrictedLeftOut");
+          const { read } = await capability();
+          expect(read).not.toBeNull(); // the record itself was persisted and read back
+          expect(read).not.toHaveProperty("restrictedLeftOut");
         });
       }
     });

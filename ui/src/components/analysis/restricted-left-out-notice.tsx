@@ -25,7 +25,9 @@ export function RestrictedLeftOutNotice({
   const sentence = restrictedLeftOutSentence(capability?.restrictedLeftOut);
   if (!sentence) return null;
   return (
-    <p className="text-xs text-warning" role="status" data-testid={testId}>
+    // A note, not a live region (`status`): it is static summary text, and on a
+    // run started from a Spec Kit handoff it renders twice on one page.
+    <p className="text-xs text-warning" role="note" data-testid={testId}>
       {sentence}
     </p>
   );
