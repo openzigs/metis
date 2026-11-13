@@ -46,7 +46,7 @@ describe("GenerateIssuesAction (#362)", () => {
     expect(button).toBeDisabled();
     expect(button).toHaveAccessibleDescription(/3 pending approval\(s\) must be resolved/);
     expect(screen.getByTestId("generate-issues-reason")).not.toHaveTextContent("rejected");
-    expect(screen.getByRole("link", { name: "Go to approvals" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Go to checkpoints" })).toHaveAttribute(
       "href",
       "#approvals",
     );
@@ -61,7 +61,7 @@ describe("GenerateIssuesAction (#362)", () => {
     const reason = screen.getByTestId("generate-issues-reason");
     expect(reason).toHaveTextContent("1 pending approval(s) must be resolved");
     expect(reason).not.toHaveTextContent("Re-run");
-    expect(screen.getByRole("link", { name: "Go to approvals" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Go to checkpoints" })).toBeInTheDocument();
   });
 
   it("explains the gate even on a run with no findings", () => {
@@ -89,7 +89,7 @@ describe("GenerateIssuesAction (#362)", () => {
     expect(screen.getByTestId("generate-issues-reason")).toHaveTextContent(
       "Couldn't check the approval gate",
     );
-    expect(screen.getByRole("link", { name: "Go to approvals" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Go to checkpoints" })).toHaveAttribute(
       "href",
       "#approvals",
     );
@@ -101,7 +101,7 @@ describe("GenerateIssuesAction (#362)", () => {
     expect(screen.getByTestId("generate-issues-reason")).toHaveTextContent(
       "No requirements to generate issues from.",
     );
-    expect(screen.queryByRole("link", { name: "Go to approvals" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Go to checkpoints" })).not.toBeInTheDocument();
   });
 
   // Issue #723 — gate open, 0 rows, approved requirements: this used to read

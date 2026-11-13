@@ -12,7 +12,7 @@
  * (`GET /api/users?projectId=`); the requester is left out, since the server
  * refuses a self-review.
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError, apiFetch } from "@/lib/api-client";
@@ -56,6 +56,35 @@ interface Props {
   currentUserId: string;
   /** #989 — how many of `requirementIds` are already approved. */
   approvedCount?: number;
+  /**
+   * #2347 — the user may take a baseline without a review (`review.admin`, as
+   * `POST /projects/:id/baselines` requires): the solo outcome says so.
+   */
+  canBaseline?: boolean;
+  /**
+   * #2347 — the user may approve a requirement directly (`project.update`, as
+   * `PUT /api/requirements/:id` requires; a `developer` may not, #1566).
+   */
+  canApprove?: boolean;
+  /**
+   * #2347 — the trigger's text and test id, and the form's heading. A page
+   * with two cards over different scopes (the Requirements list's ticked rows,
+   * the summary's whole change request) names each for its scope.
+   */
+  triggerLabel?: string;
+  heading?: string;
+  testId?: string;
+  /** #2347 — called with the new review's id once it is submitted. */
+  onRequested?: (reviewId: string) => void;
+}
+
+/** #2347 — the defined outcome for someone with no one else to review, by role. */
+export function soloOutcome(canApprove: boolean, canBaseline: boolean): string {
+  if (canBaseline)
+    return "Working alone? Approve the requirements directly; that is where they end. To fix a set, take a baseline from Baselines → New baseline.";
+  if (canApprove)
+    return "Working alone? Approve the requirements directly; that is where they end. A coordinator or admin can take a baseline from them (Baselines → New baseline).";
+  return "Working alone? Your role cannot approve requirements or take a baseline. Add a colleague to this project to review, or ask a coordinator to approve them.";
 }
 
 export function RequestReviewCard({
@@ -64,19 +93,30 @@ export function RequestReviewCard({
   requirements,
   currentUserId,
   approvedCount: approvedCountProp = 0,
+  canBaseline = false,
+  canApprove = false,
+  triggerLabel = "Request review",
+  heading = "Request review",
+  testId = "request-review",
+  onRequested,
 }: Props) {
   const qc = useQueryClient();
   const [open, setOpen] = useState(false);
-  // #1129 — the chosen subset; every requirement to start with.
-  const [chosen, setChosen] = useState<ReadonlySet<string>>(() => new Set(allRequirementIds));
+  // #1129 — the chosen subset; every requirement to start with. Held as the
+  // ones left OUT, so a requirement the caller adds to `requirementIds` later
+  // (#2347: a row ticked in the list) is chosen without remounting the form,
+  // which would drop the reviewers picked and the title typed.
+  const [excluded, setExcluded] = useState<ReadonlySet<string>>(() => new Set());
+  const chosen: ReadonlySet<string> = new Set(allRequirementIds.filter((id) => !excluded.has(id)));
   const requirementIds = allRequirementIds.filter((id) => chosen.has(id));
+  const scopeKey = allRequirementIds.join(",");
   const ticked = requirements ? tickedRequirementIds(requirements) : [];
   const approvedCount =
     requirements && requirements.some((r) => r.reviewStatus !== undefined)
       ? requirements.filter((r) => chosen.has(r.id) && r.reviewStatus === "approved").length
       : approvedCountProp;
   const choose = (next: ReadonlySet<string>): void => {
-    setChosen(next);
+    setExcluded(new Set(allRequirementIds.filter((id) => !next.has(id))));
     setDraftId(null);
   };
   const [title, setTitle] = useState("Requirements review");
@@ -87,6 +127,8 @@ export function RequestReviewCard({
   // A draft whose submit failed: a retry submits it instead of opening another.
   // Editing the title or reviewers drops it, so the retry carries the edit.
   const [draftId, setDraftId] = useState<string | null>(null);
+  // A draft opened over another set of requirements is not this request.
+  useEffect(() => setDraftId(null), [scopeKey]);
 
   const term = search.trim();
   const hits = useQuery({
@@ -100,6 +142,11 @@ export function RequestReviewCard({
   const candidates = (hits.data ?? []).filter(
     (u) => u.id !== currentUserId && !reviewers.some((r) => r.id === u.id),
   );
+  // #2347 — say why the picker offers nobody, instead of a silent empty list
+  // and a disabled button (#2330: the server answers SELF_REVIEW_FORBIDDEN).
+  const searched = term !== "" && hits.isSuccess;
+  const onlyMe = searched && (hits.data ?? []).some((u) => u.id === currentUserId);
+  const noOneElse = searched && candidates.length === 0 && reviewers.length === 0;
 
   const request = useMutation({
     mutationFn: async () => {
@@ -123,6 +170,7 @@ export function RequestReviewCard({
       setError(null);
       setReviewers([]);
       setSearch("");
+      onRequested?.(reviewId);
       // #989 — the submit moves requirements to awaiting review, so the
       // hub's counts (read from the analysis) are stale too.
       await Promise.all([
@@ -150,9 +198,9 @@ export function RequestReviewCard({
             setCreatedId(null);
             setOpen(true);
           }}
-          data-testid="request-review"
+          data-testid={testId}
         >
-          Request review
+          {triggerLabel}
         </Button>
         {createdId ? (
           <p role="status" className="text-sm" data-testid="request-review-done">
@@ -175,7 +223,7 @@ export function RequestReviewCard({
           request.mutate();
         }}
       >
-        <h3 className="text-sm font-semibold">Request review</h3>
+        <h3 className="text-sm font-semibold">{heading}</h3>
         <p className="text-sm font-medium" data-testid="request-review-scope">
           This review covers {count} of {total} requirement{total === 1 ? "" : "s"}.
         </p>
@@ -231,9 +279,9 @@ export function RequestReviewCard({
           {approvedCount > 0
             ? `${approvedCount} of them ${approvedCount === 1 ? "is" : "are"} already approved and stay${approvedCount === 1 ? "s" : ""} approved unless the review is rejected. `
             : ""}
-          The rest show as awaiting review until it is decided. Withdrawing the review puts every
-          status back, except on a requirement another open review still covers: that one waits for
-          the other review.
+          The rest show as awaiting review until it is decided. Withdrawing the review puts back the
+          status each had when the review was sent, except on a requirement another open review
+          still covers: that one waits for the other review.
         </p>
         <div className="space-y-1">
           <Label htmlFor="review-title">Title</Label>
@@ -277,6 +325,18 @@ export function RequestReviewCard({
               ))}
             </ul>
           ) : null}
+          {noOneElse ? (
+            <div className="space-y-1 text-xs" role="status" data-testid="request-review-no-one">
+              <p>
+                {onlyMe
+                  ? "You can't review your own request; add a colleague who can open this project."
+                  : `No one else who can open this project matches "${term}".`}
+              </p>
+              <p className="text-muted-foreground" data-testid="request-review-solo">
+                {soloOutcome(canApprove, canBaseline)}
+              </p>
+            </div>
+          ) : null}
           {reviewers.length > 0 ? (
             <ul className="flex flex-wrap gap-2" aria-label="Selected reviewers">
               {reviewers.map((r) => (
@@ -304,6 +364,11 @@ export function RequestReviewCard({
         {error ? (
           <p className="text-sm text-destructive" role="alert">
             {error}
+          </p>
+        ) : null}
+        {reviewers.length === 0 ? (
+          <p className="text-xs text-muted-foreground" data-testid="request-review-needs-reviewer">
+            Add at least one reviewer to request the review. You can&apos;t review your own request.
           </p>
         ) : null}
         <div className="flex gap-2">

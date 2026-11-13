@@ -37,6 +37,13 @@ import {
   canRequestReReview,
   RequestReReviewButton,
 } from "@/components/reviews/RequestReReviewButton";
+import {
+  canResubmitReview,
+  canReviseReview,
+  RejectedReviewNotice,
+  ResubmitReviewButton,
+  ReviseReviewButton,
+} from "@/components/reviews/revise-and-resubmit";
 
 /**
  * The caller's own assignment, or null. Exported for unit testing.
@@ -174,9 +181,16 @@ export default function ReviewDetailPage() {
                 <WithdrawReviewButton review={review} user={user} />
               ) : canRequestReReview(review, user) ? (
                 <RequestReReviewButton review={review} user={user} />
+              ) : canReviseReview(review, user) ? (
+                <ReviseReviewButton review={review} />
+              ) : canResubmitReview(review, user) ? (
+                <ResubmitReviewButton review={review} />
               ) : undefined
             }
           />
+
+          {/* #2347 — what was rejected and why, before the items. */}
+          <RejectedReviewNotice review={review} />
 
           <section className="space-y-3" aria-label="Review scope">
             <h2 className="text-sm font-semibold">
@@ -198,6 +212,9 @@ export default function ReviewDetailPage() {
           ) : review.status === "draft" ? (
             <p className="text-sm text-muted-foreground">
               This review is a draft and has not been submitted for review yet.
+              {canResubmitReview(review, user)
+                ? " Revise its requirements, then submit it with the button above."
+                : ""}
             </p>
           ) : null}
         </>

@@ -33,7 +33,7 @@ function Harness({
     >
       <TabsContent value="summary">
         <p>summary body</p>
-        <a href="#approvals">Go to approvals</a>
+        <a href="#approvals">Go to checkpoints</a>
         <a href="#clarifying-questions">Review questions</a>
         <a href="#somewhere-else">Elsewhere</a>
       </TabsContent>
@@ -57,17 +57,17 @@ describe("AnalysisResultTabs (#30)", () => {
   it("switches tab on a trigger click and reports it", async () => {
     const onChange = vi.fn();
     render(<Harness onChange={onChange} />);
-    await userEvent.click(screen.getByRole("tab", { name: /^Approvals/ }));
+    await userEvent.click(screen.getByRole("tab", { name: /^Checkpoints/ }));
     expect(onChange).toHaveBeenCalledWith("approvals");
     expect(screen.getByText("approvals body")).toBeInTheDocument();
     expect(screen.queryByText("summary body")).not.toBeInTheDocument();
   });
 
-  it("shows counts, wording Questions and Approvals as outstanding", () => {
+  it("shows counts, wording Questions and Checkpoints as outstanding", () => {
     render(<Harness counts={{ findings: 29, questions: 14, approvals: 0 }} />);
     expect(screen.getByTestId("analysis-tab-count-findings")).toHaveTextContent("29");
     expect(screen.getByRole("tab", { name: /^Questions\s*\(14 open\)$/ })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: /^Approvals\s*\(0 pending\)$/ })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /^Checkpoints\s*\(0 pending\)$/ })).toBeInTheDocument();
     // Outstanding work is highlighted; nothing outstanding is not.
     expect(screen.getByTestId("analysis-tab-count-questions").className).toMatch(/warning/);
     expect(screen.getByTestId("analysis-tab-count-approvals").className).not.toMatch(/warning/);
@@ -76,10 +76,10 @@ describe("AnalysisResultTabs (#30)", () => {
     expect(screen.queryByTestId("analysis-tab-count-agents")).not.toBeInTheDocument();
   });
 
-  it("turns a 'Go to approvals' anchor into a switch to the Approvals tab", async () => {
+  it("turns a 'Go to checkpoints' anchor into a switch to the Approvals tab", async () => {
     const onChange = vi.fn();
     render(<Harness onChange={onChange} />);
-    await userEvent.click(screen.getByRole("link", { name: "Go to approvals" }));
+    await userEvent.click(screen.getByRole("link", { name: "Go to checkpoints" }));
     expect(onChange).toHaveBeenCalledWith("approvals");
     expect(screen.getByText("approvals body")).toBeInTheDocument();
   });
@@ -89,7 +89,7 @@ describe("AnalysisResultTabs (#30)", () => {
   it("reports the anchor it intercepted, so the page can scroll to it", async () => {
     const onAnchor = vi.fn();
     render(<Harness onAnchor={onAnchor} />);
-    await userEvent.click(screen.getByRole("link", { name: "Go to approvals" }));
+    await userEvent.click(screen.getByRole("link", { name: "Go to checkpoints" }));
     expect(onAnchor).toHaveBeenCalledWith("#approvals");
     await userEvent.click(screen.getByRole("tab", { name: /^Summary/ }));
     await userEvent.click(screen.getByRole("link", { name: "Elsewhere" }));

@@ -50,7 +50,7 @@ export function RequirementsEmptyState({
         <p className="text-xs text-warning">
           Promote the approved requirements from the approvals section.{" "}
           <a href="#approvals" className="font-medium underline">
-            Go to approvals
+            Go to checkpoints
           </a>
         </p>
       </div>
@@ -74,7 +74,7 @@ export function RequirementsEmptyState({
           ? `${pendingCount} pending approval(s) must be resolved.`
           : "Resolve the pending approvals to release them."}{" "}
         <a href="#approvals" className="font-medium underline">
-          Go to approvals
+          Go to checkpoints
         </a>
       </p>
     </div>

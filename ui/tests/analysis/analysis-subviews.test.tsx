@@ -535,7 +535,7 @@ describe("the URL carries the tab and the run", () => {
     expect(lastReplace()).toBe("/projects/p1/analysis?tab=findings&analysisId=an-old");
   });
 
-  it("turns 'Go to approvals' into the Approvals tab", async () => {
+  it("turns 'Go to checkpoints' into the Approvals tab", async () => {
     apiMock.get.mockResolvedValue({ ...SNAPSHOT, requirements: [] });
     apiMock.listApprovals.mockResolvedValue({
       items: [],
@@ -543,7 +543,7 @@ describe("the URL carries the tab and the run", () => {
     });
     nav.search = new URLSearchParams("tab=findings");
     renderPage();
-    const link = await screen.findByRole("link", { name: "Go to approvals" });
+    const link = await screen.findByRole("link", { name: "Go to checkpoints" });
     await userEvent.click(link);
     expect(await screen.findByTestId("approvals-panel-stub")).toBeInTheDocument();
     expect(lastReplace()).toBe("/projects/p1/analysis?tab=approvals");
@@ -582,7 +582,7 @@ describe("the #approvals deep link", () => {
     nav.search = new URLSearchParams("analysisId=an-1&tab=summary");
     renderPage();
     await userEvent.click(await screen.findByRole("tab", { name: /Findings/ }));
-    await userEvent.click(screen.getByRole("tab", { name: /Approvals/ }));
+    await userEvent.click(screen.getByRole("tab", { name: /Checkpoints/ }));
     await screen.findByTestId("approvals-panel-stub");
     await screen.findByTestId("approvals-none");
     expect(scrolled).toEqual([]);

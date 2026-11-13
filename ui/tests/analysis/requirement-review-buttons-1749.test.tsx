@@ -35,7 +35,7 @@ describe("RequirementReviewButtons (#1749)", () => {
     expect(onReview.mock.calls).toEqual([["approved"], ["rejected"]]);
   });
 
-  it("reads Approved and sends nothing on an approved requirement, and Reject stays open", () => {
+  it("reads Approved and offers nothing more on an approved requirement (#2347, #2220)", () => {
     const onReview = renderButtons("approved");
     const approved = screen.getByRole("button", { name: "Approved" });
     expect(approved).toBeDisabled();
@@ -44,8 +44,8 @@ describe("RequirementReviewButtons (#1749)", () => {
     fireEvent.click(approved);
     expect(onReview).not.toHaveBeenCalled();
     expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Reject" }));
-    expect(onReview).toHaveBeenCalledWith("rejected");
+    // Not offered Reject as if nothing had happened.
+    expect(screen.queryByRole("button", { name: "Reject" })).not.toBeInTheDocument();
   });
 
   it("reads Rejected on a rejected requirement, and Approve stays open", () => {
@@ -61,9 +61,9 @@ describe("RequirementReviewButtons (#1749)", () => {
   });
 
   it("disables both, with the write hint, for a viewer who cannot write", () => {
-    renderButtons("approved", { writeHint: "Requires project.update" });
-    expect(screen.getByRole("button", { name: "Reject" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Approved" }).parentElement).toHaveAttribute(
+    renderButtons("rejected", { writeHint: "Requires project.update" });
+    expect(screen.getByRole("button", { name: "Approve" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Rejected" }).parentElement).toHaveAttribute(
       "title",
       "Requires project.update",
     );

@@ -198,7 +198,13 @@ export function RequirementsHub({ projectId }: { projectId: string }) {
             requirementIds={detail.data.requirements.map((r) => r.id)}
             requirements={detail.data.requirements}
             currentUserId={user.id}
+            canBaseline={user.permissions.includes("review.admin")}
+            canApprove={user.permissions.includes("project.update")}
             approvedCount={counts.approved}
+            // #2347 — the whole change request, not the rows ticked in the list above.
+            triggerLabel="Request review of this change request"
+            heading="Review this change request's requirements"
+            testId="requirements-hub-request-review"
           />
         ) : null}
       </Card>

@@ -148,6 +148,15 @@ describe("Baselines page", () => {
     const empty = await screen.findByTestId("baselines-empty");
     expect(screen.queryByTestId("new-baseline")).not.toBeInTheDocument();
     expect(empty).not.toHaveTextContent(/New baseline/);
+    // #2347 — the page copy no longer describes a button this role does not see.
+    expect(document.body).not.toHaveTextContent(/New baseline pins/);
+    expect(document.body).toHaveTextContent(/a coordinator or admin can also take one/);
+  });
+
+  it("#2347 — describes New baseline in the page copy to a review administrator", async () => {
+    renderWith(<ProjectBaselinesPage />, { user: userWith("coordinator") });
+    await screen.findByTestId("baselines-empty");
+    expect(document.body).toHaveTextContent(/New baseline pins the project's requirements/);
   });
 });
 
@@ -227,7 +236,7 @@ describe("RequestReviewCard", () => {
       "2 of them are already approved and stay approved unless the review is rejected.",
     );
     expect(note).toHaveTextContent(
-      "Withdrawing the review puts every status back, except on a requirement another open review still covers: that one waits for the other review.",
+      "Withdrawing the review puts back the status each had when the review was sent, except on a requirement another open review still covers: that one waits for the other review.",
     );
   });
 
@@ -320,12 +329,24 @@ describe("Requirements hub", () => {
 
   it("offers Request review to a user with review.create", async () => {
     renderWith(<RequirementsHub projectId="p1" />, { user: userWith("developer") });
-    expect(await screen.findByTestId("request-review")).toBeInTheDocument();
+    expect(await screen.findByTestId("requirements-hub-request-review")).toBeInTheDocument();
+  });
+
+  // #2347 review — named for its scope, apart from the list's ticked-rows card.
+  it("names the summary's card for the whole change request, trigger and form alike", async () => {
+    renderWith(<RequirementsHub projectId="p1" />, { user: userWith("developer") });
+    const trigger = await screen.findByTestId("requirements-hub-request-review");
+    expect(trigger).toHaveTextContent("Request review of this change request");
+    expect(screen.queryByTestId("request-review")).not.toBeInTheDocument();
+    fireEvent.click(trigger);
+    expect(
+      screen.getByRole("heading", { name: "Review this change request's requirements" }),
+    ).toBeInTheDocument();
   });
 
   it("#989 — tells the requester how many of the requirements are already approved", async () => {
     renderWith(<RequirementsHub projectId="p1" />, { user: userWith("developer") });
-    fireEvent.click(await screen.findByTestId("request-review"));
+    fireEvent.click(await screen.findByTestId("requirements-hub-request-review"));
     expect(screen.getByTestId("request-review-status-note")).toHaveTextContent(
       "1 of them is already approved and stays approved unless the review is rejected.",
     );
@@ -334,6 +355,6 @@ describe("Requirements hub", () => {
   it("does not offer it to a reader", async () => {
     renderWith(<RequirementsHub projectId="p1" />, { user: userWith("reader") });
     await screen.findByTestId("requirements-count-draft");
-    expect(screen.queryByTestId("request-review")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("requirements-hub-request-review")).not.toBeInTheDocument();
   });
 });

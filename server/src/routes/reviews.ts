@@ -40,6 +40,7 @@ import {
   reopenReview,
   submitReview,
   withdrawReview,
+  reviseReview,
 } from "../lib/reviews/review-service.js";
 
 // ---- Schemas ----------------------------------------------------------------
@@ -248,6 +249,19 @@ export function reviewsRouter(): Router {
       const { userId, role } = requireUser(req);
       await assertReviewAccess(req, String(req.params.reviewId));
       const review = await withdrawReview(userId, String(req.params.reviewId), isReviewAdmin(role));
+      res.json({ success: true, data: review });
+    },
+  );
+
+  // POST /:reviewId/revise — #2347 rejected → draft ("Revise and resubmit").
+  r.post(
+    "/:reviewId/revise",
+    requireAuth,
+    requirePermission("review.create"),
+    async (req: Request, res: Response) => {
+      const { userId, role } = requireUser(req);
+      await assertReviewAccess(req, String(req.params.reviewId));
+      const review = await reviseReview(userId, String(req.params.reviewId), isReviewAdmin(role));
       res.json({ success: true, data: review });
     },
   );

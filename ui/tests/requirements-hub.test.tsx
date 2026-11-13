@@ -214,7 +214,7 @@ describe("<RequirementsHub />", () => {
       "/projects/p1/analysis?analysisId=old",
     );
     // The reviewed set is still reviewable from the hub.
-    expect(await screen.findByTestId("request-review")).toBeInTheDocument();
+    expect(await screen.findByTestId("requirements-hub-request-review")).toBeInTheDocument();
     expect(get).toHaveBeenCalledWith("old");
 
     // Choosing the newer run shows its (empty) tally, and Request review goes.
@@ -232,11 +232,13 @@ describe("<RequirementsHub />", () => {
     expect(screen.getByTestId("requirements-review-latest")).toHaveTextContent(
       "Open latest analysis",
     );
-    await waitFor(() => expect(screen.queryByTestId("request-review")).not.toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.queryByTestId("requirements-hub-request-review")).not.toBeInTheDocument(),
+    );
 
     // And back to the earlier run, now chosen rather than defaulted to.
     fireEvent.change(select, { target: { value: "old" } });
-    expect(await screen.findByTestId("request-review")).toBeInTheDocument();
+    expect(await screen.findByTestId("requirements-hub-request-review")).toBeInTheDocument();
     expect(screen.queryByTestId("requirements-skipped-empty")).not.toBeInTheDocument();
   });
 
@@ -264,7 +266,7 @@ describe("<RequirementsHub />", () => {
     render(<RequirementsHub projectId="p1" />, {
       wrapper: makeWrapper({ initialUser: user, withAuth: true }),
     });
-    fireEvent.click(await screen.findByTestId("request-review"));
+    fireEvent.click(await screen.findByTestId("requirements-hub-request-review"));
     expect(screen.getByTestId("request-review-status-note")).toHaveTextContent(
       "1 of them is already approved and stays approved unless the review is rejected.",
     );

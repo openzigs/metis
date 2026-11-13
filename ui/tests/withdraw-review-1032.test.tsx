@@ -340,6 +340,35 @@ describe("review page (/reviews/[id])", () => {
     expect(screen.getByRole("button", { name: /approve/i })).toBeTruthy();
   });
 
+  it("#2347: on a rejected review the requester sees why, and Revise and resubmit", async () => {
+    renderDetail(
+      makeReview({
+        status: "rejected",
+        assignments: [
+          {
+            id: "a-1",
+            reviewerId: "u-dev",
+            decision: "rejected",
+            note: "Missing the refund rules",
+            decidedAt: null,
+            reviewer: { id: "u-dev", username: "dev", displayName: "Dev Reviewer" },
+          },
+        ],
+      }),
+      REQUESTER,
+    );
+    expect(await screen.findByTestId("review-rejected-notice")).toHaveTextContent(
+      "Dev Reviewer: Missing the refund rules",
+    );
+    expect(screen.getByTestId("revise-review-rev-1")).toHaveTextContent("Revise and resubmit");
+  });
+
+  it("#2347: the draft a revise leaves is resubmitted from the page", async () => {
+    renderDetail(makeReview({ status: "draft" }), REQUESTER);
+    expect(await screen.findByTestId("resubmit-review-rev-1")).toBeTruthy();
+    expect(screen.getByText(/submit it with the button above/)).toBeTruthy();
+  });
+
   it("does not offer it on an approved review, even to its requester", async () => {
     renderDetail(makeReview({ status: "approved" }), REQUESTER);
     await screen.findByTestId("review-header");
