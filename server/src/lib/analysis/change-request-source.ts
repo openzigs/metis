@@ -42,13 +42,8 @@ export async function loadChangeRequestSource(
   analysisId: string,
   canReadProject: (projectId: string) => Promise<boolean>,
 ): Promise<ChangeRequestSource> {
-  const run = await prisma.analysis.findFirst({
-    where: { id: analysisId, deletedAt: null },
-    select: { id: true, projectId: true, title: true, startedAt: true },
-  });
-  if (!run || !(await canReadProject(run.projectId))) {
-    throw new AppError(404, "NOT_FOUND", "Change request not found");
-  }
+  const run = await readableChangeRequest(analysisId, canReadProject);
+  if (!run) throw new AppError(404, "NOT_FOUND", "Change request not found");
   const rows = await prisma.requirement.findMany({
     where: {
       analysisId: run.id,
@@ -71,6 +66,23 @@ export async function loadChangeRequestSource(
       approved: r.reviewStatus === "approved",
     })),
   };
+}
+
+/**
+ * The live change request `analysisId` when `canReadProject` allows its project,
+ * else null: an unknown, deleted and unreadable one answer alike. The lists of a
+ * change request's checks (`?analysisId=`) ask this first, so a reader of only
+ * another project of a run started from it is told nothing about it.
+ */
+export async function readableChangeRequest(
+  analysisId: string,
+  canReadProject: (projectId: string) => Promise<boolean>,
+): Promise<{ id: string; projectId: string; title: string | null; startedAt: Date } | null> {
+  const run = await prisma.analysis.findFirst({
+    where: { id: analysisId, deletedAt: null },
+    select: { id: true, projectId: true, title: true, startedAt: true },
+  });
+  return run && (await canReadProject(run.projectId)) ? run : null;
 }
 
 /** A change request with no requirement to check is a 400, said in words. */

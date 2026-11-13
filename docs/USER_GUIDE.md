@@ -1373,10 +1373,14 @@ click **Run analysis** to start with your own choices instead.
 
 **Impact and portfolio.** Below the step header, the **Impact and portfolio** card starts both
 checks from the change request itself, with its requirements already filled in: you type
-nothing again, and you stay on the project's pages. [#2345]
+nothing again. Each result opens on its own page, the same impact analysis or portfolio check
+page the **Impact analyses** and **Portfolio** pages open, with a **Back to the change request**
+link at the top that returns you here in one click. [#2345]
 
 - **Run impact analysis** maps the change request's draft and approved requirements (rejected
-  and deferred ones are left out) to the affected code in this project. **Options** opens the
+  and deferred ones are left out) to the affected code in this project. One run checks at most
+  50 requirements: for a larger change request the card and the form say that the first 50 of
+  them are checked. **Options** opens the
   full impact form with the change request as its source and this project selected, to add
   other projects; keep this project selected.
 - **Run portfolio check** checks each of those requirements across every product you can read.

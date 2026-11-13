@@ -22,6 +22,7 @@ import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 import { Network, Radar } from "lucide-react";
 import {
+  MAX_IMPACT_REQUIREMENT_IDS,
   PORTFOLIO_PRE_APPROVAL_LABEL,
   type ImpactAnalysisSummary,
   type PortfolioAssessmentListItem,
@@ -68,6 +69,17 @@ export function checkedRequirements(snapshot: Pick<AnalysisSnapshot, "requiremen
     count: checked.length,
     unapproved: checked.filter((r) => r.reviewStatus !== "approved").length,
   };
+}
+
+/**
+ * #2345 — what an impact analysis of `count` requirements says it checks. One
+ * run takes at most {@link MAX_IMPACT_REQUIREMENT_IDS} (the server keeps the
+ * first, oldest ones), so a larger change request is told "the first 50 of N".
+ */
+export function impactCheckedCopy(count: number): string | null {
+  return count > MAX_IMPACT_REQUIREMENT_IDS
+    ? `An impact analysis checks the first ${MAX_IMPACT_REQUIREMENT_IDS} of the ${count}.`
+    : null;
 }
 
 /** The "Options" links: the full forms, pre-filled from this change request. */
@@ -129,6 +141,7 @@ export function ChangeRequestChecks({ projectId, snapshot, title, canRun }: Prop
           {nothing
             ? "No draft or approved requirements to check yet."
             : `Checks this change request's ${count} requirement${count === 1 ? "" : "s"} (draft and approved; rejected and deferred ones are left out).`}
+          {impactCheckedCopy(count) ? ` ${impactCheckedCopy(count)}` : ""}
           {!nothing && unapproved > 0
             ? ` ${unapproved} ${unapproved === 1 ? "is" : "are"} not approved yet: a portfolio check now is labelled as run on unapproved requirements.`
             : ""}

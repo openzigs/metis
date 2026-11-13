@@ -94,6 +94,7 @@ import {
   assertHasRequirements,
   changeRequestRef,
   loadChangeRequestSource,
+  readableChangeRequest,
 } from "../lib/analysis/change-request-source.js";
 import { loadAIConfig } from "../lib/ai/config.js";
 import type { AIProvider } from "../lib/ai/types.js";
@@ -557,6 +558,19 @@ export function portfolioAssessmentsRouter(deps: PortfolioAssessmentsRouterDeps 
         const access = await resolveReaderAccess(user);
         // A product the caller cannot read lists nothing, like one with no assessments.
         if (productId && !access.admin && !access.products.has(productId)) {
+          res.json(ok([]));
+          return;
+        }
+        // #2345 — and a change request whose project the caller cannot read, like
+        // an unknown one: each row is re-checked below too, but a check with no
+        // recorded source project would otherwise pass on its products alone.
+        if (
+          analysisId &&
+          !(await readableChangeRequest(
+            analysisId,
+            async (pid) => access.admin || (await access.canReadProject(pid)),
+          ))
+        ) {
           res.json(ok([]));
           return;
         }
