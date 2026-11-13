@@ -7,6 +7,7 @@ import {
   ARM_FLAGS,
   assertComparable,
   budgetStop,
+  stepBudgetStop,
   buildJudgedSpans,
   chatSessionScope,
   embedRuntimeFor,
@@ -245,6 +246,28 @@ describe("budgetStop", () => {
 
   it("stops on an unpriced call, whatever was spent", () => {
     expect(budgetStop({ ...base, unpricedCalls: 1 })).toMatch(/unpriced call/);
+  });
+
+  it("stops before a step of a question the costliest step so far would carry over the cap (#2316)", () => {
+    const stepCosts = { turn: [0.05, 0.12], judge: [] };
+    expect(stepBudgetStop({ ...base, spentUsd: 0.9, stepCosts, next: "turn" })).toBe(
+      "the next turn would pass the $1 cap at the costliest one so far ($0.1200)",
+    );
+    expect(stepBudgetStop({ ...base, spentUsd: 0.8, stepCosts, next: "turn" })).toBeNull();
+  });
+
+  it("checks the judge against the costliest judge call, not the costliest turn (#2316)", () => {
+    // A $0.10 answer has just run, bringing spend to $0.95: the $0.01 judge still fits,
+    // so the paid answer is graded.
+    const stepCosts = { turn: [0.1], judge: [0.01] };
+    expect(stepBudgetStop({ ...base, spentUsd: 0.95, stepCosts, next: "judge" })).toBeNull();
+    // A further turn would not fit.
+    expect(stepBudgetStop({ ...base, spentUsd: 0.95, stepCosts, next: "turn" })).toBe(
+      "the next turn would pass the $1 cap at the costliest one so far ($0.1000)",
+    );
+    expect(stepBudgetStop({ ...base, spentUsd: 0.995, stepCosts, next: "judge" })).toBe(
+      "the next judge would pass the $1 cap at the costliest one so far ($0.0100)",
+    );
   });
 });
 

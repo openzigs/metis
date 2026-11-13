@@ -254,13 +254,43 @@ describe("fuseRetrievalHits", () => {
     );
   });
 
-  it("never lets the conversational search's own finds fill a majority of the slots", () => {
+  it("never lets the conversational search's own finds fill a majority of the list", () => {
     const fused = fuseRetrievalHits([ids("u", 8)], ids("c", 8), 8);
-    expect(fused).toHaveLength(8);
     const earlier = fused.filter((h) => h.chunkId.startsWith("c"));
-    expect(earlier.length).toBeLessThanOrEqual(3);
-    // ...and with an equal weight they would have taken half.
-    expect(earlier.length).toBeGreaterThan(0);
+    expect(earlier).toHaveLength(3);
+    expect(fused).toHaveLength(11);
+  });
+
+  it("keeps every one of the user's own k best hits: the earlier topic is added, never swapped in (#2316, F2)", () => {
+    // F2: "How often does that run?" — the file asked about was the user's own
+    // 8th hit, and two hits only the conversational search found outranked it.
+    const user = ids("u", 8);
+    user[7] = { chunkId: "internal/cli/scheduler.go" };
+    const fused = fuseRetrievalHits([user], [{ chunkId: "FRD-12.md" }, { chunkId: "fr.json" }], 8);
+    expect(fused.map((h) => h.chunkId)).toEqual([
+      "u1",
+      "u2",
+      "u3",
+      "u4",
+      "FRD-12.md",
+      "u5",
+      "fr.json",
+      "u6",
+      "u7",
+      "internal/cli/scheduler.go",
+    ]);
+  });
+
+  it("adds the earlier topic only where it ranks above the user's own k-th hit (#2316)", () => {
+    // The conversational search found the user's top 4, then c1..c4 at its ranks 5 to 8:
+    // each scores below the user's 8th (0.95/65 < 1/68), so none is added.
+    const fused = fuseRetrievalHits([ids("u", 8)], [...ids("u", 4), ...ids("c", 4)], 8);
+    expect(fused.map((h) => h.chunkId)).toEqual(ids("u", 8).map((h) => h.chunkId));
+  });
+
+  it("still cuts the user's own searches to k", () => {
+    const fused = fuseRetrievalHits([ids("u", 10), ids("p", 10)], null, 8);
+    expect(fused).toHaveLength(8);
   });
 
   it("holds the earlier topic to a minority even when the user's searches found little", () => {
@@ -355,6 +385,85 @@ describe("citedExcerptIds", () => {
     expect(citedExcerptIds("Per `miniflux.py#18`.", py)).toEqual(["p18", "p1", "p5", "p17"]);
   });
 
+  it("reads a range only as wide as MAX_CHUNK_RANGE (#2316)", () => {
+    const wide: CitableExcerpt[] = [0, 5, 15, 25].map((pos, i) => ({
+      n: i + 1,
+      chunkId: `w${pos}`,
+      name: "notes.md",
+      locator: `notes.md#${pos}`,
+    }));
+    // #5 to #15 spans 10: every chunk in it is cited.
+    expect(citedExcerptIds("`notes.md` (chunks #5-#15)", wide).slice(0, 2)).toEqual(["w5", "w15"]);
+    // #0 to #25 is wider: only its two ends are read, so #5 and #15 count as the file only.
+    expect(citedExcerptIds("`notes.md` (chunks #0-#25)", wide)).toEqual(["w0", "w25", "w5", "w15"]);
+    // A model-written range a prompt can shape is not walked: only its ends are read.
+    expect(citedExcerptIds("`notes.md` (chunks #0-#999999999)", wide)).toEqual([
+      "w0",
+      "w5",
+      "w15",
+      "w25",
+    ]);
+  });
+
+  it('does not read " - N" after a chunk number as a range (#2316)', () => {
+    const doc: CitableExcerpt[] = [2, 3, 5].map((pos, i) => ({
+      n: i + 1,
+      chunkId: `r${pos}`,
+      name: "rules.md",
+      locator: `rules.md#${pos}`,
+    }));
+    // The 2 counts places, not chunks: only #5 is named exactly.
+    expect(citedExcerptIds("`rules.md` (chunk #5 - 2 places) says so", doc)).toEqual([
+      "r5",
+      "r2",
+      "r3",
+    ]);
+    // A spaced dash before a `#`, or a tight one, is still a range.
+    expect(citedExcerptIds("`rules.md` (chunks #2 - #3)", doc).slice(0, 2)).toEqual(["r2", "r3"]);
+    expect(citedExcerptIds("`rules.md` (chunks #2–3)", doc).slice(0, 2)).toEqual(["r2", "r3"]);
+  });
+
+  it("reads chunk numbers only after the whole name or a path ending in it (#2316)", () => {
+    const two: CitableExcerpt[] = [
+      {
+        n: 1,
+        chunkId: "oauth",
+        name: "internal/ui/oauth.go",
+        locator: "internal/ui/oauth.go#0",
+        source: "repo",
+      },
+      { n: 2, chunkId: "upload", name: "auth.go", locator: "auth.go#3", source: "upload" },
+    ];
+    // "auth.go" inside "oauth.go" is not the upload: its chunk is not named exactly,
+    // so it does not jump ahead of the file the answer did name.
+    expect(citedExcerptIds("See `internal/ui/oauth.go` (chunk #3).", two)).toEqual([
+      "oauth",
+      "upload",
+    ]);
+    expect(citedExcerptIds("See internal/ui/oauth.go#3.", two)).toEqual(["oauth", "upload"]);
+    // The whole name, or a path ending in it, still is.
+    expect(citedExcerptIds("See `auth.go` (chunk #3).", two)).toEqual(["upload"]);
+    expect(citedExcerptIds("See `cmd/auth.go` (chunk #3).", two)).toEqual(["upload"]);
+    expect(citedExcerptIds("Per auth.go#3.", two)).toEqual(["upload"]);
+  });
+
+  it("credits a path mention to the longest excerpt name it ends in (#2316)", () => {
+    const two: CitableExcerpt[] = [
+      { n: 1, chunkId: "repo", name: "internal/ui/auth.go", locator: "internal/ui/auth.go#0" },
+      { n: 2, chunkId: "upload", name: "auth.go", locator: "auth.go#3", source: "upload" },
+    ];
+    // The repo file is named: the upload's chunk 3 is not read in its path.
+    expect(citedExcerptIds("See `internal/ui/auth.go` (chunk #3).", two)).toEqual([
+      "repo",
+      "upload",
+    ]);
+    expect(citedExcerptIds("See internal/ui/auth.go#3.", two)).toEqual(["repo", "upload"]);
+    // The upload named alone, or under a path no excerpt has, is still the upload.
+    expect(citedExcerptIds("See `auth.go` (chunk #3).", two)).toEqual(["upload"]);
+    expect(citedExcerptIds("See `cmd/auth.go` (chunk #3).", two)).toEqual(["upload"]);
+    expect(citedExcerptIds("Per auth.go#3.", two)).toEqual(["upload"]);
+  });
+
   it("cites nothing for an answer with no citations, a number out of range, or no excerpts", () => {
     expect(citedExcerptIds("I don't know.", excerpts)).toEqual([]);
     expect(citedExcerptIds("see [9]", excerpts)).toEqual([]);
@@ -386,11 +495,25 @@ describe("citedExcerptIds", () => {
     }));
     const cited = [
       ...doc,
-      { n: 5, chunkId: "o", name: "internal/config/options.go", locator: "options.go#7" },
-      { n: 6, chunkId: "s", name: "internal/cli/scheduler.go", locator: "scheduler.go#1" },
+      // #2316 — a locator is always `name#position`, as `formatHitLocator` prints it.
+      {
+        n: 5,
+        chunkId: "o",
+        name: "internal/config/options.go",
+        locator: "internal/config/options.go#7",
+      },
+      {
+        n: 6,
+        chunkId: "s",
+        name: "internal/cli/scheduler.go",
+        locator: "internal/cli/scheduler.go#1",
+      },
     ];
     expect(
-      citedExcerptIds("miniflux.1.txt lists it; the default is in [5] and scheduler.go#1.", cited),
+      citedExcerptIds(
+        "miniflux.1.txt lists it; the default is in [5] and internal/cli/scheduler.go#1.",
+        cited,
+      ),
     ).toEqual(["o", "s", "d1", "d2"]);
     // With room to spare every match is kept, the exact ones first.
     expect(citedExcerptIds("See miniflux.1.txt and [6].", [doc[0]!, cited[5]!])).toEqual([
