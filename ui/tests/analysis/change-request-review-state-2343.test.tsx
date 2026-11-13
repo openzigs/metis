@@ -97,6 +97,25 @@ describe("reviewSignals", () => {
     ).toEqual(["rejected"]);
   });
 
+  it("drops my old rejection once a newer review of the change request is approved", () => {
+    expect(
+      reviewSignals({
+        review: { ...review("approved", false), id: "rev-2", title: "Second look" },
+        mine: { id: "rev-1", title: "Sign off", status: "rejected" },
+        assignedToMe: null,
+      }).map((s) => [s.key, s.reviewId]),
+    ).toEqual([["approved", "rev-2"]]);
+  });
+
+  it("gives my rejection and someone else's newer rejection distinct keys", () => {
+    const keys = reviewSignals({
+      review: { ...review("rejected", false), id: "rev-2", title: "Second look" },
+      mine: { id: "rev-1", title: "Sign off", status: "rejected" },
+      assignedToMe: null,
+    }).map((s) => s.key);
+    expect(keys).toEqual(["rejected", "rejected-latest"]);
+  });
+
   it("names every other status in words", () => {
     for (const status of ["draft", "in_review", "approved"] as const) {
       expect(reviewSignals({ review: review(status), assignedToMe: null })[0].label).toBe(

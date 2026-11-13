@@ -57,10 +57,15 @@ export function reviewSignals(state: ChangeRequestReviewState): Signal[] {
     });
   }
   // The caller's own rejected request, even when someone else's review of the
-  // change request is newer (`review` is the latest of anyone's).
+  // change request is newer (`review` is the latest of anyone's) — unless that
+  // newer review was approved: the change request is settled, as Home reads it
+  // (latest review wins, #2348), and no longer needs the analyst.
   const mine = state.mine;
+  const settledSince = state.review?.status === "approved" && state.review.id !== mine?.id;
   const mineRejected =
-    mine && mine.status === "rejected" && mine.id !== state.assignedToMe?.id ? mine : null;
+    mine && mine.status === "rejected" && mine.id !== state.assignedToMe?.id && !settledSince
+      ? mine
+      : null;
   if (mineRejected) {
     out.push({
       key: "rejected",
@@ -73,8 +78,10 @@ export function reviewSignals(state: ChangeRequestReviewState): Signal[] {
   const review = state.review;
   if (review && review.id !== state.assignedToMe?.id && review.id !== mineRejected?.id) {
     const rejectedMine = review.status === "rejected" && review.requestedByMe;
+    const key = rejectedMine ? "rejected" : review.status;
     out.push({
-      key: rejectedMine ? "rejected" : review.status,
+      // Someone else's rejected review beside my own rejection: a key of its own.
+      key: out.some((s) => s.key === key) ? `${key}-latest` : key,
       label: rejectedMine
         ? "Your review request was rejected"
         : REVIEW_STATUS_LABELS[review.status],
