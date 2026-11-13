@@ -1394,3 +1394,39 @@ before it, and the tuning does not change their retrieval.
 Spend for #2269: **$3.830035** over seven runs. That is a one-question smoke run ($0.055899),
 the four runs before tuning ($0.458762, $0.341409, $0.838024 and $0.717946), and the two
 conversation-aware runs after tuning ($0.500310 and $0.917685).
+
+### Search guidance (#2324), 2026-11-12
+
+`CHAT_SEARCH_GUIDANCE` adds three things: a prompt block on how to search, sharper descriptions
+on the four grounding tools, and a fixed instruction after each grounding result. It was
+measured on the `tools-only` arm, which is how chat ships. The runs used the nine
+single-product questions (S1 to S6, A3, U3, U4), with Sonnet 5.5 answers and judge, in two
+paired runs. Each pair ran without the guidance first, then with it:
+
+```bash
+CHAT_SEARCH_GUIDANCE=0 pnpm eval:ba-qa --arm tools-only --budget 2 --questions S1,S2,S3,S4,S5,S6,A3,U3,U4
+CHAT_SEARCH_GUIDANCE=1 pnpm eval:ba-qa --arm tools-only --budget 2 --questions S1,S2,S3,S4,S5,S6,A3,U3,U4
+```
+
+| | without, run 1 | with, run 1 | without, run 2 | with, run 2 |
+|---|---:|---:|---:|---:|
+| Correctness: mean facts stated | 83% | 83% | 76% | 76% |
+| Fully correct answers | 2/6 | 3/6 | 1/6 | 1/5 |
+| Citation precision | 88% (36/41) | 80% (33/41) | 84% (38/45) | 81% (30/37) |
+| Citation recall (expected files cited) | 10/15 | 10/15 | 10/15 | 8/13 |
+| Right behaviour, single-product | 6/6 | 6/6 | 6/6 | 5/5 |
+| Input tokens / question | 28,100 | 37,500 | 21,700 | 30,900 |
+| Model calls / question | 2.89 | 3.44 | 2.56 | 3.11 |
+
+- **Facts stated did not move, and citation precision fell in both pairs**, by 8 and 3 points.
+  Between the two runs without the guidance, precision varied by 4 points. The issue lets the
+  guidance ship on only if facts stated or citation precision improves and neither gets worse,
+  so `CHAT_SEARCH_GUIDANCE` is **off by default**.
+- **It costs about 9,000 more input tokens and 0.55 more model calls per question.** The prompt
+  block and the four descriptions add about 570 tokens to the cached lead. The rest comes from
+  the extra searches the model runs: 36 tool calls in the first run with the guidance, against
+  32 without.
+- In the second run with the guidance, the judge's reply for S5 could not be read, so that run
+  is scored on five answerable questions.
+- Dollar spend is not compared, for the reason given in the #2243 section: each run reads the
+  prompt cache of the run before it. The four runs spent $1.452168 in total, answers and judge.

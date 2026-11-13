@@ -77,6 +77,12 @@ export interface RuntimeTool {
    * through to the gate (and `execute` re-checks).
    */
   unavailableNow?: () => Promise<string | null>;
+  /**
+   * #2324 — the fixed `instructions` the model reads after this tool's result
+   * (outside its data fence), or `undefined` for none. Server-authored
+   * constants only — never text built from the result.
+   */
+  instructionsFor?: (result: RuntimeToolResult) => string | undefined;
   /** Validate raw model arguments BEFORE anyone is asked to approve them. */
   validate(args: unknown): { ok: true; args: unknown } | { ok: false };
   execute(args: unknown, ctx: RuntimeToolContext): Promise<RuntimeToolResult>;

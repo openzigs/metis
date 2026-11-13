@@ -996,6 +996,15 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
       "Tell the chat model when a project's index cannot be trusted (#2326). ON by default. With the code-search tools on, chat is offered `get_index_status` (per repository: last indexed commit and time, how the last indexing run ended with a classified error, symbol and document counts, files indexed and skipped), and a project whose index is failed, never built, partial or still being built gets one status line in the retrieved-knowledge block on every turn, telling the model not to conclude the project lacks what a search did not find. Off: neither. The reply's grounding label (last indexed commit, last run, a warning), the classified retrieval-failure statement and the partial-coverage note do not depend on this key.",
     sensitive: false,
   },
+  // ── #2324 — how chat searches before it answers ──────────────────────
+  CHAT_SEARCH_GUIDANCE: {
+    tier: "tunable",
+    valueType: "bool",
+    schema: z.coerce.boolean(),
+    description:
+      "Tell the chat model how to search, not only what each tool is for (#2324). OFF by default: on the #2237 BA question set (tools-only arm, two paired runs, Sonnet 5.5) it left facts stated unchanged (83%/83%, 76%/76%), lowered citation precision (88% → 80%, 84% → 81%) and added about 9,000 input tokens per question (eval-data/README.md). When a turn offers a code or knowledge tool (search_code_symbols, search_code_graph, read_file_slice, search-knowledge), the byte-stable prompt lead gets one block: turn the question into identifiers, run two or three wordings before concluding something is absent, fall back symbol → text → file listing → read, verify a call or data-flow claim by reading the code, and say what was searched when nothing turns up. Those four tools' descriptions say when to use each, what a good query looks like and what to try after an empty result, and each of their results carries a fixed instruction after its data fence (an empty result's prompts a reworded search). About 250 tokens for the block and 320 for the four descriptions, both in the cached prompt lead, plus about 50 per grounding tool result. Off (the default): the prompt, descriptions and results are as before #2324.",
+    sensitive: false,
+  },
   // ── Epic #128 — one tool runtime + enforced approval gate ─────────────
   CHAT_TOOLS: {
     tier: "tunable",

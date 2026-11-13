@@ -280,8 +280,13 @@ async function main(): Promise<void> {
   }
   const { buildProvider, loadAIConfig } = await import("../src/lib/ai/index.js");
   const { LedgerCostMeter, meterProvider } = await import("../src/lib/eval/localization/cost.js");
-  const { resolveSessionTools, loadSessionToolsFlags, sessionGate, withoutApprovalGatedTools } =
-    await import("../src/lib/ai/tool-runtime/session-tools.js");
+  const {
+    resolveSessionTools,
+    loadSessionToolsFlags,
+    offersSearchGuidance,
+    sessionGate,
+    withoutApprovalGatedTools,
+  } = await import("../src/lib/ai/tool-runtime/session-tools.js");
   const { runChatToolTurn } = await import("../src/lib/ai/tool-runtime/chat-turn.js");
   const { prepareTurn, loadChatTurnConfig, recordReply } =
     await import("../src/lib/ai/conversation/turn.js");
@@ -659,6 +664,7 @@ async function main(): Promise<void> {
         session,
         tools.mode === "native" ? NATIVE_CHAT_TOOL_NOTE : tools.schemaBlock,
         { mode: tools.skillMode, catalog: tools.skillCatalog },
+        offersSearchGuidance(tools),
       );
       const sessionMeter = new LedgerCostMeter();
       const metered = meterProvider(

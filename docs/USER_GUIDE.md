@@ -3333,6 +3333,18 @@ can use tools to look things up or act for you:
 | **MCP tools** | Tools from MCP servers this project is allowed to use (see §20.7) |
 | **Code search** | Searches the project's code graph and symbols, and reads up to 200 lines of a file from the project's repository so an answer can quote the code it cites. On unless your administrator has turned it off with `CHAT_CODE_SEARCH_TOOLS=false`. On a model that cannot call tools natively (some local runtimes) it is on only when the administrator sets `CHAT_CODE_SEARCH_TOOLS=true`, because there the answer does not stream while the tools run. With `CHAT_CODE_SEARCH_PRIMITIVES=true` (off by default) it can also find an exact text in the repository's files (up to 50 matching lines, with the totals when there are more), list files matching a pattern such as `internal/**/*.go`, and narrow a symbol search to a path, a kind or a language. It never reads, lists or searches `.env` files (templates such as `.env.example` excepted), anything under `.git`, `.ssh`, `.gnupg`, `.aws`, `.azure`, `.kube` or `.docker`, common credential files (`.netrc`, `.npmrc`, `credentials`, …), or private keys (`id_rsa`, `*.pem`, `*.key`, …), not even through a link inside the repository that points at one; it answers as if such a file did not exist. It never reads a path outside the repository. A source file whose document is restricted to other people is not read, listed or found for you, and a discussion reply leaves out every restricted file |
 
+Administrators can turn on search guidance with `CHAT_SEARCH_GUIDANCE=true`.
+When the chat can search the project's code or knowledge base, the guidance
+tells it to:
+
+- put the question in the terms the code uses;
+- try two or three wordings before saying something is not there;
+- read the code before saying one part calls another;
+- when nothing turns up, say what it searched.
+
+It is off by default. On METIS's own business-analyst question set it did not
+make answers more complete, and it made citations slightly less precise.
+
 A chat that is not scoped to a project is offered no tools. Administrators can
 turn the METIS and MCP tools off with `CHAT_TOOLS=false`. A chat can be scoped
 only to a project you can open: asking for another workspace's project is
