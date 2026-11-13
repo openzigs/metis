@@ -14,7 +14,7 @@ import {
   type FederatedSearchResult,
 } from "../lib/rag/federated-search-service.js";
 import { getUserAccessibleProjects } from "../lib/auth/accessible-projects.js";
-import { inactiveCallerAsUnauthenticated } from "../lib/rag/acl.js";
+import { inactiveCallerAsUnauthenticated } from "./acl-errors.js";
 
 const federatedSearchBodySchema = z.object({
   query: z.string().min(1).max(2048),

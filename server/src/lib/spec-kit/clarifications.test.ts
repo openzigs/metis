@@ -6,7 +6,6 @@ import { describe, expect, it } from "vitest";
 import {
   clarificationsPromptSection,
   parseClarifyMarkdown,
-  pendingClarifyQuestion,
   scopeClarificationsSection,
 } from "./clarifications.js";
 
@@ -31,12 +30,6 @@ describe("#2236 — parseClarifyMarkdown", () => {
   it("lets a later answer replace an earlier one, and ignores an answer before any question", () => {
     const md = "- **A:** stray\n- **Q:** Q1\n- **A:** first\n- **A:** second\n- **Q:**   \n";
     expect(parseClarifyMarkdown(md)).toEqual([{ question: "Q1", answer: "second" }]);
-  });
-
-  it("names the pending question, or null when the last one is answered", () => {
-    expect(pendingClarifyQuestion(CLARIFY)).toBe("Who can run an export?");
-    expect(pendingClarifyQuestion("- **Q:** a\n- **A:** b\n")).toBeNull();
-    expect(pendingClarifyQuestion("")).toBeNull();
   });
 });
 

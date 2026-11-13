@@ -29,7 +29,6 @@ import {
   writeDialogState,
 } from "./clarification-dialog-store.js";
 import type { GoverningQuestionSource } from "../governing/applicability-questions.js";
-import { isDocumentReaderEnabled } from "../document-reader/flag.js";
 import { QUESTION_IMPACTS, UNCERTAINTY_KINDS, addressedAmbiguities } from "./types/requirements.js";
 import type {
   ClarificationAnswer,
@@ -116,11 +115,14 @@ Respond ONLY with a JSON object: { "questions": [...] }
 Do not include markdown fences or commentary.`;
 
 /**
- * #2275 — the question prompt from before #2235, used while the document
- * reader (`ANALYSIS_DOCUMENT_READER`) is off: #2235's classification (kind of
- * uncertainty, readings, divergence, impact) and what the dialog does with it
- * were measured only with the reader on, so an analysis without it asks as it
- * did before.
+ * #2275 — the question prompt from before #2235, used for an analysis the
+ * document reader (`ANALYSIS_DOCUMENT_READER`) did not read: #2235's
+ * classification (kind of uncertainty, readings, divergence, impact) and what
+ * the dialog does with it were measured only on reader-read analyses, so one
+ * without it asks as it did before. #2296 — "not read by the reader" is
+ * decided from the analysis ({@link readFromSources}: none of its stored
+ * requirements carries `sources`), never from the flag read live, so an
+ * analysis keeps its mode when the flag is toggled.
  */
 export const LEGACY_QUESTION_SYSTEM_PROMPT = `You are a requirements analyst conducting a clarification session. Given requirements with identified ambiguities, generate targeted clarifying questions.
 
@@ -215,8 +217,9 @@ export function buildAmbiguitySummary(
 
 /**
  * Build the `chat()` messages for the question-generation call. #2275 —
- * `sourceQuestions` (the document reader is on) asks #2235's classified
- * questions; otherwise the pre-#2235 prompt.
+ * `sourceQuestions` (the analysis was read by the document reader, #2296
+ * {@link readFromSources}) asks #2235's classified questions; otherwise the
+ * pre-#2235 prompt.
  */
 export function buildQuestionMessages(
   requirements: StructuredRequirement[],
@@ -288,11 +291,32 @@ export interface ClarificationDialogDeps {
   /**
    * #2275 — #2235's question handling: the classifying prompt, setting aside
    * the unanswerable and the same-whichever-way, the per-round cap, and
-   * searching only for missing knowledge. Default: whether the document
-   * reader (`ANALYSIS_DOCUMENT_READER`) is on, the flag #2235 was measured
-   * under. Off, every question raised is asked and grounded, as before #2235.
+   * searching only for missing knowledge. Default: whether the analysis's
+   * requirements carry the paragraphs the document reader
+   * (`ANALYSIS_DOCUMENT_READER`, the flag #2235 was measured under) read them
+   * from. Off, every question raised is asked and grounded, as before #2235.
+   *
+   * #2296 — decided from the analysis, never from the flag read live: an
+   * analysis keeps the mode it was read in, so toggling the flag between
+   * rounds cannot mix the two behaviours in one dialog.
    */
   sourceQuestions?: boolean;
+  /**
+   * #2296 — the requirements the default mode is decided from, when not the
+   * ones the dialog is started with: the clarify route passes the list the
+   * analysis stored, so a client's `requirements` override cannot pick the
+   * mode by adding or leaving out `sources`.
+   */
+  modeFrom?: readonly StructuredRequirement[];
+}
+
+/**
+ * #2296 — whether an analysis was read by the document reader: any of its
+ * requirements carries the paragraphs it rests on (`sources` is absent on the
+ * retrieval path).
+ */
+export function readFromSources(requirements: readonly StructuredRequirement[]): boolean {
+  return requirements.some((r) => (r.sources?.length ?? 0) > 0);
 }
 
 /** #2236 — an answer the project already gave to a question about to be asked. */
@@ -335,7 +359,8 @@ export class ClarificationDialog {
   private readonly askFirst: ReadonlySet<string> | undefined;
   private readonly governing: GoverningQuestionSource | undefined;
   private readonly priorAnswers: PriorAnswerSource | undefined;
-  private readonly sourceQuestions: boolean;
+  private readonly sourceQuestions: boolean | undefined;
+  private readonly modeFrom: readonly StructuredRequirement[] | undefined;
 
   constructor(deps: ClarificationDialogDeps) {
     this.provider = deps.provider;
@@ -345,7 +370,8 @@ export class ClarificationDialog {
     this.askFirst = deps.askFirst;
     this.governing = deps.governingQuestions;
     this.priorAnswers = deps.priorAnswers;
-    this.sourceQuestions = deps.sourceQuestions ?? isDocumentReaderEnabled();
+    this.sourceQuestions = deps.sourceQuestions;
+    this.modeFrom = deps.modeFrom;
   }
 
   /**
@@ -644,16 +670,20 @@ export class ClarificationDialog {
       return this.writeStart(analysisId, revision, state);
     }
 
+    // #2296 — from every requirement, not only the open ones: the mode is the
+    // analysis's, the same in every round.
+    const sourceQuestions =
+      this.sourceQuestions ?? readFromSources(this.modeFrom ?? requirements.requirements);
     const generated =
       unresolvedReqs.length > 0
-        ? await this.generateQuestions(unresolvedReqs, state, addressed, signal)
+        ? await this.generateQuestions(unresolvedReqs, state, addressed, sourceQuestions, signal)
         : [];
 
     // #2235 — ask only what changes the outcome: the unanswerable and the
     // same-whichever-way are set aside (recorded, listed, never asked), the
     // rest ranked by impact and capped per round.
     const priorities = new Map(requirements.requirements.map((r) => [r.id, r.priority]));
-    const selection = this.sourceQuestions
+    const selection = sourceQuestions
       ? selectQuestionsToAsk(generated, {
           askFirst: this.askFirst,
           priorityOf: (id) => priorities.get(id),
@@ -887,13 +917,15 @@ export class ClarificationDialog {
      * disagree about which fields are still open.
      */
     addressed: Set<string>,
+    /** #2275 — #2235's classifying prompt; otherwise the pre-#2235 one. */
+    sourceQuestions: boolean,
     signal?: AbortSignal,
   ): Promise<GeneratedQuestion[]> {
     const messages = buildQuestionMessages(
       requirements,
       state.currentRound,
       [...addressed],
-      this.sourceQuestions,
+      sourceQuestions,
     );
     const model = this.getModel(state);
 
@@ -904,7 +936,8 @@ export class ClarificationDialog {
       label: "clarification-questions",
       schema: questionsEnvelopeSchema,
       schemaName: "clarifying questions",
-      expectedShape: QUESTIONS_SHAPE,
+      // #2296 — the re-prompt asks for the shape its own prompt asked for.
+      expectedShape: sourceQuestions ? QUESTIONS_SHAPE : LEGACY_QUESTIONS_SHAPE,
       messages,
       model,
       signal,
@@ -1146,31 +1179,43 @@ const QUESTIONS_SHAPE =
   '"options": string[], "divergent": boolean, "impact": "high" | "medium" | "low", ' +
   '"question": string, "context": string } ] }';
 
+/** #2296 — the shape {@link LEGACY_QUESTION_SYSTEM_PROMPT} asks for. */
+const LEGACY_QUESTIONS_SHAPE =
+  '{ "questions": [ { "requirementId": string, "ambiguityField": string, ' +
+  '"question": string, "context": string } ] }';
+
 /** #2235 — the most readings a question offers, and the longest one kept. */
 const MAX_OPTIONS = 4;
 const MAX_OPTION_CHARS = 200;
 
 /**
- * #2235 — the question's search first: missing knowledge, a question the model
- * did not classify (as before #2235), and a governing question (#1873).
- */
-/**
  * #2275 — with #2235's handling off, every question raised is asked, in the
  * order raised, unclassified: nothing is set aside, capped or ranked, and each
  * one is searched for (no `uncertainty`, so {@link needsSearch} is true).
+ * #2296 — and offers no readings (`options`): those are #2235's too.
  */
 function askEveryQuestion(
   questions: readonly GeneratedQuestion[],
 ): ReturnType<typeof selectQuestionsToAsk> {
   return {
     ask: questions.map(
-      ({ divergent: _divergent, uncertainty: _uncertainty, impact: _impact, ...q }) => q,
+      ({
+        divergent: _divergent,
+        uncertainty: _uncertainty,
+        impact: _impact,
+        options: _options,
+        ...q
+      }) => q,
     ),
     setAside: [],
     notAsked: [],
   };
 }
 
+/**
+ * #2235 — the question's search first: missing knowledge, a question the model
+ * did not classify (as before #2235), and a governing question (#1873).
+ */
 function needsSearch(q: ClarifyingQuestion): boolean {
   return (
     q.governing !== undefined ||

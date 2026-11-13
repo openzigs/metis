@@ -116,6 +116,13 @@ export function AclEditor(props: {
           Add
         </Button>
       </div>
+      {/* #2356 — a refused save (a new group, or another editor saving at the
+          same time) says why, instead of leaving the old list in place unexplained. */}
+      {save.error ? (
+        <p className="text-sm text-destructive" role="alert" data-testid="acl-save-error">
+          {save.error instanceof Error ? save.error.message : "The access list could not be saved."}
+        </p>
+      ) : null}
       <div className="flex justify-end">
         <Button onClick={() => save.mutate()} disabled={save.isPending} data-testid="acl-save">
           {save.isPending ? "Saving…" : "Save ACL"}

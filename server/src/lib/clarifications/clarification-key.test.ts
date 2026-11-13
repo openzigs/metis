@@ -74,6 +74,32 @@ describe("#2236 — clarificationKey", () => {
     ).not.toBe(a);
   });
 
+  it("#2310 — keys an uncited question within its analysis: same-titled requirements elsewhere do not share it", () => {
+    const asked = (analysisId: string, question = "Q one?") =>
+      clarificationKey({
+        question,
+        ambiguityField: "scope",
+        requirementTitle: "Export orders",
+        analysisId,
+      });
+    expect(asked("a1")).toBe(asked("a1", "Q two?"));
+    expect(asked("a2")).not.toBe(asked("a1"));
+    // No title either: the question, within the analysis.
+    const bare = (analysisId: string) =>
+      clarificationKey({ question: "Which orders?", analysisId });
+    expect(bare("a2")).not.toBe(bare("a1"));
+    // A cited question is still the paragraph's, whichever analysis asked it.
+    const cited = (analysisId: string) =>
+      clarificationKey({
+        question: "Q?",
+        ambiguityField: "scope",
+        requirementTitle: "Export orders",
+        analysisId,
+        citation: { headingPath: [], quote: "Orders are exported nightly." },
+      });
+    expect(cited("a2")).toBe(cited("a1"));
+  });
+
   it("keys a governing question on its rules (in any order) and its question", () => {
     const a = clarificationKey({
       question: "Will cards be exported?",

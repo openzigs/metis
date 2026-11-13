@@ -15,7 +15,11 @@
  *                      again (see {@link sourceSlot} for how the old answer is
  *                      then marked reopened).
  *   2. `governing`   — the governing rules it settles and its question.
- *   3. `requirement` — the requirement's title and the ambiguous field.
+ *   3. `requirement` — the analysis, the requirement's title and the
+ *                      ambiguous field. #2310 — the analysis too: with no
+ *                      paragraph, nothing says two analyses' same-titled
+ *                      requirements are one, so such an answer is not reused
+ *                      by another analysis.
  *   4. `spec-kit`    — the Spec Kit feature and the `/clarify` question.
  *
  * Deterministic and model-free: no model is asked whether two questions match,
@@ -30,6 +34,12 @@ export interface KeyableQuestion {
   ambiguityField?: string;
   /** The title of the requirement it was asked about. */
   requirementTitle?: string;
+  /**
+   * #2310 — the analysis it was asked in. Keys a question with no cited
+   * paragraph: a requirement's title does not say which document it came
+   * from, so two analyses' same-titled requirements are not the same one.
+   */
+  analysisId?: string;
   citation?: { documentId?: string; headingPath: readonly string[]; quote: string };
   governing?: { ruleIds: readonly string[] };
   /** For a Spec Kit `/clarify` question: the feature slug, or null for `.specify/`. */
@@ -68,11 +78,14 @@ export function clarificationKey(q: KeyableQuestion): string {
   if (quote.length > 0) {
     return hash(["source", quote, normaliseForKey(q.ambiguityField)]);
   }
+  // #2310 — with no paragraph, the question is this analysis's own: unrelated
+  // requirements titled alike in other analyses never share its answer.
+  const analysis = q.analysisId ?? "";
   const title = normaliseForKey(q.requirementTitle);
   if (title.length > 0) {
-    return hash(["requirement", title, normaliseForKey(q.ambiguityField)]);
+    return hash(["requirement", analysis, title, normaliseForKey(q.ambiguityField)]);
   }
-  return hash(["question", normaliseForKey(q.question)]);
+  return hash(["question", analysis, normaliseForKey(q.question)]);
 }
 
 /**

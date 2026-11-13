@@ -91,4 +91,22 @@ describe("AclEditor", () => {
     fireEvent.click(screen.getByTestId("acl-add"));
     expect(screen.queryByTestId("acl-subjects")).not.toBeInTheDocument();
   });
+
+  // #2356 — a refused save says why: another editor saved at the same time.
+  it("shows why a save was refused", async () => {
+    const { ApiError } = await import("@/lib/api-client");
+    updateMock.mockRejectedValue(
+      new ApiError(
+        409,
+        "Someone else changed this document's access at the same time. Reload it and save again.",
+        "ACL_CONFLICT",
+      ),
+    );
+    renderEditor([{ kind: "user", value: "u1" }]);
+    expect(screen.queryByTestId("acl-save-error")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("acl-save"));
+    expect(await screen.findByTestId("acl-save-error")).toHaveTextContent(
+      /changed this document's access at the same time/i,
+    );
+  });
 });

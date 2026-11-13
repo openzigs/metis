@@ -19,7 +19,12 @@
  *     runs as the `prepare` step of one findings run. As #2222's re-check
  *     (`recheck.ts`), the findings are produced from the new entry in memory
  *     and the entry is stored only once they are; every pair the BA already
- *     settled keeps its settlement.
+ *     settled keeps its settlement. #2310 — when some of the requirements'
+ *     findings could not be produced, the entries of the others are still
+ *     stored, matching the findings that were written. An answered
+ *     requirement no applicability entry matches is re-checked under the
+ *     stored requirement's own id instead (#2222's **Re-check this
+ *     requirement**).
  *
  * Everything here runs after the answer is committed, off the request path,
  * and never throws: a failure is logged and the earlier results stand.
@@ -29,6 +34,8 @@ import { createChildLogger } from "../logger.js";
 import { prisma } from "../prisma.js";
 import {
   ATTRIBUTION_THRESHOLD,
+  clarificationBlockEntries,
+  clarificationBlockQuestion,
   containmentScore,
   sanitizeClarificationText,
   significantTokens,
@@ -44,6 +51,11 @@ import {
   type GoverningApplicabilityHook,
 } from "../governing/applicability.js";
 import { produceGoverningFindingsForAnalysis } from "../governing/findings-store.js";
+import {
+  recheckGoverningRequirement,
+  type RecheckGoverningRequirementInput,
+  type RecheckGoverningRequirementOutcome,
+} from "../governing/recheck.js";
 import { mapRequirementToCode } from "../traceability/requirement-code-mapping.js";
 import type {
   GoverningAnalysisApplicability,
@@ -169,6 +181,10 @@ export interface ClarificationRerunDeps {
     model?: string;
   }) => Promise<Pick<GoverningApplicabilityHook, "decide"> | null>;
   produceFindings?: typeof produceGoverningFindingsForAnalysis;
+  /** #2310 — #2222's re-check, for a requirement no applicability entry matches. */
+  recheck?: (
+    input: RecheckGoverningRequirementInput,
+  ) => Promise<RecheckGoverningRequirementOutcome>;
 }
 
 /** What one re-run did, for the log and the tests. */
@@ -179,6 +195,11 @@ export interface ClarificationRerunResult {
   governingRequirements: string[];
   /** Answered requirements no applicability entry could be found for. */
   governingUnmatched: string[];
+  /**
+   * #2310 — the stored requirements carrying an unmatched requirement's
+   * answers that were re-checked under their own id (#2222).
+   */
+  governingRechecked: string[];
 }
 
 /** The ambiguity answers among `records`, by the requirement id they apply to. */
@@ -195,16 +216,31 @@ function answersByRequirement(
   return out;
 }
 
+/** A stored requirement of the analysis and the changed answers its body carries. */
+interface CarryingRow {
+  row: { id: string; title: string; body: string };
+  records: StoredClarification[];
+}
+
 /**
- * Map the analysis's stored requirements that carry the changed answers to
- * code again. They are the rows `applyClarificationsToRequirements` wrote
- * those answers into: rows of this analysis, in this project, live, whose
- * clarifications block holds one of the answers as it was written there.
+ * The stored requirements that carry the changed answers. They are the rows
+ * `applyClarificationsToRequirements` wrote those answers into: rows of this
+ * analysis, in this project, live, whose clarifications block holds one of
+ * the answers under its own question, both as written there. #2310 — only
+ * the block is read, and the question must match as well as the answer: a
+ * short answer ("Yes", "8") is in unrelated rows' text, and in their blocks.
  */
-async function remapCode(
-  input: ClarificationRerunInput,
-  mapToCode: NonNullable<ClarificationRerunDeps["mapToCode"]>,
-): Promise<number> {
+async function rowsCarrying(input: ClarificationRerunInput): Promise<CarryingRow[]> {
+  const written = input.records
+    .filter((r) => r.ambiguityField !== null)
+    .map((r) => ({
+      record: r,
+      // As the block writes it: an empty question is the placeholder there.
+      question: clarificationBlockQuestion(r.question),
+      answer: sanitizeClarificationText(r.answer),
+    }))
+    .filter((w) => w.answer.length > 0);
+  if (written.length === 0) return [];
   const rows = await prisma.requirement.findMany({
     where: {
       analysisId: input.analysisId,
@@ -214,12 +250,25 @@ async function remapCode(
     },
     select: { id: true, title: true, body: true },
   });
-  const written = input.records
-    .filter((r) => r.ambiguityField !== null)
-    .map((r) => sanitizeClarificationText(r.answer))
-    .filter((a) => a.length > 0);
+  const out: CarryingRow[] = [];
+  for (const row of rows) {
+    const entries = clarificationBlockEntries(row.body);
+    const records = written
+      .filter((w) => entries.some((e) => e.answer === w.answer && e.question === w.question))
+      .map((w) => w.record);
+    if (records.length > 0) out.push({ row, records });
+  }
+  return out;
+}
+
+/** Map the rows carrying the changed answers to code again; returns how many were. */
+async function remapCode(
+  input: ClarificationRerunInput,
+  carrying: readonly CarryingRow[],
+  mapToCode: NonNullable<ClarificationRerunDeps["mapToCode"]>,
+): Promise<number> {
   let mapped = 0;
-  for (const row of rows.filter((r) => written.some((a) => r.body.includes(a)))) {
+  for (const { row } of carrying) {
     try {
       await mapToCode(row, input.projectId);
       mapped++;
@@ -234,6 +283,60 @@ async function remapCode(
   return mapped;
 }
 
+/**
+ * #2310 — an answered requirement no applicability entry matches is
+ * re-checked as #2222's **Re-check this requirement** does: each stored
+ * requirement carrying its answers is judged on its current wording, under
+ * its own id and version, so the analysis's older result no longer stands
+ * for it. Attributed to the person who answered; a row no one can be named
+ * for is logged and left.
+ */
+async function recheckUnmatched(
+  input: ClarificationRerunInput,
+  carrying: readonly CarryingRow[],
+  recheck: NonNullable<ClarificationRerunDeps["recheck"]>,
+  result: ClarificationRerunResult,
+): Promise<void> {
+  const unmatched = new Set(result.governingUnmatched);
+  for (const { row, records } of carrying) {
+    const theirs = records.filter((r) => r.requirementIds.some((id) => unmatched.has(id)));
+    if (theirs.length === 0) continue;
+    const actorId = theirs.find((r) => r.answeredById)?.answeredById;
+    if (!actorId) {
+      log.info("an unmatched clarified requirement was not re-checked: no one answered it", {
+        analysisId: input.analysisId,
+        requirementId: row.id,
+      });
+      continue;
+    }
+    try {
+      const outcome = await recheck({
+        analysisId: input.analysisId,
+        projectId: input.projectId,
+        requirementId: row.id,
+        provider: input.provider,
+        ...(input.model ? { model: input.model } : {}),
+        actorId,
+      });
+      if (outcome.ok) {
+        result.governingRechecked.push(row.id);
+        continue;
+      }
+      log.warn("an unmatched clarified requirement could not be re-checked", {
+        analysisId: input.analysisId,
+        requirementId: row.id,
+        reason: outcome.reason,
+      });
+    } catch (err) {
+      log.warn("an unmatched clarified requirement could not be re-checked", {
+        analysisId: input.analysisId,
+        requirementId: row.id,
+        error: (err as Error).message,
+      });
+    }
+  }
+}
+
 /** Re-run code mapping and governing impact for the requirements `records` apply to. */
 export async function rerunAfterClarification(
   input: ClarificationRerunInput,
@@ -243,14 +346,17 @@ export async function rerunAfterClarification(
     codeMapped: 0,
     governingRequirements: [],
     governingUnmatched: [],
+    governingRechecked: [],
   };
   const byRequirement = answersByRequirement(input.records);
   if (byRequirement.size === 0) return result;
 
   const mapToCode =
     deps.mapToCode ?? ((row, projectId) => mapRequirementToCode(row, projectId, { persist: true }));
+  let carrying: CarryingRow[] = [];
   try {
-    result.codeMapped = await remapCode(input, mapToCode);
+    carrying = await rowsCarrying(input);
+    result.codeMapped = await remapCode(input, carrying, mapToCode);
   } catch (err) {
     log.warn("clarified requirements could not be mapped to code again", {
       analysisId: input.analysisId,
@@ -266,11 +372,15 @@ export async function rerunAfterClarification(
       error: (err as Error).message,
     });
   }
+  if (result.governingUnmatched.length > 0) {
+    await recheckUnmatched(input, carrying, deps.recheck ?? recheckGoverningRequirement, result);
+  }
   log.info("re-ran what a clarification answer changes", {
     analysisId: input.analysisId,
     codeMapped: result.codeMapped,
     governing: result.governingRequirements.length,
     governingUnmatched: result.governingUnmatched.length,
+    governingRechecked: result.governingRechecked.length,
   });
   return result;
 }
@@ -356,12 +466,21 @@ async function rerunGoverning(
     // #2222's order: the entries are stored only once their findings are, so
     // a failed evaluation leaves no stored applicability that no findings match.
     afterProduce: async (run) => {
+      // #2310 — the entries of the requirements whose findings were written
+      // are stored, so those findings never sit over their pre-answer entry
+      // (which the next findings run would revert them to). A requirement
+      // whose evaluation failed keeps its earlier entry and findings, as
+      // #2222's all-or-nothing re-check does for its one requirement.
       if (run.failed > 0) {
         log.warn("governing findings could not be re-produced after a clarification", {
           analysisId: input.analysisId,
           failed: run.failed,
         });
-        return;
+        const failed = new Set(run.failedRequirementIds ?? []);
+        // A failure the run did not name cannot be placed: store nothing.
+        decided = run.failedRequirementIds
+          ? decided.filter((d) => !failed.has(d.requirementId))
+          : [];
       }
       if (decided.length === 0) return;
       const byId = new Map(decided.map((d) => [d.requirementId, d]));

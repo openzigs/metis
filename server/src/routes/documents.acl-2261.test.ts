@@ -5,6 +5,9 @@
  *   - `PATCH /documents/:id/acl` rejects a NEW `group` subject (METIS stores no
  *     group membership, so it would match no one), while a group subject the
  *     document already carries may stay, so the editor can still save the rest.
+ *   - #2356: "already carries" means the ACL the write replaces. The save is a
+ *     compare-and-set on the ACL it read, so a group another editor removed in
+ *     between is checked again and refused, never written back.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import express from "express";
@@ -33,12 +36,23 @@ vi.mock("../middleware/upload-rate-limit.js", () => ({
 
 const projectFindUnique = vi.fn();
 const documentFindFirst = vi.fn();
-vi.mock("../lib/prisma.js", () => ({
-  prisma: {
-    project: { findUnique: projectFindUnique },
-    document: { findFirst: documentFindFirst },
-  },
-}));
+// #2356 — the real `saveDocumentAcl` runs: its compare-and-set write and the
+// chunks' update, in a transaction.
+const documentUpdateMany = vi.fn();
+const chunkUpdateMany = vi.fn();
+vi.mock("../lib/prisma.js", () => {
+  const tx = {
+    document: { updateMany: documentUpdateMany },
+    knowledgeChunk: { updateMany: chunkUpdateMany },
+  };
+  return {
+    prisma: {
+      project: { findUnique: projectFindUnique },
+      document: { findFirst: documentFindFirst },
+      $transaction: (fn: (t: typeof tx) => Promise<unknown>) => fn(tx),
+    },
+  };
+});
 
 const search = vi.fn();
 vi.mock("../lib/rag/knowledge-service.js", () => ({
@@ -57,11 +71,9 @@ vi.mock("../lib/documents/url-fetcher.js", () => ({
 const getProject = vi.fn();
 vi.mock("../lib/projects/project-service.js", () => ({ getProject }));
 vi.mock("../lib/rag/quarantine.js", () => ({ approveDocument: vi.fn(), rejectDocument: vi.fn() }));
-const propagateAcl = vi.fn();
 const resolveAclActor = vi.fn();
 vi.mock("../lib/rag/acl.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/rag/acl.js")>()),
-  propagateAcl,
   resolveAclActor,
 }));
 const audit = vi.fn();
@@ -129,20 +141,31 @@ describe("POST /retrieve — deprovisioned caller (#2261)", () => {
   });
 });
 
-describe("PATCH /documents/:id/acl — group subjects (#2261)", () => {
+describe("PATCH /documents/:id/acl — group subjects (#2261) and concurrent saves (#2356)", () => {
   let app: ReturnType<typeof createApp>;
   beforeEach(() => {
     vi.clearAllMocks();
     projectFindUnique.mockResolvedValue(inWorkspace);
-    propagateAcl.mockResolvedValue(3);
+    documentUpdateMany.mockResolvedValue({ count: 1 });
+    chunkUpdateMany.mockResolvedValue({ count: 3 });
     app = createApp();
   });
 
   const patch = (aclSubjects: unknown) =>
     request(app).patch("/api/projects/project-a01/documents/doc-9/acl").send({ aclSubjects });
+  /** The compare-and-set write: on this project's live document, holding the ACL that was read. */
+  const casWrite = (read: unknown, subjects: unknown) => ({
+    where: {
+      id: "doc-9",
+      projectId: "project-a01",
+      deletedAt: null,
+      aclSubjects: read,
+    },
+    data: { aclSubjects: JSON.stringify(subjects) },
+  });
 
   it("rejects a new group subject with 400 and changes nothing", async () => {
-    documentFindFirst.mockResolvedValueOnce({ id: "doc-9", aclSubjects: "[]" });
+    documentFindFirst.mockResolvedValueOnce({ aclSubjects: "[]" });
     const res = await patch([
       { kind: "user", value: "alice" },
       { kind: "group", value: "finance" },
@@ -150,13 +173,13 @@ describe("PATCH /documents/:id/acl — group subjects (#2261)", () => {
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe("ACL_GROUP_UNSUPPORTED");
     expect(res.body.error.details).toEqual({ groups: ["finance"] });
-    expect(propagateAcl).not.toHaveBeenCalled();
+    expect(documentUpdateMany).not.toHaveBeenCalled();
+    expect(chunkUpdateMany).not.toHaveBeenCalled();
     expect(audit).not.toHaveBeenCalled();
   });
 
   it("rejects a group the document does not already carry, beside one it does", async () => {
     documentFindFirst.mockResolvedValueOnce({
-      id: "doc-9",
       aclSubjects: '[{"kind":"group","value":"legacy"}]',
     });
     const res = await patch([
@@ -165,25 +188,27 @@ describe("PATCH /documents/:id/acl — group subjects (#2261)", () => {
     ]);
     expect(res.status).toBe(400);
     expect(res.body.error.details).toEqual({ groups: ["finance"] });
-    expect(propagateAcl).not.toHaveBeenCalled();
+    expect(documentUpdateMany).not.toHaveBeenCalled();
   });
 
   it("keeps a group subject the document already carries, so the rest can be saved", async () => {
-    documentFindFirst.mockResolvedValueOnce({
-      id: "doc-9",
-      aclSubjects: '[{"kind":"group","value":"legacy"},{"kind":"user","value":"bob"}]',
-    });
+    const held = '[{"kind":"group","value":"legacy"},{"kind":"user","value":"bob"}]';
+    documentFindFirst.mockResolvedValueOnce({ aclSubjects: held });
     const subjects = [
       { kind: "group", value: "legacy" },
       { kind: "role", value: "coordinator" },
     ];
     const res = await patch(subjects);
     expect(res.status).toBe(200);
-    expect(propagateAcl).toHaveBeenCalledWith("doc-9", subjects);
+    expect(documentUpdateMany).toHaveBeenCalledWith(casWrite(held, subjects));
+    expect(chunkUpdateMany).toHaveBeenCalledWith({
+      where: { documentId: "doc-9" },
+      data: { aclSubjects: JSON.stringify(subjects) },
+    });
   });
 
-  it("still saves user and role subjects", async () => {
-    documentFindFirst.mockResolvedValueOnce({ id: "doc-9", aclSubjects: null });
+  it("still saves user and role subjects, and audits the save", async () => {
+    documentFindFirst.mockResolvedValueOnce({ aclSubjects: "[]" });
     const subjects = [
       { kind: "user", value: "alice" },
       { kind: "role", value: "coordinator" },
@@ -191,6 +216,69 @@ describe("PATCH /documents/:id/acl — group subjects (#2261)", () => {
     const res = await patch(subjects);
     expect(res.status).toBe(200);
     expect(res.body.data).toEqual({ chunkCount: 3, aclSubjects: subjects });
-    expect(propagateAcl).toHaveBeenCalledWith("doc-9", subjects);
+    expect(documentUpdateMany).toHaveBeenCalledWith(casWrite("[]", subjects));
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "document.acl.update",
+        metadata: expect.objectContaining({ chunkCount: 3 }),
+      }),
+    );
+  });
+
+  it("404s a document that is not live in the project", async () => {
+    documentFindFirst.mockResolvedValueOnce(null);
+    const res = await patch([{ kind: "user", value: "alice" }]);
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe("DOCUMENT_NOT_FOUND");
+    expect(documentUpdateMany).not.toHaveBeenCalled();
+  });
+
+  // #2356 — Bob's editor still shows the legacy group Alice has just removed.
+  // His read saw it; Alice's save landed before his write, so his write misses
+  // the ACL it read, and the group is checked again against the ACL his write
+  // would replace: it is no longer held, so it is refused, never written back.
+  it("re-checks against the ACL it replaces when another save lands between its read and its write", async () => {
+    documentFindFirst
+      .mockResolvedValueOnce({
+        aclSubjects: '[{"kind":"group","value":"legacy"}]',
+      })
+      .mockResolvedValueOnce({
+        aclSubjects: '[{"kind":"user","value":"alice"}]',
+      });
+    documentUpdateMany.mockResolvedValueOnce({ count: 0 }); // Alice's save won the row
+    const res = await patch([
+      { kind: "group", value: "legacy" },
+      { kind: "user", value: "bob" },
+    ]);
+    expect(res.status).toBe(400);
+    expect(res.body.error.details).toEqual({ groups: ["legacy"] });
+    expect(documentUpdateMany).toHaveBeenCalledTimes(1);
+    expect(chunkUpdateMany).not.toHaveBeenCalled();
+    expect(audit).not.toHaveBeenCalled();
+  });
+
+  it("saves on the next attempt when the ACL it lost to still allows it", async () => {
+    documentFindFirst.mockResolvedValueOnce({ aclSubjects: "[]" }).mockResolvedValueOnce({
+      aclSubjects: '[{"kind":"user","value":"alice"}]',
+    });
+    documentUpdateMany.mockResolvedValueOnce({ count: 0 });
+    const subjects = [{ kind: "user", value: "bob" }];
+    const res = await patch(subjects);
+    expect(res.status).toBe(200);
+    expect(documentUpdateMany).toHaveBeenLastCalledWith(
+      casWrite('[{"kind":"user","value":"alice"}]', subjects),
+    );
+    expect(chunkUpdateMany).toHaveBeenCalledTimes(1);
+  });
+
+  it("answers 409 ACL_CONFLICT when the ACL changes under every attempt, writing nothing", async () => {
+    documentFindFirst.mockResolvedValue({ aclSubjects: "[]" });
+    documentUpdateMany.mockResolvedValue({ count: 0 });
+    const res = await patch([{ kind: "user", value: "bob" }]);
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe("ACL_CONFLICT");
+    expect(documentUpdateMany).toHaveBeenCalledTimes(3);
+    expect(chunkUpdateMany).not.toHaveBeenCalled();
+    expect(audit).not.toHaveBeenCalled();
   });
 });

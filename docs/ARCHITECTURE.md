@@ -2058,7 +2058,7 @@ The federated search service extends single-project RAG with cross-project retri
 **Security invariants:**
 - ACL enforcement: requested `projectIds` are intersected with the user's accessible projects (via `getUserAccessibleProjects`). Unauthorized project IDs are silently rejected and logged — they are dropped before any per-project index is queried, so a widening attempt returns no hits rather than an error.
 - Tenant scope (#1052): `getUserAccessibleProjects` resolves the caller's role and `WorkspaceMember` rows from the database and applies the SAME rule as `assertProjectAccess` — system admins see every project, pre-migration workspace-less projects stay open, and everyone else sees only their own workspaces' projects. Cross-tenant projects are absent from `GET /api/search/projects` rather than rejected, so search is not an existence oracle. This helper is the only authorization gate on `/api/search/*` and on the `search-knowledge-global` AI tool.
-- Chunk ACLs (#2225, #2248): `KnowledgeService.search()` filters chunks on their `aclSubjects` only when it is handed an `actor`, so every retrieval a user starts passes the requester, resolved from durable state by `resolveAclActor` in `rag/acl.ts` (`requireAuth` only verifies the JWT): the user must be live (`status: "active"`, not soft-deleted) or the call rejects with `InactiveAclActorError`, so a deprovisioned admin loses the bypass at once rather than when the token expires (#2248), and the role is `resolveDurableRole`. That covers each federated per-project search, `POST /api/projects/:id/retrieve`, chat auto-RAG (`buildAutoRagContext`, which takes the requester as a required argument) and the chat `search-knowledge` tool (`ctx.userId`). A reply a whole audience reads is different (#2248): a discussion `@AI` reply is broadcast to the `thread:{id}` room (and any project member may open the thread), a Teams `@AI` reply to the channel, so both retrieve for `sharedAudienceActor(triggeredBy)`, which sees unrestricted chunks only, matches no subject and has no admin bypass; the trigger id only attributes the denial audit row. The discussion route and `projectRetriever` (Teams) pass it to auto-RAG, and the responder runs its tools with `aclAudience: "shared"`, so `search-knowledge` searches for the same audience and the tool-result cache keys that call on a scope of its own, never a user's. A failed role read or an inactive user fails closed: auto-RAG retrieves nothing, the tool and federated search reject. Over HTTP, `POST /api/projects/:id/retrieve` and `POST /api/search/federated` answer an inactive caller with 401 `TOKEN_INVALID` (`inactiveCallerAsUnauthenticated`), as `refreshAuthenticatedUser` does, not a 500 (#2261). `group` subjects match nothing today, since METIS stores no group membership and `resolveAclActor` fills no `groups`; the ACL editor therefore offers only `user` and `role` and flags an existing `group` entry, and `PATCH /documents/:id/acl` rejects a `group` subject the document does not already carry with 400 `ACL_GROUP_UNSUPPORTED` (`newGroupSubjects`), while one it already carries may stay so the editor can still save the rest (#2261). Background generators (analysis runs, spec-kit commands, traceability suggestions, docs-gen grounding through its evidence policy) are not user-actor reads; the audit table is in PR #2246.
+- Chunk ACLs (#2225, #2248): `KnowledgeService.search()` filters chunks on their `aclSubjects` only when it is handed an `actor`, so every retrieval a user starts passes the requester, resolved from durable state by `resolveAclActor` in `rag/acl.ts` (`requireAuth` only verifies the JWT): the user must be live (`status: "active"`, not soft-deleted) or the call rejects with `InactiveAclActorError`, so a deprovisioned admin loses the bypass at once rather than when the token expires (#2248), and the role is `resolveDurableRole`. That covers each federated per-project search, `POST /api/projects/:id/retrieve`, chat auto-RAG (`buildAutoRagContext`, which takes the requester as a required argument) and the chat `search-knowledge` tool (`ctx.userId`). A reply a whole audience reads is different (#2248): a discussion `@AI` reply is broadcast to the `thread:{id}` room (and any project member may open the thread), a Teams `@AI` reply to the channel, so both retrieve for `sharedAudienceActor(triggeredBy)`, which sees unrestricted chunks only, matches no subject and has no admin bypass; the trigger id only attributes the denial audit row. The discussion route and `projectRetriever` (Teams) pass it to auto-RAG, and the responder runs its tools with `aclAudience: "shared"`, so `search-knowledge` searches for the same audience and the tool-result cache keys that call on a scope of its own, never a user's. A failed role read or an inactive user fails closed: auto-RAG retrieves nothing, the tool and federated search reject. Over HTTP, `POST /api/projects/:id/retrieve` and `POST /api/search/federated` answer an inactive caller with 401 `TOKEN_INVALID` (`inactiveCallerAsUnauthenticated`), as `refreshAuthenticatedUser` does, not a 500 (#2261). `group` subjects match nothing today, since METIS stores no group membership and `resolveAclActor` fills no `groups`; the ACL editor therefore offers only `user` and `role` and flags an existing `group` entry, and `PATCH /documents/:id/acl` rejects a `group` subject the document does not already carry with 400 `ACL_GROUP_UNSUPPORTED` (`newGroupSubjects`), while one it already carries may stay so the editor can still save the rest (#2261). "Already carries" means the ACL the write replaces (#2356): `saveDocumentAcl` writes the document and its chunks in one transaction as a compare-and-set on the ACL it read, so when another save lands in between it reads again and re-checks (a legacy group the other editor removed is refused, never written back), and after three lost races answers 409 `ACL_CONFLICT`, which the editor shows. The ingest-time write (`writeQuarantine`) is held to the same group rule. The HTTP mapping of these errors lives in `routes/acl-errors.ts`, so `rag/acl.ts` carries no HTTP status. Background generators (analysis runs, spec-kit commands, traceability suggestions, docs-gen grounding through its evidence policy) are not user-actor reads; the audit table is in PR #2246.
 - Per-project timeout: each fan-out search has a 3 s timeout (`DEFAULT_TIMEOUT_MS`). A project that timed out or failed is reported in `projectsFailed` and, with its name and `reason` (`timeout` | `error`), in `failures`, without blocking the overall response; requested ids the caller cannot reach are counted in `projectsRejected` (never named).
 - Result fusion (#2238): rank-only RRF gave every project's first hit the same score however irrelevant it was. Each hit now carries a 0..1 relevance (the dense cosine, or the logistic of the cross-encoder logit when the project's search was reranked; comparable across projects because every search embeds the same query with the same embedder). A project's relevance is its best hit's; a project below `relevanceFloor` × the best relevance (default 0.75; on a follow-up, the best among hits the user's own words found, #2279; chat reads `CHAT_MULTI_PROJECT_RELEVANCE_FLOOR_PCT`) contributes nothing and is listed in `projectsWithoutHits`; the rest take turns, in the order asked for, each in its own ranking order, until `k`. With `relevanceFloor: 0` that is exactly the old RRF order for distinct chunks, which the portfolio gap engine keeps (`retrieveShared` passes 0: each project's evidence decides its repos' coverage). A first cut, to be tuned against epic #2228's Phase 0 question set.
 
@@ -5186,19 +5186,32 @@ search; an ambiguity or a silence is the author's intent and is asked directly. 
 `citation` is copied from its requirement's source (the paragraph holding a flagged term),
 never from the model. A reply without the new fields is asked and grounded as before #2235.
 
-**Only with the reader on (#2275).** The classifying prompt, the set-asides, the per-round cap and
-the missing-knowledge-only search were measured only with `ANALYSIS_DOCUMENT_READER` on. So the
-dialog applies them only then: `ClarificationDialogDeps.sourceQuestions`, which defaults to the
-flag. With the flag off, the dialog uses the pre-#2235 prompt (`LEGACY_QUESTION_SYSTEM_PROMPT`),
-and every question raised is asked unclassified and uncapped, in the order raised, and searched
-for (`askEveryQuestion`). The `#1873 — flag off` snapshot is again the pre-#2235 one. A question
+**Only on a reader-read analysis (#2275, #2296).** The classifying prompt, the set-asides, the
+per-round cap and the missing-knowledge-only search were measured only with
+`ANALYSIS_DOCUMENT_READER` on. So the dialog applies them only to an analysis the reader read:
+`ClarificationDialogDeps.sourceQuestions`, which defaults to `readFromSources` (any of the
+analysis's requirements carries `sources`), decided over every requirement, not the open ones.
+The flag is not read live, so toggling it never switches an analysis's mode between rounds: a
+reader-read analysis keeps the classified mode with the flag off, and one whose requirements
+carry no `sources` is asked the pre-#2235 way with the flag on. The clarify route decides the
+mode from the list the analysis stored (`modeFrom`), so a client's `requirements` override cannot choose it;
+only an analysis with nothing stored falls back to the override's. Otherwise the dialog uses the
+pre-#2235 prompt (`LEGACY_QUESTION_SYSTEM_PROMPT`, re-prompting for the pre-#2235 shape), and
+every question raised is asked unclassified and uncapped, in the order raised, and searched for
+(`askEveryQuestion`, which drops `options`). The `#1873 — flag off` snapshot is again the pre-#2235 one. A question
 carries `searched: true` only when the grounding search ran for it and did not fail. The panel
 says "searched your documents and code" only then.
 
 The GtWR rules scan every reader statement (`attachUncitedQualityFlags`). The hits of a
 statement no requirement cites go to the one requirement whose title and description hold at
-least half of the statement's words, and the statement becomes one of its sources. A tie or no
-match attaches nothing, and is logged. The section line and the reader's statement now sit
+least half of the statement's content words (stop words and the "system"/"shall" boilerplate
+excluded, #2296), and the statement becomes one of its sources. A tie or no match attaches
+nothing, and is logged. A requirement keeps at most `MAX_SOURCES_PER_REQUIREMENT` (5)
+paragraphs the GtWR rules flag nothing in, counted apart from the flagged ones so citation order
+does not matter; a flagged paragraph is kept past that, because the flag's question cites it.
+`MAX_TOTAL_SOURCES_PER_REQUIREMENT` (10) bounds the whole list, flagged paragraphs first, since
+every source is quoted into the question prompt each round. A requirement at that ceiling takes
+no uncited flagged statement; it is logged and left out. The section line and the reader's statement now sit
 inside the `<<<SOURCE … SOURCE>>>` fence with the quote, in both the extraction input and the
 question prompt. The approval cards and the panel's "addressed" count include
 `setAsideAmbiguities`, as the server's `addressedAmbiguities` does.
@@ -5211,14 +5224,20 @@ Every answered clarifying question is a `ClarificationRecord` row (`clarificatio
 source paragraph (document, heading path, quote), the requirement ids and the project's product.
 One row per `(projectId, questionKey)`. `clarification-key.ts` makes the key without a model:
 the cited paragraph plus the ambiguous field, else the governing rule ids plus the question,
-else the requirement title plus the field. A Spec Kit `/clarify` answer is keyed by its feature
-slug and question. The route records the round once it is committed
-(`persistClarificationKnowledge`, off the request path, metered to the project). New or changed
-answers are then:
+else the analysis plus the requirement title plus the field (#2310: with no paragraph, a title
+does not say two analyses' requirements are one, so such an answer is not reused elsewhere). A
+Spec Kit `/clarify` answer is keyed by its feature slug and question. The route records the
+round the submit answered, once it is committed (`persistClarificationKnowledge` with
+`rounds`, off the request path, metered to the project). An older analysis's earlier round is
+never recorded again, so it cannot overwrite a newer answer (#2310). New or changed answers are
+then:
 
 - **indexed** as a Markdown document in the project's RAG store (`clarification-knowledge.ts`:
-  `documents` row by the person who answered, queued for ingest like an uploaded text, so the
-  quarantine policy and ACLs apply). A changed answer deletes its earlier document;
+  `documents` row with source `clarification` and a `document.upload` audit entry, by the person
+  who answered, queued for ingest like an uploaded text, so the quarantine policy and ACLs
+  apply). #2310: the new document is written first and linked by compare-and-set on the
+  record's `knowledgeDocumentId`, then the earlier one is deleted. When two saves race, the
+  loser withdraws its own copy;
 - **reused**: the dialog takes a `PriorAnswerSource` (`priorAnswerSourceFor`). Before a round
   is grounded, each selected question is looked up by key among the project's `settled` records.
   A hit is not asked: it lands on `ClarificationState.reused`, counts as answered (the #1104
@@ -5227,13 +5246,24 @@ answers are then:
   document, section and field under another key (its paragraph changed) is marked `reopened`
   first, so the changed paragraph is asked about again;
 - **re-run** (`clarification-rerun.ts`): stored requirements whose clarifications block holds a
-  changed answer are mapped to code again (`mapRequirementToCode`, persisted). Each answered
+  changed answer under its own question are mapped to code again (`mapRequirementToCode`,
+  persisted). #2310: the block's question and answer pairs are read back
+  (`clarificationBlockEntries`), so a short answer never matches other rows. Each answered
   requirement's governing applicability entry (by id, else the one entry its title matches) is
   re-decided on its text with the answers appended. The fresh findings are produced in the same
   findings run, through the run's new `prepare` step. So the findings response reads
   `refreshing` (the panel's "Re-checking" note) from the answer until the new findings are
-  stored. Re-extraction is the dialog's own resolution call. The persisted per-finding stale
-  marker and **Re-check this requirement** are #2222's.
+  stored. When some requirements fail, the entries of the others are stored
+  (`GoverningFindingsRun.failedRequirementIds`). An answered requirement that no entry matches
+  is re-checked through #2222's `recheckGoverningRequirement` on each stored requirement
+  carrying its answers, attributed to the person who answered. An answer **reused** in a round
+  is re-run the same way for the requirement that reused it (`rerunReusedClarifications`), and
+  its record's `requirementIds` gain that requirement. Requirement ids are local to an analysis,
+  so the column stores each as `<analysisId>:<requirementId>` (`qualifyRequirementId`), a read
+  returns the record's own analysis's ids, and the extension is a compare-and-set on the list it
+  read, retried when another reuse changed it first. Re-extraction is the dialog's own
+  resolution call. The persisted per-finding stale marker and **Re-check this requirement** are
+  #2222's.
 
 Answers are untrusted text in every later prompt. The resolution prompt fences the Q&A
 (`<<<ANSWERS … ANSWERS>>>`, markers stripped from the text). `/specify`, `/plan` (both forms) and

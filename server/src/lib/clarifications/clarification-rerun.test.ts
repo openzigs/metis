@@ -33,7 +33,25 @@ const {
   clarifiedRequirementText,
   rerunAfterClarification,
 } = await import("./clarification-rerun.js");
-const { sanitizeClarificationText } = await import("../analysis/clarification-enrichment.js");
+const { renderClarificationBlock } = await import("../analysis/clarification-enrichment.js");
+
+/** `body` with a clarifications block holding `pairs` (question, answer), as METIS writes it. */
+function withBlock(
+  body: string,
+  pairs: ReadonlyArray<readonly [string, string]>,
+  provenance: "typed" | "reused" = "typed",
+): string {
+  const block = renderClarificationBlock(
+    pairs.map(([question, answer], i) => ({
+      questionId: `q${i}`,
+      requirementId: "R-1",
+      question,
+      answer,
+      provenance,
+    })),
+  );
+  return `${body}\n\n${block}`;
+}
 
 function record(over: Partial<StoredClarification> = {}): StoredClarification {
   return {
@@ -168,10 +186,17 @@ describe("#2236 — applicabilityEntryFor", () => {
 
 describe("#2236 — rerunAfterClarification", () => {
   it("maps the requirements that carry the changed answer to code again, scoped to the analysis and project", async () => {
-    const written = sanitizeClarificationText("At least 12 characters.");
     db.requirement.findMany.mockResolvedValue([
-      { id: "row-1", title: "Password policy", body: `x\n**A:** ${written} _(typed)_` },
-      { id: "row-2", title: "Export", body: "x\n**A:** something else" },
+      {
+        id: "row-1",
+        title: "Password policy",
+        body: withBlock("x", [["How long must a password be?", "At least 12 characters."]]),
+      },
+      {
+        id: "row-2",
+        title: "Export",
+        body: withBlock("x", [["Which orders?", "something else"]]),
+      },
     ]);
     const mapToCode = vi.fn(async () => []);
     const result = await rerunAfterClarification(
@@ -364,7 +389,12 @@ describe("#2236 — rerunAfterClarification", () => {
       },
       { mapToCode, applicabilityHookFor: async () => ({ decide: vi.fn() }), produceFindings },
     );
-    expect(result).toEqual({ codeMapped: 0, governingRequirements: [], governingUnmatched: [] });
+    expect(result).toEqual({
+      codeMapped: 0,
+      governingRequirements: [],
+      governingUnmatched: [],
+      governingRechecked: [],
+    });
     expect(produceFindings).not.toHaveBeenCalled();
     expect(db.requirement.findMany).not.toHaveBeenCalled();
   });
@@ -391,7 +421,11 @@ describe("#2236 — rerunAfterClarification", () => {
 
   it("never throws: a failed code mapping or findings run is logged and the rest goes on", async () => {
     db.requirement.findMany.mockResolvedValue([
-      { id: "row-1", title: "t", body: sanitizeClarificationText("At least 12 characters.") },
+      {
+        id: "row-1",
+        title: "t",
+        body: withBlock("t", [["How long must a password be?", "At least 12 characters."]]),
+      },
     ]);
     const result = await rerunAfterClarification(
       { analysisId: "a1", projectId: "p1", provider, records: [record()] },
@@ -500,5 +534,177 @@ describe("#2236 — a later round keeps the answers of earlier rounds", () => {
     expect(text).not.toContain(Q1.answer);
     expect(text!.match(/- Q: How long must a password be\?/g)).toHaveLength(1);
     expect(text).toContain(`A: ${Q2.answer}`);
+  });
+});
+
+describe("#2310 — the re-run's edges", () => {
+  it("re-maps only the rows whose block holds the answer under its own question", async () => {
+    const yes = record({ question: "Is the export audited?", answer: "Yes" });
+    db.requirement.findMany.mockResolvedValue([
+      // "Yes" in the text, outside any block.
+      { id: "row-text", title: "t", body: withBlock("Yes, all of it.", [["Other?", "No"]]) },
+      // "Yes" answering another question.
+      { id: "row-other", title: "t", body: withBlock("x", [["Is the import audited?", "Yes"]]) },
+      // The answer to this question, reused from a record.
+      {
+        id: "row-this",
+        title: "t",
+        body: withBlock("x", [["Is the export audited?", "Yes"]], "reused"),
+      },
+    ]);
+    const mapToCode = vi.fn(async () => []);
+    const result = await rerunAfterClarification(
+      { analysisId: "a1", projectId: "p1", provider, records: [yes] },
+      { mapToCode, applicabilityHookFor: async () => null },
+    );
+    expect(mapToCode.mock.calls.map((c) => (c as unknown as [{ id: string }])[0].id)).toEqual([
+      "row-this",
+    ]);
+    expect(result.codeMapped).toBe(1);
+  });
+
+  // Review of #2430 — the block writes an empty question as a placeholder; the
+  // record side must compare the same value, or such a row never matches.
+  it("matches a row whose block holds the answer to a question with no text", async () => {
+    const blank = record({ question: "  ` ", answer: "Monthly" });
+    db.requirement.findMany.mockResolvedValue([
+      { id: "row-blank", title: "t", body: withBlock("x", [["", "Monthly"]]) },
+      { id: "row-other", title: "t", body: withBlock("x", [["How often?", "Monthly"]]) },
+    ]);
+    const mapToCode = vi.fn(async () => []);
+    await rerunAfterClarification(
+      { analysisId: "a1", projectId: "p1", provider, records: [blank] },
+      { mapToCode, applicabilityHookFor: async () => null },
+    );
+    expect(mapToCode.mock.calls.map((c) => (c as unknown as [{ id: string }])[0].id)).toEqual([
+      "row-blank",
+    ]);
+  });
+
+  it("re-checks an unmatched requirement's stored rows under their own id, as the person who answered", async () => {
+    structured.list = { requirements: [{ id: "R-1", title: "Invoices" }] };
+    db.requirement.findMany.mockResolvedValue([
+      {
+        id: "row-1",
+        title: "Invoices",
+        body: withBlock("x", [["How long must a password be?", "At least 12 characters."]]),
+      },
+      { id: "row-2", title: "Other", body: withBlock("x", [["Other?", "No"]]) },
+    ]);
+    const recheck = vi.fn(async () => ({
+      ok: true as const,
+      result: { requirementId: "row-1", version: 2, findings: 1 },
+    }));
+    const produceFindings = vi.fn();
+    const result = await rerunAfterClarification(
+      { analysisId: "a1", projectId: "p1", provider, model: "m1", records: [record()] },
+      {
+        mapToCode: vi.fn(),
+        applicabilityHookFor: async () => ({ decide: vi.fn() }),
+        produceFindings,
+        recheck,
+      },
+    );
+    expect(result.governingUnmatched).toEqual(["R-1"]);
+    expect(recheck).toHaveBeenCalledTimes(1);
+    expect(recheck).toHaveBeenCalledWith({
+      analysisId: "a1",
+      projectId: "p1",
+      requirementId: "row-1",
+      provider,
+      model: "m1",
+      actorId: "u1",
+    });
+    expect(result.governingRechecked).toEqual(["row-1"]);
+    expect(produceFindings).not.toHaveBeenCalled();
+  });
+
+  it("does not re-check a matched requirement, one no one answered, or report a failed re-check", async () => {
+    const row = {
+      id: "row-1",
+      title: "Password policy",
+      body: withBlock("x", [["How long must a password be?", "At least 12 characters."]]),
+    };
+    db.requirement.findMany.mockResolvedValue([row]);
+    const recheck = vi.fn(async () => ({ ok: false as const, reason: "no-rules" as const }));
+    const deps = {
+      mapToCode: vi.fn(),
+      applicabilityHookFor: async () => ({
+        decide: async (r: { id: string }) => decided(r.id, "applies"),
+      }),
+      produceFindings: async (input: ProduceInput) => {
+        await input.prepare?.();
+        await input.afterProduce?.(RUN_OK);
+        return RUN_OK;
+      },
+      recheck,
+    };
+    // Matched (AC-1, by title): re-run through its entry, never re-checked.
+    await rerunAfterClarification(
+      { analysisId: "a1", projectId: "p1", provider, records: [record()] },
+      deps,
+    );
+    expect(recheck).not.toHaveBeenCalled();
+
+    structured.list = { requirements: [{ id: "R-1", title: "Invoices" }] };
+    const nobody = await rerunAfterClarification(
+      {
+        analysisId: "a1",
+        projectId: "p1",
+        provider,
+        records: [record({ answeredById: null })],
+      },
+      deps,
+    );
+    expect(recheck).not.toHaveBeenCalled();
+    expect(nobody.governingRechecked).toEqual([]);
+
+    const failed = await rerunAfterClarification(
+      { analysisId: "a1", projectId: "p1", provider, records: [record()] },
+      deps,
+    );
+    expect(recheck).toHaveBeenCalledTimes(1);
+    expect(failed.governingRechecked).toEqual([]);
+
+    recheck.mockRejectedValueOnce(new Error("provider down"));
+    const thrown = await rerunAfterClarification(
+      { analysisId: "a1", projectId: "p1", provider, records: [record()] },
+      deps,
+    );
+    expect(thrown.governingRechecked).toEqual([]);
+  });
+
+  it("stores the entries of the requirements whose findings were written when another's failed", async () => {
+    structured.list = {
+      requirements: [
+        { id: "R-1", title: "Password policy enforced" },
+        { id: "R-2", title: "Bulk export of orders" },
+      ],
+    };
+    const before = structuredClone(applicability.stored!);
+    const records = [
+      record(),
+      record({ id: "rec-2", questionKey: "k2", requirementIds: ["R-2"], answer: "CSV only." }),
+    ];
+    const result = await rerunAfterClarification(
+      { analysisId: "a1", projectId: "p1", provider, records },
+      {
+        mapToCode: vi.fn(),
+        applicabilityHookFor: async () => ({
+          decide: async (r: { id: string }) => decided(r.id, "applies"),
+        }),
+        produceFindings: async (input: ProduceInput) => {
+          await input.prepare?.();
+          const run = { ...RUN_OK, failed: 1, failedRequirementIds: ["AC-2"] };
+          await input.afterProduce?.(run);
+          return run;
+        },
+      },
+    );
+    expect(result.governingRequirements).toEqual(["AC-1"]);
+    const byId = new Map(applicability.stored!.requirements.map((r) => [r.requirementId, r]));
+    expect(byId.get("AC-1")!.text).toContain("A: At least 12 characters.");
+    // AC-2's findings were not written: its pre-answer entry stands with them.
+    expect(byId.get("AC-2")).toEqual(before.requirements[1]);
   });
 });

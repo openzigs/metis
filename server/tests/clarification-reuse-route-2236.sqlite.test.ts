@@ -25,11 +25,22 @@ import {
 } from "./helpers/sqlite-migrated-db.js";
 
 const ANSWER = "Only EU invoices";
+const EARLIER = "CSV, one file per region";
 
 const state = vi.hoisted(() => {
   process.env.RATE_LIMIT_MAX = "100000";
   process.env.AI_OFFLINE = "1";
   return { db: null as unknown, questionCalls: 0 };
+});
+// Spies that call through: they prove what the ROUTER hands to the library.
+vi.mock("../src/lib/clarifications/analysis-clarifications.js", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../src/lib/clarifications/analysis-clarifications.js")>();
+  return {
+    ...actual,
+    rerunReusedClarifications: vi.fn(actual.rerunReusedClarifications),
+    persistClarificationKnowledge: vi.fn(actual.persistClarificationKnowledge),
+  };
 });
 vi.mock("../src/lib/prisma.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/lib/prisma.js")>()),
@@ -107,6 +118,7 @@ vi.mock("../src/lib/rag/ingest-queue.js", async (importOriginal) => ({
 }));
 
 const { initAnalysisRouter } = await import("../src/routes/analysis.js");
+const clarifications = await import("../src/lib/clarifications/analysis-clarifications.js");
 const { errorHandler, notFoundHandler } = await import("../src/middleware/error-handler.js");
 const { issueTokens } = await import("../src/lib/auth/jwt.js");
 
@@ -127,6 +139,24 @@ const R1 = {
   ],
   evidenceNeeds: [],
   rawSource: "",
+  // #2310 — only a question about a cited paragraph is reused by another
+  // analysis: a title alone does not say two analyses' requirements are one.
+  sources: [
+    {
+      ref: "REQ-001",
+      documentId: "doc-2236r",
+      filename: "frd.docx",
+      headingPath: ["3 Export"],
+      quote: "The monthly invoice report is exported for every region.",
+    },
+  ],
+};
+
+const CITATION = {
+  documentId: "doc-2236r",
+  filename: "frd.docx",
+  headingPath: ["3 Export"],
+  quote: "The monthly invoice report is exported for every region.",
 };
 
 const OPEN_ROUND = (analysisId: string) =>
@@ -145,6 +175,7 @@ const OPEN_ROUND = (analysisId: string) =>
             question: "Which invoices does the export cover?",
             context: "",
             groundingStatus: "open",
+            citation: CITATION,
           },
         ],
         answers: [],
@@ -246,6 +277,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
 
     beforeEach(async () => {
       state.questionCalls = 0;
+      vi.mocked(clarifications.rerunReusedClarifications).mockClear();
+      vi.mocked(clarifications.persistClarificationKnowledge).mockClear();
       await db.clarificationRecord.deleteMany({});
     });
 
@@ -287,6 +320,94 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       // And the reused answer reaches the second analysis's stored requirement.
       const row = await db.requirement.findUniqueOrThrow({ where: { id: `req-row-${seq}` } });
       expect(row.body).toContain(ANSWER);
+    });
+
+    /** Round 1 answered (an earlier question), round 2 open. */
+    const SECOND_ROUND_OPEN = (analysisId: string) => {
+      const open = JSON.parse(OPEN_ROUND(analysisId)) as {
+        currentRound: number;
+        rounds: Array<{ round: number; questions: object[]; answers: object[] }>;
+      };
+      const earlier = {
+        round: 1,
+        questions: [
+          {
+            id: "q-0",
+            requirementId: "REQ-1",
+            ambiguityField: "format",
+            question: "Which file format is the export?",
+            context: "",
+            groundingStatus: "open",
+            citation: CITATION,
+          },
+        ],
+        answers: [{ questionId: "q-0", answer: EARLIER }],
+      };
+      return JSON.stringify({
+        ...open,
+        currentRound: 2,
+        rounds: [earlier, { ...open.rounds[0]!, round: 2 }],
+      });
+    };
+    /** Only the answered round's question is a record; round 1's is not re-recorded. */
+    const expectOnlyRoundTwoRecorded = async (analysisId: string) => {
+      expect(clarifications.persistClarificationKnowledge).toHaveBeenCalledWith(
+        expect.objectContaining({ analysisId, rounds: [2] }),
+      );
+      // The router's write runs off the response's path: wait for it to settle.
+      await vi.waitFor(() =>
+        expect(vi.mocked(clarifications.persistClarificationKnowledge).mock.results[0]).toEqual(
+          expect.objectContaining({ type: "return" }),
+        ),
+      );
+      await vi.mocked(clarifications.persistClarificationKnowledge).mock.results[0]!.value;
+      const rows = await records();
+      expect(rows.map((r) => r.answer)).toEqual([ANSWER]);
+      expect(rows[0]).toMatchObject({ analysisId, ambiguityField: "scope" });
+    };
+
+    it("a submit records only the round it answered", async () => {
+      const id = await seedAnalysis(SECOND_ROUND_OPEN);
+      const res = await clarify(id, { answers: [{ questionId: "q-1", answer: ANSWER }] });
+      expect(res.status).toBe(200);
+      await expectOnlyRoundTwoRecorded(id);
+    });
+
+    it("a CSV import records only the round it answered", async () => {
+      const id = await seedAnalysis(SECOND_ROUND_OPEN);
+      const res = await request(app())
+        .post(`${base(id)}/clarify/import`)
+        .set("Authorization", `Bearer ${token()}`)
+        .attach(
+          "file",
+          Buffer.from(
+            "questionId,requirement,ambiguityField,question,suggestedAnswer,answer\r\n" +
+              `q-1,${TITLE},scope,Which invoices?,,${ANSWER}\r\n`,
+          ),
+          "answers.csv",
+        );
+      expect(res.status).toBe(200);
+      expect(res.body.data).toMatchObject({ applied: 1 });
+      await expectOnlyRoundTwoRecorded(id);
+    });
+
+    it("answers reused by a start are re-run once, not on every later view of the settled dialog", async () => {
+      const first = await seedAnalysis(OPEN_ROUND);
+      await clarify(first, { answers: [{ questionId: "q-1", answer: ANSWER }] });
+      await vi.waitFor(async () => expect(await records()).toHaveLength(1));
+
+      const second = await seedAnalysis();
+      for (let i = 0; i < 3; i += 1) {
+        const res = await clarify(second, {});
+        expect(res.status).toBe(200);
+        expect(res.body.data).toMatchObject({ completed: true, currentRound: 1 });
+      }
+      await vi.waitFor(() =>
+        expect(clarifications.rerunReusedClarifications).toHaveBeenCalledTimes(1),
+      );
+      expect(clarifications.rerunReusedClarifications).toHaveBeenCalledWith(
+        expect.objectContaining({ analysisId: second, round: 1 }),
+      );
     });
 
     it("a CSV import of answers becomes a record too", async () => {
