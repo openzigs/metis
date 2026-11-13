@@ -3342,8 +3342,13 @@ tells it to:
 - read the code before saying one part calls another;
 - when nothing turns up, say what it searched.
 
+When a code-graph search finds the symbol but has no list of results to give
+(the name matches several symbols, only probable call sites are known, a filter
+left no call to list, or nothing calls the symbol), the guidance says what to do
+next instead of telling the chat to search again.
+
 It is off by default. On METIS's own business-analyst question set it did not
-make answers more complete, and it made citations slightly less precise.
+make answers more complete, and citation precision did not improve.
 
 A chat that is not scoped to a project is offered no tools. Administrators can
 turn the METIS and MCP tools off with `CHAT_TOOLS=false`. A chat can be scoped

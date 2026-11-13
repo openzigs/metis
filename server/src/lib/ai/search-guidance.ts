@@ -21,6 +21,7 @@
  * All three are behind `CHAT_SEARCH_GUIDANCE` (key registry), whose default
  * follows the paired `pnpm eval:ba-qa` measurement recorded on #2324.
  */
+import type { ZeroResultKind } from "../analysis/tools/types.js";
 import { getConfigService } from "../config/config-service.js";
 
 /** The registry key that turns the guidance on and off. */
@@ -32,7 +33,10 @@ export const SEARCH_GUIDANCE_KEY = "CHAT_SEARCH_GUIDANCE";
  * unchanged (83% / 83%, 76% / 76%), lowered citation precision (88% → 80%,
  * 84% → 81%) and cost about 9,000 more input tokens and 0.55 more model calls
  * per question. The issue ships it on only if facts or precision improve, so
- * it waits behind the key: see `eval-data/README.md`.
+ * it waits behind the key: see `eval-data/README.md`. #2390 re-measured it after
+ * graph results that are not misses got their own instructions: facts stated
+ * unchanged again, and citation precision within noise (+2 and −2 points), so
+ * it stays off.
  */
 export const SEARCH_GUIDANCE_DEFAULT = false;
 
@@ -113,18 +117,51 @@ export const EMPTY_RESULT_INSTRUCTIONS =
   "another tool before concluding that.";
 
 /**
+ * #2390 — carried with a zero-count result that is NOT a miss, one per
+ * {@link ZeroResultKind}. `search_code_graph` counts 0 for a name that matched
+ * several symbols, for probable call sites, for a found symbol with no call
+ * edges, and for call edges a filter dropped; "nothing was found; search
+ * again" contradicted what each one says. No text claims a resolved edge
+ * exists, since one the caller may not see must not be revealed (#2243).
+ */
+export const ZERO_RESULT_INSTRUCTIONS: Readonly<Record<ZeroResultKind, string>> = {
+  "ambiguous-name":
+    "Instructions from METIS, not the tool: the name was found, and it matches more than one " +
+    "symbol, listed in this result. Repeat the call with the qualified name of the one you mean " +
+    "before you answer about it.",
+  "probable-call-sites":
+    "Instructions from METIS, not the tool: no resolved caller is recorded, but this result lists " +
+    "probable call sites the parser could not resolve. Read them (read_file_slice) before you say " +
+    "what calls it, and do not report that nothing does.",
+  "no-call-edges":
+    "Instructions from METIS, not the tool: the symbol was found, and the code graph records no " +
+    "calls in the direction asked. That answers the question as far as the graph goes; do not " +
+    "repeat this graph search. Say that calls the graph could not resolve are not counted; " +
+    "another tool may still find those.",
+  "filtered-out":
+    "Instructions from METIS, not the tool: the symbol was found, and the query, kind or " +
+    "filePath filter you gave left no call relation to list. That is a filter miss, not proof " +
+    "that nothing calls it. Repeat the call without that filter, and read any call sites this " +
+    "result lists (read_file_slice), before you say what calls it or what it calls.",
+};
+
+/**
  * The `instructions` for one result of the tool named `name` (canonical), or
  * `undefined` for a tool that is not a grounding tool and for a failed call —
  * an error is not a source, and its own text says how to repair the call.
- * `resultCount: 0` is the structured "worked, found nothing" contract (#773);
- * a result without a count (a file read) returned what it was asked for.
+ * `resultCount: 0` is the structured "worked, found nothing" contract (#773),
+ * unless `zeroResultKind` says the zero is not a miss (#2390); a result
+ * without a count (a file read) returned what it was asked for.
  */
 export function resultInstructions(
   name: string,
-  result: { isError?: boolean; resultCount?: number },
+  result: { isError?: boolean; resultCount?: number; zeroResultKind?: ZeroResultKind },
 ): string | undefined {
   if (!GROUNDING_TOOL_NAMES.has(name) || result.isError === true) return undefined;
-  return result.resultCount === 0 ? EMPTY_RESULT_INSTRUCTIONS : SOURCE_RESULT_INSTRUCTIONS;
+  if (result.resultCount !== 0) return SOURCE_RESULT_INSTRUCTIONS;
+  return result.zeroResultKind
+    ? ZERO_RESULT_INSTRUCTIONS[result.zeroResultKind]
+    : EMPTY_RESULT_INSTRUCTIONS;
 }
 
 /** True when `names` (canonical tool names offered this turn) include a grounding tool. */

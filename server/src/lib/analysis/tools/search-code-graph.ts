@@ -12,7 +12,7 @@
  * extra query. The analysis surface's {@link searchCodeGraphTool} returns
  * what it returned before #2325.
  */
-import type { AgentTool, ToolContext, ToolResult, JSONSchema } from "./types.js";
+import type { AgentTool, ToolContext, ToolResult, JSONSchema, ZeroResultKind } from "./types.js";
 import { describeReceivedKeys } from "./arg-errors.js";
 import { prisma } from "../../prisma.js";
 import { goUndecidedCallWhere } from "../../code-graph/go-type-resolution.js";
@@ -368,7 +368,11 @@ async function execute(
       return { content: `No symbol matching "${calledBy}" found.`, resultCount: 0 };
     }
     if (resolved.kind === "ambiguous") {
-      return { content: ambiguityMessage("calledBy", calledBy, resolved), resultCount: 0 };
+      return {
+        content: ambiguityMessage("calledBy", calledBy, resolved),
+        resultCount: 0,
+        zeroResultKind: "ambiguous-name",
+      };
     }
     const caller = resolved.symbol;
     // #740 — a callee the parser could not resolve (stdlib, third-party) is
@@ -389,9 +393,14 @@ async function execute(
         return {
           content: `"${calledBy}" calls no symbols resolved in this code graph; ${unresolvedNote}`,
           resultCount: 0,
+          zeroResultKind: "no-call-edges",
         };
       }
-      return { content: `"${calledBy}" does not call any other symbols.`, resultCount: 0 };
+      return {
+        content: `"${calledBy}" does not call any other symbols.`,
+        resultCount: 0,
+        zeroResultKind: "no-call-edges",
+      };
     }
     where.id = { in: targetIds };
   }
@@ -402,7 +411,11 @@ async function execute(
       return { content: `No symbol matching "${calls}" found.`, resultCount: 0 };
     }
     if (resolved.kind === "ambiguous") {
-      return { content: ambiguityMessage("calls", calls, resolved), resultCount: 0 };
+      return {
+        content: ambiguityMessage("calls", calls, resolved),
+        resultCount: 0,
+        zeroResultKind: "ambiguous-name",
+      };
     }
     const callee = resolved.symbol;
     const edges = await prisma.codeEdge.findMany({
@@ -419,9 +432,14 @@ async function execute(
         return {
           content: `No resolved symbols call "${calls}".\n${probableNote}`,
           resultCount: 0,
+          zeroResultKind: "probable-call-sites",
         };
       }
-      return { content: `No symbols call "${calls}".`, resultCount: 0 };
+      return {
+        content: `No symbols call "${calls}".`,
+        resultCount: 0,
+        zeroResultKind: "no-call-edges",
+      };
     }
     where.id = { in: callerIds };
     // `calls` replaces the id filter set by `calledBy`, so its note no longer applies.
@@ -445,7 +463,22 @@ async function execute(
   if (symbols.length === 0) {
     const none = "No symbols found matching the query.";
     const notes = [none, unresolvedNote, probableNote].filter(Boolean);
-    return { content: notes.join("\n"), resultCount: 0 };
+    // #2390 — `calls`/`calledBy` found resolved edges (none returns earlier),
+    // so with a `query`/`kind`/`filePath` filter this zero is a filter miss,
+    // not "nothing calls it". Without one, only the caller's visibility dropped
+    // them, and the probable call sites are all the caller may see. Neither
+    // kind's instruction says a resolved edge exists, so none hidden leaks.
+    const zeroResultKind: ZeroResultKind | undefined =
+      (calls || calledBy) && (query || kind || filePath)
+        ? "filtered-out"
+        : probableNote
+          ? "probable-call-sites"
+          : undefined;
+    return {
+      content: notes.join("\n"),
+      resultCount: 0,
+      ...(zeroResultKind ? { zeroResultKind } : {}),
+    };
   }
 
   const truncated = symbols.length === MAX_RESULTS;

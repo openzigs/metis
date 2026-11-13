@@ -218,6 +218,7 @@ export function codeRuntimeTool(
         text: r.content,
         ...(typeof r.isError === "boolean" ? { isError: r.isError } : {}),
         ...(typeof r.resultCount === "number" ? { resultCount: r.resultCount } : {}),
+        ...(r.zeroResultKind ? { zeroResultKind: r.zeroResultKind } : {}),
         ...(r.truncated ? { truncated: true } : {}),
         ...(r.citations && r.citations.length > 0 ? { citations: r.citations } : {}),
       };
