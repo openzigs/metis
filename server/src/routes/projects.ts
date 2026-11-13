@@ -53,7 +53,7 @@ import {
   updateProjectSqlLineage,
 } from "../lib/projects/project-service.js";
 import { summarizeUsage } from "../lib/finops/index.js";
-import { prisma } from "../lib/prisma.js";
+import { prisma, resolveDatabaseProvider } from "../lib/prisma.js";
 import { createRepoConnector } from "../lib/connectors/repo/repo-service.js";
 import { assertRepoSecretBinding } from "../lib/connectors/connector-secret-binding.js";
 import {
@@ -1337,19 +1337,28 @@ export function projectsRouter(): Router {
       }
       const actor = actorFromReq(req);
       const projectId = String(req.params.id);
-      const existing = await prisma.project.findUnique({
-        where: { id: projectId },
-        select: { id: true, allowSelfApproval: true },
-      });
-      if (!existing) throw new AppError(404, "PROJECT_NOT_FOUND", "Project not found");
-
       const { requireApprovedReview, allowSelfApproval } = parsed.data;
-      const updated = await prisma.project.update({
-        where: { id: projectId },
-        data: {
-          ...(requireApprovedReview !== undefined ? { requireApprovedReview } : {}),
-          ...(allowSelfApproval !== undefined ? { allowSelfApproval } : {}),
-        },
+      // #2436 — the old value is read in the transaction that writes the new
+      // one, with the row locked on Postgres (SQLite has one writer), so two
+      // admins toggling at once are audited as a chain: each `from` is the
+      // value the other's write left.
+      const { existing, updated } = await prisma.$transaction(async (tx) => {
+        if (resolveDatabaseProvider() === "postgresql") {
+          await tx.$queryRaw`SELECT 1 FROM "projects" WHERE "id" = ${projectId} FOR UPDATE`;
+        }
+        const existing = await tx.project.findUnique({
+          where: { id: projectId },
+          select: { id: true, allowSelfApproval: true },
+        });
+        if (!existing) throw new AppError(404, "PROJECT_NOT_FOUND", "Project not found");
+        const updated = await tx.project.update({
+          where: { id: projectId },
+          data: {
+            ...(requireApprovedReview !== undefined ? { requireApprovedReview } : {}),
+            ...(allowSelfApproval !== undefined ? { allowSelfApproval } : {}),
+          },
+        });
+        return { existing, updated };
       });
       if (requireApprovedReview !== undefined) {
         audit({

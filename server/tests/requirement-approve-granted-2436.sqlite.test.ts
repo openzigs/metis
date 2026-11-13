@@ -27,7 +27,8 @@ import {
 const state = vi.hoisted(() => {
   process.env.RATE_LIMIT_MAX = "100000";
   process.env.AI_OFFLINE = "1";
-  return { db: null as unknown };
+  // The grant below; a test withdraws it to model a role lowered mid-review.
+  return { db: null as unknown, granted: true };
 });
 vi.mock("../src/lib/prisma.js", async () => {
   const { Prisma } = await import("@prisma/client");
@@ -45,7 +46,7 @@ vi.mock("@metis/shared", async (importOriginal) => {
   return {
     ...actual,
     hasPermission: (role: RoleKey, permission: PermissionKey) =>
-      (role === "developer" && permission === "requirement.approve") ||
+      (state.granted && role === "developer" && permission === "requirement.approve") ||
       actual.hasPermission(role, permission),
   };
 });
@@ -220,6 +221,36 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         .send({ decision: "approved" });
       expect(decided.status).toBe(200);
       expect((await row(req.id)).reviewStatus).toBe("approved");
+    });
+
+    // review-service `recordDecision`: the requester's own sign-off needs
+    // `requirement.approve` at decision time, not only when the review was
+    // created — the setting alone is not enough.
+    it("cannot decide their own review once the grant is withdrawn, with the setting still on", async () => {
+      const req = await makeRequirement();
+      await db.project.update({ where: { id: PROJECT }, data: { allowSelfApproval: true } });
+      const created = await request(app())
+        .post(`/api/projects/${PROJECT}/reviews`)
+        .set("Authorization", auth())
+        .send({ title: "Solo", reviewerIds: [ANALYST], items: [{ requirementId: req.id }] });
+      expect(created.status).toBe(201);
+      const reviewId = created.body.data.id as string;
+      await request(app()).post(`/api/reviews/${reviewId}/submit`).set("Authorization", auth());
+
+      state.granted = false;
+      try {
+        const decided = await request(app())
+          .post(`/api/reviews/${reviewId}/decision`)
+          .set("Authorization", auth())
+          .send({ decision: "approved" });
+        expect(decided.status).toBe(403);
+        expect(decided.body.error.code).toBe("SELF_APPROVAL_FORBIDDEN");
+      } finally {
+        state.granted = true;
+      }
+      expect((await row(req.id)).reviewStatus).toBe("draft");
+      const review = await db.reviewRequest.findUniqueOrThrow({ where: { id: reviewId } });
+      expect(review.status).toBe("in_review");
     });
   },
 );

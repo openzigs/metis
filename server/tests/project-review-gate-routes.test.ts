@@ -48,6 +48,9 @@ vi.mock("../src/lib/prisma.js", async () => {
         async ({ where, data }: { where: { id: string }; data: Partial<ProjectRow> }) => {
           const row = projects.get(where.id);
           if (!row) throw new Error("not found");
+          // A real write takes a moment: a read made outside its transaction
+          // in that moment sees the old value (the #2436 audit race).
+          await new Promise((resolve) => setTimeout(resolve, 5));
           const next = { ...row, ...data };
           projects.set(where.id, next);
           return next;
@@ -55,7 +58,17 @@ vi.mock("../src/lib/prisma.js", async () => {
       ),
     },
   });
-  return { prisma };
+  // One transaction at a time, as SQLite's single writer (and Postgres's row
+  // lock on the project) serialise them.
+  let queue: Promise<unknown> = Promise.resolve();
+  (prisma as unknown as { $transaction: unknown }).$transaction = vi.fn(
+    (fn: (tx: unknown) => Promise<unknown>) => {
+      const run = queue.then(() => fn(prisma));
+      queue = run.catch(() => undefined);
+      return run;
+    },
+  );
+  return { prisma, resolveDatabaseProvider: () => "sqlite" as const };
 });
 
 const auditSpy = vi.fn();
@@ -242,6 +255,28 @@ describe("#2436 — allowSelfApproval on PATCH /api/projects/:id/review-gate", (
         metadata: { from: true, to: false },
       }),
     );
+  });
+
+  it("two toggles at once are audited as a chain: each from is the value the other left", async () => {
+    const [coordinator, admin] = [await login("coordinator"), await login("admin")];
+    const patch = (token: string, allowSelfApproval: boolean) =>
+      request(app)
+        .patch("/api/projects/proj_gate_001/review-gate")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ allowSelfApproval });
+
+    const results = await Promise.all([patch(coordinator, true), patch(admin, false)]);
+    expect(results.map((r) => r.status)).toEqual([200, 200]);
+
+    const changes = auditSpy.mock.calls
+      .map((c) => c[0] as { action: string; metadata: { from: boolean; to: boolean } })
+      .filter((e) => e.action === "project.selfApproval.update")
+      .map((e) => e.metadata);
+    expect(changes).toHaveLength(2);
+    // Read outside the write's transaction, both would record `from: false`.
+    expect(changes[0]!.from).toBe(false);
+    expect(changes[1]!.from).toBe(changes[0]!.to);
+    expect(projects.get("proj_gate_001")?.allowSelfApproval).toBe(changes[1]!.to);
   });
 
   it("both settings in one PATCH are written and audited separately", async () => {
