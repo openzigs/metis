@@ -1,0 +1,2037 @@
+{
+  "issue": 2403,
+  "measuredCommits": {
+    "before": "9f911c5e9d4743f2e756c4d2181ec548dc5c2179",
+    "after": "6dcf5776ba2837884338841b8c4a4b48c37507c4"
+  },
+  "runs": [
+    {
+      "label": "before3",
+      "runId": "2026-11-13T18-31-30-780Z-tools-only",
+      "model": "claude-sonnet-5-5",
+      "judgeModel": "claude-sonnet-5-5",
+      "arm": "tools-only",
+      "spentUsd": 0.768911,
+      "summary": {
+        "correctness": 0.5311111111111112,
+        "fullyCorrect": {
+          "n": 2,
+          "of": 15,
+          "rate": 0.13333333333333333
+        },
+        "citationPrecisionLines": {
+          "n": 80,
+          "of": 80,
+          "rate": 1
+        },
+        "citationPrecisionFile": {
+          "n": 5,
+          "of": 13,
+          "rate": 0.38461538461538464
+        },
+        "citationRecall": {
+          "n": 19,
+          "of": 47,
+          "rate": 0.40425531914893614
+        }
+      },
+      "questions": [
+        {
+          "id": "S1",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 4,
+            "contradicted": 0,
+            "missing": 2,
+            "total": 6
+          },
+          "toolCalls": 4,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.028681200000000004
+        },
+        {
+          "id": "S2",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 4,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 5
+          },
+          "toolCalls": 8,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.0364271
+        },
+        {
+          "id": "S3",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 4,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 4
+          },
+          "toolCalls": 8,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.0442064
+        },
+        {
+          "id": "S4",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "toolCalls": 5,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.025764899999999997
+        },
+        {
+          "id": "S5",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 4
+          },
+          "toolCalls": 4,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.022478100000000004
+        },
+        {
+          "id": "S6",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 4
+          },
+          "toolCalls": 2,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.0112821
+        },
+        {
+          "id": "S7",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 2,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 3
+          },
+          "toolCalls": 6,
+          "truncatedToolResults": 1,
+          "turnsExhausted": false,
+          "costUsd": 0.0637552
+        },
+        {
+          "id": "S8",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 2,
+            "contradicted": 1,
+            "missing": 0,
+            "total": 3
+          },
+          "toolCalls": 10,
+          "truncatedToolResults": 1,
+          "turnsExhausted": false,
+          "costUsd": 0.07505590000000001
+        },
+        {
+          "id": "S9",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 2,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 3
+          },
+          "toolCalls": 4,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.0353818
+        },
+        {
+          "id": "S10",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 1,
+            "contradicted": 1,
+            "missing": 1,
+            "total": 3
+          },
+          "toolCalls": 17,
+          "truncatedToolResults": 2,
+          "turnsExhausted": true,
+          "costUsd": 0.1270402
+        },
+        {
+          "id": "S11",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 2,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 3
+          },
+          "toolCalls": 4,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.0480974
+        },
+        {
+          "id": "M1",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 7,
+            "total": 7
+          },
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.005064000000000001
+        },
+        {
+          "id": "M2",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 2,
+            "total": 2
+          },
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.007883
+        },
+        {
+          "id": "M3",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 3,
+            "total": 3
+          },
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.007463
+        },
+        {
+          "id": "M4",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 2,
+            "total": 2
+          },
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.0050055
+        },
+        {
+          "id": "A1",
+          "expect": "follow-up",
+          "behaviour": "follow-up",
+          "facts": null,
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.00448
+        },
+        {
+          "id": "A2",
+          "expect": "follow-up",
+          "behaviour": "follow-up",
+          "facts": null,
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.0037960000000000003
+        },
+        {
+          "id": "A3",
+          "expect": "follow-up",
+          "behaviour": "follow-up",
+          "facts": null,
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.020943
+        },
+        {
+          "id": "A4",
+          "expect": "follow-up",
+          "behaviour": "follow-up",
+          "facts": null,
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.004390000000000001
+        },
+        {
+          "id": "U1",
+          "expect": "abstain",
+          "behaviour": "abstain",
+          "facts": null,
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.003886
+        },
+        {
+          "id": "U2",
+          "expect": "abstain",
+          "behaviour": "abstain",
+          "facts": null,
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.004816
+        },
+        {
+          "id": "U3",
+          "expect": "abstain",
+          "behaviour": "abstain",
+          "facts": null,
+          "toolCalls": 2,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.033470599999999996
+        },
+        {
+          "id": "U4",
+          "expect": "abstain",
+          "behaviour": "abstain",
+          "facts": null,
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.015098
+        }
+      ]
+    },
+    {
+      "label": "before4",
+      "runId": "2026-11-13T18-39-26-069Z-tools-only",
+      "model": "claude-sonnet-5-5",
+      "judgeModel": "claude-sonnet-5-5",
+      "arm": "tools-only",
+      "spentUsd": 0.634932,
+      "summary": {
+        "correctness": 0.5555555555555556,
+        "fullyCorrect": {
+          "n": 5,
+          "of": 15,
+          "rate": 0.3333333333333333
+        },
+        "citationPrecisionLines": {
+          "n": 78,
+          "of": 78,
+          "rate": 1
+        },
+        "citationPrecisionFile": {
+          "n": 2,
+          "of": 8,
+          "rate": 0.25
+        },
+        "citationRecall": {
+          "n": 18,
+          "of": 47,
+          "rate": 0.3829787234042553
+        }
+      },
+      "questions": [
+        {
+          "id": "S1",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 3,
+            "total": 6
+          },
+          "toolCalls": 3,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.021547900000000002
+        },
+        {
+          "id": "S2",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 5,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 5
+          },
+          "toolCalls": 8,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.0361164
+        },
+        {
+          "id": "S3",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 4,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 4
+          },
+          "toolCalls": 13,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.05722180000000001
+        },
+        {
+          "id": "S4",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "toolCalls": 8,
+          "truncatedToolResults": 1,
+          "turnsExhausted": false,
+          "costUsd": 0.034371900000000004
+        },
+        {
+          "id": "S5",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 4
+          },
+          "toolCalls": 3,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.0174846
+        },
+        {
+          "id": "S6",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 4
+          },
+          "toolCalls": 4,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.016919899999999998
+        },
+        {
+          "id": "S7",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "toolCalls": 5,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.03530779999999999
+        },
+        {
+          "id": "S8",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "toolCalls": 9,
+          "truncatedToolResults": 1,
+          "turnsExhausted": false,
+          "costUsd": 0.057965499999999996
+        },
+        {
+          "id": "S9",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 2,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 3
+          },
+          "toolCalls": 3,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.0175328
+        },
+        {
+          "id": "S10",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 3,
+            "total": 3
+          },
+          "toolCalls": 14,
+          "truncatedToolResults": 0,
+          "turnsExhausted": true,
+          "costUsd": 0.0933158
+        },
+        {
+          "id": "S11",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 2,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 3
+          },
+          "toolCalls": 5,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.029900000000000003
+        },
+        {
+          "id": "M1",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 7,
+            "total": 7
+          },
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.005824
+        },
+        {
+          "id": "M2",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 2,
+            "total": 2
+          },
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.005409400000000001
+        },
+        {
+          "id": "M3",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 3,
+            "total": 3
+          },
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.0064698
+        },
+        {
+          "id": "M4",
+          "expect": "answer",
+          "behaviour": "follow-up",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 2,
+            "total": 2
+          },
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.0043095
+        },
+        {
+          "id": "A1",
+          "expect": "follow-up",
+          "behaviour": "follow-up",
+          "facts": null,
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.00466
+        },
+        {
+          "id": "A2",
+          "expect": "follow-up",
+          "behaviour": "follow-up",
+          "facts": null,
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.004316
+        },
+        {
+          "id": "A3",
+          "expect": "follow-up",
+          "behaviour": "follow-up",
+          "facts": null,
+          "toolCalls": 1,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.0148418
+        },
+        {
+          "id": "A4",
+          "expect": "follow-up",
+          "behaviour": "follow-up",
+          "facts": null,
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.004350000000000001
+        },
+        {
+          "id": "U1",
+          "expect": "abstain",
+          "behaviour": "abstain",
+          "facts": null,
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.004436000000000001
+        },
+        {
+          "id": "U2",
+          "expect": "abstain",
+          "behaviour": "abstain",
+          "facts": null,
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.005215999999999999
+        },
+        {
+          "id": "U3",
+          "expect": "abstain",
+          "behaviour": "abstain",
+          "facts": null,
+          "toolCalls": 3,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.0158113
+        },
+        {
+          "id": "U4",
+          "expect": "abstain",
+          "behaviour": "abstain",
+          "facts": null,
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.004832
+        }
+      ]
+    },
+    {
+      "label": "before5",
+      "runId": "2026-11-13T18-47-55-645Z-tools-only",
+      "model": "claude-sonnet-5-5",
+      "judgeModel": "claude-sonnet-5-5",
+      "arm": "tools-only",
+      "spentUsd": 0.656414,
+      "summary": {
+        "correctness": 0.5722222222222223,
+        "fullyCorrect": {
+          "n": 6,
+          "of": 15,
+          "rate": 0.4
+        },
+        "citationPrecisionLines": {
+          "n": 79,
+          "of": 79,
+          "rate": 1
+        },
+        "citationPrecisionFile": {
+          "n": 4,
+          "of": 9,
+          "rate": 0.4444444444444444
+        },
+        "citationRecall": {
+          "n": 19,
+          "of": 47,
+          "rate": 0.40425531914893614
+        }
+      },
+      "questions": [
+        {
+          "id": "S1",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 3,
+            "total": 6
+          },
+          "toolCalls": 3,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.022957599999999995
+        },
+        {
+          "id": "S2",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 5,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 5
+          },
+          "toolCalls": 10,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.04037929999999999
+        },
+        {
+          "id": "S3",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 4,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 4
+          },
+          "toolCalls": 12,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.05492749999999999
+        },
+        {
+          "id": "S4",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "toolCalls": 6,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.0345358
+        },
+        {
+          "id": "S5",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 4,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 4
+          },
+          "toolCalls": 4,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.021298499999999998
+        },
+        {
+          "id": "S6",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 4
+          },
+          "toolCalls": 2,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.0104596
+        },
+        {
+          "id": "S7",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "toolCalls": 9,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.047407200000000004
+        },
+        {
+          "id": "S8",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "toolCalls": 12,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.0643738
+        },
+        {
+          "id": "S9",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 2,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 3
+          },
+          "toolCalls": 3,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.0165206
+        },
+        {
+          "id": "S10",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 1,
+            "contradicted": 0,
+            "missing": 2,
+            "total": 3
+          },
+          "toolCalls": 16,
+          "truncatedToolResults": 0,
+          "turnsExhausted": true,
+          "costUsd": 0.0982565
+        },
+        {
+          "id": "S11",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 1,
+            "contradicted": 0,
+            "missing": 2,
+            "total": 3
+          },
+          "toolCalls": 5,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.0318112
+        },
+        {
+          "id": "M1",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 7,
+            "total": 7
+          },
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.004964
+        },
+        {
+          "id": "M2",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 2,
+            "total": 2
+          },
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.0058394
+        },
+        {
+          "id": "M3",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 3,
+            "total": 3
+          },
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.0061297999999999995
+        },
+        {
+          "id": "M4",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 2,
+            "total": 2
+          },
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.0044895000000000004
+        },
+        {
+          "id": "A1",
+          "expect": "follow-up",
+          "behaviour": "follow-up",
+          "facts": null,
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.00484
+        },
+        {
+          "id": "A2",
+          "expect": "follow-up",
+          "behaviour": "follow-up",
+          "facts": null,
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.004306000000000001
+        },
+        {
+          "id": "A3",
+          "expect": "follow-up",
+          "behaviour": "follow-up",
+          "facts": null,
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.0065254
+        },
+        {
+          "id": "A4",
+          "expect": "follow-up",
+          "behaviour": "follow-up",
+          "facts": null,
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.00438
+        },
+        {
+          "id": "U1",
+          "expect": "abstain",
+          "behaviour": "abstain",
+          "facts": null,
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.004386
+        },
+        {
+          "id": "U2",
+          "expect": "abstain",
+          "behaviour": "abstain",
+          "facts": null,
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.0051459999999999995
+        },
+        {
+          "id": "U3",
+          "expect": "abstain",
+          "behaviour": "abstain",
+          "facts": null,
+          "toolCalls": 3,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.0148123
+        },
+        {
+          "id": "U4",
+          "expect": "abstain",
+          "behaviour": "abstain",
+          "facts": null,
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.004052
+        }
+      ]
+    },
+    {
+      "label": "after3",
+      "runId": "2026-11-13T18-35-26-060Z-tools-only",
+      "model": "claude-sonnet-5-5",
+      "judgeModel": "claude-sonnet-5-5",
+      "arm": "tools-only",
+      "spentUsd": 0.622608,
+      "summary": {
+        "correctness": 0.5166666666666667,
+        "fullyCorrect": {
+          "n": 3,
+          "of": 15,
+          "rate": 0.2
+        },
+        "citationPrecisionLines": {
+          "n": 78,
+          "of": 78,
+          "rate": 1
+        },
+        "citationPrecisionFile": {
+          "n": 2,
+          "of": 9,
+          "rate": 0.2222222222222222
+        },
+        "citationRecall": {
+          "n": 20,
+          "of": 47,
+          "rate": 0.425531914893617
+        }
+      },
+      "questions": [
+        {
+          "id": "S1",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 3,
+            "total": 6
+          },
+          "toolCalls": 3,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.0226996
+        },
+        {
+          "id": "S2",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 5,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 5
+          },
+          "toolCalls": 8,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.0391301
+        },
+        {
+          "id": "S3",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 4
+          },
+          "toolCalls": 9,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.0515813
+        },
+        {
+          "id": "S4",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "toolCalls": 6,
+          "truncatedToolResults": 1,
+          "turnsExhausted": false,
+          "costUsd": 0.031143
+        },
+        {
+          "id": "S5",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 4
+          },
+          "toolCalls": 4,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.021520900000000003
+        },
+        {
+          "id": "S6",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 4
+          },
+          "toolCalls": 2,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.0113296
+        },
+        {
+          "id": "S7",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 2,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 3
+          },
+          "toolCalls": 6,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.044440999999999994
+        },
+        {
+          "id": "S8",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "toolCalls": 9,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.049351900000000004
+        },
+        {
+          "id": "S9",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 2,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 3
+          },
+          "toolCalls": 3,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.016486800000000003
+        },
+        {
+          "id": "S10",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 1,
+            "contradicted": 0,
+            "missing": 2,
+            "total": 3
+          },
+          "toolCalls": 13,
+          "truncatedToolResults": 1,
+          "turnsExhausted": true,
+          "costUsd": 0.10512550000000001
+        },
+        {
+          "id": "S11",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 1,
+            "contradicted": 0,
+            "missing": 2,
+            "total": 3
+          },
+          "toolCalls": 6,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.0281134
+        },
+        {
+          "id": "M1",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 7,
+            "total": 7
+          },
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.005183999999999999
+        },
+        {
+          "id": "M2",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 2,
+            "total": 2
+          },
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.006519400000000001
+        },
+        {
+          "id": "M3",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 3,
+            "total": 3
+          },
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.0061497999999999995
+        },
+        {
+          "id": "M4",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 2,
+            "total": 2
+          },
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.004059500000000001
+        },
+        {
+          "id": "A1",
+          "expect": "follow-up",
+          "behaviour": "follow-up",
+          "facts": null,
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.004300000000000001
+        },
+        {
+          "id": "A2",
+          "expect": "follow-up",
+          "behaviour": "follow-up",
+          "facts": null,
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.003866
+        },
+        {
+          "id": "A3",
+          "expect": "follow-up",
+          "behaviour": "follow-up",
+          "facts": null,
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.0076054
+        },
+        {
+          "id": "A4",
+          "expect": "follow-up",
+          "behaviour": "follow-up",
+          "facts": null,
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.004
+        },
+        {
+          "id": "U1",
+          "expect": "abstain",
+          "behaviour": "abstain",
+          "facts": null,
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.0037560000000000007
+        },
+        {
+          "id": "U2",
+          "expect": "abstain",
+          "behaviour": "abstain",
+          "facts": null,
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.005135999999999999
+        },
+        {
+          "id": "U3",
+          "expect": "abstain",
+          "behaviour": "abstain",
+          "facts": null,
+          "toolCalls": 2,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.0139571
+        },
+        {
+          "id": "U4",
+          "expect": "abstain",
+          "behaviour": "abstain",
+          "facts": null,
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.004452
+        }
+      ]
+    },
+    {
+      "label": "after4",
+      "runId": "2026-11-13T18-43-30-956Z-tools-only",
+      "model": "claude-sonnet-5-5",
+      "judgeModel": "claude-sonnet-5-5",
+      "arm": "tools-only",
+      "spentUsd": 0.72087,
+      "summary": {
+        "correctness": 0.5666666666666667,
+        "fullyCorrect": {
+          "n": 4,
+          "of": 15,
+          "rate": 0.26666666666666666
+        },
+        "citationPrecisionLines": {
+          "n": 78,
+          "of": 79,
+          "rate": 0.9873417721518988
+        },
+        "citationPrecisionFile": {
+          "n": 3,
+          "of": 12,
+          "rate": 0.25
+        },
+        "citationRecall": {
+          "n": 20,
+          "of": 47,
+          "rate": 0.425531914893617
+        }
+      },
+      "questions": [
+        {
+          "id": "S1",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 4,
+            "contradicted": 0,
+            "missing": 2,
+            "total": 6
+          },
+          "toolCalls": 5,
+          "truncatedToolResults": 1,
+          "turnsExhausted": false,
+          "costUsd": 0.0389957
+        },
+        {
+          "id": "S2",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 5,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 5
+          },
+          "toolCalls": 13,
+          "truncatedToolResults": 0,
+          "turnsExhausted": true,
+          "costUsd": 0.0669392
+        },
+        {
+          "id": "S3",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 4,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 4
+          },
+          "toolCalls": 10,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.0467012
+        },
+        {
+          "id": "S4",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "toolCalls": 6,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.0314192
+        },
+        {
+          "id": "S5",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 4
+          },
+          "toolCalls": 4,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.022603400000000003
+        },
+        {
+          "id": "S6",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 4
+          },
+          "toolCalls": 2,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.010647099999999998
+        },
+        {
+          "id": "S7",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "toolCalls": 5,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.037814900000000005
+        },
+        {
+          "id": "S8",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 2,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 3
+          },
+          "toolCalls": 7,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.0420016
+        },
+        {
+          "id": "S9",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 2,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 3
+          },
+          "toolCalls": 3,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.016596800000000002
+        },
+        {
+          "id": "S10",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 2,
+            "contradicted": 1,
+            "missing": 0,
+            "total": 3
+          },
+          "toolCalls": 17,
+          "truncatedToolResults": 2,
+          "turnsExhausted": true,
+          "costUsd": 0.1417566
+        },
+        {
+          "id": "S11",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 1,
+            "contradicted": 0,
+            "missing": 2,
+            "total": 3
+          },
+          "toolCalls": 4,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.0277771
+        },
+        {
+          "id": "M1",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 7,
+            "total": 7
+          },
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.005674
+        },
+        {
+          "id": "M2",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 2,
+            "total": 2
+          },
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.006219400000000001
+        },
+        {
+          "id": "M3",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 3,
+            "total": 3
+          },
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.0058097999999999995
+        },
+        {
+          "id": "M4",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 2,
+            "total": 2
+          },
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.0049395
+        },
+        {
+          "id": "A1",
+          "expect": "follow-up",
+          "behaviour": "follow-up",
+          "facts": null,
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.00412
+        },
+        {
+          "id": "A2",
+          "expect": "follow-up",
+          "behaviour": "follow-up",
+          "facts": null,
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.003806
+        },
+        {
+          "id": "A3",
+          "expect": "follow-up",
+          "behaviour": "answer",
+          "facts": null,
+          "toolCalls": 2,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.0206718
+        },
+        {
+          "id": "A4",
+          "expect": "follow-up",
+          "behaviour": "follow-up",
+          "facts": null,
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.004050000000000001
+        },
+        {
+          "id": "U1",
+          "expect": "abstain",
+          "behaviour": "abstain",
+          "facts": null,
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.0046960000000000005
+        },
+        {
+          "id": "U2",
+          "expect": "abstain",
+          "behaviour": "abstain",
+          "facts": null,
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.004756
+        },
+        {
+          "id": "U3",
+          "expect": "abstain",
+          "behaviour": "abstain",
+          "facts": null,
+          "toolCalls": 2,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.0129092
+        },
+        {
+          "id": "U4",
+          "expect": "abstain",
+          "behaviour": "abstain",
+          "facts": null,
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.005082
+        }
+      ]
+    },
+    {
+      "label": "after5",
+      "runId": "2026-11-13T18-52-01-509Z-tools-only",
+      "model": "claude-sonnet-5-5",
+      "judgeModel": "claude-sonnet-5-5",
+      "arm": "tools-only",
+      "spentUsd": 0.639871,
+      "summary": {
+        "correctness": 0.5644444444444444,
+        "fullyCorrect": {
+          "n": 4,
+          "of": 15,
+          "rate": 0.26666666666666666
+        },
+        "citationPrecisionLines": {
+          "n": 91,
+          "of": 91,
+          "rate": 1
+        },
+        "citationPrecisionFile": {
+          "n": 3,
+          "of": 12,
+          "rate": 0.25
+        },
+        "citationRecall": {
+          "n": 18,
+          "of": 47,
+          "rate": 0.3829787234042553
+        }
+      },
+      "questions": [
+        {
+          "id": "S1",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 3,
+            "total": 6
+          },
+          "toolCalls": 3,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.0220851
+        },
+        {
+          "id": "S2",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 4,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 5
+          },
+          "toolCalls": 7,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.0344924
+        },
+        {
+          "id": "S3",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 4,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 4
+          },
+          "toolCalls": 8,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.0485717
+        },
+        {
+          "id": "S4",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "toolCalls": 6,
+          "truncatedToolResults": 1,
+          "turnsExhausted": false,
+          "costUsd": 0.0313272
+        },
+        {
+          "id": "S5",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 4
+          },
+          "toolCalls": 3,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.019528900000000002
+        },
+        {
+          "id": "S6",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 4
+          },
+          "toolCalls": 2,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.0105721
+        },
+        {
+          "id": "S7",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "toolCalls": 6,
+          "truncatedToolResults": 1,
+          "turnsExhausted": false,
+          "costUsd": 0.039730600000000005
+        },
+        {
+          "id": "S8",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "toolCalls": 7,
+          "truncatedToolResults": 1,
+          "turnsExhausted": false,
+          "costUsd": 0.0390061
+        },
+        {
+          "id": "S9",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 2,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 3
+          },
+          "toolCalls": 3,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.0177246
+        },
+        {
+          "id": "S10",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 1,
+            "contradicted": 1,
+            "missing": 1,
+            "total": 3
+          },
+          "toolCalls": 17,
+          "truncatedToolResults": 2,
+          "turnsExhausted": true,
+          "costUsd": 0.1311458
+        },
+        {
+          "id": "S11",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 2,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 3
+          },
+          "toolCalls": 4,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.025274
+        },
+        {
+          "id": "M1",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 7,
+            "total": 7
+          },
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.005154
+        },
+        {
+          "id": "M2",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 2,
+            "total": 2
+          },
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.005509400000000001
+        },
+        {
+          "id": "M3",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 3,
+            "total": 3
+          },
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.0055198
+        },
+        {
+          "id": "M4",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 2,
+            "total": 2
+          },
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.0044295
+        },
+        {
+          "id": "A1",
+          "expect": "follow-up",
+          "behaviour": "follow-up",
+          "facts": null,
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.00454
+        },
+        {
+          "id": "A2",
+          "expect": "follow-up",
+          "behaviour": "follow-up",
+          "facts": null,
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.003886
+        },
+        {
+          "id": "A3",
+          "expect": "follow-up",
+          "behaviour": "follow-up",
+          "facts": null,
+          "toolCalls": 2,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.0177318
+        },
+        {
+          "id": "A4",
+          "expect": "follow-up",
+          "behaviour": "follow-up",
+          "facts": null,
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.00404
+        },
+        {
+          "id": "U1",
+          "expect": "abstain",
+          "behaviour": "abstain",
+          "facts": null,
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.004686
+        },
+        {
+          "id": "U2",
+          "expect": "abstain",
+          "behaviour": "abstain",
+          "facts": null,
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.005195999999999999
+        },
+        {
+          "id": "U3",
+          "expect": "abstain",
+          "behaviour": "abstain",
+          "facts": null,
+          "toolCalls": 3,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.0151642
+        },
+        {
+          "id": "U4",
+          "expect": "abstain",
+          "behaviour": "abstain",
+          "facts": null,
+          "toolCalls": 0,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "costUsd": 0.005012000000000001
+        }
+      ]
+    }
+  ]
+}
