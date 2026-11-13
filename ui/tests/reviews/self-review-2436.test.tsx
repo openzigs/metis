@@ -43,7 +43,9 @@ vi.mock("next/navigation", async () => {
   };
 });
 
+import { QueryClient } from "@tanstack/react-query";
 import { RequestReviewCard } from "@/components/reviews/request-review-card";
+import { reviewGateKey } from "@/lib/publishing-api";
 import { reviewsApi, type ReviewRequest } from "@/lib/reviews-api";
 import ReviewDetailPage, { canDecide } from "@/app/(authed)/reviews/[id]/page";
 
@@ -57,8 +59,8 @@ beforeEach(() => {
 });
 
 describe("the reviewer picker (#2436)", () => {
-  function openPicker(canApprove: boolean) {
-    const Wrapper = makeWrapper({ withAuth: false });
+  function openPicker(canApprove: boolean, queryClient?: QueryClient) {
+    const Wrapper = makeWrapper({ withAuth: false, ...(queryClient ? { queryClient } : {}) });
     render(
       <Wrapper>
         <RequestReviewCard
@@ -94,6 +96,15 @@ describe("the reviewer picker (#2436)", () => {
     expect(screen.getByTestId("request-review-needs-reviewer")).toHaveTextContent(
       "You can't review your own request.",
     );
+  });
+
+  it("does not offer them without requirement.approve even with the setting cached", async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    qc.setQueryData(reviewGateKey("p1"), gate(true));
+    openPicker(false, qc);
+
+    expect(await screen.findByRole("button", { name: "Add Colleague" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Add Me" })).not.toBeInTheDocument();
   });
 
   it("does not offer them without requirement.approve, whatever the project allows", async () => {
@@ -150,9 +161,9 @@ describe("the review page's decision bar for the requester (#2436)", () => {
     role: "coordinator",
     permissions: ["requirement.approve", "review.decide"],
   };
-  function renderPage(user: AuthUser = ME) {
+  function renderPage(user: AuthUser = ME, queryClient?: QueryClient) {
     vi.mocked(reviewsApi.get).mockResolvedValue({ review: ownReview(), history: [] } as never);
-    const Wrapper = makeWrapper({ initialUser: user });
+    const Wrapper = makeWrapper({ initialUser: user, ...(queryClient ? { queryClient } : {}) });
     render(
       <Wrapper>
         <ReviewDetailPage />
@@ -172,6 +183,16 @@ describe("the review page's decision bar for the requester (#2436)", () => {
     renderPage();
     await screen.findByRole("heading", { name: "Solo sign-off" });
     await vi.waitFor(() => expect(gateGet).toHaveBeenCalled());
+    expect(screen.queryByTestId("decision-bar")).not.toBeInTheDocument();
+  });
+
+  // The setting may already be cached (the Publishing page's Approval gate
+  // card reads the same key): it alone never lets the requester decide.
+  it("hides it from a requester without requirement.approve even with the setting cached", async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    qc.setQueryData(reviewGateKey("p-1"), gate(true));
+    renderPage({ ...ME, role: "developer", permissions: ["review.decide"] }, qc);
+    await screen.findByRole("heading", { name: "Solo sign-off" });
     expect(screen.queryByTestId("decision-bar")).not.toBeInTheDocument();
   });
 
