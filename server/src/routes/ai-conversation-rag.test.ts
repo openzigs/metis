@@ -100,13 +100,14 @@ describe("buildAutoRagContext — conversation-aware searches (#2240)", () => {
     expect(out).toContain("[3] refund-b.md#0");
   });
 
-  it("keeps at most eight fused excerpts", async () => {
+  it("keeps at most eight of the user's own excerpts, and three more of the earlier topic's", async () => {
     search.mockImplementation(async (_p: string, q: string) => ({
       hits: Array.from({ length: 8 }, (_, i) => hit(`${q.length}-${i}`)),
     }));
     const cap = capture();
     await buildAutoRagContext("p1", followUp, "u1", deps(), cap);
-    expect(cap.sources).toBe(8);
+    // #2316 — the earlier topic's finds are added, never swapped in for the user's own.
+    expect(cap.sources).toBe(11);
   });
 
   // PR #2266 panel — after a refund answer that ended on a question, a new
@@ -136,7 +137,7 @@ describe("buildAutoRagContext — conversation-aware searches (#2240)", () => {
     expect(cap.excerpts!.map((e) => e.chunkId)).toEqual(["reset-1"]);
   });
 
-  it("gives the earlier topic at most 3 of the 8 slots on a follow-up", async () => {
+  it("keeps all 8 of the user's own excerpts on a follow-up, and adds at most 3 of the earlier topic's", async () => {
     search.mockImplementation(async (_p: string, q: string) => ({
       hits: Array.from({ length: 8 }, (_, i) =>
         hit(q === "product B" ? `own-${i}` : `earlier-${i}`),
@@ -145,8 +146,9 @@ describe("buildAutoRagContext — conversation-aware searches (#2240)", () => {
     const cap = capture();
     await buildAutoRagContext("p1", followUp, "u1", deps(), cap);
     const ids = cap.excerpts!.map((e) => e.chunkId);
-    expect(ids).toHaveLength(8);
-    expect(ids.filter((id) => id.startsWith("earlier-")).length).toBeLessThanOrEqual(3);
+    // #2316 (F2) — none of the user's own 8 is pushed out.
+    expect(ids.filter((id) => id.startsWith("own-"))).toHaveLength(8);
+    expect(ids.filter((id) => id.startsWith("earlier-"))).toHaveLength(3);
     expect(ids[0]).toBe("own-0");
   });
 
@@ -454,8 +456,9 @@ describe("buildAutoRagContext — relevance floor (#2241)", () => {
     }));
     const cap = capture();
     await buildAutoRagContext("p1", followUp, "u1", deps(), cap);
-    // From 8-deep lists the weak h1 left 7: h8, which the earlier topic's hit
-    // had pushed past the cut, takes its slot.
+    // From 8-deep lists the weak h1 left 7 of the user's own: h9, past the
+    // 8-deep cut, takes its slot, and the earlier topic's hit is added beside
+    // the user's 8 (#2316), not swapped in.
     expect(cap.excerpts!.map((e) => e.chunkId)).toEqual([
       "h2",
       "h3",
@@ -465,6 +468,7 @@ describe("buildAutoRagContext — relevance floor (#2241)", () => {
       "h6",
       "h7",
       "h8",
+      "h9",
     ]);
     expect(cap.belowFloor).toBe(1);
   });

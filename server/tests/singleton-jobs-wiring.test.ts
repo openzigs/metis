@@ -31,6 +31,7 @@ const mocks = vi.hoisted(() => ({
   startReplacedSecretSweep: vi.fn(),
   reconcileStrandedGeneratedDocPublications: vi.fn(),
   backfillSecretBindings: vi.fn(),
+  backfillChangeRequestTitles: vi.fn(),
   bootLog: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
@@ -82,6 +83,14 @@ vi.mock(
   partial("backfillSecretBindings", mocks.backfillSecretBindings),
 );
 
+// #2341 — mocked so this test pins the CALL: the real backfill against a test
+// database with no analyses table only logs a warning, so a no-op in its place
+// would pass unnoticed.
+vi.mock(
+  "../src/lib/analysis/change-request.js",
+  partial("backfillChangeRequestTitles", mocks.backfillChangeRequestTitles),
+);
+
 // #201 — the bootstrap logger, so a test can read which failure was reported.
 vi.mock("../src/lib/logger.js", async (importOriginal) => {
   const original = await importOriginal<typeof import("../src/lib/logger.js")>();
@@ -111,6 +120,7 @@ describe("SingletonJobs registration", () => {
     }
     mocks.reconcileStrandedGeneratedDocPublications.mockResolvedValue({});
     mocks.backfillSecretBindings.mockResolvedValue({});
+    mocks.backfillChangeRequestTitles.mockResolvedValue({ scanned: 0, updated: 0 });
   });
 
   afterEach(() => {
@@ -237,6 +247,38 @@ describe("SingletonJobs registration", () => {
     };
     jobs.stop();
     expect(handle.stop).toHaveBeenCalledTimes(1);
+  });
+
+  it("#2341 — backfills change request titles once on the leader, never on a follower", async () => {
+    // A follower holds a SingletonJobs it never starts (`onChange(false)`).
+    const follower = new SingletonJobs(fakeSchedulerBootstrap() as never);
+    follower.stop();
+    expect(mocks.backfillChangeRequestTitles).not.toHaveBeenCalled();
+
+    mocks.backfillChangeRequestTitles.mockResolvedValue({ scanned: 3, updated: 2 });
+    const leader = new SingletonJobs(fakeSchedulerBootstrap() as never);
+    leader.start();
+    leader.start();
+    expect(mocks.backfillChangeRequestTitles).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() =>
+      expect(mocks.bootLog.info).toHaveBeenCalledWith("Change request titles backfilled", {
+        updated: 2,
+      }),
+    );
+    leader.stop();
+  });
+
+  it("#2341 — reports a title backfill failure without failing the leader's start", async () => {
+    mocks.backfillChangeRequestTitles.mockRejectedValue(new Error("no such table"));
+    const jobs = new SingletonJobs(fakeSchedulerBootstrap() as never);
+    jobs.start();
+    await vi.waitFor(() =>
+      expect(mocks.bootLog.warn).toHaveBeenCalledWith("Change request title backfill failed", {
+        error: "no such table",
+      }),
+    );
+    expect(mocks.startWorkspaceUsageRollup).toHaveBeenCalledTimes(1);
+    jobs.stop();
   });
 
   it("does not double-register the rollup when start() is called twice", () => {

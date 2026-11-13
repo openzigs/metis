@@ -312,6 +312,40 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         // Ola cannot read the source project: not readable at all.
         expect((await get("ola", `/${id}`)).status).toBe(404);
       });
+
+      it("#2341 — lists the checks started from one run's requirements, each row re-filtered", async () => {
+        // Stored directly, not started: starts are rate-limited per user, and
+        // the tests after this one start their own.
+        const check = (id: string, sourceRequirementId: string | null) =>
+          db.portfolioAssessment.create({
+            data: {
+              id,
+              statement: RESET_STATEMENT,
+              sourceRequirementId,
+              sourceProjectId: PROJECTS[0].id,
+              scope: "all-accessible",
+              status: "completed",
+              createdById: "ana",
+            },
+          });
+        const id = (await check("pa-2341-run", REQ_A)).id;
+        // A check of the same text NOT started from the requirement is not the run's.
+        const unrelated = (await check("pa-2341-text", null)).id;
+
+        const forRun = await get("ana", `?analysisId=ana-${REQ_A}`);
+        expect(forRun.status).toBe(200);
+        const ids = forRun.body.data.map((r: { id: string }) => r.id);
+        expect(ids).toContain(id);
+        expect(ids).not.toContain(unrelated);
+        expect(forRun.body.data.find((r: { id: string }) => r.id === id).status).toBe("completed");
+        // Another run's requirement: none of these.
+        const other = await get("ana", `?analysisId=ana-${REQ_B}`);
+        expect(other.body.data.map((r: { id: string }) => r.id)).not.toContain(id);
+        // Ola cannot read the run's project: its checks are not listed to her.
+        expect((await get("ola", `?analysisId=ana-${REQ_A}`)).body.data).toEqual([]);
+        expect((await get("ana", `?analysisId=ana-${REQ_A}&productId=${P1}`)).status).toBe(400);
+        expect((await get("ana", `?analysisId=${"x".repeat(65)}`)).status).toBe(400);
+      });
     });
 
     it("202 → poll → completed, read back over GET, with job events", async () => {

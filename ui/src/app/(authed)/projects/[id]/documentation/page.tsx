@@ -17,7 +17,7 @@ import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { apiFetch } from "@/lib/api-client";
 import { analysisApi } from "@/lib/analysis-api";
-import { formatChangeRunLabels } from "@/lib/format-change-run-label";
+import { formatChangeRunLabels, formatRunOptionLabel } from "@/lib/format-change-run-label";
 import { useAppMutation } from "@/lib/use-app-mutation";
 import {
   useProjectJobEvents,
@@ -1200,7 +1200,7 @@ function GenerateForm({
               const label = runLabels.get(analysis.id);
               return (
                 <option key={analysis.id} value={analysis.id}>
-                  {label ? `${label.primary} · ${label.shortId}` : analysis.id}
+                  {label ? `${formatRunOptionLabel(label)} · ${label.shortId}` : analysis.id}
                 </option>
               );
             })}

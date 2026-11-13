@@ -188,11 +188,26 @@ interface ProjectRanking {
 }
 
 /**
+ * #2279 — the relevance the relative floor is measured against: the best hit
+ * the user's own words found, whenever they found any. A hit only a follow-up's
+ * conversational search found never raises the bar, so it cannot push out a
+ * product the user's new words matched; it can still bring its own product in,
+ * since that product's relevance counts every hit it has. With no user-word
+ * hit anywhere, the best hit of any kind.
+ */
+function floorReference(rankings: readonly ProjectRanking[]): number {
+  const userWord = rankings.flatMap((r) => r.hits.filter((h) => !r.contextualOnly?.has(h.chunkId)));
+  const pool = userWord.length > 0 ? userWord : rankings.flatMap((r) => r.hits);
+  return Math.max(0, ...pool.map((h) => h.score));
+}
+
+/**
  * #2238 — merge per-project rankings on relevance, not rank alone.
  *
  * 1. A project's relevance is its best hit's. A project below `floor` × the
- *    best project's relevance is left out: under rank fusion its first hit
- *    scored as high as the relevant project's first hit.
+ *    best relevance the user's own words found ({@link floorReference}) is
+ *    left out: under rank fusion its first hit scored as high as the relevant
+ *    project's first hit.
  * 2. The projects that remain take turns, in the order they were asked for,
  *    each giving its next hit in its own order, until `topK` hits are taken.
  *    Within a project its own ranking stands, so a hit only the keyword
@@ -213,7 +228,7 @@ export function fuseByRelevance(
   floor: number,
 ): FederatedHit[] {
   const withHits = rankings.filter((r) => r.hits.length > 0);
-  const best = Math.max(0, ...withHits.map((r) => r.relevance));
+  const best = floorReference(withHits);
   const kept = withHits.filter((r) => best <= 0 || r.relevance >= floor * best);
   const out: FederatedHit[] = [];
   const seen = new Set<string>();
@@ -236,9 +251,9 @@ export function fuseByRelevance(
 /**
  * #2279 — {@link fuseByRelevance}, with the hits only a follow-up's
  * conversational search found held to a minority of the `topK` slots across
- * every project, at most `floor((topK - 1) / 2)`, as single-project chat holds
- * them (`fuseRetrievalHits`): the user's own words stay in charge of what the
- * model reads. The relevance merge is prefix-stable, so it is taken whole and
+ * every project, at most `floor((topK - 1) / 2)` (single-project chat's cap in
+ * `fuseRetrievalHits`, which since #2316 adds them beside the user's own `k`
+ * instead): the user's own words stay in charge of what the model reads. The relevance merge is prefix-stable, so it is taken whole and
  * then filled to `topK`.
  */
 export function fuseCappingContextual(

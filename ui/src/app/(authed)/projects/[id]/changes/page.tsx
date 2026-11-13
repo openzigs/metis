@@ -14,14 +14,21 @@ import { changeAnalysisApi } from "@/lib/change-analysis-api";
 import { apiFetch } from "@/lib/api-client";
 import {
   formatChangeRunLabels,
+  formatRunOptionLabel,
   formatRunTimestamp,
-  shortRunId,
 } from "@/lib/format-change-run-label";
 import type { ChangeAnalysisDetail, RequirementChange } from "@metis/shared";
 import { PageHeader } from "@/components/ui/page-header";
 import { EmptyState } from "@/components/ui/empty-state";
 
-type Analysis = { id: string; status: string; startedAt: string; completedAt: string | null };
+type Analysis = {
+  id: string;
+  status: string;
+  startedAt: string;
+  completedAt: string | null;
+  /** #2341 — the change request's title. */
+  title?: string;
+};
 
 export default function ChangeAnalysisPage() {
   const params = useParams();
@@ -89,6 +96,13 @@ export default function ChangeAnalysisPage() {
   });
 
   const completedAnalyses = (analyses ?? []).filter((a) => a.status === "completed");
+  // #2341 — each run to compare by its change request's title, the date after
+  // it (sequence numbers over every run, so they match the other run lists).
+  const analysisLabels = formatChangeRunLabels(analyses ?? []).byId;
+  const analysisOption = (a: Analysis) => {
+    const label = analysisLabels.get(a.id);
+    return label ? formatRunOptionLabel(label) : formatRunTimestamp(a.startedAt);
+  };
 
   return (
     <div className="space-y-6">
@@ -114,7 +128,7 @@ export default function ChangeAnalysisPage() {
                 <option value="">Select base…</option>
                 {completedAnalyses.map((a) => (
                   <option key={a.id} value={a.id}>
-                    {formatRunTimestamp(a.startedAt)} — {shortRunId(a.id)}
+                    {analysisOption(a)}
                   </option>
                 ))}
               </select>
@@ -130,7 +144,7 @@ export default function ChangeAnalysisPage() {
                 <option value="">Select head…</option>
                 {completedAnalyses.map((a) => (
                   <option key={a.id} value={a.id}>
-                    {formatRunTimestamp(a.startedAt)} — {shortRunId(a.id)}
+                    {analysisOption(a)}
                   </option>
                 ))}
               </select>

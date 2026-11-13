@@ -416,15 +416,20 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const second = promptText(model.prompts[1]!);
       expect(second).toContain("[Beta] b-annual.md#0");
       expect(second).toContain("Beta bills annual plans monthly.");
-      expect(second).not.toContain("Alpha's client shows a banner.");
+      // Alpha stays: the user's own words matched it, and Beta's conversational-only
+      // 0.8 does not raise the floor's bar above them.
+      expect(second).toContain("Alpha's client shows a banner.");
       expect(groundingFrames(res.text)).toEqual([
         {
           status: "multi",
           projects: [
-            { projectId: ALPHA, projectName: "Alpha", sources: 0 },
+            { projectId: ALPHA, projectName: "Alpha", sources: 1 },
             { projectId: BETA, projectName: "Beta", sources: 1 },
           ],
-          sourcesUsed: [{ name: "[Beta] b-annual.md", excerpts: 1, relevance: 0.8 }],
+          sourcesUsed: [
+            { name: "[Alpha] a-client.md", excerpts: 1, relevance: 0.3 },
+            { name: "[Beta] b-annual.md", excerpts: 1, relevance: 0.8 },
+          ],
         },
       ]);
     });

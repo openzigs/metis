@@ -57,7 +57,7 @@ test.describe("New project → New change request (#2349)", () => {
       await expect(projects.wizard).toBeHidden();
       // A project with no runs opens on the start form, with its document upload.
       await expect(
-        page.getByRole("heading", { name: "Start a new analysis", exact: true }),
+        page.getByRole("heading", { name: "New change request", exact: true }),
       ).toBeVisible({ timeout: 20_000 });
     });
   });

@@ -106,6 +106,13 @@ export default function ReviewsPage() {
                         <ReviewStatusBadge status={review.status} />
                         <DueDateBadge dueAt={review.dueAt} status={review.status} />
                       </div>
+                      {/* #2341 — which change request(s) the review is about. */}
+                      {review.changeRequests && review.changeRequests.length > 0 ? (
+                        <p className="text-xs" data-testid={`review-change-requests-${review.id}`}>
+                          <span className="text-muted-foreground">Change request: </span>
+                          {review.changeRequests.map((cr) => cr.title).join(", ")}
+                        </p>
+                      ) : null}
                       <p className="text-xs text-muted-foreground">{summarize(review)}</p>
                     </Card>
                   </Link>

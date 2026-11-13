@@ -36,6 +36,7 @@ import { runImport, type RequirementStore } from "./base-importer.js";
 import type { ImporterFetchContext, MappedRequirement } from "./types.js";
 import { editedInMetisFromHistory, parseSourcePending } from "./source-sync.js";
 import { parseRequirementLabels } from "../analysis/requirement-labels.js";
+import { sourcelessRunTitle } from "../analysis/change-request.js";
 import { audit } from "../audit/audit-service.js";
 import { noteProjectRequirementsChanged } from "../docs-gen/approved-requirements-staleness.js";
 import {
@@ -355,6 +356,10 @@ export class ImportService {
         projectId,
         status: "completed",
         startedById: userId,
+        // #2341 — every run stores a title (the rule's date title: no sources).
+        startedAt: now,
+        title: sourcelessRunTitle(now),
+        titleGenerated: true,
         completedAt: now,
         metadata: JSON.stringify({ kind: "import", source: req.source, label: req.label }),
       },

@@ -1308,7 +1308,84 @@ export function specKitHandoffLabelsNotInContext(
   return [...context.components, ...context.tasks].filter((label) => !text.includes(label));
 }
 
+/**
+ * Issue #2341 — the longest change request title. A title is a label in a run
+ * list, a dropdown and a review row, not a description.
+ */
+export const CHANGE_REQUEST_TITLE_MAX = 200;
+
+/**
+ * Issue #2341 — a title as one line of plain text: every control character
+ * (a TAB pasted from a spreadsheet cell, a newline, a NUL) and every run of
+ * whitespace becomes one space, then the ends are trimmed. The rule the
+ * server's `clampTitle` applies to a generated title, so a typed title and a
+ * generated one are normalised the same way.
+ */
+export function normaliseChangeRequestTitle(raw: string): string {
+  return raw.replace(/[\u0000-\u001f\u007f\s]+/g, " ").trim();
+}
+
+/**
+ * Issue #2341 — a change request title: normalised to one line
+ * ({@link normaliseChangeRequestTitle}), then 1..{@link CHANGE_REQUEST_TITLE_MAX}
+ * characters. A control character is turned into a space, not refused, so a
+ * pasted title with a TAB is accepted; a title of nothing but control
+ * characters and spaces normalises to blank and is refused. It is stored and
+ * rendered as plain text, never as HTML or Markdown, so markup characters are
+ * allowed and shown as typed.
+ */
+export const changeRequestTitleSchema = z
+  .string()
+  .transform(normaliseChangeRequestTitle)
+  .pipe(
+    z
+      .string()
+      .min(1, "Give the change request a title")
+      .max(CHANGE_REQUEST_TITLE_MAX, `A title is at most ${CHANGE_REQUEST_TITLE_MAX} characters`),
+  );
+
+/** Issue #2341 — `PATCH /api/projects/:projectId/analyses/:id`: rename a change request. */
+export const renameAnalysisSchema = z.object({ title: changeRequestTitleSchema }).strict();
+export type RenameAnalysisInput = z.infer<typeof renameAnalysisSchema>;
+
+/**
+ * Issue #2341 — what a change request was started from, as its read shape
+ * carries it. Read from the run's own record (`metadata.documentIds` and
+ * `metadata.sourceRequirements`), which every run since #1006 writes; there is
+ * no separate table.
+ */
+export interface ChangeRequestSources {
+  /**
+   * The documents the run was limited to, each with its current display name
+   * (the source's title, else the filename). `name` is null for a document no
+   * longer in the project. Empty when the run read all of the project's
+   * documents (`allDocuments`).
+   */
+  documents: Array<{ id: string; name: string | null }>;
+  /** True when the run was not limited to chosen documents. */
+  allDocuments: boolean;
+  /** The imported tracker items the run was started from (#1006). */
+  importedItems: Array<{
+    requirementId: string;
+    title: string;
+    externalSource: string;
+    externalId: string | null;
+    externalUrl: string | null;
+  }>;
+}
+
 export const startAnalysisSchema = z.object({
+  /**
+   * Issue #2341 — the change request's title. Absent: the server names it after
+   * the first chosen document, else the first imported item.
+   */
+  title: changeRequestTitleSchema.optional(),
+  /**
+   * Issue #2341 — the run was started with "Run with defaults", so the change
+   * request says which defaults it used. Recorded only; it changes nothing the
+   * run does.
+   */
+  startedWithDefaults: z.boolean().optional(),
   documentIds: z.array(idSchema).max(100).optional(),
   /**
    * #2280 — read the selected documents again instead of reusing a saved
@@ -1579,6 +1656,20 @@ export interface AnalysisLiveAgent {
 export interface AnalysisSnapshot {
   id: string;
   projectId: string;
+  /**
+   * Issue #2341 — the change request's title, stored on every run (a run from
+   * before #2341 is backfilled at startup with the default from its sources).
+   * Never blank. Plain text. `getAnalysisSnapshot` always sets it; optional
+   * only so a payload built elsewhere (a test fixture) need not.
+   */
+  title?: string;
+  /**
+   * Issue #2341 — true when Metis proposed `title` from the run's sources, not
+   * set by anyone; false when a person typed it at start or renamed the run.
+   */
+  titleGenerated?: boolean;
+  /** Issue #2341 — the documents and imported items the run was started from. */
+  sources?: ChangeRequestSources;
   status: (typeof ANALYSIS_STATUSES)[number];
   startedAt: string;
   completedAt: string | null;
@@ -3064,7 +3155,7 @@ export type DocumentStatementKind = (typeof DOCUMENT_STATEMENT_KINDS)[number];
 export interface DocumentReadingSection {
   /** The section's heading path, `3 Booking › 3.2 Cancellation`. */
   heading: string;
-  /** `unread`: the model's reply for this section could not be read. */
+  /** `unread`: the model's reply for this section could not be read, or left it out when asked again (#2407). */
   status: "read" | "unread";
   /** Statements kept from it; 0 on a read section means it produced nothing. */
   statements: number;
