@@ -49,6 +49,31 @@ describe("reader and judge prompts", () => {
     expect(judge.userMessage.match(/\(none\)/g)).toHaveLength(3);
   });
 
+  it("does not hand arms B and C the labeller's rubric (#2250)", () => {
+    const context = { summary: "S.", glossary: [], actors: [] };
+    const prompts = [
+      buildWholeDocumentPrompt({ title: "T", text: "Doc." }).systemMessage,
+      buildSectionPrompt({ title: "T", heading: "H", sectionText: "B.", context }).systemMessage,
+    ];
+    for (const p of prompts) {
+      // The six labelled ambiguity kinds, and the labels' list of what is not a requirement.
+      for (const term of [
+        /vague/i,
+        /undefined/i,
+        /escape clause/i,
+        /contradict/i,
+        /silent/i,
+        /leaves open/i,
+        /out of scope/i,
+        /background/i,
+        /non-functional/i,
+      ]) {
+        expect(p).not.toMatch(term);
+      }
+      expect(p).toContain("word for word");
+    }
+  });
+
   it("reads a reply with a missing section or quote as empty, not as a failure", () => {
     const parsed = readerReplySchema.parse({
       requirements: [{ statement: "S", section: 7 }],

@@ -13,6 +13,7 @@ import { LedgerCostMeter, meterProvider } from "../localization/cost.js";
 import type { EvalBudget } from "../localization/runner.js";
 import { TokenLedgerMeter } from "../governing/runner.js";
 import type { AIProvider } from "../../ai/types.js";
+import { resolveFinalAnswerMaxOutputTokens } from "../../analysis/agent-runner.js";
 import type { ArmOutput, DocArm } from "./arms.js";
 import { documentKnowledge } from "./arms.js";
 import type { DocUnderstandingItem } from "./corpus.js";
@@ -35,6 +36,11 @@ export interface ReadingRecord {
   /** The arm's spend; null when a call was unpriced. */
   costUsd: number | null;
   judgeCostUsd: number | null;
+  /**
+   * #2250 — the reader's and the judge's calls no price was found for. Absent
+   * from readings written before it was kept.
+   */
+  unpricedCalls?: number;
   inputTokens: number;
   completionTokens: number;
   seconds: number;
@@ -89,6 +95,13 @@ export interface DocUnderstandingReport {
   spentUsd: number;
   judgeSpentUsd: number;
   unpricedCalls: number;
+  /**
+   * #2250 — the final-answer output cap (`ANALYSIS_FINAL_ANSWER_MAX_OUTPUT_TOKENS`,
+   * clamped to the model) the readers and the judge ran at: a reading at
+   * 16,384 and one at 21,333 are not the same measurement. Null on a report
+   * written before it was recorded.
+   */
+  outputTokenCap: number | null;
   stopped: { reason: string; armId: string; itemId: string; run: number } | null;
   provenance: { commit: string | null; dirty: boolean | null };
   corpus: Array<{
@@ -228,6 +241,7 @@ export async function runDocUnderstandingEval(
           ...(error !== undefined ? { error } : {}),
           costUsd,
           judgeCostUsd,
+          unpricedCalls: armMeter.unpricedCalls() + judgeMeter.unpricedCalls(),
           inputTokens: armMeter.inputTokens(),
           completionTokens: armMeter.completionTokens(),
           seconds,
@@ -254,6 +268,7 @@ export async function runDocUnderstandingEval(
     spentUsd: total.spentUsd(),
     judgeSpentUsd: judgeTotal.spentUsd(),
     unpricedCalls: total.unpricedCalls(),
+    outputTokenCap: resolveFinalAnswerMaxOutputTokens(opts.provider.model, opts.provider.key),
     stopped,
     provenance: opts.provenance ?? { commit: null, dirty: null },
     corpus: items.map((item) => ({
@@ -285,10 +300,18 @@ export async function runDocUnderstandingEval(
 }
 
 /**
- * One report from several invocations over the same model and commit (no
- * model is called): each invocation reads part of the corpus, so a reading
- * that takes longer than one sitting is still one reading. Records are
- * pooled per arm and every summary is recomputed from them.
+ * A record's unpriced calls. A record written before the count was kept says
+ * only whether its reader's or judge's cost went unpriced: at least one call each.
+ */
+function unpricedCallsOf(r: ReadingRecord): number {
+  return r.unpricedCalls ?? (r.costUsd === null ? 1 : 0) + (r.judgeCostUsd === null ? 1 : 0);
+}
+
+/**
+ * One report from several invocations over the same model, commit and output
+ * cap (no model is called): each invocation reads part of the corpus, so a
+ * reading that takes longer than one sitting is still one reading. Records
+ * are pooled per arm and every summary is recomputed from them.
  */
 export function combineReports(reports: readonly DocUnderstandingReport[]): DocUnderstandingReport {
   if (reports.length === 0) throw new Error("nothing to combine");
@@ -300,6 +323,11 @@ export function combineReports(reports: readonly DocUnderstandingReport[]): DocU
     if (r.provenance.commit !== first.provenance.commit) {
       throw new Error(
         `cannot combine readings at ${first.provenance.commit ?? "an unknown commit"} and ${r.provenance.commit ?? "an unknown commit"}`,
+      );
+    }
+    if ((r.outputTokenCap ?? null) !== (first.outputTokenCap ?? null)) {
+      throw new Error(
+        `cannot combine readings at output caps ${first.outputTokenCap ?? "unrecorded"} and ${r.outputTokenCap ?? "unrecorded"}`,
       );
     }
   }
@@ -331,7 +359,8 @@ export function combineReports(reports: readonly DocUnderstandingReport[]): DocU
     budgetUsd: reports.reduce((s, r) => s + r.budgetUsd, 0),
     spentUsd: records.reduce((s, r) => s + (r.costUsd ?? 0), 0) + judgeSpentUsd,
     judgeSpentUsd,
-    unpricedCalls: reports.reduce((s, r) => s + r.unpricedCalls, 0),
+    unpricedCalls: records.reduce((s, r) => s + unpricedCallsOf(r), 0),
+    outputTokenCap: first.outputTokenCap ?? null,
     stopped: reports.find((r) => r.stopped)?.stopped ?? null,
     provenance: {
       commit: first.provenance.commit,
@@ -384,6 +413,7 @@ export function toMarkdownReport(report: DocUnderstandingReport): string {
   lines.push(
     `Model: **${report.model}** · Judge: **${report.judgeModel}** · Runs requested: **${report.runsRequested}** · ` +
       `Budget: **$${report.budgetUsd}** · Spent: **$${report.spentUsd.toFixed(4)}** (judge $${report.judgeSpentUsd.toFixed(4)})` +
+      ` · Output cap: **${report.outputTokenCap ?? "unrecorded"}**` +
       (report.unpricedCalls > 0 ? ` · Unpriced calls: **${report.unpricedCalls}**` : ""),
   );
   lines.push("");

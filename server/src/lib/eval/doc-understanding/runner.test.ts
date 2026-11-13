@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { resolveFinalAnswerMaxOutputTokens } from "../../analysis/agent-runner.js";
 import type { AIProvider, ChatMessage, ChatOptions, ChatResponse } from "../../ai/types.js";
 import { splitSections } from "../../governing/rule-extraction.js";
 import { EvalBudget } from "../localization/runner.js";
@@ -60,20 +61,31 @@ const item = (name: string): DocUnderstandingItem => ({
   },
 });
 
-/** Every call answers the judge's grades: E1 states R1, Q1 asks about A1. */
-function judgeProvider(model = "claude-sonnet-5-5"): { provider: AIProvider; calls: number } {
+/**
+ * Every call answers the judge's grades: E1 states R1, Q1 asks about A1. With
+ * `judgeReplies: false` every call but the reader's answers in prose, so the
+ * judge has no usable reply.
+ */
+function judgeProvider(
+  model = "claude-sonnet-5-5",
+  { judgeReplies = true } = {},
+): { provider: AIProvider; calls: number } {
   const state = { provider: undefined as unknown as AIProvider, calls: 0 };
   state.provider = {
     key: "anthropic",
     model,
     offline: false,
-    async chat(_m: ChatMessage[], _o?: ChatOptions): Promise<ChatResponse> {
+    async chat(m: ChatMessage[], _o?: ChatOptions): Promise<ChatResponse> {
       state.calls++;
+      const reader = m.length === 1 && m[0]!.content === "read";
       return {
-        content: JSON.stringify({
-          requirements: [{ extracted: "E1", label: "R1" }],
-          questions: [{ question: "Q1", ambiguity: "A1", worthAsking: true }],
-        }),
+        content:
+          judgeReplies || reader
+            ? JSON.stringify({
+                requirements: [{ extracted: "E1", label: "R1" }],
+                questions: [{ question: "Q1", ambiguity: "A1", worthAsking: true }],
+              })
+            : "I would rather not grade this.",
         model,
         provider: "anthropic",
         usage: { promptTokens: 1000, completionTokens: 100, totalTokens: 1100 },
@@ -161,6 +173,72 @@ describe("runDocUnderstandingEval", () => {
     expect(logs[0]).toContain("failed: reader: the reader broke");
   });
 
+  it("records a judge failure against the reading, keeps its spend, and carries on (#2250)", async () => {
+    const live = judgeProvider("claude-sonnet-5-5", { judgeReplies: false });
+    const logs: string[] = [];
+    const report = await runDocUnderstandingEval([item("d1"), item("d2")], {
+      arms: [fakeArm("A")],
+      runs: 1,
+      budget: new EvalBudget(100),
+      provider: live.provider,
+      log: (l) => logs.push(l),
+    });
+    const recs = report.arms[0]!.records;
+    // Both documents were read: one judge failing does not stop the run.
+    expect(recs.map((r) => r.itemId)).toEqual(["d1", "d2"]);
+    expect(report.stopped).toBeNull();
+    const rec = recs[0]!;
+    expect(rec.error).toMatch(/^judge: .*no usable reply/);
+    expect(rec.score).toBeNull();
+    expect(rec.judge).toBeNull();
+    // The reading itself is kept, and the judge's spend is still metered.
+    expect(rec.output?.requirements).toHaveLength(1);
+    expect(rec.judgeCostUsd).toBeGreaterThan(0);
+    expect(report.judgeSpentUsd).toBeCloseTo(2 * rec.judgeCostUsd!);
+    expect(report.arms[0]!.summary.failures).toBe(2);
+    expect(logs[0]).toMatch(/^\[A\] d1 run 1 failed: judge: .*no usable reply/);
+  });
+
+  it("stops an arm before a reading its costliest one so far would carry past the cap (#2250)", async () => {
+    const one = await runDocUnderstandingEval([item("d1")], {
+      arms: [fakeArm("A")],
+      runs: 1,
+      budget: new EvalBudget(100),
+      provider: judgeProvider().provider,
+    });
+    const r = one.arms[0]!.records[0]!;
+    const perReading = r.costUsd! + r.judgeCostUsd!;
+    // After one reading there is half a reading left: under the cap, but not
+    // enough for another reading of that arm.
+    const live = judgeProvider();
+    const report = await runDocUnderstandingEval([item("d1"), item("d2")], {
+      arms: [fakeArm("A")],
+      runs: 1,
+      budget: new EvalBudget(perReading * 1.5),
+      provider: live.provider,
+    });
+    expect(report.arms[0]!.records).toHaveLength(1);
+    expect(live.calls).toBe(2);
+    expect(report.stopped).toMatchObject({ armId: "A", itemId: "d2", run: 1 });
+    expect(report.stopped!.reason).toMatch(/spent \+ up to \$[\d.]+ next/);
+    expect(report.spentUsd).toBeLessThanOrEqual(perReading * 1.5);
+  });
+
+  it("records the output-token cap the readers ran at, and each reading's unpriced calls (#2250)", async () => {
+    const report = await runDocUnderstandingEval([item("d1")], {
+      arms: [fakeArm("A")],
+      runs: 1,
+      budget: new EvalBudget(100),
+      provider: judgeProvider("a-model-metis-has-no-price-for").provider,
+    });
+    expect(report.outputTokenCap).toBe(
+      resolveFinalAnswerMaxOutputTokens("a-model-metis-has-no-price-for", "anthropic"),
+    );
+    // The reader's call and the judge's.
+    expect(report.arms[0]!.records[0]!.unpricedCalls).toBe(2);
+    expect(toMarkdownReport(report)).toContain(`Output cap: **${report.outputTokenCap}**`);
+  });
+
   it("stops before the first reading the cap refuses, and says why", async () => {
     const live = judgeProvider();
     const report = await runDocUnderstandingEval([item("d1"), item("d2")], {
@@ -245,6 +323,39 @@ describe("combineReports and rendering", () => {
       /cannot combine readings of/,
     );
     expect(() => combineReports([])).toThrow(/nothing to combine/);
+  });
+
+  it("refuses to pool readings made at different output-token caps (#2250)", async () => {
+    const a = await run(["d1"], [fakeArm("A")]);
+    const b = await run(["d2"], [fakeArm("A")]);
+    expect(combineReports([a, b]).outputTokenCap).toBe(a.outputTokenCap);
+    expect(() => combineReports([a, { ...b, outputTokenCap: 21_333 }])).toThrow(
+      `cannot combine readings at output caps ${a.outputTokenCap} and 21333`,
+    );
+    // A report written before the cap was recorded pools only with its like.
+    const old = { ...a, outputTokenCap: undefined } as unknown as DocUnderstandingReport;
+    expect(() => combineReports([old, b])).toThrow(/output caps unrecorded and \d+/);
+    expect(combineReports([old, old]).outputTokenCap).toBeNull();
+  });
+
+  it("counts unpriced calls from the records it keeps, not whole reports (#2250)", async () => {
+    const unpriced = await runDocUnderstandingEval([item("d1")], {
+      arms: [fakeArm("B")],
+      runs: 1,
+      budget: new EvalBudget(100),
+      provider: judgeProvider("a-model-metis-has-no-price-for").provider,
+      provenance: { commit: "abc", dirty: false },
+    });
+    expect(unpriced.unpricedCalls).toBe(2);
+    const priced = await run(["d2"], [fakeArm("A")]);
+    const both = { ...priced, model: unpriced.model, outputTokenCap: unpriced.outputTokenCap };
+    expect(combineReports([unpriced, both]).unpricedCalls).toBe(2);
+    // Dropping arm B drops its unpriced calls with it.
+    expect(combineReports([{ ...unpriced, arms: [] }, both]).unpricedCalls).toBe(0);
+    // A record written before the count was kept: each unpriced cost is at least one call.
+    const legacy = structuredClone(unpriced);
+    delete (legacy.arms[0]!.records[0] as { unpricedCalls?: number }).unpricedCalls;
+    expect(combineReports([legacy]).unpricedCalls).toBe(2);
   });
 
   it("renders the results, the per-document detail and each arm's configuration", async () => {

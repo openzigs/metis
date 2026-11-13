@@ -3,7 +3,10 @@
 - **Issues:** #2229, Phase 0 of epic #2227 ("METIS understands the documents it is given");
   #2255, the document reader measured on four documents
 - **Measured:** 2026-11-10, at commit `8a0601902` (#2229); 2026-11-12, at commit `658a61dc2`
-  (#2255); on `claude-sonnet-5-5` (production) and `deepseek-flash` (iteration)
+  (#2255); on `claude-sonnet-5-5` (production) and `deepseek-flash` (iteration). Each
+  commit a reading records is on its pull request's branch, which was squash-merged:
+  `8a0601902` landed on `main` as `1c93df96e` (#2247), `658a61dc2` as `afde69a5f` (#2362),
+  `362294ae3` as `b6c1799b3` (#2415) and `2d78fb104` as `815b914ee` (#2444).
 - **Readings:** `eval-data/readings/doc-understanding/`; #2407 re-measured arm R on 2026-11-12 at commit `362294ae3` (`reader-sonnet-5-5-2407`); #2374 measured arms R and B on 2026-11-13 at commit `2d78fb104` (`reader-sonnet-5-5-2374`, `reader-sonnet-5-5-2374-B-cap21333`)
 - **Harness:** `pnpm --filter server eval:doc-understanding` (`server/src/lib/eval/doc-understanding/`)
 
@@ -318,7 +321,10 @@ corpus was written from scratch.
 
 Retrieval in arm A is lexical (production's BM25 options), padded to k with unmatched
 chunks in document order, so A always reads ten chunks as production's hybrid search
-would. That leans toward A: it cannot read less than production does.
+would. That leans toward A in how much it reads: it cannot read fewer chunks than
+production does. It does not lean toward A in which chunks it reads: BM25 alone ranks them,
+not production's hybrid of BM25 and vectors, so A may read different chunks from the ones
+production would read.
 
 ### The metrics
 
@@ -408,8 +414,10 @@ documents 02 and 03 once its reduce had failed on the smallest one.
 ## What follows for the reader issue
 
 - **Default: read the whole document.** The measured gain over today (+0.74 recall on
-  Sonnet, +0.70 on DeepSeek, on every document) is the gain the epic's definition of done
-  asks for before a flag defaults on.
+  Sonnet, on every document) is the gain the epic's definition of done asks for before a
+  flag defaults on. On DeepSeek the gain is +0.70, but **B and C there are partial**: B read
+  two of the three documents (it failed on 03) and C read none (it ran on 01 only, and its
+  reduce failed), so the +0.70 compares A over three documents with B over two.
 - **Emit requirements by section, not in one reply.** Keep the whole document in context
   (B's input) and ask for the requirements of one section, or a batch of sections, per
   call. That keeps B's precision (no repeats from a context-free section read) and removes
@@ -437,8 +445,19 @@ documents 02 and 03 once its reduce had failed on the smallest one.
   it is grading. The deterministic quote check agrees with it that B and C quote real text.
 - **Synthetic documents, three of them, 22–35 KB.** Real FRDs carry tables and numbering
   that the conversion flattens; these carry one table each.
-- **Arm A is generous.** Its retrieval is padded to ten chunks even when lexical search
-  finds fewer, and its document title is given as the project name.
+- **Arm A is generous in how much it reads, not in which chunks.** Its retrieval is padded
+  to ten chunks even when lexical search finds fewer, and its document title is given as the
+  project name. Its chunks are ranked by BM25 alone, not by production's hybrid search, so
+  which ten it reads can differ from production's.
+- **B and C's prompt leaned toward the key until #2250.** Their extraction prompt listed
+  what the labels count as a requirement and not, and the six kinds the labelled ambiguities
+  are sorted into. That is the labelling convention of the documents' author, who wrote the
+  labels. #2250 replaced it with a plain analyst's instruction. Every reading above was made
+  with the old prompt, so a re-measure of B or C after #2250 is not directly comparable with
+  them. Arm R (`readDocument`) has its own prompt and was not changed.
+- **Readings record their output cap since #2250** (`outputTokenCap` in the JSON). The
+  readings above name their cap in the file name or the tables instead. `--combine` refuses
+  to pool readings made at different caps.
 - **Two model-written strings were reworded after the run.** In
   `baseline-deepseek-flash-A.json`, one extracted requirement and one question used wording
   the repository's private-vocabulary check refuses; each was rewritten to say the same thing

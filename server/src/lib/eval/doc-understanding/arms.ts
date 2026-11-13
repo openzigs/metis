@@ -322,7 +322,15 @@ export function createArmB(model: string): DocArm {
   };
 }
 
-/** `fn` over `items` with at most `limit` in flight, results in input order. */
+/**
+ * `fn` over `items` with at most `limit` in flight, results in input order.
+ *
+ * #2250 — on the first rejection no further call starts, and the rejection is
+ * raised only once the calls already in flight have settled. Rejecting at once
+ * (`Promise.all`) left the sibling workers running: their spend landed after
+ * the reading was recorded, and the next reading's calls ran beside them, past
+ * the concurrency limit.
+ */
 export async function mapLimited<T, R>(
   items: readonly T[],
   limit: number,
@@ -330,13 +338,19 @@ export async function mapLimited<T, R>(
 ): Promise<R[]> {
   const out = new Array<R>(items.length);
   let next = 0;
+  let failure: { error: unknown } | null = null;
   const worker = async (): Promise<void> => {
-    while (next < items.length) {
+    while (failure === null && next < items.length) {
       const i = next++;
-      out[i] = await fn(items[i]!, i);
+      try {
+        out[i] = await fn(items[i]!, i);
+      } catch (error) {
+        failure ??= { error };
+      }
     }
   };
   await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, worker));
+  if (failure !== null) throw (failure as { error: unknown }).error;
   return out;
 }
 
