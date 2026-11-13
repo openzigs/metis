@@ -21,8 +21,13 @@
  *     every section and as much of the text as fits; every batch of sections
  *     is then read with that context, each section under its heading path.
  *
- * Then one cross-section pass over the statements (not the document) names
- * repeats, which are dropped, and cross-references, which are kept.
+ * Statements cut from one sentence are folded back into one ({@link sentenceSpan}):
+ * #2361 measured that most of the reader's repeats were one sentence written as
+ * two or three statements, not one statement written twice. Then one
+ * cross-section pass over the statements (not the document) names repeats,
+ * which are dropped, and cross-references, which are kept. A repeat is the
+ * statement that says less, so an overview written before the section that
+ * sets a requirement out in full is the one that goes.
  *
  * Every statement passes the governing rule reader's deterministic check
  * before it is kept: its quote must be in the source verbatim, whitespace
@@ -50,6 +55,7 @@ import { clauseLocator } from "../governing/clause-verify.js";
 import {
   DOCUMENT_CONTEXT_SHAPE,
   MERGE_REPLY_SHAPE,
+  REQUIREMENT_STATEMENT_KINDS,
   STATEMENTS_REPLY_SHAPE,
   buildDocumentContextPrompt,
   buildMergePrompt,
@@ -69,7 +75,7 @@ import { batchSections, outlineSections, sectionAt, type ReaderSection } from ".
  * (`reading-cache.ts`). Bump it when the reader's prompts, reply schemas,
  * batching or verification change: every saved reading is then read again.
  */
-export const READER_VERSION = "2230.1";
+export const READER_VERSION = "2361.1";
 
 /** Source characters whose statements one reply is asked to write. */
 export const READER_BATCH_CHARS = 8000;
@@ -120,8 +126,18 @@ export interface SectionCoverage {
   statements: number;
   /** Statements whose quote was not found in this section's source. */
   unverified: number;
-  /** Statements dropped as repeats of an earlier one. */
+  /**
+   * Statements dropped as repeats: one the cross-section pass found said in
+   * full by another, or one of several cut from the same sentence (#2361).
+   */
   repeats: number;
+  /**
+   * #2361 — sections that hold, in full, a statement dropped from this one as
+   * a repeat (an overview set out later), by `sectionId`, each once; through a
+   * chain of repeats, the section of the statement finally kept. A section
+   * whose every statement went this way was read: its content is there.
+   */
+  mergedInto?: string[];
 }
 
 export interface DocumentReading {
@@ -339,8 +355,7 @@ async function read(
   }
 
   const locate = clauseLocator(text);
-  const kept: Kept[] = [];
-  const seen = new Set<string>();
+  const quoted: Kept[] = [];
   let droppedUnverified = 0;
   let readBatches = 0;
   const batches = batchSections(sections, batchChars);
@@ -396,10 +411,7 @@ async function read(
         continue;
       }
       const section = sectionAt(sections, clause.clauseStart) ?? batch[0]!;
-      const key = `${clause.clauseStart}:${clause.clauseEnd}:${parsed.data.statement.replace(/\s+/g, " ").toLowerCase()}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      kept.push({
+      quoted.push({
         kind: parsed.data.kind,
         statement: parsed.data.statement,
         quote: clause.clauseExcerpt,
@@ -415,11 +427,14 @@ async function read(
     );
   }
 
-  kept.sort((a, b) => a.start - b.start || a.end - b.end);
+  quoted.sort((a, b) => a.start - b.start || a.end - b.end);
+  const kept = foldSentences(text, quoted, (k) => coverage.get(k.section.id)!.repeats++);
   const draftIds = kept.map((_k, i) => `T${i + 1}`);
 
   // The cross-section pass: repeats and cross-references.
   const dropped = new Set<number>();
+  /** A dropped repeat -> the statement it repeats, which may itself be dropped. */
+  const keptAs = new Map<number, number>();
   const refs = new Map<number, Set<number>>();
   let merge: DocumentReading["merge"] = "skipped";
   if (kept.length >= 2) {
@@ -441,12 +456,41 @@ async function read(
     if (hasVerdict(outcome)) {
       merge = "done";
       const indexOf = new Map(draftIds.map((id, i) => [id, i]));
-      for (const d of outcome.verdict.duplicates) {
+      const pairs = outcome.verdict.duplicates.flatMap((d) => {
         const i = indexOf.get(d.id.toUpperCase());
         const of = indexOf.get(d.of.toUpperCase());
-        if (i === undefined || of === undefined || of >= i || dropped.has(of)) continue;
+        return i === undefined || of === undefined || i === of ? [] : [{ i, of }];
+      });
+      // #2361 review — a statement that several others are named repeats of is a
+      // summary combining them (a table of entitlements, a list of notices), not
+      // a fuller restatement of any one: each says something it only abridges,
+      // so none of them is dropped into it. Measured on 04: two sentences of
+      // 6 and 11.2 were dropped as repeats of one summary row each, and lost.
+      const absorbs = new Map<number, Set<number>>();
+      for (const { i, of } of pairs) absorbs.set(of, (absorbs.get(of) ?? new Set()).add(i));
+      for (const { i, of } of pairs) {
+        // #2361 — either order: the one named is the one that says less, and an
+        // overview comes before the section that sets it out. The statement it
+        // repeats must still be kept, so a pair named both ways never drops both.
+        // A summary table restates the body, not the other way round: a prose
+        // statement is never dropped as a repeat of a table row (measured on 04,
+        // where 6's teen DVD rule went into the appendix's entitlement row).
+        if (absorbs.get(of)!.size > 1 || dropped.has(i) || dropped.has(of)) continue;
+        if (isTableRow(text, kept[of]!.start) && !isTableRow(text, kept[i]!.start)) continue;
         dropped.add(i);
+        keptAs.set(i, of);
         coverage.get(kept[i]!.section.id)!.repeats++;
+      }
+      // Where each repeat's content now lives: its final keeper, through a
+      // chain of drops (A repeats B, B repeats C: A's content is in C), each
+      // other section once.
+      for (const i of dropped) {
+        let at = keptAs.get(i)!;
+        while (dropped.has(at)) at = keptAs.get(at)!;
+        const cov = coverage.get(kept[i]!.section.id)!;
+        const into = kept[at]!.section.id;
+        if (into !== cov.sectionId && !cov.mergedInto?.includes(into))
+          cov.mergedInto = [...(cov.mergedInto ?? []), into];
       }
       for (const r of outcome.verdict.crossReferences) {
         const from = indexOf.get(r.from.toUpperCase());
@@ -480,11 +524,17 @@ async function read(
       end: k.end,
       sectionId: k.section.id,
       headingPath: k.section.headingPath,
-      // A reference to a dropped repeat points at nothing kept, so it goes.
-      refersTo: [...(refs.get(i) ?? [])].flatMap((to) => {
-        const target = finalId.get(to);
-        return target ? [target] : [];
-      }),
+      // A reference to a dropped repeat points at the statement it repeats.
+      refersTo: [
+        ...new Set(
+          [...(refs.get(i) ?? [])].flatMap((to) => {
+            let at = to;
+            while (dropped.has(at)) at = keptAs.get(at)!;
+            const target = finalId.get(at);
+            return target && at !== i ? [target] : [];
+          }),
+        ),
+      ],
     });
   });
 
@@ -498,6 +548,106 @@ async function read(
     outputTokenCap,
     usage: meter.usage,
   };
+}
+
+/** #2361 review — whether the line holding `at` is a table row (`| a | b |`). */
+export function isTableRow(text: string, at: number): boolean {
+  return text
+    .slice(text.lastIndexOf("\n", at - 1) + 1, at + 1)
+    .trimStart()
+    .startsWith("|");
+}
+
+/**
+ * #2361 — the sentence around `[start, end)`: from just after the previous
+ * sentence's end (`.`, `!` or `?` before whitespace) or line break, to the
+ * next one. A line is never more than one sentence, so a table row or a list
+ * item is its own. An abbreviation (`e.g.`) ends a sentence early, which only
+ * ever leaves two statements unfolded.
+ */
+export function sentenceSpan(
+  text: string,
+  start: number,
+  end: number,
+): { start: number; end: number } {
+  const endsSentence = (i: number): boolean =>
+    /[.!?]/.test(text[i] ?? "") && (i + 1 >= text.length || /\s/.test(text[i + 1]!));
+  let from = start;
+  while (from > 0 && text[from - 1] !== "\n" && !endsSentence(from - 1)) from--;
+  let to = end;
+  // `to > start`: an empty span (`end === start`, as `foldSentences` asks and a
+  // direct caller may) right after a full stop is not a finished sentence, so
+  // it widens forward to the sentence it starts instead of stopping at once.
+  if (!(to > start && endsSentence(to - 1))) {
+    while (to < text.length && text[to] !== "\n" && !endsSentence(to)) to++;
+    if (to < text.length && text[to] !== "\n") to++;
+  }
+  return { start: from, end: to };
+}
+
+/**
+ * #2361 — statements whose quotes lie in one and the same sentence, folded
+ * into one: the quote spans them all, the statements are joined, and the kind
+ * is the first requirement kind among them (else the first's). One sentence is
+ * one statement, as #2229's whole-document read wrote it; `onFolded` is told
+ * of every statement folded into another. `kept` is in document order.
+ *
+ * Only the same single sentence folds: a statement is compared with its own
+ * sentence's span, never with a group widened by another, so folding cannot
+ * cascade along a paragraph. A quote that runs over several sentences or over
+ * a line break (two table rows, a heading) never folds, with anything: the
+ * statements beside it may be separate requirements, and a fold must not span
+ * lines or sections. Members of a fold share a section, too. The one
+ * exception is an exact twin: the same multi-sentence quote with the same
+ * statement, written twice, is kept once.
+ */
+function foldSentences(text: string, kept: Kept[], onFolded: (k: Kept) => void): Kept[] {
+  const groups = new Map<string, Kept[]>();
+  for (const k of kept) {
+    const sentence = sentenceSpan(text, k.start, k.end);
+    // In one sentence on one line: the quote ends where its first sentence does.
+    const single = sentence.end === sentenceSpan(text, k.start, k.start).end;
+    // The section prefix is defensive: one line never crosses a heading, so the
+    // sentence alone already fixes the section. A longer quote folds only with
+    // an exact twin (the same span, the same statement), as main's key did.
+    const said = k.statement.replace(/\s+/g, " ").trim().toLowerCase();
+    const key = single
+      ? `${k.section.id}:${sentence.start}:${sentence.end}`
+      : `twin:${k.start}:${k.end}:${said}`;
+    const members = groups.get(key);
+    if (members) {
+      members.push(k);
+      onFolded(k);
+    } else {
+      groups.set(key, [k]);
+    }
+  }
+  return [...groups.values()].map((members) => {
+    const first = members[0]!;
+    if (members.length === 1) return first;
+    const start = Math.min(...members.map((m) => m.start));
+    const end = Math.max(...members.map((m) => m.end));
+    const said = new Map<string, string>();
+    for (const m of members) {
+      const statement = m.statement.trim();
+      said.set(statement.replace(/\s+/g, " ").toLowerCase(), statement);
+    }
+    return {
+      kind: (members.find((m) => REQUIREMENT_STATEMENT_KINDS.has(m.kind)) ?? first).kind,
+      statement: [...said.values()].map(asSentence).join(" "),
+      quote: text.slice(start, end),
+      start,
+      end,
+      section: first.section,
+    };
+  });
+}
+
+/** A statement written to stand as a sentence: capitalised and closed with a full stop. */
+function asSentence(statement: string): string {
+  const body = statement.replace(/[,;:\s]+$/, "");
+  const capital = body.charAt(0).toUpperCase() + body.slice(1);
+  return /[.!?]["')\]]*$/.test(capital) ? capital : `${capital}.`;
 }
 
 function startsIn(clause: { clauseStart: number }, span: { start: number; end: number }): boolean {
