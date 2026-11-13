@@ -535,6 +535,8 @@ describe("buildMultiProjectRagContext reads the conversation (#2279)", () => {
     expect(out.block).not.toContain("b9.md");
     // #2294 — the user chose the source: no absolute floor either.
     expect(search.mock.calls[0]![0].absoluteFloor).toBeUndefined();
+    // #2264 — nor the per-turn project cap: a product holding an attachment is searched.
+    expect(search.mock.calls[0]![0].maxProjects).toBeUndefined();
   });
 
   it("says a product the attached documents do not cover has no excerpt for that reason", async () => {

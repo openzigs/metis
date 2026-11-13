@@ -299,7 +299,10 @@ export async function buildMultiProjectRagContext(
       // #2264 — and they share the excerpts in turns; otherwise the most
       // relevant products' hits take them.
       share: documentIds ? "turns" : "relevance",
-      maxProjects: deps.maxProjects ?? configuredMaxProjects(),
+      // #2264 — the fan-out is bounded, but not on attachments: a product
+      // holding one is searched however long ago it was updated (the scope
+      // itself holds at most 50 ids).
+      ...(documentIds ? {} : { maxProjects: deps.maxProjects ?? configuredMaxProjects() }),
       // #2294 — and chat's absolute floor (#2241), as single-project chat
       // applies it; not on attachments, which the user chose as the source.
       ...(documentIds ? {} : { absoluteFloor: deps.absoluteFloor ?? readRelevanceFloor }),
