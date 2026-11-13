@@ -32,10 +32,12 @@
  * the requester) — never derived from request input — and delivery goes to
  * personal socket rooms joined from the verified JWT only.
  *
- * #2394 — `review_requested` (a submit or a reopen) and `review_item_changed`
- * go only to the participants who can still open the review's project
- * (`reviewersWhoCanOpenOrNone`): an assignment outlives the reviewer's access,
- * and both carry the review's title. Someone without access gets no row and
+ * #2394 — every notification here (`review_requested` on a submit or reopen,
+ * `review_decided` / `review_approved` / `review_rejected` to the requester,
+ * and `review_item_changed`) goes only to the participants who can still open
+ * the review's project (`reviewersWhoCanOpenOrNone`): a reviewer's assignment
+ * or a requester's request outlives their access, and each carries the
+ * review's title. Someone without access gets no row and
  * no socket event, as a mention of a non-member gets neither
  * (`discussions/notify.ts`). The lookup is bounded and fails closed.
  */
@@ -240,6 +242,12 @@ export interface ReviewDecisionInput {
  */
 export async function notifyReviewDecision(input: ReviewDecisionInput): Promise<void> {
   try {
+    // #2394 — only a requester who can still open the project (fails closed).
+    const [requester] = await reviewersWhoCanOpenOrNone(input.projectId, [input.requestedById], {
+      event: "review_decided",
+      reviewId: input.reviewId,
+    });
+    if (!requester) return;
     // #614 — requester preference gate.
     if (!(await shouldNotify(input.requestedById, "inApp", PREFERENCE_EVENT))) return;
 

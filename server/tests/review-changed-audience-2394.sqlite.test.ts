@@ -42,7 +42,7 @@ const to = vi.fn((_rooms: string | string[]) => ({ emit, except: () => ({ emit }
 vi.mock("../src/lib/socket/registry.js", () => ({ getSocketServer: () => ({ to }) }));
 
 const { emitReviewChanged } = await import("../src/lib/reviews/review-events.js");
-const { notifyReviewSubmitted, notifyReviewedRequirementEdited } =
+const { notifyReviewDecision, notifyReviewSubmitted, notifyReviewedRequirementEdited } =
   await import("../src/lib/reviews/notify.js");
 
 const WS = "ws-2394";
@@ -222,6 +222,28 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         live: [ADMIN, MEMBER].sort(),
         stored: [ADMIN, MEMBER].sort(),
       });
+    });
+
+    it("a decision reaches the requester only while they can open the project", async () => {
+      const decide = (requestedById: string) =>
+        notifyReviewDecision({
+          reviewId: REVIEW,
+          projectId: PROJECT,
+          title: "Sprint 4 sign-off",
+          requestedById,
+          reviewerId: ADMIN,
+          reviewerName: ADMIN,
+          decision: "approved",
+          outcome: "approved",
+          baselineId: null,
+        });
+      emit.mockClear();
+      // REMOVED requested REVIEW but is no longer a member of its workspace.
+      await decide(REMOVED);
+      expect(await notified("review_approved")).toEqual({ live: [], stored: [] });
+      // The control: a requester who can open it is sent the row and the event.
+      await decide(MEMBER);
+      expect(await notified("review_approved")).toEqual({ live: [MEMBER], stored: [MEMBER] });
     });
 
     it("a project that no longer exists: system admins only", async () => {

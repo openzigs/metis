@@ -369,6 +369,43 @@ describe("notifyReviewDecision", () => {
     ).resolves.toBeUndefined();
   });
 
+  it.each([
+    ["review_decided", { outcome: null }],
+    ["review_approved", { outcome: "approved", baselineId: "bl-1" }],
+    ["review_rejected", { decision: "rejected", outcome: "rejected" }],
+  ] as const)(
+    "#2394 — a requester who can no longer open the project gets no %s row and no event",
+    async (_kind, over) => {
+      withoutAccess = new Set(["user-req"]);
+
+      await notifyReviewDecision(decisionInput(over));
+
+      expect(notificationCreate).not.toHaveBeenCalled();
+      expect(to).not.toHaveBeenCalled();
+      expect(projectFindUnique).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: "proj-1" } }),
+      );
+    },
+  );
+
+  it("#2394 — a failed or hung requester access lookup sends nothing (fail closed)", async () => {
+    userFindMany.mockRejectedValueOnce(new Error("db down"));
+    await expect(notifyReviewDecision(decisionInput())).resolves.toBeUndefined();
+
+    vi.useFakeTimers();
+    try {
+      userFindMany.mockReturnValueOnce(new Promise(() => {}));
+      const done = notifyReviewDecision(decisionInput({ outcome: "approved" }));
+      await vi.advanceTimersByTimeAsync(REVIEWER_LOOKUP_TIMEOUT_MS);
+      await done;
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(notificationCreate).not.toHaveBeenCalled();
+    expect(to).not.toHaveBeenCalled();
+  });
+
   it("never throws when the preference helper itself rejects (top-level guard)", async () => {
     shouldNotifySpy.mockRejectedValue(new Error("helper exploded"));
 
