@@ -22,7 +22,12 @@
  * when an `IngestPlan` opts into quarantine mode.
  */
 import { randomUUID } from "node:crypto";
-import { parseAclSubjects, serializeAclSubjects } from "./acl.js";
+import {
+  AclGroupUnsupportedError,
+  newGroupSubjects,
+  parseAclSubjects,
+  serializeAclSubjects,
+} from "./acl.js";
 import { prisma } from "../prisma.js";
 import { audit } from "../audit/audit-service.js";
 import { createChildLogger } from "../logger.js";
@@ -118,12 +123,14 @@ export interface ApprovalDeps {
  */
 export async function writeQuarantine(input: QuarantineWriteInput): Promise<void> {
   await prisma.$transaction(async (tx) => {
+    // Lock order is always document, then journal (including generation CAS).
+    // This no-op write takes the document row lock first on every path, so on
+    // Postgres the ACL read below cannot be overtaken by a concurrent save.
+    await tx.document.updateMany({
+      where: { id: input.documentId },
+      data: { id: input.documentId },
+    });
     if (input.ingestGeneration) {
-      // Lock order is always document, then journal (including generation CAS).
-      await tx.document.updateMany({
-        where: { id: input.documentId },
-        data: { id: input.documentId },
-      });
       const generation = await tx.quarantineChunk.updateMany({
         where: { id: input.ingestGeneration, documentId: input.documentId, ord: -4 },
         data: { ord: -4 },
@@ -131,6 +138,16 @@ export async function writeQuarantine(input: QuarantineWriteInput): Promise<void
       if (!generation.count)
         throw new Error(`Document ${input.documentId} ingest generation revoked`);
     }
+    // #2356 — the ingest-time ACL write is held to `PATCH /acl`'s rule (#2261):
+    // no `group` subject the document does not already carry. Read under the
+    // row lock taken above (SQLite serialises writers anyway), so it is the ACL
+    // the write below replaces.
+    const current = await tx.document.findFirst({
+      where: { id: input.documentId },
+      select: { aclSubjects: true },
+    });
+    const groups = newGroupSubjects(parseAclSubjects(current?.aclSubjects), input.aclSubjects);
+    if (groups.length > 0) throw new AclGroupUnsupportedError(groups);
     const held = await tx.document.updateMany({
       where: {
         id: input.documentId,

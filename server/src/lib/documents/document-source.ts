@@ -7,6 +7,8 @@
  * - `generated`  a published generated document (`docs-gen/generated-doc-publication.ts`)
  * - `repo`, `db` the repository and database connectors (`connectors/connector-ingest.ts`)
  * - `confluence`, `jira` the Atlassian connector (`connectors/atlassian.ts`)
+ * - `clarification` a clarification answer kept as project knowledge
+ *   (`clarifications/clarification-knowledge.ts`, #2310)
  */
 import { type DocumentSource, documentSourceSchema } from "@metis/shared";
 

@@ -188,7 +188,9 @@ import { applyClarificationsToRequirements } from "../lib/analysis/clarification
 import {
   persistClarificationKnowledge,
   priorAnswerSourceFor,
+  rerunReusedClarifications,
 } from "../lib/clarifications/analysis-clarifications.js";
+import { readDialogState } from "../lib/analysis/clarification-dialog-store.js";
 import { readSourceRequirements } from "../lib/analysis/source-items.js";
 import { latestRequirementApprovals } from "../lib/analysis/approved-requirement-set.js";
 import {
@@ -1251,6 +1253,11 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
       // #724 — clarify rounds are project spend: meter them, billed below.
       const provider = meterAnalysisProvider(buildProvider({ config }));
       const usageScope = { projectId, sessionId: analysisId };
+      // Epic #922 — prefer the server-sourced structured requirements that the
+      // enhancement pipeline persisted (#924). The client may still override by
+      // passing `requirements` in the body, but it no longer has to reconstruct
+      // them. Falls back to the request body when nothing was persisted.
+      const stored = (await getStructuredRequirements(analysisId)) ?? undefined;
       // Self-resolution (clarify-self-resolve): give the dialog a retriever +
       // projectId so it can ground each clarifying question against the
       // project's ingested knowledge before asking. Grounding only runs on the
@@ -1259,20 +1266,19 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
         provider,
         retriever: getKnowledgeService(),
         projectId,
+        // #2296 — the mode is the server's: decided from the list the
+        // analysis stored, never from a client override's `sources`. Only an
+        // analysis with nothing stored falls back to the override's.
+        ...(stored ? { modeFrom: stored.requirements } : {}),
         // Issue #1129 — on a run from ticked items, their questions come first.
         askFirst: tickedFirst(await requirementOriginsFor(analysisId, analysis.metadata)),
         // #1873 — the business questions for uncertain governing rules, and
         // where their answers go. Undefined (no read) with the flag off.
         governingQuestions: governingQuestionSourceFor({ analysisId, projectId, provider }),
         // #2236 — a question the project has already settled is not asked again.
-        priorAnswers: priorAnswerSourceFor(projectId),
+        priorAnswers: priorAnswerSourceFor(projectId, analysisId),
       });
 
-      // Epic #922 — prefer the server-sourced structured requirements that the
-      // enhancement pipeline persisted (#924). The client may still override by
-      // passing `requirements` in the body, but it no longer has to reconstruct
-      // them. Falls back to the request body when nothing was persisted.
-      const stored = (await getStructuredRequirements(analysisId)) ?? undefined;
       const override = body.requirements as StructuredRequirements | undefined;
       const requirements = override
         ? // The schema checks every field the dialog reads; the remaining
@@ -1320,12 +1326,16 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
         // #2236 — the answers become project knowledge: recorded, indexed and
         // re-running what they change. After the response's work is
         // committed and off its path, metered to the project like the round.
+        // #2310 — only the round this submit answered is recorded: an earlier
+        // round's answer in an older analysis must not overwrite a newer one.
+        const answeredRound = state.rounds.at(-1)?.round;
         void runInAnalysisUsageScope(usageScope, () =>
           persistClarificationKnowledge({
             projectId,
             analysisId,
             answeredById: req.user?.userId ?? null,
             provider,
+            ...(answeredRound !== undefined ? { rounds: [answeredRound] } : {}),
           }),
         );
         res.json(ok(result));
@@ -1338,6 +1348,9 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
             "requirements field is required to start clarification",
           );
         }
+        // A dialog that is already settled returns its state unchanged, and the
+        // UI starts it on every view: only a reuse this call added is re-run.
+        const reusedBefore = (await readDialogState(analysisId))?.reused?.length ?? 0;
         const state = await runInAnalysisUsageScope(usageScope, () =>
           dialog.startOrContinue(analysisId, requirements),
         );
@@ -1345,6 +1358,14 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
         // the stored requirements as typed ones do.
         if (state.reused?.some((r) => r.round === state.currentRound)) {
           await applyClarificationsToRequirements(analysisId);
+        }
+        if ((state.reused?.length ?? 0) > reusedBefore) {
+          // #2310 — and re-run what they change, as a typed answer does: off
+          // the response's path, metered to the project like the round.
+          const round = state.currentRound;
+          void runInAnalysisUsageScope(usageScope, () =>
+            rerunReusedClarifications({ projectId, analysisId, provider, round }),
+          );
         }
         res.json(ok(state));
       }
@@ -1751,13 +1772,16 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
         // Issue #1116 — the CSV round-trip is the same submit path, so it must
         // reach the artifact the same way.
         await applyClarificationsToRequirements(analysisId);
-        // #2236 — and become project knowledge the same way.
+        // #2236 — and become project knowledge the same way. #2310 — only
+        // the round this import answered is recorded.
+        const answeredRound = state.rounds.at(-1)?.round;
         void runInAnalysisUsageScope({ projectId, sessionId: analysisId }, () =>
           persistClarificationKnowledge({
             projectId,
             analysisId,
             answeredById: req.user?.userId ?? null,
             provider,
+            ...(answeredRound !== undefined ? { rounds: [answeredRound] } : {}),
           }),
         );
       }

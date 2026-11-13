@@ -125,6 +125,7 @@ const {
   applyClarificationsToRequirements,
   attributeAnswers,
   hasAnsweredClarification,
+  clarificationBlockEntries,
   collectAnsweredQuestions,
   containmentScore,
   renderClarificationBlock,
@@ -435,6 +436,33 @@ describe("attributeAnswers", () => {
     });
     expect(ATTRIBUTION_THRESHOLD).toBe(0.5);
     expect(out.unattributed).toHaveLength(1);
+  });
+});
+
+describe("#2310 — clarificationBlockEntries", () => {
+  it("reads each question and answer back from the block, without the provenance tag", () => {
+    const block = renderClarificationBlock(
+      [
+        answer(),
+        answer({
+          questionId: "q2",
+          question: "Is it <b>daily</b>?",
+          answer: "Yes",
+          provenance: "suggested",
+        }),
+      ],
+      true,
+    );
+    expect(clarificationBlockEntries(`Body text: Yes.\n\n${block}\nAfter: Yes`)).toEqual([
+      { question: "Which rate source?", answer: "The ECB daily rate." },
+      { question: "Is it &lt;b>daily&lt;/b>?", answer: "Yes" },
+    ]);
+  });
+
+  it("reads nothing outside a block, and nothing from a body with none or an edited one", () => {
+    expect(clarificationBlockEntries("- **Q:** Which?\n  **A:** Yes")).toEqual([]);
+    const block = renderClarificationBlock([answer()]);
+    expect(clarificationBlockEntries(`${block}\n\n${block}`)).toEqual([]);
   });
 });
 

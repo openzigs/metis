@@ -138,6 +138,19 @@ export function sanitizeClarificationText(text: string | null | undefined): stri
     : escapeMarkupForMarkdown(cleaned);
 }
 
+/** What the clarifications block writes for a question whose text is empty. */
+export const UNAVAILABLE_QUESTION = "(question text unavailable)";
+
+/**
+ * A question as the clarifications block writes it: sanitised, and
+ * {@link UNAVAILABLE_QUESTION} when nothing is left. #2310 — a reader matching
+ * a record against a block's entries compares this, so an empty question
+ * matches on both sides.
+ */
+export function clarificationBlockQuestion(text: string | null | undefined): string {
+  return sanitizeClarificationText(text) || UNAVAILABLE_QUESTION;
+}
+
 /**
  * Every non-blank answer across every round, newest write per question id.
  *
@@ -562,7 +575,7 @@ export function renderClarificationBlock(
 ): string {
   const usable = answers
     .map((a) => ({
-      question: sanitizeClarificationText(a.question),
+      question: clarificationBlockQuestion(a.question),
       answer: sanitizeClarificationText(a.answer),
       tag: PROVENANCE_TAGS[a.provenance],
     }))
@@ -575,10 +588,7 @@ export function renderClarificationBlock(
     CLARIFICATIONS_PREAMBLE,
     "",
     ...(flagCriteria ? [CRITERIA_FLAG_LINE, ""] : []),
-    ...usable.map(
-      (a) =>
-        `- **Q:** ${a.question || "(question text unavailable)"}\n  **A:** ${a.answer} ${a.tag}`,
-    ),
+    ...usable.map((a) => `- **Q:** ${a.question}\n  **A:** ${a.answer} ${a.tag}`),
     CLARIFICATIONS_END,
   ].join("\n");
 }
@@ -631,6 +641,34 @@ function locateClarificationBlock(body: string): BlockLocation {
 
 function normalizeNewlines(body: string): string {
   return body.replace(/\r\n/g, "\n");
+}
+
+/**
+ * #2310 — the question and answer pairs written in a body's clarifications
+ * block, as {@link renderClarificationBlock} wrote them (sanitised), without
+ * the provenance tag. Nothing outside the block is read, and a body with no
+ * block, or one edited out of shape, has none.
+ */
+export function clarificationBlockEntries(
+  body: string,
+): Array<{ question: string; answer: string }> {
+  const at = locateClarificationBlock(body);
+  if (at.kind !== "block") return [];
+  const lines = normalizeNewlines(body.slice(at.from, at.to)).split("\n");
+  const tags = Object.values(PROVENANCE_TAGS);
+  const out: Array<{ question: string; answer: string }> = [];
+  for (let i = 0; i + 1 < lines.length; i++) {
+    const q = /^- \*\*Q:\*\* (.*)$/.exec(lines[i]!);
+    const a = /^ {2}\*\*A:\*\* (.*)$/.exec(lines[i + 1]!);
+    if (!q || !a) continue;
+    const tag = tags.find((t) => a[1]!.endsWith(` ${t}`));
+    out.push({
+      question: q[1]!.trim(),
+      answer: (tag ? a[1]!.slice(0, -(tag.length + 1)) : a[1]!).trim(),
+    });
+    i++;
+  }
+  return out;
 }
 
 /**

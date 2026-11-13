@@ -1294,6 +1294,13 @@ jobs:
         working-directory: server
         run: pnpm test:integration borrow-citations-race-1893-postgres
 
+      # Issue #2356 — a document ACL save is a compare-and-set on the ACL it read.
+      # Prove that a save blocked on another's row lock re-checks its WHERE after the
+      # winner commits, reads again, and refuses a legacy group the winner removed.
+      - name: Prove concurrent document ACL saves never write back a removed group on real Postgres
+        working-directory: server
+        run: pnpm test:integration document-acl-save-2356-postgres
+
       # Issue #2032 — a governing-finding decision reads its decider's name inside
       # its own transaction. Prove that three decisions started at once on a
       # ONE-connection pool all commit: a lookup through the global client would

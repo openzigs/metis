@@ -60,7 +60,7 @@ vi.mock("../lib/documents/url-fetcher.js", () => ({
 }));
 vi.mock("../lib/projects/project-service.js", () => ({ getProject: vi.fn() }));
 vi.mock("../lib/rag/quarantine.js", () => ({ approveDocument: vi.fn(), rejectDocument: vi.fn() }));
-vi.mock("../lib/rag/acl.js", () => ({ propagateAcl: vi.fn() }));
+vi.mock("../lib/rag/acl.js", () => ({ saveDocumentAcl: vi.fn() }));
 vi.mock("../lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
 
 const { documentsRouter } = await import("./documents.js");
