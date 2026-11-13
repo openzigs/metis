@@ -20,6 +20,7 @@ import type { AgentTool } from "./types.js";
 import { chatSearchCodeGraphTool } from "./search-code-graph.js";
 import { createSearchSymbolsTool, type SearchSymbolsDeps } from "./search-symbols.js";
 import { createChatReadFileSliceTool } from "./chat-read-file-slice.js";
+import { indexStatusTool } from "./index-status.js";
 import { createChatGrepFilesTool, createChatListFilesTool } from "./chat-file-tools.js";
 import { loadCodeVersions } from "../../code-graph/code-version.js";
 
@@ -46,7 +47,7 @@ export type ChatCodeToolDeps = Partial<SearchSymbolsDeps>;
  */
 export function getChatCodeTools(
   deps?: ChatCodeToolDeps,
-  opts: { primitives?: boolean } = {},
+  opts: { indexStatus?: boolean; primitives?: boolean } = {},
 ): AgentTool[] {
   const primitives = opts.primitives === true;
   // #2325 — chat's graph and symbol searches state the indexed commit of every
@@ -55,6 +56,8 @@ export function getChatCodeTools(
     chatSearchCodeGraphTool,
     createSearchSymbolsTool({ loadVersions: loadCodeVersions, ...deps }, { filters: primitives }),
     createChatReadFileSliceTool(),
+    // #2326 — `CHAT_INDEX_STATUS`: what the index holds, and how its last run went.
+    ...(opts.indexStatus === false ? [] : [indexStatusTool]),
   ];
   if (primitives) tools.push(createChatGrepFilesTool(), createChatListFilesTool());
   return tools;

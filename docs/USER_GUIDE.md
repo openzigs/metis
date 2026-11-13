@@ -2625,13 +2625,13 @@ The publisher uses Octokit's throttle plugin with a real sleeping backoff:
 
 You don't have to configure any of this manually; it's tuned for safe, predictable behavior under load.
 
-### 13.8 Change Analysis
+### 13.8 Compare analyses
 
 Compare two analysis snapshots to see what requirements changed between versions.
 
 1. Navigate to your project, click the **Requirements** tab, then **Compare analyses**. (The page is titled **Compare analyses** so it is not confused with the **Change requests** tab.)
 2. Select a **Base analysis** (the older snapshot) and a **Head analysis** (the newer one).
-3. Click **Run Change Analysis**. METIS compares every requirement in both snapshots and detects:
+3. Click **Compare**. METIS compares every requirement in both snapshots and detects:
    - **Added** — new requirements that didn't exist in the base
    - **Removed** — requirements that existed in the base but are gone in the head
    - **Modified** — requirements that changed (body text, priority, type, or title)
@@ -3661,9 +3661,11 @@ Opening Chat from a project (`/chat?projectId=…`) scopes it to that project.
 - Every reply carries a label underneath it:
   - **Grounded in _Project_ · N sources · M project lookups** — excerpts from that project's knowledge base were given to the model (N counts each excerpt supplied, and each code symbol in a fused code block), and/or the model read the project itself through its tools — code search, or a search of the project's knowledge base (M counts the lookups that returned something). Either part is left out when it is zero. Only excerpts relevant enough to the question are supplied: a weaker match is set aside (see **Relevance floor** below). Click the label to list the files and documents the excerpts came from, each with how many excerpts it gave and its relevance (0 to 1). [#2241]
   - **Insufficient evidence — nothing in _Project_ was relevant enough to this question** — the knowledge base was searched, but every match was too weak to use, so none was given to the model. It is told to say that the sources don't show this, and what is missing, rather than guess. [#2241]
-  - **Retrieval failed — _Project_'s knowledge base could not be searched for this reply** — the search itself failed. The model is told it could not check the sources. Try again; if it keeps happening, tell your administrator. [#2241]
+  - **Retrieval failed — _Project_'s knowledge base could not be searched for this reply (_kind of failure_)** — the search itself failed. The kind of failure is named in brackets, for example "timed out" or "vector index unavailable", but never the error's text. The model is told the search failed and not to conclude that the project lacks what you asked about. Try again; if it keeps happening, tell your administrator. [#2241, #2326]
   - **No excerpts from _Project_ were retrieved automatically** — the chat is scoped, but neither automatic retrieval, a code-search lookup, nor a project knowledge-base search returned anything for this question (for example, nothing is ingested yet). The model may still have used other tools, such as an MCP server, so check any file or code it names.
-  - **Partial coverage — only X of Y chunks in _Project_ are searchable** — shown under any of the above when some of the project's documents were indexed with a different embedding model. Those documents are not searched until the project is re-indexed. [#2241]
+  - **Partial coverage — only X of Y chunks in _Project_ are searchable** — shown under any of the above when some of the project's documents were indexed with a different embedding model. Those documents are not searched until the project is re-indexed. The model is told too, so it does not read a missing excerpt as absence. [#2241, #2326]
+  - **Index: _repository_ @ _commit_, indexed _time_ · last run _status_** — for a project with a connected repository, each repository's last indexed commit and time, and how its last indexing run ended (completed, partial, failed with the kind of failure, running or interrupted). [#2326]
+  - **Index warning — …** — shown when the last indexing run failed, the index is partial, indexing is still in progress, or nothing in the project has been indexed yet. It names the part that is affected, for example "repository _billing-svc_ is not indexed yet": one repository not indexed yet, beside documents or other repositories that are, makes the index partial rather than empty. An answer may then miss code or documents that are not indexed. In that case the model is told the same thing, and it is asked to say the index may be incomplete rather than conclude that the project lacks something. It can also check with the `get_index_status` tool. Your administrator can turn that part off with `CHAT_INDEX_STATUS=false`. [#2326]
   - A reply that failed or was stopped early shows no label; its error says what happened.
   - The label keeps the project's name from when the reply was written, so it still reads correctly after a rename or deletion.
   - **Not grounded — no project selected** — the chat is unscoped.
@@ -3990,7 +3992,8 @@ You'll see two sections:
 - **A missing or emptied clone.** Before a document is generated, METIS checks each repository's clone. One that is missing, holds far fewer files than its git index lists (a full or partial purge), or is checked out at a different commit, is re-fetched at the exact commit the code graph was built from. If another job (an ingest, or another document) is preparing the same repository, METIS waits for it, up to `CLONE_RESTORE_LEASE_WAIT_MS` (default two minutes); if it is still busy, generation stops with *"Another job is preparing this repository's source … Try again in a few minutes."* — no re-ingest needed. If that cannot be done (the host is unreachable, the commit is gone, or no commit was recorded), generation stops before any AI call with *"The repository's source checkout is missing or empty … Re-ingest the repository, then generate again."* Re-ingest from the repository's connector, then generate again. An analysis in the same state restores the clone the same way, or runs without the file-reading tools and says so (`repo-clone-unavailable`).
 - `UPLOAD_ARCHIVE_DIR` / `UPLOAD_EXTRACT_DIR` — where folder-upload (`.zip`) connectors store the uploaded archive and its extracted working copy. These default to **persistent** app-data dirs (`<cwd>/data/repo-archives`, `<cwd>/data/repo-extracts`) so an uploaded project survives an OS temp purge and re-ingest can re-extract without re-upload (#329). Override to a mounted volume in production. If the stored archive is missing (e.g. a pre-#329 upload connector whose temp archive was already purged), re-ingest fails with a clear `410 UPLOAD_ARCHIVE_MISSING` — re-upload the folder to re-ingest. Like `REPO_CLONE_DIR`, these are per-pod local dirs and are not shared across replicas.
 - `CONNECTOR_ALLOW_LOOPBACK=false` — keep this off in production. Loopback / RFC1918 addresses are blocked unless you flip it.
-- `PII_REDACT_DISABLE_PATTERNS=` — empty = redact SSNs, credit cards (Luhn-validated), emails, phone numbers, IPs from any data the connectors return before it reaches RAG. Disable patterns by name only if you have a regulatory reason.
+- `PII_REDACT_DISABLE_PATTERNS=` — empty = redact SSNs, credit cards (Luhn-validated), emails, phone numbers and secrets (keys, tokens, passwords in URLs) from database and Atlassian connector data and from a repository's README before it reaches RAG. Disable patterns by name only if you have a regulatory reason.
+- **Secrets in repository files.** Repository source files and manifests are checked for secrets before they are indexed: private keys, cloud and vendor API keys and tokens, passwords in URLs, and values assigned to a password, secret, token or API-key setting (`DB_PASSWORD=…`, `"client_secret": "…"`). Each secret is replaced on its own line by a marker naming its kind, such as `[REDACTED:aws_key]`, so line numbers and citations stay the same. The same happens to the code graph's stored symbol text and to the chat and analysis file reader (`read_file_slice`). Emails and phone numbers in source code are left as they are. `PII_REDACT_DISABLE_PATTERNS` does not turn this off. To remove secrets that were indexed before this check existed, run a sync on the repository connector: files that held a secret are re-indexed, the stored copy of the old file is deleted (kept only while another document holds exactly the same content), and the rest are skipped. The next code-graph ingest rewrites the stored symbol text on its own; the symbol vector store keeps a copy of the old text in its row metadata (never read back) until the embed job that follows replaces it.
 
 ### 16.5 Managing Shared Physical Databases (Identity)
 
@@ -4941,9 +4944,9 @@ Before posting a review, the agent fetches the PR's existing review comments and
 
 The **Spec Kit** turns METIS into a structured specification tool. Rather than free-form chat, Spec Kit guides you through a phased workflow that produces a complete `.specify/` artifact set. v1.3 (Epic #396) brings METIS in line with upstream Spec Kit conventions: namespaced commands, per-feature `specs/<NNN-slug>/` directories, filesystem materialization, and phased status gates.
 
-### Where to find it: the BA/PM "author the intent" front-door
+### Where to find it
 
-Spec Kit is the **business-analyst / product-manager front-door** for authoring intent. It sits behind the project's **⚙** (Project settings) tab, beside the code views, because most analysts do not work in it day to day (#2334). Open a project, click **⚙**, then **Spec Kit**.
+Spec Kit is an optional, structured way to write intent down as a spec, a plan and a task list before handing it to analysis. Most analysts start from **Change requests** instead, so Spec Kit sits behind the project's **⚙** (Project settings) tab, beside the code views (#2334). Open a project, click **⚙**, then **Spec Kit**.
 
 The mental model is **author the intent here, then hand it off**:
 
@@ -4971,7 +4974,7 @@ Below that, **Context given to the code agent, not requirements** opens to show 
 
 ### Enabling Spec Kit
 
-1. Open the project and click the **Spec Kit** primary tab (beside Analysis), or navigate directly to `/projects/[id]/spec-kit` — the URL is unchanged.
+1. Open the project, click **⚙**, then **Spec Kit**, or navigate directly to `/projects/[id]/spec-kit` — the URL is unchanged.
 2. Toggle **Enable Spec Kit** at the top of the page. While enabled with no artifacts yet, an onboarding panel walks you through the spec → plan → tasks flow and links to the adjacent **Analysis** surface as the downstream consumer.
 3. You can now use slash commands in the Chat surface or the command palette on the Spec Kit page.
 

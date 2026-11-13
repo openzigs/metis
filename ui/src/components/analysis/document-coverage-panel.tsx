@@ -53,6 +53,14 @@ export function reusedText(reused: NonNullable<DocumentReadingDocument["reused"]
   return `Not read again: the reading saved on ${reused.readAt.slice(0, 10)} (read with ${reused.model}) was reused, because the file has not changed. Start a new analysis with "Read the documents again" for a fresh reading.`;
 }
 
+/**
+ * #2361 — a read section that produced nothing because its statements were
+ * repeats of later sections (an overview): its content was merged, not missed.
+ */
+export function mergedOnly(section: DocumentReadingSection): boolean {
+  return section.status === "read" && section.statements === 0 && !!section.mergedInto?.length;
+}
+
 function SectionLine({ section }: { section: DocumentReadingSection }): React.ReactElement {
   if (section.status === "unread") {
     return (
@@ -62,13 +70,18 @@ function SectionLine({ section }: { section: DocumentReadingSection }): React.Re
       </li>
     );
   }
+  const said =
+    section.statements > 0
+      ? describeKinds(section.kinds)
+      : mergedOnly(section)
+        ? `read; what it says is set out in full in ${section.mergedInto!.join("; ")}`
+        : "nothing extracted";
   return (
     <li
       className={`text-xs ${section.statements === 0 ? "text-muted-foreground" : "text-foreground"}`}
       data-testid="document-coverage-section"
     >
-      <span>{section.heading}</span> —{" "}
-      {section.statements === 0 ? "nothing extracted" : describeKinds(section.kinds)}
+      <span>{section.heading}</span> — {said}
     </li>
   );
 }
@@ -82,7 +95,9 @@ function DocumentEntry({ doc }: { doc: DocumentReadingDocument }): React.ReactEl
     );
   }
   const unreadSections = doc.sections.filter((s) => s.status === "unread").length;
-  const empty = doc.sections.filter((s) => s.status === "read" && s.statements === 0).length;
+  const empty = doc.sections.filter(
+    (s) => s.status === "read" && s.statements === 0 && !mergedOnly(s),
+  ).length;
   return (
     <li className="space-y-1" data-testid={`document-coverage-${doc.documentId}`}>
       <p className="text-xs text-foreground">

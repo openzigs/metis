@@ -86,6 +86,36 @@ describe("DocumentCoveragePanel", () => {
     expect(sections[2]).toHaveClass("text-warning");
   });
 
+  it("#2361 — says an overview merged into a later section was read, not that it produced nothing", () => {
+    const merged: DocumentReadingCoverage = {
+      documents: [
+        {
+          ...READ.documents[0]!,
+          sections: [
+            {
+              heading: "Booking FRD › 1 Overview",
+              status: "read",
+              statements: 0,
+              kinds: {},
+              mergedInto: ["Booking FRD › 3 Booking", "Booking FRD › 4 Fees"],
+            },
+            { heading: "Booking FRD › 2 Scope", status: "read", statements: 0, kinds: {} },
+          ],
+        },
+      ],
+    };
+    render(<DocumentCoveragePanel capability={capability(merged)} />);
+    const doc = screen.getByTestId("document-coverage-d1");
+    // Only the section with nothing at all counts as producing nothing.
+    expect(doc).toHaveTextContent("1 section produced nothing.");
+    const sections = within(doc).getAllByTestId("document-coverage-section");
+    expect(sections[0]).toHaveTextContent(
+      "Booking FRD › 1 Overview — read; what it says is set out in full in Booking FRD › 3 Booking; Booking FRD › 4 Fees",
+    );
+    expect(sections[0]).not.toHaveTextContent("nothing extracted");
+    expect(sections[1]).toHaveTextContent("Booking FRD › 2 Scope — nothing extracted");
+  });
+
   it("names every loss: unread sections, dropped statements, a merge that did not complete, an unread document", () => {
     render(<DocumentCoveragePanel capability={capability(READ)} />);
     const doc = screen.getByTestId("document-coverage-d1");

@@ -39,4 +39,17 @@ describe("projectRetriever", () => {
       sources: 2,
     });
   });
+
+  it("#2326 — passes the index status line on, so a reply with no excerpt still gets it", async () => {
+    rag.buildAutoRagContext.mockImplementationOnce(async (_p, _m, _r, _d, capture) => {
+      Object.assign(capture!, { sources: 0, indexStatusLine: "## Index status\nfailed" });
+      return "## Index status\nfailed";
+    });
+    const out = await projectRetriever("proj-1", "u-7")("q");
+    expect(out).toEqual({
+      block: "## Index status\nfailed",
+      sources: 0,
+      indexStatus: "## Index status\nfailed",
+    });
+  });
 });

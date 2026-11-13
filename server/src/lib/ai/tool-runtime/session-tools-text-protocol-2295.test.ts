@@ -58,7 +58,12 @@ describe("resolveSessionTools — models without native tool calls (#2295)", () 
     const rt = await resolve(false);
     expect(rt.mode).toBe("text");
     expect(rt.toolset.tools.map((t) => t.name).sort()).toEqual(
-      ["read_file_slice", "search_code_graph", "search_code_symbols"].sort(),
+      [
+        "get_index_status", // #2326
+        "read_file_slice",
+        "search_code_graph",
+        "search_code_symbols",
+      ].sort(),
     );
     expect(rt.schemaBlock).toContain("read_file_slice");
   });

@@ -44,6 +44,7 @@ import {
 } from "../../agent-runtime/subagents.js";
 import { resolveCapabilities } from "../capabilities.js";
 import { offersGroundingTool, searchGuidanceEnabled, withSearchUsage } from "../search-guidance.js";
+import { indexStatusEnabled } from "../index-status.js";
 import type { AIProvider, RiskLevel } from "../types.js";
 import { getToolRegistry, type ToolRegistry } from "../tool-registry.js";
 import {
@@ -136,6 +137,8 @@ export interface SessionToolsFlags {
   subAgents?: boolean;
   /** #2324 `CHAT_SEARCH_GUIDANCE` — how to search, on the grounding tools and their results. */
   searchGuidance?: boolean;
+  /** #2326 `CHAT_INDEX_STATUS` — the index-status tool and context line (default on). */
+  indexStatus?: boolean;
 }
 
 /** #2327 — `CHAT_CODE_SEARCH_PRIMITIVES`'s default. */
@@ -157,6 +160,7 @@ export function loadSessionToolsFlags(): SessionToolsFlags {
     progressiveSkills: cfg.getBool("CHAT_PROGRESSIVE_SKILLS", true),
     subAgents: cfg.getBool("CHAT_SUBAGENTS", true),
     searchGuidance: searchGuidanceEnabled(),
+    indexStatus: indexStatusEnabled(),
   };
 }
 
@@ -333,7 +337,10 @@ export async function resolveSessionTools(
     };
   }
   const codeTools = flags.codeSearchTools
-    ? getChatCodeTools(input.codeToolDeps, { primitives: flags.codeSearchPrimitives === true })
+    ? getChatCodeTools(input.codeToolDeps, {
+        indexStatus: flags.indexStatus !== false,
+        primitives: flags.codeSearchPrimitives === true,
+      })
     : [];
   const searchGuidance = flags.searchGuidance === true;
 

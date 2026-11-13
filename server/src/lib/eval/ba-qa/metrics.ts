@@ -256,3 +256,71 @@ export function summarizeArm(
     },
   };
 }
+
+/**
+ * #2269 — the scored turn of one multi-turn question, as each retrieval mode
+ * found it. Recorded for every multi-turn question whatever the run's mode:
+ * the other mode's searches cost no model call, only local ones.
+ */
+export interface TurnRetrieval {
+  questionId: string;
+  /** The fixture's label: the turn leans on the earlier ones. */
+  refersBack: boolean;
+  /** Production's planner read the turn as a follow-up (it ran a conversational search). */
+  followUpDetected: boolean;
+  /** The question's expected source files, `<product>:<path>`. */
+  expected: string[];
+  /** Those among the excerpts conversation-aware retrieval listed, searched or carried. */
+  conversation: string[];
+  /** Those among the excerpts a search of the new message alone listed. */
+  lastMessage: string[];
+  /** Excerpts the previous answer cited that came back on this turn. */
+  carried: number;
+}
+
+export interface RetrievalSummary {
+  turns: number;
+  /** Micro: expected files the conversation-aware excerpts held, over expected files. */
+  conversation: Rate;
+  /** The same for a search of the new message alone. */
+  lastMessage: Rate;
+  /** Turns labelled as referring back that the planner read as follow-ups. */
+  followUpsDetected: Rate;
+  /** Self-contained controls the planner read as follow-ups anyway. */
+  controlsReadAsFollowUps: Rate;
+  /** Questions whose conversation-aware excerpts held more expected files, and fewer. */
+  better: string[];
+  worse: string[];
+  /** Excerpts carried forward, over every turn. */
+  carried: number;
+}
+
+export function summarizeRetrieval(turns: readonly TurnRetrieval[]): RetrievalSummary {
+  const sum = (f: (t: TurnRetrieval) => number): number => turns.reduce((a, t) => a + f(t), 0);
+  const expected = sum((t) => t.expected.length);
+  const refers = turns.filter((t) => t.refersBack);
+  const controls = turns.filter((t) => !t.refersBack);
+  return {
+    turns: turns.length,
+    conversation: rate(
+      sum((t) => t.conversation.length),
+      expected,
+    ),
+    lastMessage: rate(
+      sum((t) => t.lastMessage.length),
+      expected,
+    ),
+    followUpsDetected: rate(refers.filter((t) => t.followUpDetected).length, refers.length),
+    controlsReadAsFollowUps: rate(
+      controls.filter((t) => t.followUpDetected).length,
+      controls.length,
+    ),
+    better: turns
+      .filter((t) => t.conversation.length > t.lastMessage.length)
+      .map((t) => t.questionId),
+    worse: turns
+      .filter((t) => t.conversation.length < t.lastMessage.length)
+      .map((t) => t.questionId),
+    carried: sum((t) => t.carried),
+  };
+}

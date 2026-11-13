@@ -817,8 +817,8 @@ say so in the write-up (#2229 did this for two strings).
 `corpus/baqa-01-acme-reader/` is Phase 0 of #2228: the questions a business analyst asks
 chat, over a two-product sample called Acme Reader. The two products are the Miniflux server
 (`miniflux/v2` at 2.3.3, Apache-2.0) and its Python client (`miniflux/python-client` at
-1.1.6, MIT). `questions.json` holds 23 questions in four categories, and the category fixes
-what a good reply does:
+1.1.6, MIT). `questions.json` holds 23 one-turn questions in four categories, plus the
+multi-turn set below, and the category fixes what a good reply does:
 
 | Category | Questions | A good reply |
 |---|---:|---|
@@ -1240,6 +1240,160 @@ including a scope-5 run whose results were lost to a bad `--include` path and ru
   differ by 7 points of facts stated, so differences under about 10 points are noise. The
   fall at 9 projects (33% to 17%) and the recovery (35–44%) are larger than that, and the
   retrieval counts, which carry no model noise, show the same thing.
+
+### Secret redaction in repository source (#2333), 2026-11-12
+
+#2333 redacts secrets in repository files before they are indexed, stored in the code graph or
+read by `read_file_slice`. Both evals were run before it (on `main` at `0dac6304`) and after it
+(on the PR branch), each on a freshly materialized corpus, on `claude-sonnet-5-5` for answers and
+judge. One run per arm.
+
+**What redaction changed in the corpora.** In the BA-QA knowledge step, 7 Miniflux source files
+were redacted and none of the python-client's: the `.devcontainer` and three `contrib`
+docker-compose files (`ADMIN_PASSWORD=test123` and a `postgres://…:…@` URL),
+`contrib/thunder_client/collection.json` (a `"password": "test123"`), `client/client_test.go`
+(`Token: "token2"`) and `internal/config/options_parsing_test.go` (three database URLs).
+`questions.json` cites none of them as an expected source. In the localization corpora's
+3,573 committed symbol texts, one is redacted (`miniflux#00023`, the same `client_test.go`
+literal); A0 reads the committed rows and is not affected.
+
+| BA-QA | off, before | off, after | on, before | on, after |
+|---|---:|---:|---:|---:|
+| Correctness: mean facts stated | 27% | 27% | 45% | 45% |
+| Fully correct answers | 0/10 | 0/10 | 1/10 | 2/10 |
+| Citation precision | 31% (5/16) | 33% (5/15) | 89% (47/53) | 90% (37/41) |
+| Citation recall | 16% (5/32) | 16% (5/32) | 25% (8/32) | 28% (9/32) |
+| Abstention on unanswerable | 4/4 | 4/4 | 4/4 | 4/4 |
+| Follow-up on ambiguous | 4/4 | 4/4 | 4/4 | 4/4 |
+| False abstention on answerable | 6/10 | 6/10 | 4/10 | 4/10 |
+| Right behaviour, single-product | 4/6 | 4/6 | 6/6 | 6/6 |
+| Spend (answers + judge) | $0.296865 | $0.298324 | $0.522035 | $0.475595 |
+
+- **No regression.** Every question got the same behaviour (answer, abstain, follow-up) in both
+  arms before and after. With the flags off every question stated the same number of facts. With
+  them on, S3 stated one fact fewer and S5 one more, and S2 cited one more expected file: the
+  run-to-run spread of the baseline runs above. No `[REDACTED:` marker appears in any answer.
+- **Localization A0** (`--arms A0 --runs 1`, $0): Miniflux R@5 0.52, R@10 0.60, edit precision
+  0.17, MRR 0.55; fixture portfolio R@5 0.54, R@10 1.00, edit precision 0.21, MRR 0.54, before
+  and after. The per-corpus and pooled reports are identical apart from run ids and times.
+- **The `--floor-sweep` retrieval ($0)** kept every expected-source excerpt at the default 0.55
+  floor before and after (27/27), and every question's count of expected files in its top 8 was
+  the same. The rest of the top 8 moved: 24 of 39 question-product lists differ in membership or
+  order. That is index-rebuild noise, not redaction. A second baseline, re-materialized and
+  re-ingested from scratch on the same `main` code, differs from the first in 25 of 39 lists and
+  from the branch in 22. No redacted file appears in any list that changed.
+- **Spend:** $1.592819 in all, the four BA-QA runs above. Localization A0 calls no model.
+
+### Index status (#2326), 2026-11-12
+
+`--index-fault failed|partial` records every product's last indexing run as failed (an embedding
+timeout) or partial (200 of 500 eligible files, 300 past the file limit) for one run, and
+restores the record afterwards. The indexed content is left as it is, so the arms differ only in
+what the model is told. `CHAT_INDEX_STATUS` controls that: when the index is unhealthy, a status
+line leads the retrieved-knowledge block, and `get_index_status` is offered. The scorer
+(`server/src/lib/eval/ba-qa/index-fault.ts`, `mentionsIndexProblem`) counts the answers that say
+the index failed, is partial or is incomplete. These were Sonnet 5.5 runs on the `tools-only`
+arm, using the nine single-product questions:
+
+```bash
+CHAT_INDEX_STATUS=0 pnpm eval:ba-qa --arm tools-only --budget 2 --index-fault failed --questions S1,S2,S3,S4,S5,S6,A3,U3,U4
+CHAT_INDEX_STATUS=1 pnpm eval:ba-qa --arm tools-only --budget 2 --index-fault failed --questions S1,S2,S3,S4,S5,S6,A3,U3,U4
+```
+
+| | failed, before | failed, after | partial, before | partial, after |
+|---|---:|---:|---:|---:|
+| Answers that state the index problem | 0/9 | **7/9** | 0/9 | **8/9** |
+| Abstentions that assert absence without it | 2/2 | 2/2 | 2/2 | **0/2** |
+| Correctness: mean facts stated | 86% | 80% | 84% | 76% |
+| Citation precision | 84% (38/45) | 81% (29/36) | 88% (36/41) | 82% (31/38) |
+| Abstention on unanswerable / false abstention | 2/2, 0/6 | 2/2, 0/6 | 2/2, 0/6 | 2/2, 0/6 |
+| Input tokens / question | 31,300 | 25,500 | 26,900 | 26,100 |
+
+- **Without the status, no answer mentioned the index.** That held in both faults, because the
+  model had no way to know about it. With the status on, 7 and 8 of 9 answers said the index was
+  failed or partial. In the partial run, both abstentions on unanswerable questions (U3 uptime
+  promise, U4 download counts) named the partial index instead of only asserting absence. In the
+  failed run they did not. The answer to both of those questions really is outside the code, so
+  asserting absence there is not wrong.
+- **Facts stated and precision fell by 3 to 8 points with the status on.** That is within the
+  run-to-run spread on this set: two runs of the same arm differed by 7 points in #2324's
+  measurement. The status line is only added when the index is unhealthy, so a healthy project's
+  prompt is unchanged. `CHAT_INDEX_STATUS` is **on by default**.
+- The status line costs about 80 tokens per turn when it is shown. The four runs spent $1.445313,
+  answers and judge.
+
+### Multi-turn questions (#2269)
+
+`questions.json` also holds 8 multi-turn questions, `F1` to `F8`, which measure #2240's
+conversation-aware retrieval. Each one carries `before`, the analyst's earlier turn. That turn
+is asked and answered live in the same session, and recorded in the transcript the way the chat
+routes record it, including the excerpts the answer cited. Only the last turn is graded, and the
+judge is shown the earlier turn.
+
+`refersBack` labels each graded turn. Six turns lean on the earlier one: "I meant the login
+sessions.", "How often does that run?", "And when a user changes them later?", "Can I change its
+request timeout?", "How many feeds does it refresh at a time?" and "Which exception do I get when
+its API key is wrong?". Two are self-contained controls asked mid-conversation. F6 is S2's
+question after S1. F7 is a "there" question that names its own subject. All 8 are
+single-product, so retrieval runs.
+
+```bash
+pnpm eval:ba-qa --arm off --budget 2 --multi-turn                            # production (#2240)
+pnpm eval:ba-qa --arm off --budget 2 --multi-turn --retrieval last-message \
+  --include eval-results/ba-qa/<conversation run>.json                       # the new message alone
+```
+
+`--multi-turn` selects the set. Without it a run asks the 18 one-turn questions, as before.
+`--retrieval last-message` searches only the new message, as chat did before #2240. The report
+labels that arm `off+last-message`. In either mode, the graded turn is also searched the other
+way, locally and at no model cost. The **Multi-turn retrieval** table therefore shows, for both
+modes, how many expected source files the excerpts held. It also shows how many labelled
+follow-ups the planner caught, how many controls it misread, and how many cited excerpts were
+carried forward.
+
+#### Measured 2026-11-11 (Sonnet 5.5 answers and judge, 8 questions per arm)
+
+| | off | off+last-message | on | on+last-message |
+|---|---:|---:|---:|---:|
+| Correctness: mean facts stated | 55% | 55% | 98% | 98% |
+| Fully correct answers | 4/8 | 4/8 | 7/8 | 7/8 |
+| Citation recall | 7/20 | 7/20 | 14/20 | 13/20 |
+| Expected files in the excerpts: conversation-aware | 7/20 | 8/20 | 7/20 | 6/20 |
+| … new message alone | 7/20 | 7/20 | 5/20 | 5/20 |
+| Follow-ups the planner caught | 4/6 | 4/6 | 4/6 | 4/6 |
+| Controls read as follow-ups | 0/2 | 0/2 | 0/2 | 0/2 |
+| Spend (answers + judge) | $0.500310 | $0.341409 | $0.917685 | $0.717946 |
+
+The `off` and `on` columns were run after the tuning below. The `+last-message` columns were run
+before it, and the tuning does not change their retrieval.
+
+- **Retrieval reading the conversation finds slightly more, and answers are no better on this
+  set.** Over the four runs, the conversation-aware excerpts held 28 expected files and the new
+  message alone held 24. F1 ("I meant the login sessions.") gained `internal/ui/auth.go` from
+  the conversational search. F7 gained a file through carry-forward. F2 ("How often does that
+  run?") lost `internal/cli/scheduler.go`, which was the user's own 8th hit, to two hits found
+  only by the conversational search. Correctness was the same in both modes. With the flags on,
+  the code-search tools find what retrieval missed either way.
+- **The follow-up heuristic is unchanged.** It read no control as a follow-up, F7's "there"
+  question included. It missed F5 and F8, which name four content words each. Searching those
+  two as follow-ups was measured to find no expected file that their own words missed. Raising
+  the content-word cap to four would catch them, but it would also re-admit "Are there any GDPR
+  requirements in the onboarding spec?". A test pins this: every labelled turn in the set is
+  read as measured.
+- **Carry-forward read the wrong excerpts, and was tuned.** With the flags off, the answers named
+  excerpts as "`file` (chunk #N)". 13 of the 16 earlier answers that cited anything did so, and
+  none used `[n]`. Only the file name matched, so the 4-excerpt cap filled with the file's first
+  excerpts in block order. `citedExcerptIds` now reads "`file` (chunk #N)", "chunks #A, #B and
+  #C" and "chunks #A-#B" as locators. It fills the cap with numbered and located excerpts before
+  whole-file matches, and it no longer reads `file#1` inside `file#18`. Replayed on the recorded
+  first answers, the excerpts the answers pointed at rose from 27 to 31 of the 33 that fit the
+  cap.
+- **Spend varies from run to run.** The same question's answer cost $0.022 in one run and
+  $0.054 in the next (F2, `off`). So the spend gap between the modes is within run-to-run noise.
+
+Spend for #2269: **$3.830035** over seven runs. That is a one-question smoke run ($0.055899),
+the four runs before tuning ($0.458762, $0.341409, $0.838024 and $0.717946), and the two
+conversation-aware runs after tuning ($0.500310 and $0.917685).
 
 ### Search guidance (#2324), 2026-11-12
 

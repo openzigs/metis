@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { BaQaQuestion } from "./fixture.js";
-import { scoreQuestion, summarizeArm } from "./metrics.js";
+import { scoreQuestion, summarizeArm, summarizeRetrieval } from "./metrics.js";
 import { formatBaQaReport } from "./report.js";
 
 const q: BaQaQuestion = {
@@ -80,9 +80,51 @@ describe("formatBaQaReport", () => {
     expect(md).toContain("- **off**: defaults");
     expect(md).toContain("| off | M1 | answer | unscored | - |");
     expect(md).not.toContain("Stopped early");
+    // No multi-turn question, no retrieval section.
+    expect(md).not.toContain("Multi-turn retrieval");
     // A run recorded before #2243 has no cap fields.
     expect(md).toContain("| Tool loop out of turns | n/a |");
     expect(md).toContain("| Tool results truncated | n/a |");
+  });
+
+  it("adds the multi-turn retrieval section per arm (#2269)", () => {
+    const s = scoreQuestion(q, [], new Map(), null);
+    const turn = {
+      questionId: "F2",
+      refersBack: true,
+      followUpDetected: true,
+      expected: ["a:x.go", "a:y.go"],
+      conversation: ["a:x.go", "a:y.go"],
+      lastMessage: [],
+      carried: 1,
+    };
+    const md = formatBaQaReport({
+      title: "T",
+      provider: "p",
+      model: "m",
+      judgeModel: "m",
+      arms: [
+        summarizeArm("off", [s], { answerUsd: 0, judgeUsd: 0 }),
+        summarizeArm("off+last-message", [s], { answerUsd: 0, judgeUsd: 0 }),
+      ],
+      armFlags: {},
+      sessions: [],
+      retrieval: {
+        off: summarizeRetrieval([turn]),
+        "off+last-message": summarizeRetrieval([]),
+      },
+      spentUsd: 0,
+      stoppedEarly: null,
+    });
+    expect(md).toContain("## Multi-turn retrieval (#2269)");
+    expect(md).toContain("| Metric | off | off+last-message |");
+    expect(md).toContain(
+      "| Expected files in the excerpts: conversation-aware | 100% (2/2) | n/a |",
+    );
+    expect(md).toContain("| … new message alone | 0% (0/2) | n/a |");
+    expect(md).toContain("| Follow-ups the planner caught | 100% (1/1) | n/a |");
+    expect(md).toContain("| Better with the conversation | F2 | - |");
+    expect(md).toContain("| Cited excerpts carried forward | 1 | 0 |");
   });
 
   it("counts the tool loop's two caps per arm, over the sessions that recorded them", () => {
