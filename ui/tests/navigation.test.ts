@@ -41,12 +41,9 @@ describe("navigation registry (#27)", () => {
     expect(NAV_DESTINATIONS.map((t) => t.href)).toEqual([
       "/dashboard",
       "/projects",
-      "/products",
-      "/documents",
-      "/repositories",
-      "/databases",
-      "/impact-analyses",
       "/portfolio",
+      "/documents",
+      "/impact-analyses",
       "/chat",
       "/workbench",
       "/tasks",
@@ -65,15 +62,12 @@ describe("navigation registry (#27)", () => {
     const former = [
       "/dashboard",
       "/projects",
-      "/products",
       "/chat",
       "/workbench",
       "/tasks",
       "/reviews",
       "/library",
       "/documents",
-      "/repositories",
-      "/databases",
       "/impact-analyses",
       "/scheduler",
       "/runs",
@@ -82,7 +76,9 @@ describe("navigation registry (#27)", () => {
       "/eval/leaderboard",
       "/settings",
     ];
-    // /admin, /skills and /agents redirect to their one home (#31, lib/legacy-routes).
+    // /admin, /skills and /agents redirect to their one home (#31, lib/legacy-routes);
+    // /products lands on Portfolio, and /repositories and /databases on the
+    // project list or a project's Knowledge tab (#2353, legacy-routes.test.ts).
     const hrefs = NAV_DESTINATIONS.map((t) => t.href);
     for (const href of former) expect(hrefs).toContain(href);
   });
@@ -90,12 +86,21 @@ describe("navigation registry (#27)", () => {
   it("groups the cross-project lookups under Projects", () => {
     expect(item("Projects").tabs.map((t) => t.href)).toEqual([
       "/projects",
-      "/products",
-      "/documents",
-      "/repositories",
-      "/databases",
-      "/impact-analyses",
       "/portfolio",
+      "/documents",
+      "/impact-analyses",
+    ]);
+  });
+
+  // #2353 — Products and Portfolio coverage are one Portfolio tab; the global
+  // Repositories and Databases catalogues are gone (each project's Knowledge
+  // tab lists its own).
+  it("shows one Portfolio tab and no Products, Repositories or Databases tab (#2353)", () => {
+    expect(item("Projects").tabs.map((t) => t.label)).toEqual([
+      "All projects",
+      "Portfolio",
+      "Documents",
+      "Impact analyses",
     ]);
   });
 
@@ -178,12 +183,24 @@ describe("isTabActive", () => {
     const runs = item("Activity").tabs[1];
     expect(isTabActive("/runs/42", runs)).toBe(true);
   });
+
+  // #2353 — a product's page kept its URL; the Portfolio tab that absorbed the
+  // Products list owns it.
+  it("lights Portfolio on a product's page, through its routes", () => {
+    const portfolio = item("Projects").tabs.find((t) => t.label === "Portfolio")!;
+    expect(isTabActive("/portfolio", portfolio)).toBe(true);
+    expect(isTabActive("/portfolio/pa-1", portfolio)).toBe(true);
+    expect(isTabActive("/products/p1", portfolio)).toBe(true);
+    expect(isTabActive("/productsx", portfolio)).toBe(false);
+    expect(hubForPath("/products/p1")?.label).toBe("Projects");
+  });
 });
 
 describe("isNavItemActive", () => {
   it("marks the hub active on any of its tabs", () => {
     expect(isNavItemActive("/runs/42", item("Activity"))).toBe(true);
-    expect(isNavItemActive("/repositories", item("Projects"))).toBe(true);
+    expect(isNavItemActive("/portfolio", item("Projects"))).toBe(true);
+    expect(isNavItemActive("/products/p1", item("Projects"))).toBe(true);
     expect(isNavItemActive("/settings/workspaces", item("Settings"))).toBe(true);
     expect(isNavItemActive("/workbench", item("Chat"))).toBe(true);
   });
@@ -205,7 +222,7 @@ describe("navItemCurrent (#366 review)", () => {
   });
 
   it("is true (a location, not the page) where a hub tab or project tab names the page", () => {
-    expect(navItemCurrent("/repositories", item("Projects"))).toBe("true");
+    expect(navItemCurrent("/portfolio", item("Projects"))).toBe("true");
     expect(navItemCurrent("/projects", item("Projects"))).toBe("true");
     expect(navItemCurrent("/projects/p1/analysis", item("Projects"))).toBe("true");
     expect(navItemCurrent("/settings/profile", item("Settings"))).toBe("true");
@@ -231,6 +248,23 @@ describe("PALETTE_DESTINATIONS (#366 review)", () => {
 
   it("includes every sidebar destination", () => {
     for (const t of NAV_DESTINATIONS) expect(PALETTE_DESTINATIONS).toContain(t);
+  });
+
+  // #2353 — the palette offers the merged Portfolio tab, to an analyst too,
+  // and none of the four pages it replaced.
+  it("offers Portfolio and none of the removed Projects tabs (#2353)", () => {
+    for (const isAdmin of [true, false]) {
+      const entries = paletteDestinations(isAdmin);
+      expect(entries.filter((t) => t.href === "/portfolio").map((t) => t.label)).toEqual([
+        "Portfolio",
+      ]);
+      for (const removed of ["/products", "/repositories", "/databases"]) {
+        expect(entries.map((t) => t.href)).not.toContain(removed);
+      }
+      for (const label of ["Products", "Portfolio coverage", "Repositories", "Databases"]) {
+        expect(entries.map((t) => t.label)).not.toContain(label);
+      }
+    }
   });
 
   it("labels /dashboard Dashboard, matching its page heading", () => {
@@ -379,7 +413,7 @@ describe("isAdminOnlyPath (#2332)", () => {
     expect(isAdminOnlyPath("/settings/mcp")).toBe(true);
     expect(isAdminOnlyPath("/settings/hooks")).toBe(true);
     expect(isAdminOnlyPath("/settings/usage")).toBe(false);
-    expect(isAdminOnlyPath("/repositories")).toBe(false);
+    expect(isAdminOnlyPath("/portfolio")).toBe(false);
   });
 
   it("ignores a query string or fragment", () => {
