@@ -12,21 +12,12 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [CI guards parse the step](project_ci-guards-must-parse-the-step.md) — reject if:, `||`, continue-on-error (#458)
 - [Cap gendoc-sized ids](project_gendoc-ids-are-long.md) — id caps (cursor, schema, path) must fit ~94-char gendoc- ids (#469)
 - [Tests can pin a bug](project_tests-can-lock-in-bugs.md) — grep tests for the old constant before calling it a regression (#483)
-- [Import pass 1 commits](project_logical-import-pass1-commits-early.md) — sanitise untrusted fields before batch.push (#531)
 - [Workspace delete is soft](project_workspace-delete-is-soft.md) — filter deletedAt in membership scope and at sinks (#549, #561)
-- [Dependency audit flips](project_dependency-audit-flips-on-new-advisories.md) — fix once, update-branch; removed deps vs audit tests
-- [Markdown splitters](project_markdown-sections-cost-and-harness.md) — cache lines; CRLF; real sections + unclosed fences
-- [Env helpers](project_env-helpers-read-everything-from-env.md) — read AI_FIXTURE_DIR etc. from the passed env, not process.env (#565)
 - [Parallel PR semantic conflicts](project_parallel-prs-semantic-conflicts.md) — clean merge can bypass a guard; updateMany bumps @updatedAt
-- [Time-bounded refs need recheck](project_time-dependent-refs-need-recheck.md) — one-shot retirement; test fakes miss new methods
 - [Test harness false greens](project_test-harness-false-greens.md) — pipe-to-tail exit codes; helper-only tests; fireEvent file input
 - [Socket handler patterns](project_socket-handler-patterns.md) — payload?.x, onClientEvent; rooms fixed at handshake; guard typo probe
 - [Access rule in fixtures](project_access-rule-in-fixtures.md) — socket/discussion tests encode access in mocks; update together
 - [Compaction truncates evidence](project_compaction-truncates-evidence.md) — 600-char tool-result cut; check before blaming tools
-- [e2e replay provider is not offline](project_e2e-replay-provider-not-offline.md) — detect stub by key "offline-stub" too (#900)
-- [simple-git 4 env guard](project_simple-git-4-env-guard.md) — GIT_* env needs allowEnvironment; use real-git test (#906)
-- [vitest 5 jest-dom second copy](project_vitest5-jest-dom-second-copy.md) — jest-dom loads a 2nd vitest; extend expect locally (#668)
-- [float USD to cents](project_float-usd-to-cents.md) — costUsd*100 float error; round to cents before sign/zero checks (#950)
 - [Decline guards: every token](project_decline-guards-need-every-continuation-token.md) — silent-success holes evade throw-fuzz (#1084)
 - [Weak Tested-by: check counts](project_weak-tested-by-relation-check-every-count.md) — aggregates ignore weak vs strict (#1069)
 - [Impact offline replay + pinned shapes](project_impact-offline-replay-and-pinned-shapes.md) — measure with no model; 4 far-away tests
@@ -129,3 +120,9 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Stacked PR squash conflicts](project_stacked-pr-squash-conflicts.md) — keep HEAD; union scripts/exports
 - [Borrow/governing lessons](project_review-lessons-borrowed-and-governing.md) — filter before dedupe; regex FNs; sibling merged?
 - [Time keys, re-seed, CI misreads](project_time-window-keys-reseed-states-ci-signals.md) — now-window key reverts; test mid states; neutral CodeQL
+- [Gate and harness traps](project_gate-and-harness-traps-2026-11.md) — TEST_PLAN for new routes; lint heap; eval Commit line; Playwright tab
+- [Test doubles mirror reality](project_test-doubles-mirror-real-behaviour-2026-11.md) — developer lacks project.create; orchestrator stub forwards
+- [JSON extractors: fence branch](project_json-extractors-have-a-fence-branch.md) — test fenced replies; two extractors (#1355, #2407, #2415)
+- [Relevance floor vs RRF cut](project_relevance-floor-before-rrf-cut.md) — backfill evicts kept hits; user-word reference (#2416, #2413)
+- [Job toast de-dup per run](project_job-toast-dedup-keyed-per-run.md) — documents keep ids across regenerations (#2418)
+- [Status filters: label-aware](project_requirement-status-filters-must-be-label-aware.md) — legacy review:* labels (#1016, #2420)
