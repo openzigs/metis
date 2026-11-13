@@ -223,7 +223,16 @@ describe("retrievedChunkSchema.source (#547)", () => {
   };
 
   it("accepts every source in the closed set", () => {
-    expect(DOCUMENT_SOURCES).toEqual(["upload", "generated", "repo", "db", "confluence", "jira"]);
+    expect(DOCUMENT_SOURCES).toEqual([
+      "upload",
+      "generated",
+      "repo",
+      "db",
+      "confluence",
+      "jira",
+      // #2310 — a clarification answer kept as project knowledge.
+      "clarification",
+    ]);
     for (const source of DOCUMENT_SOURCES) {
       expect(retrievedChunkSchema.safeParse({ ...hit, source }).success).toBe(true);
     }
