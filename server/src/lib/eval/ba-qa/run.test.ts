@@ -6,6 +6,7 @@ import {
   armLabel,
   ARM_FLAGS,
   assertComparable,
+  assertRoutingFlags,
   budgetStop,
   stepBudgetStop,
   buildJudgedSpans,
@@ -103,6 +104,33 @@ describe("arms", () => {
       expect(env[k]).toBe(
         k === "CHAT_CODE_SEARCH_TOOLS" || k === "CHAT_CODE_SEARCH_PRIMITIVES" ? "1" : "0",
       );
+    }
+  });
+});
+
+describe("assertRoutingFlags (#2397)", () => {
+  it.each([
+    ["--routing-sweep with --route", { routingSweep: true, route: "all" }],
+    // The floor sweep and an answer run read the same flags: no routing sweep.
+    ["--floor-sweep, or an answer run, with --route alone", { routingSweep: false, route: "all" }],
+  ])("refuses %s: --route needs --routing-scope", (_label, flags) => {
+    expect(() => assertRoutingFlags(flags)).toThrow("--route needs --routing-scope");
+  });
+
+  it("refuses --routing-sweep with --routing-scope", () => {
+    expect(() =>
+      assertRoutingFlags({ routingSweep: true, routingScope: "9", route: "all" }),
+    ).toThrow("--routing-sweep asks no model: it takes no --routing-scope");
+  });
+
+  it("accepts --route with --routing-scope, a scope alone, and neither", () => {
+    for (const flags of [
+      { routingSweep: false, routingScope: "9", route: "all" },
+      { routingSweep: false, routingScope: "9" },
+      { routingSweep: true },
+      { routingSweep: false },
+    ]) {
+      expect(() => assertRoutingFlags(flags)).not.toThrow();
     }
   });
 });

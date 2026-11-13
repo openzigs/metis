@@ -146,6 +146,23 @@ describe("parseRoutingFixture", () => {
     expect(f.questions[3].answerIn).toEqual([]);
   });
 
+  it("#2397: accepts a nested relative path and aliases at their bounds", () => {
+    const f = parseRoutingFixture(
+      raw({
+        products: [
+          { ...product("srv", { aliases: ["ab", "x".repeat(80)] }), source: { kind: "baqa" } },
+          { ...product("cli"), source: { kind: "baqa" } },
+          {
+            ...product("docs"),
+            source: { kind: "documents", files: [{ file: "a/b.c/d-e_f.md", uploadAs: "y.md" }] },
+          },
+        ],
+      }),
+      baqa,
+    );
+    expect(f.products[0].aliases).toHaveLength(2);
+  });
+
   it("accepts the committed routing set against the committed question set", () => {
     const dir = baQaCorpusDir(REPO_ROOT, BAQA_CORPUS);
     const questions = parseBaQaFixture(
@@ -268,6 +285,40 @@ describe("parseRoutingFixture", () => {
     ],
   ])("refuses %s", (_label, over, error) => {
     expect(() => parseRoutingFixture(raw(over), baqa)).toThrow(error);
+  });
+
+  // #2397 — the path guard and the alias bounds, each refused on its own.
+  it.each(["../x.md", "a/../../x.md", "/etc/passwd"])(
+    "#2397: refuses the document path %s",
+    (file) => {
+      const over = {
+        products: [
+          { ...product("srv"), source: { kind: "baqa" } },
+          { ...product("cli"), source: { kind: "baqa" } },
+          {
+            ...product("docs"),
+            source: { kind: "documents", files: [{ file, uploadAs: "y.md" }] },
+          },
+        ],
+      };
+      expect(() => parseRoutingFixture(raw(over), baqa)).toThrow(
+        /products\[2\]\.source\.files\[0\]\.file/,
+      );
+    },
+  );
+
+  it.each([
+    ["a one-letter alias", "x"],
+    ["an alias past its bound", "x".repeat(81)],
+  ])("#2397: refuses %s", (_label, alias) => {
+    const over = {
+      products: [
+        { ...product("srv", { aliases: [alias] }), source: { kind: "baqa" } },
+        { ...product("cli"), source: { kind: "baqa" } },
+      ],
+      scopeSizes: [2],
+    };
+    expect(() => parseRoutingFixture(raw(over), baqa)).toThrow(/products\[0\]\.aliases\[0\]/);
   });
 });
 
@@ -513,23 +564,32 @@ describe("scores", () => {
         decision: { ranked, route: "fallback", reason: "no-evidence", chosen: ["x", "y", "z"] },
       },
       { questionId: "R5", scopeSize: 3, answerIn: [], decision: routed },
+      // #2397 — answered in two products: it cannot be in the top 1, so top 1 leaves it out.
+      { questionId: "R6", scopeSize: 3, answerIn: ["x", "y"], decision: routed },
       { questionId: "R1", scopeSize: 2, answerIn: ["x"], decision: routed },
     ];
     const [two, three] = summarizeRouting(samples);
-    expect(two).toMatchObject({ scopeSize: 2, answerable: 1, top1: { n: 1, of: 1 } });
+    expect(two).toMatchObject({
+      scopeSize: 2,
+      answerable: 1,
+      top1: { n: 1, of: 1 },
+      // The mention puts x first; on signals alone y leads.
+      signalsTop1: { n: 0, of: 1 },
+    });
     expect(three).toMatchObject({
       scopeSize: 3,
-      answerable: 3,
+      answerable: 4,
       top1: { n: 1, of: 3 },
-      top2: { n: 2, of: 3 },
-      top3: { n: 3, of: 3 },
+      top2: { n: 3, of: 4 },
+      top3: { n: 4, of: 4 },
       signalsTop1: { n: 1, of: 3 },
-      signalsTop2: { n: 2, of: 3 },
-      routed: { n: 2, of: 3 },
-      routedRight: { n: 1, of: 2 },
+      signalsTop2: { n: 2, of: 4 },
+      signalsTop3: { n: 4, of: 4 },
+      routed: { n: 3, of: 4 },
+      routedRight: { n: 2, of: 3 },
       noAnswerFallback: { n: 1, of: 2 },
     });
-    expect(three.meanSearched).toBeCloseTo((2 + 2 + 3) / 3, 10);
+    expect(three.meanSearched).toBeCloseTo((2 + 2 + 3 + 2) / 4, 10);
   });
 
   it("rankAcrossProjects merges on cosine, a keyword-only hit last, and keeps k", () => {
@@ -618,6 +678,9 @@ describe("scores", () => {
       options: DEFAULT_ROUTING_OPTIONS,
     });
     expect(md).toContain("Router: probe k 8, floor 0.25, keep ratio 0.5.");
+    expect(md).toContain(
+      "Top k counts only the questions answered in at most k products: one answered in two cannot be in the top 1.",
+    );
     expect(md).toContain(
       "| 2 | 0 | n/a | n/a | n/a | n/a, n/a, n/a | n/a | n/a | 0.0 | 100% (1/1) |",
     );

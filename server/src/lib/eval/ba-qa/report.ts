@@ -28,8 +28,12 @@ export interface ReportSession {
   searchScope?: string;
   /** #2336 — the retrieval step's time, in ms. Absent in a run recorded before #2336. */
   retrievalMs?: number;
-  /** Seconds for the whole question: retrieval, the tool loop and the answer. */
-  seconds?: number;
+  /**
+   * #2397 — seconds to answer: retrieval, the tool loop and the reply, the judge
+   * excluded. Absent in a run recorded before #2397, whose `seconds` timed the
+   * judge's call too and is not read here.
+   */
+  answerSeconds?: number;
   /** Prompt tokens over the session's model calls, cache reads included. */
   usage?: { promptTokens: number };
 }
@@ -169,10 +173,10 @@ export function formatBaQaReport(input: {
         0,
       ),
     ),
-    row("Seconds per question", (a) =>
+    row("Seconds per answer (judge excluded)", (a) =>
       meanOf(
         input.sessions.filter((s) => s.arm === a.arm),
-        (s) => s.seconds,
+        (s) => s.answerSeconds,
         1,
       ),
     ),

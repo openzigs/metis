@@ -28,6 +28,24 @@ export function armLabel(arm: string, mode: RetrievalMode): string {
 }
 
 /**
+ * #2336, #2397 — the routing flags' combinations, checked before anything runs.
+ * Both sweeps return before an answer run reads `--route`, so a `--route`
+ * without `--routing-scope` is refused here rather than silently ignored.
+ */
+export function assertRoutingFlags(flags: {
+  routingSweep: boolean;
+  routingScope?: string;
+  route?: string;
+}): void {
+  if (flags.routingSweep && flags.routingScope !== undefined) {
+    throw new Error("--routing-sweep asks no model: it takes no --routing-scope");
+  }
+  if (flags.route !== undefined && flags.routingScope === undefined) {
+    throw new Error("--route needs --routing-scope");
+  }
+}
+
+/**
  * The questions a run asks: the one-turn set of #2237 by default, the
  * multi-turn set with `multiTurn`, or the questions named in `ids` from either;
  * then at most `limit` of them.

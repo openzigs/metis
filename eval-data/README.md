@@ -1174,13 +1174,19 @@ product the question names is always chosen. The router falls back to every proj
 project has keyword evidence, when the best score is below 0.25, or when the two signals point
 at different projects.
 
-**Is the right project in the router's top k** (answerable questions in scope):
+**Is the right project in the router's top k** (answerable questions in scope; top k counts only
+the questions answered in at most k products, #2397):
 
 | Scope | Top 1 | Top 2 | Top 3 | Top 1 / 2 / 3, product names ignored | Routed choice holds the answer | Projects searched (mean) |
 |---:|---:|---:|---:|---|---:|---:|
-| 2 | 8/12 | 12/12 | 12/12 | 5/12, 12/12, 12/12 | 12/12 | 2.0 |
-| 5 | 11/15 | 15/15 | 15/15 | 8/15, 15/15, 15/15 | 15/15 | 2.5 |
-| 9 | 14/18 | 17/18 | 18/18 | 11/18, 17/18, 18/18 | 17/17 (1 fell back) | 2.9 |
+| 2 | 8/8 | 12/12 | 12/12 | 5/8, 12/12, 12/12 | 12/12 | 2.0 |
+| 5 | 11/11 | 15/15 | 15/15 | 8/11, 15/15, 15/15 | 15/15 | 2.5 |
+| 9 | 14/14 | 17/18 | 18/18 | 11/14, 17/18, 18/18 | 17/17 (1 fell back) | 2.9 |
+
+M1 to M4 are answered in both Acme Reader products, so no ranking can put them in the top 1.
+The table first printed top 1 over every answerable question (8/12, 11/15, 14/18), which read
+as 4 misses that were never possible hits; the counts are unchanged, only their denominator.
+`--routing-sweep` prints the top 1 this way from #2397 on.
 
 The gibberish question fell back at every scope. The France question was routed to the
 Miniflux server, whose test data and code comments hold "France" and "capital".
@@ -1212,20 +1218,39 @@ two for routed):
 | Citation recall | 10/32 | 8/32 | 5/32 | 9/32, 9/32 | 12/32 |
 | False abstention on answerable | 4/10 | 5/10 | 6/10 | 4/10, 4/10 | 2/10 |
 | Input tokens per question | 4,950 | 4,788 | 4,489 | 4,882, 4,882 | 5,414 |
-| Seconds per question | 10.4 | 10.8 | 10.2 | 11.1, 10.4 | 10.9 |
+| Seconds per question (judge included) | 10.4 | 10.8 | 10.2 | 11.1, 10.4 | 10.9 |
 | Retrieval ms per question | 1,165 | 1,202 | 1,505 | 1,008 (probe included) | 1,124 |
 
-Retrieval takes about a second here, against 0.2 s in the sweep: between questions the model
-call takes 10 s and the search runs cold. The first routed run timed retrieval without its
-probe, so only the second run's time is given. The runs cost **$1.566** (answers and judge),
-including a scope-5 run whose results were lost to a bad `--include` path and run again.
+Seconds per question timed the whole question, the judge's Sonnet call included; from #2397
+the report gives seconds per answer, with the judge left out. The first routed run timed
+retrieval without its probe, so only the second run's time is given. The runs cost **$1.566**
+(answers and judge), including a scope-5 run whose results were lost to a bad `--include` path
+and run again.
+
+**Retrieval time: two measurements that disagree (#2397).** At nine products the offline sweep
+read 181 ms for search-all against 296 ms routed, probe included. The paid runs read the
+opposite, 1,505 ms against 1,008 ms, and three to eight times slower. Both time the same calls:
+the federated search for search-all, and the probe plus the federated search of the chosen
+projects for routed. Why the paid runs were slower and reversed is not established. Each column
+is one run of 10 questions, its per-question timings were not kept, and its search ran in its
+own process after 10 s of model calls, where the sweep runs the probe and the three searches
+back to back. The later paid runs on the #2264 corpus below kept their per-question timings
+(`readings/ba-qa/2264-scope9-*.json`). They read 96 and 107 ms for search-all against 181 ms
+routed, the sweep's order, and every routed question took longer than both search-all runs of
+the same question (153 to 214 ms against 78 to 135 ms). Those runs also embed each query once
+per call (#2279), where the 2026-11-12 runs embedded it once per project, so the absolute
+times are not comparable across the two dates; the order is. The 1,008 ms is one cold sample,
+and it did not reproduce.
 
 **Decision: no-go. #2336 is closed as measured-not-needed, and the accuracy loss goes to #2264.**
 
 - **Cost does not call for routing.** Input tokens and latency stay flat from 2 to 9 projects:
   the block holds 8 excerpts whatever the scope, the parallel per-project search takes 0.2 s
-  warm, and the model takes 10 s. Routing cannot improve either one, because its probe is a
-  search per project of its own. Part B's own bar for turning it on ("tokens or latency
+  warm, and a question takes 10 s, the judge's call included. Routing did not improve either.
+  Routed input tokens read 4,882 against search-all's 4,489. Routed retrieval read faster in one
+  paid run (1,008 against 1,505 ms) and slower in the sweep and in every later paid run (see
+  "Retrieval time" above), because its probe is a search of every project in scope, made
+  before the search it narrows. Part B's own bar for turning it on ("tokens or latency
   improve") could not be met.
 - **Search-all does lose accuracy as projects are added, but routing is not the fix.** From 2
   to 9 projects, the share of excerpts from an answer product falls from 67% to 31%, the
@@ -1240,7 +1265,7 @@ including a scope-5 run whose results were lost to a bad `--include` path and ru
   what ranking gets alone.
 - **The product mention does most of the router's work.** Most questions in the set name
   their product the way an analyst does ("the Acme Reader server"). With the names ignored,
-  top 1 drops to 11 of 18 at nine projects. The keyword evidence alone separates the two Acme
+  top 1 drops to 11 of 14 at nine projects (the 14 answered in one product). The keyword evidence alone separates the two Acme
   Reader products poorly: both hold most words of a question about either.
 - These are single runs of 10 questions. The two routed runs, with identical retrieval,
   differ by 7 points of facts stated, so differences under about 10 points are noise. The

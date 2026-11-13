@@ -131,6 +131,7 @@ import {
   applyArmEnv,
   armLabel,
   assertComparable,
+  assertRoutingFlags,
   budgetStop,
   buildJudgedSpans,
   chatSessionScope,
@@ -164,7 +165,9 @@ interface PoolProject {
 interface Session extends ReportSession {
   questionId: string;
   sessionId: string;
+  /** The whole question, the judge's call included; the report reads `answerSeconds`. */
   seconds: number;
+  answerSeconds: number;
   turnsUsed: number;
   hasFinalAnswer: boolean;
   response: string;
@@ -213,9 +216,11 @@ async function main(): Promise<void> {
   });
   // #2336 — the routing sweep, like the floor sweep, asks no model.
   const routingSweep = values["routing-sweep"] === true;
-  if (routingSweep && values["routing-scope"] !== undefined) {
-    throw new Error("--routing-sweep asks no model: it takes no --routing-scope");
-  }
+  assertRoutingFlags({
+    routingSweep,
+    routingScope: values["routing-scope"],
+    route: values.route,
+  });
   const floorSweep = values["floor-sweep"] === true || routingSweep;
   if (!values.arm && !floorSweep) {
     throw new Error("--arm is required (default, off, on, no-tools, …)");
@@ -536,8 +541,6 @@ async function main(): Promise<void> {
         actor: await resolveAclActor(user.id),
       },
     );
-  } else if (values.route !== undefined) {
-    throw new Error("--route needs --routing-scope");
   }
   const runArm = routing ? `${arm}-scope${routing.size}-${routing.route}` : arm;
 
@@ -856,6 +859,8 @@ async function main(): Promise<void> {
       // A question cut short by the cap is not graded or reported.
       if (stoppedEarly) break;
       if (!loop) throw new Error(`${q.id} has no turn to ask`);
+      // #2397 — the answer is done: what follows (citations, the judge) is grading.
+      const answerSeconds = Number(((performance.now() - t0) / 1000).toFixed(1));
       const { citations, ambiguous } = extractCitations(
         reply,
         q.scope.map((name) => citable.get(name)!),
@@ -891,6 +896,7 @@ async function main(): Promise<void> {
         truncatedToolResults: loop.toolResults.filter((t) => t.truncated).length,
         sessionId: row.id,
         seconds: Number(((performance.now() - t0) / 1000).toFixed(1)),
+        answerSeconds,
         turnsUsed: loop.turnsUsed,
         hasFinalAnswer: loop.loop.hasFinalAnswer,
         response: reply,
