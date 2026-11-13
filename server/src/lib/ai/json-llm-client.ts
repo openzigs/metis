@@ -13,6 +13,7 @@
  */
 import type { AIProvider, ChatMessage, ChatResponse } from "./types.js";
 import { createChildLogger } from "../logger.js";
+import { AMBIGUOUS_JSON_MESSAGE, parseBalancedJsonObject } from "../analysis/balanced-json.js";
 
 const log = createChildLogger("json-llm-client");
 
@@ -46,7 +47,9 @@ export interface JsonLlmCallResult<T> {
 
 /**
  * Strip markdown code fences and prose around a JSON object/array, then
- * parse. Throws when no JSON-looking substring is present. `callJsonLlm`
+ * parse. Throws when no JSON-looking substring is present, and when a fenced
+ * object has a different object beside it (#2407: which is the answer cannot
+ * be told). `callJsonLlm`
  * rethrows any such failure as a {@link JsonLlmParseError}.
  */
 export function extractJson<T = unknown>(raw: string): T {
@@ -71,7 +74,16 @@ export function extractJson<T = unknown>(raw: string): T {
   // over a closing fence.
   const fence = /```(?:json)?([\s\S]*?)```/i.exec(trimmed);
   if (fence) {
-    return JSON.parse(fence[1].trim()) as T;
+    const inner = fence[1].trim();
+    // #2407 — the pattern takes the FIRST fenced block, so a fenced first draft
+    // followed by a correction ("Correction: the object above is incomplete")
+    // kept the draft. Ask the balanced scan whether a different object sits
+    // anywhere in the reply; if one does, the reply is unparseable and the
+    // caller takes its JsonLlmParseError path rather than the draft.
+    if (inner.startsWith("{") && parseBalancedJsonObject(trimmed).ambiguous) {
+      throw new SyntaxError(AMBIGUOUS_JSON_MESSAGE);
+    }
+    return JSON.parse(inner) as T;
   }
   // First { … } or [ … ] balanced span. Greedy on outer braces is fine
   // because we only feed the model JSON-only system prompts; if it

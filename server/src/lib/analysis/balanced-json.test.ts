@@ -540,14 +540,51 @@ describe("#2407 a reply that corrects its own first object", () => {
     const one = JSON.stringify(FULL);
     expect(extractJsonObject(`${one}\nThat is everything.`)).toEqual(FULL);
     expect(extractJsonObject(`${one}\nAgain: ${JSON.stringify(FULL, null, 2)}`)).toEqual(FULL);
-    // `{}` is never a rival, so a full object after it is the answer.
-    expect(parseBalancedJsonObject(`{}\n${CORRECTION}\n${one}`, { leadingOnly: true })).toEqual({
+    // A leading `{}` alone, or repeated, is still the answer.
+    expect(parseBalancedJsonObject(`{}\nNothing found.`, { leadingOnly: true })).toEqual({
       found: true,
-      value: FULL,
+      value: {},
+    });
+    expect(parseBalancedJsonObject(`{}\nAgain: {}`, { leadingOnly: true })).toEqual({
+      found: true,
+      value: {},
     });
     // An opener that no JSON key follows is prose, not a cut-off object.
     expect(extractJsonObject(`${one}\nclose it with {`)).toEqual(FULL);
     expect(extractJsonObject(`${one}\nuse {name here`)).toEqual(FULL);
+  });
+
+  it("is ambiguous on a leading {} followed by a different, non-empty object", () => {
+    // Re-review: holding the later object returned an EXAMPLE as the answer
+    // (`{}` then "a non-empty reply would look like {…}"). Main returned the
+    // `{}`; neither can be told to be the answer, so the reply re-prompts.
+    const example = `{}\n\nNo requirements found. A non-empty reply would look like {"requirements":[{"id":"R1"}]}`;
+    expect(parseBalancedJsonObject(example, { leadingOnly: true })).toEqual({
+      found: false,
+      ambiguous: true,
+    });
+    expect(() => extractJsonObject(example)).toThrow(AMBIGUOUS_JSON_MESSAGE);
+    // The same for `{}` then a correction: a fabricated answer is worse than a re-ask.
+    expect(
+      parseBalancedJsonObject(`{}\n${CORRECTION}\n${JSON.stringify(FULL)}`, { leadingOnly: true }),
+    ).toEqual({ found: false, ambiguous: true });
+  });
+
+  it("does not read a quoted brace in trailing prose as a cut-off object", () => {
+    const one = JSON.stringify(FULL);
+    // Re-review: `"{"` left the depth above zero and made the reply ambiguous.
+    expect(extractJsonObject(`${one}\nNote: the opening brace "{" is required.`)).toEqual(FULL);
+    expect(
+      parseBalancedJsonObject(`Here: ${one}\nNote: the opening brace "{" is required.`),
+    ).toEqual({ found: true, value: FULL });
+    expect(extractJsonObject(`${one}\nCode: if (x) { "a" + b`)).toEqual(FULL);
+    // An unclosed object that opens with a key and its `:` is still a cut-off correction.
+    expect(() => extractJsonObject(`${one}\n${CORRECTION}\n{ "statements" : [`)).toThrow(
+      AMBIGUOUS_JSON_MESSAGE,
+    );
+    expect(() => extractJsonObject(`${one}\n${CORRECTION}\n{\n  "statements":[{"a":1}`)).toThrow(
+      AMBIGUOUS_JSON_MESSAGE,
+    );
   });
 
   it("stays linear on an answer followed by an unclosed object", () => {

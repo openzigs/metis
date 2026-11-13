@@ -174,6 +174,14 @@ function scan(text: string, leadingOnly: boolean, work: BalancedJsonWork): Balan
               // that may be the real answer cut short — never a reason to
               // discard the held one as NOT_FOUND (PR #1409 review).
               return answer === null ? NOT_FOUND : AMBIGUOUS;
+            } else if (leadingOnly && answer !== null && isEmptyObject(answer.value)) {
+              // #2407 review — a LEADING `{}` and a different, non-empty object
+              // after it (`{}\n\nNo requirements found. A non-empty reply would
+              // look like {"requirements":[…]}`). Main returned the `{}`;
+              // holding the later object returns the example: a fabricated
+              // answer, which is worse than a re-prompt. Neither can be told
+              // to be the answer. A second `{}` is the same object.
+              if (!isEmptyObject(value)) return AMBIGUOUS;
             } else if (answer === null || isEmptyObject(answer.value)) {
               // #2407 — under `leadingOnly` the leading object is held like any
               // other answer, not returned at once: a model that writes a short
@@ -207,7 +215,10 @@ function scan(text: string, leadingOnly: boolean, work: BalancedJsonWork): Balan
   // #2407 — an object opened after the answer and never closed: the reply
   // stopped partway through a second object, which may be the corrected
   // answer cut off by the output cap. The held one is not safe to return.
-  if (depth > 0 && couldBeJsonObject(text, start, work)) return AMBIGUOUS;
+  // #2407 review — only when it opens with a key (`{ "statements":`): a brace
+  // in trailing prose or code (`the opening brace "{" is required.`) also
+  // leaves the depth above zero, and is commentary, not a cut-off object.
+  if (depth > 0 && opensWithKey(text, start, work)) return AMBIGUOUS;
   return elementBeforeAnswer ? AMBIGUOUS : { found: true, value: answer.value };
 }
 
@@ -220,6 +231,31 @@ function scan(text: string, leadingOnly: boolean, work: BalancedJsonWork): Balan
 function couldBeJsonObject(text: string, start: number, work: BalancedJsonWork): boolean {
   const ch = nextTokenCode(text, start + 1, work);
   return ch === 0x22 || ch === 0x7d;
+}
+
+/**
+ * True when the `{` at `start` is followed by a complete JSON key and its `:`
+ * (`{ "statements" :`) — what an object cut off after its first key looks
+ * like, and what a quoted brace in prose (`"{" is required`) does not. Called
+ * once, at the end of the scan, over text after the last top-level `{`: linear.
+ */
+function opensWithKey(text: string, start: number, work: BalancedJsonWork): boolean {
+  let i = start + 1;
+  for (; i < text.length && isJsonWhitespace(text.charCodeAt(i)); i++) work.walked++;
+  if (text.charCodeAt(i) !== 0x22 /* " */) return false;
+  for (i++; i < text.length; i++) {
+    work.walked++;
+    const ch = text.charCodeAt(i);
+    if (ch === 0x5c /* \ */) i++;
+    else if (ch === 0x22 /* " */) return nextTokenCode(text, i + 1, work) === 0x3a; /* : */
+    // A JSON string never spans a raw line break: this quote opened prose.
+    else if (ch === 0x0a || ch === 0x0d) return false;
+  }
+  return false;
+}
+
+function isJsonWhitespace(ch: number): boolean {
+  return ch === 0x20 || ch === 0x0a || ch === 0x0d || ch === 0x09;
 }
 
 /**
