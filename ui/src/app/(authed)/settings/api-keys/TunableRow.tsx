@@ -15,7 +15,7 @@
  */
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ApiError } from "@/lib/api-client";
@@ -31,12 +31,24 @@ export function TunableRow({ view, onChanged }: TunableRowProps) {
   // unset flag that defaults on must not read as off.
   const shown = view.value ?? view.defaultValue ?? "";
   const [draft, setDraft] = useState<string>(shown);
+  // #2402 — whether the admin has edited the row, not whether the value moved:
+  // toggling back to the shown value is still an explicit choice to store it.
+  const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     setDraft(shown);
+    setDirty(false);
   }, [shown]);
+
+  const unset = view.source === "unset";
+  // #2402 — Save on an untouched unset row would write the default as an
+  // explicit value, which for a flag whose default depends on the model
+  // changes what the server does. Nothing to save until the admin edits it.
+  const untouched = unset && !dirty;
+  // #2402 — a default that differs by context: the control shows neither on nor off.
+  const defaultNote = unset ? (view.defaultNote ?? null) : null;
 
   async function handleSave() {
     setBusy(true);
@@ -94,6 +106,14 @@ export function TunableRow({ view, onChanged }: TunableRowProps) {
           >
             {sourceLabel}
           </code>
+          {defaultNote ? (
+            <span
+              className="text-muted-foreground"
+              data-testid={`config-tunable-${view.key}-default-note`}
+            >
+              {` — ${defaultNote}`}
+            </span>
+          ) : null}
         </p>
       </div>
       <div className="flex w-full items-center gap-2 md:w-1/2">
@@ -101,13 +121,17 @@ export function TunableRow({ view, onChanged }: TunableRowProps) {
           configKey={view.key}
           valueType={view.valueType}
           value={draft}
+          mixed={defaultNote !== null && untouched}
           disabled={busy}
-          onChange={setDraft}
+          onChange={(next) => {
+            setDraft(next);
+            setDirty(true);
+          }}
         />
         <Button
           size="sm"
           onClick={handleSave}
-          disabled={busy}
+          disabled={busy || untouched}
           data-testid={`config-tunable-${view.key}-save`}
         >
           Save
@@ -139,16 +163,23 @@ interface ControlProps {
   configKey: string;
   valueType: ConfigKeyView["valueType"];
   value: string;
+  /** #2402 — render a bool as neither on nor off (its default differs by context). */
+  mixed?: boolean;
   disabled: boolean;
   onChange: (value: string) => void;
 }
 
-function TunableControl({ configKey, valueType, value, disabled, onChange }: ControlProps) {
+function TunableControl({ configKey, valueType, value, mixed, disabled, onChange }: ControlProps) {
   const testId = `config-tunable-${configKey}-input`;
+  const checkbox = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (checkbox.current) checkbox.current.indeterminate = mixed === true;
+  }, [mixed]);
   if (valueType === "bool") {
     const checked = /^(1|true|yes|on)$/i.test(value.trim());
     return (
       <input
+        ref={checkbox}
         type="checkbox"
         checked={checked}
         disabled={disabled}

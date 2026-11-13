@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 vi.mock("../../prisma.js", () => ({ prisma: {} }));
 
 import { getKeyDef } from "../../config/key-registry.js";
-import { loadSessionToolsFlags } from "./session-tools.js";
+import { codeToolsOnTextProtocol, loadSessionToolsFlags } from "./session-tools.js";
 
 const KEY = "CHAT_CODE_SEARCH_TOOLS";
 
@@ -82,5 +82,41 @@ describe("loadSessionToolsFlags — models without native tool calls (#2295)", (
     const flags = loadSessionToolsFlags();
     expect(flags.codeSearchTools).toBe(false);
     expect(flags.codeSearchToolsOnTextProtocol).toBe(false);
+  });
+});
+
+describe("codeToolsOnTextProtocol — the one text-protocol gate (#2402)", () => {
+  const saved = process.env[KEY];
+  afterEach(() => {
+    if (saved === undefined) delete process.env[KEY];
+    else process.env[KEY] = saved;
+  });
+
+  it.each([
+    [undefined, true, false],
+    ["true", true, true],
+    ["false", false, false],
+  ])("CHAT_CODE_SEARCH_TOOLS=%s: native %s, text protocol %s", (raw, native, text) => {
+    if (raw === undefined) delete process.env[KEY];
+    else process.env[KEY] = raw;
+    const flags = loadSessionToolsFlags();
+    expect(flags.codeSearchTools).toBe(native);
+    expect(codeToolsOnTextProtocol(flags)).toBe(text);
+  });
+
+  it("follows codeSearchTools when the text-protocol field is omitted", () => {
+    expect(codeToolsOnTextProtocol({ chatTools: true, codeSearchTools: true })).toBe(true);
+    expect(codeToolsOnTextProtocol({ chatTools: true, codeSearchTools: false })).toBe(false);
+  });
+
+  it("the registry words the unset default as what the loader applies", () => {
+    delete process.env[KEY];
+    const flags = loadSessionToolsFlags();
+    // Derive the wording from the loader's unset behaviour, so the registry
+    // note cannot drift from what the code applies on either protocol.
+    const native = flags.codeSearchTools ? "on" : "off";
+    const text = codeToolsOnTextProtocol(flags) ? "on" : "off";
+    const expected = native === text ? native : `${native} (native tool models only)`;
+    expect(getKeyDef(KEY)?.defaultNote).toBe(expected);
   });
 });

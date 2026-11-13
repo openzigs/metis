@@ -49,6 +49,12 @@ export interface ConfigKeyDef {
    * "unset/off" declare one; it must match the default those readers pass.
    */
   default?: string;
+  /**
+   * #2402 — how the admin page words the default when it is not one value
+   * everywhere (a flag on for some models and off for others). Shown instead
+   * of `default` alone, which would claim more than the code applies.
+   */
+  defaultNote?: string;
 }
 
 // ── Re-usable schema fragments ───────────────────────────────────────────
@@ -985,6 +991,8 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
       "Master enable for agentic code-search TOOLS in chat + stream (#713). ON by default since #2243, measured on the #2237 BA question set (single-product questions: facts stated 51% → 73–84%, citation precision 28% → 80–83%, about 4x the input tokens per question; eval-data/README.md); set false to turn them off. When on, project-scoped sessions may call search_code_graph (exact graph traversal), search_code_symbols (hybrid BM25+vector symbol search) and read_file_slice (up to 200 lines from the project's own repo clones, #736) — offered as native tools to a tool-capable model, even without loaded skills. A model without native tool calls gets them through the text-protocol loop, which does not stream, and only when this key is set to true (#2295). Tool schemas render deterministically into the byte-stable prompt lead, so the flag flips the cached prefix ONCE per deploy (expected); the per-turn latency cost is one extra bounded model round-trip per executed tool call (loop capped at a few turns). When off, no code tools are offered and, with CHAT_TOOLS also off or the model not tool-capable, no loop runs. Distinct from CHAT_FUSED_CODE_RETRIEVAL (#714), which is PASSIVE per-request retrieval into the volatile tail.",
     sensitive: false,
     default: "true",
+    // #2402 — unset, the text protocol reads it as false (#2295): the box must not claim "on".
+    defaultNote: "on (native tool models only)",
   },
   // ── #2327 — sharper search primitives for chat ─────────────────────────
   CHAT_CODE_SEARCH_PRIMITIVES: {
