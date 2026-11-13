@@ -7824,7 +7824,7 @@ The v1.2 shell ships **30+ user-facing routes** plus the auth proxy handlers. Th
 | `/reviews` | Reviews | Formal review & approval queue (assigned-to-me / requested-by-me) with per-review detail, pinned-version diffs, and approve/reject (epic #609). |
 | `/documents` | Documents | Top-level cross-project document inventory with project filter. |
 | `/portfolio` | Portfolio | The Projects hub's Portfolio tab (#2353): **Coverage** (a requirement checked across the portfolio, #1626) and **Products** (list and create products; `?tab=products`). A product's page stays at `/products/[id]` and lights this tab through its `routes`. |
-| `/products`, `/repositories`, `/databases` | — | Redirects through `lib/legacy-routes` (#2353): `/products` → `/portfolio?tab=products`; the retired cross-project connector catalogues → `/projects`, or `/projects/<id>/connections` (the project's Knowledge tab) for `?projectId=<id>`. |
+| `/products`, `/repositories`, `/databases` | — | Redirects through `lib/legacy-routes` (#2353): `/products` → `/portfolio?tab=products`; the retired cross-project connector catalogues → `/projects`, or `/projects/<id>/connections` (the project's Knowledge tab) for `?projectId=<id>` when the id has the project-id shape (letters, digits, `-`, `_`; anything else, `..` included, → `/projects`). No old link carried `?projectId=`, so real bookmarks land on `/projects`. The section of `/portfolio` is kept in `?tab=` (`router.replace`). |
 | `/vault` | Vault | Admin-only encrypted secret management with reveal/rotate/audit. |
 | `/eval/leaderboard` | Eval Leaderboard | SWE-bench-Pro + TAU-bench results, sparklines, admin "Run now" triggers. |
 | `/eval/leaderboard/[id]` | Eval Run Detail | Per-task diffs via `BenchDiffViewer` for failing tasks. |

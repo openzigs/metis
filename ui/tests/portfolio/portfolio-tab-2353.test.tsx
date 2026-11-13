@@ -7,7 +7,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
+import type { QueryClient } from "@tanstack/react-query";
+import { MAX_PAGE_SIZE } from "@metis/shared";
+import { createQueryClient } from "@/lib/query-client";
 import { makeWrapper } from "../test-utils";
 import { axeViolations } from "./axe";
 
@@ -42,10 +45,12 @@ const BILLING = {
   createdAt: "2026-11-01T10:00:00.000Z",
 };
 
-function openAt(query: Record<string, string> = {}) {
+function openAt(query: Record<string, string> = {}, queryClient?: QueryClient) {
   vi.mocked(useSearchParams).mockReturnValue(new URLSearchParams(query) as never);
-  return render(<PortfolioPage />, { wrapper: makeWrapper() });
+  return render(<PortfolioPage />, { wrapper: makeWrapper({ queryClient }) });
 }
+
+const router = () => vi.mocked(useRouter)();
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -84,6 +89,47 @@ describe("the Portfolio tab (#2353)", () => {
     expect(screen.getByTestId("new-product-button")).toBeInTheDocument();
     await user.click(screen.getByRole("tab", { name: "Coverage" }));
     expect(screen.getByLabelText("Requirement statement")).toBeInTheDocument();
+  });
+
+  it("keeps the section in the URL, so Back from a product and a reload reopen it", async () => {
+    const user = userEvent.setup();
+    openAt();
+    await user.click(screen.getByRole("tab", { name: "Products" }));
+    expect(router().replace).toHaveBeenLastCalledWith("/portfolio?tab=products", {
+      scroll: false,
+    });
+    await user.click(screen.getByRole("tab", { name: "Coverage" }));
+    expect(router().replace).toHaveBeenLastCalledWith("/portfolio", { scroll: false });
+    expect(router().push).not.toHaveBeenCalled();
+  });
+
+  it("keeps the rest of the query when it changes section", async () => {
+    const user = userEvent.setup();
+    openAt({ statement: "Export invoices" });
+    await user.click(screen.getByRole("tab", { name: "Products" }));
+    expect(router().replace).toHaveBeenLastCalledWith(
+      "/portfolio?statement=Export+invoices&tab=products",
+      { scroll: false },
+    );
+  });
+
+  it("re-reads the Coverage product picker after a product is created (app QueryClient)", async () => {
+    const user = userEvent.setup();
+    products.create.mockResolvedValue({ ...BILLING, id: "p-new", name: "Orders" } as never);
+    openAt({}, createQueryClient());
+    const pickerReads = () =>
+      products.list.mock.calls.filter(([arg]) => arg?.pageSize === MAX_PAGE_SIZE).length;
+    await waitFor(() => expect(pickerReads()).toBe(1));
+
+    await user.click(screen.getByRole("tab", { name: "Products" }));
+    await user.click(await screen.findByTestId("new-product-button"));
+    await user.type(screen.getByLabelText("Name", { exact: true }), "Orders");
+    await user.click(screen.getByRole("button", { name: "Create" }));
+    await waitFor(() => expect(screen.queryByText("Create product")).not.toBeInTheDocument());
+
+    await user.click(screen.getByRole("tab", { name: "Coverage" }));
+    // Within the 30s staleTime: only the invalidation makes it read again.
+    await waitFor(() => expect(pickerReads()).toBe(2));
   });
 
   it("passes axe on each section", async () => {

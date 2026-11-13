@@ -37,6 +37,7 @@ import { PageHeader } from "@/components/ui/page-header";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ApiError } from "@/lib/api-client";
 import { productsApi } from "@/lib/products-api";
+import { queryKeys } from "@/lib/query-keys";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { useCreatePortfolioAssessment, usePortfolioAssessments } from "@/lib/portfolio-hooks";
 import { PortfolioAssessmentForm } from "@/components/portfolio/portfolio-assessment-form";
@@ -87,9 +88,22 @@ function PortfolioSections({
   requested: string | null;
   searchParams: SearchParamsReader | null;
 }) {
+  const router = useRouter();
   const [tab, setTab] = useState<PortfolioTab>(
     TABS.find((t) => t.id === requested)?.id ?? "coverage",
   );
+
+  // #2353 — the section is in the URL (`?tab=products`; Coverage is the bare
+  // page), so browser Back from a product, a reload or a shared link reopens
+  // it. Replaced, not pushed: switching sections adds no history entries.
+  function selectTab(next: PortfolioTab) {
+    setTab(next);
+    const params = new URLSearchParams(searchParams?.toString() ?? "");
+    if (next === "coverage") params.delete("tab");
+    else params.set("tab", next);
+    const qs = params.toString();
+    router.replace(qs ? `/portfolio?${qs}` : "/portfolio", { scroll: false });
+  }
 
   return (
     <div className="space-y-6 p-2 md:p-0" data-testid="portfolio-root">
@@ -98,7 +112,7 @@ function PortfolioSections({
         description="Your products, and whether one of them already does what a requirement asks, before anyone builds it again."
       />
 
-      <Tabs value={tab} onValueChange={(v) => setTab(v as PortfolioTab)}>
+      <Tabs value={tab} onValueChange={(v) => selectTab(v as PortfolioTab)}>
         <TabsList
           aria-label="Portfolio sections"
           className="flex h-auto w-full justify-start gap-1 rounded-none border-b bg-transparent p-0"
@@ -152,7 +166,9 @@ function PortfolioEntry({ searchParams }: { searchParams: SearchParamsReader | n
   const [productQuery, setProductQuery] = useState("");
   const search = useDebouncedValue(productQuery.trim(), 300);
   const productsQuery = useQuery({
-    queryKey: ["portfolio", "products", search],
+    // #2353 — under the products key, so a product created (or changed) in the
+    // Products section one click away is in this picker when Coverage reopens.
+    queryKey: queryKeys.products.list({ picker: "portfolio", search }),
     queryFn: () =>
       productsApi.list(search ? { pageSize: MAX_PAGE_SIZE, search } : { pageSize: MAX_PAGE_SIZE }),
     retry: false,

@@ -38,10 +38,22 @@ describe("legacyRedirect", () => {
       },
     );
 
-    it("encodes the project id into the path and carries nothing else", () => {
-      expect(legacyRedirect("/repositories/", { projectId: "a/../b c", q: "x" })).toBe(
-        "/projects/a%2F..%2Fb%20c/connections",
-      );
+    it.each([".", "..", "a/../b c", "../../admin", "p1?x=1", "p1#x", "%2e%2e", "a".repeat(65)])(
+      "opens the project list, carrying nothing, for %j, which is not a project id",
+      (projectId) => {
+        expect(legacyRedirect("/repositories/", { projectId, q: "x" })).toBe("/projects");
+        expect(legacyRedirect("/databases", { projectId })).toBe("/projects");
+      },
+    );
+
+    it("puts a cuid into the path and carries nothing else", () => {
+      expect(
+        legacyRedirect("/repositories", { projectId: "cmhx1a2b3c4d5e6f7g8h9i0j", q: "x" }),
+      ).toBe("/projects/cmhx1a2b3c4d5e6f7g8h9i0j/connections");
+    });
+
+    it("carries no query to the project list", () => {
+      expect(legacyRedirect("/databases", { q: "orders", tab: "x" })).toBe("/projects");
     });
 
     it("takes the first of repeated project ids and ignores an empty one", () => {

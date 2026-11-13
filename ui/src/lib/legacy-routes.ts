@@ -34,6 +34,12 @@ const EXACT: Readonly<Record<string, string>> = {
 /** #2353 — retired cross-project catalogues that a named project narrows to its Knowledge tab. */
 const CONNECTOR_CATALOGUES = new Set(["/repositories", "/databases"]);
 
+/**
+ * #2353 — the shape of a project id (a cuid, or any other id made of letters,
+ * digits, `-` and `_`). Anything else, `.` and `..` included, names no project.
+ */
+const PROJECT_ID = /^[A-Za-z0-9_-]{1,64}$/;
+
 function firstValue(raw: string | string[] | undefined): string | undefined {
   return Array.isArray(raw) ? raw[0] : raw;
 }
@@ -77,9 +83,16 @@ function target(path: string): string {
 export function legacyRedirect(pathname: string, searchParams: SearchParamsInput = {}): string {
   const path = pathname.length > 1 ? pathname.replace(/\/+$/, "") : pathname;
   // #2353 — a project in context (`?projectId=`) opens that project's
-  // Knowledge tab; the id is one path segment, so it is encoded.
-  const projectId = CONNECTOR_CATALOGUES.has(path) ? firstValue(searchParams.projectId) : undefined;
-  if (projectId) return `/projects/${encodeURIComponent(projectId)}/connections`;
+  // Knowledge tab. Only an id of the project-id shape goes into the path, so
+  // `.`, `..`, `/`, `?` and `#` cannot move the redirect off that segment;
+  // anything else opens the project list, carrying nothing. No link in the app
+  // ever put `?projectId=` here, so a real bookmark lands on the project list.
+  if (CONNECTOR_CATALOGUES.has(path)) {
+    const projectId = firstValue(searchParams.projectId);
+    return projectId && PROJECT_ID.test(projectId)
+      ? `/projects/${projectId}/connections`
+      : "/projects";
+  }
 
   const dest = target(path);
   const [base, query = ""] = dest.split("?", 2) as [string, string?];
