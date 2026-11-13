@@ -58,7 +58,7 @@ describe("ImpactAnalysesPage", () => {
   it("shows empty state", () => {
     mockUse.mockReturnValue(state({ data: [] }));
     render(<ImpactAnalysesPage />);
-    expect(screen.getByTestId("impact-list-empty")).toBeInTheDocument();
+    expect(screen.getByTestId("impact-list-empty")).toHaveAttribute("data-slot", "empty-state");
   });
 
   it("renders rows with a link to the detail view", () => {

@@ -26,6 +26,12 @@ interface VaultPickerProps {
   onChange: (value: string) => void;
   placeholder?: string;
   className?: string;
+  /**
+   * Offer only the secrets the caller may attach (the server's `bindable`).
+   * Default true. A form whose server check applies only in some cases (Publish:
+   * only a live run to a non-github.com base URL) passes false while it does not.
+   */
+  offerOnlyBindable?: boolean;
 }
 
 const CUSTOM_KEY = "__custom__";
@@ -41,7 +47,14 @@ function formatVaultRef(label: string): string {
   return `\${vault:${label}}`;
 }
 
-export function VaultPicker({ id, value, onChange, placeholder, className }: VaultPickerProps) {
+export function VaultPicker({
+  id,
+  value,
+  onChange,
+  placeholder,
+  className,
+  offerOnlyBindable = true,
+}: VaultPickerProps) {
   const { data, error } = useQuery({
     queryKey: ["vault", "list"],
     queryFn: () => vaultApi.list(),
@@ -53,10 +66,18 @@ export function VaultPicker({ id, value, onChange, placeholder, className }: Vau
   // they created (the server's SECRET_BINDING_FORBIDDEN), which nothing said.
   const refused = error instanceof ApiError && error.status === 403;
   const auth = useOptionalAuth();
-  const attachesOwnOnly = !(auth?.user?.permissions.includes("vault.reveal") ?? false);
+  const attachesOwnOnly =
+    offerOnlyBindable && !(auth?.user?.permissions.includes("vault.reveal") ?? false);
 
-  const entries = data?.items ?? [];
+  const all = data?.items ?? [];
   const parsedLabel = parseVaultLabel(value);
+  // #2382 — offer only what the caller may attach (the server's `bindable`),
+  // plus the secret already chosen here: a binding stays usable where it is.
+  const entries = offerOnlyBindable
+    ? all.filter((e) => e.bindable !== false || e.label === parsedLabel)
+    : all;
+  const noneBindable =
+    offerOnlyBindable && all.length > 0 && !all.some((e) => e.bindable !== false);
 
   // Tracks whether the user explicitly chose free-text ("custom") entry. This
   // is needed because the custom <Input> would otherwise never appear for a
@@ -112,19 +133,27 @@ export function VaultPicker({ id, value, onChange, placeholder, className }: Vau
               Your role cannot list the vault&apos;s secrets. Ask an admin to add a secret, or to
               bind one for you.
             </div>
-          ) : entries.length === 0 ? (
+          ) : all.length === 0 ? (
             <div
               className="max-w-xs px-2 py-1.5 text-xs text-muted-foreground"
               data-testid="vault-picker-empty"
             >
               No secrets in the vault yet. Ask an admin to add one.
             </div>
+          ) : noneBindable ? (
+            <div
+              className="max-w-xs px-2 py-1.5 text-xs text-muted-foreground"
+              data-testid="vault-picker-none-bindable"
+            >
+              None of the vault&apos;s secrets are yours to attach. Ask an admin to bind one for
+              you.
+            </div>
           ) : attachesOwnOnly ? (
             <div
               className="max-w-xs px-2 py-1.5 text-xs text-muted-foreground"
               data-testid="vault-picker-own-only"
             >
-              You can attach only secrets you created. For any other, ask an admin to bind it.
+              This list shows only secrets you created. For any other, ask an admin to bind it.
             </div>
           ) : null}
           {entries.map((entry) => (

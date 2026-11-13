@@ -7,7 +7,8 @@
  * recorded in the audit log.
  *
  * Routes:
- *   GET    /                list summaries (vault.read)
+ *   GET    /                list summaries (vault.read); each carries `bindable`,
+ *                            whether the caller may attach it (#2382)
  *   POST   /                create entry  (vault.write)
  *   POST   /:id/rotate      rotate value  (vault.write; another user's secret
  *                            needs `confirmForeignOwner: true` and the
@@ -40,6 +41,7 @@ import {
   type SecretSummary,
 } from "../lib/vault/vault-service.js";
 import { bindingWriteInProgress } from "../lib/vault/binding-write-mark.js";
+import { refsOwnedBy } from "../lib/vault/secret-binding.js";
 import { audit } from "../lib/audit/audit-service.js";
 import { prisma } from "../lib/prisma.js";
 import {
@@ -208,7 +210,25 @@ export function vaultRouter(): Router {
     const scope = typeof req.query.scope === "string" ? req.query.scope : undefined;
     const filter = scope === "global" || scope === "project" ? scope : undefined;
     const items = await getVaultService().list(filter);
-    res.json(ok({ items: items.map(summaryToView) }));
+    // #2382 — say which secrets the caller may attach, so the picker offers a
+    // non-admin only those. The same rule the write path enforces (#344 rule 1,
+    // `refsOwnedBy`): `vault.reveal` attaches any; anyone else only a secret
+    // they created. A flag, not the owner: the list names no one.
+    const owned =
+      req.user && hasPermission(req.user.role, "vault.reveal")
+        ? null
+        : await refsOwnedBy(
+            actorId(req),
+            items.map((s) => s.label),
+          );
+    res.json(
+      ok({
+        items: items.map((s) => ({
+          ...summaryToView(s),
+          bindable: owned === null || owned.has(s.label),
+        })),
+      }),
+    );
   });
 
   // ── Create ──────────────────────────────────────────────────────────────

@@ -186,7 +186,10 @@ describe("portfolio entry page", () => {
     api.list.mockResolvedValue([]);
     api.create.mockResolvedValue({ id: "pa-new" });
     render(<PortfolioPage />, { wrapper: makeWrapper() });
-    expect(await screen.findByTestId("portfolio-recent-empty")).toBeVisible();
+    expect(await screen.findByTestId("portfolio-recent-empty")).toHaveAttribute(
+      "data-slot",
+      "empty-state",
+    );
     await user.type(screen.getByLabelText("Requirement statement"), "Pay by transfer");
     await user.click(screen.getByRole("button", { name: "Check coverage" }));
     await waitFor(() =>

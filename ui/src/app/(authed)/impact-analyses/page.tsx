@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { ImpactAnalysesTable } from "@/components/impact/impact-analyses-table";
 import { useImpactAnalyses } from "@/lib/impact-analysis-hooks";
 import { PageHeader } from "@/components/ui/page-header";
+import { EmptyState } from "@/components/ui/empty-state";
 
 export default function ImpactAnalysesPage() {
   const { data, isLoading, isError } = useImpactAnalyses();
@@ -45,12 +46,11 @@ export default function ImpactAnalysesPage() {
           Could not load impact analyses.
         </Card>
       ) : analyses.length === 0 ? (
-        <Card
-          className="p-6 text-center text-sm text-muted-foreground"
+        <EmptyState
           data-testid="impact-list-empty"
-        >
-          No impact analyses yet. Start one to map a requirement change to code.
-        </Card>
+          title="No impact analyses yet."
+          description="Start one to map a requirement change to code."
+        />
       ) : (
         <ImpactAnalysesTable analyses={analyses} />
       )}

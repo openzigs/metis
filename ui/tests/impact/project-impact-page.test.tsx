@@ -61,7 +61,9 @@ describe("project Impact Analysis page (#61)", () => {
   it("says so when no run includes this project", async () => {
     fetchMock.mockResolvedValue([]);
     render(<ImpactPage />, { wrapper: makeWrapper({ withAuth: false }) });
-    expect(await screen.findByTestId("impact-list-empty")).toHaveTextContent(/this project/i);
+    const empty = await screen.findByTestId("impact-list-empty");
+    expect(empty).toHaveTextContent(/this project/i);
+    expect(empty).toHaveAttribute("data-slot", "empty-state"); // #2382
   });
 
   it("reports a failed load", async () => {
