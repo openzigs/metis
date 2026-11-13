@@ -193,6 +193,18 @@ describe("<MyWork />", () => {
     expect(screen.queryByRole("button", { name: "New project" })).not.toBeInTheDocument();
   });
 
+  it("reads project.create from the session, not the default role table", async () => {
+    fetchMock.mockResolvedValue({ changeRequests: [], reviews: [], projectCount: 0 });
+    // An admin by role whose session was not granted project.create.
+    renderWith(<MyWork />, { ...TEST_USER, role: "admin", permissions: [] });
+    expect(
+      await screen.findByText(
+        "You are not in any project yet. Ask an admin or coordinator to add you to one.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "New project" })).not.toBeInTheDocument();
+  });
+
   it("offers the New-project wizard when I have no projects", async () => {
     fetchMock.mockResolvedValue({ changeRequests: [], reviews: [], projectCount: 0 });
     // #2368 — the wizard opens only for a session granted project.create.
