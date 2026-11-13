@@ -298,11 +298,16 @@ export interface ClarificationDialogDeps {
    *
    * #2296 — decided from the analysis, never from the flag read live: an
    * analysis keeps the mode it was read in, so toggling the flag between
-   * rounds cannot mix the two behaviours in one dialog. The clarify route
-   * passes it from the list the analysis stored, so a client's `requirements`
-   * override cannot pick the mode by adding or leaving out `sources`.
+   * rounds cannot mix the two behaviours in one dialog.
    */
   sourceQuestions?: boolean;
+  /**
+   * #2296 — the requirements the default mode is decided from, when not the
+   * ones the dialog is started with: the clarify route passes the list the
+   * analysis stored, so a client's `requirements` override cannot pick the
+   * mode by adding or leaving out `sources`.
+   */
+  modeFrom?: readonly StructuredRequirement[];
 }
 
 /**
@@ -355,6 +360,7 @@ export class ClarificationDialog {
   private readonly governing: GoverningQuestionSource | undefined;
   private readonly priorAnswers: PriorAnswerSource | undefined;
   private readonly sourceQuestions: boolean | undefined;
+  private readonly modeFrom: readonly StructuredRequirement[] | undefined;
 
   constructor(deps: ClarificationDialogDeps) {
     this.provider = deps.provider;
@@ -365,6 +371,7 @@ export class ClarificationDialog {
     this.governing = deps.governingQuestions;
     this.priorAnswers = deps.priorAnswers;
     this.sourceQuestions = deps.sourceQuestions;
+    this.modeFrom = deps.modeFrom;
   }
 
   /**
@@ -665,7 +672,8 @@ export class ClarificationDialog {
 
     // #2296 — from every requirement, not only the open ones: the mode is the
     // analysis's, the same in every round.
-    const sourceQuestions = this.sourceQuestions ?? readFromSources(requirements.requirements);
+    const sourceQuestions =
+      this.sourceQuestions ?? readFromSources(this.modeFrom ?? requirements.requirements);
     const generated =
       unresolvedReqs.length > 0
         ? await this.generateQuestions(unresolvedReqs, state, addressed, sourceQuestions, signal)

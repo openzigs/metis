@@ -5171,8 +5171,8 @@ per-round cap and the missing-knowledge-only search were measured only with
 analysis's requirements carries `sources`), decided over every requirement, not the open ones.
 The flag is not read live, so toggling it never switches an analysis's mode between rounds: a
 reader-read analysis keeps the classified mode with the flag off, and one whose requirements
-carry no `sources` is asked the pre-#2235 way with the flag on. The clarify route passes the
-mode from the list the analysis stored, so a client's `requirements` override cannot choose it;
+carry no `sources` is asked the pre-#2235 way with the flag on. The clarify route decides the
+mode from the list the analysis stored (`modeFrom`), so a client's `requirements` override cannot choose it;
 only an analysis with nothing stored falls back to the override's. Otherwise the dialog uses the
 pre-#2235 prompt (`LEGACY_QUESTION_SYSTEM_PROMPT`, re-prompting for the pre-#2235 shape), and
 every question raised is asked unclassified and uncapped, in the order raised, and searched for

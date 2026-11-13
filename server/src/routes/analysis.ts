@@ -125,7 +125,6 @@ import {
   updateRequirementRow,
   // Epic #597 — requirements enhancement pipeline.
   ClarificationDialog,
-  readFromSources,
   getDialogState,
   listApprovalRequests,
   reopenApprovalRequest,
@@ -1245,7 +1244,7 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
         // #2296 — the mode is the server's: decided from the list the
         // analysis stored, never from a client override's `sources`. Only an
         // analysis with nothing stored falls back to the override's.
-        ...(stored ? { sourceQuestions: readFromSources(stored.requirements) } : {}),
+        ...(stored ? { modeFrom: stored.requirements } : {}),
         // Issue #1129 — on a run from ticked items, their questions come first.
         askFirst: tickedFirst(await requirementOriginsFor(analysisId, analysis.metadata)),
         // #1873 — the business questions for uncertain governing rules, and
