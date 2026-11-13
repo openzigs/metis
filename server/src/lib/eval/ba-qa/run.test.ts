@@ -278,6 +278,7 @@ describe("assertComparable", () => {
     model: "m",
     judgeModel: "j",
     fixture: { id: "f", version: 1 },
+    version: 2,
   };
 
   it("accepts another arm of the same fixture, model and judge", () => {
@@ -294,6 +295,10 @@ describe("assertComparable", () => {
     ["no judge recorded", { judgeModel: undefined }, /judged by \(unknown\), not j/],
     ["another fixture version", { fixture: { id: "f", version: 2 } }, /version 2, not 1/],
     ["an arm already in the report", { arm: "on" }, /arm on is already in the report/],
+    // #2363 — v1 labelled lines not in the file as span-checked; re-summarising
+    // it would put them under the wrong check.
+    ["a version 1 results file", { version: 1 }, /results file version 1/],
+    ["a results file with no version", { version: undefined }, /results file version 1/],
   ])("refuses %s", (_label, edit, message) => {
     expect(() =>
       assertComparable({ ...current, arm: "off", ...edit }, current, ["on"], "x.json"),
@@ -333,5 +338,17 @@ describe("unknownSources", () => {
         products,
       ),
     ).toEqual(["S1: srv:miniflux.1.txt", "S1: srv:frd.md", "S1: srv:b.go"]);
+  });
+
+  it("normalises a source path before looking it up (#2363)", () => {
+    expect(unknownSources([q("./a.go"), q("/a.go"), q(" miniflux.1 ", "doc")], products)).toEqual(
+      [],
+    );
+  });
+
+  it("names a source on a product the set does not have (#2363)", () => {
+    expect(
+      unknownSources([{ id: "M1", sources: [{ product: "nope", path: "a.go" }] }], products),
+    ).toEqual(["M1: nope:a.go"]);
   });
 });

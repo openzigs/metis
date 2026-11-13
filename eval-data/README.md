@@ -923,8 +923,12 @@ also checked within a question, before each later turn of a multi-turn question 
 judge. A turn is checked against the costliest turn so far and the judge against the costliest
 judge call, so a cheap judge is not held to an answer's cost; a question cut short there is not
 graded. A step costlier than any before it can still cross the cap. `--include` refuses a run with another
-fixture, answer model or judge model, or an arm already in the report. The included run is
-re-summarized from its per-question scores, so both columns are computed by the same code.
+fixture or fixture version, answer model or judge model, or an arm already in the report. The included run is
+re-summarized from its per-question scores, so both columns are computed by the same code. It also
+refuses a version 1 results file (written before #2265), which labelled a citation to lines not in the
+file as span-checked, so re-summarizing it would count those under the wrong check (#2363). The
+question set's `version` is bumped whenever a fact or source changes: version 2 follows S1.c's
+rewording in #2359, so a run graded on the old wording cannot sit beside one graded on the new.
 
 ### Baseline, 2026-11-11 (Sonnet 5.5 answers and judge, 18 questions per arm)
 

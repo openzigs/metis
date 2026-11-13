@@ -131,6 +131,7 @@ import {
   applyArmEnv,
   armLabel,
   assertComparable,
+  BA_QA_RESULTS_VERSION,
   budgetStop,
   buildJudgedSpans,
   chatSessionScope,
@@ -944,9 +945,7 @@ async function main(): Promise<void> {
   const runId = `${startedAt.toISOString().replace(/[:.]/g, "-")}-${runArm}`;
   const envelope: Envelope & Record<string, unknown> = {
     kind: "ba-qa",
-    // 2 (#2265): a citation's check can be `no-such-lines`, and the summary
-    // reports citation precision per check instead of one blended rate.
-    version: 2,
+    version: BA_QA_RESULTS_VERSION,
     issue: 2237,
     runId,
     startedAt: startedAt.toISOString(),

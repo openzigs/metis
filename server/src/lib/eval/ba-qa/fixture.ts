@@ -91,7 +91,8 @@ const questionSchema = z.strictObject({
 
 const fixtureSchema = z.strictObject({
   id: z.string().regex(NAME),
-  version: z.literal(1),
+  /** Bumped whenever a fact or source changes, so `--include` keeps gradings apart (#2363). */
+  version: z.number().int().min(1),
   issue: z.number().int(),
   description: z.string().min(1),
   license: z.string().min(1),
