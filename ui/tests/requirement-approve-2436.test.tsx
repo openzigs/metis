@@ -47,11 +47,12 @@ import {
 import { soloOutcome } from "@/components/reviews/request-review-card";
 import {
   ApprovalGateSettingsCard,
+  SELF_APPROVAL_ADMIN_ONLY,
   SELF_APPROVAL_HELP,
 } from "@/components/publishing/approval-gate-card";
 
 const SELF_APPROVAL_MESSAGE =
-  "You wrote or edited this requirement, so someone else must approve it. A coordinator or admin can allow self-approval in Project settings → Approval gate.";
+  "You wrote or edited this requirement, so someone else must approve it. An admin can allow self-approval in Project settings → Approval gate.";
 
 function renderList(...permissions: Parameters<typeof userWith>) {
   const Wrapper = makeWrapper({ initialUser: userWith(...permissions) });
@@ -161,8 +162,8 @@ describe("Allow self-approval on the Approval gate card (#2436)", () => {
     expect(SELF_APPROVAL_HELP).toMatch(/audit log/);
   });
 
-  it("a coordinator turns it on with a PATCH of that setting alone", async () => {
-    renderCard("coordinator");
+  it("an admin turns it on with a PATCH of that setting alone", async () => {
+    renderCard("admin");
     await waitFor(() => expect(screen.getByTestId("self-approval-toggle")).toBeEnabled());
     await userEvent.click(screen.getByTestId("self-approval-toggle"));
     await waitFor(() =>
@@ -174,6 +175,23 @@ describe("Allow self-approval on the Approval gate card (#2436)", () => {
     gateApi.get.mockResolvedValue({ requireApprovedReview: false, allowSelfApproval: true });
     renderCard("admin");
     await waitFor(() => expect(screen.getByTestId("self-approval-toggle")).toBeChecked());
+  });
+
+  // #2453 — maker-checker binds a coordinator, so only an admin changes the setting.
+  it("a coordinator sees it read-only, keeps the approval gate, and is told only an admin can change it", async () => {
+    renderCard("coordinator");
+    await waitFor(() => expect(screen.getByTestId("approval-gate-toggle")).toBeEnabled());
+    expect(screen.getByTestId("self-approval-toggle")).toBeDisabled();
+    expect(screen.getByTestId("self-approval-admin-only")).toHaveTextContent(
+      SELF_APPROVAL_ADMIN_ONLY,
+    );
+    expect(SELF_APPROVAL_HELP).toMatch(/only an admin can change it/i);
+  });
+
+  it("an admin is not told it is admin-only", async () => {
+    renderCard("admin");
+    await waitFor(() => expect(screen.getByTestId("self-approval-toggle")).toBeEnabled());
+    expect(screen.queryByTestId("self-approval-admin-only")).toBeNull();
   });
 
   it("a developer sees it read-only", async () => {

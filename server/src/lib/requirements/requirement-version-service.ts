@@ -712,7 +712,7 @@ async function updateOnce(
  * where an analyst looks for a project-wide rule (it is also on Publish).
  */
 export const SELF_APPROVAL_FORBIDDEN_MESSAGE =
-  "You wrote or edited this requirement, so someone else must approve it. A coordinator or admin can allow self-approval in Project settings → Approval gate.";
+  "You wrote or edited this requirement, so someone else must approve it. An admin can allow self-approval in Project settings → Approval gate.";
 
 /**
  * #2436 — the fields whose author an approval must not come from: the wording
