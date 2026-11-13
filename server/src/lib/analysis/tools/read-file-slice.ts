@@ -98,12 +98,23 @@ export const FILE_NOT_FOUND = "Error: File not found:";
 export async function readCloneFileLines(
   cloneDir: string,
   filePath: string,
-): Promise<{ lines: string[] } | { error: string }> {
+  /** #2412 — refuse a file larger than this many bytes before reading it (`tooLarge`). */
+  opts: { maxBytes?: number } = {},
+): Promise<{ lines: string[] } | { error: string; tooLarge?: true }> {
   const absPath = await resolveSafePath(cloneDir, filePath);
   if (!absPath) {
     return { error: "Error: Path traversal detected. filePath must be within the repository." };
   }
   try {
+    if (opts.maxBytes !== undefined) {
+      const { size } = await fs.stat(absPath);
+      if (size > opts.maxBytes) {
+        return {
+          error: `Error: ${filePath} is ${size} bytes, over the ${opts.maxBytes}-byte limit.`,
+          tooLarge: true,
+        };
+      }
+    }
     // #2333 — secrets out of the WHOLE file before any caller slices it, so a
     // key block that starts above a requested range is still recognised. In
     // place: every line keeps its number, so headers, numbering and citation

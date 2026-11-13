@@ -3,7 +3,7 @@
  * merged, read from a real clone on disk. The searcher's ranking and the line
  * lookup are scripted; the ACL rows are a mocked Prisma read.
  */
-import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -12,6 +12,13 @@ const { symbolRows } = vi.hoisted(() => ({ symbolRows: vi.fn(async () => [] as u
 vi.mock("../../prisma.js", () => ({
   prisma: { codeSymbol: { findMany: symbolRows }, codeGraph: { findMany: async () => [] } },
 }));
+// #2412 — the real file read, counted: a call reads each file once.
+const { fileReads } = vi.hoisted(() => ({ fileReads: vi.fn() }));
+vi.mock("./read-file-slice.js", async (importOriginal) => {
+  const real = await importOriginal<typeof import("./read-file-slice.js")>();
+  fileReads.mockImplementation(real.readCloneFileLines);
+  return { ...real, readCloneFileLines: fileReads };
+});
 
 import {
   createSearchCodeContextTool,
@@ -20,6 +27,8 @@ import {
   planSpanLines,
   SEARCH_CODE_CONTEXT_TOOL,
   SEARCH_DEPTH,
+  MAX_LINE_CHARS,
+  DEFAULT_MAX_FILE_BYTES,
   type SearchCodeContextDeps,
 } from "./search-code-context.js";
 import { DEFAULT_LIMIT } from "./search-symbols.js";
@@ -578,6 +587,72 @@ describe("search_code_context (#2329)", () => {
     expect(bad.isError).toBe(true);
     expect(bad.content).toContain("query");
     expect((await tool.execute({ query: "q" }, { projectId: "" })).isError).toBe(true);
+  });
+
+  it("#2412: reads each file once per call, however many of its spans it returns", async () => {
+    await file("src/a.ts", 100);
+    await file("src/b.ts", 20);
+    const { deps: d } = deps([
+      { id: "a1", path: "src/a.ts", start: 10, end: 20 },
+      { id: "b", path: "src/b.ts", start: 1, end: 5 },
+      { id: "a2", path: "src/a.ts", start: 40, end: 50 },
+      { id: "a3", path: "src/a.ts", start: 70, end: 80 },
+    ]);
+    fileReads.mockClear();
+    const r = await createSearchCodeContextTool(d).execute({ query: "q" }, CTX);
+    expect(r.resultCount).toBe(4);
+    expect(fileReads.mock.calls.map((c) => c[1])).toEqual(["src/a.ts", "src/b.ts"]);
+    // A second call reads afresh: the cache is the call's, not the tool's.
+    fileReads.mockClear();
+    await createSearchCodeContextTool(d).execute({ query: "q" }, CTX);
+    expect(fileReads).toHaveBeenCalledTimes(2);
+  });
+
+  it("#2412: leaves a file over the size cap out, counted and never located", async () => {
+    await file("dist/bundle.js", 50, (n) => `B${n} ${"y".repeat(40)}`);
+    await file("src/small.ts", 5);
+    const { deps: d } = deps([
+      { id: "bundle", path: "dist/bundle.js", start: 1, end: 10 },
+      { id: "small", path: "src/small.ts", start: 1, end: 3 },
+    ]);
+    const r = await createSearchCodeContextTool({ ...d, maxFileBytes: 1000 }).execute(
+      { query: "q" },
+      CTX,
+    );
+    expect(r.resultCount).toBe(1);
+    expect(r.citations?.map((c) => c.path)).toEqual(["src/small.ts"]);
+    expect(r.content).toContain("1 matching span was left out: the file is over 1 KB");
+    expect(r.content).not.toContain("dist/bundle.js");
+    expect(r.content).not.toContain("could not be read");
+    // The default cap is the source ingest's.
+    expect(DEFAULT_MAX_FILE_BYTES).toBe(1024 * 1024);
+    expect((await createSearchCodeContextTool(d).execute({ query: "q" }, CTX)).resultCount).toBe(2);
+    // At the cap exactly, the file is read; one byte over, it is not.
+    const { size } = await stat(path.join(clone, "dist/bundle.js"));
+    for (const [cap, returned] of [
+      [size, 2],
+      [size - 1, 1],
+    ] as const) {
+      const atCap = await createSearchCodeContextTool({ ...d, maxFileBytes: cap }).execute(
+        { query: "q" },
+        CTX,
+      );
+      expect(atCap.resultCount).toBe(returned);
+    }
+  });
+
+  it("#2412: cuts a very long (minified) line and says how much it cut", async () => {
+    const long = `const x = "${"z".repeat(5000)}";`;
+    await file("src/min.js", 3, (n) => (n === 2 ? long : `M${n}`));
+    const { deps: d } = deps([{ id: "min", path: "src/min.js", start: 1, end: 3 }]);
+    const r = await createSearchCodeContextTool(d).execute({ query: "q" }, CTX);
+    expect(r.resultCount).toBe(1);
+    const line2 = r.content.split("\n").find((l) => l.startsWith("2| "))!;
+    expect(line2).toBe(
+      `2| ${long.slice(0, MAX_LINE_CHARS)} …[${long.length - MAX_LINE_CHARS} more characters cut]`,
+    );
+    expect(r.content).toContain("1| M1");
+    expect(r.content).toContain("3| M3");
   });
 
   it("says so when no matching file can be read", async () => {

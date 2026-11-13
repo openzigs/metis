@@ -103,6 +103,17 @@ export const DEFAULT_MERGE_GAP = 3;
 export const DEFAULT_MAX_SPAN_LINES = 120;
 /** The whole result's budget, in tokens (4 characters each, as the fused block). */
 export const DEFAULT_TOKEN_BUDGET = 4000;
+/**
+ * #2412 — the largest file a span is read from, in bytes: the source ingest's
+ * default (`REPO_SOURCE_MAX_FILE_BYTES`). A larger file (generated or bundled
+ * code, most likely) is left out and counted, never read into memory.
+ */
+export const DEFAULT_MAX_FILE_BYTES = 1024 * 1024;
+/**
+ * #2412 — the longest line returned, in characters; the rest is cut and its
+ * length said. A minified line would otherwise spend the whole token budget.
+ */
+export const MAX_LINE_CHARS = 500;
 /** Lines of a cut span kept as its signature. */
 const SIGNATURE_LINES = 4;
 const CHARS_PER_TOKEN = 4;
@@ -137,6 +148,8 @@ export interface SearchCodeContextDeps {
    */
   listRepoIds: NonNullable<ChatCloneDeps["listRepoIds"]>;
   readHead: (cloneDir: string) => Promise<string | null>;
+  /** #2412 — a file larger than this many bytes is not read. */
+  maxFileBytes: number;
   mergeGap: number;
   maxSpanLines: number;
   tokenBudget: number;
@@ -245,6 +258,7 @@ export function createSearchCodeContextTool(deps: Partial<SearchCodeContextDeps>
   const mergeGap = Math.max(0, deps.mergeGap ?? DEFAULT_MERGE_GAP);
   const maxSpanLines = Math.max(SIGNATURE_LINES + 1, deps.maxSpanLines ?? DEFAULT_MAX_SPAN_LINES);
   const tokenBudget = deps.tokenBudget ?? DEFAULT_TOKEN_BUDGET;
+  const maxFileBytes = deps.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES;
 
   async function execute(args: unknown, context: ToolContext): Promise<ToolResult> {
     const validated = validateArgs(args);
@@ -317,23 +331,37 @@ export function createSearchCodeContextTool(deps: Partial<SearchCodeContextDeps>
      * The span's file from the clone it is read from: its own repository's, or
      * (a graph naming none) the first of the project's clones that has it. A
      * clone where the path is a credential file or hidden from the caller, as
-     * named or where it really resolves, is not read.
+     * named or where it really resolves, is not read. `too-large`: the only
+     * copies found are over `maxFileBytes`.
      */
     const readSpanFile = async (
       repoId: string | null,
       filePath: string,
-    ): Promise<{ repoId: string; cloneDir: string; lines: string[] } | null> => {
+    ): Promise<{ repoId: string; cloneDir: string; lines: string[] } | "too-large" | null> => {
       const candidates =
         repoId !== null ? [{ id: repoId, dir: await cloneOf(repoId) }] : await allClones();
+      let tooLarge = false;
       for (const { id, dir } of candidates) {
         if (!dir) continue;
         if (await isSensitiveInClone(dir, filePath)) continue;
         if (await isHiddenInClone(access, id, dir, filePath)) continue;
-        const read = await readCloneFileLines(dir, filePath);
-        if ("error" in read) continue;
+        const read = await readCloneFileLines(dir, filePath, { maxBytes: maxFileBytes });
+        if ("error" in read) {
+          tooLarge ||= read.tooLarge === true;
+          continue;
+        }
         return { repoId: id, cloneDir: dir, lines: read.lines };
       }
-      return null;
+      return tooLarge ? "too-large" : null;
+    };
+    // #2412 — each file is read (and its secrets redacted) once per call, however
+    // many of its spans are returned.
+    const files = new Map<string, ReturnType<typeof readSpanFile>>();
+    const readFileOnce = (repoId: string | null, filePath: string) => {
+      const key = `${repoId ?? ""}\u0000${filePath}`;
+      let read = files.get(key);
+      if (!read) files.set(key, (read = readSpanFile(repoId, filePath)));
+      return read;
     };
     const staleness = new Map<string, Promise<{ stale: boolean; head: string | null }>>();
 
@@ -343,6 +371,8 @@ export function createSearchCodeContextTool(deps: Partial<SearchCodeContextDeps>
     let spent = 0;
     let notReturned = 0;
     let unreadable = 0;
+    /** #2412 — spans whose file is over `maxFileBytes`. Counted, never located. */
+    let tooLarge = 0;
     /** Spans left out because not even their signature fit the budget. Counted, never located. */
     let overBudget = 0;
     for (const span of spans) {
@@ -351,7 +381,11 @@ export function createSearchCodeContextTool(deps: Partial<SearchCodeContextDeps>
         continue;
       }
       const first = span.hits[0]!;
-      const read = await readSpanFile(first.repoId, first.path);
+      const read = await readFileOnce(first.repoId, first.path);
+      if (read === "too-large") {
+        tooLarge += 1;
+        continue;
+      }
       if (!read) {
         unreadable += 1;
         continue;
@@ -435,6 +469,14 @@ export function createSearchCodeContextTool(deps: Partial<SearchCodeContextDeps>
           `${overBudget === 1 ? "it" : "them"} with search_code_symbols.`,
       );
     }
+    if (tooLarge > 0) {
+      // A count, never a `path:a-b`, as for the budget above.
+      notes.push(
+        `${tooLarge} matching span${tooLarge === 1 ? " was" : "s were"} left out: the file is over ` +
+          `${Math.round(maxFileBytes / 1024)} KB (generated or bundled code?). Find ` +
+          `${tooLarge === 1 ? "it" : "them"} with search_code_symbols and read_file_slice.`,
+      );
+    }
     if (unreadable > 0) {
       notes.push(`${unreadable} matching span${unreadable === 1 ? "" : "s"} could not be read.`);
     }
@@ -490,6 +532,12 @@ export function fitSpan(
   }
 }
 
+/** #2412 — a line cut to {@link MAX_LINE_CHARS}, saying how much was cut. */
+function capLine(line: string): string {
+  if (line.length <= MAX_LINE_CHARS) return line;
+  return `${line.slice(0, MAX_LINE_CHARS)} …[${line.length - MAX_LINE_CHARS} more characters cut]`;
+}
+
 /** One span as the model reads it: a head with its locators, then numbered lines. */
 function renderSpan(
   index: number,
@@ -507,7 +555,7 @@ function renderSpan(
   const body: string[] = [];
   plan.ranges.forEach(([a, b], i) => {
     if (i > 0) body.push("…");
-    for (let n = a; n <= b; n += 1) body.push(`${n}| ${lines[n - 1] ?? ""}`);
+    for (let n = a; n <= b; n += 1) body.push(`${n}| ${capLine(lines[n - 1] ?? "")}`);
   });
   return `[${index}] ${locators} — ${spanLabel(merged.hits)}${cut}\n${body.join("\n")}`;
 }

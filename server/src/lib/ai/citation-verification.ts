@@ -222,18 +222,50 @@ function readsProject(t: ToolEvidence): boolean {
   return t.source === "metis" && t.tool !== undefined && PROJECT_FILE_TOOLS.has(t.tool);
 }
 
+/**
+ * #2412 — the lines where each code tool that quotes repository text writes
+ * its own locators (group 1). Only these count as lines read: the code quoted
+ * under them is the file's text, and a `// see util.ts:1-500` in it was never
+ * read. Anchored at a line start, and the quoted lines never start that way
+ * (`N| ` numbering) or are a whole result line of their own (a snippet).
+ */
+const CODE_TOOL_HEADERS: ReadonlyMap<string, RegExp> = new Map([
+  // `[n] path:a-b, path:c-d — label`: the numbered lines under it are the file's.
+  ["search_code_context", /^\[\d+\] ([^\n]*?) — /gm],
+  // `kind name — path:a-b (score=0.812)`: the snippet under it is the file's.
+  ["search_code_symbols", /^\S+ \S+ — (\S+) \(score=/gm],
+  // `[repo] path:line: text`: the text after the locator is the file's.
+  ["grep_files", /^(?:\[[^\]\n]*\] )?([^\s:]+:\d+): /gm],
+]);
+/** Code tools whose results quote no repository text: every locator in them is their own. */
+const CODE_TOOLS_WITHOUT_FILE_TEXT: ReadonlySet<string> = new Set([
+  "search_code_graph",
+  "list_files",
+  "get_index_status",
+]);
+
+/** The parts of a code tool's result the tool itself wrote, where its locators are. */
+function ownLocatorText(t: ToolEvidence, text: string): string[] {
+  const headers = t.tool === undefined ? undefined : CODE_TOOL_HEADERS.get(t.tool);
+  if (headers) return [...text.matchAll(headers)].map((m) => m[1]!);
+  return t.tool !== undefined && CODE_TOOLS_WITHOUT_FILE_TEXT.has(t.tool) ? [text] : [];
+}
+
 /** Fold one project-reading tool result into `ev`. */
 function addToolEvidence(ev: CitationEvidence, t: ToolEvidence, earlier: boolean): void {
   if (!readsProject(t)) return;
   const text = t.result!;
-  const slice = SLICE_HEADER.exec(text);
+  // #2412 — only read_file_slice writes this header; another tool's quoted code may look like it.
+  const slice = t.tool === "read_file_slice" ? SLICE_HEADER.exec(text) : null;
   if (slice) {
     const r = range(slice[2]!, slice[3]);
     if (r) ev.add(slice[1]!, "repo", r, earlier);
   } else if (t.source === "code") {
-    for (const m of text.matchAll(LOCATOR)) {
-      const r = range(m[2]!, m[3]);
-      if (r) ev.add(m[1]!, "repo", r, earlier);
+    for (const own of ownLocatorText(t, text)) {
+      for (const m of own.matchAll(LOCATOR)) {
+        const r = range(m[2]!, m[3]);
+        if (r) ev.add(m[1]!, "repo", r, earlier);
+      }
     }
   } else {
     for (const m of text.matchAll(EXCERPT_HEADER)) ev.add(m[1]!, "document", undefined, earlier);
