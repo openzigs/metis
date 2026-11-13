@@ -11,8 +11,10 @@
  * (gate off — pre-#619 behavior).
  *
  * #2436 — the same route carries `allowSelfApproval` (maker-checker), off by
- * default, under the same `review.admin` gate; a change of it is audited as
- * `project.selfApproval.update` with its old and new value.
+ * default; a change of it is audited as `project.selfApproval.update` with its
+ * old and new value. #2453 — only an admin may change it (a coordinator holds
+ * `review.admin` but is bound by maker-checker); a refused attempt is audited
+ * as `project.selfApproval.denied`.
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -84,6 +86,8 @@ vi.mock("../src/lib/audit/audit-service.js", () => ({
 import request from "supertest";
 import { createApp } from "../src/app.js";
 import { prisma } from "../src/lib/prisma.js";
+import { SELF_APPROVAL_FORBIDDEN_MESSAGE } from "../src/lib/requirements/requirement-version-service.js";
+import { CHECKPOINT_HELD_REASON } from "../src/lib/analysis/checkpoint-authorship.js";
 
 let app: ReturnType<typeof createApp>;
 
@@ -221,8 +225,8 @@ describe("#2436 — allowSelfApproval on PATCH /api/projects/:id/review-gate", (
       .set("Authorization", `Bearer ${await login(role)}`)
       .send(body);
 
-  it("a coordinator allows self-approval; the change is audited with its old and new value", async () => {
-    const res = await send("coordinator", { allowSelfApproval: true });
+  it("an admin allows self-approval; the change is audited with its old and new value", async () => {
+    const res = await send("admin", { allowSelfApproval: true });
     expect(res.status).toBe(200);
     expect(res.body.data).toEqual({ requireApprovedReview: false, allowSelfApproval: true });
     expect(projects.get("proj_gate_001")?.allowSelfApproval).toBe(true);
@@ -258,14 +262,14 @@ describe("#2436 — allowSelfApproval on PATCH /api/projects/:id/review-gate", (
   });
 
   it("two toggles at once are audited as a chain: each from is the value the other left", async () => {
-    const [coordinator, admin] = [await login("coordinator"), await login("admin")];
+    const [first, second] = [await login("admin"), await login("admin")];
     const patch = (token: string, allowSelfApproval: boolean) =>
       request(app)
         .patch("/api/projects/proj_gate_001/review-gate")
         .set("Authorization", `Bearer ${token}`)
         .send({ allowSelfApproval });
 
-    const results = await Promise.all([patch(coordinator, true), patch(admin, false)]);
+    const results = await Promise.all([patch(first, true), patch(second, false)]);
     expect(results.map((r) => r.status)).toEqual([200, 200]);
 
     const changes = auditSpy.mock.calls
@@ -294,6 +298,52 @@ describe("#2436 — allowSelfApproval on PATCH /api/projects/:id/review-gate", (
     expect(projectAudits()).toEqual([]);
   });
 
+  // #2453 — maker-checker binds a coordinator, so a coordinator may not switch it off for
+  // their own project: only an admin changes the setting. The refusal is server-side and
+  // audited, and a PATCH carrying both settings is refused whole.
+  for (const to of [true, false]) {
+    it(`a coordinator cannot set it to ${to}: 403, nothing written, the attempt audited`, async () => {
+      projects.set("proj_gate_001", {
+        id: "proj_gate_001",
+        requireApprovedReview: false,
+        allowSelfApproval: !to,
+      });
+      const res = await send("coordinator", { allowSelfApproval: to });
+      expect(res.status).toBe(403);
+      expect(res.body.error.code).toBe("SELF_APPROVAL_SETTING_ADMIN_ONLY");
+      expect(res.body.error.message).toMatch(/only an admin/i);
+      expect(projects.get("proj_gate_001")?.allowSelfApproval).toBe(!to);
+      expect(prisma.project.update).not.toHaveBeenCalled();
+      expect(projectAudits()).toEqual(["project.selfApproval.denied"]);
+      expect(auditSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          actor: { id: "user_coordinator" },
+          action: "project.selfApproval.denied",
+          target: { type: "project", id: "proj_gate_001" },
+          metadata: { to, role: "coordinator" },
+        }),
+      );
+    });
+  }
+
+  it("a coordinator sending both settings is refused whole: the gate is not written either", async () => {
+    const res = await send("coordinator", { requireApprovedReview: true, allowSelfApproval: true });
+    expect(res.status).toBe(403);
+    expect(projects.get("proj_gate_001")).toMatchObject({
+      requireApprovedReview: false,
+      allowSelfApproval: false,
+    });
+    expect(prisma.project.update).not.toHaveBeenCalled();
+    expect(projectAudits()).toEqual(["project.selfApproval.denied"]);
+  });
+
+  it("a coordinator still changes the approval gate on its own", async () => {
+    const res = await send("coordinator", { requireApprovedReview: true });
+    expect(res.status).toBe(200);
+    expect(res.body.data).toEqual({ requireApprovedReview: true, allowSelfApproval: false });
+    expect(projectAudits()).toEqual(["project.reviewGate.update"]);
+  });
+
   it("an empty body, an unknown key or a non-boolean is a 400", async () => {
     for (const body of [{}, { allowSelfApprovals: true }, { allowSelfApproval: "yes" }]) {
       const res = await send("admin", body);
@@ -301,5 +351,14 @@ describe("#2436 — allowSelfApproval on PATCH /api/projects/:id/review-gate", (
       expect(res.body.error.code).toBe("VALIDATION_ERROR");
     }
     expect(prisma.project.update).not.toHaveBeenCalled();
+  });
+});
+
+describe("#2453 — the refusals name who can allow self-approval", () => {
+  it("an admin, not a coordinator", () => {
+    for (const message of [SELF_APPROVAL_FORBIDDEN_MESSAGE, CHECKPOINT_HELD_REASON]) {
+      expect(message).toContain("An admin can allow self-approval");
+      expect(message).not.toMatch(/coordinator/i);
+    }
   });
 });

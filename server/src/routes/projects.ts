@@ -1302,8 +1302,10 @@ export function projectsRouter(): Router {
   // governance action and requires `review.admin` (coordinator/admin), so a
   // developer with draft/publish permissions cannot weaken the gate.
   // #2436 — the same route carries `allowSelfApproval` (maker-checker, off by
-  // default) under the same `review.admin` gate; a change of it is audited
-  // with its old and new value.
+  // default); a change of it is audited with its old and new value.
+  // #2453 — only an admin may change `allowSelfApproval`. A coordinator holds
+  // `review.admin` but is the maker that maker-checker binds, so it must not
+  // switch the check off for its own project; the refused attempt is audited.
   r.get(
     "/:id/review-gate",
     requireAuth,
@@ -1338,6 +1340,21 @@ export function projectsRouter(): Router {
       const actor = actorFromReq(req);
       const projectId = String(req.params.id);
       const { requireApprovedReview, allowSelfApproval } = parsed.data;
+      // #2453 — checked before anything is read or written, so a PATCH that
+      // carries both settings is refused whole.
+      if (allowSelfApproval !== undefined && req.user!.role !== "admin") {
+        audit({
+          actor: { id: actor.id },
+          action: "project.selfApproval.denied",
+          target: { type: "project", id: projectId },
+          metadata: { to: allowSelfApproval, role: req.user!.role },
+        });
+        throw new AppError(
+          403,
+          "SELF_APPROVAL_SETTING_ADMIN_ONLY",
+          "Only an admin can change whether this project allows self-approval.",
+        );
+      }
       // #2436 — the old value is read in the transaction that writes the new
       // one, with the row locked on Postgres (SQLite has one writer), so two
       // admins toggling at once are audited as a chain: each `from` is the

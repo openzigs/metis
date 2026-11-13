@@ -122,7 +122,7 @@ export const APPROVE_HINT = `Approving needs the requirement.approve permission 
  * permission is, rather than as a refusal toast after it.
  */
 export const SELF_APPROVAL_HINT =
-  "You wrote or edited this requirement, so someone else must approve it. You can still request a review. A coordinator or admin can allow self-approval in Project settings → Approval gate.";
+  "You wrote or edited this requirement, so someone else must approve it. You can still request a review. An admin can allow self-approval in Project settings → Approval gate.";
 /** Why Edit is disabled for a role without `project.update`. */
 export const EDIT_HINT = "Editing needs a coordinator or admin role.";
 
