@@ -890,13 +890,20 @@ export default function AnalysisPage(): React.ReactElement {
                 {showStartForm ? "Hide new change request" : "New change request"}
               </Button>
             ) : null}
-            {/* #977 \u2014 this project's own budget first; the deployment-wide
-                cap is shown, but labelled as such. */}
-            {projectUsage.data ? <ProjectBudgetCard usage={projectUsage.data} /> : null}
-            {costCap.data ? <DeploymentCapCard cap={costCap.data} /> : null}
           </>
         }
-      />
+      >
+        {/* #977 \u2014 this project's own budget first; the deployment-wide cap is
+            shown, but labelled as such. #2454 \u2014 under the description, not
+            among the actions: beside the button the two cards left the title a
+            ~150 px column at a 1200 px desktop viewport. */}
+        {projectUsage.data || costCap.data ? (
+          <div className="flex flex-wrap gap-2 pt-1" data-testid="analysis-usage-cards">
+            {projectUsage.data ? <ProjectBudgetCard usage={projectUsage.data} /> : null}
+            {costCap.data ? <DeploymentCapCard cap={costCap.data} /> : null}
+          </div>
+        ) : null}
+      </PageHeader>
 
       {!canRunAnalysis ? (
         <p className="text-sm text-muted-foreground" data-testid="start-analysis-forbidden">

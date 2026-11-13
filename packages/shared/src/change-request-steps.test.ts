@@ -6,6 +6,7 @@
 import { describe, expect, it } from "vitest";
 import {
   CHANGE_REQUEST_STEPS,
+  NO_CODE_IMPACT_REASON,
   STEP_STATE_LABELS,
   agentState,
   deriveChangeRequestSteps,
@@ -109,6 +110,24 @@ const CASES: Record<ChangeRequestStepKey, Case[]> = {
     ["run cancelled first", { status: "cancelled", codeAgent: "absent" }, "needs-you"],
     ["looking at code", { status: "running", codeAgent: "running" }, "in-progress"],
     ["completed with no code row", { codeAgent: "absent" }, "not-applicable"],
+    // #2454 — a Documents-only project had no code to map, whatever the code agent
+    // did; an impact analysis over other projects is still on offer (Options).
+    ["no code connected", { codeAgent: "completed", codeConnected: false }, "not-started"],
+    [
+      "no code connected, none started",
+      { latestImpact: null, codeConnected: false },
+      "not-started",
+    ],
+    [
+      "no code connected, the run still looking",
+      { status: "running", codeAgent: "running", codeConnected: false },
+      "not-started",
+    ],
+    [
+      "no code connected, an impact analysis ran over other projects",
+      { codeConnected: false, latestImpact: { id: "ia-9", status: "completed" } },
+      "done",
+    ],
     // #2345 — the newest impact analysis started from the change request decides.
     ["latest impact completed", { latestImpact: { id: "ia-1", status: "completed" } }, "done"],
     [
@@ -316,6 +335,13 @@ describe("#2341 — deriveChangeRequestSteps", () => {
     );
     expect(stepOf("impact", { agentKeys: ["document"], latestImpact: null }).reason).toBe(
       "Run an impact analysis from this change request.",
+    );
+    // #2454 — not "The affected code was mapped." on a project with no code.
+    expect(stepOf("impact", { codeAgent: "completed", codeConnected: false }).reason).toBe(
+      NO_CODE_IMPACT_REASON,
+    );
+    expect(NO_CODE_IMPACT_REASON).toBe(
+      "This project has no code connected. Run an impact analysis over projects with code from Options.",
     );
     const preApproval = {
       products: 3,

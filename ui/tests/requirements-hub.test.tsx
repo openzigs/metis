@@ -93,6 +93,10 @@ describe("<RequirementsHub />", () => {
       expect(screen.getByTestId("requirements-count-draft")).toHaveTextContent("3"),
     );
     expect(screen.getByRole("heading", { name: "Latest analysis" })).toBeInTheDocument();
+    // #2454 — drafts are counted as drafts, not as awaiting a review none was asked for.
+    expect(screen.getByTestId("requirements-count-draft").previousElementSibling).toHaveTextContent(
+      /^Draft$/,
+    );
     expect(screen.getByTestId("requirements-count-rejected")).toHaveTextContent("1");
     const review = screen.getByTestId("requirements-review-latest");
     expect(review).toHaveTextContent("Review 3 requirements");

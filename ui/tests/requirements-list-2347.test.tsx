@@ -110,7 +110,8 @@ describe("RequirementsList (#2347)", () => {
       "href",
       "/projects/p1/analysis?analysisId=cr-1",
     );
-    expect(screen.getByTestId("requirements-status-r-1")).toHaveTextContent("Awaiting review");
+    // #2454 — a draft in no review reads "Draft", not "Awaiting review".
+    expect(screen.getByTestId("requirements-status-r-1")).toHaveTextContent(/^Draft$/);
     expect(screen.getByTestId("requirements-review-r-2")).toHaveTextContent("Review rejected");
     expect(screen.getByTestId("requirements-review-r-2")).toHaveAttribute("href", "/reviews/rev-9");
     expect(list).toHaveBeenCalledWith("p1", { page: 1, pageSize: REQUIREMENTS_PAGE_SIZE });

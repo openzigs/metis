@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 let codeGraphRow: { id: string } | null = null;
 let repoSourceRow: { id: string } | null = null;
+let repoConnectionRow: { id: string } | null = null;
 
 vi.mock("../prisma.js", () => ({
   prisma: {
@@ -16,6 +17,12 @@ vi.mock("../prisma.js", () => ({
     document: {
       findFirst: vi.fn(async ({ where }: { where: { source?: string } }) =>
         where.source === "repo" ? repoSourceRow : null,
+      ),
+    },
+    // #2454 — a live (not soft-deleted) repository connection of the project.
+    repoConnection: {
+      findMany: vi.fn(async ({ where }: { where: { deletedAt?: null } }) =>
+        where.deletedAt === null && repoConnectionRow ? [repoConnectionRow] : [],
       ),
     },
   },
@@ -32,6 +39,7 @@ import { __resetConfigSingleton } from "../config/config-service.js";
 beforeEach(() => {
   codeGraphRow = null;
   repoSourceRow = null;
+  repoConnectionRow = null;
   __resetConfigSingleton();
 });
 afterEach(() => {
@@ -45,6 +53,8 @@ describe("detectStaticCapability", () => {
     expect(cap).toEqual({
       codeGraphPresent: false,
       repoSourceIngested: false,
+      // #2454 — no repository, graph or ingested source: a Documents-only project.
+      codeConnected: false,
       // #752 — both grounding flags now default ON (config default), so a bare
       // project is degraded only for the graph/source facts, not the flags.
       fusedCodeRetrievalEnabled: true,
@@ -67,6 +77,17 @@ describe("detectStaticCapability", () => {
     const cap = await detectStaticCapability("proj-1");
     expect(cap.codeGraphPresent).toBe(true);
     expect(cap.repoSourceIngested).toBe(true);
+  });
+
+  it("#2454 — counts a project as having code once any of repository, graph or source exists", async () => {
+    repoConnectionRow = { id: "rc-1" };
+    expect((await detectStaticCapability("proj-1")).codeConnected).toBe(true);
+    repoConnectionRow = null;
+    codeGraphRow = { id: "cg-1" };
+    expect((await detectStaticCapability("proj-1")).codeConnected).toBe(true);
+    codeGraphRow = null;
+    repoSourceRow = { id: "repo-doc-1" };
+    expect((await detectStaticCapability("proj-1")).codeConnected).toBe(true);
   });
 
   it("reads the fused-code and schema-context feature flags from config", async () => {
@@ -120,6 +141,31 @@ describe("finalizeCapability", () => {
     });
     tracker.agentMode = "agentic";
     expect(finalizeCapability(tracker).reasons).toEqual([]);
+  });
+
+  it("#2454 — a project with no code: no graph or source reasons, and the record says so", () => {
+    const tracker = createCapabilityTracker({
+      static: { ...baseStatic, fusedCodeRetrievalEnabled: true, codeConnected: false },
+      codeAnalysisRequested: true,
+      databaseAnalysisRequested: false,
+    });
+    tracker.agentMode = "agentic";
+    const cap = finalizeCapability(tracker);
+    expect(cap.codeConnected).toBe(false);
+    expect(cap.reasons).not.toContain("no-code-graph");
+    expect(cap.reasons).not.toContain("source-not-ingested");
+  });
+
+  it("#2454 — a project with code writes no codeConnected, so its record is unchanged", () => {
+    const tracker = createCapabilityTracker({
+      static: { ...baseStatic, fusedCodeRetrievalEnabled: true, codeConnected: true },
+      codeAnalysisRequested: true,
+      databaseAnalysisRequested: false,
+    });
+    tracker.agentMode = "agentic";
+    const cap = finalizeCapability(tracker);
+    expect("codeConnected" in cap).toBe(false);
+    expect(cap.reasons).toEqual(["no-code-graph", "source-not-ingested"]);
   });
 
   it("surfaces the quarantine-fallback flag once set on the tracker", () => {
