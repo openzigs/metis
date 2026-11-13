@@ -1042,7 +1042,15 @@ project, each with its change request's title, its review status and the latest 
 narrowing to at most 5,000 ids, the most recently updated first (`ORDER BY "updatedAt" DESC,
 "id"`), before the page is read; past the cap the response sets `totalIsLowerBound` and the list
 reads "5,000+". The `status` filter reads a null column's legacy `review:*` label as every other
-reader does (#1016), so a row is listed under the status it shows.
+reader does (#1016), so a row is listed under the status it shows. A row may carry
+`selfApprovalForbidden: true` (#2452). It is set only when the caller holds `requirement.approve`,
+the row is not approved, the project's `allowSelfApproval` is off, and the caller is an author of
+the row, so their Approve would be refused with `SELF_APPROVAL_FORBIDDEN`. Authorship is the same
+reading as the approve write's maker-checker (`updateRequirementWithHistory`), through the shared
+`isAuthoringVersion` (a version of theirs that changed the wording, not labels) and
+`editedInCheckpoint` (an edit of theirs in the approval checkpoint). Each of those reads filters on
+the project. The flag is advisory: the write still enforces the rule. The list disables Approve on
+the row with a hint.
 
 **Similar and duplicate requirements (#1836, #1837).** `GET /api/projects/:projectId/requirements/:requirementId/similar`
 and `POST …/requirements/similar` (draft text) run behind `requireProjectAccess()`
@@ -3559,7 +3567,7 @@ Permission keys `review.create` / `review.read` / `review.decide` / `review.admi
 - **Gated flows (all publish/export choke points):** `createBatch` (live batches — the route and any internal caller), `executeBatch` (re-checked at execution time; covers the Jira destination), the publisher's `runBatch` (the scheduler republish handler calls it directly — no bypass), `approveDraft` (REST + the Slack/Teams approve actions, which call the same service), `GET …/docs/:docId/export` (spec PDF/DOCX/Markdown), and `GET /api/requirements/:id/history/export` (CSV/JSON).
 - **Gate set == publish set (PR #638 M2):** `executeBatch`'s execution-time re-check loads the draft set per destination. GitHub-only mirrors `runBatch`'s publishable-status resolution (`draft|approved|publishing|failed` — `runBatch` re-gates its exact set itself); Jira-bound destinations gate the **raw** `meta.draftIds` set with **no status filter**, because `publishBatchToJira` publishes every id in the batch metadata regardless of status — a retried, partially completed `destination=both` batch may hold drafts the GitHub leg already flipped to `published`, and those must not reach Jira ungated.
 - **Documented exemptions (deliberately not gated):** dry-run batches (no external writes; previewing is how users discover what still needs review); the analysis clarify-question CSV/JSON export (`GET …/analyses/:id/clarify/export`), a local file download that writes to no external system and is a pre-review elicitation artifact carrying requirement titles only; spec-kit `taskstoissues` (spec-kit tasks are not reviewable artifacts in the #616 model); and custom-agent/MCP/plugin config exports (portability data, no requirement content).
-- **Error contract + audit:** blocks are 409 `APPROVAL_REQUIRED` with structured `details` (`requirementIds` / `documentIds` / `unlinkedDraftIds`, no content leakage) and are audited as `review.gate.blocked` (gate-check failures as `review.gate.error`). The Publishing page renders the block with the offending ids and a link to `/reviews` (`ApprovalGateBlockNotice`), and hosts the settings toggle (`ApprovalGateSettingsCard`, `ui/src/components/publishing/approval-gate-card.tsx`).
+- **Error contract + audit:** blocks are 409 `APPROVAL_REQUIRED` with structured `details` (`requirementIds` / `documentIds` / `unlinkedDraftIds`, no content leakage) and are audited as `review.gate.blocked` (gate-check failures as `review.gate.error`). The Publishing page renders the block with the offending ids and a link to `/reviews` (`ApprovalGateBlockNotice`), and hosts the settings toggle (`ApprovalGateSettingsCard`, `ui/src/components/publishing/approval-gate-card.tsx`). The same card is also on ⚙ Project settings, in the General group, with the `#approval-gate` anchor that the self-approval hint links to (#2452).
 
 **Baselines: list, contents, compare (Issue #620)** — the browsable surface over the `Baseline`/`BaselineItem` pins that approvals create (#617 auto-creates them transactionally with the final decision). Routes in `server/src/routes/baselines.ts`, service in `server/src/lib/reviews/baseline-service.ts`:
 

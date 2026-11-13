@@ -74,6 +74,9 @@ export const queryKeys = {
       [...queryKeys.analyses.all, "model-preferences", projectId] as const,
     modelRecommendation: (projectId: string, override?: string) =>
       [...queryKeys.analyses.all, "model-recommendation", projectId, override ?? "auto"] as const,
+    /** Every page of a project's Requirements list (#2347), whatever its filters. */
+    requirementsList: (projectId: string) =>
+      [...queryKeys.analyses.all, "requirements-list", projectId] as const,
   },
   /**
    * #2376 — an analysis run's approval checkpoints. ApprovalsPanel and the

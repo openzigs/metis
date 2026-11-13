@@ -28,7 +28,7 @@ vi.mock("../src/lib/prisma.js", async (importOriginal) => {
   };
 });
 
-const { offerUnmatchedItemsForReview } =
+const { offerElicitedNfrsForReview, offerUnmatchedItemsForReview } =
   await import("../src/lib/analysis/offer-synthesis-items.js");
 const { getStructuredRequirements } = await import("../src/lib/analysis/analysis-service.js");
 const { approveAllPendingApprovalRequests } =
@@ -177,6 +177,47 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
 
     it("leaves an analysis with no reviewed requirements as it was", async () => {
       expect(await offerUnmatchedItemsForReview(UNREVIEWED, SYNTHESIS as never)).toEqual([]);
+      expect((await getStructuredRequirements(UNREVIEWED))!.requirements).toHaveLength(1);
+      expect(await approvalsOf(UNREVIEWED)).toEqual([]);
+    });
+
+    // #2449 — an elicited NFR is offered the same way, and only where a
+    // checkpoint reviews the list.
+    const NFR = {
+      id: "n1",
+      category: "security" as const,
+      title: "Rate limiting of reset requests",
+      description: "Reset requests are rate limited.",
+      metric: "",
+      priority: "must-have" as const,
+    };
+
+    it("offers an elicited NFR on a reviewed list, with a pending approval, once (#2449)", async () => {
+      const input = { nfrs: [NFR], findingIdsByIndex: [], synthesized: [] };
+      const [offered] = await offerElicitedNfrsForReview(REVIEWED, input);
+      expect(offered).toMatchObject({
+        title: NFR.title,
+        elicitedNfr: { nfrCategory: "security" },
+      });
+      expect((await getStructuredRequirements(REVIEWED))!.requirements.at(-1)!.id).toBe(
+        offered!.id,
+      );
+      expect(await approvalsOf(REVIEWED)).toContainEqual({
+        itemId: offered!.id,
+        status: "pending",
+        type: "requirement",
+      });
+      expect(await offerElicitedNfrsForReview(REVIEWED, input)).toEqual([]);
+    });
+
+    it("offers no elicited NFR where no checkpoint reviews the list (#2449)", async () => {
+      expect(
+        await offerElicitedNfrsForReview(UNREVIEWED, {
+          nfrs: [NFR],
+          findingIdsByIndex: [],
+          synthesized: [],
+        }),
+      ).toEqual([]);
       expect((await getStructuredRequirements(UNREVIEWED))!.requirements).toHaveLength(1);
       expect(await approvalsOf(UNREVIEWED)).toEqual([]);
     });

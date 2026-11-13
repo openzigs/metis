@@ -24,6 +24,19 @@
  * and the test then fails on `arrivedAtOpen`, so a lost interleaving cannot
  * pass for a proof. Every outcome is read back from the rows.
  *
+ * #2425 — a refused commit's retry used to start while the WINNER's commit was
+ * still being flushed: Postgres had already judged the cycle (so it refused the
+ * loser) but had not yet made the winner visible, so the retry read the
+ * winner's row as in flight, became a pivot again and was refused again — three
+ * times inside the old 60–100 ms of backoff, ending in `503 SIGN_IN_CONFLICT`.
+ * It took one slow WAL flush on a CI runner to show. The second case now forces
+ * that window: each held transaction sets `commit_delay` (a superuser setting,
+ * as the CI and local `metis` roles are), so the winner's commit takes at least
+ * {@link COMMIT_DELAY_MS}, and the test checks it did before trusting the result.
+ * `commit_delay` sleeps only while `fsync` is on: a server started with
+ * `-c fsync=off` skips the delay and fails the window check (never passes).
+ * CI and `docker-compose` leave fsync on.
+ *
  * Gated like the other `*-postgres.integration.test.ts` suites: runs only when
  * `RUN_INTEGRATION_TESTS=1` AND `DATABASE_URL` is Postgres-shaped.
  */
@@ -52,12 +65,16 @@ const { resolveLoginUser } = await import("../src/lib/auth/login-identity.js");
 
 const RACERS = 2;
 const FALLBACK_MS = 5_000;
+/** #2425 — how long the winner's commit is held in its WAL flush: `commit_delay`'s maximum. */
+const COMMIT_DELAY_MS = 100;
 
 interface Barrier {
   remaining: number;
   arrived: number;
   /** How many racers had arrived when the barrier opened; `null` while closed. */
   arrivedAtOpen: number | null;
+  /** When the barrier opened (`performance.now()`); `null` while closed. */
+  openedAt: number | null;
   open: Promise<void>;
   release: () => void;
 }
@@ -69,9 +86,11 @@ function newBarrier(): Barrier {
     remaining: RACERS,
     arrived: 0,
     arrivedAtOpen: null,
+    openedAt: null,
     open,
     release: () => {
       barrier.arrivedAtOpen ??= barrier.arrived;
+      barrier.openedAt ??= performance.now();
       resolve();
     },
   };
@@ -89,8 +108,15 @@ async function arrive(barrier: Barrier): Promise<void> {
 /** Where a racer's transaction waits for the others. */
 type Hold = "before-claim" | "before-commit";
 
+/** One `$transaction` a claim opened: whether it was held, and how it ended. */
+interface TxRecord {
+  held: boolean;
+  committed: boolean | null;
+  settledAt: number | null;
+}
+
 /** `tx` with the first `RACERS` holds of `hold` taken at `barrier`. */
-function heldTx(tx: PrismaClient, barrier: Barrier, hold: Hold): PrismaClient {
+function heldTx(tx: PrismaClient, barrier: Barrier, hold: Hold, record: TxRecord): PrismaClient {
   const [model, method] =
     hold === "before-claim" ? ["user", "updateMany"] : ["userIdentity", "create"];
   const delegate = Reflect.get(tx, model) as object;
@@ -103,12 +129,17 @@ function heldTx(tx: PrismaClient, barrier: Barrier, hold: Hold): PrismaClient {
       return async (...args: unknown[]) => {
         if (barrier.remaining === 0) return call(args);
         barrier.remaining -= 1;
+        record.held = true;
         if (hold === "before-claim") {
           await tx.$queryRaw`SELECT 1`;
           await arrive(barrier);
           return call(args);
         }
         const result = await call(args);
+        // #2425 — this transaction's commit, if Postgres accepts it, sleeps in
+        // its WAL flush: judged, but not yet visible to a retry that starts now.
+        await tx.$executeRaw`SET LOCAL commit_siblings = 0`;
+        await tx.$executeRaw`SET LOCAL commit_delay = 100000`; // µs: COMMIT_DELAY_MS
         await arrive(barrier);
         return result;
       };
@@ -120,12 +151,32 @@ function heldTx(tx: PrismaClient, barrier: Barrier, hold: Hold): PrismaClient {
   });
 }
 
-function held(client: PrismaClient, barrier: Barrier, hold: Hold): PrismaClient {
+function held(
+  client: PrismaClient,
+  barrier: Barrier,
+  hold: Hold,
+  records: TxRecord[] = [],
+): PrismaClient {
   return new Proxy(client, {
     get(target, prop, receiver) {
       if (prop !== "$transaction") return Reflect.get(target, prop, receiver) as unknown;
-      return (fn: (tx: PrismaClient) => Promise<unknown>, opts?: unknown) =>
-        target.$transaction((tx) => fn(heldTx(tx as PrismaClient, barrier, hold)), opts as never);
+      return async (fn: (tx: PrismaClient) => Promise<unknown>, opts?: unknown) => {
+        const record: TxRecord = { held: false, committed: null, settledAt: null };
+        records.push(record);
+        try {
+          const result = await target.$transaction(
+            (tx) => fn(heldTx(tx as PrismaClient, barrier, hold, record)),
+            opts as never,
+          );
+          record.committed = true;
+          return result;
+        } catch (error) {
+          record.committed = false;
+          throw error;
+        } finally {
+          record.settledAt = performance.now();
+        }
+      };
     },
   });
 }
@@ -187,11 +238,21 @@ describe.runIf(enabled)("#1904 login claim races on the Postgres adapter (integr
     const names = [legacyName("x"), legacyName("y")];
     const rows = await Promise.all(names.map(legacyRow));
     const barrier = newBarrier();
-    state.db = held(db, barrier, "before-commit");
+    const txs: TxRecord[] = [];
+    state.db = held(db, barrier, "before-commit", txs);
 
     const results = await Promise.allSettled([claim(names[0], "x"), claim(names[1], "y")]);
 
     expect(barrier.arrivedAtOpen).toBe(RACERS);
+    // The window was open: one held commit was refused (so its claim retried),
+    // and the other took at least COMMIT_DELAY_MS to land after the barrier.
+    const heldTxs = txs.filter((t) => t.held);
+    expect(heldTxs.map((t) => t.committed).sort()).toEqual([false, true]);
+    const winner = heldTxs.find((t) => t.committed)!;
+    expect(
+      winner.settledAt! - barrier.openedAt!,
+      "the winner's commit did not take commit_delay: is the role a superuser, and is fsync on?",
+    ).toBeGreaterThanOrEqual(COMMIT_DELAY_MS);
     expect(results).toEqual(
       rows.map((row) => ({ status: "fulfilled", value: expect.objectContaining({ id: row.id }) })),
     );
