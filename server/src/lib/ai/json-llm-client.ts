@@ -86,9 +86,10 @@ export function extractJson<T = unknown>(raw: string): T {
     }
     return JSON.parse(inner) as T;
   }
-  // First { … } or [ … ] balanced span. Greedy on outer braces is fine
-  // because we only feed the model JSON-only system prompts; if it
-  // mis-emits multiple top-level objects we still take the first one.
+  // The first `{` or `[` to the LAST matching closer. Greedy on outer braces is
+  // fine because we only feed the model JSON-only system prompts; if it
+  // mis-emits two top-level objects the slice spans both and fails to parse,
+  // so the first one is never kept.
   const firstBrace = trimmed.search(/[{[]/);
   if (firstBrace < 0) {
     throw new Error("no JSON object/array found in model output");
