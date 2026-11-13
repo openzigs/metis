@@ -10,7 +10,7 @@
   "judgeModel": "claude-sonnet-5-5",
   "fixture": {
     "id": "baqa-01-acme-reader",
-    "version": 1
+    "version": 2
   },
   "products": [
     {

@@ -923,8 +923,21 @@ also checked within a question, before each later turn of a multi-turn question 
 judge. A turn is checked against the costliest turn so far and the judge against the costliest
 judge call, so a cheap judge is not held to an answer's cost; a question cut short there is not
 graded. A step costlier than any before it can still cross the cap. `--include` refuses a run with another
-fixture, answer model or judge model, or an arm already in the report. The included run is
-re-summarized from its per-question scores, so both columns are computed by the same code.
+fixture or fixture version, answer model or judge model, or an arm already in the report. The included run is
+re-summarized from its per-question scores, so both columns are computed by the same code. It also
+refuses a version 1 results file (written before #2265), which labelled a citation to lines not in the
+file as span-checked, so re-summarizing it would count those under the wrong check (#2363). The
+question set's `version` is bumped whenever a question's text, a `before` turn, a fact or a source
+changes: version 2 follows S1.c's rewording in #2359, so a run graded on the old wording cannot sit
+beside one graded on the new.
+
+The three readings `readings/ba-qa/2264-scope9-*.json` were written as fixture version 1 and
+relabelled version 2 by hand in #2363. They do not carry the fact text, so the relabel rests on
+the git history: they started 2026-11-13 15:49 to 15:52 UTC on #2441's branch, whose commits up to
+then all descend from #2359 and hold a question set identical to version 2 in everything but the
+`version` number. They also carry results-file version 2 and `retrievalMode`, which only code
+after #2359 writes. The relabel assumes that checkout's question set had no uncommitted edits.
+Any other run written as fixture version 1 is still refused beside a version 2 run: re-run it.
 
 ### Baseline, 2026-11-11 (Sonnet 5.5 answers and judge, 18 questions per arm)
 

@@ -96,6 +96,9 @@ export function buildJudgeMessages(
   nonce: string = newNonce(),
 ): ChatMessage[] {
   const facts = (q.facts ?? []).map((f: BaQaFact) => `- ${f.id}: ${f.text}`).join("\n");
+  // The `[n] label` line sits outside the nonce fence on purpose (#2363): the
+  // label is a path and line range the citation parser already resolved against
+  // a real file, not free text from the reply, so there is nothing to fence.
   const spanText = spans
     .map((s) => `[${s.n}] ${s.label}\n<<<SPAN-${nonce}\n${clipSpan(s.text)}\nSPAN-${nonce}>>>`)
     .join("\n\n");
