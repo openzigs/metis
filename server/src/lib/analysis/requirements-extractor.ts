@@ -295,8 +295,17 @@ export const UNCITED_MATCH_THRESHOLD = 0.5;
 export function attachUncitedQualityFlags(
   requirements: StructuredRequirement[],
   sourcesByRef: ReadonlyMap<string, SourceStatement>,
+  /**
+   * #2296 — every statement a requirement cited, kept or not: one past the
+   * {@link MAX_TOTAL_SOURCES_PER_REQUIREMENT} ceiling is still cited, so it is
+   * never handed to a different requirement as though none rested on it.
+   */
+  citedRefs: ReadonlySet<string> = new Set(),
 ): number {
-  const cited = new Set(requirements.flatMap((r) => (r.sources ?? []).map((s) => s.ref)));
+  const cited = new Set([
+    ...citedRefs,
+    ...requirements.flatMap((r) => (r.sources ?? []).map((s) => s.ref)),
+  ]);
   const words = requirements.map((r) => contentWords(`${r.title} ${r.description}`));
   let added = 0;
   let unmatched = 0;
@@ -456,6 +465,8 @@ export class RequirementsExtractor {
     const requirements: StructuredRequirement[] = [];
     let totalAmbiguities = 0;
     let totalEvidenceNeeds = 0;
+    // #2296 — what the requirements cite, including paragraphs past the ceiling.
+    const citedRefs = new Set<string>();
 
     for (const raw of rawReqs) {
       if (!raw || typeof raw !== "object") continue;
@@ -478,6 +489,11 @@ export class RequirementsExtractor {
       const ambiguities = this.parseAmbiguities(r.ambiguities);
       const evidenceNeeds = this.parseEvidenceNeeds(r.evidenceNeeds);
       const sources = sourcesByRef ? citedSources(r.sourceIds, sourcesByRef) : [];
+      if (sourcesByRef && Array.isArray(r.sourceIds)) {
+        for (const id of r.sourceIds) {
+          if (typeof id === "string" && sourcesByRef.has(id.trim())) citedRefs.add(id.trim());
+        }
+      }
       // #2235 — the deterministic rules run over the source's own words.
       const fields = new Set(ambiguities.map((a) => a.field));
       for (const flagged of qualityFlagAmbiguities(
@@ -509,7 +525,7 @@ export class RequirementsExtractor {
     // statement no requirement cites (the model left it out, or cited the wrong
     // one) would otherwise get no rule hits at all.
     if (sourcesByRef) {
-      totalAmbiguities += attachUncitedQualityFlags(requirements, sourcesByRef);
+      totalAmbiguities += attachUncitedQualityFlags(requirements, sourcesByRef, citedRefs);
     }
 
     return { requirements, totalAmbiguities, totalEvidenceNeeds };

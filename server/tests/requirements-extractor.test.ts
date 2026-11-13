@@ -755,6 +755,35 @@ describe("extract — source mode (#2235)", () => {
     expect(mixed).toEqual([...u.slice(0, 3), ...seven].map((s) => s.ref));
   });
 
+  // Adversarial panel on #2426 — a flagged paragraph cited past the ceiling is
+  // still cited: it is never handed to another requirement as "uncited".
+  it("#2296 — a flagged statement cited past the ceiling is not attached to another requirement", async () => {
+    const f = flagged(MAX_TOTAL_SOURCES_PER_REQUIREMENT + 1);
+    const last = f[MAX_TOTAL_SOURCES_PER_REQUIREMENT]!;
+    const provider = sequenceProvider([
+      JSON.stringify({
+        requirements: [
+          {
+            title: "Catalogue search",
+            description: "Search the catalogue.",
+            sourceIds: f.map((s) => s.ref),
+          },
+          // Shares the dropped paragraph's words, so an "uncited" one would go here.
+          { title: "Search part", description: last.statement },
+        ],
+      }),
+    ]);
+    const result = await new RequirementsExtractor({ provider }).extract(
+      buildSourceExtractionInput(f),
+      undefined,
+      f,
+    );
+    const [catalogue, other] = result.requirements;
+    expect(catalogue?.sources).toHaveLength(MAX_TOTAL_SOURCES_PER_REQUIREMENT);
+    expect(other?.ambiguities).toEqual([]);
+    expect(other?.sources).toBeUndefined();
+  });
+
   it("#2296 — an uncited flagged statement is not added to a requirement already at the ceiling", async () => {
     const f = flagged(MAX_TOTAL_SOURCES_PER_REQUIREMENT);
     const statements = [...f, STATEMENTS[0]!];
