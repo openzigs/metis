@@ -165,13 +165,21 @@ describe("<MyWork />", () => {
 
   it("offers New change request when nothing needs me and I have projects", async () => {
     fetchMock.mockResolvedValue({ changeRequests: [], reviews: [], projectCount: 3 });
-    renderWith(<MyWork />);
+    // #2450 — offered only to a session that may start one.
+    renderWith(<MyWork />, userWith("analysis.run"));
     expect(await screen.findByText("Nothing needs you right now")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "New change request" })).toHaveAttribute(
       "href",
       "/projects",
     );
     expect(screen.queryByRole("button", { name: "New project" })).not.toBeInTheDocument();
+  });
+
+  it("#2450 — offers no New change request to a session without analysis.run", async () => {
+    fetchMock.mockResolvedValue({ changeRequests: [], reviews: [], projectCount: 3 });
+    renderWith(<MyWork />, { ...TEST_USER, role: "reader", permissions: ["analysis.read"] });
+    expect(await screen.findByText("Nothing needs you right now")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "New change request" })).not.toBeInTheDocument();
   });
 
   it("names the next step instead of New project for a role that cannot create one", async () => {

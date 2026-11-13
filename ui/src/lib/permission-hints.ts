@@ -17,3 +17,11 @@ export const REQUIRES_REQUIREMENT_APPROVE = "Requires requirement.approve";
  * not `project.update` ones: a developer holds neither.
  */
 export const REQUIRES_CONNECTOR_WRITE = "Requires connector.write";
+
+/**
+ * #2450 — starting a change request (`POST /api/projects/:id/analyses`) is an
+ * `analysis.run` write. A viewer without it is told why there is no form,
+ * rather than being offered one that ends in a 403.
+ */
+export const START_CHANGE_REQUEST_HINT =
+  "Starting a change request needs the analysis.run permission (developer, coordinator or admin by default). You can still read this project's change requests.";

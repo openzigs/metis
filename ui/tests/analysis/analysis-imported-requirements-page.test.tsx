@@ -4,7 +4,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { makeWrapper, TEST_USER } from "../test-utils";
+import { makeWrapper, userWith } from "../test-utils";
 
 vi.mock("next/navigation", async () => {
   const actual = await vi.importActual<typeof import("next/navigation")>("next/navigation");
@@ -190,8 +190,9 @@ vi.mock("@/components/requirements/requirement-links-panel", () => ({
 import AnalysisPage from "@/app/(authed)/projects/[id]/analysis/page";
 import { analysisApi } from "@/lib/analysis-api";
 
+// #2450 — the start form is offered only to a session holding analysis.run.
 function renderPage() {
-  render(<AnalysisPage />, { wrapper: makeWrapper({ initialUser: TEST_USER }) });
+  render(<AnalysisPage />, { wrapper: makeWrapper({ initialUser: userWith("analysis.run") }) });
 }
 
 beforeEach(() => {
