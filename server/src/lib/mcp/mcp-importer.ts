@@ -40,6 +40,14 @@ const SECRET_HEADER_PATTERN =
  * Value-shape heuristics for secrets that don't have an obvious key. Catches
  * `Authorization: Bearer …`, raw JWTs, GitHub PATs, Slack tokens, AWS keys.
  * Conservative — we'd rather over-vault than leak.
+ *
+ * #2333 — deliberately NOT the shared set (`safety/secret-patterns.ts`). This
+ * is a whole-value classifier that decides what goes into the vault, biased to
+ * over-vault; the shared set finds secrets inside free text and is tuned
+ * against false positives in source code. Swapped in, it would stop vaulting
+ * values this list vaults today: a 40- or 64-character hex token (exempt there
+ * as a SHA-1 / SHA-256 digest), a `Bearer` value of 8-15 characters (it needs
+ * 16), a GitHub token of 20-29 characters (it needs 30), `Basic …` (absent).
  */
 const SECRET_VALUE_PATTERNS: RegExp[] = [
   /^Bearer\s+[A-Za-z0-9._\-+/=]{8,}$/, // Authorization: Bearer xxx

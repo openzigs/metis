@@ -2,8 +2,12 @@
 
 /**
  * #29 (epic #26) — the project Overview: where each pipeline stage stands and
- * the one thing to do next in it. A brand-new project gets a numbered first-run
- * checklist instead, each step deep-linked to the page where it is done.
+ * the one thing to do next in it.
+ *
+ * #2349 — one numbered checklist for every project, new or not, in the
+ * analyst's terms: Add knowledge → Ready: ask a question → New change request →
+ * Review → Deliverable, with Publish shown as optional. Each step's action names
+ * the project tab it opens, as the tab bar names it (`project-tabs.tsx`).
  *
  * Every fact comes from an existing read endpoint (see `lib/project-pipeline`).
  * Status stays live two ways: socket pushes (`job:lifecycle` invalidates the
@@ -27,11 +31,10 @@ import { useActiveJobs, useFollowJobs } from "@/hooks/use-active-jobs";
 import { useProjectDriftCount } from "@/hooks/use-drift-count";
 import { useAuth } from "@/lib/auth-context";
 import {
-  FIRST_RUN_STEPS,
   derivePipelineStages,
+  isChecklistComplete,
   isDocumentIngesting,
   isGeneratedDocRunning,
-  isFirstRun,
   isIngestRunning,
   isProjectRepoIngestJob,
   latestCompletedAnalysisId,
@@ -43,6 +46,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { DriftBadge } from "@/components/sync/drift-badge";
+import { getProjectTabModel, resolveActiveProjectTab } from "@/components/projects/project-tabs";
 import { cn } from "@/lib/utils";
 
 /** Fallback poll cadence while a stage is running and the socket may be down. */
@@ -98,6 +102,7 @@ function StageHeading({
       <h3 className="font-medium">
         {prefix ? <span className="mr-2 text-muted-foreground">{prefix}</span> : null}
         {stage.title}
+        {stage.optional ? " (optional)" : null}
       </h3>
       {stage.id === DRIFT_STAGE ? <DriftBadge projectId={projectId} count={driftCount} /> : null}
     </div>
@@ -116,7 +121,17 @@ function StageStatus({ stage }: { stage: PipelineStage }) {
   );
 }
 
-function StageAction({ stage }: { stage: PipelineStage }) {
+/**
+ * #2349 — the tab a link opens, by the tab bar's own name for it, so the
+ * checklist's wording can never drift from the tabs (#2334 renames them).
+ */
+function projectTabNameFor(projectId: string, href: string): string | null {
+  const path = href.split(/[?#]/)[0];
+  return resolveActiveProjectTab(path, getProjectTabModel(projectId))?.section.label ?? null;
+}
+
+function StageAction({ stage, projectId }: { stage: PipelineStage; projectId: string }) {
+  const tab = projectTabNameFor(projectId, stage.action.href);
   return (
     <div className="flex flex-wrap items-center gap-2">
       <Button asChild size="sm" variant={stage.state === "done" ? "outline" : "default"}>
@@ -133,6 +148,11 @@ function StageAction({ stage }: { stage: PipelineStage }) {
             {stage.secondaryAction.label}
           </Link>
         </Button>
+      ) : null}
+      {tab ? (
+        <span className="text-xs text-muted-foreground" data-testid={`pipeline-tab-${stage.id}`}>
+          in {tab}
+        </span>
       ) : null}
     </div>
   );
@@ -261,11 +281,7 @@ export function ProjectPipelineOverview({ projectId }: { projectId: string }) {
           Some stages could not be loaded; their status may be incomplete.
         </p>
       ) : null}
-      {isFirstRun(facts) ? (
-        <FirstRunChecklist stages={stages} projectId={projectId} driftCount={driftCount} />
-      ) : (
-        <StageGrid stages={stages} projectId={projectId} driftCount={driftCount} />
-      )}
+      <ProjectChecklist stages={stages} projectId={projectId} driftCount={driftCount} />
       <p className="text-sm text-muted-foreground">
         The code summary lives under Project settings:{" "}
         <Link
@@ -281,7 +297,7 @@ export function ProjectPipelineOverview({ projectId }: { projectId: string }) {
   );
 }
 
-function FirstRunChecklist({
+function ProjectChecklist({
   stages,
   projectId,
   driftCount,
@@ -290,71 +306,39 @@ function FirstRunChecklist({
   projectId: string;
   driftCount: number;
 }) {
-  const byId = new Map(stages.map((s) => [s.id, s]));
-  const steps = FIRST_RUN_STEPS.map((id) => byId.get(id) as PipelineStage);
+  const required = stages.filter((s) => !s.optional);
+  const done = required.filter((s) => s.state === "done").length;
+  const complete = isChecklistComplete(stages);
   return (
-    <Card className="space-y-3 p-4" data-testid="first-run-checklist">
+    <Card className="space-y-3 p-4" data-testid="project-checklist">
       <div>
         <h2 id="pipeline-heading" className="text-lg font-semibold">
-          Get started
+          {complete ? "Every step done" : "Get started"}
         </h2>
-        <p className="text-sm text-muted-foreground">
-          Five steps take a project from empty to published issues.
+        <p className="text-sm text-muted-foreground" data-testid="checklist-progress">
+          {done} of {required.length} steps done. Publishing is optional.
         </p>
       </div>
       <ol className="space-y-3">
-        {steps.map((stage, i) => (
+        {stages.map((stage) => (
           <li
             key={stage.id}
             className="flex flex-wrap items-center justify-between gap-3 rounded-md border p-3"
-            data-testid={`first-run-step-${stage.id}`}
+            data-testid={`pipeline-stage-${stage.id}`}
           >
             <div className="space-y-1">
               <StageHeading
                 stage={stage}
                 projectId={projectId}
                 driftCount={driftCount}
-                prefix={`${i + 1}.`}
+                prefix={stage.optional ? undefined : `${required.indexOf(stage) + 1}.`}
               />
               <StageStatus stage={stage} />
             </div>
-            <StageAction stage={stage} />
+            <StageAction stage={stage} projectId={projectId} />
           </li>
         ))}
       </ol>
     </Card>
-  );
-}
-
-function StageGrid({
-  stages,
-  projectId,
-  driftCount,
-}: {
-  stages: PipelineStage[];
-  projectId: string;
-  driftCount: number;
-}) {
-  return (
-    <div className="space-y-3">
-      <h2 id="pipeline-heading" className="text-lg font-semibold">
-        Pipeline
-      </h2>
-      <ol className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-        {stages.map((stage) => (
-          <li key={stage.id} data-testid={`pipeline-stage-${stage.id}`}>
-            <Card className="flex h-full flex-col justify-between gap-3 p-4">
-              <div className="space-y-1">
-                <StageHeading stage={stage} projectId={projectId} driftCount={driftCount} />
-                <StageStatus stage={stage} />
-              </div>
-              <div>
-                <StageAction stage={stage} />
-              </div>
-            </Card>
-          </li>
-        ))}
-      </ol>
-    </div>
   );
 }

@@ -70,7 +70,13 @@ describe("resolveDiscussionTools", () => {
     expect(rt!.native).toBe(true);
     expect(rt!.note).toBe(DISCUSSION_NATIVE_TOOL_NOTE);
     expect(rt!.toolset.tools.map((t) => t.name).sort()).toEqual(
-      ["read_file_slice", "search-knowledge", "search_code_graph", "search_code_symbols"].sort(),
+      [
+        "get_index_status", // #2326
+        "read_file_slice",
+        "search-knowledge",
+        "search_code_graph",
+        "search_code_symbols",
+      ].sort(),
     );
     // Writes, SQL, a cross-project search and other METIS tools are not offered.
     for (const absent of ["query_database", "apply_diff", "search-knowledge-global"]) {
@@ -88,6 +94,34 @@ describe("resolveDiscussionTools", () => {
       native: true,
     });
     expect(rt!.toolset.tools.map((t) => t.name)).toEqual(["search-knowledge"]);
+  });
+
+  it("follows CHAT_INDEX_STATUS: no get_index_status when it is false (#2326)", async () => {
+    const saved = process.env.CHAT_INDEX_STATUS;
+    const names = async (flags?: typeof ON & { indexStatus?: boolean }) =>
+      (await resolveDiscussionTools({
+        session,
+        provider,
+        model: "m",
+        ...(flags ? { flags } : {}),
+        registry: FULL(),
+        native: true,
+      }))!.toolset.tools.map((t) => t.name);
+    try {
+      // Read from the key, as the discussion route does (no injected flags).
+      delete process.env.CHAT_INDEX_STATUS;
+      expect(await names()).toContain("get_index_status");
+      process.env.CHAT_INDEX_STATUS = "false";
+      const off = await names();
+      expect(off).not.toContain("get_index_status");
+      expect(off).toContain("search_code_symbols");
+      // And from injected flags.
+      delete process.env.CHAT_INDEX_STATUS;
+      expect(await names({ ...ON, indexStatus: false })).not.toContain("get_index_status");
+    } finally {
+      if (saved === undefined) delete process.env.CHAT_INDEX_STATUS;
+      else process.env.CHAT_INDEX_STATUS = saved;
+    }
   });
 
   it("offers nothing when chat's tools are off and code tools are off", async () => {
@@ -112,8 +146,25 @@ describe("resolveDiscussionTools", () => {
       native: false,
     });
     expect(rt!.native).toBe(false);
-    expect(rt!.toolset.tools.map((t) => t.name)).toEqual([...DISCUSSION_TOOL_ALLOWLIST.slice(1)]);
+    // The code tools, in the allowlist's order (#2326's get_index_status included);
+    // #2327's primitives follow their key (off here).
+    expect(rt!.toolset.tools.map((t) => t.name)).toEqual(DISCUSSION_TOOL_ALLOWLIST.slice(1, 5));
     expect(rt!.note).toContain("read_file_slice");
+  });
+
+  it("follows chat's flags: grep_files and list_files with CHAT_CODE_SEARCH_PRIMITIVES on (#2327)", async () => {
+    const rt = await resolveDiscussionTools({
+      session,
+      provider,
+      model: "m",
+      flags: { ...ON, codeSearchPrimitives: true },
+      registry: FULL(),
+      native: true,
+    });
+    const names = rt!.toolset.tools.map((t) => t.name);
+    expect(names).toEqual(expect.arrayContaining(["grep_files", "list_files"]));
+    // Both are in the allowlist a discussion reply is gated on.
+    expect(DISCUSSION_TOOL_ALLOWLIST).toEqual(expect.arrayContaining(["grep_files", "list_files"]));
   });
 
   it("#2295: a non-tool-capable model gets no code tools unless the deployment set the flag", async () => {

@@ -43,6 +43,7 @@ import {
   type SubAgentLimits,
 } from "../../agent-runtime/subagents.js";
 import { resolveCapabilities } from "../capabilities.js";
+import { indexStatusEnabled } from "../index-status.js";
 import type { AIProvider, RiskLevel } from "../types.js";
 import { getToolRegistry, type ToolRegistry } from "../tool-registry.js";
 import {
@@ -102,6 +103,11 @@ export interface SessionToolsFlags {
   /** `CHAT_CODE_SEARCH_TOOLS` — offer the curated code-search tools (default on, #2243). */
   codeSearchTools: boolean;
   /**
+   * #2327 `CHAT_CODE_SEARCH_PRIMITIVES` — with the code tools, also `grep_files`,
+   * `list_files` and `search_code_symbols`'s filters.
+   */
+  codeSearchPrimitives?: boolean;
+  /**
    * #2295 — offer them on the text protocol too, to a model that cannot call
    * tools natively. On only when `CHAT_CODE_SEARCH_TOOLS` is set to true: the
    * #2243 default was measured on native tool calls, and the text-protocol
@@ -112,7 +118,12 @@ export interface SessionToolsFlags {
   progressiveSkills?: boolean;
   /** #147 `CHAT_SUBAGENTS` — offer the project's agents as tools (default on). */
   subAgents?: boolean;
+  /** #2326 `CHAT_INDEX_STATUS` — the index-status tool and context line (default on). */
+  indexStatus?: boolean;
 }
+
+/** #2327 — `CHAT_CODE_SEARCH_PRIMITIVES`'s default. */
+export const CODE_SEARCH_PRIMITIVES_DEFAULT = false;
 
 export function loadSessionToolsFlags(): SessionToolsFlags {
   const cfg = getConfigService();
@@ -120,10 +131,16 @@ export function loadSessionToolsFlags(): SessionToolsFlags {
     chatTools: cfg.getBool("CHAT_TOOLS", true),
     // #2243 — on by default: measured on the #2237 BA question set.
     codeSearchTools: cfg.getBool("CHAT_CODE_SEARCH_TOOLS", true),
+    // #2327 — see the key's description for the measurement behind the default.
+    codeSearchPrimitives: cfg.getBool(
+      "CHAT_CODE_SEARCH_PRIMITIVES",
+      CODE_SEARCH_PRIMITIVES_DEFAULT,
+    ),
     // #2295 — but not for a model without native tool calls unless asked for.
     codeSearchToolsOnTextProtocol: cfg.getBool("CHAT_CODE_SEARCH_TOOLS", false),
     progressiveSkills: cfg.getBool("CHAT_PROGRESSIVE_SKILLS", true),
     subAgents: cfg.getBool("CHAT_SUBAGENTS", true),
+    indexStatus: indexStatusEnabled(),
   };
 }
 
@@ -299,7 +316,12 @@ export async function resolveSessionTools(
       subAgents: null,
     };
   }
-  const codeTools = flags.codeSearchTools ? getChatCodeTools(input.codeToolDeps) : [];
+  const codeTools = flags.codeSearchTools
+    ? getChatCodeTools(input.codeToolDeps, {
+        indexStatus: flags.indexStatus !== false,
+        primitives: flags.codeSearchPrimitives === true,
+      })
+    : [];
 
   if (native) {
     const base =

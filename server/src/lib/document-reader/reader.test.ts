@@ -1,13 +1,15 @@
 import { describe, expect, it } from "vitest";
 import type { AIProvider, ChatMessage, ChatOptions, ChatResponse } from "../ai/types.js";
 import { AIProviderError } from "../ai/errors.js";
-import { normaliseStatementKind } from "./prompts.js";
+import { buildMergePrompt, normaliseStatementKind } from "./prompts.js";
 import {
   DocumentReaderError,
   READER_BATCH_CHARS,
   READER_WHOLE_MAX_DOCUMENT_TOKENS,
   chooseReadingMode,
+  isTableRow,
   readDocument,
+  sentenceSpan,
   spentUsageOf,
   withSpentUsage,
 } from "./reader.js";
@@ -290,7 +292,7 @@ describe("readDocument — whole mode", () => {
         section: "S5",
         kind: "requirement",
         statement: "A patient may not hold three future appointments.",
-        quote: "hold at most two future appointments at any time.",
+        quote: "For example, a patient with two bookings must cancel one first.",
       },
       {
         section: "S6",
@@ -300,10 +302,13 @@ describe("readDocument — whole mode", () => {
       },
     );
     const merge = JSON.stringify({
-      // T3 repeats T2; a claim that T2 repeats a LATER one is ignored.
+      // T3 repeats T2. #2361: the reverse claim comes after T3 is dropped, and
+      // would drop both, so it is ignored; so are an unknown id and a self-repeat.
       duplicates: [
         { id: "T3", of: "T2" },
-        { id: "T1", of: "T4" },
+        { id: "T2", of: "T3" },
+        { id: "T9", of: "T1" },
+        { id: "T1", of: "T1" },
       ],
       crossReferences: [
         { from: "T4", to: "T2", note: "the clinic the patient books at" },
@@ -577,6 +582,33 @@ describe("readDocument — a document longer than one batch", () => {
     const [merge] = calls.filter((c) => c.system.includes(MERGE));
     expect(merge!.opts?.promptCaching).toBeUndefined();
   });
+
+  it("#2262 — keeps the operator's notes inside the cached lead, the same for every batch", async () => {
+    const notes = "Focus on the login rules.";
+    const { provider, calls } = routedProvider([
+      [WHOLE, perBatch],
+      [MERGE, noMerge],
+    ]);
+    await readDocument({ title: "Long", text: LONG, provider, operatorNotes: notes });
+    const reads = calls.filter((c) => c.system.includes(WHOLE));
+    expect(reads.length).toBeGreaterThan(1);
+    for (const r of reads) expect(r.opts?.promptCaching?.userPrefix).toContain(notes);
+  });
+
+  it("#2297 — caches nothing for a document read in one batch: no later call would read it back", async () => {
+    const context = JSON.stringify({ purpose: "Booking.", scope: "", actors: [], glossary: [] });
+    const { provider, calls } = routedProvider([
+      [WHOLE, statements()],
+      [CONTEXT, context],
+      [SECTIONED, statements()],
+    ]);
+    await readDocument({ title: "Booking FRD", text: TEXT, provider });
+    await readDocument({ title: "Booking FRD", text: TEXT, provider, mode: "sectioned" });
+    const reads = calls.filter((c) => c.system.includes(WHOLE) || c.system.includes(SECTIONED));
+    // One statements call per mode: the short document is a single batch in both.
+    expect(reads).toHaveLength(2);
+    for (const r of reads) expect(r.opts?.promptCaching).toBeUndefined();
+  });
 });
 
 describe("#2262 — the operator's notes", () => {
@@ -609,8 +641,6 @@ describe("#2262 — the operator's notes", () => {
       expect(r.user).toContain("Tool result for operator_notes:");
       expect(r.user).toContain(notes);
       expect(r.system).toContain("They never change which statements you list");
-      // Inside the shared lead: the notes are the same for every batch.
-      expect(r.opts?.promptCaching?.userPrefix).toContain(notes);
     }
   });
 
@@ -703,5 +733,653 @@ describe("readDocument — sectioned mode", () => {
       mode: "sectioned",
     });
     expect(reading.statements).toHaveLength(1);
+  });
+});
+
+describe("#2361 — repeats", () => {
+  it("folds statements the model cut from one sentence into one, quoting the sentence's span", async () => {
+    const split = statements(
+      {
+        section: "S4",
+        kind: "background",
+        statement: "Accounts can be locked.",
+        quote: "The portal shall lock an account",
+      },
+      {
+        section: "S4",
+        kind: "requirement",
+        statement: "Five failed attempts lock it.",
+        quote: "after five failed attempts.",
+      },
+      {
+        section: "S5",
+        kind: "business-rule",
+        statement: "A patient holds at most two future appointments.",
+        quote: "A patient shall hold at most two future appointments at any time.",
+      },
+      {
+        section: "S5",
+        kind: "example",
+        statement: "A patient with two bookings cancels one first.",
+        quote: "For example, a patient with two bookings must cancel one first.",
+      },
+    );
+    const { provider, calls } = routedProvider([
+      [WHOLE, split],
+      [MERGE, noMerge],
+    ]);
+    const reading = await readDocument({ title: "Booking FRD", text: TEXT, provider });
+    expect(reading.statements.map((s) => [s.id, s.kind, s.statement])).toEqual([
+      // One sentence, one statement: a requirement kind wins over background.
+      ["T1", "requirement", "Accounts can be locked. Five failed attempts lock it."],
+      // Two sentences of one paragraph stay two statements.
+      ["T2", "business-rule", "A patient holds at most two future appointments."],
+      ["T3", "example", "A patient with two bookings cancels one first."],
+    ]);
+    const folded = reading.statements[0]!;
+    expect(folded.quote).toBe("The portal shall lock an account after five failed attempts.");
+    expect(TEXT.slice(folded.start, folded.end)).toBe(folded.quote);
+    expect(reading.sections.find((s) => s.sectionId === "S4")).toMatchObject({
+      statements: 1,
+      kinds: { requirement: 1 },
+      repeats: 1,
+    });
+    // The cross-section pass sees the folded statement, not its parts.
+    const mergeCall = calls.find((c) => c.system.includes(MERGE))!;
+    expect(mergeCall.user).toContain("T1 [S4] (requirement) Accounts can be locked.");
+    expect(mergeCall.user).not.toContain("T4 ");
+  });
+
+  it("folds one quote returned with different wording", async () => {
+    const reworded = statements(
+      {
+        section: "S4",
+        kind: "requirement",
+        statement: "Lock an account after five failed logins.",
+        quote: "The portal shall lock an account after five failed attempts.",
+      },
+      {
+        section: "S4",
+        kind: "requirement",
+        statement: "Five failed logins lock the account.",
+        quote: "The portal shall lock an account after five failed attempts.",
+      },
+    );
+    const { provider } = routedProvider([[WHOLE, reworded]]);
+    const reading = await readDocument({ title: "Booking FRD", text: TEXT, provider });
+    expect(reading.statements.map((s) => s.statement)).toEqual([
+      "Lock an account after five failed logins. Five failed logins lock the account.",
+    ]);
+  });
+
+  it("drops an earlier summary that a later statement says in full, and keeps the later one", async () => {
+    const summaryFirst = statements(
+      {
+        section: "S2",
+        kind: "requirement",
+        statement: "The portal limits how many appointments a patient holds.",
+        quote: "This document describes the clinic booking portal for patients.",
+      },
+      {
+        section: "S5",
+        kind: "business-rule",
+        statement: "A patient holds at most two future appointments.",
+        quote: "A patient shall hold at most two future appointments at any time.",
+      },
+    );
+    const merge = JSON.stringify({ duplicates: [{ id: "T1", of: "T2" }], crossReferences: [] });
+    const { provider } = routedProvider([
+      [WHOLE, summaryFirst],
+      [MERGE, merge],
+    ]);
+    const reading = await readDocument({ title: "Booking FRD", text: TEXT, provider });
+    expect(reading.statements.map((s) => [s.id, s.sectionId])).toEqual([["T1", "S5"]]);
+    expect(reading.sections.find((s) => s.sectionId === "S2")).toMatchObject({
+      statements: 0,
+      repeats: 1,
+    });
+  });
+
+  // #2361 review — three sentences on one line: no line break separates them.
+  const RULES = [
+    "# Locks",
+    "",
+    "## 1 Rules",
+    "",
+    "The portal shall lock an account after five failed attempts. It shall unlock it after one hour. A patient shall hold at most two appointments.",
+    "",
+  ].join("\n");
+
+  it("folds only within one sentence: a quote over several sentences does not cascade", async () => {
+    const reply = statements(
+      {
+        section: "S2",
+        kind: "requirement",
+        statement: "Lock accounts",
+        quote: "The portal shall lock an account",
+      },
+      {
+        section: "S2",
+        kind: "requirement",
+        statement: "Failed attempts lock, and an hour unlocks.",
+        quote: "after five failed attempts. It shall unlock it after one hour.",
+      },
+      // Its exact twin (same quote, same statement) is kept once, as on main.
+      {
+        section: "S2",
+        kind: "requirement",
+        statement: "Failed attempts lock, and an hour unlocks.",
+        quote: "after five failed attempts. It shall unlock it after one hour.",
+      },
+      {
+        section: "S2",
+        kind: "requirement",
+        statement: "unlock the account,",
+        quote: "It shall unlock it",
+      },
+      {
+        section: "S2",
+        kind: "requirement",
+        statement: "an hour later",
+        quote: "unlock it after one hour.",
+      },
+      {
+        section: "S2",
+        kind: "business-rule",
+        statement: "At most two appointments.",
+        quote: "A patient shall hold at most two appointments.",
+      },
+    );
+    const { provider } = routedProvider([
+      [WHOLE, reply],
+      [MERGE, noMerge],
+    ]);
+    const reading = await readDocument({ title: "Locks", text: RULES, provider });
+    expect(reading.statements.map((s) => [s.statement, s.quote])).toEqual([
+      ["Lock accounts", "The portal shall lock an account"],
+      // The multi-sentence quote stands alone: nothing folds into it.
+      [
+        "Failed attempts lock, and an hour unlocks.",
+        "after five failed attempts. It shall unlock it after one hour.",
+      ],
+      // Two statements of the second sentence fold, joined as sentences.
+      ["Unlock the account. An hour later.", "It shall unlock it after one hour."],
+      // The third sentence is still its own requirement.
+      ["At most two appointments.", "A patient shall hold at most two appointments."],
+    ]);
+    expect(reading.sections.find((s) => s.sectionId === "S2")).toMatchObject({
+      statements: 4,
+      repeats: 2,
+    });
+  });
+
+  it("never folds a quote over a line break: two table rows stay two, and so do two quotes across them", async () => {
+    const text = [
+      "# Fees",
+      "",
+      "## 1 Fees",
+      "",
+      "| Item | Fee |",
+      "| --- | --- |",
+      "| Late return | 20p a day |",
+      "| Lost card | 2 pounds each |",
+      "",
+    ].join("\n");
+    const reply = statements(
+      {
+        section: "S2",
+        kind: "requirement",
+        statement: "Late returns cost 20p a day.",
+        quote: "| Late return | 20p a day |",
+      },
+      {
+        section: "S2",
+        kind: "background",
+        statement: "late fee",
+        quote: "Late return | 20p a day",
+      },
+      {
+        section: "S2",
+        kind: "background",
+        statement: "Fees run on.",
+        quote: "20p a day | | Lost card",
+      },
+      // Its exact twin is kept once.
+      {
+        section: "S2",
+        kind: "background",
+        statement: "Fees run on.",
+        quote: "20p a day | | Lost card",
+      },
+      {
+        section: "S2",
+        kind: "background",
+        statement: "Fees continue.",
+        quote: "20p a day | | Lost card",
+      },
+      {
+        section: "S2",
+        kind: "requirement",
+        statement: "A lost card costs 2 pounds.",
+        quote: "| Lost card | 2 pounds each |",
+      },
+    );
+    const { provider } = routedProvider([
+      [WHOLE, reply],
+      [MERGE, noMerge],
+    ]);
+    const reading = await readDocument({ title: "Fees", text, provider });
+    expect(reading.statements.map((s) => [s.kind, s.statement])).toEqual([
+      // Two statements of one row still fold.
+      ["requirement", "Late returns cost 20p a day. Late fee."],
+      // A quote across two rows folds with nothing, not even its twin.
+      ["background", "Fees run on."],
+      ["background", "Fees continue."],
+      ["requirement", "A lost card costs 2 pounds."],
+    ]);
+    expect(reading.sections.find((s) => s.sectionId === "S2")).toMatchObject({ repeats: 2 });
+  });
+
+  it("never folds a quote across a heading, so the next section keeps its own statement", async () => {
+    const text = [
+      "# Doc",
+      "",
+      "## A",
+      "",
+      "The portal shall log every booking.",
+      "",
+      "## B",
+      "",
+      "The portal shall email a receipt.",
+      "",
+    ].join("\n");
+    const reply = statements(
+      {
+        section: "S2",
+        kind: "requirement",
+        statement: "Bookings are logged.",
+        quote: "The portal shall log every booking.",
+      },
+      {
+        section: "S2",
+        kind: "background",
+        statement: "Logging, then receipts.",
+        quote: "log every booking. ## B The portal shall email",
+      },
+      {
+        section: "S3",
+        kind: "requirement",
+        statement: "A receipt is emailed.",
+        quote: "The portal shall email a receipt.",
+      },
+    );
+    const { provider } = routedProvider([
+      [WHOLE, reply],
+      [MERGE, noMerge],
+    ]);
+    const reading = await readDocument({ title: "Doc", text, provider });
+    expect(reading.statements.map((s) => [s.sectionId, s.kind])).toEqual([
+      ["S2", "requirement"],
+      ["S2", "background"],
+      ["S3", "requirement"],
+    ]);
+    expect(reading.sections.find((s) => s.sectionId === "S3")).toMatchObject({
+      statements: 1,
+      repeats: 0,
+    });
+  });
+
+  it("records where a repeat's content finally lives, through a chain, each section once", async () => {
+    const text = [
+      "# Visits",
+      "",
+      "## 1 Overview",
+      "",
+      "The portal books clinic visits. The portal cancels clinic visits.",
+      "",
+      "## 2 Booking",
+      "",
+      "The portal shall book clinic visits online.",
+      "",
+      "## 3 Rules",
+      "",
+      "The portal shall book clinic visits online at any hour. The portal shall cancel clinic visits online at any hour.",
+      "",
+    ].join("\n");
+    const reply = statements(
+      {
+        section: "S2",
+        kind: "background",
+        statement: "Visits are booked.",
+        quote: "The portal books clinic visits.",
+      },
+      {
+        section: "S2",
+        kind: "background",
+        statement: "Visits are cancelled.",
+        quote: "The portal cancels clinic visits.",
+      },
+      {
+        section: "S3",
+        kind: "requirement",
+        statement: "Book online.",
+        quote: "The portal shall book clinic visits online.",
+      },
+      {
+        section: "S4",
+        kind: "requirement",
+        statement: "Book online at any hour.",
+        quote: "The portal shall book clinic visits online at any hour.",
+      },
+      {
+        section: "S4",
+        kind: "requirement",
+        statement: "Cancel online at any hour.",
+        quote: "The portal shall cancel clinic visits online at any hour.",
+      },
+    );
+    // T1 (S2) repeats T3 (S3), which repeats T4 (S4); T2 (S2) repeats T5 (S4).
+    const merge = JSON.stringify({
+      duplicates: [
+        { id: "T1", of: "T3" },
+        { id: "T3", of: "T4" },
+        { id: "T2", of: "T5" },
+      ],
+      crossReferences: [],
+    });
+    const { provider } = routedProvider([
+      [WHOLE, reply],
+      [MERGE, merge],
+    ]);
+    const reading = await readDocument({ title: "Visits", text, provider });
+    expect(reading.statements.map((s) => s.sectionId)).toEqual(["S4", "S4"]);
+    const merged = (id: string) => reading.sections.find((s) => s.sectionId === id);
+    // Both of S2's statements now live in S4: named once, not S3 (which holds nothing).
+    expect(merged("S2")).toMatchObject({ statements: 0, repeats: 2, mergedInto: ["S4"] });
+    expect(merged("S3")).toMatchObject({ statements: 0, repeats: 1, mergedInto: ["S4"] });
+  });
+
+  it("counts a statement the cross-section pass names more than once as one repeat", async () => {
+    const reply = statements(
+      {
+        section: "S4",
+        kind: "requirement",
+        statement: "Lock after five failures.",
+        quote: "The portal shall lock an account after five failed attempts.",
+      },
+      {
+        section: "S5",
+        kind: "business-rule",
+        statement: "A patient holds at most two future appointments.",
+        quote: "A patient shall hold at most two future appointments at any time.",
+      },
+      {
+        section: "S5",
+        kind: "example",
+        statement: "A patient with two bookings cancels one first.",
+        quote: "For example, a patient with two bookings must cancel one first.",
+      },
+    );
+    const merge = JSON.stringify({
+      duplicates: [
+        { id: "T3", of: "T2" },
+        { id: "T3", of: "T2" },
+        { id: "T3", of: "T1" },
+      ],
+      crossReferences: [],
+    });
+    const { provider } = routedProvider([
+      [WHOLE, reply],
+      [MERGE, merge],
+    ]);
+    const reading = await readDocument({ title: "Booking FRD", text: TEXT, provider });
+    expect(reading.statements.map((s) => s.sectionId)).toEqual(["S4", "S5"]);
+    expect(reading.sections.find((s) => s.sectionId === "S5")).toMatchObject({
+      statements: 1,
+      repeats: 1,
+    });
+  });
+
+  it("keeps two adjacent sentences on one line apart", async () => {
+    const reply = statements(
+      {
+        section: "S2",
+        kind: "requirement",
+        statement: "Lock after five failures.",
+        quote: "The portal shall lock an account after five failed attempts.",
+      },
+      {
+        section: "S2",
+        kind: "requirement",
+        statement: "Unlock after an hour.",
+        quote: "It shall unlock it after one hour.",
+      },
+    );
+    const { provider } = routedProvider([
+      [WHOLE, reply],
+      [MERGE, noMerge],
+    ]);
+    const reading = await readDocument({ title: "Locks", text: RULES, provider });
+    expect(reading.statements.map((s) => s.statement)).toEqual([
+      "Lock after five failures.",
+      "Unlock after an hour.",
+    ]);
+  });
+
+  it("drops nothing into a statement several others are named repeats of: it is a summary of them", async () => {
+    const reply = statements(
+      {
+        section: "S4",
+        kind: "requirement",
+        statement: "Lock after five failures.",
+        quote: "The portal shall lock an account after five failed attempts.",
+      },
+      {
+        section: "S5",
+        kind: "business-rule",
+        statement: "A patient holds at most two future appointments.",
+        quote: "A patient shall hold at most two future appointments at any time.",
+      },
+      {
+        section: "S5",
+        kind: "example",
+        statement: "A patient with two bookings cancels one first.",
+        quote: "For example, a patient with two bookings must cancel one first.",
+      },
+      {
+        section: "S6",
+        kind: "definition",
+        statement: "Locks and limits apply at every clinic.",
+        quote: "A clinic means any site run by the trust.",
+      },
+    );
+    const merge = JSON.stringify({
+      // T1 and T2 are named repeats of T4, which combines them: both stay.
+      // T3 repeats T2 alone, and goes.
+      duplicates: [
+        { id: "T1", of: "T4" },
+        { id: "T2", of: "T4" },
+        { id: "T3", of: "T2" },
+      ],
+      crossReferences: [],
+    });
+    const { provider } = routedProvider([
+      [WHOLE, reply],
+      [MERGE, merge],
+    ]);
+    const reading = await readDocument({ title: "Booking FRD", text: TEXT, provider });
+    expect(reading.statements.map((s) => [s.id, s.sectionId, s.kind])).toEqual([
+      ["T1", "S4", "requirement"],
+      ["T2", "S5", "business-rule"],
+      ["T3", "S6", "definition"],
+    ]);
+    expect(reading.sections.find((s) => s.sectionId === "S4")).toMatchObject({ repeats: 0 });
+    expect(reading.sections.find((s) => s.sectionId === "S5")).toMatchObject({ repeats: 1 });
+  });
+
+  it("never drops a prose statement as a repeat of a summary table's row, but drops the row", async () => {
+    const text = [
+      "# Lending",
+      "",
+      "## 1 Teens",
+      "",
+      "Teen members cannot borrow a DVD with an 18 certificate.",
+      "",
+      "## 2 Summary",
+      "",
+      "| Category | Limits |",
+      "| --- | --- |",
+      "| Teen | 12 items on loan, no DVD with an 18 certificate |",
+      "| Teen DVDs | no DVD with an 18 certificate |",
+      "",
+    ].join("\n");
+    const reply = statements(
+      {
+        section: "S2",
+        kind: "business-rule",
+        statement: "Teens cannot borrow 18-certificate DVDs.",
+        quote: "Teen members cannot borrow a DVD with an 18 certificate.",
+      },
+      {
+        section: "S3",
+        kind: "business-rule",
+        statement: "Teens: 12 items, no 18-certificate DVDs.",
+        quote: "| Teen | 12 items on loan, no DVD with an 18 certificate |",
+      },
+    );
+    const read = async (duplicate: { id: string; of: string }, items = reply) => {
+      const merge = JSON.stringify({ duplicates: [duplicate], crossReferences: [] });
+      const { provider } = routedProvider([
+        [WHOLE, items],
+        [MERGE, merge],
+      ]);
+      const reading = await readDocument({ title: "Lending", text, provider });
+      return reading.statements.map((s) => s.sectionId);
+    };
+    expect(await read({ id: "T1", of: "T2" })).toEqual(["S2", "S3"]);
+    expect(await read({ id: "T2", of: "T1" })).toEqual(["S2"]);
+    // One row may still repeat another.
+    const rows = statements(
+      {
+        section: "S3",
+        kind: "business-rule",
+        statement: "Teens: 12 items, no 18-certificate DVDs.",
+        quote: "| Teen | 12 items on loan, no DVD with an 18 certificate |",
+      },
+      {
+        section: "S3",
+        kind: "business-rule",
+        statement: "Teens may not borrow 18-certificate DVDs.",
+        quote: "| Teen DVDs | no DVD with an 18 certificate |",
+      },
+    );
+    expect(await read({ id: "T2", of: "T1" }, rows)).toEqual(["S3"]);
+  });
+
+  it("points a reference to a dropped repeat at the statement it repeats, through a chain", async () => {
+    const reply = statements(
+      {
+        section: "S2",
+        kind: "requirement",
+        statement: "The portal limits appointments.",
+        quote: "This document describes the clinic booking portal for patients.",
+      },
+      {
+        section: "S4",
+        kind: "requirement",
+        statement: "Lock after five failures.",
+        quote: "The portal shall lock an account after five failed attempts.",
+      },
+      {
+        section: "S5",
+        kind: "business-rule",
+        statement: "A patient holds at most two future appointments.",
+        quote: "A patient shall hold at most two future appointments at any time.",
+      },
+      {
+        section: "S5",
+        kind: "example",
+        statement: "A patient with two bookings cancels one first.",
+        quote: "For example, a patient with two bookings must cancel one first.",
+      },
+    );
+    const merge = JSON.stringify({
+      // T1 repeats T3, which repeats T4: a reference to T1 lands on T4, two hops on.
+      duplicates: [
+        { id: "T1", of: "T3" },
+        { id: "T3", of: "T4" },
+      ],
+      crossReferences: [
+        { from: "T2", to: "T1", note: "the limit" },
+        // A reference that lands on itself goes.
+        { from: "T4", to: "T3", note: "self" },
+      ],
+    });
+    const { provider } = routedProvider([
+      [WHOLE, reply],
+      [MERGE, merge],
+    ]);
+    const reading = await readDocument({ title: "Booking FRD", text: TEXT, provider });
+    expect(reading.statements.map((s) => [s.id, s.sectionId, s.refersTo])).toEqual([
+      ["T1", "S4", ["T2"]],
+      ["T2", "S5", []],
+    ]);
+    // The overview's content was merged into the section that sets it out.
+    expect(reading.sections.find((s) => s.sectionId === "S2")).toMatchObject({
+      statements: 0,
+      repeats: 1,
+      mergedInto: ["S5"],
+    });
+    // A repeat within one section is not a merge into another.
+    expect(reading.sections.find((s) => s.sectionId === "S5")).toMatchObject({
+      statements: 1,
+      repeats: 1,
+    });
+    expect(reading.sections.find((s) => s.sectionId === "S5")!.mergedInto).toBeUndefined();
+  });
+
+  it("asks for one statement per sentence and reads scope, overviews and document control as background", async () => {
+    const { provider, calls } = routedProvider([[WHOLE, statements()]]);
+    await readDocument({ title: "Booking FRD", text: TEXT, provider });
+    const system = calls[0]!.system;
+    expect(system).toContain("One statement per sentence");
+    expect(system).not.toContain("is two statements");
+    expect(system).toMatch(/background: [^\n]*scope[^\n]*document itself/);
+  });
+
+  it("tells the cross-section pass to name the statement that says less", () => {
+    const { systemMessage } = buildMergePrompt({ title: "Booking FRD", statements: [] });
+    expect(systemMessage).toContain("name the one that says less");
+  });
+});
+
+describe("isTableRow", () => {
+  const text = "Prose line.\n  | a | b |\n| c | d |";
+  it("is true anywhere on a row, indented or not, and false on prose", () => {
+    expect(isTableRow(text, 0)).toBe(false);
+    expect(isTableRow(text, 5)).toBe(false);
+    expect(isTableRow(text, text.indexOf("| a"))).toBe(true);
+    expect(isTableRow(text, text.indexOf("b |"))).toBe(true);
+    expect(isTableRow(text, text.indexOf("| c"))).toBe(true);
+  });
+});
+
+describe("sentenceSpan", () => {
+  // The line before the table ends without a full stop: only the line break ends it.
+  const text = "First rule. The portal shall lock it, e.g. now:\n| a | b |\nLast one";
+  it("widens a quote to the sentence holding it", () => {
+    const at = text.indexOf("lock it");
+    const span = sentenceSpan(text, at, at + 7);
+    expect(text.slice(span.start, span.end).trim()).toBe("The portal shall lock it, e.g.");
+  });
+  it("ends at a line break, so a table row is a sentence of its own", () => {
+    const at = text.indexOf("a |");
+    const span = sentenceSpan(text, at, at + 3);
+    expect(text.slice(span.start, span.end).trim()).toBe("| a | b |");
+  });
+  it("keeps a quote that already ends a sentence and runs to the text's ends", () => {
+    expect(sentenceSpan(text, 0, 11)).toEqual({ start: 0, end: 11 });
+    const at = text.indexOf("Last");
+    expect(sentenceSpan(text, at + 5, text.length)).toEqual({ start: at, end: text.length });
   });
 });

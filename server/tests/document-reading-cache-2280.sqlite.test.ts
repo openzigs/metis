@@ -271,7 +271,11 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       // Requirements Analysis in mallory's project naming alice's document: not loaded, not looked up.
       const model = countingProvider();
       const findFirst = vi.spyOn(db.savedDocumentReading, "findFirst");
-      expect(await analyse(model.provider, PM)).toBeNull();
+      // #2297 — reported as not available (as a withheld one is), never sent to retrieval.
+      const other = await analyse(model.provider, PM);
+      expect(other!.coverage.documents).toEqual([
+        expect.objectContaining({ documentId: docA, status: "unread" }),
+      ]);
       expect(model.calls()).toBe(0);
       expect(findFirst).not.toHaveBeenCalled();
       findFirst.mockRestore();

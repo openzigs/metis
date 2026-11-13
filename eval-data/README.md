@@ -706,7 +706,8 @@ pnpm eval:localization --merge <dir> --md
 |---|---|---|
 | `A3` (A3-union) | production's (`search_code_graph`, `search_code_symbols`, `search_knowledge`, `read_file_slice`, `list_files`) and seeded blocks | A0's edit candidates, then the cited files through the stored-link channel (#1754) |
 | `A3A` (A3-alone) | the same pass as `A3` | the cited files alone, in first-cited order |
-| `A3N` (A3-nograph) | `list_files`, `read_file_slice` and the eval-only `grep_files`; no seeded blocks | the cited files alone |
+| `A3N` (A3-nograph) | `list_files`, `read_file_slice` and `grep_files`; no seeded blocks | the cited files alone |
+| `A3P` (A3-primitives, #2327) | `A3A`'s, with `search_code_symbols`'s filters and `grep_files` (chat's search primitives) | the cited files alone |
 
 - **One pass per item and repository.** The pass uses the orchestrator's own functions
   (`extractNewRequirementCandidates`, `assembleAgenticPassSeeds`, `buildAgenticPassPrompt`,
@@ -721,8 +722,11 @@ pnpm eval:localization --merge <dir> --md
   the per-repository passes. Each agent arm also gets a line with its passes, the passes
   with no schema-valid answer, and turns and tool calls per pass.
 - **`grep_files` is bounded.** It is a literal search, capped at 50 matching lines and
-  5,000 files. The file cap counts only files inside the `pathContains` scope, and it never
-  descends into a symlinked directory. A search the cap cut short says so.
+  5,000 files. Since #2327 it is production code (`analysis/tools/grep-files.ts`, offered to
+  chat behind `CHAT_CODE_SEARCH_PRIMITIVES`), so `A3N` runs the same implementation chat does,
+  with its #2327 caps (5,000 characters shown, totals when cut, secret files never read).
+  The file cap counts only files inside the `pathContains` scope, and it never descends into
+  a symlinked directory. A search the cap cut short says so.
 - **`A3N` needs the clone.** If a repository's clone is missing, `A3N` stops with an error
   telling you to run `pnpm eval:materialize`.
 - **The `--arms` list binds the run to the materialized database.** When it names an agent
@@ -859,17 +863,25 @@ Each question is its own one-turn chat session, run through production's chat pi
 `eval:chat-cache`. A question scoped to both products is asked the way chat takes it today,
 as an unscoped session with no retrieval (`chatSessionScope`, mirroring
 `server/src/routes/ai.ts`). Every arm sets `CHAT_CODE_SEARCH_TOOLS`,
-`CHAT_FUSED_CODE_RETRIEVAL` and `RAG_RERANK` itself, whatever the shell or `.env` says (#2243):
+`CHAT_FUSED_CODE_RETRIEVAL`, `RAG_RERANK` and `CHAT_CODE_SEARCH_PRIMITIVES` itself, whatever
+the shell or `.env` says (#2243, #2327):
 
-| Arm | Code-search tools | Fused code retrieval | Reranker |
-|---|---|---|---|
-| `off` | off | off | off |
-| `on` | on | on | on |
-| `no-tools` | off | on | on |
-| `no-fused` | on | off | on |
-| `no-rerank` | on | on | off |
-| `tools-only` | on | off | off |
-| `default` | unset: the server's default | unset | unset |
+| Arm | Code-search tools | Fused code retrieval | Reranker | Search primitives |
+|---|---|---|---|---|
+| `off` | off | off | off | off |
+| `on` | on | on | on | on |
+| `no-tools` | off | on | on | on |
+| `no-fused` | on | off | on | on |
+| `no-rerank` | on | on | off | on |
+| `tools-only` | on | off | off | off |
+| `tools-primitives` | on | off | off | on |
+| `default` | unset: the server's default | unset | unset | unset |
+
+Each session in the JSON records the tools it called, in order (`toolNames`, #2327).
+
+Since #2327 the `on` and `no-*` arms set `CHAT_CODE_SEARCH_PRIMITIVES=1`, so they offer
+`grep_files`, `list_files` and the symbol filters. They do not reproduce the #2243 numbers below,
+which were measured without them; `tools-only` is the arm that still matches #2243's tools-only run.
 
 An arm with the reranker on runs the embedder inline so the reranker can share the main
 thread (#222). On macOS such an arm can abort with `libc++abi: … mutex lock failed` as it
@@ -997,6 +1009,69 @@ The first "tools only" run and the `on` run each have one unscored judge reply (
   $0.0178 per question in answers, against $0.0331 for the first. The table gives input
   tokens instead. The nine runs, one of them a 1-question smoke run, cost **$2.764553**
   (answers and judge).
+
+### Search primitives, 2026-11-12 (#2327)
+
+`CHAT_CODE_SEARCH_PRIMITIVES` adds `grep_files` (a literal text search over the repository
+clones), `list_files` and `search_code_symbols`'s `fileGlob` / `symbolKind` / `language`
+filters to the code-search tools. The issue lets it default on only if it does not regress
+facts stated, citation precision, edit precision, turns or input tokens. It measured two ways,
+both paired against the same tools without it, Sonnet 5.5 throughout.
+
+**BA question set** (`tools-only` against `tools-primitives`, the nine single-product
+questions as in #2243, two runs of each arm, alternating):
+
+| | tools only | tools + primitives |
+|---|---:|---:|
+| Mean facts stated | 81%, 84% | 85%, 87% |
+| Fully correct | 2/5, 3/6 | 3/5, 3/6 |
+| Citation precision | 60% (25/42), 76% (37/49) | 63% (33/52), 76% (34/45) |
+| Citation recall | 10/15, 10/15 | 12/15, 11/15 |
+| Right behaviour | 8/9, 9/9 | 8/9, 9/9 |
+| Input tokens / question | 26,600, 25,600 | 32,800, 32,400 |
+| Model calls / question | 2.78, 2.67 | 3.22, 3.11 |
+| Tool results cut to the cap | 0, 0 | 2, 1 |
+| Tools called (both runs) | `search_code_graph` 26, `read_file_slice` 17, `search_code_symbols` 11 | `grep_files` 44, `read_file_slice` 28, `list_files` 5 |
+
+S5 went unscored in the first run of both arms (the judge reply could not be parsed).
+
+**Localization held-out corpus** (`localization-01-miniflux-heldout`, 24 items, one run):
+`A3P` is the Analysis agent's pass `A3A` with the primitives added (`grep_files` and the
+symbol filters), its citations scored alone, and is paired against `A3A` with
+`--reference A3A`:
+
+| | A3A | A3P | Δ (95% CI) |
+|---|---:|---:|---:|
+| Recall@5 | 0.68 | 0.70 | +0.015 [−0.14, +0.17] |
+| Recall@10 | 0.70 | 0.75 | +0.043 [−0.12, +0.20] |
+| Edit precision | 0.57 | 0.51 | −0.063 [−0.19, +0.05] |
+| MRR | 0.77 | 0.80 | +0.028 [−0.16, +0.22] |
+| Turns / tool calls per pass | 3.5 / 8.9 | 3.3 / 7.6 | |
+| Cost per item | $0.0838 | $0.1168 | |
+
+```bash
+pnpm eval:ba-qa --arm tools-only --budget 3 --questions S1,S2,S3,S4,S5,S6,A3,U3,U4
+pnpm eval:ba-qa --arm tools-primitives --budget 3 --questions S1,S2,S3,S4,S5,S6,A3,U3,U4
+pnpm eval:materialize localization-01-miniflux-heldout
+pnpm eval:localization --corpus localization-01-miniflux-heldout --arms A0,A3A,A3P --runs 1 --embed --items 0:4
+pnpm eval:localization --merge <dir> --reference A3A --md
+```
+
+- **Off by default.** On the BA set the primitives cost about 25% more input tokens and 0.45
+  more model calls per question; the facts and citation gains are within the run-to-run
+  spread. On localization no metric moved measurably, edit precision fell by a point
+  estimate of 0.06 and each item cost 39% more. Both are regressions the issue names.
+- **Given `grep_files`, chat stopped using the graph and symbol tools.** In 18 sessions it
+  never called `search_code_graph` or `search_code_symbols`, so the symbol filters were not
+  exercised on this set and cannot be measured apart from `grep_files` here.
+- **The cut results were not the new tools.** `grep_files` and `list_files` results on this
+  clone measured 3,300 to 4,400 characters at their own caps, under the 6,000-character tool
+  result cap; `read_file_slice` reads can exceed it.
+- **Spend:** $1.318 on the BA set (one 1-question smoke run and four runs) and $4.814 on
+  localization, answers and judge, $6.13 in all.
+- On this machine the materialize step's worker-thread embedder aborted with
+  `libc++abi: … Napi::Error` while embedding symbols (load average above 30);
+  `EMBED_INPROCESS_RUNTIME=inline pnpm eval:materialize …` completed.
 
 ### Relevance floor (#2241)
 
@@ -1165,6 +1240,87 @@ including a scope-5 run whose results were lost to a bad `--include` path and ru
   differ by 7 points of facts stated, so differences under about 10 points are noise. The
   fall at 9 projects (33% to 17%) and the recovery (35–44%) are larger than that, and the
   retrieval counts, which carry no model noise, show the same thing.
+
+### Secret redaction in repository source (#2333), 2026-11-12
+
+#2333 redacts secrets in repository files before they are indexed, stored in the code graph or
+read by `read_file_slice`. Both evals were run before it (on `main` at `0dac6304`) and after it
+(on the PR branch), each on a freshly materialized corpus, on `claude-sonnet-5-5` for answers and
+judge. One run per arm.
+
+**What redaction changed in the corpora.** In the BA-QA knowledge step, 7 Miniflux source files
+were redacted and none of the python-client's: the `.devcontainer` and three `contrib`
+docker-compose files (`ADMIN_PASSWORD=test123` and a `postgres://…:…@` URL),
+`contrib/thunder_client/collection.json` (a `"password": "test123"`), `client/client_test.go`
+(`Token: "token2"`) and `internal/config/options_parsing_test.go` (three database URLs).
+`questions.json` cites none of them as an expected source. In the localization corpora's
+3,573 committed symbol texts, one is redacted (`miniflux#00023`, the same `client_test.go`
+literal); A0 reads the committed rows and is not affected.
+
+| BA-QA | off, before | off, after | on, before | on, after |
+|---|---:|---:|---:|---:|
+| Correctness: mean facts stated | 27% | 27% | 45% | 45% |
+| Fully correct answers | 0/10 | 0/10 | 1/10 | 2/10 |
+| Citation precision | 31% (5/16) | 33% (5/15) | 89% (47/53) | 90% (37/41) |
+| Citation recall | 16% (5/32) | 16% (5/32) | 25% (8/32) | 28% (9/32) |
+| Abstention on unanswerable | 4/4 | 4/4 | 4/4 | 4/4 |
+| Follow-up on ambiguous | 4/4 | 4/4 | 4/4 | 4/4 |
+| False abstention on answerable | 6/10 | 6/10 | 4/10 | 4/10 |
+| Right behaviour, single-product | 4/6 | 4/6 | 6/6 | 6/6 |
+| Spend (answers + judge) | $0.296865 | $0.298324 | $0.522035 | $0.475595 |
+
+- **No regression.** Every question got the same behaviour (answer, abstain, follow-up) in both
+  arms before and after. With the flags off every question stated the same number of facts. With
+  them on, S3 stated one fact fewer and S5 one more, and S2 cited one more expected file: the
+  run-to-run spread of the baseline runs above. No `[REDACTED:` marker appears in any answer.
+- **Localization A0** (`--arms A0 --runs 1`, $0): Miniflux R@5 0.52, R@10 0.60, edit precision
+  0.17, MRR 0.55; fixture portfolio R@5 0.54, R@10 1.00, edit precision 0.21, MRR 0.54, before
+  and after. The per-corpus and pooled reports are identical apart from run ids and times.
+- **The `--floor-sweep` retrieval ($0)** kept every expected-source excerpt at the default 0.55
+  floor before and after (27/27), and every question's count of expected files in its top 8 was
+  the same. The rest of the top 8 moved: 24 of 39 question-product lists differ in membership or
+  order. That is index-rebuild noise, not redaction. A second baseline, re-materialized and
+  re-ingested from scratch on the same `main` code, differs from the first in 25 of 39 lists and
+  from the branch in 22. No redacted file appears in any list that changed.
+- **Spend:** $1.592819 in all, the four BA-QA runs above. Localization A0 calls no model.
+
+### Index status (#2326), 2026-11-12
+
+`--index-fault failed|partial` records every product's last indexing run as failed (an embedding
+timeout) or partial (200 of 500 eligible files, 300 past the file limit) for one run, and
+restores the record afterwards. The indexed content is left as it is, so the arms differ only in
+what the model is told. `CHAT_INDEX_STATUS` controls that: when the index is unhealthy, a status
+line leads the retrieved-knowledge block, and `get_index_status` is offered. The scorer
+(`server/src/lib/eval/ba-qa/index-fault.ts`, `mentionsIndexProblem`) counts the answers that say
+the index failed, is partial or is incomplete. These were Sonnet 5.5 runs on the `tools-only`
+arm, using the nine single-product questions:
+
+```bash
+CHAT_INDEX_STATUS=0 pnpm eval:ba-qa --arm tools-only --budget 2 --index-fault failed --questions S1,S2,S3,S4,S5,S6,A3,U3,U4
+CHAT_INDEX_STATUS=1 pnpm eval:ba-qa --arm tools-only --budget 2 --index-fault failed --questions S1,S2,S3,S4,S5,S6,A3,U3,U4
+```
+
+| | failed, before | failed, after | partial, before | partial, after |
+|---|---:|---:|---:|---:|
+| Answers that state the index problem | 0/9 | **7/9** | 0/9 | **8/9** |
+| Abstentions that assert absence without it | 2/2 | 2/2 | 2/2 | **0/2** |
+| Correctness: mean facts stated | 86% | 80% | 84% | 76% |
+| Citation precision | 84% (38/45) | 81% (29/36) | 88% (36/41) | 82% (31/38) |
+| Abstention on unanswerable / false abstention | 2/2, 0/6 | 2/2, 0/6 | 2/2, 0/6 | 2/2, 0/6 |
+| Input tokens / question | 31,300 | 25,500 | 26,900 | 26,100 |
+
+- **Without the status, no answer mentioned the index.** That held in both faults, because the
+  model had no way to know about it. With the status on, 7 and 8 of 9 answers said the index was
+  failed or partial. In the partial run, both abstentions on unanswerable questions (U3 uptime
+  promise, U4 download counts) named the partial index instead of only asserting absence. In the
+  failed run they did not. The answer to both of those questions really is outside the code, so
+  asserting absence there is not wrong.
+- **Facts stated and precision fell by 3 to 8 points with the status on.** That is within the
+  run-to-run spread on this set: two runs of the same arm differed by 7 points in #2324's
+  measurement. The status line is only added when the index is unhealthy, so a healthy project's
+  prompt is unchanged. `CHAT_INDEX_STATUS` is **on by default**.
+- The status line costs about 80 tokens per turn when it is shown. The four runs spent $1.445313,
+  answers and judge.
 
 ### Multi-turn questions (#2269)
 

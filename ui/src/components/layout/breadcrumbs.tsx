@@ -6,6 +6,7 @@ import { usePathname } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import { projectSwitcherQuery } from "@/lib/active-project";
 import { useActiveWorkspaceId } from "@/lib/active-workspace";
+import { useAuth } from "@/lib/auth-context";
 import { pageCrumbs } from "@/lib/breadcrumb-trail";
 import { cn } from "@/lib/utils";
 import {
@@ -41,7 +42,9 @@ export function Breadcrumbs() {
   const hasProjects = (projects.data?.items.length ?? 0) > 0;
   const onProjectPath = /^\/projects\/[^/]+/.test(pathname);
   const showProject = hasProjects || onProjectPath;
-  const crumbs = pageCrumbs(pathname);
+  // #2370 — no crumb links a non-admin to a page they would be refused.
+  const isAdmin = useAuth().user?.role === "admin";
+  const crumbs = pageCrumbs(pathname, isAdmin);
 
   return (
     <Breadcrumb

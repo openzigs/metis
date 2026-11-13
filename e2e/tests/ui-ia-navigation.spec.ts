@@ -242,9 +242,14 @@ async function openCommandPalette(page: Page): Promise<void> {
   }).toPass({ timeout: 30_000 });
 }
 
-/** The in-review reviews assigned to the analyst, as the server counts them. */
+/**
+ * The in-review reviews waiting on the analyst's decision, as the server
+ * counts them: the query the sidebar's count makes (#2370).
+ */
 async function assignedCount(api: APIRequestContext): Promise<number> {
-  const res = await api.get("/api/reviews?assignee=me&status=in_review&pageSize=1");
+  const res = await api.get(
+    "/api/reviews?assignee=me&status=in_review&decision=pending&pageSize=1",
+  );
   expect(res.ok(), `count reviews: ${await res.text()}`).toBeTruthy();
   return ((await res.json()) as { data: { total: number } }).data.total;
 }
@@ -299,6 +304,20 @@ test.describe("#2332 — a non-admin analyst's navigation", () => {
     }
     await page.getByRole("link", { name: "Back to dashboard" }).click();
     await expect(page).toHaveURL(/\/dashboard$/);
+  });
+
+  // #2370 — a run's own page stays open to the analyst (a project's PR
+  // reviews link there), but nothing on it leads to the Runs list they are
+  // refused: not the "All runs" link, not the breadcrumb's Runs crumb.
+  test("a run's page names Runs without linking to it", async ({ page }) => {
+    const shell = new AppShellPage(page);
+    await page.goto("/runs/e2e-2370-run", { waitUntil: "load" });
+    await shell.expectLoaded();
+    await expect(page.getByTestId("run-detail-page")).toBeVisible();
+    await expect(shell.noAccess).toHaveCount(0);
+    await expect(shell.breadcrumb).toContainText("Runs");
+    await expect(page.locator('a[href="/runs"]')).toHaveCount(0);
+    await expect(page.getByRole("link", { name: /All runs/ })).toHaveCount(0);
   });
 
   test("the command palette offers none of the hidden pages", async ({ page }) => {

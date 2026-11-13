@@ -2,12 +2,15 @@
  * Epic #473 / Issue #475 — read_file_slice tool.
  *
  * Reads a range of lines from a file in the cloned repository. Enforces
- * path containment (SSRF prevention) and a 200-line-per-call limit.
+ * path containment (SSRF prevention) and a 200-line-per-call limit. Secrets
+ * in the file are replaced in place before any line is returned (#2333);
+ * chat's `read_file_slice` wraps this tool, so it inherits that.
  */
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
 import type { AgentTool, ToolContext, ToolResult, JSONSchema } from "./types.js";
 import { missingParamError } from "./arg-errors.js";
+import { redactSecrets } from "../../safety/secret-patterns.js";
 
 const MAX_LINES = 200;
 
@@ -130,7 +133,10 @@ async function execute(args: unknown, context: ToolContext): Promise<ToolResult>
     return { content: `Error reading file: ${(err as Error).message}`, isError: true };
   }
 
-  const lines = content.split("\n");
+  // #2333 — secrets out of the whole file BEFORE it is sliced, so a key block
+  // that starts above the requested range is still recognised. In place: every
+  // line keeps its number, so the header and the numbering below are unchanged.
+  const lines = redactSecrets(content).text.split("\n");
   const startLine = validated.startLine ?? 1;
   let endLine = validated.endLine ?? startLine + MAX_LINES - 1;
 

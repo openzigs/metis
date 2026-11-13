@@ -19,6 +19,7 @@ import { RECORDED_COST_HEADER, formatRunCost } from "@/lib/run-cost";
 import { SandboxStatusBadge } from "@/components/sandbox/SandboxStatusBadge";
 import { SandboxSessionTable } from "@/components/sandbox/SandboxSessionTable";
 import { PageHeader } from "@/components/ui/page-header";
+import { useAuth } from "@/lib/auth-context";
 
 function StepCard({ step }: { step: AgentRunStep }) {
   const [open, setOpen] = useState(step.kind === "tool_call" || step.kind === "agent_phase");
@@ -99,6 +100,7 @@ function isPrReviewStep(step: AgentRunStep): boolean {
 export default function RunDetailPage() {
   const params = useParams<{ id: string }>();
   const id = params.id;
+  const isAdmin = useAuth().user?.role === "admin";
 
   const detail = useQuery({
     queryKey: ["runs", "detail", id],
@@ -125,9 +127,13 @@ export default function RunDetailPage() {
     <div className="space-y-6 p-6" data-testid="run-detail-page">
       <PageHeader
         eyebrow={
-          <Link href="/runs" className="text-sm text-info hover:underline">
-            ← All runs
-          </Link>
+          // #2370 — a non-admin reaches this page from a project's PR reviews
+          // but is refused the Runs list (#2332), so it is not offered.
+          isAdmin ? (
+            <Link href="/runs" className="text-sm text-info hover:underline">
+              ← All runs
+            </Link>
+          ) : undefined
         }
         title={`Run ${id}`}
         titleExtra={

@@ -18,6 +18,8 @@ export interface ReportSession {
   turnsExhausted?: boolean;
   /** #2243 — tool results cut to `CHAT_TOOL_RESULT_MAX_TOKENS` in the model's copy. */
   truncatedToolResults?: number;
+  /** #2327 — the tools called, in call order. Absent in a run recorded before #2327. */
+  toolNames?: string[];
   /**
    * #2336 — a session scoped to several products (a routing arm): which of
    * them it retrieved from. Such a session binds no single project but is not

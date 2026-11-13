@@ -213,3 +213,54 @@ describe("parseChatGrounding — multi-product (#2238)", () => {
     expect(parseChatGrounding(value)).toBeNull();
   });
 });
+
+describe("parseChatGrounding — index status and failure class (#2326)", () => {
+  const base = { status: "no-context", projectId: "p1", projectName: "P" } as const;
+  const repo = {
+    label: "acme-app",
+    commitSha: "c4d54f87",
+    indexedAt: "2026-11-12T05:09:00.000Z",
+    lastRun: "failed",
+    error: "authentication failed",
+  };
+
+  it("keeps a well-formed index on either project status, and a failure class on a failed search", () => {
+    const index = { state: "failed", repos: [repo] };
+    const failed = { ...base, reason: "retrieval-failed", failure: "timed out", index };
+    expect(parseChatGrounding(failed)).toEqual(failed);
+    const grounded = { status: "grounded", projectId: "p1", projectName: "P", sources: 1, index };
+    expect(parseChatGrounding(grounded)).toEqual(grounded);
+  });
+
+  it("drops a failure outside the fixed vocabulary, or on a reply whose search did not fail", () => {
+    const leaked = { ...base, reason: "retrieval-failed", failure: "ghp_SECRET at /var/lib" };
+    expect(parseChatGrounding(leaked)).toEqual({ ...base, reason: "retrieval-failed" });
+    const wrong = { ...base, reason: "nothing-found", failure: "timed out" };
+    expect(parseChatGrounding(wrong)).toEqual({ ...base, reason: "nothing-found" });
+  });
+
+  it("drops a malformed index, and a malformed repository's bad parts", () => {
+    expect(parseChatGrounding({ ...base, index: { state: "odd", repos: [] } })).toEqual(base);
+    expect(parseChatGrounding({ ...base, index: { state: "partial" } })).toEqual(base);
+    expect(parseChatGrounding({ ...base, index: "x" })).toEqual(base);
+    const parsed = parseChatGrounding({
+      ...base,
+      index: {
+        state: "partial",
+        repos: [
+          { ...repo, commitSha: "not a sha", indexedAt: "yesterday", error: "raw text" },
+          { label: "", lastRun: "completed" },
+          { label: "x", lastRun: "exploded" },
+          7,
+          ...Array.from({ length: 12 }, (_, i) => ({ label: `r${i}`, lastRun: "completed" })),
+        ],
+      },
+    });
+    expect(parsed).toMatchObject({ index: { state: "partial" } });
+    const repos = (parsed as { index: { repos: unknown[] } }).index.repos;
+    expect(repos[0]).toEqual({ label: "acme-app", lastRun: "failed" });
+    // Only the first ten entries are read; the empty label, the unknown run
+    // and the non-object among them are dropped.
+    expect(repos).toHaveLength(7);
+  });
+});

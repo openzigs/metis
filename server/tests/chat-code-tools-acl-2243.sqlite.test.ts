@@ -16,6 +16,9 @@
  *   - unrestricted files, and the whole repository once the restriction is
  *     lifted, read exactly as the tools read them with no filter at all;
  *   - the tool-result cache never hands Alice's read to Bob.
+ *
+ * #2327 — `grep_files`, `list_files` and the filtered `search_code_symbols`
+ * (chat's search primitives) are held to the same rule.
  */
 import { existsSync, mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
@@ -53,6 +56,8 @@ const { searchCodeGraphTool } = await import("../src/lib/analysis/tools/search-c
 const { createSearchSymbolsTool } = await import("../src/lib/analysis/tools/search-symbols.js");
 const { createChatReadFileSliceTool } =
   await import("../src/lib/analysis/tools/chat-read-file-slice.js");
+const { createChatGrepFilesTool, createChatListFilesTool } =
+  await import("../src/lib/analysis/tools/chat-file-tools.js");
 const { __resetToolResultCacheForTests } =
   await import("../src/lib/ai/tool-runtime/tool-result-cache.js");
 
@@ -80,8 +85,22 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       kind: string;
       score: number;
     }> = [];
-    let raw: { graph: AgentTool; symbols: AgentTool; slice: AgentTool };
-    let tools: { graph: RuntimeTool; symbols: RuntimeTool; slice: RuntimeTool };
+    let raw: {
+      graph: AgentTool;
+      symbols: AgentTool;
+      slice: AgentTool;
+      filtered: AgentTool;
+      grep: AgentTool;
+      list: AgentTool;
+    };
+    let tools: {
+      graph: RuntimeTool;
+      symbols: RuntimeTool;
+      slice: RuntimeTool;
+      filtered: RuntimeTool;
+      grep: RuntimeTool;
+      list: RuntimeTool;
+    };
 
     const ctx = (userId: string, shared = false): RuntimeToolContext => ({
       sessionId: "s-1",
@@ -217,51 +236,59 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       if (caseSensitive)
         writeFileSync(path.join(clone, "src", "Secret.ts"), "export const OPEN = 1;\n");
 
+      const symbolDeps = {
+        searcher: {
+          search: async () => [
+            {
+              symbolId: "s-secret",
+              filePath: "src/secret.ts",
+              name: "computeSecretFee",
+              kind: "function",
+              score: 0.9,
+              snippet: SECRET_LINE,
+            },
+            {
+              symbolId: "s-public",
+              filePath: "src/public.ts",
+              name: "computeFee",
+              kind: "function",
+              score: 0.8,
+            },
+            ...ghostHits,
+          ],
+        },
+        lineLookup: {
+          resolve: async (ids: string[]) =>
+            new Map(
+              ids.map((id) => [
+                id,
+                {
+                  filePath: id === "s-secret" ? "src/secret.ts" : "src/public.ts",
+                  startLine: 1,
+                  endLine: 3,
+                },
+              ]),
+            ),
+        },
+      };
+      // Repo ids come from the real `repo_connections` rows; only the clone
+      // location is given.
+      const clones = { resolveCloneDir: async () => clone };
       raw = {
         graph: searchCodeGraphTool,
-        symbols: createSearchSymbolsTool({
-          searcher: {
-            search: async () => [
-              {
-                symbolId: "s-secret",
-                filePath: "src/secret.ts",
-                name: "computeSecretFee",
-                kind: "function",
-                score: 0.9,
-                snippet: SECRET_LINE,
-              },
-              {
-                symbolId: "s-public",
-                filePath: "src/public.ts",
-                name: "computeFee",
-                kind: "function",
-                score: 0.8,
-              },
-              ...ghostHits,
-            ],
-          },
-          lineLookup: {
-            resolve: async (ids: string[]) =>
-              new Map(
-                ids.map((id) => [
-                  id,
-                  {
-                    filePath: id === "s-secret" ? "src/secret.ts" : "src/public.ts",
-                    startLine: 1,
-                    endLine: 3,
-                  },
-                ]),
-              ),
-          },
-        }),
-        // Repo ids come from the real `repo_connections` rows; only the clone
-        // location is given.
-        slice: createChatReadFileSliceTool({ resolveCloneDir: async () => clone }),
+        symbols: createSearchSymbolsTool(symbolDeps),
+        slice: createChatReadFileSliceTool(clones),
+        filtered: createSearchSymbolsTool(symbolDeps, { filters: true }),
+        grep: createChatGrepFilesTool(clones),
+        list: createChatListFilesTool(clones),
       };
       tools = {
         graph: codeRuntimeTool(raw.graph, raw.graph.name),
         symbols: codeRuntimeTool(raw.symbols, raw.symbols.name),
         slice: codeRuntimeTool(raw.slice, raw.slice.name),
+        filtered: codeRuntimeTool(raw.filtered, raw.filtered.name),
+        grep: codeRuntimeTool(raw.grep, raw.grep.name),
+        list: codeRuntimeTool(raw.list, raw.list.name),
       };
     }, MIGRATED_SQLITE_HOOK_TIMEOUT_MS);
 
@@ -315,6 +342,40 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(r.text).not.toContain("computeSecretFee");
         expect(r.text).not.toContain(SECRET_LINE);
         expect(r.resultCount).toBe(1);
+      });
+
+      it("#2327 — finds nothing of it with grep_files, list_files or a filtered symbol search", async () => {
+        // grep: neither the file nor the in-repo symlink to it (src/alias.ts).
+        const grep = await run(tools.grep, { text: "RATE" }, ctx(BOB));
+        expect(grep).toEqual({ text: "No lines contain: RATE", resultCount: 0 });
+        const fee = await run(tools.grep, { text: "export function" }, ctx(BOB));
+        expect(fee.text).toContain("src/public.ts:1:");
+        expect(fee.text).not.toMatch(/secret\.ts|alias\.ts/);
+
+        const list = await run(tools.list, { pattern: "src/*.ts" }, ctx(BOB));
+        expect(list.text).toContain("src/public.ts");
+        expect(list.text).not.toContain("src/secret.ts");
+
+        const filtered = await run(
+          tools.filtered,
+          { query: "fee", fileGlob: "src/**", symbolKind: "function", language: "ts" },
+          ctx(BOB),
+        );
+        expect(filtered.text).toContain("computeFee");
+        expect(filtered.text).not.toContain("computeSecretFee");
+        expect(filtered.text).not.toContain(SECRET_LINE);
+
+        // The owner still finds all three, the shared audience none.
+        expect((await run(tools.grep, { text: "RATE" }, ctx(ALICE))).text).toContain(
+          "src/secret.ts:1:",
+        );
+        expect((await run(tools.list, { pattern: "src/*.ts" }, ctx(ALICE))).text).toContain(
+          "src/secret.ts",
+        );
+        expect((await run(tools.grep, { text: "RATE" }, ctx(ALICE, true))).resultCount).toBe(0);
+        expect(
+          (await run(tools.list, { pattern: "src/*.ts" }, ctx(ALICE, true))).text,
+        ).not.toContain("src/secret.ts");
       });
 
       it("gets no code-graph hit from it, by name, file, caller, callee or probable call site", async () => {

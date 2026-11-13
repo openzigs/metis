@@ -12,7 +12,9 @@ import {
   parseChatGrounding,
   type ChatGrounding,
   type GroundingCoverage,
+  type GroundingIndex,
   type GroundingSource,
+  type IndexErrorClass,
 } from "@metis/shared";
 import { prisma } from "../prisma.js";
 import type { ToolSource } from "./tool-runtime/types.js";
@@ -42,6 +44,10 @@ export interface RetrievalOutcome {
   belowFloor?: number;
   failed?: boolean;
   coverage?: GroundingCoverage;
+  /** #2326 — the class of a failed search. */
+  failure?: IndexErrorClass;
+  /** #2326 — the project's index when the turn retrieved. */
+  index?: GroundingIndex;
 }
 
 /**
@@ -90,6 +96,7 @@ export async function describeGrounding(
   }
   const name = projectName ?? "this project";
   const coverage = r.coverage ? { coverage: r.coverage } : {};
+  const index = r.index ? { index: r.index } : {};
   if (r.sources > 0) {
     const sourcesUsed = groundingSources(r.excerpts ?? []);
     return {
@@ -99,6 +106,7 @@ export async function describeGrounding(
       sources: r.sources,
       ...(sourcesUsed.length > 0 ? { sourcesUsed } : {}),
       ...coverage,
+      ...index,
     };
   }
   if (typeof retrieval === "number") return { status: "no-context", projectId, projectName: name };
@@ -114,6 +122,8 @@ export async function describeGrounding(
         : "nothing-found",
     ...(!r.failed && belowFloor > 0 ? { belowFloor } : {}),
     ...coverage,
+    ...(r.failed && r.failure ? { failure: r.failure } : {}),
+    ...index,
   };
 }
 
@@ -203,6 +213,8 @@ export function withToolReads(grounding: ChatGrounding, toolReads: number): Chat
       ? { sourcesUsed: grounding.sourcesUsed }
       : {}),
     ...(grounding.coverage ? { coverage: grounding.coverage } : {}),
+    // #2326 — the index facts stand whatever the tools read.
+    ...(grounding.index ? { index: grounding.index } : {}),
   };
 }
 

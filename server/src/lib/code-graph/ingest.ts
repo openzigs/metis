@@ -126,6 +126,7 @@ import {
   type OwnFileContext,
 } from "./symbol-context.js";
 import { reconcileProjectSchemaIdentities } from "../cross-project/schema-object-identity-service.js";
+import { redactSecrets } from "../safety/secret-patterns.js";
 
 const log = createChildLogger("code-graph-ingest");
 
@@ -539,8 +540,12 @@ const EXTRACTOR_UPGRADES: ReadonlyArray<{ version: number; languages: readonly s
  * merely ends in a block comment (`#endif /* X *\/`) is no longer read as the
  * doc comment of the declaration below it. A graph stamped 1 can only have
  * come from running that branch; it is brought up to date like any older one.
+ * 3 = #2333: the context columns and the embedding text are built from the
+ * file with its secrets redacted (`safety/secret-patterns.ts`), so a graph
+ * stamped 2 has any secret in a stored signature, doc comment or body snippet
+ * replaced on its next incremental ingest, on the existing rows.
  */
-export const SYMBOL_CONTEXT_VERSION = 2;
+export const SYMBOL_CONTEXT_VERSION = 3;
 
 /** The languages a graph recorded at `storedVersion` must have upgraded in place. */
 export function extractorUpgradeLanguages(storedVersion: number | null): Set<string> {
@@ -1970,7 +1975,7 @@ async function persistParsed(
     // made the persist phase ~420k of them for this repository.
     // #1072 — what the file says about each symbol (declaration, doc comment,
     // receiver, package), read while the source is in memory and stored on the row.
-    const sourceLines = (sourceByRelPath.get(file.filePath) ?? "").split("\n");
+    const sourceLines = redactedSourceLines(sourceByRelPath.get(file.filePath) ?? "");
     const contexts = ownContextsOf(file.filePath, file.language, sourceLines, file.symbols);
     const results = await prisma.$transaction([
       prisma.codeEdge.deleteMany({ where: { codeGraphId, filePath: file.filePath } }),
@@ -2784,6 +2789,17 @@ function buildGoResolver(
   }
 }
 
+/**
+ * #2333 — a file's lines with every secret replaced in place, for the two
+ * writers of what ingest stores from a file's text (the context columns and
+ * the embedding text a hit's snippet is cut from). Line-stable, so every
+ * symbol's stored span still indexes the same lines. The parsers and the
+ * content hash read the file as it is; only what is STORED is redacted.
+ */
+function redactedSourceLines(source: string): string[] {
+  return redactSecrets(source).text.split("\n");
+}
+
 /** #1072 — the own-file context of each symbol of one file, in the order given. */
 function ownContextsOf(
   filePath: string,
@@ -2881,7 +2897,7 @@ export async function backfillSymbolContext(
         embedding: { select: { contentHash: true } },
       },
     });
-    const sourceLines = source.split("\n");
+    const sourceLines = redactedSourceLines(source);
     const contexts = ownContextsOf(relPath, language, sourceLines, rows);
     const writes: Prisma.PrismaPromise<unknown>[] = [];
     for (const [i, row] of rows.entries()) {
