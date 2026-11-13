@@ -5183,19 +5183,32 @@ search; an ambiguity or a silence is the author's intent and is asked directly. 
 `citation` is copied from its requirement's source (the paragraph holding a flagged term),
 never from the model. A reply without the new fields is asked and grounded as before #2235.
 
-**Only with the reader on (#2275).** The classifying prompt, the set-asides, the per-round cap and
-the missing-knowledge-only search were measured only with `ANALYSIS_DOCUMENT_READER` on. So the
-dialog applies them only then: `ClarificationDialogDeps.sourceQuestions`, which defaults to the
-flag. With the flag off, the dialog uses the pre-#2235 prompt (`LEGACY_QUESTION_SYSTEM_PROMPT`),
-and every question raised is asked unclassified and uncapped, in the order raised, and searched
-for (`askEveryQuestion`). The `#1873 — flag off` snapshot is again the pre-#2235 one. A question
+**Only on a reader-read analysis (#2275, #2296).** The classifying prompt, the set-asides, the
+per-round cap and the missing-knowledge-only search were measured only with
+`ANALYSIS_DOCUMENT_READER` on. So the dialog applies them only to an analysis the reader read:
+`ClarificationDialogDeps.sourceQuestions`, which defaults to `readFromSources` (any of the
+analysis's requirements carries `sources`), decided over every requirement, not the open ones.
+The flag is not read live, so toggling it never switches an analysis's mode between rounds: a
+reader-read analysis keeps the classified mode with the flag off, and one whose requirements
+carry no `sources` is asked the pre-#2235 way with the flag on. The clarify route decides the
+mode from the list the analysis stored (`modeFrom`), so a client's `requirements` override cannot choose it;
+only an analysis with nothing stored falls back to the override's. Otherwise the dialog uses the
+pre-#2235 prompt (`LEGACY_QUESTION_SYSTEM_PROMPT`, re-prompting for the pre-#2235 shape), and
+every question raised is asked unclassified and uncapped, in the order raised, and searched for
+(`askEveryQuestion`, which drops `options`). The `#1873 — flag off` snapshot is again the pre-#2235 one. A question
 carries `searched: true` only when the grounding search ran for it and did not fail. The panel
 says "searched your documents and code" only then.
 
 The GtWR rules scan every reader statement (`attachUncitedQualityFlags`). The hits of a
 statement no requirement cites go to the one requirement whose title and description hold at
-least half of the statement's words, and the statement becomes one of its sources. A tie or no
-match attaches nothing, and is logged. The section line and the reader's statement now sit
+least half of the statement's content words (stop words and the "system"/"shall" boilerplate
+excluded, #2296), and the statement becomes one of its sources. A tie or no match attaches
+nothing, and is logged. A requirement keeps at most `MAX_SOURCES_PER_REQUIREMENT` (5)
+paragraphs the GtWR rules flag nothing in, counted apart from the flagged ones so citation order
+does not matter; a flagged paragraph is kept past that, because the flag's question cites it.
+`MAX_TOTAL_SOURCES_PER_REQUIREMENT` (10) bounds the whole list, flagged paragraphs first, since
+every source is quoted into the question prompt each round. A requirement at that ceiling takes
+no uncited flagged statement; it is logged and left out. The section line and the reader's statement now sit
 inside the `<<<SOURCE … SOURCE>>>` fence with the quote, in both the extraction input and the
 question prompt. The approval cards and the panel's "addressed" count include
 `setAsideAmbiguities`, as the server's `addressedAmbiguities` does.
