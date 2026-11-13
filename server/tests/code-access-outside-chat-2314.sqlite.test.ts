@@ -442,6 +442,37 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         const symbols = chunks.map((c) => c.symbolId).filter(Boolean);
         expect(symbols).toEqual(["s-public"]);
       });
+
+      // The two seed paths now load the filter before their search: a filter
+      // that cannot be read must still not fail the pass. The seed is simply
+      // left out, as it was when the load ran only on a hit (#2314).
+      it("a filter that cannot be read leaves the seed out without failing the pass", async () => {
+        const failing = vi.spyOn(db.document, "findMany").mockRejectedValue(new Error("db down"));
+        try {
+          const seen: string[] = [];
+          await orchestrator(seen).runRequirementGroundedCodeAgent!({
+            analysisId: "an-2437-rg-down",
+            projectId: PROJECT,
+            projectName: "Code",
+            projectDescription: "fees",
+            requirements: [{ id: "REQ-1", text: "Compute the fee." }],
+            documentIds: ["d-none"],
+            signal: new AbortController().signal,
+          });
+          expect(seen.join("\n")).not.toContain("computeFee");
+          const chunks = (await orchestrator([]).retrieveContext!({
+            analysisId: "an-2437-ss-down",
+            projectId: PROJECT,
+            agentKey: "code",
+            documentIds: ["d-none"],
+            projectName: "Code",
+            projectDescription: "fees",
+          })) as Array<{ symbolId?: string }>;
+          expect(chunks.map((c) => c.symbolId).filter(Boolean)).toEqual([]);
+        } finally {
+          failing.mockRestore();
+        }
+      });
     });
 
     // #2437 — each run counts what access restrictions left out, on its

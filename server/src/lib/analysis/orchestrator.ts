@@ -4874,7 +4874,7 @@ export class AnalysisOrchestrator {
 
         // #2437 — the run read code, so every restricted file is counted as
         // left out, whether or not the fused search below returns a hit.
-        const codeAccess = await this.loadCountedCodeAccess(input.analysisId, input.projectId);
+        const codeAccess = await this.seedCodeAccess(input.analysisId, input.projectId);
 
         // #729 (Epic #725) — fold fused code-graph symbol context into the
         // grounded evidence. This mode runs when NO code graph exists, so fused
@@ -4890,9 +4890,8 @@ export class AnalysisOrchestrator {
           deps: this.deps.fusedCode,
           // #2314 — only symbols every project member may see (#2243): the
           // findings are persisted for all of them. #2437 — counted.
-          hiddenSymbols: hiddenSymbolsFor(
-            async () => codeAccess,
-            (left) => this.noteRestrictedLeftOut(input.analysisId, left),
+          hiddenSymbols: hiddenSymbolsFor(codeAccess, (left) =>
+            this.noteRestrictedLeftOut(input.analysisId, left),
           ),
         });
         // #2276 — requirements past the embedder's limit reach keyword search only.
@@ -5928,7 +5927,7 @@ export class AnalysisOrchestrator {
       //
       // #2437 — the pass read code, so every restricted file is counted as
       // left out, whether or not the fused search returns a hit.
-      const codeAccess = await this.loadCountedCodeAccess(input.analysisId, input.projectId);
+      const codeAccess = await this.seedCodeAccess(input.analysisId, input.projectId);
       const fusedChunks = await retrieveFusedCodeChunks({
         projectId: input.projectId,
         query: deriveRetrievalQuery({
@@ -5941,9 +5940,8 @@ export class AnalysisOrchestrator {
         deps: this.deps.fusedCode,
         // #2314 — only symbols every project member may see (#2243): the
         // findings are persisted for all of them. #2437 — counted.
-        hiddenSymbols: hiddenSymbolsFor(
-          async () => codeAccess,
-          (left) => this.noteRestrictedLeftOut(input.analysisId, left),
+        hiddenSymbols: hiddenSymbolsFor(codeAccess, (left) =>
+          this.noteRestrictedLeftOut(input.analysisId, left),
         ),
       });
       return fusedChunks.length > 0 ? [...combined, ...fusedChunks] : combined;
@@ -6170,6 +6168,26 @@ export class AnalysisOrchestrator {
     const codeAccess = await loadSharedCodeAccess(projectId);
     this.noteRestrictedLeftOut(analysisId, { files: codeAccess.hiddenFileCount });
     return codeAccess;
+  }
+
+  /**
+   * #2437 — {@link loadCountedCodeAccess} for a fused seed's `hiddenSymbols`
+   * load: the filter is loaded (and its files counted) before the search, so a
+   * search that matches nothing still counts them. A filter that cannot be read
+   * does not fail the pass: the load rejects only when the seed asks for it,
+   * and fused retrieval then builds no block (#2314), as it did when the load
+   * ran only on a hit.
+   */
+  private async seedCodeAccess(
+    analysisId: string | undefined,
+    projectId: string,
+  ): Promise<() => Promise<CodeAccessFilter>> {
+    try {
+      const codeAccess = await this.loadCountedCodeAccess(analysisId, projectId);
+      return async () => codeAccess;
+    } catch (err) {
+      return () => Promise.reject(err);
+    }
   }
 
   /**
