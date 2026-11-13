@@ -288,6 +288,11 @@ export interface RequirementSummary {
    * ones, which the requirement kept. Null or absent: none pending.
    */
   criteriaProposal?: RequirementCriteriaProposal | null;
+  /**
+   * #2462 — the viewer wrote or edited it and the project does not allow
+   * self-approval, so their Approve would be refused. Absent otherwise.
+   */
+  selfApprovalForbidden?: true;
 }
 
 export interface AnalysisListItem {

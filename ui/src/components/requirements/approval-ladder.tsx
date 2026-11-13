@@ -30,6 +30,15 @@ import Link from "next/link";
 export const SELF_APPROVAL_RULE =
   "You cannot approve a requirement you wrote or edited, unless the project allows self-approval (Project settings → Approval gate).";
 
+/**
+ * #2452 — why Approve is disabled on a requirement the viewer wrote or edited,
+ * in a project that does not allow self-approval: said before the click, as
+ * the permission is, rather than as a refusal toast after it. #2462 — shared by
+ * the Requirements list and the change request page's requirement cards.
+ */
+export const SELF_APPROVAL_HINT =
+  "You wrote or edited this requirement, so someone else must approve it. You can still request a review. A coordinator or admin can allow self-approval in Project settings → Approval gate.";
+
 /** #2452 — where the self-approval setting is, as a link: its card on Project settings. */
 export function approvalGateSettingsHref(projectId: string): string {
   return `/projects/${encodeURIComponent(projectId)}/settings#approval-gate`;

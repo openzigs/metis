@@ -13,13 +13,14 @@ afterEach(cleanup);
 
 function renderButtons(
   status: string | null,
-  opts: { writeHint?: string; pending?: boolean } = {},
+  opts: { writeHint?: string; approveHint?: string; pending?: boolean } = {},
 ) {
   const onReview = vi.fn();
   render(
     <RequirementReviewButtons
       status={status}
       writeHint={opts.writeHint}
+      approveHint={opts.approveHint}
       pending={opts.pending ?? false}
       onReview={onReview}
     />,
@@ -66,6 +67,47 @@ describe("RequirementReviewButtons (#1749)", () => {
     expect(screen.getByRole("button", { name: "Rejected" }).parentElement).toHaveAttribute(
       "title",
       "Requires project.update",
+    );
+  });
+});
+
+describe("RequirementReviewButtons — an approve-only reason (#2462)", () => {
+  const SELF = "You wrote or edited this requirement, so someone else must approve it.";
+
+  it("disables Approve alone, with the reason, and leaves Reject offered", () => {
+    const onReview = renderButtons("draft", { approveHint: SELF });
+    const approve = screen.getByRole("button", { name: "Approve" });
+    expect(approve).toBeDisabled();
+    expect(approve.parentElement).toHaveAttribute("title", SELF);
+    fireEvent.click(approve);
+    const reject = screen.getByRole("button", { name: "Reject" });
+    expect(reject).toBeEnabled();
+    expect(reject.parentElement).not.toHaveAttribute("title");
+    fireEvent.click(reject);
+    expect(onReview.mock.calls).toEqual([["rejected"]]);
+  });
+
+  it("on a rejected requirement, still disables Approve with the reason", () => {
+    renderButtons("rejected", { approveHint: SELF });
+    const approve = screen.getByRole("button", { name: "Approve" });
+    expect(approve).toBeDisabled();
+    expect(approve.parentElement).toHaveAttribute("title", SELF);
+  });
+
+  it("gives way to the write hint, which disables both", () => {
+    renderButtons("draft", { writeHint: "Requires requirement.approve", approveHint: SELF });
+    for (const name of ["Approve", "Reject"]) {
+      const button = screen.getByRole("button", { name });
+      expect(button).toBeDisabled();
+      expect(button.parentElement).toHaveAttribute("title", "Requires requirement.approve");
+    }
+  });
+
+  it("says nothing of it once the requirement is approved", () => {
+    renderButtons("approved", { approveHint: SELF });
+    expect(screen.getByRole("button", { name: "Approved" }).parentElement).toHaveAttribute(
+      "title",
+      "Already approved.",
     );
   });
 });

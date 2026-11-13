@@ -202,6 +202,26 @@ export async function selfApprovalForbiddenIds(
   return blocked;
 }
 
+/**
+ * #2462 — the same flag on another read of one project's requirements: the
+ * change request page's cards (`GET /api/analyses/:id`). Only a row the viewer
+ * could otherwise approve is read, as on the list: not yet approved, and the
+ * viewer holds requirement.approve. Every other row comes back unchanged.
+ */
+export async function flagSelfApprovalForbidden<T extends { id: string; reviewStatus: string }>(
+  projectId: string,
+  rows: T[],
+  viewer: RequirementListViewer | undefined,
+): Promise<Array<T & { selfApprovalForbidden?: true }>> {
+  if (!viewer?.canApprove) return rows;
+  const forbidden = await selfApprovalForbiddenIds(
+    projectId,
+    rows.filter((r) => r.reviewStatus !== "approved").map((r) => r.id),
+    viewer.userId,
+  );
+  return rows.map((r) => (forbidden.has(r.id) ? { ...r, selfApprovalForbidden: true } : r));
+}
+
 export async function listProjectRequirements(
   projectId: string,
   query: ProjectRequirementsQuery,

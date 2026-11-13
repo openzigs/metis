@@ -132,7 +132,7 @@ import { TraceabilityView } from "@/components/traceability/traceability-view";
 import { UntestedRequirementsPanel } from "@/components/traceability/untested-requirements-panel";
 import { RequirementHistoryTab } from "@/components/requirements/RequirementHistoryTab";
 import { RequirementApprovalWarning } from "@/components/requirements/RequirementApprovalWarning";
-import { ApprovalLadderNote } from "@/components/requirements/approval-ladder";
+import { ApprovalLadderNote, SELF_APPROVAL_HINT } from "@/components/requirements/approval-ladder";
 import { SourceDivergenceNotice } from "@/components/requirements/SourceDivergenceNotice";
 import { CriteriaProposalNotice } from "@/components/requirements/CriteriaProposalNotice";
 import { CriteriaProposalsSummary } from "@/components/requirements/CriteriaProposalsSummary";
@@ -1552,6 +1552,11 @@ export default function AnalysisPage(): React.ReactElement {
                                   { readAt: detail.dataUpdatedAt, sentAt: review.submittedAt },
                                 )}
                                 writeHint={requirementApproveHint}
+                                // #2462 — the author, in a project without
+                                // self-approval, is told before the click.
+                                approveHint={
+                                  req.selfApprovalForbidden ? SELF_APPROVAL_HINT : undefined
+                                }
                                 pending={review.isPending}
                                 onReview={(reviewStatus) =>
                                   review.mutate({

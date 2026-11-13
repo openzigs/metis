@@ -1050,7 +1050,10 @@ reading as the approve write's maker-checker (`updateRequirementWithHistory`), t
 `isAuthoringVersion` (a version of theirs that changed the wording, not labels) and
 `editedInCheckpoint` (an edit of theirs in the approval checkpoint). Each of those reads filters on
 the project. The flag is advisory: the write still enforces the rule. The list disables Approve on
-the row with a hint.
+the row with a hint. `GET /api/analyses/:id` sets the same flag on the snapshot's requirements
+(#2462), through `flagSelfApprovalForbidden` in `project-requirements-list.ts` under the same
+conditions, and the change request page disables Approve (not Reject) on the card with the same
+hint. Changing the Approval gate card invalidates both reads.
 
 **Similar and duplicate requirements (#1836, #1837).** `GET /api/projects/:projectId/requirements/:requirementId/similar`
 and `POST …/requirements/similar` (draft text) run behind `requireProjectAccess()`

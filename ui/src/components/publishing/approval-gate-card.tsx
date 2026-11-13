@@ -48,6 +48,8 @@ export function ApprovalGateSettingsCard({ projectId }: { projectId: string }) {
       // (`selfApprovalForbidden`): re-read it, so turning self-approval on
       // re-enables Approve now, not when the cached list goes stale.
       await qc.invalidateQueries({ queryKey: queryKeys.analyses.requirementsList(projectId) });
+      // #2462 — and so do the change request page's requirement cards.
+      await qc.invalidateQueries({ queryKey: [...queryKeys.analyses.all, "detail"] });
     },
   });
 
