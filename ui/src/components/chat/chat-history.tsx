@@ -8,9 +8,9 @@
  * The list is the server's (`GET /api/ai/sessions`): only the caller's own
  * chats, in projects they can still reach. Nothing here filters by user.
  */
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import Link from "next/link";
-import { useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import type { ResumableSessionDto } from "@metis/shared";
 import { Button } from "@/components/ui/button";
 import { SkeletonText } from "@/components/ui/skeleton";
@@ -48,20 +48,23 @@ interface Props {
 }
 
 export function ChatHistory({ activeSessionId, refreshKey = 0 }: Props) {
-  const [shown, setShown] = useState(CHAT_HISTORY_PAGE);
-  // One row past the page says whether there are more, without a count query.
-  const list = useQuery({
-    queryKey: [...CHAT_HISTORY_KEY, shown],
-    queryFn: () => sdkApi.listSessions(shown + 1),
+  // Paged by `offset` (PR #2428 review): the server clamps `limit` to 100, so a
+  // growing `limit` stopped Show more at 100 chats. One row past each page says
+  // whether there are more, without a count query.
+  const list = useInfiniteQuery({
+    queryKey: CHAT_HISTORY_KEY,
+    initialPageParam: 0,
+    queryFn: ({ pageParam }) => sdkApi.listSessions(CHAT_HISTORY_PAGE + 1, pageParam),
+    getNextPageParam: (last, _all, offset) =>
+      last.length > CHAT_HISTORY_PAGE ? offset + CHAT_HISTORY_PAGE : undefined,
   });
   const workspaces = useQuery(workspaceListQuery);
-  const { refetch } = list;
+  const { refetch, fetchNextPage, hasNextPage, isFetchingNextPage } = list;
   useEffect(() => {
     if (refreshKey > 0) void refetch();
   }, [refreshKey, refetch]);
 
-  const rows = list.data ?? [];
-  const hasMore = rows.length > shown;
+  const rows = list.data?.pages.flatMap((p) => p.slice(0, CHAT_HISTORY_PAGE)) ?? [];
   const workspaceName = (id: string) => workspaces.data?.find((w) => w.id === id)?.name ?? null;
 
   return (
@@ -83,7 +86,7 @@ export function ChatHistory({ activeSessionId, refreshKey = 0 }: Props) {
       ) : (
         <>
           <ul className="space-y-1 overflow-y-auto" data-testid="chat-history">
-            {rows.slice(0, shown).map((s) => {
+            {rows.map((s) => {
               const current = s.id === activeSessionId;
               return (
                 <li key={s.id}>
@@ -108,11 +111,12 @@ export function ChatHistory({ activeSessionId, refreshKey = 0 }: Props) {
               );
             })}
           </ul>
-          {hasMore ? (
+          {hasNextPage ? (
             <Button
               size="sm"
               variant="ghost"
-              onClick={() => setShown((n) => n + CHAT_HISTORY_PAGE)}
+              disabled={isFetchingNextPage}
+              onClick={() => void fetchNextPage()}
               data-testid="chat-history-more"
             >
               Show more

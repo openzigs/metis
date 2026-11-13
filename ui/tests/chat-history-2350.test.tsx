@@ -43,8 +43,11 @@ beforeEach(() => {
   sessions = [];
   fetchMock.mockImplementation(async (path: string) => {
     if (path === "/workspaces") return [{ id: "ws-1", name: "Retail", slug: "retail" }];
-    const limit = Number(new URL(path, "http://x").searchParams.get("limit"));
-    return sessions.slice(0, limit);
+    // As the server does: `limit` is clamped to 100, `offset` skips rows.
+    const params = new URL(path, "http://x").searchParams;
+    const limit = Math.min(Number(params.get("limit")), 100);
+    const offset = Number(params.get("offset") ?? 0);
+    return sessions.slice(offset, offset + limit);
   });
 });
 
@@ -120,6 +123,23 @@ describe("<ChatHistory /> (#2350)", () => {
     fireEvent.click(screen.getByTestId("chat-history-more"));
     expect(await screen.findByTestId(`chat-history-s${CHAT_HISTORY_PAGE + 2}`)).toBeInTheDocument();
     expect(screen.queryByTestId("chat-history-more")).not.toBeInTheDocument();
+  });
+
+  // PR #2428 review — a growing `limit` stopped at the server's clamp of 100.
+  it("pages by offset, so Show more keeps going past 100 conversations", async () => {
+    sessions = Array.from({ length: 130 }, (_, i) => row(`s${i}`));
+    render(<ChatHistory activeSessionId={null} />, { wrapper: makeWrapper({ withAuth: false }) });
+    await screen.findByTestId("chat-history-s0");
+    for (let page = 1; page * CHAT_HISTORY_PAGE < 130; page++) {
+      fireEvent.click(await screen.findByTestId("chat-history-more"));
+      const lastShown = Math.min((page + 1) * CHAT_HISTORY_PAGE, 130) - 1;
+      expect(await screen.findByTestId(`chat-history-s${lastShown}`)).toBeInTheDocument();
+    }
+    expect(screen.getAllByRole("link")).toHaveLength(130);
+    expect(screen.queryByTestId("chat-history-more")).not.toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith(
+      `/ai/sessions?limit=${CHAT_HISTORY_PAGE + 1}&offset=${6 * CHAT_HISTORY_PAGE}`,
+    );
   });
 
   it("reads the list again when the page says a turn happened", async () => {

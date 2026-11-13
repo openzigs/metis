@@ -13,13 +13,14 @@
 import { useState } from "react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import type { ChatSubjectDto } from "@metis/shared";
 import { makeWrapper, TEST_USER } from "./test-utils";
 import { acceptedTurn, sendChatMessage } from "./chat-send";
 import ChatPage from "@/app/(authed)/chat/page";
 import * as aiClient from "@/lib/ai-client";
-import { getChatSubject } from "@/lib/chat-subject";
+import { ApiError } from "@/lib/api-client";
+import { getChatSubject, storeSessionSubject } from "@/lib/chat-subject";
 import type { AuthUser } from "@/lib/auth-types";
 
 vi.mock("@/lib/ai-client", async () => {
@@ -175,7 +176,7 @@ describe("<ChatPage /> — Ask about this (#2350)", () => {
 
   it("says so, and scopes nothing, when the server refuses the item", async () => {
     params({ about: "requirement:req-x" });
-    subjectMock.mockRejectedValue(new Error("Not found"));
+    subjectMock.mockRejectedValue(new ApiError(404, "Not found"));
     render(<ChatPage />, { wrapper: makeWrapper({ initialUser: ANALYST }) });
 
     expect(await screen.findByTestId("chat-subject-refused")).toHaveTextContent(
@@ -195,6 +196,88 @@ describe("<ChatPage /> — Ask about this (#2350)", () => {
     await waitFor(() => expect(box.disabled).toBe(false));
     expect(subjectMock).not.toHaveBeenCalled();
     expect(screen.queryByTestId("chat-subject-refused")).not.toBeInTheDocument();
+  });
+});
+
+// PR #2428 review — the chat stays tied to its item: the item goes with every
+// turn (the server tells the model what it is), and the link's `?about=` gives
+// way to the chat's own `?sessionId=` so a reload resumes it.
+describe("<ChatPage /> — the item stays attached to the chat", () => {
+  const SUBJECT_ARG = 6;
+  const streamMock = () => vi.mocked(aiClient.streamChat);
+
+  it("sends the item with every turn, even when the seeded question was rewritten", async () => {
+    params({ about: "change-request:cr-1" });
+    subjectMock.mockResolvedValue(CR);
+    render(<ChatPage />, { wrapper: makeWrapper({ initialUser: ANALYST }) });
+    await screen.findByTestId("chat-subject");
+    await sendChatMessage("Something else entirely");
+    await waitFor(() => expect(streamMock()).toHaveBeenCalledTimes(1));
+    expect(streamMock().mock.calls[0]![SUBJECT_ARG]).toEqual(CR);
+    expect(streamMock().mock.calls[0]![1]).toBe("Something else entirely");
+    await sendChatMessage("and then?");
+    await waitFor(() => expect(streamMock()).toHaveBeenCalledTimes(2));
+    expect(streamMock().mock.calls[1]![SUBJECT_ARG]).toMatchObject({
+      kind: "change-request",
+      id: "cr-1",
+    });
+  });
+
+  it("replaces ?about= with the chat's own link after the first send, keeping the chat", async () => {
+    params({ about: "change-request:cr-1" });
+    subjectMock.mockResolvedValue(CR);
+    const view = render(<ChatPage />, { wrapper: makeWrapper({ initialUser: ANALYST }) });
+    await screen.findByTestId("chat-subject");
+    await sendChatMessage("What does it change?");
+    const router = vi.mocked(useRouter)();
+    await waitFor(() => expect(router.replace).toHaveBeenCalledWith("/chat?sessionId=sess-1"));
+
+    // The URL now names the chat: the page keeps it, rather than reloading it.
+    params({ sessionId: "sess-1" });
+    view.rerender(<ChatPage />);
+    expect(await screen.findByText("ok")).toBeInTheDocument();
+    expect(aiClient.resumeChatSession).not.toHaveBeenCalled();
+    expect(screen.getByTestId("chat-subject")).toHaveTextContent("Checkout v2");
+    await sendChatMessage("and then?");
+    await waitFor(() => expect(streamMock()).toHaveBeenCalledTimes(2));
+    expect(streamMock().mock.calls[1]![0]).toBe("sess-1");
+    expect(streamMock().mock.calls[1]![SUBJECT_ARG]).toMatchObject({ id: "cr-1" });
+  });
+
+  it("a reload of the chat's link resumes it still tied to its item", async () => {
+    storeSessionSubject("sess-1", CR);
+    params({ sessionId: "sess-1" });
+    vi.mocked(aiClient.resumeChatSession).mockResolvedValue({
+      session: session("proj-a"),
+      messages: [],
+    } as unknown as Awaited<ReturnType<typeof aiClient.resumeChatSession>>);
+    render(<ChatPage />, { wrapper: makeWrapper({ initialUser: ANALYST }) });
+    expect(await screen.findByTestId("chat-subject")).toHaveTextContent("Checkout v2");
+    await sendChatMessage("still there?");
+    await waitFor(() => expect(streamMock()).toHaveBeenCalled());
+    expect(streamMock().mock.calls[0]![SUBJECT_ARG]).toMatchObject({ id: "cr-1" });
+    expect(createMock).not.toHaveBeenCalled();
+  });
+
+  it("sends no item for an ordinary chat, and leaves its URL alone", async () => {
+    render(<ChatPage />, { wrapper: makeWrapper({ initialUser: ANALYST }) });
+    await sendChatMessage("hello");
+    await waitFor(() => expect(streamMock()).toHaveBeenCalledTimes(1));
+    expect(streamMock().mock.calls[0]![SUBJECT_ARG]).toBeUndefined();
+    expect(vi.mocked(useRouter)().replace).not.toHaveBeenCalled();
+  });
+
+  it("does not tie the item to a chat started after the scope moved off its project", async () => {
+    params({ about: "change-request:cr-1" });
+    subjectMock.mockResolvedValue(CR);
+    createMock.mockResolvedValue({ session: session("proj-b"), scope: null });
+    render(<ChatPage />, { wrapper: makeWrapper({ initialUser: ANALYST }) });
+    await screen.findByTestId("chat-subject");
+    fireEvent.click(screen.getByTestId("project-scope-selector"));
+    await waitFor(() => expect(screen.queryByTestId("chat-subject")).not.toBeInTheDocument());
+    await sendChatMessage("hello");
+    await waitFor(() => expect(streamMock()).toHaveBeenCalledTimes(1));
+    expect(streamMock().mock.calls[0]![SUBJECT_ARG]).toBeUndefined();
   });
 });
 

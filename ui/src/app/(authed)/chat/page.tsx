@@ -50,9 +50,9 @@ import { recentTracker, sessionTitleAfterTurn } from "@/lib/recent-tracker";
 import { ToolActivityList, TranscriptToolCalls } from "@/components/chat/tool-activity";
 import { useToolApprovals } from "@/hooks/use-tool-approvals";
 import { PageHeader } from "@/components/ui/page-header";
-import { parseChatSubjectParam } from "@metis/shared";
+import { parseChatSubjectParam, type ChatSubjectDto } from "@metis/shared";
 import { ChatSubjectNotice, useChatSubject } from "@/components/chat/chat-subject";
-import { subjectPrompt } from "@/lib/chat-subject";
+import { loadSessionSubject, storeSessionSubject, subjectPrompt } from "@/lib/chat-subject";
 import { ChatHistory } from "@/components/chat/chat-history";
 import {
   AdvancedToggle,
@@ -145,6 +145,7 @@ export default function ChatPage() {
   const subjectSettled =
     subjectState.status === "none" ||
     subjectState.status === "refused" ||
+    subjectState.status === "failed" ||
     (subjectState.status === "ready" && appliedSubject === subjectKey);
   const scopeHydrated = rawScopeHydrated && subjectSettled;
   const [session, setSession] = useState<AISession | null>(null);
@@ -176,6 +177,17 @@ export default function ChatPage() {
   useEffect(() => {
     sessionIdRef.current = session?.id ?? null;
   }, [session]);
+  // PR #2428 review — the item the chat on screen is about ("Ask about this"),
+  // remembered per session: sent with every turn, so the model is told what it
+  // is even after the opening question was rewritten, and after a reload.
+  const [boundSubject, setBoundSubject] = useState<ChatSubjectDto | null>(null);
+  const sessionKey = session?.id ?? null;
+  useEffect(() => {
+    setBoundSubject(sessionKey ? loadSessionSubject(sessionKey) : null);
+  }, [sessionKey]);
+  // Set when the page swaps `?about=` for the chat's own `?sessionId=`: the
+  // session effect keeps the chat on screen instead of reloading it.
+  const adoptedUrlSessionRef = useRef<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   // A send in progress, known synchronously (see `handleSend`).
   const sendingRef = useRef(false);
@@ -278,6 +290,13 @@ export default function ChatPage() {
     if (keepResumedSessionRef.current) {
       keepResumedSessionRef.current = false;
       return;
+    }
+    // PR #2428 review — this run was caused by the page replacing `?about=`
+    // with the chat's own `?sessionId=` after its first turn; keep the chat.
+    if (adoptedUrlSessionRef.current !== null) {
+      const adopted = adoptedUrlSessionRef.current === resumeSessionId;
+      adoptedUrlSessionRef.current = null;
+      if (adopted) return;
     }
     let cancelled = false;
     scopeGenRef.current += 1;
@@ -528,6 +547,7 @@ export default function ChatPage() {
       role: "assistant",
       content: "",
     };
+    const subject = subjectForTurn(active);
     setMessages([...messages, userMsg, assistantMsg]);
     resetToolActivity();
     if (text === input) setInput("");
@@ -546,6 +566,8 @@ export default function ChatPage() {
         () => {
           accepted = true;
         },
+        undefined,
+        subject ?? undefined,
       )) {
         handleEvent(ev, assistantMsg.id);
       }
@@ -609,8 +631,36 @@ export default function ChatPage() {
           ...(active.projectId ? { projectId: active.projectId } : {}),
         });
         setHistoryVersion((v) => v + 1);
+        // PR #2428 review — an "Ask about this" link names the item, not the
+        // chat: once the chat exists, the URL names the chat, so a reload
+        // resumes it instead of seeding a new one. (Only while it is on screen.)
+        if (aboutRaw && sessionIdRef.current === active.id) {
+          adoptedUrlSessionRef.current = active.id;
+          router.replace(`/chat?sessionId=${encodeURIComponent(active.id)}`);
+        }
       }
     }
+  }
+
+  /**
+   * PR #2428 review — the item this turn is about: the one the chat was opened
+   * from, remembered per session. A new chat is tied to the "Ask about this"
+   * item on its first turn, only while it is still in the item's project.
+   */
+  function subjectForTurn(active: AISession): ChatSubjectDto | null {
+    const stored = loadSessionSubject(active.id);
+    if (stored) return stored;
+    if (
+      subjectState.status !== "ready" ||
+      appliedSubject !== subjectKey ||
+      messages.some((m) => m.role === "user") ||
+      active.projectId !== subjectState.subject.projectId
+    ) {
+      return null;
+    }
+    storeSessionSubject(active.id, subjectState.subject);
+    setBoundSubject(subjectState.subject);
+    return subjectState.subject;
   }
 
   /**
@@ -634,6 +684,8 @@ export default function ChatPage() {
       const forked = await forkChatSession(session.id, ordinal);
       // The note described the source session's compaction, not the fork's.
       setCompactionNote(null);
+      // A fork of a chat about an item is about the same item.
+      if (boundSubject) storeSessionSubject(forked.session.id, boundSubject);
       storeActiveSessionId(forked.session.id);
       setHistoryVersion((v) => v + 1);
       router.push(`/chat?sessionId=${encodeURIComponent(forked.session.id)}`);
@@ -808,13 +860,22 @@ export default function ChatPage() {
         />
         {/* #2350 — what an "Ask about this" chat is about, while the scope is
             still the item's project; or the server's refusal to name it. */}
-        <ChatSubjectNotice
-          state={subjectState}
-          inScope={
-            subjectState.status === "ready" &&
-            scopeKey === `selected:${subjectState.subject.projectId}`
-          }
-        />
+        {/* PR #2428 review — once the chat is tied to the item, the line
+            follows the chat (a reload, a history link), not the URL. */}
+        {boundSubject ? (
+          <ChatSubjectNotice
+            state={{ status: "ready", subject: boundSubject }}
+            inScope={session?.projectId === boundSubject.projectId}
+          />
+        ) : (
+          <ChatSubjectNotice
+            state={subjectState}
+            inScope={
+              subjectState.status === "ready" &&
+              scopeKey === `selected:${subjectState.subject.projectId}`
+            }
+          />
+        )}
         <ScopeDegradationNotice scope={sessionScope} />
         {/* #18 — a session with no project runs no retrieval; say so before the
             turn. A degraded scope has its own notice (and blocks the send). */}

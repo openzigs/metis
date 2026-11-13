@@ -3440,8 +3440,15 @@ for you to edit or send. The scope pill shows the project; change it there like
 any other chat, and the "Asking about" line goes away. Chat asks the server what
 the item is, and the server answers only for an item you can open: a link to a
 change request or requirement you cannot read (deleted, or in a project you are
-not a member of) says *You can't ask about that item* and scopes nothing. A
-chat opened this way is a new chat, not the one you last had open.
+not a member of) says *You can't ask about that item* and scopes nothing. If
+the item could not be loaded at all (a busy server or a dropped connection),
+chat says so and offers **Try again** instead. A chat opened this way is a new
+chat, not the one you last had open.
+
+The chat stays about the item for the whole conversation: each question you
+send tells the assistant which item it is, so it still knows if you rewrite
+the suggested question. After your first message the address bar names the
+conversation, so reloading the page brings it back rather than starting over.
 
 **Your conversations.** The Chat page lists your past conversations on the
 left, newest first: each with its title, what it searches (a project's name,

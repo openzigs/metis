@@ -10,10 +10,22 @@ import { parseChatSubjectParam, type ChatSubjectDto } from "@metis/shared";
 import { AuthProvider } from "@/lib/auth-context";
 import type { AuthUser } from "@/lib/auth-types";
 import { TEST_USER, makeWrapper } from "./test-utils";
-import { apiFetch } from "@/lib/api-client";
-import { chatAboutHref, subjectLabel, subjectPrompt } from "@/lib/chat-subject";
+import { ApiError, apiFetch } from "@/lib/api-client";
+import {
+  chatAboutHref,
+  loadSessionSubject,
+  SESSION_SUBJECTS_MAX,
+  storeSessionSubject,
+  subjectLabel,
+  subjectPrompt,
+} from "@/lib/chat-subject";
 import { AskAboutThis } from "@/components/chat/ask-about-this";
-import { ChatSubjectNotice, SUBJECT_REFUSED, useChatSubject } from "@/components/chat/chat-subject";
+import {
+  ChatSubjectNotice,
+  SUBJECT_FAILED,
+  SUBJECT_REFUSED,
+  useChatSubject,
+} from "@/components/chat/chat-subject";
 import {
   AdvancedToggle,
   assistantInPlainWords,
@@ -102,6 +114,36 @@ describe("<AskAboutThis />", () => {
   });
 });
 
+describe("the item each chat is about (PR #2428 review)", () => {
+  it("is remembered per session, and nothing for an unknown one", () => {
+    storeSessionSubject("s1", REQ);
+    storeSessionSubject("s2", PROJECT);
+    expect(loadSessionSubject("s1")).toEqual(REQ);
+    expect(loadSessionSubject("s2")).toEqual(PROJECT);
+    expect(loadSessionSubject("s3")).toBeNull();
+  });
+
+  it(`keeps the newest ${SESSION_SUBJECTS_MAX}, re-storing one makes it newest`, () => {
+    for (let i = 0; i < SESSION_SUBJECTS_MAX; i++) storeSessionSubject(`s${i}`, PROJECT);
+    storeSessionSubject("s0", REQ);
+    storeSessionSubject("new", PROJECT);
+    expect(loadSessionSubject("s0")).toEqual(REQ);
+    expect(loadSessionSubject("s1")).toBeNull();
+    expect(loadSessionSubject("new")).toEqual(PROJECT);
+  });
+
+  it("ignores a store that is not JSON, or an entry that is not an item", () => {
+    window.localStorage.setItem("metis.chat.sessionSubjects", "{not json");
+    expect(loadSessionSubject("s1")).toBeNull();
+    window.localStorage.setItem(
+      "metis.chat.sessionSubjects",
+      JSON.stringify({ s1: { kind: "workspace", id: "w" }, s2: REQ }),
+    );
+    expect(loadSessionSubject("s1")).toBeNull();
+    expect(loadSessionSubject("s2")).toEqual(REQ);
+  });
+});
+
 describe("useChatSubject", () => {
   it("is 'none' with no about, and asks nothing", () => {
     const { result } = renderHook(() => useChatSubject(null));
@@ -117,10 +159,29 @@ describe("useChatSubject", () => {
     expect(fetchMock).toHaveBeenCalledWith("/ai/chat-subjects/requirement/r%2F1");
   });
 
-  it("is 'refused' when the server refuses", async () => {
-    fetchMock.mockRejectedValue(new Error("404"));
+  it.each([400, 403, 404])("is 'refused' when the server refuses (%i)", async (status) => {
+    fetchMock.mockRejectedValue(new ApiError(status, "no"));
     const { result } = renderHook(() => useChatSubject({ kind: "project", id: "p9" }));
     await waitFor(() => expect(result.current).toEqual({ status: "refused" }));
+  });
+
+  // PR #2428 review — a busy server or a dropped connection is not a refusal:
+  // it says so, and can be tried again.
+  it.each([
+    ["a 429", new ApiError(429, "slow down")],
+    ["a 5xx", new ApiError(503, "unavailable")],
+    ["a network failure", new TypeError("Failed to fetch")],
+  ])("is 'failed', with a retry, on %s", async (_label, err) => {
+    fetchMock.mockRejectedValueOnce(err);
+    const { result } = renderHook(() => useChatSubject({ kind: "project", id: "p1" }));
+    await waitFor(() => expect(result.current.status).toBe("failed"));
+    fetchMock.mockResolvedValueOnce(PROJECT);
+    const state = result.current;
+    if (state.status !== "failed") throw new Error("unreachable");
+    act(() => state.retry());
+    expect(result.current).toEqual({ status: "loading" });
+    await waitFor(() => expect(result.current).toEqual({ status: "ready", subject: PROJECT }));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("never shows the previous item's answer for a new one", async () => {
@@ -169,6 +230,16 @@ describe("<ChatSubjectNotice />", () => {
   it("reports a refusal as an alert", () => {
     render(<ChatSubjectNotice state={{ status: "refused" }} inScope={false} />);
     expect(screen.getByRole("alert")).toHaveTextContent(SUBJECT_REFUSED);
+  });
+
+  it("reports a failed read as one, not a refusal, and tries again on request", () => {
+    const retry = vi.fn();
+    render(<ChatSubjectNotice state={{ status: "failed", retry }} inScope={false} />);
+    const alert = screen.getByRole("alert");
+    expect(alert).toHaveTextContent(SUBJECT_FAILED);
+    expect(alert).not.toHaveTextContent("access");
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(retry).toHaveBeenCalledTimes(1);
   });
 
   it("renders a title holding markup as text", () => {

@@ -59,3 +59,14 @@ export function parseChatSubjectParam(
   if (!id || id.length > CHAT_SUBJECT_ID_MAX) return null;
   return { kind: kind as ChatSubjectKind, id };
 }
+
+/**
+ * PR #2428 review — the item a chat turn is about, sent with every turn of an
+ * "Ask about this" chat. The server re-checks that the caller can read it and
+ * tells the model what it is, so the chat stays tied to the item even when the
+ * analyst rewrites the opening question.
+ */
+export interface ChatSubjectRef {
+  kind: ChatSubjectKind;
+  id: string;
+}

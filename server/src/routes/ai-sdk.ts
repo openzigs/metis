@@ -34,10 +34,8 @@ import {
 } from "../lib/ai/session-snapshot.js";
 import { CHAT_SUBJECT_ID_MAX, CHAT_SUBJECT_KINDS, SDK_REASONING_EFFORTS } from "@metis/shared";
 import { resolveChatSubject } from "../lib/ai/chat-subject.js";
-import {
-  conversationPreAuthRateLimiter,
-  conversationRateLimiter,
-} from "../middleware/conversation-rate-limit.js";
+import { conversationPreAuthRateLimiter } from "../middleware/conversation-rate-limit.js";
+import { chatSubjectRateLimiter } from "../middleware/chat-subject-rate-limit.js";
 import type { AISession } from "@prisma/client";
 import { getAsyncRunner } from "../lib/async/runner.js";
 import {
@@ -131,12 +129,13 @@ export function aiSdkRouter(): Router {
   // requirement an "Ask about this" link names, and the project chat is scoped
   // to. Answered only for an item the caller can read; otherwise the one 404
   // (403 for a change request or requirement without `analysis.read`).
-  // Bounded per IP before auth and per user after (CodeQL js/missing-rate-limiting).
+  // Bounded per IP before auth and per user after (CodeQL js/missing-rate-limiting),
+  // on its own per-user budget, not the conversation one (PR #2428 review).
   r.get(
     "/chat-subjects/:kind/:id",
     conversationPreAuthRateLimiter,
     requireAuth,
-    conversationRateLimiter,
+    chatSubjectRateLimiter,
     async (req: Request, res: Response) => {
       const parsed = chatSubjectParamsSchema.safeParse(req.params);
       if (!parsed.success) throw new AppError(400, "BAD_REQUEST", "Invalid chat subject");

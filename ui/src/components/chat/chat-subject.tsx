@@ -8,27 +8,46 @@
  * Deliberately not a React Query hook: the chat page's tests render it without
  * a query client, and this is one read per link.
  */
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { ChatSubjectDto, ChatSubjectKind } from "@metis/shared";
+import { Button } from "@/components/ui/button";
+import { ApiError } from "@/lib/api-client";
 import { getChatSubject, subjectLabel } from "@/lib/chat-subject";
 
 export type ChatSubjectState =
   | { status: "none" }
   | { status: "loading" }
   | { status: "ready"; subject: ChatSubjectDto }
-  | { status: "refused" };
+  | { status: "refused" }
+  /** PR #2428 review — the read failed (busy, down, offline): not a refusal. */
+  | { status: "failed"; retry: () => void };
 
 /** Shown when the server will not name the item: unknown, deleted, or not the caller's to read. */
 export const SUBJECT_REFUSED =
   "You can’t ask about that item. It may have been deleted, or you don’t have access to it. You can still ask a question below.";
 
+/** Shown when the item could not be read this time: the server was busy or unreachable. */
+export const SUBJECT_FAILED =
+  "Couldn’t load the item this chat was opened from. Try again, or ask a question below.";
+
 const NONE: ChatSubjectState = { status: "none" };
 const LOADING: ChatSubjectState = { status: "loading" };
 
 /**
+ * The server's answers that mean "not for you": a malformed link (400), no
+ * permission (403), or unknown, deleted or out of reach (404). Anything else —
+ * a 429, a 5xx, a dropped connection — is a failure worth trying again.
+ */
+function isRefusal(err: unknown): boolean {
+  return (
+    err instanceof ApiError && (err.status === 400 || err.status === 403 || err.status === 404)
+  );
+}
+
+/**
  * What `about` (a parsed `?about=`) names, as the server answers for this
- * caller. `none` when there is no `about`; `refused` for any error, so a
- * refusal never scopes the chat.
+ * caller. `none` when there is no `about`; `refused` when the server refuses it;
+ * `failed` (with a retry) when it could not be asked. Neither scopes the chat.
  */
 export function useChatSubject(
   about: { kind: ChatSubjectKind; id: string } | null,
@@ -39,6 +58,11 @@ export function useChatSubject(
   // Each answer is kept with the item it answers, so a new link never shows the
   // previous item's answer for even one render.
   const [answer, setAnswer] = useState<{ key: string; state: ChatSubjectState } | null>(null);
+  const [attempt, setAttempt] = useState(0);
+  const retry = useCallback(() => {
+    setAnswer(null);
+    setAttempt((n) => n + 1);
+  }, []);
 
   useEffect(() => {
     if (!kind || !id) return;
@@ -48,14 +72,18 @@ export function useChatSubject(
       (subject) => {
         if (!cancelled) setAnswer({ key: asked, state: { status: "ready", subject } });
       },
-      () => {
-        if (!cancelled) setAnswer({ key: asked, state: { status: "refused" } });
+      (err: unknown) => {
+        if (cancelled) return;
+        setAnswer({
+          key: asked,
+          state: isRefusal(err) ? { status: "refused" } : { status: "failed", retry },
+        });
       },
     );
     return () => {
       cancelled = true;
     };
-  }, [kind, id]);
+  }, [kind, id, attempt, retry]);
 
   if (!key) return NONE;
   return answer?.key === key ? answer.state : LOADING;
@@ -78,6 +106,20 @@ export function ChatSubjectNotice({ state, inScope }: NoticeProps) {
       >
         {SUBJECT_REFUSED}
       </p>
+    );
+  }
+  if (state.status === "failed") {
+    return (
+      <div
+        role="alert"
+        data-testid="chat-subject-failed"
+        className="flex items-center gap-2 rounded border border-destructive p-2 text-sm text-destructive"
+      >
+        <span>{SUBJECT_FAILED}</span>
+        <Button size="sm" variant="outline" onClick={state.retry}>
+          Try again
+        </Button>
+      </div>
     );
   }
   if (state.status !== "ready" || !inScope) return null;

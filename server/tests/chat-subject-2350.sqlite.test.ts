@@ -14,7 +14,7 @@ import express from "express";
 import request from "supertest";
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 import { PrismaClient } from "@prisma/client";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { readGeneratedClientProvider } from "./lib/db/generated-client-provider.js";
 import {
   createMigratedSqlite,
@@ -264,6 +264,37 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     it("refuses an unknown kind and an over-long id with 400", async () => {
       expect((await get("/api/ai/chat-subjects/workspace/ws-a", A)).status).toBe(400);
       expect((await get(`/api/ai/chat-subjects/project/${"x".repeat(121)}`, A)).status).toBe(400);
+    });
+
+    // PR #2428 review — the link's read has its own budget: it neither spends
+    // nor is blocked by the conversation budget (transcript, resume, fork).
+    describe("its own rate limit", () => {
+      afterEach(() => {
+        delete process.env.AI_CONVERSATION_RATE_LIMIT_MAX;
+        delete process.env.AI_CHAT_SUBJECT_RATE_LIMIT_MAX;
+      });
+
+      it("is not drawn from the conversation budget", async () => {
+        process.env.AI_CONVERSATION_RATE_LIMIT_MAX = "1";
+        for (let i = 0; i < 3; i++) {
+          expect((await get("/api/ai/chat-subjects/project/proj-a", A)).status).toBe(200);
+        }
+      });
+
+      it("caps each user at AI_CHAT_SUBJECT_RATE_LIMIT_MAX", async () => {
+        process.env.AI_CHAT_SUBJECT_RATE_LIMIT_MAX = "1";
+        const fresh = issueTokens({
+          userId: "u-limit",
+          username: "u-limit",
+          role: "admin",
+          permissions: [],
+          workspaces: [],
+        }).accessToken;
+        expect((await get("/api/ai/chat-subjects/project/proj-a", fresh)).status).toBe(200);
+        const limited = await get("/api/ai/chat-subjects/project/proj-a", fresh);
+        expect(limited.status).toBe(429);
+        expect(limited.body.error.code).toBe("CHAT_SUBJECT_RATE_LIMITED");
+      });
     });
 
     it("requires authentication", async () => {
