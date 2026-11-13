@@ -472,8 +472,14 @@ describe("FederatedSearchService", () => {
           k: 20,
           actor: { userId: "user-1", role: "reader" },
           documentIds: ["d1"],
+          embedCache: expect.any(Map),
         });
       }
+      // One embedding cache for the whole call, shared by every project's searches.
+      const caches = new Set(
+        mockKS.search.mock.calls.map((c) => (c[2] as { embedCache: unknown }).embedCache),
+      );
+      expect(caches.size).toBe(1);
     });
 
     it("does not repeat a conversational search that is one of the user's own", async () => {
