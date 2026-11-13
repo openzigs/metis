@@ -33,18 +33,21 @@ vi.mock("../src/lib/prisma.js", async () => {
   };
 });
 const emit = vi.fn();
-const to = vi.fn((_rooms: string[]) => ({ emit }));
+const to = vi.fn((_rooms: string | string[]) => ({ emit, except: () => ({ emit }) }));
 vi.mock("../src/lib/socket/registry.js", () => ({ getSocketServer: () => ({ to }) }));
 
 const { emitReviewChanged } = await import("../src/lib/reviews/review-events.js");
 
 const WS = "ws-2394";
+const OTHER_WS = "ws-2394-other";
 const PROJECT = "proj-2394";
 const LEGACY = "proj-2394-legacy";
 const MEMBER = "u-2394-member";
 const REMOVED = "u-2394-removed";
 const ADMIN = "u-2394-admin";
-const REVIEWERS = [MEMBER, REMOVED, ADMIN];
+const DISABLED = "u-2394-disabled";
+const SCIM_DELETED = "u-2394-scim-deleted";
+const REVIEWERS = [MEMBER, REMOVED, ADMIN, DISABLED, SCIM_DELETED];
 
 describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
   "#2394 — review:changed reaches only reviewers who can open the project",
@@ -55,8 +58,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     const roomsFor = async (projectId: string) => {
       to.mockClear();
       await emitReviewChanged(projectId, "rev-2394", REVIEWERS);
-      expect(to).toHaveBeenCalledTimes(1);
-      return to.mock.calls[0]![0];
+      // The project room first, then (if anyone qualifies) the personal rooms.
+      return to.mock.calls.flatMap(([rooms]) => rooms);
     };
 
     beforeAll(async () => {
@@ -74,9 +77,19 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         create: { key: "admin", name: "admin", isSystem: true },
       });
       await db.userRole.create({ data: { userId: ADMIN, roleId: adminRole.id } });
+      // Disabled, and SCIM-deprovisioned (soft-deleted, status still active):
+      // both keep their membership rows, and neither is sent the event.
+      await db.user.update({ where: { id: DISABLED }, data: { status: "disabled" } });
+      await db.user.update({ where: { id: SCIM_DELETED }, data: { deletedAt: new Date() } });
       await db.workspace.create({ data: { id: WS, name: WS, slug: WS } });
-      // REMOVED was never (or is no longer) a member: only MEMBER holds a row.
-      await db.workspaceMember.create({ data: { workspaceId: WS, userId: MEMBER } });
+      await db.workspace.create({ data: { id: OTHER_WS, name: OTHER_WS, slug: OTHER_WS } });
+      // REMOVED is no longer a member of WS, but still of another workspace:
+      // the realistic shape of a removal, and what tells "a member of this
+      // project's workspace" from "a member of some workspace".
+      await db.workspaceMember.create({ data: { workspaceId: OTHER_WS, userId: REMOVED } });
+      for (const userId of [MEMBER, DISABLED, SCIM_DELETED]) {
+        await db.workspaceMember.create({ data: { workspaceId: WS, userId } });
+      }
       await db.project.create({
         data: { id: PROJECT, name: PROJECT, slug: PROJECT, createdById: MEMBER, workspaceId: WS },
       });
@@ -95,7 +108,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       sqlite?.cleanup();
     });
 
-    it("a workspace project: its live members and system admins, not a removed reviewer", async () => {
+    it("a workspace project: its live members and system admins, not a reviewer removed to another workspace", async () => {
       expect(await roomsFor(PROJECT)).toEqual([
         `project:${PROJECT}`,
         `user:${MEMBER}`,
@@ -113,7 +126,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(await roomsFor(PROJECT)).toEqual([`project:${PROJECT}`, `user:${ADMIN}`]);
     });
 
-    it("a legacy project with no workspace: every reviewer", async () => {
+    it("a legacy project with no workspace: every active reviewer", async () => {
       expect(await roomsFor(LEGACY)).toEqual([
         `project:${LEGACY}`,
         `user:${MEMBER}`,

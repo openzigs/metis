@@ -22,25 +22,34 @@
  * ({@link reviewersWhoCanOpen}). An assignment outlives the reviewer's access:
  * they can be removed from the workspace, or the project or its workspace
  * soft-deleted, and a personal room is never re-judged as a project room is.
+ * Nor are disabled or SCIM-soft-deleted reviewers sent it, as no other
+ * audience (mention delivery, the picker) reaches them either.
+ *
+ * The project room is sent the event first, before any lookup, so a slow or
+ * hung access query never delays the open review page; the lookup is bounded
+ * by {@link REVIEWER_LOOKUP_TIMEOUT_MS} and fails closed.
  */
 import { projectRoom, userRoom, type ReviewChangedEvent } from "@metis/shared";
+import { projectAudienceWhere, SYSTEM_ADMIN_USER } from "../auth/project-audience.js";
 import { createChildLogger } from "../logger.js";
-import { prisma, type Prisma } from "../prisma.js";
+import { prisma } from "../prisma.js";
 import { getSocketServer } from "../socket/registry.js";
 
 const log = createChildLogger("reviews:events");
 
-/** System admins open every project, deleted ones included (`assertProjectAccess`'s bypass). */
-const SYSTEM_ADMIN: Prisma.UserWhereInput = { roles: { some: { role: { key: "admin" } } } };
+/**
+ * How long the reviewer access lookup may take before the personal rooms are
+ * skipped (the fail-closed path). Two indexed reads; far longer means the
+ * database is struggling, and a late sidebar refresh is no loss.
+ */
+export const REVIEWER_LOOKUP_TIMEOUT_MS = 2_000;
 
 /**
  * #2394 — the subset of `reviewerIds` who can open `projectId` now, in their
- * given order: the project-access rule (`assertLiveProjectAccess`) keyed by the
- * reviewer, with roles and memberships read live from the database. System
- * admins always; for a live project in a live workspace, that workspace's
- * members; for a live legacy project with no workspace, everyone; for a
- * soft-deleted project, one in a soft-deleted workspace, or an unknown one,
- * system admins only. At most two queries, whatever the number of reviewers.
+ * given order: the project-access rule ({@link projectAudienceWhere}) keyed by
+ * the reviewer, with roles and memberships read live from the database, and
+ * only active, non-deleted users. An unknown project is open to system admins
+ * only. At most two queries, whatever the number of reviewers.
  */
 export async function reviewersWhoCanOpen(
   projectId: string,
@@ -48,22 +57,9 @@ export async function reviewersWhoCanOpen(
 ): Promise<string[]> {
   const ids = [...new Set(reviewerIds)];
   if (ids.length === 0) return [];
-  const project = await prisma.project.findUnique({
-    where: { id: projectId },
-    select: { workspaceId: true, deletedAt: true, workspace: { select: { deletedAt: true } } },
-  });
-  let audience: Prisma.UserWhereInput;
-  if (!project || project.deletedAt || project.workspace?.deletedAt) {
-    audience = SYSTEM_ADMIN;
-  } else if (!project.workspaceId) {
-    return ids;
-  } else {
-    audience = {
-      OR: [{ workspaceMemberships: { some: { workspaceId: project.workspaceId } } }, SYSTEM_ADMIN],
-    };
-  }
+  const audience = (await projectAudienceWhere(projectId))?.where ?? SYSTEM_ADMIN_USER;
   const rows = await prisma.user.findMany({
-    where: { id: { in: ids }, ...audience },
+    where: { id: { in: ids }, status: "active", deletedAt: null, AND: [audience] },
     select: { id: true },
   });
   const allowed = new Set(rows.map((r) => r.id));
@@ -71,26 +67,34 @@ export async function reviewersWhoCanOpen(
 }
 
 /**
- * Emit `review:changed` to the review's project room and to the own rooms of
- * those `reviewerIds` who can still open the project, as ONE broadcast over
- * the union of rooms, so a socket in several of them is sent it once.
+ * Emit `review:changed` to the review's project room, then to the own rooms
+ * of those `reviewerIds` who can still open the project. The project room is
+ * sent it synchronously, before any lookup; the personal-room broadcast
+ * excepts the project room, so a socket in both is sent it once.
  * Post-commit and fire-and-forget: it never rejects. A socket failure is
  * logged and never reaches the request, whose state change has already
- * committed; a failed access lookup is logged and sends to the project room
- * alone (fail closed for the personal rooms; the project room's join was
- * already judged).
+ * committed; a failed or timed-out access lookup is logged and skips the
+ * personal rooms (fail closed; the project room's join was already judged).
  */
 export async function emitReviewChanged(
   projectId: string,
   reviewId: string,
   reviewerIds: readonly string[] = [],
 ): Promise<void> {
+  const io = getSocketServer();
+  if (!io) return;
+  const room = projectRoom(projectId);
+  const event: ReviewChangedEvent = { projectId, reviewId, ts: Date.now() };
   try {
-    const io = getSocketServer();
-    if (!io) return;
-    const reviewers = await reachableReviewers(projectId, reviewId, reviewerIds);
-    const event: ReviewChangedEvent = { projectId, reviewId, ts: Date.now() };
-    io.to([projectRoom(projectId), ...reviewers.map(userRoom)]).emit("review:changed", event);
+    io.to(room).emit("review:changed", event);
+  } catch (err) {
+    log.warn("Failed to emit review:changed", { reviewId, error: (err as Error).message });
+  }
+  if (reviewerIds.length === 0) return;
+  const reviewers = await reachableReviewers(projectId, reviewId, reviewerIds);
+  if (reviewers.length === 0) return;
+  try {
+    io.to(reviewers.map(userRoom)).except(room).emit("review:changed", event);
   } catch (err) {
     log.warn("Failed to emit review:changed", { reviewId, error: (err as Error).message });
   }
@@ -101,13 +105,23 @@ async function reachableReviewers(
   reviewId: string,
   reviewerIds: readonly string[],
 ): Promise<string[]> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`timed out after ${REVIEWER_LOOKUP_TIMEOUT_MS}ms`)),
+      REVIEWER_LOOKUP_TIMEOUT_MS,
+    );
+    timer.unref?.();
+  });
   try {
-    return await reviewersWhoCanOpen(projectId, reviewerIds);
+    return await Promise.race([reviewersWhoCanOpen(projectId, reviewerIds), timeout]);
   } catch (err) {
     log.warn("review:changed reviewer access lookup failed; sending to the project room only", {
       reviewId,
       error: (err as Error).message,
     });
     return [];
+  } finally {
+    clearTimeout(timer);
   }
 }

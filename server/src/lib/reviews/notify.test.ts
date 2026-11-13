@@ -393,7 +393,7 @@ describe("#2219 — notifyReviewedRequirementEdited", () => {
       });
     }
     // The open review page re-reads the review.
-    expect(to).toHaveBeenCalledWith(["project:proj-1"]);
+    expect(to).toHaveBeenCalledWith("project:proj-1");
     expect(emit).toHaveBeenCalledWith(
       "review:changed",
       expect.objectContaining({ reviewId: "rev-1" }),
