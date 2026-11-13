@@ -817,8 +817,8 @@ say so in the write-up (#2229 did this for two strings).
 `corpus/baqa-01-acme-reader/` is Phase 0 of #2228: the questions a business analyst asks
 chat, over a two-product sample called Acme Reader. The two products are the Miniflux server
 (`miniflux/v2` at 2.3.3, Apache-2.0) and its Python client (`miniflux/python-client` at
-1.1.6, MIT). `questions.json` holds 23 questions in four categories, and the category fixes
-what a good reply does:
+1.1.6, MIT). `questions.json` holds 23 one-turn questions in four categories, plus the
+multi-turn set below, and the category fixes what a good reply does:
 
 | Category | Questions | A good reply |
 |---|---:|---|
@@ -1321,3 +1321,76 @@ CHAT_INDEX_STATUS=1 pnpm eval:ba-qa --arm tools-only --budget 2 --index-fault fa
   prompt is unchanged. `CHAT_INDEX_STATUS` is **on by default**.
 - The status line costs about 80 tokens per turn when it is shown. The four runs spent $1.445313,
   answers and judge.
+
+### Multi-turn questions (#2269)
+
+`questions.json` also holds 8 multi-turn questions, `F1` to `F8`, which measure #2240's
+conversation-aware retrieval. Each one carries `before`, the analyst's earlier turn. That turn
+is asked and answered live in the same session, and recorded in the transcript the way the chat
+routes record it, including the excerpts the answer cited. Only the last turn is graded, and the
+judge is shown the earlier turn.
+
+`refersBack` labels each graded turn. Six turns lean on the earlier one: "I meant the login
+sessions.", "How often does that run?", "And when a user changes them later?", "Can I change its
+request timeout?", "How many feeds does it refresh at a time?" and "Which exception do I get when
+its API key is wrong?". Two are self-contained controls asked mid-conversation. F6 is S2's
+question after S1. F7 is a "there" question that names its own subject. All 8 are
+single-product, so retrieval runs.
+
+```bash
+pnpm eval:ba-qa --arm off --budget 2 --multi-turn                            # production (#2240)
+pnpm eval:ba-qa --arm off --budget 2 --multi-turn --retrieval last-message \
+  --include eval-results/ba-qa/<conversation run>.json                       # the new message alone
+```
+
+`--multi-turn` selects the set. Without it a run asks the 18 one-turn questions, as before.
+`--retrieval last-message` searches only the new message, as chat did before #2240. The report
+labels that arm `off+last-message`. In either mode, the graded turn is also searched the other
+way, locally and at no model cost. The **Multi-turn retrieval** table therefore shows, for both
+modes, how many expected source files the excerpts held. It also shows how many labelled
+follow-ups the planner caught, how many controls it misread, and how many cited excerpts were
+carried forward.
+
+#### Measured 2026-11-11 (Sonnet 5.5 answers and judge, 8 questions per arm)
+
+| | off | off+last-message | on | on+last-message |
+|---|---:|---:|---:|---:|
+| Correctness: mean facts stated | 55% | 55% | 98% | 98% |
+| Fully correct answers | 4/8 | 4/8 | 7/8 | 7/8 |
+| Citation recall | 7/20 | 7/20 | 14/20 | 13/20 |
+| Expected files in the excerpts: conversation-aware | 7/20 | 8/20 | 7/20 | 6/20 |
+| … new message alone | 7/20 | 7/20 | 5/20 | 5/20 |
+| Follow-ups the planner caught | 4/6 | 4/6 | 4/6 | 4/6 |
+| Controls read as follow-ups | 0/2 | 0/2 | 0/2 | 0/2 |
+| Spend (answers + judge) | $0.500310 | $0.341409 | $0.917685 | $0.717946 |
+
+The `off` and `on` columns were run after the tuning below. The `+last-message` columns were run
+before it, and the tuning does not change their retrieval.
+
+- **Retrieval reading the conversation finds slightly more, and answers are no better on this
+  set.** Over the four runs, the conversation-aware excerpts held 28 expected files and the new
+  message alone held 24. F1 ("I meant the login sessions.") gained `internal/ui/auth.go` from
+  the conversational search. F7 gained a file through carry-forward. F2 ("How often does that
+  run?") lost `internal/cli/scheduler.go`, which was the user's own 8th hit, to two hits found
+  only by the conversational search. Correctness was the same in both modes. With the flags on,
+  the code-search tools find what retrieval missed either way.
+- **The follow-up heuristic is unchanged.** It read no control as a follow-up, F7's "there"
+  question included. It missed F5 and F8, which name four content words each. Searching those
+  two as follow-ups was measured to find no expected file that their own words missed. Raising
+  the content-word cap to four would catch them, but it would also re-admit "Are there any GDPR
+  requirements in the onboarding spec?". A test pins this: every labelled turn in the set is
+  read as measured.
+- **Carry-forward read the wrong excerpts, and was tuned.** With the flags off, the answers named
+  excerpts as "`file` (chunk #N)". 13 of the 16 earlier answers that cited anything did so, and
+  none used `[n]`. Only the file name matched, so the 4-excerpt cap filled with the file's first
+  excerpts in block order. `citedExcerptIds` now reads "`file` (chunk #N)", "chunks #A, #B and
+  #C" and "chunks #A-#B" as locators. It fills the cap with numbered and located excerpts before
+  whole-file matches, and it no longer reads `file#1` inside `file#18`. Replayed on the recorded
+  first answers, the excerpts the answers pointed at rose from 27 to 31 of the 33 that fit the
+  cap.
+- **Spend varies from run to run.** The same question's answer cost $0.022 in one run and
+  $0.054 in the next (F2, `off`). So the spend gap between the modes is within run-to-run noise.
+
+Spend for #2269: **$3.830035** over seven runs. That is a one-question smoke run ($0.055899),
+the four runs before tuning ($0.458762, $0.341409, $0.838024 and $0.717946), and the two
+conversation-aware runs after tuning ($0.500310 and $0.917685).

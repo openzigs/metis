@@ -29,6 +29,19 @@
  * `no-tools`, `no-fused` and `no-rerank` take one flag away from `on`; `default`
  * unsets all three, so each reads the server's default.
  *
+ * #2269 — `--multi-turn` asks the multi-turn set instead: each question's
+ * earlier turns (`before`) are asked and answered live in the same session,
+ * recorded in its transcript as the chat routes record them (with the excerpts
+ * each answer cited), and only the last turn is graded. `--retrieval` picks how
+ * a turn's auto-RAG reads the chat: `conversation` (production, #2240) or
+ * `last-message` (the new message alone, as before #2240); the report labels
+ * the arm `<arm>+last-message` for the latter. Whatever the mode, the graded
+ * turn is also searched the other way, locally, so every run reports how many
+ * expected files each mode's excerpts held:
+ *
+ *   pnpm eval:ba-qa --arm off --budget 2 --multi-turn
+ *   pnpm eval:ba-qa --arm off --budget 2 --multi-turn --retrieval last-message --include <off>.json
+ *
  * Each answer is graded by one judge call (`judge.ts`); every rate is computed
  * from its verdicts in code (`metrics.ts`). Spend is ledger-priced, answers and
  * judge apart, and held under `--budget` (USD): the run stops before a question
@@ -62,13 +75,23 @@ import {
 import {
   BAQA_CORPUS,
   baQaCorpusDir,
+  expectedSourceFiles,
+  isMultiTurn,
   loadBaQaFixture,
   type BaQaProduct,
   type BaQaQuestion,
 } from "../src/lib/eval/ba-qa/fixture.js";
 import { extractCitations, type CitableProduct } from "../src/lib/eval/ba-qa/citations.js";
 import { buildJudgeMessages, parseJudgeVerdict } from "../src/lib/eval/ba-qa/judge.js";
-import { scoreQuestion, summarizeArm, type ArmSummary } from "../src/lib/eval/ba-qa/metrics.js";
+import {
+  scoreQuestion,
+  summarizeArm,
+  // #2269's per-turn retrieval summary; routing.js has its own `summarizeRetrieval`.
+  summarizeRetrieval as summarizeTurnRetrieval,
+  type ArmSummary,
+  type RetrievalSummary,
+  type TurnRetrieval,
+} from "../src/lib/eval/ba-qa/metrics.js";
 import {
   formatFloorSweep,
   OFF_TOPIC_PROBES,
@@ -77,6 +100,8 @@ import {
   type RetrievalSample,
 } from "../src/lib/eval/ba-qa/relevance-floor.js";
 import { formatBaQaReport, type ReportSession } from "../src/lib/eval/ba-qa/report.js";
+import type { ReplyToolCall } from "../src/lib/ai/conversation/turn.js";
+import type { RagContextCapture } from "../src/routes/ai.js";
 import {
   indexFaultState,
   parseIndexFault,
@@ -102,11 +127,15 @@ import {
 } from "../src/lib/eval/ba-qa/routing.js";
 import {
   applyArmEnv,
+  armLabel,
   assertComparable,
   budgetStop,
   buildJudgedSpans,
   chatSessionScope,
   parseArm,
+  parseRetrievalMode,
+  retrievedExpectedFiles,
+  selectQuestions,
   unknownSources,
 } from "../src/lib/eval/ba-qa/run.js";
 
@@ -137,6 +166,9 @@ interface Session extends ReportSession {
   ambiguousCitations: string[];
   judgeReply: string;
   usage: { promptTokens: number; completionTokens: number; calls: number };
+  /** #2269 — a multi-turn question's earlier replies, and its graded turn searched both ways. */
+  earlierReplies?: string[];
+  retrieval?: TurnRetrieval;
 }
 
 interface Envelope {
@@ -149,6 +181,8 @@ interface Envelope {
   arm: string;
   flags: Record<string, string>;
   summary: ArmSummary;
+  /** #2269 — present on a run that asked multi-turn questions. */
+  retrieval?: RetrievalSummary;
   sessions: Session[];
 }
 
@@ -162,6 +196,8 @@ async function main(): Promise<void> {
       out: { type: "string" },
       include: { type: "string", multiple: true },
       "judge-model": { type: "string" },
+      "multi-turn": { type: "boolean" },
+      retrieval: { type: "string" },
       "floor-sweep": { type: "boolean" },
       // #2326 — record each product's last indexing run as failed or partial.
       "index-fault": { type: "string" },
@@ -180,22 +216,23 @@ async function main(): Promise<void> {
     throw new Error("--arm is required (default, off, on, no-tools, …)");
   }
   // #2241 — the sweep measures the search with the flags off.
-  const arm = floorSweep ? parseArm("off") : parseArm(values.arm!);
+  const flagArm = floorSweep ? parseArm("off") : parseArm(values.arm!);
+  const retrievalMode = parseRetrievalMode(values.retrieval ?? "conversation");
+  const arm = armLabel(flagArm, retrievalMode);
   const budget = Number(values.budget);
   if (!floorSweep && (!values.budget || !Number.isFinite(budget) || budget <= 0)) {
     throw new Error("--budget <usd> is required: the run's spend cap");
   }
   // Before any module reads a flag.
-  const flags = applyArmEnv(process.env, arm);
+  const flags = applyArmEnv(process.env, flagArm);
 
   const corpusDir = baQaCorpusDir(REPO_ROOT, BAQA_CORPUS);
   const fixture = await loadBaQaFixture(corpusDir);
-  let questions: BaQaQuestion[] = fixture.questions;
-  if (values.questions) {
-    const wanted = new Set(values.questions.split(",").map((s) => s.trim()));
-    questions = questions.filter((q) => wanted.has(q.id));
-  }
-  if (values.limit) questions = questions.slice(0, Number(values.limit));
+  let questions = selectQuestions(fixture.questions, {
+    multiTurn: values["multi-turn"] ?? false,
+    ...(values.questions ? { ids: values.questions.split(",").map((s) => s.trim()) } : {}),
+    ...(values.limit ? { limit: Number(values.limit) } : {}),
+  });
   if (questions.length === 0) throw new Error("no questions selected");
 
   const layout = materializeLayout();
@@ -246,10 +283,18 @@ async function main(): Promise<void> {
   const { resolveSessionTools, loadSessionToolsFlags, sessionGate, withoutApprovalGatedTools } =
     await import("../src/lib/ai/tool-runtime/session-tools.js");
   const { runChatToolTurn } = await import("../src/lib/ai/tool-runtime/chat-turn.js");
-  const { prepareTurn, loadChatTurnConfig } = await import("../src/lib/ai/conversation/turn.js");
+  const { prepareTurn, loadChatTurnConfig, recordReply } =
+    await import("../src/lib/ai/conversation/turn.js");
   const { chatToolLoopPromptCaching } = await import("../src/lib/ai/chat-prompt-caching.js");
-  const { buildAutoRagContext, buildLibrarySystemMessages, NATIVE_CHAT_TOOL_NOTE } =
-    await import("../src/routes/ai.js");
+  const {
+    buildAutoRagContext,
+    buildLibrarySystemMessages,
+    conversationRagContext,
+    NATIVE_CHAT_TOOL_NOTE,
+  } = await import("../src/routes/ai.js");
+  const { citedExcerptsMeta, planRetrievalQueries, retrievalConversation } =
+    await import("../src/lib/ai/conversation/retrieval-query.js");
+  const { listActiveMessages } = await import("../src/lib/ai/conversation/transcript-store.js");
   const { buildMultiProjectRagContext } = await import("../src/lib/ai/multi-project-rag.js");
   const { ingestRepoMetadata, ingestSourceAsKnowledge } =
     await import("../src/lib/connectors/connector-ingest.js");
@@ -615,38 +660,6 @@ async function main(): Promise<void> {
         tools.mode === "native" ? NATIVE_CHAT_TOOL_NOTE : tools.schemaBlock,
         { mode: tools.skillMode, catalog: tools.skillCatalog },
       );
-      // #2225 — retrieval runs as the asking user, so chunk ACLs apply as in /chat.
-      const tSearch = performance.now();
-      const rag = routing
-        ? (
-            await buildMultiProjectRagContext({
-              userId: user.id,
-              scope: {
-                kind: "projects",
-                projectIds: searchNames.map((n) => routing.pool.get(n)!.projectId),
-              },
-              query: q.text,
-            })
-          ).block
-        : await buildAutoRagContext(scope.projectId, [{ role: "user", content: q.text }], user.id);
-      // The session and tool setup between the probe and the search is not retrieval.
-      const retrievalMs = Math.round(
-        (routing?.route === "routed" ? setupStart - tRag : 0) + (performance.now() - tSearch),
-      );
-      const turn = await prepareTurn({
-        session: { id: row.id, snapshot: null },
-        userText: q.text,
-        prefix: [...library.stable, ...library.volatile],
-        beforeUser: rag ? [{ role: "system", content: rag }] : [],
-        provider: provider.key,
-        model,
-        summarizer: async () => {
-          throw new Error("a one-question session never compacts");
-        },
-        config: loadChatTurnConfig(null),
-        ...(tools.mode === "native" ? { nativeTools: tools.toolset.specs() } : {}),
-      });
-
       const sessionMeter = new LedgerCostMeter();
       const metered = meterProvider(
         meterProvider(meterProvider(provider, meter), answerMeter),
@@ -655,37 +668,162 @@ async function main(): Promise<void> {
       const usage = { promptTokens: 0, completionTokens: 0, calls: 0 };
       let toolCalls = 0;
       const toolNames: string[] = [];
-      const loop = await runChatToolTurn(
-        metered,
-        {
-          messages: turn.messages,
-          toolset: tools.toolset,
-          native: tools.mode === "native",
-          ctx: { sessionId: row.id, userId: user.id, projectId: scope.projectId },
-          gate: sessionGate({ session, runtime: tools }),
-        },
-        {
-          providerChatOptions: {
-            sessionId: row.id,
-            model,
-            callType: "chat",
-            promptCaching: chatToolLoopPromptCaching(provider),
+      // #2269 — a multi-turn question's earlier turns are asked first, in the same
+      // session; only the last turn is graded.
+      const multiTurn = isMultiTurn(q);
+      const turns = [...(q.before ?? []), q.text];
+      const earlierReplies: string[] = [];
+      let retrieval: TurnRetrieval | undefined;
+      let rag = "";
+      let reply = "";
+      // #2336 — the graded turn's retrieval time, a routed arm's probe included.
+      let retrievalMs = 0;
+      let loop: Awaited<ReturnType<typeof runChatToolTurn>> | null = null;
+      for (const [t, userText] of turns.entries()) {
+        const graded = t === turns.length - 1;
+        const viaConversation = retrievalMode === "conversation";
+        // The graded turn of a multi-turn question is searched both ways; only
+        // the run's own mode reaches the model.
+        const both = graded && multiTurn;
+        // #2225 — retrieval runs as the asking user, so chunk ACLs apply as in /chat.
+        const conv: RagContextCapture = { contexts: [], sources: 0 };
+        const last: RagContextCapture = { contexts: [], sources: 0 };
+        let searchMs = 0;
+        if (routing) {
+          // #2336 — a routing arm retrieves from the projects its route chose.
+          const tSearch = performance.now();
+          rag = (
+            await buildMultiProjectRagContext({
+              userId: user.id,
+              scope: {
+                kind: "projects",
+                projectIds: searchNames.map((n) => routing.pool.get(n)!.projectId),
+              },
+              query: userText,
+            })
+          ).block;
+          searchMs = performance.now() - tSearch;
+        } else {
+          let convRag = "";
+          if (viaConversation || both) {
+            const tSearch = performance.now();
+            convRag = await conversationRagContext(
+              { id: row.id, projectId: scope.projectId },
+              userText,
+              user.id,
+              conv,
+            );
+            if (viaConversation) searchMs = performance.now() - tSearch;
+          }
+          let lastRag = "";
+          if (!viaConversation || both) {
+            const tSearch = performance.now();
+            lastRag = await buildAutoRagContext(
+              scope.projectId,
+              [{ role: "user", content: userText }],
+              user.id,
+              undefined,
+              last,
+            );
+            if (!viaConversation) searchMs = performance.now() - tSearch;
+          }
+          rag = viaConversation ? convRag : lastRag;
+        }
+        // The session and tool setup between the probe and the search is not retrieval.
+        if (graded) {
+          retrievalMs = Math.round(
+            (routing?.route === "routed" ? setupStart - tRag : 0) + searchMs,
+          );
+        }
+        const capture = viaConversation ? conv : last;
+        if (both) {
+          const expected = expectedSourceFiles(q);
+          const product = citable.get(q.scope[0]!)!;
+          const names = (c: RagContextCapture): string[] => (c.excerpts ?? []).map((e) => e.name);
+          // Read before this turn's user row is appended, as the route reads it.
+          const history = retrievalConversation(await listActiveMessages(row.id)).messages;
+          retrieval = {
+            questionId: q.id,
+            refersBack: q.refersBack ?? false,
+            followUpDetected:
+              (planRetrievalQueries([...history, { role: "user", content: userText }])
+                ?.contextual ?? null) !== null,
+            expected,
+            conversation: retrievedExpectedFiles(expected, product, names(conv)),
+            lastMessage: retrievedExpectedFiles(expected, product, names(last)),
+            carried: conv.contexts.filter((c) => c.includes("(cited in your previous answer)"))
+              .length,
+          };
+        }
+        const turn = await prepareTurn({
+          session: { id: row.id, snapshot: null },
+          userText,
+          prefix: [...library.stable, ...library.volatile],
+          beforeUser: rag ? [{ role: "system", content: rag }] : [],
+          provider: provider.key,
+          model,
+          summarizer: async () => {
+            throw new Error("an eval session of a few turns never compacts");
           },
-          toolResultMaxChars: turn.build.toolResultMaxChars,
-          onUsage: (u) => {
-            usage.promptTokens +=
-              u.promptTokens + (u.cacheReadTokens ?? 0) + (u.cacheWriteTokens ?? 0);
-            usage.completionTokens += u.completionTokens;
-            usage.calls++;
-          },
-          onToolRecord: (record) => {
-            toolCalls++;
-            toolNames.push(record.tool);
-          },
-        },
-      );
+          config: loadChatTurnConfig(null),
+          ...(tools.mode === "native" ? { nativeTools: tools.toolset.specs() } : {}),
+        });
 
-      const reply = loop.replyText;
+        const records: ReplyToolCall[] = [];
+        loop = await runChatToolTurn(
+          metered,
+          {
+            messages: turn.messages,
+            toolset: tools.toolset,
+            native: tools.mode === "native",
+            ctx: { sessionId: row.id, userId: user.id, projectId: scope.projectId },
+            gate: sessionGate({ session, runtime: tools }),
+          },
+          {
+            providerChatOptions: {
+              sessionId: row.id,
+              model,
+              callType: "chat",
+              promptCaching: chatToolLoopPromptCaching(provider),
+            },
+            toolResultMaxChars: turn.build.toolResultMaxChars,
+            onUsage: (u) => {
+              usage.promptTokens +=
+                u.promptTokens + (u.cacheReadTokens ?? 0) + (u.cacheWriteTokens ?? 0);
+              usage.completionTokens += u.completionTokens;
+              usage.calls++;
+            },
+            onToolRecord: (rec) => {
+              toolCalls++;
+              toolNames.push(rec.tool);
+              records.push({
+                callId: rec.callId,
+                tool: rec.tool,
+                args: rec.args,
+                result: rec.result,
+                ...(rec.isError ? { isError: true } : {}),
+                executed: rec.executed,
+              });
+            },
+          },
+        );
+        reply = loop.replyText;
+        if (!graded) earlierReplies.push(reply);
+        // Recorded as the chat routes record a reply, with the excerpts it cited,
+        // so the next turn reads this one and carries those excerpts forward.
+        await recordReply({
+          sessionId: row.id,
+          text: reply,
+          toolCalls: records,
+          usage: loop.usage,
+          provider: provider.key,
+          model,
+          promptChars: null,
+          ratio: turn.ratio,
+          meta: citedExcerptsMeta(reply, capture.excerpts),
+        });
+      }
+      if (!loop) throw new Error(`${q.id} has no turn to ask`);
       const { citations, ambiguous } = extractCitations(
         reply,
         q.scope.map((name) => citable.get(name)!),
@@ -722,14 +860,21 @@ async function main(): Promise<void> {
         ambiguousCitations: ambiguous,
         judgeReply: judged.content,
         usage,
+        ...(multiTurn ? { earlierReplies } : {}),
+        ...(retrieval ? { retrieval } : {}),
       });
+      const found = retrieval
+        ? `, expected files retrieved conv ${retrieval.conversation.length} / last ` +
+          `${retrieval.lastMessage.length} of ${retrieval.expected.length}` +
+          `${retrieval.followUpDetected ? " (follow-up)" : ""}`
+        : "";
       console.log(
         `${runArm} ${q.id} [${i + 1}/${questions.length}]: ${score.behaviour ?? "UNSCORED"} ` +
           `(expect ${q.expect}), facts ${score.facts ? `${score.facts.stated}/${score.facts.total}` : "-"}, ` +
           `${citations.length} cites, ${toolCalls} tools ` +
           `(${loop.toolResults.filter((t) => t.truncated).length} cut, ` +
           `${loop.turnsUsed} turns${loop.loop.turnsExhausted ? ", OUT OF TURNS" : ""}), ` +
-          `rag ${rag.length} chars, ` +
+          `rag ${rag.length} chars${found}, ` +
           `$${(costUsd ?? Number.NaN).toFixed(4)} — total $${meter.spentUsd().toFixed(4)}`,
       );
     }
@@ -738,6 +883,7 @@ async function main(): Promise<void> {
     process.off("SIGINT", onSignal);
     process.off("SIGTERM", onSignal);
   }
+  const retrievalTurns = sessions.flatMap((s) => (s.retrieval ? [s.retrieval] : []));
   const faultSummary = indexFault
     ? summarizeIndexFault(
         indexFault,
@@ -778,6 +924,7 @@ async function main(): Promise<void> {
       projectId: repos.get(p.name)!.projectId,
     })),
     arm: runArm,
+    retrievalMode,
     flags: routing ? { ...flags, routingScope: String(routing.size), route: routing.route } : flags,
     sessionToolFlags: sessionFlags,
     ...(faultSummary ? { indexFault: faultSummary } : {}),
@@ -785,6 +932,7 @@ async function main(): Promise<void> {
     spentUsd: Number(meter.spentUsd().toFixed(6)),
     stoppedEarly,
     summary,
+    ...(retrievalTurns.length > 0 ? { retrieval: summarizeTurnRetrieval(retrievalTurns) } : {}),
     sessions,
   };
 
@@ -820,6 +968,9 @@ async function main(): Promise<void> {
     arms: all.map((e) => e.summary),
     armFlags: Object.fromEntries(all.map((e) => [e.arm, e.flags])),
     sessions: all.flatMap((e) => e.sessions),
+    retrieval: Object.fromEntries(
+      all.flatMap((e) => (e.retrieval ? [[e.arm, e.retrieval] as const] : [])),
+    ),
     spentUsd: all.reduce((a, e) => a + ((e as { spentUsd?: number }).spentUsd ?? 0), 0),
     stoppedEarly,
   });
