@@ -125,16 +125,19 @@ test.describe("Requirements tab and the approval ladder (#2347)", () => {
     });
 
     await test.step("the analyst ticks a row and requests a review of it", async () => {
-      const rowB = page.getByTestId(`requirements-row-${reqB}`);
+      // The per-change-request summary below the list has its own run-wide
+      // Request review card (#732), so every form locator is scoped to the list.
+      const list = page.getByTestId("requirements-list");
+      const rowB = list.getByTestId(`requirements-row-${reqB}`);
       await rowB.getByRole("checkbox").check();
-      await page.getByTestId("request-review").click();
-      await expect(page.getByTestId("request-review-scope")).toHaveText(
+      await list.getByTestId("request-review").click();
+      await expect(list.getByTestId("request-review-scope")).toHaveText(
         "This review covers 1 of 1 requirement.",
       );
-      await page.getByLabel("Reviewers").fill("coordinator");
-      await page.getByRole("button", { name: /^Add / }).first().click();
-      await page.getByRole("button", { name: /^Request review of 1 requirement$/ }).click();
-      await expect(page.getByTestId("request-review-done")).toBeVisible({ timeout: 30_000 });
+      await list.getByLabel("Reviewers").fill("coordinator");
+      await list.getByRole("button", { name: /^Add / }).first().click();
+      await list.getByRole("button", { name: /^Request review of 1 requirement$/ }).click();
+      await expect(list.getByTestId("request-review-done")).toBeVisible({ timeout: 30_000 });
       await expect(page.getByTestId(`requirements-review-${reqB}`)).toHaveText("In review", {
         timeout: 30_000,
       });
