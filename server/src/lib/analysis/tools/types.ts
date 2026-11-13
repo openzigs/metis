@@ -24,7 +24,9 @@ export interface ToolContext {
   /**
    * #2243 — the files the caller may not see (document ACLs). Set by the chat
    * tool runtime for every code-tool call, and (#2314) by the analysis code
-   * agent for its run's requester. Omitted (an eval harness), nothing is hidden.
+   * agent as a shared audience (`loadSharedCodeAccess`): its findings are read
+   * by every project member, so never the requester's own access. Omitted (an
+   * eval harness), nothing is hidden.
    */
   codeAccess?: CodeAccessFilter;
 }

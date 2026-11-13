@@ -380,6 +380,64 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
     });
 
+    // #2314 panel — the other two analysis paths that seed fused symbols: the
+    // requirement-grounded code agent and the single-shot code agent's context.
+    describe("the requirement-grounded and single-shot analysis paths", () => {
+      const ANSWER = JSON.stringify({ agentKey: "code", summary: "done", findings: [], notes: [] });
+      const orchestrator = (seen: string[]) =>
+        new AnalysisOrchestrator({
+          provider: {
+            key: "offline-stub",
+            model: "stub",
+            offline: true,
+            chat: vi.fn(
+              async (messages: Array<{ content: unknown }>, opts?: { systemMessage?: string }) => {
+                if (typeof opts?.systemMessage === "string") seen.push(opts.systemMessage);
+                for (const m of messages) if (typeof m.content === "string") seen.push(m.content);
+                return {
+                  content: ANSWER,
+                  usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+                  model: "stub",
+                  provider: "offline-stub",
+                };
+              },
+            ),
+          } as never,
+          knowledge: { search: async () => ({ hits: [] }) } as never,
+          fusedCode: { searcher, lineLookup },
+        }) as unknown as Record<string, (input: Record<string, unknown>) => Promise<unknown>>;
+
+      it("the requirement-grounded code agent never shows the model a restricted symbol", async () => {
+        const seen: string[] = [];
+        await orchestrator(seen).runRequirementGroundedCodeAgent!({
+          analysisId: "an-2314-rg",
+          projectId: PROJECT,
+          projectName: "Code",
+          projectDescription: "fees",
+          requirements: [{ id: "REQ-1", text: "Compute the fee." }],
+          documentIds: ["d-none"],
+          signal: new AbortController().signal,
+        });
+        const all = seen.join("\n");
+        expect(all).toContain("computeFee"); // the seed was built and reached the model
+        expect(all).not.toContain("computeSecretFee");
+        expect(all).not.toContain(SECRET_LINE);
+      });
+
+      it("the single-shot code agent's context leaves the restricted symbol out", async () => {
+        const chunks = (await orchestrator([]).retrieveContext!({
+          analysisId: "an-2314-ss",
+          projectId: PROJECT,
+          agentKey: "code",
+          documentIds: ["d-none"],
+          projectName: "Code",
+          projectDescription: "fees",
+        })) as Array<{ symbolId?: string }>;
+        const symbols = chunks.map((c) => c.symbolId).filter(Boolean);
+        expect(symbols).toEqual(["s-public"]);
+      });
+    });
+
     describe("fused symbol retrieval", () => {
       /** A reader's block: a user's own access (chat), or the shared audience's. */
       const block = (userId: string | "shared") =>
