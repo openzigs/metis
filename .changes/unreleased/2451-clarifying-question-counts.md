@@ -3,20 +3,11 @@ issue: 2451
 section: Fixed
 ---
 
-- Answering a clarifying question now counts. When a requirement had several
-  open questions about the same part of it, an answer was credited to none of
-  them, so the count of open questions never fell, the next round asked the
-  answered questions again, and the checkpoint card still listed them as open.
-  Each answer now closes the one question it was about.
+- Answering a clarifying question now closes the one open question it was
+  about, so the count falls and the next round does not ask it again.
 - The Clarifying Questions panel, the Summary, the step chip and the tab show
-  the same number of open questions. Before, the panel counted the questions on
-  screen (13) and everything else counted the open questions (12).
+  the same count of open questions; a round never opens with nothing to answer
+  while questions are open. On older runs the panel can read higher until the
+  next submit.
 - A change request's settings line says "Clarifying questions: on" from the
-  moment the run starts. Until part-way through the run it said "off".
-- A round of clarifying questions no longer opens with nothing to answer while
-  questions are still open. When none of the model's questions can be tied to
-  an open question, the round asks the open questions in their own words.
-- On a run started before this release, the Clarifying Questions panel can
-  show more open questions than the Questions tab and the Summary until answers
-  are next submitted: an answer used to close every question about the same
-  part of a requirement, and the panel now counts each one on its own.
+  moment the run starts.
