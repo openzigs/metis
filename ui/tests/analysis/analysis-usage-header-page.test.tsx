@@ -240,6 +240,23 @@ describe("analysis page usage header (#977)", () => {
     expect(await screen.findByText(/Deployment-wide analysis cap/)).toBeInTheDocument();
   });
 
+  it("#2454 — keeps the budget cards out of the header's actions, so the title keeps its width", async () => {
+    const { container } = render(<AnalysisPage />, {
+      wrapper: makeWrapper({ initialUser: TEST_USER }),
+    });
+    const card = await screen.findByText("This project, this month");
+    const cap = await screen.findByText(/Deployment-wide analysis cap/);
+    const header = container.querySelector('[data-slot="page-header"]') as HTMLElement;
+    const actions = header.querySelector('[data-slot="page-header-actions"]');
+    // Under the title and description, in the header's text column.
+    const cards = screen.getByTestId("analysis-usage-cards");
+    expect(header).toContainElement(cards);
+    expect(cards).toContainElement(card);
+    expect(cards).toContainElement(cap);
+    expect(actions === null || !actions.contains(card)).toBe(true);
+    expect(actions === null || !actions.contains(cap)).toBe(true);
+  });
+
   it("shows a running analysis's ledger tokens and cost, not 0 tok", async () => {
     renderPage();
     const started = await screen.findByText(/^Started /);

@@ -7,9 +7,10 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { makeWrapper } from "../test-utils";
 
 const rename = vi.hoisted(() => vi.fn());
+const capabilityPreview = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/analysis-api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/analysis-api")>()),
-  analysisApi: { rename },
+  analysisApi: { rename, capabilityPreview },
 }));
 const governingList = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/governing-findings-api", async (importOriginal) => ({
@@ -26,6 +27,7 @@ const listForChangeRequest = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/impact-analysis-api", () => ({ impactAnalysisApi: { listForChangeRequest } }));
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
+import { NO_CODE_IMPACT_REASON } from "@metis/shared";
 import { ApiError } from "@/lib/api-client";
 import type { AnalysisSnapshot } from "@/lib/analysis-api";
 import {
@@ -91,6 +93,7 @@ function renderWith(ui: React.ReactElement) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  capabilityPreview.mockResolvedValue({ codeConnected: true });
   governingList.mockResolvedValue(null);
   productsList.mockResolvedValue({ items: [], total: 0 });
   listDrafts.mockResolvedValue([]);
@@ -492,6 +495,63 @@ describe("ChangeRequestStepHeader", () => {
     expect(impact).toHaveAttribute("title", "The latest impact analysis is running.");
     expect(impact).toHaveAttribute("href", "/impact-analyses/ia-new");
     expect(listForChangeRequest).toHaveBeenCalledWith("an-1");
+  });
+
+  it("#2454 — on a Documents-only project, Impact says there is no code, not that code was mapped", async () => {
+    const completedCode = {
+      agentResults: [{ id: "ar-c", agentKey: "code", status: "completed", findings: [] }],
+    } as unknown as Partial<AnalysisSnapshot>;
+    const { unmount } = renderWith(
+      <ChangeRequestStepHeader
+        projectId="p1"
+        snapshot={snapshot({
+          ...completedCode,
+          capability: { codeConnected: false } as AnalysisSnapshot["capability"],
+        })}
+        pendingApprovals={0}
+      />,
+    );
+    const impact = screen.getByTestId("change-request-step-impact");
+    // Not "not applicable": Options still runs one over projects with code.
+    await waitFor(() => expect(impact).toHaveAttribute("data-state", "not-started"));
+    expect(impact).toHaveAttribute("title", NO_CODE_IMPACT_REASON);
+    // The run's record answers; the live probe is not read.
+    expect(capabilityPreview).not.toHaveBeenCalled();
+    unmount();
+
+    // The control: the same run on a project with code reads as mapped.
+    renderWith(
+      <ChangeRequestStepHeader
+        projectId="p1"
+        snapshot={snapshot(completedCode)}
+        pendingApprovals={0}
+      />,
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("change-request-step-impact")).toHaveAttribute(
+        "title",
+        "The affected code was mapped.",
+      ),
+    );
+  });
+
+  it("#2454 — while the run has written no capability record, the live probe says there is no code", async () => {
+    capabilityPreview.mockResolvedValue({ codeConnected: false });
+    renderWith(
+      <ChangeRequestStepHeader
+        projectId="p1"
+        snapshot={snapshot({
+          status: "running",
+          completedAt: null,
+          agentResults: [{ id: "ar-c", agentKey: "code", status: "running", findings: [] }],
+        } as unknown as Partial<AnalysisSnapshot>)}
+        pendingApprovals={0}
+      />,
+    );
+    const impact = screen.getByTestId("change-request-step-impact");
+    await waitFor(() => expect(impact).toHaveAttribute("title", NO_CODE_IMPACT_REASON));
+    expect(impact).not.toHaveAttribute("title", "Looking at the code.");
+    expect(capabilityPreview).toHaveBeenCalledWith("p1");
   });
 
   it("#2345 — with no result yet, Impact and Portfolio link to the change request's own checks card", async () => {

@@ -21,6 +21,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { deriveCapabilityReasons, type AnalysisPromptOnlyAgent } from "@metis/shared";
 import { analysisApi, type AnalysisAgentKey } from "@/lib/analysis-api";
+import { capabilityPreviewKey } from "@/lib/use-code-connected";
 import { CAPABILITY_REASON_COPY, preRunCapabilityTitle } from "@/lib/analysis-capability-copy";
 
 interface Props {
@@ -37,7 +38,7 @@ export function AnalysisCapabilityHint({
   codeAgentLabel = "The code agent",
 }: Props): React.ReactElement | null {
   const preview = useQuery({
-    queryKey: ["analysis", "capability-preview", projectId],
+    queryKey: capabilityPreviewKey(projectId),
     queryFn: () => analysisApi.capabilityPreview(projectId),
   });
 
@@ -48,6 +49,8 @@ export function AnalysisCapabilityHint({
     databaseAnalysisRequested: selectedAgents.includes("database"),
     codeGraphPresent: preview.data.codeGraphPresent,
     repoSourceIngested: preview.data.repoSourceIngested,
+    // #2454 — a Documents-only project is not warned about code it chose not to have.
+    codeConnected: preview.data.codeConnected,
     fusedCodeRetrievalEnabled: preview.data.fusedCodeRetrievalEnabled,
     schemaContextEnabled: preview.data.schemaContextEnabled,
     // agentMode intentionally omitted pre-run.

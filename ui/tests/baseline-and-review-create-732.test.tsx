@@ -44,7 +44,7 @@ import { baselinesApi } from "@/lib/baselines-api";
 import { reviewsApi } from "@/lib/reviews-api";
 import { analysisApi } from "@/lib/analysis-api";
 import { NewBaselineForm } from "@/components/baselines/new-baseline-form";
-import { RequestReviewCard } from "@/components/reviews/request-review-card";
+import { inReviewSentence, RequestReviewCard } from "@/components/reviews/request-review-card";
 import { RequirementsHub } from "@/components/requirements/requirements-hub";
 import ProjectBaselinesPage from "@/app/(authed)/projects/[id]/baselines/page";
 
@@ -249,6 +249,33 @@ describe("RequestReviewCard", () => {
     );
   });
 
+  it("#2454 — with every requirement in the review and none approved, names no rest", () => {
+    renderWith(
+      <RequestReviewCard projectId="p1" requirementIds={["r1", "r2", "r3"]} currentUserId="me" />,
+    );
+    fireEvent.click(screen.getByTestId("request-review"));
+
+    const note = screen.getByTestId("request-review-status-note");
+    expect(note).toHaveTextContent(/^All 3 show as in review until the review is decided\./);
+    expect(note).not.toHaveTextContent(/the rest/i);
+  });
+
+  it("#2454 — counts the others beside the approved ones", () => {
+    renderWith(
+      <RequestReviewCard
+        projectId="p1"
+        requirementIds={["r1", "r2", "r3"]}
+        currentUserId="me"
+        approvedCount={2}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("request-review"));
+
+    expect(screen.getByTestId("request-review-status-note")).toHaveTextContent(
+      "2 of them are already approved and stay approved unless the review is rejected. The other one shows as in review until the review is decided.",
+    );
+  });
+
   it("cannot be sent without a reviewer, and a removed reviewer is not sent", async () => {
     apiFetch.mockResolvedValue(PEOPLE);
     renderWith(<RequestReviewCard projectId="p1" requirementIds={["r1"]} currentUserId="me" />);
@@ -356,5 +383,16 @@ describe("Requirements hub", () => {
     renderWith(<RequirementsHub projectId="p1" />, { user: userWith("reader") });
     await screen.findByTestId("requirements-count-draft");
     expect(screen.queryByTestId("requirements-hub-request-review")).not.toBeInTheDocument();
+  });
+});
+
+describe("inReviewSentence (#2454)", () => {
+  it("counts what the review's unapproved requirements show, and says nothing when all are approved", () => {
+    expect(inReviewSentence(1, 0)).toBe("It shows as in review until the review is decided. ");
+    expect(inReviewSentence(15, 0)).toBe("All 15 show as in review until the review is decided. ");
+    expect(inReviewSentence(5, 2)).toBe(
+      "The other 3 show as in review until the review is decided. ",
+    );
+    expect(inReviewSentence(3, 3)).toBe("");
   });
 });

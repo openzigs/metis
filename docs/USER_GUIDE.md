@@ -1576,6 +1576,8 @@ METIS never silently skips code analysis. When a run could not use its full capa
 
 A **fully-capable run shows no banner at all.** The same information appears as a smaller **hint on the start-analysis form** *before* you run, so you know up front which capabilities the run will have (for example, "This project has no code graph — code gap analysis will be document-grounded only"). The hint respects which agents you have selected.
 
+A **Documents only** project (no repository connected, so no code graph or source to build) is not warned about either: the hint and the banner leave out **No code graph** and **Repository source code has not been ingested**. Its change request's **Impact** step reads "This project has no code connected", and the **Impact and portfolio** card offers an impact analysis only through **Options**, over projects that do have code.
+
 #### 11.3.2 Traceability matrix (requirement → findings → code → tests)
 
 Once a run completes, the results page shows a **Traceability matrix**: a scannable table with one row per requirement and columns for the **findings** it was grounded in, the **code locations** those findings cite (shown as `filePath:startLine-endLine`), the **tests** METIS could detect for that code, and the requirement's **coverage badge**. It answers, at a glance, "for each requirement, what did we find, where does it live in the code, and is it tested?" Each code location is listed once, and each test names the test function as well as its file. A long matrix shows 25 requirements at a time, with **Previous** / **Next** below it.

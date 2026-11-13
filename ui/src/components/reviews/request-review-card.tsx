@@ -99,6 +99,24 @@ export function soloOutcome(canApprove: boolean, canBaseline: boolean): string {
   return "Working alone? Your role cannot approve requirements or take a baseline. Add a colleague to this project to review, or ask a coordinator to approve them.";
 }
 
+/**
+ * #2454 — what the review's requirements that are not yet approved show while
+ * it is open, counted from the ones it covers. It said "The rest show as
+ * awaiting review" with nothing left over (every row ticked, none approved),
+ * which read as rows outside the review. Empty when all are approved.
+ */
+export function inReviewSentence(count: number, approvedCount: number): string {
+  const others = count - approvedCount;
+  if (others <= 0) return "";
+  if (approvedCount === 0)
+    return count === 1
+      ? "It shows as in review until the review is decided. "
+      : `All ${count} show as in review until the review is decided. `;
+  return others === 1
+    ? "The other one shows as in review until the review is decided. "
+    : `The other ${others} show as in review until the review is decided. `;
+}
+
 export function RequestReviewCard({
   projectId,
   requirementIds: allRequirementIds,
@@ -300,9 +318,9 @@ export function RequestReviewCard({
           {approvedCount > 0
             ? `${approvedCount} of them ${approvedCount === 1 ? "is" : "are"} already approved and stay${approvedCount === 1 ? "s" : ""} approved unless the review is rejected. `
             : ""}
-          The rest show as awaiting review until it is decided. Withdrawing the review puts back the
-          status each had when the review was sent, except on a requirement another open review
-          still covers: that one waits for the other review.
+          {inReviewSentence(count, approvedCount)}Withdrawing the review puts back the status each
+          had when the review was sent, except on a requirement another open review still covers:
+          that one waits for the other review.
         </p>
         <div className="space-y-1">
           <Label htmlFor="review-title">Title</Label>
