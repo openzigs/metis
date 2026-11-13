@@ -194,8 +194,14 @@ async function execute(args: unknown, context: ToolContext): Promise<ToolResult>
     };
   }
 
+  // #2314 — the analysis code agent's caller may not see every file (#2243):
+  // a hidden one is neither listed nor counted, as in chat's `list_files`.
+  const access = context.codeAccess;
+  const repo = context.connectorId ?? null;
   const tally = emptyListTally();
-  if (!(await listCloneFiles(context.cloneDir, parsed.args, tally))) {
+  const opts: ListCloneOptions =
+    access && !access.unrestricted ? { isExcluded: (rel) => access.isHidden(repo, rel) } : {};
+  if (!(await listCloneFiles(context.cloneDir, parsed.args, tally, opts))) {
     return { content: "Error: Repository clone directory not found.", isError: true };
   }
   return listFilesResult(parsed.args, tally);

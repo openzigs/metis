@@ -7,7 +7,9 @@
  * determined by the tool, its arguments, the project, the caller and the
  * project's content. The key covers all five, with the content as the version
  * key from `projects/content-version.ts`. A re-ingest therefore makes every
- * older entry unreachable: there is no invalidation to forget.
+ * older entry unreachable: there is no invalidation to forget. #2314 — the
+ * caller is their user id, durable role and groups, read on every call, so a
+ * role change is not an invalidation to forget either.
  *
  * In-process only: an LRU bounded by entry count and by bytes, and every entry
  * expires after a TTL. Not cached:
@@ -29,6 +31,7 @@
 import crypto from "node:crypto";
 import { createChildLogger } from "../../logger.js";
 import { recordToolResultCache } from "../../metrics/index.js";
+import { resolveAclActor, type AclActor } from "../../rag/acl.js";
 import {
   getProjectContentVersion,
   type ProjectContentVersion,
@@ -220,6 +223,19 @@ export interface ToolResultCacheDeps {
   cache?: () => ToolResultCache;
   version?: (projectId: string) => Promise<ProjectContentVersion>;
   enabled?: () => boolean;
+  /** #2314 — the caller's ACL actor, read per call. Defaults to `resolveAclActor`. */
+  actor?: (userId: string) => Promise<AclActor>;
+}
+
+/**
+ * #2314 — a user's cache scope: the user AND what their document access is
+ * decided on (`isVisibleTo`: their durable role and their groups). A role
+ * change does not move the project's content version, so with the user id
+ * alone a result filtered under the old role was served under the new one
+ * until the entry expired (up to the TTL, 30 minutes).
+ */
+export function userCacheScope(actor: AclActor): string {
+  return JSON.stringify([actor.userId, actor.role, [...(actor.groups ?? [])].sort()]);
 }
 
 /**
@@ -234,6 +250,7 @@ export function withToolResultCache(
   const cacheOf = deps.cache ?? getToolResultCache;
   const versionOf = deps.version ?? ((id: string) => getProjectContentVersion(id));
   const enabled = deps.enabled ?? (() => toolResultCacheEnabled());
+  const actorOf = deps.actor ?? resolveAclActor;
   const run = tool.execute.bind(tool);
   return {
     ...tool,
@@ -255,16 +272,31 @@ export function withToolResultCache(
         cache.count(tool.name, "bypass");
         return run(args, ctx);
       }
+      // The caller's access scope: per user, so no entry crosses users. #2248 —
+      // a shared audience is a scope of its own: a user's own result (which may
+      // hold chunks restricted to them) never answers a shared reply's call.
+      // #2314 — and per role and groups, read now, so a role change reaches
+      // the next call. An actor that cannot be read (an inactive user) is not
+      // served from the cache: the tool runs, and refuses them itself.
+      let scope = SHARED_AUDIENCE_SCOPE;
+      if (ctx.aclAudience !== "shared") {
+        try {
+          scope = userCacheScope(await actorOf(ctx.userId));
+        } catch (err) {
+          log.debug("ACL actor unavailable; tool result not cached", {
+            tool: tool.name,
+            error: err instanceof Error ? err.message : String(err),
+          });
+          cache.count(tool.name, "bypass");
+          return run(args, ctx);
+        }
+      }
       const key = toolResultCacheKey({
         tool: tool.name,
         args,
         projectId: ctx.projectId,
         versionKey: version.key,
-        // The caller's access scope: per user, so no entry crosses users even
-        // if a read tool starts filtering on the caller. #2248 — a shared
-        // audience is a scope of its own: a user's own result (which may hold
-        // chunks restricted to them) never answers a shared reply's call.
-        scope: ctx.aclAudience === "shared" ? SHARED_AUDIENCE_SCOPE : ctx.userId,
+        scope,
       });
       const hit = cache.get(key);
       if (hit) {

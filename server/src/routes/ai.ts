@@ -180,8 +180,10 @@ import {
   buildFusedCodeBlock,
   type FusedCodeSearcher,
   type FusedRagChunkRef,
+  type HiddenSymbolsLookup,
   type SymbolLineLookup,
 } from "../lib/rag/fused-code-context.js";
+import { hiddenSymbolsFor, loadCodeAccessFilterFor } from "../lib/analysis/tools/code-access.js";
 import {
   createDefaultCodeSearcher,
   createDefaultSymbolLineLookup,
@@ -224,6 +226,8 @@ export interface FusedCodeDeps {
   lineLookup: SymbolLineLookup;
   /** #2325 — the project's indexed versions, so each entry names its commit. */
   loadVersions?: (projectId: string) => Promise<CodeVersionIndex>;
+  /** #2314 — the symbols the reader may not see; defaults to the actor's code access. */
+  hiddenSymbols?: HiddenSymbolsLookup;
 }
 
 function defaultFusedCodeDeps(): FusedCodeDeps {
@@ -991,6 +995,11 @@ async function retrieveAutoRagBlock(
       ...(fusedDeps.loadVersions ? { loadVersions: fusedDeps.loadVersions } : {}),
       // #2242 — numbered on from the excerpts, so `[n]` names one entry only.
       firstIndex: listed.length + 1,
+      // #2314 — only symbols in files the reader may see (#2243): the same
+      // actor the excerpts were filtered for, a shared audience included.
+      hiddenSymbols:
+        fusedDeps.hiddenSymbols ??
+        hiddenSymbolsFor(() => loadCodeAccessFilterFor(projectId, actor)),
     });
 
     if (fused.block) {

@@ -10,6 +10,7 @@ import { promises as fs } from "node:fs";
 import * as path from "node:path";
 import type { AgentTool, ToolContext, ToolResult, JSONSchema } from "./types.js";
 import { missingParamError } from "./arg-errors.js";
+import { isHiddenInClone } from "./code-access.js";
 import { redactSecrets } from "../../safety/secret-patterns.js";
 
 const MAX_LINES = 200;
@@ -137,6 +138,23 @@ async function execute(args: unknown, context: ToolContext): Promise<ToolResult>
       content: "Error: No repository clone directory configured for this project.",
       isError: true,
     };
+  }
+
+  // #2314 — the analysis code agent's caller may not see every file (#2243): a
+  // hidden one gets the reply a missing file gets, so no reply confirms that a
+  // restricted file exists. Chat's wrapper checks before it calls this tool.
+  const access = context.codeAccess;
+  if (
+    access &&
+    !access.unrestricted &&
+    (await isHiddenInClone(
+      access,
+      context.connectorId ?? null,
+      context.cloneDir,
+      validated.filePath,
+    ))
+  ) {
+    return { content: `${FILE_NOT_FOUND} ${validated.filePath}`, isError: true };
   }
 
   const read = await readCloneFileLines(context.cloneDir, validated.filePath);

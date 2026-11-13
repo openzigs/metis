@@ -9,6 +9,21 @@ vi.mock("../../logger.js", () => ({
   createChildLogger: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
 }));
 
+/**
+ * #2314 — the durable role `resolveAclActor` reads, per user (default
+ * `analyst`); a user in `inactive` is refused, as a deactivated one is.
+ */
+const acl = vi.hoisted(() => ({
+  roles: new Map<string, string>(),
+  inactive: new Set<string>(),
+}));
+vi.mock("../../rag/acl.js", () => ({
+  resolveAclActor: async (userId: string) => {
+    if (acl.inactive.has(userId)) throw new Error("ACL actor unavailable");
+    return { userId, role: acl.roles.get(userId) ?? "analyst" };
+  },
+}));
+
 import {
   CACHEABLE_TOOLS,
   ToolResultCache,
@@ -17,6 +32,7 @@ import {
   getToolResultCache,
   toolResultCacheEnabled,
   toolResultCacheKey,
+  userCacheScope,
   withToolResultCache,
 } from "./tool-result-cache.js";
 import { getMetricsRegistry, resetMetricsForTests } from "../../metrics/index.js";
@@ -59,6 +75,8 @@ function tool(
 beforeEach(() => {
   resetMetricsForTests();
   __resetToolResultCacheForTests();
+  acl.roles.clear();
+  acl.inactive.clear();
 });
 afterEach(() => {
   delete process.env.CHAT_TOOL_RESULT_CACHE_ENABLED;
@@ -151,6 +169,49 @@ describe("withToolResultCache", () => {
     await cached.execute({ q: "a" }, ctx("p1", "alice"));
     await cached.execute({ q: "a" }, ctx("p1", "bob"));
     expect(execute).toHaveBeenCalledTimes(2);
+  });
+
+  // #2314 — a role change moves no content version: the entry filtered under
+  // the old role must not answer the first call under the new one.
+  it("does not serve a result cached under a user's old role after their role changes", async () => {
+    let n = 0;
+    const { t, execute } = tool("search-knowledge", () => ({ text: `run-${++n}` }));
+    const cache = new ToolResultCache();
+    const cached = withToolResultCache(t, {
+      cache: () => cache,
+      version: async () => version("v1"),
+    });
+    acl.roles.set("alice", "analyst");
+    expect((await cached.execute({ q: "a" }, ctx("p1", "alice"))).text).toBe("run-1");
+    expect((await cached.execute({ q: "a" }, ctx("p1", "alice"))).text).toBe("run-1");
+    acl.roles.set("alice", "viewer");
+    expect((await cached.execute({ q: "a" }, ctx("p1", "alice"))).text).toBe("run-2");
+    expect(execute).toHaveBeenCalledTimes(2);
+  });
+
+  it("scopes on the actor's groups in any order", () => {
+    const scope = (groups?: string[]) =>
+      userCacheScope({ userId: "u1", role: "analyst", ...(groups ? { groups } : {}) });
+    expect(scope(["b", "a"])).toBe(scope(["a", "b"]));
+    expect(scope(["a"])).not.toBe(scope(["b"]));
+    expect(scope([])).toBe(scope());
+    expect(userCacheScope({ userId: "u1", role: "admin" })).not.toBe(scope());
+  });
+
+  // #2314 — an actor that cannot be read is never answered from the cache:
+  // the tool runs, and its own access check refuses them.
+  it("bypasses the cache for a caller whose ACL actor cannot be read", async () => {
+    const { t, execute } = tool("search_code_symbols", () => ({ text: "x" }));
+    const cache = new ToolResultCache();
+    const cached = withToolResultCache(t, {
+      cache: () => cache,
+      version: async () => version("v1"),
+    });
+    await cached.execute({ q: "a" }, ctx("p1", "gone"));
+    acl.inactive.add("gone");
+    await cached.execute({ q: "a" }, ctx("p1", "gone"));
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(cache.stats()).toMatchObject({ entries: 1, hit: 0, miss: 1, bypass: 1 });
   });
 
   // #2248 — a user's own search may hold chunks restricted to them; it must

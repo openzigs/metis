@@ -53,6 +53,21 @@ vi.mock("../prisma.js", () => ({
   },
 }));
 
+// #2314 — the code pass's document-access read is not the citation lookup
+// these tests count: no file is hidden. Recorded, so the requester it is read
+// for can be checked.
+const { loadAnalysisCodeAccess } = vi.hoisted(() => ({
+  loadAnalysisCodeAccess: vi.fn(async (_projectId: string, _actorId: string | undefined) => ({
+    unrestricted: true,
+    hiddenPaths: () => [],
+    isHidden: () => false,
+  })),
+}));
+vi.mock("./tools/code-access.js", async (original) => ({
+  ...(await original<typeof import("./tools/code-access.js")>()),
+  loadAnalysisCodeAccess,
+}));
+
 const { persistAgentResult } = vi.hoisted(() => ({
   persistAgentResult: vi.fn(async (_input: unknown) => ({ id: "ar_1", findingIds: [] })),
 }));
@@ -226,6 +241,13 @@ beforeEach(() => {
 afterEach(() => {
   delete process.env.ANALYSIS_FUSED_CODE_RETRIEVAL;
   __resetConfigSingleton();
+});
+
+// #2314 — the agentic code pass reads with the run requester's document access
+// (#2243), not unfiltered: the tools' `codeAccess` is theirs.
+it("#2314 — the agentic code pass reads the requester's document access", async () => {
+  await runPipeline(ANSWER_298);
+  expect(loadAnalysisCodeAccess).toHaveBeenCalledWith(PROJECT_ID, "u1");
 });
 
 describe("#298 — an over-long documentId and note are repaired, not fatal", () => {

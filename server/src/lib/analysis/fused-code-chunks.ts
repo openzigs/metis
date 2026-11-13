@@ -39,6 +39,7 @@ import {
   type FusedCodeSearcher,
   type FusedRagChunkRef,
   type FusedSymbolHit,
+  type HiddenSymbolsLookup,
   type SymbolLineLookup,
 } from "../rag/fused-code-context.js";
 import type { RetrievalContextChunk } from "./agent-runner.js";
@@ -115,6 +116,11 @@ export async function retrieveFusedCodeChunks(opts: {
   tokenBudget?: number;
   maxSymbols?: number;
   deps?: AnalysisFusedCodeDeps;
+  /**
+   * #2314 — the hits whose file the run's reader may not see (document ACLs),
+   * dropped before the budget. The orchestrator always passes it.
+   */
+  hiddenSymbols?: HiddenSymbolsLookup;
 }): Promise<RetrievalContextChunk[]> {
   const cfg = getConfigService();
   const enabled = opts.enabled ?? cfg.getBool("ANALYSIS_FUSED_CODE_RETRIEVAL", true);
@@ -133,6 +139,7 @@ export async function retrieveFusedCodeChunks(opts: {
     maxSymbols: opts.maxSymbols ?? cfg.getNumber("ANALYSIS_FUSED_CODE_MAX_SYMBOLS", 12),
     searcher: deps.searcher,
     lineLookup: deps.lineLookup,
+    ...(opts.hiddenSymbols ? { hiddenSymbols: opts.hiddenSymbols } : {}),
   });
   return fused.hits.map(symbolHitToContextChunk);
 }
@@ -268,6 +275,8 @@ export async function retrieveFusedCodeContext(opts: {
   tokenBudget?: number;
   maxSymbols?: number;
   deps?: AnalysisFusedCodeDeps;
+  /** #2314 — see {@link retrieveFusedCodeChunks}. */
+  hiddenSymbols?: HiddenSymbolsLookup;
 }): Promise<FusedCodeContext> {
   const enabled = opts.enabled ?? getConfigService().getBool("ANALYSIS_FUSED_CODE_RETRIEVAL", true);
   const composed = composeCodeAgentFusedQuery({
@@ -285,6 +294,7 @@ export async function retrieveFusedCodeContext(opts: {
     tokenBudget: opts.tokenBudget,
     maxSymbols: opts.maxSymbols,
     deps: opts.deps,
+    ...(opts.hiddenSymbols ? { hiddenSymbols: opts.hiddenSymbols } : {}),
   });
   const block = renderFusedCodeContextBlock(chunks);
   return {

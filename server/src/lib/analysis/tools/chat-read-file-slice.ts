@@ -31,11 +31,9 @@
  *     result, before the numbered lines, so chat's model-context cap cannot
  *     cut it.
  */
-import { promises as fs } from "node:fs";
-import path from "node:path";
 import { readFileSliceTool } from "./read-file-slice.js";
 import { NO_WORKING_TREE, resolveChatClones, type ChatCloneDeps } from "./chat-clones.js";
-import { UNRESTRICTED_CODE_ACCESS, type CodeAccessFilter } from "./code-access.js";
+import { isHiddenInClone, UNRESTRICTED_CODE_ACCESS } from "./code-access.js";
 import { isSensitiveInClone, isSensitiveRepoPath, notAccessible } from "./repo-paths.js";
 import {
   codeCitationRef,
@@ -139,30 +137,8 @@ const NOT_FOUND = "Error: File not found:";
 // #2327 — moved to `repo-paths.ts`, where `grep_files` and `list_files` read it too.
 export { isSensitiveRepoPath };
 
-/**
- * #2243 — whether `filePath` in the clone of `repoId` is a hidden file. Checked
- * on the path as asked AND on where it really resolves, so a symlink inside the
- * repository (`public.ts -> secret.ts`) cannot read a hidden file under
- * another name.
- */
-export async function isHiddenInClone(
-  access: CodeAccessFilter,
-  repoId: string,
-  cloneDir: string,
-  filePath: string,
-): Promise<boolean> {
-  const asked = path.relative(path.resolve(cloneDir), path.resolve(cloneDir, filePath));
-  if (access.isHidden(repoId, asked)) return true;
-  try {
-    const [real, root] = await Promise.all([
-      fs.realpath(path.resolve(cloneDir, filePath)),
-      fs.realpath(cloneDir),
-    ]);
-    return access.isHidden(repoId, path.relative(root, real));
-  } catch {
-    return false; // not on disk: the read below reports it as not found
-  }
-}
+// #2314 — moved to `code-access.ts`, where the analysis `read_file_slice` reads it too.
+export { isHiddenInClone };
 
 export function createChatReadFileSliceTool(deps: ChatReadFileSliceDeps = {}): AgentTool {
   const loadVersions = deps.loadVersions ?? loadCodeVersions;

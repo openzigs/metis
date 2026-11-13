@@ -76,6 +76,8 @@ function options(over: Partial<BuildSpecKitRagContextOptions> = {}): BuildSpecKi
             ]),
         ),
       },
+      // #2314 — nothing hidden (the default reads the database).
+      hiddenSymbols: async () => new Set<string>(),
     },
     includeCode: true,
     siblings: { lookup: { findInFiles: vi.fn(async () => []) } },

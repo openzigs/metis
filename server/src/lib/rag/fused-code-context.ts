@@ -149,6 +149,15 @@ export interface FusedCodeSearcher {
   ): Promise<RawCodeSymbolHit[]>;
 }
 
+/**
+ * #2314 — which of `symbolIds` (all in `projectId`) the reader may not see.
+ * Kept a seam so this module stays free of database and ACL code.
+ */
+export type HiddenSymbolsLookup = (
+  symbolIds: string[],
+  projectId: string,
+) => Promise<ReadonlySet<string>>;
+
 /** Injectable line resolver — reads authoritative spans from `CodeSymbol`. */
 export interface SymbolLineLookup {
   resolve(
@@ -468,6 +477,14 @@ export async function buildFusedCodeBlock(opts: {
    * to the unversioned block, like any other failure here.
    */
   loadVersions?: (projectId: string) => Promise<CodeVersionIndex>;
+  /**
+   * #2314 — the ids among the hits whose file the reader may not see (document
+   * ACLs, #2243; `hiddenSymbolsFor` in `analysis/tools/code-access.ts`). Those
+   * hits are dropped before the dedupe and the budget, so the block neither
+   * shows nor counts them. A rejection returns the empty result: the block is
+   * never built without the reader's restrictions. Omitted, nothing is hidden.
+   */
+  hiddenSymbols?: HiddenSymbolsLookup;
 }): Promise<FuseCodeContextResult> {
   const empty: FuseCodeContextResult = {
     block: "",
@@ -508,8 +525,25 @@ export async function buildFusedCodeBlock(opts: {
     return empty;
   }
 
+  let hidden: ReadonlySet<string> = new Set();
+  if (opts.hiddenSymbols) {
+    try {
+      hidden = await opts.hiddenSymbols(
+        raw.map((r) => r.symbolId),
+        opts.projectId,
+      );
+    } catch (err) {
+      log.debug("Fused symbol access check failed, continuing without symbol grounding", {
+        projectId: opts.projectId,
+        error: (err as Error).message,
+      });
+      return empty;
+    }
+  }
+
   const hits: FusedSymbolHit[] = [];
   for (const r of raw) {
+    if (hidden.has(r.symbolId)) continue; // #2314 — the reader may not see its file
     const li = lines.get(r.symbolId);
     if (!li) continue; // no authoritative span → cannot render a locator
     hits.push({

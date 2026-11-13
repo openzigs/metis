@@ -23,7 +23,8 @@ export interface ToolContext {
   cloneDir?: string;
   /**
    * #2243 — the files the caller may not see (document ACLs). Set by the chat
-   * tool runtime for every code-tool call; omitted (analysis), nothing is hidden.
+   * tool runtime for every code-tool call, and (#2314) by the analysis code
+   * agent for its run's requester. Omitted (an eval harness), nothing is hidden.
    */
   codeAccess?: CodeAccessFilter;
 }

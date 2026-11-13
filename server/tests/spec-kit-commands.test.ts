@@ -22,6 +22,8 @@ const auditCalls: any[] = [];
 vi.mock("../src/lib/prisma.js", () => ({
   prisma: {
     auditLog: { create: vi.fn(async () => ({})) },
+    // #2314 — the fused block's access check: no restricted repository document.
+    document: { findMany: vi.fn(async () => []) },
     specKitArtifact: {
       findMany: vi.fn(async ({ where }: any) =>
         [...artifactRows.values()].filter((r) => r.projectId === where.projectId),

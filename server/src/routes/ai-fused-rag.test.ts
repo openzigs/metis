@@ -13,9 +13,17 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { search, findUnique } = vi.hoisted(() => ({
+const { search, findUnique, restrictedDocs, symbolRows } = vi.hoisted(() => ({
   search: vi.fn(),
   findUnique: vi.fn(),
+  /** #2314 — the project's restricted repository documents (none unless a test adds one). */
+  restrictedDocs: [] as Array<{ filename: string; aclSubjects: string }>,
+  /** #2314 — the `CodeSymbol` rows the access check places hits with. */
+  symbolRows: [] as Array<{
+    id: string;
+    filePath: string;
+    graph: { repoConnectionId: string | null };
+  }>,
 }));
 
 vi.mock("../lib/rag/knowledge-service.js", () => ({
@@ -28,6 +36,12 @@ vi.mock("../lib/prisma.js", () => ({
     // and its live-user check, so the requester is an active user.
     user: { findFirst: async ({ where }: { where: { id: string } }) => ({ id: where.id }) },
     userRole: { findMany: async () => [] },
+    // #2314 — the fused block's code-access check (`loadCodeAccessFilterFor`).
+    document: { findMany: async () => restrictedDocs },
+    codeSymbol: {
+      findMany: async ({ where }: { where: { id: { in: string[] } } }) =>
+        symbolRows.filter((r) => where.id.in.includes(r.id)),
+    },
   },
 }));
 
@@ -62,6 +76,8 @@ beforeEach(async () => {
   search.mockReset();
   findUnique.mockReset();
   findUnique.mockResolvedValue({ name: "ETAG" });
+  restrictedDocs.length = 0;
+  symbolRows.length = 0;
 });
 
 afterEach(() => {
@@ -181,6 +197,68 @@ describe("buildAutoRagContext — flag ON (fused merge)", () => {
     expect(out).toContain("## Retrieved Code Symbols");
     expect(out).toContain("src/Validator.java:20-55");
     expect(out).not.toContain("## Retrieved Knowledge (project-scoped RAG)");
+  });
+
+  // #2314 — the fused block is filtered for the reader the excerpts were
+  // filtered for: a symbol in a file whose document is restricted away from
+  // them is neither shown nor counted; its owner, and a shared audience, too.
+  describe("document access (#2314)", () => {
+    const secret = {
+      symbolId: "s-secret",
+      filePath: "y",
+      name: "SecretFee",
+      kind: "function",
+      score: 2,
+    };
+    const open = { symbolId: "s-open", filePath: "y", name: "Validator", kind: "class", score: 1 };
+    const lines = {
+      "s-secret": { filePath: "src/Secret.java", startLine: 1, endLine: 9 },
+      "s-open": { filePath: "src/Validator.java", startLine: 20, endLine: 55 },
+    };
+    beforeEach(() => {
+      search.mockResolvedValue({ hits: [] });
+      restrictedDocs.push({
+        filename: "connector:repo:rc1:src/src/Secret.java",
+        aclSubjects: JSON.stringify([{ kind: "user", value: "alice" }]),
+      });
+      symbolRows.push(
+        { id: "s-secret", filePath: "src/Secret.java", graph: { repoConnectionId: "rc1" } },
+        { id: "s-open", filePath: "src/Validator.java", graph: { repoConnectionId: "rc1" } },
+      );
+    });
+
+    it("drops a symbol in a file restricted away from the requester", async () => {
+      const out = await buildAutoRagContext(
+        "p1",
+        [userTurn],
+        "bob",
+        fusedDeps([secret, open], lines),
+      );
+      expect(out).toContain("src/Validator.java:20-55");
+      expect(out).not.toContain("Secret");
+    });
+
+    it("keeps it for the user the document is restricted to", async () => {
+      const out = await buildAutoRagContext(
+        "p1",
+        [userTurn],
+        "alice",
+        fusedDeps([secret, open], lines),
+      );
+      expect(out).toContain("src/Secret.java:1-9");
+    });
+
+    it("drops it for a shared audience, even one its owner triggered", async () => {
+      const { sharedAudienceActor } = await import("../lib/rag/acl.js");
+      const out = await buildAutoRagContext(
+        "p1",
+        [userTurn],
+        sharedAudienceActor("alice"),
+        fusedDeps([secret, open], lines),
+      );
+      expect(out).toContain("src/Validator.java:20-55");
+      expect(out).not.toContain("Secret");
+    });
   });
 });
 
