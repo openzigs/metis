@@ -37,7 +37,9 @@
  *
  * Nothing is cut silently: the coverage report ({@link SectionCoverage}) lists
  * every section with what was read from it, a section that produced nothing
- * says so, and a batch whose reply could not be read is reported `unread`.
+ * says so, and a batch whose reply could not be read is reported `unread`. A
+ * reply that leaves out a section with text in it is asked again for the
+ * sections it left out, and a section still left out is `unread` (#2407).
  * A provider error or a cancellation fails the read (the caller's agent fails
  * as it would today); a read in which no batch could be read throws
  * {@link DocumentReaderError}.
@@ -75,7 +77,7 @@ import { batchSections, outlineSections, sectionAt, type ReaderSection } from ".
  * (`reading-cache.ts`). Bump it when the reader's prompts, reply schemas,
  * batching or verification change: every saved reading is then read again.
  */
-export const READER_VERSION = "2361.1";
+export const READER_VERSION = "2407.1";
 
 /** Source characters whose statements one reply is asked to write. */
 export const READER_BATCH_CHARS = 8000;
@@ -362,7 +364,8 @@ async function read(
   // #2297 — the shared lead is cached only when a later batch call can read it
   // back: on Anthropic a cache write costs 1.25× and a single batch never reads it.
   const cacheLead = batches.length > 1;
-  for (const batch of batches) {
+  /** Ask for the statements of `batch`; `null` when the reply could not be read. */
+  const askBatch = async (batch: ReaderSection[]): Promise<unknown[] | null> => {
     const prompt = context
       ? buildSectionBatchPrompt({
           title: input.title,
@@ -383,14 +386,14 @@ async function read(
       STATEMENTS_REPLY_SHAPE,
     );
     rethrowProviderError(outcome);
-    if (!hasVerdict(outcome)) {
-      for (const s of batch) coverage.get(s.id)!.status = "unread";
-      continue;
-    }
-    readBatches++;
+    return hasVerdict(outcome) ? outcome.verdict.statements : null;
+  };
+  /** Keep a reply's verified statements; returns the ids of the batch's sections it covered. */
+  const keepReply = (batch: ReaderSection[], entries: unknown[]): Set<string> => {
+    const covered = new Set<string>();
     const inBatch = new Map(batch.map((s) => [s.id, s]));
     const batchSpan = { start: batch[0]!.start, end: batch[batch.length - 1]!.end };
-    for (const entry of outcome.verdict.statements) {
+    for (const entry of entries) {
       const parsed = rawStatementSchema.safeParse(entry);
       if (!parsed.success) {
         droppedUnverified++;
@@ -405,12 +408,16 @@ async function read(
       let clause = locate(parsed.data.quote, named ?? batchSpan);
       if (named && clause && !startsIn(clause, named))
         clause = locate(parsed.data.quote, batchSpan);
-      if (!clause || !startsIn(clause, batchSpan)) {
+      // #2407 — in one of the batch's own sections: a batch asked again holds
+      // only the sections left out, so it need not be contiguous.
+      const section = clause ? sectionAt(sections, clause.clauseStart) : undefined;
+      if (!clause || !section || !inBatch.has(section.id)) {
         droppedUnverified++;
         coverage.get((named ?? batch[0]!).id)!.unverified++;
+        if (named) covered.add(named.id);
         continue;
       }
-      const section = sectionAt(sections, clause.clauseStart) ?? batch[0]!;
+      covered.add(section.id);
       quoted.push({
         kind: parsed.data.kind,
         statement: parsed.data.statement,
@@ -420,6 +427,25 @@ async function read(
         section,
       });
     }
+    return covered;
+  };
+  for (const batch of batches) {
+    const entries = await askBatch(batch);
+    if (entries === null) {
+      for (const s of batch) coverage.get(s.id)!.status = "unread";
+      continue;
+    }
+    readBatches++;
+    const covered = keepReply(batch, entries);
+    // #2407 — a reply that says nothing of a section with text in it has not
+    // read that section (a reply cut short, or an incomplete first draft the
+    // model then corrected). Those sections are asked for once more, on their
+    // own, and one the second reply leaves out too is reported unread, never read.
+    const missing = batch.filter((s) => !covered.has(s.id) && hasBody(s));
+    if (missing.length === 0) continue;
+    const again = await askBatch(missing);
+    const coveredAgain = again === null ? new Set<string>() : keepReply(missing, again);
+    for (const s of missing) if (!coveredAgain.has(s.id)) coverage.get(s.id)!.status = "unread";
   }
   if (batches.length > 0 && readBatches === 0) {
     throw new DocumentReaderError(
@@ -648,6 +674,17 @@ function asSentence(statement: string): string {
   const body = statement.replace(/[,;:\s]+$/, "");
   const capital = body.charAt(0).toUpperCase() + body.slice(1);
   return /[.!?]["')\]]*$/.test(capital) ? capital : `${capital}.`;
+}
+
+/**
+ * #2407 — whether a section has text of its own beyond its heading line. One
+ * that does is expected to yield at least one statement (background, if
+ * nothing else); a heading with nothing under it before its first subheading
+ * is not.
+ */
+export function hasBody(section: Pick<ReaderSection, "text">): boolean {
+  const body = section.text.replace(/^#{1,6}[ \t][^\n]*/, "");
+  return /[\p{L}\p{N}]/u.test(body);
 }
 
 function startsIn(clause: { clauseStart: number }, span: { start: number; end: number }): boolean {
