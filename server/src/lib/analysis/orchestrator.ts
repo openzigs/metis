@@ -262,7 +262,7 @@ import {
   type AgentTool,
   type ToolContext,
 } from "./tools/index.js";
-import { hiddenSymbolsFor, loadAnalysisCodeAccess } from "./tools/code-access.js";
+import { hiddenSymbolsFor, loadSharedCodeAccess } from "./tools/code-access.js";
 import { buildRequirementGroundedPrompt, normalizeAgentContext } from "./prompts.js";
 import { clearUnknownRequirementIds } from "./requirement-id-guard.js";
 import {
@@ -1782,8 +1782,6 @@ export class AnalysisOrchestrator {
       affectedCode,
       affectedSchema,
       escalation,
-      // #2314 — the regenerating actor's document access.
-      ...(input.actorId ? { actorId: input.actorId } : {}),
     };
 
     // #1131 — a continuation appends beside the rows it continues.
@@ -2091,8 +2089,6 @@ export class AnalysisOrchestrator {
             // are one transaction. A failed or cancelled pass throws, and its
             // row is appended, deleting nothing.
             persistMode: "supersede",
-            // #2314 — the resuming actor's document access.
-            actorId: opts.actorId,
           });
           delta.promptTokens += result.usage.promptTokens;
           delta.completionTokens += result.usage.completionTokens;
@@ -2781,8 +2777,6 @@ export class AnalysisOrchestrator {
                 affectedCode,
                 affectedSchema,
                 escalation,
-                // #2314 — the requester's document access.
-                actorId: opts.startedById,
               });
               totals.promptTokens += codeResult.usage.promptTokens;
               totals.completionTokens += codeResult.usage.completionTokens;
@@ -2839,7 +2833,6 @@ export class AnalysisOrchestrator {
                   affectedCode,
                   affectedSchema,
                   escalation,
-                  actorId: opts.startedById,
                 });
                 multiResults.push(result);
                 totals.promptTokens += result.usage.promptTokens;
@@ -2889,7 +2882,6 @@ export class AnalysisOrchestrator {
               signal: codeController.signal,
               affectedCode,
               affectedSchema,
-              actorId: opts.startedById,
               governingSignal: applicabilityController.signal,
               onGoverningApplicability: (work) => {
                 governingWork = work;
@@ -3752,12 +3744,6 @@ export class AnalysisOrchestrator {
      * in one transaction, and a failed or cancelled one is appended.
      */
     persistMode?: "replace" | "append" | "supersede";
-    /**
-     * #2314 — the run's requester. The code tools and the fused symbols show
-     * only files they may see (#2243); absent or the system actor, only
-     * unrestricted files (see `loadAnalysisCodeAccess`).
-     */
-    actorId?: string;
   }): Promise<AgentRunResult> {
     const startedAt = new Date();
     const agentKey = "code" as const;
@@ -3811,11 +3797,12 @@ export class AnalysisOrchestrator {
         // to offer says nothing about whether code retrieval works.
         const withheldTools = fileToolsAvailable ? NO_WITHHELD_TOOLS : REPO_FILE_TOOLS;
 
-        // #2314 — the files the requester may not see (document ACLs, #2243) are
-        // neither read, listed nor searched by the tools, nor seeded below. An
-        // inactive requester rejects here and fails the pass: never read
-        // without their restrictions.
-        const codeAccess = await loadAnalysisCodeAccess(input.projectId, input.actorId);
+        // #2314 — an analysis's findings, citations and snippets are persisted
+        // and read by every project member, so the code agent reads as a
+        // shared audience (#2248), never as its requester: a file any document
+        // ACL restricts (#2243) is neither read, listed nor searched by the
+        // tools, nor seeded below.
+        const codeAccess = await loadSharedCodeAccess(input.projectId);
 
         // Build tool context
         const toolContext: ToolContext = {
@@ -4764,8 +4751,6 @@ export class AnalysisOrchestrator {
      * The work outlives the code agent, so the caller gives it its own.
      */
     governingSignal?: AbortSignal;
-    /** #2314 — the run's requester: the fused symbols are the ones they may see. */
-    actorId?: string;
   }): Promise<AgentRunResult> {
     const startedAt = new Date();
     const agentKey = "code" as const;
@@ -4854,10 +4839,9 @@ export class AnalysisOrchestrator {
           requirements: input.requirements,
           ragChunks: perRequirement.flatMap((r) => r.chunks).map(toFusedRagChunkRef),
           deps: this.deps.fusedCode,
-          // #2314 — only symbols in files the requester may see (#2243).
-          hiddenSymbols: hiddenSymbolsFor(() =>
-            loadAnalysisCodeAccess(input.projectId, input.actorId),
-          ),
+          // #2314 — only symbols every project member may see (#2243): the
+          // findings are persisted for all of them.
+          hiddenSymbols: hiddenSymbolsFor(() => loadSharedCodeAccess(input.projectId)),
         });
         // #2276 — requirements past the embedder's limit reach keyword search only.
         this.noteRequirementsLeftOut(input.analysisId, fused.semanticLeftOut);
@@ -5899,10 +5883,9 @@ export class AnalysisOrchestrator {
         }),
         ragChunks: combined.map(toFusedRagChunkRef),
         deps: this.deps.fusedCode,
-        // #2314 — only symbols in files the requester may see (#2243).
-        hiddenSymbols: hiddenSymbolsFor(() =>
-          loadAnalysisCodeAccess(input.projectId, input.actorId),
-        ),
+        // #2314 — only symbols every project member may see (#2243): the
+        // findings are persisted for all of them.
+        hiddenSymbols: hiddenSymbolsFor(() => loadSharedCodeAccess(input.projectId)),
       });
       return fusedChunks.length > 0 ? [...combined, ...fusedChunks] : combined;
     }

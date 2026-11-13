@@ -19,8 +19,9 @@
  * even read, so an unrestricted repository behaves exactly as before.
  *
  * #2314 — and outside chat: the analysis code agent's tools and its fused
- * symbol context ({@link loadAnalysisCodeAccess}), and the fused symbol block
- * of chat's auto-RAG and of Spec Kit (`buildFusedCodeBlock`'s `access`).
+ * symbol context, and Spec Kit's fused symbol block, as a shared audience
+ * ({@link loadSharedCodeAccess}); chat auto-RAG's fused symbol block as the
+ * turn's actor (`buildFusedCodeBlock`'s `hiddenSymbols`).
  *
  * Paths are matched per repository connection: a restriction on `src/a.ts` in
  * one repository hides nothing in another. A code graph with no repository
@@ -37,6 +38,7 @@ import {
   sharedAudienceActor,
   type AclActor,
 } from "../../rag/acl.js";
+import type { HiddenSymbolsLookup } from "../../rag/fused-code-context.js";
 
 const REPO_DOC_PREFIX = "connector:repo:";
 /** The source-file unit's prefix after the connector id. */
@@ -139,24 +141,15 @@ export function loadCodeAccessFilter(caller: CodeAccessCaller): Promise<CodeAcce
 }
 
 /**
- * #2314 — the code-access filter of an analysis run. Its findings are grounded
- * as its requester may see, as the document reader's are (#2262): a user's run
- * reads as that user; a scheduled run (`SYSTEM_ACTOR_ID`, #2297) or one with no
- * requester reads as a shared audience, which sees no restricted file. An
- * inactive requester rejects, failing the pass rather than reading unfiltered.
- */
-export function loadAnalysisCodeAccess(
-  projectId: string,
-  actorId: string | undefined,
-): Promise<CodeAccessFilter> {
-  return actorId && actorId !== SYSTEM_ACTOR_ID
-    ? loadCodeAccessFilter({ projectId, userId: actorId })
-    : loadSharedCodeAccess(projectId);
-}
-
-/**
- * #2314 — the code-access filter of output a whole project reads, such as a
- * Spec Kit artifact: a shared audience (#2248), which sees no restricted file.
+ * #2314 — the code-access filter of output a whole project reads: a shared
+ * audience (#2248), which sees no restricted file. Used for an analysis (its
+ * findings, citations and snippets are persisted and read by every member
+ * with `analysis.read`) and for a Spec Kit artifact. Deliberately NOT the
+ * requester's own access: a file only they may see would otherwise be quoted
+ * into output the rest of the project reads. This supersedes, for persisted
+ * output, the #2262 "runs as the requester" rule the document reader follows,
+ * and is the rule the discussion responder uses (`aclAudience: "shared"`).
+ * No actor is resolved, so it never rejects for an inactive requester.
  */
 export function loadSharedCodeAccess(projectId: string): Promise<CodeAccessFilter> {
   return loadCodeAccessFilter({ projectId, userId: SYSTEM_ACTOR_ID, aclAudience: "shared" });
@@ -227,15 +220,20 @@ export async function isHiddenInClone(
 /**
  * #2314 — `buildFusedCodeBlock`'s `hiddenSymbols` for the filter `load`
  * resolves. `load` runs at most once, and only when the searcher returned a
- * hit, so a fused block with nothing to filter costs no query.
+ * hit, so a fused block with nothing to filter costs no query. Each hit is
+ * judged on the file and repository its line lookup already resolved, so no
+ * symbol is read twice; a hit whose repository is unknown is matched against
+ * every repository's restrictions, as a legacy graph is.
  */
-export function hiddenSymbolsFor(
-  load: () => Promise<CodeAccessFilter>,
-): (symbolIds: string[], projectId: string) => Promise<Set<string>> {
+export function hiddenSymbolsFor(load: () => Promise<CodeAccessFilter>): HiddenSymbolsLookup {
   let filter: Promise<CodeAccessFilter> | undefined;
-  return async (symbolIds, projectId) => {
+  return async (hits) => {
     filter ??= load();
-    return hiddenSymbolIds(await filter, projectId, symbolIds);
+    const f = await filter;
+    if (f.unrestricted) return new Set();
+    return new Set(
+      hits.filter((h) => f.isHidden(h.repoConnectionId ?? null, h.filePath)).map((h) => h.symbolId),
+    );
   };
 }
 

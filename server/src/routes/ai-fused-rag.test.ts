@@ -13,17 +13,11 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { search, findUnique, restrictedDocs, symbolRows } = vi.hoisted(() => ({
+const { search, findUnique, restrictedDocs } = vi.hoisted(() => ({
   search: vi.fn(),
   findUnique: vi.fn(),
   /** #2314 — the project's restricted repository documents (none unless a test adds one). */
   restrictedDocs: [] as Array<{ filename: string; aclSubjects: string }>,
-  /** #2314 — the `CodeSymbol` rows the access check places hits with. */
-  symbolRows: [] as Array<{
-    id: string;
-    filePath: string;
-    graph: { repoConnectionId: string | null };
-  }>,
 }));
 
 vi.mock("../lib/rag/knowledge-service.js", () => ({
@@ -37,11 +31,8 @@ vi.mock("../lib/prisma.js", () => ({
     user: { findFirst: async ({ where }: { where: { id: string } }) => ({ id: where.id }) },
     userRole: { findMany: async () => [] },
     // #2314 — the fused block's code-access check (`loadCodeAccessFilterFor`).
+    // The hits are placed on the file and repository the line lookup resolved.
     document: { findMany: async () => restrictedDocs },
-    codeSymbol: {
-      findMany: async ({ where }: { where: { id: { in: string[] } } }) =>
-        symbolRows.filter((r) => where.id.in.includes(r.id)),
-    },
   },
 }));
 
@@ -77,7 +68,6 @@ beforeEach(async () => {
   findUnique.mockReset();
   findUnique.mockResolvedValue({ name: "ETAG" });
   restrictedDocs.length = 0;
-  symbolRows.length = 0;
 });
 
 afterEach(() => {
@@ -212,8 +202,18 @@ describe("buildAutoRagContext — flag ON (fused merge)", () => {
     };
     const open = { symbolId: "s-open", filePath: "y", name: "Validator", kind: "class", score: 1 };
     const lines = {
-      "s-secret": { filePath: "src/Secret.java", startLine: 1, endLine: 9 },
-      "s-open": { filePath: "src/Validator.java", startLine: 20, endLine: 55 },
+      "s-secret": {
+        filePath: "src/Secret.java",
+        startLine: 1,
+        endLine: 9,
+        repoConnectionId: "rc1",
+      },
+      "s-open": {
+        filePath: "src/Validator.java",
+        startLine: 20,
+        endLine: 55,
+        repoConnectionId: "rc1",
+      },
     };
     beforeEach(() => {
       search.mockResolvedValue({ hits: [] });
@@ -221,10 +221,6 @@ describe("buildAutoRagContext — flag ON (fused merge)", () => {
         filename: "connector:repo:rc1:src/src/Secret.java",
         aclSubjects: JSON.stringify([{ kind: "user", value: "alice" }]),
       });
-      symbolRows.push(
-        { id: "s-secret", filePath: "src/Secret.java", graph: { repoConnectionId: "rc1" } },
-        { id: "s-open", filePath: "src/Validator.java", graph: { repoConnectionId: "rc1" } },
-      );
     });
 
     it("drops a symbol in a file restricted away from the requester", async () => {

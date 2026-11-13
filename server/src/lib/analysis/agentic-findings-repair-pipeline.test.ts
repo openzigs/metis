@@ -54,10 +54,10 @@ vi.mock("../prisma.js", () => ({
 }));
 
 // #2314 — the code pass's document-access read is not the citation lookup
-// these tests count: no file is hidden. Recorded, so the requester it is read
+// these tests count: no file is hidden. Recorded, so the audience it is read
 // for can be checked.
-const { loadAnalysisCodeAccess } = vi.hoisted(() => ({
-  loadAnalysisCodeAccess: vi.fn(async (_projectId: string, _actorId: string | undefined) => ({
+const { loadSharedCodeAccess } = vi.hoisted(() => ({
+  loadSharedCodeAccess: vi.fn(async (_projectId: string) => ({
     unrestricted: true,
     hiddenPaths: () => [],
     isHidden: () => false,
@@ -65,7 +65,7 @@ const { loadAnalysisCodeAccess } = vi.hoisted(() => ({
 }));
 vi.mock("./tools/code-access.js", async (original) => ({
   ...(await original<typeof import("./tools/code-access.js")>()),
-  loadAnalysisCodeAccess,
+  loadSharedCodeAccess,
 }));
 
 const { persistAgentResult } = vi.hoisted(() => ({
@@ -243,11 +243,13 @@ afterEach(() => {
   __resetConfigSingleton();
 });
 
-// #2314 — the agentic code pass reads with the run requester's document access
-// (#2243), not unfiltered: the tools' `codeAccess` is theirs.
-it("#2314 — the agentic code pass reads the requester's document access", async () => {
+// #2314 — the agentic code pass reads as a shared audience (#2248): its
+// findings are persisted for every project member, so never with the
+// requester's own access. `tests/code-access-outside-chat-2314.sqlite.test.ts`
+// drives a real run over a real clone.
+it("#2314 — the agentic code pass reads the shared audience's document access", async () => {
   await runPipeline(ANSWER_298);
-  expect(loadAnalysisCodeAccess).toHaveBeenCalledWith(PROJECT_ID, "u1");
+  expect(loadSharedCodeAccess).toHaveBeenCalledWith(PROJECT_ID);
 });
 
 describe("#298 — an over-long documentId and note are repaired, not fatal", () => {

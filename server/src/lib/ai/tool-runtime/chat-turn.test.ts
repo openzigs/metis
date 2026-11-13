@@ -196,6 +196,37 @@ describe("runChatToolTurn", () => {
     expect(drop.execute).not.toHaveBeenCalled();
   });
 
+  // #2314 — the tool-result cache reads the caller's ACL actor once per turn:
+  // every call of a turn carries one shared memo, and the next turn a new one.
+  it("gives every tool call of a turn the same ACL actor memo, and a new turn a fresh one", async () => {
+    const memos: unknown[] = [];
+    const reader: RuntimeTool = {
+      ...tool("read_doc", () => "ok"),
+      execute: vi.fn(async (_args, ctx) => {
+        memos.push(ctx.aclActorMemo);
+        return { text: "ok" };
+      }),
+    };
+    const { toolset, gate } = setup({ low: "auto", medium: "auto", high: "auto" }, [reader]);
+    const script = () =>
+      new OfflineStubProvider({
+        script: [
+          { toolCalls: [{ id: "c1", name: "read_doc", args: { n: 1 } }] },
+          { toolCalls: [{ id: "c2", name: "read_doc", args: { n: 2 } }] },
+          { content: "done" },
+        ],
+      });
+    const turn = { messages: [{ role: "user" as const, content: "x" }], toolset, native: true };
+    await runChatToolTurn(script(), { ...turn, ctx: CTX, gate }, {});
+    await runChatToolTurn(script(), { ...turn, ctx: CTX, gate }, {});
+    expect(memos).toHaveLength(4);
+    expect(memos[0]).toBeTypeOf("object");
+    expect(memos[1]).toBe(memos[0]);
+    expect(memos[2]).not.toBe(memos[0]);
+    expect(memos[3]).toBe(memos[2]);
+    expect(CTX).not.toHaveProperty("aclActorMemo"); // the caller's ctx is not touched
+  });
+
   it("caps the model's copy of a big result and records the whole thing", async () => {
     const big = "y".repeat(5_000);
     const reader = tool("read_doc", () => big);

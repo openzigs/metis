@@ -11,6 +11,7 @@
 import type { AiToolEvent, AiToolEventPhase, CodeCitationRef } from "@metis/shared";
 import type { RiskLevel } from "../types.js";
 import type { ZeroResultKind } from "../../analysis/tools/types.js";
+import type { AclActor } from "../../rag/acl.js";
 
 /** #147 — `agent`: a sub-agent call (the tool runs another agent). */
 export type ToolSource = "metis" | "mcp" | "code" | "agent";
@@ -40,6 +41,12 @@ export interface RuntimeToolContext {
    * thread): see `ToolContext.aclAudience`. Omitted: the result is for `userId`.
    */
   aclAudience?: "shared";
+  /**
+   * #2314 — one chat turn's memo of the caller's ACL actor, so the tool-result
+   * cache reads it once per turn rather than on every call. Created per turn
+   * by `runChatTurn`; omitted, the cache reads it per call.
+   */
+  aclActorMemo?: { actor?: Promise<AclActor> };
   /**
    * #147 — the model's id for THIS call, set by the executor when it runs the
    * tool, so a sub-agent run can be linked to the call that started it.

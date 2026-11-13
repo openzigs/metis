@@ -179,8 +179,10 @@ function allowedByAgent(name: string, allowlist: readonly string[] | null | unde
  * #1843 — the read tools' results are cached on the project's content version.
  * #2243 — every call carries the caller's {@link loadCodeAccessFilter}, so a file
  * whose document the caller may not see is neither read nor listed. The cache
- * stays correct: it is scoped per user, role and groups (#2314; and per shared
- * audience), and an ACL edit moves the content version.
+ * stays correct: it is scoped per user (and per shared audience), on a project
+ * with a restricted document per durable role too (#2314; groups are in the
+ * key but `resolveAclActor` resolves none yet), and an ACL edit moves the
+ * content version.
  */
 export function codeRuntimeTool(
   tool: AgentTool,

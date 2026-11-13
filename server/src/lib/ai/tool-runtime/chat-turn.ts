@@ -370,6 +370,9 @@ export async function runChatToolTurn(
   let refunds = 0;
 
   const wireNames = input.toolset.tools.map((t) => t.wireName);
+  // #2314 — every call of this turn shares one memo of the caller's ACL actor
+  // (the executor spreads `ctx`, so the memo object itself is shared).
+  const toolCtx: RuntimeToolContext = { ...input.ctx, aclActorMemo: {} };
 
   const result = await withInvokeAgentSpan("chat", async (span) => {
     span.setAttribute("metis.session.id", input.ctx.sessionId);
@@ -425,7 +428,7 @@ export async function runChatToolTurn(
             {
               toolset: input.toolset,
               gate: input.gate,
-              ctx: input.ctx,
+              ctx: toolCtx,
               onEvent: options.onToolEvent,
             },
           );
