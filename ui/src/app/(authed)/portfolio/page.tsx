@@ -38,6 +38,8 @@ import { Card } from "@/components/ui/card";
 import { PageHeader } from "@/components/ui/page-header";
 import { ApiError } from "@/lib/api-client";
 import { productsApi } from "@/lib/products-api";
+import { projectsApi } from "@/lib/projects-api";
+import { useValidatedActiveWorkspaceId, workspaceListQuery } from "@/lib/active-workspace";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { useCreatePortfolioAssessment, usePortfolioAssessments } from "@/lib/portfolio-hooks";
 import { PortfolioAssessmentForm } from "@/components/portfolio/portfolio-assessment-form";
@@ -129,6 +131,50 @@ function PortfolioEntry({
     enabled: initialProductId !== null && !productsQuery.isPending && !listed,
     retry: false,
   });
+  // #2351 — the shared scope picker. "This project": the product of the
+  // project it was opened from (a change request's), named; a project in no
+  // product says so rather than being silently out of scope (#2330).
+  const project = useQuery({
+    queryKey: ["portfolio", "project", backProjectId],
+    queryFn: () => projectsApi.get(encodeURIComponent(backProjectId as string)),
+    enabled: backProjectId !== null,
+    retry: false,
+  });
+  const projectProductId = project.data?.productId ?? null;
+  const projectProduct = useQuery({
+    queryKey: ["portfolio", "product", projectProductId],
+    queryFn: () => productsApi.get(encodeURIComponent(projectProductId as string)),
+    enabled: projectProductId !== null,
+    retry: false,
+  });
+  const current = projectProduct.data
+    ? { id: projectProduct.data.id, name: projectProduct.data.name }
+    : null;
+  const currentNote = !backProjectId
+    ? "Open this from a change request to check its project's product."
+    : project.isSuccess && !projectProductId
+      ? `${project.data.name} is not part of a product, so it is not in the portfolio.`
+      : undefined;
+  // #2351 — "Whole workspace": the top bar's workspace's products the analyst
+  // can read (the list is access-filtered on the server).
+  const { workspaceId: activeWorkspaceId } = useValidatedActiveWorkspaceId();
+  const { data: workspaces = [] } = useQuery(workspaceListQuery);
+  const activeWorkspace = workspaces.find((w) => w.id === activeWorkspaceId) ?? null;
+  const workspaceProducts = useQuery({
+    queryKey: ["portfolio", "workspace-products", activeWorkspace?.id ?? null],
+    queryFn: () => productsApi.list({ pageSize: MAX_PAGE_SIZE, workspaceId: activeWorkspace!.id }),
+    enabled: activeWorkspace !== null,
+    retry: false,
+  });
+  const workspace =
+    activeWorkspace && workspaceProducts.isSuccess
+      ? {
+          id: activeWorkspace.id,
+          name: activeWorkspace.name,
+          productIds: workspaceProducts.data.items.map((p) => p.id),
+          count: workspaceProducts.data.total,
+        }
+      : undefined;
   const recent = usePortfolioAssessments(initialProductId ?? undefined);
   const create = useCreatePortfolioAssessment();
 
@@ -174,6 +220,9 @@ function PortfolioEntry({
         onClearDocument={() => setDocument(null)}
         changeRequest={changeRequest}
         onClearChangeRequest={() => setChangeRequest(null)}
+        current={current}
+        currentNote={currentNote}
+        workspace={workspace}
         pending={create.isPending}
         error={error}
         onSubmit={(input) =>

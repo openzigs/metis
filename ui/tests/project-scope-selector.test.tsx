@@ -37,10 +37,13 @@ describe("ProjectScopeSelector", () => {
     localStorage.clear();
   });
 
-  it("renders the selector button with 'All projects' label by default", () => {
+  // #2351 — the shared picker has no "All" option: an unscoped chat (nothing
+  // ticked) reads "No product chosen", not "All projects" (#2330: "All" meant
+  // no search here and everything in the portfolio check).
+  it("renders the selector button with 'No product chosen' by default", () => {
     render(<ProjectScopeSelector {...defaultProps} />, { wrapper: makeWrapper() });
     expect(screen.getByTestId("project-scope-selector")).toBeInTheDocument();
-    expect(screen.getByText("All projects")).toBeInTheDocument();
+    expect(screen.getByText("No product chosen")).toBeInTheDocument();
   });
 
   it("names the selected project rather than counting it (#1368)", async () => {
@@ -116,8 +119,11 @@ describe("ProjectScopeSelector", () => {
     render(<ProjectScopeSelector {...defaultProps} />, { wrapper: makeWrapper() });
 
     await user.click(screen.getByTestId("project-scope-selector"));
-    // Should show the "All my projects" option
-    expect(screen.getByText("All my projects")).toBeInTheDocument();
+    // #2351 — the shared picker's three options, in order.
+    expect(screen.getByTestId("project-scope-this")).toHaveTextContent("This project");
+    expect(screen.getByTestId("project-scope-workspace")).toHaveTextContent("Whole workspace");
+    expect(screen.getByRole("group", { name: "Chosen products" })).toBeInTheDocument();
+    expect(await screen.findByLabelText("Alpha")).toBeInTheDocument();
   });
 
   it("calls onChange when a project is toggled", async () => {
@@ -136,7 +142,9 @@ describe("ProjectScopeSelector", () => {
     );
   });
 
-  it("calls onChange with mode 'all' when 'All my projects' is clicked", async () => {
+  // #2351 — there is no "All my projects" option: unticking the last product
+  // returns chat to "all" (no search), the same scope it was before.
+  it("calls onChange with mode 'all' when the last product is unticked", async () => {
     const user = userEvent.setup();
     const onChange = vi.fn();
     render(
@@ -148,7 +156,7 @@ describe("ProjectScopeSelector", () => {
     );
 
     await user.click(screen.getByTestId("project-scope-selector"));
-    await user.click(screen.getByText("All my projects"));
+    await user.click(await screen.findByLabelText("Alpha"));
     expect(onChange).toHaveBeenCalledWith({ mode: "all", projectIds: [] });
   });
 
@@ -371,7 +379,8 @@ describe("ProjectScopeSelector — workspace scope (#2238)", () => {
     );
     await waitFor(() => expect(screen.getByTestId("project-scope-selector")).toBeEnabled());
     await user.click(screen.getByTestId("project-scope-selector"));
-    await user.click(await screen.findByText("Every project in Payments"));
+    // #2351 — one wording for the workspace (#2330 found two).
+    await user.click(await screen.findByTestId("project-scope-workspace"));
     expect(onChange).toHaveBeenCalledWith({
       mode: "workspace",
       projectIds: [],
@@ -383,7 +392,9 @@ describe("ProjectScopeSelector — workspace scope (#2238)", () => {
         onChange={onChange}
       />,
     );
-    expect(screen.getByText("All of Payments")).toBeInTheDocument();
+    expect(screen.getByTestId("project-scope-selector")).toHaveTextContent(
+      "Whole workspace: Payments",
+    );
   });
 
   it("a project ticked while the workspace is the scope starts a project selection", async () => {

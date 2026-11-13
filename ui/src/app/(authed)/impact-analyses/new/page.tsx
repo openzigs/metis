@@ -16,10 +16,14 @@ import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import type { CreateImpactAnalysisInput } from "@metis/shared";
+
+/** The most projects one impact run takes (`createImpactAnalysisSchema`). */
+const MAX_PROJECTS = 50;
 import { Card } from "@/components/ui/card";
 import { projectsApi, documentsApi, type Project } from "@/lib/projects-api";
 import { useCreateImpactAnalysis } from "@/lib/impact-analysis-hooks";
-import { MultiProjectPicker } from "@/components/impact/multi-project-picker";
+import { ScopePicker, type ScopeKind } from "@/components/scope/scope-picker";
+import { useValidatedActiveWorkspaceId, workspaceListQuery } from "@/lib/active-workspace";
 import {
   DocumentSourceSelector,
   type SourceDocument,
@@ -50,6 +54,12 @@ export default function NewImpactAnalysisPage() {
     const preselected = searchParams?.get("projectId");
     return preselected ? [preselected] : [];
   });
+  // #2351 — which of the shared picker's options the selection is: arriving
+  // with a project (or a change request) starts on "This project"; otherwise
+  // nothing is chosen, as before.
+  const [scopeKind, setScopeKind] = useState<ScopeKind | null>(() =>
+    searchParams?.get("projectId") ? "this" : null,
+  );
   // #2345 — arriving from a change request (`?analysisId=`), its requirements are
   // the source: the server reads them itself, so nothing is typed again. The
   // snapshot read here only names it and counts them.
@@ -78,6 +88,29 @@ export default function NewImpactAnalysisPage() {
     retry: false,
   });
   const projects: Project[] = projectsQuery.data?.items ?? [];
+  // #2351 — "This project": the change request's, else the one arrived with.
+  const currentProjectId = changeRequestId
+    ? (crProjectId ?? searchParams?.get("projectId") ?? null)
+    : (searchParams?.get("projectId") ?? null);
+  const currentProject = (() => {
+    const p = projects.find((x) => x.id === currentProjectId);
+    return p ? { id: p.id, name: p.name } : null;
+  })();
+  // #2351 — "Whole workspace": the top bar's workspace, and its projects the
+  // analyst can read (this list is theirs), at most what one run takes.
+  const { workspaceId: activeWorkspaceId } = useValidatedActiveWorkspaceId();
+  const { data: workspaces = [] } = useQuery(workspaceListQuery);
+  const activeWorkspace = workspaces.find((w) => w.id === activeWorkspaceId) ?? null;
+  const workspaceProjectIds = activeWorkspace
+    ? projects.filter((p) => p.workspaceId === activeWorkspace.id).map((p) => p.id)
+    : [];
+  const workspaceScope = activeWorkspace
+    ? {
+        id: activeWorkspace.id,
+        name: activeWorkspace.name,
+        count: projectsQuery.isSuccess ? workspaceProjectIds.length : null,
+      }
+    : null;
 
   // Fan out to the documents of the selected projects only.
   const documentQueries = useQueries({
@@ -217,12 +250,41 @@ export default function NewImpactAnalysisPage() {
         />
       )}
 
-      <MultiProjectPicker
-        projects={projects.map((p) => ({ id: p.id, name: p.name }))}
-        selected={selected}
-        onChange={setSelected}
-        isLoading={projectsQuery.isLoading}
-      />
+      {/* #2351 — the shared scope picker (chat and the portfolio check use the same). */}
+      <div className="space-y-1" data-testid="impact-new-scope">
+        <p className="text-sm font-medium">Where to look</p>
+        <ScopePicker
+          kind={scopeKind}
+          chosenIds={selected}
+          items={projects.map((p) => ({ id: p.id, name: p.name }))}
+          itemsLoading={projectsQuery.isLoading}
+          current={currentProject}
+          currentNote="Open this from a project or a change request to start there."
+          workspace={workspaceScope}
+          workspaceNote="No workspace is open in the top bar."
+          onPickThis={() => {
+            if (!currentProject) return;
+            setScopeKind("this");
+            setSelected([currentProject.id]);
+          }}
+          onPickWorkspace={() => {
+            if (!workspaceScope) return;
+            setScopeKind("workspace");
+            setSelected(workspaceProjectIds.slice(0, MAX_PROJECTS));
+          }}
+          onToggle={(p) => {
+            const base = scopeKind === "chosen" ? selected : [];
+            setScopeKind("chosen");
+            setSelected(base.includes(p.id) ? base.filter((id) => id !== p.id) : [...base, p.id]);
+          }}
+          maxChosen={MAX_PROJECTS}
+          testIdBase="impact-scope"
+          ariaLabel="Projects to analyse"
+        />
+        <p className="text-xs text-muted-foreground" data-testid="multi-project-count">
+          {selected.length} selected
+        </p>
+      </div>
 
       <label className="flex items-center gap-2 text-sm" data-testid="impact-new-schema-toggle">
         <input

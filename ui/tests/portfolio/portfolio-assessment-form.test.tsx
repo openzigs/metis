@@ -4,7 +4,7 @@
  * one product or none. Keyboard operable; axe passes.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createPortfolioAssessmentSchema } from "@metis/shared";
 import { PortfolioAssessmentForm } from "@/components/portfolio/portfolio-assessment-form";
@@ -45,14 +45,14 @@ describe("PortfolioAssessmentForm", () => {
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
-  it("sends one product when the scope is one product, and waits for a choice", async () => {
+  // #2351 — one product is one ticked in the shared scope picker.
+  it("sends one product when one is ticked, and waits for a choice", async () => {
     const user = userEvent.setup();
-    const { onSubmit } = setup();
+    const { onSubmit } = setup({ workspace: null });
     await user.type(screen.getByLabelText("Requirement statement"), "Pay by transfer");
-    await user.click(screen.getByRole("radio", { name: "One product" }));
     const submit = screen.getByRole("button", { name: "Check coverage" });
-    expect(submit).toBeDisabled();
-    await user.selectOptions(screen.getByLabelText("Product"), "p-crm");
+    await user.click(screen.getByTestId("portfolio-scope-selector"));
+    await user.click(screen.getByLabelText("CRM"));
     await user.click(submit);
     const sent = onSubmit.mock.calls[0][0];
     expect(sent).toEqual({ statement: "Pay by transfer", scope: "product", productIds: ["p-crm"] });
@@ -64,12 +64,12 @@ describe("PortfolioAssessmentForm", () => {
     const onProductQueryChange = vi.fn();
     const { onSubmit, rerender } = setup({ onProductQueryChange, productTotal: 140 });
     await user.type(screen.getByLabelText("Requirement statement"), "Pay by transfer");
-    await user.click(screen.getByRole("radio", { name: "One product" }));
-    expect(screen.getByLabelText("Product")).toHaveAccessibleDescription(
-      "Showing 2 of 140 products. Type part of a name to find another.",
+    await user.click(screen.getByTestId("portfolio-scope-selector"));
+    await user.click(screen.getByLabelText("CRM"));
+    expect(screen.getByTestId("portfolio-scope-hint")).toHaveTextContent(
+      "1 product to check. Showing 2 of 140 products; type part of a name to find another.",
     );
-    await user.selectOptions(screen.getByLabelText("Product"), "p-crm");
-    await user.type(screen.getByLabelText("Find a product"), "b");
+    await user.type(screen.getByLabelText("Find products"), "b");
     expect(onProductQueryChange).toHaveBeenLastCalledWith("b");
     // The search narrows the list to Billing: CRM stays chosen, by name.
     rerender(
@@ -81,10 +81,9 @@ describe("PortfolioAssessmentForm", () => {
         onSubmit={onSubmit}
       />,
     );
-    expect(screen.getByLabelText("Product")).toHaveValue("p-crm");
-    expect(
-      within(screen.getByLabelText("Product")).getByRole("option", { name: "CRM" }),
-    ).toBeInTheDocument();
+    expect(screen.getByTestId("portfolio-scope-selector")).toHaveTextContent("CRM");
+    await user.click(screen.getByTestId("portfolio-scope-selector"));
+    expect(screen.getByLabelText("CRM")).toBeChecked();
     await user.click(screen.getByRole("button", { name: "Check coverage" }));
     expect(onSubmit.mock.calls[0][0]).toEqual({
       statement: "Pay by transfer",
@@ -93,24 +92,17 @@ describe("PortfolioAssessmentForm", () => {
     });
   });
 
-  it("names a product it arrived with that the list does not hold", async () => {
-    const user = userEvent.setup();
+  it("names a product it arrived with that the list does not hold", () => {
     setup({ initialProductId: "p-elsewhere" });
-    expect(screen.getByLabelText("Product")).toHaveValue("p-elsewhere");
-    expect(
-      within(screen.getByLabelText("Product")).getByRole("option", { name: "Selected product" }),
-    ).toBeInTheDocument();
-    await user.selectOptions(screen.getByLabelText("Product"), "p-billing");
-    expect(
-      within(screen.getByLabelText("Product")).queryByRole("option", { name: "Selected product" }),
-    ).toBeNull();
+    expect(screen.getByTestId("portfolio-scope-selector")).toHaveTextContent("Selected product");
   });
 
   it("#1689 — keeps the name of a product it arrived with once a search drops it", () => {
     const onProductQueryChange = vi.fn();
     // The first page holds it, so the page never reads its name on its own.
     const { rerender } = setup({ initialProductId: "p-crm", onProductQueryChange });
-    expect(screen.getByLabelText("Product")).toHaveValue("p-crm");
+    expect(screen.getByTestId("portfolio-scope-selector")).toHaveTextContent("CRM");
+    fireEvent.click(screen.getByLabelText("Find products"));
     rerender(
       <PortfolioAssessmentForm
         products={[products[0]]}
@@ -120,30 +112,24 @@ describe("PortfolioAssessmentForm", () => {
         onSubmit={vi.fn()}
       />,
     );
-    expect(screen.getByLabelText("Product")).toHaveValue("p-crm");
-    expect(
-      within(screen.getByLabelText("Product")).getByRole("option", { name: "CRM" }),
-    ).toHaveValue("p-crm");
-    expect(
-      within(screen.getByLabelText("Product")).queryByRole("option", { name: "Selected product" }),
-    ).toBeNull();
+    expect(screen.getByTestId("portfolio-scope-selector")).toHaveTextContent("CRM");
+    expect(screen.getByTestId("portfolio-scope-selector")).not.toHaveTextContent(
+      "Selected product",
+    );
   });
 
   it("names a product it arrived with by the name it was given (#1680)", () => {
     setup({ initialProductId: "p-elsewhere", initialProductName: "Treasury" });
-    expect(
-      within(screen.getByLabelText("Product")).getByRole("option", { name: "Treasury" }),
-    ).toHaveValue("p-elsewhere");
-    expect(
-      within(screen.getByLabelText("Product")).queryByRole("option", { name: "Selected product" }),
-    ).toBeNull();
+    expect(screen.getByTestId("portfolio-scope-selector")).toHaveTextContent("Treasury");
+    expect(screen.getByTestId("portfolio-scope-selector")).not.toHaveTextContent(
+      "Selected product",
+    );
   });
 
   it("starts on the product it arrived from", async () => {
     const user = userEvent.setup();
     const { onSubmit } = setup({ initialProductId: "p-billing" });
-    expect(screen.getByRole("radio", { name: "One product" })).toBeChecked();
-    expect(screen.getByLabelText("Product")).toHaveValue("p-billing");
+    expect(screen.getByTestId("portfolio-scope-selector")).toHaveTextContent("Billing");
     await user.type(screen.getByLabelText("Requirement statement"), "x");
     await user.click(screen.getByRole("button", { name: "Check coverage" }));
     expect(onSubmit.mock.calls[0][0].productIds).toEqual(["p-billing"]);
@@ -177,11 +163,8 @@ describe("PortfolioAssessmentForm", () => {
   it("says products are loading", async () => {
     const user = userEvent.setup();
     setup({ productsLoading: true });
-    await user.click(screen.getByRole("radio", { name: "One product" }));
-    expect(screen.getByLabelText("Product")).toBeDisabled();
-    expect(
-      within(screen.getByLabelText("Product")).getByRole("option", { name: "Loading products…" }),
-    ).toBeInTheDocument();
+    await user.click(screen.getByTestId("portfolio-scope-selector"));
+    expect(screen.getByText("Loading…")).toBeInTheDocument();
   });
 
   it("is keyboard operable from the statement to the submit button", async () => {
@@ -190,27 +173,38 @@ describe("PortfolioAssessmentForm", () => {
     await user.tab();
     expect(screen.getByLabelText("Requirement statement")).toHaveFocus();
     await user.keyboard("Pay by transfer");
+    // #2351 — the shared scope picker: its button opens the three options.
     await user.tab();
-    expect(screen.getByRole("radio", { name: "All products I can access" })).toHaveFocus();
-    await user.keyboard("{ArrowDown}");
-    expect(screen.getByRole("radio", { name: "One product" })).toBeChecked();
+    expect(screen.getByTestId("portfolio-scope-selector")).toHaveFocus();
+    await user.keyboard("{Enter}");
+    // "This project" is disabled (opened from no project), so Tab skips it.
     await user.tab();
-    expect(screen.getByLabelText("Product")).toHaveFocus();
-    await user.selectOptions(screen.getByLabelText("Product"), "p-billing");
+    expect(screen.getByTestId("portfolio-scope-workspace")).toHaveFocus();
+    await user.tab();
+    expect(screen.getByLabelText("Billing")).toHaveFocus();
+    await user.keyboard(" ");
+    expect(screen.getByLabelText("Billing")).toBeChecked();
+    // Escape closes it and gives the focus back to its button.
+    await user.keyboard("{Escape}");
+    expect(screen.getByTestId("portfolio-scope-selector")).toHaveFocus();
     await user.tab();
     // #1725 — the optional host picker comes next.
     expect(screen.getByLabelText("Which product will build this? (optional)")).toHaveFocus();
     await user.tab();
     expect(screen.getByRole("button", { name: "Check coverage" })).toHaveFocus();
     await user.keyboard("{Enter}");
-    expect(onSubmit).toHaveBeenCalledOnce();
+    expect(onSubmit.mock.calls[0][0]).toEqual({
+      statement: "Pay by transfer",
+      scope: "product",
+      productIds: ["p-billing"],
+    });
   });
 
   it("passes axe in both scopes", async () => {
     const user = userEvent.setup();
     const { container } = setup({ error: "Something failed" });
     expect(await axeViolations(container)).toEqual([]);
-    await user.click(screen.getByRole("radio", { name: "One product" }));
+    await user.click(screen.getByTestId("portfolio-scope-selector"));
     expect(await axeViolations(container)).toEqual([]);
   });
 });

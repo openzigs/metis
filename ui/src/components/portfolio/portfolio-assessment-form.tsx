@@ -38,6 +38,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { ScopePicker, type ScopeKind } from "@/components/scope/scope-picker";
 
 /** #1725 — the host picker's id, the fragment a check that needs a host links to. */
 const HOST_PICKER_ID = "portfolio-host";
@@ -67,8 +68,15 @@ export interface PortfolioFormChangeRequest {
   title: string;
 }
 
-/** Where to look: every product, one chosen product, or (#2272) several chosen ones. */
-type ScopeMode = "all-accessible" | "product" | "several";
+/** #2351 — the shared picker's "Whole workspace": the workspace's products the analyst can read. */
+export interface PortfolioFormWorkspace {
+  id: string;
+  name: string;
+  /** Its products the analyst can read (the first page of them). */
+  productIds: string[];
+  /** How many it has in all; more than a check takes is said, not cut. */
+  count: number;
+}
 
 export function PortfolioAssessmentForm({
   products,
@@ -86,6 +94,10 @@ export function PortfolioAssessmentForm({
   productQuery = "",
   onProductQueryChange,
   productTotal,
+  current,
+  currentNote,
+  workspace,
+  workspaceNote,
   pending,
   error,
   onSubmit,
@@ -112,68 +124,90 @@ export function PortfolioAssessmentForm({
   /** #2345 — a change request whose draft and approved requirements are each checked. */
   changeRequest?: PortfolioFormChangeRequest | null;
   onClearChangeRequest?: () => void;
+  /** #2351 — "This project": the product of the project it was opened from. */
+  current?: PortfolioFormProduct | null;
+  /** Why there is no "This project" (e.g. the project is in no product). */
+  currentNote?: string;
+  /** #2351 — "Whole workspace": the top bar's workspace and its products. */
+  workspace?: PortfolioFormWorkspace | null;
+  workspaceNote?: string;
   pending: boolean;
   error?: string | null;
   onSubmit: (input: CreatePortfolioAssessmentInput) => void;
 }) {
   const [statement, setStatement] = useState(initialStatement.slice(0, STATEMENT_MAX));
-  const several0 = (initialProductIds ?? []).length > 1;
-  const [scope, setScope] = useState<ScopeMode>(
-    several0 ? "several" : initialProductId ? "product" : "all-accessible",
-  );
-  // #2272 — the products ticked for "Several products", and the names of those the list may drop.
-  const [chosen, setChosen] = useState<string[]>(several0 ? (initialProductIds ?? []) : []);
+  // #2351 — the shared scope picker: "This project" (its product), "Chosen
+  // products" (ticked) or "Whole workspace". Arriving with products ticks them;
+  // otherwise it starts on this project's product, else the whole workspace,
+  // until the analyst picks.
+  const arrivedWith =
+    (initialProductIds ?? []).length > 1
+      ? (initialProductIds ?? [])
+      : initialProductId
+        ? [initialProductId]
+        : [];
+  const [picked, setPicked] = useState<ScopeKind | null>(arrivedWith.length > 0 ? "chosen" : null);
+  // With no workspace open (none, or a workspace-less install), "Whole workspace"
+  // is every product the analyst can read: the `all-accessible` scope, as before.
+  const ws: PortfolioFormWorkspace & { all?: boolean } = workspace ?? {
+    id: "",
+    name: "every product you can read",
+    productIds: [],
+    count: productTotal ?? products.length,
+    all: true,
+  };
+  const kind: ScopeKind | null = picked ?? (current ? "this" : "workspace");
+  // #2272 — the products ticked, and the names of those the list may drop.
+  const [chosen, setChosen] = useState<string[]>(arrivedWith);
   const [chosenNames, setChosenNames] = useState<Record<string, string>>({});
-  const [productId, setProductId] = useState(initialProductId ?? "");
-  // The chosen product's name, kept while a search narrows the list past it.
-  // #1689 — read from the list whenever it holds the product, so one the page
-  // arrived with keeps its name too, not only one picked here.
-  const [chosenName, setChosenName] = useState<string | null>(null);
-  const listedName = products.find((p) => p.id === productId)?.name;
-  if (listedName !== undefined && listedName !== chosenName) setChosenName(listedName);
-  const options =
-    productId && !products.some((p) => p.id === productId)
-      ? [
-          {
-            id: productId,
-            name:
-              chosenName ??
-              (productId === initialProductId ? initialProductName : null) ??
-              "Selected product",
-          },
-          ...products,
-        ]
-      : products;
+  // #1689 — a ticked product keeps the name the list gave it once a search drops it.
+  const unnamed = chosen.find((id) => {
+    const listed = products.find((p) => p.id === id)?.name;
+    return listed !== undefined && chosenNames[id] !== listed;
+  });
+  if (unnamed !== undefined) {
+    const listed = products.find((p) => p.id === unnamed)!.name;
+    setChosenNames((cur) => ({ ...cur, [unnamed]: listed }));
+  }
+  // #1680 — a product arrived with that is past the first page is named by the page.
+  const nameOf = (id: string) =>
+    products.find((p) => p.id === id)?.name ??
+    chosenNames[id] ??
+    (id === current?.id ? current.name : null) ??
+    (id === initialProductId ? initialProductName : null) ??
+    "Selected product";
+  const toggle = (p: PortfolioFormProduct) => {
+    setChosenNames((cur) => ({ ...cur, [p.id]: p.name }));
+    setChosen((cur) => {
+      const base = kind === "chosen" ? cur : [];
+      return base.includes(p.id) ? base.filter((id) => id !== p.id) : [...base, p.id];
+    });
+    setPicked("chosen");
+  };
+  const allAccessible = kind === "workspace" && ws.all === true;
+  const workspaceTooBig = !ws.all && ws.count > PORTFOLIO_ASSESSMENT_MAX_PRODUCTS;
+  // The products the check is scoped to; the server checks each one again.
+  const scopeIds =
+    kind === "this" && current
+      ? [current.id]
+      : kind === "chosen"
+        ? chosen
+        : kind === "workspace" && !ws.all && !workspaceTooBig
+          ? ws.productIds
+          : [];
 
-  // #1725 — the host picked, and its name, kept while a search narrows the list past it.
+  // #1725 — the host picked. A `product` scope hosts only on its own products
+  // (`createPortfolioAssessmentSchema`), so it is one of the products in scope.
+  // Across every product, any product the analyst can read may build it.
   const [hostId, setHostId] = useState("");
   const [hostName, setHostName] = useState<string | null>(null);
   const listedHostName = products.find((p) => p.id === hostId)?.name;
   if (listedHostName !== undefined && listedHostName !== hostName) setHostName(listedHostName);
-  // #2272 — every product ticked, named from the list or as it was when ticked.
-  const nameOfChosen = (id: string) =>
-    products.find((p) => p.id === id)?.name ?? chosenNames[id] ?? "Selected product";
-  const severalOptions = [
-    ...chosen
-      .filter((id) => !products.some((p) => p.id === id))
-      .map((id) => ({ id, name: nameOfChosen(id) })),
-    ...products,
-  ];
-  const full = chosen.length >= PORTFOLIO_ASSESSMENT_MAX_PRODUCTS;
-  const toggle = (p: PortfolioFormProduct) => {
-    setChosenNames((cur) => ({ ...cur, [p.id]: p.name }));
-    setChosen((cur) => (cur.includes(p.id) ? cur.filter((id) => id !== p.id) : [...cur, p.id]));
-  };
-
-  // A `product` scope hosts only on its own products (`createPortfolioAssessmentSchema`).
-  const hostOptions =
-    scope === "product"
-      ? options.filter((p) => p.id === productId)
-      : scope === "several"
-        ? chosen.map((id) => ({ id, name: nameOfChosen(id) }))
-        : hostId && !options.some((p) => p.id === hostId)
-          ? [{ id: hostId, name: hostName ?? "Selected product" }, ...options]
-          : options;
+  const hostOptions = allAccessible
+    ? hostId && !products.some((p) => p.id === hostId)
+      ? [{ id: hostId, name: hostName ?? "Selected product" }, ...products]
+      : products
+    : scopeIds.map((id) => ({ id, name: nameOf(id) }));
   const host = hostOptions.some((p) => p.id === hostId) ? hostId : "";
 
   // #1749 — a check that needed a host links here at `#portfolio-host`: put the
@@ -188,10 +222,7 @@ export function PortfolioAssessmentForm({
   }, [productsLoading]);
 
   const hasSource = changeRequest || requirement || document ? true : statement.trim().length > 0;
-  const hasScope =
-    scope === "all-accessible" ||
-    (scope === "product" && productId !== "") ||
-    (scope === "several" && chosen.length > 0);
+  const hasScope = allAccessible || scopeIds.length > 0;
   const canSubmit = hasSource && hasScope && !pending;
 
   function handleSubmit(e: FormEvent) {
@@ -206,11 +237,9 @@ export function PortfolioAssessmentForm({
           : { statement: statement.trim() };
     const hosted = host ? { hostProductId: host } : {};
     onSubmit(
-      scope === "product"
-        ? { ...source, scope, productIds: [productId], ...hosted }
-        : scope === "several"
-          ? { ...source, scope: "product", productIds: chosen, ...hosted }
-          : { ...source, scope: "all-accessible", ...hosted },
+      allAccessible
+        ? { ...source, scope: "all-accessible", ...hosted }
+        : { ...source, scope: "product", productIds: scopeIds, ...hosted },
     );
   }
 
@@ -296,132 +325,58 @@ export function PortfolioAssessmentForm({
         </div>
       )}
 
-      <fieldset className="space-y-2">
-        <legend className="text-sm font-medium">Where to look</legend>
-        <label className="flex items-center gap-2 text-sm">
-          <input
-            type="radio"
-            name="portfolio-scope"
-            value="all-accessible"
-            checked={scope === "all-accessible"}
-            onChange={() => setScope("all-accessible")}
-          />
-          All products I can access
-        </label>
-        <label className="flex items-center gap-2 text-sm">
-          <input
-            type="radio"
-            name="portfolio-scope"
-            value="product"
-            checked={scope === "product"}
-            onChange={() => setScope("product")}
-          />
-          One product
-        </label>
-        <label className="flex items-center gap-2 text-sm">
-          <input
-            type="radio"
-            name="portfolio-scope"
-            value="several"
-            checked={scope === "several"}
-            onChange={() => setScope("several")}
-          />
-          Several products
-        </label>
-        {scope === "several" ? (
-          <div className="space-y-1 pl-6" data-testid="portfolio-several-products">
-            {onProductQueryChange ? (
-              <div className="space-y-1 pb-1">
-                <Label htmlFor="portfolio-several-search">Find products</Label>
-                <Input
-                  id="portfolio-several-search"
-                  type="search"
-                  className="max-w-sm"
-                  value={productQuery}
-                  placeholder="Type part of a product's name"
-                  onChange={(e) => onProductQueryChange(e.target.value)}
-                />
-              </div>
-            ) : null}
-            <fieldset className="space-y-1" aria-describedby="portfolio-several-hint">
-              <legend className="text-sm font-medium">Products to check</legend>
-              {productsLoading ? (
-                <p className="text-sm text-muted-foreground">Loading products…</p>
-              ) : (
-                severalOptions.map((p) => {
-                  const checked = chosen.includes(p.id);
-                  return (
-                    <label key={p.id} className="flex items-center gap-2 text-sm">
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        disabled={!checked && full}
-                        onChange={() => toggle(p)}
-                      />
-                      {p.name}
-                    </label>
-                  );
-                })
-              )}
-            </fieldset>
-            <p id="portfolio-several-hint" className="text-xs text-muted-foreground">
-              {chosen.length} chosen, up to {PORTFOLIO_ASSESSMENT_MAX_PRODUCTS}.
-              {productTotal !== undefined && productTotal > products.length
-                ? ` Showing ${products.length} of ${productTotal} products${onProductQueryChange ? "; type part of a name to find another" : ""}.`
-                : ""}
-            </p>
+      <div className="space-y-1" data-testid="portfolio-scope">
+        <p className="text-sm font-medium">Where to look</p>
+        {onProductQueryChange ? (
+          <div className="space-y-1 pb-1">
+            <Label htmlFor="portfolio-product-search">Find products</Label>
+            <Input
+              id="portfolio-product-search"
+              type="search"
+              className="max-w-sm"
+              value={productQuery}
+              placeholder="Type part of a product's name"
+              onChange={(e) => onProductQueryChange(e.target.value)}
+            />
           </div>
         ) : null}
-        {scope === "product" ? (
-          <div className="space-y-1 pl-6">
-            {onProductQueryChange ? (
-              <div className="space-y-1 pb-1">
-                <Label htmlFor="portfolio-product-search">Find a product</Label>
-                <Input
-                  id="portfolio-product-search"
-                  type="search"
-                  className="max-w-sm"
-                  value={productQuery}
-                  placeholder="Type part of a product's name"
-                  onChange={(e) => onProductQueryChange(e.target.value)}
-                />
-              </div>
-            ) : null}
-            <Label htmlFor="portfolio-product">Product</Label>
-            <select
-              id="portfolio-product"
-              className="h-9 w-full max-w-sm rounded-md border border-input bg-background px-2 text-sm"
-              value={productId}
-              disabled={productsLoading}
-              aria-describedby={
-                productTotal !== undefined && productTotal > products.length
-                  ? "portfolio-product-more"
-                  : undefined
-              }
-              onChange={(e) => {
-                setProductId(e.target.value);
-                setChosenName(null);
-              }}
-            >
-              <option value="">{productsLoading ? "Loading products…" : "Choose a product"}</option>
-              {options.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
-            {productTotal !== undefined && productTotal > products.length ? (
-              <p id="portfolio-product-more" className="text-xs text-muted-foreground">
-                Showing {products.length} of {productTotal} products.
-                {onProductQueryChange ? " Type part of a name to find another." : ""}
-              </p>
-            ) : null}
-          </div>
-        ) : null}
-      </fieldset>
+        <ScopePicker
+          kind={kind}
+          chosenIds={chosen}
+          items={[
+            ...chosen
+              .filter((id) => !products.some((p) => p.id === id))
+              .map((id) => ({ id, name: nameOf(id) })),
+            ...products,
+          ]}
+          itemsLoading={productsLoading}
+          current={current ?? null}
+          currentNote={
+            currentNote ?? "Open this from a change request to check its project's product."
+          }
+          workspace={{ id: ws.id, name: ws.name, count: ws.count }}
+          workspaceNote={workspaceNote ?? "No workspace is open in the top bar."}
+          onPickThis={() => setPicked("this")}
+          onPickWorkspace={() => setPicked("workspace")}
+          onToggle={toggle}
+          maxChosen={PORTFOLIO_ASSESSMENT_MAX_PRODUCTS}
+          testIdBase="portfolio-scope"
+          ariaLabel="Products to check"
+        />
+        <p className="text-xs text-muted-foreground" data-testid="portfolio-scope-hint">
+          {kind === "workspace" && workspaceTooBig
+            ? `The workspace has more than ${PORTFOLIO_ASSESSMENT_MAX_PRODUCTS} products: choose up to ${PORTFOLIO_ASSESSMENT_MAX_PRODUCTS}.`
+            : allAccessible
+              ? "Every product you can read is checked."
+              : `${scopeIds.length} product${scopeIds.length === 1 ? "" : "s"} to check.`}
+          {productTotal !== undefined && productTotal > products.length
+            ? ` Showing ${products.length} of ${productTotal} products${onProductQueryChange ? "; type part of a name to find another" : ""}.`
+            : ""}
+        </p>
+      </div>
 
       <div className="space-y-1">
-        {scope === "all-accessible" && onProductQueryChange ? (
+        {allAccessible && onProductQueryChange ? (
           <div className="space-y-1 pb-1">
             <Label htmlFor="portfolio-host-search">Find a product to build it</Label>
             <Input

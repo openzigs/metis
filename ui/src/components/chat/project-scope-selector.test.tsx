@@ -87,10 +87,13 @@ describe("ProjectScopeSelector (#1368)", () => {
     expect(screen.getByTestId("project-scope-selector").textContent).not.toContain("1 project");
   });
 
-  it("reads 'All projects' when unscoped", async () => {
+  // #2351 — the shared picker has no "All" option: unscoped reads "No product chosen".
+  it("reads 'No product chosen' when unscoped", async () => {
     renderSelector({ mode: "all", projectIds: [] });
     await waitFor(() => {
-      expect(screen.getByTestId("project-scope-selector").textContent).toContain("All projects");
+      expect(screen.getByTestId("project-scope-selector").textContent).toContain(
+        "No product chosen",
+      );
     });
   });
 
@@ -117,11 +120,12 @@ describe("ProjectScopeSelector (#1368)", () => {
     );
   });
 
-  it("clears back to 'all projects' via the All my projects option", async () => {
+  // #2351 — unticking the last project clears back to "all" (no search).
+  it("clears back to 'all' when the last project is unticked", async () => {
     const onChange = vi.fn();
     renderSelector({ mode: "selected", projectIds: ["p1"] }, onChange);
     await openDropdown();
-    fireEvent.click(await screen.findByText("All my projects"));
+    fireEvent.click(await screen.findByRole("checkbox", { name: /OrderBatch/ }));
     expect(onChange).toHaveBeenCalledWith({ mode: "all", projectIds: [] });
   });
 });

@@ -142,8 +142,14 @@ export function productsRouter(): Router {
   r.get("/", requirePermission("project.read"), async (req: Request, res: Response) => {
     const { page, pageSize } = paginationQuerySchema.parse(req.query);
     const search = typeof req.query.search === "string" ? req.query.search : undefined;
+    // #2351 — `?workspaceId=` narrows the list to one workspace's products; the
+    // access filter still applies, so a workspace the caller is not in lists none.
+    const workspaceId =
+      typeof req.query.workspaceId === "string" && req.query.workspaceId.length <= 120
+        ? req.query.workspaceId
+        : undefined;
     const accessWhere = await buildProductAccessWhere(req.user!);
-    const result = await listProducts({ page, pageSize, search, accessWhere });
+    const result = await listProducts({ page, pageSize, search, workspaceId, accessWhere });
     // #1258 — each listed product shows only the repos the caller can open.
     const canRead = await productRepoReadAccess(req.user!);
     const items = result.items.map((item) => withReadableProductRepos(item, canRead));
