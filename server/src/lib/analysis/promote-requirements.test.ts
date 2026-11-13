@@ -1792,3 +1792,107 @@ describe("#1202 — promotion records the pairing, and an append joins on it", (
     expect(JSON.parse(createdFor("REQ-2")!.acceptanceCriteria)).toEqual([]);
   });
 });
+describe("#2449 — a reviewed set writes the elicited NFRs its checkpoint listed, and no other", () => {
+  const listed = (id: string, title: string, extra: Record<string, unknown> = {}) => ({
+    id,
+    title,
+    description: `${title}.`,
+    type: "functional",
+    stakeholders: [],
+    priority: "should-have",
+    ambiguities: [],
+    evidenceNeeds: [],
+    rawSource: "",
+    ...extra,
+  });
+  const tokensNfr = listed("NFR-abc", "Encrypt API tokens at rest", {
+    type: "non-functional",
+    elicitedNfr: { nfrCategory: "security", evidenceFindingIndexes: [0] },
+  });
+  const awaiting = {
+    elicitedNfrsAwaitingPromotion: [
+      {
+        id: "n1",
+        category: "availability",
+        title: "99.9% monthly uptime",
+        description: "Up 99.9% of each month.",
+        metric: "99.9%",
+        priority: "should-have",
+      },
+    ],
+  };
+
+  beforeEach(() => {
+    // A code finding judged `implemented`, which the NFR cites.
+    findings.push({
+      findingId: "f_1",
+      agentKey: "code",
+      citations: [],
+      verdict: "implemented",
+    });
+    db.structured = {
+      requirements: [listed("REQ-1", "Feed URL must be absolute"), tokensNfr],
+    };
+    db.approvals = [
+      { itemId: "REQ-1", status: "approved" },
+      { itemId: "NFR-abc", status: "approved" },
+    ];
+  });
+
+  it("writes an NFR waiting on the analysis only when no checkpoint reviewed the set", async () => {
+    db.analysis = { projectId: PROJECT_ID, metadata: JSON.stringify(awaiting) };
+
+    await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true });
+
+    const input = persistRequirements.mock.calls[0]?.[0] as {
+      synthesis: { requirements: Array<{ title: string; labels: string[] }> };
+      elicited?: unknown;
+      verdicts: unknown[];
+    };
+    // The listed NFR is in the set, as the NFR; the unlisted one is not written.
+    expect(input.synthesis.requirements.map((r) => r.title)).toEqual([
+      "Feed URL must be absolute",
+      "Encrypt API tokens at rest",
+    ]);
+    expect(input.synthesis.requirements[1]!.labels).toEqual(["elicited-nfr"]);
+    expect(input.elicited).toBeUndefined();
+    // #1648 — its verdict capped, as on the allowed path.
+    expect(input.verdicts[1]).toBe("could-not-verify");
+
+    // With no checkpoint, the waiting NFR is written beside the set (#1705).
+    vi.clearAllMocks();
+    db.structured = null;
+    db.approvals = [];
+    await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true });
+    const unreviewed = persistRequirements.mock.calls[0]?.[0] as {
+      elicited?: { requirements: Array<{ title: string }> };
+    };
+    expect(unreviewed.elicited?.requirements.map((r) => r.title)).toEqual(["99.9% monthly uptime"]);
+  });
+
+  it("caps the verdict of an elicited NFR appended after the set was promoted", async () => {
+    db.requirementCount = 1;
+    db.analysis = {
+      projectId: PROJECT_ID,
+      metadata: JSON.stringify({ promotedStructuredIds: ["REQ-1"] }),
+    };
+
+    expect(await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true })).toEqual({
+      status: "promoted",
+      requirementCount: 1,
+    });
+
+    const data = (
+      lastTx!.requirement.create.mock.calls[0]?.[0] as {
+        data: Record<string, unknown>;
+      }
+    ).data;
+    expect(data).toMatchObject({
+      title: "Encrypt API tokens at rest",
+      kind: "non-functional",
+      nfrCategory: "security",
+      verdict: "could-not-verify",
+    });
+    expect(JSON.parse(data.labels as string)).toEqual(["elicited-nfr", "finding:f_1"]);
+  });
+});

@@ -453,4 +453,32 @@ describe("#1569 — requirements offered from the synthesis", () => {
       "1 requirement(s) below were written up by the analysis",
     );
   });
+
+  it("#2449 — marks an elicited NFR's card with its category, and only that card", async () => {
+    listApprovals.mockResolvedValue({
+      items: [approval(), approval({ id: "ap_2", itemId: "NFR-abc" })],
+      ticketStatus: { allowed: false, pendingCount: 2, rejectedCount: 0 },
+    });
+    renderPanel({
+      structuredRequirements: {
+        requirements: [
+          { id: "r1", title: "Feed URL must be absolute", description: "d", evidenceNeeds: [] },
+          {
+            id: "NFR-abc",
+            title: "Rate limiting of reset requests",
+            description: "Reset requests are rate limited.",
+            evidenceNeeds: [],
+            elicitedNfr: { nfrCategory: "security" },
+          },
+        ],
+        totalAmbiguities: 0,
+        totalEvidenceNeeds: 0,
+      },
+    });
+
+    const nfrCard = await screen.findByTestId("approval-ap_2");
+    expect(nfrCard).toHaveTextContent("Found by the analysis · Non-functional · Security");
+    expect(nfrCard).not.toHaveTextContent("Written up by the analysis");
+    expect(screen.queryAllByTestId("approval-elicited-nfr")).toHaveLength(1);
+  });
 });

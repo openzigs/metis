@@ -10,15 +10,20 @@ import { describe, expect, it } from "vitest";
 import type { Nfr } from "@metis/shared";
 import {
   ELICITED_NFR_LABEL,
+  ELICITED_NFR_REQUIREMENT_ID_PREFIX,
   ELICITED_NFRS_AWAITING_PROMOTION_KEY,
   MAX_ELICITED_NFRS_PER_RUN,
   capElicitedNfrVerdict,
+  capElicitedNfrVerdicts,
   elicitedNfrRequirements,
   nfrStatedByRow,
+  offerElicitedNfrs,
+  restatesTitle,
   sameSubjectWord,
   readElicitedNfrsAwaitingPromotion,
   statesSameNfr,
 } from "./elicited-nfr-requirements.js";
+import type { StructuredRequirement } from "./types/requirements.js";
 import { computeCoverageForRequirements } from "./requirement-coverage.js";
 import { computeVerdictsForRequirements } from "./requirement-verdict.js";
 
@@ -382,5 +387,179 @@ describe("readElicitedNfrsAwaitingPromotion (#1705)", () => {
         [ELICITED_NFRS_AWAITING_PROMOTION_KEY]: [{ title: "No category" }],
       }),
     ).toEqual([]);
+  });
+});
+describe("restatesTitle (#2449)", () => {
+  it("reads the walkthrough's restatement in another word form as the same title", () => {
+    expect(
+      restatesTitle("Reset link expiry after 30 minutes", "Reset link expires after 30 minutes"),
+    ).toBe(true);
+    expect(restatesTitle("Secure session cookies", "Session cookies are secured")).toBe(true);
+  });
+
+  it("keeps apart a title that adds a word, another number, or a paraphrase", () => {
+    for (const [a, b] of [
+      ["Password reset link expiry", "Password reset link"],
+      ["Single-use reset link with atomic consumption", "Reset link is single-use"],
+      ["Reset link expiry after 15 minutes", "Reset link expires after 30 minutes"],
+      ["Page load 1.5s", "Page load 15s"],
+      ["Account-enumeration protection on reset request", "Reset request must not reveal accounts"],
+      // One stem, but an ending past three letters is another word.
+      ["Process audit", "Processor audit"],
+      ["", "Reset link"],
+    ]) {
+      expect(restatesTitle(a!, b!), `${a} !~ ${b}`).toBe(false);
+    }
+  });
+
+  it("drops an elicited NFR whose title restates a requirement of any kind", () => {
+    expect(
+      statesSameNfr(
+        nfr({
+          category: "security",
+          title: "Reset link expiry after 30 minutes",
+        }),
+        {
+          title: "Reset link expires after 30 minutes",
+          body: "The emailed link stops working after 30 minutes.",
+          kind: "functional",
+        },
+      ),
+    ).toBe(true);
+  });
+});
+
+describe("offerElicitedNfrs (#2449)", () => {
+  const listed = (id: string, title: string, extra: Partial<StructuredRequirement> = {}) => ({
+    id,
+    title,
+    description: `${title}.`,
+    type: "functional" as const,
+    stakeholders: [],
+    priority: "must-have" as const,
+    ambiguities: [],
+    evidenceNeeds: [],
+    rawSource: "",
+    ...extra,
+  });
+
+  it("offers each NFR the list does not state as a marked non-functional requirement", () => {
+    const { offered, dropped } = offerElicitedNfrs({
+      structured: [listed("REQ-1", "Reset link expires after 30 minutes")],
+      nfrs: [
+        nfr({
+          category: "security",
+          title: "Reset link expiry after 30 minutes",
+        }),
+        nfr({
+          category: "security",
+          title: "Rate limiting of reset requests",
+          description: "Reset requests are rate limited.",
+          metric: "5 per hour",
+          priority: "nice-to-have",
+          evidenceIds: ["f-b"],
+        }),
+      ],
+      findingIdsByIndex: ["f-a", "f-b"],
+      synthesized: [],
+    });
+    expect(dropped).toEqual([
+      {
+        title: "Reset link expiry after 30 minutes",
+        reason: "duplicate",
+        duplicateOf: "Reset link expires after 30 minutes",
+      },
+    ]);
+    expect(offered).toEqual([
+      {
+        id: expect.stringMatching(/^NFR-[0-9a-f]{12}$/),
+        title: "Rate limiting of reset requests",
+        description: "Reset requests are rate limited.\n\nTarget: 5 per hour",
+        type: "non-functional",
+        stakeholders: [],
+        priority: "nice-to-have",
+        ambiguities: [],
+        evidenceNeeds: [],
+        rawSource: "",
+        elicitedNfr: { nfrCategory: "security", evidenceFindingIndexes: [1] },
+      },
+    ]);
+    expect(offered[0]!.id.startsWith(ELICITED_NFR_REQUIREMENT_ID_PREFIX)).toBe(true);
+  });
+
+  it("does not offer one a synthesis item states, nor one already on the list", () => {
+    const uptime = nfr({
+      category: "availability",
+      title: "API uptime",
+      metric: "99.9%",
+    });
+    const first = offerElicitedNfrs({
+      structured: [],
+      nfrs: [uptime],
+      findingIdsByIndex: [],
+      synthesized: [
+        {
+          type: "feature",
+          title: "Service level",
+          body: "The API is up 99.9% of the month.",
+          priority: "medium",
+          labels: [],
+          evidenceFindingIndexes: [],
+          acceptanceCriteria: [],
+          kind: "non-functional",
+          nfrCategory: "availability",
+        },
+      ],
+    });
+    expect(first.offered).toEqual([]);
+
+    const once = offerElicitedNfrs({
+      structured: [],
+      nfrs: [uptime],
+      findingIdsByIndex: [],
+      synthesized: [],
+    });
+    expect(once.offered).toHaveLength(1);
+    // Listed, even reworded by the reviewer: compared by category, target and subject.
+    const reworded = { ...once.offered[0]!, title: "Uptime of the API" };
+    const again = offerElicitedNfrs({
+      structured: [reworded],
+      nfrs: [uptime],
+      findingIdsByIndex: [],
+      synthesized: [],
+    });
+    expect(again.offered).toEqual([]);
+    expect(again.dropped).toEqual([
+      {
+        title: "API uptime",
+        reason: "duplicate",
+        duplicateOf: "Uptime of the API",
+      },
+    ]);
+  });
+
+  it("offers at most the per-run cap, priority mapped back to the reviewed scale", () => {
+    const { offered } = offerElicitedNfrs({
+      structured: [],
+      nfrs: distinct(MAX_ELICITED_NFRS_PER_RUN + 2).map((n, i) =>
+        i === 0 ? { ...n, priority: "must-have" as const } : n,
+      ),
+      findingIdsByIndex: [],
+      synthesized: [],
+    });
+    expect(offered).toHaveLength(MAX_ELICITED_NFRS_PER_RUN);
+    expect(offered.slice(0, 2).map((r) => r.priority)).toEqual(["must-have", "should-have"]);
+    expect(new Set(offered.map((r) => r.id)).size).toBe(offered.length);
+  });
+});
+
+describe("capElicitedNfrVerdicts (#2449)", () => {
+  it("caps only the rows labelled as elicited NFRs", () => {
+    expect(
+      capElicitedNfrVerdicts(
+        [{ labels: ["functional"] }, { labels: [ELICITED_NFR_LABEL] }, { labels: [] }],
+        ["implemented", "implemented", null],
+      ),
+    ).toEqual(["implemented", "could-not-verify", null]);
   });
 });

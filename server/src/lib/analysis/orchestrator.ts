@@ -184,7 +184,10 @@ import {
   latestRequirementApprovals,
   planApprovedRequirementSet,
 } from "./approved-requirement-set.js";
-import { offerUnmatchedItemsForReview } from "./offer-synthesis-items.js";
+import {
+  offerElicitedNfrsForReview,
+  offerUnmatchedItemsForReview,
+} from "./offer-synthesis-items.js";
 import {
   ambiguousPromotionRecords,
   promotionMatchingRecord,
@@ -5385,6 +5388,33 @@ export class AnalysisOrchestrator {
             }
           } catch (err) {
             log.error("Could not offer the synthesis requirements that matched nothing reviewed", {
+              analysisId: input.analysisId,
+              error: (err as Error).message,
+            });
+          }
+        }
+        // Issue #2449 — and the NFRs this run elicited, so the checkpoint lists
+        // every requirement promotion writes: promotion of a reviewed set writes
+        // the approved ones and no other. From a degraded synthesis too (the
+        // NFRs are the elicitor's, not its items), compared with its items only
+        // when they are requirements. Best-effort: a failure leaves the NFRs
+        // unoffered, and so unwritten.
+        if (reviewedList.length > 0 && elicitedNfrs.length > 0) {
+          try {
+            const offered = await offerElicitedNfrsForReview(input.analysisId, {
+              nfrs: elicitedNfrs,
+              findingIdsByIndex,
+              synthesized: result.degraded ? [] : result.output.requirements,
+            });
+            if (offered.length > 0) {
+              reviewedList = (await getStructuredRequirements(input.analysisId))?.requirements ?? [
+                ...reviewedList,
+                ...offered,
+              ];
+              ticketStatus = await canCreateTickets(input.analysisId);
+            }
+          } catch (err) {
+            log.error("Could not offer the elicited NFRs for review", {
               analysisId: input.analysisId,
               error: (err as Error).message,
             });

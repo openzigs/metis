@@ -1227,6 +1227,12 @@ export interface StructuredRequirement {
    */
   synthesisItemKey?: string;
   /**
+   * Issue #2449 — present only on a requirement offered at the checkpoint from
+   * an NFR the analysis elicited. Approving it promotes it as that NFR; it is
+   * not written otherwise.
+   */
+  elicitedNfr?: { nfrCategory: NfrCategory };
+  /**
    * Issue #1580 — set once a reviewer retitled it in the approval checkpoint:
    * the title the analysis extracted, shown beside the reviewed one.
    */

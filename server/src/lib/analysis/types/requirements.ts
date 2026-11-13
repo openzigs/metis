@@ -7,7 +7,7 @@
  */
 
 import type { DocumentSource } from "../../documents/document-source.js";
-import type { GoverningQuestionLink, SharedCriteriaRecord } from "@metis/shared";
+import type { GoverningQuestionLink, NfrCategory, SharedCriteriaRecord } from "@metis/shared";
 
 // ── Structured Requirements (#622) ─────────────────────────────────────
 
@@ -82,6 +82,19 @@ export interface StructuredRequirement {
    * still written with the reviewed `title`.
    */
   extractedTitle?: string;
+  /**
+   * Issue #2449 — present only on a requirement offered at the approval
+   * checkpoint from an NFR the elicitor found (`offerElicitedNfrs`), so the
+   * checkpoint lists every requirement promotion writes. Promotion writes it
+   * as that NFR: non-functional with this category, citing these findings
+   * (indexes in synthesis order, as `evidenceFindingIndexes`), labelled
+   * `elicited-nfr`, its verdict capped (#1648), and never joined to a
+   * synthesis item.
+   */
+  elicitedNfr?: {
+    nfrCategory: NfrCategory;
+    evidenceFindingIndexes: number[];
+  };
 }
 
 export interface StructuredRequirements {

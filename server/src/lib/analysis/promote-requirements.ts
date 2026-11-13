@@ -65,6 +65,7 @@ import { computeVerdictsForRequirements, type VerdictFindingInput } from "./requ
 import { requirementKindColumns } from "./requirement-kind.js";
 import {
   capElicitedNfrVerdict,
+  capElicitedNfrVerdicts,
   elicitedNfrRequirements,
   readElicitedNfrsAwaitingPromotion,
 } from "./elicited-nfr-requirements.js";
@@ -304,20 +305,26 @@ export async function promoteApprovedRequirements(
     verdict: f.verdict ?? null,
   }));
   const codeAnalysisRan = flat.some((f) => f.agentKey === "code");
-  const verdicts = computeVerdictsForRequirements(
+  // #2449 — an elicited NFR approved at the checkpoint is in the set, its
+  // verdict capped as on the allowed path (#1648).
+  const verdicts = capElicitedNfrVerdicts(
     toPromote.requirements,
-    verdictFindings,
-    codeAnalysisRan,
+    computeVerdictsForRequirements(toPromote.requirements, verdictFindings, codeAnalysisRan),
   );
   // #1705 — the NFRs the gate-blocked run elicited, written beside the set by
   // the rules of the allowed path (#1613, #1648): the ones the promoted set
   // already states dropped, at most the per-run cap, the verdict capped, and
-  // never approved by this promotion.
-  const { requirements: elicited, dropped: droppedNfrs } = elicitedNfrRequirements({
-    nfrs: readElicitedNfrsAwaitingPromotion(parseMetadataObject(analysis.metadata)),
-    findingIdsByIndex,
-    existing: toPromote.requirements,
-  });
+  // never approved by this promotion. #2449 — only on a set no checkpoint
+  // reviewed: there the run offered them for approval with the rest, so the
+  // approved ones are in `toPromote` and the others were not approved. A
+  // checkpoint never writes a requirement it did not list.
+  const { requirements: elicited, dropped: droppedNfrs } = reviewed
+    ? { requirements: [], dropped: [] }
+    : elicitedNfrRequirements({
+        nfrs: readElicitedNfrsAwaitingPromotion(parseMetadataObject(analysis.metadata)),
+        findingIdsByIndex,
+        existing: toPromote.requirements,
+      });
   if (droppedNfrs.length > 0) {
     log.info("Elicited NFRs not written as requirements", { analysisId, dropped: droppedNfrs });
   }
@@ -543,10 +550,14 @@ async function appendNewlyApproved(input: {
       added,
       flat.map((f) => ({ citations: f.citations })),
     );
-    const verdicts = computeVerdictsForRequirements(
+    // #2449 — an elicited NFR approved after the set was promoted, capped too.
+    const verdicts = capElicitedNfrVerdicts(
       added,
-      flat.map((f) => ({ agentKey: f.agentKey, verdict: f.verdict ?? null })),
-      flat.some((f) => f.agentKey === "code"),
+      computeVerdictsForRequirements(
+        added,
+        flat.map((f) => ({ agentKey: f.agentKey, verdict: f.verdict ?? null })),
+        flat.some((f) => f.agentKey === "code"),
+      ),
     );
 
     // Same row shape `persistRequirements` writes, without its replace semantics.
