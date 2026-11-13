@@ -198,7 +198,11 @@ import { listBindableAgents, loadBoundCustomAgent } from "../lib/agent-runtime/s
 import { agentSelectableTools } from "../lib/agent-runtime/tool-refs.js";
 import { assertLiveProjectAccess } from "../lib/custom-agents/authz.js";
 import { listMemberProjectsInWorkspace } from "../lib/cross-project/cross-project-access.js";
-import { buildMultiProjectRagContext, readChatSearchScope } from "../lib/ai/multi-project-rag.js";
+import {
+  buildMultiProjectRagContext,
+  readChatSearchScope,
+  type ChatSearchScope,
+} from "../lib/ai/multi-project-rag.js";
 import { parseScopeProjectIds } from "../lib/ai/chat-search-scope.js";
 import { assertSecretUsable, canUseSecret } from "../lib/vault/secret-access.js";
 import { resolveDurableRole } from "../lib/auth/durable-roles.js";
@@ -686,16 +690,7 @@ export async function conversationRagContext(
   documentIds?: readonly string[],
 ): Promise<string> {
   if (!session.projectId) return "";
-  let conversation = retrievalConversation([]);
-  try {
-    conversation = retrievalConversation(await listActiveMessages(session.id));
-  } catch (err) {
-    // An unreadable transcript costs the search its context, never the turn.
-    log.debug("Transcript unreadable for retrieval; searching the new message alone", {
-      sessionId: session.id,
-      error: (err as Error).message,
-    });
-  }
+  const conversation = await sessionRetrievalConversation(session.id);
   return buildAutoRagContext(
     session.projectId,
     [...conversation.messages, { role: "user", content: userText }],
@@ -707,6 +702,46 @@ export async function conversationRagContext(
       ...(documentIds && documentIds.length > 0 ? { documentIds } : {}),
     },
   );
+}
+
+/** #2240 — the session's prior turns as retrieval reads them; none when unreadable. */
+async function sessionRetrievalConversation(sessionId: string) {
+  try {
+    return retrievalConversation(await listActiveMessages(sessionId));
+  } catch (err) {
+    // An unreadable transcript costs the search its context, never the turn.
+    log.debug("Transcript unreadable for retrieval; searching the new message alone", {
+      sessionId,
+      error: (err as Error).message,
+    });
+    return retrievalConversation([]);
+  }
+}
+
+/**
+ * #2279 — a multi-product turn's retrieval, read with the conversation as
+ * {@link conversationRagContext} reads it for one project: the earlier turns
+ * shape the searches, the excerpts the last answer cited are carried, and the
+ * documents attached to the question limit the search.
+ */
+async function multiProductRagContext(
+  sessionId: string,
+  scope: ChatSearchScope,
+  userText: string,
+  userId: string,
+  capture: RagContextCapture,
+  documentIds?: readonly string[],
+) {
+  const conversation = await sessionRetrievalConversation(sessionId);
+  return buildMultiProjectRagContext({
+    userId,
+    scope,
+    query: userText,
+    history: conversation.messages,
+    carryForward: conversation.carryForward,
+    ...(documentIds && documentIds.length > 0 ? { documentIds } : {}),
+    capture,
+  });
 }
 
 export async function buildAutoRagContext(
@@ -1960,12 +1995,14 @@ export function aiRouter(): Router {
       // #2238 — a chat scoped to several products searches each of them.
       const multiScope = readChatSearchScope(session);
       const multi = multiScope
-        ? await buildMultiProjectRagContext({
+        ? await multiProductRagContext(
+            session.id,
+            multiScope,
+            userText,
             userId,
-            scope: multiScope,
-            query: userText,
-            capture: ragCapture,
-          })
+            ragCapture,
+            parsed.data.documentIds,
+          )
         : null;
       const ragContext = multi
         ? multi.block
@@ -2417,12 +2454,14 @@ export function aiRouter(): Router {
     // #2238 — a chat scoped to several products searches each of them.
     const multiScope = readChatSearchScope(session);
     const multi = multiScope
-      ? await buildMultiProjectRagContext({
+      ? await multiProductRagContext(
+          session.id,
+          multiScope,
+          userText,
           userId,
-          scope: multiScope,
-          query: userText,
-          capture: ragCapture,
-        })
+          ragCapture,
+          parsed.data.documentIds,
+        )
       : null;
     const ragContext = multi
       ? multi.block

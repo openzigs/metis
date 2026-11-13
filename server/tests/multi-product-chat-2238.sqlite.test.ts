@@ -18,7 +18,8 @@ import {
 } from "./helpers/sqlite-migrated-db.js";
 import type { AIProvider, ChatChunk, ChatMessage } from "../src/lib/ai/types.js";
 
-type Hit = { chunkId: string; text: string; score: number };
+/** #2279 — `when`: the hit is found only by a search whose query contains it. */
+type Hit = { chunkId: string; text: string; score: number; when?: string };
 
 const state = vi.hoisted(() => {
   process.env.AI_RATE_LIMIT_MAX = "10000";
@@ -26,8 +27,13 @@ const state = vi.hoisted(() => {
     db: null as unknown,
     /** Each project's ranked hits. */
     hits: {} as Record<string, Hit[]>,
-    /** The project ids searched, and the ACL actor each search ran for. */
-    searched: [] as Array<{ projectId: string; actor: unknown }>,
+    /** The project ids searched, and the ACL actor, query and documents each search ran for. */
+    searched: [] as Array<{
+      projectId: string;
+      actor: unknown;
+      query?: string;
+      documentIds?: unknown;
+    }>,
     /** A project whose search never answers (it times out). */
     hang: null as string | null,
   };
@@ -48,21 +54,27 @@ vi.mock("../src/lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
 // through the service's own seam: the knowledge-service module is part of an
 // import cycle with the retrieval stack, so mocking it would not reach here.
 const stubKnowledgeService = {
-  search: async (projectId: string, _query: string, opts?: { actor?: unknown }) => {
-    state.searched.push({ projectId, actor: opts?.actor });
+  search: async (
+    projectId: string,
+    query: string,
+    opts?: { actor?: unknown; documentIds?: unknown },
+  ) => {
+    state.searched.push({ projectId, actor: opts?.actor, query, documentIds: opts?.documentIds });
     if (projectId === state.hang) await new Promise(() => undefined);
     return {
       mode: "hybrid",
-      hits: (state.hits[projectId] ?? []).map((h, i) => ({
-        chunkId: h.chunkId,
-        documentId: `doc-${h.chunkId}`,
-        filename: `${h.chunkId}.md`,
-        position: i,
-        text: h.text,
-        score: h.score,
-        embeddingModel: "stub",
-        source: "upload",
-      })),
+      hits: (state.hits[projectId] ?? [])
+        .filter((h) => !h.when || query.includes(h.when))
+        .map((h, i) => ({
+          chunkId: h.chunkId,
+          documentId: `doc-${h.chunkId}`,
+          filename: `${h.chunkId}.md`,
+          position: i,
+          text: h.text,
+          score: h.score,
+          embeddingModel: "stub",
+          source: "upload",
+        })),
     };
   },
 };
@@ -85,10 +97,12 @@ class ScriptedProvider implements AIProvider {
   readonly model = "stub-model";
   readonly offline = true;
   prompts: ChatMessage[][] = [];
+  /** #2279 — scripted replies, answered in turn; then the fixed ones below. */
+  replies: string[] = [];
   async chat(messages: ChatMessage[]) {
     this.prompts.push(messages);
     return {
-      content: "chat answer",
+      content: this.replies.shift() ?? "chat answer",
       usage: { promptTokens: 10, completionTokens: 2, totalTokens: 12 },
       model: "stub-model",
       provider: this.key,
@@ -96,7 +110,7 @@ class ScriptedProvider implements AIProvider {
   }
   async *stream(messages: ChatMessage[]): AsyncGenerator<ChatChunk> {
     this.prompts.push(messages);
-    yield { type: "delta", content: "stream answer" };
+    yield { type: "delta", content: this.replies.shift() ?? "stream answer" };
     yield { type: "done", finishReason: "stop" };
   }
   async embed() {
@@ -183,6 +197,35 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       ] as const) {
         await db.project.create({
           data: { id, name, slug: id, createdById: ALICE, workspaceId },
+        });
+      }
+      // #2279 — the excerpts an answer cites are read back from the real table.
+      for (const [chunkId, projectId, text] of [
+        ["b-annual", BETA, "Beta bills annual plans monthly."],
+        ["a-x", ALPHA, "Alpha excerpt."],
+      ] as const) {
+        await db.document.create({
+          data: {
+            id: `doc-${chunkId}`,
+            projectId,
+            filename: `${chunkId}.md`,
+            mimeType: "text/markdown",
+            sizeBytes: 1,
+            storagePath: `/tmp/${chunkId}`,
+            checksum: chunkId,
+            uploadedById: ALICE,
+            status: "ready",
+          },
+        });
+        await db.knowledgeChunk.create({
+          data: {
+            id: chunkId,
+            projectId,
+            documentId: `doc-${chunkId}`,
+            position: 0,
+            text,
+            md5: chunkId,
+          },
         });
       }
       alice = issueTokens({
@@ -321,6 +364,94 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       await post("/api/ai/stream", { sessionId, message: "q" });
       expect(state.searched.map((s) => s.projectId).sort()).toEqual([ALPHA, BETA, GAMMA]);
       expect(state.searched.map((s) => s.projectId)).not.toContain(SECRET);
+    });
+
+    it("#2279 — a two-turn follow-up retrieves the product the earlier question was about", async () => {
+      state.hits = {
+        // Only the earlier question finds Beta's annual-billing excerpt...
+        [BETA]: [
+          {
+            chunkId: "b-annual",
+            text: "Beta bills annual plans monthly.",
+            score: 0.8,
+            when: "annual",
+          },
+        ],
+        // ...while the latest words alone match Alpha, weakly.
+        [ALPHA]: [
+          {
+            chunkId: "a-client",
+            text: "Alpha's client shows a banner.",
+            score: 0.3,
+            when: "client",
+          },
+        ],
+      };
+      const sessionId = await newSession({ projectIds: [ALPHA, BETA] });
+      await post("/api/ai/stream", { sessionId, message: "How are annual plans billed?" });
+      state.searched = [];
+      const res = await post("/api/ai/stream", { sessionId, message: "and in the client?" });
+      expect(res.text).toContain("event: done");
+      // Every product ran the user's words, then the follow-up read with the turn before.
+      for (const projectId of [ALPHA, BETA]) {
+        expect(state.searched.filter((s) => s.projectId === projectId).map((s) => s.query)).toEqual(
+          ["and in the client?", "and in the client?\nHow are annual plans billed?"],
+        );
+      }
+      const second = promptText(model.prompts[1]!);
+      expect(second).toContain("[Beta] b-annual.md#0");
+      expect(second).toContain("Beta bills annual plans monthly.");
+      // Alpha stays: the user's own words matched it, and Beta's conversational-only
+      // 0.8 does not raise the floor's bar above them.
+      expect(second).toContain("Alpha's client shows a banner.");
+      expect(groundingFrames(res.text)).toEqual([
+        {
+          status: "multi",
+          projects: [
+            { projectId: ALPHA, projectName: "Alpha", sources: 1 },
+            { projectId: BETA, projectName: "Beta", sources: 1 },
+          ],
+        },
+      ]);
+    });
+
+    it("#2279 — keeps the excerpt the previous answer cited in the next turn (/chat)", async () => {
+      state.hits = {
+        [BETA]: [{ chunkId: "b-annual", text: "Beta bills annual plans monthly.", score: 0.8 }],
+        [ALPHA]: [{ chunkId: "a-x", text: "Alpha excerpt.", score: 0.8 }],
+      };
+      model.replies = ["In Beta, annual plans are billed monthly [2]."];
+      const sessionId = await newSession({ projectIds: [ALPHA, BETA] });
+      const first = await post("/api/ai/chat", {
+        sessionId,
+        message: "How are annual plans billed?",
+      });
+      expect(first.status, first.text).toBe(200);
+      // The next search finds only Alpha.
+      state.hits = { [ALPHA]: [{ chunkId: "a-x", text: "Alpha excerpt.", score: 0.8 }] };
+      await post("/api/ai/chat", { sessionId, message: "and for monthly plans?" });
+      const second = promptText(model.prompts[1]!);
+      expect(second).toContain(
+        "[2] [Beta] b-annual.md#0 (cited in your previous answer)\\nBeta bills annual plans monthly.",
+      );
+      expect((await replyGroundings(sessionId))[1]).toEqual({
+        status: "multi",
+        projects: [
+          { projectId: ALPHA, projectName: "Alpha", sources: 1 },
+          { projectId: BETA, projectName: "Beta", sources: 1 },
+        ],
+      });
+    });
+
+    it("#2279 — limits every product's search to the documents attached to the question", async () => {
+      const sessionId = await newSession({ projectIds: [ALPHA, BETA] });
+      await post("/api/ai/stream", {
+        sessionId,
+        message: "Summarise the billing rules",
+        documentIds: ["doc-b-annual"],
+      });
+      expect(state.searched.map((s) => s.projectId).sort()).toEqual([ALPHA, BETA]);
+      for (const s of state.searched) expect(s.documentIds).toEqual(["doc-b-annual"]);
     });
 
     it("refuses a scope naming another workspace's project, or another workspace", async () => {
