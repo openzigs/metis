@@ -2,7 +2,7 @@
   "corpusId": "docunderstanding-03-community-grants",
   "title": "Harbour City Council: Community Grants Management System, Functional Requirements Document",
   "license": "CC0-1.0",
-  "labelStatus": "author-labelled while writing the synthetic document; cross-checked by two independent blind AI reviewers; disagreements judged by an AI and each judgement confirmed by a person (#2255)",
+  "labelStatus": "author-labelled while writing the synthetic document; cross-checked by two independent blind AI reviewers; disagreements judged by an AI and each judgement confirmed by a person (#2255); six label gaps found among the reader's false requirements on 01 and 02 (R57-R59, R61-R63) added by an AI, not yet confirmed by a person (#2374)",
   "sourceSha256": "00c68aa6dd7f5c557a6d42b155c6dac9d21e528dfc414ea70af430ab8a21ea64",
   "sections": [
     "Harbour City Council: Community Grants Management System, Functional Requirements Document",

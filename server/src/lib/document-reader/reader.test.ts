@@ -8,6 +8,7 @@ import {
   READER_WHOLE_MAX_DOCUMENT_TOKENS,
   chooseReadingMode,
   hasBody,
+  isHeldBy,
   isTableRow,
   readDocument,
   sentenceSpan,
@@ -468,6 +469,28 @@ describe("readDocument — a document longer than one batch", () => {
     ]);
   });
 
+  it("#2374 — tells each batch call where to stop: the section after its own, which another call writes", async () => {
+    const { provider, calls } = routedProvider([
+      [WHOLE, perBatch],
+      [MERGE, noMerge],
+    ]);
+    await readDocument({ title: "Long", text: LONG, provider });
+    const reads = calls.filter((c) => c.system.includes(WHOLE));
+    const stops = reads.map((r) => r.user.split("\n").find((l) => l.startsWith("Stop after")));
+    expect(reads.map(askedSections)).toEqual([["S1"], ["S2"], ["S3"], ["S4"]]);
+    expect(stops).toEqual([
+      "Stop after the last statement of S1: S2 and every section after it are written in another call.",
+      "Stop after the last statement of S2: S3 and every section after it are written in another call.",
+      "Stop after the last statement of S3: S4 and every section after it are written in another call.",
+      // The last batch has no section after it.
+      undefined,
+    ]);
+    // The boundary comes after the document, so the cached lead is the same for every call.
+    for (const r of reads.slice(0, 3))
+      expect(r.user.indexOf("Stop after")).toBeGreaterThan(r.user.indexOf("Paragraph 4.119"));
+    expect(reads[0]!.system).toContain("a statement of a section that is not named is discarded");
+  });
+
   it("reports the sections of a batch whose reply could not be read, and reads the rest", async () => {
     const { provider } = routedProvider([
       [WHOLE, (call) => (askedSections(call).includes("S1") ? "garbage" : perBatch(call))],
@@ -757,6 +780,10 @@ describe("readDocument — sectioned mode", () => {
     expect(reading.mode).toBe("sectioned");
     const [ctx] = calls.filter((c) => c.system.includes(CONTEXT));
     expect(ctx!.system).toContain("the rest of the text follows in later calls");
+    // #2374 — a sectioned call holds its own sections alone: no later section to stop before.
+    const reads = calls.filter((c) => c.system.includes(SECTIONED));
+    expect(reads.length).toBeGreaterThan(1);
+    for (const r of reads) expect(r.user).not.toContain("Stop after");
     // Every section is reported. #2407: the replies said nothing of any of
     // them, though each has text, so none is reported read.
     expect(reading.sections.length).toBeGreaterThan(1);
@@ -1259,6 +1286,175 @@ describe("#2361 — repeats", () => {
     expect(reading.sections.find((s) => s.sectionId === "S5")).toMatchObject({ repeats: 1 });
   });
 
+  it("#2374 — drops a summary table's rows that each repeat part of one prose sentence", async () => {
+    const text = [
+      "# Claims",
+      "",
+      "## 1 Documents",
+      "",
+      "A reminder is sent 21 days after the request, and the claim is closed 21 days after the reminder.",
+      "",
+      "## 2 Summary",
+      "",
+      "| Rule | Limit |",
+      "| --- | --- |",
+      "| Documents reminder | 21 days after the request |",
+      "| Claim closed | 21 days after the reminder |",
+      "| All document limits | Reminder at 21 days, then closed 21 days later |",
+      "",
+    ].join("\n");
+    const reply = statements(
+      {
+        section: "S2",
+        kind: "requirement",
+        statement: "Remind after 21 days; close 21 days after the reminder.",
+        quote:
+          "A reminder is sent 21 days after the request, and the claim is closed 21 days after the reminder.",
+      },
+      {
+        section: "S3",
+        kind: "business-rule",
+        statement: "Reminder at 21 days.",
+        quote: "| Documents reminder | 21 days after the request |",
+      },
+      {
+        section: "S3",
+        kind: "business-rule",
+        statement: "Closed 21 days after the reminder.",
+        quote: "| Claim closed | 21 days after the reminder |",
+      },
+    );
+    const merge = JSON.stringify({
+      duplicates: [
+        { id: "T2", of: "T1" },
+        { id: "T3", of: "T1" },
+      ],
+      crossReferences: [],
+    });
+    const { provider } = routedProvider([
+      [WHOLE, reply],
+      [MERGE, merge],
+    ]);
+    const reading = await readDocument({ title: "Claims", text, provider });
+    expect(reading.statements.map((s) => s.sectionId)).toEqual(["S2"]);
+    expect(reading.sections.find((s) => s.sectionId === "S3")).toMatchObject({
+      repeats: 2,
+      mergedInto: ["S2"],
+    });
+
+    // Rows named repeats of a row that combines them keep the summary guard: both stay.
+    const intoRow = JSON.stringify({
+      duplicates: [
+        { id: "T1", of: "T3" },
+        { id: "T2", of: "T3" },
+      ],
+      crossReferences: [],
+    });
+    const rowsOnly = statements(
+      {
+        section: "S3",
+        kind: "business-rule",
+        statement: "Reminder at 21 days.",
+        quote: "| Documents reminder | 21 days after the request |",
+      },
+      {
+        section: "S3",
+        kind: "business-rule",
+        statement: "Closed 21 days after the reminder.",
+        quote: "| Claim closed | 21 days after the reminder |",
+      },
+      {
+        section: "S3",
+        kind: "business-rule",
+        statement: "Reminder at 21 days, closed 21 days later.",
+        quote: "| All document limits | Reminder at 21 days, then closed 21 days later |",
+      },
+    );
+    const second = routedProvider([
+      [WHOLE, rowsOnly],
+      [MERGE, intoRow],
+    ]);
+    const again = await readDocument({ title: "Claims", text, provider: second.provider });
+    expect(again.statements.map((s) => s.statement)).toEqual([
+      "Reminder at 21 days.",
+      "Closed 21 days after the reminder.",
+      "Reminder at 21 days, closed 21 days later.",
+    ]);
+    expect(again.sections.find((s) => s.sectionId === "S3")).toMatchObject({ repeats: 0 });
+  });
+
+  it("#2374 review — keeps a detailed table's rows named repeats of a prose overview that does not say them", async () => {
+    const text = [
+      "# Notices",
+      "",
+      "## 1 Overview",
+      "",
+      "The portal shall send notifications when a booking is made, moved or cancelled.",
+      "",
+      "## 2 Notifications",
+      "",
+      "| Event | Channel | Timing |",
+      "| --- | --- | --- |",
+      "| Booking made | Email and text message | Immediately |",
+      "| Booking moved | Email | Within 15 minutes |",
+      "",
+    ].join("\n");
+    const reply = statements(
+      {
+        section: "S2",
+        kind: "requirement",
+        statement: "Notify when a booking is made, moved or cancelled.",
+        quote: "The portal shall send notifications when a booking is made, moved or cancelled.",
+      },
+      {
+        section: "S3",
+        kind: "requirement",
+        statement: "A booking made is notified by email and text message immediately.",
+        quote: "| Booking made | Email and text message | Immediately |",
+      },
+      {
+        section: "S3",
+        kind: "requirement",
+        statement: "A booking moved is notified by email within 15 minutes.",
+        quote: "| Booking moved | Email | Within 15 minutes |",
+      },
+    );
+    const merge = JSON.stringify({
+      duplicates: [
+        { id: "T2", of: "T1" },
+        { id: "T3", of: "T1" },
+      ],
+      crossReferences: [],
+    });
+    const { provider } = routedProvider([
+      [WHOLE, reply],
+      [MERGE, merge],
+    ]);
+    const reading = await readDocument({ title: "Notices", text, provider });
+    // The overview names the events; only the rows say the channel and timing,
+    // so the summary guard keeps both rows.
+    expect(reading.statements.map((s) => [s.sectionId, s.statement])).toEqual([
+      ["S2", "Notify when a booking is made, moved or cancelled."],
+      ["S3", "A booking made is notified by email and text message immediately."],
+      ["S3", "A booking moved is notified by email within 15 minutes."],
+    ]);
+    expect(reading.sections.find((s) => s.sectionId === "S3")).toMatchObject({ repeats: 0 });
+  });
+
+  it("#2374 review — a row is held by prose that says its content words, not by prose that only names it", () => {
+    // 02's two summary rows, against the sentence of 6.1 that sets both out (R13).
+    const r13 =
+      "If the required documents have not been received 21 days after the request, the application shall send a reminder to the claimant, and if they have still not been received 21 days after the reminder, the claim shall be closed as abandoned.";
+    expect(isHeldBy("| Documents reminder | 21 days after the request |", r13)).toBe(true);
+    expect(isHeldBy("| Claim closed as abandoned | 21 days after the reminder |", r13)).toBe(true);
+    const overview =
+      "The portal shall send notifications when a booking is made, moved or cancelled.";
+    expect(isHeldBy("| Booking made | Email and text message | Immediately |", overview)).toBe(
+      false,
+    );
+    expect(isHeldBy("| --- | --- |", overview)).toBe(false);
+  });
+
   it("never drops a prose statement as a repeat of a summary table's row, but drops the row", async () => {
     const text = [
       "# Lending",
@@ -1389,6 +1585,18 @@ describe("#2361 — repeats", () => {
     expect(system).toMatch(/background: [^\n]*scope[^\n]*document itself/);
   });
 
+  it("#2374 — reads a lead-in to the statements after it, and a statement's reason, as background", async () => {
+    const { provider, calls } = routedProvider([[WHOLE, statements()]]);
+    await readDocument({ title: "Booking FRD", text: TEXT, provider });
+    const system = calls[0]!.system;
+    expect(system).toMatch(
+      /background: [^\n]*a sentence that introduces the statements, list or table after it[^\n]*the reason given for another statement/,
+    );
+    expect(system).toContain(
+      "unless it is about the document itself or only introduces the statements after it",
+    );
+  });
+
   it("tells the cross-section pass to name the statement that says less", () => {
     const { systemMessage } = buildMergePrompt({ title: "Booking FRD", statements: [] });
     expect(systemMessage).toContain("name the one that says less");
@@ -1459,6 +1667,37 @@ describe("#2407 — a reply that corrects itself, or stops partway", () => {
       ["S5", "S6"],
     ]);
     expect(reading.statements.map((s) => s.sectionId)).toEqual(["S2", "S4", "S5", "S6"]);
+    expect(Object.values(statusOf(reading)).every((s) => s === "read")).toBe(true);
+  });
+
+  it("#2374 review — tells a re-ask for non-contiguous sections to stop before the section after the last", async () => {
+    // The first reply covers S4 and S6 only, so S2 and S5 are asked again: S4
+    // lies between them and is not named, and S6 is written by no one else here.
+    const { provider, calls } = routedProvider([
+      [
+        WHOLE,
+        (call) =>
+          askedSections(call).length === 2
+            ? statements(TEXT_STATEMENTS[0], TEXT_STATEMENTS[2])
+            : statements(TEXT_STATEMENTS[1], TEXT_STATEMENTS[3]),
+      ],
+      [MERGE, noMerge],
+    ]);
+    const reading = await readDocument({ title: "Booking FRD", text: TEXT, provider });
+    expect(reads(calls).map(askedSections)).toEqual([
+      ["S1", "S2", "S3", "S4", "S5", "S6"],
+      ["S2", "S5"],
+    ]);
+    const stops = reads(calls).map((r) =>
+      r.user.split("\n").find((l) => l.startsWith("Stop after")),
+    );
+    expect(stops).toEqual([
+      undefined,
+      "Stop after the last statement of S5: S6 and every section after it are written in another call.",
+    ]);
+    expect(reads(calls)[1]!.system).toContain(
+      "a statement of a section that is not named is discarded",
+    );
     expect(Object.values(statusOf(reading)).every((s) => s === "read")).toBe(true);
   });
 
