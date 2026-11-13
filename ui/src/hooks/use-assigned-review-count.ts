@@ -14,7 +14,11 @@ export const ASSIGNED_REVIEW_COUNT_KEY = queryKeys.reviews.list({
   countOnly: true,
 });
 
-/** Fallback for a change this user's socket does not hear (a dropped connection). */
+/**
+ * Fallback for a change this user's socket does not hear: a dropped
+ * connection, and count changes no event announces (their removal from a
+ * project's workspace, a project soft-delete).
+ */
 const REFRESH_MS = 60_000;
 
 /**
