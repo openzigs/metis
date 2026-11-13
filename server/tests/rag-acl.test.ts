@@ -3,24 +3,15 @@
  */
 import { describe, expect, it, vi } from "vitest";
 
-const { documentUpdate, knowledgeChunkUpdateMany } = vi.hoisted(() => ({
-  documentUpdate: vi.fn(async () => ({})),
-  knowledgeChunkUpdateMany: vi.fn(async () => ({ count: 7 })),
-}));
-
-vi.mock("../src/lib/prisma.js", () => ({
-  prisma: {
-    document: { update: documentUpdate },
-    knowledgeChunk: { updateMany: knowledgeChunkUpdateMany },
-  },
-}));
+// The primitives below read nothing; `saveDocumentAcl` (#2356) is covered on
+// real SQLite in `document-acl-save-2356.sqlite.test.ts`.
+vi.mock("../src/lib/prisma.js", () => ({ prisma: {} }));
 
 import {
   filterAccessible,
   isAdminBypass,
   isVisibleTo,
   parseAclSubjects,
-  propagateAcl,
   serializeAclSubjects,
   sharedAudienceActor,
 } from "../src/lib/rag/acl.js";
@@ -188,24 +179,5 @@ describe("filterAccessible", () => {
     const result = filterAccessible([{ chunkId: "c1" }], actor);
     expect(result.allowed).toHaveLength(1);
     expect(result.deniedChunkIds).toEqual([]);
-  });
-});
-
-describe("propagateAcl", () => {
-  it("updates the document + bulk-updates chunk ACLs", async () => {
-    const subjects = [
-      { kind: "user" as const, value: "u1" },
-      { kind: "group" as const, value: "alpha" },
-    ];
-    const count = await propagateAcl("doc1", subjects);
-    expect(count).toBe(7);
-    expect(documentUpdate).toHaveBeenCalledWith({
-      where: { id: "doc1" },
-      data: { aclSubjects: JSON.stringify(subjects) },
-    });
-    expect(knowledgeChunkUpdateMany).toHaveBeenCalledWith({
-      where: { documentId: "doc1" },
-      data: { aclSubjects: JSON.stringify(subjects) },
-    });
   });
 });

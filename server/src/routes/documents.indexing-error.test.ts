@@ -66,7 +66,7 @@ vi.mock("../lib/projects/project-service.js", () => ({
 }));
 const quarantine = vi.hoisted(() => ({ approveDocument: vi.fn(), rejectDocument: vi.fn() }));
 vi.mock("../lib/rag/quarantine.js", () => quarantine);
-vi.mock("../lib/rag/acl.js", () => ({ propagateAcl: vi.fn() }));
+vi.mock("../lib/rag/acl.js", () => ({ saveDocumentAcl: vi.fn() }));
 vi.mock("../lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
 
 const { documentsRouter } = await import("./documents.js");

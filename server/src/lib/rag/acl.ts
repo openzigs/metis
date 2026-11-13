@@ -6,13 +6,15 @@
  *   - `parseAclSubjects` — decode the JSON `aclSubjects` column safely.
  *   - `serializeAclSubjects` — encode for storage with validation.
  *   - `isVisibleTo` — authoritative visibility check given a `ChunkAcl`.
- *   - `propagateAcl` — copy a document's ACL onto every live chunk.
+ *   - `saveDocumentAcl` — replace a document's ACL and every chunk's, atomically
+ *     against the ACL it replaces (#2356).
  *
  * Storage representation:
- *   - SQLite: `aclSubjects` is a TEXT column holding a JSON array.
- *   - Postgres: a `Json` column. Prisma reads it as a parsed value already.
- *   - We normalize everything to a string array on the way in/out so
- *     downstream code never has to branch on the dialect.
+ *   - Both dialects: `aclSubjects` is a `String` column (TEXT) holding a JSON
+ *     array (`aclSubjects String @default("[]")` in each schema). The
+ *     compare-and-set in `saveDocumentAcl` relies on that: it filters on the
+ *     exact string it read, which a `Json` column could not do.
+ *   - We normalize everything to a subject array on the way in/out.
  *
  * Visibility rule:
  *   - Empty ACL list  ⇒ visible to every project member (most chunks).
@@ -35,7 +37,6 @@ import { aclSubjectSchema, type AclSubject } from "@metis/shared";
 import { prisma } from "../prisma.js";
 import { createChildLogger } from "../logger.js";
 import { resolveDurableRole } from "../auth/durable-roles.js";
-import { AppError } from "../../middleware/error-handler.js";
 
 const log = createChildLogger("rag-acl");
 
@@ -84,17 +85,6 @@ export class InactiveAclActorError extends Error {
 }
 
 /**
- * #2261 — the HTTP form of {@link InactiveAclActorError} for a route whose
- * caller IS the actor: their token outlived their account, so it is a 401
- * `TOKEN_INVALID`, as `refreshAuthenticatedUser` answers, not a 500. Any other
- * error is returned unchanged. Use as `.catch((err) => { throw ... })`.
- */
-export function inactiveCallerAsUnauthenticated(err: unknown): unknown {
-  if (!(err instanceof InactiveAclActorError)) return err;
-  return new AppError(401, "TOKEN_INVALID", "Access token is malformed or invalid");
-}
-
-/**
  * #2261 — the `group` subjects in `next` that `current` does not already hold.
  * METIS stores no group membership (IdP group claims are read at login, never
  * persisted), so a group subject matches no one; `PATCH /documents/:id/acl`
@@ -104,6 +94,86 @@ export function inactiveCallerAsUnauthenticated(err: unknown): unknown {
 export function newGroupSubjects(current: AclSubject[], next: AclSubject[]): string[] {
   const held = new Set(current.filter((s) => s.kind === "group").map((s) => s.value));
   return next.filter((s) => s.kind === "group" && !held.has(s.value)).map((s) => s.value);
+}
+
+/**
+ * #2261 / #2356 — an ACL write named `group` subjects the document does not
+ * already hold (see {@link newGroupSubjects}). Nothing was written.
+ */
+export class AclGroupUnsupportedError extends Error {
+  constructor(readonly groups: string[]) {
+    super(`Group subjects are not supported: ${groups.join(", ")}`);
+    this.name = "AclGroupUnsupportedError";
+  }
+}
+
+/**
+ * #2356 — the document's ACL kept changing under {@link saveDocumentAcl} on
+ * every attempt. Nothing was written; the caller may retry.
+ */
+export class AclSaveConflictError extends Error {
+  constructor() {
+    super("The document's access list changed while it was being saved");
+    this.name = "AclSaveConflictError";
+  }
+}
+
+/** Attempts {@link saveDocumentAcl} makes before giving up on a document whose ACL keeps changing. */
+export const ACL_SAVE_ATTEMPTS = 3;
+
+/**
+ * #2356 — replace the ACL of document `documentId` in `projectId` (the row and
+ * every chunk) with `aclSubjects`, checking the group rule against the ACL it
+ * replaces. The write is a compare-and-set on the ACL that was read: if
+ * another save changed it in between, this one reads it again and re-checks,
+ * so a group another editor just removed is never written back as "already
+ * held". The document and its chunks change in one transaction.
+ *
+ * Returns the chunk count, or `null` when the document is not live in the
+ * project. Throws {@link AclGroupUnsupportedError} (nothing written) or, past
+ * {@link ACL_SAVE_ATTEMPTS} lost races, {@link AclSaveConflictError}.
+ *
+ * `afterRead` is a test seam: it runs between the read and the write.
+ */
+export async function saveDocumentAcl(
+  input: { documentId: string; projectId: string; aclSubjects: AclSubject[] },
+  deps: { afterRead?: () => Promise<void> } = {},
+): Promise<{ chunkCount: number } | null> {
+  const serialized = serializeAclSubjects(input.aclSubjects);
+  const where = { id: input.documentId, projectId: input.projectId, deletedAt: null };
+  for (let attempt = 1; attempt <= ACL_SAVE_ATTEMPTS; attempt++) {
+    const doc = await prisma.document.findFirst({ where, select: { aclSubjects: true } });
+    if (!doc) return null;
+    const groups = newGroupSubjects(parseAclSubjects(doc.aclSubjects), input.aclSubjects);
+    if (groups.length > 0) throw new AclGroupUnsupportedError(groups);
+    await deps.afterRead?.();
+    const chunkCount = await prisma.$transaction(async (tx) => {
+      const won = await tx.document.updateMany({
+        where: { ...where, aclSubjects: doc.aclSubjects },
+        data: { aclSubjects: serialized },
+      });
+      if (won.count === 0) return null;
+      const chunks = await tx.knowledgeChunk.updateMany({
+        where: { documentId: input.documentId },
+        data: { aclSubjects: serialized },
+      });
+      return chunks.count;
+    });
+    if (chunkCount !== null) {
+      log.info("saved document acl", {
+        documentId: input.documentId,
+        chunkCount,
+        subjectCount: input.aclSubjects.length,
+        attempt,
+      });
+      return { chunkCount };
+    }
+    log.info("document acl changed while saving; reading it again", {
+      documentId: input.documentId,
+      attempt,
+    });
+  }
+  throw new AclSaveConflictError();
 }
 
 /**
@@ -211,27 +281,4 @@ export function filterAccessible<T extends { chunkId: string; aclSubjects?: AclS
     else deniedChunkIds.push(c.chunkId);
   }
   return { allowed, deniedChunkIds };
-}
-
-/**
- * Propagate a document's ACL list to every live chunk. Used by the re-permission
- * route (`PATCH /api/documents/:id/acl`) and re-ingestion. Returns the count of
- * affected chunk rows for audit logging.
- */
-export async function propagateAcl(documentId: string, aclSubjects: AclSubject[]): Promise<number> {
-  const serialized = serializeAclSubjects(aclSubjects);
-  await prisma.document.update({
-    where: { id: documentId },
-    data: { aclSubjects: serialized },
-  });
-  const updated = await prisma.knowledgeChunk.updateMany({
-    where: { documentId },
-    data: { aclSubjects: serialized },
-  });
-  log.info("propagated document acl", {
-    documentId,
-    chunkCount: updated.count,
-    subjectCount: aclSubjects.length,
-  });
-  return updated.count;
 }
