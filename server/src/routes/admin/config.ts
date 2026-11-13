@@ -66,6 +66,8 @@ interface RedactedKeyView {
    * registers no default), so an unset flag that is effectively on reads on.
    */
   defaultValue: string | null;
+  /** #2402 — the default's wording when it differs by context; `null` when it is one value. */
+  defaultNote: string | null;
 }
 
 function projectKey(svc: ConfigService, key: string): RedactedKeyView {
@@ -88,6 +90,7 @@ function projectKey(svc: ConfigService, key: string): RedactedKeyView {
     source: desc.source,
     value,
     defaultValue: def.default ?? null,
+    defaultNote: def.defaultNote ?? null,
   };
 }
 

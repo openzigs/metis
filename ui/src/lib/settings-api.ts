@@ -41,6 +41,11 @@ export interface ConfigKeyView {
   value: string | null;
   /** #2295 — what the server applies while the key is unset; `null` when it registers none. */
   defaultValue?: string | null;
+  /**
+   * #2402 — how to word the default when it is not one value everywhere (on for
+   * some models, off for others); `null` when `defaultValue` says it all.
+   */
+  defaultNote?: string | null;
 }
 
 export const configApi = {

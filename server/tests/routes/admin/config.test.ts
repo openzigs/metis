@@ -353,6 +353,7 @@ describe("GET /api/admin/config/:key", () => {
     expect(res.body.data.tier).toBe("tunable");
     // A key that registers no default says so.
     expect(res.body.data.defaultValue).toBeNull();
+    expect(res.body.data.defaultNote).toBeNull();
   });
 
   it("#2295: an unset chat flag carries the default the code applies", async () => {
@@ -369,6 +370,8 @@ describe("GET /api/admin/config/:key", () => {
         source: "unset",
         value: null,
         defaultValue: "true",
+        // #2402 — unset, it is on for native tool calls only; the page must say so.
+        defaultNote: "on (native tool models only)",
       });
       // The list carries it too: it is what the Configuration page renders.
       const list = await request(app)

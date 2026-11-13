@@ -29,7 +29,11 @@ import { CHAT_CODE_TOOL_NAMES } from "../analysis/tools/chat-code-tool-names.js"
 import { ApprovalGateService } from "../ai/approval-policy.js";
 import { resolveCapabilities } from "../ai/capabilities.js";
 import { getToolRegistry, type ToolRegistry } from "../ai/tool-registry.js";
-import { loadSessionToolsFlags, type SessionToolsFlags } from "../ai/tool-runtime/session-tools.js";
+import {
+  codeToolsOnTextProtocol,
+  loadSessionToolsFlags,
+  type SessionToolsFlags,
+} from "../ai/tool-runtime/session-tools.js";
 import {
   buildSessionToolset,
   codeRuntimeTool,
@@ -123,8 +127,7 @@ export async function resolveDiscussionTools(
   } else {
     // Not tool-capable: only the curated code tools, on the text protocol (#713),
     // and only when the deployment set CHAT_CODE_SEARCH_TOOLS (#2295).
-    const textCodeTools =
-      (flags.codeSearchToolsOnTextProtocol ?? flags.codeSearchTools) ? codeTools : [];
+    const textCodeTools = codeToolsOnTextProtocol(flags) ? codeTools : [];
     toolset = makeToolset(textCodeTools.map((t) => codeRuntimeTool(t, t.name)));
     note = formatToolSchemas(textCodeTools);
   }

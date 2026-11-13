@@ -141,6 +141,16 @@ export interface SessionToolsFlags {
   indexStatus?: boolean;
 }
 
+/**
+ * #2402 — whether the curated code tools go to a model without native tool
+ * calls (the text protocol). The one gate both chat and discussion replies
+ * use, so the two cannot drift: `codeSearchToolsOnTextProtocol` when the
+ * loader set it, else whatever `codeSearchTools` says.
+ */
+export function codeToolsOnTextProtocol(flags: SessionToolsFlags): boolean {
+  return flags.codeSearchToolsOnTextProtocol ?? flags.codeSearchTools;
+}
+
 /** #2327 — `CHAT_CODE_SEARCH_PRIMITIVES`'s default. */
 export const CODE_SEARCH_PRIMITIVES_DEFAULT = false;
 
@@ -419,8 +429,7 @@ export async function resolveSessionTools(
 
   // Not tool-capable: only the curated code tools, on the text protocol (#713),
   // and only when the deployment set CHAT_CODE_SEARCH_TOOLS (#2295).
-  const textCodeTools =
-    (flags.codeSearchToolsOnTextProtocol ?? flags.codeSearchTools) ? codeTools : [];
+  const textCodeTools = codeToolsOnTextProtocol(flags) ? codeTools : [];
   const allowed = textCodeTools.filter(
     (t) => !agentAllowlist || agentAllowlist.some((ref) => matchesToolRef(ref, t.name)),
   );

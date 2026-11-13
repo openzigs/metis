@@ -203,6 +203,67 @@ describe("Configuration page (#259)", () => {
     expect(screen.getByTestId("config-tunable-SCHEDULER_ENABLED-source").textContent).toBe("unset");
   });
 
+  describe("#2402: a flag whose default depends on the model", () => {
+    const CODE_TOOLS = {
+      key: "CHAT_CODE_SEARCH_TOOLS",
+      tier: "tunable" as const,
+      valueType: "bool" as const,
+      description: "Code-search tools in chat",
+      sensitive: false,
+      source: "unset" as const,
+      value: null,
+      defaultValue: "true",
+      defaultNote: "on (native tool models only)",
+    };
+    const id = (suffix: string) => `config-tunable-CHAT_CODE_SEARCH_TOOLS-${suffix}`;
+
+    it("reads as neither on nor off, with the note saying where it is on", async () => {
+      listMock.mockResolvedValue({ items: [CODE_TOOLS] });
+      renderPage();
+      await waitFor(() => expect(screen.getByTestId(id("input"))).toBeInTheDocument());
+      expect(screen.getByTestId(id("input"))).toBePartiallyChecked();
+      expect(screen.getByTestId(id("source")).textContent).toBe("default");
+      expect(screen.getByTestId(id("default-note")).textContent).toContain(
+        "on (native tool models only)",
+      );
+    });
+
+    it("an explicit value shows as itself, without the note", async () => {
+      listMock.mockResolvedValue({ items: [{ ...CODE_TOOLS, source: "db", value: "true" }] });
+      renderPage();
+      await waitFor(() => expect(screen.getByTestId(id("input"))).toBeInTheDocument());
+      expect(screen.getByTestId(id("input"))).toBeChecked();
+      expect(screen.getByTestId(id("input"))).not.toBePartiallyChecked();
+      expect(screen.queryByTestId(id("default-note"))).not.toBeInTheDocument();
+      expect(screen.getByTestId(id("save"))).not.toBeDisabled();
+    });
+
+    it("Save on the untouched row does nothing; once edited it saves", async () => {
+      listMock.mockResolvedValue({ items: [CODE_TOOLS] });
+      renderPage();
+      await waitFor(() => expect(screen.getByTestId(id("save"))).toBeInTheDocument());
+      expect(screen.getByTestId(id("save"))).toBeDisabled();
+      fireEvent.click(screen.getByTestId(id("save")));
+      expect(setMock).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByTestId(id("input")));
+      expect(screen.getByTestId(id("input"))).not.toBePartiallyChecked();
+      expect(screen.getByTestId(id("save"))).not.toBeDisabled();
+      fireEvent.click(screen.getByTestId(id("save")));
+      await waitFor(() => expect(setMock).toHaveBeenCalledWith("CHAT_CODE_SEARCH_TOOLS", false));
+    });
+  });
+
+  it("#2402: Save is disabled on an untouched unset row with no default", async () => {
+    renderPage();
+    await waitFor(() =>
+      expect(screen.getByTestId("config-tunable-DB_ALLOWED_HOSTS-save")).toBeInTheDocument(),
+    );
+    expect(screen.getByTestId("config-tunable-DB_ALLOWED_HOSTS-save")).toBeDisabled();
+    // A set value is saveable as it stands.
+    expect(screen.getByTestId("config-tunable-AI_DEFAULT_MODEL-save")).not.toBeDisabled();
+  });
+
   it("Clear on a db override removes it via configApi.clear", async () => {
     const clearMock = vi.mocked(configApi.clear);
     clearMock.mockResolvedValue({
