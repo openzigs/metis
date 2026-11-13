@@ -37,8 +37,14 @@ vi.mock("../src/lib/audit/audit-service.js", async (importOriginal) => ({
   audit: vi.fn(),
 }));
 
-const { editCheckpointRequirement } =
+const { editCheckpointRequirement: editAs } =
   await import("../src/lib/analysis/checkpoint-requirement-edit.js");
+// #2436 — the edit records its actor; these tests are not about who edited.
+const editCheckpointRequirement = (
+  analysisId: string,
+  approvalId: string,
+  edit: Parameters<typeof editAs>[2],
+) => editAs(analysisId, approvalId, edit, "checkpoint-editor");
 const { getStructuredRequirements } = await import("../src/lib/analysis/analysis-service.js");
 const { promoteApprovedRequirements } = await import("../src/lib/analysis/promote-requirements.js");
 

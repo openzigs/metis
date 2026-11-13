@@ -237,7 +237,10 @@ async function promoteAndNote(
   projectId: string,
   req: Request,
 ): Promise<PromotionOutcome> {
-  const promotion = await promoteApprovedRequirements(analysisId, signOffForRole(req.user!.role));
+  const promotion = await promoteApprovedRequirements(
+    analysisId,
+    signOffForRole(req.user!.role, req.user!.userId),
+  );
   if (promotion.status === "promoted") void noteProjectRequirementsChanged(projectId);
   return promotion;
 }
@@ -2258,7 +2261,12 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
       await ensureAnalysisVisible(analysisId, projectId);
 
       const actor = actorFromReq(req);
-      const requirement = await editCheckpointRequirement(analysisId, approvalId, parsed.data);
+      const requirement = await editCheckpointRequirement(
+        analysisId,
+        approvalId,
+        parsed.data,
+        actor.id,
+      );
 
       audit({
         actor: { id: actor.id },

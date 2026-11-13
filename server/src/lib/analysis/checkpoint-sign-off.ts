@@ -37,6 +37,13 @@ export const CHECKPOINT_SIGN_OFF_KEY = "checkpointSignOff";
 export interface PromotionSignOff {
   /** `true`: the rows are written `approved`; `false`: `draft`. */
   asApproved: boolean;
+  /**
+   * #2436 — who signed off, for maker-checker: a requirement this user edited
+   * in the checkpoint is promoted as awaiting review unless the project allows
+   * self-approval. Omitted (a re-save, a system run): only the edits of each
+   * item's own checkpoint reviewer hold it.
+   */
+  signerId?: string | null;
 }
 
 /** The review status a checkpoint promotion writes its rows with. */
@@ -52,8 +59,11 @@ export function promotedReviewStatus(signOff: PromotionSignOff): "approved" | "d
  * them at once. The routes deliberately match the permission check they sit
  * behind rather than disagree with it.
  */
-export function signOffForRole(role: RoleKey): PromotionSignOff {
-  return { asApproved: hasPermission(role, REQUIREMENT_SIGN_OFF_PERMISSION) };
+export function signOffForRole(role: RoleKey, userId?: string): PromotionSignOff {
+  return {
+    asApproved: hasPermission(role, REQUIREMENT_SIGN_OFF_PERMISSION),
+    ...(userId ? { signerId: userId } : {}),
+  };
 }
 
 /**

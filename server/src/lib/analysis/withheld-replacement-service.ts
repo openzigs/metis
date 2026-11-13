@@ -24,6 +24,7 @@ import {
   reviewedRequirementWhere,
 } from "./analysis-service.js";
 import { CHECKPOINT_SIGN_OFF_KEY } from "./checkpoint-sign-off.js";
+import { readHeldForReview } from "./checkpoint-authorship.js";
 import { CRITERIA_PROPOSALS_KEY, readCriteriaProposals } from "./approved-criteria-carry-over.js";
 import {
   APPLIED_WITHHELD_REPLACEMENT_REASON,
@@ -222,6 +223,11 @@ export async function applyWithheldReplacement(input: {
         insertedIds: [],
       };
       // Unreviewed rows go first, as a re-run deletes them (#57).
+      // #2436 — a row an author of it signed off is inserted awaiting review.
+      const held = new Set(
+        pair.proposal.promotion ? readHeldForReview(metadata, pair.proposal.promotion.runId) : [],
+      );
+      const heldInsertIds = new Set<string>();
       const deleteIds = steps.flatMap((s) =>
         s.kind === "delete" || s.kind === "replace" ? [s.current.id] : [],
       );
@@ -263,6 +269,9 @@ export async function applyWithheldReplacement(input: {
           // #1636 — and one that gave no kind keeps the current kind, as the
           // comparison (which then shows no kind change) says.
           const keepKind = step.kind === "replace" && !proposesKind(step.proposed);
+          const heldRow =
+            pair.proposal.reviewStatus === "approved" &&
+            held.has(step.proposed.promotedStructuredId ?? "");
           const row = await tx.requirement.create({
             data: {
               ...step.proposed,
@@ -272,10 +281,13 @@ export async function applyWithheldReplacement(input: {
                 : {}),
               analysisId: input.analysisId,
               projectId: input.projectId,
-              ...(pair.proposal.reviewStatus ? { reviewStatus: pair.proposal.reviewStatus } : {}),
+              ...(pair.proposal.reviewStatus
+                ? { reviewStatus: heldRow ? "draft" : pair.proposal.reviewStatus }
+                : {}),
             },
             select: { id: true },
           });
+          if (heldRow) heldInsertIds.add(row.id);
           result.insertedIds.push(row.id);
           rowIdByIndex[indexOf(step.proposed)] = row.id;
           if (step.kind === "insert") result.added++;
@@ -292,7 +304,9 @@ export async function applyWithheldReplacement(input: {
       // #939 — the checkpoint-approved rows are the surviving ones plus, for an
       // approved set, the rows inserted here.
       const approvedIds = readCheckpointApprovedIds(next).filter((id) => !deleted.has(id));
-      if (pair.proposal.reviewStatus === "approved") approvedIds.push(...result.insertedIds);
+      if (pair.proposal.reviewStatus === "approved") {
+        approvedIds.push(...result.insertedIds.filter((id) => !heldInsertIds.has(id)));
+      }
       if (pair.proposal.reviewStatus === "draft") next[CHECKPOINT_SIGN_OFF_KEY] = "draft";
       if (approvedIds.length > 0) next[CHECKPOINT_APPROVED_IDS_KEY] = approvedIds;
       else delete next[CHECKPOINT_APPROVED_IDS_KEY];

@@ -37,8 +37,14 @@ vi.mock("../src/lib/prisma.js", async (importOriginal) => {
 });
 
 const { selectPrismaAdapter } = await import("../src/lib/prisma.js");
-const { editCheckpointRequirement } =
+const { editCheckpointRequirement: editAs } =
   await import("../src/lib/analysis/checkpoint-requirement-edit.js");
+// #2436 — the edit records its actor; these tests are not about who edited.
+const editCheckpointRequirement = (
+  analysisId: string,
+  approvalId: string,
+  edit: Parameters<typeof editAs>[2],
+) => editAs(analysisId, approvalId, edit, "checkpoint-editor");
 const { reviewApprovalRequest } = await import("../src/lib/analysis/approval-checkpoint.js");
 
 const SUFFIX = randomUUID().slice(0, 8);

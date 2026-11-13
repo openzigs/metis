@@ -19,6 +19,7 @@ import type { EditCheckpointRequirementInput } from "@metis/shared";
 import { AppError } from "../../middleware/error-handler.js";
 import { prisma, resolveDatabaseProvider } from "../prisma.js";
 import { lockAnalysisRow, parseMetadata } from "./analysis-service.js";
+import { withCheckpointEditor } from "./checkpoint-authorship.js";
 import type { StructuredRequirement, StructuredRequirements } from "./types/requirements.js";
 
 /**
@@ -43,11 +44,16 @@ export function applyCheckpointEdit(
  * Apply `edit` to the structured requirement `approvalId` reviews, scoped to
  * `analysisId` (the caller has tied the analysis to its project, #1097).
  * Returns the requirement as stored.
+ *
+ * #2436 — `actorId` is recorded as an editor of the requirement in the same
+ * write, so the checkpoint sign-off and the direct approval treat them as one
+ * of its authors (maker-checker).
  */
 export async function editCheckpointRequirement(
   analysisId: string,
   approvalId: string,
   edit: EditCheckpointRequirementInput,
+  actorId: string,
 ): Promise<StructuredRequirement> {
   return prisma.$transaction(async (tx) => {
     await lockAnalysisRow(tx, analysisId);
@@ -97,7 +103,13 @@ export async function editCheckpointRequirement(
       where: { id: analysisId },
       data: {
         metadata: JSON.stringify({
-          ...metadata,
+          ...withCheckpointEditor(
+            metadata,
+            // #909 — the extraction run the reviewed list belongs to.
+            typeof metadata.structuredRunId === "string" ? metadata.structuredRunId : null,
+            approval.itemId,
+            actorId,
+          ),
           structuredRequirements: { ...list, requirements: nextRequirements },
         }),
       },

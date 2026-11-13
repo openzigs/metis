@@ -111,10 +111,13 @@ describe("PATCH .../approvals/:approvalId/requirement — #1580", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.data).toMatchObject({ id: "REQ-1", title: "Mark entries read" });
-    expect(editCheckpointRequirement).toHaveBeenCalledWith("analysis-1", "ap_1", {
-      title: "Mark entries read",
-      description: "Older than X.",
-    });
+    // #2436 — the session's user is recorded as an editor (maker-checker).
+    expect(editCheckpointRequirement).toHaveBeenCalledWith(
+      "analysis-1",
+      "ap_1",
+      { title: "Mark entries read", description: "Older than X." },
+      "user-1",
+    );
     // #1097 — the analysis is looked up inside the path project.
     expect(analysisFindFirst).toHaveBeenCalledWith({
       where: { id: "analysis-1", deletedAt: null, projectId: "proj-1" },

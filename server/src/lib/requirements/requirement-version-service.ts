@@ -13,6 +13,7 @@
  * unit-tested (round-trip diff, reconstruction) without a database.
  */
 import type { PrismaClient } from "@prisma/client";
+import { isCheckpointEditor } from "../analysis/checkpoint-authorship.js";
 import { clearCriteriaFlag, hasCriteriaFlag } from "../analysis/clarification-criteria-flag.js";
 import {
   mergeHiddenRequirementLabels,
@@ -357,6 +358,11 @@ const UPDATE_SELECT = {
 const MAKER_CHECKER_SELECT = {
   ...UPDATE_SELECT,
   project: { select: { allowSelfApproval: true } },
+  // A row promoted from the approval checkpoint: whoever edited its wording
+  // there is one of its authors too.
+  promotedStructuredId: true,
+  promotedStructuredRunId: true,
+  analysis: { select: { metadata: true } },
 } as const;
 
 export interface UpdateWithHistoryParams {
@@ -638,7 +644,9 @@ async function updateOnce(
       Boolean(params.actorId) &&
       untracked.reviewStatus === "approved" &&
       (untrackedWrite.reviewStatus === "approved" || rewordsIt) &&
-      (rewordsIt || (await isRecordedAuthor(txc, params.requirementId, params.actorId!)));
+      (rewordsIt ||
+        editedInCheckpoint(existing, params.actorId!) ||
+        (await isRecordedAuthor(txc, params.requirementId, params.actorId!)));
     if (selfApproved && !projectAllowsSelfApproval(existing)) {
       throw new RequirementVersionError("SELF_APPROVAL_FORBIDDEN", SELF_APPROVAL_FORBIDDEN_MESSAGE);
     }
@@ -734,6 +742,30 @@ async function isRecordedAuthor(
       return true;
     }
   });
+}
+
+/**
+ * #2436 — `actorId` edited the row's structured requirement in the approval
+ * checkpoint (#1580) before it was promoted: the checkpoint edit writes no
+ * version row, so the analysis records its editors instead. Unreadable
+ * metadata records nobody; the version history still applies.
+ */
+function editedInCheckpoint(row: Record<string, unknown>, actorId: string): boolean {
+  const raw = (row.analysis as { metadata?: unknown } | null | undefined)?.metadata;
+  if (typeof raw !== "string") return false;
+  let metadata: unknown;
+  try {
+    metadata = JSON.parse(raw);
+  } catch {
+    return false;
+  }
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return false;
+  return isCheckpointEditor(
+    metadata as Record<string, unknown>,
+    row.promotedStructuredRunId as string | null | undefined,
+    row.promotedStructuredId as string | null | undefined,
+    actorId,
+  );
 }
 
 /** #2436 — the owning project's `allowSelfApproval`, read with the row; off unless `true`. */
