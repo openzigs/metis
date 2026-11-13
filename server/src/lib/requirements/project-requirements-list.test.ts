@@ -74,6 +74,8 @@ describe("listProjectRequirements title search (#2347)", () => {
     await listProjectRequirements("p-1", { q: "card", page: 1, pageSize: 25 });
     const sql = queryRaw.mock.calls[0][0] as { sql: string };
     expect(sql.sql).toMatch(/"title" LIKE \? ESCAPE '\\'/);
+    // #2347 review — the same deterministic order before the cap on SQLite.
+    expect(sql.sql).toMatch(/ORDER BY "updatedAt" DESC, "id" ASC\s+LIMIT \?/);
   });
 
   it("runs no search query without a term", async () => {

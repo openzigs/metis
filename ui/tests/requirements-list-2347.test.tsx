@@ -266,7 +266,10 @@ describe("RequirementsList (#2347)", () => {
     update.mockRejectedValue(Object.assign(new Error("conflict"), { status: 409 }));
     renderList();
     fireEvent.click(await screen.findByTestId("requirements-approve-r-1"));
+    const callsBefore = list.mock.calls.length;
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith(APPROVE_CONFLICT_MESSAGE));
+    // "The list has been read again" is true.
+    await waitFor(() => expect(list.mock.calls.length).toBeGreaterThan(callsBefore));
   });
 
   it("disables only the row being approved, not every row", async () => {
