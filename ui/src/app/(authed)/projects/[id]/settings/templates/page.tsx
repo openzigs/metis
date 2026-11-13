@@ -435,7 +435,7 @@ export default function TemplateSettingsPage() {
         <EmptyState
           data-testid="templates-empty"
           title="No templates yet."
-          description="Create your first template or seed defaults."
+          description="Create your first template."
         />
       )}
 

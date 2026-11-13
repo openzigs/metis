@@ -8,5 +8,5 @@ section: Changed
 - More lists show the shared empty-state panel when there is nothing in them: past analyses, Jira
   connections, baselines, discussions, documentation, templates, publish drafts, reviews,
   products, projects, impact analyses and portfolio checks.
-- The vault picker lists only the secrets you may attach. The vault list now marks each one
+- The vault picker lists only the secrets you may attach (on the Publish page, only once a GitHub Enterprise base URL is set). The vault list now marks each one
   `bindable` for the caller.

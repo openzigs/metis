@@ -185,6 +185,20 @@ describe("VaultPicker", () => {
       expect(screen.queryByRole("option", { name: /admins/ })).toBeNull();
     });
 
+    it("lists every secret when offerOnlyBindable is false (Publish to github.com)", async () => {
+      list.mockResolvedValue({ items: [items[1]] });
+      const Wrapper = makeWrapper({ withAuth: false });
+      render(
+        <Wrapper>
+          <VaultPicker id="s" value="" onChange={vi.fn()} offerOnlyBindable={false} />
+        </Wrapper>,
+      );
+      await userEvent.setup().click(screen.getByRole("combobox"));
+      expect(await screen.findByRole("option", { name: /admins/ })).toBeInTheDocument();
+      expect(screen.queryByTestId("vault-picker-none-bindable")).toBeNull();
+      expect(screen.queryByTestId("vault-picker-own-only")).toBeNull();
+    });
+
     it("lists an entry with no flag (an older server) as before", async () => {
       list.mockResolvedValue({ items: [{ id: "v1", label: "gh-pat", description: null }] });
       renderWithUser(["vault.reveal"]);

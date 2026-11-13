@@ -911,6 +911,9 @@ export default function PublishingPage() {
               placeholder="${vault:my-token-label}"
               value={batchSecret}
               onChange={setBatchSecret}
+              // The server checks ownership only for a live run to a GHE base
+              // URL, so github.com and dry runs may use any vault secret.
+              offerOnlyBindable={!!batchBaseUrl.trim()}
             />
             <p
               id="batchSecretHelp"

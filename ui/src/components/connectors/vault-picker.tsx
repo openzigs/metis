@@ -26,6 +26,12 @@ interface VaultPickerProps {
   onChange: (value: string) => void;
   placeholder?: string;
   className?: string;
+  /**
+   * Offer only the secrets the caller may attach (the server's `bindable`).
+   * Default true. A form whose server check applies only in some cases (Publish:
+   * only a live run to a non-github.com base URL) passes false while it does not.
+   */
+  offerOnlyBindable?: boolean;
 }
 
 const CUSTOM_KEY = "__custom__";
@@ -41,7 +47,14 @@ function formatVaultRef(label: string): string {
   return `\${vault:${label}}`;
 }
 
-export function VaultPicker({ id, value, onChange, placeholder, className }: VaultPickerProps) {
+export function VaultPicker({
+  id,
+  value,
+  onChange,
+  placeholder,
+  className,
+  offerOnlyBindable = true,
+}: VaultPickerProps) {
   const { data, error } = useQuery({
     queryKey: ["vault", "list"],
     queryFn: () => vaultApi.list(),
@@ -53,14 +66,18 @@ export function VaultPicker({ id, value, onChange, placeholder, className }: Vau
   // they created (the server's SECRET_BINDING_FORBIDDEN), which nothing said.
   const refused = error instanceof ApiError && error.status === 403;
   const auth = useOptionalAuth();
-  const attachesOwnOnly = !(auth?.user?.permissions.includes("vault.reveal") ?? false);
+  const attachesOwnOnly =
+    offerOnlyBindable && !(auth?.user?.permissions.includes("vault.reveal") ?? false);
 
   const all = data?.items ?? [];
   const parsedLabel = parseVaultLabel(value);
   // #2382 — offer only what the caller may attach (the server's `bindable`),
   // plus the secret already chosen here: a binding stays usable where it is.
-  const entries = all.filter((e) => e.bindable !== false || e.label === parsedLabel);
-  const noneBindable = all.length > 0 && !all.some((e) => e.bindable !== false);
+  const entries = offerOnlyBindable
+    ? all.filter((e) => e.bindable !== false || e.label === parsedLabel)
+    : all;
+  const noneBindable =
+    offerOnlyBindable && all.length > 0 && !all.some((e) => e.bindable !== false);
 
   // Tracks whether the user explicitly chose free-text ("custom") entry. This
   // is needed because the custom <Input> would otherwise never appear for a
