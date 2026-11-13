@@ -14,6 +14,7 @@ import { makeWrapper } from "./test-utils";
 // Mock next/navigation
 vi.mock("next/navigation", () => ({
   useParams: vi.fn(() => ({ id: "proj_test" })),
+  useSearchParams: vi.fn(() => new URLSearchParams(window.location.search)),
 }));
 
 // The doc detail view renders the markdown previewer, which uses

@@ -13,6 +13,7 @@ import { makeWrapper } from "./test-utils";
 // Mock next/navigation
 vi.mock("next/navigation", () => ({
   useParams: vi.fn(() => ({ id: "proj_test" })),
+  useSearchParams: vi.fn(() => new URLSearchParams(window.location.search)),
 }));
 
 // Mock apiFetch

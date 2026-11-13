@@ -10,12 +10,16 @@
  * The facts come from `GET …/analyses/:id/review-state`, which reads them for
  * the caller and filters on the project and run. A failed or refused read
  * shows nothing: this is a signpost, not a claim that there is no review.
- * Titles render as React text, never markup.
+ * Titles render as React text, never markup. It re-reads when a review is
+ * decided or changes (`review:changed`, `review:notification`), so a
+ * rejection shows without a reload.
  */
+import { useEffect } from "react";
 import Link from "next/link";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, ClipboardCheck } from "lucide-react";
 import { analysisApi, type ChangeRequestReviewState } from "@/lib/analysis-api";
+import { useSocket } from "@/lib/socket-client";
 
 /** Each standing review status in words, for the analyst who asked for it. */
 export const REVIEW_STATUS_LABELS: Record<
@@ -52,8 +56,22 @@ export function reviewSignals(state: ChangeRequestReviewState): Signal[] {
       needsYou: true,
     });
   }
+  // The caller's own rejected request, even when someone else's review of the
+  // change request is newer (`review` is the latest of anyone's).
+  const mine = state.mine;
+  const mineRejected =
+    mine && mine.status === "rejected" && mine.id !== state.assignedToMe?.id ? mine : null;
+  if (mineRejected) {
+    out.push({
+      key: "rejected",
+      label: "Your review request was rejected",
+      title: mineRejected.title,
+      reviewId: mineRejected.id,
+      needsYou: true,
+    });
+  }
   const review = state.review;
-  if (review && review.id !== state.assignedToMe?.id) {
+  if (review && review.id !== state.assignedToMe?.id && review.id !== mineRejected?.id) {
     const rejectedMine = review.status === "rejected" && review.requestedByMe;
     out.push({
       key: rejectedMine ? "rejected" : review.status,
@@ -79,6 +97,21 @@ export function ChangeRequestReviewState({ projectId, analysisId }: Props) {
     queryFn: () => analysisApi.reviewState(projectId, analysisId),
     retry: false,
   });
+  // A review decided or changed elsewhere (a rejection of my request, a new
+  // assignment) re-reads the state, so it shows without a reload.
+  const qc = useQueryClient();
+  const socket = useSocket();
+  useEffect(() => {
+    if (!socket) return;
+    const refresh = () =>
+      void qc.invalidateQueries({ queryKey: ["analyses", analysisId, "review-state", projectId] });
+    socket.on("review:notification", refresh);
+    socket.on("review:changed", refresh);
+    return () => {
+      socket.off("review:notification", refresh);
+      socket.off("review:changed", refresh);
+    };
+  }, [socket, qc, analysisId, projectId]);
   if (!query.isSuccess || !query.data) return null;
   const signals = reviewSignals(query.data);
   if (signals.length === 0) return null;

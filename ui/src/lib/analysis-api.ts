@@ -338,6 +338,15 @@ export interface ChangeRequestReviewState {
     status: "draft" | "in_review" | "rejected" | "approved";
     requestedByMe: boolean;
   } | null;
+  /**
+   * The latest standing review of it that the caller requested, so their own
+   * rejection shows even when someone else's review is newer.
+   */
+  mine?: {
+    id: string;
+    title: string;
+    status: "draft" | "in_review" | "rejected" | "approved";
+  } | null;
   /** A review of it waiting on the caller's own decision. */
   assignedToMe: { id: string; title: string } | null;
 }

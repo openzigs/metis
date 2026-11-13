@@ -98,6 +98,12 @@ export class IngestQueue {
    * don't pile up multiple concurrent ingest attempts.
    */
   private readonly inflight = new Set<string>();
+  /**
+   * #2343 — who asked for each in-flight ingest. A second enqueue of a document
+   * already in flight starts no second ingest, but its requester is told how
+   * the one running ends, like the first.
+   */
+  private readonly requesters = new Map<string, Set<string>>();
 
   constructor(opts: IngestQueueOptions = {}) {
     const concurrency = opts.concurrency ?? intEnv("INGEST_CONCURRENCY", 2, 1, 32);
@@ -129,10 +135,17 @@ export class IngestQueue {
    */
   async enqueue(documentId: string, opts: EnqueueOptions = {}): Promise<void> {
     if (this.inflight.has(documentId)) {
-      log.debug("enqueue: duplicate suppressed", { documentId });
+      const waiting = opts.notifyUserId ? this.requesters.get(documentId) : undefined;
+      waiting?.add(opts.notifyUserId!);
+      log.debug("enqueue: duplicate suppressed", {
+        documentId,
+        requesterJoined: Boolean(waiting),
+      });
       return;
     }
     this.inflight.add(documentId);
+    const requesters = new Set<string>(opts.notifyUserId ? [opts.notifyUserId] : []);
+    this.requesters.set(documentId, requesters);
 
     const doc = await prisma.document.findFirst({
       where: { id: documentId, deletedAt: null },
@@ -140,15 +153,18 @@ export class IngestQueue {
     });
     if (!doc) {
       this.inflight.delete(documentId);
+      this.requesters.delete(documentId);
       throw new Error(`Document ${documentId} not found (cannot enqueue)`);
     }
     // Only push pending/failed documents into the queue. Already-ready or
     // processing rows would either re-do work or race the live worker.
     if (doc.status !== "pending" && doc.status !== "queued" && doc.status !== "failed") {
       this.inflight.delete(documentId);
+      this.requesters.delete(documentId);
       log.debug("enqueue: skipped non-queueable status", {
         documentId,
         status: doc.status,
+        requesters: requesters.size,
       });
       return;
     }
@@ -170,7 +186,7 @@ export class IngestQueue {
       .add(
         async () => {
           await this.runWithRetry(documentId, doc.projectId);
-          if (opts.notifyUserId) await this.announce(documentId, opts.notifyUserId);
+          for (const userId of requesters) await this.announce(documentId, userId);
         },
         { priority },
       )
@@ -181,6 +197,7 @@ export class IngestQueue {
       })
       .finally(() => {
         this.inflight.delete(documentId);
+        this.requesters.delete(documentId);
       });
   }
 
