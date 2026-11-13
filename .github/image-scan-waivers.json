@@ -105,6 +105,144 @@
         "server/src/lib/teams/botbuilder-zod3-reachability.test.ts",
         "scripts/lib/dependency-audit-1453-zod.test.mjs"
       ]
+    },
+    {
+      "id": "CVE-2026-105437",
+      "expires": "2027-02-12",
+      "reason": "git, git-man 1:2.47.3-0+deb13u1, installed for repository connectors (#2395): no fix in Debian trixie on 2026-11-13. Heap overflow in xdiff's three-way merge with a huge conflict-marker-size; METIS runs git only to clone (--depth=1 --single-branch, no submodules), fetch one commit and pull --ff-only (server/src/lib/connectors/repo/repo-service.ts), as uid 1001, so no three-way merge ever runs.",
+      "images": ["server"]
+    },
+    {
+      "id": "CVE-2026-111760",
+      "expires": "2027-02-12",
+      "reason": "git, git-man 1:2.47.3-0+deb13u1 (#2395): no fix in Debian trixie on 2026-11-13. Code execution during recursive clones; METIS runs git only to clone (--depth=1 --single-branch, no submodules), fetch one commit and pull --ff-only (server/src/lib/connectors/repo/repo-service.ts), as uid 1001, never --recurse-submodules.",
+      "images": ["server"]
+    },
+    {
+      "id": "CVE-2026-114466",
+      "expires": "2027-02-12",
+      "reason": "git, git-man 1:2.47.3-0+deb13u1 (#2395): no fix in Debian trixie on 2026-11-13. Arbitrary read/write through git-fast-import; METIS runs git only to clone (--depth=1 --single-branch, no submodules), fetch one commit and pull --ff-only (server/src/lib/connectors/repo/repo-service.ts), as uid 1001, and never runs fast-import.",
+      "images": ["server"]
+    },
+    {
+      "id": "CVE-2026-12064",
+      "expires": "2027-02-12",
+      "reason": "libcurl3t64-gnutls 8.14.1-2+deb13u7, pulled in by git (#2395): no fix in Debian trixie on 2026-11-13 (no-dsa, minor). The curl tool skips SSH host-key checks for a schemeless URL with --proto-default sftp/scp; the curl tool is not installed, and git fetches over HTTPS only.",
+      "images": ["server"]
+    },
+    {
+      "id": "CVE-2026-8458",
+      "expires": "2027-02-12",
+      "reason": "libcurl3t64-gnutls 8.14.1-2+deb13u7, pulled in by git (#2395): no fix in Debian trixie on 2026-11-13 (no-dsa, minor). Connection reuse across HTTP Negotiate service names; git authenticates with a Basic header, never Negotiate.",
+      "images": ["server"]
+    },
+    {
+      "id": "CVE-2026-113351",
+      "expires": "2027-02-12",
+      "reason": "libexpat1 2.9.0-1~deb13u1, new in the image with git (#2395): no fix in Debian trixie on 2026-11-13 (no-dsa). a reset and reused parser fails with XML_ERROR_NO_MEMORY. Git parses XML with expat only for WebDAV push (http-push), and METIS never pushes.",
+      "images": ["server"]
+    },
+    {
+      "id": "CVE-2026-115506",
+      "expires": "2027-02-12",
+      "reason": "libexpat1 2.9.0-1~deb13u1, new in the image with git (#2395): no fix in Debian trixie on 2026-11-13 (no-dsa). billion-laughs protection triggers too late (CPU denial of service). Git parses XML with expat only for WebDAV push (http-push), and METIS never pushes.",
+      "images": ["server"]
+    },
+    {
+      "id": "CVE-2026-117610",
+      "expires": "2027-02-12",
+      "reason": "libexpat1 2.9.0-1~deb13u1, new in the image with git (#2395): no fix in Debian trixie on 2026-11-13 (no-dsa). NULL dereference in externalEntityInitProcessor2 on an empty chunk. Git parses XML with expat only for WebDAV push (http-push), and METIS never pushes.",
+      "images": ["server"]
+    },
+    {
+      "id": "CVE-2026-118370",
+      "expires": "2027-02-12",
+      "reason": "libexpat1 2.9.0-1~deb13u1, new in the image with git (#2395): no fix in Debian trixie on 2026-11-13 (no-dsa). integer overflow in storeAtts with over 2^30 attributes. Git parses XML with expat only for WebDAV push (http-push), and METIS never pushes.",
+      "images": ["server"]
+    },
+    {
+      "id": "CVE-2026-112315",
+      "expires": "2027-02-12",
+      "reason": "krb5 (libgssapi-krb5-2, libkrb5-3, libk5crypto3, libkrb5support0): no fix in Debian trixie on 2026-11-13. kadmind memory leak on partly decoded RPCSEC_GSS messages; pulled in by libcurl3t64-gnutls for git (#2395). Only the client libraries are present: the image runs no KDC and no kadmind, and git authenticates with a Basic header, never Kerberos.",
+      "images": ["server"]
+    },
+    {
+      "id": "CVE-2026-112316",
+      "expires": "2027-02-12",
+      "reason": "krb5 (libgssapi-krb5-2, libkrb5-3, libk5crypto3, libkrb5support0): no fix in Debian trixie on 2026-11-13. kadmind memory leak in xdr_krb5_tl_data; pulled in by libcurl3t64-gnutls for git (#2395). Only the client libraries are present: the image runs no KDC and no kadmind, and git authenticates with a Basic header, never Kerberos.",
+      "images": ["server"]
+    },
+    {
+      "id": "CVE-2026-112317",
+      "expires": "2027-02-12",
+      "reason": "krb5 (libgssapi-krb5-2, libkrb5-3, libk5crypto3, libkrb5support0): no fix in Debian trixie on 2026-11-13. KDC/kadmind leak of decrypted key material in krb5_ktkdb_get_entry; pulled in by libcurl3t64-gnutls for git (#2395). Only the client libraries are present: the image runs no KDC and no kadmind, and git authenticates with a Basic header, never Kerberos.",
+      "images": ["server"]
+    },
+    {
+      "id": "CVE-2026-112318",
+      "expires": "2027-02-12",
+      "reason": "krb5 (libgssapi-krb5-2, libkrb5-3, libk5crypto3, libkrb5support0): no fix in Debian trixie on 2026-11-13. kadmind NULL dereference on an empty policy name; pulled in by libcurl3t64-gnutls for git (#2395). Only the client libraries are present: the image runs no KDC and no kadmind, and git authenticates with a Basic header, never Kerberos.",
+      "images": ["server"]
+    },
+    {
+      "id": "CVE-2026-112319",
+      "expires": "2027-02-12",
+      "reason": "krb5 (libgssapi-krb5-2, libkrb5-3, libk5crypto3, libkrb5support0): no fix in Debian trixie on 2026-11-13. unbounded XDR allocations in kadmind's GSS-RPC layer; pulled in by libcurl3t64-gnutls for git (#2395). Only the client libraries are present: the image runs no KDC and no kadmind, and git authenticates with a Basic header, never Kerberos.",
+      "images": ["server"]
+    },
+    {
+      "id": "CVE-2026-112320",
+      "expires": "2027-02-12",
+      "reason": "krb5 (libgssapi-krb5-2, libkrb5-3, libk5crypto3, libkrb5support0): no fix in Debian trixie on 2026-11-13. kadmind memory exhaustion when a client switches auth flavor; pulled in by libcurl3t64-gnutls for git (#2395). Only the client libraries are present: the image runs no KDC and no kadmind, and git authenticates with a Basic header, never Kerberos.",
+      "images": ["server"]
+    },
+    {
+      "id": "CVE-2026-112321",
+      "expires": "2027-02-12",
+      "reason": "krb5 (libgssapi-krb5-2, libkrb5-3, libk5crypto3, libkrb5support0): no fix in Debian trixie on 2026-11-13. kadmind AUTH_GSSAPI argument leak; pulled in by libcurl3t64-gnutls for git (#2395). Only the client libraries are present: the image runs no KDC and no kadmind, and git authenticates with a Basic header, never Kerberos.",
+      "images": ["server"]
+    },
+    {
+      "id": "CVE-2026-112322",
+      "expires": "2027-02-12",
+      "reason": "krb5 (libgssapi-krb5-2, libkrb5-3, libk5crypto3, libkrb5support0): no fix in Debian trixie on 2026-11-13. quadratic CPU in kadmind's clean_client; pulled in by libcurl3t64-gnutls for git (#2395). Only the client libraries are present: the image runs no KDC and no kadmind, and git authenticates with a Basic header, never Kerberos.",
+      "images": ["server"]
+    },
+    {
+      "id": "CVE-2026-112323",
+      "expires": "2027-02-12",
+      "reason": "krb5 (libgssapi-krb5-2, libkrb5-3, libk5crypto3, libkrb5support0): no fix in Debian trixie on 2026-11-13. kadmind memory exhaustion from failed AUTH_GSSAPI_INIT requests; pulled in by libcurl3t64-gnutls for git (#2395). Only the client libraries are present: the image runs no KDC and no kadmind, and git authenticates with a Basic header, never Kerberos.",
+      "images": ["server"]
+    },
+    {
+      "id": "CVE-2026-119079",
+      "expires": "2027-02-12",
+      "reason": "krb5 (libgssapi-krb5-2, libkrb5-3, libk5crypto3, libkrb5support0): no fix in Debian trixie on 2026-11-13. KDC CPU denial of service in decode_sequence_of; pulled in by libcurl3t64-gnutls for git (#2395). Only the client libraries are present: the image runs no KDC and no kadmind, and git authenticates with a Basic header, never Kerberos.",
+      "images": ["server"]
+    },
+    {
+      "id": "CVE-2026-71199",
+      "expires": "2027-02-12",
+      "reason": "krb5 (libgssapi-krb5-2, libkrb5-3, libk5crypto3, libkrb5support0): no fix in Debian trixie on 2026-11-13. unkeyed checksums accepted when validating CAMMAC verifiers in tickets; pulled in by libcurl3t64-gnutls for git (#2395). Only the client libraries are present: the image runs no KDC and no kadmind, and git authenticates with a Basic header, never Kerberos.",
+      "images": ["server"]
+    },
+    {
+      "id": "CVE-2026-107364",
+      "expires": "2027-02-12",
+      "reason": "krb5 (libgssapi-krb5-2, libkrb5-3, libk5crypto3, libkrb5support0): no fix in Debian trixie on 2026-11-13. the tracker gives no detail beyond MIT's announcement; pulled in by libcurl3t64-gnutls for git (#2395). Only the client libraries are present: the image runs no KDC and no kadmind, and git authenticates with a Basic header, never Kerberos.",
+      "images": ["server"]
+    },
+    {
+      "id": "CVE-2026-118380",
+      "expires": "2027-02-12",
+      "reason": "krb5 (libgssapi-krb5-2, libkrb5-3, libk5crypto3, libkrb5support0): no fix in Debian trixie on 2026-11-13. the tracker gives no detail beyond MIT's announcement; pulled in by libcurl3t64-gnutls for git (#2395). Only the client libraries are present: the image runs no KDC and no kadmind, and git authenticates with a Basic header, never Kerberos.",
+      "images": ["server"]
+    },
+    {
+      "id": "CVE-2026-71200",
+      "expires": "2027-02-12",
+      "reason": "krb5 (libgssapi-krb5-2, libkrb5-3, libk5crypto3, libkrb5support0): no fix in Debian trixie on 2026-11-13. the tracker gives no detail beyond MIT's announcement (Debian bug 1153598); pulled in by libcurl3t64-gnutls for git (#2395). Only the client libraries are present: the image runs no KDC and no kadmind, and git authenticates with a Basic header, never Kerberos.",
+      "images": ["server"]
     }
   ]
 }
