@@ -438,6 +438,45 @@ describe("buildMultiProjectRagContext reads the conversation (#2279)", () => {
     expect(loadChunks.mock.calls.map((c) => c[0])).toEqual(["pa"]);
   });
 
+  it("carries nothing from a project whose search failed, so the block and counts agree", async () => {
+    const loadChunks = vi.fn(async (projectId: string, ids: readonly string[]) =>
+      ids
+        .filter((id) => id.startsWith(projectId === "pa" ? "a" : "b"))
+        .map((id) => carriedChunk(id)),
+    );
+    const capture = { contexts: [] as string[], sources: 0 };
+    const out = await buildMultiProjectRagContext({
+      userId: "u1",
+      scope: twoProducts,
+      query: "q",
+      carryForward: ["a7", "b9"],
+      capture,
+      deps: {
+        // Beta is reachable (named) but its search timed out this turn.
+        search: async () =>
+          result({
+            hits: [hit("pa", "Alpha", "a1", "Alpha client.")],
+            projectsSearched: ["pa"],
+            projectsFailed: ["pb"],
+            failures: [{ projectId: "pb", projectName: "Beta", reason: "timeout" }],
+            projectNames: { pa: "Alpha", pb: "Beta" },
+          }),
+        loadChunks,
+        aclActor: async () => actor,
+      },
+    });
+    expect(loadChunks.mock.calls.map((c) => c[0])).toEqual(["pa"]);
+    expect(out.block).toContain("[2] [Alpha] a7.md#2 (cited in your previous answer)");
+    expect(out.block).not.toContain("[Beta] b9.md");
+    expect(out.block).toContain('Could not be searched this turn: "Beta" (timed out)');
+    expect(out.grounding).toEqual({
+      status: "multi",
+      projects: [{ projectId: "pa", projectName: "Alpha", sources: 2 }],
+      unsearched: [{ projectId: "pb", projectName: "Beta", reason: "timeout" }],
+    });
+    expect(capture.sources).toBe(2);
+  });
+
   it("loses only the carry-over when the cited excerpts cannot be read", async () => {
     const out = await buildMultiProjectRagContext({
       userId: "u1",
@@ -624,5 +663,21 @@ describe("buildMultiProjectRagContext — relevance floor (#2294)", () => {
     expect(out.grounding).toMatchObject({
       sourcesUsed: [{ name: "[Alpha] a1.md", excerpts: 1, relevance: 0.62 }],
     });
+  });
+
+  it("says a product the attached documents do not cover has no excerpt for that reason", async () => {
+    const out = await buildMultiProjectRagContext({
+      userId: "u1",
+      scope: twoProducts,
+      query: "Summarise these",
+      documentIds: ["doc-a1"],
+      deps: { search: async () => searched(["pa", "pb"], [hit("pa", "Alpha", "a1", "Alpha.")]) },
+    });
+    expect(out.block).toContain(
+      'Only the attached documents were searched, and none of them from "Beta" is included above',
+    );
+    expect(out.block).toContain("say that the attached documents do not cover it");
+    expect(out.block).not.toContain("Searched, but no excerpt");
+    expect(out.block).not.toContain("showed nothing relevant");
   });
 });

@@ -162,9 +162,11 @@ function nothingSearchedBlock(reason: string): string {
 
 /**
  * #2279 — the excerpts the previous answer cited, read back as each project in
- * scope holds them now: only from a project the caller can still reach this
- * turn (searched or not), for the caller as the chunk-ACL actor, and not one
- * this turn's search already found. Losing them costs the turn its carry-over,
+ * scope holds them now: only from a project searched this turn, for the caller
+ * as the chunk-ACL actor, and not one this turn's search already found. A
+ * project whose search failed or timed out carries nothing: the block tells the
+ * model its sources could not be searched, so an excerpt from it there would
+ * contradict that, and its grounding would count sources it does not list. Losing them costs the turn its carry-over,
  * never its fresh retrieval.
  */
 async function carriedExcerpts(
@@ -174,7 +176,7 @@ async function carriedExcerpts(
   deps: MultiProjectRagDeps,
 ): Promise<Array<CarriedChunk & { projectId: string }>> {
   const ids = input.carryForward ?? [];
-  const reachable = Object.keys(result.projectNames);
+  const reachable = result.projectsSearched;
   if (ids.length === 0 || reachable.length === 0) return [];
   const found = new Set(result.hits.map((h) => h.chunkId));
   try {
@@ -402,9 +404,16 @@ export async function buildMultiProjectRagContext(
   const without = projects.filter((p) => p.sources === 0).map((p) => p.projectName);
   if (chunkList.length > 0 && without.length > 0) {
     lines.push(
-      `Searched, but no excerpt from it is included above: ${quoteList(without)}. If the ` +
-        `question concerns it, say that its sources showed nothing relevant; do not describe it ` +
-        `from another product's excerpts.`,
+      documentIds
+        ? // #2279 — only the attached documents were searched, so a product with no
+          // excerpt here is one they do not cover, not one whose sources matched nothing.
+          `Only the attached documents were searched, and none of them from ` +
+            `${quoteList(without)} is included above. If the question concerns it, say that ` +
+            `the attached documents do not cover it; do not describe it from another ` +
+            `product's excerpts.`
+        : `Searched, but no excerpt from it is included above: ${quoteList(without)}. If the ` +
+            `question concerns it, say that its sources showed nothing relevant; do not ` +
+            `describe it from another product's excerpts.`,
     );
   }
   if (unsearched.length > 0) {

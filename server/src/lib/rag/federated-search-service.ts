@@ -27,7 +27,11 @@
  */
 import type { DocumentSource, RetrievalMatcher, RetrievedChunk } from "@metis/shared";
 import { getUserAccessibleProjects } from "../auth/accessible-projects.js";
-import { getKnowledgeService, type KnowledgeService } from "./knowledge-service.js";
+import {
+  getKnowledgeService,
+  type KnowledgeService,
+  type QueryEmbedCache,
+} from "./knowledge-service.js";
 import { resolveAclActor, type AclActor } from "./acl.js";
 import { createChildLogger } from "../logger.js";
 import { fuseRetrievalHits } from "../ai/conversation/retrieval-query.js";
@@ -153,6 +157,8 @@ interface ProjectSearch {
   timeoutMs: number;
   actor: AclActor;
   documentIds?: string[];
+  /** #2279 — each distinct query string is embedded once per call, not once per project. */
+  embedCache: QueryEmbedCache;
 }
 
 /** A hit in a project's own ranking, before it is labelled with the project. */
@@ -356,7 +362,13 @@ export class FederatedSearchService {
     const contextualQuery = contextual && !userQueries.includes(contextual) ? contextual : null;
     const documentIds =
       opts.documentIds && opts.documentIds.length > 0 ? [...opts.documentIds] : undefined;
-    const search: ProjectSearch = { k, timeoutMs, actor, ...(documentIds ? { documentIds } : {}) };
+    const search: ProjectSearch = {
+      k,
+      timeoutMs,
+      actor,
+      embedCache: new Map(),
+      ...(documentIds ? { documentIds } : {}),
+    };
     const results = await Promise.allSettled(
       targetIds.map((projectId) =>
         this.rankProject(projectId, userQueries, contextualQuery, search),
@@ -464,7 +476,7 @@ export class FederatedSearchService {
    * the configured timeout.
    */
   private async searchWithTimeout(projectId: string, query: string, opts: ProjectSearch) {
-    const { k, timeoutMs, actor, documentIds } = opts;
+    const { k, timeoutMs, actor, documentIds, embedCache } = opts;
     return new Promise<{
       hits: Pick<
         RetrievedChunk,
@@ -491,6 +503,7 @@ export class FederatedSearchService {
         .search(projectId, query, {
           k: perProjectDepth(k),
           actor,
+          embedCache,
           ...(documentIds ? { documentIds } : {}),
         })
         .then((result) => {
