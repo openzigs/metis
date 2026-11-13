@@ -23,6 +23,7 @@ import { analysisApi } from "@/lib/analysis-api";
 import { requirementUpdateApi } from "@/lib/collaboration-api";
 import { queryKeys } from "@/lib/query-keys";
 import { useAuth } from "@/lib/auth-context";
+import { defaultRolesHolding } from "@/lib/permission-hints";
 import { useAppMutation } from "@/lib/use-app-mutation";
 import {
   requirementsListApi,
@@ -114,8 +115,7 @@ function selfApprovalRefusal(err: unknown): string | null {
 }
 
 /** #2436 — why Approve is disabled for a role without `requirement.approve`. */
-export const APPROVE_HINT =
-  "Approving needs the requirement.approve permission (coordinator or admin by default). You can still request a review.";
+export const APPROVE_HINT = `Approving needs the requirement.approve permission (${defaultRolesHolding("requirement.approve")} by default). You can still request a review.`;
 /** Why Edit is disabled for a role without `project.update`. */
 export const EDIT_HINT = "Editing needs a coordinator or admin role.";
 
