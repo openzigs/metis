@@ -85,6 +85,8 @@ export async function listProducts(opts: {
   page?: number;
   pageSize?: number;
   search?: string;
+  /** #2351 — only this workspace's products. */
+  workspaceId?: string;
   /**
    * Issue #677 — object-level scoping. When provided, restricts the listing to
    * products the caller can access (ANDed with any search filter). Omitted for
@@ -94,9 +96,11 @@ export async function listProducts(opts: {
 }) {
   const page = opts.page ?? 1;
   const pageSize = opts.pageSize ?? 20;
-  const searchWhere: Prisma.ProductWhereInput = opts.search
-    ? { name: { contains: opts.search } }
-    : {};
+  const searchWhere: Prisma.ProductWhereInput = {
+    ...(opts.search ? { name: { contains: opts.search } } : {}),
+    // #2351 — the products of one workspace (the scope picker's "Whole workspace").
+    ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}),
+  };
   const where: Prisma.ProductWhereInput = opts.accessWhere
     ? { AND: [searchWhere, opts.accessWhere] }
     : searchWhere;

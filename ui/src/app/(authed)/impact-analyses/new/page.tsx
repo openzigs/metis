@@ -15,11 +15,16 @@ import { useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { useQueries, useQuery } from "@tanstack/react-query";
-import { MAX_IMPACT_REQUIREMENT_IDS, type CreateImpactAnalysisInput } from "@metis/shared";
+import {
+  IMPACT_MAX_PROJECTS,
+  MAX_IMPACT_REQUIREMENT_IDS,
+  type CreateImpactAnalysisInput,
+} from "@metis/shared";
 import { Card } from "@/components/ui/card";
 import { projectsApi, documentsApi, type Project } from "@/lib/projects-api";
 import { useCreateImpactAnalysis } from "@/lib/impact-analysis-hooks";
-import { MultiProjectPicker } from "@/components/impact/multi-project-picker";
+import { ScopePicker, type ScopeKind } from "@/components/scope/scope-picker";
+import { useValidatedActiveWorkspaceId, workspaceListQuery } from "@/lib/active-workspace";
 import {
   DocumentSourceSelector,
   type SourceDocument,
@@ -46,6 +51,12 @@ export default function NewImpactAnalysisPage() {
     const preselected = searchParams?.get("projectId");
     return preselected ? [preselected] : [];
   });
+  // #2351 — which of the shared picker's options the selection is: arriving
+  // with a project (or a change request) starts on "This project"; otherwise
+  // nothing is chosen, as before.
+  const [scopeKind, setScopeKind] = useState<ScopeKind | null>(() =>
+    searchParams?.get("projectId") ? "this" : null,
+  );
   // #2345 — arriving from a change request (`?analysisId=`), its requirements are
   // the source: the server reads them itself, so nothing is typed again. The
   // snapshot read here only names it and counts them.
@@ -74,6 +85,41 @@ export default function NewImpactAnalysisPage() {
     retry: false,
   });
   const projects: Project[] = projectsQuery.data?.items ?? [];
+  // #2351 — "This project": the change request's, else the one arrived with.
+  const currentProjectId = changeRequestId
+    ? (crProjectId ?? searchParams?.get("projectId") ?? null)
+    : (searchParams?.get("projectId") ?? null);
+  const currentProject = (() => {
+    const p = projects.find((x) => x.id === currentProjectId);
+    return p ? { id: p.id, name: p.name } : null;
+  })();
+  // #2351 — "Whole workspace": the top bar's workspace, and its projects the
+  // analyst can read (the server filters `/projects` by both), counted by the
+  // server rather than from the first page of every project. A workspace with
+  // more than one run takes is refused and said, as the portfolio check does,
+  // never cut to its first projects.
+  const { workspaceId: activeWorkspaceId } = useValidatedActiveWorkspaceId();
+  const { data: workspaces = [] } = useQuery(workspaceListQuery);
+  const activeWorkspace = workspaces.find((w) => w.id === activeWorkspaceId) ?? null;
+  const workspaceProjects = useQuery({
+    queryKey: ["impact", "workspace-projects", activeWorkspace?.id ?? null],
+    queryFn: () => projectsApi.list({ workspaceId: activeWorkspace!.id, limit: 100 }),
+    enabled: activeWorkspace !== null,
+    retry: false,
+  });
+  const workspaceTotal = workspaceProjects.data?.total ?? null;
+  const workspaceTooBig = workspaceTotal !== null && workspaceTotal > IMPACT_MAX_PROJECTS;
+  const workspaceProjectIds = (workspaceProjects.data?.items ?? []).map((p) => p.id);
+  // Disabled, with the reason, until the workspace's projects are read.
+  const workspaceScope =
+    activeWorkspace && workspaceProjects.isSuccess
+      ? { id: activeWorkspace.id, name: activeWorkspace.name, count: workspaceTotal }
+      : null;
+  const workspaceNote = !activeWorkspace
+    ? "No workspace is open in the top bar."
+    : workspaceProjects.isError
+      ? "Could not read the workspace's projects."
+      : "Loading the workspace's projects…";
 
   // Fan out to the documents of the selected projects only.
   const documentQueries = useQueries({
@@ -215,12 +261,43 @@ export default function NewImpactAnalysisPage() {
         />
       )}
 
-      <MultiProjectPicker
-        projects={projects.map((p) => ({ id: p.id, name: p.name }))}
-        selected={selected}
-        onChange={setSelected}
-        isLoading={projectsQuery.isLoading}
-      />
+      {/* #2351 — the shared scope picker (chat and the portfolio check use the same). */}
+      <div className="space-y-1" data-testid="impact-new-scope">
+        <p className="text-sm font-medium">Where to look</p>
+        <ScopePicker
+          kind={scopeKind}
+          chosenIds={selected}
+          items={projects.map((p) => ({ id: p.id, name: p.name }))}
+          itemsLoading={projectsQuery.isLoading}
+          current={currentProject}
+          currentNote="Open this from a project or a change request to start there."
+          workspace={workspaceScope}
+          workspaceNote={workspaceNote}
+          onPickThis={() => {
+            if (!currentProject) return;
+            setScopeKind("this");
+            setSelected([currentProject.id]);
+          }}
+          onPickWorkspace={() => {
+            if (!workspaceScope) return;
+            setScopeKind("workspace");
+            setSelected(workspaceTooBig ? [] : workspaceProjectIds);
+          }}
+          onToggle={(p) => {
+            const base = scopeKind === "chosen" ? selected : [];
+            setScopeKind("chosen");
+            setSelected(base.includes(p.id) ? base.filter((id) => id !== p.id) : [...base, p.id]);
+          }}
+          maxChosen={IMPACT_MAX_PROJECTS}
+          testIdBase="impact-scope"
+          ariaLabel="Projects to analyse"
+        />
+        <p className="text-xs text-muted-foreground" data-testid="multi-project-count">
+          {scopeKind === "workspace" && workspaceTooBig
+            ? `The workspace has more than ${IMPACT_MAX_PROJECTS} projects: choose up to ${IMPACT_MAX_PROJECTS}.`
+            : `${selected.length} selected`}
+        </p>
+      </div>
 
       <label className="flex items-center gap-2 text-sm" data-testid="impact-new-schema-toggle">
         <input

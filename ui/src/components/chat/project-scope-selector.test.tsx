@@ -15,6 +15,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { apiFetch } from "@/lib/api-client";
 import { ProjectScopeSelector, normaliseScope, type ProjectScope } from "./project-scope-selector";
 
 const PROJECTS = [
@@ -87,10 +88,13 @@ describe("ProjectScopeSelector (#1368)", () => {
     expect(screen.getByTestId("project-scope-selector").textContent).not.toContain("1 project");
   });
 
-  it("reads 'All projects' when unscoped", async () => {
+  // #2351 — the shared picker has no "All" option: unscoped reads "No product chosen".
+  it("reads 'No product chosen' when unscoped", async () => {
     renderSelector({ mode: "all", projectIds: [] });
     await waitFor(() => {
-      expect(screen.getByTestId("project-scope-selector").textContent).toContain("All projects");
+      expect(screen.getByTestId("project-scope-selector").textContent).toContain(
+        "No product chosen",
+      );
     });
   });
 
@@ -117,11 +121,47 @@ describe("ProjectScopeSelector (#1368)", () => {
     );
   });
 
-  it("clears back to 'all projects' via the All my projects option", async () => {
+  // #2351 — unticking the last project clears back to "all" (no search).
+  it("clears back to 'all' when the last project is unticked", async () => {
     const onChange = vi.fn();
     renderSelector({ mode: "selected", projectIds: ["p1"] }, onChange);
     await openDropdown();
-    fireEvent.click(await screen.findByText("All my projects"));
+    fireEvent.click(await screen.findByRole("checkbox", { name: /OrderBatch/ }));
     expect(onChange).toHaveBeenCalledWith({ mode: "all", projectIds: [] });
+  });
+
+  // #2351 review — when the scope is the top bar's project ("This project"), the
+  // shared picker shows no ticks, so a click must not act on a hidden selection.
+  describe("when the scope is the top bar's project", () => {
+    beforeEach(() => {
+      window.localStorage.setItem("metis.activeProjectId", "p1");
+      vi.mocked(apiFetch).mockImplementation((async (path: string) =>
+        path.startsWith("/search/projects")
+          ? PROJECTS
+          : path.startsWith("/workspaces")
+            ? []
+            : { items: PROJECTS, total: PROJECTS.length }) as never);
+    });
+    afterEach(() => {
+      vi.mocked(apiFetch).mockImplementation((async () => PROJECTS) as never);
+    });
+
+    it("shows no box ticked and ticking another product chooses only that one", async () => {
+      const onChange = vi.fn();
+      renderSelector({ mode: "selected", projectIds: ["p1"] }, onChange);
+      await openDropdown();
+      const orderBatch = await screen.findByRole("checkbox", { name: /OrderBatch/ });
+      expect(orderBatch).not.toBeChecked();
+      fireEvent.click(await screen.findByRole("checkbox", { name: /Invoicing/ }));
+      expect(onChange).toHaveBeenCalledWith({ mode: "selected", projectIds: ["p2"] });
+    });
+
+    it("clicking the unticked current project chooses it, not an ungrounded 'all'", async () => {
+      const onChange = vi.fn();
+      renderSelector({ mode: "selected", projectIds: ["p1"] }, onChange);
+      await openDropdown();
+      fireEvent.click(await screen.findByRole("checkbox", { name: /OrderBatch/ }));
+      expect(onChange).toHaveBeenCalledWith({ mode: "selected", projectIds: ["p1"] });
+    });
   });
 });

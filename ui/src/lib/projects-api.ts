@@ -22,6 +22,8 @@ export interface Project {
   status: "draft" | "active" | "archived";
   /** Epic #610 — owning workspace; null when the project has no workspace. */
   workspaceId?: string | null;
+  /** Epic #544 — the product the project belongs to; null when it is in none. */
+  productId?: string | null;
   /** v1.0.1 issue #134 — null/undefined ⇒ use the global default. */
   aiProviderId?: string | null;
   /** v1.2.0 — per-project AI model id override. null/undefined ⇒ use the global default. */

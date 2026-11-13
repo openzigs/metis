@@ -124,6 +124,17 @@ describe("product-service", () => {
         }),
       );
     });
+
+    it("#2351 — narrows to one workspace's products, still ANDed with the access filter", async () => {
+      mockProduct.findMany.mockResolvedValue([]);
+      mockProduct.count.mockResolvedValue(0);
+      const accessWhere = { workspaceId: { in: ["ws-1"] } };
+
+      await listProducts({ workspaceId: "ws-2", accessWhere });
+      const where = { AND: [{ workspaceId: "ws-2" }, accessWhere] };
+      expect(mockProduct.findMany).toHaveBeenCalledWith(expect.objectContaining({ where }));
+      expect(mockProduct.count).toHaveBeenCalledWith({ where });
+    });
   });
 
   describe("getProduct", () => {

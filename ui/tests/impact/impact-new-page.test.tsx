@@ -46,6 +46,12 @@ vi.mock("@/lib/analysis-api", () => ({ analysisApi: { get: getAnalysis } }));
 import NewImpactAnalysisPage from "@/app/(authed)/impact-analyses/new/page";
 import { documentsApi } from "@/lib/projects-api";
 
+/** #2351 — the projects are ticked in the shared scope picker's popover. */
+async function openScope() {
+  fireEvent.click(screen.getByTestId("impact-scope-selector"));
+  await screen.findByLabelText("Alpha");
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   search = new URLSearchParams();
@@ -59,7 +65,10 @@ describe("NewImpactAnalysisPage", () => {
     search = new URLSearchParams("projectId=project-001");
     render(<NewImpactAnalysisPage />, { wrapper: makeWrapper() });
     expect(screen.getByTestId("multi-project-count")).toHaveTextContent("1 selected");
-    await waitFor(() => expect(screen.getByTestId("project-checkbox-project-001")).toBeChecked());
+    // #2351 — the shared picker starts on "This project".
+    await waitFor(() =>
+      expect(screen.getByTestId("impact-scope-selector")).toHaveTextContent("This project: Alpha"),
+    );
   });
 
   it("shows a contrast pointer to the per-project Requirements Analysis tab", async () => {
@@ -79,10 +88,8 @@ describe("NewImpactAnalysisPage", () => {
 
   it("enables the run control with exactly one project selected", async () => {
     render(<NewImpactAnalysisPage />, { wrapper: makeWrapper() });
-    await waitFor(() =>
-      expect(screen.getByTestId("project-checkbox-project-001")).toBeInTheDocument(),
-    );
-    fireEvent.click(screen.getByTestId("project-checkbox-project-001"));
+    await openScope();
+    fireEvent.click(await screen.findByLabelText("Alpha"));
     fireEvent.change(screen.getByTestId("source-text-input"), {
       target: { value: "Add SSO login" },
     });
@@ -93,10 +100,8 @@ describe("NewImpactAnalysisPage", () => {
 
   it("submits pasted text and navigates to the new analysis", async () => {
     render(<NewImpactAnalysisPage />, { wrapper: makeWrapper() });
-    await waitFor(() =>
-      expect(screen.getByTestId("project-checkbox-project-001")).toBeInTheDocument(),
-    );
-    fireEvent.click(screen.getByTestId("project-checkbox-project-001"));
+    await openScope();
+    fireEvent.click(await screen.findByLabelText("Alpha"));
     fireEvent.change(screen.getByTestId("source-text-input"), {
       target: { value: "Add SSO login" },
     });
@@ -110,10 +115,8 @@ describe("NewImpactAnalysisPage", () => {
 
   it("opts out of schema impact when the toggle is unchecked", async () => {
     render(<NewImpactAnalysisPage />, { wrapper: makeWrapper() });
-    await waitFor(() =>
-      expect(screen.getByTestId("project-checkbox-project-001")).toBeInTheDocument(),
-    );
-    fireEvent.click(screen.getByTestId("project-checkbox-project-001"));
+    await openScope();
+    fireEvent.click(await screen.findByLabelText("Alpha"));
     fireEvent.change(screen.getByTestId("source-text-input"), {
       target: { value: "Add SSO login" },
     });
@@ -127,10 +130,8 @@ describe("NewImpactAnalysisPage", () => {
 
   it("opts into downstream dependencies when the deps toggle is checked", async () => {
     render(<NewImpactAnalysisPage />, { wrapper: makeWrapper() });
-    await waitFor(() =>
-      expect(screen.getByTestId("project-checkbox-project-001")).toBeInTheDocument(),
-    );
-    fireEvent.click(screen.getByTestId("project-checkbox-project-001"));
+    await openScope();
+    fireEvent.click(await screen.findByLabelText("Alpha"));
     fireEvent.change(screen.getByTestId("source-text-input"), {
       target: { value: "Add SSO login" },
     });
@@ -144,10 +145,8 @@ describe("NewImpactAnalysisPage", () => {
 
   it("submits a selected document", async () => {
     render(<NewImpactAnalysisPage />, { wrapper: makeWrapper() });
-    await waitFor(() =>
-      expect(screen.getByTestId("project-checkbox-project-001")).toBeInTheDocument(),
-    );
-    fireEvent.click(screen.getByTestId("project-checkbox-project-001"));
+    await openScope();
+    fireEvent.click(await screen.findByLabelText("Alpha"));
     fireEvent.click(screen.getByTestId("source-mode-document"));
     await waitFor(() => expect(screen.getByTestId("source-document-select")).toBeInTheDocument());
     fireEvent.change(screen.getByTestId("source-document-select"), {
@@ -162,11 +161,9 @@ describe("NewImpactAnalysisPage", () => {
 
   it("#2280 — offers to read the document again only for a document source, and sends it when ticked", async () => {
     render(<NewImpactAnalysisPage />, { wrapper: makeWrapper() });
-    await waitFor(() =>
-      expect(screen.getByTestId("project-checkbox-project-001")).toBeInTheDocument(),
-    );
+    await openScope();
     expect(screen.queryByTestId("impact-new-reread-checkbox")).toBeNull();
-    fireEvent.click(screen.getByTestId("project-checkbox-project-001"));
+    fireEvent.click(await screen.findByLabelText("Alpha"));
     fireEvent.click(screen.getByTestId("source-mode-document"));
     await waitFor(() => expect(screen.getByTestId("source-document-select")).toBeInTheDocument());
     fireEvent.change(screen.getByTestId("source-document-select"), {
@@ -197,10 +194,8 @@ describe("NewImpactAnalysisPage", () => {
   it("shows a loading state while documents are fetching", async () => {
     vi.mocked(documentsApi.list).mockReturnValueOnce(new Promise(() => {}));
     render(<NewImpactAnalysisPage />, { wrapper: makeWrapper() });
-    await waitFor(() =>
-      expect(screen.getByTestId("project-checkbox-project-001")).toBeInTheDocument(),
-    );
-    fireEvent.click(screen.getByTestId("project-checkbox-project-001"));
+    await openScope();
+    fireEvent.click(await screen.findByLabelText("Alpha"));
     fireEvent.click(screen.getByTestId("source-mode-document"));
     await waitFor(() => expect(screen.getByTestId("source-documents-loading")).toBeInTheDocument());
   });
@@ -264,14 +259,12 @@ describe("NewImpactAnalysisPage", () => {
       search = new URLSearchParams("analysisId=an-0000001");
       render(<NewImpactAnalysisPage />, { wrapper: makeWrapper() });
       await screen.findByText("Password reset");
-      await waitFor(() =>
-        expect(screen.getByTestId("project-checkbox-project-001")).toBeInTheDocument(),
-      );
+      await openScope();
       expect(screen.getByTestId("run-impact-analysis")).toBeDisabled();
       expect(screen.getByTestId("impact-new-hint")).toHaveTextContent(
         "Keep the change request's project selected.",
       );
-      fireEvent.click(screen.getByTestId("project-checkbox-project-001"));
+      fireEvent.click(await screen.findByLabelText("Alpha"));
       expect(screen.getByTestId("run-impact-analysis")).toBeEnabled();
     });
 

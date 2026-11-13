@@ -127,8 +127,9 @@ describe("the host picker", () => {
       screen.getByLabelText("Which product will build this? (optional)"),
       "p-billing",
     );
-    await user.click(screen.getByRole("radio", { name: "One product" }));
-    await user.selectOptions(screen.getByLabelText("Product"), "p-orders");
+    // #2351 — one product ticked in the shared scope picker.
+    await user.click(screen.getByTestId("portfolio-scope-selector"));
+    await user.click(screen.getByRole("checkbox", { name: "Orders" }));
     const host = screen.getByLabelText("Which product will build this? (optional)");
     // Billing was picked across every product: one product's scope cannot host on it.
     expect(host).toHaveValue("");
@@ -158,7 +159,7 @@ describe("the host picker", () => {
       screen.getByLabelText("Which product will build this? (optional)"),
       "p-billing",
     );
-    await user.type(screen.getByLabelText("Find a product to build it"), "o");
+    await user.type(screen.getByLabelText("Find products"), "o");
     expect(onProductQueryChange).toHaveBeenLastCalledWith("o");
     rerender(
       <PortfolioAssessmentForm

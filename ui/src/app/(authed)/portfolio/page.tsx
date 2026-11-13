@@ -43,6 +43,8 @@ import { PageHeader } from "@/components/ui/page-header";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ApiError } from "@/lib/api-client";
 import { productsApi } from "@/lib/products-api";
+import { projectsApi } from "@/lib/projects-api";
+import { useValidatedActiveWorkspaceId, workspaceListQuery } from "@/lib/active-workspace";
 import { queryKeys } from "@/lib/query-keys";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { useCreatePortfolioAssessment, usePortfolioAssessments } from "@/lib/portfolio-hooks";
@@ -206,6 +208,88 @@ function PortfolioEntry({ searchParams }: { searchParams: SearchParamsReader | n
     enabled: initialProductId !== null && !productsQuery.isPending && !listed,
     retry: false,
   });
+  // #2351 — the shared scope picker. "This project": the product of the
+  // project it was opened from (a change request's), named; a project in no
+  // product says so rather than being silently out of scope (#2330).
+  const project = useQuery({
+    queryKey: ["portfolio", "project", backProjectId],
+    queryFn: () => projectsApi.get(encodeURIComponent(backProjectId as string)),
+    enabled: backProjectId !== null,
+    retry: false,
+  });
+  const projectProductId = project.data?.productId ?? null;
+  const projectProduct = useQuery({
+    queryKey: ["portfolio", "product", projectProductId],
+    queryFn: () => productsApi.get(encodeURIComponent(projectProductId as string)),
+    enabled: projectProductId !== null,
+    retry: false,
+  });
+  const current = projectProduct.data
+    ? { id: projectProduct.data.id, name: projectProduct.data.name }
+    : null;
+  // Until the project and its product are read, the form holds its default and
+  // its submit: a quick submit would otherwise go out over every product.
+  const currentLoading =
+    backProjectId !== null &&
+    (project.isPending || (projectProductId !== null && projectProduct.isPending));
+  const currentNote = !backProjectId
+    ? "Open this from a change request to check its project's product."
+    : currentLoading
+      ? "Looking up this project's product…"
+      : project.isError
+        ? "Could not read this project, so its product is not offered."
+        : !projectProductId
+          ? `${project.data?.name ?? "This project"} is not part of a product, so it is not in the portfolio.`
+          : projectProduct.isError
+            ? "Could not read this project's product, so it is not offered."
+            : undefined;
+  // #2351 — "Whole workspace": the top bar's workspace's products the analyst
+  // can read (the list is access-filtered on the server).
+  const { workspaceId: activeWorkspaceId, status: workspaceStatus } =
+    useValidatedActiveWorkspaceId();
+  const { data: workspaces = [] } = useQuery(workspaceListQuery);
+  const activeWorkspace = workspaces.find((w) => w.id === activeWorkspaceId) ?? null;
+  const workspaceProducts = useQuery({
+    queryKey: queryKeys.products.list({
+      picker: "portfolio-workspace",
+      workspaceId: activeWorkspace?.id ?? null,
+    }),
+    queryFn: () => productsApi.list({ pageSize: MAX_PAGE_SIZE, workspaceId: activeWorkspace!.id }),
+    enabled: activeWorkspace !== null,
+    retry: false,
+  });
+  const workspace =
+    activeWorkspace && workspaceProducts.isSuccess
+      ? {
+          id: activeWorkspace.id,
+          name: activeWorkspace.name,
+          products: workspaceProducts.data.items.map((p) => ({ id: p.id, name: p.name })),
+          count: workspaceProducts.data.total,
+        }
+      : undefined;
+  // With a workspace open, "Whole workspace" waits for its products: while
+  // they load, or when they cannot be read, it is disabled and says why, never
+  // silently every product the analyst can read.
+  const workspaceNote =
+    workspaceStatus === "loading"
+      ? "Loading your workspaces…"
+      : workspaceStatus === "error"
+        ? "Could not read your workspaces."
+        : !activeWorkspace
+          ? undefined
+          : workspaceProducts.isError
+            ? "Could not read the workspace's products."
+            : workspaceProducts.isSuccess
+              ? undefined
+              : "Loading the workspace's products…";
+  // #2351 — "every product you can read" counts all of them, not the search's
+  // matches: the unsearched list, shared with the picker's own first page.
+  const allProducts = useQuery({
+    queryKey: queryKeys.products.list({ picker: "portfolio", search: "" }),
+    queryFn: () => productsApi.list({ pageSize: MAX_PAGE_SIZE }),
+    enabled: activeWorkspace === null,
+    retry: false,
+  });
   const recent = usePortfolioAssessments(initialProductId ?? undefined);
   const create = useCreatePortfolioAssessment();
 
@@ -235,6 +319,7 @@ function PortfolioEntry({ searchParams }: { searchParams: SearchParamsReader | n
         productQuery={productQuery}
         onProductQueryChange={setProductQuery}
         productTotal={productsQuery.data?.total}
+        allProductTotal={allProducts.data?.total}
         initialProductId={initialProductId}
         initialProductName={initialProduct.data?.name ?? null}
         initialProductIds={initialProductIds}
@@ -245,6 +330,11 @@ function PortfolioEntry({ searchParams }: { searchParams: SearchParamsReader | n
         onClearDocument={() => setDocument(null)}
         changeRequest={changeRequest}
         onClearChangeRequest={() => setChangeRequest(null)}
+        current={current}
+        currentNote={currentNote}
+        scopeLoading={currentLoading}
+        workspace={workspace}
+        workspaceNote={workspaceNote}
         pending={create.isPending}
         error={error}
         onSubmit={(input) =>

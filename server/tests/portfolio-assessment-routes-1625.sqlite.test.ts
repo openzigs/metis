@@ -441,24 +441,24 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         }
       });
 
-      it("a product its starter could not read never lists the assessment, or opens it, to that product's readers (#1657)", async () => {
-        // Ana (ws-a) names Billing (ws-b): her run stores it restricted.
-        const id = await start("ana", {
+      it("a product its starter cannot read is refused at the start, so nothing reaches that product's readers (#1657, #2351)", async () => {
+        // Ana (ws-a) names Billing (ws-b). #2351 — the scope is validated on the
+        // server: refused like a missing product, and nothing is stored (before,
+        // her run stored it restricted and #1657 kept it from Billing's readers).
+        const before = await db.portfolioAssessment.count();
+        // One start only: starts are rate-limited per user, and the tests after
+        // this one start their own. A readable product beside it does not let
+        // the unreadable one through.
+        const refused = await post("ana", {
           statement: CRYPTO_STATEMENT,
           scope: "product",
-          productIds: [P3],
+          productIds: [P1, P3],
         });
-        const own = await settled(id, "ana");
-        expect(own.products.map((p) => p.coverage)).toEqual(["restricted"]);
-        // Ola reads Billing, and must learn nothing of Ana's statement.
-        const list = await get("ola", `?productId=${P3}`);
-        expect(list.body.data.map((r: { id: string }) => r.id)).not.toContain(id);
-        expect((await get("ola", `/${id}`)).status).toBe(404);
-        expect(await resolveJobRoomScope(payload("ola"), id)).toBeNull();
-        // The store does not name it under Billing at all, so it takes no
-        // place in a page that the per-row filter would then leave short.
+        expect(refused.status).toBe(404);
+        expect(refused.body.error.message).toBe("Product not found");
+        expect(await db.portfolioAssessment.count()).toBe(before);
+        // Billing's readers still see what a reader of it started over it.
         const named = await listPortfolioAssessmentIds({ productId: P3, take: 100 });
-        expect(named.map((r) => r.id)).not.toContain(id);
         expect(named.map((r) => r.id)).toContain(miaRun);
       });
 

@@ -4,7 +4,7 @@
  * #18 — say plainly what a chat answer is based on.
  *
  * Retrieval runs for a chat bound to one project, or (#2238) scoped to several
- * products or a workspace. With the scope on "All projects" the model answers
+ * products or a workspace. With no product chosen (#2351) the model answers
  * from its own knowledge — and before #18 nothing on screen said so, so a
  * confident answer naming files that do not exist read like one drawn from the
  * user's code.
@@ -252,8 +252,8 @@ export function UngroundedScopeNotice({ show }: { show: boolean }) {
       data-testid="chat-ungrounded-notice"
       className="rounded border border-warning/40 bg-warning-muted px-3 py-2 text-sm text-warning"
     >
-      &ldquo;All projects&rdquo; does not search your projects — answers come from the model&apos;s
-      general knowledge, not your code or documents. Pick one or more projects, or your workspace,
+      No product is chosen, so nothing of yours is searched — answers come from the model&apos;s
+      general knowledge, not your code or documents. Pick one or more products, or your workspace,
       to ground answers in them.
     </p>
   );
