@@ -70,7 +70,7 @@ const lexicalDeps = {
 };
 
 describe("#1072 — the symbol index reads the context columns", () => {
-  it("selects signature, docComment and package, and not receiver", async () => {
+  it("selects signature, docComment and package, and not receiver (#2327: and language, for the filter)", async () => {
     findMany.mockResolvedValue(ROWS);
     await prismaSymbolIndex.getSymbols("p1");
     expect(findMany.mock.calls[0][0].select).toEqual({
@@ -82,6 +82,7 @@ describe("#1072 — the symbol index reads the context columns", () => {
       signature: true,
       docComment: true,
       package: true,
+      language: true,
     });
   });
 

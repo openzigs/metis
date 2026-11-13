@@ -148,11 +148,11 @@ describe("/projects New project is gated on project.create (#2368)", () => {
     );
   });
 
-  it("offers New project, and its form, to a role with project.create", async () => {
+  it("offers New project, and its wizard (#2349), to a role with project.create", async () => {
     const user = userEvent.setup();
     render(<ProjectsPage />, { wrapper: as("project.read", "project.create") });
     await user.click(screen.getByRole("button", { name: "New project" }));
-    expect(await screen.findByTestId("project-name-input")).toBeInTheDocument();
+    expect(await screen.findByTestId("wizard-name-input")).toBeInTheDocument();
     expect(screen.queryByTestId("new-project-forbidden")).not.toBeInTheDocument();
   });
 
@@ -303,11 +303,11 @@ describe("Connections row actions are gated on the route's key (#2368)", () => {
     expect(screen.getAllByRole("button", { name: "Test" })).toHaveLength(3);
     expect(screen.getByRole("button", { name: "Query" })).toBeInTheDocument();
     // Writes are gone.
-    for (const name of ["Delete", "Sync", "Deep Ingest", "Ingest", "Set as primary"]) {
+    for (const name of ["Delete", "Update", "Full re-read", "Ingest", "Set as primary"]) {
       expect(screen.queryByRole("button", { name })).not.toBeInTheDocument();
     }
     expect(screen.queryByTitle("Click to change branch")).not.toBeInTheDocument();
-    expect(screen.queryByTitle(/Click to set vault secret reference/)).not.toBeInTheDocument();
+    expect(screen.queryByTitle(/Click to choose the vault secret/)).not.toBeInTheDocument();
     expect(screen.queryByTitle(/Click to change API base URL/)).not.toBeInTheDocument();
     expect(screen.queryByTestId("allow-credential-scan-toggle")).not.toBeInTheDocument();
     // The values those editors held are still shown as text.
@@ -321,12 +321,12 @@ describe("Connections row actions are gated on the route's key (#2368)", () => {
     expect(await screen.findByText("main-repo")).toBeInTheDocument();
     expect(await screen.findByText("warehouse")).toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: "Delete" })).toHaveLength(3);
-    expect(screen.getAllByRole("button", { name: "Sync" })).toHaveLength(2);
-    expect(screen.getAllByRole("button", { name: "Deep Ingest" })).toHaveLength(2);
+    expect(screen.getAllByRole("button", { name: "Update" })).toHaveLength(2);
+    expect(screen.getAllByRole("button", { name: "Full re-read" })).toHaveLength(2);
     expect(screen.getByRole("button", { name: "Ingest" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Set as primary" })).toBeInTheDocument();
     expect(screen.getAllByTitle("Click to change branch")).toHaveLength(2);
-    expect(screen.getAllByTitle(/Click to set vault secret reference/)).toHaveLength(2);
+    expect(screen.getAllByTitle(/Click to choose the vault secret/)).toHaveLength(2);
     expect(screen.getByTitle(/Click to change API base URL/)).toBeInTheDocument();
     // connector.write does not carry the project setting.
     expect(screen.queryByTestId("allow-credential-scan-toggle")).not.toBeInTheDocument();

@@ -494,9 +494,33 @@ describe("#140 native tools in chat", () => {
       const sid = await newSession(app);
       await stream(app, sid);
       const offered = (model.requests[0]!.opts.tools ?? []).map((t) => t.name).sort();
-      expect(offered).toEqual([...CHAT_CODE_TOOL_NAMES].sort());
+      // #2327 — the search primitives stay behind their own key, off by default.
+      expect(offered).toEqual(
+        CHAT_CODE_TOOL_NAMES.filter((n) => n !== "grep_files" && n !== "list_files").sort(),
+      );
     } finally {
       delete process.env.CHAT_TOOLS;
+    }
+  });
+
+  it("CHAT_CODE_SEARCH_PRIMITIVES=true also offers grep_files and list_files (#2327)", async () => {
+    process.env.CHAT_TOOLS = "false";
+    process.env.CHAT_CODE_SEARCH_PRIMITIVES = "true";
+    delete process.env.CHAT_CODE_SEARCH_TOOLS;
+    try {
+      const model = stubModel([{ content: "hi" }]);
+      const app = makeApp();
+      const sid = await newSession(app);
+      await stream(app, sid);
+      const tools = model.requests[0]!.opts.tools ?? [];
+      expect(tools.map((t) => t.name).sort()).toEqual([...CHAT_CODE_TOOL_NAMES].sort());
+      const symbols = tools.find((t) => t.name === "search_code_symbols")!;
+      expect(Object.keys((symbols.parameters as { properties: object }).properties)).toContain(
+        "fileGlob",
+      );
+    } finally {
+      delete process.env.CHAT_TOOLS;
+      delete process.env.CHAT_CODE_SEARCH_PRIMITIVES;
     }
   });
 });

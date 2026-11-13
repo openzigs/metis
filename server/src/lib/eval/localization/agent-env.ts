@@ -1,5 +1,5 @@
 /**
- * #1755 — the environment an agent arm (A3, A3A, A3N) runs in, and #1818 an
+ * #1755 — the environment an agent arm (A3, A3A, A3N, #2327's A3P) runs in, and #1818 an
  * analysis arm (A7, A7O, #1834's A7K, A7S, A7SD and #1899's A7R, A7RD). Its tools read
  * the MATERIALIZED corpus (#1799): the eval database, the clones and the symbol
  * vectors under `eval-data/.materialized/`. Prisma binds its database when it is
@@ -10,7 +10,7 @@
 import type { MaterializeLayout } from "./materialize.js";
 
 /** The agent arms; `agent-arms.ts` holds their definitions (and a test pins the two lists). */
-export const AGENT_ARMS = ["A3", "A3A", "A3N"] as const;
+export const AGENT_ARMS = ["A3", "A3A", "A3N", "A3P"] as const;
 
 /** #1818 — the analysis arms; `analysis-arms.ts` holds their definitions (a test pins them too). */
 export const ANALYSIS_ARMS = ["A7", "A7O", "A7K", "A7S", "A7SD", "A7R", "A7RD"] as const;

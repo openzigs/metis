@@ -300,6 +300,50 @@ describe("HybridCodeSearch", () => {
     expect(results[0].kind).toBe("class");
   });
 
+  it("filters by language (#2327), on BM25 and vector hits alike", async () => {
+    symbolIndex.symbols = [
+      makeSearchableSymbol({ symbolId: "s1", name: "login", language: "ts" }),
+      makeSearchableSymbol({ symbolId: "s2", name: "login", language: "go", filePath: "a.go" }),
+    ];
+    vectorStore.results = symbolIndex.symbols.map((s) => ({
+      metadata: {
+        symbolId: s.symbolId,
+        filePath: s.filePath,
+        kind: s.kind,
+        name: s.name,
+        qualifiedName: s.qualifiedName,
+        contentHash: "h",
+      },
+      score: 0.9,
+    }));
+
+    const results = await search.search("login", "proj-1", { language: "go" });
+
+    expect(results.map((r) => r.symbolId)).toEqual(["s2"]);
+    // The same set unfiltered still has both: the filter keyed its own index.
+    expect((await search.search("login", "proj-1")).map((r) => r.symbolId).sort()).toEqual([
+      "s1",
+      "s2",
+    ]);
+  });
+
+  it("matches a model-written glob without backtracking (#2327)", async () => {
+    symbolIndex.symbols = [
+      makeSearchableSymbol({ symbolId: "s1", name: "login", filePath: `${"a".repeat(3000)}.ts` }),
+      makeSearchableSymbol({ symbolId: "s2", name: "login", filePath: "src/auth.ts" }),
+    ];
+    const started = performance.now();
+    const results = await search.search("login", "proj-1", { fileGlob: `${"*a".repeat(30)}*b` });
+    expect(results).toEqual([]);
+    expect(performance.now() - started).toBeLessThan(5_000);
+    // `**/` is zero or more directories.
+    expect(
+      (await search.search("login", "proj-1", { fileGlob: "src/**/auth.ts" })).map(
+        (r) => r.symbolId,
+      ),
+    ).toEqual(["s2"]);
+  });
+
   it("respects limit option", async () => {
     symbolIndex.symbols = Array.from({ length: 50 }, (_, i) =>
       makeSearchableSymbol({ symbolId: `s${i}`, name: `fn${i}`, signature: `function fn${i}()` }),
@@ -542,6 +586,22 @@ describe("HybridCodeSearch", () => {
 
       expect((await run("a|b")).map((r) => r.symbolId)).toEqual(["s1"]);
       expect((await run("a", "b|")).map((r) => r.symbolId)).toEqual(["s2"]);
+    });
+
+    it("never lets two language filters share an index (#2327)", async () => {
+      symbolIndex.symbols = [
+        makeSearchableSymbol({ symbolId: "s1", name: "alpha", language: "go" }),
+        makeSearchableSymbol({ symbolId: "s2", name: "alpha", language: "ts" }),
+      ];
+      const run = (language?: string) =>
+        new HybridCodeSearch(vectorStore, symbolIndex, embedService).search("alpha", "p", {
+          ...bm25Only,
+          ...(language ? { language } : {}),
+        });
+
+      expect((await run("go")).map((r) => r.symbolId)).toEqual(["s1"]);
+      expect((await run("ts")).map((r) => r.symbolId)).toEqual(["s2"]);
+      expect((await run()).map((r) => r.symbolId).sort()).toEqual(["s1", "s2"]);
     });
   });
 });
@@ -901,5 +961,57 @@ describe("HybridCodeSearch — vectorScore (#1097)", () => {
     expect(byId.get("b")).not.toHaveProperty("vectorScore");
     // The fused score is a rank score, not the cosine.
     expect(byId.get("v")?.score).not.toBe(0.6667);
+  });
+});
+
+describe("HybridCodeSearch — matchedBy (#2325)", () => {
+  it("names the channels that returned each hit, without changing the ranking", async () => {
+    const vectorStore = new MockVectorStore();
+    const symbolIndex = new MockSymbolIndex();
+    symbolIndex.symbols = [
+      makeSearchableSymbol({
+        symbolId: "v",
+        name: "flushAllSessions",
+        signature: "",
+        docstring: "",
+      }),
+      makeSearchableSymbol({
+        symbolId: "b",
+        name: "terminateButton",
+        signature: "",
+        docstring: "",
+      }),
+    ];
+    vectorStore.results = [
+      {
+        metadata: {
+          symbolId: "v",
+          filePath: "src/server.ts",
+          kind: "function",
+          name: "flushAllSessions",
+          qualifiedName: "server.flushAllSessions",
+          contentHash: "",
+        },
+        score: 0.6667,
+      },
+      {
+        metadata: {
+          symbolId: "b",
+          filePath: "src/b.ts",
+          kind: "function",
+          name: "terminateButton",
+          qualifiedName: "b.terminateButton",
+          contentHash: "",
+        },
+        score: 0.5,
+      },
+    ];
+    const search = new HybridCodeSearch(vectorStore, symbolIndex, new MockEmbedService());
+    const results = await search.search("terminate button", "p1", { limit: 5 });
+    const byId = new Map(results.map((r) => [r.symbolId, r]));
+    expect(byId.get("v")?.matchedBy).toEqual(["dense"]);
+    expect(byId.get("b")?.matchedBy).toEqual(["dense", "lexical"]);
+    // Found by both channels, it ranks first: the order is the fused score's.
+    expect(results[0]?.symbolId).toBe("b");
   });
 });

@@ -26,6 +26,7 @@ import { useAuth } from "@/lib/auth-context";
 import { VaultPicker } from "@/components/connectors/vault-picker";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { EmptyState } from "@/components/ui/empty-state";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
@@ -33,6 +34,7 @@ import { Progress } from "@/components/ui/progress";
 import { useConnectorProgress, useConnectorDiscovery } from "@/hooks/use-connector-events";
 import { isDeterminate, progressLabel } from "@/lib/connector-progress";
 import { useDeepIngest } from "@/hooks/use-deep-ingest";
+import { analystCopy } from "@/lib/analyst-copy";
 import { DeepIngestOutcomeBanner } from "@/components/connectors/deep-ingest-outcome-banner";
 import { DbConnectorWizard } from "@/components/connectors/db-connector-wizard";
 import { DatabaseResourceManager } from "@/components/connectors/database-resource-manager";
@@ -396,7 +398,13 @@ export default function ConnectionsPage() {
     },
     onError: (err) => {
       setRepoError(err instanceof ApiError ? err.message : "Failed");
-      toast.error("Failed to create repository connector");
+      // #2337 — keep the server's sentence (e.g. "Ask an admin to bind this
+      // secret."): the inline error had it, the toast said only "Failed".
+      toast.error(
+        err instanceof ApiError
+          ? `Could not create the repository connector: ${err.message}`
+          : "Failed to create repository connector",
+      );
     },
   });
 
@@ -451,11 +459,11 @@ export default function ConnectionsPage() {
       // #449 / #498 — a 200 with a warning: part of the ingest failed, or it
       // landed but scheduling regeneration failed. The toast is the one
       // announcement; the inline copy below is deliberately not a live region.
-      if (data.warning) toast.warning(data.warning);
-      else toast.success("Sync complete");
+      if (data.warning) toast.warning(analystCopy(data.warning));
+      else toast.success("Update complete");
     },
     onError: (err, id) => {
-      toast.error(err instanceof ApiError ? err.message : "Sync failed");
+      toast.error(err instanceof ApiError ? err.message : "Update failed");
       clearProgress(id);
     },
   });
@@ -522,7 +530,11 @@ export default function ConnectionsPage() {
     },
     onError: (err) => {
       setDbError(err instanceof ApiError ? err.message : "Failed");
-      toast.error("Failed to create database connector");
+      toast.error(
+        err instanceof ApiError
+          ? `Could not create the database connector: ${err.message}`
+          : "Failed to create database connector",
+      );
     },
   });
 
@@ -731,13 +743,20 @@ export default function ConnectionsPage() {
                     />
                   </div>
                   <div>
-                    <Label htmlFor="repo-secret">Secret ref (vault)</Label>
+                    <Label htmlFor="repo-secret">Access token (vault secret)</Label>
                     <VaultPicker
                       id="repo-secret"
                       value={repoSecretRef}
                       onChange={setRepoSecretRef}
-                      placeholder="${vault:my-token-label}"
+                      placeholder="Choose a vault secret"
                     />
+                    <p
+                      className="mt-1 text-xs text-muted-foreground"
+                      data-testid="repo-secret-hint"
+                    >
+                      Needed for a private repository. An admin stores the token in the vault; ask
+                      one to add it if it is not listed.
+                    </p>
                   </div>
                 </>
               )}
@@ -812,7 +831,7 @@ export default function ConnectionsPage() {
               ) : null}
               {repoSource === "github" && !isVaultRefOrEmpty(repoSecretRef) ? (
                 <span className="text-sm text-destructive">
-                  Secret ref must look like ${"${vault:name}"}.
+                  Choose a vault secret, or type its name as ${"${vault:name}"}.
                 </span>
               ) : null}
               {repoError ? <span className="text-sm text-destructive">{repoError}</span> : null}
@@ -963,7 +982,7 @@ export default function ConnectionsPage() {
                         ) : (
                           <button
                             className="underline decoration-dotted hover:text-foreground"
-                            title="Click to set vault secret reference (e.g. ${vault:github-pat})"
+                            title="Click to choose the vault secret (e.g. ${vault:github-pat})"
                             onClick={() => {
                               setEditingSecretId(r.id);
                               setEditSecretValue(r.secretRef ?? "");
@@ -1072,20 +1091,20 @@ export default function ConnectionsPage() {
                           variant="outline"
                           onClick={() => refreshIngestRepo.mutate(r.id)}
                           disabled={isRepoIngesting}
-                          title="Pull latest commits and re-ingest changed files"
+                          title="Fetch the latest changes and re-read the files that changed"
                         >
                           {refreshIngestRepo.isPending && refreshIngestRepo.variables === r.id
-                            ? "Syncing…"
-                            : "Sync"}
+                            ? "Updating…"
+                            : "Update"}
                         </Button>
                         <Button
                           size="sm"
                           variant="outline"
                           onClick={() => deepIngest.start(r.id)}
                           disabled={isRepoIngesting}
-                          title="Fresh clone and full re-ingest (first-time setup)"
+                          title="Read the whole repository again from scratch (first-time setup)"
                         >
-                          {deepIngest.runningConnectorId === r.id ? "Ingesting…" : "Deep Ingest"}
+                          {deepIngest.runningConnectorId === r.id ? "Reading…" : "Full re-read"}
                         </Button>
                       </>
                     ) : null}
@@ -1135,7 +1154,25 @@ export default function ConnectionsPage() {
             </li>
           ))}
           {!repos.isLoading && (repos.data ?? []).length === 0 ? (
-            <p className="text-sm text-muted-foreground">No repo connectors yet.</p>
+            <li>
+              <EmptyState
+                data-testid="repo-connectors-empty"
+                title="No repo connectors yet."
+                description="The code repositories METIS reads to learn how the system works belong here."
+                action={
+                  canWriteConnectors ? (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      data-testid="repo-connectors-empty-action"
+                      onClick={() => document.getElementById("repo-source")?.focus()}
+                    >
+                      Add a repo connector
+                    </Button>
+                  ) : undefined
+                }
+              />
+            </li>
           ) : null}
           <DeepIngestOutcomeBanner outcome={deepIngest.outcome} />
           {refreshIngestResult ? (
@@ -1154,15 +1191,17 @@ export default function ConnectionsPage() {
                 }
               >
                 {refreshIngestResult.summary.warning
-                  ? "Sync finished with a warning"
-                  : "Sync complete"}{" "}
+                  ? "Update finished with a warning"
+                  : "Update complete"}{" "}
                 &mdash;{" "}
                 {refreshIngestResult.summary.pulled
                   ? `pulled ${refreshIngestResult.summary.filesChanged} changed file${refreshIngestResult.summary.filesChanged === 1 ? "" : "s"}`
                   : "fresh clone (pull failed)"}
               </div>
               {refreshIngestResult.summary.warning ? (
-                <p className="mb-1 text-warning">{refreshIngestResult.summary.warning}</p>
+                <p className="mb-1 text-warning">
+                  {analystCopy(refreshIngestResult.summary.warning)}
+                </p>
               ) : null}
               <div className="grid grid-cols-2 gap-x-6 gap-y-0.5 font-mono text-xs text-foreground">
                 {/* #715 — the graph's size first; the rows below are only what
@@ -1192,7 +1231,7 @@ export default function ConnectionsPage() {
                 </span>
                 <span>Edges upserted</span>
                 <span>{refreshIngestResult.summary.codeGraph.edgesUpserted.toLocaleString()}</span>
-                <span>RAG chunks</span>
+                <span>Sections indexed</span>
                 <span>
                   +{refreshIngestResult.summary.sourceKnowledge.documentsCreated} new ·{" "}
                   {refreshIngestResult.summary.sourceKnowledge.documentsUpdated} updated ·{" "}
@@ -1221,7 +1260,7 @@ export default function ConnectionsPage() {
                     ? ""
                     : "s"}{" "}
                   not yet bound by type (a time or memory limit for that step was reached). Nothing
-                  already bound was changed; the next Sync continues from there.
+                  already bound was changed; the next Update continues from there.
                 </p>
               ) : null}
             </div>
@@ -1283,7 +1322,7 @@ export default function ConnectionsPage() {
                 />
               </div>
               <div className="col-span-2">
-                <Label htmlFor="db-secret">Secret ref (vault)</Label>
+                <Label htmlFor="db-secret">Password (vault secret)</Label>
                 <VaultPicker
                   id="db-secret"
                   value={dbSecretRef}
@@ -1399,7 +1438,25 @@ export default function ConnectionsPage() {
             </li>
           ))}
           {!dbs.isLoading && (dbs.data ?? []).length === 0 ? (
-            <p className="text-sm text-muted-foreground">No database connectors yet.</p>
+            <li>
+              <EmptyState
+                data-testid="db-connectors-empty"
+                title="No database connectors yet."
+                description="Databases whose tables and columns METIS should read belong here."
+                action={
+                  canWriteConnectors ? (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      data-testid="db-connectors-empty-action"
+                      onClick={() => document.getElementById("db-label")?.focus()}
+                    >
+                      Add a database connector
+                    </Button>
+                  ) : undefined
+                }
+              />
+            </li>
           ) : null}
         </ul>
 

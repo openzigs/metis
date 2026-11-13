@@ -6,11 +6,15 @@ import { normalizeFilePath } from "../localization/corpus.js";
 import type { CitableProduct, Citation } from "./citations.js";
 import type { JudgedSpan } from "./judge.js";
 
-/** The flags #2228 names as off by default; the `on` arm turns all three on. */
+/**
+ * The flags #2228 names as off by default, and #2327's search primitives; the
+ * `on` arm turns all of them on.
+ */
 export const ARM_FLAGS = [
   "CHAT_CODE_SEARCH_TOOLS",
   "CHAT_FUSED_CODE_RETRIEVAL",
   "RAG_RERANK",
+  "CHAT_CODE_SEARCH_PRIMITIVES",
 ] as const;
 type ArmFlag = (typeof ARM_FLAGS)[number];
 
@@ -20,17 +24,58 @@ type ArmFlag = (typeof ARM_FLAGS)[number];
  * "all three off" whatever the defaults are, and each `no-*` arm takes one flag
  * away from `on`, so a flag's gain is measured on its own. `tools-only` sets
  * only the code-search tools.
+ *
+ * #2327 — `tools-primitives` is `tools-only` plus the search primitives
+ * (`grep_files`, `list_files`, the symbol filters): paired with `tools-only`,
+ * it measures what the primitives add.
  */
 export const ARMS = {
   /** The server's defaults: every flag unset. */
   default: {},
-  off: { CHAT_CODE_SEARCH_TOOLS: "0", CHAT_FUSED_CODE_RETRIEVAL: "0", RAG_RERANK: "0" },
-  on: { CHAT_CODE_SEARCH_TOOLS: "1", CHAT_FUSED_CODE_RETRIEVAL: "1", RAG_RERANK: "1" },
-  "no-tools": { CHAT_CODE_SEARCH_TOOLS: "0", CHAT_FUSED_CODE_RETRIEVAL: "1", RAG_RERANK: "1" },
-  "no-fused": { CHAT_CODE_SEARCH_TOOLS: "1", CHAT_FUSED_CODE_RETRIEVAL: "0", RAG_RERANK: "1" },
-  "no-rerank": { CHAT_CODE_SEARCH_TOOLS: "1", CHAT_FUSED_CODE_RETRIEVAL: "1", RAG_RERANK: "0" },
+  off: {
+    CHAT_CODE_SEARCH_TOOLS: "0",
+    CHAT_FUSED_CODE_RETRIEVAL: "0",
+    RAG_RERANK: "0",
+    CHAT_CODE_SEARCH_PRIMITIVES: "0",
+  },
+  on: {
+    CHAT_CODE_SEARCH_TOOLS: "1",
+    CHAT_FUSED_CODE_RETRIEVAL: "1",
+    RAG_RERANK: "1",
+    CHAT_CODE_SEARCH_PRIMITIVES: "1",
+  },
+  "no-tools": {
+    CHAT_CODE_SEARCH_TOOLS: "0",
+    CHAT_FUSED_CODE_RETRIEVAL: "1",
+    RAG_RERANK: "1",
+    CHAT_CODE_SEARCH_PRIMITIVES: "1",
+  },
+  "no-fused": {
+    CHAT_CODE_SEARCH_TOOLS: "1",
+    CHAT_FUSED_CODE_RETRIEVAL: "0",
+    RAG_RERANK: "1",
+    CHAT_CODE_SEARCH_PRIMITIVES: "1",
+  },
+  "no-rerank": {
+    CHAT_CODE_SEARCH_TOOLS: "1",
+    CHAT_FUSED_CODE_RETRIEVAL: "1",
+    RAG_RERANK: "0",
+    CHAT_CODE_SEARCH_PRIMITIVES: "1",
+  },
   /** Fused retrieval's gain over the tools alone, with the reranker off as it ships. */
-  "tools-only": { CHAT_CODE_SEARCH_TOOLS: "1", CHAT_FUSED_CODE_RETRIEVAL: "0", RAG_RERANK: "0" },
+  "tools-only": {
+    CHAT_CODE_SEARCH_TOOLS: "1",
+    CHAT_FUSED_CODE_RETRIEVAL: "0",
+    RAG_RERANK: "0",
+    CHAT_CODE_SEARCH_PRIMITIVES: "0",
+  },
+  /** #2327 — the search primitives' gain over the tools alone. */
+  "tools-primitives": {
+    CHAT_CODE_SEARCH_TOOLS: "1",
+    CHAT_FUSED_CODE_RETRIEVAL: "0",
+    RAG_RERANK: "0",
+    CHAT_CODE_SEARCH_PRIMITIVES: "1",
+  },
 } as const satisfies Record<string, Partial<Record<ArmFlag, string>>>;
 export type BaQaArm = keyof typeof ARMS;
 

@@ -3,7 +3,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { makeWrapper } from "./test-utils";
+import { makeWrapper, TEST_USER } from "./test-utils";
 
 vi.mock("@/lib/runs-api", () => ({
   runsApi: {
@@ -163,7 +163,61 @@ describe("RunDetailPage", () => {
     expect(screen.getByTestId("run-step-0")).toHaveAttribute("data-step-kind", "agent_phase");
     // tool_call card defaults to expanded → its JSON content is visible
     expect(screen.getByTestId("run-step-1-content").textContent).toContain("browser_verify");
+    // Not a PR-review run: no link to a review page that would be empty.
+    expect(screen.queryByTestId("run-review-link")).toBeNull();
   });
+
+  // #2337 — /runs/[id]/review was reachable only by typing its URL.
+  // A failed review (`pr_review_error`) has no review to show: GET
+  // /runs/:id/review returns `review: null` for it, so it gets no link.
+  it.each([
+    ["pr_review", true],
+    ["pr_review_error", false],
+  ] as const)(
+    "links a PR-review run (%s step) to its review page: %s",
+    async (contentKind, linked) => {
+      get.mockResolvedValue({
+        run: {
+          id: "run_42",
+          sessionId: "pr-review-7-1",
+          projectId: "p",
+          kind: "tool",
+          status: "completed",
+          startedAt: "2026-04-01T00:00:00.000Z",
+          completedAt: "2026-04-01T00:00:01.000Z",
+          latencyMs: 100,
+          totalTokens: 50,
+          costCents: 1,
+        },
+        steps: [
+          {
+            id: "st1",
+            ord: 0,
+            kind: "tool_result",
+            content: { kind: contentKind },
+            spanId: null,
+            traceId: null,
+            latencyMs: null,
+            createdAt: "2026-04-01T00:00:00.500Z",
+          },
+        ],
+      });
+      const Wrapper = makeWrapper({});
+      render(
+        <Wrapper>
+          <RunDetailPage />
+        </Wrapper>,
+      );
+      await screen.findByTestId("run-timeline");
+      if (!linked) {
+        expect(screen.queryByTestId("run-review-link")).toBeNull();
+        return;
+      }
+      const link = await screen.findByTestId("run-review-link");
+      expect(link).toHaveAttribute("href", "/runs/run_42/review");
+      expect(link).toHaveTextContent("Open the PR review");
+    },
+  );
 
   it("surfaces an error when the API rejects", async () => {
     get.mockRejectedValue(new Error("nope"));
@@ -174,6 +228,32 @@ describe("RunDetailPage", () => {
       </Wrapper>,
     );
     await waitFor(() => expect(screen.getByText(/Failed to load run/i)).toBeInTheDocument());
+  });
+
+  // #2370 — a non-admin may open a run's page (a project's PR reviews link
+  // there) but is refused the Runs list (#2332), so it offers no way there.
+  it("links back to All runs for an admin", async () => {
+    get.mockRejectedValue(new Error("nope"));
+    const Wrapper = makeWrapper({ initialUser: { ...TEST_USER, role: "admin" } });
+    render(
+      <Wrapper>
+        <RunDetailPage />
+      </Wrapper>,
+    );
+    expect(await screen.findByRole("link", { name: /All runs/ })).toHaveAttribute("href", "/runs");
+  });
+
+  it("offers a non-admin no link to the Runs list they would be refused", async () => {
+    get.mockRejectedValue(new Error("nope"));
+    const Wrapper = makeWrapper({ initialUser: { ...TEST_USER, role: "developer" } });
+    render(
+      <Wrapper>
+        <RunDetailPage />
+      </Wrapper>,
+    );
+    await waitFor(() => expect(screen.getByText(/Failed to load run/i)).toBeInTheDocument());
+    expect(screen.getByRole("heading", { name: "Run run_42" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /All runs/ })).not.toBeInTheDocument();
   });
 });
 

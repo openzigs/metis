@@ -48,6 +48,9 @@ const findManyDocuments = vi.fn(
   },
 );
 
+const auditMock = vi.fn();
+vi.mock("../audit/audit-service.js", () => ({ audit: (...a: unknown[]) => auditMock(...a) }));
+
 vi.mock("../prisma.js", () => ({
   prisma: {
     document: { findMany: (args: never) => findManyDocuments(args) },
@@ -164,7 +167,16 @@ beforeEach(() => {
   db.knowledge = [];
   db.quarantine = [];
   findManyDocuments.mockClear();
+  auditMock.mockClear();
 });
+
+/** The reader's ACL audit rows, by action. */
+const aclAudits = () =>
+  auditMock.mock.calls
+    .map(
+      (c) => c[0] as { action: string; actor: { id: string }; target: unknown; metadata: unknown },
+    )
+    .filter((a) => a.action.startsWith("analysis.document_reader.acl_"));
 
 describe("createReaderDocumentLoader", () => {
   it("loads only this project's ready documents, in selection order, with their stored chunks", async () => {
@@ -324,12 +336,68 @@ describe("#2262 — the loader applies the requester's ACL", () => {
       // The id the requester sent, never the stored filename.
       filename: "theirs",
       reason: expect.stringContaining("not available"),
-      withheld: true,
+      unavailable: true,
     });
-    // The same reason as a document that is not ready: no existence oracle.
-    const [gone] = await createReaderDocumentLoader(files)("p1", ["nope"], MEMBER);
-    expect(gone).toMatchObject({ ok: false, reason: (theirs as { reason: string }).reason });
-    expect(gone).not.toHaveProperty("withheld");
+  });
+
+  it("#2297 — reports an id that does not exist exactly as one its ACL withholds", async () => {
+    const [theirs, gone] = await createReaderDocumentLoader(files)(
+      "p1",
+      ["theirs", "nope"],
+      MEMBER,
+    );
+    // Field for field, bar the id the requester sent: no existence oracle.
+    expect(gone).toEqual({ ...theirs, documentId: "nope", filename: "nope" });
+  });
+
+  it("#2297 — audits the documents the requester's ACL withheld, and not a missing id", async () => {
+    await createReaderDocumentLoader(files)("p1", [...ids, "nope"], MEMBER);
+    expect(aclAudits()).toEqual([
+      {
+        actor: { id: "u1" },
+        action: "analysis.document_reader.acl_denied",
+        target: { type: "project", id: "p1" },
+        metadata: {
+          reason: "aclMismatch",
+          role: "member",
+          documentIds: ["theirs", "analysts", "finance"],
+        },
+      },
+    ]);
+  });
+
+  it("#2297 — audits an admin's read of a restricted document no subject names them in", async () => {
+    db.documents.push(row("admins", restrictedTo({ kind: "role", value: "admin" })));
+    await createReaderDocumentLoader(storage({ "p1/admins": TEXT }))("p1", [...ids, "admins"], {
+      userId: "u9",
+      role: "admin",
+    });
+    expect(aclAudits()).toEqual([
+      {
+        actor: { id: "u9" },
+        action: "analysis.document_reader.acl_bypass",
+        target: { type: "project", id: "p1" },
+        metadata: {
+          reason: "adminBypass",
+          role: "admin",
+          // Not "open" (unrestricted), nor "admins" (its ACL names the role).
+          documentIds: ["mine", "theirs", "analysts", "finance"],
+        },
+      },
+    ]);
+  });
+
+  it("#2297 — writes no ACL audit row when every document is the requester's to read", async () => {
+    await createReaderDocumentLoader(files)("p1", ["open", "mine"], MEMBER);
+    expect(aclAudits()).toEqual([]);
+  });
+
+  it("#2297 — an audit write that throws does not fail the read", async () => {
+    auditMock.mockImplementationOnce(() => {
+      throw new Error("audit down");
+    });
+    const loads = await createReaderDocumentLoader(files)("p1", ids, MEMBER);
+    expect(loads.filter((l) => l.ok)).toHaveLength(2);
   });
 
   it("reads a role's, a group's and an admin's documents for them", async () => {
@@ -409,6 +477,35 @@ describe("#2262 — implicitReaderSelection", () => {
       `reads the ${READER_IMPLICIT_MAX_DOCUMENTS} most recently uploaded`,
     );
     expect(selection.withheld).toBe(1);
+    // #2297 — the withheld one is audited, as retrieval audits a denial.
+    expect(aclAudits()).toEqual([
+      expect.objectContaining({
+        action: "analysis.document_reader.acl_denied",
+        metadata: expect.objectContaining({ documentIds: ["secret"] }),
+      }),
+    ]);
+  });
+
+  it("#2297 — audits an admin's bypass of a restricted document it lists as left out", async () => {
+    db.documents = Array.from({ length: READER_IMPLICIT_MAX_DOCUMENTS + 1 }, (_, i) => ({
+      id: `d${i}`,
+      projectId: "p1",
+      filename: `doc-${i}.md`,
+      title: null,
+      mimeType: "text/markdown",
+      storagePath: `p1/d${i}`,
+      uploadedAt: i,
+      // The oldest, so left out; restricted to someone else.
+      ...(i === 0 ? { aclSubjects: restrictedTo({ kind: "user", value: "u2" }) } : {}),
+    }));
+    const selection = await implicitReaderSelection("p1", { userId: "u9", role: "admin" });
+    expect(selection.leftOut.map((d) => d.documentId)).toEqual(["d0"]);
+    expect(aclAudits()).toEqual([
+      expect.objectContaining({
+        action: "analysis.document_reader.acl_bypass",
+        metadata: expect.objectContaining({ documentIds: ["d0"] }),
+      }),
+    ]);
   });
 });
 
@@ -690,6 +787,37 @@ describe("runDocumentReaderAgent", () => {
     expect(read!.result.usage.totalTokens).toBe(220);
   });
 
+  it("#2361 — names the section a dropped overview's content was merged into", async () => {
+    const merged = provider((system) =>
+      system.includes("combining the statements")
+        ? JSON.stringify({ duplicates: [{ id: "T1", of: "T2" }], crossReferences: [] })
+        : READ_REPLY,
+    );
+    const read = await runDocumentReaderAgent({
+      provider: merged,
+      projectId: "p1",
+      documentIds: ["d1"],
+      actor: MEMBER,
+      load: async () => [doc("d1")],
+    });
+    expect(read!.coverage.documents[0]!.sections).toEqual([
+      { heading: "Grants FRD", status: "read", statements: 0, kinds: {} },
+      {
+        heading: "Grants FRD › 1 Eligibility",
+        status: "read",
+        statements: 0,
+        kinds: {},
+        mergedInto: ["Grants FRD › 2 Payment"],
+      },
+      {
+        heading: "Grants FRD › 2 Payment",
+        status: "read",
+        statements: 2,
+        kinds: { "business-rule": 1, assumption: 1 },
+      },
+    ]);
+  });
+
   it("#2275 — clips a long filename to the source schema's 512 characters", async () => {
     const long = "f".repeat(700);
     const read = await runDocumentReaderAgent({
@@ -730,15 +858,57 @@ describe("runDocumentReaderAgent", () => {
     );
   });
 
-  it("returns null when no selected document could be loaded", async () => {
+  it("returns null when no selected document's file could be loaded", async () => {
     const read = await runDocumentReaderAgent({
       provider: reading,
       projectId: "p1",
       actor: MEMBER,
       documentIds: ["d1"],
-      load: async () => [{ ok: false, documentId: "d1", filename: "d1", reason: "gone" }],
+      load: async () => [
+        {
+          ok: false,
+          documentId: "d1",
+          filename: "d1.docx",
+          reason: "Its stored file could not be read.",
+        },
+      ],
     });
     expect(read).toBeNull();
+  });
+
+  it("#2297 — a missing id and a withheld one give the requester the same result", async () => {
+    db.documents = [
+      {
+        id: "secret",
+        projectId: "p1",
+        filename: "secret.md",
+        title: null,
+        mimeType: "text/markdown",
+        storagePath: "p1/secret",
+        aclSubjects: restrictedTo({ kind: "user", value: "u2" }),
+      },
+    ];
+    const run = (id: string) =>
+      runDocumentReaderAgent({
+        provider: reading,
+        projectId: "p1",
+        actor: MEMBER,
+        documentIds: [id],
+        load: createReaderDocumentLoader(storage({ "p1/secret": TEXT })),
+      });
+    const withheld = await run("secret");
+    const missing = await run("nope");
+    // Neither falls back to retrieval (null), and the two differ only in the id.
+    expect(withheld).not.toBeNull();
+    expect(missing).not.toBeNull();
+    const shape = (r: typeof withheld) =>
+      JSON.parse(
+        JSON.stringify({ ...r!.result.output, ...r!.coverage }).replaceAll(/secret|nope/g, "ID"),
+      );
+    expect(shape(missing)).toEqual(shape(withheld));
+    expect(withheld!.coverage.documents).toEqual([
+      expect.objectContaining({ documentId: "secret", filename: "secret", status: "unread" }),
+    ]);
   });
 
   it("lists a document no reply could be read for as unread, and reads the others", async () => {
@@ -934,6 +1104,11 @@ describe("runDocumentReaderAgent", () => {
       ["d0", "unread"],
     ]);
     expect(read!.result.output.summary).toContain("Read 5 of 6 selected documents");
+    // #2297 — left out on purpose, not "could not be read".
+    expect(read!.result.output.summary).not.toContain("could not be read");
+    expect(read!.result.output.summary).toContain(
+      `1 was left out: with no document selected, only the ${READER_IMPLICIT_MAX_DOCUMENTS} most recently uploaded are read.`,
+    );
   });
 
   it("#2262 — with nothing selected and nothing ready, returns null without loading", async () => {
@@ -961,7 +1136,7 @@ describe("runDocumentReaderAgent", () => {
           documentId: "secret",
           filename: "secret",
           reason: "unavailable",
-          withheld: true,
+          unavailable: true,
         },
       ],
     });

@@ -19,6 +19,7 @@ import {
 } from "@/lib/format-change-run-label";
 import type { ChangeAnalysisDetail, RequirementChange } from "@metis/shared";
 import { PageHeader } from "@/components/ui/page-header";
+import { EmptyState } from "@/components/ui/empty-state";
 
 type Analysis = {
   id: string;
@@ -209,7 +210,11 @@ export default function ChangeAnalysisPage() {
                 </button>
               ))}
               {!isLoading && (changeAnalyses ?? []).length === 0 && (
-                <p className="text-sm text-muted-foreground">No change analyses yet.</p>
+                <EmptyState
+                  data-testid="change-analyses-empty"
+                  title="No change analyses yet."
+                  description="Comparisons of two completed analyses belong here. Pick a base and a head analysis above and run one."
+                />
               )}
             </div>
           </div>

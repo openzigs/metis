@@ -14,8 +14,10 @@ import {
   FILE_ONLY_TOOLS,
   filesOnlySystemMessage,
   NO_SEEDS,
+  withSearchPrimitives,
   type MaterializedAgentPassDeps,
 } from "./agent-pass.js";
+import { grepFilesTool } from "../../analysis/tools/grep-files.js";
 import type { MaterializedState } from "./materialize.js";
 
 const answer = (findings: unknown[]) => JSON.stringify({ summary: "s", findings });
@@ -159,7 +161,7 @@ describe("createMaterializedAgentPass", () => {
       requirements: [{ id: "NR-1", text: "Change the total" }],
       databaseAware: false,
     });
-    expect(deps.graphTools).toHaveBeenCalledWith(root);
+    expect(deps.graphTools).toHaveBeenCalledWith(root, false);
     const [, input, options] = deps.runLoop.mock.calls[0]!;
     expect(input.tools).toEqual([graphTool]);
     expect(input.toolContext).toEqual({
@@ -170,6 +172,48 @@ describe("createMaterializedAgentPass", () => {
     expect(input.userMessage).toContain("AFFECTED");
     expect(input.systemMessage).toContain("searching the code graph");
     expect(options).toMatchObject({ maxTurns: 10, model: "claude-sonnet-5-5" });
+  });
+
+  it("gives A3P production's seeded pass with the search primitives asked for (#2327)", async () => {
+    const deps = depsWith(root);
+    await createMaterializedAgentPass(deps)({
+      corpus: "c",
+      repo: "r",
+      text: "t",
+      toolset: "graph-primitives",
+    });
+    expect(deps.assembleSeeds).toHaveBeenCalled();
+    expect(deps.graphTools).toHaveBeenCalledWith(root, true);
+    const [, input] = deps.runLoop.mock.calls[0]!;
+    // Production's prompt, not the file-tools one.
+    expect(input.systemMessage).toContain("searching the code graph");
+  });
+
+  it("withSearchPrimitives swaps in the filtered symbol tool and adds grep_files with a clone (#2327)", () => {
+    const tool = (name: string, description = name): AgentTool => ({
+      name,
+      description,
+      parameters: { type: "object" },
+      execute: vi.fn(),
+    });
+    const graph = [tool("search_code_graph"), tool("search_code_symbols", "plain")];
+    const filtered = tool("search_code_symbols", "filtered");
+    const withClone = withSearchPrimitives(graph, root, filtered);
+    expect(withClone.map((t) => t.description)).toEqual([
+      "search_code_graph",
+      "filtered",
+      grepFilesTool.description,
+    ]);
+    expect(withSearchPrimitives(graph, undefined, filtered).map((t) => t.name)).toEqual([
+      "search_code_graph",
+      "search_code_symbols",
+    ]);
+    // grep_files is never offered twice.
+    expect(
+      withSearchPrimitives([...graph, grepFilesTool], root, filtered).filter(
+        (t) => t.name === "grep_files",
+      ),
+    ).toHaveLength(1);
   });
 
   it("gives A3N the file tools, no seeds and the file-tools prompt", async () => {
@@ -197,7 +241,7 @@ describe("createMaterializedAgentPass", () => {
       text: "Just this",
       toolset: "graph",
     });
-    expect(deps.graphTools).toHaveBeenCalledWith(undefined);
+    expect(deps.graphTools).toHaveBeenCalledWith(undefined, false);
     const [, input] = deps.runLoop.mock.calls[0]!;
     expect(input.toolContext).toEqual({ projectId: "proj-r", connectorId: "conn-r" });
     expect(input.userMessage).toContain("[NR-1] Just this");

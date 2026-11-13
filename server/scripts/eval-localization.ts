@@ -509,7 +509,7 @@ async function agentPassFor(
   armIds: readonly string[],
 ): Promise<AgentPass> {
   const states = await materializedStates(corpora);
-  const { assertA3NClones, createMaterializedAgentPass } =
+  const { assertA3NClones, createMaterializedAgentPass, withSearchPrimitives } =
     await import("../src/lib/eval/localization/agent-pass.js");
   // #1819 — before any pass: A3N's file tools read only the clone.
   if (armIds.includes("A3N")) await assertA3NClones(states);
@@ -520,6 +520,7 @@ async function agentPassFor(
   const { extractNewRequirementCandidates } =
     await import("../src/lib/analysis/new-requirements.js");
   const { getKnowledgeService } = await import("../src/lib/rag/knowledge-service.js");
+  const { createSearchSymbolsTool } = await import("../src/lib/analysis/tools/search-symbols.js");
   return createMaterializedAgentPass({
     provider,
     states,
@@ -538,8 +539,17 @@ async function agentPassFor(
       };
     },
     assembleSeeds: (input) => assembleAgenticPassSeeds(input),
-    graphTools: (cloneDir) =>
-      assembleAgenticCodeTools({ knowledgeService: getKnowledgeService(), cloneDir }),
+    graphTools: (cloneDir, primitives) => {
+      const tools = assembleAgenticCodeTools({ knowledgeService: getKnowledgeService(), cloneDir });
+      // #2327 — A3P: chat's search primitives on the same tool set.
+      return primitives
+        ? withSearchPrimitives(
+            tools,
+            cloneDir,
+            createSearchSymbolsTool(undefined, { filters: true }),
+          )
+        : tools;
+    },
     extractRequirements: (text) => extractNewRequirementCandidates(text),
   });
 }

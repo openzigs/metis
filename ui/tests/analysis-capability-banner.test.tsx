@@ -60,3 +60,12 @@ describe("AnalysisCapabilityBanner", () => {
     );
   });
 });
+
+describe("repo-clone-unavailable copy (#2337)", () => {
+  it("says Update, not re-sync, matching the renamed Connections button", async () => {
+    const { CAPABILITY_REASON_COPY } = await import("@/lib/analysis-capability-copy");
+    expect(JSON.stringify(CAPABILITY_REASON_COPY["repo-clone-unavailable"])).not.toMatch(
+      /re-sync/i,
+    );
+  });
+});

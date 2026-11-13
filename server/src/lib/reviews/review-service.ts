@@ -130,6 +130,15 @@ function reviewStateChangedError(): AppError {
   );
 }
 
+/**
+ * #2370 — the review's assigned reviewers, whose own rooms `review:changed`
+ * also reaches: their sidebar count drops or grows on a state change they did
+ * not make, on whatever page they have open.
+ */
+function reviewerIdsOf(review: ReviewRow): string[] {
+  return review.assignments.map((a) => a.reviewerId);
+}
+
 /** 403 unless the caller is the review's requester or holds `review.admin`. */
 function assertRequesterOrAdmin(review: ReviewRow, actorId: string, isAdmin: boolean): void {
   if (review.requestedById !== actorId && !isAdmin) {
@@ -675,7 +684,7 @@ async function startReviewRound(
     reopened: event === "reopen",
   });
   // #1574 — an open review page shows the new status without a reload.
-  emitReviewChanged(review.projectId, reviewId);
+  emitReviewChanged(review.projectId, reviewId, reviewerIdsOf(review));
 
   return updated;
 }
@@ -895,7 +904,7 @@ export async function recordDecision(
     baselineId: result.baselineId,
   });
   // #1574 — an open review page shows the decision (and any outcome) live.
-  emitReviewChanged(review.projectId, reviewId);
+  emitReviewChanged(review.projectId, reviewId, reviewerIdsOf(review));
   // #1230 — a verdict reached sets the scope's review statuses: a reader BRD
   // listing approved requirements may now be stale. Post-commit; never throws.
   if (result.aggregate !== "pending") {
@@ -952,7 +961,7 @@ async function transitionReview(
     });
   });
   // #1574 — post-commit: an open review page shows the withdraw or close live.
-  emitReviewChanged(review.projectId, reviewId);
+  emitReviewChanged(review.projectId, reviewId, reviewerIdsOf(review));
 
   return updated;
 }

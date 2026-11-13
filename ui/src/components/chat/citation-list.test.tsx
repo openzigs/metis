@@ -7,7 +7,13 @@ vi.mock("@/lib/connectors-api", () => ({ repoConnectorsApi: { list } }));
 
 import type { ChatCitation } from "@/lib/ai-client";
 import type { CodeCitationRepo } from "@/lib/code-citation-blob-url";
-import { CitationList, CitationListView, citationHref, citationSummary } from "./citation-list";
+import {
+  CitationList,
+  CitationListView,
+  citationHref,
+  citationSummary,
+  citationVersion,
+} from "./citation-list";
 
 const repo: CodeCitationRepo = {
   origin: "https://github.com",
@@ -151,7 +157,7 @@ describe("CitationList", () => {
     render(<CitationListView citations={[earlier, ambiguous]} repo={repo} />);
     const items = within(screen.getByTestId("chat-citations")).getAllByTestId("chat-citation");
     expect(items[0]!.textContent).toBe(
-      `✓ ${verifiedCode.text} — read earlier in this conversation`,
+      `✓ ${verifiedCode.text} — read earlier in this conversation version unknown`,
     );
     expect(within(items[0]!).getByRole("link")).toBeInTheDocument();
     expect(items[1]!.textContent).toBe(
@@ -164,5 +170,40 @@ describe("CitationList", () => {
     const list = screen.getByTestId("chat-citations");
     expect(list).not.toHaveAttribute("open");
     expect(list.className).toContain("text-muted-foreground");
+  });
+
+  describe("#2325 — the version a code citation was read at", () => {
+    const SHA = "fedcba9876543210fedcba9876543210fedcba98";
+
+    it("shows the short SHA and pins the link to that commit, not the connector's latest", () => {
+      const c: ChatCitation = { ...verifiedCode, commitSha: SHA };
+      expect(citationVersion(c)).toBe("@fedcba9");
+      expect(citationHref(c, repo)).toBe(
+        `https://github.com/acme/reader/blob/${SHA}/internal/model/feed.go#L120-L150`,
+      );
+      render(<CitationListView citations={[c]} repo={repo} />);
+      const version = screen.getByTestId("chat-citation-version");
+      expect(version.textContent).toBe("@fedcba9");
+      expect(version).toHaveAttribute("title", `Indexed commit ${SHA}`);
+      expect(screen.queryByTestId("chat-citation-stale")).toBeNull();
+    });
+
+    it("marks a stale citation and still lists and counts it as verified", () => {
+      const c: ChatCitation = { ...verifiedCode, commitSha: SHA, stale: true };
+      render(<CitationListView citations={[c]} repo={repo} />);
+      expect(screen.getByTestId("chat-citation-stale").textContent).toBe(
+        "⚠ index is behind the repository",
+      );
+      expect(screen.getAllByTestId("chat-citation")).toHaveLength(1);
+      expect(citationSummary([c])).toBe("Citations · 1 verified");
+    });
+
+    it("reads a citation with no recorded commit as version unknown, and a document as no version", () => {
+      expect(citationVersion(verifiedCode)).toBe("version unknown");
+      expect(citationVersion({ ...verifiedCode, commitSha: null })).toBe("version unknown");
+      expect(citationVersion(verifiedDoc)).toBeNull();
+      // Without a recorded commit the link keeps the connector's ref (#2242).
+      expect(citationHref(verifiedCode, repo)).toContain(`/blob/${repo.ref}/`);
+    });
   });
 });

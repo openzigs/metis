@@ -85,6 +85,8 @@ vi.mock("sonner", () => ({
 import { repoConnectorsApi, dbConnectorsApi, suggestedConnectorsApi } from "@/lib/connectors-api";
 import { projectsApi } from "@/lib/projects-api";
 import ConnectionsPage from "@/app/(authed)/projects/[id]/connections/page";
+import { ApiError } from "@/lib/api-client";
+import { toast } from "sonner";
 
 const repoList = repoConnectorsApi.list as unknown as ReturnType<typeof vi.fn>;
 const dbList = dbConnectorsApi.list as unknown as ReturnType<typeof vi.fn>;
@@ -186,6 +188,13 @@ describe("ConnectionsPage — rendering", () => {
   it("shows no repo connectors message when list is empty", async () => {
     renderPage();
     await waitFor(() => expect(screen.getByText(/No repo connectors yet/i)).toBeInTheDocument());
+    // #2337 — the shared EmptyState: what belongs here and the next action.
+    const empty = screen.getByTestId("repo-connectors-empty");
+    expect(empty).toHaveAttribute("data-slot", "empty-state");
+    expect(empty).toHaveTextContent(/code repositories/);
+    // The next action is a button that takes you to the form, not prose.
+    fireEvent.click(screen.getByTestId("repo-connectors-empty-action"));
+    expect(document.activeElement?.id).toBe("repo-source");
   });
 
   it("shows no db connectors message when list is empty", async () => {
@@ -193,6 +202,10 @@ describe("ConnectionsPage — rendering", () => {
     await waitFor(() =>
       expect(screen.getByText(/No database connectors yet/i)).toBeInTheDocument(),
     );
+    const empty = screen.getByTestId("db-connectors-empty");
+    expect(empty).toHaveAttribute("data-slot", "empty-state");
+    fireEvent.click(screen.getByTestId("db-connectors-empty-action"));
+    expect(document.activeElement?.id).toBe("db-label");
   });
 });
 
@@ -417,6 +430,26 @@ describe("ConnectionsPage — create repo form", () => {
     await waitFor(() =>
       // The onError callback sets repoError to 'Failed' (non-ApiError fallback)
       expect(screen.getByText(/^Failed$/)).toBeInTheDocument(),
+    );
+  });
+
+  // #2337 — the server's sentence (who to ask) reached the inline error but the
+  // toast said only "Failed to create repository connector".
+  it("keeps the server's sentence in the toast when the API refuses", async () => {
+    const user = userEvent.setup();
+    const sentence =
+      "You can only attach vault secrets you created. Ask an admin to bind this secret.";
+    repoCreate.mockRejectedValueOnce(new ApiError(403, sentence, "SECRET_BINDING_FORBIDDEN"));
+    renderPage();
+    await waitFor(() => expect(screen.getAllByLabelText(/^Label$/i)[0]).toBeInTheDocument());
+    await user.type(screen.getAllByLabelText(/^Label$/i)[0], "Dup");
+    await user.type(screen.getByLabelText(/Owner/i), "org");
+    await user.type(screen.getByLabelText(/Repo name/i), "repo");
+    await user.click(screen.getByRole("button", { name: /Add repo connector/i }));
+    await waitFor(() =>
+      expect(vi.mocked(toast.error)).toHaveBeenCalledWith(
+        `Could not create the repository connector: ${sentence}`,
+      ),
     );
   });
 });

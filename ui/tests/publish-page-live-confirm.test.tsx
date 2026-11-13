@@ -163,7 +163,7 @@ async function armLivePublish(): Promise<void> {
 /** #980 — choose a vault entry in the batch form's secret picker. */
 async function pickVaultSecret(label: string): Promise<void> {
   const user = userEvent.setup();
-  await user.click(screen.getByRole("combobox", { name: "Vault secret ref" }));
+  await user.click(screen.getByRole("combobox", { name: "Vault secret" }));
   await user.click(await screen.findByRole("option", { name: new RegExp(label) }));
 }
 

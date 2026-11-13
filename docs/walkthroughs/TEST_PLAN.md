@@ -234,7 +234,7 @@ Every phase records: **steps → Works → Useful**, plus the evidence listed un
 
 ### Phase 1 — Project creation and setup
 - **Steps:**
-  1. Go to `/projects` and use the create form (`components/projects/project-create-form`). This calls `POST /api/projects`. Name the project "Miniflux v2.3.3".
+  1. Go to `/projects` and click **New project**, which opens the New-project wizard (`components/projects/new-project-wizard`, #2349). This calls `POST /api/projects`. Name the project "Miniflux v2.3.3", keep **Documents only** (the repository is added in Phase 2), click **Create project**, then **Skip — open the Overview**.
   2. Open `/projects/:id` (pipeline overview), then `/projects/:id/settings`. Confirm the AI provider and model, then set the budget, safety, autopilot (off) and database-aware analysis (on). These call `PATCH /api/projects/:id`, `PATCH /api/projects/:id/budget` and `…/database-aware-analysis`.
   3. Open `/projects/:id/settings/models`. This calls `GET /api/projects/:id/model-preferences` and `…/analyses/model-recommendation`.
 - **Works:** the project appears in `/projects` and on `/dashboard`, settings persist across a reload, and the model picker shows `deepseek-flash`. The workspace slug field logs no console error and rejects an invalid slug (#729).
@@ -631,6 +631,7 @@ Replaces the Test Coverage page, whose imports and runs were removed in #818 and
   4. `/library?tab=agents`, via `/api/agents`.
   5. `/settings/mcp`: add, test, start and stop a server, and list its tools (`/api/mcp`, `/api/mcp/servers/:id/tools`). **Test** shows its result under the row, and the row updates after Start or Stop with no reload.
   6. Also visit `/settings/hooks`, `/settings/triggers`, `/settings/acp`, `/settings/integrations` (Slack/Teams/PagerDuty: "not configured" is acceptable), `/settings/notifications` and `/projects/:id/plugins`.
+  7. Help and dead ends (#2337): the header's **?** opens a dialog whose two links go to `/help` and its **Need a hand?** section (no GitHub link). `/help` lists the project's tabs and pages and the words METIS uses. The account menu's **Profile** opens `/settings/profile`. `/settings/audit` lands on `/settings/api-keys` with **Audit log** selected. On `/projects/:id/settings`, the groups read **General**, **AI & cost** and **Advanced**, and Advanced starts closed.
 - **Works:** every page loads without console errors, and each mutation round-trips.
 - **Useful:** a skill enabled here appears in chat's loaded-skills panel (`components/chat/loaded-skills-panel`). Disable test skills before the BA re-ask.
 

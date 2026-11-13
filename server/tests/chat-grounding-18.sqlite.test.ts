@@ -184,6 +184,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     let model: ScriptedProvider;
     const ALICE = "u-alice";
     const PROJECT = "p-payments";
+    const INDEXED_SHA = "0123456789abcdef0123456789abcdef01234567";
 
     const app = () => {
       const a = express();
@@ -222,7 +223,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         data: { id: PROJECT, name: "Payments", slug: "payments", createdById: ALICE },
       });
       // #439 — a code graph the curated code tools can read.
-      await db.codeGraph.create({ data: { id: "cg-payments", projectId: PROJECT } });
+      // #2325 — indexed at a known commit, which every code citation states.
+      await db.codeGraph.create({
+        data: { id: "cg-payments", projectId: PROJECT, commitSha: INDEXED_SHA },
+      });
       await db.codeSymbol.create({
         data: {
           codeGraphId: "cg-payments",
@@ -457,7 +461,14 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           message: "How is DNS rebinding handled?",
         });
         const expected = [
-          { text: "src/net/ssrf.ts", path: "src/net/ssrf.ts", status: "verified", source: "repo" },
+          {
+            text: "src/net/ssrf.ts",
+            path: "src/net/ssrf.ts",
+            status: "verified",
+            source: "repo",
+            // #2325 — an excerpt states no commit: the version is not known.
+            commitSha: null,
+          },
           {
             text: "src/net/pin.ts:10-20",
             path: "src/net/pin.ts",
@@ -540,6 +551,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
             lines: [5, 12],
             status: "verified",
             source: "repo",
+            commitSha: INDEXED_SHA,
           },
           {
             text: "src/validator.ts:50-60",
@@ -547,6 +559,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
             lines: [50, 60],
             status: "span-unverified",
             source: "repo",
+            commitSha: INDEXED_SHA,
           },
         ];
         expect(res.body.data.citations).toEqual(expected);
@@ -560,6 +573,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         lines,
         status,
         source: "repo",
+        // #2325 — the version the tool stated, kept on the row and read back
+        // from an earlier turn's stored tool result.
+        commitSha: INDEXED_SHA,
       });
 
       it("the /stream tool loop checks the answer against what its tools read, live and on reload", async () => {

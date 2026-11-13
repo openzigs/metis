@@ -10,17 +10,14 @@ import { MoreHorizontal, Trash2 } from "lucide-react";
 import { projectsApi } from "@/lib/projects-api";
 import { queryKeys } from "@/lib/query-keys";
 import { ProjectMetaLine } from "@/components/projects/project-meta-line";
-import { ProjectCreateForm } from "@/components/projects/project-create-form";
+import {
+  NewProjectDialog,
+  ProjectCreateForbiddenNotice,
+} from "@/components/projects/new-project-wizard";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { SkeletonText } from "@/components/ui/skeleton";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -30,7 +27,6 @@ import {
 import { PageHeader } from "@/components/ui/page-header";
 import { useValidatedActiveWorkspaceId } from "@/lib/active-workspace";
 import { useAuth } from "@/lib/auth-context";
-import { ProjectCreateForbiddenNotice } from "@/components/projects/new-project-wizard";
 
 export default function ProjectsPage() {
   const qc = useQueryClient();
@@ -52,7 +48,6 @@ export default function ProjectsPage() {
     enabled: workspace.status !== "loading",
   });
 
-  const [open, setOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string } | null>(null);
 
   const remove = useMutation({
@@ -67,25 +62,11 @@ export default function ProjectsPage() {
     <div className="space-y-6 p-2 md:p-0">
       <PageHeader
         title="Projects"
-        description="Browse, create, and manage migration projects."
+        description="Browse, create, and manage projects."
+        // #2349 — the same wizard as Home and the command palette, whatever the count.
         actions={
           canCreate ? (
-            <Dialog open={open} onOpenChange={setOpen}>
-              <DialogTrigger asChild>
-                <Button data-testid="new-project-button">New project</Button>
-              </DialogTrigger>
-              <DialogContent>
-                <DialogHeader>
-                  <DialogTitle>Create project</DialogTitle>
-                </DialogHeader>
-                <ProjectCreateForm
-                  workspaceId={activeWorkspaceId}
-                  workspaceStatus={workspace.status}
-                  onRetryWorkspaces={workspace.retry}
-                  onCreated={() => setOpen(false)}
-                />
-              </DialogContent>
-            </Dialog>
+            <NewProjectDialog triggerTestId="new-project-button" />
           ) : (
             <ProjectCreateForbiddenNotice />
           )

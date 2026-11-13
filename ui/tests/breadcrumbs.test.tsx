@@ -6,7 +6,8 @@
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
-import { makeWrapper } from "./test-utils";
+import { makeWrapper, TEST_USER } from "./test-utils";
+import type { AuthUser } from "@/lib/auth-types";
 import { usePathname } from "next/navigation";
 
 vi.mock("@/lib/api-client", async () => {
@@ -77,9 +78,9 @@ describe("<Breadcrumbs />", () => {
     });
 
     /** Renders at `path` and returns the crumbs after the two switchers. */
-    async function crumbsAt(path: string) {
+    async function crumbsAt(path: string, initialUser: AuthUser | null = null) {
       usePathnameMock.mockReturnValue(path);
-      render(<Breadcrumbs />, { wrapper: makeWrapper({}) });
+      render(<Breadcrumbs />, { wrapper: makeWrapper({ initialUser }) });
       const nav = screen.getByRole("navigation", { name: "Breadcrumb" });
       await waitFor(() =>
         expect(screen.getByRole("button", { name: /active project/i })).toBeInTheDocument(),
@@ -144,7 +145,7 @@ describe("<Breadcrumbs />", () => {
     it("a route reached from inside a section ends at its own label", async () => {
       const { current, links } = await crumbsAt("/projects/p1/sync");
       expect(links).toEqual([["Deliverables", "/projects/p1/documentation"]]);
-      expect(current[0]).toHaveTextContent("Sync");
+      expect(current[0]).toHaveTextContent("Issue updates");
     });
 
     it("outside a project, the page is the sidebar entry and is the only current crumb", async () => {
@@ -152,6 +153,22 @@ describe("<Breadcrumbs />", () => {
       expect(current).toHaveLength(1);
       expect(current[0]).toHaveTextContent("Profile");
       expect(screen.getByRole("link", { name: "Settings" })).toHaveAttribute("href", "/settings");
+    });
+
+    it("on a run's page, links Runs for an admin only (#2370)", async () => {
+      const admin = await crumbsAt("/runs/42", { ...TEST_USER, role: "admin" });
+      expect(admin.links).toEqual([["Runs", "/runs"]]);
+      expect(admin.current[0]).toHaveTextContent("Run");
+    });
+
+    it("on a run's page, names Runs without a link a non-admin would be refused (#2370)", async () => {
+      const { nav, current, links } = await crumbsAt("/runs/42", {
+        ...TEST_USER,
+        role: "developer",
+      });
+      expect(links).toEqual([]);
+      expect(nav).toHaveTextContent("Runs");
+      expect(current[0]).toHaveTextContent("Run");
     });
   });
 });

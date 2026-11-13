@@ -7,14 +7,20 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { findMany } = vi.hoisted(() => ({ findMany: vi.fn() }));
-vi.mock("../../prisma.js", () => ({ prisma: { repoConnection: { findMany } } }));
+const { findMany, graphFindMany } = vi.hoisted(() => ({
+  findMany: vi.fn(),
+  graphFindMany: vi.fn(async () => []),
+}));
+vi.mock("../../prisma.js", () => ({
+  prisma: { repoConnection: { findMany }, codeGraph: { findMany: graphFindMany } },
+}));
 import {
   createChatReadFileSliceTool,
   isSensitiveRepoPath,
   type ChatReadFileSliceDeps,
 } from "./chat-read-file-slice.js";
 import { getChatCodeTools, CHAT_CODE_TOOL_NAMES } from "./index.js";
+import { codeVersionIndexOf, NO_CODE_VERSIONS } from "../../code-graph/code-version.js";
 
 let root: string;
 
@@ -37,6 +43,7 @@ async function repo(id: string, files: Record<string, string>): Promise<string> 
 /** Repos per project; a repo's clone exists only if it was created on disk. */
 function deps(byProject: Record<string, string[]>, calls: string[] = []): ChatReadFileSliceDeps {
   return {
+    loadVersions: async () => NO_CODE_VERSIONS,
     listRepoIds: async (projectId) => {
       calls.push(projectId);
       return byProject[projectId] ?? [];
@@ -207,9 +214,62 @@ describe("chat read_file_slice — the default repo lookup (#736)", () => {
     ]) {
       const r = await tool.execute({ filePath }, { projectId: "p1" });
       expect(r.isError, filePath).toBe(true);
-      expect(r.content, filePath).toContain("not readable from chat");
+      expect(r.content, filePath).toBe(`Error: File not found or not accessible: ${filePath}`);
       expect(r.content, filePath).not.toContain("SECRET");
     }
+  });
+
+  it("#2327 — refuses .ssh, .env, .git and private keys, asked directly or through an in-repo symlink", async () => {
+    const dir = await repo("conn-a", {
+      ".ssh/id_rsa": "-----BEGIN OPENSSH PRIVATE KEY----- SECRET",
+      ".env": "DB_PASSWORD=SECRET",
+      ".git/config": "token = SECRET",
+      "keys/deploy.pem": "-----BEGIN PRIVATE KEY----- SECRET",
+      "src/ok.ts": "export const ok = 1;",
+    });
+    await symlink(path.join(dir, ".ssh", "id_rsa"), path.join(dir, "key.txt"));
+    await symlink(path.join(dir, ".env"), path.join(dir, "src", "settings.txt"));
+    await symlink(".git", path.join(dir, "gitdir"));
+    await symlink(path.join(dir, ".ssh"), path.join(dir, "sshdir"));
+    const tool = createChatReadFileSliceTool(deps({ p1: ["conn-a"] }));
+    for (const filePath of [
+      ".ssh/id_rsa",
+      "key.txt",
+      "sshdir/id_rsa",
+      "src/settings.txt",
+      "gitdir/config",
+      "keys/deploy.pem",
+    ]) {
+      const r = await tool.execute({ filePath }, { projectId: "p1" });
+      expect(r, filePath).toEqual({
+        content: `Error: File not found or not accessible: ${filePath}`,
+        isError: true,
+      });
+    }
+    expect((await tool.execute({ filePath: "src/ok.ts" }, { projectId: "p1" })).content).toContain(
+      "export const ok = 1;",
+    );
+  });
+
+  it("#2327 — refuses a sensitive path as asked before looking up a single repository", async () => {
+    const calls: string[] = [];
+    const tool = createChatReadFileSliceTool(deps({}, calls));
+    expect(await tool.execute({ filePath: ".ssh/id_rsa" }, { projectId: "p1" })).toEqual({
+      content: "Error: File not found or not accessible: .ssh/id_rsa",
+      isError: true,
+    });
+    expect(calls).toEqual([]);
+  });
+
+  it("#2327 — a sensitive symlink in one clone does not stop the read of the real file in the next", async () => {
+    const a = await repo("conn-a", { ".env": "SECRET" });
+    await mkdir(path.join(a, "src"), { recursive: true });
+    await symlink(path.join(a, ".env"), path.join(a, "src", "cfg.txt"));
+    await repo("conn-b", { "src/cfg.txt": "plain config" });
+    const tool = createChatReadFileSliceTool(deps({ p1: ["conn-a", "conn-b"] }));
+    const r = await tool.execute({ filePath: "src/cfg.txt" }, { projectId: "p1" });
+    expect(r.content).toContain("plain config");
+    expect(r.content).not.toContain("SECRET");
   });
 
   it("still reads env templates and ordinary files whose names merely contain env or git", async () => {
@@ -248,7 +308,148 @@ describe("isSensitiveRepoPath", () => {
     [".gitattributes", false],
     ["environment.go", false],
     ["docs/.github/CODEOWNERS", false],
+    // #2327
+    [".ssh/config", true],
+    ["home/.SSH/known_hosts", true],
+    [".gnupg/pubring.kbx", true],
+    [".aws/config", true],
+    [".kube/config", true],
+    [".docker/config.json", true],
+    ["deploy/id_rsa", true],
+    ["deploy/id_ed25519", true],
+    ["certs/server.pem", true],
+    ["certs/server.KEY", true],
+    ["store.p12", true],
+    ["credentials", true],
+    ["gcp/credentials.json", true],
+    [".pgpass", true],
+    ["deploy/id_rsa.pub", false],
+    ["src/credentials.ts", false],
+    ["src/keyboard.ts", false],
+    [".vscode/settings.json", false],
   ])("%s -> %s", (p, expected) => {
     expect(isSensitiveRepoPath(p)).toBe(expected);
+  });
+});
+
+const INDEXED = "a".repeat(40);
+const MOVED_ON = "b".repeat(40);
+const GITHUB = { provider: "github", ownerOrOrg: "acme", repoName: "app", apiBaseUrl: null };
+
+describe("chat read_file_slice — the citation contract (#2325)", () => {
+  function versioned(head: string | null, commitSha: string | null = INDEXED) {
+    return {
+      ...deps({ p1: ["conn-a"] }),
+      loadVersions: async () =>
+        codeVersionIndexOf([{ repoConnectionId: "conn-a", commitSha, repo: GITHUB }]),
+      readHead: async () => head,
+    } satisfies ChatReadFileSliceDeps;
+  }
+
+  it("states the indexed commit and a pinned permalink when the working tree matches it", async () => {
+    await repo("conn-a", { "src/a.ts": "one\ntwo\nthree" });
+    const r = await createChatReadFileSliceTool(versioned(INDEXED)).execute(
+      { filePath: "./src/a.ts", startLine: 2, endLine: 3 },
+      { projectId: "p1" },
+    );
+    expect(r.citations).toEqual([
+      {
+        repoConnectionId: "conn-a",
+        path: "src/a.ts",
+        startLine: 2,
+        endLine: 3,
+        commitSha: INDEXED,
+        permalink: `https://github.com/acme/app/blob/${INDEXED}/src/a.ts#L2-L3`,
+        truncated: false,
+        totalLines: 3,
+        stale: false,
+      },
+    ]);
+    expect(r.content).toContain(`Code version: indexed commit ${INDEXED.slice(0, 12)}.`);
+    expect(r.content).not.toContain("Stale");
+  });
+
+  it("marks a read of a working tree the index is behind stale, naming both commits", async () => {
+    await repo("conn-a", { "src/a.ts": "one\ntwo" });
+    const r = await createChatReadFileSliceTool(versioned(MOVED_ON)).execute(
+      { filePath: "src/a.ts" },
+      { projectId: "p1" },
+    );
+    expect(r.isError).toBeUndefined();
+    // Still served, and still a citation: flagged, never dropped.
+    expect(r.content).toContain("1| one");
+    expect(r.citations?.[0]).toMatchObject({
+      commitSha: INDEXED,
+      stale: true,
+      workingTreeSha: MOVED_ON,
+    });
+    expect(r.content).toContain("Stale: the index is behind the repository");
+    expect(r.content).toContain(MOVED_ON.slice(0, 12));
+    expect(r.content).toContain(INDEXED.slice(0, 12));
+  });
+
+  it("counts a working tree whose commit cannot be read as stale, never as the indexed one", async () => {
+    await repo("conn-a", { "a.txt": "A" });
+    const r = await createChatReadFileSliceTool(versioned(null)).execute(
+      { filePath: "a.txt" },
+      { projectId: "p1" },
+    );
+    expect(r.citations?.[0]).toMatchObject({ stale: true, workingTreeSha: null });
+    expect(r.content).toContain("commit unknown");
+  });
+
+  it("says the version is unknown when the index records no commit, and links nothing", async () => {
+    await repo("conn-a", { "a.txt": "A" });
+    const readHead = vi.fn(async () => MOVED_ON);
+    const r = await createChatReadFileSliceTool({ ...versioned(MOVED_ON, null), readHead }).execute(
+      { filePath: "a.txt" },
+      { projectId: "p1" },
+    );
+    expect(r.citations?.[0]).toMatchObject({ commitSha: null, permalink: null, stale: false });
+    expect(r.content).toContain("Code version: unknown");
+    // Nothing to compare against: HEAD is not even read.
+    expect(readHead).not.toHaveBeenCalled();
+  });
+
+  it("names the next range when the 200-line cap cuts a read", async () => {
+    await repo("conn-a", {
+      "big.txt": Array.from({ length: 500 }, (_, i) => `L${i + 1}`).join("\n"),
+    });
+    const r = await createChatReadFileSliceTool(versioned(INDEXED)).execute(
+      { filePath: "big.txt", startLine: 1, endLine: 500 },
+      { projectId: "p1" },
+    );
+    expect(r.citations?.[0]).toMatchObject({
+      startLine: 1,
+      endLine: 200,
+      truncated: true,
+      totalLines: 500,
+      next: { startLine: 201, endLine: 400 },
+    });
+    expect(r.content).toContain("request lines 201-400 next");
+  });
+
+  it("the default version lookup reads the session project's code graphs", async () => {
+    await repo("conn-a", { "a.txt": "A" });
+    const { loadVersions: _unused, ...rest } = deps({ p1: ["conn-a"] });
+    graphFindMany.mockResolvedValueOnce([]);
+    const r = await createChatReadFileSliceTool(rest).execute(
+      { filePath: "a.txt" },
+      { projectId: "p1" },
+    );
+    expect(r.citations?.[0]?.commitSha).toBeNull();
+    expect(graphFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { projectId: "p1" } }),
+    );
+  });
+
+  it("carries no contract on a refusal", async () => {
+    await repo("conn-a", { "a.txt": "A" });
+    const r = await createChatReadFileSliceTool(versioned(INDEXED)).execute(
+      { filePath: "../escape.txt" },
+      { projectId: "p1" },
+    );
+    expect(r.isError).toBe(true);
+    expect(r.citations).toBeUndefined();
   });
 });

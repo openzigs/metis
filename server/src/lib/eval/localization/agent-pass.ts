@@ -49,7 +49,7 @@ import {
   DEFAULT_SEED_CONFIDENCE,
 } from "../../traceability/seed-code-links-from-findings.js";
 import type { AgentCitation, AgentPass, AgentPassRequest, AgentPassResult } from "./arm-core.js";
-import { grepFilesTool } from "./grep-files-tool.js";
+import { grepFilesTool } from "../../analysis/tools/grep-files.js";
 import type { MaterializedState } from "./materialize.js";
 
 /** What the pass reads about a materialized project. */
@@ -74,8 +74,11 @@ export interface MaterializedAgentPassDeps {
     requirements: Array<{ id: string; text: string }>;
     databaseAware: boolean;
   }) => Promise<AgenticPassSeeds>;
-  /** The orchestrator's `assembleAgenticCodeTools` for a verified clone directory. */
-  graphTools: (cloneDir: string | undefined) => AgentTool[];
+  /**
+   * The orchestrator's `assembleAgenticCodeTools` for a verified clone
+   * directory; with `primitives` (#2327, A3P), through {@link withSearchPrimitives}.
+   */
+  graphTools: (cloneDir: string | undefined, primitives: boolean) => AgentTool[];
   /** `extractNewRequirementCandidates`. */
   extractRequirements: (text: string) => Promise<Array<{ id: string; text: string }>>;
   /** `runAgentLoop`; a seam for tests. */
@@ -95,6 +98,22 @@ export const FILE_ONLY_TOOLS: readonly AgentTool[] = [
   readFileSliceTool,
   grepFilesTool,
 ];
+
+/**
+ * #2327 — A3P's tools: `tools` (production's graph set) with
+ * `search_code_symbols` replaced by `filteredSymbols` (the same tool with its
+ * filters on) and, with a working tree, `grep_files` added: chat's search
+ * primitives on the analysis agent.
+ */
+export function withSearchPrimitives(
+  tools: readonly AgentTool[],
+  cloneDir: string | undefined,
+  filteredSymbols: AgentTool,
+): AgentTool[] {
+  const out = tools.map((t) => (t.name === filteredSymbols.name ? filteredSymbols : t));
+  if (cloneDir && !out.some((t) => t.name === grepFilesTool.name)) out.push(grepFilesTool);
+  return out;
+}
 
 /** Production's investigation steps with a working tree (`buildAgenticCodePrompt`). */
 const GRAPH_STEPS = [
@@ -207,7 +226,7 @@ export function createMaterializedAgentPass(deps: MaterializedAgentPassDeps): Ag
     }
     const project = await deps.loadProject(repo.projectId);
     const cloneDir = await existingDir(repo.cloneDir);
-    const graph = request.toolset === "graph";
+    const graph = request.toolset !== "files";
     // #1810 — the file tools read only the clone. Without it every A3N call
     // fails, and the pass would score about 0 at full cost; the graph pass runs
     // without a working tree, as production does.
@@ -228,7 +247,9 @@ export function createMaterializedAgentPass(deps: MaterializedAgentPassDeps): Ag
           databaseAware: project.databaseAware,
         })
       : NO_SEEDS;
-    const tools = graph ? deps.graphTools(cloneDir) : [...FILE_ONLY_TOOLS];
+    const tools = graph
+      ? deps.graphTools(cloneDir, request.toolset === "graph-primitives")
+      : [...FILE_ONLY_TOOLS];
     const prompt = buildAgenticPassPrompt({
       projectName: project.name,
       projectDescription: project.description,

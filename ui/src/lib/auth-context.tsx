@@ -262,6 +262,15 @@ export function AuthProvider({
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
+/**
+ * #2337 — the auth context when there is one, else `null`. For shared widgets
+ * (the vault picker) that tailor copy to the user but must also render where
+ * no provider is mounted.
+ */
+export function useOptionalAuth(): AuthContextValue | null {
+  return useContext(AuthContext);
+}
+
 export function useAuth(): AuthContextValue {
   const ctx = useContext(AuthContext);
   if (!ctx) {

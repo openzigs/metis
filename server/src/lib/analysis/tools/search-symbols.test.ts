@@ -6,6 +6,16 @@
  * validation contracts are exercised in isolation.
  */
 import { describe, expect, it, vi } from "vitest";
+// #2325 review — which line lookup the tool builds by default (#1636: the
+// analysis surface skips the repo read; chat needs it for a hit's version).
+vi.mock("../../code-graph/project-code-searcher.js", async (original) => {
+  const actual = await original<typeof import("../../code-graph/project-code-searcher.js")>();
+  return {
+    ...actual,
+    createDefaultSymbolLineLookup: vi.fn(actual.createDefaultSymbolLineLookup),
+  };
+});
+import { createDefaultSymbolLineLookup } from "../../code-graph/project-code-searcher.js";
 import { createSearchSymbolsTool } from "./search-symbols.js";
 import type {
   FusedCodeSearcher,
@@ -13,6 +23,7 @@ import type {
   SymbolLineLookup,
 } from "../../rag/fused-code-context.js";
 import type { ToolContext } from "./types.js";
+import { codeVersionIndexOf } from "../../code-graph/code-version.js";
 
 const CTX: ToolContext = { projectId: "proj-1" };
 
@@ -176,5 +187,197 @@ describe("search_code_symbols tool", () => {
     });
     expect(tool.name).toBe("search_code_symbols");
     expect(tool.parameters.required).toContain("query");
+  });
+});
+
+describe("search_code_symbols filters (#2327)", () => {
+  const hit: RawCodeSymbolHit = {
+    symbolId: "s1",
+    filePath: "internal/reader/feed.go",
+    name: "RefreshFeed",
+    kind: "function",
+    score: 1,
+  };
+  const make = (filters: boolean, hits: RawCodeSymbolHit[] = [hit]) => {
+    const searcher = mockSearcher(hits);
+    const tool = createSearchSymbolsTool({ searcher, lineLookup: mockLineLookup({}) }, { filters });
+    return { searcher, tool };
+  };
+
+  it("off (the default): the schema and the search are exactly the pre-#2327 ones", async () => {
+    const { searcher, tool } = make(false);
+    expect(Object.keys(tool.parameters.properties ?? {})).toEqual(["query", "limit"]);
+    expect(tool.description).not.toMatch(/fileGlob/);
+    // A filter the schema does not offer is not passed on.
+    await tool.execute({ query: "feed", fileGlob: "x/**", symbolKind: "nope" }, CTX);
+    expect(searcher.search).toHaveBeenCalledWith("feed", "proj-1", { limit: 15 });
+    expect(createSearchSymbolsTool({ searcher, lineLookup: mockLineLookup({}) }).parameters).toBe(
+      tool.parameters,
+    );
+  });
+
+  it("on: offers fileGlob, an enum symbolKind and an enum language, and passes them to the searcher", async () => {
+    const { searcher, tool } = make(true);
+    const props = tool.parameters.properties ?? {};
+    expect(Object.keys(props)).toEqual(["query", "limit", "fileGlob", "symbolKind", "language"]);
+    expect(props.symbolKind?.enum).toContain("method");
+    expect(props.language?.enum).toContain("go");
+    const res = await tool.execute(
+      { query: "feed", fileGlob: "./internal/**", symbolKind: "function", language: "go" },
+      CTX,
+    );
+    expect(searcher.search).toHaveBeenCalledWith("feed", "proj-1", {
+      limit: 15,
+      fileGlob: "internal/**",
+      symbolKind: "function",
+      language: "go",
+    });
+    expect(res.content).toContain("function RefreshFeed");
+    // Absent or null filters are simply not set.
+    await tool.execute({ query: "feed", fileGlob: null, language: undefined }, CTX);
+    expect(searcher.search).toHaveBeenLastCalledWith("feed", "proj-1", { limit: 15 });
+    // An empty or blank fileGlob is absent too, as grep_files reads pathContains.
+    for (const fileGlob of ["", "   "]) {
+      const r = await tool.execute({ query: "feed", fileGlob }, CTX);
+      expect(r.isError).toBeUndefined();
+      expect(searcher.search).toHaveBeenLastCalledWith("feed", "proj-1", { limit: 15 });
+    }
+  });
+
+  it.each([
+    [{ fileGlob: "../secrets/**" }, /refused "fileGlob" because it contains '\.\.'/],
+    [{ fileGlob: "/etc/**" }, /refused "fileGlob" because it is absolute/],
+    [{ fileGlob: 42 }, /refused "fileGlob" because it is not a string/],
+    [{ symbolKind: "Function" }, /"symbolKind" must be one of: function, method/],
+    [{ language: "typescript" }, /"language" must be one of: ts, js/],
+  ])("on: refuses %j without searching", async (filter, message) => {
+    const { searcher, tool } = make(true);
+    const res = await tool.execute({ query: "feed", ...filter }, CTX);
+    expect(res.isError).toBe(true);
+    expect(res.content).toMatch(message);
+    expect(searcher.search).not.toHaveBeenCalled();
+  });
+
+  it("on: says the filters found nothing, as a clean empty result", async () => {
+    const { tool } = make(true, []);
+    expect(await tool.execute({ query: "feed", language: "py" }, CTX)).toEqual({
+      content: "No matching code symbols found in this project's code graph with these filters.",
+      resultCount: 0,
+    });
+    expect((await tool.execute({ query: "feed" }, CTX)).content).toBe(
+      "No matching code symbols found in this project's code graph.",
+    );
+  });
+});
+
+describe("search_code_symbols — the citation contract (#2325)", () => {
+  const SHA = "0123456789abcdef0123456789abcdef01234567";
+  const OTHER = "fedcba9876543210fedcba9876543210fedcba98";
+  const versions = codeVersionIndexOf([
+    {
+      repoConnectionId: "r1",
+      commitSha: SHA,
+      repo: { provider: "github", ownerOrOrg: "acme", repoName: "app", apiBaseUrl: null },
+    },
+    { repoConnectionId: "r2", commitSha: OTHER, repo: null },
+  ]);
+  const lineLookup: SymbolLineLookup = {
+    resolve: vi.fn(
+      async () =>
+        new Map([
+          ["s1", { filePath: "src/a.ts", startLine: 10, endLine: 40, repoConnectionId: "r1" }],
+          ["s2", { filePath: "lib/b.go", startLine: 5, endLine: 8, repoConnectionId: "r2" }],
+        ]),
+    ),
+  };
+
+  it("states each hit's indexed commit, link and matchers when the project has a code graph", async () => {
+    const searcher = mockSearcher([
+      {
+        symbolId: "s1",
+        filePath: "src/a.ts",
+        name: "parse",
+        kind: "function",
+        score: 0.9,
+        matchedBy: ["dense", "lexical"],
+      },
+      { symbolId: "s2", filePath: "lib/b.go", name: "Store", kind: "struct", score: 0.4 },
+    ]);
+    const loadVersions = vi.fn(async () => versions);
+    const tool = createSearchSymbolsTool({ searcher, lineLookup, loadVersions });
+    const res = await tool.execute({ query: "parse" }, CTX);
+    expect(loadVersions).toHaveBeenCalledWith("proj-1");
+    expect(res.citations).toEqual([
+      {
+        repoConnectionId: "r1",
+        path: "src/a.ts",
+        startLine: 10,
+        endLine: 40,
+        commitSha: SHA,
+        permalink: `https://github.com/acme/app/blob/${SHA}/src/a.ts#L10-L40`,
+        matchedBy: ["dense", "lexical"],
+        truncated: false,
+        totalLines: null,
+        stale: false,
+      },
+      {
+        repoConnectionId: "r2",
+        path: "lib/b.go",
+        startLine: 5,
+        endLine: 8,
+        commitSha: OTHER,
+        permalink: null,
+        truncated: false,
+        totalLines: null,
+        stale: false,
+      },
+    ]);
+    // First, so chat's model-context cap (which keeps a result's start) cannot cut it.
+    expect(res.content).toMatch(/^Code version: indexed commits 0123456789ab, fedcba987654\.\n/);
+  });
+
+  it("marks a snippet the cap cut truncated, with the symbol's span as the next read", async () => {
+    const searcher = mockSearcher([
+      {
+        symbolId: "s1",
+        filePath: "src/a.ts",
+        name: "parse",
+        kind: "function",
+        score: 0.9,
+        snippet: "x".repeat(401),
+      },
+    ]);
+    const tool = createSearchSymbolsTool({
+      searcher,
+      lineLookup,
+      loadVersions: async () => versions,
+    });
+    const res = await tool.execute({ query: "parse" }, CTX);
+    expect(res.citations?.[0]).toMatchObject({
+      truncated: true,
+      totalLines: 31,
+      next: { startLine: 10, endLine: 40 },
+    });
+  });
+
+  it("carries no contract and no version line on the analysis surface (no version reader)", async () => {
+    const searcher = mockSearcher([
+      { symbolId: "s1", filePath: "src/a.ts", name: "parse", kind: "function", score: 0.9 },
+    ]);
+    const res = await createSearchSymbolsTool({ searcher, lineLookup }).execute(
+      { query: "parse" },
+      CTX,
+    );
+    expect(res.citations).toBeUndefined();
+    expect(res.content).not.toContain("Code version");
+  });
+
+  it("reads a hit's repository only for chat: the analysis surface keeps #1636's skip", () => {
+    const lookup = vi.mocked(createDefaultSymbolLineLookup);
+    lookup.mockClear();
+    createSearchSymbolsTool({ searcher: mockSearcher([]) });
+    expect(lookup).toHaveBeenLastCalledWith({ withRepo: false });
+    createSearchSymbolsTool({ searcher: mockSearcher([]), loadVersions: async () => versions });
+    expect(lookup).toHaveBeenLastCalledWith({ withRepo: true });
   });
 });
