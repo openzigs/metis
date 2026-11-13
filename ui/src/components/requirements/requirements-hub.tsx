@@ -199,6 +199,7 @@ export function RequirementsHub({ projectId }: { projectId: string }) {
             requirements={detail.data.requirements}
             currentUserId={user.id}
             canBaseline={user.permissions.includes("review.admin")}
+            canApprove={user.permissions.includes("project.update")}
             approvedCount={counts.approved}
           />
         ) : null}

@@ -6,9 +6,9 @@
  *
  * | Acceptance criterion (#2347)                                   | Test                          |
  * |----------------------------------------------------------------|-------------------------------|
- * | the tab lists requirements across change requests, by title    | approves and requests review  |
- * | approve and request review from the list                       | approves and requests review  |
- * | the ladder stated where the analyst chooses                    | approves and requests review  |
+ * | the tab lists requirements across change requests, by title    | requests review … approves    |
+ * | request review (analyst) and approve (coordinator) from a row  | requests review … approves    |
+ * | the ladder stated where the analyst chooses                    | requests review … approves    |
  * | after a rejection, what and why, and Revise and resubmit       | revises and resubmits         |
  *
  * The run and requirements are seeded through the CLI seam the review suites
@@ -88,7 +88,9 @@ test.describe("Requirements tab and the approval ladder (#2347)", () => {
     await login.login(ANALYST.username, ANALYST.password);
   });
 
-  test("approves one and requests review of another from the list", async ({ page }) => {
+  test("requests review of one from the list, and a coordinator approves another", async ({
+    page,
+  }) => {
     await page.goto(`/projects/${projectId}/requirements`, { waitUntil: "load" });
 
     await test.step("the list shows both, each with its change request by title", async () => {
@@ -102,24 +104,12 @@ test.describe("Requirements tab and the approval ladder (#2347)", () => {
       );
     });
 
-    await test.step("Approve on a row approves it, and stops offering Approve", async () => {
-      await page.getByTestId(`requirements-approve-${reqA}`).click();
-      await expect(page.getByTestId(`requirements-status-${reqA}`)).toHaveText("Approved", {
-        timeout: 30_000,
-      });
-      await expect(page.getByTestId(`requirements-approve-${reqA}`)).toHaveCount(0);
+    await test.step("the analyst (developer) may not approve directly, and is told so", async () => {
+      // #1566 — Approve and Edit are `project.update` writes, which `developer` lacks.
+      await expect(page.getByTestId(`requirements-approve-${reqA}`)).toBeDisabled();
     });
 
-    await test.step("the status filter narrows the list on the server", async () => {
-      await page.getByTestId("requirements-filter-status").selectOption("approved");
-      await expect(page.getByTestId(`requirements-row-${reqB}`)).toHaveCount(0, {
-        timeout: 30_000,
-      });
-      await expect(page.getByTestId(`requirements-row-${reqA}`)).toBeVisible();
-      await page.getByTestId("requirements-filter-status").selectOption("");
-    });
-
-    await test.step("ticking a row and requesting a review of it", async () => {
+    await test.step("the analyst ticks a row and requests a review of it", async () => {
       const rowB = page.getByTestId(`requirements-row-${reqB}`);
       await rowB.getByRole("checkbox").check();
       await page.getByTestId("request-review").click();
@@ -133,6 +123,27 @@ test.describe("Requirements tab and the approval ladder (#2347)", () => {
       await expect(page.getByTestId(`requirements-review-${reqB}`)).toHaveText("In review", {
         timeout: 30_000,
       });
+    });
+
+    await test.step("a coordinator approves one from its row; Approve is then gone", async () => {
+      await page.context().clearCookies();
+      const login = new LoginPage(page);
+      await login.goto();
+      await login.login(REVIEWER.username, REVIEWER.password);
+      await page.goto(`/projects/${projectId}/requirements`, { waitUntil: "load" });
+      await page.getByTestId(`requirements-approve-${reqA}`).click({ timeout: 30_000 });
+      await expect(page.getByTestId(`requirements-status-${reqA}`)).toHaveText("Approved", {
+        timeout: 30_000,
+      });
+      await expect(page.getByTestId(`requirements-approve-${reqA}`)).toHaveCount(0);
+    });
+
+    await test.step("the status filter narrows the list on the server", async () => {
+      await page.getByTestId("requirements-filter-status").selectOption("approved");
+      await expect(page.getByTestId(`requirements-row-${reqB}`)).toHaveCount(0, {
+        timeout: 30_000,
+      });
+      await expect(page.getByTestId(`requirements-row-${reqA}`)).toBeVisible();
     });
   });
 

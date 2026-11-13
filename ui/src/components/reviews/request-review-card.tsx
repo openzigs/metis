@@ -61,6 +61,20 @@ interface Props {
    * `POST /projects/:id/baselines` requires): the solo outcome says so.
    */
   canBaseline?: boolean;
+  /**
+   * #2347 — the user may approve a requirement directly (`project.update`, as
+   * `PUT /api/requirements/:id` requires; a `developer` may not, #1566).
+   */
+  canApprove?: boolean;
+}
+
+/** #2347 — the defined outcome for someone with no one else to review, by role. */
+export function soloOutcome(canApprove: boolean, canBaseline: boolean): string {
+  if (canBaseline)
+    return "Working alone? Approve the requirements directly; that is where they end. To fix a set, take a baseline from Baselines → New baseline.";
+  if (canApprove)
+    return "Working alone? Approve the requirements directly; that is where they end. A coordinator or admin can take a baseline from them (Baselines → New baseline).";
+  return "Working alone? Your role cannot approve requirements or take a baseline. Add a colleague to this project to review, or ask a coordinator to approve them.";
 }
 
 export function RequestReviewCard({
@@ -70,6 +84,7 @@ export function RequestReviewCard({
   currentUserId,
   approvedCount: approvedCountProp = 0,
   canBaseline = false,
+  canApprove = false,
 }: Props) {
   const qc = useQueryClient();
   const [open, setOpen] = useState(false);
@@ -296,9 +311,7 @@ export function RequestReviewCard({
                   : `No one else who can open this project matches "${term}".`}
               </p>
               <p className="text-muted-foreground" data-testid="request-review-solo">
-                {canBaseline
-                  ? "Working alone? Approve the requirements directly; that is where they end. To fix a set, take a baseline from Baselines → New baseline."
-                  : "Working alone? Approve the requirements directly; that is where they end. A coordinator or admin can take a baseline from them (Baselines → New baseline), or add a colleague to this project to review."}
+                {soloOutcome(canApprove, canBaseline)}
               </p>
             </div>
           ) : null}

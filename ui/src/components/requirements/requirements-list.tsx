@@ -184,7 +184,10 @@ export function RequirementsList({ projectId }: { projectId: string }) {
   const canEdit = user?.permissions.includes("project.update") ?? false;
   // #732 — the server gates review creation on `review.create`.
   const canRequestReview = user?.permissions.includes("review.create") ?? false;
-  const writeHint = canEdit ? undefined : "Your role cannot change requirements.";
+  // #1566 — a `developer` may request reviews but not approve or edit (`project.update`).
+  const writeHint = canEdit
+    ? undefined
+    : "Approving and editing need a coordinator or admin role. You can still request a review.";
 
   const [analysisId, setAnalysisId] = useState("");
   const [status, setStatus] = useState<RequirementListStatus | "">("");
@@ -430,6 +433,7 @@ export function RequirementsList({ projectId }: { projectId: string }) {
               }))}
               currentUserId={user.id}
               canBaseline={user.permissions.includes("review.admin")}
+              canApprove={canEdit}
             />
           ) : (
             <p className="text-xs text-muted-foreground" data-testid="requirements-review-hint">

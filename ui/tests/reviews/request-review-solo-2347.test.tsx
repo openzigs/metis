@@ -14,9 +14,23 @@ vi.mock("@/lib/api-client", async () => {
   return { ...actual, apiFetch };
 });
 
-import { RequestReviewCard } from "@/components/reviews/request-review-card";
+import { RequestReviewCard, soloOutcome } from "@/components/reviews/request-review-card";
 
-function renderCard(canBaseline = false) {
+describe("soloOutcome — a defined outcome for each role (#2347)", () => {
+  it("a coordinator or admin approves and takes the baseline", () => {
+    expect(soloOutcome(true, true)).toMatch(/Approve the requirements directly.*New baseline/);
+  });
+  it("one who may approve but not baseline is told who can", () => {
+    expect(soloOutcome(true, false)).toMatch(/A coordinator or admin can take a baseline/);
+  });
+  it("a developer, who may do neither, is told to add a colleague or ask a coordinator", () => {
+    const text = soloOutcome(false, false);
+    expect(text).toMatch(/cannot approve requirements or take a baseline/);
+    expect(text).not.toMatch(/Approve the requirements directly/);
+  });
+});
+
+function renderCard(canBaseline = false, canApprove = canBaseline) {
   const Wrapper = makeWrapper({ withAuth: false });
   render(
     <Wrapper>
@@ -25,6 +39,7 @@ function renderCard(canBaseline = false) {
         requirementIds={["r-1"]}
         currentUserId="u-me"
         canBaseline={canBaseline}
+        canApprove={canApprove}
       />
     </Wrapper>,
   );
@@ -48,7 +63,7 @@ describe("request review — the solo analyst (#2347)", () => {
       "You can't review your own request; add a colleague who can open this project.",
     );
     expect(screen.getByTestId("request-review-solo")).toHaveTextContent(
-      "A coordinator or admin can take a baseline",
+      "Your role cannot approve requirements or take a baseline. Add a colleague",
     );
   });
 

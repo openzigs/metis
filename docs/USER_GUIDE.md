@@ -1978,7 +1978,8 @@ This is useful when the AI's initial wording needs refinement or when you want t
 1. **Analysis checkpoint**: confirm what the analysis proposed before it is saved, on the
    change request's **Checkpoints** tab (it was called *Approvals*).
 2. **Requirement approval**: approve a requirement yourself, with **Approve** on its card or in
-   the Requirements list. No reviewer and no baseline are involved.
+   the Requirements list. No reviewer and no baseline are involved. This needs a coordinator or
+   admin role (`project.update`); a developer requests a review instead, and the list says so.
 3. **Formal review and baseline**: **Request review** asks colleagues to sign off a set of
    requirements. Their approval creates a baseline. If they reject the review, every
    requirement in it is rejected, including any you had already approved yourself.
@@ -2001,9 +2002,10 @@ asks the reviewers again. The change request's page links the rejection straight
 
 **Working alone.** You cannot review your own request. When the reviewer search finds no one
 else, it says so (*"You can't review your own request; add a colleague who can open this
-project"*). If you are the only analyst, approving the requirements directly is where they end.
-A coordinator or admin can then take a baseline from them with **New baseline** on the Baselines
-page; the request form tells a coordinator they can do it themselves.
+project"*), and then what happens for your role. A coordinator or admin working alone approves
+the requirements directly, which is where they end, and can take a baseline from them with
+**New baseline** on the Baselines page. A developer can do neither, so the form says to add a
+colleague to the project to review, or to ask a coordinator to approve them.
 
 Before a requirement can be published to GitHub, it must be **approved**. This is a human-in-the-loop step that ensures nothing gets published without review.
 
