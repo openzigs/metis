@@ -78,6 +78,7 @@ function renderPanel(opts: {
   approvesAsDraft?: boolean;
   viewerId?: string;
   meta?: Record<string, unknown>;
+  gateFails?: boolean;
 }) {
   analysisApi.listApprovals.mockResolvedValue({
     items: [approval("ap-1", "REQ-001"), approval("ap-2", "REQ-002")],
@@ -87,6 +88,7 @@ function renderPanel(opts: {
     projectId: "proj-1",
     allowSelfApproval: opts.allowSelfApproval ?? false,
   });
+  if (opts.gateFails) reviewGateApi.get.mockRejectedValue(new Error("network"));
   const qc = new QueryClient({
     defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
   });
@@ -136,6 +138,14 @@ describe("ApprovalsPanel — held for review, said before Approve (#2462)", () =
     renderPanel({ allowSelfApproval: true });
     await waitFor(() => expect(reviewGateApi.get).toHaveBeenCalled());
     await screen.findByTestId("approval-ap-1");
+    expect(notes()).toHaveLength(0);
+  });
+
+  it("says nothing when the gate cannot be read: it does not claim a hold it cannot confirm", async () => {
+    renderPanel({ gateFails: true });
+    await waitFor(() => expect(reviewGateApi.get).toHaveBeenCalled());
+    await screen.findByTestId("approval-ap-1");
+    await new Promise((r) => setTimeout(r, 20));
     expect(notes()).toHaveLength(0);
   });
 

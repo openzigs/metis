@@ -238,6 +238,17 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       }
     });
 
+    it("flags a completed run's requirements while it is re-run (Regenerate keeps completedAt)", async () => {
+      await db.analysis.update({ where: { id: CR }, data: { completedAt: new Date() } });
+      try {
+        await withRun("running", null, async () => {
+          expect(await flagged("u-coord", "coordinator")).toEqual(["r-checkpoint", "r-reworded"]);
+        });
+      } finally {
+        await db.analysis.update({ where: { id: CR }, data: { completedAt: null } });
+      }
+    });
+
     it("flags a running run's requirements once its approval checkpoint is open", async () => {
       await withRun("running", true, async () => {
         expect(await flagged("u-coord", "coordinator")).toEqual(["r-checkpoint", "r-reworded"]);

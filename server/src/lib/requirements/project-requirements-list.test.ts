@@ -91,6 +91,16 @@ describe("selfApprovalFlagDue (#2462): no flag reads while the page polls a run 
     expect(selfApprovalFlagDue({ status, metadata: null })).toBe(true);
   });
 
+  it("a completed run being re-run (running, completedAt kept) is due", () => {
+    expect(
+      selfApprovalFlagDue({
+        status: "running",
+        completedAt: "2026-11-13T00:00:00Z",
+        metadata: null,
+      }),
+    ).toBe(true);
+  });
+
   it.each(["pending", "running"])("a %s run is not, unless its checkpoint is open", (status) => {
     expect(selfApprovalFlagDue({ status, metadata: null })).toBe(false);
     expect(

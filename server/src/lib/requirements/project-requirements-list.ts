@@ -205,15 +205,20 @@ export async function selfApprovalForbiddenIds(
 /**
  * #2462 — whether `GET /api/analyses/:id` should work out the flag. The page
  * polls that route every 2.5 s while a run is pending or running, and the flag
- * costs up to three reads, so it is worked out only once the run has settled
- * (completed, failed, cancelled) or while its approval checkpoint is open
- * (`metadata.promotionBlocked.blocked`). Before that, no card is actionable.
+ * costs up to three reads. So it is worked out once the run has settled
+ * (completed, failed, cancelled), while its approval checkpoint is open
+ * (`metadata.promotionBlocked.blocked`), or while a run that had completed is
+ * re-run (Regenerate, repo resume): that keeps its `completedAt`
+ * (`markAnalysisRunning`), and its promoted cards keep a live Approve. A first
+ * run in progress has no card to act on.
  */
 export function selfApprovalFlagDue(snapshot: {
   status: string;
+  completedAt?: string | null;
   metadata: Record<string, unknown> | null;
 }): boolean {
   if (snapshot.status !== "pending" && snapshot.status !== "running") return true;
+  if (snapshot.completedAt) return true;
   const gate = snapshot.metadata?.promotionBlocked as { blocked?: unknown } | undefined;
   return gate?.blocked === true;
 }
