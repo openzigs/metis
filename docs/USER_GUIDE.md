@@ -1363,11 +1363,39 @@ click **Run analysis** to start with your own choices instead.
   you*, *Done* or *Not applicable*, and links to the screen where that step is done. A step
   whose feature is off or does not apply to the run (no governing documents, no portfolio, no
   code analysed) reads *Not applicable*. Questions reads *Needs you* while the run has open
-  clarifying questions, even once the run has completed. Portfolio never reads *Done*: METIS
-  keeps no record of a portfolio check per change request yet. A step METIS could not check
+  clarifying questions, even once the run has completed. **Impact** and **Portfolio** show the
+  state of the newest impact analysis or portfolio check started from this change request, and
+  link to it; before there is one they link to the **Impact and portfolio** card below. A step
+  METIS could not check
   (the policy findings or the issue drafts could not be read, for example because your role may
   not see issue drafts) reads *Unknown*, with "Couldn't check …" as its reason, never a state
   it might not be in.
+
+**Impact and portfolio.** Below the step header, the **Impact and portfolio** card starts both
+checks from the change request itself, with its requirements already filled in: you type
+nothing again. Each result opens on its own page, the same impact analysis or portfolio check
+page the **Impact analyses** and **Portfolio** pages open, with a **Back to the change request**
+link at the top that returns you here in one click. [#2345]
+
+- **Run impact analysis** maps the change request's draft and approved requirements (rejected
+  and deferred ones are left out) to the affected code in this project. One run checks at most
+  50 requirements: for a larger change request the card and the form say that the first 50 of
+  them are checked. **Options** opens the
+  full impact form with the change request as its source and this project selected, to add
+  other projects; keep this project selected.
+- **Run portfolio check** checks each of those requirements across every product you can read.
+  It is available before the requirements are approved; a check started while any of them is
+  not approved is labelled **Run on unapproved requirements**, on the card, on the check's page,
+  in the Portfolio coverage list and in its Markdown export. **Options** opens the portfolio
+  form with the change request as its source, to choose products.
+- Each check's results are listed on the card, **newest first** and marked **Latest**; older
+  ones stay listed and open with one click. Running a check again adds a newer result on top.
+- A result started from a change request opens with **← Back to the change request: <title>**
+  in place of the link to the global list, so one click returns you to it. The global **Impact
+  analyses** and **Portfolio coverage** pages still list every result across projects.
+- A reader without permission to run analyses sees the results, not the buttons. METIS reads
+  the change request's requirements itself and refuses a change request (or a project) you
+  cannot read; nothing is offered beyond the projects and products you can read.
 
 A run made before change requests had titles is given one from its sources (its first
 document's name, else its first imported item's title, else the start of its typed

@@ -43,6 +43,7 @@ import {
   useImpactProjectRepos,
 } from "@/components/impact/impact-symbol-repo-context";
 import { PageHeader } from "@/components/ui/page-header";
+import { ChangeRequestBackLink } from "@/components/analysis/change-request-back-link";
 
 const STATUS_VARIANT: Record<string, "destructive" | "default" | "secondary" | "outline"> = {
   completed: "default",
@@ -171,13 +172,22 @@ function ImpactAnalysisDetailView({
     <div className="space-y-6 p-2 md:p-0" data-testid="impact-detail-root">
       <PageHeader
         eyebrow={
-          <Link
-            href="/impact-analyses"
-            className="hover:underline"
-            data-testid="impact-detail-back"
-          >
-            ← Back to impact analyses
-          </Link>
+          // #2345 — started from a change request: one click returns to it.
+          data.changeRequest ? (
+            <ChangeRequestBackLink
+              changeRequest={data.changeRequest}
+              className="hover:underline"
+              testId="impact-detail-back"
+            />
+          ) : (
+            <Link
+              href="/impact-analyses"
+              className="hover:underline"
+              data-testid="impact-detail-back"
+            >
+              ← Back to impact analyses
+            </Link>
+          )
         }
         title="Impact analysis"
         titleExtra={

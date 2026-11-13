@@ -20,6 +20,8 @@
  * requirement the document holds is checked (the title is display-only; the
  * server reads the document itself, with access). Several `productId`s start
  * "Several products" with each one chosen.
+ * #2345 — `?analysisId=&title=` arrives from a change request: each of its
+ * draft and approved requirements is checked, before approval too (labelled).
  *
  * #2353 — the Projects hub's one Portfolio tab: the coverage check, and the
  * products it checks across (the former `/products` page, which redirects here
@@ -31,7 +33,11 @@ import { useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import { MAX_PAGE_SIZE, type PortfolioAssessmentListItem } from "@metis/shared";
+import {
+  MAX_PAGE_SIZE,
+  PORTFOLIO_PRE_APPROVAL_LABEL,
+  type PortfolioAssessmentListItem,
+} from "@metis/shared";
 import { Card } from "@/components/ui/card";
 import { PageHeader } from "@/components/ui/page-header";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -43,6 +49,7 @@ import { useCreatePortfolioAssessment, usePortfolioAssessments } from "@/lib/por
 import { PortfolioAssessmentForm } from "@/components/portfolio/portfolio-assessment-form";
 import { ProductsPanel } from "@/components/portfolio/products-panel";
 import { EmptyState } from "@/components/ui/empty-state";
+import { ChangeRequestBackLink } from "@/components/analysis/change-request-back-link";
 
 const TITLE_MAX = 200;
 
@@ -153,6 +160,21 @@ function PortfolioEntry({ searchParams }: { searchParams: SearchParamsReader | n
         }
       : null,
   );
+  // #2345 — `?analysisId=&title=&projectId=` arrives from a change request: each
+  // of its draft and approved requirements is checked (the title is
+  // display-only; the server reads the change request itself, with access), and
+  // `projectId` is only where the link back goes.
+  const analysisId = searchParams?.get("analysisId") ?? null;
+  const backProjectId = searchParams?.get("projectId") ?? null;
+  const [changeRequest, setChangeRequest] = useState(() =>
+    analysisId
+      ? {
+          id: analysisId,
+          title:
+            (searchParams?.get("title") ?? "").slice(0, TITLE_MAX) || "Selected change request",
+        }
+      : null,
+  );
   const initialStatement = searchParams?.get("statement") ?? "";
   const [requirement, setRequirement] = useState(() =>
     requirementId
@@ -195,6 +217,18 @@ function PortfolioEntry({ searchParams }: { searchParams: SearchParamsReader | n
 
   return (
     <div className="space-y-6">
+      {analysisId && backProjectId ? (
+        // #2345 — started from a change request: one click returns to it.
+        <ChangeRequestBackLink
+          changeRequest={{
+            id: analysisId,
+            projectId: backProjectId,
+            title: changeRequest?.title ?? "Selected change request",
+          }}
+          className="text-xs text-muted-foreground hover:underline"
+          testId="portfolio-back-to-change-request"
+        />
+      ) : null}
       <PortfolioAssessmentForm
         products={(productsQuery.data?.items ?? []).map((p) => ({ id: p.id, name: p.name }))}
         productsLoading={productsQuery.isLoading}
@@ -209,6 +243,8 @@ function PortfolioEntry({ searchParams }: { searchParams: SearchParamsReader | n
         onClearRequirement={() => setRequirement(null)}
         document={document}
         onClearDocument={() => setDocument(null)}
+        changeRequest={changeRequest}
+        onClearChangeRequest={() => setChangeRequest(null)}
         pending={create.isPending}
         error={error}
         onSubmit={(input) =>
@@ -243,6 +279,8 @@ function PortfolioEntry({ searchParams }: { searchParams: SearchParamsReader | n
                       : "Running"}{" "}
                   · {a.productCount} product{a.productCount === 1 ? "" : "s"} · {hostLabel(a)} ·{" "}
                   {new Date(a.createdAt).toLocaleString()}
+                  {/* #2345 — a check before approval says so wherever it is cited. */}
+                  {a.preApproval ? ` · ${PORTFOLIO_PRE_APPROVAL_LABEL}` : ""}
                 </p>
               </li>
             ))}

@@ -6,7 +6,7 @@
  * done. States come from `deriveChangeRequestSteps` (`@metis/shared`, the rules
  * the server shares); this component only loads the facts the run snapshot does
  * not carry (governing findings, the portfolio and this run's checks of it, the
- * publish drafts) and renders
+ * publish drafts, and #2345 the impact analyses started from it) and renders
  * them. A fact that is still loading, or whose read failed or was refused,
  * reads "Unknown", never as a state the step might not be in.
  *
@@ -21,6 +21,7 @@ import {
   STEP_STATE_LABELS,
   agentState,
   deriveChangeRequestSteps,
+  latestResult,
   portfolioCheckTally,
   requirementTally,
   runOptionsFromMetadata,
@@ -30,6 +31,8 @@ import {
 } from "@metis/shared";
 import type { AnalysisSnapshot } from "@/lib/analysis-api";
 import { governingFindingsApi, governingFindingsKeys } from "@/lib/governing-findings-api";
+import { impactAnalysisApi } from "@/lib/impact-analysis-api";
+import { impactAnalysisKeys } from "@/lib/impact-analysis-hooks";
 import { portfolioApi } from "@/lib/portfolio-api";
 import { portfolioKeys } from "@/lib/portfolio-hooks";
 import { productsApi } from "@/lib/products-api";
@@ -75,6 +78,13 @@ export function ChangeRequestStepHeader({ projectId, snapshot, pendingApprovals 
   const checks = useQuery({
     queryKey: portfolioKeys.runList(analysisId),
     queryFn: () => portfolioApi.listForRun(analysisId),
+    retry: false,
+  });
+  // #2345 — the impact analyses started from this change request, newest first;
+  // the same key (and cache entry) as its "Impact and portfolio" card.
+  const impacts = useQuery({
+    queryKey: impactAnalysisKeys.changeRequestList(analysisId),
+    queryFn: () => impactAnalysisApi.listForChangeRequest(analysisId),
     retry: false,
   });
   // The publish page's own key, so the two share one read.
@@ -125,6 +135,16 @@ export function ChangeRequestStepHeader({ projectId, snapshot, pendingApprovals 
   else if (!Array.isArray(checks.data)) portfolioChecks = "failed";
   else portfolioChecks = portfolioCheckTally(checks.data);
 
+  // #2345 — the newest impact analysis decides the Impact step, once read.
+  let latestImpact: ChangeRequestFacts["latestImpact"];
+  if (!impacts.isSuccess) latestImpact = unknownFact(impacts);
+  else if (!Array.isArray(impacts.data)) latestImpact = "failed";
+  else latestImpact = latestResult(impacts.data);
+  const latest = {
+    impact: typeof latestImpact === "object" ? latestImpact?.id : null,
+    portfolio: typeof portfolioChecks === "object" ? portfolioChecks.latest?.id : null,
+  };
+
   const facts: ChangeRequestFacts = {
     status: snapshot.status,
     agentKeys: options.agentKeys,
@@ -138,6 +158,7 @@ export function ChangeRequestStepHeader({ projectId, snapshot, pendingApprovals 
     products: productTotal,
     portfolioChecks,
     drafts: handoff,
+    latestImpact,
   };
   const steps = deriveChangeRequestSteps(facts);
   const current = steps.find((s) => s.state === "needs-you" || s.state === "in-progress");
@@ -151,7 +172,7 @@ export function ChangeRequestStepHeader({ projectId, snapshot, pendingApprovals 
           return (
             <li key={step.key} className="min-w-0">
               <Link
-                href={stepHref(step.key, projectId, analysisId)}
+                href={stepHref(step.key, projectId, analysisId, latest)}
                 aria-current={current?.key === step.key ? "step" : undefined}
                 title={step.reason}
                 data-testid={`change-request-step-${step.key}`}

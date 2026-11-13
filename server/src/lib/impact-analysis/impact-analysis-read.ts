@@ -1013,6 +1013,8 @@ export async function listImpactAnalyses(
     accessibleProjectIds?: string[] | null;
     limit?: number;
     projectId?: string;
+    /** #2345 — only the runs started from this change request. */
+    sourceAnalysisId?: string;
     /**
      * #88 — the calling actor. A run with NO recoverable projects (pre-#70, no
      * items) is not attributable to any project, so #70 correctly hides it from
@@ -1025,20 +1027,28 @@ export async function listImpactAnalyses(
   prisma?: ReadPrisma,
 ): Promise<ImpactAnalysisSummary[]> {
   const db = resolvePrisma(prisma);
+  // #70 — a run belongs to the projects it was STARTED for (`projects`, written
+  // with the run) as well as those its items name. The `items` arm is kept for
+  // runs created before that table existed, whose selection was never recorded.
+  const byProject = opts.projectId
+    ? {
+        OR: [
+          { projects: { some: { projectId: opts.projectId } } },
+          { items: { some: { projectId: opts.projectId } } },
+        ],
+      }
+    : null;
+  // #2345 — the runs started from one change request.
+  const byChangeRequest = opts.sourceAnalysisId
+    ? { sourceAnalysisId: opts.sourceAnalysisId }
+    : null;
+  const filters = [byProject, byChangeRequest].filter((f) => f !== null);
   const rows = await db.impactAnalysis.findMany({
-    // #70 — a run belongs to the projects it was STARTED for (`projects`, written
-    // with the run) as well as those its items name. The `items` arm is kept for
-    // runs created before that table existed, whose selection was never recorded.
-    ...(opts.projectId
-      ? {
-          where: {
-            OR: [
-              { projects: { some: { projectId: opts.projectId } } },
-              { items: { some: { projectId: opts.projectId } } },
-            ],
-          },
-        }
-      : {}),
+    ...(filters.length === 1
+      ? { where: filters[0] }
+      : filters.length > 1
+        ? { where: { AND: filters } }
+        : {}),
     orderBy: { startedAt: "desc" },
     take: opts.limit ?? 100,
     include: {
@@ -1089,6 +1099,7 @@ export async function listImpactAnalyses(
       completedAt: row.completedAt ? row.completedAt.toISOString() : null,
       // #965 — drift lineage: null for originals, the parent run id for re-runs.
       rerunOfId: row.rerunOfId ?? null,
+      sourceAnalysisId: (row as { sourceAnalysisId?: string | null }).sourceAnalysisId ?? null,
     }));
 }
 
@@ -1161,5 +1172,7 @@ export async function getImpactAnalysisDetail(
     sharedTableImpacts: computeSharedTableImpacts(items),
     // #965 — drift lineage: the original run this run re-executes (null for originals).
     rerunOfId: (row as { rerunOfId?: string | null }).rerunOfId ?? null,
+    // #2345 — the change request it was started from (null for any other start).
+    sourceAnalysisId: (row as { sourceAnalysisId?: string | null }).sourceAnalysisId ?? null,
   };
 }

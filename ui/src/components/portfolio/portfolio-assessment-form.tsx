@@ -61,6 +61,12 @@ export interface PortfolioFormDocument {
   title: string;
 }
 
+/** #2345 — a change request handed over: each of its draft and approved requirements is checked. */
+export interface PortfolioFormChangeRequest {
+  id: string;
+  title: string;
+}
+
 /** Where to look: every product, one chosen product, or (#2272) several chosen ones. */
 type ScopeMode = "all-accessible" | "product" | "several";
 
@@ -75,6 +81,8 @@ export function PortfolioAssessmentForm({
   onClearRequirement,
   document,
   onClearDocument,
+  changeRequest,
+  onClearChangeRequest,
   productQuery = "",
   onProductQueryChange,
   productTotal,
@@ -101,6 +109,9 @@ export function PortfolioAssessmentForm({
   /** #2272 — a document whose requirements are each checked. */
   document?: PortfolioFormDocument | null;
   onClearDocument?: () => void;
+  /** #2345 — a change request whose draft and approved requirements are each checked. */
+  changeRequest?: PortfolioFormChangeRequest | null;
+  onClearChangeRequest?: () => void;
   pending: boolean;
   error?: string | null;
   onSubmit: (input: CreatePortfolioAssessmentInput) => void;
@@ -176,7 +187,7 @@ export function PortfolioAssessmentForm({
     hostRef.current?.focus();
   }, [productsLoading]);
 
-  const hasSource = requirement || document ? true : statement.trim().length > 0;
+  const hasSource = changeRequest || requirement || document ? true : statement.trim().length > 0;
   const hasScope =
     scope === "all-accessible" ||
     (scope === "product" && productId !== "") ||
@@ -186,11 +197,13 @@ export function PortfolioAssessmentForm({
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
     if (!canSubmit) return;
-    const source = document
-      ? { documentId: document.id }
-      : requirement
-        ? { requirementId: requirement.id }
-        : { statement: statement.trim() };
+    const source = changeRequest
+      ? { analysisId: changeRequest.id }
+      : document
+        ? { documentId: document.id }
+        : requirement
+          ? { requirementId: requirement.id }
+          : { statement: statement.trim() };
     const hosted = host ? { hostProductId: host } : {};
     onSubmit(
       scope === "product"
@@ -208,7 +221,27 @@ export function PortfolioAssessmentForm({
       aria-label="Check a requirement across your portfolio"
       data-testid="portfolio-assessment-form"
     >
-      {document ? (
+      {changeRequest ? (
+        <div className="space-y-1" data-testid="portfolio-form-change-request">
+          <p className="text-sm font-medium">Change request</p>
+          <p className="text-sm">{changeRequest.title}</p>
+          <p className="text-xs text-muted-foreground">
+            METIS reads its draft and approved requirements and checks each on its own. Checked
+            before they are approved, the result is labelled as run on unapproved requirements.
+          </p>
+          {onClearChangeRequest ? (
+            <Button
+              type="button"
+              variant="link"
+              size="sm"
+              className="px-0"
+              onClick={onClearChangeRequest}
+            >
+              Type a statement instead
+            </Button>
+          ) : null}
+        </div>
+      ) : document ? (
         <div className="space-y-1" data-testid="portfolio-form-document">
           <p className="text-sm font-medium">Document</p>
           <p className="text-sm">{document.title}</p>

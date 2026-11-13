@@ -16,6 +16,7 @@ import {
   PORTFOLIO_DEGRADED_REASON,
   PORTFOLIO_IMPACT_TIER_LABEL,
   PORTFOLIO_NOT_AFFECTED_OLDER_RULE,
+  PORTFOLIO_PRE_APPROVAL_LABEL,
   portfolioImpactTier,
   portfolioNotCheckedText,
   portfolioRequirementCoverage,
@@ -318,6 +319,8 @@ export function renderPortfolioAssessmentMarkdown(v: PortfolioAssessmentView): s
     `**Verdict:** ${v.verdict ? VERDICT_LABEL[v.verdict] : "Not yet assessed"}`,
     // #1725 — the product chosen to build it; the view nulls one the reader cannot read.
     ...(v.hostProductId ? [`**Built by:** ${mdInline(name(v.hostProductId))}`] : []),
+    // #2345 — a check started before approval says so wherever it is cited.
+    ...(v.preApproval ? [`**${PORTFOLIO_PRE_APPROVAL_LABEL}**`] : []),
     "",
     "## Summary",
     "",
