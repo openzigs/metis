@@ -807,8 +807,16 @@ describe("discussions routes", () => {
       });
       messageFindMany.mockResolvedValue([]);
       buildAutoRagContext.mockImplementation(
-        async (_p: string, _m: unknown, _u: string, _d: unknown, capture: { sources: number }) => {
+        async (
+          _p: string,
+          _m: unknown,
+          _u: string,
+          _d: unknown,
+          capture: { sources: number; indexStatusLine?: string },
+        ) => {
           capture.sources = 2;
+          // #2326 — the status line is handed on, for a reply with no excerpt.
+          capture.indexStatusLine = "## Index status";
           return "## Retrieved Knowledge";
         },
       );
@@ -852,7 +860,7 @@ describe("discussions routes", () => {
         }),
       );
       expect(grounded).toEqual([
-        { block: "## Retrieved Knowledge", sources: 2 },
+        { block: "## Retrieved Knowledge", sources: 2, indexStatus: "## Index status" },
         { toolset: "ts" },
       ]);
     });

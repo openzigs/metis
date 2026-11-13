@@ -35,6 +35,13 @@ export const CHAT_CODE_TOOL_DESCRIPTORS: ReadonlyArray<{
     risk: "low",
   },
   {
+    // #2326 — whether the index is failed, partial or still being built.
+    name: "get_index_status",
+    description:
+      "Report the project's index: last indexed commit and time, how the last run ended, and coverage.",
+    risk: "low",
+  },
+  {
     // #2327 — offered when CHAT_CODE_SEARCH_PRIMITIVES is on.
     name: "grep_files",
     description: "Find a literal text in the project's repository files, as path:line matches.",

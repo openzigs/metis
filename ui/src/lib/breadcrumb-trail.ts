@@ -96,12 +96,18 @@ function trailFor(pathname: string): Crumb[] {
     const { section, item } = active;
     if (section.id === "overview") return [{ label: section.label }];
 
-    const candidates = [item?.href, section.href, ...(section.routes ?? [])].filter(
-      (href): href is string => !!href && isProjectTabActive(path, href, base),
-    );
+    const candidates = [
+      item?.href,
+      section.href,
+      ...(section.routes ?? []),
+      ...section.items.flatMap((i) => i.routes ?? []),
+    ].filter((href): href is string => !!href && isProjectTabActive(path, href, base));
     const matched = candidates.sort((a, b) => b.length - a.length)[0] ?? section.href;
     const trail: Crumb[] = [{ label: section.label, href: section.href }];
-    if (item) trail.push({ label: item.label, href: item.href });
+    // #2381 — a route reached from a page (issue updates, from Publish) runs
+    // through that page, not straight from the section's landing page.
+    const via = item ?? section.items.find((i) => i.routes?.includes(matched));
+    if (via) trail.push({ label: via.label, href: via.href });
     // A route reached from inside the section (issue sync) is not in the
     // sub-nav: on the route itself, it is the page.
     if (!item && matched !== section.href && path === matched) {

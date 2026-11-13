@@ -78,6 +78,11 @@ import {
 } from "../src/lib/eval/ba-qa/relevance-floor.js";
 import { formatBaQaReport, type ReportSession } from "../src/lib/eval/ba-qa/report.js";
 import {
+  indexFaultState,
+  parseIndexFault,
+  summarizeIndexFault,
+} from "../src/lib/eval/ba-qa/index-fault.js";
+import {
   answerableIn,
   DEFAULT_ROUTING_OPTIONS,
   evidenceFromHits,
@@ -158,6 +163,8 @@ async function main(): Promise<void> {
       include: { type: "string", multiple: true },
       "judge-model": { type: "string" },
       "floor-sweep": { type: "boolean" },
+      // #2326 — record each product's last indexing run as failed or partial.
+      "index-fault": { type: "string" },
       "routing-sweep": { type: "boolean" },
       "routing-scope": { type: "string" },
       route: { type: "string" },
@@ -497,6 +504,24 @@ async function main(): Promise<void> {
   }
 
   const sessionFlags = loadSessionToolsFlags();
+  // #2326 — the fault is written for this run only, and restored after it.
+  const indexFault = values["index-fault"] ? parseIndexFault(values["index-fault"]) : null;
+  const savedIngestStates = new Map<string, string | null>();
+  /** Put back every state the fault replaced; each once, whatever ends the run. */
+  const restoreIngestStates = async (): Promise<void> => {
+    for (const [id, saved] of [...savedIngestStates]) {
+      savedIngestStates.delete(id);
+      await prisma.repoConnection.update({ where: { id }, data: { sourceIngestState: saved } });
+    }
+  };
+  // An interrupted run (Ctrl-C) must not leave the products' index faulted.
+  const onSignal = (signal: NodeJS.Signals) => {
+    void restoreIngestStates().finally(() => process.exit(signal === "SIGINT" ? 130 : 143));
+  };
+  if (indexFault) {
+    process.once("SIGINT", onSignal);
+    process.once("SIGTERM", onSignal);
+  }
   console.log(
     `ba-qa ${arm}: ${provider.key}/${model}, judge ${judgeModel}, ${questions.length} questions, cap $${budget}`,
   );
@@ -505,193 +530,227 @@ async function main(): Promise<void> {
   const startedAt = new Date();
   const questionCosts: number[] = [];
 
-  for (const [i, q] of questions.entries()) {
-    stoppedEarly = budgetStop({
-      budgetUsd: budget,
-      spentUsd: meter.spentUsd(),
-      unpricedCalls: meter.unpricedCalls(),
-      questionCosts,
-    });
-    if (stoppedEarly) break;
-    const spentBefore = meter.spentUsd();
-    const t0 = performance.now();
-    const scope = routing
-      ? { projectId: null, degraded: null }
-      : chatSessionScope(q.scope.map((name) => repos.get(name)!.projectId));
-    // #2336 — a routing arm's session holds the whole scope, as chat's would;
-    // only what it retrieves from narrows.
-    let scopeIds: string[] | null = null;
-    let searchNames: readonly string[] = [];
-    // The routed arm's probe is part of its retrieval: timed from here.
-    const tRag = performance.now();
-    if (routing) {
-      const { rf, pool, size, route, taken } = routing;
-      const names = scopeOf(rf, size).map((p) => p.name);
-      scopeIds = names.map((n) => pool.get(n)!.projectId);
-      const rq = taken.get(q.id)!;
-      searchNames =
-        route === "all"
-          ? names
-          : route === "oracle"
-            ? rq.answerIn
-            : routeProjects(
-                q.text,
-                scopeOf(rf, size),
-                (await probeEvidence(scopeOf(rf, size), pool, q.text, user.id)).evidence,
-              ).chosen;
+  try {
+    if (indexFault) {
+      const faulted = JSON.stringify(indexFaultState(indexFault, new Date()));
+      for (const repo of repos.values()) {
+        const row = await prisma.repoConnection.findUniqueOrThrow({
+          where: { id: repo.connectorId },
+          select: { sourceIngestState: true },
+        });
+        // Saved before the write, so a write that fails part-way is still undone.
+        savedIngestStates.set(repo.connectorId, row.sourceIngestState);
+        await prisma.repoConnection.update({
+          where: { id: repo.connectorId },
+          data: { sourceIngestState: faulted },
+        });
+      }
+      console.log(`index fault: every product's last indexing run is recorded as ${indexFault}`);
     }
-    const setupStart = performance.now();
-    const row = await prisma.aISession.create({
-      data: {
+    for (const [i, q] of questions.entries()) {
+      stoppedEarly = budgetStop({
+        budgetUsd: budget,
+        spentUsd: meter.spentUsd(),
+        unpricedCalls: meter.unpricedCalls(),
+        questionCosts,
+      });
+      if (stoppedEarly) break;
+      const spentBefore = meter.spentUsd();
+      const t0 = performance.now();
+      const scope = routing
+        ? { projectId: null, degraded: null }
+        : chatSessionScope(q.scope.map((name) => repos.get(name)!.projectId));
+      // #2336 — a routing arm's session holds the whole scope, as chat's would;
+      // only what it retrieves from narrows.
+      let scopeIds: string[] | null = null;
+      let searchNames: readonly string[] = [];
+      // The routed arm's probe is part of its retrieval: timed from here.
+      const tRag = performance.now();
+      if (routing) {
+        const { rf, pool, size, route, taken } = routing;
+        const names = scopeOf(rf, size).map((p) => p.name);
+        scopeIds = names.map((n) => pool.get(n)!.projectId);
+        const rq = taken.get(q.id)!;
+        searchNames =
+          route === "all"
+            ? names
+            : route === "oracle"
+              ? rq.answerIn
+              : routeProjects(
+                  q.text,
+                  scopeOf(rf, size),
+                  (await probeEvidence(scopeOf(rf, size), pool, q.text, user.id)).evidence,
+                ).chosen;
+      }
+      const setupStart = performance.now();
+      const row = await prisma.aISession.create({
+        data: {
+          userId: user.id,
+          projectId: scope.projectId,
+          ...(scopeIds ? { scopeProjectIds: JSON.stringify(scopeIds) } : {}),
+          provider: provider.key,
+          model,
+          title: `eval #2237 ${runArm} ${q.id}`,
+        },
+      });
+      const session = {
+        id: row.id,
         userId: user.id,
         projectId: scope.projectId,
-        ...(scopeIds ? { scopeProjectIds: JSON.stringify(scopeIds) } : {}),
+        scopeProjectIds: row.scopeProjectIds,
+        agentId: null,
+        loadedSkillIds: row.loadedSkillIds,
+        policy: row.policy,
+      };
+      const resolved = await resolveSessionTools({
+        session,
+        provider,
+        model,
+        flags: sessionFlags,
+        mcp: null,
+      });
+      const tools = (await withoutApprovalGatedTools(resolved, session, async () => false)).runtime;
+      const library = await buildLibrarySystemMessages(
+        session,
+        tools.mode === "native" ? NATIVE_CHAT_TOOL_NOTE : tools.schemaBlock,
+        { mode: tools.skillMode, catalog: tools.skillCatalog },
+      );
+      // #2225 — retrieval runs as the asking user, so chunk ACLs apply as in /chat.
+      const tSearch = performance.now();
+      const rag = routing
+        ? (
+            await buildMultiProjectRagContext({
+              userId: user.id,
+              scope: {
+                kind: "projects",
+                projectIds: searchNames.map((n) => routing.pool.get(n)!.projectId),
+              },
+              query: q.text,
+            })
+          ).block
+        : await buildAutoRagContext(scope.projectId, [{ role: "user", content: q.text }], user.id);
+      // The session and tool setup between the probe and the search is not retrieval.
+      const retrievalMs = Math.round(
+        (routing?.route === "routed" ? setupStart - tRag : 0) + (performance.now() - tSearch),
+      );
+      const turn = await prepareTurn({
+        session: { id: row.id, snapshot: null },
+        userText: q.text,
+        prefix: [...library.stable, ...library.volatile],
+        beforeUser: rag ? [{ role: "system", content: rag }] : [],
         provider: provider.key,
         model,
-        title: `eval #2237 ${runArm} ${q.id}`,
-      },
-    });
-    const session = {
-      id: row.id,
-      userId: user.id,
-      projectId: scope.projectId,
-      scopeProjectIds: row.scopeProjectIds,
-      agentId: null,
-      loadedSkillIds: row.loadedSkillIds,
-      policy: row.policy,
-    };
-    const resolved = await resolveSessionTools({
-      session,
-      provider,
-      model,
-      flags: sessionFlags,
-      mcp: null,
-    });
-    const tools = (await withoutApprovalGatedTools(resolved, session, async () => false)).runtime;
-    const library = await buildLibrarySystemMessages(
-      session,
-      tools.mode === "native" ? NATIVE_CHAT_TOOL_NOTE : tools.schemaBlock,
-      { mode: tools.skillMode, catalog: tools.skillCatalog },
-    );
-    // #2225 — retrieval runs as the asking user, so chunk ACLs apply as in /chat.
-    const tSearch = performance.now();
-    const rag = routing
-      ? (
-          await buildMultiProjectRagContext({
-            userId: user.id,
-            scope: {
-              kind: "projects",
-              projectIds: searchNames.map((n) => routing.pool.get(n)!.projectId),
-            },
-            query: q.text,
-          })
-        ).block
-      : await buildAutoRagContext(scope.projectId, [{ role: "user", content: q.text }], user.id);
-    // The session and tool setup between the probe and the search is not retrieval.
-    const retrievalMs = Math.round(
-      (routing?.route === "routed" ? setupStart - tRag : 0) + (performance.now() - tSearch),
-    );
-    const turn = await prepareTurn({
-      session: { id: row.id, snapshot: null },
-      userText: q.text,
-      prefix: [...library.stable, ...library.volatile],
-      beforeUser: rag ? [{ role: "system", content: rag }] : [],
-      provider: provider.key,
-      model,
-      summarizer: async () => {
-        throw new Error("a one-question session never compacts");
-      },
-      config: loadChatTurnConfig(null),
-      ...(tools.mode === "native" ? { nativeTools: tools.toolset.specs() } : {}),
-    });
+        summarizer: async () => {
+          throw new Error("a one-question session never compacts");
+        },
+        config: loadChatTurnConfig(null),
+        ...(tools.mode === "native" ? { nativeTools: tools.toolset.specs() } : {}),
+      });
 
-    const sessionMeter = new LedgerCostMeter();
-    const metered = meterProvider(
-      meterProvider(meterProvider(provider, meter), answerMeter),
-      sessionMeter,
-    );
-    const usage = { promptTokens: 0, completionTokens: 0, calls: 0 };
-    let toolCalls = 0;
-    const toolNames: string[] = [];
-    const loop = await runChatToolTurn(
-      metered,
-      {
-        messages: turn.messages,
-        toolset: tools.toolset,
-        native: tools.mode === "native",
-        ctx: { sessionId: row.id, userId: user.id, projectId: scope.projectId },
-        gate: sessionGate({ session, runtime: tools }),
-      },
-      {
-        providerChatOptions: {
-          sessionId: row.id,
-          model,
-          callType: "chat",
-          promptCaching: chatToolLoopPromptCaching(provider),
+      const sessionMeter = new LedgerCostMeter();
+      const metered = meterProvider(
+        meterProvider(meterProvider(provider, meter), answerMeter),
+        sessionMeter,
+      );
+      const usage = { promptTokens: 0, completionTokens: 0, calls: 0 };
+      let toolCalls = 0;
+      const toolNames: string[] = [];
+      const loop = await runChatToolTurn(
+        metered,
+        {
+          messages: turn.messages,
+          toolset: tools.toolset,
+          native: tools.mode === "native",
+          ctx: { sessionId: row.id, userId: user.id, projectId: scope.projectId },
+          gate: sessionGate({ session, runtime: tools }),
         },
-        toolResultMaxChars: turn.build.toolResultMaxChars,
-        onUsage: (u) => {
-          usage.promptTokens +=
-            u.promptTokens + (u.cacheReadTokens ?? 0) + (u.cacheWriteTokens ?? 0);
-          usage.completionTokens += u.completionTokens;
-          usage.calls++;
+        {
+          providerChatOptions: {
+            sessionId: row.id,
+            model,
+            callType: "chat",
+            promptCaching: chatToolLoopPromptCaching(provider),
+          },
+          toolResultMaxChars: turn.build.toolResultMaxChars,
+          onUsage: (u) => {
+            usage.promptTokens +=
+              u.promptTokens + (u.cacheReadTokens ?? 0) + (u.cacheWriteTokens ?? 0);
+            usage.completionTokens += u.completionTokens;
+            usage.calls++;
+          },
+          onToolRecord: (record) => {
+            toolCalls++;
+            toolNames.push(record.tool);
+          },
         },
-        onToolRecord: (record) => {
-          toolCalls++;
-          toolNames.push(record.tool);
-        },
-      },
-    );
+      );
 
-    const reply = loop.replyText;
-    const { citations, ambiguous } = extractCitations(
-      reply,
-      q.scope.map((name) => citable.get(name)!),
-    );
-    const { spans, index } = await buildJudgedSpans(citations, readCited);
-    const judged = await meterProvider(meterProvider(provider, meter), judgeMeter).chat(
-      buildJudgeMessages(q, reply, spans),
-      { model: judgeModel, disableTools: true, maxTokens: 1200, callType: "grounding" },
-    );
-    const verdict = parseJudgeVerdict(judged.content, q, spans);
-    const score = scoreQuestion(q, citations, index, verdict);
-    const costUsd = sessionMeter.unpricedCalls() > 0 ? null : sessionMeter.spentUsd();
-    questionCosts.push(meter.spentUsd() - spentBefore);
-    sessions.push({
-      arm: runArm,
-      ...(routing
-        ? { searchScope: `${searchNames.length} of ${routing.size} products (${routing.route})` }
-        : {}),
-      retrievalMs,
-      questionId: q.id,
-      score,
-      costUsd,
-      projectId: scope.projectId,
-      ragChars: rag.length,
-      toolCalls,
-      toolNames,
-      turnsExhausted: loop.loop.turnsExhausted,
-      truncatedToolResults: loop.toolResults.filter((t) => t.truncated).length,
-      sessionId: row.id,
-      seconds: Number(((performance.now() - t0) / 1000).toFixed(1)),
-      turnsUsed: loop.turnsUsed,
-      hasFinalAnswer: loop.loop.hasFinalAnswer,
-      response: reply,
-      ambiguousCitations: ambiguous,
-      judgeReply: judged.content,
-      usage,
-    });
+      const reply = loop.replyText;
+      const { citations, ambiguous } = extractCitations(
+        reply,
+        q.scope.map((name) => citable.get(name)!),
+      );
+      const { spans, index } = await buildJudgedSpans(citations, readCited);
+      const judged = await meterProvider(meterProvider(provider, meter), judgeMeter).chat(
+        buildJudgeMessages(q, reply, spans),
+        { model: judgeModel, disableTools: true, maxTokens: 1200, callType: "grounding" },
+      );
+      const verdict = parseJudgeVerdict(judged.content, q, spans);
+      const score = scoreQuestion(q, citations, index, verdict);
+      const costUsd = sessionMeter.unpricedCalls() > 0 ? null : sessionMeter.spentUsd();
+      questionCosts.push(meter.spentUsd() - spentBefore);
+      sessions.push({
+        arm: runArm,
+        ...(routing
+          ? { searchScope: `${searchNames.length} of ${routing.size} products (${routing.route})` }
+          : {}),
+        retrievalMs,
+        questionId: q.id,
+        score,
+        costUsd,
+        projectId: scope.projectId,
+        ragChars: rag.length,
+        toolCalls,
+        toolNames,
+        turnsExhausted: loop.loop.turnsExhausted,
+        truncatedToolResults: loop.toolResults.filter((t) => t.truncated).length,
+        sessionId: row.id,
+        seconds: Number(((performance.now() - t0) / 1000).toFixed(1)),
+        turnsUsed: loop.turnsUsed,
+        hasFinalAnswer: loop.loop.hasFinalAnswer,
+        response: reply,
+        ambiguousCitations: ambiguous,
+        judgeReply: judged.content,
+        usage,
+      });
+      console.log(
+        `${runArm} ${q.id} [${i + 1}/${questions.length}]: ${score.behaviour ?? "UNSCORED"} ` +
+          `(expect ${q.expect}), facts ${score.facts ? `${score.facts.stated}/${score.facts.total}` : "-"}, ` +
+          `${citations.length} cites, ${toolCalls} tools ` +
+          `(${loop.toolResults.filter((t) => t.truncated).length} cut, ` +
+          `${loop.turnsUsed} turns${loop.loop.turnsExhausted ? ", OUT OF TURNS" : ""}), ` +
+          `rag ${rag.length} chars, ` +
+          `$${(costUsd ?? Number.NaN).toFixed(4)} — total $${meter.spentUsd().toFixed(4)}`,
+      );
+    }
+  } finally {
+    await restoreIngestStates();
+    process.off("SIGINT", onSignal);
+    process.off("SIGTERM", onSignal);
+  }
+  const faultSummary = indexFault
+    ? summarizeIndexFault(
+        indexFault,
+        sessions.map((s) => ({ response: s.response, behaviour: s.score.behaviour ?? null })),
+      )
+    : null;
+  if (faultSummary) {
     console.log(
-      `${runArm} ${q.id} [${i + 1}/${questions.length}]: ${score.behaviour ?? "UNSCORED"} ` +
-        `(expect ${q.expect}), facts ${score.facts ? `${score.facts.stated}/${score.facts.total}` : "-"}, ` +
-        `${citations.length} cites, ${toolCalls} tools ` +
-        `(${loop.toolResults.filter((t) => t.truncated).length} cut, ` +
-        `${loop.turnsUsed} turns${loop.loop.turnsExhausted ? ", OUT OF TURNS" : ""}), ` +
-        `rag ${rag.length} chars, ` +
-        `$${(costUsd ?? Number.NaN).toFixed(4)} — total $${meter.spentUsd().toFixed(4)}`,
+      `index fault ${faultSummary.fault}: ${faultSummary.mentioned}/${faultSummary.of} answers name ` +
+        `the index problem; ${faultSummary.abstainedWithoutIndex} of ${faultSummary.abstained} ` +
+        `abstentions assert absence without it`,
     );
   }
-
   const answerUsd = answerMeter.unpricedCalls() > 0 ? null : answerMeter.spentUsd();
   const judgeUsd = judgeMeter.unpricedCalls() > 0 ? null : judgeMeter.spentUsd();
   const summary = summarizeArm(
@@ -721,6 +780,7 @@ async function main(): Promise<void> {
     arm: runArm,
     flags: routing ? { ...flags, routingScope: String(routing.size), route: routing.route } : flags,
     sessionToolFlags: sessionFlags,
+    ...(faultSummary ? { indexFault: faultSummary } : {}),
     budgetUsd: budget,
     spentUsd: Number(meter.spentUsd().toFixed(6)),
     stoppedEarly,

@@ -1012,6 +1012,15 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
       "search_code_context (#2329): the most tokens (≈4 chars/token) one result may hold, at most 32000, so a typo cannot turn one call into the whole context. Spans are placed best-ranked first; one that does not fit what is left is cut down to fit, and the result counts what it left out. Default 4000.",
     sensitive: false,
   },
+  // ── #2326 — tell the model when the index is stale, partial or failed ─
+  CHAT_INDEX_STATUS: {
+    tier: "tunable",
+    valueType: "bool",
+    schema: z.coerce.boolean(),
+    description:
+      "Tell the chat model when a project's index cannot be trusted (#2326). ON by default. With the code-search tools on, chat is offered `get_index_status` (per repository: last indexed commit and time, how the last indexing run ended with a classified error, symbol and document counts, files indexed and skipped), and a project whose index is failed, never built, partial or still being built gets one status line in the retrieved-knowledge block on every turn, telling the model not to conclude the project lacks what a search did not find. Off: neither. The reply's grounding label (last indexed commit, last run, a warning), the classified retrieval-failure statement and the partial-coverage note do not depend on this key.",
+    sensitive: false,
+  },
   // ── Epic #128 — one tool runtime + enforced approval gate ─────────────
   CHAT_TOOLS: {
     tier: "tunable",

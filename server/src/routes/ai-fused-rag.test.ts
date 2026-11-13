@@ -441,7 +441,10 @@ describe("buildAutoRagContext — #1321 context capture", () => {
     const out = await buildAutoRagContext("p1", [userTurn], "u1", fusedDeps([], {}), capture);
 
     // #2241 — no excerpt, and the model is told the search failed.
-    expect(out).toBe(RETRIEVAL_FAILED_BLOCK);
+    expect(out.startsWith(RETRIEVAL_FAILED_BLOCK)).toBe(true);
+    // #2326 — the class of failure, not the error's text.
+    expect(out).toContain('Retrieval failed for "ETAG": vector index unavailable.');
+    expect(out).not.toContain("lancedb down");
     expect(capture.contexts).toEqual([]);
     expect(capture.sources).toBe(0);
   });

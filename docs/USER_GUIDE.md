@@ -2625,13 +2625,13 @@ The publisher uses Octokit's throttle plugin with a real sleeping backoff:
 
 You don't have to configure any of this manually; it's tuned for safe, predictable behavior under load.
 
-### 13.8 Change Analysis
+### 13.8 Compare analyses
 
 Compare two analysis snapshots to see what requirements changed between versions.
 
 1. Navigate to your project, click the **Requirements** tab, then **Compare analyses**. (The page is titled **Compare analyses** so it is not confused with the **Change requests** tab.)
 2. Select a **Base analysis** (the older snapshot) and a **Head analysis** (the newer one).
-3. Click **Run Change Analysis**. METIS compares every requirement in both snapshots and detects:
+3. Click **Compare**. METIS compares every requirement in both snapshots and detects:
    - **Added** — new requirements that didn't exist in the base
    - **Removed** — requirements that existed in the base but are gone in the head
    - **Modified** — requirements that changed (body text, priority, type, or title)
@@ -3649,9 +3649,11 @@ Opening Chat from a project (`/chat?projectId=…`) scopes it to that project.
 - Every reply carries a label underneath it:
   - **Grounded in _Project_ · N sources · M project lookups** — excerpts from that project's knowledge base were given to the model (N counts each excerpt supplied, and each code symbol in a fused code block), and/or the model read the project itself through its tools — code search, or a search of the project's knowledge base (M counts the lookups that returned something). Either part is left out when it is zero. Only excerpts relevant enough to the question are supplied: a weaker match is set aside (see **Relevance floor** below). Click the label to list the files and documents the excerpts came from, each with how many excerpts it gave and its relevance (0 to 1). [#2241]
   - **Insufficient evidence — nothing in _Project_ was relevant enough to this question** — the knowledge base was searched, but every match was too weak to use, so none was given to the model. It is told to say that the sources don't show this, and what is missing, rather than guess. [#2241]
-  - **Retrieval failed — _Project_'s knowledge base could not be searched for this reply** — the search itself failed. The model is told it could not check the sources. Try again; if it keeps happening, tell your administrator. [#2241]
+  - **Retrieval failed — _Project_'s knowledge base could not be searched for this reply (_kind of failure_)** — the search itself failed. The kind of failure is named in brackets, for example "timed out" or "vector index unavailable", but never the error's text. The model is told the search failed and not to conclude that the project lacks what you asked about. Try again; if it keeps happening, tell your administrator. [#2241, #2326]
   - **No excerpts from _Project_ were retrieved automatically** — the chat is scoped, but neither automatic retrieval, a code-search lookup, nor a project knowledge-base search returned anything for this question (for example, nothing is ingested yet). The model may still have used other tools, such as an MCP server, so check any file or code it names.
-  - **Partial coverage — only X of Y chunks in _Project_ are searchable** — shown under any of the above when some of the project's documents were indexed with a different embedding model. Those documents are not searched until the project is re-indexed. [#2241]
+  - **Partial coverage — only X of Y chunks in _Project_ are searchable** — shown under any of the above when some of the project's documents were indexed with a different embedding model. Those documents are not searched until the project is re-indexed. The model is told too, so it does not read a missing excerpt as absence. [#2241, #2326]
+  - **Index: _repository_ @ _commit_, indexed _time_ · last run _status_** — for a project with a connected repository, each repository's last indexed commit and time, and how its last indexing run ended (completed, partial, failed with the kind of failure, running or interrupted). [#2326]
+  - **Index warning — …** — shown when the last indexing run failed, the index is partial, indexing is still in progress, or nothing in the project has been indexed yet. It names the part that is affected, for example "repository _billing-svc_ is not indexed yet": one repository not indexed yet, beside documents or other repositories that are, makes the index partial rather than empty. An answer may then miss code or documents that are not indexed. In that case the model is told the same thing, and it is asked to say the index may be incomplete rather than conclude that the project lacks something. It can also check with the `get_index_status` tool. Your administrator can turn that part off with `CHAT_INDEX_STATUS=false`. [#2326]
   - A reply that failed or was stopped early shows no label; its error says what happened.
   - The label keeps the project's name from when the reply was written, so it still reads correctly after a rename or deletion.
   - **Not grounded — no project selected** — the chat is unscoped.
@@ -4930,9 +4932,9 @@ Before posting a review, the agent fetches the PR's existing review comments and
 
 The **Spec Kit** turns METIS into a structured specification tool. Rather than free-form chat, Spec Kit guides you through a phased workflow that produces a complete `.specify/` artifact set. v1.3 (Epic #396) brings METIS in line with upstream Spec Kit conventions: namespaced commands, per-feature `specs/<NNN-slug>/` directories, filesystem materialization, and phased status gates.
 
-### Where to find it: the BA/PM "author the intent" front-door
+### Where to find it
 
-Spec Kit is the **business-analyst / product-manager front-door** for authoring intent. It sits behind the project's **⚙** (Project settings) tab, beside the code views, because most analysts do not work in it day to day (#2334). Open a project, click **⚙**, then **Spec Kit**.
+Spec Kit is an optional, structured way to write intent down as a spec, a plan and a task list before handing it to analysis. Most analysts start from **Change requests** instead, so Spec Kit sits behind the project's **⚙** (Project settings) tab, beside the code views (#2334). Open a project, click **⚙**, then **Spec Kit**.
 
 The mental model is **author the intent here, then hand it off**:
 
@@ -4960,7 +4962,7 @@ Below that, **Context given to the code agent, not requirements** opens to show 
 
 ### Enabling Spec Kit
 
-1. Open the project and click the **Spec Kit** primary tab (beside Analysis), or navigate directly to `/projects/[id]/spec-kit` — the URL is unchanged.
+1. Open the project, click **⚙**, then **Spec Kit**, or navigate directly to `/projects/[id]/spec-kit` — the URL is unchanged.
 2. Toggle **Enable Spec Kit** at the top of the page. While enabled with no artifacts yet, an onboarding panel walks you through the spec → plan → tasks flow and links to the adjacent **Analysis** surface as the downstream consumer.
 3. You can now use slash commands in the Chat surface or the command palette on the Spec Kit page.
 

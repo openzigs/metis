@@ -623,6 +623,7 @@ describe("offering it in chat", () => {
       "search_code_graph",
       "search_code_symbols",
       "read_file_slice",
+      "get_index_status", // #2326, on by default
       SEARCH_CODE_CONTEXT_TOOL,
     ]);
     // Nameable in an agent's allowlist, and its results are evidence for citations.
