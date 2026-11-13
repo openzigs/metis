@@ -77,7 +77,7 @@ import { batchSections, outlineSections, sectionAt, type ReaderSection } from ".
  * (`reading-cache.ts`). Bump it when the reader's prompts, reply schemas,
  * batching or verification change: every saved reading is then read again.
  */
-export const READER_VERSION = "2407.1";
+export const READER_VERSION = "2374.1";
 
 /** Source characters whose statements one reply is asked to write. */
 export const READER_BATCH_CHARS = 8000;

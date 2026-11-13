@@ -131,7 +131,7 @@ For damage claims, photographs are usually enough. For high-value claims the bus
 
 ### 7.1 Determining liability
 
-Northgate is liable for loss and damage that occurs while goods are in its care, subject to the exceptions in the conditions of carriage, such as inadequate packaging by the customer or inherent defects in the goods.
+[[R61 Northgate is liable for loss and damage that occurs while goods are in its care, subject to the exceptions in the conditions of carriage, such as inadequate packaging by the customer or inherent defects in the goods.]]
 
 [[R16 The handler shall record a liability decision for each consignment on a claim, chosen from accepted, partly accepted or declined, with a reason chosen from a list maintained by the claims operations manager.]]
 
@@ -180,7 +180,7 @@ Payments are approved by people with the authority to commit the amount. The mat
 
 [[R32 The approval limits in the matrix shall be configurable by the claims operations manager, and every change shall be recorded with the name of the person who made it and the date.]]
 
-[[A4 Approvers are expected to deal with approvals promptly so that settlement times can be met.]]
+[[R62 Approvers are expected to deal with approvals promptly so that settlement times can be met.]]
 
 ### 8.2 Settlement and payment
 
@@ -268,7 +268,7 @@ For convenience this section restates the main time limits used in the claims pr
 
 | Rule | Limit |
 |---|---|
-| Notice of damage or shortage | [[A1 Within 14 days of delivery]] |
+| Notice of damage or shortage | [[R63 Within 14 days of delivery]] |
 | Notice of loss | Within 28 days of the expected delivery date |
 | Documents reminder | 21 days after the request |
 | Claim closed as abandoned | 21 days after the reminder |
@@ -289,10 +289,10 @@ For convenience this section restates the main time limits used in the claims pr
 - Whether customer service may register claims directly, rather than passing them to the mailbox, has been raised but not decided.
 
 <!-- labels
-A1 [conflict] @R7: the business rules summary gives 14 days for notice of damage and shortage while R7 gives 7 days; the summary says the capability sections take precedence but also that it predates legal review => Is the notice period for damage and shortage 7 days or 14 days after delivery?
+A1 [conflict] @R7,R63: the business rules summary gives 14 days for notice of damage and shortage while R7 gives 7 days; the summary says the capability sections take precedence but also that it predates legal review => Is the notice period for damage and shortage 7 days or 14 days after delivery?
 A2 [tbd] @R37: the recovery threshold that triggers a recovery case is not defined => What claim amount must be exceeded before a recovery case is created against a haulier?
 A3 [undefined-term] @R15: "high-value consignment" is used as the trigger for mandatory inspection but is never defined => What makes a consignment high-value for mandatory inspection: the amount claimed, a declared value, the goods type, or something else?
-A4 [vague-term] @R31: approvers are to deal with approvals "promptly", with no target time and no escalation when they do not => How quickly must an approver act on a settlement, and what happens when they do not?
+A4 [vague-term] @R31,R62: approvers are to deal with approvals "promptly", with no target time and no escalation when they do not => How quickly must an approver act on a settlement, and what happens when they do not?
 A5 [conflict] @R27,R28: the approval bands overlap at exactly 1,000, 10,000 and 50,000, so it is unclear who approves a settlement of exactly those amounts => Who approves a settlement of exactly 1,000, 10,000 or 50,000?
 A6 [missing] @R35: a disputed settlement returns to the handler, but nothing says whether it needs re-approval, how many times it can be disputed, or when a dispute ends => After a claimant disputes a settlement, does a revised offer need approval again, and is there a limit on disputes or a final position?
 A7 [missing] @R13,R36: a claim closed as abandoned can be reopened, but there is no rule on how late it can be reopened or whether the notification time limits still apply => Is there a deadline after which an abandoned claim can no longer be reopened?

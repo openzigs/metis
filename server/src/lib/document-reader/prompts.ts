@@ -63,10 +63,11 @@ const WHAT_TO_LIST = [
   "- business-rule: a policy or calculation the business applies (an eligibility rule, a fee, a threshold, a period);",
   "- assumption: something taken to be true that the document does not require;",
   "- definition: what a term means in this document;",
-  "- background: context that asks nothing of the system: the current situation and the systems that stay as they are; goals, objectives and benefits; an overview of how the system will be used that later sections set out as requirements; what a release, a phase or the document covers or leaves out (scope); and instructions about the document itself (how to read, review or comment on it, which part prevails, how its requirements are worded);",
+  "- background: context that asks nothing of the system: the current situation and the systems that stay as they are; goals, objectives and benefits; an overview of how the system will be used that later sections set out as requirements; a sentence that introduces the statements, list or table after it and asks nothing they do not set out in full; the reason given for another statement; what a release, a phase or the document covers or leaves out (scope); and instructions about the document itself (how to read, review or comment on it, which part prevails, how its requirements are worded);",
   "- example: an illustration of another statement.",
   // #2361 — scope lines, background and document control labelled requirement were most of the reader's false requirements.
-  "Label a statement by what it does in the document, not by its verb. A specific obligation in a section that sets out what is required is a requirement whether it says shall, must, will or can, or is written in the present tense or to the reader ('Overdue notices are sent...', 'You can renew...'). A goal, an overview or a scope line is background even when it says will, but a sentence that says shall or must is a requirement wherever it stands, unless it is about the document itself.",
+  // #2374 — most of what was left on 01 and 02: a lead-in to a table or list, even one saying must, and a requirement's reason.
+  "Label a statement by what it does in the document, not by its verb. A specific obligation in a section that sets out what is required is a requirement whether it says shall, must, will or can, or is written in the present tense or to the reader ('Overdue notices are sent...', 'You can renew...'). A goal, an overview or a scope line is background even when it says will, but a sentence that says shall or must is a requirement wherever it stands, unless it is about the document itself or only introduces the statements after it ('The system must provide the following reports.').",
   "Background and examples are not requirements. A table row that states an obligation is a requirement.",
   // #2361 — one sentence written as several statements was most of the reader's repeats.
   "One statement per sentence: a sentence that states several obligations is one statement that names them all. Never write two statements from one sentence.",
@@ -111,9 +112,29 @@ function operatorNotesBlock(notes: string | undefined): string[] {
   return text ? [fenceToolResult("operator_notes", text)] : [];
 }
 
-/** The trailing instruction naming one call's batch, after everything the batches share. */
-function batchInstruction(batch: readonly ReaderSection[]): string {
-  return `Write the statements of these sections only: ${sectionList(batch)}.`;
+/**
+ * The trailing instruction naming one call's batch, after everything the
+ * batches share. `next` is the section after the batch in a prompt that holds
+ * it too (whole mode). #2371 caught a batch call on 04 writing the five
+ * sections after its own, which batch-scoped verification drops and the next
+ * call writes again: 20 statements a run, paid for twice (#2374). So the call
+ * is told where it stops, on a line of its own, so the batch line names the
+ * batch alone.
+ */
+function batchInstruction(batch: readonly ReaderSection[], next?: ReaderSection): string {
+  const ask = `Write the statements of these sections only: ${sectionList(batch)}.`;
+  if (!next) return ask;
+  const last = batch[batch.length - 1]!;
+  return `${ask}\nStop after the last statement of ${last.id}: ${next.id} and every section after it are written in another call.`;
+}
+
+/** The section after `batch`'s last in `sections`, or `undefined` at the end. */
+function sectionAfter(
+  sections: readonly ReaderSection[],
+  batch: readonly ReaderSection[],
+): ReaderSection | undefined {
+  const at = sections.findIndex((s) => s.id === batch[batch.length - 1]?.id);
+  return at < 0 ? undefined : sections[at + 1];
 }
 
 /**
@@ -139,12 +160,14 @@ export function buildWholeDocumentBatchPrompt(input: {
     systemMessage: [
       "You are a business analyst reading a business requirements document from beginning to end. Each section starts with a line `=== <id> · <heading path> ===`.",
       "Read the whole document, then write the statements of only the sections named after it. Use the rest of the document to understand them (a term defined elsewhere, a rule a later section refers to), never as a source of statements for those sections.",
+      "Stop at the end of the last named section. The sections after it are written in other calls, and a statement of a section that is not named is discarded.",
       WHAT_TO_LIST,
       DATA_RULE,
       OPERATOR_NOTES_RULE,
       `Respond ONLY with one JSON object: ${STATEMENTS_REPLY_SHAPE}`,
     ].join("\n"),
-    userMessage: cachePrefix + batchInstruction(input.batch),
+    userMessage:
+      cachePrefix + batchInstruction(input.batch, sectionAfter(input.sections, input.batch)),
     cachePrefix,
   };
 }

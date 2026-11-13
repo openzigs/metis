@@ -468,6 +468,28 @@ describe("readDocument — a document longer than one batch", () => {
     ]);
   });
 
+  it("#2374 — tells each batch call where to stop: the section after its own, which another call writes", async () => {
+    const { provider, calls } = routedProvider([
+      [WHOLE, perBatch],
+      [MERGE, noMerge],
+    ]);
+    await readDocument({ title: "Long", text: LONG, provider });
+    const reads = calls.filter((c) => c.system.includes(WHOLE));
+    const stops = reads.map((r) => r.user.split("\n").find((l) => l.startsWith("Stop after")));
+    expect(reads.map(askedSections)).toEqual([["S1"], ["S2"], ["S3"], ["S4"]]);
+    expect(stops).toEqual([
+      "Stop after the last statement of S1: S2 and every section after it are written in another call.",
+      "Stop after the last statement of S2: S3 and every section after it are written in another call.",
+      "Stop after the last statement of S3: S4 and every section after it are written in another call.",
+      // The last batch has no section after it.
+      undefined,
+    ]);
+    // The boundary comes after the document, so the cached lead is the same for every call.
+    for (const r of reads.slice(0, 3))
+      expect(r.user.indexOf("Stop after")).toBeGreaterThan(r.user.indexOf("Paragraph 4.119"));
+    expect(reads[0]!.system).toContain("a statement of a section that is not named is discarded");
+  });
+
   it("reports the sections of a batch whose reply could not be read, and reads the rest", async () => {
     const { provider } = routedProvider([
       [WHOLE, (call) => (askedSections(call).includes("S1") ? "garbage" : perBatch(call))],
@@ -757,6 +779,10 @@ describe("readDocument — sectioned mode", () => {
     expect(reading.mode).toBe("sectioned");
     const [ctx] = calls.filter((c) => c.system.includes(CONTEXT));
     expect(ctx!.system).toContain("the rest of the text follows in later calls");
+    // #2374 — a sectioned call holds its own sections alone: no later section to stop before.
+    const reads = calls.filter((c) => c.system.includes(SECTIONED));
+    expect(reads.length).toBeGreaterThan(1);
+    for (const r of reads) expect(r.user).not.toContain("Stop after");
     // Every section is reported. #2407: the replies said nothing of any of
     // them, though each has text, so none is reported read.
     expect(reading.sections.length).toBeGreaterThan(1);
@@ -1387,6 +1413,18 @@ describe("#2361 — repeats", () => {
     expect(system).toContain("One statement per sentence");
     expect(system).not.toContain("is two statements");
     expect(system).toMatch(/background: [^\n]*scope[^\n]*document itself/);
+  });
+
+  it("#2374 — reads a lead-in to the statements after it, and a statement's reason, as background", async () => {
+    const { provider, calls } = routedProvider([[WHOLE, statements()]]);
+    await readDocument({ title: "Booking FRD", text: TEXT, provider });
+    const system = calls[0]!.system;
+    expect(system).toMatch(
+      /background: [^\n]*a sentence that introduces the statements, list or table after it[^\n]*the reason given for another statement/,
+    );
+    expect(system).toContain(
+      "unless it is about the document itself or only introduces the statements after it",
+    );
   });
 
   it("tells the cross-section pass to name the statement that says less", () => {

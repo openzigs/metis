@@ -109,7 +109,7 @@ Many bookings are made by parents for children and by adult children for elderly
 
 Some rules exist to protect clinical capacity and to keep the appointment book fair between patients who book online and those who telephone.
 
-[[R14 A patient shall not hold more than two future routine GP appointments at the same time across all sites.]] This limit does not apply to nurse reviews, immunisations or physiotherapy, which are often booked as a series.
+[[R14 A patient shall not hold more than two future routine GP appointments at the same time across all sites.]] [[R57 This limit does not apply to nurse reviews, immunisations or physiotherapy, which are often booked as a series.]]
 
 [[R15 The portal shall not allow a booking that starts less than two hours from the current time.]] Short-notice slots are kept for the telephone triage team.
 
@@ -148,7 +148,7 @@ The following table summarises the notifications. It repeats some of the stateme
 | Event | Channel | Timing | Recipient |
 |---|---|---|---|
 | Appointment booked, moved or cancelled | Email | At the time of the change | The account holder who made the change |
-| Upcoming appointment | Text message | [[A4 24 hours before the appointment]] | The patient, or the carer for a dependant |
+| Upcoming appointment | Text message | [[R58 24 hours before the appointment]] | The patient, or the carer for a dependant |
 | Physiotherapy follow-up on the day | Text message | [[R28 A same-day text reminder is sent at 7am for physiotherapy appointments starting after 10am.]] | The patient |
 | Waiting list offer | [[R56 Text message and email]] | When a matching slot is released | The patient on the waiting list |
 
@@ -198,7 +198,7 @@ Front-desk staff and practice managers use the PMS for most of their work. The p
 
 [[R43 Audit log entries shall be kept for eight years and shall not be editable by any user, including system administrators.]]
 
-[[R44 Portal accounts that have not been used for two years shall be deleted, and the patient shall be warned by email thirty days before deletion.]] Deleting a portal account does not affect the patient's record in the PMS.
+[[R44 Portal accounts that have not been used for two years shall be deleted, and the patient shall be warned by email thirty days before deletion.]] [[R59 Deleting a portal account does not affect the patient's record in the PMS.]]
 
 ## 10. Assumptions and dependencies
 
@@ -222,7 +222,7 @@ The following points were raised during the workshops and are not yet resolved. 
 A1 [missing] @R7,R50: the document says adult carer links are reviewed periodically but never says how often, by whom, or what happens to the link when a review is not done => How often are carer links for adult dependants reviewed, who reviews them, and does the link lapse if the review is missed?
 A2 [vague-term] @R19,R53: the behaviour when the PMS is unavailable is left as "handled appropriately", so it is unclear whether the portal refuses the booking, queues it or shows a slot it cannot confirm => When the PMS is unavailable, should the portal refuse new bookings, queue them for later, or stop showing availability?
 A3 [tbd] @R31: the waiting list offer expiry period is undefined; R31 says only "a short period" => How long does a patient have to accept a waiting list offer before it passes to the next person?
-A4 [conflict] @R24: R24 says the text reminder is sent 48 hours before every appointment, while the notification table says 24 hours => Is the standard text reminder sent 48 hours or 24 hours before the appointment, or both?
+A4 [conflict] @R24,R58: R24 says the text reminder is sent 48 hours before every appointment, while the notification table says 24 hours => Is the standard text reminder sent 48 hours or 24 hours before the appointment, or both?
 A5 [vague-term] @R12: "near real time" is not quantified, and staff are worried about double booking => What is the longest acceptable delay between a telephone booking in the PMS and the slot disappearing from the portal?
 A6 [tbd] @R5: the inactivity timeout is not agreed (ten minutes was suggested and disputed) => How long can a signed-in session stay inactive before it ends, and how far in advance is the warning shown?
 A7 [escape-clause] @R40: "where possible" makes the language requirement unverifiable and the language list is unconfirmed => Which languages must the portal support at launch, and is that a firm requirement or an aspiration?
