@@ -518,9 +518,11 @@ describe("FederatedSearchService", () => {
         query: "and in the client?",
         contextualQuery: "and in the client?\nHow is annual billing done?",
       });
-      // A is now the relevant product, so B (0.3 < 0.75 × 0.8) is left out.
-      expect(result.hits.map((h) => h.chunkId)).toEqual(["a-annual"]);
-      expect(result.projectsWithoutHits).toEqual(["proj-b"]);
+      // A, the product the earlier turn was about, is brought in. B stays: it is
+      // what the user's own words matched, and A's conversational-only 0.8 does
+      // not raise the floor's bar above them.
+      expect(result.hits.map((h) => h.chunkId)).toEqual(["a-annual", "b-client"]);
+      expect(result.projectsWithoutHits).toEqual([]);
     });
 
     it("merges a project's searches as single-project chat does: the user's words first", async () => {
@@ -567,6 +569,75 @@ describe("FederatedSearchService", () => {
       // floor((5 - 1) / 2) = 2 conversational-only hits, whichever project holds them.
       expect(ids.filter((id) => id.includes("c")).length).toBe(2);
       expect(ids).toEqual(["au1", "bu1", "ac1", "bc1"]);
+    });
+
+    it("never drops a product the user's words matched for another product's conversational-only hits", async () => {
+      // The adversarial panel's case: A's only hits come from the earlier topic,
+      // B's from the user's own new words. Measured against A's 0.8, B (0.5)
+      // fell under the 0.75 floor and 5 of the 8 slots went unused.
+      mockGetAccessible.mockResolvedValue([
+        { id: "proj-a", name: "A" },
+        { id: "proj-b", name: "B" },
+      ]);
+      const mockKS = byQuery({
+        "proj-a": { annual: [1, 2, 3, 4, 5].map((n) => makeChunk(`ac${n}`, { score: 0.8 })) },
+        "proj-b": { client: [1, 2, 3, 4, 5].map((n) => makeChunk(`bu${n}`, { score: 0.5 })) },
+      });
+      const svc = new FederatedSearchService({ knowledgeService: mockKS as never });
+      const result = await svc.searchAcrossProjects({
+        userId: "user-1",
+        query: "and in the client?",
+        contextualQuery: "and in the client?\nHow is annual billing done?",
+        k: 8,
+      });
+      const ids = result.hits.map((h) => h.chunkId);
+      // B is kept whole; A's conversational-only hits are still held to 3 of 8.
+      expect(ids.filter((id) => id.startsWith("bu"))).toEqual(["bu1", "bu2", "bu3", "bu4", "bu5"]);
+      expect(ids.filter((id) => id.startsWith("ac"))).toEqual(["ac1", "ac2", "ac3"]);
+      expect(ids).toHaveLength(8);
+      expect(result.projectsWithoutHits).toEqual([]);
+    });
+
+    it("measures the floor against the user's words: Alpha 0.7 stays beside Beta's conversational 1.0", async () => {
+      // The code review's case: under the 0.75 floor, Beta's earlier-topic hit
+      // at 1.0 set the bar at 0.75 and pushed out Alpha, the user's own match.
+      mockGetAccessible.mockResolvedValue([
+        { id: "proj-alpha", name: "Alpha" },
+        { id: "proj-beta", name: "Beta" },
+      ]);
+      const mockKS = byQuery({
+        "proj-alpha": { client: [makeChunk("alpha-u1", { score: 0.7 })] },
+        "proj-beta": { annual: [makeChunk("beta-c1", { score: 1.0 })] },
+      });
+      const svc = new FederatedSearchService({ knowledgeService: mockKS as never });
+      const result = await svc.searchAcrossProjects({
+        userId: "user-1",
+        query: "and in the client?",
+        contextualQuery: "and in the client?\nHow is annual billing done?",
+        relevanceFloor: 0.75,
+      });
+      expect(result.hits.map((h) => h.chunkId)).toEqual(["alpha-u1", "beta-c1"]);
+      expect(result.projectsWithoutHits).toEqual([]);
+    });
+
+    it("still floors a product whose only hits are conversational, against the user's best", async () => {
+      mockGetAccessible.mockResolvedValue([
+        { id: "proj-a", name: "A" },
+        { id: "proj-b", name: "B" },
+      ]);
+      const mockKS = byQuery({
+        "proj-a": { client: [makeChunk("au1", { score: 0.8 })] },
+        // Earlier-topic only, and weak beside A's 0.8 from the user's words.
+        "proj-b": { annual: [makeChunk("bc1", { score: 0.4 })] },
+      });
+      const svc = new FederatedSearchService({ knowledgeService: mockKS as never });
+      const result = await svc.searchAcrossProjects({
+        userId: "user-1",
+        query: "and in the client?",
+        contextualQuery: "and in the client?\nHow is annual billing done?",
+      });
+      expect(result.hits.map((h) => h.chunkId)).toEqual(["au1"]);
+      expect(result.projectsWithoutHits).toEqual(["proj-b"]);
     });
 
     it("reports a project whose conversational search failed as not searched", async () => {
