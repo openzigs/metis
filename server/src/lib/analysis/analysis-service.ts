@@ -2293,6 +2293,8 @@ export async function updateRequirementRow(input: {
   changed: boolean;
   /** #1162 — set when the review status changed; it is audited, not versioned. */
   reviewStatusChange?: { from: unknown; to: unknown };
+  /** #2436 — an author's own approval the project's `allowSelfApproval` let through. */
+  selfApproved?: true;
 } | null> {
   const existing = await prisma.requirement.findFirst({
     where: {
@@ -2356,6 +2358,8 @@ export async function updateRequirementRow(input: {
       expectedVersion: input.expectedVersion,
       // Issue #2219 — an edit of approved wording returns it to awaiting review.
       reopenApproval: true,
+      // Issue #2436 — the author of a requirement does not approve it alone.
+      makerChecker: true,
     });
     const reviewStatusChange = result.untrackedChanges.reviewStatus;
     return {
@@ -2363,6 +2367,7 @@ export async function updateRequirementRow(input: {
       version: result.version,
       changed: result.changed,
       ...(reviewStatusChange ? { reviewStatusChange } : {}),
+      ...(result.selfApproved ? { selfApproved: true as const } : {}),
     };
   } catch (err) {
     // Deleted between the read above and the transaction.

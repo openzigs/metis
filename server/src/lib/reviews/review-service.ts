@@ -11,7 +11,9 @@
  *
  * Security invariants enforced here:
  * - the requester can never be an assigned reviewer (create) and can never
- *   record a decision (defense in depth at decision time);
+ *   record a decision (defense in depth at decision time) — unless (#2436) the
+ *   project allows self-approval AND the requester holds `requirement.approve`,
+ *   both checked again at decision time;
  * - a decision is recorded only for the CALLER's own assignment — the
  *   reviewer identity is taken from the session, never from the body;
  * - scope items are resolved project-scoped (cross-project ids 404);
@@ -163,6 +165,9 @@ function assertRequesterOrAdmin(review: ReviewRow, actorId: string, isAdmin: boo
  */
 function assertNotDecidingReviewer(review: ReviewRow, actorId: string): void {
   if (review.status !== "in_review") return;
+  // #2436 — a requester who reviews their own request (self-approval allowed)
+  // cancels nothing of anyone else's by withdrawing it.
+  if (review.requestedById === actorId) return;
   if (review.assignments.some((a) => a.reviewerId === actorId)) {
     throw new AppError(
       403,
@@ -180,6 +185,8 @@ function assertNotDecidingReviewer(review: ReviewRow, actorId: string): void {
  * which lapses once a verdict is in, this never lapses.
  */
 function assertNotAssignedReviewer(review: ReviewRow, actorId: string): void {
+  // #2436 — the requester reviewing their own request revises their own work.
+  if (review.requestedById === actorId) return;
   if (review.assignments.some((a) => a.reviewerId === actorId)) {
     throw new AppError(
       403,
@@ -413,14 +420,33 @@ async function resolveCurrentPins(
 // Create
 // ---------------------------------------------------------------------------
 
+/**
+ * #2436 — whether `actorId` may review (and so sign off) their own request in
+ * this project: the project allows self-approval and the caller holds
+ * `requirement.approve` (the route reads it from the caller's role).
+ */
+export interface SelfApprovalOptions {
+  canApprove?: boolean;
+}
+
+/** #2436 — the project's `allowSelfApproval`, read now; off when the project is gone. */
+async function projectAllowsSelfApproval(projectId: string): Promise<boolean> {
+  const project = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { allowSelfApproval: true },
+  });
+  return project?.allowSelfApproval === true;
+}
+
 export async function createReviewRequest(
   actorId: string,
   projectId: string,
   input: CreateReviewInput,
+  options: SelfApprovalOptions = {},
 ): Promise<unknown> {
   const project = await prisma.project.findUnique({
     where: { id: projectId },
-    select: { id: true },
+    select: { id: true, allowSelfApproval: true },
   });
   if (!project) throw new AppError(404, "PROJECT_NOT_FOUND", "Project not found");
 
@@ -437,7 +463,12 @@ export async function createReviewRequest(
   const reviewerIds = [...new Set(input.reviewerIds)];
 
   // Self-review prevention: the requester must not review their own request.
-  if (reviewerIds.includes(actorId)) {
+  // #2436 — unless the project allows self-approval and the requester could
+  // approve the requirements directly anyway (`requirement.approve`).
+  if (
+    reviewerIds.includes(actorId) &&
+    !(project.allowSelfApproval === true && options.canApprove === true)
+  ) {
     throw new AppError(
       400,
       "SELF_REVIEW_FORBIDDEN",
@@ -732,6 +763,7 @@ export async function recordDecision(
   reviewId: string,
   decision: "approved" | "rejected",
   note?: string,
+  options: SelfApprovalOptions = {},
 ): Promise<DecisionResult> {
   const review = await loadReviewOr404(reviewId);
 
@@ -745,8 +777,15 @@ export async function recordDecision(
   }
 
   // Self-approval prevention (defense in depth — create() already refuses to
-  // assign the requester as a reviewer).
-  if (review.requestedById === actorId) {
+  // assign the requester as a reviewer). #2436 — a project that allows
+  // self-approval lets a requester holding `requirement.approve` decide their
+  // own review; both are read again now, so a setting turned off (or a role
+  // lowered) since the review was created stops it.
+  const selfApproval = review.requestedById === actorId;
+  if (
+    selfApproval &&
+    !(options.canApprove === true && (await projectAllowsSelfApproval(review.projectId)))
+  ) {
     throw new AppError(
       403,
       "SELF_APPROVAL_FORBIDDEN",
@@ -874,6 +913,8 @@ export async function recordDecision(
           decision,
           note: note ?? null,
           pinnedItems: pinnedItemsMetadata(review.items),
+          // #2436 — the requester decided their own review, as the project allows.
+          ...(selfApproval ? { selfApproval: true } : {}),
         },
       }),
     });

@@ -3,9 +3,10 @@
 /**
  * Epic #609 (#619) — publish/export approval gate UI.
  *
- * - `ApprovalGateSettingsCard`: per-project `requireApprovedReview` toggle.
- *   Visible to everyone with project.read; the toggle itself is enabled only
- *   for roles carrying `review.admin` (the server enforces this regardless).
+ * - `ApprovalGateSettingsCard`: per-project `requireApprovedReview` toggle,
+ *   and (#2436) the `allowSelfApproval` maker-checker toggle, off by default.
+ *   Visible to everyone with project.read; the toggles themselves are enabled
+ *   only for roles carrying `review.admin` (the server enforces this regardless).
  * - `ApprovalGateBlockNotice`: renders a 409 APPROVAL_REQUIRED / 503
  *   APPROVAL_GATE_UNAVAILABLE block with the offending items and a link to
  *   the review queue so the user can create/view the required reviews.
@@ -16,11 +17,16 @@ import { hasPermission } from "@metis/shared";
 import { ApiError } from "@/lib/api-client";
 import { useAuth } from "@/lib/auth-context";
 import { reviewGateApi } from "@/lib/publishing-api";
+import type { ReviewGateConfigPatch } from "@metis/shared";
 import { APPROVAL_GATE_UNAVAILABLE, type ApprovalGateBlock } from "@/lib/approval-gate";
 import { Card } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 
 const gateKey = (projectId: string) => ["publishing", "review-gate", projectId] as const;
+
+/** #2436 — what the self-approval setting does, under its toggle. */
+export const SELF_APPROVAL_HELP =
+  "Off (the default), someone who wrote or edited a requirement cannot approve it, and whoever requests a review cannot sign it off; a colleague must. Turn it on for a team of one. Approving still needs the requirement.approve permission, and each change of this setting is recorded in the audit log.";
 
 export function ApprovalGateSettingsCard({ projectId }: { projectId: string }) {
   const qc = useQueryClient();
@@ -34,12 +40,13 @@ export function ApprovalGateSettingsCard({ projectId }: { projectId: string }) {
   });
 
   const update = useMutation({
-    mutationFn: (requireApprovedReview: boolean) =>
-      reviewGateApi.update(projectId, { requireApprovedReview }),
+    mutationFn: (patch: ReviewGateConfigPatch) => reviewGateApi.update(projectId, patch),
     onSuccess: () => qc.invalidateQueries({ queryKey: gateKey(projectId) }),
   });
 
   const enabled = gate.data?.requireApprovedReview ?? false;
+  const selfApproval = gate.data?.allowSelfApproval ?? false;
+  const disabled = gate.isLoading || update.isPending || !canToggle;
 
   return (
     <Card className="p-4" data-testid="approval-gate-card">
@@ -54,11 +61,25 @@ export function ApprovalGateSettingsCard({ projectId }: { projectId: string }) {
           data-testid="approval-gate-toggle"
           type="checkbox"
           checked={enabled}
-          disabled={gate.isLoading || update.isPending || !canToggle}
-          onChange={(e) => update.mutate(e.target.checked)}
+          disabled={disabled}
+          onChange={(e) => update.mutate({ requireApprovedReview: e.target.checked })}
         />
         <Label htmlFor="requireApprovedReview">Require approved review to publish/export</Label>
       </div>
+      <div className="mt-3 flex items-center gap-2">
+        <input
+          id="allowSelfApproval"
+          data-testid="self-approval-toggle"
+          type="checkbox"
+          checked={selfApproval}
+          disabled={disabled}
+          onChange={(e) => update.mutate({ allowSelfApproval: e.target.checked })}
+        />
+        <Label htmlFor="allowSelfApproval">Allow self-approval</Label>
+      </div>
+      <p className="mt-1 text-xs text-muted-foreground" data-testid="self-approval-help">
+        {SELF_APPROVAL_HELP}
+      </p>
       {!canToggle && (
         <p className="mt-2 text-xs text-muted-foreground">
           Only review administrators (coordinator/admin) can change this setting.

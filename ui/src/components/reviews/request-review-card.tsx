@@ -17,6 +17,7 @@ import Link from "next/link";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError, apiFetch } from "@/lib/api-client";
 import { reviewsApi } from "@/lib/reviews-api";
+import { SELF_APPROVAL_RULE } from "@/components/requirements/approval-ladder";
 import { queryKeys } from "@/lib/query-keys";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -62,8 +63,9 @@ interface Props {
    */
   canBaseline?: boolean;
   /**
-   * #2347 — the user may approve a requirement directly (`project.update`, as
-   * `PUT /api/requirements/:id` requires; a `developer` may not, #1566).
+   * #2347 — the user may approve a requirement directly (`requirement.approve`
+   * since #2436, as `PUT /api/requirements/:id` requires; a `developer` may
+   * not, #1566).
    */
   canApprove?: boolean;
   /**
@@ -78,12 +80,16 @@ interface Props {
   onRequested?: (reviewId: string) => void;
 }
 
-/** #2347 — the defined outcome for someone with no one else to review, by role. */
+/**
+ * #2347 — the defined outcome for someone with no one else to review, by role.
+ * #2436 — one who may approve is told the maker-checker rule too: what they
+ * wrote or edited needs the project to allow self-approval.
+ */
 export function soloOutcome(canApprove: boolean, canBaseline: boolean): string {
   if (canBaseline)
-    return "Working alone? Approve the requirements directly; that is where they end. To fix a set, take a baseline from Baselines → New baseline.";
+    return `Working alone? Approve the requirements directly; that is where they end. ${SELF_APPROVAL_RULE} To fix a set, take a baseline from Baselines → New baseline.`;
   if (canApprove)
-    return "Working alone? Approve the requirements directly; that is where they end. A coordinator or admin can take a baseline from them (Baselines → New baseline).";
+    return `Working alone? Approve the requirements directly; that is where they end. ${SELF_APPROVAL_RULE} A coordinator or admin can take a baseline from them (Baselines → New baseline).`;
   return "Working alone? Your role cannot approve requirements or take a baseline. Add a colleague to this project to review, or ask a coordinator to approve them.";
 }
 

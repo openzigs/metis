@@ -2006,8 +2006,12 @@ This is useful when the AI's initial wording needs refinement or when you want t
 1. **Analysis checkpoint**: confirm what the analysis proposed before it is saved, on the
    change request's **Checkpoints** tab (it was called *Approvals*).
 2. **Requirement approval**: approve a requirement yourself, with **Approve** on its card or in
-   the Requirements list. No reviewer and no baseline are involved. This needs a coordinator or
-   admin role (`project.update`); a developer requests a review instead, and the list says so.
+   the Requirements list. No reviewer and no baseline are involved. This needs the
+   `requirement.approve` permission (#2436), which coordinators and admins hold; a developer
+   requests a review instead, and the list says so. Approving no longer needs `project.update`,
+   the right to edit project settings, so a role can be given one without the other. Editing a
+   requirement still needs `project.update`. You cannot approve a requirement you wrote or
+   edited (see **Maker-checker** below).
 3. **Formal review and baseline**: **Request review** asks colleagues to sign off a set of
    requirements. Their approval creates a baseline. If they reject the review, every
    requirement in it is rejected, including any you had already approved yourself.
@@ -2035,12 +2039,33 @@ assigned reviewer of the review cannot revise it, even with a coordinator or adm
 rejection stands until the reviewers decide again, so withdrawing the resubmitted review leaves
 the requirements rejected, not as they were before the first round.
 
-**Working alone.** You cannot review your own request. When the reviewer search finds no one
+**Maker-checker (#2436).** By default the person who wrote a requirement does not approve it:
+
+- **Direct approval.** You cannot approve a requirement you wrote or edited: one whose title,
+  description or acceptance criteria you changed (including restoring a version, taking the
+  source's wording or accepting suggested criteria), or one you created from a discussion.
+  Changing only its priority, type, labels or points does not count. A requirement the analysis
+  wrote has no author, so whoever ran the analysis may approve it. Editing a requirement and
+  approving it in one save is refused too. METIS says *"You wrote or edited this requirement, so
+  someone else must approve it"*, and a colleague approves it instead. Rejecting is not limited.
+- **Formal review.** You cannot name yourself as a reviewer of your own request, or record a
+  decision on it.
+- **Allow self-approval.** A team of one can turn this off for a project: tick **Allow
+  self-approval** on the **Approval gate** card of the project's **Publishing** page. Only review
+  administrators (coordinator or admin) can change it, and it is **off by default**. With it on,
+  someone holding `requirement.approve` may approve what they wrote, and may name themselves as
+  a reviewer of their own request and decide it. Each change of the setting is recorded in the
+  audit log (`project.selfApproval.update`, with the old and new value), and so is each
+  approval it let through (`selfApproval: true`). Turning it off stops a self-review that is
+  still waiting for a decision.
+
+**Working alone.** You cannot review your own request unless the project allows self-approval. When the reviewer search finds no one
 else, it says so (*"You can't review your own request; add a colleague who can open this
 project"*), and then what happens for your role. A coordinator or admin working alone approves
 the requirements directly, which is where they end, and can take a baseline from them with
 **New baseline** on the Baselines page. A developer can do neither, so the form says to add a
-colleague to the project to review, or to ask a coordinator to approve them.
+colleague to the project to review, or to ask a coordinator to approve them. Requirements you
+wrote or edited need someone else's approval unless the project allows self-approval.
 
 Before a requirement can be published to GitHub, it must be **approved**. This is a human-in-the-loop step that ensures nothing gets published without review.
 

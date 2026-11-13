@@ -88,10 +88,18 @@ export interface FieldChange {
 /** Compact diff — only changed fields, each as `{ from, to }`. */
 export type ChangedFields = Record<string, FieldChange>;
 
+/**
+ * The version service's predictable failure modes. `SELF_APPROVAL_FORBIDDEN`
+ * (#2436): a maker-checker approval by an author of the requirement, in a
+ * project that does not allow self-approval.
+ */
+export type RequirementVersionErrorCode =
+  "NOT_FOUND" | "INVALID_VERSION" | "VERSION_CONFLICT" | "SELF_APPROVAL_FORBIDDEN";
+
 /** Error thrown by the version service for predictable failure modes. */
 export class RequirementVersionError extends Error {
-  readonly code: "NOT_FOUND" | "INVALID_VERSION" | "VERSION_CONFLICT";
-  constructor(code: "NOT_FOUND" | "INVALID_VERSION" | "VERSION_CONFLICT", message: string) {
+  readonly code: RequirementVersionErrorCode;
+  constructor(code: RequirementVersionErrorCode, message: string) {
     super(message);
     this.name = "RequirementVersionError";
     this.code = code;
@@ -345,6 +353,12 @@ const UPDATE_SELECT = {
   sourcePending: true,
 } as const;
 
+/** #2436 — {@link UPDATE_SELECT} plus the owning project's self-approval setting. */
+const MAKER_CHECKER_SELECT = {
+  ...UPDATE_SELECT,
+  project: { select: { allowSelfApproval: true } },
+} as const;
+
 export interface UpdateWithHistoryParams {
   requirementId: string;
   /** Patch of tracked fields. `labels` must already be a JSON string. */
@@ -393,6 +407,19 @@ export interface UpdateWithHistoryParams {
    * `untrackedData.reviewStatus` wins. Off for system writers.
    */
   reopenApproval?: boolean;
+  /**
+   * Issue #2436 — maker-checker for an analyst's direct approval. When set and
+   * this write moves `reviewStatus` to `approved` (or rewords a requirement it
+   * keeps approved), `actorId` must not be an author of the requirement:
+   * someone whose version row changed its wording (an edit, a restore, an
+   * accepted suggestion, a promotion from a discussion), or someone changing
+   * its wording in this very write. An author's approval throws
+   * `SELF_APPROVAL_FORBIDDEN` unless the owning project allows self-approval.
+   * Checked inside the write transaction, against the row and history it read,
+   * so an edit committed a moment earlier is seen. A write with no `actorId` is
+   * a system write: it has no author to be. Off for system writers.
+   */
+  makerChecker?: boolean;
 }
 
 /**
@@ -443,6 +470,12 @@ export interface UpdateWithHistoryResult {
   changedFields: ChangedFields;
   /** #1162 — the untracked columns this call actually changed (never versioned). */
   untrackedChanges: ChangedFields;
+  /**
+   * #2436 — set when a `makerChecker` write approved a requirement its own
+   * author wrote, which the project's `allowSelfApproval` let through. The
+   * route records it in the audit log.
+   */
+  selfApproved?: true;
 }
 
 /**
@@ -539,7 +572,8 @@ async function updateOnce(
         ...(params.projectId ? { projectId: params.projectId } : {}),
         ...(params.analysisId ? { analysisId: params.analysisId } : {}),
       },
-      select: UPDATE_SELECT,
+      // #2436 — a maker-checker write reads the project's setting with the row.
+      select: params.makerChecker ? MAKER_CHECKER_SELECT : UPDATE_SELECT,
     })) as (RequirementSnapshot & { id: string; version: number } & Record<string, unknown>) | null;
 
     if (!existing) {
@@ -593,6 +627,22 @@ async function updateOnce(
       untrackedWrite[field] = value;
     }
 
+    // #2436 — maker-checker: the write leaves the requirement approved, and
+    // either approves it now or rewrites its wording under an approval. Its
+    // author may not do that alone. The history read here is pinned by the
+    // conditional write below: an edit committed after it bumps `version`, so
+    // this write loses the race and (unversioned) re-runs this check.
+    const rewordsIt = Object.keys(changedFields).some((f) => AUTHORED_FIELDS.has(f));
+    const selfApproved =
+      params.makerChecker === true &&
+      Boolean(params.actorId) &&
+      untracked.reviewStatus === "approved" &&
+      (untrackedWrite.reviewStatus === "approved" || rewordsIt) &&
+      (rewordsIt || (await isRecordedAuthor(txc, params.requirementId, params.actorId!)));
+    if (selfApproved && !projectAllowsSelfApproval(existing)) {
+      throw new RequirementVersionError("SELF_APPROVAL_FORBIDDEN", SELF_APPROVAL_FORBIDDEN_MESSAGE);
+    }
+
     // #877 — a no-op writes nothing and appends no history. The version check
     // above already ran in this transaction, so there is no race to lose; and
     // an empty conditional UPDATE matches no row on a real database (Prisma
@@ -635,8 +685,61 @@ async function updateOnce(
       changed,
       changedFields,
       untrackedChanges,
+      ...(selfApproved ? { selfApproved: true as const } : {}),
     };
   });
+}
+
+/** #2436 — what an author is told when their own approval is refused. */
+export const SELF_APPROVAL_FORBIDDEN_MESSAGE =
+  "You wrote or edited this requirement, so someone else must approve it. A coordinator or admin can allow self-approval in the project's Publishing settings.";
+
+/**
+ * #2436 — the fields whose author an approval must not come from: the wording
+ * a reviewer signs off (title, description, acceptance criteria), and the
+ * `__created` marker of a requirement a user created (promoted from a
+ * discussion). Labels, priority, type, points and kind classify a requirement
+ * rather than state it, and a legacy `review:*` label clean-up rewrites labels
+ * on its own, so changing them does not make someone its author.
+ */
+const AUTHORED_FIELDS: ReadonlySet<string> = new Set([
+  "title",
+  "body",
+  "acceptanceCriteria",
+  "__created",
+]);
+
+/**
+ * #2436 — `actorId` wrote a version of the requirement's wording: a version row
+ * of theirs changed an {@link AUTHORED_FIELDS} field. A row whose diff cannot
+ * be read counts as authored (fail closed).
+ */
+async function isRecordedAuthor(
+  txc: VersionPrismaClient,
+  requirementId: string,
+  actorId: string,
+): Promise<boolean> {
+  const rows = await txc.requirementVersion.findMany({
+    where: { requirementId, actorId },
+    select: { changedFields: true },
+  });
+  return rows.some((row) => {
+    const raw = row.changedFields;
+    if (typeof raw !== "string") return true;
+    try {
+      const diff = JSON.parse(raw) as unknown;
+      if (diff === null || typeof diff !== "object") return true;
+      return Object.keys(diff).some((f) => AUTHORED_FIELDS.has(f));
+    } catch {
+      return true;
+    }
+  });
+}
+
+/** #2436 — the owning project's `allowSelfApproval`, read with the row; off unless `true`. */
+function projectAllowsSelfApproval(row: Record<string, unknown>): boolean {
+  const project = row.project as { allowSelfApproval?: unknown } | null | undefined;
+  return project?.allowSelfApproval === true;
 }
 
 function versionConflict(): RequirementVersionError {

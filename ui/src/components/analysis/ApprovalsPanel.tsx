@@ -61,14 +61,15 @@ interface ApprovalsPanelProps {
    */
   analysisStatus?: string;
   /**
-   * #1588 — the viewer does not hold `project.update`: approving here still
+   * #1588 — the viewer does not hold `requirement.approve` (#2436; it was
+   * `project.update`): approving here still
    * completes the checkpoint, but the server promotes the requirements as
    * drafts for a coordinator to approve, and the panel says so.
    */
   approvesAsDraft?: boolean;
 }
 
-/** #1588 — what approving does for a viewer without `project.update`. */
+/** #1588 — what approving does for a viewer without `requirement.approve` (#2436). */
 export const DRAFT_APPROVAL_NOTICE =
   "Your approval adds these as drafts; a coordinator approves them.";
 

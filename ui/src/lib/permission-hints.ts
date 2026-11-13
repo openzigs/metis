@@ -6,6 +6,12 @@
 export const REQUIRES_PROJECT_UPDATE = "Requires project.update";
 
 /**
+ * #2436 — a requirement's verdict (Approve, Reject) is a `requirement.approve`
+ * write server-side, separate from editing it (`project.update`).
+ */
+export const REQUIRES_REQUIREMENT_APPROVE = "Requires requirement.approve";
+
+/**
  * #1591 — a requirement's data mappings (add, remove, suggest, accept) are
  * `connector.write` writes server-side (`server/src/routes/data-mappings.ts`),
  * not `project.update` ones: a developer holds neither.

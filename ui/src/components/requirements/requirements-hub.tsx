@@ -199,7 +199,7 @@ export function RequirementsHub({ projectId }: { projectId: string }) {
             requirements={detail.data.requirements}
             currentUserId={user.id}
             canBaseline={user.permissions.includes("review.admin")}
-            canApprove={user.permissions.includes("project.update")}
+            canApprove={user.permissions.includes("requirement.approve")}
             approvedCount={counts.approved}
             // #2347 — the whole change request, not the rows ticked in the list above.
             triggerLabel="Request review of this change request"

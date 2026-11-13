@@ -10,7 +10,9 @@
  *   POST /api/reviews/:reviewId/submit         — draft → in_review, pins versions
  *                                                (review.create; requester or review.admin)
  *   POST /api/reviews/:reviewId/decision       — reviewer approve/reject (review.decide;
- *                                                assigned reviewer only, never the requester)
+ *                                                assigned reviewer only, never the requester
+ *                                                unless the project allows self-approval
+ *                                                and they hold requirement.approve, #2436)
  *   POST /api/reviews/:reviewId/withdraw       — in_review → draft (requester or review.admin)
  *   POST /api/reviews/:reviewId/close          — any non-closed → closed (requester or
  *                                                review.admin)
@@ -145,7 +147,7 @@ export function projectReviewsRouter(): Router {
     requireAuth,
     requirePermission("review.create"),
     async (req: Request, res: Response) => {
-      const { userId } = requireUser(req);
+      const { userId, role } = requireUser(req);
       const projectId = String(req.params.projectId);
       const parsed = createReviewSchema.safeParse(req.body);
       if (!parsed.success) {
@@ -153,7 +155,11 @@ export function projectReviewsRouter(): Router {
           issues: parsed.error.flatten(),
         });
       }
-      const review = await createReviewRequest(userId, projectId, parsed.data);
+      // #2436 — the requester may name themselves only where the project allows
+      // self-approval and they could approve directly (`requirement.approve`).
+      const review = await createReviewRequest(userId, projectId, parsed.data, {
+        canApprove: hasPermission(role, "requirement.approve"),
+      });
       res.status(201).json({ success: true, data: review });
     },
   );
@@ -222,7 +228,7 @@ export function reviewsRouter(): Router {
     requireAuth,
     requirePermission("review.decide"),
     async (req: Request, res: Response) => {
-      const { userId } = requireUser(req);
+      const { userId, role } = requireUser(req);
       await assertReviewAccess(req, String(req.params.reviewId));
       const parsed = decisionSchema.safeParse(req.body);
       if (!parsed.success) {
@@ -235,6 +241,7 @@ export function reviewsRouter(): Router {
         String(req.params.reviewId),
         parsed.data.decision,
         parsed.data.note,
+        { canApprove: hasPermission(role, "requirement.approve") },
       );
       res.json({ success: true, data: result });
     },

@@ -99,6 +99,21 @@ function isConflict(err: unknown): boolean {
   return (err as { status?: number } | null)?.status === 409;
 }
 
+/**
+ * #2436 — the author of a requirement approving it in a project that does not
+ * allow self-approval: the server's own sentence says why and who can change it.
+ */
+function selfApprovalRefusal(err: unknown): string | null {
+  const e = err as { code?: unknown; message?: unknown } | null;
+  return e?.code === "SELF_APPROVAL_FORBIDDEN" && typeof e.message === "string" ? e.message : null;
+}
+
+/** #2436 — why Approve is disabled for a role without `requirement.approve`. */
+export const APPROVE_HINT =
+  "Approving needs the requirement.approve permission (coordinator or admin by default). You can still request a review.";
+/** Why Edit is disabled for a role without `project.update`. */
+export const EDIT_HINT = "Editing needs a coordinator or admin role.";
+
 /** What a 409 on a row's write means, and what to do next. */
 export const EDIT_CONFLICT_MESSAGE =
   "Someone changed this requirement since the list was read. The list has been read again. Your text is still here to copy: close this and edit the requirement once more.";
@@ -229,14 +244,15 @@ function EditRequirementDialog({
 
 export function RequirementsList({ projectId }: { projectId: string }) {
   const { user } = useAuth();
-  // #1566 — Edit and Approve are `project.update` writes server-side.
+  // #1566 — Edit is a `project.update` write server-side. #2436 — Approve is a
+  // `requirement.approve` one: a role may hold either without the other.
   const canEdit = user?.permissions.includes("project.update") ?? false;
+  const canApprove = user?.permissions.includes("requirement.approve") ?? false;
   // #732 — the server gates review creation on `review.create`.
   const canRequestReview = user?.permissions.includes("review.create") ?? false;
-  // #1566 — a `developer` may request reviews but not approve or edit (`project.update`).
-  const writeHint = canEdit
-    ? undefined
-    : "Approving and editing need a coordinator or admin role. You can still request a review.";
+  // #1566 — a `developer` may request reviews but not approve or edit.
+  const approveHint = canApprove ? undefined : APPROVE_HINT;
+  const editHint = canEdit ? undefined : EDIT_HINT;
 
   const [analysisId, setAnalysisId] = useState("");
   const [status, setStatus] = useState<RequirementListStatus | "">("");
@@ -277,7 +293,9 @@ export function RequirementsList({ projectId }: { projectId: string }) {
       requirementUpdateApi.update(row.id, { reviewStatus: "approved", version: row.version }),
     successMessage: "Requirement approved",
     errorMessage: (err) =>
-      isConflict(err) ? APPROVE_CONFLICT_MESSAGE : "Approving the requirement failed. Try again.",
+      isConflict(err)
+        ? APPROVE_CONFLICT_MESSAGE
+        : (selfApprovalRefusal(err) ?? "Approving the requirement failed. Try again."),
     invalidateKeys: invalidate,
     onError: (err) => {
       // The 409 says the list has been read again, so read it again.
@@ -432,13 +450,13 @@ export function RequirementsList({ projectId }: { projectId: string }) {
                 </div>
                 <div className="flex gap-1">
                   {row.reviewStatus === "approved" ? null : (
-                    <HoverHint hint={writeHint}>
+                    <HoverHint hint={approveHint}>
                       <Button
                         size="sm"
                         variant="outline"
                         // Only the row being approved waits, not every row.
                         disabled={
-                          !canEdit || (approve.isPending && approve.variables?.id === row.id)
+                          !canApprove || (approve.isPending && approve.variables?.id === row.id)
                         }
                         onClick={() => approve.mutate(row)}
                         data-testid={`requirements-approve-${row.id}`}
@@ -447,7 +465,7 @@ export function RequirementsList({ projectId }: { projectId: string }) {
                       </Button>
                     </HoverHint>
                   )}
-                  <HoverHint hint={writeHint}>
+                  <HoverHint hint={editHint}>
                     <Button
                       size="sm"
                       variant="outline"
@@ -507,7 +525,7 @@ export function RequirementsList({ projectId }: { projectId: string }) {
               }))}
               currentUserId={user.id}
               canBaseline={user.permissions.includes("review.admin")}
-              canApprove={canEdit}
+              canApprove={canApprove}
               // #2347 review — named for its scope: the summary below has its own
               // card for the whole change request.
               triggerLabel={`Request review of ${chosen.length} selected`}

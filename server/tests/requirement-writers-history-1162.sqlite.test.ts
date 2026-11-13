@@ -355,11 +355,15 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
 
       it("a content edit alongside it is versioned on its own, the status left out", async () => {
         const id = await makeRequirement({ version: 0, reviewStatus: null });
+        // #2436 — rewording and approving at once is approving your own
+        // wording, which only a project that allows self-approval lets through.
+        await db.project.update({ where: { id: PROJECT }, data: { allowSelfApproval: true } });
 
         const r = await request(app())
           .put(`/api/requirements/${id}`)
           .set("Authorization", `Bearer ${token()}`)
           .send({ title: "Renamed", reviewStatus: "approved", version: 0 });
+        await db.project.update({ where: { id: PROJECT }, data: { allowSelfApproval: false } });
 
         expect(r.status).toBe(200);
         const [v1] = await versionsOf(id);

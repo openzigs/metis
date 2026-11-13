@@ -71,6 +71,8 @@ const PERMISSIONS = [
   "review.read",
   "review.decide",
   "review.admin",
+  // #2436 — direct approval of a requirement, split out of `project.update`.
+  "requirement.approve",
 ] as const;
 
 const ROLE_PERMISSIONS: Record<string, readonly string[]> = {
@@ -96,6 +98,7 @@ const ROLE_PERMISSIONS: Record<string, readonly string[]> = {
     "review.read",
     "review.decide",
     "review.admin",
+    "requirement.approve",
   ],
   developer: [
     "project.read",

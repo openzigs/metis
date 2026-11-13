@@ -8,6 +8,10 @@
  * `developer` holds — so a developer could edit, approve or reject a
  * requirement over the API that the PUT route refuses them.
  *
+ * #2436 — the review-status change now needs `requirement.approve` and the
+ * content edit `project.update`; the default roles hold both or neither, so
+ * each role's outcome is unchanged and only the permission named differs.
+ *
  * Every role is driven through both routes, for a content edit and for a
  * review-status change, against a real SQLite database built from the
  * migration chain, with real JWTs and the real permission middleware. Each
@@ -79,12 +83,19 @@ const ROUTES = [
 
 /** A content edit and a review-status change — the Edit and Approve/Reject buttons. */
 const WRITES = [
-  { name: "a content edit", body: { title: "Renamed" }, field: "title", to: "Renamed" },
+  {
+    name: "a content edit",
+    body: { title: "Renamed" },
+    field: "title",
+    to: "Renamed",
+    permission: "project.update",
+  },
   {
     name: "a review-status change",
     body: { reviewStatus: "approved" },
     field: "reviewStatus",
     to: "approved",
+    permission: "requirement.approve",
   },
 ] as const;
 
@@ -190,7 +201,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
                 expect(res.status).toBe(403);
                 expect(res.body.error).toMatchObject({
                   code: "FORBIDDEN",
-                  message: "Requires permission project.update",
+                  message: `Requires permission ${write.permission}`,
                 });
                 // Nothing written: the row is exactly as it was created.
                 expect(after).toEqual(before);

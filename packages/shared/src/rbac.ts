@@ -34,6 +34,11 @@ export const ROLE_HIERARCHY: Record<RoleKey, number> = {
  * - `coordinator` runs project lifecycle + publishes issues.
  * - `developer` runs analyses, drafts issues, reads vault.
  * - `reader` is read-only on projects/documents/analyses.
+ * - `requirement.approve` (#2436) — the verdict on a requirement (Approve /
+ *   Reject on the list and the card). Held by the roles that held
+ *   `project.update` when it was split out of it (coordinator, admin), so no
+ *   default role gained or lost anything; a role can now carry one without
+ *   the other.
  * - PR reviews (#1472): every role reads a project's PR-review history
  *   (`pr.review.read`); `coordinator` may also re-run a review
  *   (`pr.review.manage`). `pr.review` — the manual `POST /api/run-reviews`
@@ -77,6 +82,7 @@ export const ROLE_PERMISSIONS: Record<RoleKey, readonly PermissionKey[]> = {
     "review.admin",
     "pr.review.read",
     "pr.review.manage",
+    "requirement.approve",
   ],
   developer: [
     "project.read",

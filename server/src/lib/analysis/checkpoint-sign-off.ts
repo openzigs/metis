@@ -2,12 +2,13 @@
  * Issue #1588 — who may turn an approval-checkpoint decision into an APPROVED
  * requirement.
  *
- * "Approved" means signed off by someone holding `project.update`, the
- * permission both requirement write routes demand since #1566. Approving the
- * checkpoint of an analysis stays open to `analysis.run` (a developer can run an
- * analysis end to end), but what it promotes depends on who caused the
- * promotion: with `project.update` the rows are `approved`; without it they
- * are `draft`, for a coordinator to approve through the normal review flow.
+ * "Approved" means signed off by someone holding the approval permission both
+ * requirement write routes demand for a verdict (`project.update` since #1566,
+ * `requirement.approve` since #2436). Approving the checkpoint of an analysis
+ * stays open to `analysis.run` (a developer can run an analysis end to end),
+ * but what it promotes depends on who caused the promotion: with
+ * `requirement.approve` the rows are `approved`; without it they are `draft`,
+ * for a coordinator to approve through the normal review flow.
  */
 import { hasPermission, type RoleKey } from "@metis/shared";
 import { SYSTEM_ACTOR_ID } from "../audit/system-actor.js";
@@ -17,8 +18,12 @@ import { prisma } from "../prisma.js";
 
 const log = createChildLogger("checkpoint-sign-off");
 
-/** The permission an `approved` requirement stands for (#1566, #1588). */
-export const REQUIREMENT_SIGN_OFF_PERMISSION = "project.update" as const;
+/**
+ * The permission an `approved` requirement stands for (#1566, #1588). #2436 —
+ * `requirement.approve`, the permission direct approval now needs; it was
+ * `project.update`, and the same roles (coordinator, admin) hold both.
+ */
+export const REQUIREMENT_SIGN_OFF_PERMISSION = "requirement.approve" as const;
 
 /**
  * Analysis metadata key recording the status the checkpoint promotion wrote

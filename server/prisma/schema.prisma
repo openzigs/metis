@@ -589,6 +589,12 @@ model Project {
   /// gate off (pre-#619 behavior). The gate itself fails CLOSED on any check
   /// error; only this flag being explicitly `false` disables enforcement.
   requireApprovedReview      Boolean   @default(false)
+  /// Issue #2436 — maker-checker. False (the default): the author of a
+  /// requirement (anyone recorded on its version history) cannot approve it
+  /// directly, and the requester of a review cannot sign it off. True: a solo
+  /// analyst may, still only with `requirement.approve`. Toggled through
+  /// `PATCH /api/projects/:id/review-gate` (`review.admin`), audited.
+  allowSelfApproval          Boolean   @default(false)
   /// Epic #394 (#399) — per-project max diff size in bytes for PR reviews.
   /// Null falls back to PR_REVIEW_MAX_DIFF_BYTES (default 1_048_576 / 1 MiB).
   prReviewMaxDiffBytes       Int?

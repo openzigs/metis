@@ -65,6 +65,11 @@ export const PERMISSION_KEYS = [
   "review.read",
   "review.decide",
   "review.admin",
+  // #2436 — marking a requirement approved (or rejected) directly: the verdict
+  // on the Requirements list and the requirement card, and a requester's own
+  // sign-off of a review where the project allows self-approval. Separate from
+  // `project.update` (edit project settings), which it used to need.
+  "requirement.approve",
 ] as const;
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
 

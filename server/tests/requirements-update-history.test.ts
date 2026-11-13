@@ -308,6 +308,8 @@ describe("#2219 — an edit of an approved requirement", () => {
     mockPrisma.requirement.findUnique
       .mockResolvedValueOnce({ ...EXISTING, reviewStatus: "draft" })
       .mockResolvedValueOnce({ id: "req-1", version: 2, updatedAt: new Date() });
+    // #2436 — the approver wrote no version of it, so this is no self-approval.
+    mockPrisma.requirementVersion.findMany.mockResolvedValueOnce([]);
 
     const res = await request(app).put("/requirements/req-1").send({ reviewStatus: "approved" });
 

@@ -38,6 +38,7 @@ import {
 } from "@metis/shared";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
+import { requireRequirementWritePermission } from "../lib/requirements/requirement-write-permission.js";
 import { requireProjectAccess } from "../middleware/require-project-access.js";
 import { optimisticLock, sendVersionConflict } from "../middleware/optimistic-lock.js";
 // Issue #1099 — the top-level `/api/analyses` router has no path project to
@@ -911,10 +912,11 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
     "/:id/requirements/:reqId",
     requireAuth,
     // #1566 — an edit or a review verdict is a requirement write, the same as
-    // `PUT /api/requirements/:id`, so it needs the same `project.update`.
+    // `PUT /api/requirements/:id`, so it needs the same permissions.
     // `analysis.run` (which `developer` holds) let a developer edit, approve or
-    // reject here what the PUT route refuses them.
-    requirePermission("project.update"),
+    // reject here what the PUT route refuses them. #2436 — as on the PUT: the
+    // verdict needs `requirement.approve`, any other field `project.update`.
+    requireRequirementWritePermission(),
     // #1099 — no path project here; authorize against the analysis's own.
     // Runs BEFORE the lock, whose 409 diff would otherwise describe a row the
     // caller cannot reach.
@@ -953,6 +955,9 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
           expectedVersion,
         });
       } catch (err) {
+        if (err instanceof RequirementVersionError && err.code === "SELF_APPROVAL_FORBIDDEN") {
+          throw new AppError(403, "SELF_APPROVAL_FORBIDDEN", err.message);
+        }
         if (
           err instanceof RequirementVersionError &&
           err.code === "VERSION_CONFLICT" &&
@@ -985,6 +990,8 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
           fields: Object.keys(parsed.data),
           // #1162 — the status is not versioned, so its from/to lives here.
           ...(updated.reviewStatusChange ? { reviewStatus: updated.reviewStatusChange } : {}),
+          // #2436 — the author approved it, as the project's setting allows.
+          ...(updated.selfApproved ? { selfApproval: true } : {}),
         },
       });
       // #2219 — post-commit: a review that pinned the replaced version is told.

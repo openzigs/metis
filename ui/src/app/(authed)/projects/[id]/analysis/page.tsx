@@ -195,7 +195,11 @@ import {
   runSpendLabel,
 } from "@/components/analysis/analysis-usage-header";
 import { runTokensLabel } from "@/lib/run-tokens";
-import { REQUIRES_CONNECTOR_WRITE, REQUIRES_PROJECT_UPDATE } from "@/lib/permission-hints";
+import {
+  REQUIRES_CONNECTOR_WRITE,
+  REQUIRES_PROJECT_UPDATE,
+  REQUIRES_REQUIREMENT_APPROVE,
+} from "@/lib/permission-hints";
 import { PortfolioCheckLink } from "@/components/portfolio/portfolio-check-link";
 import { ChangeRequestSummary } from "@/components/analysis/change-request-summary";
 import { proposedChangeRequestTitle } from "@/components/analysis/change-request-steps";
@@ -537,11 +541,15 @@ export default function AnalysisPage(): React.ReactElement {
   }
   // Epic #34 — collaboration state.
   const { user } = useAuth();
-  // #1566 — Edit, Approve and Reject are `project.update` writes server-side
+  // #1566 — Edit is a `project.update` write server-side
   // (both the PUT the card calls and the analysis PATCH); a viewer without it
   // gets the controls disabled with the reason rather than a 403 afterwards.
   const canEditRequirements = user?.permissions.includes("project.update") ?? false;
   const requirementWriteHint = canEditRequirements ? undefined : REQUIRES_PROJECT_UPDATE;
+  // #2436 — Approve and Reject are `requirement.approve` writes, and so is what
+  // a checkpoint approval promotes as approved (rather than as drafts).
+  const canApproveRequirements = user?.permissions.includes("requirement.approve") ?? false;
+  const requirementApproveHint = canApproveRequirements ? undefined : REQUIRES_REQUIREMENT_APPROVE;
   // #1591 — a requirement's data mappings are `connector.write` writes.
   const dataMappingWriteHint = user?.permissions.includes("connector.write")
     ? undefined
@@ -1535,7 +1543,7 @@ export default function AnalysisPage(): React.ReactElement {
                                   review.isSuccess ? review.variables : null,
                                   { readAt: detail.dataUpdatedAt, sentAt: review.submittedAt },
                                 )}
-                                writeHint={requirementWriteHint}
+                                writeHint={requirementApproveHint}
                                 pending={review.isPending}
                                 onReview={(reviewStatus) =>
                                   review.mutate({
@@ -1903,7 +1911,7 @@ export default function AnalysisPage(): React.ReactElement {
                     metadata={detail.data.metadata}
                     requirementCount={detail.data.requirements.length}
                     analysisStatus={detail.data.status}
-                    approvesAsDraft={!canEditRequirements}
+                    approvesAsDraft={!canApproveRequirements}
                   />
                 </TabsContent>
 

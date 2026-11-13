@@ -9,12 +9,17 @@
  *     with draft/publish permissions must NOT be able to weaken the gate.
  * Default under test: a fresh project reports `requireApprovedReview: false`
  * (gate off — pre-#619 behavior).
+ *
+ * #2436 — the same route carries `allowSelfApproval` (maker-checker), off by
+ * default, under the same `review.admin` gate; a change of it is audited as
+ * `project.selfApproval.update` with its old and new value.
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 interface ProjectRow {
   id: string;
   requireApprovedReview: boolean;
+  allowSelfApproval: boolean;
 }
 
 const projects = new Map<string, ProjectRow>();
@@ -40,13 +45,7 @@ vi.mock("../src/lib/prisma.js", async () => {
         return projects.get(where.id) ?? null;
       }),
       update: vi.fn(
-        async ({
-          where,
-          data,
-        }: {
-          where: { id: string };
-          data: { requireApprovedReview: boolean };
-        }) => {
+        async ({ where, data }: { where: { id: string }; data: Partial<ProjectRow> }) => {
           const row = projects.get(where.id);
           if (!row) throw new Error("not found");
           const next = { ...row, ...data };
@@ -60,6 +59,11 @@ vi.mock("../src/lib/prisma.js", async () => {
 });
 
 const auditSpy = vi.fn();
+/** #2436 — the project-setting audit actions recorded (sign-ins are audited too). */
+const projectAudits = () =>
+  auditSpy.mock.calls
+    .map((c) => (c[0] as { action: string }).action)
+    .filter((a) => a.startsWith("project."));
 vi.mock("../src/lib/audit/audit-service.js", () => ({
   audit: (...args: unknown[]) => auditSpy(...args),
 }));
@@ -82,7 +86,11 @@ beforeAll(() => {
 
 beforeEach(() => {
   projects.clear();
-  projects.set("proj_gate_001", { id: "proj_gate_001", requireApprovedReview: false });
+  projects.set("proj_gate_001", {
+    id: "proj_gate_001",
+    requireApprovedReview: false,
+    allowSelfApproval: false,
+  });
   app = createApp();
 });
 
@@ -100,7 +108,7 @@ describe("GET /api/projects/:id/review-gate", () => {
       .get("/api/projects/proj_gate_001/review-gate")
       .set("Authorization", `Bearer ${token}`);
     expect(res.status).toBe(200);
-    expect(res.body.data).toEqual({ requireApprovedReview: false });
+    expect(res.body.data).toEqual({ requireApprovedReview: false, allowSelfApproval: false });
   });
 
   it("404s for an unknown project", async () => {
@@ -121,7 +129,7 @@ describe("PATCH /api/projects/:id/review-gate", () => {
       .set("Authorization", `Bearer ${token}`)
       .send({ requireApprovedReview: true });
     expect(res.status).toBe(200);
-    expect(res.body.data).toEqual({ requireApprovedReview: true });
+    expect(res.body.data).toEqual({ requireApprovedReview: true, allowSelfApproval: false });
     expect(projects.get("proj_gate_001")?.requireApprovedReview).toBe(true);
     expect(auditSpy).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -130,17 +138,27 @@ describe("PATCH /api/projects/:id/review-gate", () => {
         metadata: { requireApprovedReview: true },
       }),
     );
+    // #2436 — the other setting was not sent, so it is neither written nor audited.
+    expect(prisma.project.update).toHaveBeenCalledWith({
+      where: { id: "proj_gate_001" },
+      data: { requireApprovedReview: true },
+    });
+    expect(projectAudits()).toHaveLength(1);
   });
 
   it("admin can disable the gate again", async () => {
-    projects.set("proj_gate_001", { id: "proj_gate_001", requireApprovedReview: true });
+    projects.set("proj_gate_001", {
+      id: "proj_gate_001",
+      requireApprovedReview: true,
+      allowSelfApproval: false,
+    });
     const token = await login("admin");
     const res = await request(app)
       .patch("/api/projects/proj_gate_001/review-gate")
       .set("Authorization", `Bearer ${token}`)
       .send({ requireApprovedReview: false });
     expect(res.status).toBe(200);
-    expect(res.body.data).toEqual({ requireApprovedReview: false });
+    expect(res.body.data).toEqual({ requireApprovedReview: false, allowSelfApproval: false });
   });
 
   it("developer (no review.admin) is rejected with 403 and the flag is untouched", async () => {
@@ -180,5 +198,73 @@ describe("PATCH /api/projects/:id/review-gate", () => {
       .set("Authorization", `Bearer ${token}`)
       .send({ requireApprovedReview: true });
     expect(res.status).toBe(404);
+  });
+});
+
+describe("#2436 — allowSelfApproval on PATCH /api/projects/:id/review-gate", () => {
+  const send = async (role: string, body: object) =>
+    request(app)
+      .patch("/api/projects/proj_gate_001/review-gate")
+      .set("Authorization", `Bearer ${await login(role)}`)
+      .send(body);
+
+  it("a coordinator allows self-approval; the change is audited with its old and new value", async () => {
+    const res = await send("coordinator", { allowSelfApproval: true });
+    expect(res.status).toBe(200);
+    expect(res.body.data).toEqual({ requireApprovedReview: false, allowSelfApproval: true });
+    expect(projects.get("proj_gate_001")?.allowSelfApproval).toBe(true);
+    expect(prisma.project.update).toHaveBeenCalledWith({
+      where: { id: "proj_gate_001" },
+      data: { allowSelfApproval: true },
+    });
+    expect(projectAudits()).toHaveLength(1);
+    expect(auditSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "project.selfApproval.update",
+        target: { type: "project", id: "proj_gate_001" },
+        metadata: { from: false, to: true },
+      }),
+    );
+  });
+
+  it("turning it off again is audited too", async () => {
+    projects.set("proj_gate_001", {
+      id: "proj_gate_001",
+      requireApprovedReview: true,
+      allowSelfApproval: true,
+    });
+    const res = await send("admin", { allowSelfApproval: false });
+    expect(res.status).toBe(200);
+    expect(res.body.data).toEqual({ requireApprovedReview: true, allowSelfApproval: false });
+    expect(auditSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "project.selfApproval.update",
+        metadata: { from: true, to: false },
+      }),
+    );
+  });
+
+  it("both settings in one PATCH are written and audited separately", async () => {
+    const res = await send("admin", { requireApprovedReview: true, allowSelfApproval: true });
+    expect(res.status).toBe(200);
+    expect(res.body.data).toEqual({ requireApprovedReview: true, allowSelfApproval: true });
+    expect(projectAudits()).toEqual(["project.reviewGate.update", "project.selfApproval.update"]);
+  });
+
+  it("a developer (no review.admin) cannot allow it, and nothing changes", async () => {
+    const res = await send("developer", { allowSelfApproval: true });
+    expect(res.status).toBe(403);
+    expect(projects.get("proj_gate_001")?.allowSelfApproval).toBe(false);
+    expect(prisma.project.update).not.toHaveBeenCalled();
+    expect(projectAudits()).toEqual([]);
+  });
+
+  it("an empty body, an unknown key or a non-boolean is a 400", async () => {
+    for (const body of [{}, { allowSelfApprovals: true }, { allowSelfApproval: "yes" }]) {
+      const res = await send("admin", body);
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe("VALIDATION_ERROR");
+    }
+    expect(prisma.project.update).not.toHaveBeenCalled();
   });
 });

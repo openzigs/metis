@@ -597,14 +597,14 @@ describe("AnalysisPage requirement write controls (#1566)", () => {
   it("disables Edit, Approve and Reject for a viewer without project.update, with the reason", async () => {
     renderPage(DEVELOPER);
     await waitForRequirement();
-    for (const button of writeButtons()) {
+    // #2436 — Approve and Reject are `requirement.approve` writes, Edit a
+    // `project.update` one; a developer holds neither, and each says which.
+    const reasons = ["Requires project.update", ...Array(2).fill("Requires requirement.approve")];
+    writeButtons().forEach((button, i) => {
       expect(button).toBeDisabled();
       // A disabled button takes no hover, so the hint sits on its wrapper (#945).
-      expect(button.closest("[data-hover-hint]")).toHaveAttribute(
-        "title",
-        "Requires project.update",
-      );
-    }
+      expect(button.closest("[data-hover-hint]")).toHaveAttribute("title", reasons[i]);
+    });
     // Comments and History are reads and stay available.
     expect(screen.getByRole("button", { name: "Comments for Login screen" })).toBeEnabled();
     expect(screen.getByRole("button", { name: /^history$/i })).toBeEnabled();
@@ -666,6 +666,23 @@ describe("AnalysisPage requirement write controls (#1566)", () => {
       expect(button).toBeEnabled();
       expect(button.closest("[data-hover-hint]")).toBeNull();
     }
+  });
+
+  it("#2436 — an analyst granted requirement.approve without project.update approves but cannot edit", async () => {
+    updateMock.update.mockResolvedValue({ id: "req-1", version: 4, updatedAt: "now" });
+    renderPage({ ...DEVELOPER, permissions: [...DEVELOPER.permissions, "requirement.approve"] });
+    await waitForRequirement();
+    const [edit, approve, reject] = writeButtons();
+    expect(edit).toBeDisabled();
+    expect(approve).toBeEnabled();
+    expect(reject).toBeEnabled();
+    fireEvent.click(approve!);
+    await waitFor(() =>
+      expect(updateMock.update).toHaveBeenCalledWith(
+        "req-1",
+        expect.objectContaining({ reviewStatus: "approved", version: 4 }),
+      ),
+    );
   });
 
   it("sends a project.update holder's Reject through the locked PUT", async () => {
