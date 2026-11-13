@@ -32,6 +32,7 @@ import {
 } from "./one-to-one-match.js";
 import { synthesisItemKey, type PairedItems, type PromotionPairing } from "./promotion-pairing.js";
 import { mergeCriterionEvidence } from "./criterion-evidence.js";
+import { ELICITED_NFR_LABEL } from "./elicited-nfr-requirements.js";
 import type { StructuredRequirement } from "./types/requirements.js";
 
 const PRIORITY_BY_STRUCTURED: Record<string, SynthesizedRequirement["priority"]> = {
@@ -102,7 +103,7 @@ export function matchSynthesized(
 /** What the join reads of a reviewed requirement. */
 export type JoinableRequirement = Pick<
   StructuredRequirement,
-  "id" | "title" | "synthesisItemKey" | "extractedTitle"
+  "id" | "title" | "synthesisItemKey" | "extractedTitle" | "elicitedNfr"
 >;
 
 /**
@@ -164,7 +165,8 @@ export function matchSynthesizedReportingRefusals(
     }
   }
   for (const req of approved) {
-    if (decided.has(req.id)) continue;
+    // #2449 — an elicited NFR is written as that NFR, never joined to an item.
+    if (decided.has(req.id) || req.elicitedNfr) continue;
     const named: number[] = [];
     synthesized.forEach((s, i) => {
       const offeredFrom =
@@ -181,7 +183,7 @@ export function matchSynthesizedReportingRefusals(
   const synthTitleKeys = synthesized.map((s) => titleKey(s.title));
   const candidates: Array<OneToOneCandidate<string, number, number[]>> = [];
   for (const req of approved) {
-    if (decided.has(req.id) || byStructuredId.has(req.id)) continue;
+    if (decided.has(req.id) || byStructuredId.has(req.id) || req.elicitedNfr) continue;
     // #1580 — synthesis titled its items after the extracted title, so a
     // requirement retitled at the checkpoint is joined on the title it had.
     const joinTitle = req.extractedTitle ?? req.title;
@@ -315,6 +317,7 @@ export function buildApprovedRequirementSet(input: {
   structured: StructuredRequirement[];
   approvedIds: ReadonlySet<string>;
   synthesis: SynthesisOutput | null;
+  findingIdsByIndex?: readonly string[];
 }): SynthesisOutput {
   return planApprovedRequirementSet(input).output;
 }
@@ -423,7 +426,8 @@ export function compareReviewedWithSynthesis(
   const { given } = matchSynthesizedReportingRefusals(structured, synthesized, structured);
   const taken = new Set([...given.values()].flat());
   return {
-    reviewedWithoutItem: structured.filter((r) => !given.has(r.id)).length,
+    // #2449 — an elicited NFR takes no item by design: it is not a gap.
+    reviewedWithoutItem: structured.filter((r) => !given.has(r.id) && !r.elicitedNfr).length,
     itemsWithoutReviewed: synthesized.filter((_, i) => !taken.has(i)).length,
   };
 }
@@ -548,6 +552,13 @@ export function planApprovedRequirementSet(input: {
   synthesis: SynthesisOutput | null;
   /** #1202 — the items already-promoted rows recorded taking ({@link pairedItemIndexes}). */
   paired?: PairedItems;
+  /**
+   * #2449 — the findings' ids in synthesis order, as promotion numbers them:
+   * an elicited NFR's evidence ids are mapped through it to indexes, and an id
+   * it does not hold is dropped. Absent, such an NFR is written citing nothing
+   * (`No evidence`), never citing the wrong finding.
+   */
+  findingIdsByIndex?: readonly string[];
 }): {
   output: SynthesisOutput;
   ambiguous: AmbiguousPromotionMatch[];
@@ -569,6 +580,7 @@ export function planApprovedRequirementSet(input: {
     input.paired,
   );
   const approvedIndex = new Map(approved.map((r, i) => [r.id, i] as const));
+  const findingIndex = new Map((input.findingIdsByIndex ?? []).map((id, i) => [id, i] as const));
   const ambiguous: AmbiguousPromotionMatch[] = refused.map((r) => ({
     structuredId: r.structuredId,
     approvedIndex: approvedIndex.get(r.structuredId)!,
@@ -583,6 +595,29 @@ export function planApprovedRequirementSet(input: {
     const match = matches.get(req.id);
     const title = (req.title.trim() || req.id).slice(0, MAX_TITLE);
     const body = (req.description.trim() || title).slice(0, MAX_BODY);
+    // #2449 — offered at the checkpoint from an elicited NFR: written as the
+    // NFR the allowed path writes (#1613), with the reviewed title, body and
+    // priority. The caller caps its verdict by the label (#1648).
+    if (req.elicitedNfr) {
+      return {
+        type: "feature",
+        title,
+        body,
+        priority: PRIORITY_BY_STRUCTURED[req.priority] ?? "medium",
+        labels: [ELICITED_NFR_LABEL],
+        evidenceFindingIndexes: [
+          ...new Set(
+            req.elicitedNfr.evidenceFindingIds.flatMap((id) => {
+              const i = findingIndex.get(id);
+              return i === undefined ? [] : [i];
+            }),
+          ),
+        ].slice(0, MAX_EVIDENCE),
+        acceptanceCriteria: [],
+        kind: "non-functional",
+        nfrCategory: req.elicitedNfr.nfrCategory,
+      };
+    }
     // #1569 — an offered requirement's priority and classification were only
     // derived from its item, so the item's own are kept.
     const offered = req.synthesisItemKey !== undefined ? match : undefined;

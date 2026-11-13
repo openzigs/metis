@@ -818,3 +818,79 @@ describe("#1569 — a synthesis item that matches nothing reviewed is offered, n
     expect(plan.output.requirements[0]!.acceptanceCriteria).toEqual(["Returns 204"]);
   });
 });
+describe("#2449 — an elicited NFR offered at the checkpoint is promoted as that NFR", () => {
+  const nfrReq: StructuredRequirement = {
+    ...structured(
+      "NFR-abc",
+      "Reset link expiry after 30 minutes",
+      "Links expire.\n\nTarget: 30 min",
+    ),
+    type: "non-functional",
+    priority: "should-have",
+    elicitedNfr: { nfrCategory: "security", evidenceFindingIds: ["f-c", "f-a"] },
+  };
+  // An item whose title the NFR would win by the title join.
+  const expiry = synth("Reset link expiry after 30 minutes", {
+    acceptanceCriteria: ["The link fails after 30 minutes"],
+    evidenceFindingIndexes: [1],
+  });
+
+  it("writes it non-functional with its category, evidence and label, never joined to an item", () => {
+    const plan = planApprovedRequirementSet({
+      structured: [nfrReq],
+      approvedIds: new Set(["NFR-abc"]),
+      synthesis: { summary: "s", requirements: [expiry] },
+      findingIdsByIndex: ["f-a", "f-b", "f-c"],
+    });
+    expect(plan.output.requirements).toEqual([
+      {
+        type: "feature",
+        title: "Reset link expiry after 30 minutes",
+        body: "Links expire.\n\nTarget: 30 min",
+        priority: "medium",
+        labels: ["elicited-nfr"],
+        evidenceFindingIndexes: [2, 0],
+        acceptanceCriteria: [],
+        kind: "non-functional",
+        nfrCategory: "security",
+      },
+    ]);
+    expect(plan.pairings).toEqual([{ structuredId: "NFR-abc", synthesisKeys: [] }]);
+    expect(plan.ambiguous).toEqual([]);
+  });
+
+  it("cites its findings as they stand at promotion, by id: a re-run that reorders or replaces them never misattributes", () => {
+    const evidence = (findingIdsByIndex?: string[]) =>
+      planApprovedRequirementSet({
+        structured: [nfrReq],
+        approvedIds: new Set(["NFR-abc"]),
+        synthesis: { summary: "s", requirements: [] },
+        ...(findingIdsByIndex ? { findingIdsByIndex } : {}),
+      }).output.requirements[0]!.evidenceFindingIndexes;
+    // Reordered: each id follows its finding to its new index.
+    expect(evidence(["f-c", "f-x", "f-a"])).toEqual([0, 2]);
+    // Replaced: an id that names no finding now is dropped, not pointed elsewhere.
+    expect(evidence(["f-x", "f-y", "f-a"])).toEqual([2]);
+    expect(evidence(["f-x", "f-y", "f-z"])).toEqual([]);
+    // No numbering given: cites nothing rather than a guess.
+    expect(evidence()).toEqual([]);
+  });
+
+  it("leaves the item to the reviewed requirement it restates, and is no gap in the comparison", () => {
+    const reviewed = structured("REQ-1", "Reset link expiry after 30 minutes");
+    const plan = planApprovedRequirementSet({
+      structured: [nfrReq, reviewed],
+      approvedIds: new Set(["NFR-abc", "REQ-1"]),
+      synthesis: { summary: "s", requirements: [expiry] },
+    });
+    // Without the exclusion the two tie on the item and the join refuses both.
+    expect(plan.output.requirements[1]!.acceptanceCriteria).toEqual([
+      "The link fails after 30 minutes",
+    ]);
+    expect(plan.ambiguous).toEqual([]);
+    expect(compareReviewedWithSynthesis([nfrReq, reviewed], [expiry])).toEqual({
+      reviewedWithoutItem: 0,
+      itemsWithoutReviewed: 0,
+    });
+  });
+});

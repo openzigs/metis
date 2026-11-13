@@ -7,7 +7,7 @@
  */
 
 import type { DocumentSource } from "../../documents/document-source.js";
-import type { GoverningQuestionLink, SharedCriteriaRecord } from "@metis/shared";
+import type { GoverningQuestionLink, NfrCategory, SharedCriteriaRecord } from "@metis/shared";
 
 // ── Structured Requirements (#622) ─────────────────────────────────────
 
@@ -82,6 +82,21 @@ export interface StructuredRequirement {
    * still written with the reviewed `title`.
    */
   extractedTitle?: string;
+  /**
+   * Issue #2449 — present only on a requirement offered at the approval
+   * checkpoint from an NFR the elicitor found (`offerElicitedNfrs`), so the
+   * checkpoint lists every requirement promotion writes. Promotion writes it
+   * as that NFR: non-functional with this category, citing these findings,
+   * labelled `elicited-nfr`, its verdict capped (#1648), and never joined to a
+   * synthesis item. The findings are held by id, not by synthesis index: a
+   * re-run of the blocked analysis replaces its findings and can reorder
+   * them, and an id that no longer names a finding drops out where an index
+   * would point at another finding. Promotion maps them to indexes.
+   */
+  elicitedNfr?: {
+    nfrCategory: NfrCategory;
+    evidenceFindingIds: string[];
+  };
 }
 
 export interface StructuredRequirements {

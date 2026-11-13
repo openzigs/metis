@@ -36,6 +36,7 @@ import {
   countApprovedRequirements,
   PromoteApprovedRequirementsButton,
 } from "./PromoteApprovedRequirementsButton";
+import { NFR_CATEGORY_LABEL } from "./RequirementKind";
 import {
   CheckpointRequirementEditor,
   checkpointDraftOf,
@@ -476,6 +477,17 @@ function ApprovalCard({
               className="rounded border border-border px-2 py-0.5 text-xs text-muted-foreground"
             >
               Written up by the analysis
+            </span>
+          )}
+          {/* #2449 — an NFR the analysis elicited: promoted only if approved here. */}
+          {requirement?.elicitedNfr && (
+            <span
+              data-testid="approval-elicited-nfr"
+              className="rounded border border-border px-2 py-0.5 text-xs text-muted-foreground"
+            >
+              Found by the analysis · Non-functional ·{" "}
+              {NFR_CATEGORY_LABEL[requirement.elicitedNfr.nfrCategory] ??
+                requirement.elicitedNfr.nfrCategory}
             </span>
           )}
         </div>
