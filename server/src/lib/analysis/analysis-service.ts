@@ -133,6 +133,11 @@ import {
 } from "../docs-gen/approved-requirements-staleness.js";
 import { pairedInRun, pairingColumns, type PromotedFrom } from "./promotion-pairing.js";
 import {
+  changeRequestDetails,
+  defaultChangeRequestTitle,
+  type ChangeRequestDetails,
+} from "./change-request.js";
+import {
   ACCEPTED_CRITERIA_PROPOSAL_REASON,
   APPROVED_CRITERIA_KEY,
   CRITERIA_PROPOSALS_KEY,
@@ -171,6 +176,14 @@ export interface CreateAnalysisInput {
   specKitHandoff?: SpecKitHandoffRecord;
   /** Issue #1027 — the code agent's plan context; persisted for regenerate and resume. */
   agentContext?: string;
+  /**
+   * Issue #2341 — the title the analyst typed (already validated and clamped).
+   * Absent, `createAnalysis` stores the default from the run's sources, so every
+   * start path (system starts included) stores a title.
+   */
+  title?: string;
+  /** Issue #2341 — started with "Run with defaults"; recorded in the metadata. */
+  startedWithDefaults?: boolean;
 }
 
 /**
@@ -242,6 +255,18 @@ const isAgentOutput = (
   value !== null && Array.isArray((value as AgentOutput).findings);
 
 export async function createAnalysis(input: CreateAnalysisInput) {
+  const startedAt = new Date();
+  // #2341 — every run stores a title, so SQL can search and sort it (#2347).
+  const typed = input.title?.trim();
+  const title =
+    typed ||
+    (await defaultChangeRequestTitle({
+      projectId: input.projectId,
+      documentIds: input.documentIds,
+      importedTitles: input.sourceRequirements?.map((r) => r.title),
+      extraInstructions: input.extraInstructions ?? null,
+      startedAt,
+    }));
   return prisma.analysis.create({
     data: {
       projectId: input.projectId,
@@ -249,6 +274,9 @@ export async function createAnalysis(input: CreateAnalysisInput) {
       // at, so it is stored as NULL, as the audit log stores it (#1518).
       startedById: input.startedById === SYSTEM_ACTOR_ID ? null : input.startedById,
       status: "running",
+      startedAt,
+      title,
+      titleGenerated: !typed,
       metadata: JSON.stringify({
         agentKeys: input.agentKeys,
         documentIds: input.documentIds ?? [],
@@ -259,6 +287,7 @@ export async function createAnalysis(input: CreateAnalysisInput) {
           : {}),
         ...(input.specKitHandoff ? { specKitHandoff: input.specKitHandoff } : {}),
         ...(input.agentContext ? { agentContext: input.agentContext } : {}),
+        ...(input.startedWithDefaults ? { startedWithDefaults: true } : {}),
       }),
     },
   });
@@ -2072,6 +2101,9 @@ export async function listAnalysesForProject(projectId: string) {
     select: {
       id: true,
       projectId: true,
+      // #2341 — the change request's name, and whether a person set it.
+      title: true,
+      titleGenerated: true,
       status: true,
       startedAt: true,
       completedAt: true,
@@ -2106,8 +2138,11 @@ export async function listAnalysesForProject(projectId: string) {
     });
     return null;
   });
+  // #2341 — each run's title (stored or generated) and sources, one document read.
+  const details = await changeRequestDetails(projectId, runs);
   return runs.map(({ agentResults, ...r }) => ({
     ...r,
+    ...(details.get(r.id) as ChangeRequestDetails),
     failedAgents: analysisFailedAgents(agentResults),
     // #1143 — and which agents lost malformed citations: "completed with warnings".
     droppedCitations: extractCapability(parseMetadata(r.metadata))?.droppedCitations ?? [],
@@ -2143,11 +2178,16 @@ export async function getAnalysisSnapshot(id: string): Promise<AnalysisSnapshot 
   );
   const sourceById = new Map([...cited].map(([docId, d]) => [docId, d.source]));
   const snapshot = toSnapshot(row, crossDocFindings, sourceById);
+  // #2341 — the change request's title and what it was started from.
+  const details = (await changeRequestDetails(row.projectId, [row])).get(
+    row.id,
+  ) as ChangeRequestDetails;
   // #2222 — the version each requirement was analysed at, so the findings it
   // was synthesised from are marked stale once a person edits it.
   const analysed = await analysedVersions(row.requirements);
   return {
     ...snapshot,
+    ...details,
     requirements: snapshot.requirements.map((r) => ({
       ...r,
       analysedVersion: analysed.get(r.id) ?? r.version,

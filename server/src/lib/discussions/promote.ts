@@ -25,6 +25,7 @@
  */
 import { prisma } from "../prisma.js";
 import { audit } from "../audit/audit-service.js";
+import { sourcelessRunTitle } from "../analysis/change-request.js";
 import { noteProjectRequirementsChanged } from "../docs-gen/approved-requirements-staleness.js";
 import type { RoleKey } from "@metis/shared";
 
@@ -66,12 +67,17 @@ export async function deriveAnalysisId(input: {
   }
 
   // 3. Synthetic "discussion" analysis.
+  const now = new Date();
   const synthetic = await prisma.analysis.create({
     data: {
       projectId: input.projectId,
       startedById: input.actorId,
       status: "completed",
-      completedAt: new Date(),
+      // #2341 — every run stores a title (the rule's date title: no sources).
+      startedAt: now,
+      title: sourcelessRunTitle(now),
+      titleGenerated: true,
+      completedAt: now,
       metadata: JSON.stringify({ origin: "discussion" }),
     },
     select: { id: true },

@@ -57,7 +57,8 @@ export function ArtifactsSection({ projectId }: Props) {
               <Card className="flex items-center justify-between gap-3 p-4">
                 <div>
                   <p className="text-sm font-medium">
-                    Analysis {a.id.slice(0, 8)}…
+                    {/* #2341 — by the change request's title (an older server: the id). */}
+                    {a.title?.trim() || `Analysis ${a.id.slice(0, 8)}…`}
                     <span className="ml-2 rounded bg-muted px-1.5 py-0.5 text-xs">
                       {runStatusText(a)}
                     </span>

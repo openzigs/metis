@@ -2,7 +2,7 @@
  * E2E — Analysis-page "Evaluate new requirements" panel (epic #904, #907 / #908).
  *
  * Verifies the collapsible free-text requirements panel and the pre-run summary
- * added inside the "Start a new analysis" Card on `/projects/[id]/analysis`:
+ * added inside the "New change request" Card on `/projects/[id]/analysis`:
  *   - the panel is collapsible (accessible `aria-expanded` toggle),
  *   - a live character counter tracks input against the 4096 cap and the cap
  *     is enforced,

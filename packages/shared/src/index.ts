@@ -97,3 +97,6 @@ export * from "./schema-check.js";
 // #2348 — Home "My work": change requests by state and reviews assigned to me.
 export * from "./my-work.js";
 export * from "./analysis-open-questions.js";
+// #2341 — a change request's eight steps and their states; shared so the UI's
+// step header and the server's grouping by state (#2343, #2348) agree.
+export * from "./change-request-steps.js";

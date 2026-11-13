@@ -525,6 +525,21 @@ describe("PublishingPage — run labels and target pre-fill (#364, #733)", () =>
     expect(older.textContent).toMatch(/^Run #1 — /);
   });
 
+  it("#2341 — leads with the change request's title, the run number and date after it", async () => {
+    listForProjectMock.mockResolvedValue({
+      items: [
+        makeAnalysis({
+          id: "cmumww553000newer",
+          startedAt: "2026-04-02T00:00:00.000Z",
+          title: "Checkout v2",
+        }),
+      ],
+    });
+    renderPage();
+    const option = await screen.findByRole("option", { name: /cmumww55/ });
+    expect(option.textContent).toMatch(/^Checkout v2 · Run #1 — .+ · completed · cmumww55$/);
+  });
+
   it("#733 — fills owner and repo from the saved project target when they are empty", async () => {
     getDestMock.mockResolvedValueOnce(dest("openzigs", "flux-v2"));
     renderPage();
