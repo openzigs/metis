@@ -254,8 +254,11 @@ function renderInline(nodes: AdfNode[], depth: number): string {
   // Close the marks above `keep`, moving trailing whitespace outside them: `**a **` does not render.
   const closeTo = (keep: number) => {
     if (open.length <= keep) return;
-    const trail = /\s*$/.exec(out)?.[0] ?? "";
-    out = out.slice(0, out.length - trail.length);
+    // Scan back from the end: an unanchored `/\s*$/` is quadratic in any earlier whitespace run.
+    let cut = out.length;
+    while (cut > 0 && /\s/.test(out[cut - 1])) cut -= 1;
+    const trail = out.slice(cut);
+    out = out.slice(0, cut);
     while (open.length > keep) out += closer(open.pop() as OpenMark);
     out += trail;
   };

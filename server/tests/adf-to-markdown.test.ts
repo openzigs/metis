@@ -259,6 +259,24 @@ describe("adfToMarkdown", () => {
   });
 });
 
+describe("adfToMarkdown — mark closing stays linear (#2260 review)", () => {
+  const flips = (n: number) =>
+    Array.from({ length: n }, (_, i) => (i % 2 === 0 ? t("x", { type: "strong" }) : t("y")));
+
+  it("does not go quadratic on a long whitespace run followed by many mark flips", () => {
+    const start = performance.now();
+    adfToMarkdown(doc(p(t(" ".repeat(16_000)), ...flips(300))));
+    expect(performance.now() - start).toBeLessThan(1_000);
+  });
+
+  it("does not go quadratic on many hard breaks followed by mark flips", () => {
+    const start = performance.now();
+    const breaks = Array.from({ length: 2_000 }, () => ({ type: "hardBreak" }));
+    adfToMarkdown(doc(p(...breaks, ...flips(300))));
+    expect(performance.now() - start).toBeLessThan(1_000);
+  });
+});
+
 describe("adfToMarkdown — rendered by a real Markdown parser (#2260)", () => {
   it("keeps a hard break as a line break, not a soft break that renders as a space", () => {
     const md = adfToMarkdown(doc(p(t("Line one"), { type: "hardBreak" }, t("Line two"))));
