@@ -19,6 +19,13 @@
  *   say so, and on the grounding badge — never silently dropped.
  *
  * Single-project chat keeps `buildAutoRagContext` (routes/ai.ts) unchanged.
+ *
+ * #2279 — and, as single-project chat does since #2240, a turn's retrieval
+ * reads the conversation: the searches are planned once
+ * (`planRetrievalQueries`) and every project runs all of them, merged as
+ * single-project chat merges them; the excerpts the previous answer cited are
+ * read back (scoped to the projects in scope now, ACL-checked for the caller)
+ * and kept; and documents attached to the question limit every search.
  */
 import type { ChatGrounding, ChatGroundingProject, ChatGroundingUnsearched } from "@metis/shared";
 import type { RoleKey } from "@metis/shared";
@@ -36,6 +43,14 @@ import {
 import { formatHitLocator, formatHitScore } from "../rag/hit-locator.js";
 import { formatDerivedLabel } from "../rag/derived-label.js";
 import type { ChatSearchScope } from "./chat-search-scope.js";
+import type { ChatMessage } from "./types.js";
+import {
+  planRetrievalQueries,
+  planSearches,
+  type CitableExcerpt,
+} from "./conversation/retrieval-query.js";
+import { loadChunksById } from "../rag/chunk-lookup.js";
+import { resolveAclActor, type AclActor } from "../rag/acl.js";
 
 export { readChatSearchScope, type ChatSearchScope } from "./chat-search-scope.js";
 
@@ -43,7 +58,9 @@ const log = createChildLogger("multi-project-rag");
 
 /** The excerpts one multi-product turn puts in the prompt (single-project chat: 8). */
 export const MULTI_PROJECT_K = 8;
-const MAX_QUERY_CHARS = 2048;
+
+/** A chunk read back by id, as `loadChunksById` returns it. */
+type CarriedChunk = Awaited<ReturnType<typeof loadChunksById>>[number];
 
 export interface MultiProjectRagDeps {
   search?: (opts: FederatedSearchOptions) => Promise<FederatedSearchResult>;
@@ -52,6 +69,14 @@ export interface MultiProjectRagDeps {
   role?: (userId: string) => Promise<RoleKey>;
   /** 0..1; defaults to `CHAT_MULTI_PROJECT_RELEVANCE_FLOOR_PCT` / 100. */
   relevanceFloor?: number;
+  /** #2279 — the caller as the chunk-ACL actor of a carried excerpt's read. */
+  aclActor?: (userId: string) => Promise<AclActor>;
+  /** #2279 — read chunks of one project back by id (`loadChunksById`). */
+  loadChunks?: (
+    projectId: string,
+    chunkIds: readonly string[],
+    actor: AclActor,
+  ) => Promise<CarriedChunk[]>;
 }
 
 export interface MultiProjectRagInput {
@@ -59,8 +84,20 @@ export interface MultiProjectRagInput {
   scope: ChatSearchScope;
   /** The user's message; the retrieval query is its first 2,048 characters. */
   query: string;
-  /** As `buildAutoRagContext`'s: the contexts the model saw, and how many. */
-  capture?: { contexts: string[]; sources: number };
+  /**
+   * #2279 — the session's earlier user and assistant messages, oldest first
+   * (`retrievalConversation`), so a follow-up is searched with the turn before.
+   */
+  history?: readonly ChatMessage[];
+  /** #2279 — the chunk ids the previous answer cited, kept in this turn's block. */
+  carryForward?: readonly string[];
+  /** #2279 — the documents the user attached to the question: the search covers only these. */
+  documentIds?: readonly string[];
+  /**
+   * As `buildAutoRagContext`'s: the contexts the model saw, and how many; and
+   * (#2279) the numbered excerpts, so the reply records which it cited.
+   */
+  capture?: { contexts: string[]; sources: number; excerpts?: CitableExcerpt[] };
   deps?: MultiProjectRagDeps;
 }
 
@@ -111,6 +148,49 @@ function nothingSearchedBlock(reason: string): string {
 }
 
 /**
+ * #2279 — the excerpts the previous answer cited, read back as each project in
+ * scope holds them now: only from a project the caller can still reach this
+ * turn (searched or not), for the caller as the chunk-ACL actor, and not one
+ * this turn's search already found. Losing them costs the turn its carry-over,
+ * never its fresh retrieval.
+ */
+async function carriedExcerpts(
+  input: MultiProjectRagInput,
+  result: FederatedSearchResult,
+  documentIds: readonly string[] | undefined,
+  deps: MultiProjectRagDeps,
+): Promise<Array<CarriedChunk & { projectId: string }>> {
+  const ids = input.carryForward ?? [];
+  const reachable = Object.keys(result.projectNames);
+  if (ids.length === 0 || reachable.length === 0) return [];
+  const found = new Set(result.hits.map((h) => h.chunkId));
+  try {
+    const actor = await (deps.aclActor ?? resolveAclActor)(input.userId);
+    const read = deps.loadChunks ?? loadChunksById;
+    const perProject = await Promise.all(
+      reachable.map(async (projectId) =>
+        (await read(projectId, ids, actor)).map((c) => ({ ...c, projectId })),
+      ),
+    );
+    const byId = new Map(perProject.flat().map((c) => [c.chunkId, c]));
+    return [...new Set(ids)]
+      .map((id) => byId.get(id))
+      .filter(
+        (c): c is CarriedChunk & { projectId: string } =>
+          c !== undefined &&
+          !found.has(c.chunkId) &&
+          // Attached documents limit the whole block, carried excerpts included.
+          (!documentIds || documentIds.includes(c.documentId)),
+      );
+  } catch (err) {
+    log.debug("Cited excerpts could not be carried forward", {
+      error: (err as Error).message,
+    });
+    return [];
+  }
+}
+
+/**
  * #2238 — retrieve for one turn of a multi-product chat: the prompt block and
  * the turn's grounding. Never throws: a failure is reported in both, so the
  * answer cannot read as grounded in sources that were never searched.
@@ -119,8 +199,15 @@ export async function buildMultiProjectRagContext(
   input: MultiProjectRagInput,
 ): Promise<MultiProjectRagResult> {
   const deps = input.deps ?? {};
-  const query = input.query.slice(0, MAX_QUERY_CHARS);
-  if (!query.trim()) return { block: "", grounding: { status: "multi", projects: [] } };
+  // #2279 — the searches come from the conversation, as single-project chat's do.
+  const plan = planRetrievalQueries([
+    ...(input.history ?? []),
+    { role: "user", content: input.query },
+  ]);
+  if (!plan) return { block: "", grounding: { status: "multi", projects: [] } };
+  const searches = planSearches(plan);
+  const documentIds =
+    input.documentIds && input.documentIds.length > 0 ? [...input.documentIds] : undefined;
 
   let ids: string[];
   try {
@@ -148,9 +235,14 @@ export async function buildMultiProjectRagContext(
     result = await (deps.search ?? ((o) => getFederatedSearchService().searchAcrossProjects(o)))({
       userId: input.userId,
       projectIds: ids,
-      query,
+      query: searches.user[0] ?? plan.primary,
       k: MULTI_PROJECT_K,
-      relevanceFloor: deps.relevanceFloor ?? configuredFloor(),
+      // Attached documents are the source the user chose: every product holding
+      // one contributes, however its relevance compares with the others'.
+      relevanceFloor: documentIds ? 0 : (deps.relevanceFloor ?? configuredFloor()),
+      ...(searches.user.length > 1 ? { moreQueries: searches.user.slice(1) } : {}),
+      ...(searches.contextual ? { contextualQuery: searches.contextual } : {}),
+      ...(documentIds ? { documentIds } : {}),
     });
   } catch (err) {
     log.debug("Multi-product retrieval failed, continuing without context", {
@@ -163,8 +255,11 @@ export async function buildMultiProjectRagContext(
   }
 
   const nameOf = (id: string) => result.projectNames[id] ?? id;
+  const carried = await carriedExcerpts(input, result, documentIds, deps);
   const sourcesBy = new Map<string, number>();
-  for (const h of result.hits) sourcesBy.set(h.projectId, (sourcesBy.get(h.projectId) ?? 0) + 1);
+  for (const h of [...result.hits, ...carried]) {
+    sourcesBy.set(h.projectId, (sourcesBy.get(h.projectId) ?? 0) + 1);
+  }
   const projects: ChatGroundingProject[] = result.projectsSearched.map((id) => ({
     projectId: id,
     projectName: nameOf(id),
@@ -190,14 +285,29 @@ export async function buildMultiProjectRagContext(
     };
   }
 
-  const chunkList = result.hits.map(
-    (h, i) =>
-      `[${i + 1}] [${h.projectName}] ${formatHitLocator(h)}${formatDerivedLabel(h.derived)} ` +
-      `(${formatHitScore({ score: h.score, matchedBy: h.matchedBy }, 3)})\n${h.text}`,
-  );
+  const chunkList = [
+    ...result.hits.map(
+      (h, i) =>
+        `[${i + 1}] [${h.projectName}] ${formatHitLocator(h)}${formatDerivedLabel(h.derived)} ` +
+        `(${formatHitScore({ score: h.score, matchedBy: h.matchedBy }, 3)})\n${h.text}`,
+    ),
+    ...carried.map(
+      (h, j) =>
+        `[${result.hits.length + j + 1}] [${nameOf(h.projectId)}] ${formatHitLocator(h)}` +
+        `${formatDerivedLabel(h.derived)} (cited in your previous answer)\n${h.text}`,
+    ),
+  ];
   if (input.capture) {
     input.capture.contexts.push(...chunkList);
     input.capture.sources += chunkList.length;
+    // #2279 — numbered as the block numbers them, so the reply records what it cited.
+    input.capture.excerpts = [...result.hits, ...carried].map((h, i) => ({
+      n: i + 1,
+      chunkId: h.chunkId,
+      name: h.path ?? h.filename,
+      locator: formatHitLocator(h),
+      ...(h.source ? { source: h.source } : {}),
+    }));
   }
 
   const lines: string[] = [
@@ -215,7 +325,16 @@ export async function buildMultiProjectRagContext(
         `product's excerpt over to another product. Prefer these excerpts over your own ` +
         `background knowledge or earlier chat history. An excerpt marked DERIVED is generated ` +
         `documentation about the product, not a primary source: use it as a pointer, prefer an ` +
-        `unmarked excerpt when they disagree, and say so when you rely on one:`,
+        `unmarked excerpt when they disagree, and say so when you rely on one` +
+        // #2279 — said only when it applies, so an ordinary turn's block is unchanged.
+        (documentIds
+          ? ". The user attached documents to this question, so every excerpt below comes from them"
+          : "") +
+        (carried.length > 0
+          ? '. An excerpt marked "cited in your previous answer" is one your last answer drew on, ' +
+            "kept so you can build on it"
+          : "") +
+        ":",
       chunkList.join("\n\n---\n\n"),
     );
   } else {
