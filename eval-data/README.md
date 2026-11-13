@@ -1519,3 +1519,82 @@ the span) and files named without lines (judged by file), so both are shown, wit
   in one pair and 1,100 more in the other. These runs do not record the text of tool results, so
   they cannot show how many results got the new instructions.
 - The four runs spent $1.662181 in total, answers and judge.
+
+### Citation contract (#2325) and facts stated, re-measured (#2403), 2026-11-13
+
+#2325's PR (#2400) puts a version line, and on a read a stale or paging line, at the top of
+every chat code and knowledge tool result. Its two paired runs on all 23 questions read facts
+stated at 55% and 63% before and 54% and 51% after (means 59% and 52.5%), and tool results cut
+by the model cap (`CHAT_TOOL_RESULT_MAX_TOKENS`, default 2,000 tokens) rose from 1.5 to 4.5 per
+run. #2403 ran three more pairs to settle whether facts stated dropped.
+
+The code measured is pinned, not `main`: **before** is `9f911c5` (`main` just before #2400
+merged; the PR's own "before" was `0cd9b02`, and the one commit between them changes UI copy
+and a connector status string), **after** is `6dcf577` (#2400's merge commit). #2401
+(`search_code_context`) is not in either: it is off by default and the `tools-only` arm does not
+turn it on, so it cannot move this arm. One materialization served all six runs (#2400 has no
+migration). The worktree was switched between the commits, with `@metis/shared` rebuilt each
+time, and the runs alternated before, after, before, after, before, after:
+
+```bash
+pnpm eval:ba-qa --arm tools-only --budget 2      # 23 questions, Sonnet 5.5 answers and judge
+```
+
+| | before 3 | before 4 | before 5 | after 3 | after 4 | after 5 |
+|---|---:|---:|---:|---:|---:|---:|
+| Correctness: mean facts stated | 53% | 56% | 57% | 52% | 57% | 56% |
+| Fully correct answers | 2/15 | 5/15 | 6/15 | 3/15 | 4/15 | 4/15 |
+| Citation precision, line spans | 100% (80/80) | 100% (78/78) | 100% (79/79) | 100% (78/78) | 99% (78/79) | 100% (91/91) |
+| Citation precision, files without lines | 38% (5/13) | 25% (2/8) | 44% (4/9) | 22% (2/9) | 25% (3/12) | 25% (3/12) |
+| Citation recall (expected files cited) | 19/47 | 18/47 | 19/47 | 20/47 | 20/47 | 18/47 |
+| False abstention on answerable | 4/15 | 3/15 | 4/15 | 4/15 | 4/15 | 4/15 |
+| Tool calls, all 23 questions | 74 | 79 | 85 | 71 | 80 | 71 |
+| Tool results cut by the model cap | 4 in 3 sessions | 2 in 2 | 0 | 2 in 2 | 3 in 2 | 5 in 4 |
+| Spend | $0.768911 | $0.634932 | $0.656414 | $0.622608 | $0.720870 | $0.639871 |
+
+With #2400's two pairs, five runs a side:
+
+| | before (5 runs) | after (5 runs) |
+|---|---:|---:|
+| Mean facts stated, each run | 55, 63, 53, 56, 57 | 54, 51, 52, 57, 56 |
+| Mean of the runs | 56.8% | 54.0% |
+| Citation precision, line spans, pooled | 99.0% (389/393) | 99.1% (424/428) |
+| Tool results cut by the model cap, each run | 2, 1, 4, 2, 0 (1.8 a run) | 5, 4, 2, 3, 5 (3.8 a run) |
+
+**Facts stated did not drop.** Per question, over the three new pairs (each question's mean
+over its three runs, after minus before):
+
+| Question | Facts | Before, each run | After, each run | After − before |
+|---|---:|---|---|---:|
+| S1 | 6 | 4, 3, 3 | 3, 4, 3 | 0 |
+| S2 | 5 | 4, 5, 5 | 5, 5, 4 | 0 |
+| S3 | 4 | 4, 4, 4 | 3, 4, 4 | −8 pts |
+| S4, S6, S9 | 3, 4, 3 | the same in all six runs | | 0 |
+| S5 | 4 | 3, 3, 4 | 3, 3, 3 | −8 pts |
+| S7 | 3 | 2, 3, 3 | 2, 3, 3 | 0 |
+| S8 | 3 | 2, 3, 3 | 3, 2, 3 | 0 |
+| S10 | 3 | 1, 0, 1 | 1, 2, 1 | +22 pts |
+| S11 | 3 | 2, 2, 1 | 1, 1, 2 | −11 pts |
+| M1 to M4 | 7, 2, 3, 2 | 0 in all six runs: chat asks or abstains, unscoped | | 0 |
+
+- 11 of the 15 answer questions score the same on both sides; 3 are lower by one fact in one
+  run of three, and one (S10) is higher. The mean per-question difference is **−0.4 points**
+  (sd 7.3, n 15, t −0.2; an exact sign-flip test on the four questions that moved gives p = 1.0).
+- Over five runs a side, the run means differ by 2.8 points (56.8% against 54.0%). That is
+  less than the 10-point spread among the five "before" runs, and nearly all of it comes from
+  the first pair's 63%. Welch's t on the run means is about 1.4 (p about 0.2).
+- Citation precision on line spans held: 99.0% before and 99.1% after, pooled.
+
+**The cap cuts are real, but they do not cost facts.** Cuts about doubled (1.8 to 3.8 a run over
+five runs a side), consistent with the headers taking room at the top of a result. They fall on
+the questions that make the model read deeply (S4, S7, S8, S10). On the same question, a session
+with a cut scored no worse than one without on four of the five questions that had one: S4 all
+3/3 either way; S8 the same mean; S1 and S10 higher with a cut (S10 42% against 17%); S7 one
+fact lower in one cut session. So the headers were not trimmed and the default cap was not
+raised: the issue asked for either only if facts stated dropped.
+
+The per-question scores of the six runs (no transcripts) are in
+`readings/ba-qa/2403-citation-contract-paired.json`. #2400's two pairs recorded no per-question
+file, so the per-question view covers the three new pairs only. Spend for #2403: **$4.389305**,
+the six runs ($4.043606) and one six-question smoke run before them ($0.345699); the knowledge
+ingest went through `--floor-sweep`, which asks no model.
