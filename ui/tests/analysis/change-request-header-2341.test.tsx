@@ -99,6 +99,51 @@ beforeEach(() => {
 });
 
 describe("ChangeRequestSummary", () => {
+  // #2437 — the change request says how many restricted files its run left
+  // out, counted, never named, and says nothing when it left none out.
+  it("says how many restricted files the run left out, and why (#2437)", () => {
+    renderWith(
+      <ChangeRequestSummary
+        projectId="p1"
+        snapshot={snapshot({
+          capability: {
+            restrictedLeftOut: { reason: "shared-audience", files: 3, symbols: 0 },
+          } as AnalysisSnapshot["capability"],
+        })}
+        fallbackTitle="Run #1"
+        canRename={false}
+      />,
+    );
+    expect(
+      within(screen.getByTestId("change-request-summary")).getByTestId("restricted-left-out"),
+    ).toHaveTextContent(
+      "3 restricted files weren't analysed: results are shared with the whole project, so they include only what everyone on it can see.",
+    );
+    // #2437 review — static summary text, not a live region: on a run started
+    // from a Spec Kit handoff it renders twice, and a screen reader would
+    // announce the same sentence twice when the capability arrives.
+    const notice = screen.getByTestId("restricted-left-out");
+    expect(notice).toHaveAttribute("role", "note");
+    expect(notice).not.toHaveAttribute("aria-live");
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it("says nothing about restricted files when the run left none out (#2437)", () => {
+    renderWith(
+      <ChangeRequestSummary
+        projectId="p1"
+        snapshot={snapshot({
+          capability: {
+            restrictedLeftOut: { reason: "shared-audience", files: 0, symbols: 0 },
+          } as AnalysisSnapshot["capability"],
+        })}
+        fallbackTitle="Run #1"
+        canRename={false}
+      />,
+    );
+    expect(screen.queryByTestId("restricted-left-out")).toBeNull();
+  });
+
   it("shows the title as text, the sources and the defaults it ran with", () => {
     renderWith(
       <ChangeRequestSummary

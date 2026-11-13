@@ -39,6 +39,8 @@ vi.mock("../src/lib/prisma.js", async () => {
       return state.db;
     },
     Prisma,
+    // #2437 — the capability is persisted through the metadata merge-writer.
+    resolveDatabaseProvider: () => "sqlite",
   };
 });
 // #2314 — the run test inspects the model's conversation, not the persisted
@@ -63,6 +65,10 @@ const { retrieveFusedCodeChunks } = await import("../src/lib/analysis/fused-code
 const { buildSpecKitRagContext } = await import("../src/lib/spec-kit/rag-context.js");
 const { codeRuntimeTool } = await import("../src/lib/ai/tool-runtime/toolset.js");
 const { AnalysisOrchestrator } = await import("../src/lib/analysis/orchestrator.js");
+const { createCapabilityTracker, finalizeCapability } =
+  await import("../src/lib/analysis/analysis-capability.js");
+const { getAnalysisCapability, getAnalysisSnapshot, persistAnalysisCapability } =
+  await import("../src/lib/analysis/analysis-service.js");
 const { createSearchSymbolsTool } = await import("../src/lib/analysis/tools/search-symbols.js");
 const { __resetToolResultCacheForTests } =
   await import("../src/lib/ai/tool-runtime/tool-result-cache.js");
@@ -436,6 +442,175 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         const symbols = chunks.map((c) => c.symbolId).filter(Boolean);
         expect(symbols).toEqual(["s-public"]);
       });
+
+      // The two seed paths now load the filter before their search: a filter
+      // that cannot be read must still not fail the pass. The seed is simply
+      // left out, as it was when the load ran only on a hit (#2314).
+      it("a filter that cannot be read leaves the seed out without failing the pass", async () => {
+        const failing = vi.spyOn(db.document, "findMany").mockRejectedValue(new Error("db down"));
+        try {
+          const seen: string[] = [];
+          await orchestrator(seen).runRequirementGroundedCodeAgent!({
+            analysisId: "an-2437-rg-down",
+            projectId: PROJECT,
+            projectName: "Code",
+            projectDescription: "fees",
+            requirements: [{ id: "REQ-1", text: "Compute the fee." }],
+            documentIds: ["d-none"],
+            signal: new AbortController().signal,
+          });
+          expect(seen.join("\n")).not.toContain("computeFee");
+          const chunks = (await orchestrator([]).retrieveContext!({
+            analysisId: "an-2437-ss-down",
+            projectId: PROJECT,
+            agentKey: "code",
+            documentIds: ["d-none"],
+            projectName: "Code",
+            projectDescription: "fees",
+          })) as Array<{ symbolId?: string }>;
+          expect(chunks.map((c) => c.symbolId).filter(Boolean)).toEqual([]);
+        } finally {
+          failing.mockRestore();
+        }
+      });
+    });
+
+    // #2437 — each run counts what access restrictions left out, on its
+    // capability record: counts and the reason only, never a path or a name,
+    // and nothing at all when nothing was left out. Every analysis path that
+    // reads code: the agentic pass, the requirement-grounded agent and the
+    // single-shot context. The record is persisted on a real Analysis row and
+    // read back through both readers the UI is served by.
+    describe("#2437 — what a run left out is counted, never named", () => {
+      const ANSWER = JSON.stringify({ agentKey: "code", summary: "done", findings: [], notes: [] });
+      type Orch = {
+        capabilities: Map<string, ReturnType<typeof createCapabilityTracker>>;
+      } & Record<string, (input: Record<string, unknown>) => Promise<unknown>>;
+      /**
+       * An orchestrator with a capability tracker for `analysisId`, as a pipeline
+       * run has, and an Analysis row the finalized record is persisted on.
+       */
+      const withTracker = async (
+        analysisId: string,
+        codeSearcher: FusedCodeSearcher = searcher,
+      ) => {
+        await db.analysis.upsert({
+          where: { id: analysisId },
+          create: { id: analysisId, projectId: PROJECT, status: "completed", startedById: ALICE },
+          update: { metadata: null },
+        });
+        const orch = new AnalysisOrchestrator({
+          provider: {
+            key: "offline-stub",
+            model: "stub",
+            offline: true,
+            chat: vi.fn(async () => ({
+              content: ANSWER,
+              usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+              model: "stub",
+              provider: "offline-stub",
+            })),
+          } as never,
+          knowledge: { search: async () => ({ hits: [] }) } as never,
+          fusedCode: { searcher: codeSearcher, lineLookup },
+          prepareRepoClone: async () => "healthy",
+        }) as unknown as Orch;
+        const tracker = createCapabilityTracker({
+          static: {
+            codeGraphPresent: true,
+            repoSourceIngested: true,
+            fusedCodeRetrievalEnabled: true,
+            schemaContextEnabled: true,
+          },
+          codeAnalysisRequested: true,
+          databaseAnalysisRequested: false,
+        });
+        orch.capabilities.set(analysisId, tracker);
+        /** Persist the finalized record as the pipeline does, then read it back. */
+        const capability = async () => {
+          await persistAnalysisCapability(analysisId, finalizeCapability(tracker));
+          const read = await getAnalysisCapability(analysisId);
+          // The snapshot (the analysis page) serves the same record.
+          expect((await getAnalysisSnapshot(analysisId))?.capability).toEqual(read);
+          const row = await db.analysis.findUniqueOrThrow({ where: { id: analysisId } });
+          return { read: read!, stored: row.metadata ?? "" };
+        };
+        return { orch, capability };
+      };
+      const runs: Record<string, (orch: Orch, analysisId: string) => Promise<unknown>> = {
+        agentic: (orch, analysisId) => {
+          process.env.REPO_CLONE_DIR = cloneRoot;
+          return orch.runAgenticCodeAgent!({
+            analysisId,
+            projectId: PROJECT,
+            projectName: "Code",
+            projectDescription: "fees",
+            requirements: [{ id: "REQ-1", text: "Compute the fee." }],
+            signal: new AbortController().signal,
+            connectorId: REPO,
+            actorId: ALICE,
+          });
+        },
+        "requirement-grounded": (orch, analysisId) =>
+          orch.runRequirementGroundedCodeAgent!({
+            analysisId,
+            projectId: PROJECT,
+            projectName: "Code",
+            projectDescription: "fees",
+            requirements: [{ id: "REQ-1", text: "Compute the fee." }],
+            documentIds: ["d-none"],
+            signal: new AbortController().signal,
+          }),
+        "single-shot": (orch, analysisId) =>
+          orch.retrieveContext!({
+            analysisId,
+            projectId: PROJECT,
+            agentKey: "code",
+            documentIds: ["d-none"],
+            projectName: "Code",
+            projectDescription: "fees",
+          }),
+      };
+
+      for (const [path, run] of Object.entries(runs)) {
+        // #2437 review — a run that read code could not see the file even when
+        // its code search matched nothing, so the file is counted all the same,
+        // on every path (the requirement-grounded and single-shot paths once
+        // counted it only when the search returned a hit).
+        it(`the ${path} path counts the restricted file when its code search finds nothing`, async () => {
+          const id = `an-2437-${path}-no-hits`;
+          const { orch, capability } = await withTracker(id, { search: async () => [] });
+          await run(orch, id);
+          expect((await capability()).read.restrictedLeftOut).toEqual({
+            reason: "shared-audience",
+            files: 1,
+            symbols: 0,
+          });
+        });
+
+        it(`the ${path} path counts the restricted file and its symbol, and names neither`, async () => {
+          const { orch, capability } = await withTracker(`an-2437-${path}`);
+          await run(orch, `an-2437-${path}`);
+          const { read, stored } = await capability();
+          expect(read.restrictedLeftOut).toEqual({
+            reason: "shared-audience",
+            files: 1,
+            symbols: 1,
+          });
+          for (const named of ["secret", "computeSecretFee", "s-secret", SECRET_DOC]) {
+            expect(stored).not.toContain(named);
+          }
+        });
+
+        it(`the ${path} path records nothing once no file is restricted`, async () => {
+          await restrict([]);
+          const { orch, capability } = await withTracker(`an-2437-${path}-open`);
+          await run(orch, `an-2437-${path}-open`);
+          const { read } = await capability();
+          expect(read).not.toBeNull(); // the record itself was persisted and read back
+          expect(read).not.toHaveProperty("restrictedLeftOut");
+        });
+      }
     });
 
     describe("fused symbol retrieval", () => {

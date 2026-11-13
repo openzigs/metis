@@ -85,6 +85,19 @@ describe("codeAccessFilterOf", () => {
     expect(f.isHidden(null, "src/b.ts")).toBe(true);
   });
 
+  // #2437 — what a run left out is counted per repository: the same path
+  // restricted in two repositories is two files, and a repeat is one.
+  it("counts every hidden file once per repository", () => {
+    expect(UNRESTRICTED_CODE_ACCESS.hiddenFileCount).toBe(0);
+    const f = codeAccessFilterOf([
+      { connectorId: "rc1", path: "src/a.ts" },
+      { connectorId: "rc2", path: "src/a.ts" },
+      { connectorId: "rc1", path: "src/b.ts" },
+      { connectorId: "rc1", path: "src/a.ts" },
+    ]);
+    expect(f.hiddenFileCount).toBe(3);
+  });
+
   it("matches another spelling of a path, and a different case as a different file", () => {
     const f = codeAccessFilterOf([{ connectorId: "rc1", path: "src/Config.ts" }]);
     expect(f.isHidden("rc1", "./src//Config.ts")).toBe(true);
@@ -130,5 +143,35 @@ describe("hiddenSymbolsFor", () => {
     expect(await lookup(hits)).toEqual(new Set());
     await lookup(hits);
     expect(loads).toBe(1);
+  });
+
+  // #2437 — a run counts what it left out: the files the filter hides, and the
+  // ids (never the paths) of the hits it dropped.
+  it("reports each restricted check's hidden-file count and dropped hit ids", async () => {
+    const seen: unknown[] = [];
+    const lookup = hiddenSymbolsFor(
+      async () =>
+        codeAccessFilterOf([
+          { connectorId: "rc1", path: "src/secret.ts" },
+          { connectorId: "rc2", path: "src/other.ts" },
+        ]),
+      (left) => seen.push(left),
+    );
+    await lookup(hits);
+    await lookup([{ symbolId: "s5", filePath: "src/open.ts", repoConnectionId: "rc1" }]);
+    expect(seen).toEqual([
+      { files: 2, symbolIds: ["s1", "s3", "s4"] },
+      { files: 2, symbolIds: [] },
+    ]);
+  });
+
+  it("reports nothing under an unrestricted filter", async () => {
+    const seen: unknown[] = [];
+    const lookup = hiddenSymbolsFor(
+      async () => UNRESTRICTED_CODE_ACCESS,
+      (left) => seen.push(left),
+    );
+    await lookup(hits);
+    expect(seen).toEqual([]);
   });
 });

@@ -26,6 +26,7 @@ import {
   type DocumentReadingCoverage,
   type RequirementInputAccount,
   type RequirementsLeftOutNotice,
+  type RestrictedLeftOutNotice,
   deriveCapabilityReasons,
 } from "@metis/shared";
 import { prisma } from "../prisma.js";
@@ -165,6 +166,52 @@ export interface CapabilityTracker {
   requirementsLeftOut?: RequirementsLeftOutNotice[];
   /** #2233 — per agent answer, the findings cut from it. Optional, as above. */
   findingsLeftOut?: FindingsLeftOutNotice[];
+  /**
+   * #2437 — restricted files the run's code reads could not see: the most any
+   * access check reported (each check counts the same project-wide set).
+   * Optional, as above.
+   */
+  restrictedFiles?: number;
+  /**
+   * #2437 — the code-search hits dropped because their file is restricted, by
+   * symbol id, so a symbol dropped by two searches counts once. Only the count
+   * is persisted.
+   */
+  restrictedSymbolIds?: Set<string>;
+}
+
+/**
+ * #2437 — record what one access check of the run's code reads left out (#2314:
+ * an analysis reads as a shared audience). Counts only; the ids stay in memory.
+ */
+export function recordRestrictedLeftOut(
+  tracker: RestrictedLeftOutCounts,
+  left: { files: number; symbolIds?: readonly string[] },
+): void {
+  if (left.files > (tracker.restrictedFiles ?? 0)) tracker.restrictedFiles = left.files;
+  if (left.symbolIds && left.symbolIds.length > 0) {
+    const ids = (tracker.restrictedSymbolIds ??= new Set());
+    for (const id of left.symbolIds) ids.add(id);
+  }
+}
+
+/**
+ * #2437 — what {@link recordRestrictedLeftOut} accumulates: a run's tracker, or
+ * the holder a single-agent regenerate or a skipped-repo resume (which have no
+ * tracker) collects its pass's counts in.
+ */
+export type RestrictedLeftOutCounts = Pick<
+  CapabilityTracker,
+  "restrictedFiles" | "restrictedSymbolIds"
+>;
+
+/** #2437 — the persisted notice, or `null` when the run left nothing restricted out. */
+export function restrictedLeftOutOf(
+  tracker: RestrictedLeftOutCounts,
+): RestrictedLeftOutNotice | null {
+  const files = tracker.restrictedFiles ?? 0;
+  const symbols = tracker.restrictedSymbolIds?.size ?? 0;
+  return files + symbols > 0 ? { reason: "shared-audience", files, symbols } : null;
 }
 
 /**
@@ -262,6 +309,7 @@ export async function detectCodeAgentFailed(analysisId: string): Promise<boolean
 export function finalizeCapability(tracker: CapabilityTracker): AnalysisCapability {
   const codeAgentStoppedEarly =
     tracker.codeAgentStoppedEarly === true && tracker.codeRetrievalDegradedOtherwise !== true;
+  const restrictedLeftOut = restrictedLeftOutOf(tracker);
   return {
     codeAnalysisRequested: tracker.codeAnalysisRequested,
     databaseAnalysisRequested: tracker.databaseAnalysisRequested,
@@ -310,6 +358,8 @@ export function finalizeCapability(tracker: CapabilityTracker): AnalysisCapabili
     ...(tracker.findingsLeftOut && tracker.findingsLeftOut.length > 0
       ? { findingsLeftOut: structuredClone(tracker.findingsLeftOut) }
       : {}),
+    // #2437 — omitted when the run left no restricted source out.
+    ...(restrictedLeftOut ? { restrictedLeftOut } : {}),
     reasons: deriveCapabilityReasons({
       codeAnalysisRequested: tracker.codeAnalysisRequested,
       databaseAnalysisRequested: tracker.databaseAnalysisRequested,

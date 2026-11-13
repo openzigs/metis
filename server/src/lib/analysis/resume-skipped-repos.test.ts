@@ -208,6 +208,58 @@ describe("AnalysisOrchestrator.resumeSkippedRepos (#741)", () => {
     expect(finalize?.totalTokens).toEqual({ increment: 30 });
   });
 
+  // #2437 review — a resume has no capability tracker, so its passes' restricted
+  // count was lost. It adds to the other repositories' findings: merge, never replace.
+  describe("#2437 — the resumed passes' restricted count", () => {
+    type Noting = { noteRestrictedLeftOut: (id: string, left: object) => void };
+    const resumeWith = async (
+      stored: object | undefined,
+      checks: Array<{ files: number; symbolIds?: string[] }>,
+    ) => {
+      const meta = JSON.parse(capabilityMeta([{ connectorId: "c2", label: "worker" }])) as {
+        capability: Record<string, unknown>;
+      };
+      if (stored) meta.capability.restrictedLeftOut = stored;
+      state.metadata = JSON.stringify(meta);
+      state.connectors = [{ id: "c2", label: "worker" }];
+      const { orch, runAgenticCodeAgent } = makeOrch();
+      runAgenticCodeAgent.mockImplementation((async (input: { analysisId: string }) => {
+        for (const left of checks)
+          (orch as unknown as Noting).noteRestrictedLeftOut(input.analysisId, left);
+        return {
+          agentKey: "code",
+          output: { agentKey: "code", summary: "", notes: [], findings: [] },
+          usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+          durationMs: 1,
+        };
+      }) as never);
+      await orch.resumeSkippedRepos({ analysisId: ANALYSIS_ID, actorId: "u1" });
+      return readCapability()?.restrictedLeftOut;
+    };
+
+    it("records what the resumed repository left out on a run that recorded nothing", async () => {
+      expect(await resumeWith(undefined, [{ files: 2, symbolIds: ["s1", "s2", "s1"] }])).toEqual({
+        reason: "shared-audience",
+        files: 2,
+        symbols: 2,
+      });
+    });
+
+    it("merges into the stored count, never lowering it", async () => {
+      const stored = { reason: "shared-audience", files: 1, symbols: 4 };
+      expect(await resumeWith(stored, [{ files: 3, symbolIds: ["s1"] }])).toEqual({
+        reason: "shared-audience",
+        files: 3,
+        symbols: 4,
+      });
+    });
+
+    it("keeps the other repositories' count when the resumed one left nothing out", async () => {
+      const stored = { reason: "shared-audience", files: 2, symbols: 1 };
+      expect(await resumeWith(stored, [{ files: 0, symbolIds: [] }])).toEqual(stored);
+    });
+  });
+
   // PR #1095 panel, T3 — the re-synthesis rewrites every requirement row, so it
   // must be given the run's imported items or every "Imported as" link is lost.
   it("#1063 — hands the run's imported items to the re-synthesis", async () => {

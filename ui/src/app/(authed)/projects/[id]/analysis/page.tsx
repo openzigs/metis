@@ -1234,7 +1234,10 @@ export default function AnalysisPage(): React.ReactElement {
 
               {/* Issue #994 — what a Spec Kit handoff sent and left out, on every
               tab and while the run is still going. Nothing for other runs. */}
-              <SpecKitHandoffNotice metadata={detail.data.metadata} />
+              <SpecKitHandoffNotice
+                metadata={detail.data.metadata}
+                capability={detail.data.capability}
+              />
               {/* Issue #1027 — the context text the code agent was given, for any
               run that has one: the notice above names labels, this is the text. */}
               <AgentContextDisclosure metadata={detail.data.metadata} />

@@ -61,6 +61,7 @@ const { loadSharedCodeAccess } = vi.hoisted(() => ({
     unrestricted: true,
     hiddenPaths: () => [],
     isHidden: () => false,
+    hiddenFileCount: 0,
   })),
 }));
 vi.mock("./tools/code-access.js", async (original) => ({
