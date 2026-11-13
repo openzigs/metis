@@ -1932,6 +1932,7 @@ export default function AnalysisPage(): React.ReactElement {
                     requirementCount={detail.data.requirements.length}
                     analysisStatus={detail.data.status}
                     approvesAsDraft={!canApproveRequirements}
+                    viewerId={user?.id}
                   />
                 </TabsContent>
 

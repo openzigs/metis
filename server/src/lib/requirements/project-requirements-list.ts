@@ -203,6 +203,22 @@ export async function selfApprovalForbiddenIds(
 }
 
 /**
+ * #2462 — whether `GET /api/analyses/:id` should work out the flag. The page
+ * polls that route every 2.5 s while a run is pending or running, and the flag
+ * costs up to three reads, so it is worked out only once the run has settled
+ * (completed, failed, cancelled) or while its approval checkpoint is open
+ * (`metadata.promotionBlocked.blocked`). Before that, no card is actionable.
+ */
+export function selfApprovalFlagDue(snapshot: {
+  status: string;
+  metadata: Record<string, unknown> | null;
+}): boolean {
+  if (snapshot.status !== "pending" && snapshot.status !== "running") return true;
+  const gate = snapshot.metadata?.promotionBlocked as { blocked?: unknown } | undefined;
+  return gate?.blocked === true;
+}
+
+/**
  * #2462 — the same flag on another read of one project's requirements: the
  * change request page's cards (`GET /api/analyses/:id`). Only a row the viewer
  * could otherwise approve is read, as on the list: not yet approved, and the

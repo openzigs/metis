@@ -116,8 +116,6 @@ function selfApprovalRefusal(err: unknown): string | null {
 
 /** #2436 — why Approve is disabled for a role without `requirement.approve`. */
 export const APPROVE_HINT = `Approving needs the requirement.approve permission (${defaultRolesHolding("requirement.approve")} by default). You can still request a review.`;
-/** #2452 — why Approve is disabled on a row the viewer wrote or edited (now in approval-ladder, #2462). */
-export { SELF_APPROVAL_HINT };
 /** Why Edit is disabled for a role without `project.update`. */
 export const EDIT_HINT = "Editing needs a coordinator or admin role.";
 

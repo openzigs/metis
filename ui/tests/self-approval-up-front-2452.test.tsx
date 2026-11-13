@@ -34,11 +34,11 @@ import {
   APPROVE_HINT,
   RequirementsList,
   REQUIREMENTS_PAGE_SIZE,
-  SELF_APPROVAL_HINT,
 } from "@/components/requirements/requirements-list";
 import {
   ApprovalLadderNote,
   approvalGateSettingsHref,
+  SELF_APPROVAL_HINT,
   SELF_APPROVAL_RULE,
 } from "@/components/requirements/approval-ladder";
 

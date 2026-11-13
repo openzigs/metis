@@ -24,7 +24,8 @@ import {
 } from "@/lib/analysis-api";
 import { toast } from "sonner";
 import { ApiError } from "@/lib/api-client";
-import { queryKeys } from "@/lib/query-keys";
+import { queryKeys, reviewGateKey } from "@/lib/query-keys";
+import { reviewGateApi } from "@/lib/publishing-api";
 import { useSocket } from "@/lib/socket-client";
 import { keepRoomSubscribed } from "@/lib/socket-subscription";
 import { analysisFollow } from "@/lib/socket-rooms";
@@ -80,6 +81,46 @@ interface ApprovalsPanelProps {
    * drafts for a coordinator to approve, and the panel says so.
    */
   approvesAsDraft?: boolean;
+  /**
+   * #2462 — the signed-in user's id, so a requirement they edited in this
+   * checkpoint says before Approve that it will be held for a colleague's
+   * review (#2436). Omitted: no such note.
+   */
+  viewerId?: string;
+}
+
+/**
+ * #2462 — what approving does to a requirement the viewer edited in the
+ * checkpoint, in a project that does not allow self-approval: the server
+ * promotes it awaiting review, not approved (#2436). Said before the click,
+ * not only in the toast after it.
+ */
+export const HELD_FOR_REVIEW_NOTICE =
+  "You edited this requirement, so approving it holds it for a colleague's review: it is saved awaiting review, not approved. A coordinator or admin can allow self-approval in Project settings → Approval gate.";
+
+/**
+ * #2462 — the structured requirement ids `viewerId` edited in the checkpoint of
+ * the run under review. Read as the server's maker-checker reads it
+ * (`readCheckpointEditors`): the editors record counts only when it belongs to
+ * the run the reviewed list came from (`structuredRunId`).
+ */
+export function checkpointItemsEditedBy(
+  metadata: Record<string, unknown> | null | undefined,
+  viewerId: string | undefined,
+): ReadonlySet<string> {
+  const out = new Set<string>();
+  if (!metadata || !viewerId) return out;
+  const raw = metadata.checkpointRequirementEditors;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return out;
+  const record = raw as { runId?: unknown; editors?: unknown };
+  const recordedRun = typeof record.runId === "string" ? record.runId : null;
+  const currentRun = typeof metadata.structuredRunId === "string" ? metadata.structuredRunId : null;
+  if (recordedRun !== currentRun) return out;
+  if (!record.editors || typeof record.editors !== "object") return out;
+  for (const [id, users] of Object.entries(record.editors as Record<string, unknown>)) {
+    if (Array.isArray(users) && users.includes(viewerId)) out.add(id);
+  }
+  return out;
 }
 
 /** #1588 — what approving does for a viewer without `requirement.approve` (#2436). */
@@ -384,6 +425,7 @@ function ApprovalCard({
   onChange,
   draft,
   onDraftChange,
+  heldForReviewIfApproved = false,
 }: {
   approval: ApprovalRequestPayload;
   /** #922 — matched structured requirement for `requirement` approvals. */
@@ -402,6 +444,8 @@ function ApprovalCard({
    */
   draft: CheckpointDraft | undefined;
   onDraftChange: DraftUpdate;
+  /** #2462 — the viewer edited it here and the project forbids self-approval. */
+  heldForReviewIfApproved?: boolean;
 }): React.ReactElement {
   const qc = useQueryClient();
   const [note, setNote] = useState("");
@@ -562,6 +606,11 @@ function ApprovalCard({
               No code link: its evidence cites no code, so approving promotes it without one.
             </p>
           )}
+          {heldForReviewIfApproved && (
+            <p data-testid="approval-held-for-review" className="text-xs text-warning">
+              {HELD_FOR_REVIEW_NOTICE}
+            </p>
+          )}
           <Textarea
             aria-label={`Review note for ${itemName}`}
             placeholder="Optional review note…"
@@ -649,12 +698,15 @@ function ApproveAllPending({
   pendingCount,
   approvesAsDraft,
   openEdits,
+  heldCount = 0,
   onChange,
 }: {
   projectId: string;
   analysisId: string;
   pendingCount: number;
   approvesAsDraft: boolean;
+  /** #2462 — pending requirements the viewer edited here, held for review if approved. */
+  heldCount?: number;
   /** #2147 — pending requirements with an edit open: approving now promotes the old text. */
   openEdits: number;
   onChange: () => void;
@@ -699,6 +751,13 @@ function ApproveAllPending({
           ? "added as drafts, for a coordinator to approve."
           : "promoted as approved."}
       </p>
+      {heldCount > 0 && (
+        <p className="text-xs text-warning" data-testid="approve-all-held-for-review">
+          {heldCount === 1 ? "One of them" : `${heldCount} of them`} you edited here, so{" "}
+          {heldCount === 1 ? "it is" : "they are"} held for a colleague&apos;s review: saved
+          awaiting review, not approved.
+        </p>
+      )}
       <div className="flex gap-2">
         <Button
           size="sm"
@@ -861,6 +920,7 @@ export function ApprovalsPanel({
   requirementCount,
   analysisStatus,
   approvesAsDraft = false,
+  viewerId,
 }: ApprovalsPanelProps): React.ReactElement | null {
   const inFlight = analysisStatus === "pending" || analysisStatus === "running";
   // #922 — index structured requirements by id so each `requirement` approval
@@ -878,6 +938,21 @@ export function ApprovalsPanel({
     queryKey: queryKeys.approvals.forAnalysis(analysisId),
     queryFn: () => analysisApi.listApprovals(projectId, analysisId),
   });
+  // #2462 — a requirement the viewer edited here is promoted awaiting review
+  // when they approve it, unless the project allows self-approval (#2436). The
+  // gate is read only when there is such a requirement; a viewer without
+  // requirement.approve promotes everything as drafts and is told so already.
+  const editedByViewer = checkpointItemsEditedBy(metadata, viewerId);
+  const gate = useQuery({
+    queryKey: reviewGateKey(projectId),
+    queryFn: () => reviewGateApi.get(projectId),
+    enabled: Boolean(projectId) && !approvesAsDraft && editedByViewer.size > 0,
+  });
+  const heldIfApproved = (approval: ApprovalRequestPayload): boolean =>
+    !approvesAsDraft &&
+    gate.data?.allowSelfApproval === false &&
+    approval.type === "requirement" &&
+    editedByViewer.has(approval.itemId);
   // #2147 — every open checkpoint edit, by approval id (see `ApprovalCard`).
   const [drafts, setDrafts] = useState<Readonly<Record<string, CheckpointDraft>>>({});
   const draftUpdate =
@@ -956,6 +1031,7 @@ export function ApprovalsPanel({
       onChange={() => query.refetch()}
       draft={drafts[approval.id]}
       onDraftChange={draftUpdate(approval.id)}
+      heldForReviewIfApproved={heldIfApproved(approval)}
     />
   );
 
@@ -1019,6 +1095,7 @@ export function ApprovalsPanel({
               pendingCount={pending.length}
               approvesAsDraft={approvesAsDraft}
               openEdits={pending.filter((a) => drafts[a.id]).length}
+              heldCount={pending.filter(heldIfApproved).length}
               onChange={() => query.refetch()}
             />
           </div>

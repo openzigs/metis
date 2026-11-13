@@ -161,7 +161,10 @@ import {
 } from "../lib/analysis/index.js";
 import { ModelNotServedError } from "../lib/ai/model-router.js";
 import { RequirementVersionError } from "../lib/requirements/requirement-version-service.js";
-import { flagSelfApprovalForbidden } from "../lib/requirements/project-requirements-list.js";
+import {
+  flagSelfApprovalForbidden,
+  selfApprovalFlagDue,
+} from "../lib/requirements/project-requirements-list.js";
 import { visibleRequirementLabels } from "../lib/analysis/requirement-labels.js";
 import { listPromptOnlyAnalysisAgents } from "../lib/analysis/custom-agent-phase.js";
 import {
@@ -767,11 +770,12 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
       if (!snapshot) throw new AppError(404, "ANALYSIS_NOT_FOUND", "Analysis not found");
       // #2462 — a requirement the caller wrote or edited says so when the
       // project does not allow self-approval, so the card explains Approve
-      // before the click (as the Requirements list does, #2452).
+      // before the click (as the Requirements list does, #2452). Not while the
+      // page polls a run in progress: see `selfApprovalFlagDue`.
       const requirements = await flagSelfApprovalForbidden(
         snapshot.projectId,
         snapshot.requirements,
-        req.user
+        req.user && selfApprovalFlagDue(snapshot)
           ? {
               userId: req.user.userId,
               canApprove: hasPermission(req.user.role, "requirement.approve"),

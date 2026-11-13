@@ -195,6 +195,63 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       }
     });
 
+    // The page polls this route every 2.5 s while a run is pending or running;
+    // the flag's reads wait until the run settles or its checkpoint opens.
+    const withRun = async (
+      status: string,
+      promotionBlocked: boolean | null,
+      fn: () => Promise<void>,
+    ) => {
+      const meta = {
+        checkpointRequirementEditors: { runId: "run-1", editors: { "REQ-001": ["u-coord"] } },
+        ...(promotionBlocked === null
+          ? {}
+          : { promotionBlocked: { blocked: promotionBlocked, pendingCount: 1, rejectedCount: 0 } }),
+      };
+      await db.analysis.update({
+        where: { id: CR },
+        data: { status, metadata: JSON.stringify(meta) },
+      });
+      try {
+        await fn();
+      } finally {
+        await db.analysis.update({
+          where: { id: CR },
+          data: {
+            status: "completed",
+            metadata: JSON.stringify({
+              checkpointRequirementEditors: { runId: "run-1", editors: { "REQ-001": ["u-coord"] } },
+            }),
+          },
+        });
+      }
+    };
+
+    it("flags nothing while the run is pending or running, so polling costs no extra reads", async () => {
+      for (const status of ["pending", "running"]) {
+        await withRun(status, null, async () => {
+          expect(await flagged("u-coord", "coordinator")).toEqual([]);
+        });
+        await withRun(status, false, async () => {
+          expect(await flagged("u-coord", "coordinator")).toEqual([]);
+        });
+      }
+    });
+
+    it("flags a running run's requirements once its approval checkpoint is open", async () => {
+      await withRun("running", true, async () => {
+        expect(await flagged("u-coord", "coordinator")).toEqual(["r-checkpoint", "r-reworded"]);
+      });
+    });
+
+    it("flags a settled run's requirements whether it completed, failed or was cancelled", async () => {
+      for (const status of ["failed", "cancelled"]) {
+        await withRun(status, null, async () => {
+          expect(await flagged("u-coord", "coordinator")).toEqual(["r-checkpoint", "r-reworded"]);
+        });
+      }
+    });
+
     it("still refuses the author's approve write, whatever the page was shown", async () => {
       const res = await request(app())
         .put(`/api/requirements/r-reworded`)
