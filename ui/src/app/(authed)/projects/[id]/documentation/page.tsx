@@ -38,6 +38,7 @@ import { RequirementsScopePicker } from "@/components/documentation/requirements
 import type { DocSectionProgressEvent, SchemaGraph } from "@metis/shared";
 import { PageHeader } from "@/components/ui/page-header";
 import { quarantineHref } from "@/lib/project-pipeline";
+import { EmptyState } from "@/components/ui/empty-state";
 
 /**
  * #272 — the schema graph (@xyflow/react, its dagre layout and stylesheet) is
@@ -475,9 +476,12 @@ export default function DocumentationPage(): React.ReactElement {
             </Card>
           ))}
           {docsQuery.data?.length === 0 && (
-            <p className="text-muted-foreground col-span-full">
-              No documentation generated yet. Click &ldquo;Generate Documentation&rdquo; to start.
-            </p>
+            <EmptyState
+              className="col-span-full"
+              data-testid="documentation-empty"
+              title="No documentation generated yet."
+              description={<>Click &ldquo;Generate Documentation&rdquo; to start.</>}
+            />
           )}
         </div>
       )}

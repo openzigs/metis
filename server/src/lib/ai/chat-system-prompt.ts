@@ -126,6 +126,14 @@ export interface ChatSystemParts {
    */
   answerPolicy?: string | null;
   /**
+   * Stable — the #2324 search guidance (`SEARCH_GUIDANCE_INSTRUCTION`,
+   * `search-guidance.ts`), for a turn that offers a code/knowledge tool. Fixed
+   * text, so it rides in the lead after the answering policy, which owns
+   * whether to answer; this block owns how to look first. Empty/absent ⇒ the
+   * lead is unchanged.
+   */
+  searchGuidance?: string | null;
+  /**
    * Volatile — the per-project Chronicle memory block. Grows as memory entries
    * are added, so it must NOT sit ahead of the cachePoint.
    */
@@ -155,7 +163,8 @@ function sys(content: string): ChatMessage {
  * Assemble the chat system messages into a stable lead + volatile tail.
  *
  * Ordering (wire order): `persona`, then each non-empty `skillBlock`, then the
- * `toolSchemas` block, then the `citationInstruction`, then the `answerPolicy` (all stable), then
+ * `toolSchemas` block, then the `citationInstruction`, then the `answerPolicy`, then the
+ * `searchGuidance` (all stable), then
  * `chronicle`, then `userSystemMessage` (volatile). Empty/whitespace-only pieces
  * are dropped, exactly as the previous inline assembly did.
  *
@@ -186,6 +195,10 @@ export function assembleChatSystem(parts: ChatSystemParts): AssembledChatSystem 
   // #2241 — fixed text too, and constant for a session (its project never changes).
   if (parts.answerPolicy && parts.answerPolicy.trim().length > 0) {
     stable.push(sys(parts.answerPolicy));
+  }
+  // #2324 — fixed text, present for a turn whose tools can search the sources.
+  if (parts.searchGuidance && parts.searchGuidance.trim().length > 0) {
+    stable.push(sys(parts.searchGuidance));
   }
 
   const volatile: ChatMessage[] = [];

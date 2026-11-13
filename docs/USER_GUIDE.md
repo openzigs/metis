@@ -1087,7 +1087,8 @@ The wizard has four steps:
    the project's Knowledge pages.
 3. **Create** — check the summary and click **Create project** (or **Create and
    start ingest** for a repository, which also starts its Deep Ingest in the
-   background).
+   background). If you close the dialog while it reads **Creating…**, the
+   project is still created and a message says so. Open it from **Projects**.
 4. **Change request** — click **New change request** to upload the documents
    that describe the change and start its analysis, or **Skip — open the
    Overview**. Closing the dialog at this step also opens the Overview.
@@ -1117,7 +1118,7 @@ Click on any project card to view its details.
 
 ### 9.4 Project Detail View
 
-Opening a project lands on its **Overview**, a numbered checklist of the analyst's job: **Add knowledge** → **Ready: ask a question** → **New change request** → **Review** → **Deliverable**, with **Publish** shown as optional. Each step says where it stands (documents and connections added, ingest counts, the last change request, requirements awaiting review, deliverables generated, the last publish) and has the one action that moves it forward ("Add knowledge", "Ask a question", "New change request", "Review 12 requirements", "Generate a deliverable", …), with the name of the project tab that action opens. The heading reads **Get started** until the five numbered steps are done, then **Every step done**; publishing is never required. An existing project shows the steps it has already done as done. Status updates live while an ingest, analysis or doc generation runs. Project settings are behind the **⚙** tab.
+Opening a project lands on its **Overview**, a numbered checklist of the analyst's job: **Add knowledge** → **Ready: ask a question** → **New change request** → **Review** → **Deliverable**, with **Publish** shown as optional. Each step says where it stands (documents and connections added, ingest counts, the last change request, requirements awaiting review, deliverables generated, the last publish) and has the one action that moves it forward ("Add knowledge", "Ask a question", "New change request", "Review 12 requirements", "Generate a deliverable", …), with the name of the project tab that action opens. The heading reads **Get started** until the five numbered steps are done, then **Every step done**; publishing is never required. The **Review** step is done only when nothing in the latest run is waiting: no requirement awaiting review, no approval pending, no clarifying question open and none rejected. It reads **Checking requirements…** until both the requirements and the approvals are read, so the action it shows does not change a moment later. If METIS could not prepare the run's clarifying questions (the analysis could not read the requirements out of the model's answer), the step needs attention and says **Clarifying questions could not be prepared**, linked to the run's Questions tab, rather than reading done. Resolving an approval on the analysis page updates this step without a reload. [#2376] An existing project shows the steps it has already done as done. Status updates live while an ingest, analysis or doc generation runs. Project settings are behind the **⚙** tab.
 
 The Ingest card reads the newest 100 documents: on a larger project it shows the project's document total, and any failed or processing count from that page reads "at least N". The Publish card shows the last batch only to roles that can preview issues; a read-only role sees that publish history is not available to it.
 
@@ -1127,7 +1128,7 @@ Beneath the pipeline, **Knowledge search** runs a retrieval query over the proje
 
 **How the settings are grouped (#2337).** The ⚙ page has three groups. **General**: the workspace, the primary repository, and links to the project's skills and agents in Library. **AI & cost**: the AI provider and model, model preferences, safety, the monthly budget, autopilot and automatic PR review. **Advanced**, closed until you open it: the Bedrock inference profile, database-aware analysis, SQL lineage and AGENTS.md. No setting was removed, and each works as before. The quarantine and memory panels follow the groups.
 
-**Words on screen (#2337).** METIS uses plain words for its own machinery. A document's or repository's **sections indexed** are what METIS can search (an admin screen still says "chunks", with a line explaining the word). On **Connections**, **Update** fetches a repository's latest changes and re-reads only the files that changed (it was "Sync"), and **Full re-read** reads the whole repository again (it was "Deep Ingest"). A project's **Short name** is the name used in its web address (it was "Slug"). A repository's **Access token** and a database's **Password** are vault secrets that an admin stores. If the vault picker lists nothing, it says to ask an admin. If your role cannot list the vault, the picker says that, too. Without the `vault.reveal` permission you can attach only secrets you created, and the picker says so; when the server refuses a secret, the error toast repeats the server's reason. The published-issue drift page is now **Issue updates**.
+**Words on screen (#2337).** METIS uses plain words for its own machinery. A document's or repository's **sections indexed** are what METIS can search (an admin screen still says "chunks", with a line explaining the word). On **Connections**, **Update** fetches a repository's latest changes and re-reads only the files that changed (it was "Sync"), and **Full re-read** reads the whole repository again (it was "Deep Ingest"). A project's **Short name** is the name used in its web address (it was "Slug"). A repository's **Access token** and a database's **Password** are vault secrets that an admin stores. If the vault picker lists nothing, it says to ask an admin. If your role cannot list the vault, the picker says that, too. Without the `vault.reveal` permission you can attach only secrets you created, so the picker lists only those and says so (a secret already chosen on that connection stays listed); if none are yours, it says to ask an admin to bind one (#2382). The Publish page's batch form lists every secret until you enter a GitHub Enterprise base URL, because only a live run to that URL needs a secret you may attach; when the server refuses a secret, the error toast repeats the server's reason. The published-issue drift page is now **Issue updates**.
 
 **Help (#2337).** The **?** button in the header opens **Help** inside METIS (`/help`): how to get started, a project's tabs and their pages, the words above, and who to ask (your METIS administrator). It no longer links to GitHub. Your **Profile** is one click from the account menu. A PR-review run's page (`/runs/{id}`) links to its review (**Open the PR review**). The old `/settings/audit` address now opens **Settings → Configuration** on its **Audit log** tab.
 
@@ -2667,13 +2668,13 @@ The publisher uses Octokit's throttle plugin with a real sleeping backoff:
 
 You don't have to configure any of this manually; it's tuned for safe, predictable behavior under load.
 
-### 13.8 Change Analysis
+### 13.8 Compare analyses
 
 Compare two analysis snapshots to see what requirements changed between versions.
 
 1. Navigate to your project, click the **Requirements** tab, then **Compare analyses**. (The page is titled **Compare analyses** so it is not confused with the **Change requests** tab.)
 2. Select a **Base analysis** (the older snapshot) and a **Head analysis** (the newer one).
-3. Click **Run Change Analysis**. METIS compares every requirement in both snapshots and detects:
+3. Click **Compare**. METIS compares every requirement in both snapshots and detects:
    - **Added** — new requirements that didn't exist in the base
    - **Removed** — requirements that existed in the base but are gone in the head
    - **Modified** — requirements that changed (body text, priority, type, or title)
@@ -3373,7 +3374,24 @@ can use tools to look things up or act for you:
 | **Inspect Database** | Examines a connected database's schema |
 | **Query Database** | Runs read-only SQL against a connected database |
 | **MCP tools** | Tools from MCP servers this project is allowed to use (see §20.7) |
-| **Code search** | Searches the project's code graph and symbols, and reads up to 200 lines of a file from the project's repository so an answer can quote the code it cites. On unless your administrator has turned it off with `CHAT_CODE_SEARCH_TOOLS=false`. On a model that cannot call tools natively (some local runtimes) it is on only when the administrator sets `CHAT_CODE_SEARCH_TOOLS=true`, because there the answer does not stream while the tools run. With `CHAT_CODE_SEARCH_PRIMITIVES=true` (off by default) it can also find an exact text in the repository's files (up to 50 matching lines, with the totals when there are more), list files matching a pattern such as `internal/**/*.go`, and narrow a symbol search to a path, a kind or a language. It never reads, lists or searches `.env` files (templates such as `.env.example` excepted), anything under `.git`, `.ssh`, `.gnupg`, `.aws`, `.azure`, `.kube` or `.docker`, common credential files (`.netrc`, `.npmrc`, `credentials`, …), or private keys (`id_rsa`, `*.pem`, `*.key`, …), not even through a link inside the repository that points at one; it answers as if such a file did not exist. It never reads a path outside the repository. A source file whose document is restricted to other people is not read, listed or found for you, and a discussion reply leaves out every restricted file |
+| **Code search** | Searches the project's code graph and symbols, and reads up to 200 lines of a file from the project's repository so an answer can quote the code it cites. On unless your administrator has turned it off with `CHAT_CODE_SEARCH_TOOLS=false`. On a model that cannot call tools natively (some local runtimes) it is on only when the administrator sets `CHAT_CODE_SEARCH_TOOLS=true`, because there the answer does not stream while the tools run. With `CHAT_CODE_SEARCH_PRIMITIVES=true` (off by default) it can also find an exact text in the repository's files (up to 50 matching lines, with the totals when there are more), list files matching a pattern such as `internal/**/*.go`, and narrow a symbol search to a path, a kind or a language. It never reads, lists or searches `.env` files (templates such as `.env.example` excepted), anything under `.git`, `.ssh`, `.gnupg`, `.aws`, `.azure`, `.kube` or `.docker`, common credential files (`.netrc`, `.npmrc`, `credentials`, …), or private keys (`id_rsa`, `*.pem`, `*.key`, …), not even through a link inside the repository that points at one; it answers as if such a file did not exist. It never reads a path outside the repository. A source file whose document is restricted to other people is not read, listed or found for you, and a discussion reply leaves out every restricted file. An administrator can also turn on `CHAT_CODE_CONTEXT_TOOL`, which lets the model get the whole functions and classes behind a question in one call, instead of fragments it then has to read one by one. It is off by default until it is measured [#2329] |
+
+Administrators can turn on search guidance with `CHAT_SEARCH_GUIDANCE=true`.
+When the chat can search the project's code or knowledge base, the guidance
+tells it to:
+
+- put the question in the terms the code uses;
+- try two or three wordings before saying something is not there;
+- read the code before saying one part calls another;
+- when nothing turns up, say what it searched.
+
+When a code-graph search finds the symbol but has no list of results to give
+(the name matches several symbols, only probable call sites are known, a filter
+left no call to list, or nothing calls the symbol), the guidance says what to do
+next instead of telling the chat to search again.
+
+It is off by default. On METIS's own business-analyst question set it did not
+make answers more complete, and citation precision did not improve.
 
 A chat that is not scoped to a project is offered no tools. Administrators can
 turn the METIS and MCP tools off with `CHAT_TOOLS=false`. A chat can be scoped
@@ -3691,9 +3709,11 @@ Opening Chat from a project (`/chat?projectId=…`) scopes it to that project.
 - Every reply carries a label underneath it:
   - **Grounded in _Project_ · N sources · M project lookups** — excerpts from that project's knowledge base were given to the model (N counts each excerpt supplied, and each code symbol in a fused code block), and/or the model read the project itself through its tools — code search, or a search of the project's knowledge base (M counts the lookups that returned something). Either part is left out when it is zero. Only excerpts relevant enough to the question are supplied: a weaker match is set aside (see **Relevance floor** below). Click the label to list the files and documents the excerpts came from, each with how many excerpts it gave and its relevance (0 to 1). [#2241]
   - **Insufficient evidence — nothing in _Project_ was relevant enough to this question** — the knowledge base was searched, but every match was too weak to use, so none was given to the model. It is told to say that the sources don't show this, and what is missing, rather than guess. [#2241]
-  - **Retrieval failed — _Project_'s knowledge base could not be searched for this reply** — the search itself failed. The model is told it could not check the sources. Try again; if it keeps happening, tell your administrator. [#2241]
+  - **Retrieval failed — _Project_'s knowledge base could not be searched for this reply (_kind of failure_)** — the search itself failed. The kind of failure is named in brackets, for example "timed out" or "vector index unavailable", but never the error's text. The model is told the search failed and not to conclude that the project lacks what you asked about. Try again; if it keeps happening, tell your administrator. [#2241, #2326]
   - **No excerpts from _Project_ were retrieved automatically** — the chat is scoped, but neither automatic retrieval, a code-search lookup, nor a project knowledge-base search returned anything for this question (for example, nothing is ingested yet). The model may still have used other tools, such as an MCP server, so check any file or code it names.
-  - **Partial coverage — only X of Y chunks in _Project_ are searchable** — shown under any of the above when some of the project's documents were indexed with a different embedding model. Those documents are not searched until the project is re-indexed. [#2241]
+  - **Partial coverage — only X of Y chunks in _Project_ are searchable** — shown under any of the above when some of the project's documents were indexed with a different embedding model. Those documents are not searched until the project is re-indexed. The model is told too, so it does not read a missing excerpt as absence. [#2241, #2326]
+  - **Index: _repository_ @ _commit_, indexed _time_ · last run _status_** — for a project with a connected repository, each repository's last indexed commit and time, and how its last indexing run ended (completed, partial, failed with the kind of failure, running or interrupted). [#2326]
+  - **Index warning — …** — shown when the last indexing run failed, the index is partial, indexing is still in progress, or nothing in the project has been indexed yet. It names the part that is affected, for example "repository _billing-svc_ is not indexed yet": one repository not indexed yet, beside documents or other repositories that are, makes the index partial rather than empty. An answer may then miss code or documents that are not indexed. In that case the model is told the same thing, and it is asked to say the index may be incomplete rather than conclude that the project lacks something. It can also check with the `get_index_status` tool. Your administrator can turn that part off with `CHAT_INDEX_STATUS=false`. [#2326]
   - A reply that failed or was stopped early shows no label; its error says what happened.
   - The label keeps the project's name from when the reply was written, so it still reads correctly after a rename or deletion.
   - **Not grounded — no project selected** — the chat is unscoped.
@@ -4145,7 +4165,7 @@ The **Secret Vault** is a secure storage for sensitive information that METIS ne
 
 - **Encrypted at rest** — all secrets are encrypted using AES-256-GCM, a military-grade encryption algorithm
 - **Key derivation** — the encryption key is derived from a master key using PBKDF2 with 100,000 iterations, making brute-force attacks practically impossible
-- **Access controlled** — users with `vault.read` (admin, coordinator, developer) can list entries, view audit history, and use a secret by reference (chat BYOK keys, connectors, MCP servers) — but a non-administrator may attach to a connector or MCP server only secrets they created, and cannot change the host, base URL, command or env of one that holds someone else's secret (403 `SECRET_BINDING_FORBIDDEN`; ask an administrator). The same applies to publishing and Projects v2 board listing against a GitHub Enterprise base URL, and to moving a Jira connection (base URL, proxy or TLS settings) without re-entering its credentials. A label that matches more than one secret (for example `global:x` and `project:x`) is refused rather than guessed — qualify it or use the secret id; only `vault.reveal` — administrators only — can see a secret's plaintext; only `vault.write` can create, rotate, or delete entries
+- **Access controlled** — users with `vault.read` (admin, coordinator, developer) can list entries, view audit history, and use a secret by reference (chat BYOK keys, connectors, MCP servers) — but a non-administrator may attach to a connector or MCP server only secrets they created, and cannot change the host, base URL, command or env of one that holds someone else's secret (403 `SECRET_BINDING_FORBIDDEN`; ask an administrator). The same applies to publishing and Projects v2 board listing against a GitHub Enterprise base URL, and to moving a Jira connection (base URL, proxy or TLS settings) without re-entering its credentials. A label that matches more than one secret (for example `global:x` and `project:x`) is refused rather than guessed — qualify it or use the secret id; the list (`GET /api/vault`) marks each entry `bindable` when the caller may attach it (#2382); only `vault.reveal` — administrators only — can see a secret's plaintext; only `vault.write` can create, rotate, or delete entries
 - **Audit logged** — every reveal attempt (`vault.reveal`, with `outcome` `granted`, `denied` or `not_found` — never the value), create, rotate, and delete is recorded in the audit trail with `source: "vault_ui"` metadata
 
 ### Using the Vault
@@ -4972,9 +4992,9 @@ Before posting a review, the agent fetches the PR's existing review comments and
 
 The **Spec Kit** turns METIS into a structured specification tool. Rather than free-form chat, Spec Kit guides you through a phased workflow that produces a complete `.specify/` artifact set. v1.3 (Epic #396) brings METIS in line with upstream Spec Kit conventions: namespaced commands, per-feature `specs/<NNN-slug>/` directories, filesystem materialization, and phased status gates.
 
-### Where to find it: the BA/PM "author the intent" front-door
+### Where to find it
 
-Spec Kit is the **business-analyst / product-manager front-door** for authoring intent. It sits behind the project's **⚙** (Project settings) tab, beside the code views, because most analysts do not work in it day to day (#2334). Open a project, click **⚙**, then **Spec Kit**.
+Spec Kit is an optional, structured way to write intent down as a spec, a plan and a task list before handing it to analysis. Most analysts start from **Change requests** instead, so Spec Kit sits behind the project's **⚙** (Project settings) tab, beside the code views (#2334). Open a project, click **⚙**, then **Spec Kit**.
 
 The mental model is **author the intent here, then hand it off**:
 
@@ -5002,7 +5022,7 @@ Below that, **Context given to the code agent, not requirements** opens to show 
 
 ### Enabling Spec Kit
 
-1. Open the project and click the **Spec Kit** primary tab (beside Analysis), or navigate directly to `/projects/[id]/spec-kit` — the URL is unchanged.
+1. Open the project, click **⚙**, then **Spec Kit**, or navigate directly to `/projects/[id]/spec-kit` — the URL is unchanged.
 2. Toggle **Enable Spec Kit** at the top of the page. While enabled with no artifacts yet, an onboarding panel walks you through the spec → plan → tasks flow and links to the adjacent **Analysis** surface as the downstream consumer.
 3. You can now use slash commands in the Chat surface or the command palette on the Spec Kit page.
 

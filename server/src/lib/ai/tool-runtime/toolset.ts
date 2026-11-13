@@ -21,6 +21,7 @@ import { matchesToolRef } from "../approval-policy.js";
 import type { RiskLevel } from "../types.js";
 import type { RuntimeTool, RuntimeToolContext } from "./types.js";
 import { withToolResultCache } from "./tool-result-cache.js";
+import { resultInstructions, withSearchUsage } from "../search-guidance.js";
 
 /**
  * Tools that reach BEYOND the session's project. A project-scoped chat must not
@@ -61,6 +62,11 @@ export interface BuildToolsetInput {
   /** `null` — the agent declares no allowlist; otherwise refs (`mcp:x:*` allowed). */
   agentAllowlist?: readonly string[] | null;
   exclude?: ReadonlySet<string>;
+  /**
+   * #2324 — `CHAT_SEARCH_GUIDANCE`: the grounding tools' descriptions say how
+   * to search with them, and each result carries fixed `instructions`.
+   */
+  searchGuidance?: boolean;
 }
 
 /** #147 — a tool the session has but the agent's allowlist withheld. */
@@ -176,11 +182,18 @@ function allowedByAgent(name: string, allowlist: readonly string[] | null | unde
  * stays correct: it is scoped per user (and per shared audience), and an ACL
  * edit moves the content version.
  */
-export function codeRuntimeTool(tool: AgentTool, wireName: string): RuntimeTool {
+export function codeRuntimeTool(
+  tool: AgentTool,
+  wireName: string,
+  opts: { searchGuidance?: boolean } = {},
+): RuntimeTool {
   return withToolResultCache({
     name: tool.name,
     wireName,
-    description: tool.description,
+    description: opts.searchGuidance
+      ? withSearchUsage(tool.name, tool.description)
+      : tool.description,
+    ...(opts.searchGuidance ? { instructionsFor: (r) => resultInstructions(tool.name, r) } : {}),
     parameters: tool.parameters as unknown as Record<string, unknown>,
     risk: "low",
     source: "code",
@@ -205,6 +218,7 @@ export function codeRuntimeTool(tool: AgentTool, wireName: string): RuntimeTool 
         text: r.content,
         ...(typeof r.isError === "boolean" ? { isError: r.isError } : {}),
         ...(typeof r.resultCount === "number" ? { resultCount: r.resultCount } : {}),
+        ...(r.zeroResultKind ? { zeroResultKind: r.zeroResultKind } : {}),
         ...(r.truncated ? { truncated: true } : {}),
         ...(r.citations && r.citations.length > 0 ? { citations: r.citations } : {}),
       };
@@ -218,12 +232,14 @@ function registryRuntimeTool(
   wireName: string,
   forcePrompt: boolean,
   forcePromptNow?: () => Promise<boolean>,
+  searchGuidance = false,
 ): RuntimeTool {
   // #1843 — `search-knowledge` is cached on the project's content version.
   return withToolResultCache({
     name: view.name,
     wireName,
-    description: view.description,
+    description: searchGuidance ? withSearchUsage(view.name, view.description) : view.description,
+    ...(searchGuidance ? { instructionsFor: (r) => resultInstructions(view.name, r) } : {}),
     parameters: view.parameters,
     risk: view.risk,
     source: view.origin?.kind === "mcp" ? "mcp" : "metis",
@@ -291,7 +307,10 @@ export async function buildSessionToolset(input: BuildToolsetInput): Promise<Run
       withheld.push({ name: tool.name, risk: "low" });
       continue;
     }
-    add((wire) => codeRuntimeTool(tool, wire), tool.name);
+    add(
+      (wire) => codeRuntimeTool(tool, wire, { searchGuidance: input.searchGuidance === true }),
+      tool.name,
+    );
   }
 
   const projectId = input.ctx.projectId;
@@ -342,7 +361,15 @@ export async function buildSessionToolset(input: BuildToolsetInput): Promise<Run
       forcePromptNow = async () => (await mcp.governance(serverId))?.requireApproval ?? true;
     }
     add(
-      (wire) => registryRuntimeTool(input.registry, view, wire, forcePrompt, forcePromptNow),
+      (wire) =>
+        registryRuntimeTool(
+          input.registry,
+          view,
+          wire,
+          forcePrompt,
+          forcePromptNow,
+          input.searchGuidance === true,
+        ),
       view.name,
     );
   }

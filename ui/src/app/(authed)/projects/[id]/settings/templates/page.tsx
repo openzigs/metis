@@ -21,6 +21,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { PageHeader } from "@/components/ui/page-header";
+import { EmptyState } from "@/components/ui/empty-state";
 
 const SECTION_TYPES = ["text", "markdown", "checklist", "number", "select", "tags"] as const;
 const PLATFORMS = ["github", "jira", "universal"] as const;
@@ -431,9 +432,11 @@ export default function TemplateSettingsPage() {
       {isLoading && <div className="text-muted-foreground">Loading templates…</div>}
 
       {!isLoading && templates.length === 0 && (
-        <Card className="p-8 text-center text-muted-foreground">
-          No templates yet. Create your first template or seed defaults.
-        </Card>
+        <EmptyState
+          data-testid="templates-empty"
+          title="No templates yet."
+          description="Create your first template."
+        />
       )}
 
       <div className="space-y-3">

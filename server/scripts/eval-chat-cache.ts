@@ -176,8 +176,13 @@ async function main(): Promise<void> {
   const { getProjectContentVersion } = await import("../src/lib/projects/content-version.js");
   const { CACHEABLE_TOOLS, getToolResultCache } =
     await import("../src/lib/ai/tool-runtime/tool-result-cache.js");
-  const { resolveSessionTools, loadSessionToolsFlags, sessionGate, withoutApprovalGatedTools } =
-    await import("../src/lib/ai/tool-runtime/session-tools.js");
+  const {
+    resolveSessionTools,
+    loadSessionToolsFlags,
+    offersSearchGuidance,
+    sessionGate,
+    withoutApprovalGatedTools,
+  } = await import("../src/lib/ai/tool-runtime/session-tools.js");
   const { runChatToolTurn } = await import("../src/lib/ai/tool-runtime/chat-turn.js");
   const { prepareTurn, loadChatTurnConfig } = await import("../src/lib/ai/conversation/turn.js");
   const { buildSemanticCacheScope } = await import("../src/lib/ai/semantic-cache.js");
@@ -290,6 +295,7 @@ async function main(): Promise<void> {
         session,
         tools.mode === "native" ? NATIVE_CHAT_TOOL_NOTE : tools.schemaBlock,
         { mode: tools.skillMode, catalog: tools.skillCatalog },
+        offersSearchGuidance(tools),
       );
       const prefix = [...library.stable, ...library.volatile];
       const rag = await buildAutoRagContext(

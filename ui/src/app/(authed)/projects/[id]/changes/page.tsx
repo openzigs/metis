@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * Change Analysis page — Epic #557 / Issue #568.
+ * Compare analyses page (was Change Analysis) — Epic #557 / Issue #568; renamed in #2334 / #2381.
  *
  * Lists change analysis runs, allows triggering new ones (base vs head),
  * and displays detected changes with approve/reject workflow.
@@ -212,7 +212,7 @@ export default function ChangeAnalysisPage() {
               {!isLoading && (changeAnalyses ?? []).length === 0 && (
                 <EmptyState
                   data-testid="change-analyses-empty"
-                  title="No change analyses yet."
+                  title="No comparisons yet."
                   description="Comparisons of two completed analyses belong here. Pick a base and a head analysis above and run one."
                 />
               )}
@@ -271,7 +271,7 @@ function ChangeAnalysisDetailPanel({
   return (
     <div data-testid="change-detail">
       <div className="flex justify-between items-center mb-4">
-        <h2 className="text-lg font-semibold">Change Analysis Detail</h2>
+        <h2 className="text-lg font-semibold">Comparison details</h2>
         <StatusBadge status={detail.status} />
       </div>
 

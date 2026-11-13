@@ -199,6 +199,7 @@ import { ChangeRequestSummary } from "@/components/analysis/change-request-summa
 import { proposedChangeRequestTitle } from "@/components/analysis/change-request-steps";
 import { ChangeRequestStepHeader } from "@/components/analysis/change-request-step-header";
 import { CHANGE_REQUEST_TITLE_MAX, normaliseChangeRequestTitle } from "@metis/shared";
+import { EmptyState } from "@/components/ui/empty-state";
 
 const SPECIALIST_AGENTS: AnalysisAgentKey[] = ["document", "code", "database", "web"];
 
@@ -694,7 +695,7 @@ export default function AnalysisPage(): React.ReactElement {
     // Issue #30 — the SAME key ApprovalsPanel reads and invalidates. Under its
     // own key this copy was never invalidated, so resolving an approval left
     // the Deep Dive gate (and now the tab's pending count) stale until reload.
-    queryKey: ["approvals", selectedAnalysisId ?? ""],
+    queryKey: queryKeys.approvals.forAnalysis(selectedAnalysisId ?? ""),
     queryFn: () => analysisApi.listApprovals(projectId, selectedAnalysisId!),
     enabled: Boolean(projectId && selectedAnalysisId) && detail.data?.status === "completed",
   });
@@ -1088,7 +1089,12 @@ export default function AnalysisPage(): React.ReactElement {
           <h3 className="mb-3 text-base font-semibold">Change requests</h3>
           {list.isLoading ? <p className="text-sm">Loading…</p> : null}
           {list.data?.items?.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No change requests yet.</p>
+            <EmptyState
+              className="p-4"
+              data-testid="analysis-runs-empty"
+              title="No change requests yet."
+              description="Each change request you start is listed here."
+            />
           ) : null}
           <ul className="space-y-1">
             {list.data?.items?.map((item) => (

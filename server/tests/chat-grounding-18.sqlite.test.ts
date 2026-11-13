@@ -11,8 +11,13 @@ import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 import { PrismaClient } from "@prisma/client";
 import express from "express";
 import request from "supertest";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { readGeneratedClientProvider } from "./lib/db/generated-client-provider.js";
+import {
+  EMPTY_RESULT_INSTRUCTIONS,
+  SEARCH_GUIDANCE_INSTRUCTION,
+  ZERO_RESULT_INSTRUCTIONS,
+} from "../src/lib/ai/search-guidance.js";
 import {
   createMigratedSqlite,
   type MigratedSqlite,
@@ -697,6 +702,56 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(res.body.data.grounding).toEqual(expected);
         expect(await replyGroundings(sessionId)).toEqual([expected]);
       });
+    });
+
+    /**
+     * #2390 — `CHAT_SEARCH_GUIDANCE` through the real /chat and /stream routes:
+     * the lead the model reads carries the guidance block when the flag is on and
+     * a code tool is offered, and a graph result that is not a miss reaches the
+     * model with its own instruction. Replacing either route's
+     * `offersSearchGuidance(tools)` with `false` turns this red.
+     */
+    describe("#2390 — the search guidance reaches the model through both chat routes", () => {
+      const CALLERS = JSON.stringify({ tool: "search_code_graph", args: { calls: "Validator" } });
+      const lead = (prompt: ChatMessage[] | undefined) =>
+        (prompt ?? []).filter((m) => m.role === "system").map((m) => String(m.content));
+      beforeEach(() => {
+        process.env.CHAT_CODE_SEARCH_TOOLS = "true";
+      });
+      afterEach(() => {
+        delete process.env.CHAT_SEARCH_GUIDANCE;
+      });
+
+      it.each(["/api/ai/stream", "/api/ai/chat"])(
+        "%s: with the flag on, the lead carries the guidance and a found-but-uncalled symbol is not 'nothing found'",
+        async (route) => {
+          process.env.CHAT_SEARCH_GUIDANCE = "true";
+          model.chatReplies = [CALLERS, "Nothing calls the validator."];
+          const sessionId = await newSession(PROJECT);
+          const res = await post(route, { sessionId, message: "who calls the validator?" });
+          expect(res.status, res.text).toBe(200);
+          expect(lead(model.prompts[0])).toContain(SEARCH_GUIDANCE_INSTRUCTION);
+          // The tool's result, as the model read it in its next call.
+          const fed = JSON.stringify(model.prompts[1]);
+          expect(fed).toContain('No symbols call \\"Validator\\".');
+          expect(fed).toContain(
+            JSON.stringify(ZERO_RESULT_INSTRUCTIONS["no-call-edges"]).slice(1, -1),
+          );
+          expect(fed).not.toContain(JSON.stringify(EMPTY_RESULT_INSTRUCTIONS).slice(1, -1));
+        },
+      );
+
+      it.each(["/api/ai/stream", "/api/ai/chat"])(
+        "%s: with the flag off, neither the block nor any result instruction is sent",
+        async (route) => {
+          model.chatReplies = [CALLERS, "Nothing calls the validator."];
+          const sessionId = await newSession(PROJECT);
+          const res = await post(route, { sessionId, message: "who calls the validator?" });
+          expect(res.status, res.text).toBe(200);
+          expect(lead(model.prompts[0])).not.toContain(SEARCH_GUIDANCE_INSTRUCTION);
+          expect(JSON.stringify(model.prompts[1])).not.toContain("Instructions from METIS");
+        },
+      );
     });
 
     describe("#464 — the project-scoped search-knowledge tool counts as grounding", () => {

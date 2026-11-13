@@ -36,7 +36,9 @@ export function groundingText(g: ChatGrounding): string {
         return `Insufficient evidence — nothing in ${g.projectName} was relevant enough to this question${weak}; check any file or code it names`;
       }
       if (g.reason === "retrieval-failed") {
-        return `Retrieval failed — ${g.projectName}'s knowledge base could not be searched for this reply; check any file or code it names`;
+        // #2326 — the class of failure, a fixed phrase; never the error's text.
+        const why = g.failure ? ` (${g.failure})` : "";
+        return `Retrieval failed — ${g.projectName}'s knowledge base could not be searched for this reply${why}; check any file or code it names`;
       }
       // PR #437 review: say only what is known. Auto-retrieval supplied no
       // excerpts, but the model may still have read the project through its
@@ -96,6 +98,73 @@ export function coverageText(g: ChatGrounding): string | null {
   return `Partial coverage — only ${matchingChunks} of ${totalChunks} indexed sections in ${g.projectName} are searchable with the current embedding model; re-index to search the rest`;
 }
 
+type GroundingIndexOf = NonNullable<Extract<ChatGrounding, { status: "grounded" }>["index"]>;
+
+function indexOf(g: ChatGrounding): GroundingIndexOf | undefined {
+  return g.status === "grounded" || g.status === "no-context" ? g.index : undefined;
+}
+
+/** `2026-11-12T05:27:41.000Z` → `2026-11-12 05:27 UTC`. */
+function indexedAtText(iso: string): string {
+  return `${iso.slice(0, 16).replace("T", " ")} UTC`;
+}
+
+/**
+ * #2326 — what the project's index was when the reply was answered: each
+ * repository's last indexed commit and time and how its last indexing run
+ * ended. `null` when the server sent no index facts (or the project has no
+ * repository).
+ */
+export function indexText(g: ChatGrounding): string | null {
+  const index = indexOf(g);
+  if (!index || index.repos.length === 0) return null;
+  const repos = index.repos.map((r) => {
+    const commit = r.commitSha ? ` @ ${r.commitSha.slice(0, 7)}` : "";
+    const when = r.indexedAt ? `, indexed ${indexedAtText(r.indexedAt)}` : ", never indexed";
+    const run = `last run ${r.lastRun}${r.error ? ` (${r.error})` : ""}`;
+    return `${r.label}${commit}${when} · ${run}`;
+  });
+  return `Index: ${repos.join("; ")}`;
+}
+
+const INDEX_WARNINGS: Record<Exclude<GroundingIndexOf["state"], "healthy">, string> = {
+  failed: "the last indexing run failed",
+  "never-indexed": "nothing in this project has been indexed yet",
+  "in-progress": "indexing is still in progress",
+  partial: "the index is partial",
+};
+
+/**
+ * What is wrong with one repository's index, in the server's order
+ * (`repoState` in `index-status.ts`); `null` when nothing is.
+ */
+function repoIssue(r: GroundingIndexOf["repos"][number]): string | null {
+  if (r.lastRun === "running") return `${r.label} is still being indexed`;
+  if (r.lastRun === "failed" || r.error) {
+    return `the last indexing of ${r.label} failed${r.error ? ` (${r.error})` : ""}`;
+  }
+  if (r.lastRun === "partial") return `the index of ${r.label} is partial`;
+  if (r.lastRun === "interrupted") return `indexing of ${r.label} was interrupted`;
+  if (r.lastRun === "never") return `repository ${r.label} is not indexed yet`;
+  return null;
+}
+
+/**
+ * #2326 — a warning when the index is failed, empty, partial or being built;
+ * `null` when healthy. It names the part that is missing — one repository not
+ * indexed yet beside indexed documents is not "nothing indexed" (#2384).
+ */
+export function indexWarningText(g: ChatGrounding): string | null {
+  const index = indexOf(g);
+  if (!index || index.state === "healthy") return null;
+  const issues = index.repos.map(repoIssue).filter((i): i is string => i !== null);
+  const what =
+    index.state === "never-indexed" || issues.length === 0
+      ? INDEX_WARNINGS[index.state]
+      : issues.join("; ");
+  return `Index warning — ${what}, so this reply may miss code or documents that are not indexed`;
+}
+
 function relevanceText(relevance: number | undefined): string {
   return relevance === undefined ? "" : ` · relevance ${relevance.toFixed(2)}`;
 }
@@ -110,6 +179,8 @@ export function GroundingBadge({ grounding }: { grounding: ChatGrounding | undef
     grounding.status === "grounded" || (grounding.status === "multi" && multiGrounded(grounding));
   const sources = grounding.status === "grounded" ? (grounding.sourcesUsed ?? []) : [];
   const coverage = coverageText(grounding);
+  const index = indexText(grounding);
+  const indexWarning = indexWarningText(grounding);
   return (
     <div
       data-testid="chat-grounding"
@@ -137,6 +208,16 @@ export function GroundingBadge({ grounding }: { grounding: ChatGrounding | undef
       {coverage ? (
         <p data-testid="chat-grounding-coverage" className="text-warning">
           {coverage}
+        </p>
+      ) : null}
+      {indexWarning ? (
+        <p data-testid="chat-grounding-index-warning" className="text-warning">
+          {indexWarning}
+        </p>
+      ) : null}
+      {index ? (
+        <p data-testid="chat-grounding-index" className="text-muted-foreground">
+          {index}
         </p>
       ) : null}
     </div>

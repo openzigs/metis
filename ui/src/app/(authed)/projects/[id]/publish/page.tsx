@@ -71,6 +71,7 @@ import {
   type BatchWithIssues,
 } from "@/components/publishing/published-issues";
 import { PageHeader } from "@/components/ui/page-header";
+import { EmptyState } from "@/components/ui/empty-state";
 
 const keys = {
   drafts: (pid: string) => ["publishing", "drafts", pid] as const,
@@ -866,7 +867,13 @@ export default function PublishingPage() {
               </li>
             ))}
             {!drafts.data?.length && (
-              <li className="py-2 text-xs text-muted-foreground">No drafts yet.</li>
+              <li>
+                <EmptyState
+                  className="p-4"
+                  data-testid="publish-drafts-empty"
+                  title="No drafts yet."
+                />
+              </li>
             )}
           </ul>
         )}
@@ -909,6 +916,9 @@ export default function PublishingPage() {
               placeholder="${vault:my-token-label}"
               value={batchSecret}
               onChange={setBatchSecret}
+              // The server checks ownership only for a live run to a GHE base
+              // URL, so github.com and dry runs may use any vault secret.
+              offerOnlyBindable={!!batchBaseUrl.trim()}
             />
             <p
               id="batchSecretHelp"

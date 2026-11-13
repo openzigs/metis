@@ -75,13 +75,24 @@ interface DisplayMessage extends Partial<Omit<DisplayTurn, "role" | "content">> 
  * box gives no guidance, so we offer a few representative actions.
  */
 const SUGGESTED_PROMPTS: { title: string; prompt: string }[] = [
-  { title: "Summarize a project", prompt: "Give me a high-level summary of this project." },
-  { title: "Find recent changes", prompt: "What are the most recent changes in this codebase?" },
+  // #2382 — an analyst's questions, in plain language. The bracketed part is
+  // theirs to fill in before sending.
   {
-    title: "Explain a codebase area",
-    prompt: "Explain how the authentication flow works in this codebase.",
+    title: "What does this system do?",
+    prompt: "In plain language, what does this system do, who uses it, and for what?",
   },
-  { title: "Draft a plan", prompt: "Help me draft an implementation plan for a new feature." },
+  {
+    title: "How does it work today?",
+    prompt: "Walk me through how [a process, such as placing an order] works today, step by step.",
+  },
+  {
+    title: "Does it already do this?",
+    prompt: "Does the system already do this, and where? [describe what the business needs]",
+  },
+  {
+    title: "What would a change affect?",
+    prompt: "If we changed [a rule, screen or report], what else would be affected?",
+  },
 ];
 
 /** #1412 — shown when a `?sessionId=` link names a chat that cannot be opened. */

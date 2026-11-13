@@ -494,9 +494,12 @@ describe("#140 native tools in chat", () => {
       const sid = await newSession(app);
       await stream(app, sid);
       const offered = (model.requests[0]!.opts.tools ?? []).map((t) => t.name).sort();
-      // #2327 — the search primitives stay behind their own key, off by default.
+      // #2327 — the search primitives stay behind their own key, off by default;
+      // #2329 — search_code_context too, off until measured.
       expect(offered).toEqual(
-        CHAT_CODE_TOOL_NAMES.filter((n) => n !== "grep_files" && n !== "list_files").sort(),
+        CHAT_CODE_TOOL_NAMES.filter(
+          (n) => n !== "grep_files" && n !== "list_files" && n !== "search_code_context",
+        ).sort(),
       );
     } finally {
       delete process.env.CHAT_TOOLS;
@@ -513,7 +516,10 @@ describe("#140 native tools in chat", () => {
       const sid = await newSession(app);
       await stream(app, sid);
       const tools = model.requests[0]!.opts.tools ?? [];
-      expect(tools.map((t) => t.name).sort()).toEqual([...CHAT_CODE_TOOL_NAMES].sort());
+      // #2329's search_code_context stays behind its own key.
+      expect(tools.map((t) => t.name).sort()).toEqual(
+        CHAT_CODE_TOOL_NAMES.filter((n) => n !== "search_code_context").sort(),
+      );
       const symbols = tools.find((t) => t.name === "search_code_symbols")!;
       expect(Object.keys((symbols.parameters as { properties: object }).properties)).toContain(
         "fileGlob",

@@ -56,6 +56,15 @@ vi.mock("@/lib/change-analysis-api", () => ({
   publishDestinationApi: { get: vi.fn().mockResolvedValue(null), update: vi.fn() },
 }));
 
+vi.mock("@/lib/vault-api", () => ({
+  vaultApi: {
+    list: vi.fn().mockResolvedValue({
+      items: [{ id: "v1", label: "team-pat", description: null, bindable: false }],
+    }),
+  },
+}));
+
+import userEvent from "@testing-library/user-event";
 import { analysisApi } from "@/lib/analysis-api";
 import { ApiError } from "@/lib/api-client";
 import { publishingApi } from "@/lib/publishing-api";
@@ -193,6 +202,27 @@ describe("PublishingPage — analysis picker", () => {
         expect.objectContaining({ targetBaseUrl: "https://other.example.com/api/v3" }),
       ),
     );
+  });
+
+  it("#2382 — offers an admin-stored secret for github.com, but filters by ownership once a GHE base URL is set", async () => {
+    const Wrapper = makeWrapper({});
+    render(
+      <Wrapper>
+        <PublishingPage />
+      </Wrapper>,
+    );
+    const user = userEvent.setup();
+    const trigger = await screen.findByRole("combobox", { name: /vault secret/i });
+    await user.click(trigger);
+    expect(await screen.findByRole("option", { name: /team-pat/ })).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+
+    fireEvent.change(screen.getByLabelText("GHE base URL (optional)"), {
+      target: { value: "https://ghe.example.com/api/v3" },
+    });
+    await user.click(screen.getByRole("combobox", { name: /vault secret/i }));
+    expect(await screen.findByTestId("vault-picker-none-bindable")).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: /team-pat/ })).toBeNull();
   });
 
   /** The page with an analysis picked and a target typed, ready to Generate. */

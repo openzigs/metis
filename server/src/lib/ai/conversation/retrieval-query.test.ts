@@ -2,7 +2,10 @@
  * #2240 — the searches a chat turn runs, read from the conversation, and the
  * excerpts an answer cited, carried to the next turn.
  */
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { loadBaQaFixture } from "../../eval/ba-qa/fixture.js";
 import type { ChatMessage } from "../types.js";
 import type { StoredMessage } from "./transcript-store.js";
 import {
@@ -172,6 +175,57 @@ describe("assistantQuestion / isFollowUp", () => {
   });
 });
 
+/**
+ * #2269 — the follow-up heuristic against the labelled multi-turn BA questions
+ * (`eval-data/corpus/baqa-01-acme-reader`), as `pnpm eval:ba-qa --multi-turn`
+ * measured it: every self-contained question is searched on its own, and the
+ * follow-ups that name no subject of their own are read with the turn before.
+ */
+describe("the follow-up heuristic on the BA question set (#2269)", () => {
+  const corpus = loadBaQaFixture(
+    path.resolve(
+      path.dirname(fileURLToPath(import.meta.url)),
+      "../../../../..",
+      "eval-data/corpus/baqa-01-acme-reader",
+    ),
+  );
+  /**
+   * Follow-ups that name a subject of their own (four content words), so they
+   * are searched as written. Forcing them to follow-ups was measured to find no
+   * expected file that their own words missed, and loosening the content-word
+   * cap to four would re-admit "Are there any GDPR requirements in the
+   * onboarding spec?".
+   */
+  const SEARCHED_AS_WRITTEN = ["F5", "F8"];
+  const plan = (before: string[], text: string) =>
+    planRetrievalQueries([
+      ...before.flatMap((b) => [user(b), assistant("Here is what the sources show.")]),
+      user(text),
+    ]);
+
+  it("reads no self-contained question as a follow-up, mid-conversation or not", async () => {
+    const f = await corpus;
+    const self = f.questions.filter(
+      (q) => q.refersBack === false || (!q.before && q.category !== "ambiguous"),
+    );
+    expect(self.length).toBeGreaterThanOrEqual(16);
+    for (const q of self) {
+      expect(plan(q.before ?? ["What does the server do?"], q.text)?.contextual, q.id).toBeNull();
+    }
+  });
+
+  it("reads each subject-less follow-up with the turn before it", async () => {
+    const f = await corpus;
+    const refers = f.questions.filter((q) => q.refersBack);
+    for (const q of refers) {
+      const contextual = plan(q.before!, q.text)?.contextual ?? null;
+      if (SEARCHED_AS_WRITTEN.includes(q.id)) expect(contextual, q.id).toBeNull();
+      else expect(contextual, q.id).toContain(q.before!.at(-1)!);
+    }
+    expect(refers.filter((q) => !SEARCHED_AS_WRITTEN.includes(q.id)).length).toBe(4);
+  });
+});
+
 describe("planSearches", () => {
   it("separates the user's own searches from the conversational one", () => {
     const plan = { primary: "q", parts: ["a part?", "b part?"], contextual: "q\nbefore" };
@@ -256,8 +310,49 @@ describe("citedExcerptIds", () => {
 
   it("reads a locator, and a file name (every excerpt of that file)", () => {
     expect(citedExcerptIds("As `src/fees.ts:10-20` shows", excerpts)).toEqual(["c3"]);
-    expect(citedExcerptIds("Per rules.md#1, …", excerpts)).toEqual(["c1", "c2"]);
+    // The locator names #1 exactly; the file name adds the rest of rules.md after it.
+    expect(citedExcerptIds("Per rules.md#1, …", excerpts)).toEqual(["c2", "c1"]);
     expect(citedExcerptIds("rules.md says…", excerpts)).toEqual(["c1", "c2"]);
+  });
+
+  // #2269 — measured: with the flags off, 13 of the 16 first answers that cited an
+  // excerpt named it as "`file` (chunk #N)", and none used [n].
+  const py: CitableExcerpt[] = [1, 5, 17, 18, 19, 20].map((pos, i) => ({
+    n: i + 1,
+    chunkId: `p${pos}`,
+    name: "miniflux.py",
+    locator: `miniflux.py#${pos}`,
+  }));
+
+  it("reads a file's chunk numbers as written after its name (#2269)", () => {
+    expect(citedExcerptIds("They subclass `ClientError` (`miniflux.py`, chunk #17).", py)).toEqual([
+      "p17",
+      "p1",
+      "p5",
+      "p18",
+    ]);
+    expect(citedExcerptIds("In `miniflux.py` (chunk #19): raises", py).slice(0, 1)).toEqual([
+      "p19",
+    ]);
+    // Lists and ranges of chunk numbers.
+    expect(citedExcerptIds("`miniflux.py` (chunks #5, #1 and #20)", py).slice(0, 3)).toEqual([
+      "p1",
+      "p5",
+      "p20",
+    ]);
+    expect(citedExcerptIds("(`miniflux.py`, chunks #17-#19).", py).slice(0, 3)).toEqual([
+      "p17",
+      "p18",
+      "p19",
+    ]);
+    // A chunk number with no file before it names nothing.
+    expect(citedExcerptIds("See chunk #17.", py)).toEqual([]);
+  });
+
+  it("does not read a locator inside a longer chunk number (#2269)", () => {
+    // `miniflux.py#18` is not `miniflux.py#1`.
+    expect(citedExcerptIds("Per `miniflux.py#18`.", py).slice(0, 1)).toEqual(["p18"]);
+    expect(citedExcerptIds("Per `miniflux.py#18`.", py)).toEqual(["p18", "p1", "p5", "p17"]);
   });
 
   it("cites nothing for an answer with no citations, a number out of range, or no excerpts", () => {
@@ -277,6 +372,31 @@ describe("citedExcerptIds", () => {
       locator: `f${i + 1}.md#0`,
     }));
     expect(citedExcerptIds("[1][2][3][4][5][6]", many)).toEqual(["k1", "k2", "k3", "k4"]);
+  });
+
+  it("fills the cap with numbered and locator citations before whole-file ones (#2269)", () => {
+    // Four excerpts of one long file, then two the answer cites exactly: a file
+    // name pulls in every excerpt of the file, and must not crowd out the
+    // excerpts the answer named by number or locator.
+    const doc = Array.from({ length: 4 }, (_, i) => ({
+      n: i + 1,
+      chunkId: `d${i + 1}`,
+      name: "miniflux.1.txt",
+      locator: `miniflux.1.txt#${i}`,
+    }));
+    const cited = [
+      ...doc,
+      { n: 5, chunkId: "o", name: "internal/config/options.go", locator: "options.go#7" },
+      { n: 6, chunkId: "s", name: "internal/cli/scheduler.go", locator: "scheduler.go#1" },
+    ];
+    expect(
+      citedExcerptIds("miniflux.1.txt lists it; the default is in [5] and scheduler.go#1.", cited),
+    ).toEqual(["o", "s", "d1", "d2"]);
+    // With room to spare every match is kept, the exact ones first.
+    expect(citedExcerptIds("See miniflux.1.txt and [6].", [doc[0]!, cited[5]!])).toEqual([
+      "s",
+      "d1",
+    ]);
   });
 
   it("records the citation under the meta key, and nothing when none", () => {

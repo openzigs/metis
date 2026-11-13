@@ -43,6 +43,8 @@ import {
   type SubAgentLimits,
 } from "../../agent-runtime/subagents.js";
 import { resolveCapabilities } from "../capabilities.js";
+import { offersGroundingTool, searchGuidanceEnabled, withSearchUsage } from "../search-guidance.js";
+import { indexStatusEnabled } from "../index-status.js";
 import type { AIProvider, RiskLevel } from "../types.js";
 import { getToolRegistry, type ToolRegistry } from "../tool-registry.js";
 import {
@@ -94,6 +96,22 @@ export interface SessionToolRuntime {
    * tool loop runs; the tools read them when they execute.
    */
   subAgents: AgentToolsContext | null;
+  /**
+   * #2324 — `CHAT_SEARCH_GUIDANCE` was on when the toolset was built: its
+   * grounding tools carry the search usage and per-result instructions. Read
+   * through {@link offersSearchGuidance}, which also checks one is offered.
+   */
+  searchGuidance?: boolean;
+}
+
+/**
+ * #2324 — whether this turn's prompt gets the search-guidance block: the
+ * guidance is on AND a code/knowledge tool is offered in the turn.
+ */
+export function offersSearchGuidance(runtime: SessionToolRuntime): boolean {
+  return (
+    runtime.searchGuidance === true && offersGroundingTool(runtime.toolset.tools.map((t) => t.name))
+  );
 }
 
 export interface SessionToolsFlags {
@@ -117,6 +135,10 @@ export interface SessionToolsFlags {
   progressiveSkills?: boolean;
   /** #147 `CHAT_SUBAGENTS` — offer the project's agents as tools (default on). */
   subAgents?: boolean;
+  /** #2324 `CHAT_SEARCH_GUIDANCE` — how to search, on the grounding tools and their results. */
+  searchGuidance?: boolean;
+  /** #2326 `CHAT_INDEX_STATUS` — the index-status tool and context line (default on). */
+  indexStatus?: boolean;
 }
 
 /** #2327 — `CHAT_CODE_SEARCH_PRIMITIVES`'s default. */
@@ -137,6 +159,8 @@ export function loadSessionToolsFlags(): SessionToolsFlags {
     codeSearchToolsOnTextProtocol: cfg.getBool("CHAT_CODE_SEARCH_TOOLS", false),
     progressiveSkills: cfg.getBool("CHAT_PROGRESSIVE_SKILLS", true),
     subAgents: cfg.getBool("CHAT_SUBAGENTS", true),
+    searchGuidance: searchGuidanceEnabled(),
+    indexStatus: indexStatusEnabled(),
   };
 }
 
@@ -313,8 +337,12 @@ export async function resolveSessionTools(
     };
   }
   const codeTools = flags.codeSearchTools
-    ? getChatCodeTools(input.codeToolDeps, { primitives: flags.codeSearchPrimitives === true })
+    ? getChatCodeTools(input.codeToolDeps, {
+        indexStatus: flags.indexStatus !== false,
+        primitives: flags.codeSearchPrimitives === true,
+      })
     : [];
+  const searchGuidance = flags.searchGuidance === true;
 
   if (native) {
     const base =
@@ -330,6 +358,7 @@ export async function resolveSessionTools(
                 : input.mcp
               : null,
             agentAllowlist,
+            searchGuidance,
           });
     const taken = new Set(base.tools.map((t) => t.wireName));
     const agentTools = skillTools().filter((t) => !taken.has(t.wireName));
@@ -384,6 +413,7 @@ export async function resolveSessionTools(
       skillCatalog: catalog,
       approvalOverride: agent.approvalOverride,
       subAgents,
+      searchGuidance,
     };
   }
 
@@ -397,13 +427,19 @@ export async function resolveSessionTools(
   if (allowed.length === 0) return off(catalog, agent.approvalOverride, agentAllowlist);
   return {
     mode: "text",
-    toolset: makeToolset(allowed.map((t) => codeRuntimeTool(t, t.name))),
-    schemaBlock: formatToolSchemas(allowed),
+    toolset: makeToolset(allowed.map((t) => codeRuntimeTool(t, t.name, { searchGuidance }))),
+    // #2324 — the text protocol reads its descriptions from this block.
+    schemaBlock: formatToolSchemas(
+      searchGuidance
+        ? allowed.map((t) => ({ ...t, description: withSearchUsage(t.name, t.description) }))
+        : allowed,
+    ),
     agentAllowlist,
     skillMode: "inline",
     skillCatalog: catalog,
     approvalOverride: agent.approvalOverride,
     subAgents: null,
+    searchGuidance,
   };
 }
 

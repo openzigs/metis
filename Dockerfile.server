@@ -425,13 +425,24 @@ RUN echo "os patch level: ${OS_PATCH_DATE}" \
 # Trixie renamed the library for the 64-bit time_t transition (`libaio1t64`,
 # `libaio.so.1t64`); Instant Client asks for `libaio.so.1`, hence the link.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends libaio1t64 \
+ && apt-get install -y --no-install-recommends libaio1t64 git ca-certificates \
  && rm -rf /var/lib/apt/lists/* \
  && LIBAIO="$(find /usr/lib -name 'libaio.so.1t64' | head -n 1)" \
  && ln -s "$LIBAIO" "$(dirname "$LIBAIO")/libaio.so.1"
 COPY --from=oracle-client /opt/oracle/instantclient /opt/oracle/instantclient
 RUN echo /opt/oracle/instantclient > /etc/ld.so.conf.d/oracle-instantclient.conf \
  && ldconfig
+
+# #2395 — repository connectors clone through simple-git
+# (server/src/lib/connectors/repo/repo-service.ts), which spawns the `git` binary,
+# and the slim base image ships none: every ingest from a repository connector
+# failed in this image while working in local development. `git` and
+# `ca-certificates` are installed in the libaio layer above: trixie's git is 2.47,
+# above the 2.36 the clone's `--filter=blob:limit` needs, and ca-certificates is
+# only a Recommends of git, so --no-install-recommends leaves it out (the base
+# purges it) and every https clone would fail certificate verification. The
+# smoke's `git` probe (scripts/lib/smoke-server-image.mjs) checks the version,
+# git-remote-https and the CA bundle in every arm.
 
 # Compiled application code.
 COPY --from=builder    --chown=metis:metis /app/server/dist             ./server/dist

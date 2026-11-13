@@ -817,8 +817,8 @@ say so in the write-up (#2229 did this for two strings).
 `corpus/baqa-01-acme-reader/` is Phase 0 of #2228: the questions a business analyst asks
 chat, over a two-product sample called Acme Reader. The two products are the Miniflux server
 (`miniflux/v2` at 2.3.3, Apache-2.0) and its Python client (`miniflux/python-client` at
-1.1.6, MIT). `questions.json` holds 23 questions in four categories, and the category fixes
-what a good reply does:
+1.1.6, MIT). `questions.json` holds 23 one-turn questions in four categories, plus the
+multi-turn set below, and the category fixes what a good reply does:
 
 | Category | Questions | A good reply |
 |---|---:|---|
@@ -1283,3 +1283,187 @@ literal); A0 reads the committed rows and is not affected.
   re-ingested from scratch on the same `main` code, differs from the first in 25 of 39 lists and
   from the branch in 22. No redacted file appears in any list that changed.
 - **Spend:** $1.592819 in all, the four BA-QA runs above. Localization A0 calls no model.
+
+### Index status (#2326), 2026-11-12
+
+`--index-fault failed|partial` records every product's last indexing run as failed (an embedding
+timeout) or partial (200 of 500 eligible files, 300 past the file limit) for one run, and
+restores the record afterwards. The indexed content is left as it is, so the arms differ only in
+what the model is told. `CHAT_INDEX_STATUS` controls that: when the index is unhealthy, a status
+line leads the retrieved-knowledge block, and `get_index_status` is offered. The scorer
+(`server/src/lib/eval/ba-qa/index-fault.ts`, `mentionsIndexProblem`) counts the answers that say
+the index failed, is partial or is incomplete. These were Sonnet 5.5 runs on the `tools-only`
+arm, using the nine single-product questions:
+
+```bash
+CHAT_INDEX_STATUS=0 pnpm eval:ba-qa --arm tools-only --budget 2 --index-fault failed --questions S1,S2,S3,S4,S5,S6,A3,U3,U4
+CHAT_INDEX_STATUS=1 pnpm eval:ba-qa --arm tools-only --budget 2 --index-fault failed --questions S1,S2,S3,S4,S5,S6,A3,U3,U4
+```
+
+| | failed, before | failed, after | partial, before | partial, after |
+|---|---:|---:|---:|---:|
+| Answers that state the index problem | 0/9 | **7/9** | 0/9 | **8/9** |
+| Abstentions that assert absence without it | 2/2 | 2/2 | 2/2 | **0/2** |
+| Correctness: mean facts stated | 86% | 80% | 84% | 76% |
+| Citation precision | 84% (38/45) | 81% (29/36) | 88% (36/41) | 82% (31/38) |
+| Abstention on unanswerable / false abstention | 2/2, 0/6 | 2/2, 0/6 | 2/2, 0/6 | 2/2, 0/6 |
+| Input tokens / question | 31,300 | 25,500 | 26,900 | 26,100 |
+
+- **Without the status, no answer mentioned the index.** That held in both faults, because the
+  model had no way to know about it. With the status on, 7 and 8 of 9 answers said the index was
+  failed or partial. In the partial run, both abstentions on unanswerable questions (U3 uptime
+  promise, U4 download counts) named the partial index instead of only asserting absence. In the
+  failed run they did not. The answer to both of those questions really is outside the code, so
+  asserting absence there is not wrong.
+- **Facts stated and precision fell by 3 to 8 points with the status on.** That is within the
+  run-to-run spread on this set: two runs of the same arm differed by 7 points in #2324's
+  measurement. The status line is only added when the index is unhealthy, so a healthy project's
+  prompt is unchanged. `CHAT_INDEX_STATUS` is **on by default**.
+- The status line costs about 80 tokens per turn when it is shown. The four runs spent $1.445313,
+  answers and judge.
+
+### Multi-turn questions (#2269)
+
+`questions.json` also holds 8 multi-turn questions, `F1` to `F8`, which measure #2240's
+conversation-aware retrieval. Each one carries `before`, the analyst's earlier turn. That turn
+is asked and answered live in the same session, and recorded in the transcript the way the chat
+routes record it, including the excerpts the answer cited. Only the last turn is graded, and the
+judge is shown the earlier turn.
+
+`refersBack` labels each graded turn. Six turns lean on the earlier one: "I meant the login
+sessions.", "How often does that run?", "And when a user changes them later?", "Can I change its
+request timeout?", "How many feeds does it refresh at a time?" and "Which exception do I get when
+its API key is wrong?". Two are self-contained controls asked mid-conversation. F6 is S2's
+question after S1. F7 is a "there" question that names its own subject. All 8 are
+single-product, so retrieval runs.
+
+```bash
+pnpm eval:ba-qa --arm off --budget 2 --multi-turn                            # production (#2240)
+pnpm eval:ba-qa --arm off --budget 2 --multi-turn --retrieval last-message \
+  --include eval-results/ba-qa/<conversation run>.json                       # the new message alone
+```
+
+`--multi-turn` selects the set. Without it a run asks the 18 one-turn questions, as before.
+`--retrieval last-message` searches only the new message, as chat did before #2240. The report
+labels that arm `off+last-message`. In either mode, the graded turn is also searched the other
+way, locally and at no model cost. The **Multi-turn retrieval** table therefore shows, for both
+modes, how many expected source files the excerpts held. It also shows how many labelled
+follow-ups the planner caught, how many controls it misread, and how many cited excerpts were
+carried forward.
+
+#### Measured 2026-11-11 (Sonnet 5.5 answers and judge, 8 questions per arm)
+
+| | off | off+last-message | on | on+last-message |
+|---|---:|---:|---:|---:|
+| Correctness: mean facts stated | 55% | 55% | 98% | 98% |
+| Fully correct answers | 4/8 | 4/8 | 7/8 | 7/8 |
+| Citation recall | 7/20 | 7/20 | 14/20 | 13/20 |
+| Expected files in the excerpts: conversation-aware | 7/20 | 8/20 | 7/20 | 6/20 |
+| … new message alone | 7/20 | 7/20 | 5/20 | 5/20 |
+| Follow-ups the planner caught | 4/6 | 4/6 | 4/6 | 4/6 |
+| Controls read as follow-ups | 0/2 | 0/2 | 0/2 | 0/2 |
+| Spend (answers + judge) | $0.500310 | $0.341409 | $0.917685 | $0.717946 |
+
+The `off` and `on` columns were run after the tuning below. The `+last-message` columns were run
+before it, and the tuning does not change their retrieval.
+
+- **Retrieval reading the conversation finds slightly more, and answers are no better on this
+  set.** Over the four runs, the conversation-aware excerpts held 28 expected files and the new
+  message alone held 24. F1 ("I meant the login sessions.") gained `internal/ui/auth.go` from
+  the conversational search. F7 gained a file through carry-forward. F2 ("How often does that
+  run?") lost `internal/cli/scheduler.go`, which was the user's own 8th hit, to two hits found
+  only by the conversational search. Correctness was the same in both modes. With the flags on,
+  the code-search tools find what retrieval missed either way.
+- **The follow-up heuristic is unchanged.** It read no control as a follow-up, F7's "there"
+  question included. It missed F5 and F8, which name four content words each. Searching those
+  two as follow-ups was measured to find no expected file that their own words missed. Raising
+  the content-word cap to four would catch them, but it would also re-admit "Are there any GDPR
+  requirements in the onboarding spec?". A test pins this: every labelled turn in the set is
+  read as measured.
+- **Carry-forward read the wrong excerpts, and was tuned.** With the flags off, the answers named
+  excerpts as "`file` (chunk #N)". 13 of the 16 earlier answers that cited anything did so, and
+  none used `[n]`. Only the file name matched, so the 4-excerpt cap filled with the file's first
+  excerpts in block order. `citedExcerptIds` now reads "`file` (chunk #N)", "chunks #A, #B and
+  #C" and "chunks #A-#B" as locators. It fills the cap with numbered and located excerpts before
+  whole-file matches, and it no longer reads `file#1` inside `file#18`. Replayed on the recorded
+  first answers, the excerpts the answers pointed at rose from 27 to 31 of the 33 that fit the
+  cap.
+- **Spend varies from run to run.** The same question's answer cost $0.022 in one run and
+  $0.054 in the next (F2, `off`). So the spend gap between the modes is within run-to-run noise.
+
+Spend for #2269: **$3.830035** over seven runs. That is a one-question smoke run ($0.055899),
+the four runs before tuning ($0.458762, $0.341409, $0.838024 and $0.717946), and the two
+conversation-aware runs after tuning ($0.500310 and $0.917685).
+
+### Search guidance (#2324), 2026-11-12
+
+`CHAT_SEARCH_GUIDANCE` adds three things: a prompt block on how to search, sharper descriptions
+on the four grounding tools, and a fixed instruction after each grounding result. It was
+measured on the `tools-only` arm, which is how chat ships. The runs used the nine
+single-product questions (S1 to S6, A3, U3, U4), with Sonnet 5.5 answers and judge, in two
+paired runs. Each pair ran without the guidance first, then with it:
+
+```bash
+CHAT_SEARCH_GUIDANCE=0 pnpm eval:ba-qa --arm tools-only --budget 2 --questions S1,S2,S3,S4,S5,S6,A3,U3,U4
+CHAT_SEARCH_GUIDANCE=1 pnpm eval:ba-qa --arm tools-only --budget 2 --questions S1,S2,S3,S4,S5,S6,A3,U3,U4
+```
+
+| | without, run 1 | with, run 1 | without, run 2 | with, run 2 |
+|---|---:|---:|---:|---:|
+| Correctness: mean facts stated | 83% | 83% | 76% | 76% |
+| Fully correct answers | 2/6 | 3/6 | 1/6 | 1/5 |
+| Citation precision | 88% (36/41) | 80% (33/41) | 84% (38/45) | 81% (30/37) |
+| Citation recall (expected files cited) | 10/15 | 10/15 | 10/15 | 8/13 |
+| Right behaviour, single-product | 6/6 | 6/6 | 6/6 | 5/5 |
+| Input tokens / question | 28,100 | 37,500 | 21,700 | 30,900 |
+| Model calls / question | 2.89 | 3.44 | 2.56 | 3.11 |
+
+- **Facts stated did not move, and citation precision fell in both pairs**, by 8 and 3 points.
+  Between the two runs without the guidance, precision varied by 4 points. The issue lets the
+  guidance ship on only if facts stated or citation precision improves and neither gets worse,
+  so `CHAT_SEARCH_GUIDANCE` is **off by default**.
+- **It costs about 9,000 more input tokens and 0.55 more model calls per question.** The prompt
+  block and the four descriptions add about 570 tokens to the cached lead. The rest comes from
+  the extra searches the model runs: 36 tool calls in the first run with the guidance, against
+  32 without.
+- In the second run with the guidance, the judge's reply for S5 could not be read, so that run
+  is scored on five answerable questions.
+- Dollar spend is not compared, for the reason given in the #2243 section: each run reads the
+  prompt cache of the run before it. The four runs spent $1.452168 in total, answers and judge.
+
+### Search guidance re-measured after the not-a-miss fix (#2390), 2026-11-12
+
+#2390 gives a `search_code_graph` result that counts 0 but is not a miss its own instruction:
+a name that matches several symbols, probable call sites only, or a found symbol with no call
+edges. Before the fix, all three got "nothing was found; search again". The measurement was
+re-run with the same commands, questions, arm and model (Sonnet 5.5 answers and judge), in two
+paired runs on a fresh materialization. Each pair ran without the guidance first, then with it.
+Since #2325, the report splits citation precision into citations with line spans (judged on
+the span) and files named without lines (judged by file), so both are shown, with their sum.
+
+| | without, run 1 | with, run 1 | without, run 2 | with, run 2 |
+|---|---:|---:|---:|---:|
+| Correctness: mean facts stated | 81% | 76% | 80% | 80% |
+| Fully correct answers | 2/5 | 1/5 | 2/6 | 2/6 |
+| Citation precision, line spans | 100% (42/42) | 100% (36/36) | 98% (39/40) | 100% (42/42) |
+| Citation precision, files without lines | 17% (1/6) | 0% (0/3) | 22% (2/9) | 0% (0/9) |
+| Citation precision, both | 90% (43/48) | 92% (36/39) | 84% (41/49) | 82% (42/51) |
+| Citation recall (expected files cited) | 8/13 | 6/11 | 10/15 | 9/15 |
+| Right behaviour, single-product | 5/5 | 5/5 | 6/6 | 6/6 |
+| Input tokens / question | 40,900 | 35,800 | 37,800 | 38,900 |
+| Model calls / question | 3.22 | 3.11 | 3.11 | 3.44 |
+| Tool calls, all nine questions | 44 | 35 | 39 | 38 |
+
+- **Facts stated did not move.** Each question that both runs of a pair scored got the same
+  count of facts in both. Run 1's means differ only because the judge's reply could not be
+  read for a different question in each arm (S5 without the guidance, S3 with it).
+- **Citation precision did not improve.** Precision on cited line spans was 100% in three runs
+  and 98% in the fourth, so it has no room to rise. Over all citations, the guidance was 2
+  points better in one pair and 2 points worse in the other, inside the 4-point spread between
+  the two runs without it. Recall was 1 or 2 files lower with the guidance in both pairs.
+- **So `CHAT_SEARCH_GUIDANCE` stays off by default**, by the issue's rule: turn it on only if
+  facts stated or citation precision improves and neither gets worse.
+- Unlike #2324's runs, the guidance added no input tokens on average: 5,100 fewer per question
+  in one pair and 1,100 more in the other. These runs do not record the text of tool results, so
+  they cannot show how many results got the new instructions.
+- The four runs spent $1.662181 in total, answers and judge.

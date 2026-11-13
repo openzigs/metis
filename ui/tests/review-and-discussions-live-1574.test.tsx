@@ -195,6 +195,7 @@ describe("the discussions list follows discussion:changed (#1574)", () => {
     listThreadsMock.mockResolvedValue([]);
     renderList();
     expect(await screen.findByText(/No discussions yet/)).toBeInTheDocument();
+    expect(screen.getByTestId("discussions-empty")).toHaveAttribute("data-slot", "empty-state");
     expect(socket!.emitted("subscribe:project", { projectId: "p-1" })).toBe(1);
 
     listThreadsMock.mockResolvedValue([thread("t-new", "Feed refresh timing")]);

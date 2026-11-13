@@ -303,6 +303,32 @@ export const MODULE_PROBES = Object.freeze([
     code: 'const os = await import("node:os"); const fs = await import("node:fs"); const path = await import("node:path"); const d = path.join(os.homedir(), ".metis-sessions", "smoke"); fs.mkdirSync(d, { recursive: true }); fs.rmSync(d, { recursive: true });',
   },
   {
+    // #2395 — repository connectors clone through simple-git
+    // (server/src/lib/connectors/repo/repo-service.ts), which spawns the `git`
+    // binary, and node:22-trixie-slim ships none: ingest failed while /healthz
+    // stayed green. Asked through simple-git, resolved from the server's cwd as the
+    // server resolves it. The clone's `--filter=blob:limit` needs git >= 2.36.
+    name: "git",
+    code: [
+      'const { simpleGit } = await import("simple-git");',
+      'const out = await simpleGit(process.cwd()).raw(["--version"]);',
+      "const m = /git version (\\d+)\\.(\\d+)/.exec(out);",
+      'if (!m) throw new Error("git --version printed " + JSON.stringify(out));',
+      "const [major, minor] = [Number(m[1]), Number(m[2])];",
+      'if (major < 2 || (major === 2 && minor < 36)) throw new Error("git " + major + "." + minor + " is older than 2.36, which the repository clone\'s --filter=blob:limit needs");',
+      // `--version` proves the binary, not that a clone can work. An https clone
+      // needs git-remote-https and a CA bundle: --no-install-recommends leaves
+      // ca-certificates out and the slim base purges it, so every https clone
+      // fails certificate verification while Node's bundled roots keep Octokit
+      // working. Both checks are offline.
+      'const fs = await import("node:fs"); const path = await import("node:path");',
+      'const execPath = (await simpleGit(process.cwd()).raw(["--exec-path"])).trim();',
+      'if (!fs.existsSync(path.join(execPath, "git-remote-https"))) throw new Error("git-remote-https is missing from " + execPath + ": https clones cannot work");',
+      'const ca = process.env.SSL_CERT_FILE || "/etc/ssl/certs/ca-certificates.crt";',
+      'if (!fs.existsSync(ca)) throw new Error("no CA bundle at " + ca + ": every https clone fails certificate verification (install ca-certificates)");',
+    ].join(" "),
+  },
+  {
     // The Oracle connector in thick mode (server/src/lib/connectors/db/drivers/oracle.ts),
     // which is what the Instant Client in the image exists for.
     name: "oracle-thick",

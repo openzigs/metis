@@ -30,6 +30,10 @@ export function projectRetriever(
       undefined,
       capture,
     );
-    return { block, sources: capture.sources };
+    return {
+      block,
+      sources: capture.sources,
+      ...(capture.indexStatusLine ? { indexStatus: capture.indexStatusLine } : {}),
+    };
   };
 }

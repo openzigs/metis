@@ -1533,7 +1533,9 @@ export async function runAgentLoop(
   /** The model's copy of one result: header first (compaction keys on it). */
   const resultMessageText = (name: string, r: ToolResult, fence: boolean): string => {
     const body = `${r.content}${r.truncated ? "\n[Results truncated]" : ""}`;
-    return fence ? fenceToolResult(name, body) : `Tool result for ${name}:\n${body}`;
+    const text = fence ? fenceToolResult(name, body) : `Tool result for ${name}:\n${body}`;
+    // #2324 — server-authored, so it sits OUTSIDE the data fence.
+    return r.instructions ? `${text}\n${r.instructions}` : text;
   };
 
   // Conversation history. On the analysis path, any volatile graph/code context

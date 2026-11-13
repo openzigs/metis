@@ -10,6 +10,7 @@
  */
 import type { AiToolEvent, AiToolEventPhase, CodeCitationRef } from "@metis/shared";
 import type { RiskLevel } from "../types.js";
+import type { ZeroResultKind } from "../../analysis/tools/types.js";
 
 /** #147 — `agent`: a sub-agent call (the tool runs another agent). */
 export type ToolSource = "metis" | "mcp" | "code" | "agent";
@@ -20,6 +21,8 @@ export interface RuntimeToolResult {
   isError?: boolean;
   /** Code tools and `search-knowledge` (#464): how many results came back (`0` = a well-formed empty result). */
   resultCount?: number;
+  /** #2390 — a `resultCount: 0` that is not a miss (`ToolResult.zeroResultKind`). */
+  zeroResultKind?: ZeroResultKind;
   truncated?: boolean;
   /** #147 — the sub-agent run this call started, when the tool ran an agent. */
   subAgentRunId?: string;
@@ -77,6 +80,12 @@ export interface RuntimeTool {
    * through to the gate (and `execute` re-checks).
    */
   unavailableNow?: () => Promise<string | null>;
+  /**
+   * #2324 — the fixed `instructions` the model reads after this tool's result
+   * (outside its data fence), or `undefined` for none. Server-authored
+   * constants only — never text built from the result.
+   */
+  instructionsFor?: (result: RuntimeToolResult) => string | undefined;
   /** Validate raw model arguments BEFORE anyone is asked to approve them. */
   validate(args: unknown): { ok: true; args: unknown } | { ok: false };
   execute(args: unknown, ctx: RuntimeToolContext): Promise<RuntimeToolResult>;

@@ -144,7 +144,10 @@ describe("<Breadcrumbs />", () => {
 
     it("a route reached from inside a section ends at its own label", async () => {
       const { current, links } = await crumbsAt("/projects/p1/sync");
-      expect(links).toEqual([["Deliverables", "/projects/p1/documentation"]]);
+      expect(links).toEqual([
+        ["Deliverables", "/projects/p1/documentation"],
+        ["Publish", "/projects/p1/publish"],
+      ]);
       expect(current[0]).toHaveTextContent("Issue updates");
     });
 

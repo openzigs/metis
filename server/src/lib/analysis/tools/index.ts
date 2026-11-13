@@ -20,13 +20,26 @@ import type { AgentTool } from "./types.js";
 import { chatSearchCodeGraphTool } from "./search-code-graph.js";
 import { createSearchSymbolsTool, type SearchSymbolsDeps } from "./search-symbols.js";
 import { createChatReadFileSliceTool } from "./chat-read-file-slice.js";
+import { indexStatusTool } from "./index-status.js";
 import { createChatGrepFilesTool, createChatListFilesTool } from "./chat-file-tools.js";
 import { loadCodeVersions } from "../../code-graph/code-version.js";
+import { getConfigService } from "../../config/config-service.js";
+import {
+  createSearchCodeContextTool,
+  DEFAULT_MERGE_GAP,
+  DEFAULT_TOKEN_BUDGET,
+} from "./search-code-context.js";
 
 export { CHAT_CODE_TOOL_NAMES } from "./chat-code-tool-names.js";
 
 /** Deps for the chat-facing code tool set (test seams for the hybrid searcher). */
-export type ChatCodeToolDeps = Partial<SearchSymbolsDeps>;
+export type ChatCodeToolDeps = Partial<SearchSymbolsDeps> & {
+  /**
+   * #2329 — offer `search_code_context`. Defaults to `CHAT_CODE_CONTEXT_TOOL`
+   * (off until measured).
+   */
+  codeContext?: boolean;
+};
 
 /**
  * Epic #712 / Issue #713 — the curated code-search tool set offered on the
@@ -46,16 +59,36 @@ export type ChatCodeToolDeps = Partial<SearchSymbolsDeps>;
  */
 export function getChatCodeTools(
   deps?: ChatCodeToolDeps,
-  opts: { primitives?: boolean } = {},
+  opts: { indexStatus?: boolean; primitives?: boolean } = {},
 ): AgentTool[] {
   const primitives = opts.primitives === true;
+  const { codeContext, ...searchDeps } = deps ?? {};
   // #2325 — chat's graph and symbol searches state the indexed commit of every
   // hit; the analysis surface's copies do not.
   const tools = [
     chatSearchCodeGraphTool,
-    createSearchSymbolsTool({ loadVersions: loadCodeVersions, ...deps }, { filters: primitives }),
+    createSearchSymbolsTool(
+      { loadVersions: loadCodeVersions, ...searchDeps },
+      { filters: primitives },
+    ),
     createChatReadFileSliceTool(),
+    // #2326 — `CHAT_INDEX_STATUS`: what the index holds, and how its last run went.
+    ...(opts.indexStatus === false ? [] : [indexStatusTool]),
   ];
   if (primitives) tools.push(createChatGrepFilesTool(), createChatListFilesTool());
+  // #2329 — whole-symbol context, beside the other tools (never instead of
+  // them), and the same searcher, so the ranking is the one they see.
+  const cfg = getConfigService();
+  if (codeContext ?? cfg.getBool("CHAT_CODE_CONTEXT_TOOL", false)) {
+    tools.push(
+      createSearchCodeContextTool({
+        ...(searchDeps.searcher ? { searcher: searchDeps.searcher } : {}),
+        ...(searchDeps.lineLookup ? { lineLookup: searchDeps.lineLookup } : {}),
+        ...(searchDeps.loadVersions ? { loadVersions: searchDeps.loadVersions } : {}),
+        mergeGap: cfg.getNumber("CHAT_CODE_CONTEXT_MERGE_GAP", DEFAULT_MERGE_GAP),
+        tokenBudget: cfg.getNumber("CHAT_CODE_CONTEXT_TOKEN_BUDGET", DEFAULT_TOKEN_BUDGET),
+      }),
+    );
+  }
   return tools;
 }

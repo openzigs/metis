@@ -110,8 +110,8 @@ function clip(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max)}… [truncated]` : text;
 }
 
-/** A line that opens or closes a fenced code block. */
-const FENCE = /^(`{3,}|~{3,})/;
+/** A line that opens a fenced code block: its marker run, then any info string. */
+const FENCE_OPEN = /^(`{3,}|~{3,})/;
 
 /**
  * The summary of a Spec Kit `spec.md`: the text under its `# Spec` heading, up
@@ -119,17 +119,27 @@ const FENCE = /^(`{3,}|~{3,})/;
  * A spec without that heading is shown from its start. `""` when there is no
  * text at all, or none under the heading. #2282 — a `#` line inside a fenced
  * code block is code, not a heading, so it neither starts nor ends the summary.
+ * #2309 — as in CommonMark, a fence closes only on a run of its opener's
+ * character at least as long as the opener's, with nothing after it but spaces:
+ * a `~~~` inside a backtick fence, or three backticks inside four, is code.
  */
 export function specSummary(spec: string): string {
   const lines = spec.split(/\r?\n/);
-  let fenced = false;
+  /** The open fence's marker run (e.g. "````"), or null outside a fence. */
+  let fence: string | null = null;
   const isHeading = lines.map((l) => {
     const line = l.trim();
-    if (FENCE.test(line)) {
-      fenced = !fenced;
+    if (fence !== null) {
+      const closes = line.length >= fence.length && line === fence[0]!.repeat(line.length);
+      if (closes) fence = null;
       return false;
     }
-    return !fenced && /^#{1,6}\s/.test(line);
+    const open = FENCE_OPEN.exec(line);
+    if (open) {
+      fence = open[1]!;
+      return false;
+    }
+    return /^#{1,6}\s/.test(line);
   });
   const start = lines.findIndex((l, i) => isHeading[i] && /^#\s+spec\s*$/i.test(l.trim()));
   if (start === -1) return spec.trim();

@@ -9,8 +9,9 @@
  *   - `agent-runtime/secret-scan.ts` — refuses an agent or skill definition that
  *     carries a {@link SecretPattern.highConfidence} match;
  *   - repository SOURCE at ingest (`connectors/connector-ingest.ts`), code-graph
- *     symbol text at write time (`code-graph/ingest.ts`) and `read_file_slice` at
- *     read time (`analysis/tools/read-file-slice.ts`) call {@link redactSecrets}.
+ *     symbol text at write time (`code-graph/ingest.ts`) and every clone read at
+ *     read time (`readCloneFileLines` in `analysis/tools/read-file-slice.ts`,
+ *     shared by `read_file_slice` and `search_code_context`) call {@link redactSecrets}.
  *     A new read path over repository text (grep and list tools, #2327; MCP
  *     results, #2331) calls it too.
  *

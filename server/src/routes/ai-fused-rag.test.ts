@@ -38,6 +38,7 @@ import {
   stableLeadText,
   CITATION_INSTRUCTION,
 } from "../lib/ai/chat-system-prompt.js";
+import { SEARCH_GUIDANCE_INSTRUCTION } from "../lib/ai/search-guidance.js";
 import { __resetConfigSingleton } from "../lib/config/config-service.js";
 import type {
   FusedCodeDeps,
@@ -284,6 +285,20 @@ describe("caching placement — fused block lands in the volatile tail (#700/#69
     expect(workspace.stable.map((m) => m.content)).toContain(ANSWER_POLICY_INSTRUCTION);
   });
 
+  // #2324 — the search guidance goes to a turn whose tools can search the sources.
+  it("adds the search guidance after the answering policy only when asked to", async () => {
+    const session = { agentId: null, loadedSkillIds: "[]", projectId: "p1" };
+    const guided = await buildLibrarySystemMessages(session, "", undefined, true);
+    const lead = guided.stable.map((m) => m.content);
+    expect(lead.indexOf(SEARCH_GUIDANCE_INSTRUCTION)).toBe(
+      lead.indexOf(ANSWER_POLICY_INSTRUCTION) + 1,
+    );
+    expect(guided.volatile.map((m) => m.content)).not.toContain(SEARCH_GUIDANCE_INSTRUCTION);
+    const plain = await buildLibrarySystemMessages(session, "", undefined, false);
+    expect(plain.all.map((m) => m.content)).not.toContain(SEARCH_GUIDANCE_INSTRUCTION);
+    expect(stableLeadText(await buildLibrarySystemMessages(session))).toBe(stableLeadText(plain));
+  });
+
   it("keeps the citation-bearing lead byte-identical across two same-config requests", async () => {
     const session = { agentId: null, loadedSkillIds: "[]", projectId: null };
     const first = await buildLibrarySystemMessages(session);
@@ -441,7 +456,10 @@ describe("buildAutoRagContext — #1321 context capture", () => {
     const out = await buildAutoRagContext("p1", [userTurn], "u1", fusedDeps([], {}), capture);
 
     // #2241 — no excerpt, and the model is told the search failed.
-    expect(out).toBe(RETRIEVAL_FAILED_BLOCK);
+    expect(out.startsWith(RETRIEVAL_FAILED_BLOCK)).toBe(true);
+    // #2326 — the class of failure, not the error's text.
+    expect(out).toContain('Retrieval failed for "ETAG": vector index unavailable.');
+    expect(out).not.toContain("lancedb down");
     expect(capture.contexts).toEqual([]);
     expect(capture.sources).toBe(0);
   });

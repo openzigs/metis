@@ -462,6 +462,8 @@ export async function runChatToolTurn(
             ...(typeof executed.resultCount === "number"
               ? { resultCount: executed.resultCount }
               : {}),
+            // #2324 — fixed text, rendered after the result's data fence.
+            ...(executed.instructions ? { instructions: executed.instructions } : {}),
           };
         },
       },

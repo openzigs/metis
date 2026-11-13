@@ -18,6 +18,7 @@ import { useAuth } from "@/lib/auth-context";
 import { WithdrawReviewButton } from "@/components/reviews/WithdrawReviewButton";
 import { DueDateBadge, ReviewStatusBadge } from "@/components/reviews/review-badges";
 import { PageHeader } from "@/components/ui/page-header";
+import { EmptyState } from "@/components/ui/empty-state";
 
 const TABS = ["assigned", "requested"] as const;
 type Tab = (typeof TABS)[number];
@@ -27,10 +28,12 @@ const TAB_LABELS: Record<Tab, string> = {
   requested: "Requested by me",
 };
 
-const EMPTY_MESSAGES: Record<Tab, string> = {
-  assigned: "No reviews assigned to you.",
-  requested:
-    "You haven't requested any reviews yet. Request one from a project's Requirements page.",
+const EMPTY_MESSAGES: Record<Tab, { title: string; description?: string }> = {
+  assigned: { title: "No reviews assigned to you." },
+  requested: {
+    title: "You haven't requested any reviews yet.",
+    description: "Request one from a project's Requirements page.",
+  },
 };
 
 /** Query filters per tab — identity resolves server-side from the session. */
@@ -87,7 +90,7 @@ export default function ReviewsPage() {
               Failed to load reviews. Please try again.
             </p>
           ) : reviews.length === 0 ? (
-            <Card className="p-6 text-sm text-muted-foreground">{EMPTY_MESSAGES[tab]}</Card>
+            <EmptyState data-testid="reviews-empty" {...EMPTY_MESSAGES[tab]} />
           ) : (
             <ul className="space-y-2" aria-label={TAB_LABELS[tab]}>
               {reviews.map((review) => (

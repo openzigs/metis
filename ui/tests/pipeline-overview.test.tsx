@@ -6,6 +6,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
+import fs from "node:fs";
+import path from "node:path";
 
 vi.mock("next/navigation", async (orig) => ({
   ...(await orig<typeof import("next/navigation")>()),
@@ -49,6 +51,7 @@ import { useProjectJobEvents } from "@/hooks/use-job-events";
 import { useConnectorProgress } from "@/hooks/use-connector-events";
 import ChangeAnalysisPage from "@/app/(authed)/projects/[id]/changes/page";
 import { getProjectTabModel, resolveActiveProjectTab } from "@/components/projects/project-tabs";
+import { queryKeys } from "@/lib/query-keys";
 
 const repos = vi.mocked(repoConnectorsApi.list);
 const dbs = vi.mocked(dbConnectorsApi.list);
@@ -255,6 +258,66 @@ describe("checklist steps", () => {
       "href",
       "/projects/p1/analysis?analysisId=a1&tab=approvals",
     );
+  });
+
+  // #2376 — the Overview's count refreshes only because it shares the approvals
+  // cache key that ApprovalsPanel and the analysis page invalidate (the #30
+  // lesson). Resolve the approvals "elsewhere" by invalidating that key.
+  it("#2376 — refreshes when approvals are resolved elsewhere", async () => {
+    listAnalyses.mockResolvedValue({ items: [COMPLETED] });
+    getAnalysis.mockResolvedValue({ requirements: [{ reviewStatus: "approved" }] } as never);
+    pendingApprovals(3);
+    const { qc } = renderOverview();
+    await waitFor(() =>
+      expect(screen.getByTestId("pipeline-status-review")).toHaveTextContent("3 approvals pending"),
+    );
+    pendingApprovals(0);
+    await act(() => qc.invalidateQueries({ queryKey: queryKeys.approvals.forAnalysis("a1") }));
+    await waitFor(() =>
+      expect(screen.getByTestId("pipeline-status-review")).toHaveTextContent(
+        "All requirements reviewed",
+      ),
+    );
+  });
+
+  // #2376 — and every reader and invalidator goes through that one key: a
+  // literal ["approvals", …] elsewhere could drift from it unnoticed.
+  it("#2376 — no approvals cache key is spelled out by hand", () => {
+    const root = path.resolve(__dirname, "../src");
+    const offenders: string[] = [];
+    const walk = (dir: string) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) walk(full);
+        else if (/\.tsx?$/.test(entry.name) && !entry.name.endsWith(".test.tsx")) {
+          if (/queryKey:\s*\[\s*["']approvals["']/.test(fs.readFileSync(full, "utf8"))) {
+            offenders.push(path.relative(root, full));
+          }
+        }
+      }
+    };
+    walk(root);
+    expect(offenders).toEqual([]);
+  });
+
+  // #2376 — a run whose structured extraction failed must not read Done (#1081).
+  it("#2376 — says the questions could not be prepared when extraction failed", async () => {
+    listAnalyses.mockResolvedValue({ items: [COMPLETED] });
+    getAnalysis.mockResolvedValue({
+      requirements: [{ reviewStatus: "approved" }],
+      metadata: {
+        enhancement: { enableClarification: true, enableWebResearch: false },
+        structuredExtractionFailure: { reason: "invalid-json", at: "2026-09-01T10:04:00Z" },
+      },
+    } as never);
+    renderOverview();
+    await waitFor(() =>
+      expect(screen.getByTestId("pipeline-status-review")).toHaveTextContent(
+        "Clarifying questions could not be prepared",
+      ),
+    );
+    expect(screen.getByTestId("pipeline-stage-review")).toHaveTextContent("Needs attention:");
+    expect(screen.getByTestId("pipeline-status-review")).not.toHaveTextContent(/all requirements/i);
   });
 
   it("#2367 — needs attention after a review rejects every requirement", async () => {
