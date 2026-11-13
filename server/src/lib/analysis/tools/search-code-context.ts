@@ -91,6 +91,7 @@ import {
   createDefaultCodeSearcher,
   createDefaultSymbolLineLookup,
 } from "../../code-graph/project-code-searcher.js";
+import { resolveSourceIngestLimits } from "../../connectors/connector-ingest.js";
 
 export const SEARCH_CODE_CONTEXT_TOOL = "search_code_context";
 /** Spans returned when the call names no `limit`. */
@@ -108,12 +109,6 @@ export const DEFAULT_MERGE_GAP = 3;
 export const DEFAULT_MAX_SPAN_LINES = 120;
 /** The whole result's budget, in tokens (4 characters each, as the fused block). */
 export const DEFAULT_TOKEN_BUDGET = 4000;
-/**
- * #2412 — the largest file a span is read from, in bytes: the source ingest's
- * default (`REPO_SOURCE_MAX_FILE_BYTES`). A larger file (generated or bundled
- * code, most likely) is left out and counted, never read into memory.
- */
-export const DEFAULT_MAX_FILE_BYTES = 1024 * 1024;
 /**
  * #2412 — the longest line returned, in characters; the rest is cut and its
  * length said. A minified line would otherwise spend the whole token budget.
@@ -153,7 +148,12 @@ export interface SearchCodeContextDeps {
    */
   listRepoIds: NonNullable<ChatCloneDeps["listRepoIds"]>;
   readHead: (cloneDir: string) => Promise<string | null>;
-  /** #2412 — a file larger than this many bytes is not read. */
+  /**
+   * #2412 — a file larger than this many bytes is not read (generated or
+   * bundled code, most likely): left out and counted, never read into memory.
+   * Defaults to the source ingest's own limit, `REPO_SOURCE_MAX_FILE_BYTES`
+   * as configured, so every file the ingest indexed can be read here.
+   */
   maxFileBytes: number;
   mergeGap: number;
   maxSpanLines: number;
@@ -263,7 +263,7 @@ export function createSearchCodeContextTool(deps: Partial<SearchCodeContextDeps>
   const mergeGap = Math.max(0, deps.mergeGap ?? DEFAULT_MERGE_GAP);
   const maxSpanLines = Math.max(SIGNATURE_LINES + 1, deps.maxSpanLines ?? DEFAULT_MAX_SPAN_LINES);
   const tokenBudget = deps.tokenBudget ?? DEFAULT_TOKEN_BUDGET;
-  const maxFileBytes = deps.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES;
+  const maxFileBytes = deps.maxFileBytes ?? resolveSourceIngestLimits().maxFileBytes;
 
   async function execute(args: unknown, context: ToolContext): Promise<ToolResult> {
     const validated = validateArgs(args);
@@ -537,10 +537,17 @@ export function fitSpan(
   }
 }
 
-/** #2412 — a line cut to {@link MAX_LINE_CHARS}, saying how much was cut. */
-function capLine(line: string): string {
+/**
+ * #2412 — a line cut to {@link MAX_LINE_CHARS} UTF-16 units, saying how much
+ * was cut. A cut never splits a surrogate pair: when the last unit kept would
+ * be a high surrogate, the cut backs off one unit, so an astral character
+ * (an emoji) is kept or cut whole, never left as a lone surrogate.
+ */
+export function capLine(line: string): string {
   if (line.length <= MAX_LINE_CHARS) return line;
-  return `${line.slice(0, MAX_LINE_CHARS)} …[${line.length - MAX_LINE_CHARS} more characters cut]`;
+  const last = line.charCodeAt(MAX_LINE_CHARS - 1);
+  const keep = last >= 0xd800 && last <= 0xdbff ? MAX_LINE_CHARS - 1 : MAX_LINE_CHARS;
+  return `${line.slice(0, keep)} …[${line.length - keep} more characters cut]`;
 }
 
 /** One span as the model reads it: a head with its locators, then numbered lines. */

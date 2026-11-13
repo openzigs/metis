@@ -28,7 +28,7 @@ import {
   SEARCH_CODE_CONTEXT_TOOL,
   SEARCH_DEPTH,
   MAX_LINE_CHARS,
-  DEFAULT_MAX_FILE_BYTES,
+  capLine,
   type SearchCodeContextDeps,
 } from "./search-code-context.js";
 import { DEFAULT_LIMIT } from "./search-symbols.js";
@@ -624,11 +624,19 @@ describe("search_code_context (#2329)", () => {
     expect(r.content).toContain("1 matching span was left out: the file is over 1 KB");
     expect(r.content).not.toContain("dist/bundle.js");
     expect(r.content).not.toContain("could not be read");
-    // The default cap is the source ingest's.
-    expect(DEFAULT_MAX_FILE_BYTES).toBe(1024 * 1024);
+    // The default cap is the source ingest's (1 MiB unless configured).
     expect((await createSearchCodeContextTool(d).execute({ query: "q" }, CTX)).resultCount).toBe(2);
-    // At the cap exactly, the file is read; one byte over, it is not.
     const { size } = await stat(path.join(clone, "dist/bundle.js"));
+    // ...and follows REPO_SOURCE_MAX_FILE_BYTES as the operator configured it.
+    vi.stubEnv("REPO_SOURCE_MAX_FILE_BYTES", String(size - 1));
+    try {
+      expect((await createSearchCodeContextTool(d).execute({ query: "q" }, CTX)).resultCount).toBe(
+        1,
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    // At the cap exactly, the file is read; one byte over, it is not.
     for (const [cap, returned] of [
       [size, 2],
       [size - 1, 1],
@@ -653,6 +661,22 @@ describe("search_code_context (#2329)", () => {
     );
     expect(r.content).toContain("1| M1");
     expect(r.content).toContain("3| M3");
+  });
+
+  it("#2412: never cuts a line inside a surrogate pair", () => {
+    const emoji = "\u{1F600}"; // two UTF-16 units
+    // The pair straddles the cut: it is dropped whole, not split.
+    const straddling = `${"a".repeat(MAX_LINE_CHARS - 1)}${emoji}${"b".repeat(10)}`;
+    expect(capLine(straddling)).toBe(`${"a".repeat(MAX_LINE_CHARS - 1)} …[12 more characters cut]`);
+    // The pair ends exactly at the cut: it is kept whole.
+    const ending = `${"a".repeat(MAX_LINE_CHARS - 2)}${emoji}${"b".repeat(10)}`;
+    expect(capLine(ending)).toBe(
+      `${"a".repeat(MAX_LINE_CHARS - 2)}${emoji} …[10 more characters cut]`,
+    );
+    for (const line of [straddling, ending]) {
+      expect(capLine(line)).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
+    }
+    expect(capLine("short")).toBe("short");
   });
 
   it("says so when no matching file can be read", async () => {
