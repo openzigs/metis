@@ -188,6 +188,7 @@ import { applyClarificationsToRequirements } from "../lib/analysis/clarification
 import {
   persistClarificationKnowledge,
   priorAnswerSourceFor,
+  rerunReusedClarifications,
 } from "../lib/clarifications/analysis-clarifications.js";
 import { readSourceRequirements } from "../lib/analysis/source-items.js";
 import { latestRequirementApprovals } from "../lib/analysis/approved-requirement-set.js";
@@ -1265,7 +1266,7 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
         // where their answers go. Undefined (no read) with the flag off.
         governingQuestions: governingQuestionSourceFor({ analysisId, projectId, provider }),
         // #2236 — a question the project has already settled is not asked again.
-        priorAnswers: priorAnswerSourceFor(projectId),
+        priorAnswers: priorAnswerSourceFor(projectId, analysisId),
       });
 
       // Epic #922 — prefer the server-sourced structured requirements that the
@@ -1320,12 +1321,16 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
         // #2236 — the answers become project knowledge: recorded, indexed and
         // re-running what they change. After the response's work is
         // committed and off its path, metered to the project like the round.
+        // #2310 — only the round this submit answered is recorded: an earlier
+        // round's answer in an older analysis must not overwrite a newer one.
+        const answeredRound = state.rounds.at(-1)?.round;
         void runInAnalysisUsageScope(usageScope, () =>
           persistClarificationKnowledge({
             projectId,
             analysisId,
             answeredById: req.user?.userId ?? null,
             provider,
+            ...(answeredRound !== undefined ? { rounds: [answeredRound] } : {}),
           }),
         );
         res.json(ok(result));
@@ -1345,6 +1350,12 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
         // the stored requirements as typed ones do.
         if (state.reused?.some((r) => r.round === state.currentRound)) {
           await applyClarificationsToRequirements(analysisId);
+          // #2310 — and re-run what they change, as a typed answer does: off
+          // the response's path, metered to the project like the round.
+          const round = state.currentRound;
+          void runInAnalysisUsageScope(usageScope, () =>
+            rerunReusedClarifications({ projectId, analysisId, provider, round }),
+          );
         }
         res.json(ok(state));
       }
@@ -1751,13 +1762,16 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
         // Issue #1116 — the CSV round-trip is the same submit path, so it must
         // reach the artifact the same way.
         await applyClarificationsToRequirements(analysisId);
-        // #2236 — and become project knowledge the same way.
+        // #2236 — and become project knowledge the same way. #2310 — only
+        // the round this import answered is recorded.
+        const answeredRound = state.rounds.at(-1)?.round;
         void runInAnalysisUsageScope({ projectId, sessionId: analysisId }, () =>
           persistClarificationKnowledge({
             projectId,
             analysisId,
             answeredById: req.user?.userId ?? null,
             provider,
+            ...(answeredRound !== undefined ? { rounds: [answeredRound] } : {}),
           }),
         );
       }

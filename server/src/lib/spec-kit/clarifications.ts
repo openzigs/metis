@@ -43,12 +43,6 @@ export function parseClarifyMarkdown(content: string): SpecKitClarification[] {
   return out;
 }
 
-/** The question an answer given now would answer: the last one, when it is open. */
-export function pendingClarifyQuestion(content: string): string | null {
-  const last = parseClarifyMarkdown(content).at(-1);
-  return last && last.answer === null ? last.question : null;
-}
-
 /** The fence's markers, removed from quoted text so it cannot close the fence. */
 function fenced(text: string): string {
   return text

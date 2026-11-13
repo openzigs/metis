@@ -62,6 +62,12 @@ export interface GoverningFindingsRun {
   noEvidenceDemoted: number;
   /** Requirements whose evaluation failed; their earlier findings are left as they were. */
   failed: number;
+  /**
+   * #2310 — the ids of those requirements, present only when one failed: a
+   * caller storing applicability for several requirements stores the entries
+   * of the ones whose findings were written.
+   */
+  failedRequirementIds?: string[];
 }
 
 export interface ProduceGoverningFindingsInput {
@@ -336,6 +342,7 @@ async function produceNow(input: ProduceGoverningFindingsInput): Promise<Governi
       } catch (err) {
         if (input.signal?.aborted) throw err;
         run.failed++;
+        run.failedRequirementIds = [...(run.failedRequirementIds ?? []), r.requirementId];
         log.warn("governing findings could not be evaluated for a requirement", {
           analysisId: input.analysisId,
           requirementId: r.requirementId,

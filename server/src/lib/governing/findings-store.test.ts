@@ -184,6 +184,8 @@ describe("produceGoverningFindingsForAnalysis — edges", () => {
       unverifiedCitations: 2,
       noEvidenceDemoted: 1,
     });
+    // #2310 — the run names the requirement whose evaluation failed.
+    expect(run.failedRequirementIds).toEqual(["REQ-003"]);
     expect(citableWorkspaceRules).toHaveBeenCalledWith("ws", ["r1"]);
   });
 

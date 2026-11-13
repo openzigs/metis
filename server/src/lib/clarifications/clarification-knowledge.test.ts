@@ -6,10 +6,16 @@
 import { describe, expect, it, vi } from "vitest";
 import type { StoredClarification } from "./clarification-records.js";
 
-const db = vi.hoisted(() => ({
-  document: { create: vi.fn(), findFirst: vi.fn() },
-  clarificationRecord: { updateMany: vi.fn() },
-}));
+const db = vi.hoisted(() => {
+  const d = {
+    document: { create: vi.fn(), findFirst: vi.fn() },
+    auditLog: { create: vi.fn() },
+    clarificationRecord: { updateMany: vi.fn(async () => ({ count: 1 })) },
+    $transaction: vi.fn(),
+  };
+  d.$transaction.mockImplementation(async (fn: (tx: typeof d) => unknown) => fn(d));
+  return d;
+});
 vi.mock("../prisma.js", () => ({ prisma: db }));
 
 const {
@@ -116,6 +122,100 @@ describe("#2236 — indexClarification edges", () => {
       select: { aclSubjects: true },
     });
     expect(db.document.create.mock.calls.at(-1)![0].data.aclSubjects).toBe(acl);
+  });
+
+  const storage = () => ({
+    write: vi.fn(async () => ({ sizeBytes: 7, storagePath: "p", checksum: "c" })),
+  });
+
+  it("#2310 — is its own source, with the upload audit entry, by the person who answered", async () => {
+    db.document.create.mockResolvedValueOnce({ id: "doc-new" });
+    await indexClarification(record(), { storage: storage() as never, enqueue: vi.fn() });
+    const created = db.document.create.mock.calls.at(-1)![0].data;
+    expect(created).toMatchObject({ source: "clarification", uploadedById: "u1", projectId: "p1" });
+    const audit = db.auditLog.create.mock.calls.at(-1)![0].data;
+    expect(audit).toMatchObject({
+      actorId: "u1",
+      action: "document.upload",
+      targetType: "document",
+      targetId: "doc-new",
+    });
+    expect(JSON.parse(audit.metadata)).toMatchObject({
+      projectId: "p1",
+      source: "clarification",
+      clarificationId: "rec-1",
+    });
+  });
+
+  it("#2310 — writes the new document before deleting the old, so a failed write keeps the old one linked", async () => {
+    const deleteDocument = vi.fn(async (_id: string): Promise<void> => undefined);
+    const failing = {
+      write: vi.fn(async () => {
+        throw new Error("disk full");
+      }),
+    };
+    expect(
+      await indexClarification(record({ knowledgeDocumentId: "doc-old" }), {
+        storage: failing,
+        deleteDocument,
+        enqueue: vi.fn(),
+      }),
+    ).toBeNull();
+    expect(deleteDocument).not.toHaveBeenCalled();
+    expect(db.clarificationRecord.updateMany).not.toHaveBeenCalled();
+
+    // A successful write links the new one in place of the old, then deletes the old.
+    db.document.create.mockResolvedValueOnce({ id: "doc-new" });
+    const order: string[] = [];
+    db.clarificationRecord.updateMany.mockImplementationOnce(async () => {
+      order.push("link");
+      return { count: 1 };
+    });
+    deleteDocument.mockImplementation(async (id: string) => {
+      order.push(`delete ${id}`);
+    });
+    expect(
+      await indexClarification(record({ knowledgeDocumentId: "doc-old" }), {
+        storage: storage() as never,
+        deleteDocument,
+        enqueue: vi.fn(),
+      }),
+    ).toBe("doc-new");
+    expect(order).toEqual(["link", "delete doc-old"]);
+    expect(db.clarificationRecord.updateMany).toHaveBeenCalledWith({
+      where: { projectId: "p1", id: "rec-1", knowledgeDocumentId: "doc-old" },
+      data: { knowledgeDocumentId: "doc-new" },
+    });
+  });
+
+  it("#2310 — a concurrent index that linked first wins: this copy is withdrawn, not linked or queued", async () => {
+    db.document.create.mockResolvedValueOnce({ id: "doc-late" });
+    db.clarificationRecord.updateMany.mockResolvedValueOnce({ count: 0 });
+    const deleteDocument = vi.fn(async () => undefined);
+    const enqueue = vi.fn();
+    expect(
+      await indexClarification(record(), {
+        storage: storage() as never,
+        deleteDocument,
+        enqueue,
+      }),
+    ).toBeNull();
+    expect(deleteDocument).toHaveBeenCalledWith("doc-late");
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+
+  it("#2310 — a superseded document that cannot be deleted leaves the new one linked", async () => {
+    db.document.create.mockResolvedValueOnce({ id: "doc-new" });
+    const deleteDocument = vi.fn(async () => {
+      throw new Error("store down");
+    });
+    expect(
+      await indexClarification(record({ knowledgeDocumentId: "doc-old" }), {
+        storage: storage() as never,
+        deleteDocument,
+        enqueue: vi.fn(),
+      }),
+    ).toBe("doc-new");
   });
 });
 

@@ -4,12 +4,14 @@
  * document.
  *
  * Each record is written as one small Markdown document (`documents` row,
- * source `upload`, uploaded by the person who answered) and queued for ingest
- * like an uploaded text: the same chunking, quarantine policy, ACL and
- * retrieval as the rest of the project's knowledge. When the answer changes,
- * the earlier document is deleted and the new one indexed, so a superseded
- * answer is never cited; when it is reopened (its paragraph changed), the
- * document is withdrawn ({@link withdrawClarification}).
+ * source `clarification` (#2310), uploaded by the person who answered, with a
+ * `document.upload` audit entry) and queued for ingest like an uploaded text:
+ * the same chunking, quarantine policy, ACL and retrieval as the rest of the
+ * project's knowledge. When the answer changes, the new document is indexed
+ * and then the earlier one deleted, so a superseded answer is never cited and
+ * a failed write never leaves the record naming a deleted document; when it
+ * is reopened (its paragraph changed), the document is withdrawn
+ * ({@link withdrawClarification}).
  *
  * The answer and the quoted paragraph are user- and document-authored text.
  * They are written as text, never executed or interpolated into a query, and
@@ -23,8 +25,10 @@ import { getDocumentStorage } from "../documents/storage.js";
 import type { StorageBackend } from "../documents/storage-backend.js";
 import { getIngestQueue } from "../rag/ingest-queue.js";
 import { getKnowledgeService } from "../rag/knowledge-service.js";
+import { buildAuditLogData } from "../audit/audit-service.js";
 import {
   setClarificationKnowledgeDocument,
+  swapClarificationKnowledgeDocument,
   type StoredClarification,
 } from "./clarification-records.js";
 
@@ -91,9 +95,9 @@ export interface ClarificationIndexDeps {
 /**
  * Index `record` as a project document, replacing the one it was indexed as
  * before. Returns the new document's id, or null when it could not be indexed:
- * no one to attribute it to (a record with no `answeredById`), or the write
- * failed. Never throws: the record is stored either way, and a failed index
- * is logged.
+ * no one to attribute it to (a record with no `answeredById`), the write
+ * failed, or a concurrent index of the same record linked its document first.
+ * Never throws: the record is stored either way, and a failed index is logged.
  */
 export async function indexClarification(
   record: StoredClarification,
@@ -105,10 +109,9 @@ export async function indexClarification(
   }
   const deleteDocument =
     deps.deleteDocument ?? ((id: string) => getKnowledgeService().deleteDocument(id));
+  // #2310 — the document this write replaces, as the record was read.
+  const previous = record.knowledgeDocumentId;
   try {
-    if (record.knowledgeDocumentId) {
-      await deleteDocument(record.knowledgeDocumentId);
-    }
     const storage = deps.storage ?? getDocumentStorage();
     const stored = await storage.write({
       projectId: record.projectId,
@@ -122,24 +125,77 @@ export async function indexClarification(
           select: { aclSubjects: true },
         })
       : null;
-    const document = await prisma.document.create({
-      data: {
-        projectId: record.projectId,
-        ...(sourceAcl ? { aclSubjects: sourceAcl.aclSubjects } : {}),
-        filename: clarificationFilename(record.id),
-        title: clarificationTitle(record),
-        mimeType: "text/markdown",
-        sizeBytes: stored.sizeBytes,
-        storagePath: stored.storagePath,
-        checksum: stored.checksum,
-        uploadedById: record.answeredById,
-        status: "pending",
-      },
+    const answeredById = record.answeredById;
+    const filename = clarificationFilename(record.id);
+    // #2310 — its own source, so the document lists tell it from an upload,
+    // and (A09) the `document.upload` audit entry an upload writes, by the
+    // person who answered, in the same transaction as the row.
+    const document = await prisma.$transaction(async (tx) => {
+      const created = await tx.document.create({
+        data: {
+          projectId: record.projectId,
+          ...(sourceAcl ? { aclSubjects: sourceAcl.aclSubjects } : {}),
+          filename,
+          title: clarificationTitle(record),
+          mimeType: "text/markdown",
+          sizeBytes: stored.sizeBytes,
+          storagePath: stored.storagePath,
+          checksum: stored.checksum,
+          uploadedById: answeredById,
+          source: "clarification",
+          status: "pending",
+        },
+      });
+      await tx.auditLog.create({
+        data: buildAuditLogData({
+          actorId: answeredById,
+          action: "document.upload",
+          targetType: "document",
+          targetId: created.id,
+          metadata: {
+            projectId: record.projectId,
+            filename,
+            sizeBytes: stored.sizeBytes,
+            source: "clarification",
+            clarificationId: record.id,
+          },
+        }),
+      });
+      return created;
     });
-    await setClarificationKnowledgeDocument(record.projectId, record.id, document.id);
+    // #2310 — written first, linked only if the record still names the
+    // document this write replaces: of two persists of one record, one links
+    // its document and the other withdraws its own.
+    const linked = await swapClarificationKnowledgeDocument(
+      record.projectId,
+      record.id,
+      previous,
+      document.id,
+    );
+    if (!linked) {
+      log.info("clarification indexed by a concurrent write: this copy is withdrawn", {
+        recordId: record.id,
+        documentId: document.id,
+      });
+      await deleteDocument(document.id);
+      return null;
+    }
     const enqueue =
       deps.enqueue ?? ((id: string) => getIngestQueue().enqueue(id, { priority: "manual" }));
     await enqueue(document.id);
+    // Only now is the superseded answer's document deleted, so a failed write
+    // above never leaves the record naming a document that is gone.
+    if (previous) {
+      try {
+        await deleteDocument(previous);
+      } catch (err) {
+        log.warn("a superseded clarification document could not be deleted", {
+          recordId: record.id,
+          documentId: previous,
+          error: (err as Error).message,
+        });
+      }
+    }
     return document.id;
   } catch (err) {
     log.warn("clarification could not be indexed", {

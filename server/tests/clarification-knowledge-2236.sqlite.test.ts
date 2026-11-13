@@ -45,12 +45,17 @@ const { ClarificationDialog } = await import("../src/lib/analysis/clarification-
 const { collectAnsweredQuestions } =
   await import("../src/lib/analysis/clarification-enrichment.js");
 const { writeDialogState } = await import("../src/lib/analysis/clarification-dialog-store.js");
-const { persistClarificationKnowledge, priorAnswerSourceFor, recordAnalysisClarifications } =
-  await import("../src/lib/clarifications/analysis-clarifications.js");
+const {
+  persistClarificationKnowledge,
+  priorAnswerSourceFor,
+  recordAnalysisClarifications,
+  rerunReusedClarifications,
+} = await import("../src/lib/clarifications/analysis-clarifications.js");
 const { indexClarification } = await import("../src/lib/clarifications/clarification-knowledge.js");
 const { rerunAfterClarification } =
   await import("../src/lib/clarifications/clarification-rerun.js");
-const { listClarifications } = await import("../src/lib/clarifications/clarification-records.js");
+const { findClarificationsById } =
+  await import("../src/lib/clarifications/clarification-records.js");
 const { recordSpecKitClarification } =
   await import("../src/lib/clarifications/spec-kit-clarifications.js");
 
@@ -211,6 +216,23 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       await db.document.deleteMany({});
     });
 
+    /** The project's records, newest answer first; with a feature, that Spec Kit set's. */
+    async function listRecords(projectId: string, specKitFeature?: string | null) {
+      const rows = await db.clarificationRecord.findMany({
+        where: {
+          projectId,
+          ...(specKitFeature !== undefined ? { origin: "spec-kit", specKitFeature } : {}),
+        },
+        orderBy: { answeredAt: "desc" },
+        select: { id: true },
+      });
+      const byId = await findClarificationsById(
+        projectId,
+        rows.map((r) => r.id),
+      );
+      return rows.map((r) => byId.get(r.id)!);
+    }
+
     it("records each answer with who, when, the source paragraph, the requirement and the product", async () => {
       const at = new Date("2026-11-11T10:00:00.000Z");
       const changed = await recordAnalysisClarifications({
@@ -222,7 +244,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         now: at,
       });
       expect(changed).toHaveLength(1);
-      const [stored] = await listClarifications(PA);
+      const [stored] = await listRecords(PA);
       expect(stored).toMatchObject({
         origin: "analysis",
         analysisId: A1,
@@ -259,7 +281,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         requirements: requirements("R-1"),
       });
       expect(edited.map((r) => r.answer)).toEqual(["At least 15 characters."]);
-      expect(await listClarifications(PA)).toHaveLength(1);
+      expect(await listRecords(PA)).toHaveLength(1);
     });
 
     it("a later analysis of the project reuses the settled answer instead of asking; another project asks", async () => {
@@ -272,7 +294,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
 
       const provider = questionModel();
-      const dialog = new ClarificationDialog({ provider, priorAnswers: priorAnswerSourceFor(PA) });
+      const dialog = new ClarificationDialog({
+        provider,
+        priorAnswers: priorAnswerSourceFor(PA, A2),
+      });
       const started = await dialog.startOrContinue(A2, requirements("R-9"));
       // Nothing is left to ask, so the dialog completes without a question.
       expect(started.completed).toBe(true);
@@ -299,7 +324,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       // Another project of the same workspace has no such answer: it asks.
       const other = new ClarificationDialog({
         provider: questionModel(),
-        priorAnswers: priorAnswerSourceFor(PB),
+        priorAnswers: priorAnswerSourceFor(PB, B1),
       });
       const asked = await other.startOrContinue(B1, requirements("R-9"));
       expect(asked.reused ?? []).toEqual([]);
@@ -321,13 +346,13 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const deleteDocument = vi.fn(async () => undefined);
       const dialog = new ClarificationDialog({
         provider: questionModel(),
-        priorAnswers: priorAnswerSourceFor(PA, { deleteDocument }),
+        priorAnswers: priorAnswerSourceFor(PA, A3, { deleteDocument }),
       });
       const changedParagraph = "Passwords must be long enough, or use a passkey.";
       const started = await dialog.startOrContinue(A3, requirements("R-5", changedParagraph));
       expect(started.reused ?? []).toEqual([]);
       expect(started.rounds[0]!.questions).toHaveLength(1);
-      const [record] = await listClarifications(PA);
+      const [record] = await listRecords(PA);
       expect(record).toMatchObject({ status: "reopened" });
       expect(record!.reopenedAt).toBeInstanceOf(Date);
       // The reopened answer is no longer project knowledge: it cannot be cited.
@@ -346,7 +371,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const deleteDocument = vi.fn(async () => undefined);
       const dialog = new ClarificationDialog({
         provider: questionModel(),
-        priorAnswers: priorAnswerSourceFor(PA, { deleteDocument }),
+        priorAnswers: priorAnswerSourceFor(PA, A3, { deleteDocument }),
       });
       // Same document, heading and field; another paragraph of the section.
       const sibling = "Service accounts rotate their credentials every quarter.";
@@ -354,7 +379,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       // The sibling is asked about (it has no answer of its own) ...
       expect(started.rounds[0]!.questions).toHaveLength(1);
       // ... and the first paragraph's answer still stands.
-      const [record] = await listClarifications(PA);
+      const [record] = await listRecords(PA);
       expect(record).toMatchObject({ status: "settled", reopenedAt: null });
       expect(deleteDocument).not.toHaveBeenCalled();
     });
@@ -394,7 +419,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(written[0]).toContain("**Answer:** At least 12 characters.");
       expect(written[0]).toContain("**Source paragraph:** Passwords must be long enough.");
       expect(enqueue).toHaveBeenCalledWith(first);
-      const [indexed] = await listClarifications(PA);
+      const [indexed] = await listRecords(PA);
       expect(indexed!.knowledgeDocumentId).toBe(first);
 
       const [changed] = await recordAnalysisClarifications({
@@ -407,7 +432,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const second = await indexClarification(changed!, { storage, enqueue, deleteDocument });
       expect(deleteDocument).toHaveBeenCalledWith(first);
       expect(second).not.toBe(first);
-      expect((await listClarifications(PA))[0]!.knowledgeDocumentId).toBe(second);
+      expect((await listRecords(PA))[0]!.knowledgeDocumentId).toBe(second);
     });
 
     it("persistClarificationKnowledge records from the stored dialog, indexes and re-runs only what changed", async () => {
@@ -417,6 +442,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         codeMapped: 0,
         governingRequirements: [],
         governingUnmatched: [],
+        governingRechecked: [],
       }));
       const provider = questionModel();
       const input = { projectId: PA, analysisId: A1, answeredById: USER, provider };
@@ -551,6 +577,182 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(await storedText()).toBe(third);
     });
 
+    it("#2310 — a submit records only the round it answered: an older analysis never overwrites a newer answer", async () => {
+      const index = vi.fn(async () => "doc");
+      const rerun = vi.fn(async () => ({
+        codeMapped: 0,
+        governingRequirements: [],
+        governingUnmatched: [],
+        governingRechecked: [],
+      }));
+      const provider = questionModel();
+      // A1 answers the paragraph's question in round 1.
+      await writeDialogState(A1, answeredState(A1, "R-1", "At least 12 characters."));
+      await persistClarificationKnowledge(
+        { projectId: PA, analysisId: A1, answeredById: USER, provider, rounds: [1] },
+        { index, rerun },
+      );
+      // A2, later, answers the same question differently.
+      await writeDialogState(A2, answeredState(A2, "R-9", "At least 15 characters."));
+      await persistClarificationKnowledge(
+        { projectId: PA, analysisId: A2, answeredById: USER, provider, rounds: [1] },
+        { index, rerun },
+      );
+      expect((await listRecords(PA)).map((r) => r.answer)).toEqual(["At least 15 characters."]);
+
+      // A1 then answers round 2 (another question): its round 1 is not recorded again.
+      const older = answeredState(A1, "R-1", "At least 12 characters.");
+      older.rounds.push({
+        round: 2,
+        questions: [
+          {
+            id: "q-a1-r2",
+            requirementId: "R-1",
+            ambiguityField: "expiry",
+            question: "Do passwords expire?",
+            context: "",
+            answer: "Never.",
+          },
+        ],
+        answers: [{ questionId: "q-a1-r2", answer: "Never." }],
+      });
+      await writeDialogState(A1, older);
+      const changed = await persistClarificationKnowledge(
+        { projectId: PA, analysisId: A1, answeredById: USER, provider, rounds: [2] },
+        { index, rerun },
+      );
+      expect(changed.map((r) => r.answer)).toEqual(["Never."]);
+      const records = await listRecords(PA);
+      expect(records.find((r) => r.ambiguityField === "minimumLength")!.answer).toBe(
+        "At least 15 characters.",
+      );
+    });
+
+    it("#2310 — an uncited answer is its analysis's own: a same-titled requirement elsewhere does not share it", async () => {
+      const uncited = (analysisId: string, answer: string): ClarificationState => {
+        const s = answeredState(analysisId, "R-1", answer);
+        delete s.rounds[0]!.questions[0]!.citation;
+        return s;
+      };
+      const noSources = (id: string) => {
+        const r = requirements(id);
+        delete r.requirements[0]!.sources;
+        return r;
+      };
+      await recordAnalysisClarifications({
+        projectId: PA,
+        analysisId: A1,
+        answeredById: USER,
+        state: uncited(A1, "At least 12 characters."),
+        requirements: noSources("R-1"),
+      });
+      await recordAnalysisClarifications({
+        projectId: PA,
+        analysisId: A2,
+        answeredById: USER,
+        state: uncited(A2, "At least 15 characters."),
+        requirements: noSources("R-1"),
+      });
+      const answers = (await listRecords(PA)).map((r) => r.answer).sort();
+      expect(answers).toEqual(["At least 12 characters.", "At least 15 characters."]);
+    });
+
+    it("#2310 — a reused answer re-runs what it changes for the requirement it now applies to", async () => {
+      const [record] = await recordAnalysisClarifications({
+        projectId: PA,
+        analysisId: A1,
+        answeredById: USER,
+        state: answeredState(A1, "R-1", "At least 12 characters."),
+        requirements: requirements("R-1"),
+      });
+      const reused = (round: number, extra: Record<string, unknown> = {}) => ({
+        requirementId: "R-9",
+        ambiguityField: "minimumLength",
+        question: "How long must a password be now?",
+        answer: "At least 12 characters.",
+        recordId: record!.id,
+        answeredAt: record!.answeredAt.toISOString(),
+        fromAnalysisId: A1,
+        round,
+        ...extra,
+      });
+      await writeDialogState(A2, {
+        analysisId: A2,
+        currentRound: 2,
+        maxRounds: 3,
+        rounds: [],
+        resolvedAmbiguities: [],
+        escalatedToSonnet: false,
+        completed: true,
+        reused: [
+          reused(2),
+          // Another round's, and a governing one: neither is re-run here.
+          reused(1, { requirementId: "R-8" }),
+          reused(2, {
+            requirementId: "R-7",
+            governing: { requirementId: "R-7", ruleIds: ["rule-1"] },
+          }),
+        ],
+      });
+      const rerun = vi.fn(async () => ({
+        codeMapped: 0,
+        governingRequirements: [],
+        governingUnmatched: [],
+        governingRechecked: [],
+      }));
+      const provider = questionModel();
+      const count = await rerunReusedClarifications(
+        { projectId: PA, analysisId: A2, provider, round: 2 },
+        { rerun },
+      );
+      expect(count).toBe(1);
+      expect(rerun).toHaveBeenCalledTimes(1);
+      const call = (rerun.mock.calls[0] as unknown as [Record<string, unknown>])[0];
+      expect(call).toMatchObject({ analysisId: A2, projectId: PA });
+      expect(call.records).toEqual([
+        expect.objectContaining({
+          id: record!.id,
+          question: "How long must a password be now?",
+          answer: "At least 12 characters.",
+          requirementIds: ["R-9"],
+        }),
+      ]);
+      expect(call.settled).toEqual(
+        expect.arrayContaining([expect.objectContaining({ key: `record:${record!.id}` })]),
+      );
+      // The record now applies to the requirement that reused it too.
+      const [stored] = await listRecords(PA);
+      expect(stored!.requirementIds).toEqual(["R-1", "R-9"]);
+      // Re-running again adds nothing twice.
+      await rerunReusedClarifications(
+        { projectId: PA, analysisId: A2, provider, round: 2 },
+        { rerun },
+      );
+      expect((await listRecords(PA))[0]!.requirementIds).toEqual(["R-1", "R-9"]);
+
+      // Nothing reused this round, no dialog, or another project's record: nothing re-run.
+      rerun.mockClear();
+      expect(
+        await rerunReusedClarifications(
+          { projectId: PA, analysisId: A2, provider, round: 3 },
+          { rerun },
+        ),
+      ).toBe(0);
+      expect(
+        await rerunReusedClarifications(
+          { projectId: PA, analysisId: A3, provider, round: 2 },
+          { rerun },
+        ),
+      ).toBe(0);
+      expect(
+        await rerunReusedClarifications(
+          { projectId: PB, analysisId: A2, provider, round: 2 },
+          { rerun },
+        ),
+      ).toBe(0);
+      expect(rerun).not.toHaveBeenCalled();
+    });
+
     it("a Spec Kit /clarify answer is a record of the project, keyed by its feature", async () => {
       const index = vi.fn(async () => null);
       const record = await recordSpecKitClarification(
@@ -570,8 +772,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         productIds: [PRODUCT],
       });
       expect(index).toHaveBeenCalledTimes(1);
-      expect(await listClarifications(PA, { specKitFeature: "001-export" })).toHaveLength(1);
-      expect(await listClarifications(PA, { specKitFeature: null })).toHaveLength(0);
+      expect(await listRecords(PA, "001-export")).toHaveLength(1);
+      expect(await listRecords(PA, null)).toHaveLength(0);
     });
   },
 );

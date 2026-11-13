@@ -24,8 +24,7 @@ import {
 
 const log = createChildLogger("clarification-records");
 
-export const CLARIFICATION_ORIGINS = ["analysis", "spec-kit"] as const;
-export type ClarificationOrigin = (typeof CLARIFICATION_ORIGINS)[number];
+export type ClarificationOrigin = "analysis" | "spec-kit";
 
 /** The paragraph of a document a question was asked about. */
 export interface ClarificationSource {
@@ -293,27 +292,59 @@ export async function setClarificationKnowledgeDocument(
   });
 }
 
-/** The project's records, newest answer first; optionally one analysis's or one Spec Kit set's. */
-export async function listClarifications(
+/**
+ * #2310 — point a record at document `to` only if it still points at `from`
+ * (compare-and-set). False when another write changed the link first: two
+ * persists of one record raced, and the caller's document is the loser.
+ */
+export async function swapClarificationKnowledgeDocument(
   projectId: string,
-  filter: {
-    analysisId?: string;
-    specKitFeature?: string | null;
-    status?: ClarificationStatus;
-  } = {},
-): Promise<StoredClarification[]> {
-  const rows = await prisma.clarificationRecord.findMany({
-    where: {
-      projectId,
-      ...(filter.analysisId !== undefined ? { analysisId: filter.analysisId } : {}),
-      ...(filter.specKitFeature !== undefined
-        ? { origin: "spec-kit", specKitFeature: filter.specKitFeature }
-        : {}),
-      ...(filter.status ? { status: filter.status } : {}),
-    },
-    orderBy: { answeredAt: "desc" },
+  recordId: string,
+  from: string | null,
+  to: string | null,
+): Promise<boolean> {
+  const { count } = await prisma.clarificationRecord.updateMany({
+    where: { projectId, id: recordId, knowledgeDocumentId: from },
+    data: { knowledgeDocumentId: to },
   });
-  return rows.map(toStored);
+  return count === 1;
+}
+
+/** #2310 — the records of `projectId` with `ids`, by id. */
+export async function findClarificationsById(
+  projectId: string,
+  ids: readonly string[],
+): Promise<Map<string, StoredClarification>> {
+  const unique = [...new Set(ids)];
+  if (unique.length === 0) return new Map();
+  const rows = await prisma.clarificationRecord.findMany({
+    where: { projectId, id: { in: unique } },
+  });
+  return new Map(rows.map((r) => [r.id, toStored(r)]));
+}
+
+/**
+ * #2310 — add `requirementIds` to the requirements a record applies to: a
+ * reused answer now applies to the requirement of the analysis that reused it.
+ * Nothing is written when it applies to all of them already.
+ */
+export async function addClarificationRequirements(
+  projectId: string,
+  recordId: string,
+  requirementIds: readonly string[],
+): Promise<void> {
+  const row = await prisma.clarificationRecord.findFirst({
+    where: { projectId, id: recordId },
+    select: { requirementIds: true },
+  });
+  if (!row) return;
+  const current = stringArray(row.requirementIds);
+  const next = [...new Set([...current, ...requirementIds])];
+  if (next.length === current.length) return;
+  await prisma.clarificationRecord.updateMany({
+    where: { projectId, id: recordId },
+    data: { requirementIds: JSON.stringify(next) },
+  });
 }
 
 /** The products a project's answers apply to: the project's product, when it has one. */

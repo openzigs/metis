@@ -22,6 +22,8 @@ import {
 } from "./clarification-knowledge.js";
 import { rerunAfterClarification, type SettledRequirementAnswer } from "./clarification-rerun.js";
 import {
+  addClarificationRequirements,
+  findClarificationsById,
   findSettledClarifications,
   projectProductIds,
   recordClarification,
@@ -32,15 +34,21 @@ import {
 
 const log = createChildLogger("analysis-clarifications");
 
-/** The key of a dialog question; `titleOf` names its requirement. */
+/**
+ * The key of a dialog question of analysis `analysisId`; `titleOf` names its
+ * requirement. #2310 — the analysis keys a question with no cited paragraph
+ * (see `clarificationKey`).
+ */
 export function keyOfQuestion(
   q: ClarifyingQuestion,
   titleOf: (requirementId: string) => string | undefined,
+  analysisId: string,
 ): string {
   return clarificationKey({
     question: q.question,
     ambiguityField: q.ambiguityField,
     requirementTitle: titleOf(q.requirementId),
+    analysisId,
     ...(q.citation ? { citation: q.citation } : {}),
     ...(q.governing ? { governing: q.governing } : {}),
   });
@@ -54,21 +62,31 @@ function requirementIdsOf(q: ClarifyingQuestion): string[] {
 
 /**
  * Every question answered in the dialog, as record inputs. A reused answer is
- * not among them: its record already exists.
+ * not among them: its record already exists. #2310 — with `rounds`, only the
+ * answers of those rounds: a submit records the round it answered, so an
+ * earlier round's answer in an older analysis never overwrites a newer answer
+ * to the same question, nor re-settles a record reopened since.
  */
 export function answeredClarificationInputs(
   state: ClarificationState,
   requirements: StructuredRequirements | undefined,
-  ctx: { analysisId: string; answeredById: string | null; productIds: string[]; now: Date },
+  ctx: {
+    analysisId: string;
+    answeredById: string | null;
+    productIds: string[];
+    now: Date;
+    rounds?: ReadonlySet<number>;
+  },
 ): ClarificationInput[] {
   const titles = new Map((requirements?.requirements ?? []).map((r) => [r.id, r.title]));
   const out = new Map<string, ClarificationInput>();
   for (const round of state.rounds ?? []) {
+    if (ctx.rounds && !ctx.rounds.has(round.round)) continue;
     const submitted = new Map((round.answers ?? []).map((a) => [a.questionId, a.answer]));
     for (const q of round.questions ?? []) {
       const answer = (q.answer ?? submitted.get(q.id) ?? "").trim();
       if (answer.length === 0) continue;
-      const questionKey = keyOfQuestion(q, (id) => titles.get(id));
+      const questionKey = keyOfQuestion(q, (id) => titles.get(id), ctx.analysisId);
       // A later round's answer to the same question replaces an earlier one.
       out.set(questionKey, {
         origin: "analysis",
@@ -103,14 +121,21 @@ export function answeredClarificationInputs(
  * project record. Governing answers settle rules, not wording, and are left
  * out. These are the answers `applyClarificationsToRequirements` writes into
  * the requirement body, so a re-decision judges what the body says.
+ *
+ * #2310 (decided) — a reused answer counts even when another analysis has
+ * reopened its record since. A record is reopened because the paragraph it
+ * was asked about changed in a newer version of the document; this analysis
+ * read the paragraph the answer was given for, so the answer still holds
+ * here, and the body keeps it too.
  */
 export function settledRequirementAnswers(
   state: ClarificationState,
   requirements: StructuredRequirements | undefined,
+  analysisId: string,
 ): SettledRequirementAnswer[] {
   const out: SettledRequirementAnswer[] = [];
   const inputs = answeredClarificationInputs(state, requirements, {
-    analysisId: "",
+    analysisId,
     answeredById: null,
     productIds: [],
     now: new Date(0),
@@ -142,13 +167,15 @@ export interface RecordAnalysisClarificationsInput {
   state: ClarificationState;
   requirements: StructuredRequirements | undefined;
   now?: Date;
+  /** #2310 — only these rounds' answers (the round just answered); default every round. */
+  rounds?: readonly number[];
 }
 
 /**
- * Store every answer of the dialog as a project record. Returns the records
- * whose answer is new or changed: those are the ones to index and re-run. A
- * record that could not be written is logged and left out; the dialog's own
- * copy of the answer stands either way.
+ * Store the dialog's answers as project records. Returns the records whose
+ * answer is new or changed: those are the ones to index and re-run. A record
+ * that could not be written is logged and left out; the dialog's own copy of
+ * the answer stands either way.
  */
 export async function recordAnalysisClarifications(
   input: RecordAnalysisClarificationsInput,
@@ -158,6 +185,7 @@ export async function recordAnalysisClarifications(
     answeredById: input.answeredById,
     productIds: await projectProductIds(input.projectId),
     now: input.now ?? new Date(),
+    ...(input.rounds ? { rounds: new Set(input.rounds) } : {}),
   });
   const changed: StoredClarification[] = [];
   for (const one of inputs) {
@@ -180,17 +208,19 @@ export async function recordAnalysisClarifications(
  * answered by the settled record under its key. Before reading, a record asked
  * about a paragraph that has since changed is reopened, so the changed
  * paragraph is asked about again, and its document is withdrawn from the
- * project's knowledge so the old answer is no longer cited.
+ * project's knowledge so the old answer is no longer cited. `analysisId` is
+ * the analysis asking (#2310: it keys a question with no cited paragraph).
  */
 export function priorAnswerSourceFor(
   projectId: string,
+  analysisId: string,
   deps: Pick<ClarificationIndexDeps, "deleteDocument"> = {},
 ): PriorAnswerSource {
   return {
     async find(questions, titleOf) {
       const keyed = questions.map((q) => ({
         id: q.id,
-        key: keyOfQuestion(q, titleOf),
+        key: keyOfQuestion(q, titleOf, analysisId),
         question: {
           question: q.question,
           ambiguityField: q.ambiguityField,
@@ -227,6 +257,11 @@ export interface ClarificationKnowledgeInput {
   answeredById: string | null;
   provider: AIProvider;
   model?: string;
+  /**
+   * #2310 — the rounds whose answers are recorded: the round the submit
+   * answered. Default every round.
+   */
+  rounds?: readonly number[];
 }
 
 export interface ClarificationKnowledgeDeps {
@@ -235,10 +270,10 @@ export interface ClarificationKnowledgeDeps {
 }
 
 /**
- * After a round is answered (or answers were reused): store the dialog's
- * answers as project records, index the new and changed ones in the project's
- * RAG store, and re-run what they change. Runs after the answers are
- * committed; never throws. Returns the records that changed.
+ * After a round is answered: store its answers as project records, index the
+ * new and changed ones in the project's RAG store, and re-run what they
+ * change. Runs after the answers are committed; never throws. Returns the
+ * records that changed.
  */
 export async function persistClarificationKnowledge(
   input: ClarificationKnowledgeInput,
@@ -254,6 +289,7 @@ export async function persistClarificationKnowledge(
       answeredById: input.answeredById,
       state,
       requirements,
+      ...(input.rounds ? { rounds: input.rounds } : {}),
     });
     if (changed.length === 0) return [];
     const index = deps.index ?? indexClarification;
@@ -264,7 +300,7 @@ export async function persistClarificationKnowledge(
       provider: input.provider,
       ...(input.model ? { model: input.model } : {}),
       records: changed,
-      settled: settledRequirementAnswers(state, requirements),
+      settled: settledRequirementAnswers(state, requirements, input.analysisId),
     });
     return changed;
   } catch (err) {
@@ -273,5 +309,71 @@ export async function persistClarificationKnowledge(
       error: (err as Error).message,
     });
     return [];
+  }
+}
+
+export interface ReusedClarificationInput {
+  projectId: string;
+  analysisId: string;
+  provider: AIProvider;
+  model?: string;
+  /** The round the answers were reused in. */
+  round: number;
+}
+
+/**
+ * #2310 — after a round reused settled answers: each record's
+ * `requirementIds` is extended to the requirement it now applies to, and what
+ * the answer changes for that requirement is re-run, as for an answer typed in
+ * this analysis (code mapping and governing impact). The record is not
+ * written again nor re-indexed: its answer did not change. Runs after the
+ * answers are written into the requirement bodies; never throws. Returns how
+ * many reused answers were re-run.
+ */
+export async function rerunReusedClarifications(
+  input: ReusedClarificationInput,
+  deps: Pick<ClarificationKnowledgeDeps, "rerun"> = {},
+): Promise<number> {
+  try {
+    const state = await readDialogState(input.analysisId);
+    const reused = (state?.reused ?? []).filter(
+      (r) => r.round === input.round && !r.governing && r.answer.trim().length > 0,
+    );
+    if (!state || reused.length === 0) return 0;
+    const stored = await findClarificationsById(
+      input.projectId,
+      reused.map((r) => r.recordId),
+    );
+    const records: StoredClarification[] = [];
+    for (const r of reused) {
+      const record = stored.get(r.recordId);
+      if (!record) continue;
+      await addClarificationRequirements(input.projectId, record.id, [r.requirementId]);
+      // As this analysis wrote it into the requirement body, for this
+      // analysis's requirement only.
+      records.push({
+        ...record,
+        question: r.question,
+        answer: r.answer,
+        requirementIds: [r.requirementId],
+      });
+    }
+    if (records.length === 0) return 0;
+    const requirements = (await getStructuredRequirements(input.analysisId)) ?? undefined;
+    await (deps.rerun ?? rerunAfterClarification)({
+      analysisId: input.analysisId,
+      projectId: input.projectId,
+      provider: input.provider,
+      ...(input.model ? { model: input.model } : {}),
+      records,
+      settled: settledRequirementAnswers(state, requirements, input.analysisId),
+    });
+    return records.length;
+  } catch (err) {
+    log.warn("reused clarification answers could not be re-run", {
+      analysisId: input.analysisId,
+      error: (err as Error).message,
+    });
+    return 0;
   }
 }

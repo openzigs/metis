@@ -127,6 +127,24 @@ const R1 = {
   ],
   evidenceNeeds: [],
   rawSource: "",
+  // #2310 — only a question about a cited paragraph is reused by another
+  // analysis: a title alone does not say two analyses' requirements are one.
+  sources: [
+    {
+      ref: "REQ-001",
+      documentId: "doc-2236r",
+      filename: "frd.docx",
+      headingPath: ["3 Export"],
+      quote: "The monthly invoice report is exported for every region.",
+    },
+  ],
+};
+
+const CITATION = {
+  documentId: "doc-2236r",
+  filename: "frd.docx",
+  headingPath: ["3 Export"],
+  quote: "The monthly invoice report is exported for every region.",
 };
 
 const OPEN_ROUND = (analysisId: string) =>
@@ -145,6 +163,7 @@ const OPEN_ROUND = (analysisId: string) =>
             question: "Which invoices does the export cover?",
             context: "",
             groundingStatus: "open",
+            citation: CITATION,
           },
         ],
         answers: [],

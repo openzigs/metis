@@ -634,6 +634,34 @@ function normalizeNewlines(body: string): string {
 }
 
 /**
+ * #2310 — the question and answer pairs written in a body's clarifications
+ * block, as {@link renderClarificationBlock} wrote them (sanitised), without
+ * the provenance tag. Nothing outside the block is read, and a body with no
+ * block, or one edited out of shape, has none.
+ */
+export function clarificationBlockEntries(
+  body: string,
+): Array<{ question: string; answer: string }> {
+  const at = locateClarificationBlock(body);
+  if (at.kind !== "block") return [];
+  const lines = normalizeNewlines(body.slice(at.from, at.to)).split("\n");
+  const tags = Object.values(PROVENANCE_TAGS);
+  const out: Array<{ question: string; answer: string }> = [];
+  for (let i = 0; i + 1 < lines.length; i++) {
+    const q = /^- \*\*Q:\*\* (.*)$/.exec(lines[i]!);
+    const a = /^ {2}\*\*A:\*\* (.*)$/.exec(lines[i + 1]!);
+    if (!q || !a) continue;
+    const tag = tags.find((t) => a[1]!.endsWith(` ${t}`));
+    out.push({
+      question: q[1]!.trim(),
+      answer: (tag ? a[1]!.slice(0, -(tag.length + 1)) : a[1]!).trim(),
+    });
+    i++;
+  }
+  return out;
+}
+
+/**
  * Remove a previously generated block (and its surrounding blank lines). A
  * malformed block is left as it is.
  */
