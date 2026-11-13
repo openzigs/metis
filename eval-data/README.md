@@ -1561,7 +1561,7 @@ With #2400's two pairs, five runs a side:
 | Citation precision, line spans, pooled | 99.0% (389/393) | 99.1% (424/428) |
 | Tool results cut by the model cap, each run | 2, 1, 4, 2, 0 (1.8 a run) | 5, 4, 2, 3, 5 (3.8 a run) |
 
-**Facts stated did not drop.** Per question, over the three new pairs (each question's mean
+**No drop in facts stated was detected.** Per question, over the three new pairs (each question's mean
 over its three runs, after minus before):
 
 | Question | Facts | Before, each run | After, each run | After − before |
@@ -1577,21 +1577,30 @@ over its three runs, after minus before):
 | S11 | 3 | 2, 2, 1 | 1, 1, 2 | −11 pts |
 | M1 to M4 | 7, 2, 3, 2 | 0 in all six runs: chat asks or abstains, unscoped | | 0 |
 
-- 11 of the 15 answer questions score the same on both sides; 3 are lower by one fact in one
-  run of three, and one (S10) is higher. The mean per-question difference is **−0.4 points**
-  (sd 7.3, n 15, t −0.2; an exact sign-flip test on the four questions that moved gives p = 1.0).
+- M1 to M4 are structural zeros: chat abstains on all four in every run, so they score 0 on
+  both sides and could not have moved. Of the 11 questions chat actually answered (S1 to S11),
+  7 held, 3 fell by one fact in one run of three (S3, S5, S11), and 1 (S10) rose. Over those
+  11 the mean per-question difference is **−0.5 points** (sd 8.7, t −0.2). Counting the four
+  zeros too (n 15) it is **−0.4 points** (after minus before; sd 7.3, t −0.2), pulled toward 0
+  by them. An exact sign-flip test on the four questions that moved gives p = 1.0.
 - Over five runs a side, the run means differ by 2.8 points (56.8% against 54.0%). That is
   less than the 10-point spread among the five "before" runs, and nearly all of it comes from
   the first pair's 63%. Welch's t on the run means is about 1.4 (p about 0.2).
+- Not significant means no drop was detected, not that there was none. A 95% interval on the
+  run-mean difference (before minus after, Welch) runs from about −1.9 to +7.5 points, so a
+  drop of several points is not ruled out; the per-question interval is about ±4 points at n 15 and about ±5.8 at n 11.
 - Citation precision on line spans held: 99.0% before and 99.1% after, pooled.
 
-**The cap cuts are real, but they do not cost facts.** Cuts about doubled (1.8 to 3.8 a run over
-five runs a side), consistent with the headers taking room at the top of a result. They fall on
-the questions that make the model read deeply (S4, S7, S8, S10). On the same question, a session
-with a cut scored no worse than one without on four of the five questions that had one: S4 all
-3/3 either way; S8 the same mean; S1 and S10 higher with a cut (S10 42% against 17%); S7 one
-fact lower in one cut session. So the headers were not trimmed and the default cap was not
-raised: the issue asked for either only if facts stated dropped.
+**The cap cuts are real, and there is no sign that they cost facts.** Cuts about doubled (1.8
+to 3.8 a run over five runs a side), consistent with the headers taking room at the top of a
+result. They fall on the questions that make the model read deeply (S1, S4, S7, S8, S10). On the
+same question, a session with a cut scored no worse than one without on four of the five
+questions that had one: S4 all 3/3 either way; S8 the same mean; S1 and S10 higher with a cut
+(S10 42% against 17%); S7 one fact lower in one cut session. This comparison is weak: each
+question has only one to four cut sessions, and it is confounded with the arm (3 of the 4 cut
+S10 sessions are after-runs, and the after side scored higher on S10), so the S10 gain cannot be
+credited to the cut. So the headers were not trimmed and the default cap was not raised: the
+issue asked for either only if facts stated dropped.
 
 The per-question scores of the six runs (no transcripts) are in
 `readings/ba-qa/2403-citation-contract-paired.json`. #2400's two pairs recorded no per-question
