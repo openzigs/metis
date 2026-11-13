@@ -34,7 +34,7 @@ export const READER_REPLY_SHAPE =
  * sorted into: the labelling convention of the documents' own author, which
  * leaned arms B and C toward the key they are scored against.
  */
-const WHAT_TO_EXTRACT = [
+export const WHAT_TO_EXTRACT = [
   "A requirement is something the document says the system, its users or the business must do or must not do. List each one the document states, once, in the order it appears.",
   "Raise a question only where a business analyst would need to go back to the document's author before a requirement could be built or tested. Make each question specific, and do not ask what the document already answers.",
   "For each requirement and question, quote the passage it rests on word for word, so it can be found in the document.",

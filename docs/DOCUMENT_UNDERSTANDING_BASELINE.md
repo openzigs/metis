@@ -457,7 +457,11 @@ documents 02 and 03 once its reduce had failed on the smallest one.
   them. Arm R (`readDocument`) has its own prompt and was not changed.
 - **Readings record their output cap since #2250** (`outputTokenCap` in the JSON). The
   readings above name their cap in the file name or the tables instead. `--combine` refuses
-  to pool readings made at different caps.
+  to pool readings made at different caps, and refuses any reading that records no cap, so
+  none of the readings above can be pooled with another. Two of them show why:
+  `reader-sonnet-5-5-2374` (16,384) and `reader-sonnet-5-5-2374-B-cap21333` (21,333) share a
+  model and a commit, and both record no cap. Each is already a finished reading, so nothing
+  documented here combines two of them. To pool one with new work, re-run it.
 - **Two model-written strings were reworded after the run.** In
   `baseline-deepseek-flash-A.json`, one extracted requirement and one question used wording
   the repository's private-vocabulary check refuses; each was rewritten to say the same thing

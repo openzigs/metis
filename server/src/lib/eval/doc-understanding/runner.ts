@@ -99,9 +99,10 @@ export interface DocUnderstandingReport {
    * #2250 — the final-answer output cap (`ANALYSIS_FINAL_ANSWER_MAX_OUTPUT_TOKENS`,
    * clamped to the model) the readers and the judge ran at: a reading at
    * 16,384 and one at 21,333 are not the same measurement. Null on a report
-   * written before it was recorded.
+   * written before it was recorded, and absent from one written before the
+   * field existed; `combineReports` refuses to pool either.
    */
-  outputTokenCap: number | null;
+  outputTokenCap?: number | null;
   stopped: { reason: string; armId: string; itemId: string; run: number } | null;
   provenance: { commit: string | null; dirty: boolean | null };
   corpus: Array<{
@@ -325,7 +326,21 @@ export function combineReports(reports: readonly DocUnderstandingReport[]): DocU
         `cannot combine readings at ${first.provenance.commit ?? "an unknown commit"} and ${r.provenance.commit ?? "an unknown commit"}`,
       );
     }
-    if ((r.outputTokenCap ?? null) !== (first.outputTokenCap ?? null)) {
+  }
+  // #2250 — a report written before the cap was kept cannot be checked, even
+  // against another unrecorded one: two such readings may differ (cap 16,384
+  // and 21,333 at one commit, for instance). Alone, there is nothing to compare.
+  if (reports.length > 1) {
+    const unrecorded = reports.findIndex((r) => r.outputTokenCap == null);
+    if (unrecorded !== -1) {
+      throw new Error(
+        `cannot combine: report ${unrecorded + 1} records no output cap (written before #2250), ` +
+          `so its cap cannot be checked against the others; re-run it rather than pool it`,
+      );
+    }
+  }
+  for (const r of reports) {
+    if (r.outputTokenCap !== first.outputTokenCap) {
       throw new Error(
         `cannot combine readings at output caps ${first.outputTokenCap ?? "unrecorded"} and ${r.outputTokenCap ?? "unrecorded"}`,
       );

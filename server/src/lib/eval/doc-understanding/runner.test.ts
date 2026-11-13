@@ -332,10 +332,29 @@ describe("combineReports and rendering", () => {
     expect(() => combineReports([a, { ...b, outputTokenCap: 21_333 }])).toThrow(
       `cannot combine readings at output caps ${a.outputTokenCap} and 21333`,
     );
-    // A report written before the cap was recorded pools only with its like.
-    const old = { ...a, outputTokenCap: undefined } as unknown as DocUnderstandingReport;
-    expect(() => combineReports([old, b])).toThrow(/output caps unrecorded and \d+/);
-    expect(combineReports([old, old]).outputTokenCap).toBeNull();
+    // A report written before the cap was recorded pools with nothing: its cap
+    // cannot be checked, even against another unrecorded one.
+    const { outputTokenCap: _cap, ...old }: DocUnderstandingReport = a;
+    expect(() => combineReports([old, b])).toThrow(/records no output cap/);
+    expect(() => combineReports([b, old])).toThrow(/records no output cap/);
+    // Alone it is still one reading: there is nothing to compare its cap with.
+    expect(combineReports([old]).outputTokenCap).toBeNull();
+  });
+
+  it("refuses two unrecorded caps, which may differ (#2250)", async () => {
+    // The committed reader-sonnet-5-5-2374 (cap 16,384) and
+    // reader-sonnet-5-5-2374-B-cap21333 share a model and commit and record no
+    // cap: comparing null with null used to pool them silently.
+    const a = await run(["d1"], [fakeArm("A")]);
+    const b = await run(["d2"], [fakeArm("A")]);
+    const { outputTokenCap: _a, ...oldA }: DocUnderstandingReport = a;
+    const { outputTokenCap: _b, ...oldB }: DocUnderstandingReport = b;
+    expect(() => combineReports([oldA, oldB])).toThrow(
+      /report 1 records no output cap \(written before #2250\)/,
+    );
+    expect(() => combineReports([oldA, { ...oldB, outputTokenCap: null }])).toThrow(
+      /records no output cap/,
+    );
   });
 
   it("counts unpriced calls from the records it keeps, not whole reports (#2250)", async () => {
