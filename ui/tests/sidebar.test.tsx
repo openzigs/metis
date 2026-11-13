@@ -125,14 +125,13 @@ describe("<Sidebar /> — by role (#2332)", () => {
   });
 
   it.each(["developer", "reader", "coordinator"] as const)(
-    "never links a %s to an operations page: Activity lands on Sessions",
+    "never links a %s to an operations page: no Activity entry (#2350)",
     (role) => {
       renderSidebar({ role });
       expect(entries()).toEqual([
         ["Home", "/dashboard"],
         ["Projects", "/projects"],
         ["Chat", "/chat"],
-        ["Activity", "/sessions"],
         ["Reviews", "/reviews"],
         ["Library", "/library"],
         ["Settings", "/settings"],
@@ -140,9 +139,9 @@ describe("<Sidebar /> — by role (#2332)", () => {
     },
   );
 
-  it("does not mark a non-admin's Activity entry on a run's own page, which is not in it", () => {
+  it("gives a non-admin no Activity entry, even on a run's own page", () => {
     renderSidebar({ role: "developer", pathname: "/runs/42" });
-    expect(screen.getByRole("link", { name: "Activity" })).not.toHaveAttribute("aria-current");
+    expect(screen.queryByRole("link", { name: "Activity" })).not.toBeInTheDocument();
   });
 });
 

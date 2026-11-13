@@ -7,6 +7,7 @@
  *   GET   /api/ai/sessions/:id/plan             — fetch latest plan
  *   GET   /api/ai/sessions                      — the caller's sessions, paged (#738)
  *   GET   /api/ai/sessions?status=resumable     — resumable sessions
+ *   GET   /api/ai/chat-subjects/:kind/:id        — what an "Ask about this" link names (#2350)
  *
  * Resume and manual compaction moved to `ai-conversation.ts` with the
  * server-owned transcript (#127).
@@ -31,7 +32,12 @@ import {
   SESSION_LIST_DEFAULT_LIMIT,
   SESSION_LIST_MAX_LIMIT,
 } from "../lib/ai/session-snapshot.js";
-import { SDK_REASONING_EFFORTS } from "@metis/shared";
+import { CHAT_SUBJECT_ID_MAX, CHAT_SUBJECT_KINDS, SDK_REASONING_EFFORTS } from "@metis/shared";
+import { resolveChatSubject } from "../lib/ai/chat-subject.js";
+import {
+  conversationPreAuthRateLimiter,
+  conversationRateLimiter,
+} from "../middleware/conversation-rate-limit.js";
 import type { AISession } from "@prisma/client";
 import { getAsyncRunner } from "../lib/async/runner.js";
 import {
@@ -89,6 +95,12 @@ const listQuerySchema = z.object({
   offset: z.coerce.number().int().min(0).default(0),
 });
 
+// #2350 — an "Ask about this" link's item. Parsed before any query runs.
+const chatSubjectParamsSchema = z.object({
+  kind: z.enum(CHAT_SUBJECT_KINDS),
+  id: z.string().min(1).max(CHAT_SUBJECT_ID_MAX),
+});
+
 const messageSchema = z.object({
   role: z.enum(["user", "system", "agent"]).default("user"),
   content: z.string().min(1).max(50_000),
@@ -114,6 +126,23 @@ export function aiSdkRouter(): Router {
     const page = await listSessions(req.user!, { limit, offset });
     res.json({ ...ok(page.sessions), page: { limit, offset, hasMore: page.hasMore } });
   });
+
+  // GET /api/ai/chat-subjects/:kind/:id — #2350: the project, change request or
+  // requirement an "Ask about this" link names, and the project chat is scoped
+  // to. Answered only for an item the caller can read; otherwise the one 404
+  // (403 for a change request or requirement without `analysis.read`).
+  // Bounded per IP before auth and per user after (CodeQL js/missing-rate-limiting).
+  r.get(
+    "/chat-subjects/:kind/:id",
+    conversationPreAuthRateLimiter,
+    requireAuth,
+    conversationRateLimiter,
+    async (req: Request, res: Response) => {
+      const parsed = chatSubjectParamsSchema.safeParse(req.params);
+      if (!parsed.success) throw new AppError(400, "BAD_REQUEST", "Invalid chat subject");
+      res.json(ok(await resolveChatSubject(req.user!, parsed.data.kind, parsed.data.id)));
+    },
+  );
 
   r.patch("/sessions/:id/model", requireAuth, async (req: Request, res: Response) => {
     await assertOwner(req, String(req.params.id));

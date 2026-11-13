@@ -123,6 +123,13 @@ describe("project Overview page", () => {
     expect(screen.queryByTestId("archive-button")).toBeNull();
     expect(screen.queryByRole("heading", { name: "Settings" })).toBeNull();
   });
+
+  // #2350 — chat about the project, opened already scoped to it.
+  it("offers Ask about this, linking into chat about this project", async () => {
+    render(<ProjectOverviewPage />, { wrapper: makeWrapper({ initialUser: TEST_USER }) });
+    const link = await screen.findByRole("link", { name: "Ask about this project in chat" });
+    expect(link).toHaveAttribute("href", "/chat?about=project%3Ap1");
+  });
 });
 
 describe("project Settings page (⚙)", () => {

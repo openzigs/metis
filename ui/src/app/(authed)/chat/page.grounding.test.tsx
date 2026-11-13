@@ -53,6 +53,8 @@ vi.mock("@/components/chat/agent-picker", () => ({
   loadStoredAgentKey: () => null,
   storeAgentKey: vi.fn(),
 }));
+// #2350 — the history list reads its own query; not under test here.
+vi.mock("@/components/chat/chat-history", () => ({ ChatHistory: () => null }));
 vi.mock("@/components/chat/loaded-skills-panel", () => ({ LoadedSkillsPanel: () => null }));
 vi.mock("@/components/chat/project-scope-selector", () => ({
   ProjectScopeSelector: () => null,

@@ -834,6 +834,8 @@ A sub-agent runs inside its caller's turn, so the stream's hard ceiling and abor
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `POST` | `/sessions` | Create chat session (title, projectId, policy) |
+| `GET` | `/sessions` | The caller's own sessions, newest first, paged (#738); each row carries its project name and, for a multi-product or workspace chat, `scopeProjectIds` / `scopeWorkspaceId` — chat's history list (#2350) |
+| `GET` | `/chat-subjects/:kind/:id` | #2350 "Ask about this": a `project`, `change-request` or `requirement` the caller can read, with the project chat is scoped to (`lib/ai/chat-subject.ts`). Project access via `assertLiveProjectAccess`; a change request or requirement also needs `analysis.read` (403) and must not be deleted. Unknown, deleted and unreachable all answer the one 404 |
 | `GET` | `/sessions/:id` | Read session metadata |
 | `PATCH` | `/sessions/:id` | Update title / policy |
 | `GET` | `/sessions/:id/usage` | In-memory + today's persisted token totals |

@@ -158,6 +158,9 @@ export const sdkApi = {
 
   // Sessions / plan / model
   listResumable: () => apiFetch<ResumableSessionDto[]>("/ai/sessions?status=resumable"),
+  /** #2350 — the caller's own conversations, newest activity first (chat history). */
+  listSessions: (limit: number, offset = 0) =>
+    apiFetch<ResumableSessionDto[]>(`/ai/sessions?limit=${limit}&offset=${offset}`),
   resumeSession: (id: string) => apiFetch<unknown>(`/ai/sessions/${id}/resume`, { method: "POST" }),
   switchModel: (id: string, body: { model: string; reasoningEffort?: SdkReasoningEffort }) =>
     apiFetch<{ currentModel: string; previousModel: string | null }>(`/ai/sessions/${id}/model`, {

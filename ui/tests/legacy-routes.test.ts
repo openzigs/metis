@@ -26,6 +26,8 @@ describe("legacyRedirect", () => {
     ["/products", "/portfolio?tab=products"],
     ["/repositories", "/projects"],
     ["/databases", "/projects"],
+    // #2350 — Activity → Sessions is chat's history list.
+    ["/sessions", "/chat"],
   ])("sends %s to %s", (from, to) => {
     expect(legacyRedirect(from)).toBe(to);
   });

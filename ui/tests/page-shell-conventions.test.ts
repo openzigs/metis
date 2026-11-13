@@ -61,6 +61,8 @@ const REDIRECT_ONLY = new Set([
   "app/(authed)/products/page.tsx",
   "app/(authed)/repositories/page.tsx",
   "app/(authed)/databases/page.tsx",
+  // #2350 — Sessions is chat's history list.
+  "app/(authed)/sessions/page.tsx",
 ]);
 
 const PAGES = walk(AUTHED, (n) => n === "page.tsx");

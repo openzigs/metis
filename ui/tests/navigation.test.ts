@@ -48,7 +48,6 @@ describe("navigation registry (#27)", () => {
       "/workbench",
       "/tasks",
       "/runs",
-      "/sessions",
       "/scheduler",
       "/reviews",
       "/library",
@@ -58,7 +57,7 @@ describe("navigation registry (#27)", () => {
     ]);
   });
 
-  it("keeps every one of the 21 former sidebar routes reachable through a hub tab", () => {
+  it("keeps every one of the former sidebar routes reachable through a hub tab", () => {
     const former = [
       "/dashboard",
       "/projects",
@@ -71,14 +70,14 @@ describe("navigation registry (#27)", () => {
       "/impact-analyses",
       "/scheduler",
       "/runs",
-      "/sessions",
       "/vault",
       "/eval/leaderboard",
       "/settings",
     ];
     // /admin, /skills and /agents redirect to their one home (#31, lib/legacy-routes);
     // /products lands on Portfolio, and /repositories and /databases on the
-    // project list or a project's Knowledge tab (#2353, legacy-routes.test.ts).
+    // project list or a project's Knowledge tab (#2353, legacy-routes.test.ts);
+    // /sessions on chat's history list (#2350).
     const hrefs = NAV_DESTINATIONS.map((t) => t.href);
     for (const href of former) expect(hrefs).toContain(href);
   });
@@ -108,13 +107,19 @@ describe("navigation registry (#27)", () => {
     expect(item("Chat").tabs.map((t) => t.href)).toEqual(["/chat", "/workbench"]);
   });
 
+  // #2350 — the Workbench is demoted: an admin's tab, not a non-admin's, but
+  // a non-admin sent there (a Library template's Run) is not refused.
+  it("shows the Workbench tab to admins only, and refuses no one its page (#2350)", () => {
+    expect(visibleTabs(item("Chat"), true).map((t) => t.label)).toEqual(["Chat", "Workbench"]);
+    expect(visibleTabs(item("Chat"), false).map((t) => t.label)).toEqual(["Chat"]);
+    expect(paletteDestinations(false).map((t) => t.href)).not.toContain("/workbench");
+    expect(paletteDestinations(true).map((t) => t.href)).toContain("/workbench");
+    expect(isAdminOnlyTabPath("/workbench")).toBe(false);
+    expect(isAdminOnlyPath("/workbench")).toBe(false);
+  });
+
   it("groups the activity logs under Activity", () => {
-    expect(item("Activity").tabs.map((t) => t.href)).toEqual([
-      "/tasks",
-      "/runs",
-      "/sessions",
-      "/scheduler",
-    ]);
+    expect(item("Activity").tabs.map((t) => t.href)).toEqual(["/tasks", "/runs", "/scheduler"]);
   });
 
   it("gives Reviews a sidebar entry of its own (#2332)", () => {
@@ -122,8 +127,10 @@ describe("navigation registry (#27)", () => {
     expect(item("Reviews").tabs.map((t) => t.href)).toEqual(["/reviews"]);
   });
 
+  // #2350 — and the Workbench tab, hidden from a non-admin but not refused (`openByUrl`).
   it("marks the operations and developer pages admin-only, and nothing else (#2332)", () => {
     expect(NAV_DESTINATIONS.filter((t) => t.adminOnly).map((t) => t.href)).toEqual([
+      "/workbench",
       "/tasks",
       "/runs",
       "/scheduler",
@@ -286,7 +293,7 @@ describe("paletteDestinations (#368)", () => {
     expect(hrefs).not.toContain("/settings/auth");
     expect(hrefs).not.toContain("/settings/embeddings/models");
     for (const t of PALETTE_DESTINATIONS) {
-      if (!isAdminOnlyPath(t.href)) expect(hrefs).toContain(t.href);
+      if (!t.adminOnly && !isAdminOnlyPath(t.href)) expect(hrefs).toContain(t.href);
     }
   });
 
@@ -303,7 +310,7 @@ describe("paletteDestinations (#368)", () => {
     ]) {
       expect(hrefs).not.toContain(hidden);
     }
-    for (const kept of ["/reviews", "/sessions", "/settings", "/settings/usage", "/chat"]) {
+    for (const kept of ["/reviews", "/settings", "/settings/usage", "/chat"]) {
       expect(hrefs).toContain(kept);
     }
     expect(paletteDestinations(true).map((t) => t.href)).toContain("/settings/mcp");
@@ -322,14 +329,13 @@ describe("paletteDestinations (#368)", () => {
 describe("visibleTabs", () => {
   it("hides admin-only tabs from non-admins (#2332)", () => {
     expect(visibleTabs(item("Settings"), false).map((t) => t.label)).toEqual(["Settings"]);
-    expect(visibleTabs(item("Activity"), false).map((t) => t.label)).toEqual(["Sessions"]);
+    expect(visibleTabs(item("Activity"), false).map((t) => t.label)).toEqual([]);
   });
 
   it("shows an admin every Activity tab", () => {
     expect(visibleTabs(item("Activity"), true).map((t) => t.label)).toEqual([
       "Tasks",
       "Runs",
-      "Sessions",
       "Scheduler",
     ]);
   });
@@ -357,15 +363,17 @@ describe("visibleNavItems (#2332)", () => {
     expect(visibleNavItems(true)).toEqual(NAV_ITEMS);
   });
 
-  it("gives a non-admin every entry, each landing on a page they may open", () => {
+  it("gives a non-admin every entry but Activity, each landing on a page they may open", () => {
     const items = visibleNavItems(false);
-    expect(items.map((i) => i.label)).toEqual(NAV_ITEMS.map((i) => i.label));
+    // #2350 — Sessions, the last Activity page a non-admin kept, is chat history.
+    expect(items.map((i) => i.label)).toEqual(
+      NAV_ITEMS.map((i) => i.label).filter((l) => l !== "Activity"),
+    );
     for (const i of items) {
       expect(i.href).toBe(i.tabs[0].href);
       for (const t of i.tabs) expect(isAdminOnlyPath(t.href)).toBe(false);
     }
-    // Activity lands on Sessions, the one page of it a non-admin keeps (#2350).
-    expect(items.find((i) => i.label === "Activity")?.href).toBe("/sessions");
+    expect(items.find((i) => i.label === "Chat")?.tabs.map((t) => t.href)).toEqual(["/chat"]);
     expect(items.find((i) => i.label === "Settings")?.tabs.map((t) => t.href)).toEqual([
       "/settings",
     ]);
@@ -401,10 +409,15 @@ describe("isAdminOnlyTabPath (#2332)", () => {
     expect(isAdminOnlyTabPath("/runs/42/review")).toBe(false);
   });
 
-  it.each(["/sessions", "/reviews", "/reviews/r1", "/dashboard", "/settings", "/runsheet"])(
-    "leaves %s open",
-    (path) => expect(isAdminOnlyTabPath(path)).toBe(false),
-  );
+  it.each([
+    "/chat",
+    "/workbench",
+    "/reviews",
+    "/reviews/r1",
+    "/dashboard",
+    "/settings",
+    "/runsheet",
+  ])("leaves %s open", (path) => expect(isAdminOnlyTabPath(path)).toBe(false));
 });
 
 describe("isAdminOnlyPath (#2332)", () => {
@@ -425,7 +438,8 @@ describe("isAdminOnlyPath (#2332)", () => {
 
 describe("hubForPath", () => {
   it("finds the hub owning a tab route", () => {
-    expect(hubForPath("/sessions")?.label).toBe("Activity");
+    expect(hubForPath("/scheduler")?.label).toBe("Activity");
+    expect(hubForPath("/workbench")?.label).toBe("Chat");
     expect(hubForPath("/impact-analyses/new")?.label).toBe("Projects");
     expect(hubForPath("/vault")?.label).toBe("Settings");
   });

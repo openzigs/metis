@@ -94,7 +94,8 @@ describe("<DashboardPage />", () => {
     expect(screen.getByTestId("widget-projects-empty-cta")).toHaveAttribute("href", "/projects");
     expect(screen.getByTestId("widget-tasks-empty-cta")).toHaveAttribute("href", "/tasks");
     expect(screen.getByTestId("widget-scheduler-empty-cta")).toHaveAttribute("href", "/scheduler");
-    expect(screen.getByTestId("widget-recent-empty-cta")).toHaveAttribute("href", "/workbench");
+    // #2350 — the Workbench is demoted; an empty Recent points at Chat.
+    expect(screen.getByTestId("widget-recent-empty-cta")).toHaveAttribute("href", "/chat");
   });
 
   // #273 — the first-run journey starts here: the empty Projects widget opens

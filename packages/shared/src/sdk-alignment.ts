@@ -103,6 +103,13 @@ export interface ResumableSessionDto {
   status: string;
   snapshotUpdatedAt: string | null;
   updatedAt: string;
+  /**
+   * #2350 — the 2+ projects a multi-product chat searches (`projectId` is
+   * null), so a history row can name its scope. Absent from an older server.
+   */
+  scopeProjectIds?: string[] | null;
+  /** #2350 — the workspace a workspace-scoped chat searches. */
+  scopeWorkspaceId?: string | null;
 }
 
 export interface SessionSnapshot {
