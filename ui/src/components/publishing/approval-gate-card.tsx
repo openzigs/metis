@@ -15,7 +15,7 @@
  */
 import Link from "next/link";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { hasPermission } from "@metis/shared";
+import { canChangeSelfApproval, hasPermission } from "@metis/shared";
 import { ApiError } from "@/lib/api-client";
 import { useAuth } from "@/lib/auth-context";
 import { reviewGateApi } from "@/lib/publishing-api";
@@ -33,13 +33,13 @@ export const SELF_APPROVAL_HELP =
 
 /** #2453 — shown to a review administrator who is not an admin. */
 export const SELF_APPROVAL_ADMIN_ONLY =
-  "Only an admin can change self-approval, so whoever is bound by it cannot switch it off for their own project.";
+  "Only an admin can change this, so someone bound by maker-checker cannot switch it off for their own project.";
 
 export function ApprovalGateSettingsCard({ projectId }: { projectId: string }) {
   const qc = useQueryClient();
   const { user } = useAuth();
   const canToggle = user ? hasPermission(user.role, "review.admin") : false;
-  const canToggleSelfApproval = user?.role === "admin";
+  const canToggleSelfApproval = user ? canChangeSelfApproval(user.role) : false;
 
   const gate = useQuery({
     queryKey: gateKey(projectId),

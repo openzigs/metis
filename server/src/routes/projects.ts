@@ -25,6 +25,7 @@ import {
   publishDestinationConfigSchema,
   reviewGateConfigSchema,
   updateAllowCredentialScanSchema,
+  canChangeSelfApproval,
 } from "@metis/shared";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
@@ -1342,7 +1343,7 @@ export function projectsRouter(): Router {
       const { requireApprovedReview, allowSelfApproval } = parsed.data;
       // #2453 — checked before anything is read or written, so a PATCH that
       // carries both settings is refused whole.
-      if (allowSelfApproval !== undefined && req.user!.role !== "admin") {
+      if (allowSelfApproval !== undefined && !canChangeSelfApproval(req.user!.role)) {
         audit({
           actor: { id: actor.id },
           action: "project.selfApproval.denied",

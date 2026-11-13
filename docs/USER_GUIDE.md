@@ -2066,7 +2066,10 @@ the requirements rejected, not as they were before the first round.
   same card is also on **Deliverables → Publish**). Only an **admin** can change it, and it is
   **off by default**. A coordinator sees it read-only: maker-checker binds them, so they cannot
   switch it off for their own project, and an attempt through the API is refused and recorded in
-  the audit log (`project.selfApproval.denied`). With it on,
+  the audit log (`project.selfApproval.denied`). A coordinator could change it before this
+  rule, and the upgrade leaves their choice in place: after upgrading, an admin should check the
+  audit log for `project.selfApproval.update` entries made by a coordinator and turn the setting
+  off on any project where it is not wanted. With it on,
   someone holding `requirement.approve` may approve what they wrote, and may name themselves as
   a reviewer of their own request (the reviewer search offers you) and decide it. Each change of the setting is recorded in the
   audit log (`project.selfApproval.update`, with the old and new value), and so is each
