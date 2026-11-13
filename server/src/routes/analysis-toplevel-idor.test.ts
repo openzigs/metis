@@ -122,7 +122,10 @@ const orchestrator = {
   resumeSkippedRepos,
 };
 
-const getAnalysisSnapshot = vi.fn(async () => ({ id: "an-1", status: "completed" }));
+// #2462 — the route flags the snapshot's requirements, so the stub carries the
+// contract's `projectId` and `requirements` (none, so no authorship is read).
+const SNAPSHOT = { id: "an-1", projectId: "p-a", status: "completed", requirements: [] };
+const getAnalysisSnapshot = vi.fn(async () => ({ ...SNAPSHOT }));
 const updateRequirementRow = vi.fn(async () => ({ id: "req-1" }));
 
 vi.mock("../lib/analysis/index.js", () => ({
@@ -248,7 +251,7 @@ describe("/api/analyses top-level router — cross-tenant scope (#1099)", () => 
       workspaceId: "ws-a",
       workspace: { deletedAt: null, members: [{ id: "member-row" }] },
     });
-    getAnalysisSnapshot.mockResolvedValue({ id: "an-1", status: "completed" });
+    getAnalysisSnapshot.mockResolvedValue({ ...SNAPSHOT });
     assertCanResumeRepos.mockResolvedValue({ skippedRepos: [{ connectorId: "c1" }] });
     updateRequirementRow.mockResolvedValue({ id: "req-1" });
     currentUser = READER_WS_B;
