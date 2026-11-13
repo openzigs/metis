@@ -173,7 +173,7 @@ function requirementsStep(f: ChangeRequestFacts): Derived {
   if (f.pendingApprovals !== null && f.pendingApprovals > 0)
     return {
       state: "needs-you",
-      reason: `${f.pendingApprovals} approval${f.pendingApprovals === 1 ? "" : "s"} pending.`,
+      reason: `${f.pendingApprovals} checkpoint${f.pendingApprovals === 1 ? "" : "s"} pending.`,
     };
   if (n > 0) return { state: "done", reason: `${n} requirement${n === 1 ? "" : "s"}.` };
   if (f.status === "pending") return { state: "not-started", reason: "The run has not started." };

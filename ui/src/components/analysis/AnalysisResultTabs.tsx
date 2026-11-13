@@ -7,7 +7,7 @@
  * screens tall instead of 113,000 px. The page owns the value (it lives in
  * `?tab=`), so every sub-view is deep-linkable.
  *
- * In-page anchors that predate the tabs — "Go to approvals", "Review
+ * In-page anchors that predate the tabs — "Go to checkpoints", "Review
  * questions" — now point at content that may not be mounted. A click on one is
  * intercepted here and turned into a tab switch instead of a dead scroll, and
  * reported through `onAnchor` so the page can scroll to the target once the

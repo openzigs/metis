@@ -935,7 +935,7 @@ export function ApprovalsPanel({
     // to the controls that clear the gate.
     <div id="approvals" className="space-y-4" data-testid="approvals-panel">
       <div className="space-y-1">
-        <h3 className="text-lg font-semibold">Approvals</h3>
+        <h3 className="text-lg font-semibold">Checkpoints</h3>
         <p className="text-sm text-muted-foreground">
           Review and resolve the human-in-the-loop checkpoints below. Specs are not promoted until
           every approval is resolved; rejected requirements are left out, and any rejection can be

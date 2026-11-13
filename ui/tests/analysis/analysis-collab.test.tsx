@@ -505,6 +505,14 @@ describe("AnalysisPage collaboration (Epic #34)", () => {
     });
   });
 
+  it("#2347 — says on the card what Approve does and how a formal review differs", async () => {
+    renderPage();
+    await waitForRequirement();
+    expect(screen.getByTestId("approval-ladder-note")).toHaveTextContent(
+      /Approve marks it approved yourself.*approved ones included/,
+    );
+  });
+
   it("routes review-status (approve) through the locked PUT with version (AC2/M1)", async () => {
     updateMock.update.mockResolvedValue({ id: "req-1", version: 5, updatedAt: "now" });
     renderPage();

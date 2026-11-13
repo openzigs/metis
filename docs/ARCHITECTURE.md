@@ -1025,6 +1025,16 @@ change). Writers only enqueue it, debounced, through the `noteProjectRequirement
 turns the warm-up off); `findNearestRequirements` runs it first, so a query never reads an
 index older than the requirements, and re-reads every hit on project, id and `deletedAt`.
 
+**The project's requirements list (#2347).** `GET /api/projects/:projectId/requirements`
+(`routes/project-requirements.ts`, `lib/requirements/project-requirements-list.ts`) backs the
+Requirements tab: every live requirement of the project whose run is a live run of the same
+project, each with its change request's title, its review status and the latest standing
+(non-closed) review covering it; filtered by `analysisId`, `status` and a case-insensitive title
+`q`, paged on the server (`pageSize` ≤ 100). A per-IP limiter, `requireAuth`,
+`requireProjectAccess()` and `analysis.read` run first. The title search is a parameterised
+`ILIKE` (Postgres) or `LIKE … ESCAPE` (SQLite) on the project with `%`, `_` and `\` escaped,
+narrowing to at most 5,000 ids before the page is read.
+
 **Similar and duplicate requirements (#1836, #1837).** `GET /api/projects/:projectId/requirements/:requirementId/similar`
 and `POST …/requirements/similar` (draft text) run behind `requireProjectAccess()`
 (`routes/requirement-similarity.ts`, `lib/requirements/similar-requirements.ts`). Vector
@@ -3506,6 +3516,7 @@ The exhaustive transition table (`REVIEW_TRANSITIONS`) makes anything absent ill
 | `POST /api/reviews/:id/decision` | `review.decide` (assigned reviewer only) | Records `{decision: approved\|rejected, note}` on **the caller's own assignment** (reviewer identity from the session, never the body). Requester is refused (403 `SELF_APPROVAL_FORBIDDEN`); double decisions are 409 (guarded `updateMany … decision: "pending"` — race-safe). The aggregate is computed from assignment rows **re-read inside the transaction** (never a stale pre-transaction snapshot), and when it flips, the state transition (a guarded `updateMany` on `status: "in_review"` — a lost race is a 409 `REVIEW_STATE_CHANGED` rollback, so two racing finalizers can never double-fire or overwrite a concurrent withdraw), `Requirement.reviewStatus` derivation, and (on approval) `Baseline`+`BaselineItem` creation all commit **in the same transaction** as the final decision. A docs-only approval yields `baselineId: null` by design (documents are not baseline-pinnable). |
 | `POST /api/reviews/:id/withdraw` | `review.create` (requester or `review.admin`; never an assigned reviewer of it, 403 `REVIEWER_CANNOT_WITHDRAW`, #1575) | `in_review → draft`; restores each requirement's `reviewStatus` to the `priorReviewStatus` captured at submit (#989). The write is guarded on the `draft` the submit left, so a status set since is not overwritten; a pre-migration review has no capture and writes null to requirements still at draft. **Two open reviews of one requirement (#1016):** both are allowed; a requirement another `in_review` review still covers is left as it is, and the last open review to leave restores it. On Postgres the scope's `requirements` rows are locked `FOR UPDATE` (id order) before the "other open review?" read — in submit, withdraw/close and a verdict alike — so two racing withdraws cannot each see the other as open and both skip the restore (`review-two-open-1016-postgres.integration.test.ts`). |
 | `POST /api/reviews/:id/close` | `review.create` (requester or `review.admin`; while `in_review`, never an assigned reviewer of it, 403 `REVIEWER_CANNOT_WITHDRAW`, #1575) | Any non-closed → `closed` (terminal archive). A close from `in_review` restores prior requirement statuses like a withdraw (#989); a close from `draft`, `approved` or `rejected` leaves `reviewStatus` untouched. |
+| `POST /api/reviews/:id/revise` | `review.create` (requester or `review.admin`; never an assigned reviewer of it) | #2347 "Revise and resubmit": `rejected → draft` with the same items and reviewers (`transitionReview`, guarded on `rejected`, `decidedAt` cleared). Nothing is restored: the requirements keep the rejection until the draft is submitted again, which re-pins their current versions and resets every decision. Audited `review.revise`. |
 | `POST /api/reviews/:id/reopen` | `review.create` (requester or `review.admin`) | #2219 "Request re-review": `approved → in_review`, the same round start as a submit (re-pins every item at its current version, captures prior statuses, resets decisions, notifies reviewers as a re-review). The earlier round's `Baseline` is kept but detached (`reviewRequestId` set null), so the next approval creates its own, named `… round N` (`@@unique([projectId, name])`). Audited `review.reopen`. |
 | `GET /api/requirements/:id/approval` | `review.read` | #2219 — the approved and in-review reviews that pinned the requirement (pinned version, approvers' names), project-scoped; the Edit dialog's warning (`approvalEditWarning` in `@metis/shared`). |
 

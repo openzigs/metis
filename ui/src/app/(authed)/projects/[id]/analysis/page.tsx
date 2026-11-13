@@ -132,6 +132,7 @@ import { TraceabilityView } from "@/components/traceability/traceability-view";
 import { UntestedRequirementsPanel } from "@/components/traceability/untested-requirements-panel";
 import { RequirementHistoryTab } from "@/components/requirements/RequirementHistoryTab";
 import { RequirementApprovalWarning } from "@/components/requirements/RequirementApprovalWarning";
+import { ApprovalLadderNote } from "@/components/requirements/approval-ladder";
 import { SourceDivergenceNotice } from "@/components/requirements/SourceDivergenceNotice";
 import { CriteriaProposalNotice } from "@/components/requirements/CriteriaProposalNotice";
 import { CriteriaProposalsSummary } from "@/components/requirements/CriteriaProposalsSummary";
@@ -1533,6 +1534,11 @@ export default function AnalysisPage(): React.ReactElement {
                               ) : null}
                             </div>
                           </div>
+                          {/* #2347 — what Approve does and how a formal review
+                            differs, at the point of choosing (not once approved). */}
+                          {req.reviewStatus !== "approved" ? (
+                            <ApprovalLadderNote className="mt-1" />
+                          ) : null}
                           {/* Epic #34 (AC4) — assignee picker + SLA badge. */}
                           <RequirementCollabRow
                             requirementId={req.id}

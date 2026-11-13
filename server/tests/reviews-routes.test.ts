@@ -873,6 +873,100 @@ describe("POST /reviews/:reviewId/decision", () => {
 
 // ---- Withdraw / close --------------------------------------------------------
 
+// #2347 — "Revise and resubmit": rejected → draft, the same items and reviewers.
+describe("POST /reviews/:reviewId/revise", () => {
+  const rejected = () =>
+    makeReview({
+      status: "rejected",
+      decidedAt: new Date(),
+      assignments: [makeAssignment({ decision: "rejected", note: "Missing refund rules" })],
+    });
+  // The review's project is live and open (not left over from an earlier test).
+  beforeEach(() => {
+    mockPrisma.project.findUnique.mockResolvedValue({ id: "proj-1" });
+  });
+
+  it("lets the requester send a rejected review back to draft, keeping its items", async () => {
+    testUser.userId = "user-req";
+    testUser.role = "developer";
+    mockPrisma.reviewRequest.findUnique.mockResolvedValue(rejected());
+
+    const res = await request(app).post("/reviews/rev-1/revise").send({});
+
+    expect(res.status).toBe(200);
+    // Guarded write from `rejected`, clearing the verdict's time.
+    expect(mockPrisma.reviewRequest.updateMany).toHaveBeenCalledWith({
+      where: { id: "rev-1", status: "rejected" },
+      data: expect.objectContaining({ status: "draft", decidedAt: null }),
+    });
+    // The rejection stands on the requirements until the review is resubmitted:
+    // nothing is restored, and the items are not touched.
+    expect(mockPrisma.requirement.updateMany).not.toHaveBeenCalled();
+    expect(mockPrisma.reviewRequestItem.update).not.toHaveBeenCalled();
+    expect(auditRows()).toContainEqual(
+      expect.objectContaining({
+        action: "review.revise",
+        inTx: true,
+        metadata: { from: "rejected", to: "draft" },
+      }),
+    );
+  });
+
+  it("lets a review admin revise another user's rejected review", async () => {
+    testUser.userId = "user-other";
+    testUser.role = "coordinator";
+    mockPrisma.reviewRequest.findUnique.mockResolvedValue(rejected());
+
+    const res = await request(app).post("/reviews/rev-1/revise").send({});
+
+    expect(res.status).toBe(200);
+  });
+
+  it("403s anyone else: not the requester and no review.admin", async () => {
+    testUser.userId = "user-other";
+    testUser.role = "developer";
+    mockPrisma.reviewRequest.findUnique.mockResolvedValue(rejected());
+
+    const res = await request(app).post("/reviews/rev-1/revise").send({});
+
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe("NOT_REQUESTER");
+    expect(mockPrisma.reviewRequest.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("403s a reader, who may not request reviews at all", async () => {
+    testUser.userId = "user-req";
+    testUser.role = "reader";
+    mockPrisma.reviewRequest.findUnique.mockResolvedValue(rejected());
+
+    const res = await request(app).post("/reviews/rev-1/revise").send({});
+
+    expect(res.status).toBe(403);
+  });
+
+  it("409s a review that is not rejected (only a rejection is revised)", async () => {
+    testUser.userId = "user-req";
+    for (const status of ["in_review", "approved", "draft", "closed"]) {
+      mockPrisma.reviewRequest.findUnique.mockResolvedValue(makeReview({ status }));
+      const res = await request(app).post("/reviews/rev-1/revise").send({});
+      expect(res.status, status).toBe(409);
+      expect(res.body.error.code).toBe("ILLEGAL_REVIEW_TRANSITION");
+    }
+    expect(mockPrisma.reviewRequest.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("409s when the revise loses a race (guarded write)", async () => {
+    testUser.userId = "user-req";
+    mockPrisma.reviewRequest.findUnique.mockResolvedValue(rejected());
+    mockPrisma.reviewRequest.updateMany.mockResolvedValue({ count: 0 });
+
+    const res = await request(app).post("/reviews/rev-1/revise").send({});
+
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe("REVIEW_STATE_CHANGED");
+  });
+});
+
 describe("POST /reviews/:reviewId/withdraw", () => {
   it("lets the requester withdraw an in_review review back to draft", async () => {
     mockPrisma.reviewRequest.findUnique.mockResolvedValue(

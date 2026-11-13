@@ -6,8 +6,9 @@
  * A requirement already in a state does not offer that state again: an
  * approved one reads "Approved" and its button is disabled, so a second click
  * no longer sends a second `PUT /api/requirements/:id` (the walkthrough saw two
- * for one requirement). The other action stays available, so a decision can
- * still be changed. A review that has just succeeded counts before the
+ * for one requirement). A rejection can still be overturned with Approve; an
+ * approved requirement offers nothing more (#2347): editing it sends it back
+ * for review (#2219). A review that has just succeeded counts before the
  * requirement is read back, which closes the gap a quick second click fell into.
  */
 import type { RequirementReviewStatus } from "@metis/shared";
@@ -67,9 +68,13 @@ const ACTIONS = [
 ] as const;
 
 export function RequirementReviewButtons({ status, writeHint, pending, onReview }: Props) {
+  // #2347 (#2220) — an approved requirement is not offered Approve / Reject as
+  // if nothing had happened: it reads Approved, and changing it is an edit
+  // (which sends it back for review, #2219) or a formal review.
+  const actions = status === "approved" ? ACTIONS.filter((a) => a.status === "approved") : ACTIONS;
   return (
     <>
-      {ACTIONS.map((a) => {
+      {actions.map((a) => {
         const done = status === a.status;
         return (
           <HoverHint

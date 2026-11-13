@@ -249,7 +249,7 @@ describe("checklist steps", () => {
     renderOverview();
     await waitFor(() =>
       expect(screen.getByTestId("pipeline-status-review")).toHaveTextContent(
-        "6 approvals pending · Questions waiting (12)",
+        "6 checkpoints pending · Questions waiting (12)",
       ),
     );
     expect(listApprovals).toHaveBeenCalledWith("p1", "a1");
@@ -269,7 +269,9 @@ describe("checklist steps", () => {
     pendingApprovals(3);
     const { qc } = renderOverview();
     await waitFor(() =>
-      expect(screen.getByTestId("pipeline-status-review")).toHaveTextContent("3 approvals pending"),
+      expect(screen.getByTestId("pipeline-status-review")).toHaveTextContent(
+        "3 checkpoints pending",
+      ),
     );
     pendingApprovals(0);
     await act(() => qc.invalidateQueries({ queryKey: queryKeys.approvals.forAnalysis("a1") }));
@@ -341,7 +343,7 @@ describe("checklist steps", () => {
     renderOverview();
     await waitFor(() =>
       expect(screen.getByTestId("pipeline-status-review")).toHaveTextContent(
-        "Could not check this run's approvals",
+        "Could not check this run's checkpoints",
       ),
     );
   });

@@ -922,7 +922,7 @@ async function transitionReview(
   actorId: string,
   reviewId: string,
   isAdmin: boolean,
-  event: "withdraw" | "close",
+  event: "withdraw" | "close" | "revise",
 ): Promise<unknown> {
   const review = await loadReviewOr404(reviewId);
   assertRequesterOrAdmin(review, actorId, isAdmin);
@@ -972,6 +972,21 @@ export async function withdrawReview(
   isAdmin: boolean,
 ): Promise<unknown> {
   return transitionReview(actorId, reviewId, isAdmin, "withdraw");
+}
+
+/**
+ * #2347 — "Revise and resubmit": rejected → draft, with the same items and
+ * reviewers. The requirements keep the rejection until the review is submitted
+ * again (a submit re-pins their current versions and resets every reviewer's
+ * decision), so the analyst can edit them in between. Requester or
+ * `review.admin`, as withdraw is.
+ */
+export async function reviseReview(
+  actorId: string,
+  reviewId: string,
+  isAdmin: boolean,
+): Promise<unknown> {
+  return transitionReview(actorId, reviewId, isAdmin, "revise");
 }
 
 export async function closeReview(

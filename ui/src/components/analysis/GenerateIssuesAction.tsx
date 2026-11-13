@@ -96,7 +96,7 @@ export function GenerateIssuesAction({
             <>
               Couldn&apos;t check the approval gate for this run.{" "}
               <a href="#approvals" className="font-medium underline">
-                Go to approvals
+                Go to checkpoints
               </a>
             </>
           ) : (
@@ -108,7 +108,7 @@ export function GenerateIssuesAction({
               ? `${ticketStatus.pendingCount} pending approval(s) must be resolved before requirements exist.`
               : "Approvals must be resolved before requirements exist."}{" "}
             <a href="#approvals" className="font-medium underline">
-              Go to approvals
+              Go to checkpoints
             </a>
           </>
         ) : stranded ? (

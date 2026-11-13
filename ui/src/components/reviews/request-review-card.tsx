@@ -56,6 +56,11 @@ interface Props {
   currentUserId: string;
   /** #989 — how many of `requirementIds` are already approved. */
   approvedCount?: number;
+  /**
+   * #2347 — the user may take a baseline without a review (`review.admin`, as
+   * `POST /projects/:id/baselines` requires): the solo outcome says so.
+   */
+  canBaseline?: boolean;
 }
 
 export function RequestReviewCard({
@@ -64,6 +69,7 @@ export function RequestReviewCard({
   requirements,
   currentUserId,
   approvedCount: approvedCountProp = 0,
+  canBaseline = false,
 }: Props) {
   const qc = useQueryClient();
   const [open, setOpen] = useState(false);
@@ -100,6 +106,11 @@ export function RequestReviewCard({
   const candidates = (hits.data ?? []).filter(
     (u) => u.id !== currentUserId && !reviewers.some((r) => r.id === u.id),
   );
+  // #2347 — say why the picker offers nobody, instead of a silent empty list
+  // and a disabled button (#2330: the server answers SELF_REVIEW_FORBIDDEN).
+  const searched = term !== "" && hits.isSuccess;
+  const onlyMe = searched && (hits.data ?? []).some((u) => u.id === currentUserId);
+  const noOneElse = searched && candidates.length === 0 && reviewers.length === 0;
 
   const request = useMutation({
     mutationFn: async () => {
@@ -277,6 +288,20 @@ export function RequestReviewCard({
               ))}
             </ul>
           ) : null}
+          {noOneElse ? (
+            <div className="space-y-1 text-xs" role="status" data-testid="request-review-no-one">
+              <p>
+                {onlyMe
+                  ? "You can't review your own request; add a colleague who can open this project."
+                  : `No one else who can open this project matches "${term}".`}
+              </p>
+              <p className="text-muted-foreground" data-testid="request-review-solo">
+                {canBaseline
+                  ? "Working alone? Approve the requirements directly; that is where they end. To fix a set, take a baseline from Baselines → New baseline."
+                  : "Working alone? Approve the requirements directly; that is where they end. A coordinator or admin can take a baseline from them (Baselines → New baseline), or add a colleague to this project to review."}
+              </p>
+            </div>
+          ) : null}
           {reviewers.length > 0 ? (
             <ul className="flex flex-wrap gap-2" aria-label="Selected reviewers">
               {reviewers.map((r) => (
@@ -304,6 +329,11 @@ export function RequestReviewCard({
         {error ? (
           <p className="text-sm text-destructive" role="alert">
             {error}
+          </p>
+        ) : null}
+        {reviewers.length === 0 ? (
+          <p className="text-xs text-muted-foreground" data-testid="request-review-needs-reviewer">
+            Add at least one reviewer to request the review. You can&apos;t review your own request.
           </p>
         ) : null}
         <div className="flex gap-2">

@@ -148,6 +148,15 @@ describe("Baselines page", () => {
     const empty = await screen.findByTestId("baselines-empty");
     expect(screen.queryByTestId("new-baseline")).not.toBeInTheDocument();
     expect(empty).not.toHaveTextContent(/New baseline/);
+    // #2347 — the page copy no longer describes a button this role does not see.
+    expect(document.body).not.toHaveTextContent(/New baseline pins/);
+    expect(document.body).toHaveTextContent(/a coordinator or admin can also take one/);
+  });
+
+  it("#2347 — describes New baseline in the page copy to a review administrator", async () => {
+    renderWith(<ProjectBaselinesPage />, { user: userWith("coordinator") });
+    await screen.findByTestId("baselines-empty");
+    expect(document.body).toHaveTextContent(/New baseline pins the project's requirements/);
   });
 });
 

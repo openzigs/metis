@@ -104,7 +104,8 @@ export function ChangeRequestReviewState({ projectId, analysisId }: Props) {
               href={reviewHref(s.reviewId)}
               className="text-primary underline-offset-2 hover:underline"
             >
-              Open review
+              {/* #2347 — a rejection of your own request is revised on the review. */}
+              {s.key === "rejected" ? "Revise and resubmit" : "Open review"}
             </Link>
           </li>
         );
