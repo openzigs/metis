@@ -80,6 +80,17 @@ test.describe("Analysis capability signals (#733)", () => {
 
   // AC3 — the form warns, before a run, that code analysis will be limited.
   test("start-analysis form shows the capability hint for a degraded project", async ({ page }) => {
+    // #2454 — a project with no code at all (created "Documents only") is not
+    // warned about a graph or source it has nothing to build them from. The
+    // degraded project here has a repository whose code is not built yet.
+    const api = await authedApi(accessToken);
+    const stamp = Date.now();
+    const repo = await api.post(`/api/projects/${projectId}/connectors/repos`, {
+      data: { label: `capability-${stamp}`, ownerOrOrg: "metis-e2e", repoName: `cap-${stamp}` },
+    });
+    expect(repo.status(), await repo.text()).toBe(201);
+    await api.dispose();
+
     const analysis = new AnalysisPage(page);
     await analysis.goto(projectId);
 
