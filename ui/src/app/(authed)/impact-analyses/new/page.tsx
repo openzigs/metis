@@ -15,7 +15,11 @@ import { useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { useQueries, useQuery } from "@tanstack/react-query";
-import { IMPACT_MAX_PROJECTS, type CreateImpactAnalysisInput } from "@metis/shared";
+import {
+  IMPACT_MAX_PROJECTS,
+  MAX_IMPACT_REQUIREMENT_IDS,
+  type CreateImpactAnalysisInput,
+} from "@metis/shared";
 import { Card } from "@/components/ui/card";
 import { projectsApi, documentsApi, type Project } from "@/lib/projects-api";
 import { useCreateImpactAnalysis } from "@/lib/impact-analysis-hooks";
@@ -33,11 +37,7 @@ import { Button } from "@/components/ui/button";
 import { analysisApi } from "@/lib/analysis-api";
 import { queryKeys } from "@/lib/query-keys";
 import { checkedRequirements } from "@/components/analysis/change-request-checks";
-
-/** #2345 — the change request's own page. */
-function changeRequestHref(projectId: string, analysisId: string): string {
-  return `/projects/${encodeURIComponent(projectId)}/analysis?${new URLSearchParams({ analysisId }).toString()}`;
-}
+import { changeRequestHref } from "@/components/analysis/change-request-back-link";
 
 export default function NewImpactAnalysisPage() {
   const router = useRouter();
@@ -194,7 +194,7 @@ export default function NewImpactAnalysisPage() {
         eyebrow={
           changeRequestId && crProjectId ? (
             <Link
-              href={changeRequestHref(crProjectId, changeRequestId)}
+              href={changeRequestHref({ projectId: crProjectId, id: changeRequestId })}
               className="text-xs text-muted-foreground hover:underline"
               data-testid="impact-new-back"
             >
@@ -232,7 +232,9 @@ export default function NewImpactAnalysisPage() {
               <p className="text-xs text-muted-foreground">
                 {crRequirements === 0
                   ? "It has no draft or approved requirements to analyse yet."
-                  : `Its ${crRequirements} draft and approved requirement${crRequirements === 1 ? " is" : "s are"} analysed; METIS reads them itself. Keep its project selected.`}
+                  : crRequirements > MAX_IMPACT_REQUIREMENT_IDS
+                    ? `The first ${MAX_IMPACT_REQUIREMENT_IDS} of its ${crRequirements} draft and approved requirements are analysed (one run checks at most ${MAX_IMPACT_REQUIREMENT_IDS}); METIS reads them itself. Keep its project selected.`
+                    : `Its ${crRequirements} draft and approved requirement${crRequirements === 1 ? " is" : "s are"} analysed; METIS reads them itself. Keep its project selected.`}
               </p>
             </>
           )}

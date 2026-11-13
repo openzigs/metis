@@ -1373,10 +1373,14 @@ click **Run analysis** to start with your own choices instead.
 
 **Impact and portfolio.** Below the step header, the **Impact and portfolio** card starts both
 checks from the change request itself, with its requirements already filled in: you type
-nothing again, and you stay on the project's pages. [#2345]
+nothing again. Each result opens on its own page, the same impact analysis or portfolio check
+page the **Impact analyses** and **Portfolio** pages open, with a **Back to the change request**
+link at the top that returns you here in one click. [#2345]
 
 - **Run impact analysis** maps the change request's draft and approved requirements (rejected
-  and deferred ones are left out) to the affected code in this project. **Options** opens the
+  and deferred ones are left out) to the affected code in this project. One run checks at most
+  50 requirements: for a larger change request the card and the form say that the first 50 of
+  them are checked. **Options** opens the
   full impact form with the change request as its source and this project selected, to add
   other projects; keep this project selected.
 - **Run portfolio check** checks each of those requirements across every product you can read.
@@ -2148,12 +2152,17 @@ In the header, open the workspace menu (the workspace's name), choose **Open wor
 
 Before anyone builds a requirement, check whether a product you already have does it, and
 which other products a change for it would reach. Your *portfolio* is the products you can
-access under **Projects › Products**. A product groups the repositories that make it up (see
-Section 15.5), and the check reads the code in those repositories. [#1608]
+access, listed under **Projects › Portfolio › Products**. A product groups the repositories
+that make it up (see Section 15.5), and the check reads the code in those repositories. [#1608]
+
+The **Portfolio** tab (`/portfolio`) holds both: **Coverage**, where you run a check, and
+**Products**, where you list, open and create products. It opens on Coverage. The old
+`/products` and `/portfolio` addresses still work: `/products` opens the Products section, and
+a product's own page keeps its address. [#2353]
 
 #### Running a check
 
-1. Open **Projects › Portfolio coverage** (`/portfolio`).
+1. Open **Projects › Portfolio** (`/portfolio`). It opens on **Coverage**.
 2. Describe what the business needs in plain language, up to 8,000 characters. For example:
    *"Customers can pay an invoice by bank transfer."*
 3. Under **Where to look**, open the scope picker (the same one chat and impact analysis use,
@@ -3755,9 +3764,9 @@ Opening Chat from a project (`/chat?projectId=…`) scopes it to that project.
 
   Replies written before this label existed show none.
 
-**How a question over several projects is answered (#2238):** every turn searches each project in the scope, again checking that you can still open it. Each project's matches are compared on how close they are to the question, and a project whose best match is well below the best project's contributes nothing, so a project that has nothing to do with the question does not slip its top excerpt into the answer (`CHAT_MULTI_PROJECT_RELEVANCE_FLOOR_PCT`, default 75). The projects that remain share the excerpts. Every excerpt is labelled with its project, and the model is told to say which project each statement comes from, and never to carry a fact from one project over to another.
+**How a question over several projects is answered (#2238):** every turn searches each project in the scope, again checking that you can still open it. Each project's matches are compared on how close they are to the question, and a project whose best match is well below the best project's contributes nothing, so a project that has nothing to do with the question does not slip its top excerpt into the answer (`CHAT_MULTI_PROJECT_RELEVANCE_FLOOR_PCT`, default 75). The projects that remain share the excerpts. Every excerpt is labelled with its project, and the model is told to say which project each statement comes from, and never to carry a fact from one project over to another. Since #2294 the same relevance floor as a one-project chat applies to each project as well: a match too weak to bear on the question is left out and the next one takes its place, and when every match in every project is too weak, the answer says the sources don't show this and the label reads **Insufficient evidence**. The label lists the files the excerpts came from, each named with its project.
 
-**Follow-up questions.** A scoped chat searches the project with the conversation, not just your last message. When you answer a question the model asked ("Which product do you mean?" — "Server"), or ask a short follow-up ("and for annual plans?"), the search reads your message together with the question before it. Your own words always run as a search of their own as well, and they count for more: the 8 best excerpts your own words found are always kept, and the earlier question can add at most 3 more (#2316). A question that names its own subject ("Are there any GDPR requirements in the onboarding spec?") is searched on its own, even right after the model asked you something. A question with several parts (a numbered list, or several questions in one message) searches each part, and the results are merged. The excerpts an answer cited (by its `[n]` number, its file name or its location) are given to the model again on your next message, marked as cited in the previous answer, so it can build on them. They are read again when you send it: an excerpt you can no longer see, or whose document was deleted, is not brought back. Each excerpt brought back counts toward the **N sources** in the label. [#2240]
+**Follow-up questions.** A scoped chat searches the project with the conversation, not just your last message. When you answer a question the model asked ("Which product do you mean?" — "Server"), or ask a short follow-up ("and for annual plans?"), the search reads your message together with the question before it. Your own words always run as a search of their own as well, and they count for more: the 8 best excerpts your own words found are always kept, and the earlier question can add at most 3 more (#2316). A question that names its own subject ("Are there any GDPR requirements in the onboarding spec?") is searched on its own, even right after the model asked you something. A question with several parts (a numbered list, or several questions in one message) searches each part, and the results are merged. The excerpts an answer cited (by its `[n]` number, its file name or its location) are given to the model again on your next message, marked as cited in the previous answer, so it can build on them. They are read again when you send it: an excerpt you can no longer see, or whose document was deleted, is not brought back. Each excerpt brought back counts toward the **N sources** in the label. [#2240] A chat over several projects does the same: a follow-up is searched in every project together with the question before it, so "and in the client?" finds the project the earlier question was about; the excerpts the last answer cited come back labelled with their project; and documents attached in the Workbench limit every project's search to them. [#2279]
 
 **Checked citations.** When an answer cites a file (`internal/model/feed.go:120-150`, a path, or an excerpt number such as `[2]`), METIS checks each citation against what that turn actually retrieved or read. That means the excerpts it was given and the files and line ranges its code and knowledge tools returned. A **Citations** line under the reply counts them, and opens to list each one:
 
@@ -3781,13 +3790,12 @@ The list opens by itself when any citation did not check out. A file name mentio
 
 ## 15. Managing Git Repositories
 
-> **v1.2.0 update.** Repositories are now reachable two ways: (a) the
-> per-project **Connections** tab (still the source of truth for connector
-> CRUD — see §15.4), and (b) a top-level `/repositories` page in the sidebar
-> that aggregates every repo across every project the operator can see, with
-> a project-name filter and one-click "open in project" links. Both surfaces
-> hit the same `/api/projects/:id/connectors/repos` endpoints — no new
-> server routes were added (`#196 / #224`).
+> **Where repositories live.** A project's repositories are on its
+> **Knowledge › Connections** tab, which is where you add, edit and remove
+> them (see §15.4). The cross-project **Projects › Repositories** list is
+> gone (#2353): `/repositories` now opens the project list, or a project's
+> Knowledge tab when the link names one (`/repositories?projectId=<id>`).
+> To find a repository, open its project from **Projects**.
 
 ### 15.1 Why Connect Repositories?
 
@@ -3926,7 +3934,7 @@ then, impact analysis and "Tested by" may miss some Go call paths in that reposi
 
 ### 15.5 Products that span repositories you can't access
 
-A product (**Projects › Products**) can include repositories from projects you don't
+A product (**Projects › Portfolio › Products**) can include repositories from projects you don't
 have access to. You won't see those repositories; instead the product page says
 **"N repos hidden"**. **Generate Documentation** still works, but it builds the documents
 from the repositories you *can* access, and every document affected says so: *"Built
@@ -3996,12 +4004,12 @@ Without edit rights the list is read-only and marked **Restricted**.
 
 ## 16. Database Connections
 
-> **v1.2.0 update.** As with repositories, the per-project **Connections**
-> tab remains the source of truth for database connector CRUD, and a new
-> top-level `/databases` sidebar page surfaces the full inventory across
-> projects with the same filter / link-back pattern (`#196 / #224`). The
-> read-only SQL panel still lives only on the per-project page so RBAC
-> stays project-scoped.
+> **Where database connections live.** As with repositories, a project's
+> database connections are on its **Knowledge › Connections** tab, with the
+> read-only SQL panel, so access stays project-scoped. The cross-project
+> **Projects › Databases** list is gone (#2353): `/databases` now opens the
+> project list, or a project's Knowledge tab when the link names one
+> (`/databases?projectId=<id>`).
 
 ### 16.1 Why Connect Databases?
 
@@ -4469,7 +4477,8 @@ Single admin home for AI provider preferences and runtime configuration. The rou
 ### 20.5 Integrations (`/settings/integrations`)
 
 A navigation index that cards every third-party integration surface:
-**Repositories**, **Databases**, **MCP servers**, **Hooks**, **Triggers**,
+**Repositories and databases** (to the project list: each project's Knowledge
+tab holds its own, #2353), **MCP servers**, **Hooks**, **Triggers**,
 **Notifications** (Slack + PagerDuty), and the **Vault**. Connections
 themselves remain project-scoped (see §15 and §16); the Integrations page just
 gives operators a single jumping-off point.

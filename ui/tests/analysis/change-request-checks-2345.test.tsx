@@ -31,6 +31,7 @@ import {
   ChangeRequestChecks,
   changeRequestFormHrefs,
   checkedRequirements,
+  impactCheckedCopy,
 } from "@/components/analysis/change-request-checks";
 import { PortfolioAssessmentForm } from "@/components/portfolio/portfolio-assessment-form";
 import { portfolioCheckHref } from "@/components/portfolio/portfolio-check-link";
@@ -125,6 +126,15 @@ describe("#2345 — the change request's Impact and portfolio card", () => {
     const sent = createPortfolio.mock.calls[0][0];
     expect(sent).toEqual({ analysisId: "an-1", scope: "all-accessible" });
     expect(createPortfolioAssessmentSchema.safeParse(sent).success).toBe(true);
+  });
+
+  it("says an impact analysis checks the first 50 of a larger change request's requirements", () => {
+    renderCard(Array.from({ length: 51 }, (_, i) => req(`r${i}`, "approved")));
+    const source = screen.getByTestId("change-request-checks-source");
+    expect(source).toHaveTextContent("Checks this change request's 51 requirements");
+    expect(source).toHaveTextContent("An impact analysis checks the first 50 of the 51.");
+    expect(impactCheckedCopy(50)).toBeNull();
+    expect(impactCheckedCopy(51)).toBe("An impact analysis checks the first 50 of the 51.");
   });
 
   it("offers nothing to run while the change request has no requirement to check", () => {

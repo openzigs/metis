@@ -4,10 +4,9 @@
  * Project-scoped Impact Analysis (#28, epic #26) — the Change requests tab's entry to
  * impact analysis, which is otherwise a cross-project tool in the sidebar.
  * #61 — lists this project's own runs (`GET /impact-analyses?projectId=`).
- * #2345 — `?analysisId=` (a change request) is carried into the new-run form.
  */
 import Link from "next/link";
-import { useParams, useSearchParams } from "next/navigation";
+import { useParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { ImpactAnalysesTable } from "@/components/impact/impact-analyses-table";
@@ -18,13 +17,6 @@ import { EmptyState } from "@/components/ui/empty-state";
 export default function ProjectImpactPage() {
   const params = useParams<{ id: string }>();
   const projectId = params?.id ?? "";
-  // #2345 — arriving from a change request, "New impact analysis" starts from it
-  // (its requirements pre-filled; the server reads them itself).
-  const analysisId = useSearchParams()?.get("analysisId") ?? null;
-  const newHref = `/impact-analyses/new?${new URLSearchParams({
-    projectId,
-    ...(analysisId ? { analysisId } : {}),
-  }).toString()}`;
   const { data, isLoading, isError } = useImpactAnalyses(projectId);
   // The server already narrows by `projectId`; checking `projectIds` too keeps
   // another project's run off this page if that filter is ever lost.
@@ -42,7 +34,10 @@ export default function ProjectImpactPage() {
         </p>
         <div className="flex flex-wrap gap-2">
           <Button asChild size="sm">
-            <Link href={newHref} data-testid="project-impact-new">
+            <Link
+              href={`/impact-analyses/new?projectId=${encodeURIComponent(projectId)}`}
+              data-testid="project-impact-new"
+            >
               New impact analysis
             </Link>
           </Button>

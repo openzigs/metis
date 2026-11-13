@@ -108,6 +108,7 @@ import {
   assertHasRequirements,
   changeRequestRef,
   loadChangeRequestSource,
+  readableChangeRequest,
 } from "../lib/analysis/change-request-source.js";
 import { loadAccessibleImpactDetail } from "../lib/impact-analysis/impact-detail-access.js";
 import { diffImpactRuns } from "../lib/impact-analysis/impact-drift.js";
@@ -1129,6 +1130,19 @@ export function impactAnalysisRouter(deps: UsageClassificationRouterDeps = {}): 
       // newest first; each row is still filtered on the caller's projects.
       const analysisId = listQuerySchema.parse(req.query).analysisId;
       if (projectId && accessibleProjectIds && !accessibleProjectIds.includes(projectId)) {
+        res.json(ok([]));
+        return;
+      }
+      // #2345 — a change request whose project the caller cannot read lists
+      // nothing, the same answer as an unknown one: a reader of only a project
+      // co-selected in a run started from it learns nothing of it.
+      if (
+        analysisId &&
+        !(await readableChangeRequest(
+          analysisId,
+          async (pid) => accessibleProjectIds === null || accessibleProjectIds.includes(pid),
+        ))
+      ) {
         res.json(ok([]));
         return;
       }

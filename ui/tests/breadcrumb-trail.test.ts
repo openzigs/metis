@@ -104,6 +104,20 @@ describe("pageCrumbs (#271)", () => {
     ]);
   });
 
+  // #2353 — Products merged into the Portfolio tab; a product's own page kept
+  // its URL and now sits under Portfolio.
+  it("runs a product's page and a check through Portfolio (#2353)", () => {
+    expect(pageCrumbs("/products/clx0123456789abcdefghijk", false)).toEqual([
+      { label: "Portfolio", href: "/portfolio" },
+      { label: "Product" },
+    ]);
+    expect(pageCrumbs("/portfolio/clx0123456789abcdefghijk", false)).toEqual([
+      { label: "Portfolio", href: "/portfolio" },
+      { label: "Check" },
+    ]);
+    expect(pageCrumbs("/portfolio", false)).toEqual([{ label: "Portfolio" }]);
+  });
+
   it("is empty for a project route outside the project tabs", () => {
     expect(pageCrumbs("/projects/p1/nowhere", true)).toEqual([]);
   });

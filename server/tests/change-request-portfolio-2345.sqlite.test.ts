@@ -277,5 +277,26 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect((await get("ola", `/${id}`)).status).toBe(404);
       expect((await get("ola", `?analysisId=${CR_DRAFT}`)).body.data).toEqual([]);
     });
+
+    it("lists nothing for a change request the caller cannot read, even a check of theirs that names it", async () => {
+      // A check Ola started that names Mia's change request but records no
+      // source project: the per-row rule would let its starter read it, so the
+      // change request's own project is what keeps it off Ola's list.
+      await db.portfolioAssessment.create({
+        data: {
+          id: "pa-2345-no-source-project",
+          statement: "Typed",
+          sourceAnalysisId: CR_DRAFT,
+          scope: "all-accessible",
+          status: "completed",
+          createdById: "ola",
+        },
+      });
+      const forOla = await get("ola", `?analysisId=${CR_DRAFT}`);
+      expect(forOla.status).toBe(200);
+      expect(forOla.body.data).toEqual([]);
+      // The same answer as a change request that does not exist.
+      expect((await get("ola", "?analysisId=cr-nope-2345")).body.data).toEqual([]);
+    });
   },
 );

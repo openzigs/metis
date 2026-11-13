@@ -57,12 +57,16 @@ vi.mock("../src/lib/impact-analysis/impact-analysis-engine.js", async () => {
 const { impactAnalysisRouter } = await import("../src/routes/impact-analysis.js");
 const { errorHandler, notFoundHandler } = await import("../src/middleware/error-handler.js");
 const { issueTokens } = await import("../src/lib/auth/jwt.js");
+const { changeRequestRef } = await import("../src/lib/analysis/change-request-source.js");
 const engine = await vi.importActual<
   typeof import("../src/lib/impact-analysis/impact-analysis-engine.js")
 >("../src/lib/impact-analysis/impact-analysis-engine.js");
 
 const WS1 = "ws1-2345";
 const WS2 = "ws2-2345";
+/** Workspace 3 holds project C: Carol reads only it; Bob reads it too. */
+const WS3 = "ws3-2345";
+const PC = "proj-c-2345";
 const PA = "proj-a-2345";
 const PB = "proj-b-2345";
 /** Change requests: A's with requirements, A's with none, A's deleted, B's. */
@@ -75,6 +79,7 @@ const USERS: Record<string, { role: RoleKey; ws: string }> = {
   alice: { role: "coordinator", ws: WS1 },
   bob: { role: "coordinator", ws: WS1 },
   mallory: { role: "coordinator", ws: WS2 },
+  carol: { role: "coordinator", ws: WS3 },
 };
 type Who = keyof typeof USERS;
 
@@ -116,15 +121,19 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         });
         await db.userRole.create({ data: { userId: id, roleId: "role-coordinator" } });
       }
-      for (const ws of [WS1, WS2]) {
+      for (const ws of [WS1, WS2, WS3]) {
         await db.workspace.create({ data: { id: ws, name: ws, slug: ws } });
       }
       for (const [userId, u] of Object.entries(USERS)) {
         await db.workspaceMember.create({ data: { workspaceId: u.ws, userId, role: "member" } });
       }
+      await db.workspaceMember.create({
+        data: { workspaceId: WS3, userId: "bob", role: "member" },
+      });
       for (const [id, createdById, workspaceId] of [
         [PA, "alice", WS1],
         [PB, "mallory", WS2],
+        [PC, "carol", WS3],
       ] as const) {
         await db.project.create({
           data: { id, name: id, slug: id, createdById, workspaceId, status: "active" },
@@ -280,6 +289,36 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect((await get("mallory", `?analysisId=${CR_A}`)).body.data).toEqual([]);
       expect((await get("mallory", `/${second}`)).status).toBe(404);
       expect((await get("bob", `?analysisId=${"x".repeat(65)}`)).status).toBe(400);
+    });
+
+    it("lists nothing to a reader of only a project co-selected in a run started from the change request", async () => {
+      // Bob starts a run from project A's change request and adds project C.
+      const run = (await post("bob", { analysisId: CR_A, projectIds: [PA, PC] })).body.data.id;
+      // Carol reads C only: the run is hers to see by project, the change request is not.
+      const byProject = (await get("carol", `?projectId=${PC}`)).body
+        .data as ImpactAnalysisSummary[];
+      expect(byProject.map((r) => r.id)).toContain(run);
+      const byChangeRequest = await get("carol", `?analysisId=${CR_A}`);
+      expect(byChangeRequest.status).toBe(200);
+      expect(byChangeRequest.body.data).toEqual([]);
+      // The same answer as an unknown change request.
+      expect((await get("carol", "?analysisId=cr-nope-2345")).body.data).toEqual([]);
+      // Bob reads A: he still sees it.
+      const forBob = (await get("bob", `?analysisId=${CR_A}`)).body.data as ImpactAnalysisSummary[];
+      expect(forBob.map((r) => r.id)).toContain(run);
+    });
+
+    it("names a change request back only among the projects it is given", async () => {
+      expect(await changeRequestRef(CR_A, [PA, PC])).toEqual({
+        id: CR_A,
+        projectId: PA,
+        title: "Password reset by email",
+      });
+      // Projects that do not include the change request's own: it is not named.
+      expect(await changeRequestRef(CR_A, [PB, PC])).toBeNull();
+      expect(await changeRequestRef(CR_A, [])).toBeNull();
+      expect(await changeRequestRef(CR_DELETED, [PA])).toBeNull();
+      expect(await changeRequestRef(null, [PA])).toBeNull();
     });
 
     it("the real trigger stores the change request it was started from", async () => {

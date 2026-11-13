@@ -234,6 +234,27 @@ describe("NewImpactAnalysisPage", () => {
       expect(getAnalysis).toHaveBeenCalledWith("an-0000001");
     });
 
+    it("says only the first 50 are analysed when the change request has more", async () => {
+      getAnalysis.mockResolvedValue({
+        id: "an-0000001",
+        projectId: "project-001",
+        title: "Password reset",
+        requirements: Array.from({ length: 51 }, (_, i) => ({
+          id: `r${i}`,
+          reviewStatus: "draft",
+        })),
+      });
+      search = new URLSearchParams("projectId=project-001&analysisId=an-0000001");
+      render(<NewImpactAnalysisPage />, { wrapper: makeWrapper() });
+      const source = await screen.findByTestId("impact-new-change-request");
+      await waitFor(() =>
+        expect(source).toHaveTextContent(
+          "The first 50 of its 51 draft and approved requirements are analysed",
+        ),
+      );
+      expect(source).not.toHaveTextContent("Its 51");
+    });
+
     it("waits while the change request's project is not selected", async () => {
       search = new URLSearchParams("analysisId=an-0000001");
       render(<NewImpactAnalysisPage />, { wrapper: makeWrapper() });
