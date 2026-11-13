@@ -13,7 +13,9 @@ import {
 
 vi.mock("../auth/accessible-projects.js", () => {
   const getUserAccessibleProjects = vi.fn();
-  const getUserArchivedProjects = vi.fn(async () => []);
+  const getUserArchivedProjects = vi.fn(
+    async (_userId: string, _ids: readonly string[]): Promise<{ id: string; name: string }[]> => [],
+  );
   return {
     getUserAccessibleProjects,
     getUserArchivedProjects,
