@@ -331,7 +331,7 @@ export async function notifyReviewedRequirementEdited(
     const recipients = new Map<string, (typeof items)[number]>();
     for (const item of items) {
       const review = item.reviewRequest;
-      emitReviewChanged(review.projectId, review.id);
+      void emitReviewChanged(review.projectId, review.id);
       for (const userId of [review.requestedById, ...review.assignments.map((a) => a.reviewerId)]) {
         if (userId !== input.actorId && !recipients.has(userId)) recipients.set(userId, item);
       }
