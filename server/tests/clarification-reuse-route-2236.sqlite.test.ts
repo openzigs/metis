@@ -31,6 +31,16 @@ const state = vi.hoisted(() => {
   process.env.AI_OFFLINE = "1";
   return { db: null as unknown, questionCalls: 0 };
 });
+// Spies that call through: they prove what the ROUTER hands to the library.
+vi.mock("../src/lib/clarifications/analysis-clarifications.js", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../src/lib/clarifications/analysis-clarifications.js")>();
+  return {
+    ...actual,
+    rerunReusedClarifications: vi.fn(actual.rerunReusedClarifications),
+    persistClarificationKnowledge: vi.fn(actual.persistClarificationKnowledge),
+  };
+});
 vi.mock("../src/lib/prisma.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/lib/prisma.js")>()),
   get prisma() {
@@ -107,6 +117,7 @@ vi.mock("../src/lib/rag/ingest-queue.js", async (importOriginal) => ({
 }));
 
 const { initAnalysisRouter } = await import("../src/routes/analysis.js");
+const clarifications = await import("../src/lib/clarifications/analysis-clarifications.js");
 const { errorHandler, notFoundHandler } = await import("../src/middleware/error-handler.js");
 const { issueTokens } = await import("../src/lib/auth/jwt.js");
 
@@ -265,6 +276,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
 
     beforeEach(async () => {
       state.questionCalls = 0;
+      vi.mocked(clarifications.rerunReusedClarifications).mockClear();
+      vi.mocked(clarifications.persistClarificationKnowledge).mockClear();
       await db.clarificationRecord.deleteMany({});
     });
 
@@ -306,6 +319,51 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       // And the reused answer reaches the second analysis's stored requirement.
       const row = await db.requirement.findUniqueOrThrow({ where: { id: `req-row-${seq}` } });
       expect(row.body).toContain(ANSWER);
+    });
+
+    it("a submit and a CSV import record only the round they answered", async () => {
+      const first = await seedAnalysis(OPEN_ROUND);
+      await clarify(first, { answers: [{ questionId: "q-1", answer: ANSWER }] });
+      await vi.waitFor(async () => expect(await records()).toHaveLength(1));
+      expect(clarifications.persistClarificationKnowledge).toHaveBeenLastCalledWith(
+        expect.objectContaining({ analysisId: first, rounds: [1] }),
+      );
+      const second = await seedAnalysis(OPEN_ROUND);
+      await request(app())
+        .post(`${base(second)}/clarify/import`)
+        .set("Authorization", `Bearer ${token()}`)
+        .attach(
+          "file",
+          Buffer.from(
+            "questionId,requirement,ambiguityField,question,suggestedAnswer,answer\r\n" +
+              `q-1,${TITLE},scope,Which invoices?,,${ANSWER}\r\n`,
+          ),
+          "answers.csv",
+        );
+      await vi.waitFor(() =>
+        expect(clarifications.persistClarificationKnowledge).toHaveBeenLastCalledWith(
+          expect.objectContaining({ analysisId: second, rounds: [1] }),
+        ),
+      );
+    });
+
+    it("answers reused by a start are re-run once, not on every later view of the settled dialog", async () => {
+      const first = await seedAnalysis(OPEN_ROUND);
+      await clarify(first, { answers: [{ questionId: "q-1", answer: ANSWER }] });
+      await vi.waitFor(async () => expect(await records()).toHaveLength(1));
+
+      const second = await seedAnalysis();
+      for (let i = 0; i < 3; i += 1) {
+        const res = await clarify(second, {});
+        expect(res.status).toBe(200);
+        expect(res.body.data).toMatchObject({ completed: true, currentRound: 1 });
+      }
+      await vi.waitFor(() =>
+        expect(clarifications.rerunReusedClarifications).toHaveBeenCalledTimes(1),
+      );
+      expect(clarifications.rerunReusedClarifications).toHaveBeenCalledWith(
+        expect.objectContaining({ analysisId: second, round: 1 }),
+      );
     });
 
     it("a CSV import of answers becomes a record too", async () => {

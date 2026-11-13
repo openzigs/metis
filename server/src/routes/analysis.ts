@@ -190,6 +190,7 @@ import {
   priorAnswerSourceFor,
   rerunReusedClarifications,
 } from "../lib/clarifications/analysis-clarifications.js";
+import { readDialogState } from "../lib/analysis/clarification-dialog-store.js";
 import { readSourceRequirements } from "../lib/analysis/source-items.js";
 import { latestRequirementApprovals } from "../lib/analysis/approved-requirement-set.js";
 import {
@@ -1343,6 +1344,9 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
             "requirements field is required to start clarification",
           );
         }
+        // A dialog that is already settled returns its state unchanged, and the
+        // UI starts it on every view: only a reuse this call added is re-run.
+        const reusedBefore = (await readDialogState(analysisId))?.reused?.length ?? 0;
         const state = await runInAnalysisUsageScope(usageScope, () =>
           dialog.startOrContinue(analysisId, requirements),
         );
@@ -1350,6 +1354,8 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
         // the stored requirements as typed ones do.
         if (state.reused?.some((r) => r.round === state.currentRound)) {
           await applyClarificationsToRequirements(analysisId);
+        }
+        if ((state.reused?.length ?? 0) > reusedBefore) {
           // #2310 — and re-run what they change, as a typed answer does: off
           // the response's path, metered to the project like the round.
           const round = state.currentRound;
