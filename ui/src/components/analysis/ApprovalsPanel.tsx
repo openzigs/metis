@@ -409,7 +409,7 @@ function ApprovalCard({
       }),
     onSuccess: () => {
       onChange();
-      qc.invalidateQueries({ queryKey: ["approvals", analysisId] });
+      qc.invalidateQueries({ queryKey: queryKeys.approvals.forAnalysis(analysisId) });
       // Issue #1135 — resolving the last approval promotes the requirements, and
       // the server applies the clarification answers to the freshly created rows
       // in the same request (routes/analysis.ts → promoteApprovedRequirements →
@@ -431,7 +431,7 @@ function ApprovalCard({
     mutationFn: () => analysisApi.reopenApproval(projectId, analysisId, approval.id),
     onSuccess: () => {
       onChange();
-      qc.invalidateQueries({ queryKey: ["approvals", analysisId] });
+      qc.invalidateQueries({ queryKey: queryKeys.approvals.forAnalysis(analysisId) });
       qc.invalidateQueries({ queryKey: queryKeys.analyses.detail(analysisId) });
     },
   });
@@ -638,7 +638,7 @@ function ApproveAllPending({
     onSuccess: () => {
       setConfirming(false);
       onChange();
-      qc.invalidateQueries({ queryKey: ["approvals", analysisId] });
+      qc.invalidateQueries({ queryKey: queryKeys.approvals.forAnalysis(analysisId) });
       // Approving promotes the requirements (as the per-card approve does, #1135).
       qc.invalidateQueries({ queryKey: queryKeys.analyses.detail(analysisId) });
     },
@@ -760,7 +760,7 @@ function LeaveOutAdded({
     onSuccess: () => {
       setConfirming(false);
       onChange();
-      qc.invalidateQueries({ queryKey: ["approvals", analysisId] });
+      qc.invalidateQueries({ queryKey: queryKeys.approvals.forAnalysis(analysisId) });
       qc.invalidateQueries({ queryKey: queryKeys.analyses.detail(analysisId) });
     },
   });
@@ -846,7 +846,7 @@ export function ApprovalsPanel({
     approval.type === "requirement" ? requirementsById.get(approval.itemId) : undefined;
 
   const query = useQuery({
-    queryKey: ["approvals", analysisId],
+    queryKey: queryKeys.approvals.forAnalysis(analysisId),
     queryFn: () => analysisApi.listApprovals(projectId, analysisId),
   });
   // #2147 — every open checkpoint edit, by approval id (see `ApprovalCard`).

@@ -75,6 +75,14 @@ export const queryKeys = {
     modelRecommendation: (projectId: string, override?: string) =>
       [...queryKeys.analyses.all, "model-recommendation", projectId, override ?? "auto"] as const,
   },
+  /**
+   * #2376 — an analysis run's approval checkpoints. ApprovalsPanel and the
+   * analysis page invalidate it when one is resolved, and the project Overview
+   * reads it, so one key keeps the Overview's count current (the #30 lesson).
+   */
+  approvals: {
+    forAnalysis: (analysisId: string) => ["approvals", analysisId] as const,
+  },
   issues: {
     all: ["issues"] as const,
     forProject: (projectId: string) => [...queryKeys.issues.all, "project", projectId] as const,

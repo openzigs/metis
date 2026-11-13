@@ -10,6 +10,7 @@ import {
   isProjectRepoIngestJob,
   KNOWLEDGE_SEARCH_ANCHOR,
   newChangeRequestHref,
+  openQuestionsFact,
   type PipelineFacts,
   type PipelineStage,
 } from "@/lib/project-pipeline";
@@ -456,6 +457,53 @@ describe("review stage", () => {
     expect(s.status).toMatch(/checking/i);
   });
 
+  // #2376 — the nit: while approvals load, the stage showed the Questions or
+  // Requirements action, then switched to "Resolve N approvals".
+  it("waits for the approvals before naming an action, even with other work waiting", () => {
+    const s = stage(
+      facts({
+        analyses: [completed],
+        awaitingReview: 2,
+        pendingApprovals: null,
+        openQuestions: 3,
+        rejectedRequirements: 1,
+      }),
+      "review",
+    );
+    expect(s.state).toBe("todo");
+    expect(s.status).toMatch(/checking/i);
+    expect(s.action.href).toBe(`${B}/requirements`);
+  });
+
+  // #2376 — a run whose structured extraction failed has no questions to count
+  // (#1081); "0 open" let it read "All requirements reviewed".
+  it("needs attention, not done, when the run's clarifying questions could not be prepared", () => {
+    const s = stage(
+      facts({ analyses: [completed], awaitingReview: 0, openQuestions: "unreadable" }),
+      "review",
+    );
+    expect(s.state).toBe("attention");
+    expect(s.status).toBe("Clarifying questions could not be prepared");
+    expect(s.action).toEqual({
+      label: "See why",
+      href: `${B}/analysis?analysisId=a1&tab=questions`,
+    });
+  });
+
+  it("names a failed extraction beside the rest that is waiting", () => {
+    const s = stage(
+      facts({
+        analyses: [completed],
+        awaitingReview: 0,
+        pendingApprovals: 2,
+        openQuestions: "unreadable",
+      }),
+      "review",
+    );
+    expect(s.status).toBe("2 approvals pending · Clarifying questions could not be prepared");
+    expect(s.action.href).toBe(`${B}/analysis?analysisId=a1&tab=approvals`);
+  });
+
   it("does not read an unreadable approvals check as nothing pending", () => {
     const s = stage(
       facts({ analyses: [completed], awaitingReview: 0, pendingApprovals: "unreadable" }),
@@ -767,5 +815,39 @@ describe("isProjectRepoIngestJob (#273)", () => {
     expect(isProjectRepoIngestJob(job("repo-ingest", "p2"), "p1")).toBe(false);
     expect(isProjectRepoIngestJob(job("analysis", "p1"), "p1")).toBe(false);
     expect(isProjectRepoIngestJob(job("repo-ingest", null), "p1")).toBe(false);
+  });
+});
+
+describe("openQuestionsFact (#2376)", () => {
+  const clarifying = { enhancement: { enableClarification: true } };
+
+  it("counts the open questions when extraction succeeded", () => {
+    expect(
+      openQuestionsFact({ ...clarifying, structuredRequirements: { totalAmbiguities: 4 } }),
+    ).toBe(4);
+  });
+
+  it("is unreadable, not zero, when structured extraction failed", () => {
+    expect(
+      openQuestionsFact({
+        ...clarifying,
+        structuredExtractionFailure: { reason: "invalid-json", at: "2026-11-01T00:00:00Z" },
+      }),
+    ).toBe("unreadable");
+  });
+
+  it("is unreadable when extraction failed on a run without clarification, too", () => {
+    expect(
+      openQuestionsFact({
+        enhancement: { enableClarification: false },
+        structuredExtractionFailure: { reason: "provider-error", at: "2026-11-01T00:00:00Z" },
+      }),
+    ).toBe("unreadable");
+  });
+
+  it("is zero when the run asked no questions (clarification off, or no metadata yet)", () => {
+    expect(openQuestionsFact({ enhancement: { enableClarification: false } })).toBe(0);
+    expect(openQuestionsFact(undefined)).toBe(0);
+    expect(openQuestionsFact(null)).toBe(0);
   });
 });

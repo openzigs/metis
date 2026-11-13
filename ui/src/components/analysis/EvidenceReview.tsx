@@ -7,6 +7,7 @@
  * badges, and approve/reject controls for each piece of evidence.
  */
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { queryKeys } from "@/lib/query-keys";
 import { analysisApi, type ApprovalRequestPayload } from "@/lib/analysis-api";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -67,7 +68,7 @@ export function EvidenceReview({
       analysisApi.reviewApproval(projectId, analysisId, approvalId, { status }),
     onSuccess: () => {
       onApprovalChange();
-      qc.invalidateQueries({ queryKey: ["approvals", analysisId] });
+      qc.invalidateQueries({ queryKey: queryKeys.approvals.forAnalysis(analysisId) });
     },
   });
 
