@@ -24,7 +24,7 @@
  * ingest is reported but still goes on to the last step — the project was
  * created, and Connections is where either is retried.
  */
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -44,6 +44,7 @@ import {
 } from "@/lib/error-suggestion";
 import { resolveErrorMessage } from "@/lib/use-app-mutation";
 import { newChangeRequestHref } from "@/lib/project-pipeline";
+import { getProjectTabModel, resolveActiveProjectTab } from "@/components/projects/project-tabs";
 import { warnPrimaryRepoNotLinked } from "@/components/projects/primary-repo-warning";
 import { VaultPicker } from "@/components/connectors/vault-picker";
 import { Button } from "@/components/ui/button";
@@ -79,6 +80,19 @@ const STEPS: ReadonlyArray<{ id: StepId; label: string }> = [
   { id: "create", label: "Create" },
   { id: "next", label: "Change request" },
 ];
+
+/**
+ * #2388 — the tab a source is connected from later, by the tab bar's own name
+ * for the section that holds Connections, so this copy cannot name a tab that
+ * does not exist. The label does not depend on the project, which does not
+ * exist yet.
+ */
+function connectionsTabName(): string {
+  const model = getProjectTabModel("new");
+  return (
+    resolveActiveProjectTab("/projects/new/connections", model)?.section.label ?? "Connections"
+  );
+}
 
 type IngestOutcome =
   | { kind: "skipped" }
@@ -140,6 +154,17 @@ export function NewProjectWizard({
   const sourceValid = !useRepo || (owner.trim() !== "" && repo.trim() !== "" && !apiBaseMalformed);
   const repoLabel = `${owner.trim()}/${repo.trim()}`;
 
+  // #2388 — false once the dialog closes and unmounts this wizard. TanStack
+  // Query still runs the hook-level `onSuccess` after that, and its `onCreated`
+  // would hand this opening's project to the dialog's NEXT opening.
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+
   const create = useMutation({
     mutationFn: async (): Promise<{ project: CreatedProject; ingest: IngestOutcome }> => {
       const project = await projectsApi.create({
@@ -186,6 +211,9 @@ export function NewProjectWizard({
       } else {
         toast.error(`Project created, but the ingest did not start: ${ingest.message}`);
       }
+      // The project exists and the toast said so; an opening closed mid-create
+      // is over, so it takes no step and reports no project.
+      if (!mounted.current) return;
       setCreated({ project, ingest });
       setStep("next");
       onCreated?.(project);
@@ -395,7 +423,7 @@ export function NewProjectWizard({
           ) : (
             <p className="text-sm text-muted-foreground">
               Nothing to connect now: you upload your documents with the project&apos;s first change
-              request. A repository or database can be connected later, from Knowledge.
+              request. A repository or database can be connected later, from {connectionsTabName()}.
             </p>
           )}
 

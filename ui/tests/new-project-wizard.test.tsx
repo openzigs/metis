@@ -23,6 +23,12 @@ vi.mock("@/hooks/use-active-jobs", async (orig) => {
   const actual = await orig<typeof import("@/hooks/use-active-jobs")>();
   return { ...actual, applyJobLifecycleEvent: vi.fn(actual.applyJobLifecycleEvent) };
 });
+// #2388 — the REAL tab model, spied on, so a test can rename a tab and see the
+// wizard's copy follow it.
+vi.mock("@/components/projects/project-tabs", async (orig) => {
+  const actual = await orig<typeof import("@/components/projects/project-tabs")>();
+  return { ...actual, getProjectTabModel: vi.fn(actual.getProjectTabModel) };
+});
 vi.mock("@/lib/socket-client", async (orig) => ({
   ...(await orig<typeof import("@/lib/socket-client")>()),
   useSocket: () => null,
@@ -41,6 +47,7 @@ import {
   useActiveJobs,
 } from "@/hooks/use-active-jobs";
 import { isProjectRepoIngestJob } from "@/lib/project-pipeline";
+import { getProjectTabModel } from "@/components/projects/project-tabs";
 import { toast } from "sonner";
 
 const create = vi.mocked(projectsApi.create);
@@ -447,6 +454,35 @@ describe("NewProjectWizard", () => {
     expect(screen.queryByText(/secret ref/i)).not.toBeInTheDocument();
   });
 
+  // #2388 — the copy names the tab Connections sits under by the tab bar's own
+  // name for it, so a renamed tab cannot leave the wizard pointing at nothing.
+  it("names the tab where a source is connected later from the tab model", async () => {
+    const user = userEvent.setup();
+    const model = vi.mocked(getProjectTabModel);
+    const real = model.getMockImplementation()!;
+    model.mockImplementation((id) => {
+      const m = real(id);
+      return {
+        sections: m.sections.map((s) => (s.id === "knowledge" ? { ...s, label: "Sources" } : s)),
+      };
+    });
+    try {
+      renderWizard();
+      await fillName(user);
+      expect(screen.getByText(/connected later, from Sources\./)).toBeInTheDocument();
+      expect(screen.queryByText(/from Knowledge/)).not.toBeInTheDocument();
+    } finally {
+      model.mockImplementation(real);
+    }
+  });
+
+  it("names Knowledge as that tab today", async () => {
+    const user = userEvent.setup();
+    renderWizard();
+    await fillName(user);
+    expect(screen.getByText(/connected later, from Knowledge\./)).toBeInTheDocument();
+  });
+
   it("goes Back without losing what was typed", async () => {
     const user = userEvent.setup();
     renderWizard();
@@ -551,6 +587,34 @@ describe("NewProjectDialog", () => {
     await user.click(screen.getByRole("button", { name: "Skip — open the Overview" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     push().mockClear();
+
+    await user.click(screen.getByRole("button", { name: "New project" }));
+    expect(screen.getByLabelText("Name")).toHaveValue("");
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(push()).not.toHaveBeenCalled();
+  });
+
+  // #2388 — closing the dialog while Create is in flight: the project is still
+  // made (and said so), but this opening is over, so a LATER opening must not
+  // inherit it and carry the user to it on close.
+  it("does not carry a project created after the dialog closed into a later opening", async () => {
+    const user = userEvent.setup();
+    let resolveCreate!: (p: unknown) => void;
+    create.mockImplementation(() => new Promise((r) => (resolveCreate = r)) as never);
+    renderDialog();
+    await user.click(screen.getByRole("button", { name: "New project" }));
+    await fillName(user);
+    await user.click(next());
+    await user.click(screen.getByRole("button", { name: "Create project" }));
+    expect(screen.getByRole("button", { name: "Creating…" })).toBeDisabled();
+
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await act(async () => resolveCreate({ ...PROJECT, primaryRepo: null }));
+    // The project exists: the user is told, even with the dialog gone.
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith("Project created"));
+    expect(push()).not.toHaveBeenCalled();
 
     await user.click(screen.getByRole("button", { name: "New project" }));
     expect(screen.getByLabelText("Name")).toHaveValue("");
