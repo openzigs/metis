@@ -110,25 +110,43 @@ describe("arms", () => {
 
 describe("assertRoutingFlags (#2397)", () => {
   it.each([
-    ["--routing-sweep with --route", { routingSweep: true, route: "all" }],
-    // The floor sweep and an answer run read the same flags: no routing sweep.
-    ["--floor-sweep, or an answer run, with --route alone", { routingSweep: false, route: "all" }],
+    ["--routing-sweep with --route", { routingSweep: true, floorSweep: false, route: "all" }],
+    ["--floor-sweep with --route alone", { routingSweep: false, floorSweep: true, route: "all" }],
+    ["an answer run with --route alone", { routingSweep: false, floorSweep: false, route: "all" }],
   ])("refuses %s: --route needs --routing-scope", (_label, flags) => {
     expect(() => assertRoutingFlags(flags)).toThrow("--route needs --routing-scope");
   });
 
   it("refuses --routing-sweep with --routing-scope", () => {
     expect(() =>
-      assertRoutingFlags({ routingSweep: true, routingScope: "9", route: "all" }),
+      assertRoutingFlags({
+        routingSweep: true,
+        floorSweep: false,
+        routingScope: "9",
+        route: "all",
+      }),
     ).toThrow("--routing-sweep asks no model: it takes no --routing-scope");
   });
 
+  it.each([
+    ["with --route", { route: "all" }],
+    ["alone", {}],
+  ])(
+    "refuses --floor-sweep with --routing-scope %s: the sweep returns before reading either",
+    (_l, rest) => {
+      expect(() =>
+        assertRoutingFlags({ routingSweep: false, floorSweep: true, routingScope: "9", ...rest }),
+      ).toThrow("--floor-sweep asks no model: it takes no --routing-scope");
+    },
+  );
+
   it("accepts --route with --routing-scope, a scope alone, and neither", () => {
     for (const flags of [
-      { routingSweep: false, routingScope: "9", route: "all" },
-      { routingSweep: false, routingScope: "9" },
-      { routingSweep: true },
-      { routingSweep: false },
+      { routingSweep: false, floorSweep: false, routingScope: "9", route: "all" },
+      { routingSweep: false, floorSweep: false, routingScope: "9" },
+      { routingSweep: true, floorSweep: false },
+      { routingSweep: false, floorSweep: true },
+      { routingSweep: false, floorSweep: false },
     ]) {
       expect(() => assertRoutingFlags(flags)).not.toThrow();
     }

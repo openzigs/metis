@@ -29,16 +29,23 @@ export function armLabel(arm: string, mode: RetrievalMode): string {
 
 /**
  * #2336, #2397 — the routing flags' combinations, checked before anything runs.
- * Both sweeps return before an answer run reads `--route`, so a `--route`
- * without `--routing-scope` is refused here rather than silently ignored.
+ * Both sweeps return before an answer run reads `--routing-scope` or `--route`,
+ * so either sweep refuses `--routing-scope` (and with it `--route`), and a
+ * `--route` without `--routing-scope` is refused in every mode, rather than
+ * any of them being silently ignored. `floorSweep` is the explicit
+ * `--floor-sweep`, not the routing sweep's implied one.
  */
 export function assertRoutingFlags(flags: {
   routingSweep: boolean;
+  floorSweep: boolean;
   routingScope?: string;
   route?: string;
 }): void {
   if (flags.routingSweep && flags.routingScope !== undefined) {
     throw new Error("--routing-sweep asks no model: it takes no --routing-scope");
+  }
+  if (flags.floorSweep && flags.routingScope !== undefined) {
+    throw new Error("--floor-sweep asks no model: it takes no --routing-scope");
   }
   if (flags.route !== undefined && flags.routingScope === undefined) {
     throw new Error("--route needs --routing-scope");

@@ -218,6 +218,7 @@ async function main(): Promise<void> {
   const routingSweep = values["routing-sweep"] === true;
   assertRoutingFlags({
     routingSweep,
+    floorSweep: values["floor-sweep"] === true,
     routingScope: values["routing-scope"],
     route: values.route,
   });

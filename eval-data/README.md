@@ -1265,8 +1265,9 @@ and it did not reproduce.
   what ranking gets alone.
 - **The product mention does most of the router's work.** Most questions in the set name
   their product the way an analyst does ("the Acme Reader server"). With the names ignored,
-  top 1 drops to 11 of 14 at nine projects (the 14 answered in one product). The keyword evidence alone separates the two Acme
-  Reader products poorly: both hold most words of a question about either.
+  top 1 drops to 11 of 14 at nine projects (the 14 answered in one product). The keyword
+  evidence alone separates the two Acme Reader products poorly: both hold most words of a
+  question about either.
 - These are single runs of 10 questions. The two routed runs, with identical retrieval,
   differ by 7 points of facts stated, so differences under about 10 points are noise. The
   fall at 9 projects (33% to 17%) and the recovery (35–44%) are larger than that, and the

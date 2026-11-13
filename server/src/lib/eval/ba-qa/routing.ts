@@ -517,13 +517,12 @@ export function summarizeRouting(samples: readonly RoutingSample[]): RoutingRow[
         ans.filter((s) => s.answerIn.length <= k),
         (s) => inTopK(order(s.decision.ranked), s.answerIn, k),
       );
-    const asRanked = (r: readonly RankedProject[]) => r;
     return {
       scopeSize,
       answerable: ans.length,
-      top1: topK(1, asRanked),
-      top2: topK(2, asRanked),
-      top3: topK(3, asRanked),
+      top1: topK(1, (r) => r),
+      top2: topK(2, (r) => r),
+      top3: topK(3, (r) => r),
       signalsTop1: topK(1, bySignals),
       signalsTop2: topK(2, bySignals),
       signalsTop3: topK(3, bySignals),
