@@ -172,6 +172,40 @@ describe("parseChatGrounding — multi-product (#2238)", () => {
     }
   });
 
+  it("accepts the sources used, and why nothing was supplied (#2294)", () => {
+    for (const g of [
+      {
+        status: "multi",
+        projects,
+        sourcesUsed: [{ name: "[Alpha] rules.md", excerpts: 3, relevance: 0.71 }],
+      },
+      {
+        status: "multi",
+        projects: [{ projectId: "a", projectName: "Alpha", sources: 0 }],
+        reason: "insufficient-evidence",
+        belowFloor: 6,
+      },
+      { status: "multi", projects: [], reason: "retrieval-failed" },
+    ]) {
+      expect(parseChatGrounding(g)).toEqual(g);
+    }
+  });
+
+  it("drops an unknown reason, a weak-match count without its reason, and malformed sources (#2294)", () => {
+    expect(
+      parseChatGrounding({
+        status: "multi",
+        projects,
+        reason: "bored",
+        belowFloor: 3,
+        sourcesUsed: "a.md",
+      }),
+    ).toEqual({ status: "multi", projects });
+    expect(
+      parseChatGrounding({ status: "multi", projects, reason: "nothing-found", belowFloor: 3 }),
+    ).toEqual({ status: "multi", projects, reason: "nothing-found" });
+  });
+
   it("drops extra keys and an empty unsearched list", () => {
     expect(
       parseChatGrounding({

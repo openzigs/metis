@@ -430,4 +430,395 @@ describe("FederatedSearchService", () => {
       expect(result.projectsSearched).toHaveLength(0);
     });
   });
+
+  describe("a conversation-aware turn's searches (#2279)", () => {
+    /** Each project's hits for each query, keyed by a word the query must contain. */
+    function byQuery(impl: Record<string, Record<string, ReturnType<typeof makeChunk>[]>>) {
+      return {
+        search: vi.fn(async (projectId: string, query: string, _opts: unknown) => {
+          const hits = Object.entries(impl[projectId] ?? {})
+            .filter(([word]) => query.includes(word))
+            .flatMap(([, h]) => h);
+          return { hits, mode: "hybrid" as const, reranked: false };
+        }),
+      };
+    }
+
+    it("runs every search in every project, for the caller, limited to the attached documents", async () => {
+      mockGetAccessible.mockResolvedValue([
+        { id: "proj-a", name: "A" },
+        { id: "proj-b", name: "B" },
+      ]);
+      const mockKS = buildMockKnowledgeService({});
+      const svc = new FederatedSearchService({ knowledgeService: mockKS as never });
+      await svc.searchAcrossProjects({
+        userId: "user-1",
+        query: "and in the client?",
+        moreQueries: ["second part?"],
+        contextualQuery: "and in the client?\nHow is annual billing done?",
+        documentIds: ["d1"],
+      });
+      const calls = mockKS.search.mock.calls.map((c) => [c[0], c[1]]);
+      expect(calls).toEqual([
+        ["proj-a", "and in the client?"],
+        ["proj-a", "second part?"],
+        ["proj-a", "and in the client?\nHow is annual billing done?"],
+        ["proj-b", "and in the client?"],
+        ["proj-b", "second part?"],
+        ["proj-b", "and in the client?\nHow is annual billing done?"],
+      ]);
+      for (const call of mockKS.search.mock.calls) {
+        expect(call[2]).toEqual({
+          k: 20,
+          actor: { userId: "user-1", role: "reader" },
+          documentIds: ["d1"],
+          embedCache: expect.any(Map),
+        });
+      }
+      // One embedding cache for the whole call, shared by every project's searches.
+      const caches = new Set(
+        mockKS.search.mock.calls.map((c) => (c[2] as { embedCache: unknown }).embedCache),
+      );
+      expect(caches.size).toBe(1);
+    });
+
+    it("does not repeat a conversational search that is one of the user's own", async () => {
+      mockGetAccessible.mockResolvedValue([{ id: "proj-a", name: "A" }]);
+      const mockKS = buildMockKnowledgeService({});
+      const svc = new FederatedSearchService({ knowledgeService: mockKS as never });
+      await svc.searchAcrossProjects({
+        userId: "user-1",
+        query: "q",
+        moreQueries: ["q", " "],
+        contextualQuery: " q ",
+      });
+      expect(mockKS.search.mock.calls.map((c) => c[1])).toEqual(["q"]);
+    });
+
+    it("a follow-up's conversational search brings in the product the earlier turn was about", async () => {
+      mockGetAccessible.mockResolvedValue([
+        { id: "proj-a", name: "A" },
+        { id: "proj-b", name: "B" },
+      ]);
+      const mockKS = byQuery({
+        // Only the earlier question ("annual billing") finds A's excerpt.
+        "proj-a": { annual: [makeChunk("a-annual", { score: 0.8 })] },
+        // The latest words alone ("the client") match B, weakly.
+        "proj-b": { client: [makeChunk("b-client", { score: 0.3 })] },
+      });
+      const svc = new FederatedSearchService({ knowledgeService: mockKS as never });
+      const latestOnly = await svc.searchAcrossProjects({
+        userId: "user-1",
+        query: "and in the client?",
+      });
+      expect(latestOnly.hits.map((h) => h.chunkId)).toEqual(["b-client"]);
+
+      const result = await svc.searchAcrossProjects({
+        userId: "user-1",
+        query: "and in the client?",
+        contextualQuery: "and in the client?\nHow is annual billing done?",
+      });
+      // A, the product the earlier turn was about, is brought in. B stays: it is
+      // what the user's own words matched, and A's conversational-only 0.8 does
+      // not raise the floor's bar above them.
+      expect(result.hits.map((h) => h.chunkId)).toEqual(["a-annual", "b-client"]);
+      expect(result.projectsWithoutHits).toEqual([]);
+    });
+
+    it("merges a project's searches as single-project chat does: the user's words first", async () => {
+      mockGetAccessible.mockResolvedValue([{ id: "proj-a", name: "A" }]);
+      const mockKS = byQuery({
+        "proj-a": {
+          // The conversational search ranks c1 first; the user's own ranks u1.
+          annual: [makeChunk("c1", { score: 0.9 }), makeChunk("u1", { score: 0.7 })],
+          client: [makeChunk("u1", { score: 0.7 })],
+        },
+      });
+      const svc = new FederatedSearchService({ knowledgeService: mockKS as never });
+      const result = await svc.searchAcrossProjects({
+        userId: "user-1",
+        query: "the client",
+        contextualQuery: "the client\nannual",
+      });
+      expect(result.hits.map((h) => h.chunkId)).toEqual(["u1", "c1"]);
+    });
+
+    it("holds the hits only the conversational search found to a minority of k, across projects", async () => {
+      mockGetAccessible.mockResolvedValue([
+        { id: "proj-a", name: "A" },
+        { id: "proj-b", name: "B" },
+      ]);
+      const mockKS = byQuery({
+        "proj-a": {
+          annual: [makeChunk("ac1", { score: 0.8 }), makeChunk("ac2", { score: 0.8 })],
+          client: [makeChunk("au1", { score: 0.7 })],
+        },
+        "proj-b": {
+          annual: [makeChunk("bc1", { score: 0.8 }), makeChunk("bc2", { score: 0.8 })],
+          client: [makeChunk("bu1", { score: 0.7 })],
+        },
+      });
+      const svc = new FederatedSearchService({ knowledgeService: mockKS as never });
+      const result = await svc.searchAcrossProjects({
+        userId: "user-1",
+        query: "the client",
+        contextualQuery: "the client\nannual",
+        k: 5,
+      });
+      const ids = result.hits.map((h) => h.chunkId);
+      // floor((5 - 1) / 2) = 2 conversational-only hits, whichever project holds them.
+      expect(ids.filter((id) => id.includes("c")).length).toBe(2);
+      expect(ids).toEqual(["au1", "bu1", "ac1", "bc1"]);
+    });
+
+    it("never drops a product the user's words matched for another product's conversational-only hits", async () => {
+      // The adversarial panel's case: A's only hits come from the earlier topic,
+      // B's from the user's own new words. Measured against A's 0.8, B (0.5)
+      // fell under the 0.75 floor and 5 of the 8 slots went unused.
+      mockGetAccessible.mockResolvedValue([
+        { id: "proj-a", name: "A" },
+        { id: "proj-b", name: "B" },
+      ]);
+      const mockKS = byQuery({
+        "proj-a": { annual: [1, 2, 3, 4, 5].map((n) => makeChunk(`ac${n}`, { score: 0.8 })) },
+        "proj-b": { client: [1, 2, 3, 4, 5].map((n) => makeChunk(`bu${n}`, { score: 0.5 })) },
+      });
+      const svc = new FederatedSearchService({ knowledgeService: mockKS as never });
+      const result = await svc.searchAcrossProjects({
+        userId: "user-1",
+        query: "and in the client?",
+        contextualQuery: "and in the client?\nHow is annual billing done?",
+        k: 8,
+      });
+      const ids = result.hits.map((h) => h.chunkId);
+      // B is kept whole; A's conversational-only hits are still held to 3 of 8.
+      expect(ids.filter((id) => id.startsWith("bu"))).toEqual(["bu1", "bu2", "bu3", "bu4", "bu5"]);
+      expect(ids.filter((id) => id.startsWith("ac"))).toEqual(["ac1", "ac2", "ac3"]);
+      expect(ids).toHaveLength(8);
+      expect(result.projectsWithoutHits).toEqual([]);
+    });
+
+    it("measures the floor against the user's words: Alpha 0.7 stays beside Beta's conversational 1.0", async () => {
+      // The code review's case: under the 0.75 floor, Beta's earlier-topic hit
+      // at 1.0 set the bar at 0.75 and pushed out Alpha, the user's own match.
+      mockGetAccessible.mockResolvedValue([
+        { id: "proj-alpha", name: "Alpha" },
+        { id: "proj-beta", name: "Beta" },
+      ]);
+      const mockKS = byQuery({
+        "proj-alpha": { client: [makeChunk("alpha-u1", { score: 0.7 })] },
+        "proj-beta": { annual: [makeChunk("beta-c1", { score: 1.0 })] },
+      });
+      const svc = new FederatedSearchService({ knowledgeService: mockKS as never });
+      const result = await svc.searchAcrossProjects({
+        userId: "user-1",
+        query: "and in the client?",
+        contextualQuery: "and in the client?\nHow is annual billing done?",
+        relevanceFloor: 0.75,
+      });
+      expect(result.hits.map((h) => h.chunkId)).toEqual(["alpha-u1", "beta-c1"]);
+      expect(result.projectsWithoutHits).toEqual([]);
+    });
+
+    it("still floors a product whose only hits are conversational, against the user's best", async () => {
+      mockGetAccessible.mockResolvedValue([
+        { id: "proj-a", name: "A" },
+        { id: "proj-b", name: "B" },
+      ]);
+      const mockKS = byQuery({
+        "proj-a": { client: [makeChunk("au1", { score: 0.8 })] },
+        // Earlier-topic only, and weak beside A's 0.8 from the user's words.
+        "proj-b": { annual: [makeChunk("bc1", { score: 0.4 })] },
+      });
+      const svc = new FederatedSearchService({ knowledgeService: mockKS as never });
+      const result = await svc.searchAcrossProjects({
+        userId: "user-1",
+        query: "and in the client?",
+        contextualQuery: "and in the client?\nHow is annual billing done?",
+      });
+      expect(result.hits.map((h) => h.chunkId)).toEqual(["au1"]);
+      expect(result.projectsWithoutHits).toEqual(["proj-b"]);
+    });
+
+    it("reports a project whose conversational search failed as not searched", async () => {
+      mockGetAccessible.mockResolvedValue([
+        { id: "proj-a", name: "A" },
+        { id: "proj-b", name: "B" },
+      ]);
+      const mockKS = {
+        search: vi.fn(async (projectId: string, query: string) => {
+          if (projectId === "proj-b" && query.includes("annual")) throw new Error("boom");
+          return { hits: [makeChunk(`${projectId}-1`)], mode: "hybrid", reranked: false };
+        }),
+      };
+      const svc = new FederatedSearchService({ knowledgeService: mockKS as never });
+      const result = await svc.searchAcrossProjects({
+        userId: "user-1",
+        query: "the client",
+        contextualQuery: "the client\nannual",
+      });
+      expect(result.projectsSearched).toEqual(["proj-a"]);
+      expect(result.failures).toEqual([{ projectId: "proj-b", projectName: "B", reason: "error" }]);
+      expect(result.hits.map((h) => h.chunkId)).toEqual(["proj-a-1"]);
+    });
+  });
+
+  describe("chat's absolute relevance floor (#2294)", () => {
+    const floorAt = (f: number) => vi.fn((_models: readonly string[]) => f);
+    const scored = (id: string, score: number, extra: Record<string, unknown> = {}) => ({
+      ...makeChunk(id, { score }),
+      ...extra,
+    });
+
+    it("drops a weak hit before the merge, so the next one takes its slot", async () => {
+      mockGetAccessible.mockResolvedValue([{ id: "proj-a", name: "A" }]);
+      const mockKS = buildMockKnowledgeService({
+        "proj-a": [scored("a1", 0.8), scored("a2", 0.3), scored("a3", 0.7)],
+      });
+      const svc = new FederatedSearchService({ knowledgeService: mockKS as never });
+      const absoluteFloor = floorAt(0.55);
+      const result = await svc.searchAcrossProjects({
+        userId: "user-1",
+        query: "q",
+        k: 2,
+        absoluteFloor,
+      });
+      expect(result.hits.map((h) => h.chunkId)).toEqual(["a1", "a3"]);
+      // Of the two the merge would have returned, one fell below the floor.
+      expect(result.belowFloor).toBe(1);
+      // The floor is read for the embedders the hits were scored with.
+      expect(absoluteFloor).toHaveBeenCalledWith([
+        "text-embedding-3-small",
+        "text-embedding-3-small",
+        "text-embedding-3-small",
+      ]);
+    });
+
+    it("leaves out a product whose every hit is below it, and compares the rest on what remains", async () => {
+      mockGetAccessible.mockResolvedValue([
+        { id: "proj-a", name: "A" },
+        { id: "proj-b", name: "B" },
+      ]);
+      const mockKS = buildMockKnowledgeService({
+        "proj-a": [scored("a1", 0.6)],
+        // B's best is weak; without the floor it would set the relative bar.
+        "proj-b": [scored("b1", 0.5)],
+      });
+      const svc = new FederatedSearchService({ knowledgeService: mockKS as never });
+      const result = await svc.searchAcrossProjects({
+        userId: "user-1",
+        query: "q",
+        absoluteFloor: floorAt(0.55),
+      });
+      expect(result.hits.map((h) => h.chunkId)).toEqual(["a1"]);
+      expect(result.projectsWithoutHits).toEqual(["proj-b"]);
+      expect(result.belowFloor).toBe(1);
+    });
+
+    it("reads a reranked project's dense cosine, not the cross-encoder's verdict", async () => {
+      mockGetAccessible.mockResolvedValue([{ id: "proj-a", name: "A" }]);
+      const mockKS = {
+        search: vi.fn(async () => ({
+          hits: [
+            scored("strong", 3, { denseScore: 0.7 }),
+            // A confident cross-encoder, but a weak dense match.
+            scored("weak", 4, { denseScore: 0.3 }),
+          ],
+          mode: "hybrid" as const,
+          reranked: true,
+        })),
+      };
+      const svc = new FederatedSearchService({ knowledgeService: mockKS as never });
+      const result = await svc.searchAcrossProjects({
+        userId: "user-1",
+        query: "q",
+        absoluteFloor: floorAt(0.55),
+      });
+      expect(result.hits.map((h) => h.chunkId)).toEqual(["strong"]);
+      expect(result.hits[0]!.denseScore).toBe(0.7);
+    });
+
+    it("compares the products on the relevance of the hits the floor kept", async () => {
+      mockGetAccessible.mockResolvedValue([
+        { id: "proj-a", name: "A" },
+        { id: "proj-b", name: "B" },
+      ]);
+      const mockKS = {
+        search: vi.fn(async (projectId: string) =>
+          projectId === "proj-a"
+            ? {
+                // The cross-encoder's favourite is a weak dense match; what is
+                // left of A is far less relevant than B.
+                hits: [
+                  scored("a-top", 6, { denseScore: 0.3 }),
+                  scored("a-rest", -1, { denseScore: 0.7 }),
+                ],
+                mode: "hybrid" as const,
+                reranked: true,
+              }
+            : { hits: [scored("b1", 0.6)], mode: "hybrid" as const, reranked: false },
+        ),
+      };
+      const svc = new FederatedSearchService({ knowledgeService: mockKS as never });
+      const result = await svc.searchAcrossProjects({
+        userId: "user-1",
+        query: "q",
+        absoluteFloor: floorAt(0.55),
+      });
+      expect(result.hits.map((h) => h.chunkId)).toEqual(["b1"]);
+      expect(result.projectsWithoutHits).toEqual(["proj-a"]);
+    });
+
+    it("keeps a keyword-only hit only when a dense hit of its own project cleared the floor", async () => {
+      mockGetAccessible.mockResolvedValue([
+        { id: "proj-a", name: "A" },
+        { id: "proj-b", name: "B" },
+      ]);
+      const lexical = (id: string) => scored(id, 0, { matchedBy: ["lexical"] });
+      const mockKS = buildMockKnowledgeService({
+        "proj-a": [lexical("a-kw"), scored("a1", 0.7)],
+        "proj-b": [lexical("b-kw")],
+      });
+      const svc = new FederatedSearchService({ knowledgeService: mockKS as never });
+      const kept = await svc.searchAcrossProjects({
+        userId: "user-1",
+        query: "q",
+        relevanceFloor: 0,
+        absoluteFloor: floorAt(0.55),
+      });
+      // B has no dense hit of its own: A's strong hit does not vouch for B's keyword-only one.
+      expect(kept.hits.map((h) => h.chunkId).sort()).toEqual(["a-kw", "a1"]);
+      expect(kept.belowFloor).toBe(1);
+
+      const weak = buildMockKnowledgeService({
+        "proj-a": [lexical("a-kw"), scored("a1", 0.3)],
+        "proj-b": [lexical("b-kw")],
+      });
+      const none = await new FederatedSearchService({
+        knowledgeService: weak as never,
+      }).searchAcrossProjects({
+        userId: "user-1",
+        query: "q",
+        relevanceFloor: 0,
+        absoluteFloor: floorAt(0.55),
+      });
+      expect(none.hits).toEqual([]);
+      expect(none.belowFloor).toBe(3);
+    });
+
+    it("changes nothing when the floor is off for these embedders", async () => {
+      mockGetAccessible.mockResolvedValue([{ id: "proj-a", name: "A" }]);
+      const mockKS = buildMockKnowledgeService({
+        "proj-a": [scored("a1", 0.8), scored("a2", 0.1)],
+      });
+      const svc = new FederatedSearchService({ knowledgeService: mockKS as never });
+      const result = await svc.searchAcrossProjects({
+        userId: "user-1",
+        query: "q",
+        absoluteFloor: floorAt(0),
+      });
+      expect(result.hits.map((h) => h.chunkId)).toEqual(["a1", "a2"]);
+      expect(result.belowFloor).toBe(0);
+    });
+  });
 });

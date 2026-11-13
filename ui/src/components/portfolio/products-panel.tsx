@@ -1,0 +1,166 @@
+"use client";
+
+/**
+ * The products in the portfolio — list and create multi-repo products (Epic
+ * #544 / Issue #547). #2353 — this was the `/products` page; it is now the
+ * Products section of the Portfolio tab, beside the coverage check across them.
+ */
+import Link from "next/link";
+import { useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { ApiError } from "@/lib/api-client";
+import { productsApi } from "@/lib/products-api";
+import { queryKeys } from "@/lib/query-keys";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { SkeletonText } from "@/components/ui/skeleton";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
+import { EmptyState } from "@/components/ui/empty-state";
+
+export function ProductsPanel() {
+  const qc = useQueryClient();
+  const list = useQuery({
+    queryKey: queryKeys.products.list({}),
+    queryFn: () => productsApi.list(),
+  });
+
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState("");
+  const [slug, setSlug] = useState("");
+  const [slugManuallyEdited, setSlugManuallyEdited] = useState(false);
+  const [description, setDescription] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  const create = useMutation({
+    mutationFn: () => productsApi.create({ name, slug, description: description || undefined }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.products.all });
+      setOpen(false);
+      setName("");
+      setSlug("");
+      setSlugManuallyEdited(false);
+      setDescription("");
+      setError(null);
+    },
+    onError: (err: unknown) => {
+      setError(err instanceof ApiError ? err.message : "Failed to create product");
+    },
+  });
+
+  return (
+    <section className="space-y-4" aria-labelledby="portfolio-products-heading">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="space-y-1">
+          <h2 id="portfolio-products-heading" className="text-base font-semibold">
+            Products
+          </h2>
+          <p className="text-sm text-muted-foreground">
+            Multi-repository product documentation — group repos, detect relationships, and generate
+            unified docs.
+          </p>
+        </div>
+        <Dialog open={open} onOpenChange={setOpen}>
+          <DialogTrigger asChild>
+            <Button data-testid="new-product-button">New product</Button>
+          </DialogTrigger>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Create product</DialogTitle>
+            </DialogHeader>
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                create.mutate();
+              }}
+              className="space-y-4"
+            >
+              <div className="space-y-2">
+                <Label htmlFor="product-name">Name</Label>
+                <Input
+                  id="product-name"
+                  value={name}
+                  onChange={(e) => {
+                    const newName = e.target.value;
+                    setName(newName);
+                    if (!slugManuallyEdited) {
+                      setSlug(
+                        newName
+                          .toLowerCase()
+                          .replace(/[^a-z0-9\s-]/g, "")
+                          .replace(/\s+/g, "-")
+                          .replace(/-+/g, "-")
+                          .replace(/^-|-$/g, ""),
+                      );
+                    }
+                  }}
+                  placeholder="My Product"
+                  required
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="product-slug">Short name</Label>
+                <Input
+                  id="product-slug"
+                  value={slug}
+                  onChange={(e) => {
+                    setSlug(e.target.value);
+                    setSlugManuallyEdited(true);
+                  }}
+                  placeholder="my-product"
+                  required
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="product-description">Description</Label>
+                <Input
+                  id="product-description"
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
+                  placeholder="Optional description"
+                />
+              </div>
+              {error && <p className="text-sm text-destructive">{error}</p>}
+              <Button type="submit" disabled={create.isPending} className="w-full">
+                {create.isPending ? "Creating…" : "Create"}
+              </Button>
+            </form>
+          </DialogContent>
+        </Dialog>
+      </div>
+
+      {list.isLoading && <SkeletonText lines={3} />}
+
+      {list.data && list.data.items.length === 0 && (
+        <EmptyState
+          data-testid="products-empty"
+          title="No products yet."
+          description="Create one to start grouping repositories and generating documentation."
+        />
+      )}
+
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+        {list.data?.items.map((product) => (
+          <Link key={product.id} href={`/products/${product.id}`}>
+            <Card className="p-4 hover:border-primary/50 transition-colors cursor-pointer">
+              <h3 className="font-medium">{product.name}</h3>
+              <p className="text-sm text-muted-foreground line-clamp-2">
+                {product.description || "No description"}
+              </p>
+              <p className="text-xs text-muted-foreground mt-2">
+                {new Date(product.createdAt).toLocaleDateString()}
+              </p>
+            </Card>
+          </Link>
+        ))}
+      </div>
+    </section>
+  );
+}

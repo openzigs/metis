@@ -3155,7 +3155,7 @@ export type DocumentStatementKind = (typeof DOCUMENT_STATEMENT_KINDS)[number];
 export interface DocumentReadingSection {
   /** The section's heading path, `3 Booking › 3.2 Cancellation`. */
   heading: string;
-  /** `unread`: the model's reply for this section could not be read. */
+  /** `unread`: the model's reply for this section could not be read, or left it out when asked again (#2407). */
   status: "read" | "unread";
   /** Statements kept from it; 0 on a read section means it produced nothing. */
   statements: number;

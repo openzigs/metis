@@ -23,8 +23,8 @@ describe("<SettingsIntegrationsPage />", () => {
   it("links an admin to every integration surface", () => {
     renderPage("admin");
     const expected: Array<[string, string]> = [
-      ["settings-integrations-link-repositories", "/repositories"],
-      ["settings-integrations-link-databases", "/databases"],
+      // #2353 — one card for both, to the project list (each project's Knowledge tab).
+      ["settings-integrations-link-connections", "/projects"],
       ["settings-integrations-link-mcp", "/settings/mcp"],
       ["settings-integrations-link-hooks", "/settings/hooks"],
       ["settings-integrations-link-triggers", "/settings/triggers"],
@@ -45,7 +45,7 @@ describe("<SettingsIntegrationsPage />", () => {
     for (const hidden of ["mcp", "hooks", "triggers", "vault"]) {
       expect(screen.queryByTestId(`settings-integrations-link-${hidden}`)).not.toBeInTheDocument();
     }
-    for (const kept of ["repositories", "databases", "notifications", "teams"]) {
+    for (const kept of ["connections", "notifications", "teams"]) {
       expect(screen.getByTestId(`settings-integrations-link-${kept}`)).toBeInTheDocument();
     }
   });

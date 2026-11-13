@@ -18,6 +18,7 @@ import { makeWrapper } from "./test-utils";
 
 vi.mock("next/navigation", () => ({
   useParams: vi.fn(() => ({ id: "proj_test" })),
+  useSearchParams: vi.fn(() => new URLSearchParams(window.location.search)),
 }));
 
 vi.mock("@/lib/api-client", () => ({

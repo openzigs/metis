@@ -44,6 +44,18 @@ vi.mock("../src/lib/audit/audit-service.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/lib/audit/audit-service.js")>()),
   audit: vi.fn(),
 }));
+// A permission the test withdraws from every role (the route's 403 case: no
+// shipped role lacks `review.read`, so one is taken away here).
+const withheld = vi.hoisted(() => new Set<string>());
+vi.mock("@metis/shared", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@metis/shared")>();
+  return {
+    ...actual,
+    hasPermission: (role: Parameters<typeof actual.hasPermission>[0], permission: string) =>
+      !withheld.has(permission) &&
+      actual.hasPermission(role, permission as Parameters<typeof actual.hasPermission>[1]),
+  };
+});
 const emit = vi.fn();
 const to = vi.fn((_room: string) => ({ emit }));
 vi.mock("../src/lib/socket/registry.js", async (importOriginal) => ({
@@ -347,7 +359,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       it("is empty before any review", async () => {
         const res = await state(ANA());
         expect(res.status).toBe(200);
-        expect(res.body.data).toEqual({ review: null, assignedToMe: null });
+        expect(res.body.data).toEqual({ review: null, mine: null, assignedToMe: null });
       });
 
       it("shows the reviewer their assignment and the requester the review", async () => {
@@ -370,6 +382,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
             status: "in_review",
             requestedByMe: false,
           },
+          mine: null,
           assignedToMe: { id: "rev-2343", title: "Sign off checkout" },
         });
         const requester = await state(ANA());
@@ -396,6 +409,40 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           requestedByMe: true,
         });
         expect((await state(REV())).body.data.assignedToMe).toBeNull();
+      });
+
+      it("a newer review by someone else does not hide the requester's rejection", async () => {
+        await db.reviewRequest.create({
+          data: {
+            id: "rev-2343-other",
+            projectId: P,
+            title: "Second look",
+            status: "draft",
+            requestedById: "u-rev",
+            updatedAt: new Date(Date.now() + 60_000),
+            items: { create: [{ requirementId: "req-2", pinnedVersion: 1 }] },
+          },
+        });
+        const requester = (await state(ANA())).body.data;
+        expect(requester.review).toMatchObject({ id: "rev-2343-other", requestedByMe: false });
+        expect(requester.mine).toEqual({
+          id: "rev-2343",
+          title: "Sign off checkout",
+          status: "rejected",
+        });
+        // The other user's own latest is their draft.
+        expect((await state(REV())).body.data.mine).toMatchObject({ id: "rev-2343-other" });
+      });
+
+      it("refuses a caller without review.read (403), naming no review", async () => {
+        withheld.add("review.read");
+        try {
+          const res = await state(ANA());
+          expect(res.status).toBe(403);
+          expect(JSON.stringify(res.body)).not.toContain("Sign off checkout");
+        } finally {
+          withheld.delete("review.read");
+        }
       });
 
       it("never answers for a run of another project", async () => {

@@ -14,6 +14,7 @@ vi.mock("../logger.js", () => ({
 }));
 
 import { JsonLlmParseError, callJsonLlm, extractJson } from "./json-llm-client.js";
+import { AMBIGUOUS_JSON_MESSAGE } from "../analysis/balanced-json.js";
 
 function makeProvider(content: string): AIProvider {
   const response: ChatResponse = {
@@ -60,6 +61,39 @@ describe("extractJson", () => {
   });
   it("throws when JSON braces are unbalanced", () => {
     expect(() => extractJson("{ a:")).toThrow();
+  });
+
+  // #2407 — the fence pattern takes the FIRST fenced block, so a fenced draft
+  // followed by a correction kept the draft. Each must be unparseable instead.
+  describe("#2407 a fenced first draft followed by a correction", () => {
+    const DRAFT = '{"candidates":[{"table":"orders"}]}';
+    const FULL = '{"candidates":[{"table":"orders"},{"table":"order_lines"}]}';
+    const CORRECTION = "Correction: the object above is incomplete. Here is the full response.";
+    const fence = (body: string): string => `\`\`\`json\n${body}\n\`\`\``;
+
+    it("throws on a fenced draft followed by a bare correction", () => {
+      expect(() => extractJson(`${fence(DRAFT)}\n${CORRECTION}\n${FULL}`)).toThrow(
+        AMBIGUOUS_JSON_MESSAGE,
+      );
+    });
+
+    it("throws on prose and two fences", () => {
+      expect(() =>
+        extractJson(`Here you go:\n${fence(DRAFT)}\n${CORRECTION}\n${fence(FULL)}`),
+      ).toThrow(AMBIGUOUS_JSON_MESSAGE);
+    });
+
+    it("still parses a single fenced answer, and the same object fenced twice", () => {
+      expect(extractJson(`Here you go:\n${fence(FULL)}\nDone.`)).toEqual(JSON.parse(FULL));
+      expect(extractJson(`${fence(FULL)}\nAgain:\n${fence(FULL)}`)).toEqual(JSON.parse(FULL));
+    });
+
+    it("callJsonLlm reports the ambiguity as a JsonLlmParseError", async () => {
+      const provider = makeProvider(`${fence(DRAFT)}\n${CORRECTION}\n${fence(FULL)}`);
+      await expect(callJsonLlm(provider, { systemPrompt: "s", userPrompt: "u" })).rejects.toThrow(
+        JsonLlmParseError,
+      );
+    });
   });
 });
 

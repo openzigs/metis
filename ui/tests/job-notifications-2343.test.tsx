@@ -202,6 +202,95 @@ describe("fireJobNotificationToast (#2343)", () => {
     );
   });
 
+  describe("a regeneration of the same document after a failure (#2343 review)", () => {
+    const reason = "This document type needs connected source code. Connect a repository.";
+    const failRun1 = () => {
+      fireTerminalToast(
+        lifecycle({
+          kind: "doc-generation",
+          jobId: "doc-1",
+          status: "failed",
+          error: reason,
+          ts: 10,
+        }),
+      );
+      fireJobNotificationToast(
+        jobEvent({
+          kind: "job_failed",
+          jobKind: "doc-generation",
+          jobId: "doc-1",
+          notificationId: "n-run-1",
+          title: 'Document "BRD" failed to generate',
+          message: "The document could not be generated. Open it to regenerate.",
+          ts: 11,
+        }),
+      );
+    };
+    const ready = jobEvent({
+      kind: "job_completed",
+      jobKind: "doc-generation",
+      jobId: "doc-1",
+      notificationId: "n-run-2",
+      title: 'Document "BRD" is ready',
+      message: "Open the document to read it.",
+      ts: 50,
+    });
+
+    it("run 2's notification alone says ready, without run 1's failure reason", () => {
+      failRun1();
+      expect(fireJobNotificationToast(ready)).toBe(true);
+      expect(toast.success).toHaveBeenLastCalledWith('Document "BRD" is ready', {
+        description: "Open the document to read it.",
+        action: expect.objectContaining({ label: "Open" }),
+      });
+    });
+
+    it("run 2's lifecycle end toasts, and its notification rewrites it with run 2's line", () => {
+      failRun1();
+      expect(
+        fireTerminalToast(
+          lifecycle({
+            kind: "doc-generation",
+            jobId: "doc-1",
+            message: "Documentation ready",
+            ts: 49,
+          }),
+        ),
+      ).toBe(true);
+      expect(toast.success).toHaveBeenLastCalledWith("Documentation ready");
+      expect(fireJobNotificationToast(ready)).toBe(true);
+      expect(toast.success).toHaveBeenLastCalledWith(
+        'Document "BRD" is ready',
+        expect.objectContaining({
+          id: "t-3", // run 2's own lifecycle toast (t-1 and t-2 were run 1's)
+          description: "Documentation ready. Open the document to read it.",
+        }),
+      );
+      // A re-delivery of either run's lifecycle end stays quiet.
+      expect(
+        fireTerminalToast(
+          lifecycle({
+            kind: "doc-generation",
+            jobId: "doc-1",
+            message: "Documentation ready",
+            ts: 49,
+          }),
+        ),
+      ).toBe(false);
+      expect(
+        fireTerminalToast(
+          lifecycle({
+            kind: "doc-generation",
+            jobId: "doc-1",
+            status: "failed",
+            error: reason,
+            ts: 10,
+          }),
+        ),
+      ).toBe(false);
+    });
+  });
+
   it("ends a lifecycle line with a full stop before the next step", () => {
     fireTerminalToast(lifecycle({ message: "Analysis complete" }));
     fireJobNotificationToast(jobEvent());
@@ -231,18 +320,40 @@ describe("fireJobNotificationToast (#2343)", () => {
     expect(options.action).toBeUndefined();
   });
 
+  /** Stand in for another tab: its own module state, the same localStorage. */
+  const otherTab = () => __resetTerminalToastsForTests({ keepStorage: true });
+
   it("a second tab stays quiet: the first tab's claim is shared through localStorage", () => {
-    window.localStorage.setItem(`${CROSS_TAB_CLAIM_PREFIX}an-1`, String(Date.now()));
-    expect(fireJobNotificationToast(jobEvent())).toBe(false);
-    // The lifecycle path claims across tabs too (a job this tab has not seen).
-    window.localStorage.setItem(`${CROSS_TAB_CLAIM_PREFIX}an-2`, String(Date.now()));
-    expect(fireTerminalToast(lifecycle({ jobId: "an-2" }))).toBe(false);
-    expect(toast.success).not.toHaveBeenCalled();
+    // Tab A toasts the run's lifecycle end; tab B hears only the notification.
+    expect(fireTerminalToast(lifecycle({ ts: 100 }))).toBe(true);
+    otherTab();
+    expect(fireJobNotificationToast(jobEvent({ ts: 105 }))).toBe(false);
+    // Tab A showed the notification first; tab B also hears the lifecycle end.
+    __resetTerminalToastsForTests();
+    expect(fireJobNotificationToast(jobEvent({ jobId: "an-2", ts: 205 }))).toBe(true);
+    otherTab();
+    expect(fireTerminalToast(lifecycle({ jobId: "an-2", ts: 200 }))).toBe(false);
+    expect(fireJobNotificationToast(jobEvent({ jobId: "an-2", ts: 205 }))).toBe(false);
+    expect(window.localStorage.getItem(`${CROSS_TAB_CLAIM_PREFIX}an-2`)).toBe("n:205");
   });
 
-  it("an old claim has expired: a regeneration on the same id toasts again", () => {
-    window.localStorage.setItem(`${CROSS_TAB_CLAIM_PREFIX}doc-1`, String(Date.now() - 11 * 60_000));
-    expect(fireJobNotificationToast(jobEvent({ jobId: "doc-1" }))).toBe(true);
+  it("a claim names its run: a regeneration within minutes toasts in the tab that heard it (#2343 review)", () => {
+    const run = (ts: number, kind: JobNotificationEvent["kind"]) =>
+      jobEvent({ jobId: "doc-1", jobKind: "doc-generation", notificationId: `n-${ts}`, kind, ts });
+    const now = Date.now();
+    // Tab A announces run 1 (a failure).
+    expect(fireJobNotificationToast(run(now, "job_failed"))).toBe(true);
+    // Tab B, a minute later, hears run 2: the old run's claim does not hold it.
+    otherTab();
+    expect(fireJobNotificationToast(run(now + 60_000, "job_completed"))).toBe(true);
+    // And tab B's claim of run 2 keeps tab A quiet about it.
+    otherTab();
+    expect(fireJobNotificationToast(run(now + 60_000, "job_completed"))).toBe(false);
+  });
+
+  it("a lifecycle claim left by a closed tab does not silence a much later run", () => {
+    window.localStorage.setItem(`${CROSS_TAB_CLAIM_PREFIX}doc-1`, "l:1");
+    expect(fireJobNotificationToast(jobEvent({ jobId: "doc-1", ts: 1 + 11 * 60_000 }))).toBe(true);
   });
 
   it("a job already toasted without a toast id (a stale replay) is not shown again", () => {

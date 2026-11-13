@@ -163,6 +163,28 @@ describe("IngestQueue announces the outcome to the uploader (#2343)", () => {
     expect(dispatchJobOutcome).not.toHaveBeenCalled();
   });
 
+  it("a second requester of a document already in flight is told too", async () => {
+    seed("d8");
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const knowledge = {
+      ingestDocument: vi.fn(async (id: string) => {
+        await gate;
+        documents.set(id, { ...documents.get(id)!, status: "ready", indexState: "indexed" });
+        return { documentId: id, status: "ready", chunkCount: 1 };
+      }),
+    } as unknown as KS;
+    const queue = new IngestQueue({ knowledge, concurrency: 1 });
+    await queue.enqueue("d8", { notifyUserId: "u-1" });
+    // Queued again while the first ingest runs: one ingest, both told.
+    await queue.enqueue("d8", { notifyUserId: "u-2" });
+    await queue.enqueue("d8", { notifyUserId: "u-1" });
+    release();
+    await queue.onIdle();
+    expect(knowledge.ingestDocument).toHaveBeenCalledTimes(1);
+    expect(dispatchJobOutcome.mock.calls.map((c) => c[0].userId).sort()).toEqual(["u-1", "u-2"]);
+  });
+
   it("a document deleted meanwhile is not announced", async () => {
     seed("d7");
     const queue = new IngestQueue({

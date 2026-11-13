@@ -34,7 +34,7 @@ import {
   type ChunkOptions,
   resolveChunkParams,
 } from "./chunker.js";
-import { Embedder, getEmbedder } from "./embedder.js";
+import { Embedder, getEmbedder, type EmbeddingResult } from "./embedder.js";
 import {
   forceReleaseReindexLease,
   readReindexLease,
@@ -226,7 +226,16 @@ export interface SearchOptions {
    * have to assert on the new field.
    */
   reportAclMismatch?: boolean;
+  /**
+   * #2279 — query embeddings shared across the searches of one federated call:
+   * a query string already embedded (or being embedded) under this cache is not
+   * embedded again. The owner scopes it to one call; it is never process-wide.
+   */
+  embedCache?: QueryEmbedCache;
 }
+
+/** #2279 — see {@link SearchOptions.embedCache}. */
+export type QueryEmbedCache = Map<string, Promise<EmbeddingResult>>;
 
 export interface ReindexProgress {
   processed: number;
@@ -720,6 +729,19 @@ export class KnowledgeService {
     return { documentId, status: "ready", chunkCount: chunks.length };
   }
 
+  /** Embed one query, once per {@link QueryEmbedCache} when one is given. */
+  private embedQuery(query: string, cache: QueryEmbedCache | undefined): Promise<EmbeddingResult> {
+    if (!cache) return this.embedder.embed([query]);
+    let pending = cache.get(query);
+    if (!pending) {
+      pending = this.embedder.embed([query]);
+      cache.set(query, pending);
+      // A failed embed is not remembered: a later search under the cache retries.
+      pending.catch(() => cache.delete(query));
+    }
+    return pending;
+  }
+
   /**
    * Vector search over a project's chunks.
    * Returns top-k hits with source attribution and an optional coverage
@@ -730,7 +752,7 @@ export class KnowledgeService {
     const k = clamp(opts.k ?? DEFAULT_RETRIEVE_K, 1, MAX_SEARCH_K);
     const mode: RetrievalMode = opts.mode ?? DEFAULT_RETRIEVAL_MODE;
     if (!query || query.trim().length === 0) return { hits: [], mode };
-    const queryEmbed = await this.embedder.embed([query]);
+    const queryEmbed = await this.embedQuery(query, opts.embedCache);
     const vectors = queryEmbed.vectors;
     // #792 — the identity the query was ACTUALLY embedded with. For the sidecar
     // this is the value the sidecar echoed, so query and corpus are compared in

@@ -65,8 +65,8 @@ function SectionLine({ section }: { section: DocumentReadingSection }): React.Re
   if (section.status === "unread") {
     return (
       <li className="text-xs text-warning" data-testid="document-coverage-section">
-        <span>{section.heading}</span> — not read: the model&apos;s reply for this section could not
-        be read.
+        <span>{section.heading}</span> — not read: the model&apos;s reply could not be read, or left
+        this section out even when asked again.
       </li>
     );
   }
@@ -115,7 +115,7 @@ function DocumentEntry({ doc }: { doc: DocumentReadingDocument }): React.ReactEl
       {unreadSections > 0 ? (
         <p className="text-xs text-warning">
           {plural(unreadSections, "section was", "sections were")} not read: the model&apos;s reply
-          could not be read.
+          could not be read, or left them out even when asked again.
         </p>
       ) : null}
       {doc.droppedUnverified > 0 ? (

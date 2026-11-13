@@ -82,7 +82,10 @@ describe("DocumentCoveragePanel", () => {
     expect(sections[1]).toHaveTextContent(
       "Booking FRD › 3 Booking — 2 requirements, 1 business rule, 1 background statement",
     );
-    expect(sections[2]).toHaveTextContent("not read");
+    // #2407 — a section the reply left out, even when asked again, is unread too.
+    expect(sections[2]).toHaveTextContent(
+      "not read: the model's reply could not be read, or left this section out even when asked again.",
+    );
     expect(sections[2]).toHaveClass("text-warning");
   });
 

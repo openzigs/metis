@@ -155,7 +155,8 @@ export default function ProductDetailPage({ params }: { params: Promise<{ id: st
   return (
     <div className="space-y-6 p-6">
       <div className="flex items-center gap-4">
-        <Link href="/products">
+        {/* #2353 — the products list is the Portfolio tab's Products section. */}
+        <Link href="/portfolio?tab=products">
           <Button variant="ghost" size="icon" aria-label="Back to products">
             <ArrowLeft className="h-4 w-4" aria-hidden />
           </Button>

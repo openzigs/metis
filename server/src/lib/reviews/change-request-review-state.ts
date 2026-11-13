@@ -8,6 +8,9 @@
  *   requirements (the rule `deriveChangeRequestState` uses for Home, #2348),
  *   with whether the caller requested it. Its `status` says requested (a
  *   draft), in review, approved or rejected;
+ * - `mine`: the latest standing review of the run the CALLER requested, so a
+ *   newer review someone else opened cannot hide "Your review request was
+ *   rejected" from the analyst who asked for it;
  * - `assignedToMe`: the most recent review covering the run that is waiting
  *   on the caller's own decision (`awaitingDecisionWhere`, the sidebar's and
  *   Home's predicate), so a reviewer opening the change request sees "Review
@@ -30,6 +33,7 @@ export interface ChangeRequestReviewState {
     status: (typeof STANDING_STATUSES)[number];
     requestedByMe: boolean;
   } | null;
+  mine: { id: string; title: string; status: (typeof STANDING_STATUSES)[number] } | null;
   assignedToMe: { id: string; title: string } | null;
 }
 
@@ -43,15 +47,22 @@ export async function readChangeRequestReviewState(
       some: { requirement: { is: { analysisId, projectId, deletedAt: null } } },
     },
   };
-  const [latest, assigned] = await Promise.all([
+  const standing = { projectId, status: { in: [...STANDING_STATUSES] }, ...coversRun };
+  const newestFirst = [{ updatedAt: "desc" as const }, { id: "desc" as const }];
+  const [latest, mine, assigned] = await Promise.all([
     prisma.reviewRequest.findFirst({
-      where: { projectId, status: { in: [...STANDING_STATUSES] }, ...coversRun },
-      orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+      where: standing,
+      orderBy: newestFirst,
       select: { id: true, title: true, status: true, requestedById: true },
     }),
     prisma.reviewRequest.findFirst({
+      where: { ...standing, requestedById: userId },
+      orderBy: newestFirst,
+      select: { id: true, title: true, status: true },
+    }),
+    prisma.reviewRequest.findFirst({
       where: { projectId, ...awaitingDecisionWhere(userId, {}), ...coversRun },
-      orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+      orderBy: newestFirst,
       select: { id: true, title: true },
     }),
   ]);
@@ -62,6 +73,13 @@ export async function readChangeRequestReviewState(
           title: latest.title,
           status: latest.status as (typeof STANDING_STATUSES)[number],
           requestedByMe: latest.requestedById === userId,
+        }
+      : null,
+    mine: mine
+      ? {
+          id: mine.id,
+          title: mine.title,
+          status: mine.status as (typeof STANDING_STATUSES)[number],
         }
       : null,
     assignedToMe: assigned ? { id: assigned.id, title: assigned.title } : null,

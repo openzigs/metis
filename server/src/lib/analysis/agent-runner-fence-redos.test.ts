@@ -73,10 +73,19 @@ function extractJsonObjectViaOldFence(raw: string): unknown {
   const trimmed = raw.trim();
   const leading = leadingObject(trimmed);
   if (leading.found) return leading.value;
+  // #2407 — tracks production: an ambiguous leading object throws before the fence.
+  if (leading.ambiguous) throw new SyntaxError(AMBIGUOUS_JSON_MESSAGE);
   const fenceMatch = trimmed.match(OLD_FENCE_PATTERN);
   if (fenceMatch && fenceMatch[1]) {
     const inner = fenceMatch[1].trim();
-    if (inner.startsWith("{")) return JSON.parse(inner);
+    if (inner.startsWith("{")) {
+      // #2407 — tracks production: a fenced first draft with a rival is ambiguous.
+      const rival = parseBalancedJsonObject(trimmed);
+      if (!rival.found && rival.ambiguous) {
+        throw new SyntaxError(AMBIGUOUS_JSON_MESSAGE);
+      }
+      return JSON.parse(inner);
+    }
   }
   return balancedOrThrow(trimmed);
 }
