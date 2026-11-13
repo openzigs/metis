@@ -29,7 +29,8 @@ export const ANALYSIS_TABS = [
   { value: "requirements", label: "Requirements" },
   { value: "findings", label: "Findings" },
   { value: "questions", label: "Questions" },
-  { value: "approvals", label: "Approvals" },
+  // #2347 — the analysis checkpoint, not requirement approval (the URL value stays).
+  { value: "approvals", label: "Checkpoints" },
   { value: "agents", label: "Agent output" },
   { value: "traceability", label: "Traceability" },
 ] as const;
@@ -50,7 +51,7 @@ export function parseAnalysisTab(raw: string | null | undefined): AnalysisTab {
 
 /**
  * In-page anchors that predate the tabs, mapped to the tab that now holds their
- * target. "Go to approvals" (#1104, #362) and "Review questions" (#1135) keep
+ * target. "Go to checkpoints" (#1104, #362) and "Review questions" (#1135) keep
  * working without every panel learning about the tabs.
  */
 const ANCHOR_TABS: Record<string, AnalysisTab> = {

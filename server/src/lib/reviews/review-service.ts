@@ -133,7 +133,9 @@ function reviewStateChangedError(): AppError {
 /**
  * #2370 — the review's assigned reviewers, whose own rooms `review:changed`
  * also reaches: their sidebar count drops or grows on a state change they did
- * not make, on whatever page they have open.
+ * not make, on whatever page they have open. Every assignee, including one who
+ * has lost access to the project since: `emitReviewChanged` keeps only those
+ * who can still open it (#2394).
  */
 function reviewerIdsOf(review: ReviewRow): string[] {
   return review.assignments.map((a) => a.reviewerId);
@@ -166,6 +168,23 @@ function assertNotDecidingReviewer(review: ReviewRow, actorId: string): void {
       403,
       "REVIEWER_CANNOT_WITHDRAW",
       "You are a reviewer of this review: record your decision instead of withdrawing or closing it",
+    );
+  }
+}
+
+/**
+ * #2347 — 403 when the caller is an assigned reviewer of the review, in ANY
+ * state. "Revise and resubmit" is the author's next round: a reviewer who
+ * rejected it (a coordinator holds `review.admin`) must not be the one to
+ * reopen it, whatever its status. Unlike {@link assertNotDecidingReviewer},
+ * which lapses once a verdict is in, this never lapses.
+ */
+function assertNotAssignedReviewer(review: ReviewRow, actorId: string): void {
+  if (review.assignments.some((a) => a.reviewerId === actorId)) {
+    throw new AppError(
+      403,
+      "REVIEWER_CANNOT_REVISE",
+      "You are a reviewer of this review: only its requester, or a review administrator who is not one of its reviewers, may revise it",
     );
   }
 }
@@ -684,7 +703,7 @@ async function startReviewRound(
     reopened: event === "reopen",
   });
   // #1574 — an open review page shows the new status without a reload.
-  emitReviewChanged(review.projectId, reviewId, reviewerIdsOf(review));
+  void emitReviewChanged(review.projectId, reviewId, reviewerIdsOf(review));
 
   return updated;
 }
@@ -904,7 +923,7 @@ export async function recordDecision(
     baselineId: result.baselineId,
   });
   // #1574 — an open review page shows the decision (and any outcome) live.
-  emitReviewChanged(review.projectId, reviewId, reviewerIdsOf(review));
+  void emitReviewChanged(review.projectId, reviewId, reviewerIdsOf(review));
   // #1230 — a verdict reached sets the scope's review statuses: a reader BRD
   // listing approved requirements may now be stale. Post-commit; never throws.
   if (result.aggregate !== "pending") {
@@ -922,10 +941,11 @@ async function transitionReview(
   actorId: string,
   reviewId: string,
   isAdmin: boolean,
-  event: "withdraw" | "close",
+  event: "withdraw" | "close" | "revise",
 ): Promise<unknown> {
   const review = await loadReviewOr404(reviewId);
   assertRequesterOrAdmin(review, actorId, isAdmin);
+  if (event === "revise") assertNotAssignedReviewer(review, actorId);
   assertNotDecidingReviewer(review, actorId);
 
   const nextStatus = transition(review.status as ReviewRequestStatus, event);
@@ -961,7 +981,7 @@ async function transitionReview(
     });
   });
   // #1574 — post-commit: an open review page shows the withdraw or close live.
-  emitReviewChanged(review.projectId, reviewId, reviewerIdsOf(review));
+  void emitReviewChanged(review.projectId, reviewId, reviewerIdsOf(review));
 
   return updated;
 }
@@ -972,6 +992,27 @@ export async function withdrawReview(
   isAdmin: boolean,
 ): Promise<unknown> {
   return transitionReview(actorId, reviewId, isAdmin, "withdraw");
+}
+
+/**
+ * #2347 — "Revise and resubmit": rejected → draft, with the same items and
+ * reviewers. The requirements keep the rejection until the review is submitted
+ * again (a submit re-pins their current versions and resets every reviewer's
+ * decision), so the analyst can edit them in between. Requester or
+ * `review.admin`, as withdraw is, and never an assigned reviewer of it, in any
+ * state (`assertNotAssignedReviewer`).
+ *
+ * The resubmit captures each requirement's status as it then stands, which is
+ * the rejection; so a later withdraw of the resubmitted review puts back
+ * `rejected`, not the status from before the first round. The rejection is a
+ * standing verdict until the reviewers decide again.
+ */
+export async function reviseReview(
+  actorId: string,
+  reviewId: string,
+  isAdmin: boolean,
+): Promise<unknown> {
+  return transitionReview(actorId, reviewId, isAdmin, "revise");
 }
 
 export async function closeReview(

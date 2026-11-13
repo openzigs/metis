@@ -183,6 +183,15 @@ export const reviewsApi = {
     return apiFetch<ReviewRequest>(`/reviews/${reviewId}/reopen`, { method: "POST" });
   },
 
+  /**
+   * #2347 — "Revise and resubmit": rejected → draft, the same items and
+   * reviewers. Requester or `review.admin` only; submit it again with
+   * {@link reviewsApi.submit} once the requirements are revised.
+   */
+  revise(reviewId: string): Promise<ReviewRequest> {
+    return apiFetch<ReviewRequest>(`/reviews/${reviewId}/revise`, { method: "POST" });
+  },
+
   /** #2219 — the approved and in-review reviews that pinned a requirement. */
   requirementApproval(requirementId: string): Promise<RequirementApproval> {
     return apiFetch<RequirementApproval>(

@@ -63,9 +63,14 @@ export default function ProjectBaselinesPage() {
 
   return (
     <div className="space-y-6 p-2 md:p-0">
+      {/* #2347 — role-aware: New baseline is described only to who sees it. */}
       <PageHeader
         title="Baselines"
-        description="Immutable snapshots of requirement versions. A baseline is created automatically when a review is approved, pinning what it approved; New baseline pins the project's requirements except items imported from a tracker that nobody has approved. Compare two baselines to see what changed between sign-offs."
+        description={
+          canCreate
+            ? "Immutable snapshots of requirement versions. A baseline is created automatically when a review is approved, pinning what it approved; New baseline pins the project's requirements except items imported from a tracker that nobody has approved. Compare two baselines to see what changed between sign-offs."
+            : "Immutable snapshots of requirement versions. A baseline is created automatically when a review is approved, pinning what it approved; a coordinator or admin can also take one from the approved requirements. Compare two baselines to see what changed between sign-offs."
+        }
       />
 
       {canCreate ? <NewBaselineForm projectId={projectId} /> : null}

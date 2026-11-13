@@ -2001,6 +2001,47 @@ This is useful when the AI's initial wording needs refinement or when you want t
 
 ### 12.6 Approving Requirements
 
+**The approval ladder (#2347).** A requirement can be approved in three ways, in this order:
+
+1. **Analysis checkpoint**: confirm what the analysis proposed before it is saved, on the
+   change request's **Checkpoints** tab (it was called *Approvals*).
+2. **Requirement approval**: approve a requirement yourself, with **Approve** on its card or in
+   the Requirements list. No reviewer and no baseline are involved. This needs a coordinator or
+   admin role (`project.update`); a developer requests a review instead, and the list says so.
+3. **Formal review and baseline**: **Request review** asks colleagues to sign off a set of
+   requirements. Their approval creates a baseline. If they reject the review, every
+   requirement in it is rejected, including any you had already approved yourself.
+
+An approved requirement shows **Approved** and offers no Approve or Reject; to change it, edit it
+(which sends it back for review) or put it in a formal review.
+
+**The Requirements tab is the list.** The project's **Requirements** tab lists every requirement
+across its change requests: its title, its change request (linked), its status, and the state of
+its latest formal review (linked to the review). Filter by change request and by status, search
+by title, and page through. From a row you can **Approve** it, **Edit** its title and description
+(an approved one shows the warning first and goes back for review), or tick rows and click
+**Request review of N selected**. Ticking another row keeps the reviewers and title you have
+entered, and the ticks clear once the review is requested. The per-change-request summary follows
+the list; its **Request review of this change request** covers every requirement of the selected
+change request, not just the ticked rows. If a save or an approval meets someone else's change,
+the list is read again and the edit dialog keeps your text so you can copy it.
+
+**After a rejection.** A rejected review says, at the top, that every item in it is now rejected
+and what each rejecting reviewer gave as the reason. Its requester (or a review administrator)
+clicks **Revise and resubmit**: the review goes back to a draft with the same requirements and
+reviewers. Edit the requirements, then **Resubmit for review**, which pins their new versions and
+asks the reviewers again. The change request's page links the rejection straight to it. An
+assigned reviewer of the review cannot revise it, even with a coordinator or admin role. The
+rejection stands until the reviewers decide again, so withdrawing the resubmitted review leaves
+the requirements rejected, not as they were before the first round.
+
+**Working alone.** You cannot review your own request. When the reviewer search finds no one
+else, it says so (*"You can't review your own request; add a colleague who can open this
+project"*), and then what happens for your role. A coordinator or admin working alone approves
+the requirements directly, which is where they end, and can take a baseline from them with
+**New baseline** on the Baselines page. A developer can do neither, so the form says to add a
+colleague to the project to review, or to ask a coordinator to approve them.
+
 Before a requirement can be published to GitHub, it must be **approved**. This is a human-in-the-loop step that ensures nothing gets published without review.
 
 **Individual approval**: Click the **"Approve"** button on any requirement in `generated` or `reviewing` status.
@@ -2024,7 +2065,7 @@ When a review of requirements is **approved**, METIS automatically creates a **b
 - **List:** every baseline in the project, newest first, showing how many requirements it pins and which review produced it (or who created it manually).
 - **Contents:** open a baseline to see each requirement **as it was at its pinned version** — even if it has been edited or deleted since. A drift note ("now at v5", "deleted since") tells you where the requirement is today, but the baseline itself never changes.
 - **Compare:** with two or more baselines, pick two in the compare picker to see what changed between sign-offs: requirements **added**, **removed**, **unchanged**, and **changed** — the changed ones with a field-by-field before/after diff (title, body, priority, type, story points, …).
-- **Requesting a review:** on the project's **Requirements** page, **Request review** (anyone with `review.create`: developer, coordinator, admin) opens a review of the latest analysis's requirements. Search for reviewers among the people who can open the project (you cannot review your own request), adjust the title, and send it. The review is submitted straight away, pinning each requirement's current version, and appears in the reviewers' **Reviews** queue.
+- **Requesting a review:** on the project's **Requirements** page (anyone with `review.create`: developer, coordinator, admin), **Request review of N selected** opens a review of the rows you ticked in the list, and **Request review of this change request** in the summary below opens one of the selected change request's requirements. Search for reviewers among the people who can open the project (you cannot review your own request), adjust the title, and send it. The review is submitted straight away, pinning each requirement's current version, and appears in the reviewers' **Reviews** queue.
 - **Manual baselines:** review administrators (coordinator or admin) can also pin a baseline without a review: **New baseline** on the Baselines page takes a name (and an optional description) and pins the current version of the project's requirements, which is useful for milestone freezes outside a formal review. It leaves out items imported from a tracker (for example GitHub issues) that nobody has approved; an imported item you approved is pinned. Before you create it, the form says how many requirements it will pin, how many of those are approved, and how many imported items it leaves out. The API (`POST /api/projects/:id/baselines`) also accepts a chosen subset of requirements, which is pinned whatever its status.
 - **Immutability:** baselines cannot be edited or deleted — there is no such button and no such API. They are audit artifacts: what was approved stays exactly as approved.
 
@@ -6230,17 +6271,17 @@ Before tickets are created, METIS creates approval requests for:
 - **Evidence items** — Approve or reject each evidence digest
 - **Requirements** — Approve or reject each refined requirement
 
-View approvals at **Analysis → Approvals** tab. Each item shows its status (Pending / Approved / Rejected) and supports adding reviewer notes. Tickets can only be created once all required approvals are resolved.
+View approvals at **Analysis → Checkpoints** tab (called *Approvals* before #2347). Each item shows its status (Pending / Approved / Rejected) and supports adding reviewer notes. Tickets can only be created once all required approvals are resolved.
 
-**Requirements the analysis wrote up on its own (#1569).** The analysis sometimes writes up a requirement that is not on the list METIS extracted for you to review. For example, the code or database agents may find security or operations work. When the analysis says such a requirement restates nothing on the list, METIS adds it to the Approvals tab as a requirement of its own, marked **Written up by the analysis**, with its own pending approval. Approve it and it is saved with its acceptance criteria and evidence; reject it and it is left out. Before this change those requirements were dropped when you approved, and the tab only warned that their criteria and evidence would not be carried over. The banner above the approvals says how many were added this way. A requirement the analysis wrote up without saying which listed requirement it restates is still not added, because it may repeat one already on the list; the banner still counts those.
+**Requirements the analysis wrote up on its own (#1569).** The analysis sometimes writes up a requirement that is not on the list METIS extracted for you to review. For example, the code or database agents may find security or operations work. When the analysis says such a requirement restates nothing on the list, METIS adds it to the Checkpoints tab as a requirement of its own, marked **Written up by the analysis**, with its own pending approval. Approve it and it is saved with its acceptance criteria and evidence; reject it and it is left out. Before this change those requirements were dropped when you approved, and the tab only warned that their criteria and evidence would not be carried over. The banner above the approvals says how many were added this way. A requirement the analysis wrote up without saying which listed requirement it restates is still not added, because it may repeat one already on the list; the banner still counts those.
 
 **Editing a requirement before you approve it (#1580).** A pending requirement has an **Edit** button beside **Approve** and **Reject**. It lets you change the requirement's title and description, and approving saves the requirement with your wording. While the editor is open, **Approve** and **Reject** for that requirement are turned off, and so is **Approve all** for the whole list, so you cannot approve the old text by mistake. Save or cancel the edit to turn them back on (#2147). A retitled requirement shows the title the analysis gave it ("Edited. The analysis titled it: …"). It still gets the acceptance criteria and evidence the analysis wrote for it. You can edit a requirement only while its approval is pending. Once it is approved, edit it on the Requirements page instead. If someone else approves it while you are editing, your text stays on screen with a note saying so, so you can copy it to the Requirements page. If someone rejects it, the note says it was rejected instead. A rejected requirement is left out, so it is not on the Requirements page: select **Reopen** on its card, and your text can be edited and saved there again (#2157). While an edit is open on a requirement the analysis added, **Leave out the N added by the analysis** is turned off too, as its **Reject** is (#2167). Editing needs the same permission as approving.
 
-**Who can approve requirements here (#1588).** Anyone who can run analyses (a developer, coordinator or admin) can resolve the checkpoint. What approving does depends on whether you hold the `project.update` permission, the same one that approving a requirement anywhere else needs. With it (coordinator, admin), the requirements you approve are added to the Requirements hub as **Approved**. Without it (developer), approving still completes the checkpoint and adds the requirements to the hub, but as **Draft**; a coordinator then approves them there. The Approvals tab tells you so: *"Your approval adds these as drafts; a coordinator approves them."* Rejecting, leaving out the requirements the analysis added, and reopening a rejection work the same for everyone. A Regenerate re-creates the approved list with the permission of whoever started the run, and a run the scheduler started re-creates it as drafts.
+**Who can approve requirements here (#1588).** Anyone who can run analyses (a developer, coordinator or admin) can resolve the checkpoint. What approving does depends on whether you hold the `project.update` permission, the same one that approving a requirement anywhere else needs. With it (coordinator, admin), the requirements you approve are added to the Requirements hub as **Approved**. Without it (developer), approving still completes the checkpoint and adds the requirements to the hub, but as **Draft**; a coordinator then approves them there. The Checkpoints tab tells you so: *"Your approval adds these as drafts; a coordinator approves them."* Rejecting, leaving out the requirements the analysis added, and reopening a rejection work the same for everyone. A Regenerate re-creates the approved list with the permission of whoever started the run, and a run the scheduler started re-creates it as drafts.
 
-**Requirements that would be saved without a code link (#1568).** A requirement gets its code links from the evidence the analysis cites for it. When that evidence cites no code, approving saves the requirement with no code link. This happens most often for requirements the analysis added on a run started from ticked imported items, because the code analysis looks at the ticked items' code. Once the analysis has finished, the Approvals tab marks each such pending requirement **No code link**, and a line above the pending list says how many there are. You can leave them out, or approve them knowing they will have no code link. The mark is based on the evidence only. A requirement that cites a file METIS has not indexed can still end up with no link even though it is not marked.
+**Requirements that would be saved without a code link (#1568).** A requirement gets its code links from the evidence the analysis cites for it. When that evidence cites no code, approving saves the requirement with no code link. This happens most often for requirements the analysis added on a run started from ticked imported items, because the code analysis looks at the ticked items' code. Once the analysis has finished, the Checkpoints tab marks each such pending requirement **No code link**, and a line above the pending list says how many there are. You can leave them out, or approve them knowing they will have no code link. The mark is based on the evidence only. A requirement that cites a file METIS has not indexed can still end up with no link even though it is not marked.
 
-**When the requirements step fails (#1355).** The checkpoints are built from the requirements METIS reads out of the model's answer. No checkpoints are created when that step fails, so nothing holds the requirements back and they are saved without review. The step fails in one of three ways, and the Approvals tab names which one in place of "This run has no approval checkpoints":
+**When the requirements step fails (#1355).** The checkpoints are built from the requirements METIS reads out of the model's answer. No checkpoints are created when that step fails, so nothing holds the requirements back and they are saved without review. The step fails in one of three ways, and the Checkpoints tab names which one in place of "This run has no approval checkpoints":
 
 - **The answer could not be read**, even after METIS asked once more: "METIS could not read the requirements out of the AI model's answer".
 - **The request to the model failed** (a connection error, an upstream outage, a quota): "the request to the AI model failed and no requirements came back".

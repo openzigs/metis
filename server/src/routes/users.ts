@@ -23,6 +23,7 @@ import type { AuthPayload } from "@metis/shared";
 import { prisma } from "../lib/prisma.js";
 import { assertResourceProjectAccess } from "../lib/auth/resource-project-access.js";
 import { readLiveWorkspaceIds } from "../lib/auth/live-workspace-ids.js";
+import { projectAudienceWhere, SYSTEM_ADMIN_USER } from "../lib/auth/project-audience.js";
 
 const MAX_LIMIT = 25;
 const DEFAULT_LIMIT = 8;
@@ -44,16 +45,14 @@ const searchQuerySchema = z.object({
   projectId: z.string().trim().min(1).max(100).optional(),
 });
 
-/** System admins open every project (`assertProjectAccess`'s bypass). */
-const SYSTEM_ADMIN: Prisma.UserWhereInput = { roles: { some: { role: { key: "admin" } } } };
-
 /**
  * #734 — the users who can open `projectId`, as a `User` filter. Mirrors who a
  * comment or discussion @mention is delivered to (`assertProjectAccess` plus
  * "not soft-deleted", via `canAccessProjectDiscussions`): system admins, plus
  * the live members of a live workspace — or everyone for a legacy project with
  * no workspace. A soft-deleted project offers system admins only, and only to
- * a system admin.
+ * a system admin. The rule itself is `projectAudienceWhere`, shared with the
+ * `review:changed` reviewer audience (#2394).
  *
  * @throws AppError 404 — unknown project, the caller cannot open it, or it is
  *   soft-deleted and the caller is not a system admin
@@ -63,22 +62,13 @@ async function mentionAudienceWhere(
   projectId: string,
 ): Promise<Prisma.UserWhereInput> {
   await assertResourceProjectAccess(user, projectId, projectNotFound);
-  const project = await prisma.project.findUnique({
-    where: { id: projectId },
-    select: { workspaceId: true, deletedAt: true, workspace: { select: { deletedAt: true } } },
-  });
-  if (!project) throw projectNotFound();
-  if (project.deletedAt || project.workspace?.deletedAt) {
-    // A soft-deleted project is the unknown-project 404 to everyone but a
-    // system admin — the comment routes answer it the same way
-    // (`canAccessProjectDiscussions`), and a 200 here would list the admins.
-    if (user?.role !== "admin") throw projectNotFound();
-    return SYSTEM_ADMIN;
-  }
-  if (!project.workspaceId) return {};
-  return {
-    OR: [{ workspaceMemberships: { some: { workspaceId: project.workspaceId } } }, SYSTEM_ADMIN],
-  };
+  const audience = await projectAudienceWhere(projectId);
+  if (!audience) throw projectNotFound();
+  // A soft-deleted project is the unknown-project 404 to everyone but a
+  // system admin — the comment routes answer it the same way
+  // (`canAccessProjectDiscussions`), and a 200 here would list the admins.
+  if (!audience.live && user?.role !== "admin") throw projectNotFound();
+  return audience.where;
 }
 
 /**
@@ -97,7 +87,7 @@ async function callerAudienceWhere(user: AuthPayload): Promise<Prisma.UserWhereI
   return {
     OR: [
       { id: user.userId },
-      SYSTEM_ADMIN,
+      SYSTEM_ADMIN_USER,
       ...(workspaceIds.length > 0
         ? [{ workspaceMemberships: { some: { workspaceId: { in: workspaceIds } } } }]
         : []),

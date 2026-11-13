@@ -389,9 +389,9 @@ describe("review stage", () => {
       "review",
     );
     expect(s.state).toBe("attention");
-    expect(s.status).toBe("6 approvals pending");
+    expect(s.status).toBe("6 checkpoints pending");
     expect(s.action).toEqual({
-      label: "Resolve 6 approvals",
+      label: "Resolve 6 checkpoints",
       href: `${B}/analysis?analysisId=a1&tab=approvals`,
     });
   });
@@ -433,7 +433,9 @@ describe("review stage", () => {
       }),
       "review",
     );
-    expect(s.status).toBe("6 approvals pending · Questions waiting (12) · 1 requirement rejected");
+    expect(s.status).toBe(
+      "6 checkpoints pending · Questions waiting (12) · 1 requirement rejected",
+    );
     expect(s.action.href).toBe(`${B}/analysis?analysisId=a1&tab=approvals`);
   });
 
@@ -442,7 +444,7 @@ describe("review stage", () => {
       facts({ analyses: [completed], awaitingReview: 2, pendingApprovals: 1 }),
       "review",
     );
-    expect(s.status).toBe("2 requirements awaiting review · 1 approval pending");
+    expect(s.status).toBe("2 requirements awaiting review · 1 checkpoint pending");
     expect(s.action.href).toBe(`${B}/analysis?analysisId=a1`);
   });
 
@@ -498,7 +500,7 @@ describe("review stage", () => {
       }),
       "review",
     );
-    expect(s.status).toBe("2 approvals pending · Clarifying questions could not be prepared");
+    expect(s.status).toBe("2 checkpoints pending · Clarifying questions could not be prepared");
     expect(s.action.href).toBe(`${B}/analysis?analysisId=a1&tab=approvals`);
   });
 
@@ -508,7 +510,7 @@ describe("review stage", () => {
       "review",
     );
     expect(s.state).toBe("attention");
-    expect(s.status).toBe("Could not check this run's approvals");
+    expect(s.status).toBe("Could not check this run's checkpoints");
     expect(s.action.href).toBe(`${B}/analysis?analysisId=a1&tab=approvals`);
   });
 

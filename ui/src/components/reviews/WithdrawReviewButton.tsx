@@ -3,7 +3,7 @@
 /**
  * #1032 — withdraw a review from the UI.
  *
- * The Request review form says "Withdrawing the review puts every status back",
+ * The Request review form says withdrawing the review puts each status back,
  * and the server has done that since #989 (`POST /api/reviews/:id/withdraw`),
  * but nothing in the UI called it. This is the one control, used on the review
  * page and on each /reviews row.

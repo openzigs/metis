@@ -73,7 +73,7 @@ describe("#1104 B — the empty requirements list explains the gate", () => {
   it("links to the approvals section so the gate is one click away", () => {
     render(<RequirementsEmptyState metadata={GATED_METADATA} />);
 
-    const link = screen.getByRole("link", { name: /approval/i });
+    const link = screen.getByRole("link", { name: /checkpoints/i });
     expect(link).toHaveAttribute("href", "#approvals");
   });
 
@@ -114,7 +114,7 @@ describe("#1104 B — the empty requirements list explains the gate", () => {
     );
     expect(notice).toHaveTextContent(/Promote the approved requirements/);
     expect(notice).not.toHaveTextContent(/rejected|must be resolved/i);
-    expect(screen.getByRole("link", { name: "Go to approvals" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Go to checkpoints" })).toHaveAttribute(
       "href",
       "#approvals",
     );

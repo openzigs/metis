@@ -68,7 +68,7 @@ const CASES: Record<ChangeRequestStepKey, Case[]> = {
   ],
   requirements: [
     [
-      "approvals pending",
+      "checkpoints pending",
       { pendingApprovals: 2, requirementCounts: { ...NONE, draft: 3 } },
       "needs-you",
     ],
@@ -270,7 +270,7 @@ describe("#2341 — deriveChangeRequestSteps", () => {
     );
     const reason = (k: ChangeRequestStepKey) => steps.find((s) => s.key === k)!.reason;
     expect(reason("questions")).toBe("1 open question.");
-    expect(reason("requirements")).toBe("1 approval pending.");
+    expect(reason("requirements")).toBe("1 checkpoint pending.");
     expect(reason("policy")).toBe("2 findings need your input.");
     expect(reason("review")).toBe("1 of 3 reviewed; 2 to go.");
     expect(reason("handoff")).toBe("2 issues published.");

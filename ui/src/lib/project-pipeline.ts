@@ -382,9 +382,9 @@ function requirementsReview(base: string, f: PipelineFacts): PipelineStage {
   }
   if (typeof f.pendingApprovals === "number" && f.pendingApprovals > 0) {
     waiting.push({
-      status: `${plural(f.pendingApprovals, "approval")} pending`,
+      status: `${plural(f.pendingApprovals, "checkpoint")} pending`,
       action: {
-        label: `Resolve ${plural(f.pendingApprovals, "approval")}`,
+        label: `Resolve ${plural(f.pendingApprovals, "checkpoint")}`,
         href: `${run}&tab=approvals`,
       },
     });
@@ -428,8 +428,8 @@ function requirementsReview(base: string, f: PipelineFacts): PipelineStage {
       id: "review",
       title: TITLE.review,
       state: "attention",
-      status: "Could not check this run's approvals",
-      action: { label: "Open approvals", href: `${run}&tab=approvals` },
+      status: "Could not check this run's checkpoints",
+      action: { label: "Open checkpoints", href: `${run}&tab=approvals` },
     };
   }
   return {
