@@ -33,6 +33,9 @@
  * that window: each held transaction sets `commit_delay` (a superuser setting,
  * as the CI and local `metis` roles are), so the winner's commit takes at least
  * {@link COMMIT_DELAY_MS}, and the test checks it did before trusting the result.
+ * `commit_delay` sleeps only while `fsync` is on: a server started with
+ * `-c fsync=off` skips the delay and fails the window check (never passes).
+ * CI and `docker-compose` leave fsync on.
  *
  * Gated like the other `*-postgres.integration.test.ts` suites: runs only when
  * `RUN_INTEGRATION_TESTS=1` AND `DATABASE_URL` is Postgres-shaped.
@@ -246,7 +249,10 @@ describe.runIf(enabled)("#1904 login claim races on the Postgres adapter (integr
     const heldTxs = txs.filter((t) => t.held);
     expect(heldTxs.map((t) => t.committed).sort()).toEqual([false, true]);
     const winner = heldTxs.find((t) => t.committed)!;
-    expect(winner.settledAt! - barrier.openedAt!).toBeGreaterThanOrEqual(COMMIT_DELAY_MS);
+    expect(
+      winner.settledAt! - barrier.openedAt!,
+      "the winner's commit did not take commit_delay: is the role a superuser, and is fsync on?",
+    ).toBeGreaterThanOrEqual(COMMIT_DELAY_MS);
     expect(results).toEqual(
       rows.map((row) => ({ status: "fulfilled", value: expect.objectContaining({ id: row.id }) })),
     );

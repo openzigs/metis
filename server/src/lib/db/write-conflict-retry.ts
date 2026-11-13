@@ -19,6 +19,11 @@
  * a CI runner, reproduced with a 100 ms `commit_delay`), and a sign-in that
  * conflicted with nobody still alive got `503 SIGN_IN_CONFLICT`. The attempts
  * now span at least 300 ms (100–200 ms, then 200–400 ms).
+ *
+ * That 300 ms is a measured margin, not a guarantee: the window is the winner's
+ * commit latency, so a flush that stalls longer than the remaining backoff still
+ * ends in the same fail-closed conflict error. If those show up in production,
+ * add attempts rather than lengthening the step further.
  */
 import { isSerializationFailure } from "./prisma-errors.js";
 
