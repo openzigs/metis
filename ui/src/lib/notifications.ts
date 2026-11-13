@@ -13,6 +13,7 @@ import type {
   CommentMentionEvent,
   DiscussionMentionEvent,
   InAppNotificationFields,
+  JobNotificationEvent,
   ReviewNotificationEvent,
 } from "@metis/shared";
 
@@ -48,6 +49,9 @@ const WARN_TYPES: ReadonlySet<string> = new Set([
   "review_rejected",
   // #2219 — an approved requirement was edited: the approval needs a re-review.
   "review_item_changed",
+  // #2343 — a job the user started failed, or its document waits in quarantine.
+  "job_failed",
+  "job_awaiting_review",
 ]);
 
 export class NotificationStore {
@@ -327,6 +331,15 @@ export function discussionMentionEventToNotification(
  * edit of an approved requirement, which asks for a re-review.
  */
 export function reviewEventToNotification(event: ReviewNotificationEvent): NotificationDraft {
+  return inAppDraft(event, event.kind, WARN_TYPES.has(event.kind) ? "warn" : "info");
+}
+
+/**
+ * #2343 — map a `job:notification` event into a Notification draft: an
+ * analysis, document generation or ingest the user started finished (info),
+ * failed or is waiting for review in quarantine (warn).
+ */
+export function jobEventToNotification(event: JobNotificationEvent): NotificationDraft {
   return inAppDraft(event, event.kind, WARN_TYPES.has(event.kind) ? "warn" : "info");
 }
 

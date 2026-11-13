@@ -20,9 +20,11 @@
  *  - Static `getIngestQueue` singleton + `__resetIngestQueueSingleton`
  *    matches the rest of the lib/rag/* modules so tests stay isolated.
  */
+import { randomUUID } from "node:crypto";
 import PQueue from "p-queue";
 import { prisma } from "../prisma.js";
 import { createChildLogger } from "../logger.js";
+import { dispatchJobOutcome } from "../notifications/job-notify.js";
 import {
   getKnowledgeService,
   type KnowledgeEvent,
@@ -55,6 +57,23 @@ export interface EnqueueOptions {
   priority?: IngestPriority;
   /** Project id is read from the row when enqueuing; this is for telemetry. */
   reason?: string;
+  /**
+   * #2343 — the person who asked for this ingest (an upload, a pasted text or
+   * a fetched URL), told when it ends: ready, held in quarantine for review,
+   * or failed. Absent for ingests nobody is waiting on (a clarification answer
+   * written as a document), which stay quiet.
+   */
+  notifyUserId?: string;
+}
+
+/** #2343 — how a finished ingest ended, from the document row it wrote. */
+export function ingestOutcome(doc: {
+  status: string;
+  indexState: string | null;
+}): "completed" | "failed" | "awaiting-review" | null {
+  if (doc.status === "failed") return "failed";
+  if (doc.status !== "ready") return null; // left pending for a later retry: not over
+  return doc.indexState === "quarantined" ? "awaiting-review" : "completed";
 }
 
 function intEnv(name: string, fallback: number, min = 1, max = 32): number {
@@ -79,6 +98,12 @@ export class IngestQueue {
    * don't pile up multiple concurrent ingest attempts.
    */
   private readonly inflight = new Set<string>();
+  /**
+   * #2343 — who asked for each in-flight ingest. A second enqueue of a document
+   * already in flight starts no second ingest, but its requester is told how
+   * the one running ends, like the first.
+   */
+  private readonly requesters = new Map<string, Set<string>>();
 
   constructor(opts: IngestQueueOptions = {}) {
     const concurrency = opts.concurrency ?? intEnv("INGEST_CONCURRENCY", 2, 1, 32);
@@ -110,10 +135,17 @@ export class IngestQueue {
    */
   async enqueue(documentId: string, opts: EnqueueOptions = {}): Promise<void> {
     if (this.inflight.has(documentId)) {
-      log.debug("enqueue: duplicate suppressed", { documentId });
+      const waiting = opts.notifyUserId ? this.requesters.get(documentId) : undefined;
+      waiting?.add(opts.notifyUserId!);
+      log.debug("enqueue: duplicate suppressed", {
+        documentId,
+        requesterJoined: Boolean(waiting),
+      });
       return;
     }
     this.inflight.add(documentId);
+    const requesters = new Set<string>(opts.notifyUserId ? [opts.notifyUserId] : []);
+    this.requesters.set(documentId, requesters);
 
     const doc = await prisma.document.findFirst({
       where: { id: documentId, deletedAt: null },
@@ -121,15 +153,18 @@ export class IngestQueue {
     });
     if (!doc) {
       this.inflight.delete(documentId);
+      this.requesters.delete(documentId);
       throw new Error(`Document ${documentId} not found (cannot enqueue)`);
     }
     // Only push pending/failed documents into the queue. Already-ready or
     // processing rows would either re-do work or race the live worker.
     if (doc.status !== "pending" && doc.status !== "queued" && doc.status !== "failed") {
       this.inflight.delete(documentId);
+      this.requesters.delete(documentId);
       log.debug("enqueue: skipped non-queueable status", {
         documentId,
         status: doc.status,
+        requesters: requesters.size,
       });
       return;
     }
@@ -148,7 +183,13 @@ export class IngestQueue {
 
     const priority = PRIORITY_VALUES[opts.priority ?? "default"];
     this.queue
-      .add(() => this.runWithRetry(documentId, doc.projectId), { priority })
+      .add(
+        async () => {
+          await this.runWithRetry(documentId, doc.projectId);
+          for (const userId of requesters) await this.announce(documentId, userId);
+        },
+        { priority },
+      )
       .catch((err) => {
         // p-queue rejects only if the wrapper itself throws. runWithRetry
         // already swallows everything, so this is genuinely unexpected.
@@ -156,6 +197,7 @@ export class IngestQueue {
       })
       .finally(() => {
         this.inflight.delete(documentId);
+        this.requesters.delete(documentId);
       });
   }
 
@@ -218,6 +260,37 @@ export class IngestQueue {
       attempt,
       errorMessage: lastError?.message,
     });
+  }
+
+  /**
+   * #2343 — tell the person who asked for this ingest how it ended, read from
+   * the row the ingest wrote (it is the source of truth for ready, quarantined
+   * and failed). One enqueue is one run: its retries end in one announcement.
+   * Never throws.
+   */
+  private async announce(documentId: string, userId: string): Promise<void> {
+    try {
+      const doc = await prisma.document.findFirst({
+        where: { id: documentId, deletedAt: null },
+        select: { projectId: true, filename: true, status: true, indexState: true },
+      });
+      const outcome = doc ? ingestOutcome(doc) : null;
+      if (!doc || !outcome) return;
+      dispatchJobOutcome({
+        kind: "document-ingest",
+        jobId: documentId,
+        projectId: doc.projectId,
+        userId,
+        outcome,
+        subject: doc.filename,
+        dedupeKey: `document-ingest:${documentId}:${randomUUID()}:${outcome}`,
+      });
+    } catch (err) {
+      log.warn("ingest outcome could not be announced", {
+        documentId,
+        error: (err as Error).message,
+      });
+    }
   }
 
   private safeEmit(event: KnowledgeEvent): void {

@@ -249,7 +249,7 @@ describe("checklist steps", () => {
     renderOverview();
     await waitFor(() =>
       expect(screen.getByTestId("pipeline-status-review")).toHaveTextContent(
-        "6 approvals pending · 12 clarifying questions open",
+        "6 approvals pending · Questions waiting (12)",
       ),
     );
     expect(listApprovals).toHaveBeenCalledWith("p1", "a1");

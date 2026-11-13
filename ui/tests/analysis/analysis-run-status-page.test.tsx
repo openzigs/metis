@@ -96,6 +96,8 @@ const { SNAPSHOT, LIST } = vi.hoisted(() => {
         startedAt: new Date(Date.now() - 60_000).toISOString(),
         failedAgents: [],
         droppedCitations: [{ agentKey: "document", count: 1 }],
+        // #2343 — completed with clarifying questions still open.
+        openQuestions: 2,
       },
       {
         ...completed,
@@ -120,6 +122,7 @@ vi.mock("@/lib/analysis-api", () => ({
     regenerateAgent: vi.fn(),
     updateRequirement: vi.fn(),
     listApprovals: vi.fn().mockResolvedValue({ ticketStatus: { allowed: true } }),
+    reviewState: vi.fn().mockResolvedValue({ review: null, assignedToMe: null }),
   },
 }));
 
@@ -215,6 +218,18 @@ async function header(): Promise<HTMLElement> {
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(analysisApi.get).mockResolvedValue(SNAPSHOT as never);
+});
+
+describe("questions waiting on the change-request list (#2343)", () => {
+  it("marks only the run whose questions wait on the analyst, with the count", async () => {
+    renderPage();
+    const rows = await pastRunRows();
+    expect(rows).toHaveLength(3);
+    const badges = await screen.findAllByTestId("analysis-run-questions-waiting");
+    expect(badges).toHaveLength(1);
+    expect(badges[0]).toHaveTextContent("Questions waiting (2)");
+    expect(rows[1]).toContainElement(badges[0]);
+  });
 });
 
 describe("analysis page run status (#1143)", () => {

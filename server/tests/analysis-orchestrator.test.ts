@@ -381,6 +381,10 @@ vi.mock("../src/lib/audit/audit-service.js", () => ({
   getAuditService: vi.fn(),
 }));
 
+// #2343 — the starter's toast and bell item; its own suite covers the writes.
+const dispatchJobOutcome = vi.hoisted(() => vi.fn());
+vi.mock("../src/lib/notifications/job-notify.js", () => ({ dispatchJobOutcome }));
+
 // #864 — the web specialist runs only when a web search provider is
 // configured; these suites exercise it, so report one as configured. The
 // augmenter's own short-circuit calls the module-internal binding, so the
@@ -772,6 +776,15 @@ describe("AnalysisOrchestrator.start", () => {
     const final = analyses.get(analysisId)!;
     expect(final.status).toBe("completed");
     expect(final.totalTokens).toBeGreaterThan(0);
+    // #2343 — the person who started it is told, once, wherever they are.
+    expect(dispatchJobOutcome).toHaveBeenCalledTimes(1);
+    expect(dispatchJobOutcome).toHaveBeenCalledWith({
+      kind: "analysis",
+      jobId: analysisId,
+      projectId: "proj-abcdefghij",
+      userId: "user-1234567890",
+      outcome: "completed",
+    });
 
     // Five AgentResult rows: 4 specialists + 1 synthesis.
     const rows = [...agentResults.values()].filter((a) => a.analysisId === analysisId);
@@ -1116,6 +1129,13 @@ describe("AnalysisOrchestrator.start", () => {
     const final = analyses.get(analysisId)!;
     // Honesty: an all-agents-failed run must NOT report completed.
     expect(final.status).toBe("failed");
+    // #2343 — and its starter is told it failed, not that it finished.
+    expect(dispatchJobOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({ jobId: analysisId, outcome: "failed" }),
+    );
+    expect(dispatchJobOutcome).not.toHaveBeenCalledWith(
+      expect.objectContaining({ jobId: analysisId, outcome: "completed" }),
+    );
     // The first agent error is surfaced on the persisted row (server-side only).
     expect(final.errorMessage).toContain("404 not_found_error");
     expect(final.errorMessage).toContain("specialist agent");

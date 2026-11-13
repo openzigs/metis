@@ -9,6 +9,7 @@ import { makeWrapper } from "./test-utils";
 
 vi.mock("next/navigation", () => ({
   useParams: vi.fn(() => ({ id: "proj_test" })),
+  useSearchParams: vi.fn(() => new URLSearchParams(window.location.search)),
 }));
 
 vi.mock("@/lib/api-client", () => ({
@@ -123,6 +124,55 @@ describe("DocumentationPage — failed document (#50)", () => {
         expect.objectContaining({ method: "POST" }),
       ),
     );
+  });
+
+  // #2343 — a failed generation's toast and bell item land on `?doc=<id>`,
+  // which opens that document and its Regenerate without a click.
+  it("opens the document named by ?doc= (where a job notification lands)", async () => {
+    window.history.pushState({}, "", `/projects/proj_test/documentation?doc=${DOC_ID}`);
+    try {
+      setup(detail({ interrupted: true }));
+      expect(await screen.findByText(/generation was interrupted/i)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /^regenerate$/i })).toBeInTheDocument();
+      expect(mockApiFetch).toHaveBeenCalledWith(`/projects/proj_test/docs/${DOC_ID}`);
+    } finally {
+      window.history.pushState({}, "", "/");
+    }
+  });
+
+  // #2343 review — "Open" goes through the app router, which keeps this page
+  // mounted: a `?doc=` change on the page must switch the document shown.
+  it("follows a ?doc= change while the page stays mounted", async () => {
+    const OTHER = "doc_2";
+    mockApiFetch.mockImplementation(async (path: string) => {
+      if (path.endsWith(`/docs/${OTHER}`))
+        return detail({ id: OTHER, title: "Second document", interrupted: true });
+      if (path.endsWith(`/docs/${DOC_ID}`)) return detail({ interrupted: true });
+      if (path.endsWith("/docs")) return [{ ...detail({}), content: undefined }];
+      return [];
+    });
+    const Wrapper = makeWrapper({ withAuth: false });
+    const page = () => (
+      <Wrapper>
+        <DocumentationPage />
+      </Wrapper>
+    );
+    window.history.pushState({}, "", `/projects/proj_test/documentation?doc=${DOC_ID}`);
+    try {
+      const { rerender } = render(page());
+      await waitFor(() =>
+        expect(mockApiFetch).toHaveBeenCalledWith(`/projects/proj_test/docs/${DOC_ID}`),
+      );
+      // The router's push: same route, new search params, page still mounted.
+      window.history.pushState({}, "", `/projects/proj_test/documentation?doc=${OTHER}`);
+      rerender(page());
+      await waitFor(() =>
+        expect(mockApiFetch).toHaveBeenCalledWith(`/projects/proj_test/docs/${OTHER}`),
+      );
+      expect(await screen.findByText("Second document")).toBeInTheDocument();
+    } finally {
+      window.history.pushState({}, "", "/");
+    }
   });
 
   it("shows no failure banner for a ready document", async () => {

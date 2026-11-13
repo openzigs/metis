@@ -9,10 +9,10 @@
  * - Rich markdown preview with TOC
  * - Export buttons (PDF, Word, Markdown)
  */
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useSearchParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { apiFetch } from "@/lib/api-client";
@@ -205,6 +205,15 @@ export default function DocumentationPage(): React.ReactElement {
   const params = useParams<{ id: string }>();
   const projectId = params?.id ?? "";
   const [selectedDoc, setSelectedDoc] = useState<string | null>(null);
+  // #2343 — `?doc=<id>` opens that document: where a finished or failed
+  // generation's toast and bell item land. Followed on every change, not only
+  // on mount: "Open" goes through the app router, which keeps this page
+  // mounted when the analyst is already on it. Applied in an effect (no
+  // hydration mismatch); the document read is project-scoped server-side.
+  const requestedDoc = useSearchParams()?.get("doc") ?? null;
+  useEffect(() => {
+    if (requestedDoc) setSelectedDoc(requestedDoc);
+  }, [requestedDoc]);
   const [showGenerate, setShowGenerate] = useState(false);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");

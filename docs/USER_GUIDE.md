@@ -1019,7 +1019,8 @@ The bell icon in the header opens a side **notifications drawer** with these ale
 - **Mention** — someone @mentioned you in a comment, e.g. *Alex mentioned you on "Login lockout"*, with the start of the comment underneath. Click **Open →** to open that requirement (or Spec Kit artifact) with its comments showing. The quote follows the comment: if its author edits it, the notification quotes the new text (or reads *The comment was edited.* if you can no longer open the project); if they delete it, the notification keeps who and where but reads *The comment was deleted.* An item already showing in an open drawer updates on the next reload.
 - **Discussion mention** — someone @mentioned you in a project discussion, e.g. *Alex mentioned you in "Feed refresh schedule"*, with the start of the message underneath. Click **Open →** to go to that discussion thread.
 - **SLA deadline expired** — an assignment's SLA deadline has passed. Click **Open →** to navigate to the requirement. It goes only to people who can still open the project. A requirement can be assigned only to someone the assignee picker offers: an active member of the project's workspace, or a system admin. Anyone else gets "Assignee not found" (#1432).
-- **Review lifecycle** — for the formal review workflow (the Reviews page, sidebar → Reviews): as an **assigned reviewer** you are notified when a review is submitted and awaits your decision; as the **requester** you are notified of each reviewer's decision; the decision that settles the review arrives as one notification giving the final outcome (approved — including when a baseline was auto-created — or rejected) and who decided it. Each notification deep-links to the review's detail page. These are governed by the **Requirements approved × In-app** toggle in Settings → Notifications.
+- **Review lifecycle** — for the formal review workflow (the Reviews page, sidebar → Reviews): as an **assigned reviewer** you are notified when a review is submitted and awaits your decision; as the **requester** you are notified of each reviewer's decision; the decision that settles the review arrives as one notification giving the final outcome (approved — including when a baseline was auto-created — or rejected) and who decided it. Each notification deep-links to the review's detail page. A review waiting on you reads *Review assigned to you*, and a rejection of a review you asked for reads *Your review request was rejected*. These are governed by the **Requirements approved × In-app** toggle in Settings → Notifications.
+- **Job results** — when a change request (analysis), a document you generated, or a document you uploaded, pasted or fetched from a URL finishes, you get a toast and a bell item naming it, wherever you are in the app, even in a tab you opened after starting it. **Open** lands on the result: the change request, the document, or the documents list. A change request that finished with clarifying questions says *Questions waiting (N)*. A job that failed says so in plain words and lands where you can run it again. An uploaded document held in quarantine says it *is waiting for review* and lands on the quarantine queue. One job gives one toast and one bell item, also after a reconnect or with two tabs open. Only the person who started the job is told; an automatic regeneration tells no one. These are governed by the **Analysis, ingest and document results × In-app** toggle in Settings → Notifications (on by default).
 
 The badge shows your unread count; opening the drawer marks all items read. Use **Clear all** to dismiss the list. Comment mentions, discussion mentions and review notifications arrive **live** while you are signed in: the badge updates without a reload, and the item reads the same as it will after a reload. Notifications are **persisted server-side**, so they survive page reloads and reconnects and you do not miss an alert sent while you were offline. Each notification links to the item it is about where there is one. If you lose access to a notification's project — you are removed from its workspace, it moves to a workspace you are not in, or it is deleted — the notification stays in your list (so the unread count still adds up) but reads *Notification unavailable*, with no text or link.
 
@@ -1362,14 +1363,23 @@ click **Run analysis** to start with your own choices instead.
   Portfolio, Review, Hand-off. Each step says, in words, *Not started*, *In progress*, *Needs
   you*, *Done* or *Not applicable*, and links to the screen where that step is done. A step
   whose feature is off or does not apply to the run (no governing documents, no portfolio, no
-  code analysed) reads *Not applicable*. Questions reads *Needs you* while the run has open
-  clarifying questions, even once the run has completed. **Impact** and **Portfolio** show the
-  state of the newest impact analysis or portfolio check started from this change request, and
-  link to it; before there is one they link to the **Impact and portfolio** card below. A step
-  METIS could not check
+  code analysed) reads *Not applicable*. Questions reads *Questions waiting (N)*, with the count,
+  while the run has open clarifying questions, even once the run has completed. **Impact** and
+  **Portfolio** show the state of the newest impact analysis or portfolio check started from this
+  change request, and link to it; before there is one they link to the **Impact and portfolio**
+  card below. A step METIS could not check
   (the policy findings or the issue drafts could not be read, for example because your role may
   not see issue drafts) reads *Unknown*, with "Couldn't check …" as its reason, never a state
-  it might not be in.
+  it might not be in;
+- its **formal review**, when it has one: *Review assigned to you* when a review of it waits on
+  your decision, *Your review request was rejected* when a review you asked for was rejected,
+  and otherwise where the review stands (*Review requested (not sent yet)*, *In review*,
+  *Review approved*, *Review rejected*). **Open review** goes to the review.
+
+**What needs you, at a glance.** The run list marks a completed change request whose
+clarifying questions are still open with *Questions waiting (N)*, and the project Overview's
+Review stage says the same. When a change request you started finishes or fails, you get a
+toast and a bell item that lands on it (see §8.5).
 
 **Impact and portfolio.** Below the step header, the **Impact and portfolio** card starts both
 checks from the change request itself, with its requirements already filled in: you type
@@ -4453,7 +4463,7 @@ Customize how METIS looks:
 
 ### 20.3 Notifications (`/settings/notifications`)
 
-Control which notifications you receive as a **per-channel × per-event matrix** — one checkbox per combination of channel (Email, In-app, Webhook, Microsoft Teams) and event (Analysis completed, Requirements approved, Issues published, System alerts, Mentions, SLA deadlines).
+Control which notifications you receive as a **per-channel × per-event matrix** — one checkbox per combination of channel (Email, In-app, Webhook, Microsoft Teams) and event (Analysis completed, Requirements approved, Issues published, System alerts, Mentions, SLA deadlines, Analysis, ingest and document results).
 
 - Preferences are **stored server-side on your account** and sync across browsers and devices (defaults: Email, In-app, and Teams on; Webhook off). If loading or saving fails, the page shows an error — it never falls back to browser-local storage.
 - **Save** is disabled until the form is dirty and writes only the cells you changed; **Discard changes** reverts unsaved edits.

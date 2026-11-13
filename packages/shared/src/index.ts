@@ -100,3 +100,4 @@ export * from "./analysis-open-questions.js";
 // #2341 — a change request's eight steps and their states; shared so the UI's
 // step header and the server's grouping by state (#2343, #2348) agree.
 export * from "./change-request-steps.js";
+export * from "./job-outcome.js";

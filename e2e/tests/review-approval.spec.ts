@@ -171,7 +171,7 @@ test.describe("Epic #609 — review & approval workflow (#622)", () => {
       // Deterministic gate on the persisted row before asserting the drawer,
       // which hydrates from GET /notifications on mount.
       const note = await waitForNotification(ctx.requesterApi, "review_rejected");
-      expect(note.title).toBe("Review rejected");
+      expect(note.title).toBe("Your review request was rejected");
 
       // Switch the browser session from the reviewer to the requester. Clearing
       // cookies + a full reload drops the reviewer session so the login form
@@ -180,7 +180,9 @@ test.describe("Epic #609 — review & approval workflow (#622)", () => {
       await loginViaUi(page, REQUESTER);
       await page.getByTestId("notifications-bell").click();
       await expect(page.getByTestId("notifications-drawer")).toBeVisible();
-      await expect(page.getByTestId("notifications-list")).toContainText("Review rejected");
+      await expect(page.getByTestId("notifications-list")).toContainText(
+        "Your review request was rejected",
+      );
     });
 
     await test.step("revise the requirement and resubmit a fresh review round", async () => {

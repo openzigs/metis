@@ -16,6 +16,7 @@ import { analysedVersions } from "../governing/requirement-staleness.js";
 import { ELICITED_NFRS_AWAITING_PROMOTION_KEY } from "./elicited-nfr-requirements.js";
 import {
   analysisFailedAgents,
+  openQuestionCount,
   readDroppedCitations,
   isAgentPhaseResultKey,
   type AnalysisAgentSource,
@@ -2146,6 +2147,11 @@ export async function listAnalysesForProject(projectId: string) {
     failedAgents: analysisFailedAgents(agentResults),
     // #1143 — and which agents lost malformed citations: "completed with warnings".
     droppedCitations: extractCapability(parseMetadata(r.metadata))?.droppedCitations ?? [],
+    // #2343 — "Questions waiting (N)" on the change-request list: a run with
+    // questions on completes with them open (#2330), counted as its Questions
+    // tab and Home count them.
+    openQuestions:
+      r.status === "completed" ? (openQuestionCount(parseMetadata(r.metadata)) ?? 0) : 0,
     requirementCounts: counts.get(r.id) as RequirementCounts,
     ledgerTokens: ledger ? (ledger.get(r.id) ?? { withCache: 0, withoutCache: 0 }) : null,
   }));

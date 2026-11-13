@@ -24,6 +24,9 @@ export const NOTIFICATION_EVENTS = [
   "systemAlerts",
   "mention",
   "slaDeadline",
+  // #2343 — an analysis, a document generation or an ingest the user started
+  // finished, failed, or is waiting for review (toast + bell item).
+  "jobFinished",
 ] as const;
 
 export type NotificationEvent = (typeof NOTIFICATION_EVENTS)[number];

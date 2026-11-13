@@ -218,6 +218,7 @@ import {
 import { PublishError } from "../lib/publishing/finding-publisher.js";
 import { noteProjectRequirementsChanged } from "../lib/docs-gen/approved-requirements-staleness.js";
 import { signOffForRole } from "../lib/analysis/checkpoint-sign-off.js";
+import { readChangeRequestReviewState } from "../lib/reviews/change-request-review-state.js";
 
 /**
  * Promote an analysis's approved requirements (#1104) and, when rows were
@@ -1010,6 +1011,28 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
    * state carries requirement text and grounded answers, so an unscoped lookup
    * here leaked another project's content.
    */
+  /**
+   * GET /api/projects/:projectId/analyses/:id/review-state
+   * #2343 — the change request's formal review as the caller sees it: the
+   * latest standing review of its requirements (and whether the caller asked
+   * for it), and a review of it waiting on the caller's own decision. Needs
+   * `review.read` on top of `analysis.read`: it names reviews. Scoped with
+   * `ensureAnalysisVisible`, and every read filters on the project and run.
+   */
+  projectScoped.get(
+    "/:id/review-state",
+    requireAuth,
+    requirePermission("analysis.read"),
+    requirePermission("review.read"),
+    async (req: Request, res: Response) => {
+      const analysisId = String(req.params.id);
+      const projectId = String(req.params.projectId);
+      await ensureAnalysisVisible(analysisId, projectId);
+      const actor = actorFromReq(req);
+      res.json(ok(await readChangeRequestReviewState(projectId, analysisId, actor.id)));
+    },
+  );
+
   projectScoped.get(
     "/:id/clarify",
     requireAuth,
