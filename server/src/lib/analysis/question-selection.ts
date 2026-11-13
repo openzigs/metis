@@ -16,6 +16,7 @@
  * A question the model did not classify is asked, as before #2235: METIS is
  * recall-first (#1101), so a missing verdict never hides a question.
  */
+import { ambiguityFieldKeys } from "@metis/shared";
 import type {
   ClarifyingQuestion,
   QuestionCitation,
@@ -136,9 +137,10 @@ export function citationFor(
 ): QuestionCitation | undefined {
   const sources = requirement?.sources ?? [];
   if (sources.length === 0) return undefined;
-  const term = requirement?.ambiguities
-    ?.find((a) => a.field === ambiguityField)
-    ?.term?.toLowerCase();
+  // #2451 — `ambiguityField` is the ambiguity's key (`ambiguityFieldKeys`).
+  const ambiguities = requirement?.ambiguities ?? [];
+  const at = ambiguityFieldKeys(ambiguities).indexOf(ambiguityField);
+  const term = ambiguities[at]?.term?.toLowerCase();
   const held = term
     ? sources.find((s) => holdsWord(s.quote.replace(/\s+/g, " ").toLowerCase(), term))
     : undefined;

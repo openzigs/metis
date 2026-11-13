@@ -126,9 +126,12 @@ describe("#2236 — the dialog reuses settled answers", () => {
           new Map(questions.map((q) => [q.id, { recordId: "rec", answer: "x", answeredAt: "t" }])),
       ),
     };
+    // #2451 — a question on a listed requirement is filed under one of its open
+    // ambiguities or not asked, so a field no requirement has arrives here only
+    // on a requirement that is not in the list.
     const madeUp = JSON.stringify({
       questions: [
-        { requirementId: "r1", ambiguityField: "colour", question: "Colour?", context: "" },
+        { requirementId: "r-gone", ambiguityField: "colour", question: "Colour?", context: "" },
       ],
     });
     const p = {

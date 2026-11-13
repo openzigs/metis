@@ -34,20 +34,52 @@ describe("retryOnWriteConflict", () => {
   it.each([
     ["P2034", p2034],
     ["adapter-pg TransactionWriteConflict", adapterConflict],
-  ])("runs the transaction again after a %s, backing off further each time", async (_, make) => {
+  ])(
+    "runs the transaction again after a %s, backing off within each attempt's band",
+    async (_, make) => {
+      // Bands only: under random jitter these bounds also admit a linear schedule.
+      // The doubling itself is pinned by the jitter-fixed case below.
+      const sleep = noWait();
+      const run = vi
+        .fn<() => Promise<string>>()
+        .mockRejectedValueOnce(make())
+        .mockRejectedValueOnce(make())
+        .mockResolvedValueOnce("won");
+      await expect(retryOnWriteConflict(run, { sleep })).resolves.toBe("won");
+      expect(run).toHaveBeenCalledTimes(3);
+      const [first, second] = sleep.mock.calls.map(([ms]) => ms);
+      expect(first).toBeGreaterThanOrEqual(WRITE_CONFLICT_BACKOFF_MS);
+      expect(first).toBeLessThan(WRITE_CONFLICT_BACKOFF_MS * 2);
+      expect(second).toBeGreaterThanOrEqual(WRITE_CONFLICT_BACKOFF_MS * 2);
+      expect(second).toBeLessThan(WRITE_CONFLICT_BACKOFF_MS * 4);
+    },
+  );
+
+  it("doubles the wait per lost attempt, with the same jitter added on top", async () => {
+    const random = vi.spyOn(Math, "random").mockReturnValue(0.5);
+    try {
+      const sleep = noWait();
+      const run = vi.fn(async () => {
+        throw p2034();
+      });
+      await expect(retryOnWriteConflict(run, { attempts: 4, sleep })).rejects.toBeDefined();
+      expect(sleep.mock.calls.map(([ms]) => ms / WRITE_CONFLICT_BACKOFF_MS)).toEqual([1.5, 3, 6]);
+    } finally {
+      random.mockRestore();
+    }
+  });
+
+  // #2425 — Postgres refuses a conflict's loser while the winner's COMMIT is
+  // still being flushed, and a retry inside that window is refused again. The
+  // old 20–40 ms then 40–60 ms fit inside one slow flush on a CI runner.
+  it("spends at least 300 ms backing off before it gives up, so a slow commit is outlasted", async () => {
     const sleep = noWait();
-    const run = vi
-      .fn<() => Promise<string>>()
-      .mockRejectedValueOnce(make())
-      .mockRejectedValueOnce(make())
-      .mockResolvedValueOnce("won");
-    await expect(retryOnWriteConflict(run, { sleep })).resolves.toBe("won");
-    expect(run).toHaveBeenCalledTimes(3);
-    const [first, second] = sleep.mock.calls.map(([ms]) => ms);
-    expect(first).toBeGreaterThanOrEqual(WRITE_CONFLICT_BACKOFF_MS);
-    expect(first).toBeLessThan(WRITE_CONFLICT_BACKOFF_MS * 2);
-    expect(second).toBeGreaterThanOrEqual(WRITE_CONFLICT_BACKOFF_MS * 2);
-    expect(second).toBeLessThan(WRITE_CONFLICT_BACKOFF_MS * 3);
+    const run = vi.fn(async () => {
+      throw p2034();
+    });
+    await expect(retryOnWriteConflict(run, { sleep })).rejects.toMatchObject({ code: "P2034" });
+    const waited = sleep.mock.calls.reduce((sum, [ms]) => sum + ms, 0);
+    expect(waited).toBeGreaterThanOrEqual(300);
   });
 
   it("surfaces the last conflict once every attempt lost one", async () => {

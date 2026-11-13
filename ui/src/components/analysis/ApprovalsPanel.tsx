@@ -11,7 +11,7 @@
  */
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { PromotionBlockedEvent } from "@metis/shared";
+import { ambiguityFieldKeys, type PromotionBlockedEvent } from "@metis/shared";
 import {
   ambiguitiesOf,
   analysisApi,
@@ -36,6 +36,7 @@ import {
   countApprovedRequirements,
   PromoteApprovedRequirementsButton,
 } from "./PromoteApprovedRequirementsButton";
+import { NFR_CATEGORY_LABEL } from "./RequirementKind";
 import {
   CheckpointRequirementEditor,
   checkpointDraftOf,
@@ -408,10 +409,12 @@ function ApprovalCard({
   const isResolved = approval.status !== "pending";
   // #403 — older stored requirements carry no `ambiguities` array.
   const allAmbiguities = requirement ? ambiguitiesOf(requirement) : [];
-  // #1000 — an answered question is closed, not open.
-  const ambiguities = allAmbiguities.filter(
-    (amb) => !addressed.has(`${requirement?.id}:${amb.field}`),
-  );
+  // #1000 — an answered question is closed, not open. #2451 — keyed per
+  // ambiguity: several can share a field, and answering one closes only it.
+  const keys = ambiguityFieldKeys(allAmbiguities);
+  const ambiguities = allAmbiguities
+    .map((amb, i) => ({ ...amb, key: keys[i]! }))
+    .filter((amb) => !addressed.has(`${requirement?.id}:${amb.key}`));
   const answeredCount = allAmbiguities.length - ambiguities.length;
 
   const reviewMutation = useMutation({
@@ -478,6 +481,17 @@ function ApprovalCard({
               Written up by the analysis
             </span>
           )}
+          {/* #2449 — an NFR the analysis elicited: promoted only if approved here. */}
+          {requirement?.elicitedNfr && (
+            <span
+              data-testid="approval-elicited-nfr"
+              className="rounded border border-border px-2 py-0.5 text-xs text-muted-foreground"
+            >
+              Found by the analysis · Non-functional ·{" "}
+              {NFR_CATEGORY_LABEL[requirement.elicitedNfr.nfrCategory] ??
+                requirement.elicitedNfr.nfrCategory}
+            </span>
+          )}
         </div>
         <span
           className={
@@ -525,7 +539,7 @@ function ApprovalCard({
               </p>
               <ul className="space-y-1">
                 {ambiguities.map((amb) => (
-                  <li key={amb.field} className="text-xs text-warning">
+                  <li key={amb.key} className="text-xs text-warning">
                     {amb.suggestedQuestion || amb.description}
                   </li>
                 ))}

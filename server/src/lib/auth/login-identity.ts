@@ -430,7 +430,7 @@ export async function resolveLoginUser(input: {
   // `resolveOnce` at most 6 times, each opening at most one serializable claim
   // transaction. The caller then runs `reconcileTrustedLoginRole`, its own
   // retry loop of up to 3 transactions: at most 9 serializable transactions and
-  // three backoff loops (each under 100 ms of jittered waiting) per sign-in.
+  // three backoff loops (each under 600 ms of jittered waiting, #2425) per sign-in.
   const attempt = () =>
     retryOnWriteConflict(() => resolveOnce(identity, profile, primaryKind), {
       exhausted: signInConflict,

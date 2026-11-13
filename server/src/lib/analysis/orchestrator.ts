@@ -184,7 +184,10 @@ import {
   latestRequirementApprovals,
   planApprovedRequirementSet,
 } from "./approved-requirement-set.js";
-import { offerUnmatchedItemsForReview } from "./offer-synthesis-items.js";
+import {
+  offerElicitedNfrsForReview,
+  offerUnmatchedItemsForReview,
+} from "./offer-synthesis-items.js";
 import {
   ambiguousPromotionRecords,
   promotionMatchingRecord,
@@ -1057,6 +1060,15 @@ export class AnalysisOrchestrator {
       ...(opts.agentContext ? { agentContext: opts.agentContext } : {}),
       ...(opts.title ? { title: opts.title } : {}),
       ...(opts.startedWithDefaults ? { startedWithDefaults: true } : {}),
+      // #2451 — what the run will do, stated from the start. Absent, both are off.
+      ...(opts.enableClarification || opts.enableWebResearch
+        ? {
+            enhancementRequested: {
+              enableWebResearch: opts.enableWebResearch ?? false,
+              enableClarification: opts.enableClarification ?? false,
+            },
+          }
+        : {}),
     });
 
     audit({
@@ -5390,6 +5402,33 @@ export class AnalysisOrchestrator {
             });
           }
         }
+        // Issue #2449 — and the NFRs this run elicited, so the checkpoint lists
+        // every requirement promotion writes: promotion of a reviewed set writes
+        // the approved ones and no other. From a degraded synthesis too (the
+        // NFRs are the elicitor's, not its items), compared with its items only
+        // when they are requirements. Best-effort: a failure leaves the NFRs
+        // unoffered, and so unwritten.
+        if (reviewedList.length > 0 && elicitedNfrs.length > 0) {
+          try {
+            const offered = await offerElicitedNfrsForReview(input.analysisId, {
+              nfrs: elicitedNfrs,
+              findingIdsByIndex,
+              synthesized: result.degraded ? [] : result.output.requirements,
+            });
+            if (offered.length > 0) {
+              reviewedList = (await getStructuredRequirements(input.analysisId))?.requirements ?? [
+                ...reviewedList,
+                ...offered,
+              ];
+              ticketStatus = await canCreateTickets(input.analysisId);
+            }
+          } catch (err) {
+            log.error("Could not offer the elicited NFRs for review", {
+              analysisId: input.analysisId,
+              error: (err as Error).message,
+            });
+          }
+        }
         // Issue #1104 (finding B) — the run produced requirements; the gate is
         // WITHHOLDING them. Record how many so every surface (metadata, socket,
         // job event, UI) can say "N requirements awaiting approval" instead of
@@ -5499,7 +5538,12 @@ export class AnalysisOrchestrator {
         requirementApprovals.filter((a) => a.status === "approved").map((a) => a.itemId),
       );
       const plan = reviewed
-        ? planApprovedRequirementSet({ structured, approvedIds, synthesis: result.output })
+        ? planApprovedRequirementSet({
+            structured,
+            approvedIds,
+            synthesis: result.output,
+            findingIdsByIndex,
+          })
         : null;
       const toPersist = plan ? plan.output : result.output;
 

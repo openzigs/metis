@@ -252,6 +252,26 @@ describe("ChangeRequestSummary", () => {
       lines: ["Model: chosen automatically", "Clarifying questions: off", "Web research: off"],
     });
   });
+
+  it("#2451 — states the clarifying questions asked for while the run is going", () => {
+    // Before the enhancement step writes `enhancement`, only the start's record exists.
+    const running = {
+      startedWithDefaults: true,
+      enhancementRequested: { enableClarification: true, enableWebResearch: false },
+    };
+    expect(runSettingsSummary(running).lines).toEqual([
+      "Model: chosen automatically",
+      "Clarifying questions: on",
+      "Web research: off",
+    ]);
+    // Once written, what the step recorded is what the line says.
+    expect(
+      runSettingsSummary({
+        ...running,
+        enhancement: { enableClarification: true, enableWebResearch: true },
+      }).lines,
+    ).toContain("Web research: on");
+  });
 });
 
 describe("ChangeRequestStepHeader", () => {

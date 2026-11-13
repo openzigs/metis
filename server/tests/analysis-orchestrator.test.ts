@@ -832,6 +832,42 @@ describe("AnalysisOrchestrator.start", () => {
     }
   });
 
+  it("#2451 — start() stores the enhancements asked for on the row it creates", async () => {
+    const orch = new AnalysisOrchestrator({
+      provider: makeProvider({}),
+      io: makeIO() as unknown as import("../src/lib/socket/server.js").MetisIOServer,
+      retrieve: async () => [],
+    });
+    const create = vi.mocked(prisma.analysis.create);
+    create.mockClear();
+    const { id: analysisId } = await orch.start({
+      projectId: "proj-abcdefghij",
+      startedById: "user-1234567890",
+      enableClarification: true,
+    });
+    const data = (create.mock.calls[0]![0] as { data: Record<string, unknown> }).data;
+    // Before the enhancement step writes `enhancement`, the settings line reads this.
+    expect(JSON.parse(data.metadata as string).enhancementRequested).toEqual({
+      enableWebResearch: false,
+      enableClarification: true,
+    });
+    for (let i = 0; i < 200 && analyses.get(analysisId)!.status === "running"; i += 1) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+
+    // A run that asked for neither stores nothing: absent reads as both off.
+    create.mockClear();
+    const { id: plainId } = await orch.start({
+      projectId: "proj-abcdefghij",
+      startedById: "user-1234567890",
+    });
+    const plain = (create.mock.calls[0]![0] as { data: Record<string, unknown> }).data;
+    expect(JSON.parse(plain.metadata as string)).not.toHaveProperty("enhancementRequested");
+    for (let i = 0; i < 200 && analyses.get(plainId)!.status === "running"; i += 1) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+  });
+
   it("runs cross-doc detection post-synthesis and persists findings (#203/#221)", async () => {
     const io = makeIO();
     const provider = makeProvider({
