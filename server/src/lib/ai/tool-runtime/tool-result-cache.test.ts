@@ -264,6 +264,7 @@ describe("withToolResultCache", () => {
     expect([...CACHEABLE_TOOLS].sort()).toEqual([
       "read_file_slice",
       "search-knowledge",
+      "search_code_context",
       "search_code_graph",
       "search_code_symbols",
     ]);

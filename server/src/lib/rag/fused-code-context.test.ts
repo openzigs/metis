@@ -13,6 +13,7 @@ import { describe, expect, it, vi } from "vitest";
 import { MAX_SNIPPET_CHARS, MAX_SNIPPET_LINES } from "../code-graph/symbol-context.js";
 import {
   buildFusedCodeBlock,
+  mergeAdjacentSpans,
   extractRepoRelPath,
   fuseCodeContext,
   type FusedCodeSearcher,
@@ -721,5 +722,46 @@ describe("fused code context — the citation contract (#2325)", () => {
     });
     expect(failed.usedSymbols).toBe(1);
     expect(failed.hits[0]).not.toHaveProperty("citation");
+  });
+});
+
+describe("mergeAdjacentSpans (#2329)", () => {
+  const h = (file: string, startLine: number, endLine: number, rank: number) => ({
+    file,
+    startLine,
+    endLine,
+    rank,
+  });
+
+  it("merges overlapping, touching and near ranges in one file; keeps far ones apart", () => {
+    const spans = mergeAdjacentSpans(
+      [
+        h("a", 10, 20, 2),
+        h("a", 15, 18, 0),
+        h("a", 21, 25, 3),
+        h("a", 29, 30, 4),
+        h("a", 40, 41, 1),
+      ],
+      3,
+    );
+    expect(spans.map((s) => [s.startLine, s.endLine, s.rank])).toEqual([
+      [10, 30, 0],
+      [40, 41, 1],
+    ]);
+    // Hits listed best-ranked first.
+    expect(spans[0]!.hits.map((x) => x.rank)).toEqual([0, 2, 3, 4]);
+  });
+
+  it("gap 0 merges only overlapping or touching ranges", () => {
+    expect(mergeAdjacentSpans([h("a", 1, 5, 0), h("a", 6, 8, 1)], 0)).toHaveLength(1);
+    expect(mergeAdjacentSpans([h("a", 1, 5, 0), h("a", 7, 8, 1)], 0)).toHaveLength(2);
+  });
+
+  it("never merges across files, and orders spans by their best hit", () => {
+    const spans = mergeAdjacentSpans([h("b", 1, 5, 1), h("a", 1, 5, 0), h("b", 4, 9, 2)], 3);
+    expect(spans.map((s) => [s.file, s.startLine, s.endLine])).toEqual([
+      ["a", 1, 5],
+      ["b", 1, 9],
+    ]);
   });
 });

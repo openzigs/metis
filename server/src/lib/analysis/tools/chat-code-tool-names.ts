@@ -53,6 +53,13 @@ export const CHAT_CODE_TOOL_DESCRIPTORS: ReadonlyArray<{
     description: "List the project's repository files matching a glob.",
     risk: "low",
   },
+  {
+    // #2329 — whole symbols for a question (offered when CHAT_CODE_CONTEXT_TOOL is on).
+    name: "search_code_context",
+    description:
+      "Whole functions and classes for a question about the code, adjacent matches merged, each with a file:line locator.",
+    risk: "low",
+  },
 ];
 
 export const CHAT_CODE_TOOL_NAMES: readonly string[] = CHAT_CODE_TOOL_DESCRIPTORS.map(

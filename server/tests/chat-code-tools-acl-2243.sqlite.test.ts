@@ -19,6 +19,10 @@
  *
  * #2327 — `grep_files`, `list_files` and the filtered `search_code_symbols`
  * (chat's search primitives) are held to the same rule.
+ *
+ * #2329 — so is `search_code_context`, driven as a discussion reply offers it
+ * (`resolveDiscussionTools`, then the `ctx` `ai-responder` passes): the shared
+ * audience's access, never `UNRESTRICTED_CODE_ACCESS`.
  */
 import { existsSync, mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
@@ -34,8 +38,10 @@ import {
 } from "./helpers/sqlite-migrated-db.js";
 import type { RuntimeTool, RuntimeToolContext } from "../src/lib/ai/tool-runtime/types.js";
 import type { AgentTool } from "../src/lib/analysis/tools/types.js";
+import type { ChatCodeToolDeps } from "../src/lib/analysis/tools/index.js";
+import type { AIProvider } from "../src/lib/ai/types.js";
 
-const state = vi.hoisted(() => ({ db: null as unknown }));
+const state = vi.hoisted(() => ({ db: null as unknown, clone: "" }));
 vi.mock("../src/lib/prisma.js", async () => {
   const { Prisma } = await import("@prisma/client");
   return {
@@ -45,6 +51,13 @@ vi.mock("../src/lib/prisma.js", async () => {
     Prisma,
   };
 });
+// #2329 — the default clone resolver (the one a discussion's code tools use)
+// finds this test's clone for its one repository.
+vi.mock("../src/lib/analysis/clone-availability.js", async (original) => ({
+  ...(await original<typeof import("../src/lib/analysis/clone-availability.js")>()),
+  resolveExistingCloneDir: async (id: string | undefined) =>
+    id === "rc-app" ? state.clone : undefined,
+}));
 // The content version must not probe an embedding sidecar.
 vi.mock("../src/lib/rag/embedder.js", async (original) => ({
   ...(await original<typeof import("../src/lib/rag/embedder.js")>()),
@@ -58,6 +71,7 @@ const { createChatReadFileSliceTool } =
   await import("../src/lib/analysis/tools/chat-read-file-slice.js");
 const { createChatGrepFilesTool, createChatListFilesTool } =
   await import("../src/lib/analysis/tools/chat-file-tools.js");
+const { resolveDiscussionTools } = await import("../src/lib/discussions/grounding.js");
 const { __resetToolResultCacheForTests } =
   await import("../src/lib/ai/tool-runtime/tool-result-cache.js");
 
@@ -93,6 +107,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       grep: AgentTool;
       list: AgentTool;
     };
+    let symbolDeps: ChatCodeToolDeps;
     let tools: {
       graph: RuntimeTool;
       symbols: RuntimeTool;
@@ -236,7 +251,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       if (caseSensitive)
         writeFileSync(path.join(clone, "src", "Secret.ts"), "export const OPEN = 1;\n");
 
-      const symbolDeps = {
+      state.clone = clone;
+      symbolDeps = {
         searcher: {
           search: async () => [
             {
@@ -431,6 +447,32 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect((await run(tools.slice, { filePath: "src/public.ts" }, shared)).text).toContain(
           "computeFee",
         );
+      });
+    });
+
+    // #2329 — with CHAT_CODE_CONTEXT_TOOL on, search_code_context joins a
+    // discussion reply through DISCUSSION_TOOL_ALLOWLIST. Its own fallback with
+    // no filter is UNRESTRICTED_CODE_ACCESS, so the reply must hand it one.
+    describe("search_code_context in a discussion reply (#2329)", () => {
+      it("reads with the shared audience's access, never unrestricted", async () => {
+        const rt = await resolveDiscussionTools({
+          session: { id: "s-1", userId: ALICE, projectId: PROJECT },
+          provider: { key: "openai", model: "m" } as unknown as AIProvider,
+          model: "m",
+          flags: { chatTools: false, codeSearchTools: true },
+          codeToolDeps: { ...symbolDeps, codeContext: true },
+          native: true,
+        });
+        const tool = rt!.toolset.resolve("search_code_context");
+        expect(tool).toBeDefined();
+        // The ctx ai-responder passes: the whole thread reads the reply.
+        const shared = await run(tool!, { query: "fee" }, ctx(ALICE, true));
+        expect(shared.isError).toBeFalsy();
+        expect(shared.text).toContain("computeFee");
+        expect(shared.text).not.toContain(SECRET_LINE);
+        // Alice's own chat reads it: the filter kept it out, not an empty search.
+        expect((await run(tool!, { query: "fee" }, ctx(ALICE))).text).toContain(SECRET_LINE);
+        expect((await run(tool!, { query: "fee" }, ctx(BOB))).text).not.toContain(SECRET_LINE);
       });
     });
 
