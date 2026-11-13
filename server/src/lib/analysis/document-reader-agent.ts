@@ -30,9 +30,11 @@
  *
  * #2262 — and only documents the requester may see: the document's ACL
  * (`Document.aclSubjects`, mirrored onto its chunks) is checked against the
- * requester (`isVisibleTo`), as #2225 did for retrieval. A document they may
- * not see reads as unavailable, with the same reason as one that is not
- * ready, so the report is no oracle for a restricted document's existence.
+ * requester (`isVisibleTo`), as #2225 did for retrieval. #2297 — a document
+ * they may not see and an id that is missing or not ready are reported the
+ * same way, and neither sends the agent back to retrieval, so the result is no
+ * oracle for a restricted document's existence. The denial, and an admin's
+ * bypass of a document's ACL, each write an audit row, as retrieval does.
  */
 import type {
   AgentFindingPayload,
@@ -55,8 +57,9 @@ import {
 import { readDocumentOnce, type ReadingCacheDeps } from "../document-reader/reading-cache.js";
 import { REQUIREMENT_STATEMENT_KINDS, type StatementKind } from "../document-reader/prompts.js";
 import { formatHeadingPath } from "../document-reader/sections.js";
+import { audit } from "../audit/audit-service.js";
 import { prisma } from "../prisma.js";
-import { isVisibleTo, parseAclSubjects, type AclActor } from "../rag/acl.js";
+import { isAdminBypass, isVisibleTo, parseAclSubjects, type AclActor } from "../rag/acl.js";
 import type { AgentRunResult } from "./agent-runner.js";
 import type { SourceStatement } from "./requirements-extractor.js";
 
@@ -78,8 +81,12 @@ export type ReaderDocumentLoad =
       documentId: string;
       filename: string;
       reason: string;
-      /** #2262 — withheld by its ACL: never fall back to retrieving it instead. */
-      withheld?: true;
+      /**
+       * #2297 — not available to read: missing, not ready, not in the project,
+       * or withheld by its ACL, which this flag does not tell apart. Never fall
+       * back to retrieving it instead: retrieval would read a withheld one unchecked.
+       */
+      unavailable?: true;
     };
 
 /** Loads the selected documents of a project the actor may see, in selection order. */
@@ -120,20 +127,33 @@ export function createReaderDocumentLoader(
       },
     });
     const byId = new Map(rows.map((r) => [r.id, r]));
-    const out: ReaderDocumentLoad[] = [];
+    const denied: string[] = [];
+    const bypassed: string[] = [];
+    const readable = new Map<string, (typeof rows)[number]>();
     for (const documentId of documentIds) {
       const row = byId.get(documentId);
-      if (!row) {
-        out.push({ ok: false, documentId, filename: documentId, reason: NOT_AVAILABLE });
+      if (!row) continue;
+      const acl = { subjects: parseAclSubjects(row.aclSubjects) };
+      if (!isVisibleTo(acl, actor)) {
+        denied.push(documentId);
         continue;
       }
-      if (!isVisibleTo({ subjects: parseAclSubjects(row.aclSubjects) }, actor)) {
+      if (isAdminBypass(acl, actor)) bypassed.push(documentId);
+      readable.set(documentId, row);
+    }
+    auditReaderAcl(projectId, actor, { denied, bypassed });
+
+    const out: ReaderDocumentLoad[] = [];
+    for (const documentId of documentIds) {
+      const row = readable.get(documentId);
+      if (!row) {
+        // The id the requester sent, never a stored filename: missing and withheld look alike.
         out.push({
           ok: false,
           documentId,
           filename: documentId,
           reason: NOT_AVAILABLE,
-          withheld: true,
+          unavailable: true,
         });
         continue;
       }
@@ -177,6 +197,35 @@ export function createReaderDocumentLoader(
     }
     return out;
   };
+}
+
+/**
+ * #2297 — an audit row for the documents the requester's ACL withheld from the
+ * reader, and one for those an admin read only through the ACL bypass, as
+ * retrieval writes `knowledge.search.acl_denied`. Never fails the read.
+ */
+function auditReaderAcl(
+  projectId: string,
+  actor: AclActor,
+  ids: { denied: readonly string[]; bypassed?: readonly string[] },
+): void {
+  const rows: Array<[string, readonly string[], Record<string, unknown>]> = [
+    ["analysis.document_reader.acl_denied", ids.denied, { reason: "aclMismatch" }],
+    ["analysis.document_reader.acl_bypass", ids.bypassed ?? [], { reason: "adminBypass" }],
+  ];
+  for (const [action, documentIds, extra] of rows) {
+    if (documentIds.length === 0) continue;
+    try {
+      audit({
+        actor: { id: actor.userId },
+        action,
+        target: { type: "project", id: projectId },
+        metadata: { ...extra, role: actor.role, documentIds: [...documentIds] },
+      });
+    } catch {
+      // Audit failures must never break the analysis.
+    }
+  }
 }
 
 /** The document's stored chunks (approved, else quarantined), by position. */
@@ -234,15 +283,18 @@ export async function implicitReaderSelection(
     select: { id: true, filename: true, aclSubjects: true },
     orderBy: [{ uploadedAt: "desc" }, { id: "asc" }],
   });
-  const visible = rows.filter((r) =>
-    isVisibleTo({ subjects: parseAclSubjects(r.aclSubjects) }, actor),
-  );
+  const acl = (r: (typeof rows)[number]) => ({ subjects: parseAclSubjects(r.aclSubjects) });
+  const visible = rows.filter((r) => isVisibleTo(acl(r), actor));
+  const leftOut = visible.slice(READER_IMPLICIT_MAX_DOCUMENTS);
+  // #2297 — the loader audits the documents it is given; these are the ones it never sees.
+  auditReaderAcl(projectId, actor, {
+    denied: rows.filter((r) => !isVisibleTo(acl(r), actor)).map((r) => r.id),
+    bypassed: leftOut.filter((r) => isAdminBypass(acl(r), actor)).map((r) => r.id),
+  });
   const reason = `Not read: with no document selected, the analysis reads the ${READER_IMPLICIT_MAX_DOCUMENTS} most recently uploaded. Select it to have it read.`;
   return {
     documentIds: visible.slice(0, READER_IMPLICIT_MAX_DOCUMENTS).map((r) => r.id),
-    leftOut: visible
-      .slice(READER_IMPLICIT_MAX_DOCUMENTS)
-      .map((r) => unreadDocument(r.id, r.filename, reason)),
+    leftOut: leftOut.map((r) => unreadDocument(r.id, r.filename, reason)),
     withheld: rows.length - visible.length,
   };
 }
@@ -356,9 +408,10 @@ export interface DocumentReaderAgentResult {
 /**
  * Read the selected documents (with none selected, the bounded
  * {@link implicitReaderSelection}) the actor may see, and build the document
- * agent's result. `null` when none could be loaded and none was withheld by
- * its ACL: the caller then retrieves, as today. A withheld document never
- * sends the caller to retrieval, which would read it unchecked.
+ * agent's result. `null` when none could be loaded and none was unavailable
+ * (missing, not ready or withheld by its ACL, #2297): the caller then
+ * retrieves, as today. An unavailable document never sends the caller to
+ * retrieval, which would read a withheld one unchecked.
  *
  * A provider error or a cancellation throws, as the agent call it replaces
  * did, carrying every token spent before it ({@link spentUsageOf}).
@@ -392,8 +445,11 @@ export async function runDocumentReaderAgent(input: {
           input.actor,
         )
       : [];
-  const withheld = selection.withheld + loads.filter((l) => !l.ok && l.withheld).length;
-  if (!loads.some((l) => l.ok) && withheld === 0) return null;
+  // #2297 — a missing id and a withheld one are one case (`unavailable`): both
+  // are reported, and neither falls back to retrieval, which would read a
+  // withheld document unchecked.
+  const unavailable = selection.withheld + loads.filter((l) => !l.ok && l.unavailable).length;
+  if (!loads.some((l) => l.ok) && unavailable === 0) return null;
 
   const coverage: DocumentReadingDocument[] = [];
   const requirements: DocumentRequirement[] = [];
@@ -488,11 +544,17 @@ export async function runDocumentReaderAgent(input: {
 
   const read = coverage.filter((d) => d.status === "read");
   const sections = read.reduce((n, d) => n + d.sections.length, 0);
-  const unread = coverage.length - read.length;
+  // #2297 — the implicit selection's left-out documents were not read on
+  // purpose; only the rest "could not be read".
+  const leftOut = selection.leftOut.length;
+  const unread = coverage.length - read.length - leftOut;
   const summary = clip(
     `Read ${read.length} of ${coverage.length} selected document${coverage.length === 1 ? "" : "s"} in full ` +
       `(${sections} section${sections === 1 ? "" : "s"}): ${requirements.length} statement${requirements.length === 1 ? "" : "s"} to analyse, each with its source.` +
       (unread > 0 ? ` ${unread} could not be read; the coverage report says why.` : "") +
+      (leftOut > 0
+        ? ` ${leftOut} ${leftOut === 1 ? "was" : "were"} left out: with no document selected, only the ${READER_IMPLICIT_MAX_DOCUMENTS} most recently uploaded are read.`
+        : "") +
       reusedReadingsSentence(reused),
     MAX_SUMMARY,
   );

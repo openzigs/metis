@@ -176,14 +176,9 @@ export const ADVERSARIAL_INPUTS: ReadonlyArray<readonly [name: string, build: Bu
  * here. Each is listed with what it is built FROM; a site that is not listed
  * fails the test. Nothing built from request text belongs in this list.
  */
-const RUNTIME_BUILT_PATTERNS: ReadonlyArray<{ file: string; text: string; builtFrom: string }> = [
-  {
-    file: "lib/code-graph/hybrid-search.ts",
-    text: "new RegExp(`^${escaped}$`)",
-    builtFrom:
-      "matchGlob: a caller's file-path glob with every metacharacter escaped, tested against one file path",
-  },
-];
+// #2327 — `matchGlob` in `hybrid-search.ts` was the one entry; it now uses the
+// non-regex matcher of `code-graph/glob-match.ts`, so the list is empty.
+const RUNTIME_BUILT_PATTERNS: ReadonlyArray<{ file: string; text: string; builtFrom: string }> = [];
 
 interface FoundRegex {
   file: string;

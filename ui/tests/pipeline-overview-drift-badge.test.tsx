@@ -85,7 +85,7 @@ function renderOverview() {
   return render(<ProjectPipelineOverview projectId="p1" />, { wrapper: Wrapper });
 }
 
-/** Past the first-run checklist, so the full stage grid renders. */
+/** A project with a completed analysis. */
 const COMPLETED_ANALYSIS = {
   id: "a1",
   projectId: "p1",
@@ -134,7 +134,7 @@ describe("#78 — drift badge on the project Overview", () => {
 
     const badge = await screen.findByRole("button", { name: /3 pending drift events/i });
     // Inside the <h3>, the heading read "Publish View 3 pending drift events".
-    const heading = screen.getByRole("heading", { level: 3, name: "Publish" });
+    const heading = screen.getByRole("heading", { level: 3, name: "Publish (optional)" });
     expect(within(heading).queryByRole("button")).toBeNull();
     expect(heading.contains(badge)).toBe(false);
     // Still beside the stage it belongs to.

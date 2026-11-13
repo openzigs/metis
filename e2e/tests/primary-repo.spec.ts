@@ -314,20 +314,18 @@ test.describe("Epic #640 — Primary Repository", () => {
     const slug = `e2e-validation-${Date.now()}`;
     const projectsPage = new ProjectsPage(page);
 
-    await test.step("Open create dialog and fill only owner", async () => {
+    await test.step("Open the wizard and fill only owner", async () => {
       await projectsPage.goto();
-      await projectsPage.newProjectButton.click();
-      await projectsPage.nameInput.fill(`Validation ${slug}`);
-      await projectsPage.slugInput.fill(slug);
-      await projectsPage.toggleRepoSection.click();
+      await projectsPage.startProject(`Validation ${slug}`, slug);
+      await projectsPage.repoSourceOption.check();
       await expect(projectsPage.repoOwnerInput).toBeVisible();
       await projectsPage.repoOwnerInput.fill("lone-org");
       // Leave repo name empty
     });
 
-    await test.step("Verify validation error and submit is disabled", async () => {
+    await test.step("Verify validation error and Next is disabled", async () => {
       await expect(projectsPage.repoValidationError).toBeVisible();
-      await expect(projectsPage.submitButton).toBeDisabled();
+      await expect(projectsPage.nextButton).toBeDisabled();
     });
   });
 });

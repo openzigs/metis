@@ -8,6 +8,7 @@
  * ({@link buildSymbolDocumentText}). Vector search uses embeddings from issue #508.
  */
 import { createChildLogger } from "../logger.js";
+import { compileGlob } from "./glob-match.js";
 import { MAX_EMBED_TEXT_CHARS } from "../rag/embed-model-config.js";
 import { shippedDocumentText } from "./symbol-context.js";
 import type { EmbedService, SymbolEmbeddingMetadata } from "./symbol-embeddings.js";
@@ -45,8 +46,13 @@ export interface SearchableSymbol {
    * adding `filePath + kind + language` to the BM25 document and the arm came out
    * WORSE: pure-BM25 nDCG@10 0.056 → 0.053 (Δ −0.004, 95% CI [−0.012, +0.001],
    * sign p = 1.000) and it lost `testConnection` from the exact-name #1 set. The
-   * field is populated only by the eval corpus, which keeps that negative result
-   * reproducible. Do not wire it into `SYMBOL_SELECT` without re-measuring.
+   * field was populated only by the eval corpus, which keeps that negative result
+   * reproducible.
+   *
+   * #2327 — production's `SYMBOL_SELECT` now reads it, for the `language`
+   * FILTER of `search_code_symbols` only. {@link buildSymbolDocumentText} still
+   * does not read it, so the BM25 document, and every ranking #1159 measured,
+   * is unchanged. Do not add it to the document without re-measuring.
    */
   language?: string;
   /**
@@ -100,10 +106,12 @@ export interface HybridSearchResult {
 export interface HybridSearchOptions {
   /** Maximum results to return. Default: 20. */
   limit?: number;
-  /** File glob pattern filter. */
+  /** File glob pattern filter (`glob-match.ts` syntax). */
   fileGlob?: string;
   /** Filter by symbol kind. */
   symbolKind?: string;
+  /** #2327 — filter by `CodeSymbol.language` (`ts`, `go`, …). */
+  language?: string;
   /** Weight configuration. */
   weights?: SearchWeights;
   /**
@@ -582,7 +590,7 @@ const sharedBm25 = new WeakMap<
   WeakMap<readonly SearchableSymbol[], Map<string, BM25Index>>
 >();
 
-/** Distinct `fileGlob`/`symbolKind` variants kept per symbol array (oldest evicted). */
+/** Distinct `fileGlob`/`symbolKind`/`language` variants kept per symbol array (oldest evicted). */
 const MAX_SHARED_FILTER_VARIANTS = 8;
 
 /**
@@ -625,8 +633,7 @@ export class HybridCodeSearch {
     allSymbols: readonly SearchableSymbol[],
     filteredSymbols: readonly SearchableSymbol[],
     projectId: string,
-    fileGlob?: string,
-    symbolKind?: string,
+    filter: SymbolFilter,
   ): BM25Index {
     let byArray = sharedBm25.get(this.lexical);
     if (!byArray) {
@@ -638,13 +645,11 @@ export class HybridCodeSearch {
       byFilter = new Map();
       byArray.set(allSymbols, byFilter);
     }
-    // JSON, not a '|' join: '|' is a legal glob character, so a join lets two
-    // different pairs ("a|b" + none, "a" + "b|") collide on one index.
-    const filterKey = JSON.stringify([fileGlob ?? "", symbolKind ?? ""]);
+    const filterKey = filter.key;
     const shared = byFilter.get(filterKey);
     if (shared) return shared;
 
-    const cacheKey = this.computeBm25CacheKey(filteredSymbols, fileGlob, symbolKind);
+    const cacheKey = this.computeBm25CacheKey(filteredSymbols, filterKey);
     if (cacheKey !== this.bm25CacheKey) {
       this.bm25 = new BM25Index(this.lexical);
       this.bm25.build(filteredSymbols);
@@ -663,17 +668,13 @@ export class HybridCodeSearch {
    * Compute a cache key for the BM25 index based on symbol IDs and filters.
    * Rebuilds the index only when the underlying symbol set changes.
    */
-  private computeBm25CacheKey(
-    symbols: readonly SearchableSymbol[],
-    fileGlob?: string,
-    symbolKind?: string,
-  ): string {
+  private computeBm25CacheKey(symbols: readonly SearchableSymbol[], filterKey: string): string {
     // Use sorted symbol IDs + filter params as the cache key
     const ids = symbols
       .map((s) => s.symbolId)
       .sort()
       .join(",");
-    return `${ids}|${fileGlob ?? ""}|${symbolKind ?? ""}`;
+    return `${ids}|${filterKey}`;
   }
 
   /**
@@ -686,8 +687,7 @@ export class HybridCodeSearch {
     projectId: string,
     hitIds: string[],
     symbolMap: Map<string, SearchableSymbol>,
-    fileGlob?: string,
-    symbolKind?: string,
+    filter: SymbolFilter,
   ): Promise<void> {
     const hydrate = this.symbolIndex.getSymbolsByIds?.bind(this.symbolIndex);
     if (!hydrate) return;
@@ -696,8 +696,7 @@ export class HybridCodeSearch {
 
     const extra = await hydrate(projectId, missing);
     for (const sym of extra) {
-      if (fileGlob && !matchGlob(sym.filePath, fileGlob)) continue;
-      if (symbolKind && sym.kind !== symbolKind) continue;
+      if (filter.accepts && !filter.accepts(sym)) continue;
       // NOTE: deliberately NOT added to the BM25 index. These symbols were never
       // lexically scored, and injecting them would change the BM25 ranking as a
       // side effect of a vector hit.
@@ -718,20 +717,15 @@ export class HybridCodeSearch {
     projectId: string,
     opts: HybridSearchOptions = {},
   ): Promise<HybridSearchResult[]> {
-    const { limit = 20, fileGlob, symbolKind, weights = DEFAULT_WEIGHTS } = opts;
+    const { limit = 20, weights = DEFAULT_WEIGHTS } = opts;
+    const filter = symbolFilter(opts);
 
     // Load symbols for BM25 index
     const allSymbols = await this.symbolIndex.getSymbols(projectId);
     if (allSymbols.length === 0) return [];
 
     // Apply pre-filters
-    let filteredSymbols = allSymbols;
-    if (fileGlob) {
-      filteredSymbols = filteredSymbols.filter((s) => matchGlob(s.filePath, fileGlob));
-    }
-    if (symbolKind) {
-      filteredSymbols = filteredSymbols.filter((s) => s.kind === symbolKind);
-    }
+    const filteredSymbols = filter.accepts ? allSymbols.filter(filter.accepts) : allSymbols;
 
     // Build symbol lookup map
     const symbolMap = new Map<string, SearchableSymbol>();
@@ -740,13 +734,7 @@ export class HybridCodeSearch {
     }
 
     // BM25 scoring — rebuild index only when symbol set changes
-    const bm25Results = this.bm25For(
-      allSymbols,
-      filteredSymbols,
-      projectId,
-      fileGlob,
-      symbolKind,
-    ).score(query);
+    const bm25Results = this.bm25For(allSymbols, filteredSymbols, projectId, filter).score(query);
 
     // Vector search — SKIPPED ENTIRELY when the vector channel is weighted out.
     //
@@ -784,8 +772,7 @@ export class HybridCodeSearch {
             projectId,
             vectorHits.map((h) => h.metadata.symbolId),
             symbolMap,
-            fileGlob,
-            symbolKind,
+            filter,
           );
 
           // Filter vector results to match our pre-filters. A hit still missing
@@ -868,18 +855,35 @@ export class HybridCodeSearch {
 
 // ---- Utility --------------------------------------------------------------
 
+/** The pre-filters of one search, compiled once, and the key its BM25 index is cached under. */
+interface SymbolFilter {
+  /** `null` when the search has no filter. */
+  accepts: ((sym: SearchableSymbol) => boolean) | null;
+  key: string;
+}
+
+function symbolFilter(opts: HybridSearchOptions): SymbolFilter {
+  const { fileGlob, symbolKind, language } = opts;
+  // JSON, not a '|' join: '|' is a legal glob character, so a join lets two
+  // different filters ("a|b" + none, "a" + "b|") collide on one index.
+  const key = JSON.stringify([fileGlob ?? "", symbolKind ?? "", language ?? ""]);
+  if (!fileGlob && !symbolKind && !language) return { accepts: null, key };
+  // #2327 — the glob comes from a model: compiled to a matcher that cannot backtrack.
+  const glob = fileGlob ? compileGlob(fileGlob) : null;
+  return {
+    key,
+    accepts: (s) =>
+      (!symbolKind || s.kind === symbolKind) &&
+      (!language || s.language === language) &&
+      (!glob || glob(s.filePath)),
+  };
+}
+
 /**
- * Simple glob matching for file paths. Supports `*` and `**` patterns.
+ * Glob matching for file paths (`glob-match.ts`: `*`, `?`, `**`). #2327
+ * replaced the regular expression it compiled with a matcher that cannot
+ * backtrack.
  */
 export function matchGlob(filePath: string, pattern: string): boolean {
-  // Convert glob to regex
-  const escaped = pattern
-    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
-    .replace(/\*\*/g, "§DOUBLE§")
-    .replace(/\*/g, "[^/]*")
-    .replace(/§DOUBLE§/g, ".*");
-
-  // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp -- `escaped` has all regex metacharacters escaped first and only `*`/`**` expanded into bounded classes; the anchored pattern cannot inject or backtrack catastrophically.
-  const regex = new RegExp(`^${escaped}$`);
-  return regex.test(filePath);
+  return compileGlob(pattern)(filePath);
 }

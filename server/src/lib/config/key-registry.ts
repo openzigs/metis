@@ -978,6 +978,15 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
     sensitive: false,
     default: "true",
   },
+  // ── #2327 — sharper search primitives for chat ─────────────────────────
+  CHAT_CODE_SEARCH_PRIMITIVES: {
+    tier: "tunable",
+    valueType: "bool",
+    schema: z.coerce.boolean(),
+    description:
+      "With CHAT_CODE_SEARCH_TOOLS on, also offer chat grep_files (a literal, case-insensitive text search over the project's repository clones: at most 50 lines of 200 characters and 5,000 characters shown, 5,000 files of at most 512 KB and 64 MB read, with totals when cut), list_files (a glob over the same clones: at most 100 paths shown, with the total) and search_code_symbols's fileGlob / symbolKind / language filters (#2327). Every path is repository-relative (absolute paths, '..' and symlinks out of a clone refused; .git, .env* and credential files never read) and every result is filtered on the caller's document ACLs. OFF by default (#2327, eval-data/README.md): paired against the tools alone on the #2237 BA question set (2 runs each) it stated 85–87% of facts vs 81–84%, citation precision 63–76% vs 60–76%, but used about 25% more input tokens per question (32,600 vs 26,100) and 0.45 more model calls; the model called grep_files instead of the graph and symbol tools. On the localization held-out corpus (A3P vs A3A, 24 items) no metric moved measurably and edit precision fell 0.57 → 0.51 (Δ −0.06, 95% CI [−0.19, +0.05]) at 39% more cost per item. Turn it on to give chat literal search over the source.",
+    sensitive: false,
+  },
   // ── #2326 — tell the model when the index is stale, partial or failed ─
   CHAT_INDEX_STATUS: {
     tier: "tunable",

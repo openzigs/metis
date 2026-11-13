@@ -214,9 +214,62 @@ describe("chat read_file_slice — the default repo lookup (#736)", () => {
     ]) {
       const r = await tool.execute({ filePath }, { projectId: "p1" });
       expect(r.isError, filePath).toBe(true);
-      expect(r.content, filePath).toContain("not readable from chat");
+      expect(r.content, filePath).toBe(`Error: File not found or not accessible: ${filePath}`);
       expect(r.content, filePath).not.toContain("SECRET");
     }
+  });
+
+  it("#2327 — refuses .ssh, .env, .git and private keys, asked directly or through an in-repo symlink", async () => {
+    const dir = await repo("conn-a", {
+      ".ssh/id_rsa": "-----BEGIN OPENSSH PRIVATE KEY----- SECRET",
+      ".env": "DB_PASSWORD=SECRET",
+      ".git/config": "token = SECRET",
+      "keys/deploy.pem": "-----BEGIN PRIVATE KEY----- SECRET",
+      "src/ok.ts": "export const ok = 1;",
+    });
+    await symlink(path.join(dir, ".ssh", "id_rsa"), path.join(dir, "key.txt"));
+    await symlink(path.join(dir, ".env"), path.join(dir, "src", "settings.txt"));
+    await symlink(".git", path.join(dir, "gitdir"));
+    await symlink(path.join(dir, ".ssh"), path.join(dir, "sshdir"));
+    const tool = createChatReadFileSliceTool(deps({ p1: ["conn-a"] }));
+    for (const filePath of [
+      ".ssh/id_rsa",
+      "key.txt",
+      "sshdir/id_rsa",
+      "src/settings.txt",
+      "gitdir/config",
+      "keys/deploy.pem",
+    ]) {
+      const r = await tool.execute({ filePath }, { projectId: "p1" });
+      expect(r, filePath).toEqual({
+        content: `Error: File not found or not accessible: ${filePath}`,
+        isError: true,
+      });
+    }
+    expect((await tool.execute({ filePath: "src/ok.ts" }, { projectId: "p1" })).content).toContain(
+      "export const ok = 1;",
+    );
+  });
+
+  it("#2327 — refuses a sensitive path as asked before looking up a single repository", async () => {
+    const calls: string[] = [];
+    const tool = createChatReadFileSliceTool(deps({}, calls));
+    expect(await tool.execute({ filePath: ".ssh/id_rsa" }, { projectId: "p1" })).toEqual({
+      content: "Error: File not found or not accessible: .ssh/id_rsa",
+      isError: true,
+    });
+    expect(calls).toEqual([]);
+  });
+
+  it("#2327 — a sensitive symlink in one clone does not stop the read of the real file in the next", async () => {
+    const a = await repo("conn-a", { ".env": "SECRET" });
+    await mkdir(path.join(a, "src"), { recursive: true });
+    await symlink(path.join(a, ".env"), path.join(a, "src", "cfg.txt"));
+    await repo("conn-b", { "src/cfg.txt": "plain config" });
+    const tool = createChatReadFileSliceTool(deps({ p1: ["conn-a", "conn-b"] }));
+    const r = await tool.execute({ filePath: "src/cfg.txt" }, { projectId: "p1" });
+    expect(r.content).toContain("plain config");
+    expect(r.content).not.toContain("SECRET");
   });
 
   it("still reads env templates and ordinary files whose names merely contain env or git", async () => {
@@ -255,6 +308,25 @@ describe("isSensitiveRepoPath", () => {
     [".gitattributes", false],
     ["environment.go", false],
     ["docs/.github/CODEOWNERS", false],
+    // #2327
+    [".ssh/config", true],
+    ["home/.SSH/known_hosts", true],
+    [".gnupg/pubring.kbx", true],
+    [".aws/config", true],
+    [".kube/config", true],
+    [".docker/config.json", true],
+    ["deploy/id_rsa", true],
+    ["deploy/id_ed25519", true],
+    ["certs/server.pem", true],
+    ["certs/server.KEY", true],
+    ["store.p12", true],
+    ["credentials", true],
+    ["gcp/credentials.json", true],
+    [".pgpass", true],
+    ["deploy/id_rsa.pub", false],
+    ["src/credentials.ts", false],
+    ["src/keyboard.ts", false],
+    [".vscode/settings.json", false],
   ])("%s -> %s", (p, expected) => {
     expect(isSensitiveRepoPath(p)).toBe(expected);
   });

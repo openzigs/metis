@@ -344,22 +344,26 @@ async function read(
   let droppedUnverified = 0;
   let readBatches = 0;
   const batches = batchSections(sections, batchChars);
+  // #2297 — the shared lead is cached only when a later batch call can read it
+  // back: on Anthropic a cache write costs 1.25× and a single batch never reads it.
+  const cacheLead = batches.length > 1;
   for (const batch of batches) {
+    const prompt = context
+      ? buildSectionBatchPrompt({
+          title: input.title,
+          context,
+          batch,
+          operatorNotes: input.operatorNotes,
+        })
+      : buildWholeDocumentBatchPrompt({
+          title: input.title,
+          sections,
+          batch,
+          operatorNotes: input.operatorNotes,
+        });
     const outcome = await ask(
       "document-reader-statements",
-      context
-        ? buildSectionBatchPrompt({
-            title: input.title,
-            context,
-            batch,
-            operatorNotes: input.operatorNotes,
-          })
-        : buildWholeDocumentBatchPrompt({
-            title: input.title,
-            sections,
-            batch,
-            operatorNotes: input.operatorNotes,
-          }),
+      cacheLead ? prompt : { systemMessage: prompt.systemMessage, userMessage: prompt.userMessage },
       statementsReplySchema,
       STATEMENTS_REPLY_SHAPE,
     );

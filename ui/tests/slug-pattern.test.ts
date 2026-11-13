@@ -59,7 +59,12 @@ describe("pattern attributes in ui/src", () => {
     })),
   );
 
-  it.each(literals)("$file: $pattern compiles with the v flag", ({ pattern }) => {
-    expect(() => compileAsBrowser(pattern)).not.toThrow();
+  // One test rather than `it.each`: #2349 removed the last literal (the old
+  // Create form's), and an empty table is an empty suite, which vitest fails.
+  // The scan stays for the next literal anyone writes.
+  it("every literal compiles with the v flag", () => {
+    for (const { file, pattern } of literals) {
+      expect(() => compileAsBrowser(pattern), `${file}: ${pattern}`).not.toThrow();
+    }
   });
 });
