@@ -67,13 +67,10 @@ test.describe("Settings sub-pages (#220 / #221)", () => {
 
     await test.step("the grid + key links render", async () => {
       await expect(integrations.grid).toBeVisible();
-      await expect(integrations.link("settings-integrations-link-repositories")).toHaveAttribute(
+      // #2353 — one card for both, to the project list (each project's Knowledge tab).
+      await expect(integrations.link("settings-integrations-link-connections")).toHaveAttribute(
         "href",
-        "/repositories",
-      );
-      await expect(integrations.link("settings-integrations-link-databases")).toHaveAttribute(
-        "href",
-        "/databases",
+        "/projects",
       );
       await expect(integrations.link("settings-integrations-link-mcp")).toHaveAttribute(
         "href",

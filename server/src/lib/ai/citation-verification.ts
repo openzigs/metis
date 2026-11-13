@@ -298,7 +298,7 @@ export function collectCitationEvidence(
     ev.add(e.name, source);
   }
   for (const text of retrieved?.contexts ?? []) {
-    // A multi-product block (#2238) records no `excerpts`: read its headers.
+    // A capture with no `excerpts` (a multi-product block before #2279): read its headers.
     if (!retrieved?.excerpts) {
       for (const m of text.matchAll(EXCERPT_HEADER)) ev.add(m[1]!, "document");
     }

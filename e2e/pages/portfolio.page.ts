@@ -14,8 +14,9 @@ export class PortfolioEntryPage {
 
   constructor(page: Page) {
     this.page = page;
+    // #2353 — the coverage check is the Portfolio tab's opening section.
     this.heading = page.getByRole("heading", {
-      name: "Portfolio coverage",
+      name: "Portfolio",
       level: 1,
       exact: true,
     });

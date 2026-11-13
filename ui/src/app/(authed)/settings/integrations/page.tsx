@@ -36,19 +36,15 @@ interface IntegrationLink {
 }
 
 const INTEGRATIONS: IntegrationLink[] = [
+  // #2353 — the cross-project catalogues are gone: each project's Knowledge
+  // tab holds its own repository and database connections.
   {
-    href: "/repositories",
-    title: "Code repositories",
-    description: "GitHub / GitLab connectors across every accessible project.",
+    href: "/projects",
+    title: "Repositories and databases",
+    description:
+      "Git repositories and database connections, per project: open a project's Knowledge tab.",
     icon: GitBranch,
-    testId: "settings-integrations-link-repositories",
-  },
-  {
-    href: "/databases",
-    title: "Databases",
-    description: "Postgres, MySQL, and SQLite connections for agent + RAG use.",
-    icon: Database,
-    testId: "settings-integrations-link-databases",
+    testId: "settings-integrations-link-connections",
   },
   {
     href: "/settings/mcp",

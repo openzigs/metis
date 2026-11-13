@@ -22,6 +22,10 @@
  * "Several products" with each one chosen.
  * #2345 — `?analysisId=&title=` arrives from a change request: each of its
  * draft and approved requirements is checked, before approval too (labelled).
+ *
+ * #2353 — the Projects hub's one Portfolio tab: the coverage check, and the
+ * products it checks across (the former `/products` page, which redirects here
+ * with `?tab=products`). The check is the section a link with no `tab` opens.
  */
 "use client";
 
@@ -36,15 +40,25 @@ import {
 } from "@metis/shared";
 import { Card } from "@/components/ui/card";
 import { PageHeader } from "@/components/ui/page-header";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ApiError } from "@/lib/api-client";
 import { productsApi } from "@/lib/products-api";
+import { queryKeys } from "@/lib/query-keys";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { useCreatePortfolioAssessment, usePortfolioAssessments } from "@/lib/portfolio-hooks";
 import { PortfolioAssessmentForm } from "@/components/portfolio/portfolio-assessment-form";
+import { ProductsPanel } from "@/components/portfolio/products-panel";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ChangeRequestBackLink } from "@/components/analysis/change-request-back-link";
 
 const TITLE_MAX = 200;
+
+type PortfolioTab = "coverage" | "products";
+
+const TABS: ReadonlyArray<{ id: PortfolioTab; label: string }> = [
+  { id: "coverage", label: "Coverage" },
+  { id: "products", label: "Products" },
+];
 
 const VERDICT_LABEL: Record<string, string> = {
   implemented: "Covered",
@@ -62,16 +76,77 @@ function hostLabel(a: Pick<PortfolioAssessmentListItem, "hostProductId" | "hostP
   return `Built by ${a.hostProductName ?? "the product chosen"}`;
 }
 
+type SearchParamsReader = { get(name: string): string | null; getAll?(name: string): string[] };
+
 export default function PortfolioPage() {
   const searchParams = useSearchParams();
-  return <PortfolioEntry key={searchParams?.toString() ?? ""} searchParams={searchParams} />;
+  const requested = searchParams?.get("tab") ?? null;
+  // Keyed on `tab`, so a link naming another section (the hub tab's bare
+  // `/portfolio`, say) opens it even while this page is already showing.
+  return (
+    <PortfolioSections key={requested ?? ""} requested={requested} searchParams={searchParams} />
+  );
 }
 
-function PortfolioEntry({
+function PortfolioSections({
+  requested,
   searchParams,
 }: {
-  searchParams: { get(name: string): string | null; getAll?(name: string): string[] } | null;
+  requested: string | null;
+  searchParams: SearchParamsReader | null;
 }) {
+  const router = useRouter();
+  const [tab, setTab] = useState<PortfolioTab>(
+    TABS.find((t) => t.id === requested)?.id ?? "coverage",
+  );
+
+  // #2353 — the section is in the URL (`?tab=products`; Coverage is the bare
+  // page), so browser Back from a product, a reload or a shared link reopens
+  // it. Replaced, not pushed: switching sections adds no history entries.
+  function selectTab(next: PortfolioTab) {
+    setTab(next);
+    const params = new URLSearchParams(searchParams?.toString() ?? "");
+    if (next === "coverage") params.delete("tab");
+    else params.set("tab", next);
+    const qs = params.toString();
+    router.replace(qs ? `/portfolio?${qs}` : "/portfolio", { scroll: false });
+  }
+
+  return (
+    <div className="space-y-6 p-2 md:p-0" data-testid="portfolio-root">
+      <PageHeader
+        title="Portfolio"
+        description="Your products, and whether one of them already does what a requirement asks, before anyone builds it again."
+      />
+
+      <Tabs value={tab} onValueChange={(v) => selectTab(v as PortfolioTab)}>
+        <TabsList
+          aria-label="Portfolio sections"
+          className="flex h-auto w-full justify-start gap-1 rounded-none border-b bg-transparent p-0"
+        >
+          {TABS.map((t) => (
+            <TabsTrigger
+              key={t.id}
+              value={t.id}
+              data-testid={`portfolio-tab-${t.id}`}
+              className="rounded-none border-b-2 border-transparent px-3 py-2 font-normal text-muted-foreground shadow-none hover:text-foreground data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:font-medium data-[state=active]:text-foreground data-[state=active]:shadow-none"
+            >
+              {t.label}
+            </TabsTrigger>
+          ))}
+        </TabsList>
+        <TabsContent value="coverage">
+          <PortfolioEntry key={searchParams?.toString() ?? ""} searchParams={searchParams} />
+        </TabsContent>
+        <TabsContent value="products">
+          <ProductsPanel />
+        </TabsContent>
+      </Tabs>
+    </div>
+  );
+}
+
+function PortfolioEntry({ searchParams }: { searchParams: SearchParamsReader | null }) {
   const router = useRouter();
   const initialProductId = searchParams?.get("productId") ?? null;
   const initialProductIds = searchParams?.getAll?.("productId") ?? [];
@@ -113,7 +188,9 @@ function PortfolioEntry({
   const [productQuery, setProductQuery] = useState("");
   const search = useDebouncedValue(productQuery.trim(), 300);
   const productsQuery = useQuery({
-    queryKey: ["portfolio", "products", search],
+    // #2353 — under the products key, so a product created (or changed) in the
+    // Products section one click away is in this picker when Coverage reopens.
+    queryKey: queryKeys.products.list({ picker: "portfolio", search }),
     queryFn: () =>
       productsApi.list(search ? { pageSize: MAX_PAGE_SIZE, search } : { pageSize: MAX_PAGE_SIZE }),
     retry: false,
@@ -139,25 +216,19 @@ function PortfolioEntry({
     : null;
 
   return (
-    <div className="space-y-6 p-2 md:p-0" data-testid="portfolio-root">
-      <PageHeader
-        eyebrow={
-          analysisId && backProjectId ? (
-            <ChangeRequestBackLink
-              changeRequest={{
-                id: analysisId,
-                projectId: backProjectId,
-                title: changeRequest?.title ?? "Selected change request",
-              }}
-              className="text-xs text-muted-foreground hover:underline"
-              testId="portfolio-back-to-change-request"
-            />
-          ) : undefined
-        }
-        title="Portfolio coverage"
-        description="Check whether a product in your portfolio already does what a requirement asks, before anyone builds it again."
-      />
-
+    <div className="space-y-6">
+      {analysisId && backProjectId ? (
+        // #2345 — started from a change request: one click returns to it.
+        <ChangeRequestBackLink
+          changeRequest={{
+            id: analysisId,
+            projectId: backProjectId,
+            title: changeRequest?.title ?? "Selected change request",
+          }}
+          className="text-xs text-muted-foreground hover:underline"
+          testId="portfolio-back-to-change-request"
+        />
+      ) : null}
       <PortfolioAssessmentForm
         products={(productsQuery.data?.items ?? []).map((p) => ({ id: p.id, name: p.name }))}
         productsLoading={productsQuery.isLoading}
