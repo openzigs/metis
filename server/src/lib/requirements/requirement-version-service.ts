@@ -426,6 +426,14 @@ export interface UpdateWithHistoryParams {
    * a system write: it has no author to be. Off for system writers.
    */
   makerChecker?: boolean;
+  /**
+   * Issue #2436 — with `makerChecker`: the wording this write sets was written
+   * by the analysis, not the actor (an accepted #1389 criteria suggestion), so
+   * writing it does not make the actor an author here. Keeping the approval is
+   * then self-approval only for someone who already was one. The version row
+   * still records the actor, so a LATER approval of theirs counts it.
+   */
+  suggestedWording?: boolean;
 }
 
 /**
@@ -644,7 +652,7 @@ async function updateOnce(
       Boolean(params.actorId) &&
       untracked.reviewStatus === "approved" &&
       (untrackedWrite.reviewStatus === "approved" || rewordsIt) &&
-      (rewordsIt ||
+      ((rewordsIt && !params.suggestedWording) ||
         editedInCheckpoint(existing, params.actorId!) ||
         (await isRecordedAuthor(txc, params.requirementId, params.actorId!)));
     if (selfApproved && !projectAllowsSelfApproval(existing)) {

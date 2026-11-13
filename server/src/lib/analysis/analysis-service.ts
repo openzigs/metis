@@ -100,6 +100,7 @@ import {
 } from "./source-items.js";
 import { toSourceDivergence } from "../importers/source-sync.js";
 import {
+  holdsApproval,
   RequirementVersionError,
   updateRequirementWithHistory,
   updateRequirementWithHistoryInTransaction,
@@ -1751,6 +1752,14 @@ export interface ResolveCriteriaProposalResult {
   choice: "accept" | "dismiss";
   version: number;
   changed: boolean;
+  /**
+   * #2436 — what accepting did to an approval the requirement held: `kept`
+   * (the accepter may approve it, see {@link resolveCriteriaProposal}) or
+   * `reopened` (returned to awaiting review). Absent when it held none.
+   */
+  approval?: "kept" | "reopened";
+  /** #2436 — kept by one of its own authors, which `allowSelfApproval` let through. */
+  selfApproved?: true;
 }
 
 /**
@@ -1761,6 +1770,15 @@ export interface ResolveCriteriaProposalResult {
  * work). **Dismiss** changes no content; it is remembered so the next
  * re-synthesis does not raise the same suggestion again. Either way the
  * proposal is cleared, in the same transaction as the write.
+ *
+ * #2436 — accepting rewords the criteria, and the approval was of the old
+ * ones. On an approved requirement the approval is kept only when the accepter
+ * could approve the new wording directly: they hold `requirement.approve`
+ * (`canApprove`) and are not one of its authors, or the project allows
+ * self-approval (maker-checker, as on the list). Otherwise the requirement
+ * returns to awaiting review. The suggested criteria were written by the
+ * analysis, so accepting them does not by itself make the accepter an author
+ * here; their version row does count against a later approval of theirs.
  */
 export async function resolveCriteriaProposal(input: {
   requirementId: string;
@@ -1770,6 +1788,8 @@ export async function resolveCriteriaProposal(input: {
   projectId?: string;
   /** #871 — the version the card showed; checked when accepting. */
   expectedVersion?: number;
+  /** #2436 — the accepter holds `requirement.approve`. Omitted: they do not. */
+  canApprove?: boolean;
 }): Promise<ResolveCriteriaProposalResult> {
   const result = await prisma.$transaction(async (tx) => {
     const row = await tx.requirement.findFirst({
@@ -1778,7 +1798,15 @@ export async function resolveCriteriaProposal(input: {
         deletedAt: null,
         ...(input.projectId ? { projectId: input.projectId } : {}),
       },
-      select: { id: true, analysisId: true, projectId: true, version: true },
+      select: {
+        id: true,
+        analysisId: true,
+        projectId: true,
+        version: true,
+        // #2436 — whether accepting rewords an approval.
+        reviewStatus: true,
+        labels: true,
+      },
     });
     if (!row) throw new CriteriaProposalError("NOT_FOUND", "Requirement not found");
     await lockAnalysisRow(tx, row.analysisId);
@@ -1797,10 +1825,15 @@ export async function resolveCriteriaProposal(input: {
     }
     let version = row.version;
     let changed = false;
+    let approval: ResolveCriteriaProposalResult["approval"];
+    let selfApproved = false;
     if (input.choice === "accept") {
-      const written = await updateRequirementWithHistoryInTransaction(
-        tx as unknown as Pick<VersionPrismaClient, "requirement" | "requirementVersion">,
-        {
+      const versionTx = tx as unknown as Pick<
+        VersionPrismaClient,
+        "requirement" | "requirementVersion"
+      >;
+      const accept = (keepApproval: boolean) =>
+        updateRequirementWithHistoryInTransaction(versionTx, {
           requirementId: row.id,
           // #990 — `[]` accepted is an explicit clear, stored as the marker.
           patch: {
@@ -1812,10 +1845,42 @@ export async function resolveCriteriaProposal(input: {
           actorId: input.actorId,
           reason: ACCEPTED_CRITERIA_PROPOSAL_REASON,
           expectedVersion: input.expectedVersion,
-        },
-      );
+          // #2436 — the approval was of the old criteria: reopened, unless
+          // the accepter may keep it (maker-checker decides, in the write).
+          reopenApproval: true,
+          ...(keepApproval
+            ? {
+                untrackedData: { reviewStatus: "approved" as const },
+                makerChecker: true,
+                suggestedWording: true,
+              }
+            : {}),
+        });
+      const approved = holdsApproval(row);
+      let written: Awaited<ReturnType<typeof accept>>;
+      if (approved && input.canApprove === true) {
+        try {
+          written = await accept(true);
+        } catch (err) {
+          if (!(err instanceof RequirementVersionError) || err.code !== "SELF_APPROVAL_FORBIDDEN") {
+            throw err;
+          }
+          // An author of it, in a project that does not allow self-approval.
+          written = await accept(false);
+        }
+      } else {
+        written = await accept(false);
+      }
       version = written.version;
       changed = written.changed;
+      selfApproved = written.selfApproved === true;
+      if (approved && changed) {
+        approval =
+          written.untrackedChanges.reviewStatus?.to === "approved" ||
+          !written.untrackedChanges.reviewStatus
+            ? "kept"
+            : "reopened";
+      }
     }
     delete proposals[row.id];
     const record = readStoredApprovedCriteriaRecord(metadata);
@@ -1835,6 +1900,8 @@ export async function resolveCriteriaProposal(input: {
       choice: input.choice,
       version,
       changed,
+      ...(approval ? { approval } : {}),
+      ...(selfApproved ? { selfApproved: true as const } : {}),
     };
   });
   // Committed by now: a reader BRD listing approved requirements may be stale.

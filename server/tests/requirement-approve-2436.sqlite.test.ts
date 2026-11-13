@@ -58,6 +58,9 @@ const { issueTokens } = await import("../src/lib/auth/jwt.js");
 const { audit } = await import("../src/lib/audit/audit-service.js");
 const { SELF_APPROVAL_FORBIDDEN_MESSAGE } =
   await import("../src/lib/requirements/requirement-version-service.js");
+const { resolveCriteriaProposal } = await import("../src/lib/analysis/analysis-service.js");
+const { CRITERIA_PROPOSALS_KEY } =
+  await import("../src/lib/analysis/approved-criteria-carry-over.js");
 
 const WORKSPACE = "ws-2436";
 const PROJECT = "proj-2436";
@@ -446,6 +449,109 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         const revised = await reviewAction(MAKER, second.reviewId, "revise");
         expect(revised.status).toBe(200);
         expect(revised.body.data.status).toBe("draft");
+      });
+    });
+
+    // #1389 — a re-synthesis suggested other acceptance criteria for an
+    // approved requirement. Accepting them rewords it, so the approval is kept
+    // only for someone who could approve the new wording directly.
+    describe("accepting suggested criteria (#1389) on an approved requirement", () => {
+      const SUGGESTED = ["Entries older than the threshold are marked read"];
+      const withSuggestion = async (reviewStatus: string, authoredByUser?: string) => {
+        const req = authoredByUser ? await authoredBy(authoredByUser) : await makeRequirement();
+        await db.requirement.update({ where: { id: req.id }, data: { reviewStatus } });
+        await db.analysis.update({
+          where: { id: ANALYSIS },
+          data: {
+            metadata: JSON.stringify({
+              [CRITERIA_PROPOSALS_KEY]: {
+                [req.id]: {
+                  structuredId: "REQ-1",
+                  proposed: SUGGESTED,
+                  at: "2026-11-13T00:00:00Z",
+                },
+              },
+            }),
+          },
+        });
+        return row(req.id);
+      };
+      const accept = (userId: string, id: string, version: number) =>
+        request(app())
+          .post(`/api/requirements/${id}/criteria-proposal`)
+          .set("Authorization", bearer(userId))
+          .send({ choice: "accept", version });
+      const acceptAudit = () =>
+        vi
+          .mocked(audit)
+          .mock.calls.map((c) => c[0] as { action: string; metadata?: Record<string, unknown> })
+          .find((e) => e.action === "requirement.criteria_proposal.resolve");
+
+      it("a colleague who may approve keeps the approval, and the audit says so", async () => {
+        const req = await withSuggestion("approved");
+        vi.mocked(audit).mockClear();
+
+        const res = await accept(CHECKER, req.id, req.version);
+
+        expect(res.status).toBe(200);
+        expect(res.body.data).toMatchObject({ changed: true, approval: "kept" });
+        const after = await row(req.id);
+        expect(JSON.parse(after.acceptanceCriteria!)).toEqual(SUGGESTED);
+        expect(after.reviewStatus).toBe("approved");
+        expect(acceptAudit()?.metadata).toMatchObject({ approval: "kept" });
+        expect(acceptAudit()?.metadata).not.toHaveProperty("selfApproval");
+      });
+
+      it("its author's accept returns it to awaiting review", async () => {
+        const req = await withSuggestion("approved", MAKER);
+        vi.mocked(audit).mockClear();
+
+        const res = await accept(MAKER, req.id, req.version);
+
+        expect(res.status).toBe(200);
+        expect(res.body.data).toMatchObject({ changed: true, approval: "reopened" });
+        const after = await row(req.id);
+        expect(JSON.parse(after.acceptanceCriteria!)).toEqual(SUGGESTED);
+        expect(after.reviewStatus).toBe("draft");
+        expect(acceptAudit()?.metadata).toMatchObject({ approval: "reopened" });
+      });
+
+      it("with self-approval allowed, its author keeps the approval and the audit says self-approval", async () => {
+        await allowSelfApproval(true);
+        const req = await withSuggestion("approved", MAKER);
+        vi.mocked(audit).mockClear();
+
+        const res = await accept(MAKER, req.id, req.version);
+
+        expect(res.body.data).toMatchObject({ approval: "kept", selfApproved: true });
+        expect((await row(req.id)).reviewStatus).toBe("approved");
+        expect(acceptAudit()?.metadata).toMatchObject({ approval: "kept", selfApproval: true });
+      });
+
+      it("someone without requirement.approve returns it to awaiting review", async () => {
+        // No default role holds project.update (the route's gate) without
+        // requirement.approve, so the service is called as such a role would be.
+        const req = await withSuggestion("approved");
+        const result = await resolveCriteriaProposal({
+          requirementId: req.id,
+          choice: "accept",
+          actorId: CHECKER,
+          expectedVersion: req.version,
+          canApprove: false,
+        });
+
+        expect(result).toMatchObject({ changed: true, approval: "reopened" });
+        expect((await row(req.id)).reviewStatus).toBe("draft");
+      });
+
+      it("accepting on a requirement awaiting review leaves its status alone", async () => {
+        const req = await withSuggestion("draft");
+
+        const res = await accept(CHECKER, req.id, req.version);
+
+        expect(res.status).toBe(200);
+        expect(res.body.data).not.toHaveProperty("approval");
+        expect((await row(req.id)).reviewStatus).toBe("draft");
       });
     });
   },

@@ -68,6 +68,7 @@ import {
   ACCEPTANCE_CRITERIA_CLEARED,
   ACCEPTANCE_CRITERIA_MAX_ITEMS,
   ACCEPTANCE_CRITERION_MAX_LENGTH,
+  hasPermission,
   parseAcceptanceCriteria,
   resolveCriteriaProposalSchema,
 } from "@metis/shared";
@@ -527,6 +528,9 @@ export function requirementsCollaborationRouter(): Router {
           // Defence in depth alongside the router guard (#1118).
           projectId: requirementScopeWhere(req).projectId,
           expectedVersion: parsed.data.version,
+          // #2436 — accepting keeps an approval only for someone who may
+          // approve the new criteria; anyone else's accept reopens it.
+          canApprove: hasPermission(req.user.role, "requirement.approve"),
         });
         audit({
           actor: req.user.userId,
@@ -538,6 +542,9 @@ export function requirementsCollaborationRouter(): Router {
             choice: result.choice,
             changed: result.changed,
             version: result.version,
+            // #2436 — what the accept did to the approval, and a self-approval.
+            ...(result.approval ? { approval: result.approval } : {}),
+            ...(result.selfApproved ? { selfApproval: true } : {}),
           },
         });
         res.json({ success: true, data: result });
