@@ -31,18 +31,22 @@ export function TunableRow({ view, onChanged }: TunableRowProps) {
   // unset flag that defaults on must not read as off.
   const shown = view.value ?? view.defaultValue ?? "";
   const [draft, setDraft] = useState<string>(shown);
+  // #2402 — whether the admin has edited the row, not whether the value moved:
+  // toggling back to the shown value is still an explicit choice to store it.
+  const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     setDraft(shown);
+    setDirty(false);
   }, [shown]);
 
   const unset = view.source === "unset";
   // #2402 — Save on an untouched unset row would write the default as an
   // explicit value, which for a flag whose default depends on the model
   // changes what the server does. Nothing to save until the admin edits it.
-  const untouched = unset && draft === shown;
+  const untouched = unset && !dirty;
   // #2402 — a default that differs by context: the control shows neither on nor off.
   const defaultNote = unset ? (view.defaultNote ?? null) : null;
 
@@ -119,7 +123,10 @@ export function TunableRow({ view, onChanged }: TunableRowProps) {
           value={draft}
           mixed={defaultNote !== null && untouched}
           disabled={busy}
-          onChange={setDraft}
+          onChange={(next) => {
+            setDraft(next);
+            setDirty(true);
+          }}
         />
         <Button
           size="sm"

@@ -254,6 +254,35 @@ describe("Configuration page (#259)", () => {
     });
   });
 
+  it("#2402: toggling an unset default-note row twice leaves an explicit true to save", async () => {
+    listMock.mockResolvedValue({
+      items: [
+        {
+          key: "CHAT_CODE_SEARCH_TOOLS",
+          tier: "tunable" as const,
+          valueType: "bool" as const,
+          description: "Code-search tools in chat",
+          sensitive: false,
+          source: "unset" as const,
+          value: null,
+          defaultValue: "true",
+          defaultNote: "on (native tool models only)",
+        },
+      ],
+    });
+    renderPage();
+    const input = "config-tunable-CHAT_CODE_SEARCH_TOOLS-input";
+    const save = "config-tunable-CHAT_CODE_SEARCH_TOOLS-save";
+    await waitFor(() => expect(screen.getByTestId(input)).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId(input));
+    fireEvent.click(screen.getByTestId(input));
+    expect(screen.getByTestId(input)).toBeChecked();
+    expect(screen.getByTestId(input)).not.toBePartiallyChecked();
+    expect(screen.getByTestId(save)).not.toBeDisabled();
+    fireEvent.click(screen.getByTestId(save));
+    await waitFor(() => expect(setMock).toHaveBeenCalledWith("CHAT_CODE_SEARCH_TOOLS", true));
+  });
+
   it("#2402: Save is disabled on an untouched unset row with no default", async () => {
     renderPage();
     await waitFor(() =>

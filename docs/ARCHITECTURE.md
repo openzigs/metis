@@ -7983,7 +7983,7 @@ Epic #249 introduces a centralized `ConfigService` (`server/src/lib/config/`) th
 
 | Method | Path | Permission | Notes |
 |--------|------|------------|-------|
-| GET | `/api/admin/config` | `admin.read` | Lists every registered key with redacted value + source (`vault`/`db`/`env`/`unset`), and `defaultValue`: the registry's `default`, what the code applies while the key is unset (`null` when none is registered, #2295). |
+| GET | `/api/admin/config` | `admin.read` | Lists every registered key with redacted value + source (`vault`/`db`/`env`/`unset`), and `defaultValue`: the registry's `default`, what the code applies while the key is unset (`null` when none is registered, #2295), and `defaultNote`: registry wording for a default that differs by context (e.g. by model protocol), `null` when none (#2402). |
 | GET | `/api/admin/config/:key` | `admin.read` | Single-key projection. |
 | PUT | `/api/admin/config/:key` | `admin.write` | Validates the body via the per-key Zod schema. Writes secrets to the vault, tunables to `runtime_config`. Emits `config.changed`. Records an audit row. |
 | DELETE | `/api/admin/config/:key` | `admin.write` | Clears the override. Falls back to env on the next read. |
