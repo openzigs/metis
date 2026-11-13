@@ -81,6 +81,10 @@ vi.mock("../lib/analysis/index.js", () => ({
 }));
 
 vi.mock("../lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
+// The route reads the stored dialog to tell a start that reused answers from a view of a settled one.
+vi.mock("../lib/analysis/clarification-dialog-store.js", () => ({
+  readDialogState: vi.fn(async () => null),
+}));
 vi.mock("../lib/ai/index.js", () => ({
   buildProvider: vi.fn(() => ({})),
   loadAIConfig: vi.fn(() => ({})),

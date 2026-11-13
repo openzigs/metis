@@ -194,6 +194,8 @@ export const DOCUMENT_SOURCES = [
   "db",
   "confluence",
   "jira",
+  // #2310 — a clarification answer kept as project knowledge.
+  "clarification",
 ] as const;
 export const documentSourceSchema = z.enum(DOCUMENT_SOURCES);
 export type DocumentSource = z.infer<typeof documentSourceSchema>;

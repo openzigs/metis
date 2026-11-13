@@ -24,8 +24,7 @@ import {
 
 const log = createChildLogger("clarification-records");
 
-export const CLARIFICATION_ORIGINS = ["analysis", "spec-kit"] as const;
-export type ClarificationOrigin = (typeof CLARIFICATION_ORIGINS)[number];
+export type ClarificationOrigin = "analysis" | "spec-kit";
 
 /** The paragraph of a document a question was asked about. */
 export interface ClarificationSource {
@@ -69,6 +68,13 @@ export interface StoredClarification {
   answeredAt: Date;
   ambiguityField: string | null;
   source: ClarificationSource | null;
+  /**
+   * The requirements of {@link analysisId} the answer applies to, by their
+   * id in that analysis. #2310 — the column stores each id qualified by its
+   * analysis ({@link qualifyRequirementId}), since requirement ids are local
+   * to an analysis (`REQ-1` is in every one); an id another analysis added
+   * (a reuse) is kept there and not returned here.
+   */
   requirementIds: string[];
   productIds: string[];
   status: ClarificationStatus;
@@ -87,6 +93,59 @@ function stringArray(raw: string | null | undefined): string[] {
   } catch {
     return [];
   }
+}
+
+/**
+ * #2310 — a requirement id as the record's column stores it:
+ * `<analysisId>:<requirementId>`. Requirement ids are local to an analysis,
+ * so an unqualified list that two analyses extend cannot be resolved. An id
+ * with no analysis (a Spec Kit record) is stored as it is.
+ */
+export function qualifyRequirementId(
+  analysisId: string | null | undefined,
+  requirementId: string,
+): string {
+  return analysisId ? `${analysisId}:${requirementId}` : requirementId;
+}
+
+/**
+ * The ids of `analysisId`'s own requirements among a stored list. An id
+ * written before #2310 is unqualified and was always the record's own
+ * analysis's; one qualified by another analysis is left out.
+ */
+function ownRequirementIds(stored: readonly string[], analysisId: string | null): string[] {
+  if (!analysisId) return [...stored];
+  const prefix = `${analysisId}:`;
+  const out: string[] = [];
+  for (const id of stored) {
+    if (id.startsWith(prefix)) out.push(id.slice(prefix.length));
+    else if (!id.includes(":")) out.push(id);
+  }
+  return [...new Set(out)];
+}
+
+/**
+ * Adversarial panel on #2430 — the stored list a re-answer writes: the
+ * answering analysis's own ids (`own`, already qualified) replace its earlier
+ * ones, and the ids other analyses added when they reused the answer
+ * ({@link addClarificationRequirements}) are kept, so a re-answer never
+ * erases where else the answer applies. An id written before #2310 is
+ * unqualified and was the record's own analysis's: it is qualified by it.
+ * A Spec Kit answer (no analysis) replaces the list, as before.
+ */
+function keepOthersRequirements(
+  existing: Row,
+  input: Pick<ClarificationInput, "analysisId">,
+  own: string,
+): string {
+  if (!input.analysisId) return own;
+  const mine = `${input.analysisId}:`;
+  const others: string[] = [];
+  for (const id of stringArray(existing.requirementIds)) {
+    const qualified = id.includes(":") ? id : qualifyRequirementId(existing.analysisId, id);
+    if (qualified.includes(":") && !qualified.startsWith(mine)) others.push(qualified);
+  }
+  return JSON.stringify([...new Set([...(JSON.parse(own) as string[]), ...others])]);
 }
 
 function toStored(row: Row): StoredClarification {
@@ -113,7 +172,7 @@ function toStored(row: Row): StoredClarification {
             quote: row.sourceQuote,
           }
         : null,
-    requirementIds: stringArray(row.requirementIds),
+    requirementIds: ownRequirementIds(stringArray(row.requirementIds), row.analysisId),
     productIds: stringArray(row.productIds),
     status: row.status === "reopened" ? "reopened" : "settled",
     reopenedAt: row.reopenedAt,
@@ -140,7 +199,9 @@ function columns(input: ClarificationInput) {
     sourceFilename: input.source?.filename ?? null,
     sourceHeadingPath: JSON.stringify(input.source?.headingPath ?? []),
     sourceQuote: input.source?.quote ?? null,
-    requirementIds: JSON.stringify([...new Set(input.requirementIds)]),
+    requirementIds: JSON.stringify([
+      ...new Set(input.requirementIds.map((id) => qualifyRequirementId(input.analysisId, id))),
+    ]),
     productIds: JSON.stringify([...new Set(input.productIds)]),
     status: "settled",
     reopenedAt: null,
@@ -174,7 +235,13 @@ export async function recordClarification(
   }
   const data = columns(input);
   if (existing) {
-    const row = await prisma.clarificationRecord.update({ where, data });
+    const row = await prisma.clarificationRecord.update({
+      where,
+      data: {
+        ...data,
+        requirementIds: keepOthersRequirements(existing, input, data.requirementIds),
+      },
+    });
     return { record: toStored(row), changed: true };
   }
   try {
@@ -293,27 +360,77 @@ export async function setClarificationKnowledgeDocument(
   });
 }
 
-/** The project's records, newest answer first; optionally one analysis's or one Spec Kit set's. */
-export async function listClarifications(
+/**
+ * #2310 — point a record at document `to` only if it still points at `from`
+ * (compare-and-set). False when another write changed the link first: two
+ * persists of one record raced, and the caller's document is the loser.
+ */
+export async function swapClarificationKnowledgeDocument(
   projectId: string,
-  filter: {
-    analysisId?: string;
-    specKitFeature?: string | null;
-    status?: ClarificationStatus;
-  } = {},
-): Promise<StoredClarification[]> {
-  const rows = await prisma.clarificationRecord.findMany({
-    where: {
-      projectId,
-      ...(filter.analysisId !== undefined ? { analysisId: filter.analysisId } : {}),
-      ...(filter.specKitFeature !== undefined
-        ? { origin: "spec-kit", specKitFeature: filter.specKitFeature }
-        : {}),
-      ...(filter.status ? { status: filter.status } : {}),
-    },
-    orderBy: { answeredAt: "desc" },
+  recordId: string,
+  from: string | null,
+  to: string | null,
+): Promise<boolean> {
+  const { count } = await prisma.clarificationRecord.updateMany({
+    where: { projectId, id: recordId, knowledgeDocumentId: from },
+    data: { knowledgeDocumentId: to },
   });
-  return rows.map(toStored);
+  return count === 1;
+}
+
+/** #2310 — the records of `projectId` with `ids`, by id. */
+export async function findClarificationsById(
+  projectId: string,
+  ids: readonly string[],
+): Promise<Map<string, StoredClarification>> {
+  const unique = [...new Set(ids)];
+  if (unique.length === 0) return new Map();
+  const rows = await prisma.clarificationRecord.findMany({
+    where: { projectId, id: { in: unique } },
+  });
+  return new Map(rows.map((r) => [r.id, toStored(r)]));
+}
+
+/** How often {@link addClarificationRequirements} retries a lost compare-and-set. */
+const ADD_REQUIREMENTS_ATTEMPTS = 3;
+
+/**
+ * #2310 — add `requirementIds` of analysis `analysisId` to the requirements a
+ * record applies to: a reused answer now applies to the requirement of the
+ * analysis that reused it. Each is stored qualified by `analysisId`
+ * ({@link qualifyRequirementId}), so another analysis's `REQ-2` is never read
+ * as the record's own. Nothing is written when it applies to all of them
+ * already. The write is a compare-and-set on the list it read, retried when
+ * another reuse changed the list first, so two analyses reusing one record at
+ * once each keep their id. Returns whether the list holds them all.
+ */
+export async function addClarificationRequirements(
+  projectId: string,
+  recordId: string,
+  analysisId: string,
+  requirementIds: readonly string[],
+): Promise<boolean> {
+  const added = requirementIds.map((id) => qualifyRequirementId(analysisId, id));
+  for (let attempt = 0; attempt < ADD_REQUIREMENTS_ATTEMPTS; attempt++) {
+    const row = await prisma.clarificationRecord.findFirst({
+      where: { projectId, id: recordId },
+      select: { requirementIds: true },
+    });
+    if (!row) return false;
+    const current = stringArray(row.requirementIds);
+    const next = [...new Set([...current, ...added])];
+    if (next.length === current.length) return true;
+    const { count } = await prisma.clarificationRecord.updateMany({
+      where: { projectId, id: recordId, requirementIds: row.requirementIds },
+      data: { requirementIds: JSON.stringify(next) },
+    });
+    if (count === 1) return true;
+  }
+  log.warn("a reused clarification's requirements were not extended: the record kept changing", {
+    projectId,
+    recordId,
+  });
+  return false;
 }
 
 /** The products a project's answers apply to: the project's product, when it has one. */

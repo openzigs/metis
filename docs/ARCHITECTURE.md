@@ -5221,14 +5221,20 @@ Every answered clarifying question is a `ClarificationRecord` row (`clarificatio
 source paragraph (document, heading path, quote), the requirement ids and the project's product.
 One row per `(projectId, questionKey)`. `clarification-key.ts` makes the key without a model:
 the cited paragraph plus the ambiguous field, else the governing rule ids plus the question,
-else the requirement title plus the field. A Spec Kit `/clarify` answer is keyed by its feature
-slug and question. The route records the round once it is committed
-(`persistClarificationKnowledge`, off the request path, metered to the project). New or changed
-answers are then:
+else the analysis plus the requirement title plus the field (#2310: with no paragraph, a title
+does not say two analyses' requirements are one, so such an answer is not reused elsewhere). A
+Spec Kit `/clarify` answer is keyed by its feature slug and question. The route records the
+round the submit answered, once it is committed (`persistClarificationKnowledge` with
+`rounds`, off the request path, metered to the project). An older analysis's earlier round is
+never recorded again, so it cannot overwrite a newer answer (#2310). New or changed answers are
+then:
 
 - **indexed** as a Markdown document in the project's RAG store (`clarification-knowledge.ts`:
-  `documents` row by the person who answered, queued for ingest like an uploaded text, so the
-  quarantine policy and ACLs apply). A changed answer deletes its earlier document;
+  `documents` row with source `clarification` and a `document.upload` audit entry, by the person
+  who answered, queued for ingest like an uploaded text, so the quarantine policy and ACLs
+  apply). #2310: the new document is written first and linked by compare-and-set on the
+  record's `knowledgeDocumentId`, then the earlier one is deleted. When two saves race, the
+  loser withdraws its own copy;
 - **reused**: the dialog takes a `PriorAnswerSource` (`priorAnswerSourceFor`). Before a round
   is grounded, each selected question is looked up by key among the project's `settled` records.
   A hit is not asked: it lands on `ClarificationState.reused`, counts as answered (the #1104
@@ -5237,13 +5243,24 @@ answers are then:
   document, section and field under another key (its paragraph changed) is marked `reopened`
   first, so the changed paragraph is asked about again;
 - **re-run** (`clarification-rerun.ts`): stored requirements whose clarifications block holds a
-  changed answer are mapped to code again (`mapRequirementToCode`, persisted). Each answered
+  changed answer under its own question are mapped to code again (`mapRequirementToCode`,
+  persisted). #2310: the block's question and answer pairs are read back
+  (`clarificationBlockEntries`), so a short answer never matches other rows. Each answered
   requirement's governing applicability entry (by id, else the one entry its title matches) is
   re-decided on its text with the answers appended. The fresh findings are produced in the same
   findings run, through the run's new `prepare` step. So the findings response reads
   `refreshing` (the panel's "Re-checking" note) from the answer until the new findings are
-  stored. Re-extraction is the dialog's own resolution call. The persisted per-finding stale
-  marker and **Re-check this requirement** are #2222's.
+  stored. When some requirements fail, the entries of the others are stored
+  (`GoverningFindingsRun.failedRequirementIds`). An answered requirement that no entry matches
+  is re-checked through #2222's `recheckGoverningRequirement` on each stored requirement
+  carrying its answers, attributed to the person who answered. An answer **reused** in a round
+  is re-run the same way for the requirement that reused it (`rerunReusedClarifications`), and
+  its record's `requirementIds` gain that requirement. Requirement ids are local to an analysis,
+  so the column stores each as `<analysisId>:<requirementId>` (`qualifyRequirementId`), a read
+  returns the record's own analysis's ids, and the extension is a compare-and-set on the list it
+  read, retried when another reuse changed it first. Re-extraction is the dialog's own
+  resolution call. The persisted per-finding stale marker and **Re-check this requirement** are
+  #2222's.
 
 Answers are untrusted text in every later prompt. The resolution prompt fences the Q&A
 (`<<<ANSWERS … ANSWERS>>>`, markers stripped from the text). `/specify`, `/plan` (both forms) and
