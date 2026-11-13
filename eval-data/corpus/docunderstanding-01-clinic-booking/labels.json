@@ -2,8 +2,8 @@
   "corpusId": "docunderstanding-01-clinic-booking",
   "title": "Riverside Community Clinics: Online Appointment Booking, Functional Requirements Document",
   "license": "CC0-1.0",
-  "labelStatus": "author-labelled while writing the synthetic document; cross-checked by two independent blind AI reviewers; disagreements judged by an AI and each judgement confirmed by a person (#2255)",
-  "sourceSha256": "936c77c882c53336335672e3b7960277200ebde758db59bc15b9a4c711798fea",
+  "labelStatus": "author-labelled while writing the synthetic document; cross-checked by two independent blind AI reviewers; disagreements judged by an AI and each judgement confirmed by a person (#2255); six label gaps found among the reader's false requirements on 01 and 02 (R57-R59, R61-R63) added by an AI, not yet confirmed by a person (#2374)",
+  "sourceSha256": "113bad0c094cc78286fed56f25f617f233375ea73f96a89110167ed8dbb79292",
   "sections": [
     "Riverside Community Clinics: Online Appointment Booking, Functional Requirements Document",
     "Document control",
@@ -139,6 +139,11 @@
       "span": "A patient shall not hold more than two future routine GP appointments at the same time across all sites."
     },
     {
+      "id": "R57",
+      "section": "5.2 Booking rules",
+      "span": "This limit does not apply to nurse reviews, immunisations or physiotherapy, which are often booked as a series."
+    },
+    {
       "id": "R15",
       "section": "5.2 Booking rules",
       "span": "The portal shall not allow a booking that starts less than two hours from the current time."
@@ -222,6 +227,11 @@
       "id": "R27",
       "section": "6. Reminders and notifications",
       "span": "Patients shall be able to choose not to receive text reminders, and the choice shall be recorded in the PMS so that it also applies to reminders the PMS sends."
+    },
+    {
+      "id": "R58",
+      "section": "6. Reminders and notifications",
+      "span": "24 hours before the appointment"
     },
     {
       "id": "R28",
@@ -312,6 +322,11 @@
       "id": "R44",
       "section": "9.3 Privacy, security and data retention",
       "span": "Portal accounts that have not been used for two years shall be deleted, and the patient shall be warned by email thirty days before deletion."
+    },
+    {
+      "id": "R59",
+      "section": "9.3 Privacy, security and data retention",
+      "span": "Deleting a portal account does not affect the patient's record in the PMS."
     }
   ],
   "ambiguities": [
@@ -356,10 +371,10 @@
       "kind": "conflict",
       "description": "R24 says the text reminder is sent 48 hours before every appointment, while the notification table says 24 hours",
       "question": "Is the standard text reminder sent 48 hours or 24 hours before the appointment, or both?",
-      "requirements": ["R24"],
+      "requirements": ["R24", "R58"],
       "spans": [
-        "24 hours before the appointment",
-        "The portal shall send each patient a reminder by text message 48 hours before every appointment, whether it was booked online or by telephone."
+        "The portal shall send each patient a reminder by text message 48 hours before every appointment, whether it was booked online or by telephone.",
+        "24 hours before the appointment"
       ],
       "sections": ["6. Reminders and notifications"]
     },

@@ -4,7 +4,7 @@
   #2255, the document reader measured on four documents
 - **Measured:** 2026-11-10, at commit `8a0601902` (#2229); 2026-11-12, at commit `658a61dc2`
   (#2255); on `claude-sonnet-5-5` (production) and `deepseek-flash` (iteration)
-- **Readings:** `eval-data/readings/doc-understanding/`; #2407 re-measured arm R on 2026-11-12 at commit `362294ae3` (`reader-sonnet-5-5-2407`)
+- **Readings:** `eval-data/readings/doc-understanding/`; #2407 re-measured arm R on 2026-11-12 at commit `362294ae3` (`reader-sonnet-5-5-2407`); #2374 measured arms R and B on 2026-11-13 at commit `2d78fb104` (`reader-sonnet-5-5-2374`, `reader-sonnet-5-5-2374-B-cap21333`)
 - **Harness:** `pnpm --filter server eval:doc-understanding` (`server/src/lib/eval/doc-understanding/`)
 
 ## The reader, measured (#2255)
@@ -156,6 +156,100 @@ Four statements replies were re-prompted as unreadable (one on 01, three on 04, 
 its body, so which of them were corrected replies is not known. Every run's call count is its
 batches (3, 4, 5 and 9), the merge and those re-prompts, so no section was asked for again.
 
+### Precision on 01 and 02, and batches that overran (#2374)
+
+After #2407, R's precision was 0.92 on 01 and 0.88 on 02, against B's 1.00. **#2255's rule now
+holds on all three documents B reads, under a key that gained six requirements.** Under the
+old key it would still fail on 01 and 02. `ANALYSIS_DOCUMENT_READER` stays off: #2321 is still
+open, and a person has not yet confirmed the six labels.
+
+**Each false requirement on 01 and 02 was decided on its own.** There were 13 different ones
+across #2361's and #2407's four runs of each document. A **label gap** is a sentence that
+states a rule or obligation no labelled sentence states. **Over-extraction** is background
+(scope, a lead-in to the requirements after it, a reason, the situation as it is) or something a
+labelled sentence already says in full.
+
+| Doc | Sentence | Runs (of 4) | Decision |
+|---|---|---|---|
+| 01 | 5.2 "This limit does not apply to nurse reviews, immunisations or physiotherapy…" | 3 | label gap, **R57**: the exception is a rule a tester checks |
+| 01 | 6, the table row "Upcoming appointment, text message, 24 hours before" | 4 | label gap, **R58**: one side of A4's conflict, before only marked as A4's span |
+| 01 | 9.3 "Deleting a portal account does not affect the patient's record in the PMS." | 4 | label gap, **R59** |
+| 01 | 2.1 "Each site may choose which of its appointment types are offered online." | 2 | over-extraction: a scope line; R33 sets it out in full |
+| 01 | 2.2 "The portal will not offer a symptom checker…" | 1 | over-extraction: scope |
+| 01 | 5.2 "Short-notice slots are kept for the telephone triage team." | 1 | over-extraction: R15's reason |
+| 02 | 7.1 "Northgate is liable for loss and damage that occurs while goods are in its care, subject to the exceptions…" | 4 | label gap, **R61**: the rule R16's decision applies |
+| 02 | 8.1 "Approvers are expected to deal with approvals promptly…" | 4 | label gap, **R62**: before only marked as A4's span. 01's vague requirements (R53) are labelled and named by their ambiguity, and this matches that. |
+| 02 | 15, the summary row "Notice of damage or shortage: within 14 days of delivery" | 4 | label gap, **R63**: one side of A1's conflict |
+| 02 | 8.1 "Payments are approved by people with the authority to commit the amount." | 4 | over-extraction: a lead-in to the matrix (R27 to R30) |
+| 02 | 11 "The application must provide it directly." | 4 | over-extraction: a lead-in to R47 to R50 |
+| 02 | 13 "They need to be moved into the application at go-live…" | 2 | over-extraction: a lead-in to R54 |
+| 02 | 5.2 "Special terms may set different periods…" | 3 | over-extraction: R6 already reads the claimant's own terms |
+| 02 | 9.1 "Subcontract agreements allow Northgate to recover from a haulier…" | 1 | over-extraction: the contract position R37 and R38 set out. This one is a close call: it resembles 7.1, but its content is in the requirements after it. |
+
+The six additions are recorded in every `labels.json`'s `labelStatus` as added by an AI and
+not yet confirmed by a person. A reviewer who disagrees removes the `[[R…]]` marker in
+`frd.src.md` and rebuilds. R58 on 01 and R62 and R63 on 02 replaced an ambiguity's marker, so
+for those three the reviewer also restores the `[[A…]]` marker it replaced (01's A4 on R58,
+02's A4 on R62 and A1 on R63) and removes the id from that ambiguity's `@R` list
+(`A4 [conflict] @R24,R58`, `A4 [vague-term] @R31,R62`, `A1 [conflict] @R7,R63`). Now 01 has
+59 requirements and 02 has 63.
+
+**What changed in the reader:**
+
+- **The prompt** reads two kinds of sentence as background. One introduces the statements,
+  list or table after it, including one that says must. The other gives the reason for another
+  statement.
+- **The cross-section pass** now drops a summary table's rows that each restate part of one
+  prose sentence. A diagnostic read of 02 showed that the pass named 15's "documents reminder"
+  and "closed as abandoned" rows as repeats of 6.1's one sentence holding both. #2361's summary
+  guard then kept both rows, because several statements were named repeats of that sentence.
+  A row is dropped this way only when the sentence says at least three quarters of the row's
+  content words, so a prose overview over a detailed table keeps the table's rows.
+- **Each whole-mode batch call** is told the section after its batch, and to stop before it.
+
+Reading `reader-sonnet-5-5-2374` (arms R and B, output cap 16,384) and
+`reader-sonnet-5-5-2374-B-cap21333` (B on 03 at 21,333, as #2255 read it). Both are on
+claude-sonnet-5-5, two runs per document, at commit `2d78fb104`. Each run was its own
+invocation, combined with `--combine`, so the reading says "Runs requested: 1" and labels every
+record run 1.
+
+| Document | B recall / precision | R recall / precision | Gap (R − B) | Held? | R precision under the old key | R precision at #2407 |
+|---|---|---|---|---|---|---|
+| 01 clinic booking | 0.86 / 0.99 | 0.97 / 0.97 | +0.11 / −0.02 | yes | 0.92 | 0.92 |
+| 02 freight claims | 0.94 / 1.00 | 1.00 / 0.97 | +0.06 / −0.03 | yes | 0.92 | 0.88 |
+| 03 community grants | 0.96 / 1.00 (cap 21,333) | 0.99 / 0.96 | +0.02 / −0.04 | yes | (key unchanged) | 0.95 |
+| 04 library lending | not read | 0.99 / 0.92 | | no B to compare | (key unchanged) | 0.93 |
+
+"Under the old key" scores the same runs without the six new labels, treating a statement matched
+to one of them as unmatched. B found none of the six in any run. Under the old key, B's recall is
+0.91 on 01 and 0.98 on 02.
+
+**Read the result with that in mind.** Over the four runs of 01 and 02, the prompt and the
+cross-section pass took R's precision from 0.92 to 0.92 on 01 and from 0.88 to 0.92 on 02. That
+is about half of 02's gap and none of 01's. The rest of the closing is the six labels. On 01 the
+statements left over are the two scope lines (2.1 and 2.2), in both runs. On 02 they are 11's
+lead-in in both runs and 8.1's lead-in in one.
+
+**The overrun on 04 is gone.** At #2361 and #2407, three of four runs dropped 20 statements
+quoted from outside their batch (`droppedUnverified`). All three runs of 04 at this PR's prompt
+dropped none: one at `409755758` and two at `2d78fb104`. Output was 40,923, 49,751 and 41,498
+tokens per run, against 53,051, 41,857, 47,240 and 48,110. At the final commit the cost per
+run was $0.72 and $0.48, a mean of $0.60 against #2407's $0.64. The first of those runs made 12
+calls, two of them re-asks or re-prompts (#2407), which is why it cost more.
+
+Misses at the final commit:
+
+- 01: R51 (twice) and R54 (once).
+- 03: R105 (twice) and R103 (once).
+- 04: R37 and R216, in one run.
+
+R47 on 01 was found in both runs, though #2407 missed it in both.
+
+Spend: $4.38 metered at the final commit ($3.80 for R and B, $0.58 for B on 03), plus $1.52 for
+the first measurement of the prompt change. The diagnostic read of 02 was unmetered and cost
+about $0.23, priced from its logged usage at `provider-rates.ts`'s Sonnet 5.5 rates. The total is
+about $6.13, within the $20 pre-approval.
+
 ## The Phase 0 answer (#2229)
 
 When an analyst gives METIS a Word FRD today, Requirements Analysis finds **about a quarter
@@ -208,7 +302,7 @@ document's author. For #2255, two AI reviewers labelled each document blind, an 
 recommended an answer for each disagreement, and a person confirmed every one. That added 18
 requirements and 12 ambiguities across the four documents, and re-kinded five ambiguities
 from contradiction to gap. 01 now has 56 requirements and 12 ambiguities, 02 has 60 and 18,
-and 03 has 106 and 17. It was not a second human labelling, and the #2229 readings were not
+and 03 has 106 and 17 (#2374 added three to each of 01 and 02, see above). It was not a second human labelling, and the #2229 readings were not
 re-scored. The Miniflux sample the issue suggested as a starting point is not in the
 repository, and the existing `eval-data/corpus/brd-*` items are about 500 bytes each, so the
 corpus was written from scratch.

@@ -2,8 +2,8 @@
   "corpusId": "docunderstanding-02-freight-claims",
   "title": "Northgate Freight: Cargo Loss and Damage Claims Handling, Business Requirements Document",
   "license": "CC0-1.0",
-  "labelStatus": "author-labelled while writing the synthetic document; cross-checked by two independent blind AI reviewers; disagreements judged by an AI and each judgement confirmed by a person (#2255)",
-  "sourceSha256": "5208fe1e5b3d6707264e0fbd22bbeda95c55f7c7d048b07d16c1cbb300940b98",
+  "labelStatus": "author-labelled while writing the synthetic document; cross-checked by two independent blind AI reviewers; disagreements judged by an AI and each judgement confirmed by a person (#2255); six label gaps found among the reader's false requirements on 01 and 02 (R57-R59, R61-R63) added by an AI, not yet confirmed by a person (#2374)",
+  "sourceSha256": "7986ee3377ed5cdf5c6e891e3412fc7903e2b3162d940b58e7723aa4f7e63d8c",
   "sections": [
     "Northgate Freight: Cargo Loss and Damage Claims Handling, Business Requirements Document",
     "Purpose of this document",
@@ -124,6 +124,11 @@
       "span": "An inspection shall be requested for every damage claim on a high-value consignment before liability is decided."
     },
     {
+      "id": "R61",
+      "section": "7.1 Determining liability",
+      "span": "Northgate is liable for loss and damage that occurs while goods are in its care, subject to the exceptions in the conditions of carriage, such as inadequate packaging by the customer or inherent defects in the goods."
+    },
+    {
       "id": "R16",
       "section": "7.1 Determining liability",
       "span": "The handler shall record a liability decision for each consignment on a claim, chosen from accepted, partly accepted or declined, with a reason chosen from a list maintained by the claims operations manager."
@@ -207,6 +212,11 @@
       "id": "R32",
       "section": "8.1 Approval matrix",
       "span": "The approval limits in the matrix shall be configurable by the claims operations manager, and every change shall be recorded with the name of the person who made it and the date."
+    },
+    {
+      "id": "R62",
+      "section": "8.1 Approval matrix",
+      "span": "Approvers are expected to deal with approvals promptly so that settlement times can be met."
     },
     {
       "id": "R33",
@@ -342,6 +352,11 @@
       "id": "R58",
       "section": "14. Non-functional requirements",
       "span": "The application shall be usable by handlers working from home through the company's standard remote access arrangements."
+    },
+    {
+      "id": "R63",
+      "section": "15. Business rules summary",
+      "span": "Within 14 days of delivery"
     }
   ],
   "ambiguities": [
@@ -350,12 +365,12 @@
       "kind": "conflict",
       "description": "the business rules summary gives 14 days for notice of damage and shortage while R7 gives 7 days; the summary says the capability sections take precedence but also that it predates legal review",
       "question": "Is the notice period for damage and shortage 7 days or 14 days after delivery?",
-      "requirements": ["R7"],
+      "requirements": ["R7", "R63"],
       "spans": [
-        "Within 14 days of delivery",
-        "Under the standard conditions, damage and shortage must be notified within 7 days of delivery and loss within 28 days of the expected delivery date."
+        "Under the standard conditions, damage and shortage must be notified within 7 days of delivery and loss within 28 days of the expected delivery date.",
+        "Within 14 days of delivery"
       ],
-      "sections": ["15. Business rules summary", "5.2 Time limits for notification"]
+      "sections": ["5.2 Time limits for notification", "15. Business rules summary"]
     },
     {
       "id": "A2",
@@ -386,10 +401,10 @@
       "kind": "vague-term",
       "description": "approvers are to deal with approvals \"promptly\", with no target time and no escalation when they do not",
       "question": "How quickly must an approver act on a settlement, and what happens when they do not?",
-      "requirements": ["R31"],
+      "requirements": ["R31", "R62"],
       "spans": [
-        "Approvers are expected to deal with approvals promptly so that settlement times can be met.",
-        "The application shall route each settlement to the approver required by the matrix and shall not allow a person to approve a settlement on a claim they registered or handled."
+        "The application shall route each settlement to the approver required by the matrix and shall not allow a person to approve a settlement on a claim they registered or handled.",
+        "Approvers are expected to deal with approvals promptly so that settlement times can be met."
       ],
       "sections": ["8.1 Approval matrix"]
     },

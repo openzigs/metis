@@ -2,7 +2,7 @@
   "corpusId": "docunderstanding-04-library-lending",
   "title": "Kestrel Vale Libraries: Membership and Lending Platform, Functional Requirements Document",
   "license": "CC0-1.0",
-  "labelStatus": "author-labelled while writing the synthetic document; cross-checked by two independent blind AI reviewers; disagreements judged by an AI and each judgement confirmed by a person (#2255)",
+  "labelStatus": "author-labelled while writing the synthetic document; cross-checked by two independent blind AI reviewers; disagreements judged by an AI and each judgement confirmed by a person (#2255); six label gaps found among the reader's false requirements on 01 and 02 (R57-R59, R61-R63) added by an AI, not yet confirmed by a person (#2374)",
   "sourceSha256": "6ed92ce645c5183f577433bba501754b480742b6a11b2aa18f9847ea405b69db",
   "sections": [
     "Kestrel Vale Libraries: Membership and Lending Platform, Functional Requirements Document",
