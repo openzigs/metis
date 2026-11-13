@@ -199,6 +199,7 @@ import {
   REQUIRES_CONNECTOR_WRITE,
   REQUIRES_PROJECT_UPDATE,
   REQUIRES_REQUIREMENT_APPROVE,
+  START_CHANGE_REQUEST_HINT,
 } from "@/lib/permission-hints";
 import { PortfolioCheckLink } from "@/components/portfolio/portfolio-check-link";
 import { ChangeRequestSummary } from "@/components/analysis/change-request-summary";
@@ -877,8 +878,8 @@ export default function AnalysisPage(): React.ReactElement {
           <>
             {/* Issue #30 — rendered once the runs list has settled, so the
                 default (open only when there are no runs) cannot flip under
-                a click. */}
-            {list.isSuccess || list.isError ? (
+                a click. #2450 — and only to a viewer who may start one. */}
+            {canRunAnalysis && (list.isSuccess || list.isError) ? (
               <Button
                 variant={showStartForm ? "outline" : "default"}
                 aria-expanded={showStartForm}
@@ -897,7 +898,11 @@ export default function AnalysisPage(): React.ReactElement {
         }
       />
 
-      {showStartForm ? (
+      {!canRunAnalysis ? (
+        <p className="text-sm text-muted-foreground" data-testid="start-analysis-forbidden">
+          {START_CHANGE_REQUEST_HINT}
+        </p>
+      ) : showStartForm ? (
         <Card id="start-analysis-form" className="space-y-4 p-4">
           <div>
             <h2 className="text-lg font-semibold">New change request</h2>

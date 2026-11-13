@@ -9,12 +9,7 @@
 
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
-import {
-  hasPermission,
-  type MyWorkChangeRequest,
-  type MyWorkResponse,
-  type MyWorkReview,
-} from "@metis/shared";
+import { type MyWorkChangeRequest, type MyWorkResponse, type MyWorkReview } from "@metis/shared";
 import { useAuth } from "@/lib/auth-context";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -78,7 +73,12 @@ function MyWorkSkeleton() {
 
 function MyWorkContent({ data }: { data: MyWorkResponse }) {
   const { user } = useAuth();
-  const canCreateProject = user ? hasPermission(user.role, "project.create") : false;
+  // Both gates read the session's server-issued permission set (#2368), not
+  // the static default role table. #2450 — starting a change request is an
+  // `analysis.run` write; a reader would be refused by the server, so it is
+  // offered no link to start one.
+  const canCreateProject = user?.permissions.includes("project.create") ?? false;
+  const canRunAnalysis = user?.permissions.includes("analysis.run") ?? false;
   const groups = groupChangeRequests(data.changeRequests);
   if (groups.length === 0 && data.reviews.length === 0) {
     return data.projectCount === 0 ? (
@@ -104,11 +104,13 @@ function MyWorkContent({ data }: { data: MyWorkResponse }) {
         title="Nothing needs you right now"
         description="Change requests waiting on your answers or a review, and reviews assigned to you, appear here."
         action={
-          <Button asChild size="sm">
-            <Link href="/projects" data-testid="my-work-new-change-request">
-              New change request
-            </Link>
-          </Button>
+          canRunAnalysis ? (
+            <Button asChild size="sm">
+              <Link href="/projects" data-testid="my-work-new-change-request">
+                New change request
+              </Link>
+            </Button>
+          ) : undefined
         }
         data-testid="my-work-empty"
       />

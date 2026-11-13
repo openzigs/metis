@@ -11,7 +11,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient } from "@tanstack/react-query";
-import { makeWrapper, TEST_USER } from "../test-utils";
+import { makeWrapper, TEST_USER, userWith } from "../test-utils";
 import { ROLE_PERMISSIONS } from "@metis/shared";
 
 const nav = vi.hoisted(() => ({ search: new URLSearchParams(), replace: vi.fn() }));
@@ -389,8 +389,8 @@ function classified(id = "an-1") {
   };
 }
 
-function renderPage() {
-  render(<AnalysisPage />, { wrapper: makeWrapper({ initialUser: TEST_USER }) });
+function renderPage(user = TEST_USER) {
+  render(<AnalysisPage />, { wrapper: makeWrapper({ initialUser: user }) });
 }
 
 const findingTitles = () =>
@@ -965,8 +965,11 @@ describe("requirements are paged", () => {
 });
 
 describe("starting a run is separate from reading one", () => {
+  // #2450 — the form is an analysis.run write; only a session holding it sees it.
+  const RUNNER = userWith("analysis.run");
+
   it("collapses the run form when the project has runs, and opens it on demand", async () => {
-    renderPage();
+    renderPage(RUNNER);
     const toggle = await screen.findByTestId("start-analysis-toggle");
     expect(toggle).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByRole("heading", { name: "New change request" })).not.toBeInTheDocument();
@@ -979,12 +982,31 @@ describe("starting a run is separate from reading one", () => {
 
   it("opens the run form on a project with no runs", async () => {
     apiMock.listForProject.mockResolvedValueOnce({ items: [] });
-    renderPage();
+    renderPage(RUNNER);
     expect(await screen.findByTestId("start-analysis-toggle")).toHaveAttribute(
       "aria-expanded",
       "true",
     );
     expect(screen.getByRole("heading", { name: "New change request" })).toBeInTheDocument();
+  });
+
+  it("#2450 — offers no run form to a viewer without analysis.run, and says why", async () => {
+    apiMock.listForProject.mockResolvedValueOnce({ items: [] });
+    renderPage(userWith("analysis.read"));
+    expect(await screen.findByTestId("start-analysis-forbidden")).toHaveTextContent(
+      "Starting a change request needs the analysis.run permission",
+    );
+    // A project with no runs would otherwise open the form.
+    await waitFor(() => expect(apiMock.listForProject).toHaveBeenCalled());
+    expect(screen.queryByTestId("start-analysis-toggle")).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "New change request" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Run with defaults" })).not.toBeInTheDocument();
+  });
+
+  it("#2450 — says nothing about the permission to a viewer who holds it", async () => {
+    renderPage(RUNNER);
+    await screen.findByTestId("start-analysis-toggle");
+    expect(screen.queryByTestId("start-analysis-forbidden")).not.toBeInTheDocument();
   });
 });
 
