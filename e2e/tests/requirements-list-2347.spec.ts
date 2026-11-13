@@ -68,7 +68,6 @@ test.describe("Requirements tab and the approval ladder (#2347)", () => {
       data?: { id?: string; project?: { id?: string } };
     };
     projectId = (body.data?.project?.id ?? body.data?.id ?? body.id) as string;
-    await admin.dispose();
 
     // The reviewer must exist to be found by the reviewer search.
     await primeUser(REVIEWER);
@@ -82,6 +81,22 @@ test.describe("Requirements tab and the approval ladder (#2347)", () => {
     });
     expect(renamed.status(), await renamed.text()).toBe(200);
     await api.dispose();
+
+    // The seed writes approved requirements; put A back to awaiting review so
+    // there is something to approve (read through the list, which carries the
+    // version the guarded PUT needs).
+    const page1 = await admin.get(`/api/projects/${projectId}/requirements?pageSize=100`);
+    expect(page1.status(), await page1.text()).toBe(200);
+    const rows = (
+      (await page1.json()) as { data: { items: Array<{ id: string; version: number }> } }
+    ).data.items;
+    const a = rows.find((r) => r.id === reqA);
+    expect(a, "seeded requirement listed").toBeTruthy();
+    const reset = await admin.put(`/api/requirements/${reqA}`, {
+      data: { reviewStatus: "draft", version: a!.version },
+    });
+    expect(reset.ok(), await reset.text()).toBeTruthy();
+    await admin.dispose();
 
     const login = new LoginPage(page);
     await login.goto();
