@@ -1273,7 +1273,7 @@ Client surfaces use `useJobToast` (`ui/src/hooks/use-job-toast.ts`) for the fire
 
 Every authenticated socket auto-joins a personal room `user:{userId}` in `attachHandlers` (`server/src/lib/socket/server.ts`). The room id is derived ONLY from `socket.data.user.userId` (the verified JWT) — no client-supplied value is ever used and there is no `subscribe:user` handler (OWASP A01). The join fires on every (re)connection so reconnect is covered automatically.
 
-Five server modules emit to these rooms:
+Six server modules emit to these rooms:
 - `mentions.ts`: `comment:mention` → `user:{mentionedUserId}`
 - `sla-checker.ts`: `sla:deadline_expired` → `user:{assigneeId}` and (if different) `user:{coordinatorId}`, each only while `isEligibleAssignee` (`lib/requirements/assignee-eligibility.ts`) still holds for the requirement's project (#1432). If that check throws, the row is neither sent nor marked `notifiedAt`, so the next run retries it; a known-ineligible recipient is skipped and the row is marked. The same rule gates `POST /api/requirements/:requirementId/assignments`: an active, non-deleted user who passes the project-access rule keyed by that user (`canAccessProjectDiscussions`: a live member of the project's workspace, any system admin, anyone for a legacy workspace-less project, system admins only for a soft-deleted one), the same audience the assignee picker offers (`GET /api/users?projectId=`). Anyone else, an unknown id included, is `404 ASSIGNEE_NOT_FOUND`; the GET list blanks the name of an assignee or `assignedBy` user who no longer qualifies (one parallel check per distinct user)
 - `discussions/notify.ts`: `discussion:mention` → `user:{mentionedUserId}` (#489)
