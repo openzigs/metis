@@ -22,7 +22,8 @@ import { useSocket } from "@/lib/socket-client";
 import { keepSubscribed } from "@/lib/socket-subscription";
 import { projectJoin } from "@/lib/socket-rooms";
 import { queryKeys } from "@/lib/query-keys";
-import { reviewGateApi, reviewGateKey } from "@/lib/publishing-api";
+import { reviewGateApi } from "@/lib/publishing-api";
+import { reviewGateKey } from "@/lib/query-keys";
 import {
   reviewsApi,
   type ReviewDetail,

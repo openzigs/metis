@@ -45,7 +45,7 @@ vi.mock("next/navigation", async () => {
 
 import { QueryClient } from "@tanstack/react-query";
 import { RequestReviewCard } from "@/components/reviews/request-review-card";
-import { reviewGateKey } from "@/lib/publishing-api";
+import { reviewGateKey } from "@/lib/query-keys";
 import { reviewsApi, type ReviewRequest } from "@/lib/reviews-api";
 import ReviewDetailPage, { canDecide } from "@/app/(authed)/reviews/[id]/page";
 

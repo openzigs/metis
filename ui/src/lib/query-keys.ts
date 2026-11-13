@@ -235,3 +235,12 @@ export const queryKeys = {
 } as const;
 
 export type QueryKeys = typeof queryKeys;
+
+/**
+ * #2436 — the project's review-gate setting (`GET /projects/:id/review-gate`),
+ * shared by the Approval gate card, the reviewer picker and the review page so
+ * a toggle refreshes every reader. Kept here, not in `publishing-api`, which
+ * many tests mock wholesale.
+ */
+export const reviewGateKey = (projectId: string) =>
+  ["publishing", "review-gate", projectId] as const;
