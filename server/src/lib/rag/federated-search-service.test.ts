@@ -11,9 +11,20 @@ import {
 
 // ─── Mocks ──────────────────────────────────────────────────────────────────
 
-vi.mock("../auth/accessible-projects.js", () => ({
-  getUserAccessibleProjects: vi.fn(),
-}));
+vi.mock("../auth/accessible-projects.js", () => {
+  const getUserAccessibleProjects = vi.fn();
+  const getUserArchivedProjects = vi.fn(
+    async (_userId: string, _ids: readonly string[]): Promise<{ id: string; name: string }[]> => [],
+  );
+  return {
+    getUserAccessibleProjects,
+    getUserArchivedProjects,
+    getUserProjectScope: vi.fn(async (userId: string) => ({
+      accessible: await getUserAccessibleProjects(userId),
+      archived: (ids: readonly string[]) => getUserArchivedProjects(userId, ids),
+    })),
+  };
+});
 
 vi.mock("./knowledge-service.js", () => ({
   getKnowledgeService: vi.fn(() => ({
@@ -36,9 +47,10 @@ vi.mock("../logger.js", () => ({
   }),
 }));
 
-import { getUserAccessibleProjects } from "../auth/accessible-projects.js";
+import { getUserAccessibleProjects, getUserArchivedProjects } from "../auth/accessible-projects.js";
 
 const mockGetAccessible = vi.mocked(getUserAccessibleProjects);
+const mockGetArchived = vi.mocked(getUserArchivedProjects);
 
 // Helper to build a mock KnowledgeService
 function buildMockKnowledgeService(impl: Record<string, unknown[]>) {
@@ -82,6 +94,7 @@ function makeChunk(
 describe("FederatedSearchService", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockGetArchived.mockResolvedValue([]);
     __resetFederatedSearchSingleton();
   });
 
@@ -169,7 +182,9 @@ describe("FederatedSearchService", () => {
       expect(result.hits[0].score).toBeCloseTo(0.82);
     });
 
-    it("shares k between the relevant projects, in the order asked for, each in its own order", async () => {
+    // #2264 — the projects that clear the floor share k by relevance: the next
+    // slot goes to whichever project's next hit is most relevant.
+    it("shares k between the relevant projects by relevance, each in its own order", async () => {
       mockGetAccessible.mockResolvedValue([
         { id: "proj-a", name: "A" },
         { id: "proj-b", name: "B" },
@@ -186,8 +201,321 @@ describe("FederatedSearchService", () => {
       const svc = new FederatedSearchService({ knowledgeService: mockKS as never });
       const result = await svc.searchAcrossProjects({ userId: "user-1", query: "q", k: 3 });
 
-      expect(result.hits.map((h) => h.chunkId)).toEqual(["a1", "b1", "a2"]);
+      expect(result.hits.map((h) => h.chunkId)).toEqual(["b1", "b2", "a1"]);
       expect(result.totalHits).toBe(3);
+    });
+
+    it("on the verdict scale, never moves a project's hit above one its project ranked higher", async () => {
+      mockGetAccessible.mockResolvedValue([
+        { id: "proj-a", name: "A" },
+        { id: "proj-b", name: "B" },
+      ]);
+      // Raw logits: A's ranking put a 0.6 verdict above a 0.95, so the 0.95 waits for it.
+      const logits: Record<string, ReturnType<typeof makeChunk>[]> = {
+        "proj-a": [makeChunk("a1", { score: 0.405 }), makeChunk("a2", { score: 2.944 })],
+        "proj-b": [makeChunk("b1", { score: 1.386 }), makeChunk("b2", { score: 0 })],
+      };
+      const mockKS = {
+        search: vi.fn(async (projectId: string) => ({
+          hits: logits[projectId] ?? [],
+          mode: "hybrid" as const,
+          reranked: true,
+        })),
+      };
+      const svc = new FederatedSearchService({ knowledgeService: mockKS as never });
+      const result = await svc.searchAcrossProjects({
+        userId: "user-1",
+        query: "q",
+        relevanceFloor: 0,
+      });
+      expect(result.hits.map((h) => h.chunkId)).toEqual(["b1", "a1", "a2", "b2"]);
+    });
+
+    // The code review's case: with the reranker off a project's order is RRF
+    // of its dense and keyword ranks, which the cosine need not follow. A
+    // weak-cosine hit ranked first by its keywords capped every hit below it,
+    // so the project with the best cosine of all lost every slot.
+    it("on the cosine scale, shares the slots on each hit's own cosine, each project in its RRF order", async () => {
+      mockGetAccessible.mockResolvedValue([
+        { id: "proj-a", name: "A" },
+        { id: "proj-b", name: "B" },
+      ]);
+      const hybrid = (id: string, rrf: number, cosine: number) => ({
+        ...makeChunk(id, { score: rrf }),
+        denseScore: cosine,
+        matchedBy: ["dense", "lexical"],
+      });
+      const mockKS = buildMockKnowledgeService({
+        "proj-a": [
+          hybrid("a1", 0.033, 0.45),
+          hybrid("a2", 0.032, 0.85),
+          hybrid("a3", 0.031, 0.84),
+          hybrid("a4", 0.03, 0.83),
+        ],
+        "proj-b": Array.from({ length: 8 }, (_, i) =>
+          hybrid(`b${i + 1}`, 0.033 - i * 0.001, 0.8 - i * 0.01),
+        ),
+      });
+      const svc = new FederatedSearchService({ knowledgeService: mockKS as never });
+      const result = await svc.searchAcrossProjects({ userId: "user-1", query: "q", k: 8 });
+
+      // A's three cosines above B's best earn it three slots, which it fills
+      // from the top of its own ranking: a1 first, as its fusion put it.
+      expect(result.hits.map((h) => h.chunkId)).toEqual([
+        "a1",
+        "a2",
+        "a3",
+        "b1",
+        "b2",
+        "b3",
+        "b4",
+        "b5",
+      ]);
+      expect(result.projectsWithoutHits).toEqual([]);
+      expect(result).not.toHaveProperty("projectsCapped");
+    });
+
+    it("breaks a tie between equally relevant hits for the more relevant project", async () => {
+      mockGetAccessible.mockResolvedValue([
+        { id: "proj-a", name: "A" },
+        { id: "proj-b", name: "B" },
+      ]);
+      const mockKS = buildMockKnowledgeService({
+        "proj-a": [makeChunk("a1", { score: 0.6 }), makeChunk("a2", { score: 0.5 })],
+        "proj-b": [makeChunk("b1", { score: 0.9 }), makeChunk("b2", { score: 0.5 })],
+      });
+      const svc = new FederatedSearchService({ knowledgeService: mockKS as never });
+      const result = await svc.searchAcrossProjects({
+        userId: "user-1",
+        query: "q",
+        relevanceFloor: 0,
+      });
+      // a2 and b2 tie at 0.5 and depth 1: B, the more relevant project, goes first.
+      expect(result.hits.map((h) => h.chunkId)).toEqual(["b1", "a1", "b2", "a2"]);
+    });
+
+    it("takes turns, in the order asked for, when share is 'turns'", async () => {
+      mockGetAccessible.mockResolvedValue([
+        { id: "proj-a", name: "A" },
+        { id: "proj-b", name: "B" },
+      ]);
+      const mockKS = buildMockKnowledgeService({
+        "proj-a": [
+          makeChunk("a1", { score: 0.7 }),
+          makeChunk("a2", { score: 0.69 }),
+          makeChunk("a3", { score: 0.68 }),
+        ],
+        "proj-b": [makeChunk("b1", { score: 0 }), makeChunk("b2", { score: 0.9 })],
+      });
+      const svc = new FederatedSearchService({ knowledgeService: mockKS as never });
+      const result = await svc.searchAcrossProjects({
+        userId: "user-1",
+        query: "q",
+        k: 3,
+        share: "turns",
+      });
+      expect(result.hits.map((h) => h.chunkId)).toEqual(["a1", "b1", "a2"]);
+    });
+
+    // #2336's sweep: distractors that clear the floor took one slot per round
+    // from the products holding the answer. Under relevance they take the rest.
+    it("gives the excerpts to the answer's product, not one per distractor that clears the floor", async () => {
+      const distractors = Array.from({ length: 7 }, (_, i) => `proj-d${i}`);
+      mockGetAccessible.mockResolvedValue([
+        ...distractors.map((id) => ({ id, name: id })),
+        { id: "proj-answer", name: "Answer" },
+      ]);
+      const mockKS = buildMockKnowledgeService({
+        ...Object.fromEntries(
+          distractors.map((id) => [
+            id,
+            [1, 2, 3].map((n) => makeChunk(`${id}-${n}`, { score: 0.63 - n * 0.01 })),
+          ]),
+        ),
+        "proj-answer": [1, 2, 3, 4, 5, 6].map((n) =>
+          makeChunk(`ans-${n}`, { score: 0.8 - n * 0.01 }),
+        ),
+      });
+      const svc = new FederatedSearchService({ knowledgeService: mockKS as never });
+      const result = await svc.searchAcrossProjects({ userId: "user-1", query: "q", k: 8 });
+      const ids = result.hits.map((h) => h.chunkId);
+      // Every answer hit first, then the two closest distractor hits.
+      expect(ids.slice(0, 6)).toEqual(["ans-1", "ans-2", "ans-3", "ans-4", "ans-5", "ans-6"]);
+      expect(ids).toHaveLength(8);
+      expect(ids.slice(6)).toEqual(["proj-d0-1", "proj-d1-1"]);
+      // The other distractors cleared the floor, so they were cut by k, not irrelevant.
+      expect(result.projectsCapped).toEqual(distractors.slice(2));
+      expect(result.projectsWithoutHits).toEqual(distractors.slice(2));
+    });
+
+    it("lets a relevant project asked for after eight others into the excerpts", async () => {
+      const early = Array.from({ length: 8 }, (_, i) => `proj-e${i}`);
+      mockGetAccessible.mockResolvedValue([
+        ...early.map((id) => ({ id, name: id })),
+        { id: "proj-late", name: "Late" },
+      ]);
+      const mockKS = buildMockKnowledgeService({
+        ...Object.fromEntries(early.map((id) => [id, [makeChunk(`${id}-1`, { score: 0.7 })]])),
+        "proj-late": [makeChunk("late-1", { score: 0.9 })],
+      });
+      const svc = new FederatedSearchService({ knowledgeService: mockKS as never });
+      const result = await svc.searchAcrossProjects({ userId: "user-1", query: "q", k: 8 });
+      expect(result.hits[0]!.chunkId).toBe("late-1");
+      expect(result.projectsCapped).toEqual(["proj-e7"]);
+    });
+
+    it("reports no capped project when every relevant one got a slot", async () => {
+      mockGetAccessible.mockResolvedValue([
+        { id: "proj-a", name: "A" },
+        { id: "proj-c", name: "C" },
+      ]);
+      const mockKS = buildMockKnowledgeService({
+        "proj-a": [makeChunk("a1", { score: 0.9 })],
+        "proj-c": [makeChunk("c1", { score: 0.1 })],
+      });
+      const svc = new FederatedSearchService({ knowledgeService: mockKS as never });
+      const result = await svc.searchAcrossProjects({ userId: "user-1", query: "q" });
+      expect(result.projectsWithoutHits).toEqual(["proj-c"]);
+      expect(result).not.toHaveProperty("projectsCapped");
+    });
+
+    // #2264 — the reranker fell back for one project: its scores are cosines
+    // while the other's are cross-encoder verdicts, so both are compared on
+    // the dense cosine.
+    it("compares every project on the dense cosine when only some were reranked", async () => {
+      mockGetAccessible.mockResolvedValue([
+        { id: "proj-a", name: "A" },
+        { id: "proj-b", name: "B" },
+      ]);
+      const mockKS = {
+        search: vi.fn(async (projectId: string) =>
+          projectId === "proj-a"
+            ? {
+                // A logit of -1 is a verdict of 0.27, far below B's 0.7 cosine,
+                // but A's dense match (0.72) is as close as B's.
+                hits: [{ ...makeChunk("a1", { score: -1 }), denseScore: 0.72 }],
+                mode: "hybrid" as const,
+                reranked: true,
+              }
+            : {
+                hits: [{ ...makeChunk("b1", { score: 0.7 }), denseScore: 0.7 }],
+                mode: "hybrid" as const,
+                reranked: false,
+              },
+        ),
+      };
+      const svc = new FederatedSearchService({ knowledgeService: mockKS as never });
+      const result = await svc.searchAcrossProjects({ userId: "user-1", query: "q" });
+      expect(result.hits.map((h) => h.chunkId)).toEqual(["a1", "b1"]);
+      expect(result.projectsWithoutHits).toEqual([]);
+      // The hit keeps the score a reader labels it with.
+      expect(result.hits[0]!.score).toBeCloseTo(1 / (1 + Math.exp(1)));
+    });
+
+    it("compares on the dense cosine when one of a project's searches was not reranked", async () => {
+      mockGetAccessible.mockResolvedValue([
+        { id: "proj-a", name: "A" },
+        { id: "proj-b", name: "B" },
+      ]);
+      const mockKS = {
+        search: vi.fn(async (projectId: string, query: string) => ({
+          hits:
+            projectId === "proj-a"
+              ? [{ ...makeChunk(`a-${query}`, { score: 4 }), denseScore: 0.3 }]
+              : [{ ...makeChunk(`b-${query}`, { score: 1 }), denseScore: 0.8 }],
+          mode: "hybrid" as const,
+          // A's second search fell back.
+          reranked: !(projectId === "proj-a" && query === "second"),
+        })),
+      };
+      const svc = new FederatedSearchService({ knowledgeService: mockKS as never });
+      const result = await svc.searchAcrossProjects({
+        userId: "user-1",
+        query: "first",
+        moreQueries: ["second"],
+      });
+      // On the verdicts A (0.98) would lead and B (0.73) clear the floor; on the
+      // cosines A (0.3) is far below B (0.8) and is left out.
+      expect(result.projectsWithoutHits).toEqual(["proj-a"]);
+    });
+
+    it("searches the most recently updated projects over maxProjects, and names the rest", async () => {
+      // `getUserAccessibleProjects` returns the most recently updated first.
+      mockGetAccessible.mockResolvedValue([
+        { id: "proj-new", name: "New" },
+        { id: "proj-mid", name: "Mid" },
+        { id: "proj-old", name: "Old" },
+      ]);
+      const mockKS = buildMockKnowledgeService({
+        "proj-new": [makeChunk("n1")],
+        "proj-mid": [makeChunk("m1")],
+        "proj-old": [makeChunk("o1")],
+      });
+      const svc = new FederatedSearchService({ knowledgeService: mockKS as never });
+      const result = await svc.searchAcrossProjects({
+        userId: "user-1",
+        query: "q",
+        projectIds: ["proj-old", "proj-mid", "proj-new"],
+        maxProjects: 2,
+      });
+      expect(mockKS.search.mock.calls.map((c) => c[0])).toEqual(["proj-mid", "proj-new"]);
+      expect(result.projectsSearched).toEqual(["proj-mid", "proj-new"]);
+      expect(result.projectsOverLimit).toEqual(["proj-old"]);
+      expect(result.projectNames).toEqual({
+        "proj-old": "Old",
+        "proj-mid": "Mid",
+        "proj-new": "New",
+      });
+    });
+
+    it("searches every project when the scope is within maxProjects", async () => {
+      mockGetAccessible.mockResolvedValue([
+        { id: "proj-a", name: "A" },
+        { id: "proj-b", name: "B" },
+      ]);
+      const mockKS = buildMockKnowledgeService({});
+      const svc = new FederatedSearchService({ knowledgeService: mockKS as never });
+      const result = await svc.searchAcrossProjects({
+        userId: "user-1",
+        query: "q",
+        maxProjects: 2,
+      });
+      expect(mockKS.search).toHaveBeenCalledTimes(2);
+      expect(result).not.toHaveProperty("projectsOverLimit");
+    });
+
+    it("names a reachable archived project as archived, not as rejected", async () => {
+      mockGetAccessible.mockResolvedValue([{ id: "proj-a", name: "A" }]);
+      mockGetArchived.mockResolvedValue([{ id: "proj-arch", name: "Old" }]);
+      const mockKS = buildMockKnowledgeService({ "proj-a": [makeChunk("a1")] });
+      const svc = new FederatedSearchService({ knowledgeService: mockKS as never });
+      const result = await svc.searchAcrossProjects({
+        userId: "user-1",
+        query: "q",
+        projectIds: ["proj-a", "proj-arch", "proj-secret"],
+      });
+      // Asked only about the ids the caller cannot search.
+      expect(mockGetArchived).toHaveBeenCalledWith("user-1", ["proj-arch", "proj-secret"]);
+      expect(result.projectsArchived).toEqual(["proj-arch"]);
+      expect(result.projectsRejected).toBe(1);
+      expect(result.projectNames).toEqual({ "proj-a": "A", "proj-arch": "Old" });
+      expect(mockKS.search.mock.calls.map((c) => c[0])).toEqual(["proj-a"]);
+    });
+
+    it("names the archived projects when every requested project is archived", async () => {
+      mockGetAccessible.mockResolvedValue([]);
+      mockGetArchived.mockResolvedValue([{ id: "proj-arch", name: "Old" }]);
+      const mockKS = buildMockKnowledgeService({});
+      const svc = new FederatedSearchService({ knowledgeService: mockKS as never });
+      const result = await svc.searchAcrossProjects({
+        userId: "user-1",
+        query: "q",
+        projectIds: ["proj-arch"],
+      });
+      expect(result.projectsArchived).toEqual(["proj-arch"]);
+      expect(result.projectsRejected).toBe(0);
+      expect(result.projectNames).toEqual({ "proj-arch": "Old" });
+      expect(mockKS.search).not.toHaveBeenCalled();
     });
 
     it("keeps every project in when the floor is 0", async () => {
@@ -620,6 +948,32 @@ describe("FederatedSearchService", () => {
       expect(result.projectsWithoutHits).toEqual([]);
     });
 
+    // #2264 code review: C cleared the floor on the earlier topic alone, and the
+    // conversational cap, not closer matches, left it out; k was not even full.
+    it("does not report as capped a product only the conversational search found", async () => {
+      mockGetAccessible.mockResolvedValue([
+        { id: "proj-a", name: "A" },
+        { id: "proj-c", name: "C" },
+      ]);
+      const mockKS = byQuery({
+        "proj-a": {
+          client: [makeChunk("au1", { score: 0.9 })],
+          annual: [makeChunk("ac1", { score: 0.95 }), makeChunk("ac2", { score: 0.94 })],
+        },
+        "proj-c": { annual: [makeChunk("cc1", { score: 0.85 })] },
+      });
+      const svc = new FederatedSearchService({ knowledgeService: mockKS as never });
+      const result = await svc.searchAcrossProjects({
+        userId: "user-1",
+        query: "and in the client?",
+        contextualQuery: "and in the client?\nHow is annual billing done?",
+        k: 5,
+      });
+      expect(result.hits.map((h) => h.chunkId)).toEqual(["au1", "ac1", "ac2"]);
+      expect(result.projectsWithoutHits).toEqual(["proj-c"]);
+      expect(result).not.toHaveProperty("projectsCapped");
+    });
+
     it("still floors a product whose only hits are conversational, against the user's best", async () => {
       mockGetAccessible.mockResolvedValue([
         { id: "proj-a", name: "A" },
@@ -748,7 +1102,8 @@ describe("FederatedSearchService", () => {
           projectId === "proj-a"
             ? {
                 // The cross-encoder's favourite is a weak dense match; what is
-                // left of A is far less relevant than B.
+                // left of A is far less relevant than B, on the verdict both
+                // projects were scored with (#2264: one scale).
                 hits: [
                   scored("a-top", 6, { denseScore: 0.3 }),
                   scored("a-rest", -1, { denseScore: 0.7 }),
@@ -756,7 +1111,11 @@ describe("FederatedSearchService", () => {
                 mode: "hybrid" as const,
                 reranked: true,
               }
-            : { hits: [scored("b1", 0.6)], mode: "hybrid" as const, reranked: false },
+            : {
+                hits: [scored("b1", 0.6, { denseScore: 0.6 })],
+                mode: "hybrid" as const,
+                reranked: true,
+              },
         ),
       };
       const svc = new FederatedSearchService({ knowledgeService: mockKS as never });

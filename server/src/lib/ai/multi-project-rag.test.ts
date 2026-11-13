@@ -90,6 +90,10 @@ describe("buildMultiProjectRagContext (#2238)", () => {
       query: "how does rule X work?",
       k: 8,
       relevanceFloor: 0.6,
+      // #2264 — the most relevant products' hits take the excerpts, and the
+      // fan-out is bounded (`CHAT_MULTI_PROJECT_MAX_PROJECTS`, default 20).
+      share: "relevance",
+      maxProjects: 20,
       // #2294 — chat's absolute floor, read for the hits' embedders.
       absoluteFloor: readRelevanceFloor,
     });
@@ -340,6 +344,8 @@ describe("buildMultiProjectRagContext reads the conversation (#2279)", () => {
       contextualQuery: "and in the client?\nHow is annual billing done?",
       k: 8,
       relevanceFloor: 0.6,
+      share: "relevance",
+      maxProjects: 20,
       absoluteFloor: readRelevanceFloor,
     });
   });
@@ -517,13 +523,20 @@ describe("buildMultiProjectRagContext reads the conversation (#2279)", () => {
       },
     });
     expect(search).toHaveBeenCalledWith(
-      expect.objectContaining({ documentIds: ["doc-a1", "doc-keep"], relevanceFloor: 0 }),
+      // #2264 — every product holding an attached document gets its turn.
+      expect.objectContaining({
+        documentIds: ["doc-a1", "doc-keep"],
+        relevanceFloor: 0,
+        share: "turns",
+      }),
     );
     expect(out.block).toContain("The user attached documents to this question");
     expect(out.block).toContain("[2] [Beta] b8.md#2 (cited in your previous answer)");
     expect(out.block).not.toContain("b9.md");
     // #2294 — the user chose the source: no absolute floor either.
     expect(search.mock.calls[0]![0].absoluteFloor).toBeUndefined();
+    // #2264 — nor the per-turn project cap: a product holding an attachment is searched.
+    expect(search.mock.calls[0]![0].maxProjects).toBeUndefined();
   });
 
   it("says a product the attached documents do not cover has no excerpt for that reason", async () => {
@@ -682,6 +695,183 @@ describe("buildMultiProjectRagContext — relevance floor (#2294)", () => {
     });
     expect(out.grounding).toMatchObject({
       sourcesUsed: [{ name: "[Alpha] a1.md", excerpts: 1, relevance: 0.62 }],
+    });
+  });
+});
+
+describe("buildMultiProjectRagContext — ranking past the excerpt limit (#2264)", () => {
+  it("passes an injected per-turn project limit to the search", async () => {
+    const search = vi.fn(async (_o: FederatedSearchOptions) => result());
+    await buildMultiProjectRagContext({
+      userId: "u1",
+      scope: twoProducts,
+      query: "q",
+      deps: { search, maxProjects: 3 },
+    });
+    expect(search.mock.calls[0]![0].maxProjects).toBe(3);
+  });
+
+  it("says a relevant product left out by the excerpt limit was cut, not that it matched nothing", async () => {
+    const out = await buildMultiProjectRagContext({
+      userId: "u1",
+      scope: { kind: "projects", projectIds: ["pa", "pb", "pc"] },
+      query: "q",
+      deps: {
+        search: async () =>
+          result({
+            hits: [hit("pa", "Alpha", "a1", "x")],
+            projectsSearched: ["pa", "pb", "pc"],
+            projectsWithoutHits: ["pb", "pc"],
+            projectsCapped: ["pb"],
+            projectNames: { pa: "Alpha", pb: "Beta", pc: "Gamma" },
+          }),
+      },
+    });
+    expect(out.block).toContain(
+      'Searched and relevant, but left out because the 8 excerpts went to closer matches: "Beta"',
+    );
+    expect(out.block).toContain("say that its sources may hold more than is shown here");
+    expect(out.block).toContain('Searched, but no excerpt from it is included above: "Gamma"');
+    expect(out.block).not.toContain('included above: "Beta"');
+  });
+
+  it("names the products a scope over the limit did not search, the first ten and a count", async () => {
+    const over = Array.from({ length: 12 }, (_, i) => `p${i}`);
+    const out = await buildMultiProjectRagContext({
+      userId: "u1",
+      scope: { kind: "workspace", workspaceId: "w1" },
+      query: "q",
+      deps: {
+        role: async () => "reader",
+        workspaceProjects: async () => ["pa", ...over],
+        search: async () =>
+          result({
+            hits: [hit("pa", "Alpha", "a1", "x")],
+            projectsSearched: ["pa"],
+            projectsOverLimit: over,
+            projectNames: {
+              pa: "Alpha",
+              ...Object.fromEntries(over.map((id) => [id, `Name ${id}`])),
+            },
+          }),
+      },
+    });
+    expect(out.block).toContain("holds more products than one turn searches, so 12 were not");
+    expect(out.block).toContain('"Name p0", "Name p1"');
+    expect(out.block).toContain('"Name p9" and 2 more');
+    expect(out.block).not.toContain("Name p10");
+    expect(out.block).toContain("suggest narrowing the chat's scope");
+  });
+
+  it("names a chosen archived product as archived, not as out of reach", async () => {
+    const out = await buildMultiProjectRagContext({
+      userId: "u1",
+      scope: { kind: "projects", projectIds: ["pa", "old"] },
+      query: "q",
+      deps: {
+        search: async () =>
+          result({
+            hits: [hit("pa", "Alpha", "a1", "x")],
+            projectsSearched: ["pa"],
+            projectsArchived: ["old"],
+            projectNames: { pa: "Alpha", old: "Legacy" },
+          }),
+      },
+    });
+    expect(out.block).toContain('Archived, so not searched: "Legacy"');
+    expect(out.block).not.toContain("no longer available");
+  });
+
+  it("says nothing of a workspace's archived projects, which are not in its live scope", async () => {
+    const out = await buildMultiProjectRagContext({
+      userId: "u1",
+      scope: { kind: "workspace", workspaceId: "w1" },
+      query: "q",
+      deps: {
+        role: async () => "reader",
+        workspaceProjects: async () => ["pa", "old"],
+        search: async () =>
+          result({
+            hits: [hit("pa", "Alpha", "a1", "x")],
+            projectsSearched: ["pa"],
+            projectsArchived: ["old"],
+            projectNames: { pa: "Alpha", old: "Legacy" },
+          }),
+      },
+    });
+    expect(out.block).not.toContain("Legacy");
+    expect(out.block).not.toContain("no longer available");
+  });
+
+  it("says the projects are archived when every one in the scope is", async () => {
+    const out = await buildMultiProjectRagContext({
+      userId: "u1",
+      scope: twoProducts,
+      query: "q",
+      deps: {
+        search: async () =>
+          result({ projectsArchived: ["pa", "pb"], projectNames: { pa: "Alpha", pb: "Beta" } }),
+      },
+    });
+    expect(out.block).toContain('but its projects are archived ("Alpha" and "Beta")');
+    expect(out.block).not.toContain("available to you");
+  });
+
+  it("still names the chosen archived products when others are out of reach", async () => {
+    const out = await buildMultiProjectRagContext({
+      userId: "u1",
+      scope: { kind: "projects", projectIds: ["pa", "gone"] },
+      query: "q",
+      deps: {
+        search: async () =>
+          result({ projectsArchived: ["pa"], projectsRejected: 1, projectNames: { pa: "Alpha" } }),
+      },
+    });
+    expect(out.block).toContain(
+      'but its projects are archived ("Alpha") or no longer available to you',
+    );
+  });
+
+  it("does not name a workspace's archived projects when nothing was searched", async () => {
+    const out = await buildMultiProjectRagContext({
+      userId: "u1",
+      scope: { kind: "workspace", workspaceId: "w1" },
+      query: "q",
+      deps: {
+        role: async () => "reader",
+        workspaceProjects: async () => ["old"],
+        search: async () => result({ projectsArchived: ["old"], projectNames: { old: "Legacy" } }),
+      },
+    });
+    expect(out.block).toContain("but its projects are archived.");
+    expect(out.block).not.toContain("Legacy");
+  });
+
+  it("gives two products of the same name distinct labels", async () => {
+    const out = await buildMultiProjectRagContext({
+      userId: "u1",
+      scope: { kind: "projects", projectIds: ["proj-aaaaaa", "proj-bbbbbb"] },
+      query: "q",
+      deps: {
+        search: async () =>
+          result({
+            hits: [
+              hit("proj-aaaaaa", "Billing", "a1", "One."),
+              hit("proj-bbbbbb", "Billing", "b1", "Two."),
+            ],
+            projectsSearched: ["proj-aaaaaa", "proj-bbbbbb"],
+            projectNames: { "proj-aaaaaa": "Billing", "proj-bbbbbb": "Billing" },
+          }),
+      },
+    });
+    expect(out.block).toContain("[1] [Billing (aaaaaa)] a1.md#0");
+    expect(out.block).toContain("[2] [Billing (bbbbbb)] b1.md#0");
+    expect(out.block).toContain('"Billing (aaaaaa)" and "Billing (bbbbbb)"');
+    expect(out.grounding).toMatchObject({
+      projects: [
+        { projectId: "proj-aaaaaa", projectName: "Billing (aaaaaa)" },
+        { projectId: "proj-bbbbbb", projectName: "Billing (bbbbbb)" },
+      ],
     });
   });
 });

@@ -149,6 +149,9 @@ describe("<ChatPage /> — multi-product chat (#2238)", () => {
     });
     render(<ChatPage />, { wrapper: makeWrapper({ withAuth: false }) });
     // Before the first send: the scope will search, so no "not grounded" notice.
+    // #2264 — asserted once the page is ready (the box is enabled): before
+    // that the notice is hidden whatever the scope, so the check proved nothing.
+    await waitFor(() => expect(screen.getByLabelText("Message")).toBeEnabled());
     expect(screen.queryByTestId("chat-ungrounded-notice")).not.toBeInTheDocument();
     await sendChatMessage("what changes in A and B?");
 

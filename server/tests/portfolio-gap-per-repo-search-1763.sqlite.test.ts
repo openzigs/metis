@@ -261,6 +261,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(off.calls).toHaveLength(1);
       // #2238 — the shared search keeps every project's evidence: no relevance floor.
       expect(off.calls[0]!.relevanceFloor).toBe(0);
+      // #2264 — and every project takes its turn: the relevance share would
+      // hand one project's slots to another's closer hits.
+      expect(off.calls[0]!.share).toBe("turns");
       expect(reasonOf(before, P4, RC_P4_MAIL)).toBe("no-evidence-retrieved");
 
       const on = recordingSearch(P4_HITS);

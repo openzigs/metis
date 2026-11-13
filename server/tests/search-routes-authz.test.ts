@@ -75,8 +75,12 @@ let currentWorkspaces: string[] = ["ws-b"];
  */
 function matchesWhere(row: ProjectRow, where: Record<string, unknown>): boolean {
   if ("deletedAt" in where && where.deletedAt === null && row.deletedAt !== null) return false;
-  const status = where.status as { not?: string } | undefined;
-  if (status?.not && row.status === status.not) return false;
+  const status = where.status as string | { not?: string } | undefined;
+  if (typeof status === "string" && row.status !== status) return false;
+  if (typeof status === "object" && status.not && row.status === status.not) return false;
+  // #2264 — the archived-project read narrows to the requested ids.
+  const id = where.id as { in?: string[] } | undefined;
+  if (id?.in && !id.in.includes(row.id)) return false;
   const or = where.OR as Array<Record<string, unknown>> | undefined;
   if (or) {
     const anyMatch = or.some((clause) => {
@@ -92,6 +96,9 @@ function matchesWhere(row: ProjectRow, where: Record<string, unknown>): boolean 
   return true;
 }
 
+/** #2264 — the caller's workspace memberships, read once per resolution of the caller. */
+const memberFindMany = vi.fn(async () => currentWorkspaces.map((workspaceId) => ({ workspaceId })));
+
 const projectFindMany = vi.fn(async ({ where }: { where: Record<string, unknown> }) =>
   PROJECTS.filter((p) => matchesWhere(p, where)).map((p) => ({ id: p.id, name: p.name })),
 );
@@ -101,7 +108,7 @@ vi.mock("../src/lib/prisma.js", async () => {
   const prisma = withRouteAuth({
     $queryRawUnsafe: vi.fn(async () => 1),
     workspaceMember: {
-      findMany: vi.fn(async () => currentWorkspaces.map((workspaceId) => ({ workspaceId }))),
+      findMany: () => memberFindMany(),
     },
     user: {
       upsert: vi.fn(async ({ create }: { create: Record<string, unknown> }) => ({
@@ -296,6 +303,51 @@ describe("POST /api/search/federated — cross-tenant chunk disclosure (#1052)",
     expect(res.status).toBe(200);
     expect(res.body.data.projectsSearched).toEqual(["proj-open"]);
     expect(res.body.data.hits[0].text).toBe("LEGACY-OPEN-CHUNK");
+  });
+
+  it("#2264 — names the caller's own archived project as archived, not as unavailable", async () => {
+    const token = await loginAs("reader", ["ws-b"]);
+    const res = await request(app)
+      .post("/api/search/federated")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ query: "password", projectIds: ["proj-b", "proj-arch"] });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.projectsSearched).toEqual(["proj-b"]);
+    expect(res.body.data.projectsArchived).toEqual(["proj-arch"]);
+    expect(res.body.data.projectsRejected).toBe(0);
+    expect(res.body.data.projectNames["proj-arch"]).toBe("Archived (workspace B)");
+    expect(JSON.stringify(res.body)).not.toContain("ARCHIVED-CHUNK");
+    expect(knowledgeSearch.mock.calls.map((c) => c[0])).not.toContain("proj-arch");
+  });
+
+  it("#2264 — reads the archived project for the caller it already resolved", async () => {
+    const token = await loginAs("reader", ["ws-b"]);
+    memberFindMany.mockClear();
+    projectFindMany.mockClear();
+    const res = await request(app)
+      .post("/api/search/federated")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ query: "password", projectIds: ["proj-b", "proj-arch"] });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.projectsArchived).toEqual(["proj-arch"]);
+    // The live and the archived read: two project queries, one caller resolution.
+    expect(projectFindMany).toHaveBeenCalledTimes(2);
+    expect(memberFindMany).toHaveBeenCalledTimes(1);
+  });
+
+  it("#2264 — never names another workspace's archived project", async () => {
+    const token = await loginAs("reader", ["ws-a"]);
+    const res = await request(app)
+      .post("/api/search/federated")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ query: "password", projectIds: ["proj-a", "proj-arch"] });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.projectsRejected).toBe(1);
+    expect(res.body.data.projectsArchived).toBeUndefined();
+    expect(JSON.stringify(res.body)).not.toContain("Archived (workspace B)");
   });
 
   it("lets a system admin search any workspace", async () => {

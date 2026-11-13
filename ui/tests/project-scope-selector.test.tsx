@@ -451,6 +451,57 @@ describe("ProjectScopeSelector — workspace scope (#2238)", () => {
     });
   });
 
+  // #2264 — a stored workspace scope the caller has left was sent as is, and
+  // the first send of the chat failed with a 404.
+  it("drops a stored workspace scope once the list shows the caller has left it", async () => {
+    const onChange = vi.fn();
+    render(
+      <ProjectScopeSelector
+        value={{ mode: "workspace", projectIds: [], workspaceId: "w-left" }}
+        onChange={onChange}
+      />,
+      { wrapper: makeWrapper() },
+    );
+    await waitFor(() => expect(onChange).toHaveBeenCalledWith({ mode: "all", projectIds: [] }));
+    expect(JSON.parse(localStorage.getItem("metis.chat.projectScope")!)).toEqual({
+      mode: "all",
+      projectIds: [],
+    });
+  });
+
+  it("keeps a stored workspace scope the caller is still a member of", async () => {
+    const onChange = vi.fn();
+    render(
+      <ProjectScopeSelector
+        value={{ mode: "workspace", projectIds: [], workspaceId: "w-1" }}
+        onChange={onChange}
+      />,
+      { wrapper: makeWrapper() },
+    );
+    await waitFor(() => expect(screen.getByTestId("project-scope-selector")).toBeEnabled());
+    await waitFor(() => expect(vi.mocked(apiFetch)).toHaveBeenCalledWith("/workspaces"));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("does not drop a workspace scope before the workspace list has loaded", async () => {
+    vi.mocked(apiFetch).mockImplementation(
+      async (path: string) =>
+        (path === "/workspaces" ? new Promise(() => {}) : [{ id: "p-1", name: "Alpha" }]) as never,
+    );
+    const onChange = vi.fn();
+    render(
+      <ProjectScopeSelector
+        value={{ mode: "workspace", projectIds: [], workspaceId: "w-1" }}
+        onChange={onChange}
+      />,
+      { wrapper: makeWrapper() },
+    );
+    await waitFor(() => expect(screen.getByTestId("project-scope-selector")).toBeEnabled());
+    await new Promise((r) => setTimeout(r, 20));
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
   it("with no workspace open the option is disabled and says why, even over a stored workspace scope", async () => {
     localStorage.removeItem("metis.activeWorkspaceId");
     vi.mocked(apiFetch).mockImplementation(

@@ -1247,6 +1247,46 @@ including a scope-5 run whose results were lost to a bad `--include` path and ru
   fall at 9 projects (33% to 17%) and the recovery (35–44%) are larger than that, and the
   retrieval counts, which carry no model noise, show the same thing.
 
+**After #2264 (2026-11-13, `--routing-sweep`, $0).** #2264 replaced the equal turns with a
+merge on relevance (`fuseByRelevance`, `share: "relevance"`). The same sweep, on the branch,
+on a freshly materialized corpus. The `ranked` counterfactual reads exactly as before (68%,
+8/32 at 9), so the corpus and probes match the run above:
+
+| Scope | Way | Excerpts from an answer product, before → after | Expected files retrieved, before → after |
+|---:|---|---:|---:|
+| 2 | all | 67% → 73% (70/96) | 9/32 → 9/32 |
+| 5 | all | 43% → 67% (80/120) | 8/32 → 9/32 |
+| 9 | all | **31% → 70% (101/144)** | **4/32 → 9/32** |
+| 9 | routed | 61% → 77% (111/144) | 8/32 → 9/32 |
+| 9 | oracle | 100% → 100% (138/138) | 11/32 → 12/32 |
+
+Search-all at nine products now retrieves as many expected files as routing (9/32), and more
+than the cosine-only counterfactual, so the retrieval loss #2336 measured is recovered.
+
+**After #2264's review fixes (2026-11-13, answers paid).** Re-measured at the PR's final
+merge rule (on the cosine scale a project's slots follow each hit's own cosine, and the project
+fills them in its own order) on a newly materialized corpus. The `--routing-sweep` ($0, at
+`e6676d50`) reads 69% (100/144) and 8/32 for `all` at nine products, against 74% (107/144) and
+8/32 for `routed`. `ranked` reads 7/32 here, against 8/32 above, so this corpus is not the
+earlier one. That is why the answers were measured again for both ways on it, at `e8ce629b`
+(Sonnet 5.5 answers and judge, the 10 answerable questions; readings in `readings/ba-qa/`):
+
+| | 9, all (before #2264) | 9, all | 9, all (again) | 9, routed |
+|---|---:|---:|---:|---:|
+| Correctness: mean facts stated | 17% | 23% | 23% | 28% |
+| Citation precision | 29% (5/17) | 37% (10/27) | 38% (10/26) | 35% (9/26) |
+| Citation recall | 5/32 | 10/32 | 10/32 | 9/32 |
+| False abstention on answerable | 6/10 | 5/10 | 5/10 | 6/10 |
+| Input tokens per question | 4,489 | 5,832 | 5,832 | 5,535 |
+| Spend (answers + judge) | | $0.275918 | $0.135486 | $0.271591 |
+
+On the same corpus, search-all is within 5 points of routed on facts stated, which is under the
+roughly 10 points two identical runs differed by above. It cites more expected files than
+routed and abstains no more often. Both sit below the 2026-11-12 routed figures (35–42%), but
+routed itself reads 28% on this corpus, so that difference is the corpus and the run, not the
+merge. Search-all is within reach of routed, so #2336 stays closed. The three runs cost $0.682995 (the repeat run read prompt-cache
+hits, hence its lower cost).
+
 ### Secret redaction in repository source (#2333), 2026-11-12
 
 #2333 redacts secrets in repository files before they are indexed, stored in the code graph or

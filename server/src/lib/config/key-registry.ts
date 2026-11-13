@@ -575,7 +575,15 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
     valueType: "int",
     schema: z.coerce.number().int().min(0).max(100),
     description:
-      "In a chat scoped to several projects (or a workspace), a project's excerpts reach the prompt only when its best match is at least this share of the best project's (#2238). Default 75; 0 lets every project with a match in. Relevance is the dense cosine, or the cross-encoder's verdict when RAG_RERANK is on.",
+      "In a chat scoped to several projects (or a workspace), a project's excerpts reach the prompt only when its best match is at least this share of the best project's (#2238). Default 75; 0 lets every project with a match in. Relevance is the dense cosine, or the cross-encoder's verdict when RAG_RERANK is on and every project's search was reranked (#2264).",
+    sensitive: false,
+  },
+  CHAT_MULTI_PROJECT_MAX_PROJECTS: {
+    tier: "tunable",
+    valueType: "int",
+    schema: z.coerce.number().int().min(1),
+    description:
+      "The most projects one turn of a chat scoped to several projects (or a workspace) searches (#2264). Over it, the projects most recently updated are searched and the answer is told which were not. Default 20.",
     sensitive: false,
   },
   // ── Epic #725 / Issue #729 — fused code-graph retrieval in analysis ────
