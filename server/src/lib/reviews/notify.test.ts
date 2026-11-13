@@ -16,9 +16,17 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const notificationCreate = vi.fn();
 const prefFindMany = vi.fn();
 const itemFindMany = vi.fn();
+// #2394 — the access lookup (`reviewersWhoCanOpen`): the project, then the
+// users among the recipients who can open it.
+const projectFindUnique = vi.fn();
+const userFindMany = vi.fn();
+/** Users the access lookup leaves out (they can no longer open the project). */
+let withoutAccess = new Set<string>();
 vi.mock("../prisma.js", () => ({
   prisma: {
     notification: { create: (...a: unknown[]) => notificationCreate(...a) },
+    project: { findUnique: (...a: unknown[]) => projectFindUnique(...a) },
+    user: { findMany: (...a: unknown[]) => userFindMany(...a) },
     notificationPreference: { findMany: (...a: unknown[]) => prefFindMany(...a) },
     // #2219 — the reviews that pinned an edited requirement.
     reviewRequestItem: { findMany: (...a: unknown[]) => itemFindMany(...a) },
@@ -58,6 +66,7 @@ const {
   dispatchReviewedRequirementEdited,
   reviewHref,
 } = await import("./notify.js");
+const { REVIEWER_LOOKUP_TIMEOUT_MS } = await import("./review-events.js");
 
 function submittedInput(over: Partial<Parameters<typeof notifyReviewSubmitted>[0]> = {}) {
   return {
@@ -98,6 +107,15 @@ beforeEach(() => {
   // Default: no stored preference rows → inApp × requirementsApproved is ON.
   prefFindMany.mockResolvedValue([]);
   shouldNotifySpy.mockImplementation((...a) => actualPrefs.shouldNotify(...a));
+  // #2394 — default: a live workspace project every recipient can still open.
+  withoutAccess = new Set();
+  // Reset, not just clear: an unconsumed `…Once` must not leak into the next test.
+  projectFindUnique.mockReset();
+  userFindMany.mockReset();
+  projectFindUnique.mockResolvedValue({ workspaceId: "ws-1", deletedAt: null, workspace: null });
+  userFindMany.mockImplementation(async ({ where }: { where: { id: { in: string[] } } }) =>
+    where.id.in.filter((id) => !withoutAccess.has(id)).map((id) => ({ id })),
+  );
 });
 
 describe("reviewHref", () => {
@@ -222,6 +240,46 @@ describe("notifyReviewSubmitted", () => {
     const rows = createdRows();
     expect(rows).toHaveLength(1);
     expect(rows[0].userId).toBe("rev-b");
+  });
+
+  it("#2394 — a reopen reaches only the reviewers who can still open the project", async () => {
+    withoutAccess = new Set(["rev-b"]);
+
+    await notifyReviewSubmitted(submittedInput({ reopened: true }));
+
+    // No row written for the removed reviewer, and no live event either.
+    expect(createdRows().map((r) => r.userId)).toEqual(["rev-a"]);
+    expect(createdRows()[0].title).toBe("Re-review requested");
+    expect(to.mock.calls.map((c) => c[0])).toEqual(["user:rev-a"]);
+    // The lookup is asked about the project of the review.
+    expect(projectFindUnique).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: "proj-1" } }),
+    );
+  });
+
+  it("#2394 — a failed access lookup sends nobody anything (fail closed)", async () => {
+    userFindMany.mockRejectedValueOnce(new Error("db down"));
+
+    await expect(
+      notifyReviewSubmitted(submittedInput({ reopened: true })),
+    ).resolves.toBeUndefined();
+
+    expect(notificationCreate).not.toHaveBeenCalled();
+    expect(to).not.toHaveBeenCalled();
+  });
+
+  it("#2394 — an access lookup that hangs past the timeout sends nobody anything", async () => {
+    vi.useFakeTimers();
+    try {
+      userFindMany.mockReturnValueOnce(new Promise(() => {}));
+      const done = notifyReviewSubmitted(submittedInput({ reopened: true }));
+      await vi.advanceTimersByTimeAsync(REVIEWER_LOOKUP_TIMEOUT_MS);
+      await done;
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(notificationCreate).not.toHaveBeenCalled();
+    expect(to).not.toHaveBeenCalled();
   });
 
   it("never throws on malformed input (top-level guard)", async () => {
@@ -427,6 +485,59 @@ describe("#2219 — notifyReviewedRequirementEdited", () => {
     const [row] = createdRows();
     expect(row.title).toBe("Requirement under review changed");
     expect(String(row.message)).toContain("is reviewing v1");
+  });
+
+  it("#2394 — a participant who can no longer open the project gets no row and no event", async () => {
+    itemFindMany.mockResolvedValue([item()]);
+    withoutAccess = new Set(["rev-b", "user-req"]);
+
+    await notifyReviewedRequirementEdited(editInput());
+
+    expect(createdRows().map((r) => r.userId)).toEqual(["rev-a"]);
+    const personal = to.mock.calls.map((c) => c[0]).filter((r) => String(r).startsWith("user:"));
+    expect(personal).toEqual(["user:rev-a"]);
+    expect(emit).not.toHaveBeenCalledWith(
+      "review:notification",
+      expect.objectContaining({ userId: "rev-b" }),
+    );
+  });
+
+  it("#2394 — someone shut out of the newest review's project is told of an older one they can open", async () => {
+    itemFindMany.mockResolvedValue([
+      item({ projectId: "proj-closed", assignments: [{ reviewerId: "rev-a" }] }),
+      item({ id: "rev-2", projectId: "proj-1", assignments: [{ reviewerId: "rev-a" }] }),
+    ]);
+    projectFindUnique.mockImplementation(async ({ where }: { where: { id: string } }) =>
+      where.id === "proj-closed"
+        ? { workspaceId: "ws-1", deletedAt: new Date(), workspace: null }
+        : { workspaceId: "ws-1", deletedAt: null, workspace: null },
+    );
+    // A soft-deleted project is open to system admins only: the lookup asks
+    // for admins, whom this double does not have.
+    userFindMany.mockImplementation(
+      async ({
+        where,
+      }: {
+        where: { id: { in: string[] }; AND: Array<Record<string, unknown>> };
+      }) => ("roles" in where.AND[0] ? [] : where.id.in.map((id) => ({ id }))),
+    );
+
+    await notifyReviewedRequirementEdited(editInput());
+
+    const rows = createdRows();
+    expect(rows.map((r) => [r.userId, r.href]).sort()).toEqual([
+      ["rev-a", "/reviews/rev-2"],
+      ["user-req", "/reviews/rev-2"],
+    ]);
+  });
+
+  it("#2394 — a failed access lookup sends no review_item_changed (fail closed)", async () => {
+    itemFindMany.mockResolvedValue([item()]);
+    userFindMany.mockRejectedValueOnce(new Error("db down"));
+
+    await notifyReviewedRequirementEdited(editInput());
+
+    expect(notificationCreate).not.toHaveBeenCalled();
   });
 
   it("respects a recipient who turned review notifications off", async () => {

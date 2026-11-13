@@ -91,7 +91,10 @@ export async function emitReviewChanged(
     log.warn("Failed to emit review:changed", { reviewId, error: (err as Error).message });
   }
   if (reviewerIds.length === 0) return;
-  const reviewers = await reachableReviewers(projectId, reviewId, reviewerIds);
+  const reviewers = await reviewersWhoCanOpenOrNone(projectId, reviewerIds, {
+    event: "review:changed",
+    reviewId,
+  });
   if (reviewers.length === 0) return;
   try {
     io.to(reviewers.map(userRoom)).except(room).emit("review:changed", event);
@@ -100,11 +103,19 @@ export async function emitReviewChanged(
   }
 }
 
-async function reachableReviewers(
+/**
+ * {@link reviewersWhoCanOpen}, bounded by {@link REVIEWER_LOOKUP_TIMEOUT_MS} and
+ * failing closed: a failed or timed-out lookup is logged and answers `[]`, so
+ * nobody is sent anything rather than someone who cannot open the project.
+ * Never rejects. Shared by `review:changed` and the review notifications
+ * (`notify.ts`: `review_requested`, `review_item_changed`).
+ */
+export async function reviewersWhoCanOpenOrNone(
   projectId: string,
-  reviewId: string,
   reviewerIds: readonly string[],
+  context: { event: string; reviewId: string },
 ): Promise<string[]> {
+  if (reviewerIds.length === 0) return [];
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(
@@ -116,8 +127,8 @@ async function reachableReviewers(
   try {
     return await Promise.race([reviewersWhoCanOpen(projectId, reviewerIds), timeout]);
   } catch (err) {
-    log.warn("review:changed reviewer access lookup failed; sending to the project room only", {
-      reviewId,
+    log.warn(`${context.event} reviewer access lookup failed; no reviewer is sent it`, {
+      reviewId: context.reviewId,
       error: (err as Error).message,
     });
     return [];

@@ -9,6 +9,8 @@ import request from "supertest";
 
 const mockPrisma = {
   user: { findMany: vi.fn() },
+  // #2394 — the picker's project audience (`projectAudienceWhere`).
+  project: { findUnique: vi.fn() },
 };
 
 vi.mock("../src/lib/prisma.js", () => ({ prisma: mockPrisma }));
@@ -108,6 +110,21 @@ describe("GET /users", () => {
 
     expect(res.status).toBe(401);
     expect(res.body.error.code).toBe("AUTH_REQUIRED");
+    expect(mockPrisma.user.findMany).not.toHaveBeenCalled();
+  });
+
+  it("#2394 — a system admin naming an unknown project gets 404, and no user is listed", async () => {
+    // The admin bypasses the access check, so only the audience lookup can
+    // tell an unknown project from a known one.
+    mockPrisma.project.findUnique.mockResolvedValue(null);
+
+    const res = await request(createApp()).get("/users?projectId=proj-unknown");
+
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe("NOT_FOUND");
+    expect(mockPrisma.project.findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: "proj-unknown" } }),
+    );
     expect(mockPrisma.user.findMany).not.toHaveBeenCalled();
   });
 });

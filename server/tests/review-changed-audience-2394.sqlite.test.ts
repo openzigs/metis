@@ -8,8 +8,13 @@
  * included, and a legacy project with no workspace is open to everyone — the
  * project-access rule (`assertLiveProjectAccess`).
  *
- * Proven through the real emitter against a real SQLite database built from
- * the migration chain; only the socket server is a fake.
+ * The same rule gates the review notifications that carry the review's
+ * title: `review_requested` (a submit, or the reopen of an approved review)
+ * and `review_item_changed`. Someone without access gets no row and no
+ * `review:notification`.
+ *
+ * Proven through the real emitter and fan-out against a real SQLite database
+ * built from the migration chain; only the socket server is a fake.
  */
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 import { PrismaClient } from "@prisma/client";
@@ -37,6 +42,8 @@ const to = vi.fn((_rooms: string | string[]) => ({ emit, except: () => ({ emit }
 vi.mock("../src/lib/socket/registry.js", () => ({ getSocketServer: () => ({ to }) }));
 
 const { emitReviewChanged } = await import("../src/lib/reviews/review-events.js");
+const { notifyReviewSubmitted, notifyReviewedRequirementEdited } =
+  await import("../src/lib/reviews/notify.js");
 
 const WS = "ws-2394";
 const OTHER_WS = "ws-2394-other";
@@ -48,6 +55,10 @@ const ADMIN = "u-2394-admin";
 const DISABLED = "u-2394-disabled";
 const SCIM_DELETED = "u-2394-scim-deleted";
 const REVIEWERS = [MEMBER, REMOVED, ADMIN, DISABLED, SCIM_DELETED];
+const EDITOR = "u-2394-editor";
+const ANALYSIS = "an-2394";
+const REQUIREMENT = "req-2394";
+const REVIEW = "rev-2394-approved";
 
 describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
   "#2394 — review:changed reaches only reviewers who can open the project",
@@ -96,6 +107,42 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       await db.project.create({
         data: { id: LEGACY, name: LEGACY, slug: LEGACY, createdById: MEMBER },
       });
+      // An approved review in PROJECT that pinned a requirement at v1, its
+      // requester and reviewers spanning every audience above.
+      await db.user.create({
+        data: {
+          id: EDITOR,
+          username: EDITOR,
+          displayName: EDITOR,
+          email: `${EDITOR}@example.test`,
+        },
+      });
+      await db.analysis.create({
+        data: { id: ANALYSIS, projectId: PROJECT, startedById: MEMBER, status: "completed" },
+      });
+      await db.requirement.create({
+        data: {
+          id: REQUIREMENT,
+          projectId: PROJECT,
+          analysisId: ANALYSIS,
+          title: "Password length",
+          body: "body",
+          version: 1,
+        },
+      });
+      await db.reviewRequest.create({
+        data: {
+          id: REVIEW,
+          projectId: PROJECT,
+          title: "Sprint 4 sign-off",
+          status: "approved",
+          requestedById: REMOVED,
+          assignments: {
+            create: [MEMBER, ADMIN, DISABLED, SCIM_DELETED].map((reviewerId) => ({ reviewerId })),
+          },
+          items: { create: [{ requirementId: REQUIREMENT, pinnedVersion: 1 }] },
+        },
+      });
     }, MIGRATED_SQLITE_HOOK_TIMEOUT_MS);
 
     beforeEach(async () => {
@@ -133,6 +180,48 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         `user:${REMOVED}`,
         `user:${ADMIN}`,
       ]);
+    });
+
+    /** Who was sent a `review:notification`, and who got a stored row of `type`. */
+    const notified = async (type: string) => {
+      const live = emit.mock.calls
+        .filter(([name]) => name === "review:notification")
+        .map(([, payload]) => (payload as { userId: string }).userId)
+        .sort();
+      const rows = await db.notification.findMany({ where: { type }, select: { userId: true } });
+      await db.notification.deleteMany({ where: { type } });
+      return { live, stored: rows.map((r) => r.userId).sort() };
+    };
+
+    it("a reopen sends review_requested only to reviewers who can open the project", async () => {
+      emit.mockClear();
+      await notifyReviewSubmitted({
+        reviewId: REVIEW,
+        projectId: PROJECT,
+        title: "Sprint 4 sign-off",
+        actorId: EDITOR,
+        reviewerIds: REVIEWERS,
+        reopened: true,
+      });
+      expect(await notified("review_requested")).toEqual({
+        live: [ADMIN, MEMBER].sort(),
+        stored: [ADMIN, MEMBER].sort(),
+      });
+    });
+
+    it("an edit of a pinned requirement sends review_item_changed only to participants with access", async () => {
+      emit.mockClear();
+      // REMOVED requested the review; DISABLED and SCIM_DELETED are assigned.
+      await notifyReviewedRequirementEdited({
+        requirementId: REQUIREMENT,
+        fromVersion: 1,
+        toVersion: 2,
+        actorId: EDITOR,
+      });
+      expect(await notified("review_item_changed")).toEqual({
+        live: [ADMIN, MEMBER].sort(),
+        stored: [ADMIN, MEMBER].sort(),
+      });
     });
 
     it("a project that no longer exists: system admins only", async () => {

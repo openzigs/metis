@@ -31,13 +31,20 @@
  * participants as recorded in the committed review row (assigned reviewers /
  * the requester) — never derived from request input — and delivery goes to
  * personal socket rooms joined from the verified JWT only.
+ *
+ * #2394 — `review_requested` (a submit or a reopen) and `review_item_changed`
+ * go only to the participants who can still open the review's project
+ * (`reviewersWhoCanOpenOrNone`): an assignment outlives the reviewer's access,
+ * and both carry the review's title. Someone without access gets no row and
+ * no socket event, as a mention of a non-member gets neither
+ * (`discussions/notify.ts`). The lookup is bounded and fails closed.
  */
 import { userRoom } from "@metis/shared";
 import { prisma } from "../prisma.js";
 import { createChildLogger } from "../logger.js";
 import { getSocketServer } from "../socket/registry.js";
 import { shouldNotify } from "../notifications/preferences.js";
-import { emitReviewChanged } from "./review-events.js";
+import { emitReviewChanged, reviewersWhoCanOpenOrNone } from "./review-events.js";
 
 const log = createChildLogger("reviews:notify");
 
@@ -153,12 +160,17 @@ export interface ReviewSubmittedInput {
 }
 
 /**
- * Notify every assigned reviewer that a review round has been submitted and
- * awaits their decision. Never throws.
+ * Notify every assigned reviewer who can still open the project (#2394) that a
+ * review round has been submitted and awaits their decision. Never throws.
  */
 export async function notifyReviewSubmitted(input: ReviewSubmittedInput): Promise<void> {
   try {
-    const reviewerIds = [...new Set(input.reviewerIds)].filter((id) => id !== input.actorId);
+    // #2394 — only the reviewers who can still open the project.
+    const reviewerIds = await reviewersWhoCanOpenOrNone(
+      input.projectId,
+      input.reviewerIds.filter((id) => id !== input.actorId),
+      { event: "review_requested", reviewId: input.reviewId },
+    );
 
     await Promise.allSettled(
       reviewerIds.map(async (reviewerId) => {
@@ -294,7 +306,8 @@ export interface ReviewedRequirementEditInput {
 }
 
 /**
- * #2219 — tell the reviewers and the requester of every approved or in-review
+ * #2219 — tell the reviewers and the requester (those who can still open the
+ * project, #2394) of every approved or in-review
  * review that pinned the version this edit replaced that the requirement has
  * changed since. Only a review pinned at `fromVersion` qualifies, so the first
  * edit after a sign-off notifies and a second edit (the pin is already out of
@@ -328,14 +341,30 @@ export async function notifyReviewedRequirementEdited(
       orderBy: { createdAt: "desc" },
     });
 
+    // #2394 — each review's participants who can still open its project. A
+    // person who cannot open the most recent review's project may still be
+    // told of an older one they can open.
+    const audiences = await Promise.all(
+      items.map((item) => {
+        const review = item.reviewRequest;
+        void emitReviewChanged(review.projectId, review.id);
+        const participants = [
+          review.requestedById,
+          ...review.assignments.map((a) => a.reviewerId),
+        ].filter((id) => id !== input.actorId);
+        return reviewersWhoCanOpenOrNone(review.projectId, participants, {
+          event: "review_item_changed",
+          reviewId: review.id,
+        });
+      }),
+    );
+
     const recipients = new Map<string, (typeof items)[number]>();
-    for (const item of items) {
-      const review = item.reviewRequest;
-      void emitReviewChanged(review.projectId, review.id);
-      for (const userId of [review.requestedById, ...review.assignments.map((a) => a.reviewerId)]) {
-        if (userId !== input.actorId && !recipients.has(userId)) recipients.set(userId, item);
+    items.forEach((item, i) => {
+      for (const userId of audiences[i]) {
+        if (!recipients.has(userId)) recipients.set(userId, item);
       }
-    }
+    });
 
     await Promise.allSettled(
       [...recipients].map(async ([userId, item]) => {
