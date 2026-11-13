@@ -150,9 +150,17 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         [PA, "alice", WS1],
         [PB, "mallory", WS2],
       ] as const) {
-        await seed.project.create({
-          data: { id, name: id, slug: id, createdById, workspaceId, status: "active" },
-        });
+        // Raw SQL: the current client also WRITES `projects` columns added since this
+        // database's migration (#2436's defaulted `allowSelfApproval`).
+        await seed.$executeRawUnsafe(
+          `INSERT INTO "projects" ("id","name","slug","createdById","workspaceId","status","updatedAt")
+           VALUES (?, ?, ?, ?, ?, 'active', CURRENT_TIMESTAMP)`,
+          id,
+          id,
+          id,
+          createdById,
+          workspaceId,
+        );
       }
       for (const [key, projectId] of [
         ["a1", PA],

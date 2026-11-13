@@ -203,7 +203,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         sqlite.applyRemaining();
         expect(applied()).toBe(true);
         for (const t of TABLES) expect(tables()).toContain(t);
-        expect(existing()).toEqual(seeded);
+        // Later migrations may add columns to these tables (#2436 added
+        // `projects.allowSelfApproval`): every seeded value reads back unchanged.
+        expect(existing()).toMatchObject(seeded);
         insertGoverning();
       },
       MIGRATED_SQLITE_HOOK_TIMEOUT_MS,
