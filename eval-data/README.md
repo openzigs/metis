@@ -60,11 +60,11 @@ Each `expected.json` is an array of golden requirements:
 [
   {
     "id": "R1",
-    "type": "feature",        // feature | bug | chore | epic | task
+    "type": "feature", // feature | bug | chore | epic | task
     "title": "Email and password sign-in",
     "description": "Registered customers sign in with an email address and password.",
-    "priority": "high"        // low | medium | high | critical
-  }
+    "priority": "high", // low | medium | high | critical
+  },
 ]
 ```
 
@@ -113,21 +113,21 @@ directory and pairs each `queryId` with a gold answer plus its provenance:
 ```jsonc
 {
   "corpusId": "docretrieval-01-metis-docs",
-  "license": "CC0-1.0",                 // an SPDX identifier — see below
-  "snapshotCommit": "953bfe70…",        // must match queries.json
+  "license": "CC0-1.0", // an SPDX identifier — see below
+  "snapshotCommit": "953bfe70…", // must match queries.json
   "answers": [
     {
-      "queryId": "dq-ops-01",           // must exist in queries.json
-      "answer": "…",                    // 1–3 sentences of self-contained prose
+      "queryId": "dq-ops-01", // must exist in queries.json
+      "answer": "…", // 1–3 sentences of self-contained prose
       "note": "anything deliberately out of scope",
       "provenance": {
         "author": "gh:some-person",
         "date": "2026-08-27",
-        "reviewedBy": "gh:another-person",   // optional; may NOT be the author
-        "reviewedAt": "2026-08-28"           // optional; may not precede `date`
-      }
-    }
-  ]
+        "reviewedBy": "gh:another-person", // optional; may NOT be the author
+        "reviewedAt": "2026-08-28", // optional; may not precede `date`
+      },
+    },
+  ],
 }
 ```
 
@@ -190,11 +190,11 @@ File localization of **analyst-worded** requirements: which files of a code grap
 requirement should lead to. Every arm of epic #1751 is measured on these, so the
 ground truth was fixed before any arm ran.
 
-| Corpus | Items | Purpose | Repositories |
-|---|---|---|---|
-| `localization-01-miniflux-heldout` | 25 | **held-out** | `miniflux/v2` at `v2.3.3` |
-| `localization-02-fixture-portfolio` | 15 | **held-out** (reused by #1766) | `openzigs/metis-fixture-{orders,billing,notify}` |
-| `localization-00-miniflux-run7-insample` | 6 | **in-sample only**: never used to claim a gain | `miniflux/v2` at `v2.3.3` |
+| Corpus                                   | Items | Purpose                                        | Repositories                                     |
+| ---------------------------------------- | ----- | ---------------------------------------------- | ------------------------------------------------ |
+| `localization-01-miniflux-heldout`       | 25    | **held-out**                                   | `miniflux/v2` at `v2.3.3`                        |
+| `localization-02-fixture-portfolio`      | 15    | **held-out** (reused by #1766)                 | `openzigs/metis-fixture-{orders,billing,notify}` |
+| `localization-00-miniflux-run7-insample` | 6     | **in-sample only**: never used to claim a gain | `miniflux/v2` at `v2.3.3`                        |
 
 Each corpus holds a `manifest.json` (items, ground truth, provenance, who wrote the
 text), the code graph's symbol rows as `symbols.json.gz`, and `baseline-A0.{json,md}`.
@@ -330,12 +330,12 @@ For each repository in the manifest, the command:
 No hosted model is called, so it costs $0. Everything goes into the gitignored
 `eval-data/.materialized/`:
 
-| Path | What | Variable an arm sets from it |
-|---|---|---|
-| `eval.db` | the SQLite eval database | `DATABASE_URL` |
-| `clones/<connectorId>/` | one clone per repository | `REPO_CLONE_DIR` |
-| `lancedb/` | the symbol vectors | `LANCEDB_PATH` |
-| `<corpus>.state.json` | each repository's `projectId`, `connectorId` and commit SHA, plus the three paths above | (read it with `readMaterializedState`) |
+| Path                    | What                                                                                    | Variable an arm sets from it           |
+| ----------------------- | --------------------------------------------------------------------------------------- | -------------------------------------- |
+| `eval.db`               | the SQLite eval database                                                                | `DATABASE_URL`                         |
+| `clones/<connectorId>/` | one clone per repository                                                                | `REPO_CLONE_DIR`                       |
+| `lancedb/`              | the symbol vectors                                                                      | `LANCEDB_PATH`                         |
+| `<corpus>.state.json`   | each repository's `projectId`, `connectorId` and commit SHA, plus the three paths above | (read it with `readMaterializedState`) |
 
 The script sets those variables itself and reads no `.env`. It fails unless Prisma is
 bound to `eval.db`, so it never writes to `server/dev.db`. It also fails if
@@ -435,10 +435,10 @@ it affects.
 
 **Disk and time** (measured 2026-11-04 on an Apple-silicon laptop, model already cached):
 
-| Corpus | Symbols | Clone | Ingest | Embed | Re-run |
-|---|---|---|---|---|---|
-| `localization-01-miniflux-heldout` | 3,533 | 1 s | 4 s | 82 s | 2 s |
-| `localization-02-fixture-portfolio` (3 repositories) | 40 | 1.4 s | < 1 s | 4 s | 2 s |
+| Corpus                                               | Symbols | Clone | Ingest | Embed | Re-run |
+| ---------------------------------------------------- | ------- | ----- | ------ | ----- | ------ |
+| `localization-01-miniflux-heldout`                   | 3,533   | 1 s   | 4 s    | 82 s  | 2 s    |
+| `localization-02-fixture-portfolio` (3 repositories) | 40      | 1.4 s | < 1 s  | 4 s   | 2 s    |
 
 Both corpora together take about 57 MB: 22 MB database, 26 MB vectors, 8 MB clones.
 The first run with an empty model cache also downloads the embedding model (drop
@@ -460,14 +460,14 @@ measures that on the held-out corpora, over the same analyses as A7.
 (#1915). So A7 (no re-ingest), A7S (after the code changed) and A7R (after a routine
 re-ingest) read what production ships, and A7SD and A7RD force the flag on:
 
-| Arm | Staleness | Demotion (#1832) |
-|---|---|---|
-| `A7` | none | off (as shipped since #1939) |
-| `A7K` | none | off: the stage before #1832; since #1939 the same reading as A7 |
-| `A7S` | the item's patch, re-ingested | off (as shipped since #1939) |
-| `A7SD` | the item's patch, re-ingested | on (the flag forced on) |
-| `A7R` | none: a no-op re-ingest at the pinned commit (#1899) | off (as shipped since #1939) |
-| `A7RD` | none: a no-op re-ingest at the pinned commit (#1899) | on (the flag forced on) |
+| Arm    | Staleness                                            | Demotion (#1832)                                                |
+| ------ | ---------------------------------------------------- | --------------------------------------------------------------- |
+| `A7`   | none                                                 | off (as shipped since #1939)                                    |
+| `A7K`  | none                                                 | off: the stage before #1832; since #1939 the same reading as A7 |
+| `A7S`  | the item's patch, re-ingested                        | off (as shipped since #1939)                                    |
+| `A7SD` | the item's patch, re-ingested                        | on (the flag forced on)                                         |
+| `A7R`  | none: a no-op re-ingest at the pinned commit (#1899) | off (as shipped since #1939)                                    |
+| `A7RD` | none: a no-op re-ingest at the pinned commit (#1899) | on (the flag forced on)                                         |
 
 With no re-ingest every citation is still `unverified`, so A7K reads the same as A7
 **by construction**: with demotion off, nothing is reordered or set aside. A7K
@@ -499,6 +499,7 @@ patch edits the functions of one file, renames one file and deletes one file:
   analysis cites. On the first DeepSeek reading, an edit to the single longest function
   of MF-4483's answer file left none of its 21 citations stale. Editing every function
   of that file left 13 of 44 stale over two items.
+
 - **rename:** another ground-truth file, else the edited file's nearest neighbour, to
   `<name>_renamed<ext>`. A renamed file is scored as the file it was.
 - **delete:** the edited file's nearest neighbour with the most symbols. This is never
@@ -576,12 +577,12 @@ table guard was read again on `main` at `219b5fc8` (#1848's scoring) plus this s
 
 The held-out run is on `claude-sonnet-5-5`, one run, both held-out corpora:
 
-| Arm | Miniflux R@5 | Fixture R@5 | Pooled R@5 vs A0 | MRR (Miniflux / fixture) |
-|---|---|---|---|---|
-| A7 | 0.81 | 0.70 | +0.239 [0.12, 0.36] | 0.92 / 0.64 |
-| A7K | 0.81 | 0.70 | +0.239 [0.12, 0.36] | 0.92 / 0.64 |
-| A7S | 0.83 | 0.63 | +0.222 [0.11, 0.33] | 0.92 / 0.64 |
-| A7SD | 0.73 | 0.63 | +0.162 [0.05, 0.27] | 0.68 / 0.54 |
+| Arm  | Miniflux R@5 | Fixture R@5 | Pooled R@5 vs A0    | MRR (Miniflux / fixture) |
+| ---- | ------------ | ----------- | ------------------- | ------------------------ |
+| A7   | 0.81         | 0.70        | +0.239 [0.12, 0.36] | 0.92 / 0.64              |
+| A7K  | 0.81         | 0.70        | +0.239 [0.12, 0.36] | 0.92 / 0.64              |
+| A7S  | 0.83         | 0.63        | +0.222 [0.11, 0.33] | 0.92 / 0.64              |
+| A7SD | 0.73         | 0.63        | +0.162 [0.05, 0.27] | 0.68 / 0.54              |
 
 Paired comparisons, pooled over the 39 items:
 
@@ -602,14 +603,14 @@ only. On the two items checked, FX-02 and FX-03, that is what lowered A7S agains
 is scored on the analysis's first persisted requirement (#1848), with the union of every
 persisted requirement beside it:
 
-| Reading | First persisted requirement | Unioned |
-|---|---|---|
-| A0, mapper | 0.803 | 0.803 |
-| A0, split | 0.644 | 0.644 |
-| A7O | 0.753 | 0.487 |
-| A7 | 0.702 | 0.459 |
-| A7S | 0.720 | 0.452 |
-| A7SD | 0.692 | 0.485 |
+| Reading    | First persisted requirement | Unioned |
+| ---------- | --------------------------- | ------- |
+| A0, mapper | 0.803                       | 0.803   |
+| A0, split  | 0.644                       | 0.644   |
+| A7O        | 0.753                       | 0.487   |
+| A7         | 0.702                       | 0.459   |
+| A7S        | 0.720                       | 0.452   |
+| A7SD       | 0.692                       | 0.485   |
 
 Paired over the 11 requirements, scored on the first persisted requirement:
 
@@ -657,13 +658,13 @@ pnpm eval:localization --corpus localization-02-fixture-portfolio \
 pnpm eval:localization --merge <dir> --reference A7,A7R,A7S
 ```
 
-| Arm | Miniflux R@5 | Fixture R@5 | Pooled R@5 vs A0 | MRR (Miniflux / fixture) |
-|---|---|---|---|---|
-| A7 | 0.87 | 0.73 | +0.288 [0.19, 0.39] | 0.93 / 0.63 |
-| A7R | 0.87 | 0.73 | +0.288 [0.19, 0.39] | 0.93 / 0.63 |
-| A7RD | 0.87 | 0.73 | +0.288 [0.19, 0.39] | 0.93 / 0.63 |
-| A7S | 0.87 | 0.70 | +0.276 [0.18, 0.38] | 0.93 / 0.63 |
-| A7SD | 0.71 | 0.70 | +0.179 [0.09, 0.27] | 0.59 / 0.51 |
+| Arm  | Miniflux R@5 | Fixture R@5 | Pooled R@5 vs A0    | MRR (Miniflux / fixture) |
+| ---- | ------------ | ----------- | ------------------- | ------------------------ |
+| A7   | 0.87         | 0.73        | +0.288 [0.19, 0.39] | 0.93 / 0.63              |
+| A7R  | 0.87         | 0.73        | +0.288 [0.19, 0.39] | 0.93 / 0.63              |
+| A7RD | 0.87         | 0.73        | +0.288 [0.19, 0.39] | 0.93 / 0.63              |
+| A7S  | 0.87         | 0.70        | +0.276 [0.18, 0.38] | 0.93 / 0.63              |
+| A7SD | 0.71         | 0.70        | +0.179 [0.09, 0.27] | 0.59 / 0.51              |
 
 Paired comparisons, pooled over the 39 items:
 
@@ -702,12 +703,12 @@ pnpm eval:localization --arms A0,A3,A3A,A3N --runs 1 --shard 1/12   # then 2/12 
 pnpm eval:localization --merge <dir> --md
 ```
 
-| Arm | Agent tools | Files scored |
-|---|---|---|
-| `A3` (A3-union) | production's (`search_code_graph`, `search_code_symbols`, `search_knowledge`, `read_file_slice`, `list_files`) and seeded blocks | A0's edit candidates, then the cited files through the stored-link channel (#1754) |
-| `A3A` (A3-alone) | the same pass as `A3` | the cited files alone, in first-cited order |
-| `A3N` (A3-nograph) | `list_files`, `read_file_slice` and `grep_files`; no seeded blocks | the cited files alone |
-| `A3P` (A3-primitives, #2327) | `A3A`'s, with `search_code_symbols`'s filters and `grep_files` (chat's search primitives) | the cited files alone |
+| Arm                          | Agent tools                                                                                                                      | Files scored                                                                       |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `A3` (A3-union)              | production's (`search_code_graph`, `search_code_symbols`, `search_knowledge`, `read_file_slice`, `list_files`) and seeded blocks | A0's edit candidates, then the cited files through the stored-link channel (#1754) |
+| `A3A` (A3-alone)             | the same pass as `A3`                                                                                                            | the cited files alone, in first-cited order                                        |
+| `A3N` (A3-nograph)           | `list_files`, `read_file_slice` and `grep_files`; no seeded blocks                                                               | the cited files alone                                                              |
+| `A3P` (A3-primitives, #2327) | `A3A`'s, with `search_code_symbols`'s filters and `grep_files` (chat's search primitives)                                        | the cited files alone                                                              |
 
 - **One pass per item and repository.** The pass uses the orchestrator's own functions
   (`extractNewRequirementCandidates`, `assembleAgenticPassSeeds`, `buildAgenticPassPrompt`,
@@ -759,12 +760,12 @@ analyst would want raised labelled against a source span. The first three are th
 baseline of epic #2227: do not change a reader's default until this corpus shows the
 change is a gain. The fourth (#2255) is the 60 KB size the epic's definition of done names.
 
-| Corpus | Kind | Word file | Converted text | Sections | Requirements | Ambiguities |
-|---|---|---|---|---|---|---|
-| `docunderstanding-01-clinic-booking` | FRD | 18 KB | 22,129 chars | 26 | 56 | 12 |
-| `docunderstanding-02-freight-claims` | BRD | 18 KB | 23,478 chars | 36 | 60 | 18 |
-| `docunderstanding-03-community-grants` | FRD | 22 KB | 35,075 chars | 53 | 106 | 17 |
-| `docunderstanding-04-library-lending` | FRD | 31 KB | 60,624 chars | 81 | 216 | 30 |
+| Corpus                                 | Kind | Word file | Converted text | Sections | Requirements | Ambiguities |
+| -------------------------------------- | ---- | --------- | -------------- | -------- | ------------ | ----------- |
+| `docunderstanding-01-clinic-booking`   | FRD  | 18 KB     | 22,129 chars   | 26       | 56           | 12          |
+| `docunderstanding-02-freight-claims`   | BRD  | 18 KB     | 23,478 chars   | 36       | 60           | 18          |
+| `docunderstanding-03-community-grants` | FRD  | 22 KB     | 35,075 chars   | 53       | 106          | 17          |
+| `docunderstanding-04-library-lending`  | FRD  | 31 KB     | 60,624 chars   | 81       | 216          | 30          |
 
 Document 04 does not write its requirements only as "shall" statements. Most of what a member
 experiences is written to the member, as in the library's own leaflets ("You can renew…",
@@ -820,12 +821,12 @@ chat, over a two-product sample called Acme Reader. The two products are the Min
 1.1.6, MIT). `questions.json` holds 23 one-turn questions in four categories, plus the
 multi-turn set below, and the category fixes what a good reply does:
 
-| Category | Questions | A good reply |
-|---|---:|---|
-| `single-product`: "how does rule X work in product Y" | 11 | answers; carries facts and expected code and doc sources |
-| `multi-product`: "what does FRD-12 change in A and B" | 4 | answers from both products and `frd-12.md`; carries facts, expected requirements and the files an impact analysis should name |
-| `ambiguous` | 4 | asks a follow-up question |
-| `unanswerable` | 4 | says the sources don't show this |
+| Category                                              | Questions | A good reply                                                                                                                  |
+| ----------------------------------------------------- | --------: | ----------------------------------------------------------------------------------------------------------------------------- |
+| `single-product`: "how does rule X work in product Y" |        11 | answers; carries facts and expected code and doc sources                                                                      |
+| `multi-product`: "what does FRD-12 change in A and B" |         4 | answers from both products and `frd-12.md`; carries facts, expected requirements and the files an impact analysis should name |
+| `ambiguous`                                           |         4 | asks a follow-up question                                                                                                     |
+| `unanswerable`                                        |         4 | says the sources don't show this                                                                                              |
 
 Every fact and line range was read from the pinned commits by the agent that wrote the
 set. No person has reviewed them yet (`authoredBy`). `frd-12.md` is a synthetic CC0
@@ -835,13 +836,13 @@ S7 to S11 (#2198) are walkthrough run 10's wrong chat answers, asked again as BA
 Each `why` names the run step and the wrong claim, and each lists the source that disproves
 it, so a contradicted fact is what a recurrence looks like:
 
-| Question | Run 10's wrong claim | The source that disproves it |
-|---|---|---|
-| S7 | cited `storage/user.go:13-16` (the imports) and missed the unique username | `migrations.go:25`, `storage/user.go:72` |
-| S8 | the `removed` status is still used | `migrations.go:1489-1495` |
-| S9 | `MarkAllAsReadBeforeDate` has no callers | `googlereader/handler.go:1225` |
-| S10 | `showUnreadPage` has the paging bug; missed the category page | `ui/unread_entries.go:38`, `ui/category_entries.go` |
-| S11 | the `read_at` requirement is the reading-time estimate | `readingtime/readingtime.go`, `storage/entry.go:412-427` |
+| Question | Run 10's wrong claim                                                       | The source that disproves it                             |
+| -------- | -------------------------------------------------------------------------- | -------------------------------------------------------- |
+| S7       | cited `storage/user.go:13-16` (the imports) and missed the unique username | `migrations.go:25`, `storage/user.go:72`                 |
+| S8       | the `removed` status is still used                                         | `migrations.go:1489-1495`                                |
+| S9       | `MarkAllAsReadBeforeDate` has no callers                                   | `googlereader/handler.go:1225`                           |
+| S10      | `showUnreadPage` has the paging bug; missed the category page              | `ui/unread_entries.go:38`, `ui/category_entries.go`      |
+| S11      | the `read_at` requirement is the reading-time estimate                     | `readingtime/readingtime.go`, `storage/entry.go:412-427` |
 
 The baseline below predates them and covers the first 18 questions only. To measure the
 five on their own, add `--questions S7,S8,S9,S10,S11`.
@@ -866,16 +867,16 @@ as an unscoped session with no retrieval (`chatSessionScope`, mirroring
 `CHAT_FUSED_CODE_RETRIEVAL`, `RAG_RERANK` and `CHAT_CODE_SEARCH_PRIMITIVES` itself, whatever
 the shell or `.env` says (#2243, #2327):
 
-| Arm | Code-search tools | Fused code retrieval | Reranker | Search primitives |
-|---|---|---|---|---|
-| `off` | off | off | off | off |
-| `on` | on | on | on | on |
-| `no-tools` | off | on | on | on |
-| `no-fused` | on | off | on | on |
-| `no-rerank` | on | on | off | on |
-| `tools-only` | on | off | off | off |
-| `tools-primitives` | on | off | off | on |
-| `default` | unset: the server's default | unset | unset | unset |
+| Arm                | Code-search tools           | Fused code retrieval | Reranker | Search primitives |
+| ------------------ | --------------------------- | -------------------- | -------- | ----------------- |
+| `off`              | off                         | off                  | off      | off               |
+| `on`               | on                          | on                   | on       | on                |
+| `no-tools`         | off                         | on                   | on       | on                |
+| `no-fused`         | on                          | off                  | on       | on                |
+| `no-rerank`        | on                          | on                   | off      | on                |
+| `tools-only`       | on                          | off                  | off      | off               |
+| `tools-primitives` | on                          | off                  | off      | on                |
+| `default`          | unset: the server's default | unset                | unset    | unset             |
 
 Each session in the JSON records the tools it called, in order (`toolNames`, #2327).
 
@@ -915,7 +916,9 @@ answer and the cited spans reach the judge fenced between markers that carry a r
 per call, labelled as data to grade rather than instructions.
 
 `--budget` is checked between questions. The run stops before a question once the cap is
-reached, or once the costliest question so far would carry the spend past it. A question
+reached, or once the costliest question so far would carry the spend past it. Since #2316 it is
+also checked within a question, before each later turn of a multi-turn question and before the
+judge, against the costliest such step so far; a question cut short there is not graded. A step
 costlier than any before it can still cross the cap. `--include` refuses a run with another
 fixture, answer model or judge model, or an arm already in the report. The included run is
 re-summarized from its per-question scores, so both columns are computed by the same code.
@@ -931,20 +934,20 @@ span-judged. The two figures are different tests, not one rate rising from 30% t
 Their "checked against the span" count also includes cited lines that are not in the file.
 From the next run on, the report gives the two rates apart.
 
-| | off (today) | on (three flags) |
-|---|---:|---:|
-| Sessions chat left unscoped (no retrieval) | 9/18 | 9/18 |
-| Correctness: mean facts stated | 29% (run 1: 27%) | 49% (48%) |
-| Fully correct answers | 0/10 | 2/10 |
-| Citation precision, both checks in one rate | 30% (6/20) (run 1: 33%) | 83% (34/41) (89%) |
-| … with lines (span-judged, or not in the file) | 0/20 | 35/41 (44/47) |
-| Citation recall | 19% (6/32) | 31% (10/32) (28%) |
-| Abstention on unanswerable | 4/4 | 4/4 |
-| Follow-up on ambiguous | 3/4 | 3/4 |
-| False abstention on answerable | 5/10 (run 1: 6/10) | 4/10 |
-| Right behaviour, single-product | 5/6 (run 1: 4/6) | 6/6 |
-| Right behaviour, multi-product | 0/4 | 0/4 |
-| Spend (answers + judge) | $0.309360 (run 1: $0.303841) | $0.488667 ($0.492134) |
+|                                                |                  off (today) |      on (three flags) |
+| ---------------------------------------------- | ---------------------------: | --------------------: |
+| Sessions chat left unscoped (no retrieval)     |                         9/18 |                  9/18 |
+| Correctness: mean facts stated                 |             29% (run 1: 27%) |             49% (48%) |
+| Fully correct answers                          |                         0/10 |                  2/10 |
+| Citation precision, both checks in one rate    |      30% (6/20) (run 1: 33%) |     83% (34/41) (89%) |
+| … with lines (span-judged, or not in the file) |                         0/20 |         35/41 (44/47) |
+| Citation recall                                |                   19% (6/32) |     31% (10/32) (28%) |
+| Abstention on unanswerable                     |                          4/4 |                   4/4 |
+| Follow-up on ambiguous                         |                          3/4 |                   3/4 |
+| False abstention on answerable                 |           5/10 (run 1: 6/10) |                  4/10 |
+| Right behaviour, single-product                |             5/6 (run 1: 4/6) |                   6/6 |
+| Right behaviour, multi-product                 |                          0/4 |                   0/4 |
+| Spend (answers + judge)                        | $0.309360 (run 1: $0.303841) | $0.488667 ($0.492134) |
 
 - **Every multi-product question abstained in both arms and both runs.** Chat drops a
   two-product scope to an unscoped session, so it retrieved nothing and offered no project
@@ -971,18 +974,18 @@ and no tools, so no flag can change them. Tools with fused retrieval, and tools 
 each run twice. The second "tools + fused" run is `default` on an intermediate state of this
 branch, and the second "tools only" run is `default` as it merged.
 
-| | off | tools only | tools + fused | on (all three) | no-fused | no-tools |
-|---|---:|---:|---:|---:|---:|---:|
-| Correctness: mean facts stated | 51% | 84%, 73% | 86%, 80% | 76% | 76% | 41% |
-| Fully correct answers | 0/6 | 2/5, 2/6 | 3/6, 2/6 | 1/5 | 1/6 | 0/6 |
-| Citation precision | 28% (5/18) | 80%, 83% | 86%, 77% | 89% (32/36) | 86% (44/51) | 45% (9/20) |
-| … checked against the span | 0/18 | 27/35, 34/41 | 35/43, 27/35 | 31/36 | 47/51 | 6/20 |
-| Citation recall | 5/15 | 8/13, 10/15 | 10/15, 10/15 | 9/14 | 10/15 | 5/15 |
-| False abstention on answerable | 1/6 | 0/5, 0/6 | 0/6, 0/6 | 0/5 | 0/6 | 1/6 |
-| Input tokens per question (cache reads included) | 6,000 | 27,500, 24,300 | 25,200, 27,000 | 24,900 | 33,100 | 6,700 |
-| Model calls per question | 1.00 | 3.00, 2.78 | 2.56, 2.78 | 2.56 | 3.33 | 1.00 |
-| Tool loop out of turns (`CHAT_TOOL_MAX_TURNS` 6) | 0/9 | 0/9, 0/9 | 0/9, 0/9 | 0/9 | 0/9 | 0/9 |
-| Tool results truncated (`CHAT_TOOL_RESULT_MAX_TOKENS` 2,000) | 0 | 0, 0 | 1, 0 | 0 | 0 | 0 |
+|                                                              |        off |     tools only |  tools + fused | on (all three) |    no-fused |   no-tools |
+| ------------------------------------------------------------ | ---------: | -------------: | -------------: | -------------: | ----------: | ---------: |
+| Correctness: mean facts stated                               |        51% |       84%, 73% |       86%, 80% |            76% |         76% |        41% |
+| Fully correct answers                                        |        0/6 |       2/5, 2/6 |       3/6, 2/6 |            1/5 |         1/6 |        0/6 |
+| Citation precision                                           | 28% (5/18) |       80%, 83% |       86%, 77% |    89% (32/36) | 86% (44/51) | 45% (9/20) |
+| … checked against the span                                   |       0/18 |   27/35, 34/41 |   35/43, 27/35 |          31/36 |       47/51 |       6/20 |
+| Citation recall                                              |       5/15 |    8/13, 10/15 |   10/15, 10/15 |           9/14 |       10/15 |       5/15 |
+| False abstention on answerable                               |        1/6 |       0/5, 0/6 |       0/6, 0/6 |            0/5 |         0/6 |        1/6 |
+| Input tokens per question (cache reads included)             |      6,000 | 27,500, 24,300 | 25,200, 27,000 |         24,900 |      33,100 |      6,700 |
+| Model calls per question                                     |       1.00 |     3.00, 2.78 |     2.56, 2.78 |           2.56 |        3.33 |       1.00 |
+| Tool loop out of turns (`CHAT_TOOL_MAX_TURNS` 6)             |        0/9 |       0/9, 0/9 |       0/9, 0/9 |            0/9 |         0/9 |        0/9 |
+| Tool results truncated (`CHAT_TOOL_RESULT_MAX_TOKENS` 2,000) |          0 |           0, 0 |           1, 0 |              0 |           0 |          0 |
 
 The first "tools only" run and the `on` run each have one unscored judge reply (S5 and S6).
 
@@ -1021,17 +1024,17 @@ both paired against the same tools without it, Sonnet 5.5 throughout.
 **BA question set** (`tools-only` against `tools-primitives`, the nine single-product
 questions as in #2243, two runs of each arm, alternating):
 
-| | tools only | tools + primitives |
-|---|---:|---:|
-| Mean facts stated | 81%, 84% | 85%, 87% |
-| Fully correct | 2/5, 3/6 | 3/5, 3/6 |
-| Citation precision | 60% (25/42), 76% (37/49) | 63% (33/52), 76% (34/45) |
-| Citation recall | 10/15, 10/15 | 12/15, 11/15 |
-| Right behaviour | 8/9, 9/9 | 8/9, 9/9 |
-| Input tokens / question | 26,600, 25,600 | 32,800, 32,400 |
-| Model calls / question | 2.78, 2.67 | 3.22, 3.11 |
-| Tool results cut to the cap | 0, 0 | 2, 1 |
-| Tools called (both runs) | `search_code_graph` 26, `read_file_slice` 17, `search_code_symbols` 11 | `grep_files` 44, `read_file_slice` 28, `list_files` 5 |
+|                             |                                                             tools only |                                    tools + primitives |
+| --------------------------- | ---------------------------------------------------------------------: | ----------------------------------------------------: |
+| Mean facts stated           |                                                               81%, 84% |                                              85%, 87% |
+| Fully correct               |                                                               2/5, 3/6 |                                              3/5, 3/6 |
+| Citation precision          |                                               60% (25/42), 76% (37/49) |                              63% (33/52), 76% (34/45) |
+| Citation recall             |                                                           10/15, 10/15 |                                          12/15, 11/15 |
+| Right behaviour             |                                                               8/9, 9/9 |                                              8/9, 9/9 |
+| Input tokens / question     |                                                         26,600, 25,600 |                                        32,800, 32,400 |
+| Model calls / question      |                                                             2.78, 2.67 |                                            3.22, 3.11 |
+| Tool results cut to the cap |                                                                   0, 0 |                                                  2, 1 |
+| Tools called (both runs)    | `search_code_graph` 26, `read_file_slice` 17, `search_code_symbols` 11 | `grep_files` 44, `read_file_slice` 28, `list_files` 5 |
 
 S5 went unscored in the first run of both arms (the judge reply could not be parsed).
 
@@ -1040,14 +1043,14 @@ S5 went unscored in the first run of both arms (the judge reply could not be par
 symbol filters), its citations scored alone, and is paired against `A3A` with
 `--reference A3A`:
 
-| | A3A | A3P | Δ (95% CI) |
-|---|---:|---:|---:|
-| Recall@5 | 0.68 | 0.70 | +0.015 [−0.14, +0.17] |
-| Recall@10 | 0.70 | 0.75 | +0.043 [−0.12, +0.20] |
-| Edit precision | 0.57 | 0.51 | −0.063 [−0.19, +0.05] |
-| MRR | 0.77 | 0.80 | +0.028 [−0.16, +0.22] |
-| Turns / tool calls per pass | 3.5 / 8.9 | 3.3 / 7.6 | |
-| Cost per item | $0.0838 | $0.1168 | |
+|                             |       A3A |       A3P |            Δ (95% CI) |
+| --------------------------- | --------: | --------: | --------------------: |
+| Recall@5                    |      0.68 |      0.70 | +0.015 [−0.14, +0.17] |
+| Recall@10                   |      0.70 |      0.75 | +0.043 [−0.12, +0.20] |
+| Edit precision              |      0.57 |      0.51 | −0.063 [−0.19, +0.05] |
+| MRR                         |      0.77 |      0.80 | +0.028 [−0.16, +0.22] |
+| Turns / tool calls per pass | 3.5 / 8.9 | 3.3 / 7.6 |                       |
+| Cost per item               |   $0.0838 |   $0.1168 |                       |
 
 ```bash
 pnpm eval:ba-qa --arm tools-only --budget 3 --questions S1,S2,S3,S4,S5,S6,A3,U3,U4
@@ -1082,16 +1085,16 @@ France?" and the like) over each product. For each candidate floor on the dense 
 reports what the floor would empty or drop (`server/src/lib/eval/ba-qa/relevance-floor.ts`).
 Run on 2026-11-11 with gte-modernbert-base, the default embedder:
 
-| Floor | Off-topic probes emptied | Unanswerable emptied | Answerable emptied | Ambiguous emptied | Expected excerpts kept | Excerpts dropped |
-|---:|---:|---:|---:|---:|---:|---:|
-| 0.50 | 3/12 | 0/4 | 0/10 | 0/4 | 25/25 | 0/216 |
-| 0.53 | 5/12 | 0/4 | 0/10 | 0/4 | 25/25 | 8/216 |
-| **0.55** | **6/12** | **0/4** | **0/10** | **0/4** | **25/25** | **14/216** |
-| 0.56 | 9/12 | 0/4 | 0/10 | 0/4 | 24/25 | 16/216 |
-| 0.57 | 12/12 | 0/4 | 0/10 | 0/4 | 24/25 | 21/216 |
-| 0.60 | 12/12 | 0/4 | 0/10 | 0/4 | 23/25 | 49/216 |
-| 0.65 | 12/12 | 1/4 | 0/10 | 3/4 | 12/25 | 138/216 |
-| 0.70 | 12/12 | 1/4 | 4/10 | 3/4 | 8/25 | 184/216 |
+|    Floor | Off-topic probes emptied | Unanswerable emptied | Answerable emptied | Ambiguous emptied | Expected excerpts kept | Excerpts dropped |
+| -------: | -----------------------: | -------------------: | -----------------: | ----------------: | ---------------------: | ---------------: |
+|     0.50 |                     3/12 |                  0/4 |               0/10 |               0/4 |                  25/25 |            0/216 |
+|     0.53 |                     5/12 |                  0/4 |               0/10 |               0/4 |                  25/25 |            8/216 |
+| **0.55** |                 **6/12** |              **0/4** |           **0/10** |           **0/4** |              **25/25** |       **14/216** |
+|     0.56 |                     9/12 |                  0/4 |               0/10 |               0/4 |                  24/25 |           16/216 |
+|     0.57 |                    12/12 |                  0/4 |               0/10 |               0/4 |                  24/25 |           21/216 |
+|     0.60 |                    12/12 |                  0/4 |               0/10 |               0/4 |                  23/25 |           49/216 |
+|     0.65 |                    12/12 |                  1/4 |               0/10 |               3/4 |                  12/25 |          138/216 |
+|     0.70 |                    12/12 |                  1/4 |               4/10 |               3/4 |                   8/25 |          184/216 |
 
 - **The default is 0.55.** It is the highest floor that loses no expected-source excerpt. The
   lowest such excerpt scored 0.560 (M2, the client's `miniflux.py`). At 0.57 every off-topic
@@ -1108,16 +1111,16 @@ Run on 2026-11-11 with gte-modernbert-base, the default embedder:
 
 One run per arm (Sonnet 5.5 answers and judge), compared with run 2 above:
 
-| | off, before | off, #2241 | on, before | on, #2241 |
-|---|---:|---:|---:|---:|
-| Correctness: mean facts stated | 29% | 22% | 49% | 48% |
-| Fully correct answers | 0/10 | 0/10 | 2/10 | 2/10 |
-| Citation precision | 30% (6/20) | 21% (4/19) | 83% (34/41) | 89% (50/56) |
-| Abstention on unanswerable | 4/4 | 4/4 | 4/4 | 4/4 |
-| Follow-up on ambiguous | 3/4 | **4/4** | 3/4 | **4/4** |
-| False abstention on answerable | 5/10 | 7/10 | 4/10 | 4/10 |
-| Right behaviour, single-product | 5/6 | 3/6 | 6/6 | 6/6 |
-| Spend (answers + judge) | $0.309360 | $0.295650 | $0.488667 | $0.477220 |
+|                                 | off, before | off, #2241 |  on, before |   on, #2241 |
+| ------------------------------- | ----------: | ---------: | ----------: | ----------: |
+| Correctness: mean facts stated  |         29% |        22% |         49% |         48% |
+| Fully correct answers           |        0/10 |       0/10 |        2/10 |        2/10 |
+| Citation precision              |  30% (6/20) | 21% (4/19) | 83% (34/41) | 89% (50/56) |
+| Abstention on unanswerable      |         4/4 |        4/4 |         4/4 |         4/4 |
+| Follow-up on ambiguous          |         3/4 |    **4/4** |         3/4 |     **4/4** |
+| False abstention on answerable  |        5/10 |       7/10 |        4/10 |        4/10 |
+| Right behaviour, single-product |         5/6 |        3/6 |         6/6 |         6/6 |
+| Spend (answers + judge)         |   $0.309360 |  $0.295650 |   $0.488667 |   $0.477220 |
 
 - **A3 is now asked about in both arms.** Before, it was answered on an assumption.
 - **With the flags off, chat now abstains where retrieval missed the rule.** S1, S3 and S4 said
@@ -1171,27 +1174,27 @@ at different projects.
 **Is the right project in the router's top k** (answerable questions in scope):
 
 | Scope | Top 1 | Top 2 | Top 3 | Top 1 / 2 / 3, product names ignored | Routed choice holds the answer | Projects searched (mean) |
-|---:|---:|---:|---:|---|---:|---:|
-| 2 | 8/12 | 12/12 | 12/12 | 5/12, 12/12, 12/12 | 12/12 | 2.0 |
-| 5 | 11/15 | 15/15 | 15/15 | 8/15, 15/15, 15/15 | 15/15 | 2.5 |
-| 9 | 14/18 | 17/18 | 18/18 | 11/18, 17/18, 18/18 | 17/17 (1 fell back) | 2.9 |
+| ----: | ----: | ----: | ----: | ------------------------------------ | -----------------------------: | -----------------------: |
+|     2 |  8/12 | 12/12 | 12/12 | 5/12, 12/12, 12/12                   |                          12/12 |                      2.0 |
+|     5 | 11/15 | 15/15 | 15/15 | 8/15, 15/15, 15/15                   |                          15/15 |                      2.5 |
+|     9 | 14/18 | 17/18 | 18/18 | 11/18, 17/18, 18/18                  |            17/17 (1 fell back) |                      2.9 |
 
 The gibberish question fell back at every scope. The France question was routed to the
 Miniflux server, whose test data and code comments hold "France" and "capital".
 
 **What reaches the prompt** (offline, the same questions; time is warm, in-process):
 
-| Scope | Way | Projects searched | Excerpts from an answer product | Expected files retrieved | Mean ms |
-|---:|---|---:|---:|---:|---:|
-| 2 | all | 2.0 | 67% (64/96) | 9/32 | 151 |
-| 2 | oracle | 1.3 | 100% (96/96) | 11/32 | 109 |
-| 5 | all | 5.0 | 43% (51/120) | 8/32 | 251 |
-| 5 | ranked | 5.0 | 63% (76/120) | 8/32 | 247 |
-| 5 | routed | 2.5 | 58% (70/120) | 9/32 | 411 |
-| 9 | all | 9.0 | **31% (44/144)** | **4/32** | 181 |
-| 9 | ranked | 9.0 | 68% (98/144) | 8/32 | 199 |
-| 9 | routed | 2.9 | 61% (88/144) | 8/32 | 296 |
-| 9 | oracle | 1.2 | 100% (141/141) | 11/32 | 64 |
+| Scope | Way    | Projects searched | Excerpts from an answer product | Expected files retrieved | Mean ms |
+| ----: | ------ | ----------------: | ------------------------------: | -----------------------: | ------: |
+|     2 | all    |               2.0 |                     67% (64/96) |                     9/32 |     151 |
+|     2 | oracle |               1.3 |                    100% (96/96) |                    11/32 |     109 |
+|     5 | all    |               5.0 |                    43% (51/120) |                     8/32 |     251 |
+|     5 | ranked |               5.0 |                    63% (76/120) |                     8/32 |     247 |
+|     5 | routed |               2.5 |                    58% (70/120) |                     9/32 |     411 |
+|     9 | all    |               9.0 |                **31% (44/144)** |                 **4/32** |     181 |
+|     9 | ranked |               9.0 |                    68% (98/144) |                     8/32 |     199 |
+|     9 | routed |               2.9 |                    61% (88/144) |                     8/32 |     296 |
+|     9 | oracle |               1.2 |                  100% (141/141) |                    11/32 |      64 |
 
 The multi-product block held 11,300 to 12,200 characters in every row: it carries 8 excerpts,
 whatever the number of projects. `routed` time includes the probe.
@@ -1199,15 +1202,15 @@ whatever the number of projects. `routed` time includes the probe.
 **Answers** (Sonnet 5.5 answers and judge, the 10 answerable questions, one run per column,
 two for routed):
 
-| | 2, all | 5, all | 9, all | 9, routed | 9, oracle |
-|---|---:|---:|---:|---:|---:|
-| Correctness: mean facts stated | 33% | 30% | **17%** | 42%, 35% | 44% |
-| Citation precision | 40% (10/25) | 42% (8/19) | 29% (5/17) | 36% (9/25), 39% (9/23) | 39% (12/31) |
-| Citation recall | 10/32 | 8/32 | 5/32 | 9/32, 9/32 | 12/32 |
-| False abstention on answerable | 4/10 | 5/10 | 6/10 | 4/10, 4/10 | 2/10 |
-| Input tokens per question | 4,950 | 4,788 | 4,489 | 4,882, 4,882 | 5,414 |
-| Seconds per question | 10.4 | 10.8 | 10.2 | 11.1, 10.4 | 10.9 |
-| Retrieval ms per question | 1,165 | 1,202 | 1,505 | 1,008 (probe included) | 1,124 |
+|                                |      2, all |     5, all |     9, all |              9, routed |   9, oracle |
+| ------------------------------ | ----------: | ---------: | ---------: | ---------------------: | ----------: |
+| Correctness: mean facts stated |         33% |        30% |    **17%** |               42%, 35% |         44% |
+| Citation precision             | 40% (10/25) | 42% (8/19) | 29% (5/17) | 36% (9/25), 39% (9/23) | 39% (12/31) |
+| Citation recall                |       10/32 |       8/32 |       5/32 |             9/32, 9/32 |       12/32 |
+| False abstention on answerable |        4/10 |       5/10 |       6/10 |             4/10, 4/10 |        2/10 |
+| Input tokens per question      |       4,950 |      4,788 |      4,489 |           4,882, 4,882 |       5,414 |
+| Seconds per question           |        10.4 |       10.8 |       10.2 |             11.1, 10.4 |        10.9 |
+| Retrieval ms per question      |       1,165 |      1,202 |      1,505 | 1,008 (probe included) |       1,124 |
 
 Retrieval takes about a second here, against 0.2 s in the sweep: between questions the model
 call takes 10 s and the search runs cold. The first routed run timed retrieval without its
@@ -1257,17 +1260,17 @@ docker-compose files (`ADMIN_PASSWORD=test123` and a `postgres://…:…@` URL),
 3,573 committed symbol texts, one is redacted (`miniflux#00023`, the same `client_test.go`
 literal); A0 reads the committed rows and is not affected.
 
-| BA-QA | off, before | off, after | on, before | on, after |
-|---|---:|---:|---:|---:|
-| Correctness: mean facts stated | 27% | 27% | 45% | 45% |
-| Fully correct answers | 0/10 | 0/10 | 1/10 | 2/10 |
-| Citation precision | 31% (5/16) | 33% (5/15) | 89% (47/53) | 90% (37/41) |
-| Citation recall | 16% (5/32) | 16% (5/32) | 25% (8/32) | 28% (9/32) |
-| Abstention on unanswerable | 4/4 | 4/4 | 4/4 | 4/4 |
-| Follow-up on ambiguous | 4/4 | 4/4 | 4/4 | 4/4 |
-| False abstention on answerable | 6/10 | 6/10 | 4/10 | 4/10 |
-| Right behaviour, single-product | 4/6 | 4/6 | 6/6 | 6/6 |
-| Spend (answers + judge) | $0.296865 | $0.298324 | $0.522035 | $0.475595 |
+| BA-QA                           | off, before | off, after |  on, before |   on, after |
+| ------------------------------- | ----------: | ---------: | ----------: | ----------: |
+| Correctness: mean facts stated  |         27% |        27% |         45% |         45% |
+| Fully correct answers           |        0/10 |       0/10 |        1/10 |        2/10 |
+| Citation precision              |  31% (5/16) | 33% (5/15) | 89% (47/53) | 90% (37/41) |
+| Citation recall                 |  16% (5/32) | 16% (5/32) |  25% (8/32) |  28% (9/32) |
+| Abstention on unanswerable      |         4/4 |        4/4 |         4/4 |         4/4 |
+| Follow-up on ambiguous          |         4/4 |        4/4 |         4/4 |         4/4 |
+| False abstention on answerable  |        6/10 |       6/10 |        4/10 |        4/10 |
+| Right behaviour, single-product |         4/6 |        4/6 |         6/6 |         6/6 |
+| Spend (answers + judge)         |   $0.296865 |  $0.298324 |   $0.522035 |   $0.475595 |
 
 - **No regression.** Every question got the same behaviour (answer, abstain, follow-up) in both
   arms before and after. With the flags off every question stated the same number of facts. With
@@ -1300,14 +1303,14 @@ CHAT_INDEX_STATUS=0 pnpm eval:ba-qa --arm tools-only --budget 2 --index-fault fa
 CHAT_INDEX_STATUS=1 pnpm eval:ba-qa --arm tools-only --budget 2 --index-fault failed --questions S1,S2,S3,S4,S5,S6,A3,U3,U4
 ```
 
-| | failed, before | failed, after | partial, before | partial, after |
-|---|---:|---:|---:|---:|
-| Answers that state the index problem | 0/9 | **7/9** | 0/9 | **8/9** |
-| Abstentions that assert absence without it | 2/2 | 2/2 | 2/2 | **0/2** |
-| Correctness: mean facts stated | 86% | 80% | 84% | 76% |
-| Citation precision | 84% (38/45) | 81% (29/36) | 88% (36/41) | 82% (31/38) |
-| Abstention on unanswerable / false abstention | 2/2, 0/6 | 2/2, 0/6 | 2/2, 0/6 | 2/2, 0/6 |
-| Input tokens / question | 31,300 | 25,500 | 26,900 | 26,100 |
+|                                               | failed, before | failed, after | partial, before | partial, after |
+| --------------------------------------------- | -------------: | ------------: | --------------: | -------------: |
+| Answers that state the index problem          |            0/9 |       **7/9** |             0/9 |        **8/9** |
+| Abstentions that assert absence without it    |            2/2 |           2/2 |             2/2 |        **0/2** |
+| Correctness: mean facts stated                |            86% |           80% |             84% |            76% |
+| Citation precision                            |    84% (38/45) |   81% (29/36) |     88% (36/41) |    82% (31/38) |
+| Abstention on unanswerable / false abstention |       2/2, 0/6 |      2/2, 0/6 |        2/2, 0/6 |       2/2, 0/6 |
+| Input tokens / question                       |         31,300 |        25,500 |          26,900 |         26,100 |
 
 - **Without the status, no answer mentioned the index.** That held in both faults, because the
   model had no way to know about it. With the status on, 7 and 8 of 9 answers said the index was
@@ -1353,26 +1356,31 @@ carried forward.
 
 #### Measured 2026-11-11 (Sonnet 5.5 answers and judge, 8 questions per arm)
 
-| | off | off+last-message | on | on+last-message |
-|---|---:|---:|---:|---:|
-| Correctness: mean facts stated | 55% | 55% | 98% | 98% |
-| Fully correct answers | 4/8 | 4/8 | 7/8 | 7/8 |
-| Citation recall | 7/20 | 7/20 | 14/20 | 13/20 |
-| Expected files in the excerpts: conversation-aware | 7/20 | 8/20 | 7/20 | 6/20 |
-| … new message alone | 7/20 | 7/20 | 5/20 | 5/20 |
-| Follow-ups the planner caught | 4/6 | 4/6 | 4/6 | 4/6 |
-| Controls read as follow-ups | 0/2 | 0/2 | 0/2 | 0/2 |
-| Spend (answers + judge) | $0.500310 | $0.341409 | $0.917685 | $0.717946 |
+|                                                    |       off | off+last-message |        on | on+last-message |
+| -------------------------------------------------- | --------: | ---------------: | --------: | --------------: |
+| Correctness: mean facts stated                     |       55% |              55% |       98% |             98% |
+| Fully correct answers                              |       4/8 |              4/8 |       7/8 |             7/8 |
+| Citation recall                                    |      7/20 |             7/20 |     14/20 |           13/20 |
+| Expected files in the excerpts: conversation-aware |      7/20 |             8/20 |      7/20 |            6/20 |
+| … new message alone                                |      7/20 |             7/20 |      5/20 |            5/20 |
+| Follow-ups the planner caught                      |       4/6 |              4/6 |       4/6 |             4/6 |
+| Controls read as follow-ups                        |       0/2 |              0/2 |       0/2 |             0/2 |
+| Spend (answers + judge)                            | $0.500310 |        $0.341409 | $0.917685 |       $0.717946 |
 
 The `off` and `on` columns were run after the tuning below. The `+last-message` columns were run
 before it, and the tuning does not change their retrieval.
 
 - **Retrieval reading the conversation finds slightly more, and answers are no better on this
-  set.** Over the four runs, the conversation-aware excerpts held 28 expected files and the new
-  message alone held 24. F1 ("I meant the login sessions.") gained `internal/ui/auth.go` from
+  set.** In the two runs after the tuning (`off`, `on`), the conversation-aware excerpts held 14
+  expected files and the new message alone held 12. The two runs before it (`+last-message`)
+  gave the same 14 and 12. The tuning changes only which excerpts are carried forward, so it can
+  move the conversation-aware count and not the other. A total over all four runs (28 and 24)
+  mixes measurements from before and after the tuning (#2316). F1 ("I meant the login sessions.") gained `internal/ui/auth.go` from
   the conversational search. F7 gained a file through carry-forward. F2 ("How often does that
   run?") lost `internal/cli/scheduler.go`, which was the user's own 8th hit, to two hits found
-  only by the conversational search. Correctness was the same in both modes. With the flags on,
+  only by the conversational search. Since #2316 those hits are added after the user's own 8
+  rather than swapped in for its last ones, so the user's 8 always stay (a test pins F2's
+  shape). This has not been re-measured with a model. Correctness was the same in both modes. With the flags on,
   the code-search tools find what retrieval missed either way.
 - **The follow-up heuristic is unchanged.** It read no control as a follow-up, F7's "there"
   question included. It missed F5 and F8, which name four content words each. Searching those
@@ -1408,15 +1416,15 @@ CHAT_SEARCH_GUIDANCE=0 pnpm eval:ba-qa --arm tools-only --budget 2 --questions S
 CHAT_SEARCH_GUIDANCE=1 pnpm eval:ba-qa --arm tools-only --budget 2 --questions S1,S2,S3,S4,S5,S6,A3,U3,U4
 ```
 
-| | without, run 1 | with, run 1 | without, run 2 | with, run 2 |
-|---|---:|---:|---:|---:|
-| Correctness: mean facts stated | 83% | 83% | 76% | 76% |
-| Fully correct answers | 2/6 | 3/6 | 1/6 | 1/5 |
-| Citation precision | 88% (36/41) | 80% (33/41) | 84% (38/45) | 81% (30/37) |
-| Citation recall (expected files cited) | 10/15 | 10/15 | 10/15 | 8/13 |
-| Right behaviour, single-product | 6/6 | 6/6 | 6/6 | 5/5 |
-| Input tokens / question | 28,100 | 37,500 | 21,700 | 30,900 |
-| Model calls / question | 2.89 | 3.44 | 2.56 | 3.11 |
+|                                        | without, run 1 | with, run 1 | without, run 2 | with, run 2 |
+| -------------------------------------- | -------------: | ----------: | -------------: | ----------: |
+| Correctness: mean facts stated         |            83% |         83% |            76% |         76% |
+| Fully correct answers                  |            2/6 |         3/6 |            1/6 |         1/5 |
+| Citation precision                     |    88% (36/41) | 80% (33/41) |    84% (38/45) | 81% (30/37) |
+| Citation recall (expected files cited) |          10/15 |       10/15 |          10/15 |        8/13 |
+| Right behaviour, single-product        |            6/6 |         6/6 |            6/6 |         5/5 |
+| Input tokens / question                |         28,100 |      37,500 |         21,700 |      30,900 |
+| Model calls / question                 |           2.89 |        3.44 |           2.56 |        3.11 |
 
 - **Facts stated did not move, and citation precision fell in both pairs**, by 8 and 3 points.
   Between the two runs without the guidance, precision varied by 4 points. The issue lets the
@@ -1441,18 +1449,18 @@ paired runs on a fresh materialization. Each pair ran without the guidance first
 Since #2325, the report splits citation precision into citations with line spans (judged on
 the span) and files named without lines (judged by file), so both are shown, with their sum.
 
-| | without, run 1 | with, run 1 | without, run 2 | with, run 2 |
-|---|---:|---:|---:|---:|
-| Correctness: mean facts stated | 81% | 76% | 80% | 80% |
-| Fully correct answers | 2/5 | 1/5 | 2/6 | 2/6 |
-| Citation precision, line spans | 100% (42/42) | 100% (36/36) | 98% (39/40) | 100% (42/42) |
-| Citation precision, files without lines | 17% (1/6) | 0% (0/3) | 22% (2/9) | 0% (0/9) |
-| Citation precision, both | 90% (43/48) | 92% (36/39) | 84% (41/49) | 82% (42/51) |
-| Citation recall (expected files cited) | 8/13 | 6/11 | 10/15 | 9/15 |
-| Right behaviour, single-product | 5/5 | 5/5 | 6/6 | 6/6 |
-| Input tokens / question | 40,900 | 35,800 | 37,800 | 38,900 |
-| Model calls / question | 3.22 | 3.11 | 3.11 | 3.44 |
-| Tool calls, all nine questions | 44 | 35 | 39 | 38 |
+|                                         | without, run 1 |  with, run 1 | without, run 2 |  with, run 2 |
+| --------------------------------------- | -------------: | -----------: | -------------: | -----------: |
+| Correctness: mean facts stated          |            81% |          76% |            80% |          80% |
+| Fully correct answers                   |            2/5 |          1/5 |            2/6 |          2/6 |
+| Citation precision, line spans          |   100% (42/42) | 100% (36/36) |    98% (39/40) | 100% (42/42) |
+| Citation precision, files without lines |      17% (1/6) |     0% (0/3) |      22% (2/9) |     0% (0/9) |
+| Citation precision, both                |    90% (43/48) |  92% (36/39) |    84% (41/49) |  82% (42/51) |
+| Citation recall (expected files cited)  |           8/13 |         6/11 |          10/15 |         9/15 |
+| Right behaviour, single-product         |            5/5 |          5/5 |            6/6 |          6/6 |
+| Input tokens / question                 |         40,900 |       35,800 |         37,800 |       38,900 |
+| Model calls / question                  |           3.22 |         3.11 |           3.11 |         3.44 |
+| Tool calls, all nine questions          |             44 |           35 |             39 |           38 |
 
 - **Facts stated did not move.** Each question that both runs of a pair scored got the same
   count of facts in both. Run 1's means differ only because the judge's reply could not be

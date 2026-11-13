@@ -256,20 +256,27 @@ export async function buildJudgedSpans(
  * steady per-question cost then ends under the cap rather than one question
  * over it. The first question, or one costlier than any before it, can still
  * cross it, since nothing is known of its cost before it runs.
+ *
+ * #2316 — also checked within a question, before each of its steps (a turn
+ * of a multi-turn question, then the judge), with `step: "step"` and the
+ * steps' costs: a question of four turns and a judge no longer runs whole
+ * between two checks.
  */
 export function budgetStop(input: {
   budgetUsd: number;
   spentUsd: number;
   unpricedCalls: number;
-  /** What each question asked so far cost, its answer and its judge. */
+  /** What each question (or, for `step: "step"`, each step) so far cost. */
   questionCosts: readonly number[];
+  /** What is about to run: a question (the default) or one step of one. */
+  step?: "question" | "step";
 }): string | null {
   const { budgetUsd, spentUsd } = input;
   if (input.unpricedCalls > 0) return "an unpriced call: the cap cannot be enforced";
   if (spentUsd >= budgetUsd) return `the $${budgetUsd} cap was reached`;
   const costliest = Math.max(0, ...input.questionCosts);
   if (spentUsd + costliest > budgetUsd) {
-    return `the next question would pass the $${budgetUsd} cap at the costliest one so far ($${costliest.toFixed(4)})`;
+    return `the next ${input.step ?? "question"} would pass the $${budgetUsd} cap at the costliest one so far ($${costliest.toFixed(4)})`;
   }
   return null;
 }

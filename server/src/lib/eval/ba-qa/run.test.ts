@@ -246,6 +246,15 @@ describe("budgetStop", () => {
   it("stops on an unpriced call, whatever was spent", () => {
     expect(budgetStop({ ...base, unpricedCalls: 1 })).toMatch(/unpriced call/);
   });
+
+  it("stops before a step of a question the costliest step so far would carry over the cap (#2316)", () => {
+    expect(budgetStop({ ...base, spentUsd: 0.9, questionCosts: [0.05, 0.12], step: "step" })).toBe(
+      "the next step would pass the $1 cap at the costliest one so far ($0.1200)",
+    );
+    expect(
+      budgetStop({ ...base, spentUsd: 0.8, questionCosts: [0.05, 0.12], step: "step" }),
+    ).toBeNull();
+  });
 });
 
 describe("assertComparable", () => {

@@ -211,13 +211,19 @@ export function planSearches(plan: RetrievalQueryPlan): {
 }
 
 /**
- * One ranked list of at most `k` hits from a turn's searches. A single search
- * is returned as it ranked. Several are merged by weighted reciprocal rank
- * fusion: the user's own searches weigh 1 and the conversational one
- * {@link CONTEXTUAL_WEIGHT}, so a tie goes to the user's words. Hits that only
- * the conversational search found — the earlier topic — are then held to a
- * minority of the `k` slots, at most `floor((k - 1) / 2)`, whatever their
- * scores: the user's own words stay in charge of what the model reads.
+ * One ranked list from a turn's searches. A single search is returned as it
+ * ranked, cut to `k`. Several are merged by weighted reciprocal rank fusion:
+ * the user's own searches weigh 1 and the conversational one
+ * {@link CONTEXTUAL_WEIGHT}, so a tie goes to the user's words. The `k` best
+ * hits the user's own searches found are always kept; hits that only the
+ * conversational search found — the earlier topic — are added among them in
+ * fused order, at most `floor((k - 1) / 2)` of them, so they stay a minority
+ * of the list and the user's own words stay in charge of what the model reads.
+ *
+ * #2316 — added, never swapped in: when they took slots out of `k`, two
+ * conversational-only hits outranked the user's own ranks 6 to 8 under the
+ * fusion and pushed out the file a follow-up asked about (F2 in
+ * `eval-data/README.md`).
  */
 export function fuseRetrievalHits<T extends { chunkId: string }>(
   userLists: readonly T[][],
@@ -244,10 +250,13 @@ export function fuseRetrievalHits<T extends { chunkId: string }>(
   const userFound = new Set(userLists.flatMap((l) => l.map((h) => h.chunkId)));
   const maxContextualOnly = Math.floor((k - 1) / 2);
   const out: T[] = [];
+  let own = 0;
   let contextualOnly = 0;
   for (const { hit } of ranked) {
-    if (out.length >= k) break;
-    if (!userFound.has(hit.chunkId)) {
+    if (userFound.has(hit.chunkId)) {
+      if (own >= k) continue;
+      own++;
+    } else {
       if (contextualOnly >= maxContextualOnly) continue;
       contextualOnly++;
     }
@@ -276,22 +285,39 @@ const MAX_CHUNK_RANGE = 10;
 /**
  * The chunk numbers written right after a file name: "`f.py` (chunk #17)",
  * "(`f.py`, chunks #6, #5 and #8)", "`f.py` (chunks #19-#20)".
+ *
+ * #2316 — a dash joins a range only written tight ("#19-#20", "#4–6") or
+ * before a `#` ("#19 - #20"): in "(chunk #5 - 2 places)" the 2 is not a chunk.
  */
 const CHUNK_REF =
-  /^[`'"\s(,:]{0,8}chunks?\s+(#?\d+(?:\s*(?:,\s*(?:and\s+)?|and\s+|-|–|to\s+)\s*#?\d+)*)/i;
+  /^[`'"\s(,:]{0,8}chunks?\s+(#?\d+(?:(?:\s*,\s*(?:and\s+)?|\s+and\s+|\s+to\s+|[-–]|\s+[-–]\s*(?=#)|\s*[-–]\s+(?=#))#?\d+)*)/i;
 
-/** Whether `answer` names `locator` whole: `f.py#1` is not read inside `f.py#18`. */
+/** A character that continues a file name or path segment: not a boundary before one. */
+const NAME_CHAR = /[\p{L}\p{N}_.-]/u;
+
+/**
+ * #2316 — whether the mention of a name at `at` is the whole name or a path
+ * suffix of a longer one: `auth.go` is named in "`auth.go`" and in
+ * "internal/auth.go", but not inside "internal/ui/oauth.go".
+ */
+function wholeNameAt(answer: string, at: number): boolean {
+  return at === 0 || !NAME_CHAR.test(answer.charAt(at - 1));
+}
+
+/** Whether `answer` names `locator` whole: `f.py#1` is not read inside `f.py#18` or `of.py#1`. */
 function mentionsLocator(answer: string, locator: string): boolean {
   for (let at = answer.indexOf(locator); at >= 0; at = answer.indexOf(locator, at + 1)) {
-    if (!/\d/.test(answer.charAt(at + locator.length))) return true;
+    if (wholeNameAt(answer, at) && !/\d/.test(answer.charAt(at + locator.length))) return true;
   }
   return false;
 }
 
-/** The chunk positions `answer` names after each mention of `name`. */
+/** The chunk positions `answer` names after each whole mention of `name`. */
 function chunkRefs(answer: string, name: string): Set<number> {
   const out = new Set<number>();
   for (let at = answer.indexOf(name); at >= 0; at = answer.indexOf(name, at + 1)) {
+    // #2316 — chunk numbers after a longer name are that file's, not this one's.
+    if (!wholeNameAt(answer, at)) continue;
     const list = CHUNK_REF.exec(answer.slice(at + name.length, at + name.length + 80))?.[1];
     if (!list) continue;
     let prev: number | null = null;

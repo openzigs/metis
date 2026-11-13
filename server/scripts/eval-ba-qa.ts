@@ -46,9 +46,10 @@
  * from its verdicts in code (`metrics.ts`). Spend is ledger-priced, answers and
  * judge apart, and held under `--budget` (USD): the run stops before a question
  * once the cap is reached, once the costliest question so far would carry the
- * spend past it, or on an unpriced call (`budgetStop`). The cap is checked
- * between questions, not within one, so a question costlier than any before it
- * can still cross it.
+ * spend past it, or on an unpriced call (`budgetStop`). #2316 — it is checked
+ * within a question too, before each later turn of a multi-turn question and
+ * before the judge, against the costliest such step so far; a question cut
+ * short is not graded. One step costlier than any before it can still cross it.
  * Results: `eval-results/ba-qa/<runId>.{json,md}`.
  *
  * #2241 — `--floor-sweep` asks no model: after the knowledge step it runs chat's
@@ -579,6 +580,17 @@ async function main(): Promise<void> {
   let stoppedEarly: string | null = null;
   const startedAt = new Date();
   const questionCosts: number[] = [];
+  // #2316 — what each step of a question cost (a turn, or the judge), for the
+  // check before the next step.
+  const stepCosts: number[] = [];
+  const stepStop = () =>
+    budgetStop({
+      budgetUsd: budget,
+      spentUsd: meter.spentUsd(),
+      unpricedCalls: meter.unpricedCalls(),
+      questionCosts: stepCosts,
+      step: "step",
+    });
 
   try {
     if (indexFault) {
@@ -686,6 +698,13 @@ async function main(): Promise<void> {
       let retrievalMs = 0;
       let loop: Awaited<ReturnType<typeof runChatToolTurn>> | null = null;
       for (const [t, userText] of turns.entries()) {
+        // #2316 — the cap is checked before every turn after the first (the
+        // question's own check covered that one), not only between questions.
+        if (t > 0) {
+          stoppedEarly = stepStop();
+          if (stoppedEarly) break;
+        }
+        const stepBefore = meter.spentUsd();
         const graded = t === turns.length - 1;
         const viaConversation = retrievalMode === "conversation";
         // The graded turn of a multi-turn question is searched both ways; only
@@ -828,17 +847,25 @@ async function main(): Promise<void> {
           ratio: turn.ratio,
           meta: citedExcerptsMeta(reply, capture.excerpts),
         });
+        stepCosts.push(meter.spentUsd() - stepBefore);
       }
+      // A question cut short by the cap is not graded or reported.
+      if (stoppedEarly) break;
       if (!loop) throw new Error(`${q.id} has no turn to ask`);
       const { citations, ambiguous } = extractCitations(
         reply,
         q.scope.map((name) => citable.get(name)!),
       );
       const { spans, index } = await buildJudgedSpans(citations, readCited);
+      // #2316 — the judge is a step too.
+      stoppedEarly = stepStop();
+      if (stoppedEarly) break;
+      const judgeBefore = meter.spentUsd();
       const judged = await meterProvider(meterProvider(provider, meter), judgeMeter).chat(
         buildJudgeMessages(q, reply, spans),
         { model: judgeModel, disableTools: true, maxTokens: 1200, callType: "grounding" },
       );
+      stepCosts.push(meter.spentUsd() - judgeBefore);
       const verdict = parseJudgeVerdict(judged.content, q, spans);
       const score = scoreQuestion(q, citations, index, verdict);
       const costUsd = sessionMeter.unpricedCalls() > 0 ? null : sessionMeter.spentUsd();
