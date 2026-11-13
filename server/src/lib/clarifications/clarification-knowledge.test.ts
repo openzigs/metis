@@ -204,6 +204,25 @@ describe("#2236 — indexClarification edges", () => {
     expect(enqueue).not.toHaveBeenCalled();
   });
 
+  // Adversarial panel on #2430 — after the link moved, nothing names the old
+  // document: a failed enqueue must still delete it, or it is never removed.
+  it("#2310 — a failed enqueue still deletes the superseded document, and reads as not indexed", async () => {
+    db.document.create.mockResolvedValueOnce({ id: "doc-new" });
+    const deleteDocument = vi.fn(async (_id: string): Promise<void> => undefined);
+    const enqueue = vi.fn(async () => {
+      throw new Error("queue down");
+    });
+    expect(
+      await indexClarification(record({ knowledgeDocumentId: "doc-old" }), {
+        storage: storage() as never,
+        deleteDocument,
+        enqueue,
+      }),
+    ).toBeNull();
+    expect(enqueue).toHaveBeenCalledWith("doc-new");
+    expect(deleteDocument).toHaveBeenCalledWith("doc-old");
+  });
+
   it("#2310 — a superseded document that cannot be deleted leaves the new one linked", async () => {
     db.document.create.mockResolvedValueOnce({ id: "doc-new" });
     const deleteDocument = vi.fn(async () => {

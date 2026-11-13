@@ -8,8 +8,10 @@
  * `document.upload` audit entry) and queued for ingest like an uploaded text:
  * the same chunking, quarantine policy, ACL and retrieval as the rest of the
  * project's knowledge. When the answer changes, the new document is indexed
- * and then the earlier one deleted, so a superseded answer is never cited and
- * a failed write never leaves the record naming a deleted document; when it
+ * and then the earlier one deleted, so a superseded answer is not cited and
+ * a failed write never leaves the record naming a deleted document (a delete
+ * that itself fails is logged with the document's id: nothing names that
+ * document any more, so it is not retried); when it
  * is reopened (its paragraph changed), the document is withdrawn
  * ({@link withdrawClarification}).
  *
@@ -182,7 +184,20 @@ export async function indexClarification(
     }
     const enqueue =
       deps.enqueue ?? ((id: string) => getIngestQueue().enqueue(id, { priority: "manual" }));
-    await enqueue(document.id);
+    // Adversarial panel on #2430 — once the link has moved, a failed enqueue
+    // must not skip the delete below: nothing names the superseded document
+    // any more, so it would stay in the project's knowledge for good.
+    let queued = true;
+    try {
+      await enqueue(document.id);
+    } catch (err) {
+      queued = false;
+      log.warn("clarification document could not be queued for ingest", {
+        recordId: record.id,
+        documentId: document.id,
+        error: (err as Error).message,
+      });
+    }
     // Only now is the superseded answer's document deleted, so a failed write
     // above never leaves the record naming a document that is gone.
     if (previous) {
@@ -196,7 +211,7 @@ export async function indexClarification(
         });
       }
     }
-    return document.id;
+    return queued ? document.id : null;
   } catch (err) {
     log.warn("clarification could not be indexed", {
       recordId: record.id,

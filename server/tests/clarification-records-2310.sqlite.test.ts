@@ -173,6 +173,30 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       );
     });
 
+    // Adversarial panel on #2430 — the ids reusing analyses added survive a
+    // re-answer; only the answering analysis's own ids are replaced.
+    it("a re-answer keeps the requirements other analyses reused it for", async () => {
+      const { record } = await recordClarification(PA, input());
+      await addClarificationRequirements(PA, record.id, A2, ["R-7"]);
+      await recordClarification(
+        PA,
+        input({ answer: "At least 14 characters.", requirementIds: ["R-2"] }),
+      );
+      expect(await storedIds(record.id)).toEqual([`${A1}:R-2`, `${A2}:R-7`]);
+
+      // A pre-#2310 unqualified id was the record's own analysis's: kept, and
+      // qualified, when another analysis answers the same question.
+      await db.clarificationRecord.update({
+        where: { id: record.id },
+        data: { requirementIds: JSON.stringify(["R-0", `${A2}:R-7`]) },
+      });
+      await recordClarification(
+        PA,
+        input({ analysisId: A3, answer: "At least 16 characters.", requirementIds: ["R-3"] }),
+      );
+      expect(await storedIds(record.id)).toEqual([`${A3}:R-3`, `${A1}:R-0`, `${A2}:R-7`]);
+    });
+
     it("two reuses racing on one record each keep their id: the write is a compare-and-set", async () => {
       const { record } = await recordClarification(PA, input());
       const findFirst = db.clarificationRecord.findFirst.bind(db.clarificationRecord);

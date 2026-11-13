@@ -124,6 +124,30 @@ function ownRequirementIds(stored: readonly string[], analysisId: string | null)
   return [...new Set(out)];
 }
 
+/**
+ * Adversarial panel on #2430 — the stored list a re-answer writes: the
+ * answering analysis's own ids (`own`, already qualified) replace its earlier
+ * ones, and the ids other analyses added when they reused the answer
+ * ({@link addClarificationRequirements}) are kept, so a re-answer never
+ * erases where else the answer applies. An id written before #2310 is
+ * unqualified and was the record's own analysis's: it is qualified by it.
+ * A Spec Kit answer (no analysis) replaces the list, as before.
+ */
+function keepOthersRequirements(
+  existing: Row,
+  input: Pick<ClarificationInput, "analysisId">,
+  own: string,
+): string {
+  if (!input.analysisId) return own;
+  const mine = `${input.analysisId}:`;
+  const others: string[] = [];
+  for (const id of stringArray(existing.requirementIds)) {
+    const qualified = id.includes(":") ? id : qualifyRequirementId(existing.analysisId, id);
+    if (qualified.includes(":") && !qualified.startsWith(mine)) others.push(qualified);
+  }
+  return JSON.stringify([...new Set([...(JSON.parse(own) as string[]), ...others])]);
+}
+
 function toStored(row: Row): StoredClarification {
   const headingPath = stringArray(row.sourceHeadingPath);
   return {
@@ -211,7 +235,13 @@ export async function recordClarification(
   }
   const data = columns(input);
   if (existing) {
-    const row = await prisma.clarificationRecord.update({ where, data });
+    const row = await prisma.clarificationRecord.update({
+      where,
+      data: {
+        ...data,
+        requirementIds: keepOthersRequirements(existing, input, data.requirementIds),
+      },
+    });
     return { record: toStored(row), changed: true };
   }
   try {
