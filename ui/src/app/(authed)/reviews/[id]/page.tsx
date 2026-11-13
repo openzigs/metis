@@ -22,6 +22,7 @@ import { useSocket } from "@/lib/socket-client";
 import { keepSubscribed } from "@/lib/socket-subscription";
 import { projectJoin } from "@/lib/socket-rooms";
 import { queryKeys } from "@/lib/query-keys";
+import { reviewGateApi, reviewGateKey } from "@/lib/publishing-api";
 import {
   reviewsApi,
   type ReviewDetail,
@@ -59,15 +60,21 @@ export function findMyAssignment(
 /**
  * True when the caller may record a decision right now: they hold a pending
  * assignment, the review is in_review, and they are not the requester
- * (mirrors the server's SELF_APPROVAL_FORBIDDEN guard). Exported for testing.
+ * (mirrors the server's SELF_APPROVAL_FORBIDDEN guard). #2436 — the requester
+ * may when `selfApprovalAllowed`: the project allows self-approval and they
+ * hold `requirement.approve`, as the server requires. Exported for testing.
  */
-export function canDecide(review: ReviewRequest, userId: string | null): boolean {
+export function canDecide(
+  review: ReviewRequest,
+  userId: string | null,
+  selfApprovalAllowed = false,
+): boolean {
   const mine = findMyAssignment(review, userId);
   return (
     mine !== null &&
     mine.decision === "pending" &&
     review.status === "in_review" &&
-    review.requestedById !== userId
+    (review.requestedById !== userId || selfApprovalAllowed)
   );
 }
 
@@ -111,6 +118,17 @@ export default function ReviewDetailPage() {
   }, [socket, projectId, reviewId, qc]);
 
   const myAssignment = review ? findMyAssignment(review, userId) : null;
+
+  // #2436 — a requester who is also an assigned reviewer may decide only where
+  // the project allows self-approval and they hold `requirement.approve`.
+  const canApprove = user?.permissions.includes("requirement.approve") ?? false;
+  const ownRequest = review !== undefined && review.requestedById === userId;
+  const gate = useQuery({
+    queryKey: reviewGateKey(projectId ?? ""),
+    queryFn: () => reviewGateApi.get(projectId!),
+    enabled: Boolean(projectId) && ownRequest && canApprove && myAssignment !== null,
+  });
+  const selfApprovalAllowed = canApprove && gate.data?.allowSelfApproval === true;
 
   const decide = useMutation({
     mutationFn: (vars: { decision: "approved" | "rejected"; note?: string }) =>
@@ -203,7 +221,7 @@ export default function ReviewDetailPage() {
 
           <ReviewerPanel assignments={review.assignments} currentUserId={userId} />
 
-          {canDecide(review, userId) ? (
+          {canDecide(review, userId, selfApprovalAllowed) ? (
             <DecisionBar
               pending={decide.isPending}
               error={decisionError}

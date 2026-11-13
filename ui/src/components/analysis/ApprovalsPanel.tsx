@@ -18,9 +18,11 @@ import {
   readEnhancementMetadata,
   type ApprovalRequestPayload,
   type ClarificationStatePayload,
+  type PromotionOutcome,
   type StructuredRequirement,
   type TicketStatus,
 } from "@/lib/analysis-api";
+import { toast } from "sonner";
 import { ApiError } from "@/lib/api-client";
 import { queryKeys } from "@/lib/query-keys";
 import { useSocket } from "@/lib/socket-client";
@@ -39,6 +41,16 @@ import {
   checkpointDraftOf,
   type CheckpointDraft,
 } from "./CheckpointRequirementEditor";
+
+/**
+ * #2436 — a promotion that wrote requirements awaiting review rather than
+ * approved (their editor signed them off; maker-checker) says so, once.
+ */
+export function announceHeldForReview(promotion: PromotionOutcome | undefined): void {
+  if (promotion?.status === "promoted" && promotion.heldForReviewReason) {
+    toast.info(promotion.heldForReviewReason);
+  }
+}
 
 interface ApprovalsPanelProps {
   projectId: string;
@@ -408,7 +420,8 @@ function ApprovalCard({
         status: decision,
         reviewNote: note.trim() ? note.trim() : undefined,
       }),
-    onSuccess: () => {
+    onSuccess: (data) => {
+      announceHeldForReview(data.promotion);
       onChange();
       qc.invalidateQueries({ queryKey: queryKeys.approvals.forAnalysis(analysisId) });
       // Issue #1135 — resolving the last approval promotes the requirements, and
@@ -636,7 +649,8 @@ function ApproveAllPending({
   const [confirming, setConfirming] = useState(false);
   const approveAll = useMutation({
     mutationFn: () => analysisApi.approveAllApprovals(projectId, analysisId),
-    onSuccess: () => {
+    onSuccess: (data) => {
+      announceHeldForReview(data.promotion);
       setConfirming(false);
       onChange();
       qc.invalidateQueries({ queryKey: queryKeys.approvals.forAnalysis(analysisId) });

@@ -180,6 +180,11 @@ export interface ResolveCriteriaProposalResult {
   choice: "accept" | "dismiss";
   version: number;
   changed: boolean;
+  /**
+   * #2436 — what accepting did to the requirement's approval: `kept`, or
+   * `reopened` (awaiting review: someone else must approve the new criteria).
+   */
+  approval?: "kept" | "reopened";
 }
 
 export const requirementCriteriaProposalApi = {

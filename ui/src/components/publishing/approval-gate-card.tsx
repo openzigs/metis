@@ -16,13 +16,13 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { hasPermission } from "@metis/shared";
 import { ApiError } from "@/lib/api-client";
 import { useAuth } from "@/lib/auth-context";
-import { reviewGateApi } from "@/lib/publishing-api";
+import { reviewGateApi, reviewGateKey } from "@/lib/publishing-api";
 import type { ReviewGateConfigPatch } from "@metis/shared";
 import { APPROVAL_GATE_UNAVAILABLE, type ApprovalGateBlock } from "@/lib/approval-gate";
 import { Card } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 
-const gateKey = (projectId: string) => ["publishing", "review-gate", projectId] as const;
+const gateKey = reviewGateKey;
 
 /** #2436 — what the self-approval setting does, under its toggle. */
 export const SELF_APPROVAL_HELP =

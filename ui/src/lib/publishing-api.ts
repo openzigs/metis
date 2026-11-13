@@ -118,6 +118,9 @@ export const publishingApi = {
  * Reading needs `project.read`; updating needs `review.admin`. #2436 — it also
  * carries the project's `allowSelfApproval` (maker-checker) switch.
  */
+/** The query key the review-gate setting is cached under (shared, so a toggle refreshes every reader). */
+export const reviewGateKey = (projectId: Id) => ["publishing", "review-gate", projectId] as const;
+
 export const reviewGateApi = {
   get: (projectId: Id) => apiFetch<ReviewGateConfig>(`/projects/${projectId}/review-gate`),
   update: (projectId: Id, body: ReviewGateConfigPatch) =>

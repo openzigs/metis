@@ -68,9 +68,12 @@ export function CriteriaProposalNotice({
         choice,
         ...(choice === "accept" ? { version } : {}),
       }),
-    successMessage: (_d, choice) =>
+    successMessage: (d, choice) =>
       choice === "accept"
-        ? "Accepted the suggested acceptance criteria"
+        ? // #2436 — the approval was of the old criteria; maker-checker reopened it.
+          d.approval === "reopened"
+          ? "Accepted the suggested acceptance criteria. The requirement is awaiting review again: someone else must approve the new criteria."
+          : "Accepted the suggested acceptance criteria"
         : "Kept the approved acceptance criteria",
     invalidateKeys,
     // A 409 means the requirement changed or the suggestion is gone: reload,

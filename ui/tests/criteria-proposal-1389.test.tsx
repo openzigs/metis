@@ -101,6 +101,28 @@ describe("CriteriaProposalNotice (#1389)", () => {
     expect(invalidate).toHaveBeenCalledWith({ queryKey: KEY });
   });
 
+  // #2436 — maker-checker returned the requirement to awaiting review.
+  it("Accept that reopened the approval says the requirement awaits review again", async () => {
+    resolve.mockResolvedValue({
+      id: "req-1",
+      choice: "accept",
+      version: 2,
+      changed: true,
+      approval: "reopened",
+    });
+    renderNotice();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Accept suggested acceptance criteria for Feed reader" }),
+    );
+
+    await waitFor(() =>
+      expect(toast.success).toHaveBeenCalledWith(
+        "Accepted the suggested acceptance criteria. The requirement is awaiting review again: someone else must approve the new criteria.",
+      ),
+    );
+  });
+
   it("Dismiss sends no version, then refetches", async () => {
     resolve.mockResolvedValue({ id: "req-1", choice: "dismiss", version: 1, changed: false });
     const { invalidate } = renderNotice();
