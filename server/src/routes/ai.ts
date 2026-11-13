@@ -460,16 +460,19 @@ type ChatBody = z.infer<typeof chatBodySchema>;
 export const CLIENT_HISTORY_REJECTED = "CLIENT_HISTORY_REJECTED";
 
 /**
- * The per-turn system context placed just before the user's message: what an
- * "Ask about this" chat is about (#2350), then what retrieval found.
+ * The per-turn context placed just before the user's message: what retrieval
+ * found (system), then what an "Ask about this" chat is about (#2350). The item
+ * block carries analyst-editable text (a requirement's body), so — the #2226
+ * rule (`discussions/thread-context.ts`) — it goes in as a USER turn, never a
+ * system one; `joinAdjacentUserMessages` folds it into the question's turn.
  */
 export function turnContextMessages(
   subjectBlock: string | null,
   ragContext: string | null | undefined,
 ): ChatMessage[] {
   const out: ChatMessage[] = [];
-  if (subjectBlock) out.push({ role: "system", content: subjectBlock });
   if (ragContext) out.push({ role: "system", content: ragContext });
+  if (subjectBlock) out.push({ role: "user", content: subjectBlock });
   return out;
 }
 

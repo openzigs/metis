@@ -180,10 +180,12 @@ async function changeRequestSourceNames(projectId: string, analysisId: string): 
 }
 
 /**
- * PR #2428 review — the system block that tells the model which item an "Ask
- * about this" chat is about. The chat page sends the item with every turn of
- * such a chat, so the chat stays tied to it even when the analyst rewrites or
- * clears the opening question.
+ * PR #2428 review — the block that tells the model which item an "Ask about
+ * this" chat is about. The chat page sends the item with every turn of such a
+ * chat, so the chat stays tied to it even when the analyst rewrites or clears
+ * the opening question. It carries analyst-editable text (a requirement's
+ * body), so the route sends it in the question's USER turn, never as a system
+ * message (`turnContextMessages`, the #2226 rule).
  *
  * Access is re-checked here, on every turn, by {@link resolveChatSubject} (the
  * item's own page's rule). `null` — the turn runs without the block — when there

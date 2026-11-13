@@ -114,11 +114,15 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(res.status, res.text).toBe(201);
       return (res.body.data.session as { id: string }).id;
     }
-    /** The system messages the model was shown on its `n`th call. */
-    const systemText = (n: number) =>
+    const text = (m: ChatMessage) =>
+      typeof m.content === "string" ? m.content : JSON.stringify(m.content);
+    /** Everything the model was shown on its `n`th call. */
+    const promptText = (n: number) => (model.prompts[n] ?? []).map(text).join("\n---\n");
+    /** Its system messages only. */
+    const systemOnly = (n: number) =>
       (model.prompts[n] ?? [])
         .filter((m) => m.role === "system")
-        .map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content)))
+        .map(text)
         .join("\n---\n");
 
     beforeAll(async () => {
@@ -198,19 +202,20 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
       expect(res.status, res.text).toBe(200);
       expect(res.text).toContain("event: done");
-      const sys = systemText(0);
-      expect(sys).toContain(`${SUBJECT_LEAD} requirement in Metis.`);
-      expect(sys).toContain("Project: “Alpha”");
-      expect(sys).toContain("Change request: “Checkout v2”");
-      expect(sys).toContain("Requirement: “Pay by card”");
-      expect(sys).toContain(BODY);
-      // A system message of this turn, ahead of the question.
+      // The #2226 rule: analyst-editable text (the requirement's body) goes in
+      // the question's USER turn, ahead of the question, never a system message.
       const prompt = model.prompts[0]!;
-      const at = prompt.findIndex(
-        (m) => m.role === "system" && String(m.content).startsWith(SUBJECT_LEAD),
-      );
-      expect(at).toBeGreaterThan(-1);
-      expect(prompt[prompt.length - 1]!.role).toBe("user");
+      const last = prompt[prompt.length - 1]!;
+      expect(last.role).toBe("user");
+      const turn = text(last);
+      expect(turn).toContain(`${SUBJECT_LEAD} requirement in Metis.`);
+      expect(turn).toContain("Project: “Alpha”");
+      expect(turn).toContain("Change request: “Checkout v2”");
+      expect(turn).toContain("Requirement: “Pay by card”");
+      expect(turn).toContain(BODY);
+      expect(turn.indexOf(SUBJECT_LEAD)).toBeLessThan(turn.indexOf("What does this cover?"));
+      expect(systemOnly(0)).not.toContain(SUBJECT_LEAD);
+      expect(systemOnly(0)).not.toContain(BODY);
     });
 
     it("keeps telling it on later turns, and on /chat", async () => {
@@ -219,15 +224,15 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       await post("/api/ai/stream", { sessionId, message: "hello", subject });
       const res = await post("/api/ai/chat", { sessionId, message: "and then?", subject });
       expect(res.status, res.text).toBe(200);
-      expect(systemText(1)).toContain(`${SUBJECT_LEAD} change request in Metis.`);
-      expect(systemText(1)).toContain("Change request: “Checkout v2”");
-      expect(systemText(1)).toContain("Its source documents: “checkout-spec.md”");
+      expect(promptText(1)).toContain(`${SUBJECT_LEAD} change request in Metis.`);
+      expect(promptText(1)).toContain("Change request: “Checkout v2”");
+      expect(promptText(1)).toContain("Its source documents: “checkout-spec.md”");
     });
 
     it("says nothing of an item when the turn names none", async () => {
       const sessionId = await newSession();
       await post("/api/ai/stream", { sessionId, message: "hello" });
-      expect(systemText(0)).not.toContain(SUBJECT_LEAD);
+      expect(promptText(0)).not.toContain(SUBJECT_LEAD);
     });
 
     it("drops an item the caller cannot read, without telling the model anything of it", async () => {
@@ -238,7 +243,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         subject: { kind: "requirement", id: "req-b" },
       });
       expect(res.status, res.text).toBe(200);
-      const sys = systemText(0);
+      const sys = promptText(0);
       expect(sys).not.toContain(SUBJECT_LEAD);
       expect(sys).not.toContain("Refund within 30 days");
       expect(sys).not.toContain("Bravo's secret rule");
@@ -251,8 +256,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         message: "hello",
         subject: { kind: "requirement", id: "req-a" },
       });
-      expect(systemText(0)).not.toContain(SUBJECT_LEAD);
-      expect(systemText(0)).not.toContain(BODY);
+      expect(promptText(0)).not.toContain(SUBJECT_LEAD);
+      expect(promptText(0)).not.toContain(BODY);
     });
 
     it("refuses a malformed subject with 400", async () => {
@@ -324,12 +329,41 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           ),
         ).toBeNull();
       });
+
+      // Adversarial panel (test-falsifiability) — the item is IN the session's
+      // project, so only the per-turn access re-check can drop it.
+      it("re-checks access each turn: an in-scope item a caller cannot read is dropped", async () => {
+        const outsider = { ...userA, userId: "u-b", username: "u-b", workspaces: ["ws-b"] };
+        expect(
+          await chatSubjectContextBlock(
+            outsider,
+            { projectId: "proj-a" },
+            { kind: "requirement", id: "req-a" },
+          ),
+        ).toBeNull();
+        const noAnalysisRead = { ...userA, role: "guest" as "developer" };
+        expect(
+          await chatSubjectContextBlock(
+            noAnalysisRead,
+            { projectId: "proj-a" },
+            { kind: "requirement", id: "req-a" },
+          ),
+        ).toBeNull();
+        // The same item, for a caller who can read it, is told.
+        expect(
+          await chatSubjectContextBlock(
+            userA,
+            { projectId: "proj-a" },
+            { kind: "requirement", id: "req-a" },
+          ),
+        ).toContain(BODY);
+      });
     });
 
-    it("turnContextMessages puts the item before what retrieval found", () => {
+    it("turnContextMessages: retrieval as system, the item as a user turn (#2226 rule)", () => {
       expect(turnContextMessages("item", "rag")).toEqual([
-        { role: "system", content: "item" },
         { role: "system", content: "rag" },
+        { role: "user", content: "item" },
       ]);
       expect(turnContextMessages(null, "")).toEqual([]);
     });
