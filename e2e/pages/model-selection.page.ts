@@ -64,6 +64,10 @@ export class ModelSelectionPanel {
 
   /** Wait for the recommendation data to load (loading indicator disappears). */
   async waitForLoaded(): Promise<void> {
+    // #2341 — the model choice sits behind the new change request's "Options".
+    const options = this.page.getByTestId("change-request-options-toggle");
+    await expect(options).toBeVisible({ timeout: 15_000 });
+    if ((await options.getAttribute("aria-expanded")) !== "true") await options.click();
     await expect(this.panelHeading).toBeVisible({ timeout: 15_000 });
   }
 

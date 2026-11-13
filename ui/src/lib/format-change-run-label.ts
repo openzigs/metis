@@ -26,11 +26,24 @@ const SHORT_ID_LEN = 8;
 export interface ChangeRunLike {
   id: string;
   startedAt: string | Date;
+  /**
+   * #2341 — the change request's title. When present it is the primary label
+   * and "Run #N — <date-time>" moves to `detail`; a run with none (a Change
+   * Analysis comparison run) keeps the sequence-and-date label.
+   */
+  title?: string | null;
 }
 
 export interface ChangeRunLabel {
-  /** Human-facing primary label: `"Run #<seq> — <date-time>"`. Never a bare id. */
+  /**
+   * Human-facing primary label: the change request's title (#2341), else
+   * `"Run #<seq> — <date-time>"`. Never a bare id, never a bare timestamp.
+   */
   primary: string;
+  /** #2341 — `"Run #<seq> — <date-time>"`: secondary detail beside a title. */
+  detail: string;
+  /** #2341 — true when `primary` is the change request's title. */
+  titled: boolean;
   /** Short id for disambiguation / copy / tooltip — secondary, never primary. */
   shortId: string;
   /** The stable 1-based sequence ordinal (oldest run = 1). */
@@ -63,8 +76,12 @@ export function shortRunId(id: string): string {
  * single-run primitive it delegates to.
  */
 export function formatChangeRunLabel(run: ChangeRunLike, sequence: number): ChangeRunLabel {
+  const detail = `Run #${sequence} — ${formatRunTimestamp(run.startedAt)}`;
+  const title = run.title?.trim();
   return {
-    primary: `Run #${sequence} — ${formatRunTimestamp(run.startedAt)}`,
+    primary: title || detail,
+    detail,
+    titled: Boolean(title),
     shortId: shortRunId(run.id),
     sequence,
     rawId: (run.id ?? "").trim(),
@@ -108,4 +125,13 @@ export function formatChangeRunLabels(runs: ChangeRunLike[]): {
   });
 
   return { byId, ordered };
+}
+
+/**
+ * #2341 — one line for a run in a dropdown: the title with the sequence and date
+ * after it, or the sequence and date alone for a run with no title. The date is
+ * always there, never the only label of a titled run.
+ */
+export function formatRunOptionLabel(label: ChangeRunLabel): string {
+  return label.titled ? `${label.primary} · ${label.detail}` : label.primary;
 }

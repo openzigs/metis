@@ -66,8 +66,15 @@ function plural(n: number, word: string): string {
   return `${n} ${word}${n === 1 ? "" : "s"}`;
 }
 
+/** #2341 — the change request's title first; its start time is secondary detail. */
+function runTitlePrefix(run: AnalysisListItem): string {
+  const when = new Date(run.startedAt).toLocaleString();
+  const title = run.title?.trim();
+  return title ? `${title} · ${when}` : when;
+}
+
 function runLabel(run: AnalysisListItem): string {
-  return `${new Date(run.startedAt).toLocaleString()} · ${plural(totalRequirements(run), "requirement")} (${run.requirementCounts.approved} approved)`;
+  return `${runTitlePrefix(run)} · ${plural(totalRequirements(run), "requirement")} (${run.requirementCounts.approved} approved)`;
 }
 
 function runHref(projectId: string, analysisId: string): string {
@@ -202,7 +209,7 @@ export function RequirementsHub({ projectId }: { projectId: string }) {
           {analyses.map((a) => (
             <li key={a.id} className="flex items-center justify-between gap-3 py-2 text-sm">
               <span>
-                {new Date(a.startedAt).toLocaleString()} · {runStatusText(a)} ·{" "}
+                {runTitlePrefix(a)} · {runStatusText(a)} ·{" "}
                 {plural(totalRequirements(a), "requirement")}
               </span>
               <Link href={runHref(projectId, a.id)} className="underline">

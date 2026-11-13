@@ -84,6 +84,10 @@ export class AnalysisEnhancementPage {
     await expect(toggle).toBeVisible({ timeout: 30_000 });
     if ((await toggle.getAttribute("aria-expanded")) !== "true") await toggle.click();
     await expect(toggle).toHaveAttribute("aria-expanded", "true");
+    // #2341 — the agents, model and enhancement switches sit behind "Options".
+    const options = this.page.getByTestId("change-request-options-toggle");
+    if ((await options.getAttribute("aria-expanded")) !== "true") await options.click();
+    await expect(options).toHaveAttribute("aria-expanded", "true");
   }
 
   // ── Enhancement toggle helpers ─────────────────────────────────────

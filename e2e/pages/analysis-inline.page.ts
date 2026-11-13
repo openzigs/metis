@@ -101,7 +101,8 @@ export class AnalysisPage {
    * Open the Analysis page. Issue #30 — a run's results are split into tabs
    * (`?tab=`), and the run form is collapsed once the project has runs:
    *   - with `tab`, land on that results sub-view;
-   *   - without it, make sure the "Start a new analysis" form is open.
+   *   - without it, make sure the "New change request" form is open, with its
+   *     Options (#2341) shown, so "Run analysis" runs the options set here.
    */
   async goto(projectId: string, tab?: AnalysisTab): Promise<void> {
     const query = tab ? `?tab=${tab}` : "";
@@ -123,6 +124,10 @@ export class AnalysisPage {
     await expect(toggle).toBeVisible({ timeout: 30_000 });
     if ((await toggle.getAttribute("aria-expanded")) !== "true") await toggle.click();
     await expect(toggle).toHaveAttribute("aria-expanded", "true");
+    // #2341 — the agents, model and enhancement switches sit behind "Options".
+    const options = this.page.getByTestId("change-request-options-toggle");
+    if ((await options.getAttribute("aria-expanded")) !== "true") await options.click();
+    await expect(options).toHaveAttribute("aria-expanded", "true");
   }
 
   /** Expand the collapsible "Add documents" panel if it is collapsed. */

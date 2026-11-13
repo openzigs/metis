@@ -84,6 +84,7 @@ import { startSpecKitJobSweeper } from "./lib/spec-kit/jobs.js";
 import { startReplacedSecretSweep } from "./lib/vault/secret-retirement.js";
 import { reconcileStrandedGeneratedDocPublications } from "./lib/docs-gen/generated-doc-publication-recovery.js";
 import { backfillSecretBindings } from "./lib/vault/secret-binding-backfill.js";
+import { backfillChangeRequestTitles } from "./lib/analysis/change-request.js";
 
 const log = createChildLogger("server-bootstrap");
 
@@ -146,6 +147,16 @@ export class SingletonJobs {
     backfillSecretBindings().catch((err) => {
       log.warn("Vault secret-binding backfill failed", { error: (err as Error).message });
     });
+    // #2341 — store a title on every run from before #2341, so titles are
+    // searchable and sortable in SQL (#2347). Idempotent: a no-op once done.
+    backfillChangeRequestTitles().then(
+      ({ updated }) => {
+        if (updated > 0) log.info("Change request titles backfilled", { updated });
+      },
+      (err) => {
+        log.warn("Change request title backfill failed", { error: (err as Error).message });
+      },
+    );
     // Scattered interval jobs — each fires once cluster-wide now they run only
     // on the leader. Epic refs: #736 (SLA), #48/#49/#52 (FinOps), #413 (revocation).
     this.handles = [

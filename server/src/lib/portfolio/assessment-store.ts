@@ -228,16 +228,23 @@ export async function failInterruptedPortfolioAssessments(staleBefore: Date): Pr
  * row is only the id its starter supplied for a product they could not read,
  * so it never lists the assessment under that product. `before` pages on
  * (`createdAt`, `id`) from the last row of the previous page.
+ *
+ * #2341 — or those started from a requirement of the run `analysisId` (its
+ * `sourceRequirementId` names a requirement whose `analysisId` is the run),
+ * so a change request's Portfolio step can say a check was done.
  */
 export async function listPortfolioAssessmentIds(filter: {
   productId?: string;
   createdById?: string;
+  analysisId?: string;
   take: number;
   before?: { createdAt: Date; id: string };
 }): Promise<Array<{ id: string; createdAt: Date }>> {
   const scope: Prisma.PortfolioAssessmentWhereInput = filter.productId
     ? { products: { some: { productId: filter.productId, coverage: { not: "restricted" } } } }
-    : { createdById: filter.createdById };
+    : filter.analysisId
+      ? { sourceRequirement: { analysisId: filter.analysisId } }
+      : { createdById: filter.createdById };
   const before = filter.before;
   return prisma.portfolioAssessment.findMany({
     where: before

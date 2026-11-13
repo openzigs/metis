@@ -178,7 +178,11 @@ describe("<RequirementsHub />", () => {
 
   it("#999 — skips a newer empty run, keeps Request review, and lets the user choose the run", async () => {
     list.mockResolvedValue({
-      items: [run("new", "completed"), run("old", "completed", { draft: 2, approved: 16 })],
+      items: [
+        run("new", "completed"),
+        // #2341 — a run with a title leads with it; one without keeps its time.
+        { ...run("old", "completed", { draft: 2, approved: 16 }), title: "Saved cards" },
+      ],
     } as never);
     get.mockImplementation(
       async (id: string) =>
@@ -217,7 +221,7 @@ describe("<RequirementsHub />", () => {
     const select = screen.getByTestId("requirements-run-select") as HTMLSelectElement;
     expect([...select.options].map((o) => o.textContent)).toEqual([
       expect.stringContaining("0 requirements (0 approved)"),
-      expect.stringContaining("18 requirements (16 approved)"),
+      expect.stringMatching(/^Saved cards · .+18 requirements \(16 approved\)$/),
     ]);
     fireEvent.change(select, { target: { value: "new" } });
     await waitFor(() =>

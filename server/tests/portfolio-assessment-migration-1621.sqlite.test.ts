@@ -16,6 +16,7 @@ import {
   createMigratedSqlite,
   type MigratedSqlite,
   MIGRATED_SQLITE_HOOK_TIMEOUT_MS,
+  onSeededColumns,
 } from "./helpers/sqlite-migrated-db.js";
 
 const MIGRATION = "20261107001621_issue1621_portfolio_assessment";
@@ -175,7 +176,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         sqlite.applyRemaining();
         expect(applied()).toBe(true);
         for (const t of TABLES) expect(tables()).toContain(t);
-        expect(existing()).toEqual(seeded);
+        // Later migrations may add columns to these tables (#2341).
+        expect(onSeededColumns(existing(), seeded)).toEqual(seeded);
       },
       MIGRATED_SQLITE_HOOK_TIMEOUT_MS,
     );

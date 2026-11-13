@@ -1333,9 +1333,51 @@ When you click **"Run Analysis"** on a project, here's what happens behind the s
 
    **A step whose answer could not be read says so (#1081).** When the model's answer for a step cannot be read even after METIS asks it once more, the screen says that step could not be read rather than showing an empty result: the cross-document panel names the completeness or contradiction check that could not be read (so "no gaps" there is not a clean result), the clarifying-questions panel says the questions could not be read instead of "nothing to clarify", a question METIS could not check against your project's documents says so, a web search that used the evidence need's own wording is labelled, an impact analysis names the AI stages whose answer could not be read, and data-mapping suggestions say which table batches were not checked.
 
+### 11.1a Change requests: a named unit of work
+
+Each analysis run is a **change request**: the run, the document(s) or imported tracker items it
+was started from, a title and a status. Change requests live on the project's **Change
+requests** tab and are listed by title everywhere a run is chosen: the run list on the analysis
+page, the **Analysis run** dropdown under Documentation and on the Requirements page, the
+**Analysis** dropdown on Publish, and each review on the **Reviews** page. The run number and
+start time follow the title as secondary detail.
+
+**Starting one.** Click **New change request**. Give it a title, or keep the one proposed (the
+first chosen document's name). Left blank, METIS names it after the first chosen document, else
+the first imported item. Choose or upload the document(s), tick imported tracker items, or type
+new requirements, then click **Run with defaults**. The defaults are every specialist agent, the
+model chosen automatically, clarifying questions on, web research off, and saved document
+readings reused. The agents, the model and those switches are behind **Options**; open it and
+click **Run analysis** to start with your own choices instead.
+
+**Its page.** A change request's page opens with:
+
+- its **title**: click the pencil to rename it. Renaming needs permission to run analyses; a
+  reader cannot rename. A title is one line of at most 200 characters, shown exactly as typed
+  (markup is not rendered);
+- **Started from**: the documents and imported items it was started from (or "all of the
+  project's documents");
+- the **settings** it ran with, headed **Run with defaults** when it was started that way;
+- a **step header** of eight steps: Read, Questions, Requirements, Policy check, Impact,
+  Portfolio, Review, Hand-off. Each step says, in words, *Not started*, *In progress*, *Needs
+  you*, *Done* or *Not applicable*, and links to the screen where that step is done. A step
+  whose feature is off or does not apply to the run (no governing documents, no portfolio, no
+  code analysed) reads *Not applicable*. Questions reads *Needs you* while the run has open
+  clarifying questions, even once the run has completed. Portfolio never reads *Done*: METIS
+  keeps no record of a portfolio check per change request yet. A step METIS could not check
+  (the policy findings or the issue drafts could not be read, for example because your role may
+  not see issue drafts) reads *Unknown*, with "Couldn't check …" as its reason, never a state
+  it might not be in.
+
+A run made before change requests had titles is given one from its sources (its first
+document's name, else its first imported item's title, else the start of its typed
+requirements, else its date) the next time the server starts, and keeps it until someone
+renames it. A run METIS starts itself (a scheduled re-run, an import) is named the same way
+when it starts.
+
 ### 11.2 Adding Documents and New Requirements Before a Run
 
-You no longer need to leave the Analysis page to feed a run. The **Start a new analysis** card has two optional panels that let you shape what the agents look at.
+You no longer need to leave the Analysis page to feed a run. The **New change request** card has two optional panels that let you shape what the agents look at.
 
 **Add documents (inline upload)**
 
@@ -1380,7 +1422,7 @@ The rule filters only the links this panel **stores and shows**. It does not nar
 
 The link is made by the analysis model, which names the imported items each requirement restates; METIS only accepts items that belong to that run, and the title and link always come from the imported item itself. The list of everything the run was started from is still shown in **Imported requirements analyzed in this run** on the Summary tab.
 
-Just above the **Run analysis** button, a one-line summary confirms what the run will use — for example, *"This run uses 3 documents + requirements provided: yes."*
+Just above the **Run with defaults** button, a one-line summary confirms what the run will use — for example, *"This run uses 3 documents + requirements provided: yes."*
 
 ### 11.3 Understanding Analysis Results
 
@@ -3681,7 +3723,7 @@ Opening Chat from a project (`/chat?projectId=…`) scopes it to that project.
 
 **How a question over several projects is answered (#2238):** every turn searches each project in the scope, again checking that you can still open it. Each project's matches are compared on how close they are to the question, and a project whose best match is well below the best project's contributes nothing, so a project that has nothing to do with the question does not slip its top excerpt into the answer (`CHAT_MULTI_PROJECT_RELEVANCE_FLOOR_PCT`, default 75). The projects that remain share the excerpts. Every excerpt is labelled with its project, and the model is told to say which project each statement comes from, and never to carry a fact from one project over to another.
 
-**Follow-up questions.** A scoped chat searches the project with the conversation, not just your last message. When you answer a question the model asked ("Which product do you mean?" — "Server"), or ask a short follow-up ("and for annual plans?"), the search reads your message together with the question before it. Your own words always run as a search of their own as well, and they count for more: excerpts found only through the earlier question take at most 3 of the 8 places. A question that names its own subject ("Are there any GDPR requirements in the onboarding spec?") is searched on its own, even right after the model asked you something. A question with several parts (a numbered list, or several questions in one message) searches each part, and the results are merged. The excerpts an answer cited (by its `[n]` number, its file name or its location) are given to the model again on your next message, marked as cited in the previous answer, so it can build on them. They are read again when you send it: an excerpt you can no longer see, or whose document was deleted, is not brought back. Each excerpt brought back counts toward the **N sources** in the label. [#2240] A chat over several projects does the same: a follow-up is searched in every project together with the question before it, so "and in the client?" finds the project the earlier question was about; the excerpts the last answer cited come back labelled with their project; and documents attached in the Workbench limit every project's search to them. [#2279]
+**Follow-up questions.** A scoped chat searches the project with the conversation, not just your last message. When you answer a question the model asked ("Which product do you mean?" — "Server"), or ask a short follow-up ("and for annual plans?"), the search reads your message together with the question before it. Your own words always run as a search of their own as well, and they count for more: the 8 best excerpts your own words found are always kept, and the earlier question can add at most 3 more (#2316). A question that names its own subject ("Are there any GDPR requirements in the onboarding spec?") is searched on its own, even right after the model asked you something. A question with several parts (a numbered list, or several questions in one message) searches each part, and the results are merged. The excerpts an answer cited (by its `[n]` number, its file name or its location) are given to the model again on your next message, marked as cited in the previous answer, so it can build on them. They are read again when you send it: an excerpt you can no longer see, or whose document was deleted, is not brought back. Each excerpt brought back counts toward the **N sources** in the label. [#2240] A chat over several projects does the same: a follow-up is searched in every project together with the question before it, so "and in the client?" finds the project the earlier question was about; the excerpts the last answer cited come back labelled with their project; and documents attached in the Workbench limit every project's search to them. [#2279]
 
 **Checked citations.** When an answer cites a file (`internal/model/feed.go:120-150`, a path, or an excerpt number such as `[2]`), METIS checks each citation against what that turn actually retrieved or read. That means the excerpts it was given and the files and line ranges its code and knowledge tools returned. A **Citations** line under the reply counts them, and opens to list each one:
 

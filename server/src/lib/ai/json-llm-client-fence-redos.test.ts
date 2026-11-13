@@ -61,6 +61,7 @@
 import { describe, expect, it } from "vitest";
 
 import { extractJson } from "./json-llm-client.js";
+import { AMBIGUOUS_JSON_MESSAGE, parseBalancedJsonObject } from "../analysis/balanced-json.js";
 
 /**
  * The pre-#1260 pattern, verbatim including the `/i` flag, as the differential
@@ -84,7 +85,13 @@ function extractJsonViaOldFence(raw: string): unknown {
   const trimmed = raw.trim();
   const fence = OLD_FENCE_PATTERN.exec(trimmed);
   if (fence) {
-    return JSON.parse(fence[1].trim());
+    const inner = fence[1].trim();
+    // #2407 — tracks production: a fenced first draft with a rival is ambiguous.
+    if (inner.startsWith("{")) {
+      const rival = parseBalancedJsonObject(trimmed);
+      if (!rival.found && rival.ambiguous) throw new SyntaxError(AMBIGUOUS_JSON_MESSAGE);
+    }
+    return JSON.parse(inner);
   }
   const firstBrace = trimmed.search(/[{[]/);
   if (firstBrace < 0) {
@@ -508,7 +515,11 @@ describe("#1260 the fence capture is unchanged by dropping the whitespace class"
    * the assertions are ABSOLUTE rather than differential.
    */
   it.each([
-    ["two fenced objects", 'prose ```json\n{"a":11}\n``` more ```json\n{"b":12}\n```', { a: 11 }],
+    [
+      "two fenced copies of one object",
+      'prose ```json\n{"a":11}\n``` more ```json\n{ "a": 11 }\n```',
+      { a: 11 },
+    ],
     [
       "a fenced object followed by prose containing a brace",
       'Use this:\n```json\n{"a":1}\n```\nthen close the } block.',

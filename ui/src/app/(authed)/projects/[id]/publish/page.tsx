@@ -16,7 +16,11 @@ import { ApiError } from "@/lib/api-client";
 import { publishingApi } from "@/lib/publishing-api";
 import { analysisApi, type AnalysisListItem } from "@/lib/analysis-api";
 import { runStatusText } from "@/components/analysis/analysis-status-badge";
-import { formatChangeRunLabels, type ChangeRunLabel } from "@/lib/format-change-run-label";
+import {
+  formatChangeRunLabels,
+  formatRunOptionLabel,
+  type ChangeRunLabel,
+} from "@/lib/format-change-run-label";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { PausableLiveRegion } from "@/components/a11y/pausable-live-region";
@@ -98,7 +102,8 @@ function statusClass(status: string): string {
  * so is its status: a run that completed with errors or warnings says so.
  */
 function analysisLabel(a: AnalysisListItem, label: ChangeRunLabel): string {
-  return `${label.primary} · ${runStatusText(a)} · ${label.shortId}`;
+  // #2341 — the change request's title first; the run number and date after it.
+  return `${formatRunOptionLabel(label)} · ${runStatusText(a)} · ${label.shortId}`;
 }
 
 /**
