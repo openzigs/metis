@@ -2,9 +2,61 @@
  * #2237 — the runner's testable half: the arms, the chat scope a question gets,
  * and the cited spans the judge is shown.
  */
-import { normalizeFilePath } from "../localization/corpus.js";
+import { fileKey, normalizeFilePath } from "../localization/corpus.js";
 import type { CitableProduct, Citation } from "./citations.js";
+import { isMultiTurn, type BaQaQuestion } from "./fixture.js";
 import type { JudgedSpan } from "./judge.js";
+
+/**
+ * #2269 — how a turn's auto-RAG reads the chat: `conversation` is production's
+ * (#2240: the earlier turns shape the searches and cited excerpts carry
+ * forward); `last-message` searches the new message alone, as chat did before.
+ */
+export const RETRIEVAL_MODES = ["conversation", "last-message"] as const;
+export type RetrievalMode = (typeof RETRIEVAL_MODES)[number];
+
+export function parseRetrievalMode(raw: string): RetrievalMode {
+  if (raw !== "conversation" && raw !== "last-message") {
+    throw new Error(`--retrieval takes conversation or last-message, not ${raw}`);
+  }
+  return raw;
+}
+
+/** The arm's column in the report: production's retrieval keeps the arm's own name. */
+export function armLabel(arm: string, mode: RetrievalMode): string {
+  return mode === "conversation" ? arm : `${arm}+${mode}`;
+}
+
+/**
+ * The questions a run asks: the one-turn set of #2237 by default, the
+ * multi-turn set with `multiTurn`, or the questions named in `ids` from either;
+ * then at most `limit` of them.
+ */
+export function selectQuestions(
+  all: readonly BaQaQuestion[],
+  opts: { multiTurn?: boolean; ids?: readonly string[]; limit?: number },
+): BaQaQuestion[] {
+  let out = opts.ids
+    ? all.filter((q) => opts.ids!.includes(q.id))
+    : all.filter((q) => isMultiTurn(q) === Boolean(opts.multiTurn));
+  if (opts.limit !== undefined) out = out.slice(0, opts.limit);
+  return out;
+}
+
+/**
+ * #2269 — the expected source files (`<product>:<path>`) that a turn's
+ * retrieved excerpts include. `names` are the excerpts' names as the
+ * retrieved-knowledge block lists them: a repository path, or an upload's
+ * filename, which `product.documents` maps to the path a source names it by.
+ */
+export function retrievedExpectedFiles(
+  expected: readonly string[],
+  product: Pick<CitableProduct, "name" | "documents">,
+  names: readonly string[],
+): string[] {
+  const found = new Set(names.map((n) => fileKey(product.name, product.documents.get(n) ?? n)));
+  return expected.filter((key) => found.has(key));
+}
 
 /**
  * The flags #2228 names as off by default, and #2327's search primitives; the

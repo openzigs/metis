@@ -24,9 +24,19 @@ import {
   sessionRoom,
   type ApiResponse,
   type CompactionEventDto,
+  type GroundingIndex,
+  type IndexErrorClass,
   type ModelCatalogResponse,
 } from "@metis/shared";
 import { requireAuth } from "../middleware/auth.js";
+import {
+  classifyIndexError,
+  indexStatusEnabled,
+  indexStatusLine,
+  quoteName,
+  readProjectIndexStatus,
+  toGroundingIndex,
+} from "../lib/ai/index-status.js";
 import { aiRateLimiter } from "../middleware/ai-rate-limit.js";
 import {
   conversationPreAuthRateLimiter,
@@ -640,6 +650,12 @@ export interface RagContextCapture {
    * embedded with another model are invisible to the current one.
    */
   coverage?: { matchingChunks: number; totalChunks: number };
+  /** #2326 — the class of a failed search (`failed`), never its text. */
+  failure?: IndexErrorClass;
+  /** #2326 — the project's index when the turn retrieved. */
+  index?: GroundingIndex;
+  /** #2326 — the status line the block led with, when the index is not healthy. */
+  indexStatusLine?: string;
 }
 
 /** #2240 — what the conversation adds to a turn's retrieval. */
@@ -715,6 +731,56 @@ export async function buildAutoRagContext(
   // the latest message read with the turn before it.
   const plan = planRetrievalQueries(messages);
   if (!plan || !projectId) return "";
+  // #2326 — read alongside the search: the index facts for the reply's label,
+  // and a status line when the index cannot be trusted. Best-effort: an
+  // unreadable status costs the turn its line, never its retrieval.
+  const statusRead = readProjectIndexStatus(projectId);
+  const cap: RagContextCapture = capture ?? { contexts: [], sources: 0 };
+  const block = await retrieveAutoRagBlock(projectId, plan, requester, fusedDeps, cap, opts);
+  const status = await statusRead;
+  // A healthy project with no repository has nothing for the label to show.
+  if (status && (status.repos.length > 0 || status.state !== "healthy")) {
+    cap.index = toGroundingIndex(status);
+  }
+  const line = status && indexStatusEnabled() ? indexStatusLine(status) : null;
+  // #2326 — kept apart too: a discussion reply drops an excerpt-less block,
+  // but not the status line (`ai-responder.ts`).
+  if (line) cap.indexStatusLine = line;
+  return [
+    line,
+    block,
+    // #2326 — a partial coverage reaches the model too, not only the label.
+    cap.coverage ? partialCoverageNote(cap.coverage) : null,
+  ]
+    .filter((part): part is string => Boolean(part))
+    .join("\n\n");
+}
+
+/**
+ * #2326 — the model's note that only part of the project's knowledge could be
+ * searched (chunks embedded with another model are invisible to the current
+ * one), so an excerpt it did not get is not evidence of absence.
+ */
+export function partialCoverageNote(coverage: {
+  matchingChunks: number;
+  totalChunks: number;
+}): string {
+  return (
+    `Note: only ${coverage.matchingChunks} of the ${coverage.totalChunks} chunks in this ` +
+    `project's knowledge base could be searched (the rest were embedded with another model), so ` +
+    `something missing from these results may still be in the project; do not conclude it is absent.`
+  );
+}
+
+/** The retrieved-knowledge block of {@link buildAutoRagContext}, filling `capture`. */
+async function retrieveAutoRagBlock(
+  projectId: string,
+  plan: NonNullable<ReturnType<typeof planRetrievalQueries>>,
+  requester: string | SharedAudienceActor,
+  fusedDeps: FusedCodeDeps,
+  capture: RagContextCapture,
+  opts: AutoRagOptions,
+): Promise<string> {
   const searches = planSearches(plan);
   const documentIds =
     opts.documentIds && opts.documentIds.length > 0 ? [...opts.documentIds] : undefined;
@@ -757,14 +823,12 @@ export async function buildAutoRagContext(
     const { kept: hits, belowFloor } = applyRelevanceFloor(fusedHits, floor);
     // #2241 — a partial coverage is reported, not just logged.
     const coverage = results.find((r) => r.coverageWarning)?.coverageWarning;
-    if (capture) {
-      if (belowFloor > 0) capture.belowFloor = belowFloor;
-      if (coverage) {
-        capture.coverage = {
-          matchingChunks: coverage.matchingChunks,
-          totalChunks: coverage.totalChunks,
-        };
-      }
+    if (belowFloor > 0) capture.belowFloor = belowFloor;
+    if (coverage) {
+      capture.coverage = {
+        matchingChunks: coverage.matchingChunks,
+        totalChunks: coverage.totalChunks,
+      };
     }
     // #2240 — the excerpts the previous answer cited, read back as the project
     // holds them now. Losing them costs this turn its carry-over, never its
@@ -808,22 +872,20 @@ export async function buildAutoRagContext(
             `(cited in your previous answer)\n${h.text}`,
         ),
       ];
-      if (capture) {
-        capture.contexts.push(...chunkList);
-        capture.sources += chunkList.length;
-        capture.excerpts = listed.map((h, i) => {
-          // #2241 — a fresh hit's dense cosine; a carried excerpt has none.
-          const relevance = i < hits.length ? denseCosine(hits[i]!) : null;
-          return {
-            n: i + 1,
-            chunkId: h.chunkId,
-            name: h.path ?? h.filename,
-            locator: formatHitLocator(h),
-            source: h.source,
-            ...(relevance !== null ? { relevance } : {}),
-          };
-        });
-      }
+      capture.contexts.push(...chunkList);
+      capture.sources += chunkList.length;
+      capture.excerpts = listed.map((h, i) => {
+        // #2241 — a fresh hit's dense cosine; a carried excerpt has none.
+        const relevance = i < hits.length ? denseCosine(hits[i]!) : null;
+        return {
+          n: i + 1,
+          chunkId: h.chunkId,
+          name: h.path ?? h.filename,
+          locator: formatHitLocator(h),
+          source: h.source,
+          ...(relevance !== null ? { relevance } : {}),
+        };
+      });
       const chunks = chunkList.join("\n\n---\n\n");
       // #2240 — said only when it applies, so an ordinary turn's block is unchanged.
       const notes =
@@ -867,7 +929,7 @@ export async function buildAutoRagContext(
       firstIndex: listed.length + 1,
     });
 
-    if (capture && fused.block) {
+    if (fused.block) {
       capture.contexts.push(fused.block);
       capture.sources += fused.usedSymbols;
       capture.codeEntries = fused.hits.map((h, i) => ({
@@ -895,22 +957,49 @@ export async function buildAutoRagContext(
     return `${ragBlock}\n\n${fused.block}`;
   } catch (err) {
     // A partially-filled capture would misrepresent what the model saw.
-    if (capture) {
-      capture.contexts.length = 0;
-      capture.sources = 0;
-      delete capture.excerpts;
-      delete capture.codeEntries;
-      delete capture.belowFloor;
-      delete capture.coverage;
-      // #2241 — recorded, so the reply's label says the search failed.
-      capture.failed = true;
-    }
+    capture.contexts.length = 0;
+    capture.sources = 0;
+    delete capture.excerpts;
+    delete capture.codeEntries;
+    delete capture.belowFloor;
+    delete capture.coverage;
+    // #2241 — recorded, so the reply's label says the search failed.
+    capture.failed = true;
+    // #2326 — the model and the label get the class of failure; the log keeps
+    // the full detail (A09).
+    const failure = classifyIndexError(err);
+    capture.failure = failure;
     log.warn("Auto-RAG retrieval failed, continuing without context", {
       projectId,
+      failure,
       error: (err as Error).message,
+      stack: (err as Error).stack,
     });
-    return RETRIEVAL_FAILED_BLOCK;
+    let projectName = "this project";
+    try {
+      const project = await prisma.project.findUnique({
+        where: { id: projectId },
+        select: { name: true },
+      });
+      projectName = project?.name?.trim() || projectName;
+    } catch {
+      /* the name is a label; the statement stands without it */
+    }
+    return retrievalFailedBlock(projectName, failure);
   }
+}
+
+/**
+ * #2326 — the block a turn gets when the knowledge search failed: which
+ * project, the class of failure (never the error's text), and an explicit
+ * instruction not to read the failure as absence.
+ */
+export function retrievalFailedBlock(projectName: string, failure: IndexErrorClass): string {
+  return (
+    `${RETRIEVAL_FAILED_BLOCK}\n` +
+    `Retrieval failed for ${quoteName(projectName)}: ${failure}. Do not conclude that the project's code ` +
+    `or documents lack what the question asks about.`
+  );
 }
 
 /**

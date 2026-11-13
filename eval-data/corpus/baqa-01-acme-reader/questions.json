@@ -2,9 +2,9 @@
   "id": "baqa-01-acme-reader",
   "version": 1,
   "issue": 2237,
-  "description": "Phase 0 of #2228: business-analyst questions over the Acme Reader sample, two products (the Miniflux server and its Python client). Single-product rule questions and multi-product FRD impact questions carry the facts a correct answer states and the sources that support them; ambiguous questions expect a follow-up question and unanswerable ones expect 'the sources don't show this'.",
+  "description": "Phase 0 of #2228: business-analyst questions over the Acme Reader sample, two products (the Miniflux server and its Python client). Single-product rule questions and multi-product FRD impact questions carry the facts a correct answer states and the sources that support them; ambiguous questions expect a follow-up question and unanswerable ones expect 'the sources don't show this'. Multi-turn questions (#2269) carry the analyst's earlier turns in 'before': the last turn is scored, and 'refersBack' says whether it leans on those turns or is a self-contained control asked mid-conversation.",
   "license": "Questions, facts and frd-12.md: CC0-1.0 (written for METIS). Cited sources: miniflux/v2 (Apache-2.0) and miniflux/python-client (MIT) at the pinned commits.",
-  "authoredBy": "claude-opus-5-5 (an AI coding agent), dispatched on issue #2237, 2026-11-10. Every fact and line range was read from the pinned commits; none was reviewed by a person yet. S7 to S11 were added on issue #2198 (2026-11-11) by the same kind of agent, from walkthrough run 10's wrong answers, and read from the same pinned commit.",
+  "authoredBy": "claude-opus-5-5 (an AI coding agent), dispatched on issue #2237, 2026-11-10. Every fact and line range was read from the pinned commits; none was reviewed by a person yet. S7 to S11 were added on issue #2198 (2026-11-11) by the same kind of agent, from walkthrough run 10's wrong answers, and read from the same pinned commit. The multi-turn questions F1 to F8 were added by claude-opus-5-5 on issue #2269, 2026-11-11, read from the same commits.",
   "products": [
     {
       "name": "miniflux",
@@ -775,6 +775,324 @@
       "text": "How many people downloaded the Acme Reader Python client last month?",
       "expect": "abstain",
       "why": "Download counts are not in the repository or its documents."
+    },
+    {
+      "id": "F1",
+      "category": "single-product",
+      "scope": ["miniflux"],
+      "before": ["Can we make it expire sooner?"],
+      "text": "I meant the login sessions.",
+      "refersBack": true,
+      "expect": "answer",
+      "facts": [
+        {
+          "id": "F1.a",
+          "text": "Login (web) sessions are removed after 30 days by default (CLEANUP_REMOVE_SESSIONS_DAYS); lowering that setting makes them expire sooner."
+        },
+        {
+          "id": "F1.b",
+          "text": "The session cookie's expiry is set from the same setting."
+        }
+      ],
+      "sources": [
+        {
+          "product": "miniflux",
+          "path": "internal/config/options.go",
+          "lines": [152, 156]
+        },
+        {
+          "product": "miniflux",
+          "path": "internal/ui/auth.go",
+          "lines": [44, 52]
+        },
+        {
+          "product": "miniflux",
+          "path": "internal/cli/cleanup_tasks.go",
+          "lines": [16, 23]
+        },
+        {
+          "product": "miniflux",
+          "path": "miniflux.1",
+          "lines": [230, 233],
+          "kind": "doc"
+        }
+      ]
+    },
+    {
+      "id": "F2",
+      "category": "single-product",
+      "scope": ["miniflux"],
+      "before": [
+        "When does the Acme Reader server delete old articles, and which articles are never deleted?"
+      ],
+      "text": "How often does that run?",
+      "refersBack": true,
+      "expect": "answer",
+      "facts": [
+        {
+          "id": "F2.a",
+          "text": "The cleanup runs every 24 hours by default."
+        },
+        {
+          "id": "F2.b",
+          "text": "The interval is set with CLEANUP_FREQUENCY_HOURS, in hours (at least 1)."
+        }
+      ],
+      "sources": [
+        {
+          "product": "miniflux",
+          "path": "internal/config/options.go",
+          "lines": [144, 151]
+        },
+        {
+          "product": "miniflux",
+          "path": "internal/cli/scheduler.go",
+          "lines": [27, 30]
+        },
+        {
+          "product": "miniflux",
+          "path": "internal/cli/scheduler.go",
+          "lines": [53, 57]
+        },
+        {
+          "product": "miniflux",
+          "path": "miniflux.1",
+          "lines": [225, 228],
+          "kind": "doc"
+        }
+      ]
+    },
+    {
+      "id": "F3",
+      "category": "single-product",
+      "scope": ["miniflux"],
+      "before": [
+        "What rules does the Acme Reader server apply to a new user's username and password?"
+      ],
+      "text": "And when a user changes them later?",
+      "refersBack": true,
+      "expect": "answer",
+      "facts": [
+        {
+          "id": "F3.a",
+          "text": "A changed password must still be at least 6 characters long."
+        },
+        {
+          "id": "F3.b",
+          "text": "A changed username must not be empty and must not belong to another user."
+        },
+        {
+          "id": "F3.c",
+          "text": "The allowed-characters rule for usernames is not checked when a username is changed."
+        }
+      ],
+      "sources": [
+        {
+          "product": "miniflux",
+          "path": "internal/validator/user.go",
+          "lines": [37, 51]
+        }
+      ]
+    },
+    {
+      "id": "F4",
+      "category": "single-product",
+      "scope": ["python-client"],
+      "before": ["How does the Acme Reader Python client sign in to the server?"],
+      "text": "Can I change its request timeout?",
+      "refersBack": true,
+      "expect": "answer",
+      "facts": [
+        {
+          "id": "F4.a",
+          "text": "Yes: the client takes a timeout argument, in seconds, when it is created, and uses it for every request."
+        },
+        {
+          "id": "F4.b",
+          "text": "The default timeout is 30 seconds."
+        }
+      ],
+      "sources": [
+        {
+          "product": "python-client",
+          "path": "miniflux.py",
+          "lines": [109, 146]
+        },
+        {
+          "product": "python-client",
+          "path": "miniflux.py",
+          "lines": [191, 192]
+        }
+      ]
+    },
+    {
+      "id": "F5",
+      "category": "single-product",
+      "scope": ["miniflux"],
+      "before": [
+        "How does the Acme Reader server decide when to check a feed for new articles again?"
+      ],
+      "text": "How many feeds does it refresh at a time?",
+      "refersBack": true,
+      "expect": "answer",
+      "facts": [
+        {
+          "id": "F5.a",
+          "text": "Each polling interval (60 minutes by default, POLLING_FREQUENCY) the scheduler picks a batch of at most 100 feeds by default (BATCH_SIZE)."
+        },
+        {
+          "id": "F5.b",
+          "text": "The batch is refreshed by a pool of 16 background workers by default (WORKER_POOL_SIZE)."
+        }
+      ],
+      "sources": [
+        {
+          "product": "miniflux",
+          "path": "internal/cli/scheduler.go",
+          "lines": [15, 51]
+        },
+        {
+          "product": "miniflux",
+          "path": "internal/config/options.go",
+          "lines": [108, 115]
+        },
+        {
+          "product": "miniflux",
+          "path": "internal/config/options.go",
+          "lines": [600, 607]
+        },
+        {
+          "product": "miniflux",
+          "path": "miniflux.1",
+          "lines": [183, 186],
+          "kind": "doc"
+        },
+        {
+          "product": "miniflux",
+          "path": "miniflux.1",
+          "lines": [648, 651],
+          "kind": "doc"
+        }
+      ]
+    },
+    {
+      "id": "F6",
+      "category": "single-product",
+      "scope": ["miniflux"],
+      "before": [
+        "How does the Acme Reader server decide when to check a feed for new articles again?"
+      ],
+      "text": "When does the Acme Reader server delete old articles, and which articles are never deleted?",
+      "refersBack": false,
+      "expect": "answer",
+      "facts": [
+        {
+          "id": "F6.a",
+          "text": "Read articles are removed after 60 days by default."
+        },
+        {
+          "id": "F6.b",
+          "text": "Unread articles are removed after 180 days by default."
+        },
+        {
+          "id": "F6.c",
+          "text": "Starred (bookmarked) and shared articles are never removed by the cleanup."
+        },
+        {
+          "id": "F6.d",
+          "text": "A removed article leaves a tombstone so the same article is not imported again on a later refresh."
+        },
+        {
+          "id": "F6.e",
+          "text": "Setting either number of days to -1 turns that cleanup off."
+        }
+      ],
+      "sources": [
+        {
+          "product": "miniflux",
+          "path": "internal/storage/entry.go",
+          "lines": [368, 398]
+        },
+        {
+          "product": "miniflux",
+          "path": "internal/cli/cleanup_tasks.go",
+          "lines": [25, 46]
+        },
+        {
+          "product": "miniflux",
+          "path": "internal/config/options.go",
+          "lines": [134, 143]
+        },
+        {
+          "product": "miniflux",
+          "path": "miniflux.1",
+          "lines": [203, 224],
+          "kind": "doc"
+        }
+      ]
+    },
+    {
+      "id": "F7",
+      "category": "single-product",
+      "scope": ["miniflux"],
+      "before": [
+        "After how many failed refreshes does the Acme Reader server stop checking a feed, and what happens then?"
+      ],
+      "text": "Is there a setting for how long the Acme Reader server waits for a feed's website to respond?",
+      "refersBack": false,
+      "expect": "answer",
+      "facts": [
+        {
+          "id": "F7.a",
+          "text": "HTTP_CLIENT_TIMEOUT sets how long the server waits before it cancels a request to the feed's site."
+        },
+        {
+          "id": "F7.b",
+          "text": "The default is 20 seconds."
+        }
+      ],
+      "sources": [
+        {
+          "product": "miniflux",
+          "path": "internal/config/options.go",
+          "lines": [276, 283]
+        },
+        {
+          "product": "miniflux",
+          "path": "internal/reader/handler/handler.go",
+          "lines": [224, 228]
+        },
+        {
+          "product": "miniflux",
+          "path": "miniflux.1",
+          "lines": [350, 353],
+          "kind": "doc"
+        }
+      ]
+    },
+    {
+      "id": "F8",
+      "category": "single-product",
+      "scope": ["python-client"],
+      "before": [
+        "What does the Acme Reader Python client do when the server answers a request with an error?"
+      ],
+      "text": "Which exception do I get when its API key is wrong?",
+      "refersBack": true,
+      "expect": "answer",
+      "facts": [
+        {
+          "id": "F8.a",
+          "text": "The server answers a wrong API key with 401, which the client raises as AccessUnauthorized."
+        }
+      ],
+      "sources": [
+        {
+          "product": "python-client",
+          "path": "miniflux.py",
+          "lines": [171, 182]
+        }
+      ]
     }
   ]
 }

@@ -16,6 +16,11 @@ export interface VaultEntry {
   keyVersion: number;
   createdAt: string;
   updatedAt: string;
+  /**
+   * #2382 — on a list, whether the caller may attach this secret (anyone with
+   * `vault.reveal`, or the secret's creator). Absent from an older server.
+   */
+  bindable?: boolean;
 }
 
 export interface VaultAuditEntry {

@@ -43,6 +43,7 @@
  * evidence instead of copying this note. Full rationale:
  * `docs/decisions/0008-redaction-sinks.md`.
  */
+import { redactSecrets } from "../../safety/secret-patterns.js";
 
 const SENSITIVE_KEY_PATTERNS: readonly RegExp[] = [
   /^content$/i,
@@ -63,99 +64,62 @@ const REDACTED = "[REDACTED]";
 const MAX_DEPTH = 8;
 
 /**
- * Value-level scrubber patterns. Each pattern's full match is replaced
- * with `[REDACTED]` (capture groups inside `(?:...)` are non-capturing
- * by design so the whole match — including the prefix — is replaced).
+ * #2333 — the vendor key shapes (Anthropic, Slack, GitHub, GitLab, AWS and the
+ * rest) are NOT listed here: {@link redactSecretsInString} runs the one shared
+ * set, `safety/secret-patterns.ts`, and collapses its `[REDACTED:<class>]`
+ * markers to this sink's plain `[REDACTED]`, so an audit row reads as before.
+ * The shared set is a superset of the vendor shapes this file used to copy, but
+ * for one edge: its prefixed shapes do not start right after a `-` (`x-sk-ant-…`).
  *
- * Order matters: more specific patterns first so e.g. an
- * `Authorization: Bearer ghp_...` is matched as the auth-header pattern
- * rather than the bare GitHub-token pattern, leaving the header name
- * itself intact via post-processing.
+ * What stays here is this sink's own behaviour, which the shared set does not
+ * have, and must not: it is tuned against false positives in SOURCE CODE,
+ * while an audit row is better over-redacted.
+ *
+ *   - `auth-header` runs FIRST and keeps the header name and scheme
+ *     (`Authorization: Basic [REDACTED]`); the shared set knows only `Bearer`.
+ *   - `openai-key-short` takes `sk-` + 20 characters; the shared OpenAI shape
+ *     needs 32.
+ *   - `google-api-key-prefix` takes the first 35 characters after `AIza` even
+ *     when more follow; the shared shape wants exactly 35 then a boundary.
+ *   - `connection-string-credentials` redacts a template slot too
+ *     (`://u:${PASS}@`), which the shared `url_credentials` keeps.
+ *   - `long-base64-after-sep`: a padded base64 value after `=` or `:`.
  */
-const VALUE_REDACTION_PATTERNS: ReadonlyArray<{ name: string; rx: RegExp; replacement: string }> = [
-  // Authorization header — Bearer / Basic / Digest. Capture the header
-  // name + scheme so the audit row still tells you "an auth header was
-  // present" without exposing the credential.
+const AUTH_HEADER = {
+  name: "auth-header",
+  rx: /(Authorization\s*:\s*)(Bearer|Basic|Digest|Token)\s+[A-Za-z0-9._\-+/=]+/gi,
+  replacement: `$1$2 ${REDACTED}`,
+} as const;
+
+/** Run after the shared set; see the note above for why each is this sink's own. */
+const SINK_ONLY_PATTERNS: ReadonlyArray<{ name: string; rx: RegExp; replacement: string }> = [
   {
-    name: "auth-header",
-    rx: /(Authorization\s*:\s*)(Bearer|Basic|Digest|Token)\s+[A-Za-z0-9._\-+/=]+/gi,
-    replacement: `$1$2 ${REDACTED}`,
-  },
-  // OpenAI-style API keys: `sk-` followed by ≥20 base62 chars.
-  {
-    name: "openai-key",
+    name: "openai-key-short",
     rx: /\bsk-[A-Za-z0-9]{20,}/g,
     replacement: REDACTED,
   },
-  // Anthropic API keys: sk-ant-... The OpenAI sk- pattern above stops at the
-  // first hyphen, so sk-ant-api03-... slipped through (#685). METIS is a Claude
-  // shop, so this is the realistic key shape; base64url alphabet.
   {
-    name: "anthropic-key",
-    rx: /\bsk-ant-[A-Za-z0-9_-]{20,}/g,
-    replacement: REDACTED,
-  },
-  // Slack bot/user/app tokens: xoxb-/xoxp-/xoxa-/xoxr- followed by id-id-secret.
-  {
-    name: "slack-token",
-    rx: /\bxox[abprs]-[A-Za-z0-9-]{10,}/g,
-    replacement: REDACTED,
-  },
-  // GitHub personal access token (classic): ghp_ + 36 chars.
-  {
-    name: "github-pat",
-    rx: /\bghp_[A-Za-z0-9]{36}\b/g,
-    replacement: REDACTED,
-  },
-  // GitHub app/server token: ghs_ + 36 chars.
-  {
-    name: "github-server",
-    rx: /\bghs_[A-Za-z0-9]{36}\b/g,
-    replacement: REDACTED,
-  },
-  // GitHub OAuth token: gho_ + 36 chars.
-  {
-    name: "github-oauth",
-    rx: /\bgho_[A-Za-z0-9]{36}\b/g,
-    replacement: REDACTED,
-  },
-  // GitLab personal access token: glpat- + ≥20 chars (alnum + _-).
-  {
-    name: "gitlab-pat",
-    rx: /\bglpat-[A-Za-z0-9_-]{20,}/g,
-    replacement: REDACTED,
-  },
-  // AWS access key id: AKIA + 16 uppercase alphanumerics.
-  {
-    name: "aws-akid",
-    rx: /\bAKIA[A-Z0-9]{16}\b/g,
-    replacement: REDACTED,
-  },
-  // Google Cloud / Firebase API key: AIza + 35 url-safe chars.
-  {
-    name: "google-api-key",
+    name: "google-api-key-prefix",
     rx: /AIza[0-9A-Za-z_-]{35}/g,
     replacement: REDACTED,
   },
-  // Connection-string credentials: scheme://user:pass@host - redact the
-  // user:pass credential but KEEP the scheme + host so the audit row still
-  // shows which service was contacted (#685). User is optional (redis://:pass@);
-  // the password may itself contain a colon.
+  // User is optional (redis://:pass@); the password may itself contain a colon.
   {
     name: "connection-string-credentials",
     rx: /(:\/\/)([^:@/\s]*:[^@/\s]+)@/g,
     replacement: `$1${REDACTED}@`,
   },
-  // Long base64-looking secret after `=` or `:` (e.g. `password=…`,
-  // `--token=AbCd…==`, `key: AbCd…`). Requires `=` padding so we don't
-  // false-positive on long hex blobs or base64 file content fragments
-  // — the padded form is what users typically paste from secret stores.
+  // `password=…`, `--token=AbCd…==`, `key: AbCd…`. Requires `=` padding so we
+  // don't false-positive on long hex blobs or base64 file content fragments.
   {
     name: "long-base64-after-sep",
     rx: /([=:]\s*)([A-Za-z0-9+/_-]{32,}={1,2})/g,
     replacement: `$1${REDACTED}`,
   },
 ];
+
+/** A shared-set marker (`[REDACTED:github_pat]`), collapsed to this sink's plain one. */
+const SHARED_MARKER = /\[REDACTED:[a-z_]{1,40}\]/g;
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -168,8 +132,9 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  */
 export function redactSecretsInString(input: string): string {
   if (input.length === 0) return input;
-  let out = input;
-  for (const { rx, replacement } of VALUE_REDACTION_PATTERNS) {
+  let out = input.replace(AUTH_HEADER.rx, AUTH_HEADER.replacement);
+  out = redactSecrets(out).text.replace(SHARED_MARKER, REDACTED);
+  for (const { rx, replacement } of SINK_ONLY_PATTERNS) {
     out = out.replace(rx, replacement);
   }
   return out;

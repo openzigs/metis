@@ -20,7 +20,6 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { CheckCircle2, AlertTriangle, Circle, Loader2 } from "lucide-react";
 import { apiFetch } from "@/lib/api-client";
 import { analysisApi } from "@/lib/analysis-api";
-import { openQuestionCount } from "@metis/shared";
 import { dbConnectorsApi, repoConnectorsApi } from "@/lib/connectors-api";
 import { documentsApi } from "@/lib/projects-api";
 import { publishingApi } from "@/lib/publishing-api";
@@ -38,6 +37,7 @@ import {
   isIngestRunning,
   isProjectRepoIngestJob,
   latestCompletedAnalysisId,
+  openQuestionsFact,
   type PipelineFacts,
   type PipelineStage,
   type PipelineStageId,
@@ -223,7 +223,7 @@ export function ProjectPipelineOverview({ projectId }: { projectId: string }) {
   // draft count alone read 0 while they waited. The SAME key the analysis page
   // and ApprovalsPanel read and invalidate, so resolving one updates this too.
   const approvals = useQuery({
-    queryKey: ["approvals", reviewId ?? ""],
+    queryKey: queryKeys.approvals.forAnalysis(reviewId ?? ""),
     queryFn: () => analysisApi.listApprovals(projectId, reviewId as string),
     enabled: Boolean(reviewId),
   });
@@ -261,7 +261,7 @@ export function ProjectPipelineOverview({ projectId }: { projectId: string }) {
     pendingApprovals: approvals.isError
       ? "unreadable"
       : (approvals.data?.ticketStatus.pendingCount ?? null),
-    openQuestions: openQuestionCount(review.data?.metadata) ?? 0,
+    openQuestions: openQuestionsFact(review.data?.metadata),
     rejectedRequirements:
       review.data?.requirements.filter((r) => r.reviewStatus === "rejected").length ?? 0,
     docs: docs.data ?? [],

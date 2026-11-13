@@ -35,6 +35,7 @@ import { productsApi } from "@/lib/products-api";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { useCreatePortfolioAssessment, usePortfolioAssessments } from "@/lib/portfolio-hooks";
 import { PortfolioAssessmentForm } from "@/components/portfolio/portfolio-assessment-form";
+import { EmptyState } from "@/components/ui/empty-state";
 
 const TITLE_MAX = 200;
 
@@ -154,9 +155,7 @@ function PortfolioEntry({
             Could not load recent checks.
           </Card>
         ) : (recent.data ?? []).length === 0 ? (
-          <p className="text-sm text-muted-foreground" data-testid="portfolio-recent-empty">
-            No checks yet.
-          </p>
+          <EmptyState data-testid="portfolio-recent-empty" title="No checks yet." />
         ) : (
           <ul className="divide-y divide-border rounded-lg border border-border">
             {(recent.data ?? []).map((a) => (

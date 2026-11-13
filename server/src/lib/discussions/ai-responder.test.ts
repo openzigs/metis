@@ -539,6 +539,52 @@ describe("streamAIReply — #739 grounding", () => {
     }
   });
 
+  it("#2326 — a failed or empty index's status line reaches the reply with no excerpt", async () => {
+    const line = '## Index status\nThe index of project "Acme" is not complete: …';
+    const streamSpy = vi.fn(async function* (_m: ChatMessage[]) {
+      yield { type: "delta", content: "ok" } as ChatChunk;
+      yield { type: "done" } as ChatChunk;
+    });
+    const provider = {
+      key: "offline-stub",
+      model: "x",
+      stream: streamSpy,
+    } as unknown as AIProvider;
+    // The retrieval-failed block is dropped, as before; the status line is not.
+    const retrieve = vi.fn(async () => ({
+      block: `${line}\n\n## Retrieved Knowledge — retrieval failed`,
+      sources: 0,
+      indexStatus: line,
+    }));
+    await streamAIReply({ thread, triggerMessage, actor, provider, retrieve });
+    const sent = streamSpy.mock.calls[0][0] as Array<{ role: string; content: string }>;
+    // Not told it has excerpts: it has none.
+    expect(sent[0].content).toBe(DISCUSSION_SYSTEM_PROMPT);
+    expect(sent.at(-2)).toEqual({ role: "system", content: line });
+    expect(sent.at(-1)).toEqual({ role: "user", content: triggerMessage.body });
+    expect(sent.some((m) => m.content.includes("retrieval failed"))).toBe(false);
+  });
+
+  it("#2326 — with excerpts, the status line comes once, inside the block", async () => {
+    const line = "## Index status\npartial";
+    const streamSpy = vi.fn(async function* (_m: ChatMessage[]) {
+      yield { type: "delta", content: "ok" } as ChatChunk;
+      yield { type: "done" } as ChatChunk;
+    });
+    const provider = {
+      key: "offline-stub",
+      model: "x",
+      stream: streamSpy,
+    } as unknown as AIProvider;
+    const block = `${line}\n\n## Retrieved Knowledge\n[1] a.go:1`;
+    const retrieve = vi.fn(async () => ({ block, sources: 1, indexStatus: line }));
+    await streamAIReply({ thread, triggerMessage, actor, provider, retrieve });
+    const sent = streamSpy.mock.calls[0][0] as Array<{ role: string; content: string }>;
+    expect(sent.filter((m) => m.content.includes("## Index status"))).toEqual([
+      { role: "system", content: block },
+    ]);
+  });
+
   it("with tools: reads the project, then answers from what it read", async () => {
     const tool = readTool("123: func (f *Feed) ScheduleNextCheck(");
     const { provider, calls, stream } = chatProvider([

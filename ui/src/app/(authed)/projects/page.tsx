@@ -27,6 +27,7 @@ import {
 import { PageHeader } from "@/components/ui/page-header";
 import { useValidatedActiveWorkspaceId } from "@/lib/active-workspace";
 import { useAuth } from "@/lib/auth-context";
+import { EmptyState } from "@/components/ui/empty-state";
 
 export default function ProjectsPage() {
   const qc = useQueryClient();
@@ -126,11 +127,13 @@ export default function ProjectsPage() {
           ))}
         </div>
       ) : (
-        <Card className="p-6 text-center text-sm text-muted-foreground">
-          {canCreate
-            ? "No projects yet. Create one to get started."
-            : "No projects yet. Ask an admin or coordinator to create one."}
-        </Card>
+        <EmptyState
+          data-testid="projects-empty"
+          title="No projects yet."
+          description={
+            canCreate ? "Create one to get started." : "Ask an admin or coordinator to create one."
+          }
+        />
       )}
 
       {/* Delete confirmation dialog */}
