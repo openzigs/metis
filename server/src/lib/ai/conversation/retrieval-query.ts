@@ -217,8 +217,9 @@ export function planSearches(plan: RetrievalQueryPlan): {
  * {@link CONTEXTUAL_WEIGHT}, so a tie goes to the user's words. The `k` best
  * hits the user's own searches found are always kept; hits that only the
  * conversational search found — the earlier topic — are added among them in
- * fused order, at most `floor((k - 1) / 2)` of them, so they stay a minority
- * of the list and the user's own words stay in charge of what the model reads.
+ * fused order, at most `floor((k - 1) / 2)` of them and only those ranked
+ * above the user's own k-th, so they stay a minority of the list and the
+ * user's own words stay in charge of what the model reads.
  *
  * #2316 — added, never swapped in: when they took slots out of `k`, two
  * conversational-only hits outranked the user's own ranks 6 to 8 under the
@@ -253,8 +254,9 @@ export function fuseRetrievalHits<T extends { chunkId: string }>(
   let own = 0;
   let contextualOnly = 0;
   for (const { hit } of ranked) {
+    // Ranked best first: once the user's own k are in, nothing below them is.
+    if (own >= k) break;
     if (userFound.has(hit.chunkId)) {
-      if (own >= k) continue;
       own++;
     } else {
       if (contextualOnly >= maxContextualOnly) continue;
@@ -304,20 +306,51 @@ function wholeNameAt(answer: string, at: number): boolean {
   return at === 0 || !NAME_CHAR.test(answer.charAt(at - 1));
 }
 
+/**
+ * #2316 — the other excerpts' names that end in `name` as a path suffix:
+ * `internal/ui/auth.go` for `auth.go`.
+ */
+function longerNames(name: string, names: readonly string[]): string[] {
+  return names.filter(
+    (n) =>
+      n.length > name.length &&
+      n.endsWith(name) &&
+      !NAME_CHAR.test(n.charAt(n.length - name.length - 1)),
+  );
+}
+
+/**
+ * Whether the mention of `name` at `at` names this file: the whole name or a
+ * path ending in it, and not one of `longer` — the longest matching excerpt
+ * name wins, so "internal/ui/auth.go" is that excerpt's, not an upload `auth.go`'s.
+ */
+function namesFileAt(answer: string, at: number, name: string, longer: readonly string[]): boolean {
+  if (!wholeNameAt(answer, at)) return false;
+  const end = at + name.length;
+  return !longer.some((l) => end >= l.length && answer.startsWith(l, end - l.length));
+}
+
 /** Whether `answer` names `locator` whole: `f.py#1` is not read inside `f.py#18` or `of.py#1`. */
-function mentionsLocator(answer: string, locator: string): boolean {
+function mentionsLocator(
+  answer: string,
+  locator: string,
+  name: string,
+  longer: readonly string[],
+): boolean {
   for (let at = answer.indexOf(locator); at >= 0; at = answer.indexOf(locator, at + 1)) {
-    if (wholeNameAt(answer, at) && !/\d/.test(answer.charAt(at + locator.length))) return true;
+    if (namesFileAt(answer, at, name, longer) && !/\d/.test(answer.charAt(at + locator.length))) {
+      return true;
+    }
   }
   return false;
 }
 
 /** The chunk positions `answer` names after each whole mention of `name`. */
-function chunkRefs(answer: string, name: string): Set<number> {
+function chunkRefs(answer: string, name: string, longer: readonly string[]): Set<number> {
   const out = new Set<number>();
   for (let at = answer.indexOf(name); at >= 0; at = answer.indexOf(name, at + 1)) {
     // #2316 — chunk numbers after a longer name are that file's, not this one's.
-    if (!wholeNameAt(answer, at)) continue;
+    if (!namesFileAt(answer, at, name, longer)) continue;
     const list = CHUNK_REF.exec(answer.slice(at + name.length, at + name.length + 80))?.[1];
     if (!list) continue;
     let prev: number | null = null;
@@ -362,14 +395,17 @@ export function citedExcerptIds(answer: string, excerpts: readonly CitableExcerp
     for (const n of m[1]!.split(",")) numbers.add(Number.parseInt(n.trim(), 10));
   }
   const refs = new Map<string, Set<number>>();
+  const names = [...new Set(excerpts.map((e) => e.name))];
   const exact: string[] = [];
   const byFile: string[] = [];
   for (const e of excerpts) {
+    const longer = longerNames(e.name, names);
     const named = e.name.length >= 4 && answer.includes(e.name);
-    if (named && !refs.has(e.name)) refs.set(e.name, chunkRefs(answer, e.name));
+    if (named && !refs.has(e.name)) refs.set(e.name, chunkRefs(answer, e.name, longer));
     const position = Number.parseInt(e.locator.slice(e.locator.lastIndexOf("#") + 1), 10);
     const located =
-      mentionsLocator(answer, e.locator) || (named && refs.get(e.name)!.has(position));
+      mentionsLocator(answer, e.locator, e.name, longer) ||
+      (named && refs.get(e.name)!.has(position));
     if (numbers.has(e.n) || located) exact.push(e.chunkId);
     else if (named) byFile.push(e.chunkId);
   }

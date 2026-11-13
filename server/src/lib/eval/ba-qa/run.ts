@@ -258,9 +258,9 @@ export async function buildJudgedSpans(
  * cross it, since nothing is known of its cost before it runs.
  *
  * #2316 — also checked within a question, before each of its steps (a turn
- * of a multi-turn question, then the judge), with `step: "step"` and the
- * steps' costs: a question of four turns and a judge no longer runs whole
- * between two checks.
+ * of a multi-turn question, then the judge), through {@link stepBudgetStop}
+ * against the costliest step of the same kind: a question of four turns and a
+ * judge no longer runs whole between two checks.
  */
 export function budgetStop(input: {
   budgetUsd: number;
@@ -269,7 +269,7 @@ export function budgetStop(input: {
   /** What each question (or, for `step: "step"`, each step) so far cost. */
   questionCosts: readonly number[];
   /** What is about to run: a question (the default) or one step of one. */
-  step?: "question" | "step";
+  step?: "question" | StepKind;
 }): string | null {
   const { budgetUsd, spentUsd } = input;
   if (input.unpricedCalls > 0) return "an unpriced call: the cap cannot be enforced";
@@ -279,6 +279,33 @@ export function budgetStop(input: {
     return `the next ${input.step ?? "question"} would pass the $${budgetUsd} cap at the costliest one so far ($${costliest.toFixed(4)})`;
   }
   return null;
+}
+
+/** A step of a question: one turn of it, or the judge's grading of its answer. */
+export type StepKind = "turn" | "judge";
+
+/**
+ * #2316 — what each kind of step cost so far, kept apart: a judge call costs a
+ * fraction of an answer turn, so checking the judge against the costliest turn
+ * would stop a run with the judge still fitting and leave a paid answer ungraded.
+ */
+export type StepCosts = Record<StepKind, number[]>;
+
+/** {@link budgetStop} before one step of a question, against the costliest step of its kind. */
+export function stepBudgetStop(input: {
+  budgetUsd: number;
+  spentUsd: number;
+  unpricedCalls: number;
+  stepCosts: StepCosts;
+  next: StepKind;
+}): string | null {
+  return budgetStop({
+    budgetUsd: input.budgetUsd,
+    spentUsd: input.spentUsd,
+    unpricedCalls: input.unpricedCalls,
+    questionCosts: input.stepCosts[input.next],
+    step: input.next,
+  });
 }
 
 /** The fields of a results file that decide whether it can sit beside this run. */

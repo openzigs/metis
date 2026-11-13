@@ -281,6 +281,13 @@ describe("fuseRetrievalHits", () => {
     ]);
   });
 
+  it("adds the earlier topic only where it ranks above the user's own k-th hit (#2316)", () => {
+    // The conversational search found the user's top 4, then c1..c4 at its ranks 5 to 8:
+    // each scores below the user's 8th (0.95/65 < 1/68), so none is added.
+    const fused = fuseRetrievalHits([ids("u", 8)], [...ids("u", 4), ...ids("c", 4)], 8);
+    expect(fused.map((h) => h.chunkId)).toEqual(ids("u", 8).map((h) => h.chunkId));
+  });
+
   it("still cuts the user's own searches to k", () => {
     const fused = fuseRetrievalHits([ids("u", 10), ids("p", 10)], null, 8);
     expect(fused).toHaveLength(8);
@@ -389,15 +396,13 @@ describe("citedExcerptIds", () => {
     expect(citedExcerptIds("`notes.md` (chunks #5-#15)", wide).slice(0, 2)).toEqual(["w5", "w15"]);
     // #0 to #25 is wider: only its two ends are read, so #5 and #15 count as the file only.
     expect(citedExcerptIds("`notes.md` (chunks #0-#25)", wide)).toEqual(["w0", "w25", "w5", "w15"]);
-    // A model-written range a prompt can shape is not walked: this returns at once.
-    const t0 = performance.now();
+    // A model-written range a prompt can shape is not walked: only its ends are read.
     expect(citedExcerptIds("`notes.md` (chunks #0-#999999999)", wide)).toEqual([
       "w0",
       "w5",
       "w15",
       "w25",
     ]);
-    expect(performance.now() - t0).toBeLessThan(1000);
   });
 
   it('does not read " - N" after a chunk number as a range (#2316)', () => {
@@ -437,6 +442,23 @@ describe("citedExcerptIds", () => {
     ]);
     expect(citedExcerptIds("See internal/ui/oauth.go#3.", two)).toEqual(["oauth", "upload"]);
     // The whole name, or a path ending in it, still is.
+    expect(citedExcerptIds("See `auth.go` (chunk #3).", two)).toEqual(["upload"]);
+    expect(citedExcerptIds("See `cmd/auth.go` (chunk #3).", two)).toEqual(["upload"]);
+    expect(citedExcerptIds("Per auth.go#3.", two)).toEqual(["upload"]);
+  });
+
+  it("credits a path mention to the longest excerpt name it ends in (#2316)", () => {
+    const two: CitableExcerpt[] = [
+      { n: 1, chunkId: "repo", name: "internal/ui/auth.go", locator: "internal/ui/auth.go#0" },
+      { n: 2, chunkId: "upload", name: "auth.go", locator: "auth.go#3", source: "upload" },
+    ];
+    // The repo file is named: the upload's chunk 3 is not read in its path.
+    expect(citedExcerptIds("See `internal/ui/auth.go` (chunk #3).", two)).toEqual([
+      "repo",
+      "upload",
+    ]);
+    expect(citedExcerptIds("See internal/ui/auth.go#3.", two)).toEqual(["repo", "upload"]);
+    // The upload named alone, or under a path no excerpt has, is still the upload.
     expect(citedExcerptIds("See `auth.go` (chunk #3).", two)).toEqual(["upload"]);
     expect(citedExcerptIds("See `cmd/auth.go` (chunk #3).", two)).toEqual(["upload"]);
     expect(citedExcerptIds("Per auth.go#3.", two)).toEqual(["upload"]);

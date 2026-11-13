@@ -917,8 +917,9 @@ per call, labelled as data to grade rather than instructions.
 `--budget` is checked between questions. The run stops before a question once the cap is
 reached, or once the costliest question so far would carry the spend past it. Since #2316 it is
 also checked within a question, before each later turn of a multi-turn question and before the
-judge, against the costliest such step so far; a question cut short there is not graded. A step
-costlier than any before it can still cross the cap. `--include` refuses a run with another
+judge. A turn is checked against the costliest turn so far and the judge against the costliest
+judge call, so a cheap judge is not held to an answer's cost; a question cut short there is not
+graded. A step costlier than any before it can still cross the cap. `--include` refuses a run with another
 fixture, answer model or judge model, or an arm already in the report. The included run is
 re-summarized from its per-question scores, so both columns are computed by the same code.
 
@@ -1374,13 +1375,14 @@ before it, and the tuning does not change their retrieval.
   expected files and the new message alone held 12. The two runs before it (`+last-message`)
   gave the same 14 and 12. The tuning changes only which excerpts are carried forward, so it can
   move the conversation-aware count and not the other. A total over all four runs (28 and 24)
-  mixes measurements from before and after the tuning (#2316). F1 ("I meant the login sessions.") gained `internal/ui/auth.go` from
-  the conversational search. F7 gained a file through carry-forward. F2 ("How often does that
-  run?") lost `internal/cli/scheduler.go`, which was the user's own 8th hit, to two hits found
-  only by the conversational search. Since #2316 those hits are added after the user's own 8
+  mixes measurements from before and after the tuning (#2316). F1 ("I meant the login
+  sessions.") gained `internal/ui/auth.go` from the conversational search. F7 gained a file
+  through carry-forward. F2 ("How often does that run?") lost `internal/cli/scheduler.go`, which
+  was the user's own 8th hit, to two hits found only by the conversational search. Since #2316
+  such hits are added among the user's own 8, at most 3 and only where they rank above its 8th,
   rather than swapped in for its last ones, so the user's 8 always stay (a test pins F2's
-  shape). This has not been re-measured with a model. Correctness was the same in both modes. With the flags on,
-  the code-search tools find what retrieval missed either way.
+  shape). This has not been re-measured with a model. Correctness was the same in both modes.
+  With the flags on, the code-search tools find what retrieval missed either way.
 - **The follow-up heuristic is unchanged.** It read no control as a follow-up, F7's "there"
   question included. It missed F5 and F8, which name four content words each. Searching those
   two as follow-ups was measured to find no expected file that their own words missed. Raising
