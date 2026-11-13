@@ -29,3 +29,5 @@ it is scrubbed.
   `routes/comments.ts` must be added to both mocks ([[whole-module-vi-mock-stubs-500-at-runtime]]).
 
 Backfilling `notifications.payload` in a migration: see [[prisma-cross-database]].
+
+**Re-check project access at write time (#2394, #2422).** Assignments outlive access. Every notification writer addressing reviewers or requesters must filter to people who can still open the project: `projectAudienceWhere` in `server/src/lib/auth/project-audience.ts`, or `reviewersWhoCanOpenOrNone`. Test with a reviewer whose membership was removed.
