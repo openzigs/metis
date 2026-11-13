@@ -170,6 +170,28 @@ describe("ImpactAnalysisDetailPage", () => {
     expect(screen.getByTestId("impact-detail-status")).toHaveTextContent("pending");
   });
 
+  it("#2345 — a run started from a change request links back to it in one click", () => {
+    mockUse.mockReturnValue(
+      state({
+        data: {
+          ...detail,
+          sourceAnalysisId: "an-1",
+          changeRequest: { id: "an-1", projectId: "project-001", title: "Password reset" },
+        },
+      }),
+    );
+    render(<ImpactAnalysisDetailPage />, { wrapper: makeWrapper() });
+    const back = screen.getByTestId("impact-detail-back");
+    expect(back).toHaveAttribute("href", "/projects/project-001/analysis?analysisId=an-1");
+    expect(back).toHaveTextContent("← Back to the change request: Password reset");
+  });
+
+  it("#2345 — any other run keeps the link to every impact analysis", () => {
+    mockUse.mockReturnValue(state({ data: { ...detail, changeRequest: null } }));
+    render(<ImpactAnalysisDetailPage />, { wrapper: makeWrapper() });
+    expect(screen.getByTestId("impact-detail-back")).toHaveAttribute("href", "/impact-analyses");
+  });
+
   it("shows running state", () => {
     mockUse.mockReturnValue(state({ data: { ...detail, status: "running", items: [] } }));
     render(<ImpactAnalysisDetailPage />, { wrapper: makeWrapper() });

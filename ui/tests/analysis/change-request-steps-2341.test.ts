@@ -15,10 +15,21 @@ describe("#2341 — stepHref", () => {
     expect(href("questions")).toBe("/projects/p%201/analysis?analysisId=an-1&tab=questions");
     expect(href("requirements")).toBe("/projects/p%201/analysis?analysisId=an-1&tab=requirements");
     expect(href("policy")).toBe("/projects/p%201/analysis?analysisId=an-1&tab=findings");
-    expect(href("impact")).toBe("/projects/p%201/impact");
-    expect(href("portfolio")).toBe("/portfolio");
+    // #2345 — before a result exists, both start from the change request's own card.
+    expect(href("impact")).toBe("/projects/p%201/analysis?analysisId=an-1#change-request-checks");
+    expect(href("portfolio")).toBe(
+      "/projects/p%201/analysis?analysisId=an-1#change-request-checks",
+    );
     expect(href("review")).toBe("/projects/p%201/requirements");
     expect(href("handoff")).toBe("/projects/p%201/publish?analysisId=an-1");
+  });
+
+  it("#2345 — links Impact and Portfolio to the newest result started from the change request", () => {
+    const latest = { impact: "ia 1", portfolio: "pa-1" };
+    expect(stepHref("impact", "p1", "an-1", latest)).toBe("/impact-analyses/ia%201");
+    expect(stepHref("portfolio", "p1", "an-1", latest)).toBe("/portfolio/pa-1");
+    // The other steps do not move.
+    expect(stepHref("review", "p1", "an-1", latest)).toBe("/projects/p1/requirements");
   });
 });
 

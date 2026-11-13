@@ -99,6 +99,8 @@ export async function createPortfolioAssessment(raw: PortfolioAssessmentInput): 
         sourceRequirementId: input.sourceRequirementId,
         sourceProjectId: input.sourceProjectId,
         sourceDocumentId: input.sourceDocumentId,
+        sourceAnalysisId: input.sourceAnalysisId,
+        preApproval: input.preApproval,
         scope: input.scope,
         productIds: JSON.stringify(input.productIds),
         status: input.status,
@@ -231,7 +233,8 @@ export async function failInterruptedPortfolioAssessments(staleBefore: Date): Pr
  *
  * #2341 — or those started from a requirement of the run `analysisId` (its
  * `sourceRequirementId` names a requirement whose `analysisId` is the run),
- * so a change request's Portfolio step can say a check was done.
+ * so a change request's Portfolio step can say a check was done; #2345 — or
+ * from the change request itself (`sourceAnalysisId`).
  */
 export async function listPortfolioAssessmentIds(filter: {
   productId?: string;
@@ -243,7 +246,13 @@ export async function listPortfolioAssessmentIds(filter: {
   const scope: Prisma.PortfolioAssessmentWhereInput = filter.productId
     ? { products: { some: { productId: filter.productId, coverage: { not: "restricted" } } } }
     : filter.analysisId
-      ? { sourceRequirement: { analysisId: filter.analysisId } }
+      ? // #2345 — or started from the change request itself.
+        {
+          OR: [
+            { sourceRequirement: { analysisId: filter.analysisId } },
+            { sourceAnalysisId: filter.analysisId },
+          ],
+        }
       : { createdById: filter.createdById };
   const before = filter.before;
   return prisma.portfolioAssessment.findMany({
@@ -310,6 +319,8 @@ export async function getPortfolioAssessment(id: string): Promise<PortfolioAsses
     sourceRequirementId: row.sourceRequirementId,
     sourceProjectId: row.sourceProjectId,
     sourceDocumentId: row.sourceDocumentId,
+    sourceAnalysisId: row.sourceAnalysisId,
+    preApproval: row.preApproval,
     scope: oneOf(PORTFOLIO_ASSESSMENT_SCOPES, row.scope, "product"),
     productIds: parseJson<string[]>(row.productIds, []),
     status: oneOf(PORTFOLIO_ASSESSMENT_STATUSES, row.status, "failed"),

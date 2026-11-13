@@ -4,6 +4,10 @@
  * Pick a requirements-change source (pasted text or an existing document) plus
  * one or more projects (a single project runs a single-project impact; two+
  * enables cross-project comparison), then trigger a per-project code-impact report.
+ *
+ * #2345 — `?analysisId=` arrives from a change request: its requirements are
+ * the source (read by the server), its project stays selected, and the page
+ * links back to it.
  */
 "use client";
 
@@ -11,7 +15,7 @@ import { useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { useQueries, useQuery } from "@tanstack/react-query";
-import type { CreateImpactAnalysisInput } from "@metis/shared";
+import { MAX_IMPACT_REQUIREMENT_IDS, type CreateImpactAnalysisInput } from "@metis/shared";
 import { Card } from "@/components/ui/card";
 import { projectsApi, documentsApi, type Project } from "@/lib/projects-api";
 import { useCreateImpactAnalysis } from "@/lib/impact-analysis-hooks";
@@ -24,6 +28,11 @@ import {
 import { RunImpactAnalysisButton } from "@/components/impact/run-impact-analysis-button";
 import { ApiError } from "@/lib/api-client";
 import { PageHeader } from "@/components/ui/page-header";
+import { Button } from "@/components/ui/button";
+import { analysisApi } from "@/lib/analysis-api";
+import { queryKeys } from "@/lib/query-keys";
+import { checkedRequirements } from "@/components/analysis/change-request-checks";
+import { changeRequestHref } from "@/components/analysis/change-request-back-link";
 
 export default function NewImpactAnalysisPage() {
   const router = useRouter();
@@ -37,6 +46,20 @@ export default function NewImpactAnalysisPage() {
     const preselected = searchParams?.get("projectId");
     return preselected ? [preselected] : [];
   });
+  // #2345 — arriving from a change request (`?analysisId=`), its requirements are
+  // the source: the server reads them itself, so nothing is typed again. The
+  // snapshot read here only names it and counts them.
+  const [changeRequestId, setChangeRequestId] = useState<string | null>(
+    () => searchParams?.get("analysisId") ?? null,
+  );
+  const changeRequest = useQuery({
+    queryKey: queryKeys.analyses.detail(changeRequestId ?? ""),
+    queryFn: () => analysisApi.get(changeRequestId as string),
+    enabled: changeRequestId !== null,
+    retry: false,
+  });
+  const crProjectId = changeRequest.data?.projectId ?? null;
+  const crRequirements = changeRequest.data ? checkedRequirements(changeRequest.data).count : 0;
   const [mode, setMode] = useState<SourceMode>("text");
   const [text, setText] = useState("");
   const [documentId, setDocumentId] = useState<string | null>(null);
@@ -76,13 +99,21 @@ export default function NewImpactAnalysisPage() {
 
   const documentsLoading = mode === "document" && documentQueries.some((q) => q.isLoading);
 
-  const hasSource = mode === "text" ? text.trim().length > 0 : Boolean(documentId);
-  const isValid = selected.length >= 1 && hasSource;
+  const hasSource = changeRequestId
+    ? crRequirements > 0
+    : mode === "text"
+      ? text.trim().length > 0
+      : Boolean(documentId);
+  // #2345 — the change request's own project stays in the run (the server requires it).
+  const keepsChangeRequestProject =
+    !changeRequestId || (crProjectId !== null && selected.includes(crProjectId));
+  const isValid = selected.length >= 1 && hasSource && keepsChangeRequestProject;
 
   function handleSubmit() {
     if (!isValid) return;
-    const base =
-      mode === "text"
+    const base = changeRequestId
+      ? { analysisId: changeRequestId, projectIds: selected }
+      : mode === "text"
         ? { text: text.trim(), projectIds: selected }
         : { documentId: documentId as string, projectIds: selected };
     // Keep the payload minimal: only add a flag when it diverges from the
@@ -92,7 +123,9 @@ export default function NewImpactAnalysisPage() {
       ...base,
       ...(includeSchema ? {} : { includeSchemaImpact: false }),
       ...(includeDependencies ? { includeDependencies: true } : {}),
-      ...(mode === "document" && rereadDocument ? { rereadDocument: true } : {}),
+      ...(!changeRequestId && mode === "document" && rereadDocument
+        ? { rereadDocument: true }
+        : {}),
     };
 
     createMutation.mutate(payload, {
@@ -113,13 +146,23 @@ export default function NewImpactAnalysisPage() {
     <div className="space-y-6 p-2 md:p-0" data-testid="impact-new-root">
       <PageHeader
         eyebrow={
-          <Link
-            href="/impact-analyses"
-            className="text-xs text-muted-foreground hover:underline"
-            data-testid="impact-new-back"
-          >
-            ← Back to impact analyses
-          </Link>
+          changeRequestId && crProjectId ? (
+            <Link
+              href={changeRequestHref({ projectId: crProjectId, id: changeRequestId })}
+              className="text-xs text-muted-foreground hover:underline"
+              data-testid="impact-new-back"
+            >
+              ← Back to the change request
+            </Link>
+          ) : (
+            <Link
+              href="/impact-analyses"
+              className="text-xs text-muted-foreground hover:underline"
+              data-testid="impact-new-back"
+            >
+              ← Back to impact analyses
+            </Link>
+          )
         }
         title="New impact analysis"
         description={
@@ -130,16 +173,47 @@ export default function NewImpactAnalysisPage() {
         }
       />
 
-      <DocumentSourceSelector
-        mode={mode}
-        onModeChange={setMode}
-        text={text}
-        onTextChange={setText}
-        documents={documents}
-        documentId={documentId}
-        onDocumentChange={setDocumentId}
-        documentsLoading={documentsLoading}
-      />
+      {changeRequestId ? (
+        <Card className="space-y-1 p-4" data-testid="impact-new-change-request">
+          <p className="text-sm font-medium">Change request</p>
+          {changeRequest.isLoading ? (
+            <p className="text-sm text-muted-foreground">Loading the change request…</p>
+          ) : changeRequest.isError || !changeRequest.data ? (
+            <p className="text-sm text-destructive">Could not read this change request.</p>
+          ) : (
+            <>
+              <p className="text-sm">{changeRequest.data.title?.trim() || "Change request"}</p>
+              <p className="text-xs text-muted-foreground">
+                {crRequirements === 0
+                  ? "It has no draft or approved requirements to analyse yet."
+                  : crRequirements > MAX_IMPACT_REQUIREMENT_IDS
+                    ? `The first ${MAX_IMPACT_REQUIREMENT_IDS} of its ${crRequirements} draft and approved requirements are analysed (one run checks at most ${MAX_IMPACT_REQUIREMENT_IDS}); METIS reads them itself. Keep its project selected.`
+                    : `Its ${crRequirements} draft and approved requirement${crRequirements === 1 ? " is" : "s are"} analysed; METIS reads them itself. Keep its project selected.`}
+              </p>
+            </>
+          )}
+          <Button
+            type="button"
+            variant="link"
+            size="sm"
+            className="px-0"
+            onClick={() => setChangeRequestId(null)}
+          >
+            Use pasted text or a document instead
+          </Button>
+        </Card>
+      ) : (
+        <DocumentSourceSelector
+          mode={mode}
+          onModeChange={setMode}
+          text={text}
+          onTextChange={setText}
+          documents={documents}
+          documentId={documentId}
+          onDocumentChange={setDocumentId}
+          documentsLoading={documentsLoading}
+        />
+      )}
 
       <MultiProjectPicker
         projects={projects.map((p) => ({ id: p.id, name: p.name }))}
@@ -168,7 +242,7 @@ export default function NewImpactAnalysisPage() {
         Include downstream dependencies (what the changed code uses — broader & noisier)
       </label>
 
-      {mode === "document" ? (
+      {mode === "document" && !changeRequestId ? (
         <label className="flex items-center gap-2 text-sm" data-testid="impact-new-reread-toggle">
           <input
             type="checkbox"
@@ -197,7 +271,9 @@ export default function NewImpactAnalysisPage() {
         />
         {!isValid ? (
           <span className="text-xs text-muted-foreground" data-testid="impact-new-hint">
-            Select at least one project and provide a change source.
+            {changeRequestId && !keepsChangeRequestProject && crProjectId
+              ? "Keep the change request's project selected."
+              : "Select at least one project and provide a change source."}
           </span>
         ) : null}
       </div>

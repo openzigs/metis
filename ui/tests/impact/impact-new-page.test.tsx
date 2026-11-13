@@ -40,6 +40,9 @@ vi.mock("@/lib/projects-api", () => ({
   },
 }));
 
+const getAnalysis = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/analysis-api", () => ({ analysisApi: { get: getAnalysis } }));
+
 import NewImpactAnalysisPage from "@/app/(authed)/impact-analyses/new/page";
 import { documentsApi } from "@/lib/projects-api";
 
@@ -200,5 +203,92 @@ describe("NewImpactAnalysisPage", () => {
     fireEvent.click(screen.getByTestId("project-checkbox-project-001"));
     fireEvent.click(screen.getByTestId("source-mode-document"));
     await waitFor(() => expect(screen.getByTestId("source-documents-loading")).toBeInTheDocument());
+  });
+
+  describe("#2345 — from a change request", () => {
+    beforeEach(() => {
+      getAnalysis.mockResolvedValue({
+        id: "an-0000001",
+        projectId: "project-001",
+        title: "Password reset",
+        requirements: [
+          { id: "r1", reviewStatus: "draft" },
+          { id: "r2", reviewStatus: "approved" },
+          { id: "r3", reviewStatus: "rejected" },
+        ],
+      });
+    });
+
+    it("names the change request as the source, sends it instead of text, and links back to it", async () => {
+      search = new URLSearchParams("projectId=project-001&analysisId=an-0000001");
+      render(<NewImpactAnalysisPage />, { wrapper: makeWrapper() });
+      const source = await screen.findByTestId("impact-new-change-request");
+      await waitFor(() => expect(source).toHaveTextContent("Password reset"));
+      expect(source).toHaveTextContent("Its 2 draft and approved requirements are analysed");
+      expect(screen.queryByTestId("source-text-input")).toBeNull();
+      expect(screen.getByTestId("impact-new-back")).toHaveAttribute(
+        "href",
+        "/projects/project-001/analysis?analysisId=an-0000001",
+      );
+      await waitFor(() => expect(screen.getByTestId("run-impact-analysis")).toBeEnabled());
+      fireEvent.click(screen.getByTestId("run-impact-analysis"));
+      expect(mutate.mock.calls[0][0]).toEqual({
+        analysisId: "an-0000001",
+        projectIds: ["project-001"],
+      });
+      expect(getAnalysis).toHaveBeenCalledWith("an-0000001");
+    });
+
+    it("says only the first 50 are analysed when the change request has more", async () => {
+      getAnalysis.mockResolvedValue({
+        id: "an-0000001",
+        projectId: "project-001",
+        title: "Password reset",
+        requirements: Array.from({ length: 51 }, (_, i) => ({
+          id: `r${i}`,
+          reviewStatus: "draft",
+        })),
+      });
+      search = new URLSearchParams("projectId=project-001&analysisId=an-0000001");
+      render(<NewImpactAnalysisPage />, { wrapper: makeWrapper() });
+      const source = await screen.findByTestId("impact-new-change-request");
+      await waitFor(() =>
+        expect(source).toHaveTextContent(
+          "The first 50 of its 51 draft and approved requirements are analysed",
+        ),
+      );
+      expect(source).not.toHaveTextContent("Its 51");
+    });
+
+    it("waits while the change request's project is not selected", async () => {
+      search = new URLSearchParams("analysisId=an-0000001");
+      render(<NewImpactAnalysisPage />, { wrapper: makeWrapper() });
+      await screen.findByText("Password reset");
+      await waitFor(() =>
+        expect(screen.getByTestId("project-checkbox-project-001")).toBeInTheDocument(),
+      );
+      expect(screen.getByTestId("run-impact-analysis")).toBeDisabled();
+      expect(screen.getByTestId("impact-new-hint")).toHaveTextContent(
+        "Keep the change request's project selected.",
+      );
+      fireEvent.click(screen.getByTestId("project-checkbox-project-001"));
+      expect(screen.getByTestId("run-impact-analysis")).toBeEnabled();
+    });
+
+    it("can drop the change request and type a source instead", async () => {
+      search = new URLSearchParams("projectId=project-001&analysisId=an-0000001");
+      render(<NewImpactAnalysisPage />, { wrapper: makeWrapper() });
+      fireEvent.click(
+        await screen.findByRole("button", { name: "Use pasted text or a document instead" }),
+      );
+      fireEvent.change(screen.getByTestId("source-text-input"), {
+        target: { value: "Add SSO login" },
+      });
+      fireEvent.click(screen.getByTestId("run-impact-analysis"));
+      expect(mutate.mock.calls[0][0]).toEqual({
+        text: "Add SSO login",
+        projectIds: ["project-001"],
+      });
+    });
   });
 });

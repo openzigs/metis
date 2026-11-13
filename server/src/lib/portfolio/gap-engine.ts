@@ -1309,10 +1309,19 @@ export async function loadReadableSourceRequirement(
   title: string;
   body: string;
   acceptanceCriteria: string | null;
+  /** #2345 — its review status, so a check before approval is labelled so. */
+  reviewStatus?: string | null;
 }> {
   const requirement = await prisma.requirement.findFirst({
     where: { id: requirementId, deletedAt: null, ...(projectId ? { projectId } : {}) },
-    select: { id: true, projectId: true, title: true, body: true, acceptanceCriteria: true },
+    select: {
+      id: true,
+      projectId: true,
+      title: true,
+      body: true,
+      acceptanceCriteria: true,
+      reviewStatus: true,
+    },
   });
   if (
     !requirement ||
