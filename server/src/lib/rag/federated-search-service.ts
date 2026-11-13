@@ -232,9 +232,9 @@ export function fuseByRelevance(
 /**
  * #2279 — {@link fuseByRelevance}, with the hits only a follow-up's
  * conversational search found held to a minority of the `topK` slots across
- * every project, at most `floor((topK - 1) / 2)`, as single-project chat holds
- * them (`fuseRetrievalHits`): the user's own words stay in charge of what the
- * model reads. The relevance merge is prefix-stable, so it is taken whole and
+ * every project, at most `floor((topK - 1) / 2)` (single-project chat's cap in
+ * `fuseRetrievalHits`, which since #2316 adds them beside the user's own `k`
+ * instead): the user's own words stay in charge of what the model reads. The relevance merge is prefix-stable, so it is taken whole and
  * then filled to `topK`.
  */
 export function fuseCappingContextual(
