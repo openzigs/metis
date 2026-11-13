@@ -12,6 +12,7 @@ import { Card } from "@/components/ui/card";
 import { ImpactAnalysesTable } from "@/components/impact/impact-analyses-table";
 import { useImpactAnalyses } from "@/lib/impact-analysis-hooks";
 import { PageHeader } from "@/components/ui/page-header";
+import { EmptyState } from "@/components/ui/empty-state";
 
 export default function ProjectImpactPage() {
   const params = useParams<{ id: string }>();
@@ -63,12 +64,10 @@ export default function ProjectImpactPage() {
             Could not load impact analyses.
           </Card>
         ) : analyses.length === 0 ? (
-          <Card
-            className="p-6 text-center text-sm text-muted-foreground"
+          <EmptyState
             data-testid="impact-list-empty"
-          >
-            No impact analysis includes this project yet.
-          </Card>
+            title="No impact analysis includes this project yet."
+          />
         ) : (
           <ImpactAnalysesTable analyses={analyses} />
         )}

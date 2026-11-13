@@ -20,6 +20,7 @@ import { queryKeys } from "@/lib/query-keys";
 import { BaselineCompareView } from "@/components/baselines/BaselineCompareView";
 import { NewBaselineForm } from "@/components/baselines/new-baseline-form";
 import { PageHeader } from "@/components/ui/page-header";
+import { EmptyState } from "@/components/ui/empty-state";
 
 /** One-line baseline row summary. Exported for unit testing. */
 export function summarizeBaseline(baseline: BaselineSummary): string {
@@ -76,15 +77,22 @@ export default function ProjectBaselinesPage() {
           Failed to load baselines. Please try again.
         </p>
       ) : baselines.length === 0 ? (
-        <Card className="p-6 text-sm text-muted-foreground" data-testid="baselines-empty">
-          No baselines yet. One is created when a review of requirements is approved: request a
-          review from the{" "}
-          <Link href={`/projects/${projectId}/requirements`} className="underline">
-            Requirements
-          </Link>{" "}
-          page.
-          {canCreate ? " You can also pin the current requirements now with New baseline." : null}
-        </Card>
+        <EmptyState
+          data-testid="baselines-empty"
+          title="No baselines yet."
+          description={
+            <>
+              One is created when a review of requirements is approved: request a review from the{" "}
+              <Link href={`/projects/${projectId}/requirements`} className="underline">
+                Requirements
+              </Link>{" "}
+              page.
+              {canCreate
+                ? " You can also pin the current requirements now with New baseline."
+                : null}
+            </>
+          }
+        />
       ) : (
         <>
           <ul className="space-y-2" aria-label="Baselines">

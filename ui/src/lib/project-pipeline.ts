@@ -14,6 +14,7 @@
  * `analyze` is "New change request", `docs` is "Deliverable"); they stay because
  * deep links, test ids and the drift badge are keyed on them.
  */
+import { openQuestionCount } from "@metis/shared";
 
 export type PipelineStageId = "sources" | "ingest" | "analyze" | "review" | "docs" | "publish";
 
@@ -66,8 +67,12 @@ export interface PipelineFacts {
    * alone read 0 and the stage said "All requirements reviewed".
    */
   pendingApprovals: number | null | "unreadable";
-  /** #2367 — its clarifying questions still open, as the Questions tab counts them. */
-  openQuestions: number;
+  /**
+   * #2367 — its clarifying questions still open, as the Questions tab counts
+   * them. #2376 — `"unreadable"` when structured extraction failed, so there
+   * are no questions to count (#1081); see {@link openQuestionsFact}.
+   */
+  openQuestions: number | "unreadable";
   /** #2367 — its requirements a reviewer rejected. */
   rejectedRequirements: number;
   docs: Array<{ status: string }>;
@@ -326,6 +331,22 @@ function analyzeStage(projectId: string, f: PipelineFacts): PipelineStage {
   };
 }
 
+/**
+ * #2376 — the open-question fact for a run's metadata. `openQuestionCount`
+ * answers `undefined` both when the run asked nothing (clarification off) and
+ * when structured extraction failed (#1081); only the first is "none open".
+ * A failed extraction prepared no questions or approval checkpoints, whatever
+ * the clarification setting, so it is `"unreadable"`.
+ */
+export function openQuestionsFact(metadata: unknown): number | "unreadable" {
+  const failed =
+    !!metadata &&
+    typeof metadata === "object" &&
+    !!(metadata as { structuredExtractionFailure?: unknown }).structuredExtractionFailure;
+  if (failed) return "unreadable";
+  return openQuestionCount(metadata) ?? 0;
+}
+
 /** The analysis whose requirements are up for review: the newest completed one. */
 export function latestCompletedAnalysisId(f: Pick<PipelineFacts, "analyses">): string | null {
   return f.analyses.find((a) => a.status === "completed")?.id ?? null;
@@ -345,6 +366,9 @@ function requirementsReview(base: string, f: PipelineFacts): PipelineStage {
     return { ...checking, status: "Start a change request to produce requirements" };
   }
   if (f.awaitingReview === null) return checking;
+  // #2376 — wait for the approvals too: naming the Requirements or Questions
+  // action first, then switching to "Resolve N approvals", read as a flicker.
+  if (f.pendingApprovals === null) return checking;
 
   const run = `${base}/analysis?analysisId=${encodeURIComponent(analysisId)}`;
   // #2367 — everything in this run still waiting on a person, most blocking
@@ -365,7 +389,12 @@ function requirementsReview(base: string, f: PipelineFacts): PipelineStage {
       },
     });
   }
-  if (f.openQuestions > 0) {
+  if (f.openQuestions === "unreadable") {
+    waiting.push({
+      status: "Clarifying questions could not be prepared",
+      action: { label: "See why", href: `${run}&tab=questions` },
+    });
+  } else if (f.openQuestions > 0) {
     waiting.push({
       status: `${plural(f.openQuestions, "clarifying question")} open`,
       action: {
@@ -392,7 +421,6 @@ function requirementsReview(base: string, f: PipelineFacts): PipelineStage {
       action: waiting[0].action,
     };
   }
-  if (f.pendingApprovals === null) return checking;
   if (f.pendingApprovals === "unreadable") {
     // A failed read must not pass for "nothing pending".
     return {

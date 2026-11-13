@@ -134,6 +134,7 @@ describe("Baselines page", () => {
   it("offers New baseline to a review administrator and says how to get one", async () => {
     renderWith(<ProjectBaselinesPage />, { user: userWith("coordinator") });
     const empty = await screen.findByTestId("baselines-empty");
+    expect(empty).toHaveAttribute("data-slot", "empty-state"); // #2382
     expect(screen.getByTestId("new-baseline")).toBeInTheDocument();
     expect(empty).toHaveTextContent(/New baseline/);
     expect(screen.getByRole("link", { name: "Requirements" })).toHaveAttribute(

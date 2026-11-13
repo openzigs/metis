@@ -66,22 +66,38 @@ beforeEach(() => {
 describe("<ChatPage /> — guided empty state (#461)", () => {
   it("renders suggested-prompt cards once the session is ready", async () => {
     render(<ChatPage />, { wrapper: makeWrapper({ withAuth: false }) });
-    expect(await screen.findByText("Summarize a project")).toBeInTheDocument();
-    expect(screen.getByText("Find recent changes")).toBeInTheDocument();
+    expect(await screen.findByText("What does this system do?")).toBeInTheDocument();
+    expect(screen.getByText("What would a change affect?")).toBeInTheDocument();
+  });
+
+  // #2382 — the starters are an analyst's questions, in plain language: none
+  // asks about "the codebase" or for an implementation plan.
+  it("offers starters in plain language for analysts", async () => {
+    render(<ChatPage />, { wrapper: makeWrapper({ withAuth: false }) });
+    await screen.findByText("What does this system do?");
+    const cards = screen.getAllByRole("button", { name: /\?/ });
+    const text = cards.map((c) => c.textContent ?? "").join(" ");
+    expect(screen.getByText("Does it already do this?")).toBeInTheDocument();
+    expect(screen.getByText("How does it work today?")).toBeInTheDocument();
+    expect(text).not.toMatch(/codebase|implementation|authentication flow/i);
   });
 
   it("seeds the message input when a suggested prompt is clicked", async () => {
     const user = userEvent.setup();
     render(<ChatPage />, { wrapper: makeWrapper({ withAuth: false }) });
-    const card = await screen.findByText("Summarize a project");
+    const card = await screen.findByText("What does this system do?");
     await user.click(card);
     const input = screen.getByLabelText("Message") as HTMLInputElement;
-    await waitFor(() => expect(input.value).toBe("Give me a high-level summary of this project."));
+    await waitFor(() =>
+      expect(input.value).toBe(
+        "In plain language, what does this system do, who uses it, and for what?",
+      ),
+    );
   });
 
   it("marks the transcript region as an aria-live log", async () => {
     render(<ChatPage />, { wrapper: makeWrapper({ withAuth: false }) });
-    await screen.findByText("Summarize a project");
+    await screen.findByText("What does this system do?");
     const log = screen.getByRole("log");
     expect(log).toHaveAttribute("aria-live", "polite");
   });
@@ -91,7 +107,7 @@ describe("<ChatPage /> — guided empty state (#461)", () => {
   // labelled complementary region so SR users can orient without visual cues.
   it("names the message input and labels the skills sidebar (#58)", async () => {
     render(<ChatPage />, { wrapper: makeWrapper({ withAuth: false }) });
-    await screen.findByText("Summarize a project");
+    await screen.findByText("What does this system do?");
     expect(screen.getByRole("heading", { level: 1, name: "Chat" })).toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "Message" })).toBeInTheDocument();
     expect(screen.getByRole("complementary", { name: "Session skills" })).toBeInTheDocument();

@@ -11,6 +11,12 @@
  * The category fixes the expected behaviour, and the loader refuses a file in
  * which they disagree: a question filed as ambiguous but scored as an answer
  * would measure nothing.
+ *
+ * #2269 — a MULTI-TURN question carries `before`, the analyst's earlier turns in
+ * the same chat, asked and answered live before `text`, which is the turn
+ * scored. `refersBack` labels whether `text` leans on those turns ("How often
+ * does that run?") or is a self-contained control asked mid-conversation; the
+ * follow-up heuristic of #2240 is measured against it.
  */
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -79,6 +85,8 @@ const questionSchema = z.strictObject({
   facts: z.array(factSchema).optional(),
   sources: z.array(sourceSchema).optional(),
   why: z.string().min(1).optional(),
+  before: z.array(z.string().min(1)).min(1).max(3).optional(),
+  refersBack: z.boolean().optional(),
 });
 
 const fixtureSchema = z.strictObject({
@@ -129,6 +137,12 @@ export function parseBaQaFixture(raw: unknown): BaQaFixture {
       if (!products.has(s)) fail(`${q.id} is scoped to unknown product ${s}`);
     }
     if (new Set(q.scope).size !== q.scope.length) fail(`${q.id} names a product twice`);
+    if (q.before && q.refersBack === undefined) {
+      fail(`${q.id} has earlier turns but no refersBack`);
+    }
+    if (!q.before && q.refersBack !== undefined) {
+      fail(`${q.id} has refersBack but no earlier turns`);
+    }
     if (q.expect !== EXPECTED_BEHAVIOUR[q.category]) {
       fail(`${q.id} is ${q.category} but expects ${q.expect}`);
     }
@@ -161,6 +175,11 @@ export function parseBaQaFixture(raw: unknown): BaQaFixture {
     }
   }
   return fixture;
+}
+
+/** #2269 — a question asked after earlier turns in the same chat. */
+export function isMultiTurn(q: BaQaQuestion): boolean {
+  return (q.before?.length ?? 0) > 0;
 }
 
 /** `<repo root>/eval-data/corpus/<id>`. */
