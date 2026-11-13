@@ -3,6 +3,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { __resetConfigSingleton } from "../config/config-service.js";
 import {
   applyRelevanceFloor,
+  carriedOnlyNote,
+  floorKeep,
   CHAT_RELEVANCE_FLOOR_KEY,
   DEFAULT_CHAT_RELEVANCE_FLOOR,
   denseCosine,
@@ -58,6 +60,30 @@ describe("applyRelevanceFloor", () => {
   it("keeps every hit when the floor is 0", () => {
     const hits = [dense("a", 0.1), lexical("k")];
     expect(applyRelevanceFloor(hits, 0)).toEqual({ kept: hits, belowFloor: 0 });
+  });
+});
+
+describe("floorKeep (#2294)", () => {
+  it("tests one hit as applyRelevanceFloor does, with the keyword rule read over the pool", () => {
+    const pool = [dense("a", 0.4), dense("deep", 0.7), lexical("k")];
+    const keep = floorKeep(pool, 0.55);
+    expect(keep(dense("a", 0.4))).toBe(false);
+    expect(keep(dense("deep", 0.7))).toBe(true);
+    // A dense hit of the pool cleared the floor, so a keyword-only hit stays.
+    expect(keep(lexical("k"))).toBe(true);
+    expect(floorKeep([dense("a", 0.4), lexical("k")], 0.55)(lexical("k"))).toBe(false);
+  });
+
+  it("keeps everything when the floor is off", () => {
+    expect(floorKeep([dense("a", 0.1)], 0)(dense("a", 0.1))).toBe(true);
+  });
+});
+
+describe("carriedOnlyNote (#2294)", () => {
+  it("tells the model its own search found nothing usable, singular and plural", () => {
+    expect(carriedOnlyNote(1)).toContain("the 1 closest match was too weak");
+    expect(carriedOnlyNote(3)).toContain("the 3 closest matches were too weak");
+    expect(carriedOnlyNote(3)).toContain("ones your previous answer cited");
   });
 });
 

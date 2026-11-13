@@ -323,6 +323,18 @@ describe("fuseRetrievalHits", () => {
   it("returns nothing from no searches", () => {
     expect(fuseRetrievalHits([], null, 8)).toEqual([]);
   });
+
+  it("passes over a hit `keep` rejects, so the next one takes its slot (#2294)", () => {
+    const notU2 = (h: { chunkId: string }) => h.chunkId !== "u2";
+    expect(fuseRetrievalHits([ids("u", 5)], null, 3, notU2).map((h) => h.chunkId)).toEqual([
+      "u1",
+      "u3",
+      "u4",
+    ]);
+    // The rejected u2 is not one of the user's 4, so u5 is; c1 is added beside them (#2316).
+    const fused = fuseRetrievalHits([ids("u", 5)], ids("c", 5), 4, notU2);
+    expect(fused.map((h) => h.chunkId)).toEqual(["u1", "u3", "u4", "c1", "u5"]);
+  });
 });
 
 const excerpts: CitableExcerpt[] = [
