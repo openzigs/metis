@@ -205,7 +205,9 @@ test.describe("UI IA — navigation & layout (#133)", () => {
     await test.step("/portfolio opens the coverage check", async () => {
       await page.goto("/portfolio", { waitUntil: "load" });
       await shell.expectLoaded();
-      await expect(page.getByRole("heading", { level: 1, name: "Portfolio" })).toBeVisible();
+      await expect(
+        page.getByRole("heading", { level: 1, name: "Portfolio", exact: true }),
+      ).toBeVisible();
       await expect(shell.hubTab("Projects", "Portfolio")).toHaveAttribute("aria-current", "page");
       await expect(page.getByLabel("Requirement statement")).toBeVisible();
     });
@@ -421,7 +423,9 @@ test.describe("#2332 — a non-admin analyst's navigation", () => {
       await expect(page).toHaveURL(/\/portfolio$/);
       await expect(page.getByLabel("Requirement statement")).toBeVisible();
       await page.getByRole("tab", { name: "Products" }).click();
-      await expect(page.getByRole("heading", { level: 2, name: "Products" })).toBeVisible();
+      await expect(
+        page.getByRole("heading", { level: 2, name: "Products", exact: true }),
+      ).toBeVisible();
     });
 
     await test.step("the palette", async () => {
