@@ -316,6 +316,16 @@ export const MODULE_PROBES = Object.freeze([
       'if (!m) throw new Error("git --version printed " + JSON.stringify(out));',
       "const [major, minor] = [Number(m[1]), Number(m[2])];",
       'if (major < 2 || (major === 2 && minor < 36)) throw new Error("git " + major + "." + minor + " is older than 2.36, which the repository clone\'s --filter=blob:limit needs");',
+      // `--version` proves the binary, not that a clone can work. An https clone
+      // needs git-remote-https and a CA bundle: --no-install-recommends leaves
+      // ca-certificates out and the slim base purges it, so every https clone
+      // fails certificate verification while Node's bundled roots keep Octokit
+      // working. Both checks are offline.
+      'const fs = await import("node:fs"); const path = await import("node:path");',
+      'const execPath = (await simpleGit(process.cwd()).raw(["--exec-path"])).trim();',
+      'if (!fs.existsSync(path.join(execPath, "git-remote-https"))) throw new Error("git-remote-https is missing from " + execPath + ": https clones cannot work");',
+      'const ca = process.env.SSL_CERT_FILE || "/etc/ssl/certs/ca-certificates.crt";',
+      'if (!fs.existsSync(ca)) throw new Error("no CA bundle at " + ca + ": every https clone fails certificate verification (install ca-certificates)");',
     ].join(" "),
   },
   {

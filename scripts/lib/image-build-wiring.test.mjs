@@ -210,6 +210,10 @@ describe("Dockerfile.server ships git in the runtime image (#2395)", () => {
     expect(installed).toContain("git");
   });
 
+  it("installs ca-certificates with it: a Recommends that --no-install-recommends drops", () => {
+    expect(installed).toContain("ca-certificates");
+  });
+
   it("installs it before dropping to the runtime user", () => {
     const at = runner.search(/--no-install-recommends [^\n]*\bgit\b/);
     expect(at).toBeGreaterThan(-1);

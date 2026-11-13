@@ -1213,6 +1213,7 @@ got further. The fixes that make it start, measured on amd64 (`du`, MiB; the
 | `@napi-rs/canvas` ×3: `linux-x64-gnu` replaces `linux-x64-musl` | +9 | |
 | `@prisma/debug`, `mysql2`, `fast-check`, `jszip` restored | <2 | Runtime imports of `@prisma/driver-adapter-utils`, the MySQL connector, `effect`, and `archive-extract.ts` respectively |
 | Oracle Instant Client on the loader path (`ld.so.conf.d` + `libaio`) | <1 | `initOracleClient` failed with `DPI-1047` without it |
+| `git` and `ca-certificates` (#2395) | ~+86 compressed | Repository connectors clone through simple-git, which spawns `git`. The chain is perl, libcurl3t64-gnutls, krb5, expat; the figure is the git layer's blobs in the build log. `ca-certificates` is only a Recommends of git, so it is named explicitly: without it every https clone fails certificate verification |
 
 In total the image grew from 860 to 1,111 MiB by `du` (849 → 1,101 MB of
 uncompressed layers), and the `api` job measured it at **1,067.7 MB** (run

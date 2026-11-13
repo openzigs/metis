@@ -755,18 +755,36 @@ describe("git probe (#2395)", () => {
   mkdirSync(empty);
   afterAll(() => rmSync(scratch, { recursive: true, force: true }));
 
-  /** @param {string} path */
-  const runProbe = (path) =>
+  const caFile = join(scratch, "ca-certificates.crt");
+  writeFileSync(caFile, "");
+
+  /**
+   * @param {string} path
+   * @param {string} [ssl] the CA bundle path the probe is told to look for
+   */
+  const runProbe = (path, ssl = caFile) =>
     spawnSync(process.execPath, ["--input-type=module", "-e", probe?.code ?? ""], {
       cwd: serverDir,
       encoding: "utf-8",
-      env: { ...process.env, PATH: path },
+      env: { ...process.env, PATH: path, SSL_CERT_FILE: ssl },
     });
 
-  /** A directory whose `git` prints `git version <v>`. @param {string} v */
-  const fakeGit = (v) => {
+  /**
+   * A directory whose `git` prints `git version <v>` and an exec path that holds
+   * git-remote-https unless `https` is false.
+   * @param {string} v
+   * @param {boolean} [https]
+   */
+  const fakeGit = (v, https = true) => {
     const dir = mkdtempSync(join(scratch, "v"));
-    writeFileSync(join(dir, "git"), `#!/bin/sh\necho "git version ${v}"\n`, { mode: 0o755 });
+    const exec = join(dir, "exec");
+    mkdirSync(exec);
+    if (https) writeFileSync(join(exec, "git-remote-https"), "", { mode: 0o755 });
+    writeFileSync(
+      join(dir, "git"),
+      `#!/bin/sh\ncase "$1" in\n  --exec-path) echo "${exec}" ;;\n  *) echo "git version ${v}" ;;\nesac\n`,
+      { mode: 0o755 },
+    );
     return dir;
   };
 
@@ -780,8 +798,8 @@ describe("git probe (#2395)", () => {
     expect(probe?.code).toMatch(/\.raw\(\["--version"\]\)/);
   });
 
-  it("passes with the git on this machine's PATH", () => {
-    const r = runProbe(process.env.PATH ?? "");
+  it("passes with a current git, git-remote-https and a CA bundle", () => {
+    const r = runProbe(fakeGit("2.47.3"));
     expect(r.stderr).toBe("");
     expect(r.status).toBe(0);
   });
@@ -789,6 +807,19 @@ describe("git probe (#2395)", () => {
   it("fails when no git is on PATH, as in the slim base image", () => {
     const r = runProbe(empty);
     expect(r.status).not.toBe(0);
+    expect(r.stderr).toMatch(/ENOENT/);
+  });
+
+  it("fails when there is no CA bundle: every https clone would fail certificate verification", () => {
+    const r = runProbe(fakeGit("2.47.3"), join(scratch, "absent.crt"));
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toMatch(/no CA bundle/);
+  });
+
+  it("fails when git-remote-https is missing from the exec path", () => {
+    const r = runProbe(fakeGit("2.47.3", false));
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toMatch(/git-remote-https is missing/);
   });
 
   it("fails on a git older than 2.36, which the clone's --filter=blob:limit needs", () => {
