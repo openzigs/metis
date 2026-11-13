@@ -27,8 +27,9 @@
  * ("Generated spec.md (v3) … grounded on 8 retrieved chunks.") verbatim.
  */
 import { toast } from "sonner";
-import type { JobLifecycleEvent } from "@metis/shared";
+import type { JobLifecycleEvent, JobNotificationEvent } from "@metis/shared";
 import { analystCopy } from "./analyst-copy";
+import { safeInAppHref } from "./notifications";
 
 /** Generic, user-safe fallbacks used when the event omits a message/error. */
 export const GENERIC_SUCCESS_TOAST = "Done.";
@@ -42,6 +43,119 @@ export const GENERIC_FAILURE_TOAST = "The operation failed. Please try again.";
  * per-instance `useRef` guard cannot achieve.
  */
 const toastedJobIds = new Set<string>();
+
+/**
+ * #2343 — the sonner id of the toast each job fired, so the job's
+ * `job:notification` (which names the change request or document and links to
+ * it) can rewrite that toast in place instead of adding a second one.
+ */
+const toastIdByJob = new Map<string, string | number>();
+
+/** #2343 — the `job:notification`s already shown, by saved row id. */
+const seenNotifications = new Set<string>();
+
+/**
+ * #2343 — one toast per RUN of a job across TABS too. The module-level state
+ * dedupes within one tab; two tabs of the same user each hear the job (the
+ * project room in one, the personal `user:{id}` room in both), so the first
+ * tab to toast claims the run in `localStorage`, which every tab of the origin
+ * shares, and the others stay quiet.
+ *
+ * A document's id is the job id of every regeneration of it, so the claim
+ * names the run, not the job: it holds the server time (`ts`) of the event
+ * that was toasted, and whether that was the run's lifecycle end (`l`) or its
+ * notification (`n`). A run's lifecycle end is emitted before its
+ * notification, and a later run's events are later still, so a claim for an
+ * earlier run never silences the next one.
+ */
+export const CROSS_TAB_CLAIM_PREFIX = "metis.jobToast.";
+/** How long after a lifecycle toast in another tab its run's notification may follow. */
+export const CROSS_TAB_CLAIM_TTL_MS = 10 * 60_000;
+
+type ClaimBy = "l" | "n";
+
+function readClaim(raw: string | null): { by: ClaimBy; ts: number } | null {
+  const match = /^([ln]):(\d+)$/.exec(raw ?? "");
+  return match ? { by: match[1] as ClaimBy, ts: Number(match[2]) } : null;
+}
+
+/** Whether another tab already toasted the run this event belongs to. */
+function heldElsewhere(held: { by: ClaimBy; ts: number } | null, by: ClaimBy, ts: number): boolean {
+  if (!held) return false;
+  // This run's end or notification (or a later run's) was already toasted.
+  if (by === "l") return held.ts >= ts;
+  // This notification itself was already shown.
+  if (held.by === "n") return held.ts >= ts;
+  // This run's lifecycle end was toasted there; that tab rewrites it in place.
+  return held.ts <= ts && ts - held.ts < CROSS_TAB_CLAIM_TTL_MS;
+}
+
+function claimAcrossTabs(jobId: string, by: ClaimBy, ts: number): boolean {
+  try {
+    const storage = window.localStorage;
+    const key = `${CROSS_TAB_CLAIM_PREFIX}${jobId}`;
+    if (heldElsewhere(readClaim(storage.getItem(key)), by, ts)) return false;
+    storage.setItem(key, `${by}:${ts}`);
+    return true;
+  } catch {
+    // No storage (private mode, a server render): this tab's own dedup only.
+    return true;
+  }
+}
+
+/** Record across tabs that this run's notification has been shown. */
+function markAnnouncedAcrossTabs(jobId: string, ts: number): void {
+  try {
+    window.localStorage.setItem(`${CROSS_TAB_CLAIM_PREFIX}${jobId}`, `n:${ts}`);
+  } catch {
+    /* no storage */
+  }
+}
+
+/**
+ * #2343 — per job, the server time of the last `job:notification` this tab
+ * handled. That notification ends a run: every lifecycle event up to it
+ * belongs to a run already announced, and anything later is the next run (a
+ * document regenerated), which toasts on its own.
+ */
+const announcedThrough = new Map<string, number>();
+
+/** The run is over: the next one of this job starts with nothing of it. */
+function endRun(jobId: string, ts: number): void {
+  announcedThrough.set(jobId, ts);
+  toastIdByJob.delete(jobId);
+  toastTextByJob.delete(jobId);
+}
+
+/** Where a toast's "Open" goes. The header registers the app router (#2343). */
+let navigate: (href: string) => void = (href) => {
+  window.location.assign(href);
+};
+
+/** #2343 — route a toast's "Open" through the app router rather than a full load. */
+export function setTerminalToastNavigator(fn: (href: string) => void): void {
+  navigate = fn;
+}
+
+/**
+ * #2343 — the text each job's lifecycle toast showed. A rewrite keeps it: a
+ * failure's lifecycle text can be its specific, user-safe reason (#2369, "This
+ * document type needs connected source code"), which the bell item's generic
+ * line does not carry.
+ */
+const toastTextByJob = new Map<string, string>();
+
+function remember(jobId: string, id: unknown, text?: string): void {
+  if (typeof id === "string" || typeof id === "number") toastIdByJob.set(jobId, id);
+  if (text) toastTextByJob.set(jobId, text);
+}
+
+/** Two lines as one description, each ending its sentence. */
+function sentences(first: string, second: string): string {
+  const a = first.trim();
+  if (!a) return second;
+  return `${/[.!?]$/.test(a) ? a : `${a}.`} ${second}`;
+}
 
 /**
  * #1580 — how old a REPLAYED terminal event may be and still toast. The server
@@ -98,6 +212,15 @@ export function terminalToastText(event: JobLifecycleEvent): {
 export function fireTerminalToast(event: JobLifecycleEvent | null | undefined): boolean {
   if (!event || typeof event.jobId !== "string" || !event.jobId) return false;
   if (!isTerminalJobStatus(event.status)) return false;
+  // #2343 — a job whose run was already announced: an event up to that
+  // announcement is a re-delivery of it; a later one is the job's next run (a
+  // document regenerated), which is news of its own.
+  const through = announcedThrough.get(event.jobId);
+  if (through !== undefined) {
+    if (event.ts <= through) return false;
+    announcedThrough.delete(event.jobId);
+    toastedJobIds.delete(event.jobId);
+  }
   if (toastedJobIds.has(event.jobId)) return false;
   toastedJobIds.add(event.jobId);
   // #1580 — a replay of an old terminal event is state, not news: a deep link
@@ -105,10 +228,67 @@ export function fireTerminalToast(event: JobLifecycleEvent | null | undefined): 
   // requirement(s) awaiting approval" long after the checkpoint was resolved.
   // The job is still marked, so a later re-delivery stays quiet too.
   if (isStaleReplay(event)) return false;
+  if (!claimAcrossTabs(event.jobId, "l", event.ts)) return false;
   const { kind, text } = terminalToastText(event);
-  if (kind === "success") toast.success(text);
-  else if (kind === "warning") toast.warning(text);
-  else toast.error(text);
+  if (kind === "success") remember(event.jobId, toast.success(text), text);
+  else if (kind === "warning") remember(event.jobId, toast.warning(text), text);
+  else remember(event.jobId, toast.error(text), text);
+  return true;
+}
+
+/**
+ * #2343 — the toast for a job the user started: its `job:notification` names
+ * the change request or document, says how it ended in plain words, and links
+ * to the result (or, after a failure, to where it can be run again).
+ *
+ * The same job may already have toasted from its `job:lifecycle` (the project
+ * room usually delivers first): that toast is rewritten in place, so there is
+ * still one. Otherwise this is the job's one toast, deduped by `jobId` in this
+ * tab and across tabs exactly like {@link fireTerminalToast}. Returns whether a
+ * toast was shown or rewritten.
+ */
+export function fireJobNotificationToast(event: JobNotificationEvent | null | undefined): boolean {
+  if (!event || typeof event.jobId !== "string" || !event.jobId) return false;
+  // A re-delivery of the same notification is not news.
+  const seenKey = event.notificationId ?? `${event.jobId}:${event.kind}:${event.ts}`;
+  if (seenNotifications.has(seenKey)) return false;
+  seenNotifications.add(seenKey);
+  const href = safeInAppHref(event.href);
+  const options = {
+    description: event.message,
+    ...(href ? { action: { label: "Open", onClick: () => navigate(href) } } : {}),
+  };
+  const show =
+    event.kind === "job_failed"
+      ? toast.error
+      : event.kind === "job_awaiting_review"
+        ? toast.warning
+        : toast.success;
+  const through = announcedThrough.get(event.jobId);
+  // An earlier notification of this job ended a run at or after this one.
+  if (through !== undefined && event.ts <= through) return false;
+  // This run already toasted here from its lifecycle end (no notification of
+  // it handled yet): rewrite that toast in place.
+  if (through === undefined && toastedJobIds.has(event.jobId)) {
+    const id = toastIdByJob.get(event.jobId);
+    // Keep what THIS run's lifecycle toast said (a failure's reason), then the
+    // next step; the run's entries are dropped below, so a later run of the
+    // same document never inherits them.
+    const said = toastTextByJob.get(event.jobId);
+    endRun(event.jobId, event.ts);
+    if (id === undefined) return false;
+    markAnnouncedAcrossTabs(event.jobId, event.ts);
+    show(event.title, {
+      ...options,
+      description: said ? sentences(said, event.message) : event.message,
+      id,
+    });
+    return true;
+  }
+  toastedJobIds.add(event.jobId);
+  endRun(event.jobId, event.ts);
+  if (!claimAcrossTabs(event.jobId, "n", event.ts)) return false;
+  show(event.title, options);
   return true;
 }
 
@@ -141,7 +321,22 @@ export function releaseTerminalToast(jobId: string | null | undefined): void {
   if (jobId) toastedJobIds.delete(jobId);
 }
 
-/** Test-only reset so specs start from an empty dedup set. */
-export function __resetTerminalToastsForTests(): void {
+/**
+ * Test-only reset so specs start from an empty dedup set. `keepStorage` keeps
+ * the cross-tab claims, so a spec can stand in for a second tab.
+ */
+export function __resetTerminalToastsForTests(opts: { keepStorage?: boolean } = {}): void {
   toastedJobIds.clear();
+  toastIdByJob.clear();
+  toastTextByJob.clear();
+  seenNotifications.clear();
+  announcedThrough.clear();
+  if (opts.keepStorage) return;
+  try {
+    for (const key of Object.keys(window.localStorage)) {
+      if (key.startsWith(CROSS_TAB_CLAIM_PREFIX)) window.localStorage.removeItem(key);
+    }
+  } catch {
+    /* no storage */
+  }
 }

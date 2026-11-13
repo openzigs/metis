@@ -1,49 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
-import { MultiProjectPicker } from "@/components/impact/multi-project-picker";
 import { DocumentSourceSelector } from "@/components/impact/document-source-selector";
 import { RunImpactAnalysisButton } from "@/components/impact/run-impact-analysis-button";
-
-const PROJECTS = [
-  { id: "project-001", name: "Alpha" },
-  { id: "project-002", name: "Beta" },
-];
-
-describe("MultiProjectPicker", () => {
-  it("communicates single- vs multi-project impact without a two-project minimum", () => {
-    render(<MultiProjectPicker projects={PROJECTS} selected={[]} onChange={() => {}} />);
-    const helper = screen.getByText(/Pick one deep-ingested project/i);
-    expect(helper).toHaveTextContent(/single-project impact/i);
-    expect(helper).toHaveTextContent(/two or more/i);
-    expect(screen.queryByText(/at least two/i)).not.toBeInTheDocument();
-  });
-
-  it("renders loading state", () => {
-    render(<MultiProjectPicker projects={[]} selected={[]} onChange={() => {}} isLoading />);
-    expect(screen.getByTestId("multi-project-loading")).toBeInTheDocument();
-  });
-
-  it("renders empty state", () => {
-    render(<MultiProjectPicker projects={[]} selected={[]} onChange={() => {}} />);
-    expect(screen.getByTestId("multi-project-empty")).toBeInTheDocument();
-  });
-
-  it("selects and deselects a project", () => {
-    const onChange = vi.fn();
-    const { rerender } = render(
-      <MultiProjectPicker projects={PROJECTS} selected={[]} onChange={onChange} />,
-    );
-    fireEvent.click(screen.getByTestId("project-checkbox-project-001"));
-    expect(onChange).toHaveBeenCalledWith(["project-001"]);
-
-    rerender(
-      <MultiProjectPicker projects={PROJECTS} selected={["project-001"]} onChange={onChange} />,
-    );
-    expect(screen.getByTestId("multi-project-count")).toHaveTextContent("1 selected");
-    fireEvent.click(screen.getByTestId("project-checkbox-project-001"));
-    expect(onChange).toHaveBeenLastCalledWith([]);
-  });
-});
 
 describe("DocumentSourceSelector", () => {
   const base = {

@@ -35,6 +35,7 @@ import {
 import { resolveAclActor, type AclActor } from "./acl.js";
 import { createChildLogger } from "../logger.js";
 import { fuseRetrievalHits } from "../ai/conversation/retrieval-query.js";
+import { floorKeep } from "../ai/relevance-floor.js";
 
 const log = createChildLogger("federated-search");
 
@@ -75,6 +76,15 @@ export interface FederatedSearchOptions {
   contextualQuery?: string | null;
   /** #2279 — the documents attached to the question: every search covers only these. */
   documentIds?: string[];
+  /**
+   * #2294 — chat's absolute relevance floor (#2241) on each hit's dense
+   * cosine, given the embedding models the hits were scored with (chat passes
+   * `readRelevanceFloor`). It is applied to each project's own ranking BEFORE
+   * the projects are merged, so a weak hit's slot goes to the next one that
+   * clears it, and a project left with nothing contributes nothing. Off when
+   * absent or when it returns 0.
+   */
+  absoluteFloor?: (embeddingModels: readonly string[]) => number;
 }
 
 export interface FederatedHit {
@@ -98,6 +108,10 @@ export interface FederatedHit {
   matchedBy?: RetrievalMatcher[];
   source?: DocumentSource;
   derived?: RetrievedChunk["derived"];
+  /** #2294 — the dense cosine when a rerank rewrote `score`, for the absolute floor. */
+  denseScore?: number;
+  /** #2294 — the model the hit was embedded with: the floor is calibrated per model. */
+  embeddingModel?: string;
 }
 
 /** #2238 — a project that could not be searched, and why. */
@@ -128,6 +142,11 @@ export interface FederatedSearchResult {
   projectsRejected: number;
   /** #2238 — the name of every project searched or failed (all reachable by the caller). */
   projectNames: Record<string, string>;
+  /**
+   * #2294 — how many of the hits the merge would have returned without the
+   * absolute floor fell below it (0, or absent, when it is off).
+   */
+  belowFloor?: number;
 }
 
 class FederatedSearchTimeoutError extends Error {}
@@ -275,6 +294,34 @@ function emptyResult(projectsRejected = 0): FederatedSearchResult {
     failures: [],
     projectsRejected,
     projectNames: {},
+    belowFloor: 0,
+  };
+}
+
+/**
+ * #2294 — each project's ranking with the hits below chat's absolute floor
+ * taken out, as `applyRelevanceFloor` takes them out of one project's list: a
+ * dense hit must reach the floor, and a keyword-only hit (no cosine) stays only
+ * when some dense hit of its own project cleared it. `null` when the floor is off.
+ */
+function applyAbsoluteFloor(
+  rankings: readonly ProjectRanking[],
+  floorFor: FederatedSearchOptions["absoluteFloor"],
+): { rankings: ProjectRanking[]; keep: (h: FederatedHit) => boolean } | null {
+  if (!floorFor) return null;
+  const all = rankings.flatMap((r) => r.hits);
+  const floor = floorFor(all.flatMap((h) => (h.embeddingModel ? [h.embeddingModel] : [])));
+  if (!(floor > 0)) return null;
+  // Per project, as for one project: a keyword-only hit is vouched for by a
+  // dense hit of its own project, never by another product's.
+  const keeps = new Map(rankings.map((r) => [r.projectId, floorKeep(r.hits, floor)]));
+  const keep = (h: FederatedHit) => keeps.get(h.projectId)?.(h) ?? true;
+  return {
+    keep,
+    rankings: rankings.map((r) => {
+      const hits = r.hits.filter(keep);
+      return { ...r, hits, relevance: Math.max(0, ...hits.map((h) => h.score)) };
+    }),
   };
 }
 
@@ -370,9 +417,13 @@ export class FederatedSearchService {
     }
 
     // 4. Cross-project fusion on relevance (#2238)
-    const fused = contextualQuery
-      ? fuseCappingContextual(rankings, k, floor)
-      : fuseByRelevance(rankings, k, floor);
+    const merge = (r: readonly ProjectRanking[]) =>
+      contextualQuery ? fuseCappingContextual(r, k, floor) : fuseByRelevance(r, k, floor);
+    // #2294 — the absolute floor, per project before the merge, so the merge
+    // backfills a weak hit's slot rather than returning fewer.
+    const floored = applyAbsoluteFloor(rankings, opts.absoluteFloor);
+    const fused = merge(floored?.rankings ?? rankings);
+    const belowFloor = floored ? merge(rankings).filter((h) => !floored.keep(h)).length : 0;
     const contributing = new Set(fused.map((h) => h.projectId));
 
     return {
@@ -386,6 +437,7 @@ export class FederatedSearchService {
       projectNames: Object.fromEntries(
         targetIds.map((id) => [id, accessibleMap.get(id) ?? id] as const),
       ),
+      belowFloor,
     };
   }
 
@@ -417,6 +469,8 @@ export class FederatedSearchService {
           ...(h.matchedBy ? { matchedBy: h.matchedBy } : {}),
           ...(h.source ? { source: h.source } : {}),
           ...(h.derived ? { derived: h.derived } : {}),
+          ...(h.denseScore !== undefined ? { denseScore: h.denseScore } : {}),
+          ...(h.embeddingModel ? { embeddingModel: h.embeddingModel } : {}),
         }));
       }),
     );
@@ -451,6 +505,8 @@ export class FederatedSearchService {
         | "matchedBy"
         | "source"
         | "derived"
+        | "denseScore"
+        | "embeddingModel"
       >[];
       reranked?: boolean;
     }>((resolve, reject) => {

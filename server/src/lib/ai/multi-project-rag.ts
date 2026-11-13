@@ -26,8 +26,17 @@
  * single-project chat merges them; the excerpts the previous answer cited are
  * read back (scoped to the projects in scope now, ACL-checked for the caller)
  * and kept; and documents attached to the question limit every search.
+ *
+ * #2294 — chat's absolute relevance floor (#2241) applies here too, per
+ * project before the merge, and the turn's grounding says what single-project
+ * grounding says: the sources used, or why nothing was supplied.
  */
-import type { ChatGrounding, ChatGroundingProject, ChatGroundingUnsearched } from "@metis/shared";
+import type {
+  ChatGrounding,
+  ChatGroundingProject,
+  ChatGroundingUnsearched,
+  NoContextReason,
+} from "@metis/shared";
 import type { RoleKey } from "@metis/shared";
 import { getConfigService } from "../config/config-service.js";
 import { createChildLogger } from "../logger.js";
@@ -44,6 +53,8 @@ import { formatHitLocator, formatHitScore } from "../rag/hit-locator.js";
 import { formatDerivedLabel } from "../rag/derived-label.js";
 import type { ChatSearchScope } from "./chat-search-scope.js";
 import type { ChatMessage } from "./types.js";
+import { groundingSources } from "./chat-grounding.js";
+import { carriedOnlyNote, denseCosine, readRelevanceFloor } from "./relevance-floor.js";
 import {
   planRetrievalQueries,
   planSearches,
@@ -69,6 +80,8 @@ export interface MultiProjectRagDeps {
   role?: (userId: string) => Promise<RoleKey>;
   /** 0..1; defaults to `CHAT_MULTI_PROJECT_RELEVANCE_FLOOR_PCT` / 100. */
   relevanceFloor?: number;
+  /** #2294 — chat's absolute floor for the hits' embedders; defaults to `readRelevanceFloor`. */
+  absoluteFloor?: (embeddingModels: readonly string[]) => number;
   /** #2279 — the caller as the chunk-ACL actor of a carried excerpt's read. */
   aclActor?: (userId: string) => Promise<AclActor>;
   /** #2279 — read chunks of one project back by id (`loadChunksById`). */
@@ -242,6 +255,9 @@ export async function buildMultiProjectRagContext(
       // Attached documents are the source the user chose: every product holding
       // one contributes, however its relevance compares with the others'.
       relevanceFloor: documentIds ? 0 : (deps.relevanceFloor ?? configuredFloor()),
+      // #2294 — and chat's absolute floor (#2241), as single-project chat
+      // applies it; not on attachments, which the user chose as the source.
+      ...(documentIds ? {} : { absoluteFloor: deps.absoluteFloor ?? readRelevanceFloor }),
       ...(searches.user.length > 1 ? { moreQueries: searches.user.slice(1) } : {}),
       ...(searches.contextual ? { contextualQuery: searches.contextual } : {}),
       ...(documentIds ? { documentIds } : {}),
@@ -252,7 +268,7 @@ export async function buildMultiProjectRagContext(
     });
     return {
       block: nothingSearchedBlock("their sources could not be searched this turn"),
-      grounding: { status: "multi", projects: [] },
+      grounding: { status: "multi", projects: [], reason: "retrieval-failed" },
     };
   }
 
@@ -272,11 +288,38 @@ export async function buildMultiProjectRagContext(
     projectName: f.projectName,
     reason: f.reason,
   }));
+  const belowFloor = result.belowFloor ?? 0;
+  const listed = [...result.hits, ...carried];
+  // #2294 — as `describeGrounding` says it for one project: the files the
+  // excerpts came from, named as the model saw them, with each fresh hit's
+  // dense cosine; or, when nothing reached the prompt, why.
+  const sourcesUsed = groundingSources(
+    listed.map((h, i) => {
+      const relevance = i < result.hits.length ? denseCosine(result.hits[i]!) : null;
+      return {
+        name: `[${nameOf(h.projectId)}] ${h.path ?? h.filename}`,
+        ...(relevance !== null ? { relevance } : {}),
+      };
+    }),
+  );
+  const reason: NoContextReason | null =
+    listed.length > 0
+      ? null
+      : projects.length === 0 && unsearched.length > 0
+        ? "retrieval-failed"
+        : projects.length === 0
+          ? null
+          : belowFloor > 0
+            ? "insufficient-evidence"
+            : "nothing-found";
   const grounding: ChatGrounding = {
     status: "multi",
     projects,
     ...(unsearched.length > 0 ? { unsearched } : {}),
     ...(result.projectsRejected > 0 ? { unavailable: result.projectsRejected } : {}),
+    ...(sourcesUsed.length > 0 ? { sourcesUsed } : {}),
+    ...(reason ? { reason } : {}),
+    ...(reason === "insufficient-evidence" ? { belowFloor } : {}),
   };
 
   const inScope = [...projects.map((p) => p.projectName), ...unsearched.map((u) => u.projectName)];
@@ -319,6 +362,10 @@ export async function buildMultiProjectRagContext(
       `this chat runs on) and never any other topic raised earlier in this conversation.`,
   ];
   if (chunkList.length > 0) {
+    // #2294 — the floor set aside every fresh match and only carried excerpts
+    // remain: the turn stays grounded in them (the model is shown them), but
+    // it is told this question's own search found nothing usable.
+    if (result.hits.length === 0 && belowFloor > 0) lines.push(carriedOnlyNote(belowFloor));
     lines.push(
       `Each excerpt below is labelled with the product it was retrieved from, in square brackets. ` +
         `Answer from these excerpts, and attribute every claim to its product by name ` +
@@ -338,6 +385,15 @@ export async function buildMultiProjectRagContext(
           : "") +
         ":",
       chunkList.join("\n\n---\n\n"),
+    );
+  } else if (belowFloor > 0) {
+    // #2294 — as `insufficientEvidenceBlock` for one project.
+    lines.push(
+      `Their knowledge bases were searched for this question and nothing in them was relevant ` +
+        `enough to use: the ${belowFloor} closest ${belowFloor === 1 ? "match was" : "matches were"} ` +
+        `too weak, so no excerpt is shown. Do not answer from general knowledge: say that their ` +
+        `sources don't show this, and say what is missing (which document, rule or code would ` +
+        `answer it).`,
     );
   } else {
     lines.push(

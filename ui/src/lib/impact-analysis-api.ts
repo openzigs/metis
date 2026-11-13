@@ -43,6 +43,13 @@ export const impactAnalysisApi = {
       ? apiFetch<ImpactAnalysisSummary[]>(BASE, { params: { projectId } })
       : apiFetch<ImpactAnalysisSummary[]>(BASE),
 
+  /**
+   * #2345 — the runs started from the change request `analysisId`, newest
+   * first, as far as the caller may read them.
+   */
+  listForChangeRequest: (analysisId: string) =>
+    apiFetch<ImpactAnalysisSummary[]>(BASE, { params: { analysisId } }),
+
   get: (id: string) => apiFetch<ImpactAnalysisDetail>(`${BASE}/${id}`),
 
   /**

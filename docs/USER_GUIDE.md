@@ -1019,7 +1019,8 @@ The bell icon in the header opens a side **notifications drawer** with these ale
 - **Mention** — someone @mentioned you in a comment, e.g. *Alex mentioned you on "Login lockout"*, with the start of the comment underneath. Click **Open →** to open that requirement (or Spec Kit artifact) with its comments showing. The quote follows the comment: if its author edits it, the notification quotes the new text (or reads *The comment was edited.* if you can no longer open the project); if they delete it, the notification keeps who and where but reads *The comment was deleted.* An item already showing in an open drawer updates on the next reload.
 - **Discussion mention** — someone @mentioned you in a project discussion, e.g. *Alex mentioned you in "Feed refresh schedule"*, with the start of the message underneath. Click **Open →** to go to that discussion thread.
 - **SLA deadline expired** — an assignment's SLA deadline has passed. Click **Open →** to navigate to the requirement. It goes only to people who can still open the project. A requirement can be assigned only to someone the assignee picker offers: an active member of the project's workspace, or a system admin. Anyone else gets "Assignee not found" (#1432).
-- **Review lifecycle** — for the formal review workflow (the Reviews page, sidebar → Reviews): as an **assigned reviewer** you are notified when a review is submitted and awaits your decision; as the **requester** you are notified of each reviewer's decision; the decision that settles the review arrives as one notification giving the final outcome (approved — including when a baseline was auto-created — or rejected) and who decided it. Each notification deep-links to the review's detail page. These are governed by the **Requirements approved × In-app** toggle in Settings → Notifications.
+- **Review lifecycle** — for the formal review workflow (the Reviews page, sidebar → Reviews): as an **assigned reviewer** you are notified when a review is submitted and awaits your decision; as the **requester** you are notified of each reviewer's decision; the decision that settles the review arrives as one notification giving the final outcome (approved — including when a baseline was auto-created — or rejected) and who decided it. Each notification deep-links to the review's detail page. A review waiting on you reads *Review assigned to you*, and a rejection of a review you asked for reads *Your review request was rejected*. These are governed by the **Requirements approved × In-app** toggle in Settings → Notifications.
+- **Job results** — when a change request (analysis), a document you generated, or a document you uploaded, pasted or fetched from a URL finishes, you get a toast and a bell item naming it, wherever you are in the app, even in a tab you opened after starting it. **Open** lands on the result: the change request, the document, or the documents list. A change request that finished with clarifying questions says *Questions waiting (N)*. A job that failed says so in plain words and lands where you can run it again. An uploaded document held in quarantine says it *is waiting for review* and lands on the quarantine queue. One job gives one toast and one bell item, also after a reconnect or with two tabs open. Only the person who started the job is told; an automatic regeneration tells no one. These are governed by the **Analysis, ingest and document results × In-app** toggle in Settings → Notifications (on by default).
 
 The badge shows your unread count; opening the drawer marks all items read. Use **Clear all** to dismiss the list. Comment mentions, discussion mentions and review notifications arrive **live** while you are signed in: the badge updates without a reload, and the item reads the same as it will after a reload. Notifications are **persisted server-side**, so they survive page reloads and reconnects and you do not miss an alert sent while you were offline. Each notification links to the item it is about where there is one. If you lose access to a notification's project — you are removed from its workspace, it moves to a workspace you are not in, or it is deleted — the notification stays in your list (so the unread count still adds up) but reads *Notification unavailable*, with no text or link.
 
@@ -1362,12 +1363,49 @@ click **Run analysis** to start with your own choices instead.
   Portfolio, Review, Hand-off. Each step says, in words, *Not started*, *In progress*, *Needs
   you*, *Done* or *Not applicable*, and links to the screen where that step is done. A step
   whose feature is off or does not apply to the run (no governing documents, no portfolio, no
-  code analysed) reads *Not applicable*. Questions reads *Needs you* while the run has open
-  clarifying questions, even once the run has completed. Portfolio never reads *Done*: METIS
-  keeps no record of a portfolio check per change request yet. A step METIS could not check
+  code analysed) reads *Not applicable*. Questions reads *Questions waiting (N)*, with the count,
+  while the run has open clarifying questions, even once the run has completed. **Impact** and
+  **Portfolio** show the state of the newest impact analysis or portfolio check started from this
+  change request, and link to it; before there is one they link to the **Impact and portfolio**
+  card below. A step METIS could not check
   (the policy findings or the issue drafts could not be read, for example because your role may
   not see issue drafts) reads *Unknown*, with "Couldn't check …" as its reason, never a state
-  it might not be in.
+  it might not be in;
+- its **formal review**, when it has one: *Review assigned to you* when a review of it waits on
+  your decision, *Your review request was rejected* when a review you asked for was rejected,
+  and otherwise where the review stands (*Review requested (not sent yet)*, *In review*,
+  *Review approved*, *Review rejected*). **Open review** goes to the review.
+
+**What needs you, at a glance.** The run list marks a completed change request whose
+clarifying questions are still open with *Questions waiting (N)*, and the project Overview's
+Review stage says the same. When a change request you started finishes or fails, you get a
+toast and a bell item that lands on it (see §8.5).
+
+**Impact and portfolio.** Below the step header, the **Impact and portfolio** card starts both
+checks from the change request itself, with its requirements already filled in: you type
+nothing again. Each result opens on its own page, the same impact analysis or portfolio check
+page the **Impact analyses** and **Portfolio** pages open, with a **Back to the change request**
+link at the top that returns you here in one click. [#2345]
+
+- **Run impact analysis** maps the change request's draft and approved requirements (rejected
+  and deferred ones are left out) to the affected code in this project. One run checks at most
+  50 requirements: for a larger change request the card and the form say that the first 50 of
+  them are checked. **Options** opens the
+  full impact form with the change request as its source and this project selected, to add
+  other projects; keep this project selected.
+- **Run portfolio check** checks each of those requirements across every product you can read.
+  It is available before the requirements are approved; a check started while any of them is
+  not approved is labelled **Run on unapproved requirements**, on the card, on the check's page,
+  in the Portfolio coverage list and in its Markdown export. **Options** opens the portfolio
+  form with the change request as its source, to choose products.
+- Each check's results are listed on the card, **newest first** and marked **Latest**; older
+  ones stay listed and open with one click. Running a check again adds a newer result on top.
+- A result started from a change request opens with **← Back to the change request: <title>**
+  in place of the link to the global list, so one click returns you to it. The global **Impact
+  analyses** and **Portfolio coverage** pages still list every result across projects.
+- A reader without permission to run analyses sees the results, not the buttons. METIS reads
+  the change request's requirements itself and refuses a change request (or a project) you
+  cannot read; nothing is offered beyond the projects and products you can read.
 
 A run made before change requests had titles is given one from its sources (its first
 document's name, else its first imported item's title, else the start of its typed
@@ -2124,17 +2162,31 @@ In the header, open the workspace menu (the workspace's name), choose **Open wor
 
 Before anyone builds a requirement, check whether a product you already have does it, and
 which other products a change for it would reach. Your *portfolio* is the products you can
-access under **Projects › Products**. A product groups the repositories that make it up (see
-Section 15.5), and the check reads the code in those repositories. [#1608]
+access, listed under **Projects › Portfolio › Products**. A product groups the repositories
+that make it up (see Section 15.5), and the check reads the code in those repositories. [#1608]
+
+The **Portfolio** tab (`/portfolio`) holds both: **Coverage**, where you run a check, and
+**Products**, where you list, open and create products. It opens on Coverage. The old
+`/products` and `/portfolio` addresses still work: `/products` opens the Products section, and
+a product's own page keeps its address. [#2353]
 
 #### Running a check
 
-1. Open **Projects › Portfolio coverage** (`/portfolio`).
+1. Open **Projects › Portfolio** (`/portfolio`). It opens on **Coverage**.
 2. Describe what the business needs in plain language, up to 8,000 characters. For example:
    *"Customers can pay an invoice by bank transfer."*
-3. Under **Where to look**, choose **All products I can access**, **One product** and pick
-   it, or **Several products** and tick each one (up to 50). **Find a product** searches all
-   your products by name; a product you ticked stays ticked when a search hides it.
+3. Under **Where to look**, open the scope picker (the same one chat and impact analysis use,
+   [#2351]) and choose **This project** (the product of the project you came from, for example
+   a change request's; a project in no product says so), **Whole workspace** (every product of
+   the top bar's workspace you can read, with how many that is; with no workspace open, every
+   product you can read), or tick **Chosen products** (up to 50). Opened from no project, it
+   reads **Every product you can read** and checks all of them, as before; opened from a
+   product, that product is ticked. Untick every chosen product to go back to **Every product
+   you can read**. **Whole workspace** stays unavailable, and says why, until the workspace's
+   products are read; **Check coverage** waits while the project's product is looked up. **Find
+   products** searches all your products by name (and the product list for who will build it);
+   a product you ticked stays ticked when a search hides it. A product you cannot read is
+   refused by the server, never checked.
 4. Click **Check coverage**.
 
 You can also start a check from three other places. Every **approved** requirement on a
@@ -2287,8 +2339,9 @@ every table the change reaches the product through, not only the one on the path
 If nothing covers the requirement yet, no product's code changes until one is chosen to
 build it, so there is nothing to work the impact out from. Choose that product under
 **Which product will build this? (optional)** when you start the check (the API takes
-`hostProductId` on `POST /api/portfolio-assessments`). In **One product** scope, only that
-product can be chosen; in **Several products** scope, any one of those ticked. The check
+`hostProductId` on `POST /api/portfolio-assessments`). Over **This project**, **Chosen
+products** or a workspace's products, only a product in that scope can be chosen; with no
+workspace open, any product you can read. The check
 then names it (**Product that will build it**, and
 **Built by** above the impact, with a **Chosen to build this** badge on its card). It reads
 **Must change**, and so does every product that holds one of its repositories, such as an
@@ -3289,8 +3342,8 @@ The AI Chat is your interactive assistant for asking questions, getting help wit
 Chat opens on the project active in the top bar. The project you last picked in
 chat's own project selector is used only when no project is active. The chat
 you last had open comes back when it belongs to that project. A chat you last
-had open under **All projects**, with **All projects** picked in the selector,
-comes back too, and the selector returns to **All projects**. A new chat is
+had open with no product chosen comes back too, and the selector returns to
+**No product chosen**. A new chat is
 saved only when you send its first message, so opening Chat or clicking
 **New chat** does not add an empty "New Chat" to your session list. Recent
 lists each chat under the title saved with it: a new chat is named after its
@@ -3691,13 +3744,13 @@ Both fields persist on the `Project` row and are read at session-create time. Th
 
 ### 14.6 Project Scope and Grounding
 
-Chat answers from your projects' knowledge bases when the chat is scoped to **one project**, to **several projects**, or to **every project in your workspace** (#2238). With the scope on **All projects**, no project is searched: the model answers from its own general knowledge, which can sound confident while naming files or functions that do not exist in your code. [#18]
+Chat answers from your projects' knowledge bases when the chat is scoped to **one project**, to **several projects**, or to **every project in your workspace** (#2238). With **No product chosen**, no project is searched: the model answers from its own general knowledge, which can sound confident while naming files or functions that do not exist in your code. [#18]
 
 **Choosing the scope:**
 
 1. In the Chat page, find the scope pill in the header.
-2. Click it and tick one or more projects, or pick **Every project in _Workspace_** (the workspace shown in the top bar), or **All my projects** for an unscoped chat. Tick several projects to ask one question about all of them — for example "what does this FRD change in A and B?".
-3. Your choice is remembered in your browser. Chat opens on the project active in the top bar; a remembered selection of several projects that includes it, or the top bar's workspace, is kept. If you have never picked one, chat starts scoped to the active project, or to **All projects** if you have none.
+2. Click it: the same picker as impact analysis and the portfolio check, with the same three options [#2351]. Pick **This project** (the project active in the top bar), **Whole workspace** (every project of the workspace shown in the top bar, with how many that is), or tick one or more projects under **Chosen products**. Untick them all for an unscoped chat (**No product chosen**). Tick several projects to ask one question about all of them — for example "what does this FRD change in A and B?". Escape closes the picker.
+3. Your choice is remembered in your browser. Chat opens on the project active in the top bar; a remembered selection of several projects that includes it, or the top bar's workspace, is kept. If you have never picked one, chat starts scoped to the active project, or to **No product chosen** if you have none.
 
 A new scope starts a new chat on your next message; the conversation you had open stays in Sessions.
 
@@ -3705,7 +3758,7 @@ Opening Chat from a project (`/chat?projectId=…`) scopes it to that project.
 
 **Seeing what an answer is based on:**
 
-- While the scope is **All projects**, a notice above the conversation says that answers are not grounded in any project.
+- While no product is chosen, a notice above the conversation says that answers are not grounded in any project.
 - Every reply carries a label underneath it:
   - **Grounded in _Project_ · N sources · M project lookups** — excerpts from that project's knowledge base were given to the model (N counts each excerpt supplied, and each code symbol in a fused code block), and/or the model read the project itself through its tools — code search, or a search of the project's knowledge base (M counts the lookups that returned something). Either part is left out when it is zero. Only excerpts relevant enough to the question are supplied: a weaker match is set aside (see **Relevance floor** below). Click the label to list the files and documents the excerpts came from, each with how many excerpts it gave and its relevance (0 to 1). [#2241]
   - **Insufficient evidence — nothing in _Project_ was relevant enough to this question** — the knowledge base was searched, but every match was too weak to use, so none was given to the model. It is told to say that the sources don't show this, and what is missing, rather than guess. [#2241]
@@ -3721,7 +3774,7 @@ Opening Chat from a project (`/chat?projectId=…`) scopes it to that project.
 
   Replies written before this label existed show none.
 
-**How a question over several projects is answered (#2238):** every turn searches each project in the scope, again checking that you can still open it. Each project's matches are compared on how close they are to the question, and a project whose best match is well below the best project's contributes nothing, so a project that has nothing to do with the question does not slip its top excerpt into the answer (`CHAT_MULTI_PROJECT_RELEVANCE_FLOOR_PCT`, default 75). The projects that remain share the excerpts. Every excerpt is labelled with its project, and the model is told to say which project each statement comes from, and never to carry a fact from one project over to another.
+**How a question over several projects is answered (#2238):** every turn searches each project in the scope, again checking that you can still open it. Each project's matches are compared on how close they are to the question, and a project whose best match is well below the best project's contributes nothing, so a project that has nothing to do with the question does not slip its top excerpt into the answer (`CHAT_MULTI_PROJECT_RELEVANCE_FLOOR_PCT`, default 75). The projects that remain share the excerpts. Every excerpt is labelled with its project, and the model is told to say which project each statement comes from, and never to carry a fact from one project over to another. Since #2294 the same relevance floor as a one-project chat applies to each project as well: a match too weak to bear on the question is left out and the next one takes its place, and when every match in every project is too weak, the answer says the sources don't show this and the label reads **Insufficient evidence**. The label lists the files the excerpts came from, each named with its project.
 
 **Follow-up questions.** A scoped chat searches the project with the conversation, not just your last message. When you answer a question the model asked ("Which product do you mean?" — "Server"), or ask a short follow-up ("and for annual plans?"), the search reads your message together with the question before it. Your own words always run as a search of their own as well, and they count for more: the 8 best excerpts your own words found are always kept, and the earlier question can add at most 3 more (#2316). A question that names its own subject ("Are there any GDPR requirements in the onboarding spec?") is searched on its own, even right after the model asked you something. A question with several parts (a numbered list, or several questions in one message) searches each part, and the results are merged. The excerpts an answer cited (by its `[n]` number, its file name or its location) are given to the model again on your next message, marked as cited in the previous answer, so it can build on them. They are read again when you send it: an excerpt you can no longer see, or whose document was deleted, is not brought back. Each excerpt brought back counts toward the **N sources** in the label. [#2240] A chat over several projects does the same: a follow-up is searched in every project together with the question before it, so "and in the client?" finds the project the earlier question was about; the excerpts the last answer cited come back labelled with their project; and documents attached in the Workbench limit every project's search to them. [#2279]
 
@@ -3747,13 +3800,12 @@ The list opens by itself when any citation did not check out. A file name mentio
 
 ## 15. Managing Git Repositories
 
-> **v1.2.0 update.** Repositories are now reachable two ways: (a) the
-> per-project **Connections** tab (still the source of truth for connector
-> CRUD — see §15.4), and (b) a top-level `/repositories` page in the sidebar
-> that aggregates every repo across every project the operator can see, with
-> a project-name filter and one-click "open in project" links. Both surfaces
-> hit the same `/api/projects/:id/connectors/repos` endpoints — no new
-> server routes were added (`#196 / #224`).
+> **Where repositories live.** A project's repositories are on its
+> **Knowledge › Connections** tab, which is where you add, edit and remove
+> them (see §15.4). The cross-project **Projects › Repositories** list is
+> gone (#2353): `/repositories` now opens the project list, or a project's
+> Knowledge tab when the link names one (`/repositories?projectId=<id>`).
+> To find a repository, open its project from **Projects**.
 
 ### 15.1 Why Connect Repositories?
 
@@ -3892,7 +3944,7 @@ then, impact analysis and "Tested by" may miss some Go call paths in that reposi
 
 ### 15.5 Products that span repositories you can't access
 
-A product (**Projects › Products**) can include repositories from projects you don't
+A product (**Projects › Portfolio › Products**) can include repositories from projects you don't
 have access to. You won't see those repositories; instead the product page says
 **"N repos hidden"**. **Generate Documentation** still works, but it builds the documents
 from the repositories you *can* access, and every document affected says so: *"Built
@@ -3962,12 +4014,12 @@ Without edit rights the list is read-only and marked **Restricted**.
 
 ## 16. Database Connections
 
-> **v1.2.0 update.** As with repositories, the per-project **Connections**
-> tab remains the source of truth for database connector CRUD, and a new
-> top-level `/databases` sidebar page surfaces the full inventory across
-> projects with the same filter / link-back pattern (`#196 / #224`). The
-> read-only SQL panel still lives only on the per-project page so RBAC
-> stays project-scoped.
+> **Where database connections live.** As with repositories, a project's
+> database connections are on its **Knowledge › Connections** tab, with the
+> read-only SQL panel, so access stays project-scoped. The cross-project
+> **Projects › Databases** list is gone (#2353): `/databases` now opens the
+> project list, or a project's Knowledge tab when the link names one
+> (`/databases?projectId=<id>`).
 
 ### 16.1 Why Connect Databases?
 
@@ -4411,7 +4463,7 @@ Customize how METIS looks:
 
 ### 20.3 Notifications (`/settings/notifications`)
 
-Control which notifications you receive as a **per-channel × per-event matrix** — one checkbox per combination of channel (Email, In-app, Webhook, Microsoft Teams) and event (Analysis completed, Requirements approved, Issues published, System alerts, Mentions, SLA deadlines).
+Control which notifications you receive as a **per-channel × per-event matrix** — one checkbox per combination of channel (Email, In-app, Webhook, Microsoft Teams) and event (Analysis completed, Requirements approved, Issues published, System alerts, Mentions, SLA deadlines, Analysis, ingest and document results).
 
 - Preferences are **stored server-side on your account** and sync across browsers and devices (defaults: Email, In-app, and Teams on; Webhook off). If loading or saving fails, the page shows an error — it never falls back to browser-local storage.
 - **Save** is disabled until the form is dirty and writes only the cells you changed; **Discard changes** reverts unsaved edits.
@@ -4435,7 +4487,8 @@ Single admin home for AI provider preferences and runtime configuration. The rou
 ### 20.5 Integrations (`/settings/integrations`)
 
 A navigation index that cards every third-party integration surface:
-**Repositories**, **Databases**, **MCP servers**, **Hooks**, **Triggers**,
+**Repositories and databases** (to the project list: each project's Knowledge
+tab holds its own, #2353), **MCP servers**, **Hooks**, **Triggers**,
 **Notifications** (Slack + PagerDuty), and the **Vault**. Connections
 themselves remain project-scoped (see §15 and §16); the Integrations page just
 gives operators a single jumping-off point.

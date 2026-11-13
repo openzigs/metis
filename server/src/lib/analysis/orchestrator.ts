@@ -167,6 +167,7 @@ import { cloneDirPath, resolveExistingCloneDir } from "./clone-availability.js";
 import { prepareAnalysisClone } from "./clone-restore.js";
 import { assertCanStartAnalysis, getProjectMonthlyAnalysisTokens } from "./cost-cap.js";
 import { notifyAnalysisComplete } from "../teams/notification-hooks.js";
+import { dispatchJobOutcome } from "../notifications/job-notify.js";
 import {
   createApprovalRequests,
   canCreateTickets,
@@ -3056,6 +3057,14 @@ export class AnalysisOrchestrator {
         await markAnalysisFailed(analysisId, summary, totals);
         this.emitFailed(analysisId, genericFailureMessage("analysis"));
         jobEvents.failed("analysis", analysisId, opts.projectId, genericFailureMessage("analysis"));
+        // #2343 — the starter's toast and bell item, wherever they are.
+        dispatchJobOutcome({
+          kind: "analysis",
+          jobId: analysisId,
+          projectId: opts.projectId,
+          userId: opts.startedById,
+          outcome: "failed",
+        });
         audit({
           actor: { id: opts.startedById },
           action: "analysis.failed",
@@ -3138,6 +3147,14 @@ export class AnalysisOrchestrator {
         ? `Analysis complete — ${gate.awaitingRequirementCount} requirement(s) awaiting approval before they are saved`
         : "Analysis complete";
       jobEvents.completed("analysis", analysisId, opts.projectId, completionMessage);
+      // #2343 — the starter's toast and bell item (with its open questions).
+      dispatchJobOutcome({
+        kind: "analysis",
+        jobId: analysisId,
+        projectId: opts.projectId,
+        userId: opts.startedById,
+        outcome: "completed",
+      });
       // Issue #67 — best-effort one-way Teams notification card. Fire-and-forget
       // off the critical path: a notification failure (or no configured target)
       // must never affect the completed analysis. The hook derives the workspace
@@ -3189,6 +3206,13 @@ export class AnalysisOrchestrator {
       await markAnalysisFailed(analysisId, (err as Error).message, totals);
       this.emitFailed(analysisId, genericFailureMessage("analysis"));
       jobEvents.failed("analysis", analysisId, opts.projectId, genericFailureMessage("analysis"));
+      dispatchJobOutcome({
+        kind: "analysis",
+        jobId: analysisId,
+        projectId: opts.projectId,
+        userId: opts.startedById,
+        outcome: "failed",
+      });
       audit({
         actor: { id: opts.startedById },
         action: "analysis.failed",

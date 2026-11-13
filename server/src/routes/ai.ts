@@ -157,7 +157,13 @@ import {
   retrievalConversation,
   type CitableExcerpt,
 } from "../lib/ai/conversation/retrieval-query.js";
-import { applyRelevanceFloor, denseCosine, readRelevanceFloor } from "../lib/ai/relevance-floor.js";
+import {
+  applyRelevanceFloor,
+  carriedOnlyNote,
+  denseCosine,
+  floorKeep,
+  readRelevanceFloor,
+} from "../lib/ai/relevance-floor.js";
 import {
   citationsMeta,
   collectCitationEvidence,
@@ -675,6 +681,10 @@ export interface AutoRagOptions {
 
 /** Excerpts the retrieved-knowledge block lists from search (carried ones are extra). */
 const AUTO_RAG_K = 8;
+/** #2294 — how deep each search reads, so the floor's dropped hits can be replaced. */
+const AUTO_RAG_BACKFILL_K = AUTO_RAG_K * 2;
+/** #2294 — the candidate pool an 8-deep search has always had (`KnowledgeService`'s default). */
+const AUTO_RAG_POOL = Math.max(AUTO_RAG_K * 4, 20);
 
 /**
  * #2240 — a chat turn's auto-RAG, read with the conversation: the session's
@@ -835,18 +845,26 @@ async function retrieveAutoRagBlock(
     const results = await Promise.all(
       queries.map((q) =>
         service.search(projectId, q, {
-          k: AUTO_RAG_K,
+          // #2294 — read deeper than the block lists, so a hit the floor sets
+          // aside can be replaced; the candidate pool (and so the rerank) is
+          // the one an 8-deep search always had.
+          k: AUTO_RAG_BACKFILL_K,
+          fusionPoolSize: AUTO_RAG_POOL,
           actor,
           ...(documentIds ? { documentIds } : {}),
         }),
       ),
     );
-    const lists = results.map((r) => r.hits);
+    const deep = results.map((r) => r.hits);
+    const userLists = deep.slice(0, searches.user.length);
+    const contextualList = searches.contextual ? deep[searches.user.length]! : null;
+    const top = <T>(l: readonly T[]) => l.slice(0, AUTO_RAG_K);
     // The user's own searches weigh more than the conversational one, whose
-    // own finds never fill a majority of the slots.
+    // own finds never fill a majority of the slots. Fused from each search's
+    // top 8, so a turn the floor does not touch is listed exactly as before.
     const fusedHits = fuseRetrievalHits(
-      lists.slice(0, searches.user.length),
-      searches.contextual ? lists[searches.user.length]! : null,
+      userLists.map(top),
+      contextualList ? top(contextualList) : null,
       AUTO_RAG_K,
     );
     // #2241 — a chunk too weak to bear on the question never reaches the prompt.
@@ -854,8 +872,16 @@ async function retrieveAutoRagBlock(
     // Not when the user attached documents: they chose the source, so a
     // question like "summarise this" must reach that document's best excerpts
     // however weakly the words match, never an "insufficient evidence" block.
-    const floor = documentIds ? 0 : readRelevanceFloor(fusedHits.map((h) => h.embeddingModel));
-    const { kept: hits, belowFloor } = applyRelevanceFloor(fusedHits, floor);
+    const candidates = deep.flat();
+    const floor = documentIds ? 0 : readRelevanceFloor(candidates.map((h) => h.embeddingModel));
+    const { kept, belowFloor } = applyRelevanceFloor(fusedHits, floor);
+    // #2294 — backfill: when the floor set some aside, the turn is fused again
+    // from the deeper lists with the floor applied before the cut, so the next
+    // hits that clear it take the freed slots.
+    const hits =
+      belowFloor > 0
+        ? fuseRetrievalHits(userLists, contextualList, AUTO_RAG_K, floorKeep(candidates, floor))
+        : kept;
     // #2241 — a partial coverage is reported, not just logged.
     const coverage = results.find((r) => r.coverageWarning)?.coverageWarning;
     if (belowFloor > 0) capture.belowFloor = belowFloor;
@@ -933,6 +959,9 @@ async function retrieveAutoRagBlock(
           : "");
       ragBlock =
         `## Retrieved Knowledge (project-scoped RAG)\n` +
+        // #2294 — only carried excerpts are left: the turn stays grounded in
+        // them, and the model is told the question's own search found nothing.
+        (hits.length === 0 && belowFloor > 0 ? `${carriedOnlyNote(belowFloor)}\n` : "") +
         `This chat session is scoped to the project "${projectName}". The excerpts below were ` +
         `retrieved from "${projectName}"'s own knowledge base and are the primary source for ` +
         `any question about "the project" or "this project" — that phrase always means "${projectName}", ` +

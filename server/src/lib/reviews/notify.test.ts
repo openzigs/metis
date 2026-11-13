@@ -194,7 +194,7 @@ describe("notifyReviewSubmitted", () => {
     // #104 — no row, so no id to merge on; the text and link still ride along.
     expect(emit.mock.calls[0][1]).toMatchObject({
       notificationId: null,
-      title: "Review requested",
+      title: "Review assigned to you",
       href: "/reviews/rev-1",
     });
   });
@@ -335,7 +335,7 @@ describe("notifyReviewDecision", () => {
 
     const rows = createdRows();
     expect(rows.map((r) => r.type)).toEqual(["review_rejected"]);
-    expect(rows[0].title).toBe("Review rejected");
+    expect(rows[0].title).toBe("Your review request was rejected");
     expect(rows[0].message).toBe('Alice Reviewer rejected "Sprint 4 sign-off"');
     expect(JSON.parse(String(rows[0].payload)).baselineId).toBeNull();
     expect(emit).toHaveBeenCalledTimes(1);

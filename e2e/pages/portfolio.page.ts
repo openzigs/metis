@@ -9,18 +9,20 @@ export class PortfolioEntryPage {
   readonly page: Page;
   readonly heading: Locator;
   readonly statement: Locator;
-  readonly allProducts: Locator;
+  /** #2351 — the shared scope picker's button. */
+  readonly scope: Locator;
   readonly submit: Locator;
 
   constructor(page: Page) {
     this.page = page;
+    // #2353 — the coverage check is the Portfolio tab's opening section.
     this.heading = page.getByRole("heading", {
-      name: "Portfolio coverage",
+      name: "Portfolio",
       level: 1,
       exact: true,
     });
     this.statement = page.getByLabel("Requirement statement");
-    this.allProducts = page.getByRole("radio", { name: "All products I can access" });
+    this.scope = page.getByRole("button", { name: "Products to check" });
     this.submit = page.getByRole("button", { name: "Check coverage" });
   }
 
@@ -34,20 +36,26 @@ export class PortfolioEntryPage {
    * by name first (the list holds one page of the analyst's products).
    */
   async chooseHost(name: string): Promise<void> {
-    await this.page.getByLabel("Find a product to build it").fill(name);
+    // Across every product, the host picker lists what **Find products**
+    // matches (#1725; one search since #2351); over a workspace's products it
+    // lists those products already.
+    const search = this.page.getByLabel("Find products", { exact: true });
+    if (await search.isVisible()) await search.fill(name);
     const host = this.page.getByLabel("Which product will build this? (optional)");
     await expect(host.getByRole("option", { name, exact: true })).toBeAttached();
     await host.selectOption({ label: name });
   }
 
   /**
-   * Check `statement` across every product the user can access; returns the check's id.
+   * Check `statement` across the whole workspace (every product the user can
+   * read when no workspace is open); returns the check's id.
    * #1725 — `host` names the product that will build it. An empty `statement`
    * keeps the one the page arrived with.
    */
   async checkAcrossPortfolio(statement: string, host?: string): Promise<string> {
     if (statement) await this.statement.fill(statement);
-    await expect(this.allProducts).toBeChecked();
+    // #2351 — opened from no project, the check covers every product the user can read.
+    await expect(this.scope).toContainText("Every product you can read");
     if (host) await this.chooseHost(host);
     await Promise.all([
       this.page.waitForURL(/\/portfolio\/[^/]+$/, { timeout: 30_000 }),

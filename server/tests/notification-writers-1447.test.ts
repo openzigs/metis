@@ -48,7 +48,13 @@ const PROJECTLESS_TYPES = ["chat_identity_bound"]; // #2089
  * Project-scoped types first written after the #1447 backfill: every row
  * carries its project from the start, so no backfill branch exists for them.
  */
-const POST_BACKFILL_TYPES = ["review_item_changed"]; // #2219
+const POST_BACKFILL_TYPES = [
+  "review_item_changed", // #2219
+  // #2343 — a job the user started finished, failed or waits for review.
+  "job_completed",
+  "job_failed",
+  "job_awaiting_review",
+];
 
 function sourceFiles(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {
@@ -82,6 +88,12 @@ function unionLiterals(file: string, alias: string): string[] {
 const NON_LITERAL_TYPES: Record<string, () => string[]> = {
   "lib/reviews/notify.ts:n.kind": () =>
     unionLiterals(path.join(SRC, "lib/reviews/notify.ts"), "ReviewNotificationKind"),
+  // #2343 — the stored type of a job outcome.
+  "lib/notifications/job-notify.ts:jobNotificationType(outcome)": () =>
+    unionLiterals(
+      path.join(SERVER, "../packages/shared/src/job-outcome.ts"),
+      "JobNotificationType",
+    ),
 };
 
 interface Writer {
@@ -171,6 +183,7 @@ describe("#1447 — every notification writer records its project", () => {
         "lib/collaboration/mentions.ts",
         "lib/collaboration/sla-checker.ts",
         "lib/discussions/notify.ts",
+        "lib/notifications/job-notify.ts",
         "lib/reviews/notify.ts",
         "lib/workspaces/chatops-identity-binding-notice.ts",
       ]),

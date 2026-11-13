@@ -183,7 +183,7 @@ export async function notifyReviewSubmitted(input: ReviewSubmittedInput): Promis
           await persistAndEmit({
             userId: reviewerId,
             kind: "review_requested",
-            title: input.reopened ? "Re-review requested" : "Review requested",
+            title: input.reopened ? "Re-review requested" : "Review assigned to you",
             message: input.reopened
               ? `"${input.title}" changed since it was approved and needs your review again`
               : `You are assigned as a reviewer on "${input.title}"`,
@@ -276,7 +276,7 @@ export async function notifyReviewDecision(input: ReviewDecisionInput): Promise<
     await persistAndEmit({
       userId: input.requestedById,
       kind: approved ? "review_approved" : "review_rejected",
-      title: approved ? "Review approved" : "Review rejected",
+      title: approved ? "Review approved" : "Your review request was rejected",
       message: approved && baselineId ? `${decided} — a baseline was created` : decided,
       reviewId: input.reviewId,
       projectId: input.projectId,

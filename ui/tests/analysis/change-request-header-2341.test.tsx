@@ -22,6 +22,8 @@ const listForRun = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/portfolio-api", () => ({ portfolioApi: { listForRun } }));
 const listDrafts = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/publishing-api", () => ({ publishingApi: { listDrafts } }));
+const listForChangeRequest = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/impact-analysis-api", () => ({ impactAnalysisApi: { listForChangeRequest } }));
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 import { ApiError } from "@/lib/api-client";
@@ -93,6 +95,7 @@ beforeEach(() => {
   productsList.mockResolvedValue({ items: [], total: 0 });
   listDrafts.mockResolvedValue([]);
   listForRun.mockResolvedValue([]);
+  listForChangeRequest.mockResolvedValue([]);
 });
 
 describe("ChangeRequestSummary", () => {
@@ -236,7 +239,8 @@ describe("ChangeRequestStepHeader", () => {
     const links = within(nav).getAllByRole("link");
     expect(links.map((l) => l.textContent?.split(":")[0])).toEqual([
       "1. ReadDone",
-      "2. QuestionsNeeds you",
+      // #2343 — open questions read as "Questions waiting", with the count.
+      "2. QuestionsQuestions waiting (2)",
       "3. RequirementsNeeds you",
       "4. Policy checkNot applicable",
       "5. ImpactDone",
@@ -310,7 +314,9 @@ describe("ChangeRequestStepHeader", () => {
     );
     const portfolio = () => screen.getByTestId("change-request-step-portfolio");
     await waitFor(() => expect(portfolio()).toHaveAttribute("data-state", "done"));
-    expect(portfolio()).toHaveAttribute("title", "1 portfolio check completed.");
+    // #2345 — the newest check decides, and the step links to it.
+    expect(portfolio()).toHaveAttribute("title", "The latest portfolio check is complete.");
+    expect(portfolio()).toHaveAttribute("href", "/portfolio/pa-1");
     expect(listForRun).toHaveBeenCalledWith("an-1");
     unmount();
 
@@ -406,5 +412,53 @@ describe("ChangeRequestStepHeader", () => {
     expect(handoff).toHaveAttribute("data-state", "unknown");
     expect(handoff).toHaveTextContent("Unknown");
     expect(handoff).not.toHaveTextContent("Not started");
+  });
+
+  it("#2345 — Impact reads the newest impact analysis started from the change request, and links to it", async () => {
+    listForChangeRequest.mockResolvedValue([
+      { id: "ia-new", status: "running" },
+      { id: "ia-old", status: "completed" },
+    ]);
+    renderWith(
+      <ChangeRequestStepHeader projectId="p1" snapshot={snapshot()} pendingApprovals={0} />,
+    );
+    const impact = screen.getByTestId("change-request-step-impact");
+    await waitFor(() => expect(impact).toHaveAttribute("data-state", "in-progress"));
+    expect(impact).toHaveAttribute("title", "The latest impact analysis is running.");
+    expect(impact).toHaveAttribute("href", "/impact-analyses/ia-new");
+    expect(listForChangeRequest).toHaveBeenCalledWith("an-1");
+  });
+
+  it("#2345 — with no result yet, Impact and Portfolio link to the change request's own checks card", async () => {
+    productsList.mockResolvedValue({ items: [], total: 2 });
+    renderWith(
+      <ChangeRequestStepHeader
+        projectId="p1"
+        snapshot={snapshot({ metadata: { agentKeys: ["document"] } })}
+        pendingApprovals={0}
+      />,
+    );
+    const impact = screen.getByTestId("change-request-step-impact");
+    await waitFor(() => expect(impact).toHaveAttribute("data-state", "not-started"));
+    expect(impact).toHaveAttribute(
+      "href",
+      "/projects/p1/analysis?analysisId=an-1#change-request-checks",
+    );
+    expect(screen.getByTestId("change-request-step-portfolio")).toHaveAttribute(
+      "href",
+      "/projects/p1/analysis?analysisId=an-1#change-request-checks",
+    );
+  });
+
+  it("#2345 — a refused impact-analyses read leaves Impact unknown", async () => {
+    listForChangeRequest.mockRejectedValue(new ApiError(403, "no", "FORBIDDEN"));
+    renderWith(
+      <ChangeRequestStepHeader projectId="p1" snapshot={snapshot()} pendingApprovals={0} />,
+    );
+    const impact = screen.getByTestId("change-request-step-impact");
+    await waitFor(() =>
+      expect(impact).toHaveAttribute("title", "Couldn't check the impact analyses."),
+    );
+    expect(impact).toHaveAttribute("data-state", "unknown");
   });
 });

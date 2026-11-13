@@ -5,7 +5,7 @@
  * table, and the entry page starts a check and opens it.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useRouter, useSearchParams } from "next/navigation";
 import { makeWrapper } from "../test-utils";
@@ -114,6 +114,34 @@ describe("portfolio assessment page", () => {
       "Appendix B Not checked: the model could not read this section of the document.",
     );
     expect(await axeViolations(container)).toEqual([]);
+  });
+
+  it("#2345 — a change request's check before approval is labelled, and links back to it", async () => {
+    api.get.mockResolvedValue({
+      ...fiveStates(),
+      sourceAnalysisId: "an-1",
+      preApproval: true,
+      statement: 'Requirements of change request "Password reset"',
+      changeRequest: { id: "an-1", projectId: "p1", title: "Password reset" },
+    });
+    const { container } = render(<PortfolioAssessmentPage />, { wrapper: makeWrapper() });
+    expect(await screen.findByRole("heading", { name: "Change request" })).toBeVisible();
+    expect(screen.getByTestId("portfolio-detail-pre-approval")).toHaveTextContent(
+      "Run on unapproved requirements: some requirements checked were not approved",
+    );
+    expect(screen.getByTestId("portfolio-detail-back-to-change-request")).toHaveAttribute(
+      "href",
+      "/projects/p1/analysis?analysisId=an-1",
+    );
+    expect(await axeViolations(container)).toEqual([]);
+  });
+
+  it("#2345 — a check not started from a change request keeps the global back link, unlabelled", async () => {
+    api.get.mockResolvedValue({ ...fiveStates(), preApproval: false, changeRequest: null });
+    render(<PortfolioAssessmentPage />, { wrapper: makeWrapper() });
+    expect(await screen.findByText("← Back to portfolio coverage")).toBeVisible();
+    expect(screen.queryByTestId("portfolio-detail-pre-approval")).toBeNull();
+    expect(screen.queryByTestId("portfolio-detail-back-to-change-request")).toBeNull();
   });
 
   it("#2272 — a check still running lists nothing as not checked yet", async () => {
@@ -257,8 +285,10 @@ describe("portfolio entry page", () => {
     expect(items[1]).toHaveTextContent(`${"x".repeat(140)}…`);
     expect(items[1]).toHaveTextContent("Running · 3 products · No product chosen to build it ·");
     expect(items[2]).toHaveTextContent("Failed · 2 products · Built by the product chosen ·");
-    expect(screen.getByRole("radio", { name: "One product" })).toBeChecked();
-    await waitFor(() => expect(screen.getByLabelText("Product")).toHaveValue("p-billing"));
+    // #2351 — the product arrived with is ticked in the shared scope picker.
+    await waitFor(() =>
+      expect(screen.getByTestId("portfolio-scope-selector")).toHaveTextContent("Billing"),
+    );
   });
 
   it("names a product it arrived with that is past the first page (#1680)", async () => {
@@ -268,9 +298,9 @@ describe("portfolio entry page", () => {
     api.list.mockResolvedValue([]);
     vi.mocked(productsApi.get).mockResolvedValue({ id: "p-far", name: "Treasury" } as never);
     render(<PortfolioPage />, { wrapper: makeWrapper() });
-    expect(
-      await within(screen.getByLabelText("Product")).findByRole("option", { name: "Treasury" }),
-    ).toHaveValue("p-far");
+    await waitFor(() =>
+      expect(screen.getByTestId("portfolio-scope-selector")).toHaveTextContent("Treasury"),
+    );
     expect(productsApi.get).toHaveBeenCalledWith("p-far");
   });
 
@@ -280,9 +310,9 @@ describe("portfolio entry page", () => {
     );
     api.list.mockResolvedValue([]);
     render(<PortfolioPage />, { wrapper: makeWrapper() });
-    expect(
-      await within(screen.getByLabelText("Product")).findByRole("option", { name: "Billing" }),
-    ).toHaveValue("p-billing");
+    await waitFor(() =>
+      expect(screen.getByTestId("portfolio-scope-selector")).toHaveTextContent("Billing"),
+    );
     await waitFor(() => expect(productsApi.list).toHaveBeenCalled());
     // Give a read that should not happen the chance to start.
     await new Promise((r) => setTimeout(r, 50));
@@ -330,6 +360,47 @@ describe("portfolio entry page", () => {
     expect(screen.getByLabelText("Requirement statement")).toBeVisible();
   });
 
+  it("#2345 — arrives from a change request, sends it, labels a pre-approval check in its list, and links back", async () => {
+    const user = userEvent.setup();
+    vi.mocked(useSearchParams).mockReturnValue(
+      new URLSearchParams({
+        analysisId: "an-1",
+        title: "Password reset",
+        projectId: "p1",
+      }) as never,
+    );
+    api.list.mockResolvedValue([
+      {
+        id: "pa-1",
+        statement: 'Requirements of change request "Password reset"',
+        scope: "all-accessible",
+        status: "completed",
+        verdict: "partial",
+        productCount: 2,
+        hostProductId: null,
+        hostProductName: null,
+        sourceAnalysisId: "an-1",
+        preApproval: true,
+        createdById: "u1",
+        createdAt: "2026-11-01T10:00:00.000Z",
+        updatedAt: "2026-11-01T10:00:00.000Z",
+      },
+    ]);
+    api.create.mockResolvedValue({ id: "pa-new" });
+    render(<PortfolioPage />, { wrapper: makeWrapper() });
+    expect(screen.getByTestId("portfolio-form-change-request")).toHaveTextContent("Password reset");
+    expect(screen.getByTestId("portfolio-back-to-change-request")).toHaveAttribute(
+      "href",
+      "/projects/p1/analysis?analysisId=an-1",
+    );
+    const items = await screen.findAllByTestId("portfolio-recent-item");
+    expect(items[0]).toHaveTextContent("Run on unapproved requirements");
+    await user.click(screen.getByRole("button", { name: "Check coverage" }));
+    await waitFor(() =>
+      expect(api.create).toHaveBeenCalledWith({ analysisId: "an-1", scope: "all-accessible" }),
+    );
+  });
+
   it("#2272 — arrives with several products chosen", async () => {
     vi.mocked(useSearchParams).mockReturnValue(
       new URLSearchParams([
@@ -340,8 +411,8 @@ describe("portfolio entry page", () => {
     );
     api.list.mockResolvedValue([]);
     render(<PortfolioPage />, { wrapper: makeWrapper() });
-    expect(screen.getByRole("radio", { name: "Several products" })).toBeChecked();
     expect(screen.getByTestId("portfolio-form-document")).toHaveTextContent("Selected document");
+    fireEvent.click(screen.getByTestId("portfolio-scope-selector"));
     expect(await screen.findByRole("checkbox", { name: "Billing" })).toBeChecked();
     expect(screen.getByRole("checkbox", { name: "CRM" })).toBeChecked();
   });
@@ -466,10 +537,9 @@ describe("#1673 — the coverage pages' follow-ups", () => {
       total: 140,
     } as never);
     render(<PortfolioPage />, { wrapper: makeWrapper() });
-    await user.click(screen.getByRole("radio", { name: "One product" }));
     expect(products).toHaveBeenCalledWith({ pageSize: 100 });
     expect(await screen.findByText(/Showing 2 of 140 products/)).toBeVisible();
-    await user.type(screen.getByLabelText("Find a product"), "ledg");
+    await user.type(screen.getByLabelText("Find products"), "ledg");
     await waitFor(() => expect(products).toHaveBeenCalledWith({ pageSize: 100, search: "ledg" }));
   });
 });

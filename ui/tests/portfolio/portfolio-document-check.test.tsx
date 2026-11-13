@@ -39,14 +39,14 @@ describe("#2272 — the form: several products, and a document", () => {
     const user = userEvent.setup();
     const { onSubmit } = setup();
     await user.type(screen.getByLabelText("Requirement statement"), "Pay by transfer");
-    await user.click(screen.getByRole("radio", { name: "Several products" }));
+    // #2351 — products are ticked in the shared scope picker.
+    await user.click(screen.getByTestId("portfolio-scope-selector"));
     const submit = screen.getByRole("button", { name: "Check coverage" });
-    expect(submit).toBeDisabled();
     await user.click(screen.getByRole("checkbox", { name: "Billing" }));
     await user.click(screen.getByRole("checkbox", { name: "Ledger" }));
     await user.click(screen.getByRole("checkbox", { name: "CRM" }));
     await user.click(screen.getByRole("checkbox", { name: "CRM" }));
-    expect(screen.getByText(/2 chosen, up to 50\./)).toBeInTheDocument();
+    expect(screen.getByTestId("portfolio-scope-hint")).toHaveTextContent("2 products to check.");
     await user.click(submit);
     const sent = onSubmit.mock.calls[0][0];
     expect(sent).toEqual({
@@ -61,7 +61,8 @@ describe("#2272 — the form: several products, and a document", () => {
     const user = userEvent.setup();
     const { onSubmit } = setup();
     await user.type(screen.getByLabelText("Requirement statement"), "x");
-    await user.click(screen.getByRole("radio", { name: "Several products" }));
+    // #2351 — products are ticked in the shared scope picker.
+    await user.click(screen.getByTestId("portfolio-scope-selector"));
     await user.click(screen.getByRole("checkbox", { name: "Billing" }));
     await user.click(screen.getByRole("checkbox", { name: "Ledger" }));
     expect(
@@ -81,7 +82,8 @@ describe("#2272 — the form: several products, and a document", () => {
     const onProductQueryChange = vi.fn();
     const { onSubmit, rerender } = setup({ onProductQueryChange, productTotal: 140 });
     await user.type(screen.getByLabelText("Requirement statement"), "x");
-    await user.click(screen.getByRole("radio", { name: "Several products" }));
+    // #2351 — products are ticked in the shared scope picker.
+    await user.click(screen.getByTestId("portfolio-scope-selector"));
     expect(screen.getByText(/Showing 3 of 140 products; type part of a name/)).toBeInTheDocument();
     await user.click(screen.getByRole("checkbox", { name: "CRM" }));
     await user.type(screen.getByLabelText("Find products"), "b");
@@ -94,6 +96,8 @@ describe("#2272 — the form: several products, and a document", () => {
         onSubmit={onSubmit}
       />,
     );
+    // Typing in the search closed the picker; it reopens with CRM still ticked.
+    await user.click(screen.getByTestId("portfolio-scope-selector"));
     expect(screen.getByRole("checkbox", { name: "CRM" })).toBeChecked();
     await user.click(screen.getByRole("checkbox", { name: "Billing" }));
     await user.click(screen.getByRole("button", { name: "Check coverage" }));
@@ -107,7 +111,8 @@ describe("#2272 — the form: several products, and a document", () => {
       name: `Product ${i}`,
     }));
     setup({ products: many });
-    await user.click(screen.getByRole("radio", { name: "Several products" }));
+    // #2351 — products are ticked in the shared scope picker.
+    await user.click(screen.getByTestId("portfolio-scope-selector"));
     for (const p of many.slice(0, PORTFOLIO_ASSESSMENT_MAX_PRODUCTS)) {
       await user.click(screen.getByRole("checkbox", { name: p.name }));
     }
@@ -123,7 +128,7 @@ describe("#2272 — the form: several products, and a document", () => {
   it("starts on several products it arrived with", async () => {
     const user = userEvent.setup();
     const { onSubmit } = setup({ initialProductIds: ["p-crm", "p-elsewhere"] });
-    expect(screen.getByRole("radio", { name: "Several products" })).toBeChecked();
+    await user.click(screen.getByTestId("portfolio-scope-selector"));
     expect(screen.getByRole("checkbox", { name: "CRM" })).toBeChecked();
     expect(screen.getByRole("checkbox", { name: "Selected product" })).toBeChecked();
     await user.type(screen.getByLabelText("Requirement statement"), "x");
@@ -154,7 +159,8 @@ describe("#2272 — the form: several products, and a document", () => {
   it("passes axe with several products and a document", async () => {
     const user = userEvent.setup();
     const { container } = setup({ document: { id: "doc-1", title: "FRD" } });
-    await user.click(screen.getByRole("radio", { name: "Several products" }));
+    // #2351 — products are ticked in the shared scope picker.
+    await user.click(screen.getByTestId("portfolio-scope-selector"));
     await user.click(screen.getByRole("checkbox", { name: "Billing" }));
     expect(await axeViolations(container)).toEqual([]);
   });

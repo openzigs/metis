@@ -2,8 +2,8 @@
  * Epic #196 — settings IA + top-level surfaces e2e.
  *
  * Round-trips the new /api/vault routes (#222), confirms the existing
- * connector + document routes are reachable (so the new top-level
- * /repositories /databases /documents pages stay client-side fan-outs),
+ * connector + document routes are reachable (so the top-level /documents
+ * page stays a client-side fan-out; #2353 retired /repositories and /databases),
  * and walks every UI route added in this epic to ensure it renders.
  */
 import { test, expect, request, type APIRequestContext } from "@playwright/test";
@@ -97,8 +97,8 @@ test.describe("Settings IA + top-level surfaces (#196) @quarantine", () => {
       ["/settings/integrations", "settings-integrations-root"],
       ["/vault", "vault-root"],
       ["/documents", "documents-top-root"],
-      ["/repositories", "repositories-top-root"],
-      ["/databases", "databases-top-root"],
+      // #2353 — the global /repositories and /databases catalogues are gone;
+      // ui-ia-navigation.spec.ts follows their redirects.
     ];
 
     for (const [path, testid] of surfaces) {

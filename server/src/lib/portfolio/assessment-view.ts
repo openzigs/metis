@@ -616,6 +616,9 @@ export function toListItem(v: PortfolioAssessmentView): PortfolioAssessmentListI
     // #1749 — the view already dropped a host this reader cannot read.
     hostProductId: v.hostProductId,
     hostProductName: v.hostProductId ? (v.productNames[v.hostProductId] ?? null) : null,
+    // #2345 — where it was started from, and the pre-approval label wherever it is cited.
+    sourceAnalysisId: v.sourceAnalysisId,
+    preApproval: v.preApproval,
     createdById: v.createdById,
     createdAt: v.createdAt,
     updatedAt: v.updatedAt,

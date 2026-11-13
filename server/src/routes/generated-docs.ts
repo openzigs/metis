@@ -34,6 +34,7 @@ import { prisma, Prisma } from "../lib/prisma.js";
 import { assertDocumentExportable } from "../lib/reviews/approval-gate.js";
 import { createChildLogger } from "../lib/logger.js";
 import { jobEvents, genericFailureMessage } from "../lib/socket/job-events.js";
+import { dispatchJobOutcome } from "../lib/notifications/job-notify.js";
 import type { SchemaGraph } from "@metis/shared";
 import {
   createEvidencePolicy,
@@ -1317,6 +1318,21 @@ export async function generateDocumentAsync(
   let beforeStep: GenerationStepHook | undefined;
   // #857 — what a resumed run reused and rewrote.
   let resume: SectionResumeReport | undefined;
+  // #2343 — who to tell when this run ends, set once the run is a manual one.
+  let announceTo: { userId: string; subject: string } | undefined;
+  const announce = (outcome: "completed" | "failed"): void => {
+    if (!announceTo) return;
+    dispatchJobOutcome({
+      kind: "doc-generation",
+      jobId: docId,
+      projectId,
+      userId: announceTo.userId,
+      outcome,
+      subject: announceTo.subject,
+      // The document's id is every regeneration's job id: the claim names this run.
+      dedupeKey: `doc-generation:${docId}:${claim}:${outcome}`,
+    });
+  };
   try {
     if (automatic?.signal.aborted)
       throw new UnpublishableGenerationError("aborted", "Regeneration aborted");
@@ -1346,6 +1362,9 @@ export async function generateDocumentAsync(
       };
     if (!automatic && original.status === "pending") pendingUpdatedAt = original.updatedAt;
     const policy = await resolveEvidencePolicy(original);
+    // #2343 — a run a person asked for ends with a toast and a bell item for
+    // them; an automatic regeneration was asked for by nobody, so it is quiet.
+    if (!automatic) announceTo = { userId: policy.actor.userId, subject: original.title };
     const lastVersion = await prisma.generatedDocumentVersion.findFirst({
       where: { documentId: docId },
       orderBy: { version: "desc" },
@@ -2115,6 +2134,7 @@ export async function generateDocumentAsync(
       projectId,
       healthStatus === "degraded" ? "Generated with warnings" : "Documentation ready",
     );
+    announce("completed");
   } catch (caught) {
     // Stopped before any write below, so a late beat cannot change the outcome.
     stopHeartbeat?.();
@@ -2250,6 +2270,7 @@ export async function generateDocumentAsync(
           ? "Generation reached its cost ceiling; the finished sections were saved"
           : "Generation stopped early; the finished sections were saved",
       );
+      announce("completed");
       return;
     }
     const failed = claimed
@@ -2293,7 +2314,7 @@ export async function generateDocumentAsync(
     // detail is retained in the server log above (log.error), never the client.
     // #2369 — except a run that found no code to document: that is the user's
     // to fix, so the toast says why and what to do (a fixed message).
-    if (failed?.count)
+    if (failed?.count) {
       jobEvents.failed(
         "doc-generation",
         docId,
@@ -2302,6 +2323,8 @@ export async function generateDocumentAsync(
           ? generationFailureMessage(err)
           : genericFailureMessage("doc-generation"),
       );
+      announce("failed");
+    }
     if (automatic) throw err;
   } finally {
     stopHeartbeat?.();

@@ -114,6 +114,12 @@ describe("<SettingsNotificationsPage /> load", () => {
     expect(prefsApi.put).not.toHaveBeenCalled();
   });
 
+  it("#2343 — offers the job-results switch, labelled and on by default for in-app", async () => {
+    await renderLoaded();
+    expect(screen.getByText("Analysis, ingest and document results")).toBeInTheDocument();
+    expect(cell("inApp", "jobFinished").checked).toBe(true);
+  });
+
   it("renders stored overrides from the server (not defaults)", async () => {
     await renderLoaded(defaultRows([{ channel: "email", event: "mention", enabled: false }]));
     expect(cell("email", "mention").checked).toBe(false);

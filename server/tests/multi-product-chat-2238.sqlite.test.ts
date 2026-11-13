@@ -19,7 +19,14 @@ import {
 import type { AIProvider, ChatChunk, ChatMessage } from "../src/lib/ai/types.js";
 
 /** #2279 — `when`: the hit is found only by a search whose query contains it. */
-type Hit = { chunkId: string; text: string; score: number; when?: string };
+type Hit = {
+  chunkId: string;
+  text: string;
+  score: number;
+  when?: string;
+  /** #2294 — the embedder; chat's absolute floor is calibrated on one. */
+  model?: string;
+};
 
 const state = vi.hoisted(() => {
   process.env.AI_RATE_LIMIT_MAX = "10000";
@@ -72,7 +79,7 @@ const stubKnowledgeService = {
           position: i,
           text: h.text,
           score: h.score,
-          embeddingModel: "stub",
+          embeddingModel: h.model ?? "stub",
           source: "upload",
         })),
     };
@@ -272,6 +279,11 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           { projectId: ALPHA, projectName: "Alpha", sources: 1 },
           { projectId: BETA, projectName: "Beta", sources: 1 },
         ],
+        // #2294 — the files each excerpt came from, as the model saw them.
+        sourcesUsed: [
+          { name: "[Alpha] a1.md", excerpts: 1, relevance: 0.8 },
+          { name: "[Beta] b1.md", excerpts: 1, relevance: 0.78 },
+        ],
       };
       expect(groundingFrames(res.text)).toEqual([expected]);
       expect(state.searched.map((s) => s.projectId).sort()).toEqual([ALPHA, BETA]);
@@ -314,6 +326,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
             { projectId: ALPHA, projectName: "Alpha", sources: 1 },
             { projectId: GAMMA, projectName: "Gamma", sources: 0 },
           ],
+          sourcesUsed: [{ name: "[Alpha] a1.md", excerpts: 1, relevance: 0.82 }],
         },
       ]);
     });
@@ -334,6 +347,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           status: "multi",
           projects: [{ projectId: ALPHA, projectName: "Alpha", sources: 1 }],
           unavailable: 1,
+          sourcesUsed: [{ name: "[Alpha] a1.md", excerpts: 1, relevance: 0.8 }],
         },
       ]);
     });
@@ -351,6 +365,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           status: "multi",
           projects: [{ projectId: ALPHA, projectName: "Alpha", sources: 1 }],
           unsearched: [{ projectId: BETA, projectName: "Beta", reason: "timeout" }],
+          sourcesUsed: [{ name: "[Alpha] a1.md", excerpts: 1, relevance: 0.8 }],
         },
       ]);
     }, 15_000);
@@ -411,6 +426,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
             { projectId: ALPHA, projectName: "Alpha", sources: 1 },
             { projectId: BETA, projectName: "Beta", sources: 1 },
           ],
+          sourcesUsed: [
+            { name: "[Alpha] a-client.md", excerpts: 1, relevance: 0.3 },
+            { name: "[Beta] b-annual.md", excerpts: 1, relevance: 0.8 },
+          ],
         },
       ]);
     });
@@ -440,7 +459,56 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           { projectId: ALPHA, projectName: "Alpha", sources: 1 },
           { projectId: BETA, projectName: "Beta", sources: 1 },
         ],
+        // The carried excerpt has no relevance of this turn's.
+        sourcesUsed: [
+          { name: "[Alpha] a-x.md", excerpts: 1, relevance: 0.8 },
+          { name: "[Beta] b-annual.md", excerpts: 1 },
+        ],
       });
+    });
+
+    it("#2294 — applies chat's relevance floor: matches too weak in every product reach no prompt, and the badge says why", async () => {
+      const GTE = "Alibaba-NLP/gte-modernbert-base";
+      state.hits = {
+        [ALPHA]: [{ chunkId: "a-weak", text: "Alpha onboarding.", score: 0.31, model: GTE }],
+        [BETA]: [{ chunkId: "b-weak", text: "Beta onboarding.", score: 0.3, model: GTE }],
+      };
+      const sessionId = await newSession({ projectIds: [ALPHA, BETA] });
+      const res = await post("/api/ai/stream", {
+        sessionId,
+        message: "What is the capital of France?",
+      });
+      const prompt = promptText(model.prompts[0]!);
+      expect(prompt).not.toContain("Alpha onboarding.");
+      expect(prompt).not.toContain("Beta onboarding.");
+      expect(prompt).toContain("nothing in them was relevant enough to use: the 2 closest matches");
+      const expected = {
+        status: "multi",
+        projects: [
+          { projectId: ALPHA, projectName: "Alpha", sources: 0 },
+          { projectId: BETA, projectName: "Beta", sources: 0 },
+        ],
+        reason: "insufficient-evidence",
+        belowFloor: 2,
+      };
+      expect(groundingFrames(res.text)).toEqual([expected]);
+      // Read back through the route the chat page uses, past the shared parser.
+      expect(await replyGroundings(sessionId)).toEqual([expected]);
+    });
+
+    it("#2294 — keeps a product's strong match and drops another product's weak one", async () => {
+      const GTE = "Alibaba-NLP/gte-modernbert-base";
+      state.hits = {
+        // Within the relative floor of each other (0.6 ≥ 0.75 × 0.7), but Beta's
+        // match is below chat's absolute floor.
+        [ALPHA]: [{ chunkId: "a-ok", text: "Alpha rule.", score: 0.7, model: GTE }],
+        [BETA]: [{ chunkId: "b-low", text: "Beta near miss.", score: 0.53, model: GTE }],
+      };
+      const sessionId = await newSession({ projectIds: [ALPHA, BETA] });
+      await post("/api/ai/stream", { sessionId, message: "What is the rule?" });
+      const prompt = promptText(model.prompts[0]!);
+      expect(prompt).toContain("Alpha rule.");
+      expect(prompt).not.toContain("Beta near miss.");
     });
 
     it("#2279 — limits every product's search to the documents attached to the question", async () => {

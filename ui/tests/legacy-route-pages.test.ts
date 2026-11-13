@@ -14,6 +14,9 @@ import SettingsAgentsRedirect from "@/app/(authed)/settings/agents/page";
 import SettingsAuditRedirect from "@/app/(authed)/settings/audit/page";
 import ProjectUsageRedirect from "@/app/(authed)/projects/[id]/usage/page";
 import WorkspaceFinopsRedirect from "@/app/(authed)/workspaces/[id]/finops/page";
+import ProductsRedirect from "@/app/(authed)/products/page";
+import RepositoriesRedirect from "@/app/(authed)/repositories/page";
+import DatabasesRedirect from "@/app/(authed)/databases/page";
 
 const query = (q: Record<string, string> = {}) => Promise.resolve(q);
 
@@ -57,6 +60,25 @@ describe("retired route pages (#31)", () => {
     await SettingsAuditRedirect({ searchParams: query() });
     expect(redirect).toHaveBeenCalledWith("/settings/api-keys?tab=audit");
   });
+
+  // #2353 — the Projects hub's retired tabs.
+  it("sends /products to the Portfolio tab's Products section", async () => {
+    await ProductsRedirect({ searchParams: query() });
+    expect(redirect).toHaveBeenCalledWith("/portfolio?tab=products");
+  });
+
+  it.each([
+    ["/repositories", RepositoriesRedirect],
+    ["/databases", DatabasesRedirect],
+  ] as const)(
+    "sends %s to the project list, or to a named project's Knowledge tab",
+    async (_path, Page) => {
+      await Page({ searchParams: query() });
+      expect(redirect).toHaveBeenLastCalledWith("/projects");
+      await Page({ searchParams: query({ projectId: "p1" }) });
+      expect(redirect).toHaveBeenLastCalledWith("/projects/p1/connections");
+    },
+  );
 
   it("sends a project's usage to the Project scope of Usage & cost", async () => {
     await ProjectUsageRedirect({ params: Promise.resolve({ id: "p1" }), searchParams: query() });

@@ -9,6 +9,7 @@ import { z } from "zod";
 import { REQUIREMENT_KINDS, REQUIREMENT_VERDICTS } from "./constants.js";
 import { NFR_CATEGORIES } from "./elicitation.js";
 import { PRODUCT_INTEGRATION_KINDS, type ProductResourceKind } from "./product-docs.js";
+import type { ChangeRequestRef } from "./impact.js";
 
 /**
  * Which products an assessment looked at: the products chosen (`product`: one or
@@ -241,6 +242,10 @@ export const portfolioAssessmentInputSchema = z
     sourceProjectId: z.string().min(1).max(64).nullable().default(null),
     /** #2272 — the document whose requirements were checked; null for any other source. */
     sourceDocumentId: z.string().min(1).max(64).nullable().default(null),
+    /** #2345 — the change request whose requirements are checked. */
+    sourceAnalysisId: z.string().min(1).max(64).nullable().default(null),
+    /** #2345 — a requirement checked was not approved when the check started. */
+    preApproval: z.boolean().default(false),
     scope: z.enum(PORTFOLIO_ASSESSMENT_SCOPES),
     productIds: z.array(z.string().min(1).max(64)).max(PORTFOLIO_ASSESSMENT_LIMITS.products),
     status: z.enum(PORTFOLIO_ASSESSMENT_STATUSES).default("pending"),
@@ -335,6 +340,10 @@ export interface PortfolioAssessment {
   repos: Array<Required<z.output<typeof portfolioAssessmentRepoInputSchema>>>;
   /** #2272 — what the check did not check, each with why; empty for a run before #2272. */
   notChecked: PortfolioNotChecked[];
+  /** #2345 — the change request whose requirements were checked; null for any other source. */
+  sourceAnalysisId?: string | null;
+  /** #2345 — a requirement checked was not approved when the check started. */
+  preApproval?: boolean;
 }
 
 // ─── #1625 — the HTTP contract ──────────────────────────────────────────────
@@ -352,6 +361,12 @@ export const createPortfolioAssessmentSchema = z
     requirementId: z.string().min(1).max(64).optional(),
     /** #2272 — a document: the model reads it, and each requirement it finds is checked. */
     documentId: z.string().min(1).max(64).optional(),
+    /**
+     * #2345 — a change request (analysis run): the server reads its draft and
+     * approved requirements, with access, and checks each. Allowed before they
+     * are approved; such a check is labelled as run on unapproved requirements.
+     */
+    analysisId: z.string().min(1).max(64).optional(),
     scope: z.enum(PORTFOLIO_ASSESSMENT_SCOPES),
     productIds: z
       .array(z.string().min(1).max(64))
@@ -366,9 +381,11 @@ export const createPortfolioAssessmentSchema = z
   })
   .strict()
   .refine(
-    (v) => [v.statement, v.requirementId, v.documentId].filter((x) => x !== undefined).length === 1,
+    (v) =>
+      [v.statement, v.requirementId, v.documentId, v.analysisId].filter((x) => x !== undefined)
+        .length === 1,
     {
-      message: "Give exactly one of statement, requirementId and documentId",
+      message: "Give exactly one of statement, requirementId, documentId and analysisId",
       path: ["statement"],
     },
   )
@@ -392,6 +409,12 @@ export const createPortfolioAssessmentSchema = z
   });
 export type CreatePortfolioAssessmentInput = z.input<typeof createPortfolioAssessmentSchema>;
 
+/**
+ * #2345 — the label a check started before its requirements were approved
+ * carries wherever it is cited: its page, every list and the export.
+ */
+export const PORTFOLIO_PRE_APPROVAL_LABEL = "Run on unapproved requirements";
+
 /** The portfolio verdict in the requirement-verdict vocabulary (#1622). */
 export type PortfolioVerdict = (typeof REQUIREMENT_VERDICTS)[number];
 
@@ -402,6 +425,12 @@ export type PortfolioVerdict = (typeof REQUIREMENT_VERDICTS)[number];
  */
 export interface PortfolioAssessmentView extends PortfolioAssessment {
   verdict: PortfolioVerdict | null;
+  /**
+   * #2345 — the change request it was started from, named for the link back;
+   * null when there is none, it was deleted since, or the reader cannot read
+   * its project.
+   */
+  changeRequest?: ChangeRequestRef | null;
   /** Names of the products in the assessment that the reader can read now. */
   productNames: Record<string, string>;
   /**
@@ -436,6 +465,10 @@ export interface PortfolioAssessmentListItem {
   hostProductId: string | null;
   /** #1749 — that product's name; null when there is no readable host. */
   hostProductName: string | null;
+  /** #2345 — the change request whose requirements were checked; null for any other source. */
+  sourceAnalysisId?: string | null;
+  /** #2345 — run on requirements not all approved when it started. */
+  preApproval?: boolean;
   createdById: string;
   createdAt: string;
   updatedAt: string;

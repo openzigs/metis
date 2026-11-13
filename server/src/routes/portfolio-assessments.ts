@@ -16,7 +16,8 @@
  *   permission (`analysis.run` to start, `analysis.read` to read). CSRF is the
  *   app-wide `csrfProtection` (#913), which runs before every `/api` router.
  * - `requirementId` must name a requirement in a project the caller can read;
- *   anything else is 404 (no existence oracle). So must (#2272) `documentId` a
+ *   anything else is 404 (no existence oracle). So must (#2345) `analysisId` a
+ *   live change request; its requirements are read by the server, never the form. So must (#2272) `documentId` a
  *   live document in such a project, and an `all-accessible` scope's
  *   `hostProductId` a product they can read.
  * - #2272 — a check started from a document records the document's project as
@@ -89,6 +90,12 @@ import { readDocumentOnce } from "../lib/document-reader/reading-cache.js";
 import { shapeAwareChangeExtractor } from "../lib/impact-analysis/change-request.js";
 import type { ReadStoredFile } from "../lib/impact-analysis/document-source.js";
 import { buildProvider } from "../lib/ai/providers/factory.js";
+import {
+  assertHasRequirements,
+  changeRequestRef,
+  loadChangeRequestSource,
+  readableChangeRequest,
+} from "../lib/analysis/change-request-source.js";
 import { loadAIConfig } from "../lib/ai/config.js";
 import type { AIProvider } from "../lib/ai/types.js";
 import { estimateUsageCostUsd } from "../lib/ai/token-tracker.js";
@@ -222,6 +229,10 @@ interface RunSource {
   notChecked: PortfolioNotChecked[];
   /** #2272 — a document's requirements are read as the run starts, not in the request. */
   documentId: string | null;
+  /** #2345 — the change request whose requirements are checked; null for any other source. */
+  analysisId?: string | null;
+  /** #2345 — a requirement checked is not approved (yet). */
+  preApproval?: boolean;
 }
 
 /**
@@ -258,6 +269,32 @@ async function gapInputFor(
       documentId: doc.id,
     };
   }
+  if (body.analysisId !== undefined) {
+    // #2345 — the change request's own requirements, read with the caller's
+    // project access (404 for an unreadable one), never taken from the form.
+    const changeRequest = await loadChangeRequestSource(body.analysisId, (projectId) =>
+      canAccessProjectDiscussions({ id: user.userId, role: user.role }, projectId),
+    );
+    assertHasRequirements(changeRequest);
+    const criteria = boundedRequirements(
+      changeRequest.requirements.map((r) => `${r.title}: ${r.body}`.trim()),
+    );
+    return {
+      input: portfolioGapInputSchema.parse({
+        statement: cutText(
+          `Requirements of change request "${changeRequest.title}"`,
+          PORTFOLIO_STATEMENT_MAX_CHARS,
+        ).text,
+        criteria: criteria.criteria,
+        sourceProjectId: changeRequest.projectId,
+        ...scoped,
+      }),
+      notChecked: criteria.notChecked,
+      documentId: null,
+      analysisId: changeRequest.id,
+      preApproval: changeRequest.requirements.some((r) => !r.approved),
+    };
+  }
   // #1657 — a soft-deleted requirement is not found, like one that never existed.
   const requirement = await loadReadableSourceRequirement(user, body.requirementId!);
   const statement = cutText(
@@ -275,6 +312,8 @@ async function gapInputFor(
     }),
     notChecked: [...(statement.entry ? [statement.entry] : []), ...criteria.notChecked],
     documentId: null,
+    // #2345 — a requirement checked before it is approved is labelled so.
+    preApproval: requirement.reviewStatus !== "approved",
   };
 }
 
@@ -468,6 +507,16 @@ export function portfolioAssessmentsRouter(deps: PortfolioAssessmentsRouterDeps 
       try {
         const user = req.user!;
         const body = createPortfolioAssessmentSchema.parse(req.body);
+        // #2351 — a scope is validated here, not trusted from the picker: every
+        // product it names must be one the caller can read now (the reads' own
+        // rule), else the start is refused like a missing product (404), and
+        // nothing is stored. Before, an unreadable one was stored `restricted`.
+        if (body.scope === "product") {
+          const access = await resolveReaderAccess(user);
+          if (!access.admin && (body.productIds ?? []).some((id) => !access.products.has(id))) {
+            throw new AppError(404, "NOT_FOUND", "Product not found");
+          }
+        }
         const source = await gapInputFor(user, body);
         const { input } = source;
         const hostProductId = body.hostProductId ?? null;
@@ -481,6 +530,9 @@ export function portfolioAssessmentsRouter(deps: PortfolioAssessmentsRouterDeps 
           sourceProjectId: input.sourceProjectId,
           // #2272 — the document whose requirements it checks.
           sourceDocumentId: source.documentId,
+          // #2345 — the change request it was started from, and whether it ran before approval.
+          sourceAnalysisId: source.analysisId ?? null,
+          preApproval: source.preApproval ?? false,
           scope: input.scope,
           productIds: input.productIds,
           // #1725 — stored so the page can say which product will build it.
@@ -519,6 +571,19 @@ export function portfolioAssessmentsRouter(deps: PortfolioAssessmentsRouterDeps 
           res.json(ok([]));
           return;
         }
+        // #2345 — and a change request whose project the caller cannot read, like
+        // an unknown one: each row is re-checked below too, but a check with no
+        // recorded source project would otherwise pass on its products alone.
+        if (
+          analysisId &&
+          !(await readableChangeRequest(
+            analysisId,
+            async (pid) => access.admin || (await access.canReadProject(pid)),
+          ))
+        ) {
+          res.json(ok([]));
+          return;
+        }
         // #2341 — a run's checks are re-filtered per row like any other list:
         // a check of a project the caller cannot read now is not listed.
         const filter = productId
@@ -544,7 +609,14 @@ export function portfolioAssessmentsRouter(deps: PortfolioAssessmentsRouterDeps 
         const access = await resolveReaderAccess(req.user!);
         const view = await viewPortfolioAssessment(access, String(req.params.id));
         if (!view) throw notFound();
-        res.json(ok(view));
+        // #2345 — the change request it was started from, for the link back. The
+        // view is readable only by a reader of its source project, and the change
+        // request is looked up in that project alone.
+        const changeRequest = await changeRequestRef(
+          view.sourceAnalysisId,
+          view.sourceProjectId ? [view.sourceProjectId] : [],
+        );
+        res.json(ok({ ...view, changeRequest }));
       } catch (err) {
         next(err);
       }

@@ -203,8 +203,13 @@ export const productsApi = {
    * #1673 — `GET /products` pages by `page` and `pageSize` (`paginationQuerySchema`,
    * at most `MAX_PAGE_SIZE`); the `limit` this used to send was ignored.
    */
-  list: async (params?: { search?: string; page?: number; pageSize?: number }) =>
-    apiFetch<{ items: Product[]; total: number }>("/products", { params }),
+  list: async (params?: {
+    search?: string;
+    page?: number;
+    pageSize?: number;
+    /** #2351 — one workspace's products (the scope picker's "Whole workspace"). */
+    workspaceId?: string;
+  }) => apiFetch<{ items: Product[]; total: number }>("/products", { params }),
 
   get: async (id: string) => apiFetch<ProductWithRepos>(`/products/${id}`),
 

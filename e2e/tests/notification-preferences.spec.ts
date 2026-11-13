@@ -230,6 +230,18 @@ test.describe("Epic #608 / Issue #615 — notification preferences e2e", () => {
     });
   });
 
+  // #2343 — the new signal (finished, failed and waiting-for-review jobs) has
+  // its own switch, on by default, and the server agrees.
+  test("the job-results switch is listed and on by default", async ({ page }) => {
+    const settings = new SettingsNotificationsPage(page);
+    await settings.goto();
+    await settings.expectLoaded();
+    await expect(page.getByText("Analysis, ingest and document results")).toBeVisible();
+    await expect(settings.cell("inApp", "jobFinished")).toBeChecked();
+    const cell = findCell(await getPreferences(coordinatorApi), "inApp", "jobFinished");
+    expect(cell).toMatchObject({ enabled: true, isDefault: true });
+  });
+
   // AC2 — settings survive reload and re-login: server-side persistence,
   // not localStorage.
   test("preference toggles survive reload and re-login (server-side, not localStorage)", async ({

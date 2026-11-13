@@ -4,7 +4,7 @@
  * #18 — say plainly what a chat answer is based on.
  *
  * Retrieval runs for a chat bound to one project, or (#2238) scoped to several
- * products or a workspace. With the scope on "All projects" the model answers
+ * products or a workspace. With no product chosen (#2351) the model answers
  * from its own knowledge — and before #18 nothing on screen said so, so a
  * confident answer naming files that do not exist read like one drawn from the
  * user's code.
@@ -66,6 +66,14 @@ function multiText(g: Extract<ChatGrounding, { status: "multi" }>): string {
       `Grounded in ${used
         .map((p) => `${p.projectName} (${plural(p.sources, "source", "sources")})`)
         .join(", ")}`,
+    );
+  } else if (g.projects.length > 0 && g.reason === "insufficient-evidence") {
+    // #2294 — as for one project: the matches were found, and too weak to use.
+    const weak = g.belowFloor
+      ? ` (${plural(g.belowFloor, "weak match", "weak matches")} set aside)`
+      : "";
+    parts.push(
+      `Insufficient evidence — nothing in the products searched was relevant enough to this question${weak}; check any file or code it names`,
     );
   } else if (g.projects.length > 0) {
     parts.push("No excerpts matched in any product searched");
@@ -177,7 +185,15 @@ export function GroundingBadge({ grounding }: { grounding: ChatGrounding | undef
   if (!grounding) return null;
   const grounded =
     grounding.status === "grounded" || (grounding.status === "multi" && multiGrounded(grounding));
-  const sources = grounding.status === "grounded" ? (grounding.sourcesUsed ?? []) : [];
+  // #2294 — a multi-product reply lists its sources too, each named with its product.
+  const sources =
+    grounding.status === "grounded" || grounding.status === "multi"
+      ? (grounding.sourcesUsed ?? [])
+      : [];
+  const reason =
+    grounding.status === "no-context" || grounding.status === "multi"
+      ? grounding.reason
+      : undefined;
   const coverage = coverageText(grounding);
   const index = indexText(grounding);
   const indexWarning = indexWarningText(grounding);
@@ -185,9 +201,7 @@ export function GroundingBadge({ grounding }: { grounding: ChatGrounding | undef
     <div
       data-testid="chat-grounding"
       data-grounding={grounding.status}
-      {...(grounding.status === "no-context" && grounding.reason
-        ? { "data-reason": grounding.reason }
-        : {})}
+      {...(reason ? { "data-reason": reason } : {})}
       className={`mt-1 text-xs ${grounded ? "text-muted-foreground" : "text-warning"}`}
     >
       {sources.length > 0 ? (
@@ -238,8 +252,8 @@ export function UngroundedScopeNotice({ show }: { show: boolean }) {
       data-testid="chat-ungrounded-notice"
       className="rounded border border-warning/40 bg-warning-muted px-3 py-2 text-sm text-warning"
     >
-      &ldquo;All projects&rdquo; does not search your projects — answers come from the model&apos;s
-      general knowledge, not your code or documents. Pick one or more projects, or your workspace,
+      No product is chosen, so nothing of yours is searched — answers come from the model&apos;s
+      general knowledge, not your code or documents. Pick one or more products, or your workspace,
       to ground answers in them.
     </p>
   );

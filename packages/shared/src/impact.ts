@@ -438,6 +438,9 @@ export type ImpactAffectedSymbol = z.infer<typeof impactAffectedSymbolSchema>;
 /** #1754 — the most stored requirements one impact run may be asked about. */
 export const MAX_IMPACT_REQUIREMENT_IDS = 50;
 
+/** #2351 — the most projects one impact run takes; the UI's scope picker reads it too. */
+export const IMPACT_MAX_PROJECTS = 50;
+
 /**
  * Create an impact analysis. At least one change source must be supplied:
  * `documentId`, `text`, or `requirementIds` (#1754). `projectIds` must contain
@@ -461,7 +464,10 @@ export const createImpactAnalysisSchema = z
       .max(MAX_IMPACT_REQUIREMENT_IDS)
       .transform((ids) => [...new Set(ids)])
       .optional(),
-    projectIds: z.array(idSchema).min(1, "at least one projectId is required").max(50),
+    projectIds: z
+      .array(idSchema)
+      .min(1, "at least one projectId is required")
+      .max(IMPACT_MAX_PROJECTS),
     /**
      * Epic #168 — when true, the engine also crosses code → mapper/entity →
      * table → column and reports affected tables/columns + suggested DDL.
@@ -481,10 +487,29 @@ export const createImpactAnalysisSchema = z
      * `ANALYSIS_DOCUMENT_READER`). The fresh reading replaces the saved one.
      */
     rereadDocument: z.boolean().optional(),
+    /**
+     * #2345 — the change request (analysis run) this run is started from. The
+     * server reads that change request's requirements (draft and approved, not
+     * rejected or deferred) itself, with access, as the run's `requirementIds`,
+     * so the form never sends them; its project must be one of `projectIds`.
+     * Given alone: never with `documentId`, `text` or `requirementIds`.
+     */
+    analysisId: idSchema.optional(),
   })
-  .refine((v) => Boolean(v.documentId) || Boolean(v.text) || (v.requirementIds?.length ?? 0) > 0, {
-    message: "one of documentId, text or requirementIds is required",
-    path: ["documentId"],
+  .refine(
+    (v) =>
+      Boolean(v.documentId) ||
+      Boolean(v.text) ||
+      (v.requirementIds?.length ?? 0) > 0 ||
+      Boolean(v.analysisId),
+    {
+      message: "one of documentId, text, requirementIds or analysisId is required",
+      path: ["documentId"],
+    },
+  )
+  .refine((v) => !v.analysisId || (!v.documentId && !v.text && !v.requirementIds), {
+    message: "a change request (analysisId) is the only source when given",
+    path: ["analysisId"],
   });
 /** #2280 — the optional body of `POST /impact-analyses/:id/rerun`. */
 export const rerunImpactAnalysisSchema = z
@@ -902,6 +927,18 @@ export interface ImpactAnalysisSummary {
    * and link back to its parent. Original runs are immutable.
    */
   rerunOfId: string | null;
+  /** #2345 — the change request this run was started from, or null. */
+  sourceAnalysisId?: string | null;
+}
+
+/**
+ * #2345 — the change request an impact analysis or portfolio check was started
+ * from, as the reader may see it: named only for a reader of its project.
+ */
+export interface ChangeRequestRef {
+  id: string;
+  projectId: string;
+  title: string;
 }
 
 /**
@@ -1011,6 +1048,13 @@ export interface ImpactAnalysisDetail {
    * vs its parent) and a "re-run of …" lineage crumb. Original runs are immutable.
    */
   rerunOfId: string | null;
+  /** #2345 — the change request this run was started from, or null. */
+  sourceAnalysisId?: string | null;
+  /**
+   * #2345 — that change request, named for the link back; null when there is
+   * none, or it was deleted since. Set by the detail route only.
+   */
+  changeRequest?: ChangeRequestRef | null;
 }
 
 // ---- Re-run + drift (#965) -------------------------------------------------

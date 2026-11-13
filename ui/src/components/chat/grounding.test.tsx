@@ -1,6 +1,7 @@
 /** #18 — the words a user reads about what an answer is based on. */
 import { describe, it, expect } from "vitest";
 import { render, screen, within } from "@testing-library/react";
+import type { ChatGrounding } from "@metis/shared";
 import {
   GroundingBadge,
   UngroundedScopeNotice,
@@ -271,11 +272,13 @@ describe("index status on the label (#2326)", () => {
 });
 
 describe("UngroundedScopeNotice (#18)", () => {
-  it("states that 'All projects' does not search projects", () => {
+  it("states that with no product chosen nothing is searched, in the picker's words (#2351)", () => {
     render(<UngroundedScopeNotice show />);
-    expect(screen.getByTestId("chat-ungrounded-notice").textContent).toMatch(
-      /does not search your projects/,
-    );
+    const text = screen.getByTestId("chat-ungrounded-notice").textContent ?? "";
+    expect(text).toMatch(/nothing of yours is searched/);
+    expect(text).toMatch(/No product is chosen/);
+    // #2351 — "All" is no longer an option anywhere; the notice must not name it.
+    expect(text).not.toMatch(/All projects/);
   });
 
   it("renders nothing when hidden", () => {
@@ -344,5 +347,47 @@ describe("groundingText — multi-product (#2238)", () => {
     expect(screen.getByTestId("chat-grounding").className).toContain("text-warning");
     rerender(<GroundingBadge grounding={{ status: "multi", projects: [alpha], unavailable: 1 }} />);
     expect(screen.getByTestId("chat-grounding").className).toContain("text-warning");
+  });
+
+  it("#2294 — says the evidence was insufficient when the floor set every match aside", () => {
+    const g: ChatGrounding = {
+      status: "multi",
+      projects: [gamma],
+      reason: "insufficient-evidence",
+      belowFloor: 4,
+    };
+    expect(groundingText(g)).toBe(
+      "Insufficient evidence — nothing in the products searched was relevant enough to this question (4 weak matches set aside); check any file or code it names",
+    );
+    expect(groundingText({ ...g, belowFloor: undefined })).toBe(
+      "Insufficient evidence — nothing in the products searched was relevant enough to this question; check any file or code it names",
+    );
+    render(<GroundingBadge grounding={g} />);
+    expect(screen.getByTestId("chat-grounding")).toHaveAttribute(
+      "data-reason",
+      "insufficient-evidence",
+    );
+    expect(screen.getByTestId("chat-grounding").className).toContain("text-warning");
+  });
+
+  it("#2294 — lists each source, named with its product", () => {
+    render(
+      <GroundingBadge
+        grounding={{
+          status: "multi",
+          projects: [alpha],
+          sourcesUsed: [
+            { name: "[Alpha] rules.md", excerpts: 2, relevance: 0.71 },
+            { name: "[Alpha] faq.md", excerpts: 1 },
+          ],
+        }}
+      />,
+    );
+    const items = within(screen.getByTestId("chat-grounding-sources")).getAllByRole("listitem");
+    expect(items.map((li) => li.textContent)).toEqual([
+      "[Alpha] rules.md · 2 excerpts · relevance 0.71",
+      "[Alpha] faq.md · 1 excerpt",
+    ]);
+    expect(screen.getByTestId("chat-grounding")).not.toHaveAttribute("data-reason");
   });
 });

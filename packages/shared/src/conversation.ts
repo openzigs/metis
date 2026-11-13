@@ -146,6 +146,18 @@ export type ChatGrounding =
       projects: ChatGroundingProject[];
       unsearched?: ChatGroundingUnsearched[];
       unavailable?: number;
+      /**
+       * #2294 — as `grounded.sourcesUsed`: the files and documents the
+       * excerpts came from, each named `[Product] name` as the model saw it.
+       */
+      sourcesUsed?: GroundingSource[];
+      /**
+       * #2294 — as `no-context.reason`, when no excerpt reached the prompt
+       * from any product: nothing found, too weak to use (`belowFloor` of them
+       * set aside), or every search failed.
+       */
+      reason?: NoContextReason;
+      belowFloor?: number;
     };
 
 /** #2238 — one project a multi-product turn searched. */
@@ -408,11 +420,20 @@ function parseMultiGrounding(g: Record<string, unknown>): ChatGrounding | null {
     }
   }
   if (g.unavailable !== undefined && !(count(g.unavailable) && g.unavailable > 0)) return null;
+  // #2294 — as for one project: a malformed list or an unknown reason is
+  // dropped, and the label then says only what it said before.
+  const sourcesUsed = parseSources(g.sourcesUsed);
+  const reason = NO_CONTEXT_REASONS.find((r) => r === g.reason);
   return {
     status: "multi",
     projects,
     ...(unsearched && unsearched.length > 0 ? { unsearched } : {}),
     ...(g.unavailable !== undefined ? { unavailable: g.unavailable as number } : {}),
+    ...(sourcesUsed ? { sourcesUsed } : {}),
+    ...(reason ? { reason } : {}),
+    ...(reason === "insufficient-evidence" && count(g.belowFloor) && g.belowFloor > 0
+      ? { belowFloor: g.belowFloor }
+      : {}),
   };
 }
 

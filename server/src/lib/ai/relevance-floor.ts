@@ -68,6 +68,22 @@ export interface FloorResult<T> {
 }
 
 /**
+ * #2294 — what a turn's block says when the floor set aside every fresh match
+ * but the excerpts the previous answer cited were carried in (#2240). The turn
+ * stays grounded in those (the model is shown them, and the label counts what
+ * reached the prompt), but the model is told this question's own search found
+ * nothing usable, so it does not stretch the carried excerpts over it.
+ */
+export function carriedOnlyNote(belowFloor: number): string {
+  return (
+    `This question's own search found nothing relevant enough to use: the ${belowFloor} ` +
+    `closest ${belowFloor === 1 ? "match was" : "matches were"} too weak. The only excerpts ` +
+    `below are ones your previous answer cited. Answer from them only where they bear on this ` +
+    `question; otherwise say the sources don't show this, and what is missing.`
+  );
+}
+
+/**
  * Keep the hits whose dense cosine is at least `floor`, and the keyword-only
  * hits when any dense hit cleared it. A `floor` of 0 or less keeps every hit.
  */
@@ -76,13 +92,25 @@ export function applyRelevanceFloor<T extends FloorableHit>(
   floor: number,
 ): FloorResult<T> {
   if (!(floor > 0)) return { kept: [...hits], belowFloor: 0 };
-  const cleared = hits.some((h) => {
+  const kept = hits.filter(floorKeep(hits, floor));
+  return { kept, belowFloor: hits.length - kept.length };
+}
+
+/**
+ * #2294 — the floor's test of one hit, as {@link applyRelevanceFloor} applies
+ * it: a dense hit must reach `floor`, and a keyword-only hit is kept when some
+ * hit of `pool` cleared it. Used where the floor runs before a list is cut, so
+ * a weak hit's slot goes to the next one. Keeps everything when `floor` is 0.
+ */
+export function floorKeep<T extends FloorableHit>(
+  pool: readonly T[],
+  floor: number,
+): (hit: T) => boolean {
+  if (!(floor > 0)) return () => true;
+  const clears = (h: T) => {
     const c = denseCosine(h);
     return c !== null && c >= floor;
-  });
-  const kept = hits.filter((h) => {
-    const c = denseCosine(h);
-    return c === null ? cleared : c >= floor;
-  });
-  return { kept, belowFloor: hits.length - kept.length };
+  };
+  const cleared = pool.some(clears);
+  return (h) => (denseCosine(h) === null ? cleared : clears(h));
 }
