@@ -2165,9 +2165,18 @@ a product's own page keeps its address. [#2353]
 1. Open **Projects › Portfolio** (`/portfolio`). It opens on **Coverage**.
 2. Describe what the business needs in plain language, up to 8,000 characters. For example:
    *"Customers can pay an invoice by bank transfer."*
-3. Under **Where to look**, choose **All products I can access**, **One product** and pick
-   it, or **Several products** and tick each one (up to 50). **Find a product** searches all
-   your products by name; a product you ticked stays ticked when a search hides it.
+3. Under **Where to look**, open the scope picker (the same one chat and impact analysis use,
+   [#2351]) and choose **This project** (the product of the project you came from, for example
+   a change request's; a project in no product says so), **Whole workspace** (every product of
+   the top bar's workspace you can read, with how many that is; with no workspace open, every
+   product you can read), or tick **Chosen products** (up to 50). Opened from no project, it
+   reads **Every product you can read** and checks all of them, as before; opened from a
+   product, that product is ticked. Untick every chosen product to go back to **Every product
+   you can read**. **Whole workspace** stays unavailable, and says why, until the workspace's
+   products are read; **Check coverage** waits while the project's product is looked up. **Find
+   products** searches all your products by name (and the product list for who will build it);
+   a product you ticked stays ticked when a search hides it. A product you cannot read is
+   refused by the server, never checked.
 4. Click **Check coverage**.
 
 You can also start a check from three other places. Every **approved** requirement on a
@@ -2320,8 +2329,9 @@ every table the change reaches the product through, not only the one on the path
 If nothing covers the requirement yet, no product's code changes until one is chosen to
 build it, so there is nothing to work the impact out from. Choose that product under
 **Which product will build this? (optional)** when you start the check (the API takes
-`hostProductId` on `POST /api/portfolio-assessments`). In **One product** scope, only that
-product can be chosen; in **Several products** scope, any one of those ticked. The check
+`hostProductId` on `POST /api/portfolio-assessments`). Over **This project**, **Chosen
+products** or a workspace's products, only a product in that scope can be chosen; with no
+workspace open, any product you can read. The check
 then names it (**Product that will build it**, and
 **Built by** above the impact, with a **Chosen to build this** badge on its card). It reads
 **Must change**, and so does every product that holds one of its repositories, such as an
@@ -3322,8 +3332,8 @@ The AI Chat is your interactive assistant for asking questions, getting help wit
 Chat opens on the project active in the top bar. The project you last picked in
 chat's own project selector is used only when no project is active. The chat
 you last had open comes back when it belongs to that project. A chat you last
-had open under **All projects**, with **All projects** picked in the selector,
-comes back too, and the selector returns to **All projects**. A new chat is
+had open with no product chosen comes back too, and the selector returns to
+**No product chosen**. A new chat is
 saved only when you send its first message, so opening Chat or clicking
 **New chat** does not add an empty "New Chat" to your session list. Recent
 lists each chat under the title saved with it: a new chat is named after its
@@ -3724,13 +3734,13 @@ Both fields persist on the `Project` row and are read at session-create time. Th
 
 ### 14.6 Project Scope and Grounding
 
-Chat answers from your projects' knowledge bases when the chat is scoped to **one project**, to **several projects**, or to **every project in your workspace** (#2238). With the scope on **All projects**, no project is searched: the model answers from its own general knowledge, which can sound confident while naming files or functions that do not exist in your code. [#18]
+Chat answers from your projects' knowledge bases when the chat is scoped to **one project**, to **several projects**, or to **every project in your workspace** (#2238). With **No product chosen**, no project is searched: the model answers from its own general knowledge, which can sound confident while naming files or functions that do not exist in your code. [#18]
 
 **Choosing the scope:**
 
 1. In the Chat page, find the scope pill in the header.
-2. Click it and tick one or more projects, or pick **Every project in _Workspace_** (the workspace shown in the top bar), or **All my projects** for an unscoped chat. Tick several projects to ask one question about all of them — for example "what does this FRD change in A and B?".
-3. Your choice is remembered in your browser. Chat opens on the project active in the top bar; a remembered selection of several projects that includes it, or the top bar's workspace, is kept. If you have never picked one, chat starts scoped to the active project, or to **All projects** if you have none.
+2. Click it: the same picker as impact analysis and the portfolio check, with the same three options [#2351]. Pick **This project** (the project active in the top bar), **Whole workspace** (every project of the workspace shown in the top bar, with how many that is), or tick one or more projects under **Chosen products**. Untick them all for an unscoped chat (**No product chosen**). Tick several projects to ask one question about all of them — for example "what does this FRD change in A and B?". Escape closes the picker.
+3. Your choice is remembered in your browser. Chat opens on the project active in the top bar; a remembered selection of several projects that includes it, or the top bar's workspace, is kept. If you have never picked one, chat starts scoped to the active project, or to **No product chosen** if you have none.
 
 A new scope starts a new chat on your next message; the conversation you had open stays in Sessions.
 
@@ -3738,7 +3748,7 @@ Opening Chat from a project (`/chat?projectId=…`) scopes it to that project.
 
 **Seeing what an answer is based on:**
 
-- While the scope is **All projects**, a notice above the conversation says that answers are not grounded in any project.
+- While no product is chosen, a notice above the conversation says that answers are not grounded in any project.
 - Every reply carries a label underneath it:
   - **Grounded in _Project_ · N sources · M project lookups** — excerpts from that project's knowledge base were given to the model (N counts each excerpt supplied, and each code symbol in a fused code block), and/or the model read the project itself through its tools — code search, or a search of the project's knowledge base (M counts the lookups that returned something). Either part is left out when it is zero. Only excerpts relevant enough to the question are supplied: a weaker match is set aside (see **Relevance floor** below). Click the label to list the files and documents the excerpts came from, each with how many excerpts it gave and its relevance (0 to 1). [#2241]
   - **Insufficient evidence — nothing in _Project_ was relevant enough to this question** — the knowledge base was searched, but every match was too weak to use, so none was given to the model. It is told to say that the sources don't show this, and what is missing, rather than guess. [#2241]

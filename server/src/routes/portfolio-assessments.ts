@@ -507,6 +507,16 @@ export function portfolioAssessmentsRouter(deps: PortfolioAssessmentsRouterDeps 
       try {
         const user = req.user!;
         const body = createPortfolioAssessmentSchema.parse(req.body);
+        // #2351 — a scope is validated here, not trusted from the picker: every
+        // product it names must be one the caller can read now (the reads' own
+        // rule), else the start is refused like a missing product (404), and
+        // nothing is stored. Before, an unreadable one was stored `restricted`.
+        if (body.scope === "product") {
+          const access = await resolveReaderAccess(user);
+          if (!access.admin && (body.productIds ?? []).some((id) => !access.products.has(id))) {
+            throw new AppError(404, "NOT_FOUND", "Product not found");
+          }
+        }
         const source = await gapInputFor(user, body);
         const { input } = source;
         const hostProductId = body.hostProductId ?? null;

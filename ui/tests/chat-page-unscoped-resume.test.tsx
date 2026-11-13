@@ -105,7 +105,8 @@ describe("<ChatPage /> — reloading an 'All projects' conversation (PR #1234 P1
 
     await waitFor(() => expect(screen.getByText(/an unscoped question/)).toBeInTheDocument());
     expect(aiClient.loadActiveSessionId()).toBe("sess-stored");
-    await waitFor(() => expect(selectorLabel()).toContain("All projects"));
+    // #2351 — the unscoped chat reads "No product chosen" in the shared picker.
+    await waitFor(() => expect(selectorLabel()).toContain("No product chosen"));
     // The resume survives the scope change it causes: still on screen.
     await new Promise((r) => setTimeout(r, 30));
     expect(screen.getByText(/an unscoped question/)).toBeInTheDocument();
