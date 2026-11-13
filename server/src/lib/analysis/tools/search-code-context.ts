@@ -151,8 +151,11 @@ export interface SearchCodeContextDeps {
   /**
    * #2412 — a file larger than this many bytes is not read (generated or
    * bundled code, most likely): left out and counted, never read into memory.
-   * Defaults to the source ingest's own limit, `REPO_SOURCE_MAX_FILE_BYTES`
-   * as configured, so every file the ingest indexed can be read here.
+   * Defaults to the source-embedding ingest's limit, `REPO_SOURCE_MAX_FILE_BYTES`
+   * as configured (1 MiB unless an operator changes it), so the two caps cannot
+   * drift. The code-graph ingest that writes the symbols has no size gate of its
+   * own, so a symbol in a larger file can still be found here and is counted,
+   * never read.
    */
   maxFileBytes: number;
   mergeGap: number;

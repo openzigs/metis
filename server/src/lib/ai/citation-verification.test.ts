@@ -348,6 +348,16 @@ describe("collectCitationEvidence — what the tools read", () => {
       ).toEqual(["verified", "verified", "not-read"]);
     });
 
+    it("grep_files: a path with spaces in it still gives its line", () => {
+      const result = [
+        "[main] My Docs/spec.md:12: the refund rule util.ts:1-500",
+        "src/app (copy)/x.ts:3: y",
+      ].join("\n");
+      expect(
+        status("Docs/spec.md:12 x.ts:3 util.ts:1-500", tool({ tool: "grep_files", result })),
+      ).toEqual(["verified", "verified", "not-read"]);
+    });
+
     it("reads the slice header from read_file_slice only, and nothing from an unknown code tool", () => {
       expect(
         status(

@@ -257,8 +257,9 @@ function readsProject(t: ToolEvidence): boolean {
 const CODE_TOOL_HEADERS: ReadonlyMap<string, RegExp> = new Map([
   // `[n] path:a-b, path:c-d — label`: the numbered lines under it are the file's.
   ["search_code_context", /^\[\d+\] ([^\n]*?) — /],
-  // `[repo] path:line: text`: the text after the locator is the file's.
-  ["grep_files", /^(?:\[[^\]\n]*\] )?([^\s:]+:\d+): /],
+  // `[repo] path:line: text`: the text after the locator is the file's. The
+  // path may hold spaces (`My Docs/spec.md`), never a colon: it ends at the first.
+  ["grep_files", /^(?:\[[^\]\n]*\] )?([^:\n]+:\d+): /],
 ]);
 /**
  * #2412 — code tools whose evidence is their structured `citations` alone.
