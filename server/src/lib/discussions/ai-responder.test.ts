@@ -1008,6 +1008,34 @@ describe("streamAIReply — #2290 the reply's citations, checked", () => {
     expect(storedMeta()?.citations).toEqual(result.message.citations);
   });
 
+  it("counts only the lines the model's capped copy of a long read kept (#2315)", async () => {
+    // 1,000 numbered lines, far past DISCUSSION_TOOL_RESULT_MAX_CHARS: the model
+    // saw the head of the read, never line 900, though the header claims it.
+    const body = Array.from(
+      { length: 1000 },
+      (_, i) => `${i + 1}| const line${i + 1} = "${"x".repeat(40)}";`,
+    ).join("\n");
+    const tool = readTool(`internal/model/feed.go (lines 1-1000 of 1000)\n${body}`);
+    const answer = "See internal/model/feed.go:10-20 and internal/model/feed.go:900-910.";
+    const { provider } = chatProvider([
+      { toolCalls: [CALL], usage: USAGE(10, 1) },
+      { content: answer, usage: USAGE(10, 1) },
+    ]);
+
+    const result = await streamAIReply({
+      thread,
+      triggerMessage,
+      actor,
+      provider,
+      resolveTools: async () => toolRuntime(tool),
+    });
+
+    expect(result.message.citations?.map((c) => [c.text, c.status])).toEqual([
+      ["internal/model/feed.go:10-20", "verified"],
+      ["internal/model/feed.go:900-910", "span-unverified"],
+    ]);
+  });
+
   it("checks `[n]` and a named file against the retrieved excerpts the reply was given", async () => {
     const retrieve = vi.fn(async () => ({
       block: "## Retrieved Knowledge\n[1] FRD-12.md#0\nRefunds within 30 days.",
