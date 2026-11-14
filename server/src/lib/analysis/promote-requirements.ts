@@ -16,6 +16,7 @@ import { synthesisOutputSchema, type SynthesisOutput } from "@metis/shared";
 import { createChildLogger } from "../logger.js";
 import { prisma } from "../prisma.js";
 import { readSourceRequirements, serializeSourceCandidateIds } from "./source-items.js";
+import { evidenceFindingIds, sourceIdsOfFindingSets } from "./source-ids.js";
 import { seedRequirementCodeLinksFromFindings } from "../traceability/seed-code-links-from-findings.js";
 import {
   CHECKPOINT_APPROVED_IDS_KEY,
@@ -571,9 +572,17 @@ async function appendNewlyApproved(input: {
     );
 
     // Same row shape `persistRequirements` writes, without its replace semantics.
+    const labelsByK = added.map((r) => evidenceLabels(r, findingIdsByIndex));
+    // #2446 — the sources of the findings each row rests on, in one read.
+    const sourceIdsByK = await sourceIdsOfFindingSets(
+      tx,
+      input.analysisId,
+      labelsByK.map(evidenceFindingIds),
+    );
     const ids: string[] = [];
     for (let k = 0; k < added.length; k++) {
       const r = added[k]!;
+      const labels = labelsByK[k]!;
       const row = await tx.requirement.create({
         data: {
           analysisId: input.analysisId,
@@ -583,7 +592,8 @@ async function appendNewlyApproved(input: {
           body: r.body,
           priority: r.priority,
           // #1709 — the one copy of the label mapping (#1648).
-          labels: JSON.stringify(evidenceLabels(r, findingIdsByIndex)),
+          labels: JSON.stringify(labels),
+          sourceIds: sourceIdsByK[k] ?? null,
           acceptanceCriteria: JSON.stringify(r.acceptanceCriteria ?? []),
           storyPoints: r.storyPoints ?? null,
           coverage: coverages[k] ?? null,

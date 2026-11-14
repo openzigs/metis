@@ -71,6 +71,25 @@ export interface SymbolEmbeddingStore {
   getExistingHashes(projectId: string): Promise<Map<string, string>>;
   upsert(projectId: string, rows: SymbolEmbeddingRow[]): Promise<void>;
   deleteBySymbolIds(projectId: string, symbolIds: string[]): Promise<number>;
+  /**
+   * #2346 — the stored vectors of `symbolIds` (ids whose symbol is gone), each
+   * with the text it was embedded from and the file it was in. The pipeline
+   * reuses one for a new symbol with the same content instead of embedding it
+   * again ({@link renameStableKeys}). Optional: a store without it reuses
+   * nothing, and every new symbol is embedded.
+   */
+  getStoredVectors?(projectId: string, symbolIds: string[]): Promise<StoredSymbolVector[]>;
+}
+
+/** #2346 — a vector already in the store, as {@link SymbolEmbeddingStore.getStoredVectors} reads it. */
+export interface StoredSymbolVector {
+  symbolId: string;
+  vector: number[];
+  /** The text the vector was embedded from. */
+  text: string;
+  /** The file the symbol was in when it was embedded. */
+  filePath: string;
+  embeddingModel: string;
 }
 
 export interface EmbedService {
@@ -97,6 +116,12 @@ export interface PipelineResult {
   totalSymbols: number;
   embedded: number;
   skipped: number;
+  /**
+   * #2346 — symbols given the stored vector of a symbol that is gone, with the
+   * same content (a renamed or moved file, or an unchanged symbol of an edited
+   * file), instead of being embedded again. Not counted in `embedded`.
+   */
+  reused: number;
   deleted: number;
   durationMs: number;
 }
@@ -176,6 +201,59 @@ export function computeSymbolHash(formattedContent: string): string {
   return createHash("sha256").update(formattedContent).digest("hex");
 }
 
+// ---- Rename stability (#2346) ---------------------------------------------
+
+/** The labelled context lines `contextLines` (symbol-context.ts) places after the header. */
+const CONTEXT_LINE = /^(?:receiver|package|doc|tables|callers): /;
+
+/** What a path in a key is replaced with: a NUL, which no formatted text holds. */
+const PATH_MARK = "\u0000path";
+const DIR_MARK = "\u0000dir";
+
+/**
+ * #2346 — the content keys of an embedding text, with the file it is in taken
+ * out, so the same symbol in a renamed or moved file has the same keys.
+ *
+ * Ingest writes a symbol's text as `{kind} {name} in {filePath}`, its context
+ * lines, then its body (`formatSymbolForEmbedding`). Only three parts depend on
+ * where the file is: the header's path; a `module` symbol's name, which is the
+ * file's name; and the `package:` line of a language with no package clause,
+ * which is the file's directory name (`packageOfFile`). So:
+ *
+ *   - `exact`: the text with the header's path (and a module's file name)
+ *     replaced. Equal for a rename within a directory, a move whose directory
+ *     name is the same, a file whose package line is its declared package,
+ *     and an unchanged symbol of an edited file;
+ *   - `moved`: also with a `package:` line naming the directory replaced.
+ *     Equal for a move to another directory.
+ *
+ * Everything else, the body above all, must be identical. A text whose header
+ * does not end with ` in {filePath}` gets keys only its own exact text matches.
+ */
+export function renameStableKeys(text: string, filePath: string): { exact: string; moved: string } {
+  const lines = text.split("\n");
+  const suffix = ` in ${filePath}`;
+  const header = lines[0] ?? "";
+  const parts = filePath.split("/");
+  if (filePath !== "" && header.endsWith(suffix)) {
+    const head = header.slice(0, header.length - suffix.length);
+    const named = head === `module ${parts[parts.length - 1]}` ? `module ${PATH_MARK}` : head;
+    lines[0] = `${named} in ${PATH_MARK}`;
+  }
+  const exact = computeSymbolHash(lines.join("\n"));
+  const dir = parts.length >= 2 ? parts[parts.length - 2] : null;
+  for (let i = 1; dir && i < lines.length && CONTEXT_LINE.test(lines[i]!); i += 1) {
+    if (lines[i] === `package: ${dir}`) {
+      lines[i] = `package: ${DIR_MARK}`;
+      break;
+    }
+  }
+  return { exact, moved: computeSymbolHash(lines.join("\n")) };
+}
+
+/** Stored vectors read per {@link SymbolEmbeddingStore.getStoredVectors} call. */
+const REUSE_READ_CHUNK = 500;
+
 // ---- Pipeline -------------------------------------------------------------
 
 /**
@@ -229,6 +307,22 @@ export class SymbolEmbeddingPipeline {
       }
     }
 
+    // Ids with a stored vector and no current symbol: deleted at the end, and
+    // first offered for reuse (#2346).
+    const staleSymbolIds: string[] = [];
+    for (const existingId of existingHashes.keys()) {
+      if (!currentSymbolIds.has(existingId)) {
+        staleSymbolIds.push(existingId);
+      }
+    }
+
+    // #2346 — a symbol whose content is a gone symbol's takes that vector.
+    // Ingest gives every symbol of a re-parsed file a new id, so a renamed or
+    // moved file, and every unchanged symbol of an edited one, would otherwise
+    // be embedded again from scratch.
+    const reusedRows = await this.reuseStoredVectors(projectId, toEmbed, staleSymbolIds);
+    progress.skipped += reusedRows;
+
     progress.phase = "embedding";
     onProgress?.(progress);
 
@@ -237,6 +331,7 @@ export class SymbolEmbeddingPipeline {
       total: symbols.length,
       toEmbed: toEmbed.length,
       skipped: progress.skipped,
+      reused: reusedRows,
     });
 
     // Step 3: Batch embed
@@ -289,14 +384,8 @@ export class SymbolEmbeddingPipeline {
     progress.phase = "storing";
     onProgress?.(progress);
 
-    // Step 5: Remove embeddings for symbols that no longer exist
-    const staleSymbolIds: string[] = [];
-    for (const existingId of existingHashes.keys()) {
-      if (!currentSymbolIds.has(existingId)) {
-        staleSymbolIds.push(existingId);
-      }
-    }
-
+    // Step 5: Remove embeddings for symbols that no longer exist (a reused
+    // vector now lives on under its new symbol's id, so this drops the copy).
     let deleted = 0;
     if (staleSymbolIds.length > 0) {
       deleted = await this.store.deleteBySymbolIds(projectId, staleSymbolIds);
@@ -310,6 +399,7 @@ export class SymbolEmbeddingPipeline {
       projectId,
       embedded: allRows.length,
       skipped: progress.skipped,
+      reused: reusedRows,
       deleted,
       durationMs,
     });
@@ -317,9 +407,78 @@ export class SymbolEmbeddingPipeline {
     return {
       totalSymbols: symbols.length,
       embedded: allRows.length,
-      skipped: progress.skipped,
+      skipped: progress.skipped - reusedRows,
+      reused: reusedRows,
       deleted,
       durationMs,
     };
+  }
+
+  /**
+   * #2346 — give each symbol in `toEmbed` whose {@link renameStableKeys} match
+   * a stale vector's that vector, written under the symbol's own id with its
+   * current path and text, and take it out of `toEmbed`. The `exact` key is
+   * tried before the `moved` one. Stale vectors are read in chunks, so memory
+   * is bounded however many files moved. Returns how many were reused.
+   *
+   * The reused vector was embedded from the text at the old path, so its path
+   * tokens are the old ones until the symbol's content changes or the next
+   * model re-index embeds the stored (new) text.
+   */
+  private async reuseStoredVectors(
+    projectId: string,
+    toEmbed: Array<{ symbol: SymbolForEmbedding; formatted: string; hash: string }>,
+    staleSymbolIds: readonly string[],
+  ): Promise<number> {
+    const read = this.store.getStoredVectors?.bind(this.store);
+    if (!read || toEmbed.length === 0 || staleSymbolIds.length === 0) return 0;
+    const pending = toEmbed.map((t) => ({
+      ...t,
+      keys: renameStableKeys(t.formatted, t.symbol.filePath),
+    }));
+    let reused = 0;
+    for (let i = 0; i < staleSymbolIds.length && pending.length > 0; i += REUSE_READ_CHUNK) {
+      const stored = await read(projectId, staleSymbolIds.slice(i, i + REUSE_READ_CHUNK));
+      const byExact = new Map<string, StoredSymbolVector>();
+      const byMoved = new Map<string, StoredSymbolVector>();
+      for (const v of stored) {
+        if (!v.text || v.vector.length === 0) continue;
+        const k = renameStableKeys(v.text, v.filePath);
+        if (!byExact.has(k.exact)) byExact.set(k.exact, v);
+        if (!byMoved.has(k.moved)) byMoved.set(k.moved, v);
+      }
+      const rows: SymbolEmbeddingRow[] = [];
+      for (let j = pending.length - 1; j >= 0; j -= 1) {
+        const p = pending[j]!;
+        const v = byExact.get(p.keys.exact) ?? byMoved.get(p.keys.moved);
+        if (!v) continue;
+        rows.push({
+          id: `sym-embed-${p.symbol.symbolId}`,
+          vector: v.vector,
+          metadata: {
+            symbolId: p.symbol.symbolId,
+            filePath: p.symbol.filePath,
+            kind: p.symbol.kind,
+            name: p.symbol.name,
+            qualifiedName: p.symbol.qualifiedName,
+            contentHash: p.hash,
+            text: p.formatted,
+            embeddingModel: v.embeddingModel,
+          },
+        });
+        pending.splice(j, 1);
+      }
+      if (rows.length > 0) {
+        await this.store.upsert(projectId, rows);
+        reused += rows.length;
+      }
+    }
+    if (reused > 0) {
+      const left = new Set(pending.map((p) => p.symbol.symbolId));
+      for (let j = toEmbed.length - 1; j >= 0; j -= 1) {
+        if (!left.has(toEmbed[j]!.symbol.symbolId)) toEmbed.splice(j, 1);
+      }
+    }
+    return reused;
   }
 }

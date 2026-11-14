@@ -185,6 +185,22 @@ describe("#788 draftConstitution", () => {
     expect(r.message).toMatch(/grounded on 1 retrieved chunk/);
   });
 
+  it("#2431 — searches as a shared audience named for the caller", async () => {
+    const provider = new Provider(DRAFT);
+    const ks = knowledge([README]);
+    await draftConstitution({
+      projectId: "p1",
+      actorId: "u1",
+      resolveProvider: vi.fn(async () => provider as unknown as AIProvider),
+      knowledgeService: ks,
+      fusedCode: noCode,
+      today: TODAY,
+    });
+    expect((ks.search.mock.calls[0] as unknown[])[2]).toMatchObject({
+      actor: { userId: "u1", role: "shared-audience", sharedAudience: true },
+    });
+  });
+
   it("completes a draft missing metadata and sections so it validates", async () => {
     const bare = [
       "```markdown",

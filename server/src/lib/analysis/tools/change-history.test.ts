@@ -233,6 +233,22 @@ describe("get_change_history", () => {
     expect(r.citations?.[0]?.truncated).toBe(true);
   });
 
+  it("offers no cursor when the walk stopped on its output limit, since it could never advance (#2484 panel)", async () => {
+    const { tool } = make({
+      readLog: async () => ({
+        ok: true,
+        commits: [commit(C1, "x")],
+        more: "cap",
+        reached: null,
+        outputLimited: true,
+      }),
+    });
+    const r = await tool.execute({ filePath: "src/feed.go" }, ctx);
+    expect(r.content).not.toContain("cursor:");
+    expect(r.content).toContain("older commits inside the window may exist but cannot be listed");
+    expect(r.truncated).toBe(true);
+  });
+
   it("never returns a bare empty list: no commits in the window says the bound", async () => {
     const { tool } = make({ commits: [], more: "bound" });
     const r = await tool.execute({ filePath: "src/feed.go" }, ctx);
@@ -524,7 +540,16 @@ describe("default lookups — scoped to the session's project (A01)", () => {
     db.docFindFirst.mockResolvedValueOnce({ id: "d1" });
     expect((await tool.execute({ filePath: "src/feed.go" }, ctx)).isError).toBeUndefined();
     expect(db.docFindFirst.mock.calls.at(-1)![0]).toMatchObject({
-      where: { projectId: "p1", filename: "connector:repo:r1:src/src/feed.go" },
+      where: { projectId: "p1", filename: { in: ["connector:repo:r1:src/src/feed.go"] } },
+    });
+    // #2484 panel — a root manifest the metadata ingest stored under its bare name.
+    db.docFindFirst.mockResolvedValueOnce({ id: "d2" });
+    expect((await tool.execute({ filePath: "go.mod" }, ctx)).isError).toBeUndefined();
+    expect(db.docFindFirst.mock.calls.at(-1)![0]).toMatchObject({
+      where: {
+        projectId: "p1",
+        filename: { in: ["connector:repo:r1:src/go.mod", "connector:repo:r1:go.mod"] },
+      },
     });
     db.docFindFirst.mockResolvedValueOnce(null);
     db.symFindFirst.mockResolvedValueOnce({ id: "s1" });

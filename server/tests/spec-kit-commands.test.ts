@@ -128,6 +128,10 @@ import { writeArtifact } from "../src/lib/spec-kit/artifacts.js";
 import { renderSourceRequirementsSection } from "../src/lib/spec-kit/requirements-seed.js";
 import { SpecKitArtifactError } from "../src/lib/spec-kit/artifacts.js";
 import { fakeSource, sym } from "./helpers/plan-localisation-graph.js";
+import { SYSTEM_ACTOR_ID } from "../src/lib/audit/system-actor.js";
+
+/** #2431 — a Spec Kit artifact is read by the whole project: its searches are a shared audience's. */
+const SHARED = { userId: SYSTEM_ACTOR_ID, role: "shared-audience", sharedAudience: true };
 
 class FakeProvider implements AIProvider {
   readonly key: ProviderKey = "offline-stub";
@@ -297,7 +301,8 @@ describe("/specify", () => {
       deps: { provider: new EchoSystemProvider() },
     });
     // Top-k first; the second call pins the rest of the retrieved document (#20).
-    expect(ks.search.mock.calls[0][2]).toEqual({ k: 8 });
+    // #2431 — still a shared audience; the requester only names the audit rows.
+    expect(ks.search.mock.calls[0][2]).toEqual({ k: 8, actor: { ...SHARED, userId: "u1" } });
     // RAG context threaded into the agent system prompt.
     expect(r.artifact.content).toContain("Retrieved Project Knowledge");
     expect(r.artifact.content).toContain("server/src/billing/ledger.ts#L10-L40");
@@ -389,11 +394,13 @@ describe("/plan", () => {
     ]);
     const r = await runPlan({
       projectId: "p1",
+      actorId: "u1",
       knowledgeService: ks,
       deps: { provider: new EchoSystemProvider() },
     });
     // Top-k first; the second call pins the rest of the retrieved document (#20).
-    expect(ks.search.mock.calls[0][2]).toEqual({ k: 8 });
+    // #2431 — named for the caller, still a shared audience.
+    expect(ks.search.mock.calls[0][2]).toEqual({ k: 8, actor: { ...SHARED, userId: "u1" } });
     expect(r.artifact.content).toContain("Retrieved Project Knowledge");
     expect(r.artifact.content).toContain("server/src/server.ts#L1-L80");
     const ok = auditCalls.find((c) => c.action === "spec_kit.command.plan");
@@ -681,6 +688,7 @@ describe("grounding in the codebase (#20)", () => {
     expect(ks.search).toHaveBeenCalledWith("p1", "recover malformed tool-call markup", {
       k: 8,
       documentIds: ["req"],
+      actor: SHARED,
     });
   });
 

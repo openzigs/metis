@@ -278,6 +278,11 @@ vi.mock("../src/lib/prisma.js", () => ({
           return row;
         },
       ),
+      // #2446 — a requirement's sources are read from its evidence findings.
+      // This fake records none, so every requirement reads "not recorded";
+      // the record itself is exercised against real SQLite in
+      // tests/source-provenance-2446.sqlite.test.ts.
+      findMany: vi.fn(async () => []),
     },
     requirement: {
       // Issue #769 — this fake models no review work and no prior set, so the
@@ -336,7 +341,15 @@ vi.mock("../src/lib/prisma.js", () => ({
     },
     document: {
       // `filename` is non-null on the real row; #303's citation-id repair reads it.
-      findMany: vi.fn(async () => uploadedDocs.map((id) => ({ id, filename: `${id}.md` }))),
+      // #2431 — a lookup by id (the quarantine fallback's ACL check) finds
+      // those documents, unrestricted.
+      findMany: vi.fn(async (args?: { where?: { id?: { in?: string[] } } }) =>
+        (args?.where?.id?.in ?? uploadedDocs).map((id) => ({
+          id,
+          filename: `${id}.md`,
+          aclSubjects: "[]",
+        })),
+      ),
       // Issue #733 — repo-source detection: a `source: "repo"` document (#525) exists
       // only when the test toggles `repoSourceExists`.
       findFirst: vi.fn(async ({ where }: { where: { source?: string } }) => {

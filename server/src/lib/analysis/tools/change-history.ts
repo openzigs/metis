@@ -248,8 +248,15 @@ async function projectRepos(projectId: string): Promise<HistoryRepo[]> {
 }
 
 async function indexedFile(projectId: string, repoId: string, filePath: string): Promise<boolean> {
+  // A source document, or (#2484 panel) a root README or manifest the metadata
+  // ingest stored under its bare name (`connector:repo:<id>:go.mod`). The
+  // caller has already checked the path; it must still be a blob at the commit.
+  const filenames = [`connector:repo:${repoId}:src/${filePath}`];
+  if (!filePath.includes("/") && filePath !== "OVERVIEW.md") {
+    filenames.push(`connector:repo:${repoId}:${filePath}`);
+  }
   const doc = await prisma.document.findFirst({
-    where: { projectId, filename: `connector:repo:${repoId}:src/${filePath}` },
+    where: { projectId, filename: { in: filenames } },
     select: { id: true },
   });
   if (doc) return true;
@@ -372,8 +379,17 @@ function coverageLine(
   shown: number,
   cursor: number,
   windowStart: string,
+  outputLimited = false,
 ): string {
   const since = day(windowStart);
+  if (more === "cap" && outputLimited) {
+    // No cursor: a later call would stop at the same output limit (#2484 panel).
+    return (
+      `[more: cap — commits ${cursor + 1}-${cursor + shown} shown; the history's commit ` +
+      "messages are too large to read further in one call, so older commits inside the window " +
+      "may exist but cannot be listed. Do not answer as if these were all.]"
+    );
+  }
   if (more === "cap") {
     return (
       `[more: cap — commits ${cursor + 1}-${cursor + shown} shown; older commits exist. ` +
@@ -564,7 +580,13 @@ export function createChangeHistoryTool(deps: ChangeHistoryDeps = {}): AgentTool
       content: [
         ...header,
         ...body,
-        coverageLine(log.more, log.commits.length, parsed.cursor, state.windowStart),
+        coverageLine(
+          log.more,
+          log.commits.length,
+          parsed.cursor,
+          state.windowStart,
+          log.outputLimited === true,
+        ),
       ].join("\n"),
       resultCount: log.commits.length,
       truncated: log.more === "cap",

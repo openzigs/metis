@@ -157,6 +157,8 @@ export async function runSpecifyFeature(input: SpecifyFeatureInput): Promise<Spe
   // failed retrieval ⇒ "" (ungrounded); never throws.
   const rag = await buildSpecKitRagContext(input.projectId, seed ? seed.ragQuery : trimmed, {
     knowledgeService: input.knowledgeService,
+    // #2431 — names the requester on the denial audit rows; grants nothing.
+    ...(input.actorId ? { triggeredBy: input.actorId } : {}),
     // #944 — a spec must see the capability that already ships, and who calls
     // it: grounded on documents alone, a walkthrough spec never mentioned the
     // existing function that did most of the job, or its caller.

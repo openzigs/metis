@@ -78,6 +78,8 @@ export type HistoryLogResult =
       more: "cap" | "bound" | "none";
       /** With `bound`: the oldest in-window commit date the walk reached (null: none). */
       reached: string | null;
+      /** With `cap`: the walk stopped on its output limit, so no cursor can go further. */
+      outputLimited?: true;
     }
   | { ok: false; reason: "timeout" | "line-range" | "failed" };
 
@@ -177,10 +179,15 @@ export async function readHistoryLog(q: HistoryQuery): Promise<HistoryLogResult>
   if (inWindow.length >= want) return { ok: true, commits: page, more: "cap", reached };
   if (result.stopped === "timeout") return { ok: false, reason: "timeout" };
   if (result.stopped === "output-cap") {
-    // Stopped mid-walk on output, not on the window: what is shown is a page,
-    // and the cursor goes on from it. Only a walk already past the window with
-    // nothing to show is `bound`; one that showed nothing yet failed.
-    if (page.length > 0) return { ok: true, commits: page, more: "cap", reached };
+    // Stopped mid-walk on output, not on the window: more in-window commits
+    // may exist, but no cursor can reach them — a later call re-reads the same
+    // output and stops at the same byte (#2484 panel). So `cap`, flagged as
+    // the output's limit, and the tool offers no cursor. Only a walk already
+    // past the window with nothing to show is `bound`; one that showed nothing
+    // yet failed.
+    if (page.length > 0) {
+      return { ok: true, commits: page, more: "cap", reached, outputLimited: true };
+    }
     if (sawOlder) return { ok: true, commits: page, more: "bound", reached };
     return { ok: false, reason: "failed" };
   }

@@ -442,7 +442,7 @@ describe("readHistoryLog (offline, against the fetched repository)", () => {
     const run: GitRunner = async () => ({ code: null, stdout, stderr: "", stopped: "output-cap" });
     const r = await q("h.txt", { run });
     expect(subjects(r)).toEqual(["one", "two"]);
-    expect(r).toMatchObject({ more: "cap" });
+    expect(r).toMatchObject({ more: "cap", outputLimited: true });
   });
 });
 

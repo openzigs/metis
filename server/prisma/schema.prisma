@@ -1444,6 +1444,13 @@ model Analysis {
   /// #2341 — true when Metis proposed `title` (the default above); false when a
   /// person typed it at start or renamed the run.
   titleGenerated Boolean @default(false)
+  /// #2446 (epic #2438) — whose access the run read its sources with, so a
+  /// read-time filter knows how to treat its rows. `shared`: the shared
+  /// audience (#2314), and every finding and requirement it wrote records the
+  /// sources it drew on (`sourceIds`). NULL: a run from before #2446 (or a
+  /// synthetic run: import, discussion, code ingest), whose rows record none;
+  /// it keeps the shared-audience rule. A marker, never backfilled.
+  sourceAccess   String?
   /// The user who started the run. #1528 — NULL for a run the system started
   /// (a scheduled `rerun-analysis` task), which has no user: the orchestrator
   /// is handed `SYSTEM_ACTOR_ID` and `createAnalysis` stores it as NULL, as the
@@ -1561,6 +1568,10 @@ model CrossDocFinding {
   evidenceIds String   @default("[]")
   /// For contradictions: "self"|"pairwise"; null for completeness gaps.
   scope       String?
+  /// #2446 — JSON `{ documentIds, chunkIds }`: the union of the sources of the
+  /// findings in `evidenceIds`. Ids only. NULL: not recorded (before #2446, or
+  /// an evidence finding with no record), never "no sources".
+  sourceIds   String?
   createdAt   DateTime @default(now())
 
   analysis Analysis @relation(fields: [analysisId], references: [id], onDelete: Cascade)
@@ -1700,6 +1711,13 @@ model Finding {
   /// gate: `confirmed` (kept a grounded code citation) | `unverified` (code claim dropped).
   /// Null for findings with no code-evidence claim and for rows written before #740.
   verificationStatus String?
+  /// #2446 (epic #2438) — the sources this finding drew on, recorded at write
+  /// time: JSON `{ documentIds, chunkIds, citations: [{ documentIds, chunkIds }] }`,
+  /// the `Document` and `KnowledgeChunk` ids its citations name, and each
+  /// citation's own in `evidence.citations` order. Ids only, never a path or
+  /// name (`lib/analysis/source-ids.ts`). NULL: not recorded (a row from
+  /// before #2446, a code-ingest or scan-materialised finding).
+  sourceIds     String?
   createdAt     DateTime @default(now())
 
   agentResult AgentResult? @relation(fields: [agentResultId], references: [id], onDelete: Cascade)
@@ -1780,6 +1798,11 @@ model Requirement {
   /// items this row took its criteria and evidence from; `[]` for none. NULL:
   /// not recorded (as above).
   promotedSynthesisKeys   String?
+  /// #2446 — JSON `{ documentIds, chunkIds }`: the union of the sources of the
+  /// findings this requirement cites as evidence (its `finding:` labels), at
+  /// write time. Ids only. NULL: not recorded (before #2446, not written by an
+  /// analysis, or an evidence finding with no record), never "no sources".
+  sourceIds        String?
   storyPoints      Int?
   parentId         String?
   /// Epic #192 (A.5) — living-spec sync. Set when a PR linked to the

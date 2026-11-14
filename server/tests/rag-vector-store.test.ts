@@ -91,6 +91,13 @@ describe("LocalVectorStore", () => {
     },
   );
 
+  it("#2346 — getRows returns the asked rows, vectors included", async () => {
+    await store.upsert("p1", [row("a", [1, 0, 0]), row("b", [0, 1, 0])]);
+    const got = await store.getRows("p1", ["b", "missing"]);
+    expect(got.map((r) => [r.id, r.vector])).toEqual([["b", [0, 1, 0]]]);
+    expect(await store.getRows("p1", [])).toEqual([]);
+  });
+
   it("upsert overwrites by id (no duplicates)", async () => {
     await store.upsert("p1", [row("a", [1, 0, 0])]);
     await store.upsert("p1", [row("a", [0, 1, 0], { text: "updated" })]);

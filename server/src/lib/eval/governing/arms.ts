@@ -50,6 +50,7 @@ import { selectWebAgentEvidence } from "../../analysis/orchestrator.js";
 import {
   buildRetrievalQueries,
   runGroundedRetrieval,
+  UNRESTRICTED_RETRIEVAL,
   type GroundedSearchSource,
 } from "../../analysis/retrieval.js";
 import type { ClarifyingQuestion } from "../../analysis/types/requirements.js";
@@ -308,6 +309,8 @@ export function createA0Arm(deps: GoverningArmDeps): GoverningArm {
       const retrieved: RetrievalContextChunk[] = selectWebAgentEvidence(
         await runGroundedRetrieval(source, {
           projectId: corpus.name,
+          // #2431 — fixed eval documents: no ACL to read under.
+          actor: UNRESTRICTED_RETRIEVAL,
           queries: buildRetrievalQueries({
             agentKey: "web",
             projectName,

@@ -21,6 +21,10 @@ import {
   buildSpecKitRagContext,
   type SpecKitKnowledgeService,
 } from "../src/lib/spec-kit/rag-context.js";
+import { SYSTEM_ACTOR_ID } from "../src/lib/audit/system-actor.js";
+
+/** #2431 — a Spec Kit artifact is read by the whole project: every search is a shared audience's. */
+const SHARED = { userId: SYSTEM_ACTOR_ID, role: "shared-audience", sharedAudience: true };
 
 function chunk(partial: Partial<RetrievedChunk>): RetrievedChunk {
   return {
@@ -78,7 +82,7 @@ describe("buildSpecKitRagContext", () => {
     // Labeled, attributed header so the model treats it as reference data.
     expect(res.context).toMatch(/Retrieved (Project )?Knowledge/i);
     // The service was asked for the right project/query/k.
-    expect(ks.search).toHaveBeenCalledWith("p1", "how does auth work", { k: 8 });
+    expect(ks.search).toHaveBeenCalledWith("p1", "how does auth work", { k: 8, actor: SHARED });
   });
 
   it("returns empty context on zero hits (hash-embedder fallback / no signal)", async () => {
@@ -117,7 +121,7 @@ describe("buildSpecKitRagContext", () => {
   it("defaults k to 8 when not supplied", async () => {
     const ks = fakeKnowledgeService(async () => ({ hits: [chunk({})] }));
     await buildSpecKitRagContext("p1", "query", { knowledgeService: ks });
-    expect(ks.search).toHaveBeenCalledWith("p1", "query", { k: 8 });
+    expect(ks.search).toHaveBeenCalledWith("p1", "query", { k: 8, actor: SHARED });
   });
 
   it("truncates an overlong query before retrieval (defence against giant prompts)", async () => {

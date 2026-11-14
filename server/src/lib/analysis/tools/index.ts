@@ -24,6 +24,7 @@ import { indexStatusTool } from "./index-status.js";
 import { createChatGrepFilesTool, createChatListFilesTool } from "./chat-file-tools.js";
 import { createChangeHistoryTool } from "./change-history.js";
 import { CHANGE_HISTORY_FLAG } from "../../connectors/repo/history-repo.js";
+import { createFileOutlineTool } from "./file-outline.js";
 import { loadCodeVersions } from "../../code-graph/code-version.js";
 import { getConfigService } from "../../config/config-service.js";
 import {
@@ -46,6 +47,11 @@ export type ChatCodeToolDeps = Partial<SearchSymbolsDeps> & {
    * (off until measured: it reads the history repository that flag fetches).
    */
   changeHistory?: boolean;
+  /**
+   * #2346 — offer `get_file_outline`. Defaults to `CHAT_FILE_OUTLINE_TOOL`
+   * (off until measured).
+   */
+  fileOutline?: boolean;
 };
 
 /**
@@ -69,7 +75,7 @@ export function getChatCodeTools(
   opts: { indexStatus?: boolean; primitives?: boolean } = {},
 ): AgentTool[] {
   const primitives = opts.primitives === true;
-  const { codeContext, changeHistory, ...searchDeps } = deps ?? {};
+  const { codeContext, changeHistory, fileOutline, ...searchDeps } = deps ?? {};
   // #2325 — chat's graph and symbol searches state the indexed commit of every
   // hit; the analysis surface's copies do not.
   const tools = [
@@ -86,6 +92,14 @@ export function getChatCodeTools(
   // #2329 — whole-symbol context, beside the other tools (never instead of
   // them), and the same searcher, so the ranking is the one they see.
   const cfg = getConfigService();
+  // #2346 — a file's symbols and spans, from the code graph.
+  if (fileOutline ?? cfg.getBool("CHAT_FILE_OUTLINE_TOOL", false)) {
+    tools.push(
+      createFileOutlineTool(
+        searchDeps.loadVersions ? { loadVersions: searchDeps.loadVersions } : {},
+      ),
+    );
+  }
   if (codeContext ?? cfg.getBool("CHAT_CODE_CONTEXT_TOOL", false)) {
     tools.push(
       createSearchCodeContextTool({

@@ -1021,6 +1021,15 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
       "Offer get_change_history in chat beside the other code tools (#2338): the commits that changed a file, a line range or a symbol (up to 20 per call, newest first, with date, subject, a message excerpt and a link), and whether older history exists. While on, each code-graph ingest of a GitHub or GitLab connector also fetches a separate bare, blobless history repository at the indexed commit with the file contents of the REPO_HISTORY_WINDOW_DAYS (365) days before that commit (docs/decisions/0023), capped by REPO_HISTORY_MAX_BYTES; turning it off deletes that history at once. Commit text is redacted (secrets and e-mail addresses) and every read is local: no network, no credential. Local-folder and uploaded-archive sources have no history. OFF by default until measured with the `tools-history` arm of `pnpm eval:ba-qa`. Needs CHAT_CODE_SEARCH_TOOLS on.",
     sensitive: false,
   },
+  // ── #2346 — a file's outline from the code graph ───────────────────────
+  CHAT_FILE_OUTLINE_TOOL: {
+    tier: "tunable",
+    valueType: "bool",
+    schema: z.coerce.boolean(),
+    description:
+      "Offer get_file_outline in chat beside the other code tools (#2346): the symbols one file declares (functions, classes, methods, types; at most 200), each with its kind, path:start-end span and the symbol it is declared in, from the project's code graph, without reading the file, and with the commit they describe. A file the code graph does not hold (a language it does not parse, or a file the indexing skipped) is said to be so; a file whose document is restricted from the caller reads the same way. OFF by default until it is measured on the BA question set. Needs CHAT_CODE_SEARCH_TOOLS on.",
+    sensitive: false,
+  },
   CHAT_CODE_CONTEXT_MERGE_GAP: {
     tier: "tunable",
     valueType: "int",

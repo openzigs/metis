@@ -3139,7 +3139,8 @@ export interface FindingsLeftOutNotice {
 /**
  * Issue #2437 — why a run left restricted sources out. `shared-audience`
  * (#2314): an analysis's results are read by the whole project, so its code
- * reads see only what every member may see.
+ * reads (and, since #2431, its document searches) see only what every member
+ * may see.
  */
 export const RESTRICTED_LEFT_OUT_REASONS = ["shared-audience"] as const;
 export type RestrictedLeftOutReason = (typeof RESTRICTED_LEFT_OUT_REASONS)[number];
@@ -3152,11 +3153,16 @@ export type RestrictedLeftOutReason = (typeof RESTRICTED_LEFT_OUT_REASONS)[numbe
  * `files` are the restricted repository files the run could not read (every
  * one hidden from its audience, in a run that read code); `symbols` the
  * code-search matches dropped because their file is one of them.
+ *
+ * Issue #2431 — `documentChunks`: the document-search matches (distinct
+ * chunks, an upload's or a repository file's) dropped because their document
+ * is restricted. Absent when none was, and on runs before #2431.
  */
 export interface RestrictedLeftOutNotice {
   reason: RestrictedLeftOutReason;
   files: number;
   symbols: number;
+  documentChunks?: number;
 }
 
 /** A repository skipped from a multi-repo run because the per-repo token budget was too low. */
@@ -3614,10 +3620,19 @@ export function readFindingsLeftOut(value: unknown): FindingsLeftOutNotice[] {
  */
 export function readRestrictedLeftOut(value: unknown): RestrictedLeftOutNotice | null {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
-  const { reason, files, symbols } = value as Record<string, unknown>;
+  const { reason, files, symbols, documentChunks } = value as Record<string, unknown>;
   if (!(RESTRICTED_LEFT_OUT_REASONS as readonly unknown[]).includes(reason)) return null;
-  if (!isCount(files) || !isCount(symbols) || files + symbols === 0) return null;
-  return { reason: reason as RestrictedLeftOutReason, files, symbols };
+  if (!isCount(files) || !isCount(symbols)) return null;
+  // #2431 — optional: a record written before it has none.
+  if (documentChunks !== undefined && !isCount(documentChunks)) return null;
+  const chunks = documentChunks ?? 0;
+  if (files + symbols + chunks === 0) return null;
+  return {
+    reason: reason as RestrictedLeftOutReason,
+    files,
+    symbols,
+    ...(chunks > 0 ? { documentChunks: chunks } : {}),
+  };
 }
 
 /** Issue #2437 — why, in the analyst's words, per reason. */
@@ -3652,7 +3667,20 @@ export function restrictedLeftOutSentence(value: unknown): string | null {
         : `${symbols} matching code symbols in ${where} were left out`,
     );
   }
-  return `${parts.join(", and ")}: ${RESTRICTED_LEFT_OUT_WHY[notice.reason]}`;
+  // #2431 — what document search left out.
+  const chunks = notice.documentChunks ?? 0;
+  if (chunks > 0) {
+    parts.push(
+      chunks === 1
+        ? "1 matching passage from a restricted document was left out"
+        : `${chunks} matching passages from restricted documents were left out`,
+    );
+  }
+  const listed =
+    parts.length > 2
+      ? `${parts.slice(0, -1).join(", ")}, and ${parts[parts.length - 1]}`
+      : parts.join(", and ");
+  return `${listed}: ${RESTRICTED_LEFT_OUT_WHY[notice.reason]}`;
 }
 
 /**

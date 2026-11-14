@@ -20,6 +20,7 @@ import {
   type BuildSpecKitRagContextOptions,
 } from "./rag-context.js";
 import { LOCALISATION_HEADER } from "./plan-localisation.js";
+import { UNRESTRICTED_CODE_ACCESS } from "../analysis/tools/code-access.js";
 
 afterEach(() => {
   delete process.env.SPEC_KIT_PLAN_LOCALISATION_TOKEN_BUDGET;
@@ -80,6 +81,8 @@ function options(over: Partial<BuildSpecKitRagContextOptions> = {}): BuildSpecKi
       hiddenSymbols: async () => new Set<string>(),
     },
     includeCode: true,
+    // #2431 — nothing hidden from the callers or the localisation (the default reads the database).
+    codeAccess: async () => UNRESTRICTED_CODE_ACCESS,
     siblings: { lookup: { findInFiles: vi.fn(async () => []) } },
     callers: {
       lookup: {

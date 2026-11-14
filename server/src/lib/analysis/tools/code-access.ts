@@ -104,6 +104,18 @@ export function repoDocumentPath(filename: string): { connectorId: string; path:
   return { connectorId, path: normalizeRepoPath(name) };
 }
 
+/**
+ * #2446 — the inverse of {@link repoDocumentPath}: the `Document` filenames a
+ * repository file can be ingested under (a source file, or a root manifest or
+ * README), for a normalised repository-relative `filePath`.
+ */
+export function repoDocumentFilenames(connectorId: string, filePath: string): string[] {
+  const p = normalizeRepoPath(filePath);
+  if (!p) return [];
+  const prefix = `${REPO_DOC_PREFIX}${connectorId}:`;
+  return [`${prefix}${SOURCE_PREFIX}${p}`, `${prefix}${p}`];
+}
+
 /** Build a filter from the hidden `(connectorId, path)` pairs. */
 export function codeAccessFilterOf(
   hidden: ReadonlyArray<{ connectorId: string; path: string }>,
