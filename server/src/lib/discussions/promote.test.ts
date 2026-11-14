@@ -130,6 +130,9 @@ describe("promoteMessageToRequirement", () => {
           body: "We must support SSO",
           type: "feature",
           priority: "high",
+          // #2447 — a discussion message cites no document: an empty list, so
+          // the redaction never reads it as resting on the run it is filed under.
+          sourceIds: JSON.stringify({ documentIds: [], chunkIds: [] }),
         }),
       }),
     );

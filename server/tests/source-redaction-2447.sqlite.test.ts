@@ -409,7 +409,15 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           `${base}/req-2447-open/similar/req-2447-secret/not-duplicate`,
           {},
         );
-        expect([borrowInto.status, borrowFrom.status, dismiss.status]).toEqual([404, 404, 404]);
+        // Either slot of the pair: the restricted one first as well.
+        const dismissFirst = await post(
+          "bob",
+          `${base}/req-2447-secret/similar/req-2447-open/not-duplicate`,
+          {},
+        );
+        expect([borrowInto.status, borrowFrom.status, dismiss.status, dismissFirst.status]).toEqual(
+          [404, 404, 404, 404],
+        );
       });
     });
 

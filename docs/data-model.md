@@ -290,7 +290,9 @@ document under its access list *now* (`isVisibleTo`, the document-search rule);
 a document outside the run's project, or one that cannot be read, counts as one
 they cannot see. A row with NULL is shown when the reader can see everything
 its run could: for `shared`, a reader who can see now every document any row
-of the run records (its corpus, all open when the run read it); for any other
+of the run records (its corpus, all open when the run read it; every document
+of the project when a finding of the run has no record, its source read having
+failed); for any other
 marker, an admin only.
 A row that fails is replaced by a placeholder (`restricted: true`, title
 `Restricted`), never removed. Chunk ids are not checked on their own: a chunk's

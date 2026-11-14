@@ -218,7 +218,7 @@ export async function loadSourceGuard(
     else if (run.sourceAccess === SOURCE_ACCESS_SHARED) wideRuns.add(row.analysisId);
     else needsActor = true;
   }
-  const corpus = await loadRunCorpus(db, [...wideRuns]);
+  const corpus = await loadRunCorpus(db, [...wideRuns], runs);
   for (const [analysisId, ids] of corpus) {
     const projectId = runs.get(analysisId)!.projectId;
     for (const id of ids) cite(projectId, id);
@@ -253,10 +253,17 @@ export async function loadSourceGuard(
  * The corpus of each run in `analysisIds`: every document id any of its
  * findings, requirements or cross-document findings records. Three reads per
  * batch of runs, of the recorded lists only.
+ *
+ * A finding with no record means its source read failed (#2446 records one for
+ * every finding it writes), so the recorded union may miss what it cited: that
+ * run's corpus is then every document of its project (fail closed), one more
+ * read per such run. A requirement or cross-document finding with no record is
+ * expected (it rests on the run) and widens nothing.
  */
 async function loadRunCorpus(
   db: GuardDb,
   analysisIds: readonly string[],
+  runs: ReadonlyMap<string, GuardRun>,
 ): Promise<Map<string, Set<string>>> {
   const corpus = new Map<string, Set<string>>();
   const add = (analysisId: string | null | undefined, sourceIds: string | null) => {
@@ -285,6 +292,24 @@ async function loadRunCorpus(
     for (const f of findings) add(f.agentResult?.analysisId, f.sourceIds);
     for (const r of requirements) add(r.analysisId, r.sourceIds);
     for (const c of crossDoc) add(c.analysisId, c.sourceIds);
+
+    const unrecorded = await db.finding.findMany({
+      where: { agentResult: { analysisId: { in: ids } }, sourceIds: null },
+      select: { agentResult: { select: { analysisId: true } } },
+    });
+    const incomplete = new Set(
+      unrecorded.flatMap((f) => (f.agentResult?.analysisId ? [f.agentResult.analysisId] : [])),
+    );
+    for (const analysisId of incomplete) {
+      const run = runs.get(analysisId);
+      if (!run) continue;
+      const docs = await db.document.findMany({
+        where: { projectId: run.projectId },
+        select: { id: true },
+      });
+      const set = corpus.get(analysisId)!;
+      for (const d of docs) set.add(d.id);
+    }
   }
   return corpus;
 }

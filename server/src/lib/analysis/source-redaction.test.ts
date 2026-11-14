@@ -133,29 +133,52 @@ function fakeDb(
   runRows: Array<{ id: string; projectId: string; sourceAccess: string | null }>,
   docRows: Array<{ id: string; projectId: string; aclSubjects: string }>,
   /** Each run's recorded rows, as the run-wide read finds them. */
-  recorded: Array<{ analysisId: string; sourceIds: string }> = [],
+  recorded: Array<{
+    analysisId: string;
+    sourceIds: string;
+    /** Which row kind records it; a finding by default. */
+    kind?: "finding" | "requirement" | "crossDoc";
+  }> = [],
+  /** The runs with a finding whose sources were not recorded (a failed read). */
+  unrecorded: string[] = [],
 ) {
   type RunWhere = {
     analysisId?: { in: string[] };
     agentResult?: { analysisId: { in: string[] } };
+    sourceIds?: null | { not: null };
   };
-  const inRuns = (where: RunWhere) =>
-    recorded.filter((r) =>
-      (where.analysisId?.in ?? where.agentResult?.analysisId.in ?? []).includes(r.analysisId),
+  const inRuns = (where: RunWhere, kind: "finding" | "requirement" | "crossDoc") =>
+    recorded.filter(
+      (r) =>
+        (r.kind ?? "finding") === kind &&
+        (where.analysisId?.in ?? where.agentResult?.analysisId.in ?? []).includes(r.analysisId),
     );
   const findingFindMany = vi.fn(async ({ where }: { where: RunWhere }) =>
-    inRuns(where).map((r) => ({
-      sourceIds: r.sourceIds,
-      agentResult: { analysisId: r.analysisId },
-    })),
+    where.sourceIds === null
+      ? unrecorded
+          .filter((id) => where.agentResult!.analysisId.in.includes(id))
+          .map((analysisId) => ({ agentResult: { analysisId } }))
+      : inRuns(where, "finding").map((r) => ({
+          sourceIds: r.sourceIds,
+          agentResult: { analysisId: r.analysisId },
+        })),
   );
-  const requirementFindMany = vi.fn(async ({ where }: { where: RunWhere }) => inRuns(where));
-  const crossDocFindMany = vi.fn(async () => []);
+  const requirementFindMany = vi.fn(async ({ where }: { where: RunWhere }) =>
+    inRuns(where, "requirement"),
+  );
+  const crossDocFindMany = vi.fn(async ({ where }: { where: RunWhere }) =>
+    inRuns(where, "crossDoc"),
+  );
   const analysisFindMany = vi.fn(async ({ where }: { where: { id: { in: string[] } } }) =>
     runRows.filter((r) => where.id.in.includes(r.id)),
   );
-  const documentFindMany = vi.fn(async ({ where }: { where: { id: { in: string[] } } }) =>
-    docRows.filter((d) => where.id.in.includes(d.id)),
+  const documentFindMany = vi.fn(
+    async ({ where }: { where: { id?: { in: string[] }; projectId?: string } }) =>
+      docRows.filter((d) =>
+        where.projectId !== undefined
+          ? d.projectId === where.projectId
+          : where.id!.in.includes(d.id),
+      ),
   );
   const db = {
     analysis: { findMany: analysisFindMany },
@@ -220,12 +243,47 @@ describe("loadSourceGuard (#2447)", () => {
     const wide = fakeDb([run], docs, recorded);
     const reader = vi.fn(async () => BOB);
     const guard = await loadSourceGuard(reader, [{ analysisId: "a", sourceIds: null }], wide.db);
-    expect(wide.findingFindMany).toHaveBeenCalledTimes(1);
+    // The recorded lists, then the findings with none (a failed read).
+    expect(wide.findingFindMany).toHaveBeenCalledTimes(2);
     expect(reader).toHaveBeenCalledTimes(1);
     expect(guard.canSeeRun("a")).toBe(false);
     expect(guard.canSee({ analysisId: "a", sourceIds: null })).toBe(false);
     const alice = await loadSourceGuard(ALICE, [{ analysisId: "a", sourceIds: null }], wide.db);
     expect(alice.canSeeRun("a")).toBe(true);
+  });
+
+  it("fails closed when a finding's sources were not recorded: every document of the project counts", async () => {
+    const run = { id: "a", projectId: "p1", sourceAccess: "shared" };
+    const docs = [
+      { id: "d1", projectId: "p1", aclSubjects: RESTRICTED_ACL },
+      { id: "d2", projectId: "p1", aclSubjects: "[]" },
+      { id: "d9", projectId: "p2", aclSubjects: RESTRICTED_ACL },
+    ];
+    // Only d2 is recorded; the finding whose read failed may have cited d1.
+    const recorded = [{ analysisId: "a", sourceIds: ids(["d2"]) }];
+    const rows = [{ analysisId: "a", sourceIds: null }];
+    const failed = fakeDb([run], docs, recorded, ["a"]);
+    const bob = await loadSourceGuard(BOB, rows, failed.db);
+    expect(bob.canSeeRun("a")).toBe(false);
+    expect(bob.canSee(rows[0]!)).toBe(false);
+    expect((await loadSourceGuard(ALICE, rows, failed.db)).canSeeRun("a")).toBe(true);
+    // Every read failed: no corpus recorded at all, still closed.
+    const none = fakeDb([run], docs, [], ["a"]);
+    expect((await loadSourceGuard(BOB, rows, none.db)).canSeeRun("a")).toBe(false);
+    // Every read recorded: the recorded corpus alone decides.
+    const ok = fakeDb([run], docs, recorded);
+    expect((await loadSourceGuard(BOB, rows, ok.db)).canSeeRun("a")).toBe(true);
+  });
+
+  it("counts a document a requirement or a cross-document finding records in the corpus", async () => {
+    const run = { id: "a", projectId: "p1", sourceAccess: "shared" };
+    const docs = [{ id: "d1", projectId: "p1", aclSubjects: RESTRICTED_ACL }];
+    const rows = [{ analysisId: "a", sourceIds: null }];
+    for (const kind of ["requirement", "crossDoc"] as const) {
+      const { db } = fakeDb([run], docs, [{ analysisId: "a", sourceIds: ids(["d1"]), kind }]);
+      expect((await loadSourceGuard(BOB, rows, db)).canSeeRun("a")).toBe(false);
+      expect((await loadSourceGuard(ALICE, rows, db)).canSeeRun("a")).toBe(true);
+    }
   });
 
   it("resolves the reader for a row resting on a run under a non-shared marker", async () => {
