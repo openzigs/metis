@@ -8,7 +8,18 @@
  * are consulted for BOTH endpoints) and drive the service's own logic against a
  * hand-rolled Prisma mock — no real DB (the #289 lesson).
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+// #2491 — the source filter is pinned over a real database in
+// tests/source-redaction-2491.sqlite.test.ts; here nothing is restricted unless
+// a test says which ids are.
+const hiddenIds = vi.hoisted(() => ({ ids: new Set<string>() }));
+vi.mock("../analysis/source-redaction.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../analysis/source-redaction.js")>()),
+  restrictedIds: async (_reader: unknown, rows: Array<{ id: string }>) =>
+    new Set(rows.map((r) => r.id).filter((id) => hiddenIds.ids.has(id))),
+  restrictedRequirementIds: async (_reader: unknown, ids: Iterable<string>) =>
+    new Set([...ids].filter((id) => hiddenIds.ids.has(id))),
+}));
 
 const actorHasProjectAccess = vi.fn();
 const listMemberProjectsInWorkspace = vi.fn();
@@ -50,6 +61,8 @@ const {
   deleteRequirementLink,
   listRequirementLinks,
   searchWorkspaceRequirements,
+  SEARCH_SCAN_BATCH,
+  SEARCH_SCAN_CAP,
 } = await import("./requirement-link-service.js");
 
 const actor = { id: "user-1", role: "developer" as const };
@@ -534,9 +547,15 @@ describe("searchWorkspaceRequirements", () => {
   beforeEach(() => {
     db = createMockDb();
     listMemberProjectsInWorkspace.mockResolvedValue(["projA", "projB"]);
-    db.requirement.count.mockResolvedValue(1);
     db.requirement.findMany.mockResolvedValue([
-      { id: "r1", title: "Login", projectId: "projA", project: { name: "Project A" } },
+      {
+        id: "r1",
+        title: "Login",
+        projectId: "projA",
+        project: { name: "Project A" },
+        analysisId: "a",
+        sourceIds: null,
+      },
     ]);
   });
 
@@ -568,58 +587,85 @@ describe("searchWorkspaceRequirements", () => {
   it("scopes the query to accessible projects, excludes soft-deleted, and paginates", async () => {
     const result = await searchWorkspaceRequirements(
       actor,
-      { workspaceId: "ws1", query: "log", page: 2, pageSize: 10 },
+      { workspaceId: "ws1", query: "log", page: 1, pageSize: 10 },
       db as never,
     );
-    const whereArg = db.requirement.findMany.mock.calls[0][0].where;
-    expect(whereArg.projectId).toEqual({ in: ["projA", "projB"] });
-    expect(whereArg.deletedAt).toBeNull();
-    expect(whereArg.title).toEqual({ contains: "log" });
     const callArgs = db.requirement.findMany.mock.calls[0][0];
-    expect(callArgs.skip).toBe(10);
-    expect(callArgs.take).toBe(10);
-    expect(result.items[0]).toMatchObject({ id: "r1", projectName: "Project A" });
+    expect(callArgs.where.projectId).toEqual({ in: ["projA", "projB"] });
+    expect(callArgs.where.deletedAt).toBeNull();
+    expect(callArgs.where.title).toEqual({ contains: "log" });
+    expect(callArgs.skip).toBe(0);
+    expect(callArgs.orderBy).toEqual([{ title: "asc" }, { id: "asc" }]);
+    expect(result.items).toEqual([
+      { id: "r1", title: "Login", projectId: "projA", projectName: "Project A" },
+    ]);
     expect(result.total).toBe(1);
+  });
+
+  it("cuts page 2 from the visible matches", async () => {
+    const rows = Array.from({ length: 15 }, (_, i) => ({
+      id: `r${String(i).padStart(2, "0")}`,
+      title: `t${String(i).padStart(2, "0")}`,
+      projectId: "projA",
+      project: { name: "Project A" },
+      analysisId: "a",
+      sourceIds: null,
+    }));
+    db.requirement.findMany.mockImplementation(async (args: { skip: number; take: number }) =>
+      rows.slice(args.skip, args.skip + args.take),
+    );
+    const result = await searchWorkspaceRequirements(
+      actor,
+      { workspaceId: "ws1", query: "t", page: 2, pageSize: 10 },
+      db as never,
+    );
+    expect(result.items.map((i) => i.id)).toEqual(rows.slice(10).map((r) => r.id));
+    expect(result).toMatchObject({ page: 2, pageSize: 10, total: 15 });
   });
 
   it("uses a case-insensitive ILIKE query on the Postgres adapter path (mixed-case term)", async () => {
     resolveDatabaseProviderMock.mockReturnValue("postgresql");
     const queryRaw = db.$queryRaw as ReturnType<typeof vi.fn>;
-    queryRaw
-      .mockResolvedValueOnce([{ count: 1n }])
-      .mockResolvedValueOnce([
-        { id: "r1", title: "Login", projectId: "projA", projectName: "Project A" },
-      ]);
+    queryRaw.mockResolvedValueOnce([
+      {
+        id: "r1",
+        title: "Login",
+        projectId: "projA",
+        projectName: "Project A",
+        analysisId: "a",
+        sourceIds: null,
+      },
+    ]);
     const result = await searchWorkspaceRequirements(
       actor,
-      { workspaceId: "ws1", query: "LOGIN", page: 2, pageSize: 10 },
+      { workspaceId: "ws1", query: "LOGIN", page: 1, pageSize: 10 },
       db as never,
     );
     // Postgres takes the raw ILIKE branch — the Prisma builder is NOT used.
     expect(db.requirement.findMany).not.toHaveBeenCalled();
     expect(db.requirement.count).not.toHaveBeenCalled();
-    expect(queryRaw).toHaveBeenCalledTimes(2);
-    const countSql = (queryRaw.mock.calls[0][0] as { strings: string[] }).strings.join(" ");
-    const pageSql = (queryRaw.mock.calls[1][0] as { strings: string[] }).strings.join(" ");
-    expect(countSql).toContain("ILIKE");
+    expect(queryRaw).toHaveBeenCalledTimes(1);
+    const pageSql = (queryRaw.mock.calls[0][0] as { strings: string[] }).strings.join(" ");
     expect(pageSql).toContain("ILIKE");
     // The mixed-case term is a bound parameter (never interpolated into SQL).
-    const pageValues = (queryRaw.mock.calls[1][0] as { values: unknown[] }).values;
+    const pageValues = (queryRaw.mock.calls[0][0] as { values: unknown[] }).values;
     expect(pageValues).toContain("%LOGIN%");
-    expect(result).toMatchObject({ total: 1, page: 2, pageSize: 10 });
-    expect(result.items[0]).toMatchObject({ id: "r1", projectName: "Project A" });
+    expect(result).toMatchObject({ total: 1, page: 1, pageSize: 10 });
+    expect(result.items).toEqual([
+      { id: "r1", title: "Login", projectId: "projA", projectName: "Project A" },
+    ]);
   });
 
   it("escapes LIKE metacharacters in the term on the Postgres path", async () => {
     resolveDatabaseProviderMock.mockReturnValue("postgresql");
     const queryRaw = db.$queryRaw as ReturnType<typeof vi.fn>;
-    queryRaw.mockResolvedValueOnce([{ count: 0n }]).mockResolvedValueOnce([]);
+    queryRaw.mockResolvedValueOnce([]);
     await searchWorkspaceRequirements(
       actor,
       { workspaceId: "ws1", query: "50%_off", page: 1, pageSize: 20 },
       db as never,
     );
-    const values = (queryRaw.mock.calls[1][0] as { values: unknown[] }).values;
+    const values = (queryRaw.mock.calls[0][0] as { values: unknown[] }).values;
     // % and _ are escaped so they match literally, not as wildcards.
     expect(values).toContain("%50\\%\\_off%");
   });
@@ -646,17 +692,111 @@ describe("searchWorkspaceRequirements", () => {
   });
 
   it("falls back to the default Prisma client when no db is supplied", async () => {
-    defaultPrismaMock.requirement.count.mockResolvedValue(1);
     defaultPrismaMock.requirement.findMany.mockResolvedValue([
-      { id: "r9", title: "Fallback", projectId: "projA", project: { name: "Project A" } },
+      {
+        id: "r9",
+        title: "Fallback",
+        projectId: "projA",
+        project: { name: "Project A" },
+        analysisId: "a",
+        sourceIds: null,
+      },
     ]);
     const result = await searchWorkspaceRequirements(actor, {
       workspaceId: "ws1",
       page: 1,
       pageSize: 20,
     });
-    expect(defaultPrismaMock.requirement.count).toHaveBeenCalledTimes(1);
     expect(defaultPrismaMock.requirement.findMany).toHaveBeenCalledTimes(1);
     expect(result.items[0]).toMatchObject({ id: "r9", projectName: "Project A" });
+  });
+});
+
+describe("#2491 — a requirement resting on a source the caller cannot see", () => {
+  let db: MockDb;
+  /** `n` matches in title order; the first `hidden` of them restricted. */
+  const matches = (n: number, hidden: number) => {
+    const rows = Array.from({ length: n }, (_, i) => {
+      const id = `r${String(i).padStart(5, "0")}`;
+      return {
+        id,
+        title: id,
+        projectId: "projA",
+        project: { name: "Project A" },
+        projectName: "Project A",
+        analysisId: "a",
+        sourceIds: null,
+      };
+    });
+    hiddenIds.ids = new Set(rows.slice(0, hidden).map((r) => r.id));
+    return rows;
+  };
+  beforeEach(() => {
+    db = createMockDb();
+    listMemberProjectsInWorkspace.mockResolvedValue(["projA"]);
+  });
+  afterEach(() => {
+    hiddenIds.ids = new Set();
+    resolveDatabaseProviderMock.mockReturnValue("sqlite");
+  });
+
+  it("is left out of the SQLite search before the page is cut, and not counted", async () => {
+    const rows = matches(30, 12);
+    db.requirement.findMany.mockImplementation(async (args: { skip: number; take: number }) =>
+      rows.slice(args.skip, args.skip + args.take),
+    );
+    const result = await searchWorkspaceRequirements(
+      actor,
+      { workspaceId: "ws1", query: "r", page: 1, pageSize: 10 },
+      db as never,
+    );
+    expect(result.items.map((i) => i.id)).toEqual(rows.slice(12, 22).map((r) => r.id));
+    expect(result.total).toBe(18);
+    // No id list is bound into the query at all: each batch is decided after it is read.
+    for (const [args] of db.requirement.findMany.mock.calls) {
+      expect(JSON.stringify(args.where)).not.toContain("notIn");
+    }
+  });
+
+  it("reads a bounded window of matches in bounded batches, however many rows match (#1346)", async () => {
+    const rows = matches(50_000, 49_000);
+    db.requirement.findMany.mockImplementation(async (args: { skip: number; take: number }) =>
+      rows.slice(args.skip, args.skip + args.take),
+    );
+    const result = await searchWorkspaceRequirements(
+      actor,
+      { workspaceId: "ws1", page: 1, pageSize: 20 },
+      db as never,
+    );
+    const takes = db.requirement.findMany.mock.calls.map(([args]) => args.take as number);
+    expect(Math.max(...takes)).toBeLessThanOrEqual(SEARCH_SCAN_BATCH);
+    expect(takes.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(SEARCH_SCAN_CAP);
+    // Every match in the window is hidden: nothing leaks, nothing is counted.
+    expect(result).toEqual({ items: [], page: 1, pageSize: 20, total: 0 });
+  });
+
+  it("is left out of the Postgres search's count and page, with no id list bound", async () => {
+    resolveDatabaseProviderMock.mockReturnValue("postgresql");
+    const rows = matches(50_000, 49_000);
+    const queryRaw = db.$queryRaw as ReturnType<typeof vi.fn>;
+    queryRaw.mockImplementation(async (sql: { values: unknown[] }) => {
+      const [take, skip] = sql.values.slice(-2) as [number, number];
+      return rows.slice(skip, skip + take);
+    });
+    const result = await searchWorkspaceRequirements(
+      actor,
+      { workspaceId: "ws1", query: "r", page: 1, pageSize: 10 },
+      db as never,
+    );
+    expect(result.total).toBe(0);
+    let read = 0;
+    for (const [sql] of queryRaw.mock.calls) {
+      const text = (sql as { strings: string[] }).strings.join(" ");
+      expect(text).not.toContain("NOT IN");
+      const [take] = (sql as { values: unknown[] }).values.slice(-2) as [number, number];
+      expect(take).toBeLessThanOrEqual(SEARCH_SCAN_BATCH);
+      read += take;
+    }
+    expect(read).toBeLessThanOrEqual(SEARCH_SCAN_CAP);
   });
 });

@@ -24,7 +24,14 @@
  *     stored, matching the findings that were written. An answered
  *     requirement no applicability entry matches is re-checked under the
  *     stored requirement's own id instead (#2222's **Re-check this
- *     requirement**).
+ *     requirement**). #2429 — a re-decided entry records, in `versions`, the
+ *     version of each stored requirement carrying its answers that it judged
+ *     (one no one edited by hand: its wording is the analysed wording with
+ *     the answers). Its findings record the same, so they are current for
+ *     those requirements, while an answer counts as a person's edit for every
+ *     finding the re-run did not re-produce (`requirement-staleness.ts`): the
+ *     traceability (agent) findings, and the governing findings of a
+ *     requirement whose re-decision failed, read stale until re-checked.
  *
  * Everything here runs after the answer is committed, off the request path,
  * and never throws: a failure is logged and the earlier results stand.
@@ -56,6 +63,10 @@ import {
   type RecheckGoverningRequirementInput,
   type RecheckGoverningRequirementOutcome,
 } from "../governing/recheck.js";
+import {
+  answeredOnlyVersions,
+  type AnsweredOnlyVersion,
+} from "../governing/requirement-staleness.js";
 import { mapRequirementToCode } from "../traceability/requirement-code-mapping.js";
 import type {
   GoverningAnalysisApplicability,
@@ -185,6 +196,8 @@ export interface ClarificationRerunDeps {
   recheck?: (
     input: RecheckGoverningRequirementInput,
   ) => Promise<RecheckGoverningRequirementOutcome>;
+  /** #2429 — the versions a re-decision judged (`answeredOnlyVersions`). */
+  judgedVersions?: typeof answeredOnlyVersions;
 }
 
 /** What one re-run did, for the log and the tests. */
@@ -214,6 +227,11 @@ function answersByRequirement(
     for (const id of r.requirementIds) out.set(id, [...(out.get(id) ?? []), r]);
   }
   return out;
+}
+
+/** One answer as a clarifications block holds it (`clarificationBlockEntries`). */
+function blockEntryKey(question: string, answer: string): string {
+  return `${clarificationBlockQuestion(question)}\n${sanitizeClarificationText(answer)}`;
 }
 
 /** A stored requirement of the analysis and the changed answers its body carries. */
@@ -365,7 +383,7 @@ export async function rerunAfterClarification(
   }
 
   try {
-    await rerunGoverning(input, byRequirement, deps, result);
+    await rerunGoverning(input, byRequirement, carrying, deps, result);
   } catch (err) {
     log.warn("governing impact could not be re-run after a clarification", {
       analysisId: input.analysisId,
@@ -388,6 +406,7 @@ export async function rerunAfterClarification(
 async function rerunGoverning(
   input: ClarificationRerunInput,
   byRequirement: Map<string, StoredClarification[]>,
+  carrying: readonly CarryingRow[],
   deps: ClarificationRerunDeps,
   result: ClarificationRerunResult,
 ): Promise<void> {
@@ -410,12 +429,14 @@ async function rerunGoverning(
   // Applicability entry id → every answer its requirement now carries: the
   // settled ones from earlier rounds as well as this round's.
   const targets = new Map<string, Array<{ key: string; question: string; answer: string }>>();
+  const entryOf = new Map<string, string>();
   for (const id of byRequirement.keys()) {
     const entry = applicabilityEntryFor(stored, { id, title: titles.get(id) });
     if (!entry) {
       result.governingUnmatched.push(id);
       continue;
     }
+    entryOf.set(id, entry);
     const answers = targets.get(entry) ?? [];
     for (const a of answersForRequirement(id, input.settled ?? [], input.records)) {
       if (!answers.some((b) => b.key === a.key)) answers.push(a);
@@ -425,6 +446,31 @@ async function rerunGoverning(
   if (targets.size === 0) return;
 
   const requirementIds = [...targets.keys()];
+  // #2429 — entry id → the stored rows carrying its requirements' answers.
+  const rowsOf = new Map<string, Set<string>>();
+  for (const { row, records } of carrying) {
+    for (const r of records) {
+      for (const id of r.requirementIds) {
+        const entry = entryOf.get(id);
+        if (entry) rowsOf.set(entry, (rowsOf.get(entry) ?? new Set()).add(row.id));
+      }
+    }
+  }
+  const judgedVersions = deps.judgedVersions ?? answeredOnlyVersions;
+  // Every answer this run read, as a clarifications block writes it. A row is
+  // stamped only at a version whose block carries none other: `prepare` runs
+  // in the findings queue's turn, so an answer submitted since this run read
+  // its answers can already be in the row, unjudged (#2429 review).
+  const read = new Set(
+    [...(input.settled ?? []), ...input.records.filter((r) => r.ambiguityField !== null)].map((a) =>
+      blockEntryKey(a.question, a.answer),
+    ),
+  );
+  const judgedAt = (version: AnsweredOnlyVersion | undefined): number | undefined =>
+    version &&
+    clarificationBlockEntries(version.body).every((e) => read.has(`${e.question}\n${e.answer}`))
+      ? version.version
+      : undefined;
   const produce = deps.produceFindings ?? produceGoverningFindingsForAnalysis;
   // The re-decided entries, in memory until the findings made from them are stored.
   let decided: GoverningRequirementApplicability[] = [];
@@ -439,6 +485,13 @@ async function rerunGoverning(
     // findings from now until the new ones are stored.
     prepare: async () => {
       const current = (await readGoverningApplicability(input.analysisId)) ?? stored;
+      // Read before the decisions, so a hand edit made while they run is not
+      // taken as judged.
+      const versions = await judgedVersions(
+        [...new Set([...rowsOf.values()].flatMap((ids) => [...ids]))],
+        input.analysisId,
+        input.projectId,
+      );
       const fresh = await Promise.all(
         requirementIds.map(async (requirementId) => {
           const entry = current.requirements.find((r) => r.requirementId === requirementId);
@@ -456,8 +509,17 @@ async function rerunGoverning(
           }
           const next = toStoredApplicability([{ requirementId, text, chunks: [], governing: set }])
             .requirements[0]!;
+          // #2429 — the stored rows whose wording this judged, at that version.
+          const judged = { ...entry?.versions };
+          for (const id of rowsOf.get(requirementId) ?? []) {
+            const version = judgedAt(versions.get(id));
+            if (version !== undefined) judged[id] = version;
+          }
           // The BA's governing answers on this requirement's pairs stand.
-          return withSettlementsFrom(next, entry);
+          return withSettlementsFrom(
+            Object.keys(judged).length > 0 ? { ...next, versions: judged } : next,
+            entry,
+          );
         }),
       );
       decided = fresh.filter((e): e is GoverningRequirementApplicability => e !== null);

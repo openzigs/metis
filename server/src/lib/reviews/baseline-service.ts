@@ -16,7 +16,13 @@
  * and Jama Connect couple review sign-off to baselines the same way (see
  * docs/USER_GUIDE.md).
  */
+import { RESTRICTED_SOURCE_TITLE } from "@metis/shared";
 import { AppError } from "../../middleware/error-handler.js";
+import {
+  restrictedRequirementIds,
+  sharedSourceReader,
+  type SourceReader,
+} from "../analysis/source-redaction.js";
 import { buildAuditLogData } from "../audit/audit-service.js";
 import { prisma } from "../prisma.js";
 import {
@@ -245,12 +251,35 @@ export async function listBaselines(
 // Contents (requirement @ pinned version)
 // ---------------------------------------------------------------------------
 
-export async function getBaselineContents(baselineId: string): Promise<unknown> {
+/**
+ * #2491 — `reader` (the caller; the shared audience by default, which sees no
+ * restricted source) is shown a requirement resting on a source they cannot
+ * see as an item with no snapshot and `restricted: true`.
+ */
+export async function getBaselineContents(
+  baselineId: string,
+  reader: SourceReader = sharedSourceReader(),
+): Promise<unknown> {
   const baseline = await loadBaselineOr404(baselineId);
   const sources = await loadSnapshotSources(baseline.items.map((i) => i.requirementId));
+  const hidden = await restrictedRequirementIds(
+    reader,
+    baseline.items.map((i) => i.requirementId),
+  );
 
   const items = baseline.items.map((item) => {
     const source = sources.get(item.requirementId);
+    if (hidden.has(item.requirementId)) {
+      return {
+        requirementId: item.requirementId,
+        version: item.version,
+        snapshot: null,
+        current: source
+          ? { version: source.row.version, deleted: source.row.deletedAt !== null }
+          : null,
+        restricted: true,
+      };
+    }
     return {
       requirementId: item.requirementId,
       version: item.version,
@@ -299,6 +328,8 @@ export interface BaselineCompareResult {
 export async function compareBaselines(
   baselineIdA: string,
   baselineIdB: string,
+  /** #2491 — as {@link getBaselineContents}: a hidden requirement shows no title or diff. */
+  reader: SourceReader = sharedSourceReader(),
 ): Promise<BaselineCompareResult> {
   const a = await loadBaselineOr404(baselineIdA);
   const b = await loadBaselineOr404(baselineIdB);
@@ -319,13 +350,15 @@ export async function compareBaselines(
     ),
   ];
   const sources = await loadSnapshotSources(involvedIds);
+  const hidden = await restrictedRequirementIds(reader, involvedIds);
 
   const snapshotAt = (requirementId: string, version: number): RequirementSnapshot | null => {
     const source = sources.get(requirementId);
-    if (!source) return null;
+    if (!source || hidden.has(requirementId)) return null;
     return snapshotAtVersion(pickTracked(source.row), source.versionsDesc, version);
   };
   const titleAt = (requirementId: string, version: number): string => {
+    if (hidden.has(requirementId)) return RESTRICTED_SOURCE_TITLE;
     const snapshot = snapshotAt(requirementId, version);
     const title = snapshot?.title;
     return typeof title === "string" ? title : "";

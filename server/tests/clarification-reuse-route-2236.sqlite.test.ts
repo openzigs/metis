@@ -121,6 +121,8 @@ const { initAnalysisRouter } = await import("../src/routes/analysis.js");
 const clarifications = await import("../src/lib/clarifications/analysis-clarifications.js");
 const { errorHandler, notFoundHandler } = await import("../src/middleware/error-handler.js");
 const { issueTokens } = await import("../src/lib/auth/jwt.js");
+const { ANSWERED_CLARIFICATION_VERSION_REASON } =
+  await import("../src/lib/governing/requirement-staleness.js");
 
 const WORKSPACE = "ws-2236r";
 const PROJECT = "proj-2236r";
@@ -252,6 +254,17 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     }
 
     const records = () => db.clarificationRecord.findMany({ where: { projectId: PROJECT } });
+    /**
+     * #2429 — the reasons of the versions written into the analysis's stored
+     * requirement: an answer on an existing row is the analyst's edit.
+     */
+    const versionReasons = async (analysisId: string) =>
+      (
+        await db.requirementVersion.findMany({
+          where: { requirement: { analysisId } },
+          select: { reason: true, actorId: true },
+        })
+      ).map((v) => [v.reason, v.actorId]);
 
     beforeAll(async () => {
       sqlite = createMigratedSqlite("2236-clarification-reuse-route");
@@ -291,6 +304,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const first = await seedAnalysis(OPEN_ROUND);
       const submitted = await clarify(first, { answers: [{ questionId: "q-1", answer: ANSWER }] });
       expect(submitted.status).toBe(200);
+      expect(await versionReasons(first)).toEqual([[ANSWERED_CLARIFICATION_VERSION_REASON, null]]);
       // Recorded off the response's path.
       await vi.waitFor(async () => expect(await records()).toHaveLength(1));
       const [record] = await records();
@@ -320,6 +334,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       // And the reused answer reaches the second analysis's stored requirement.
       const row = await db.requirement.findUniqueOrThrow({ where: { id: `req-row-${seq}` } });
       expect(row.body).toContain(ANSWER);
+      expect(await versionReasons(second)).toEqual([[ANSWERED_CLARIFICATION_VERSION_REASON, null]]);
     });
 
     /** Round 1 answered (an earlier question), round 2 open. */
@@ -425,6 +440,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         );
       expect(res.status).toBe(200);
       expect(res.body.data).toMatchObject({ applied: 1 });
+      expect(await versionReasons(id)).toEqual([[ANSWERED_CLARIFICATION_VERSION_REASON, null]]);
       await vi.waitFor(async () => expect(await records()).toHaveLength(1));
       expect((await records())[0]).toMatchObject({ analysisId: id, answer: ANSWER });
     });

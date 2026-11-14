@@ -132,3 +132,24 @@ export function requirementScopeWhere(req: Request): { projectId?: string } {
   const projectId = (req as RequirementScopedRequest).requirementProjectId;
   return projectId ? { projectId } : {};
 }
+
+/**
+ * #2447 / #2491 — for a project-scoped route (`/projects/:projectId/requirements/:id/…`):
+ * a requirement resting on a source the caller cannot see answers as an
+ * unknown one does. An unknown id falls through to the route's own 404, so
+ * both read the same.
+ */
+export async function assertRequirementSourcesVisible(
+  userId: string,
+  projectId: string,
+  requirementId: string,
+): Promise<void> {
+  const row = await prisma.requirement.findFirst({
+    where: { id: requirementId, projectId, deletedAt: null },
+    select: { id: true, analysisId: true, sourceIds: true },
+  });
+  if (!row) return;
+  if ((await restrictedIds(userSourceReader(userId), [row])).size > 0) {
+    throw new AppError(404, "REQUIREMENT_NOT_FOUND", "requirement not found in this project");
+  }
+}

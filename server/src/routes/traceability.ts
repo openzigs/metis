@@ -6,6 +6,7 @@
  *   GET    /requirements/:requirementId/spec-mappings        analysis.read   (#226 list)
  *   POST   /requirements/:requirementId/spec-mappings        analysis.run    (#226 create)
  *   DELETE /requirements/:requirementId/spec-mappings/:id     analysis.run    (#226 remove)
+ *     (#2491 — all three answer 404 for a requirement whose source the caller cannot see)
  *   GET    /specs/:specId/code-mappings                       analysis.read   (#227 list)
  *   POST   /specs/:specId/code-mappings                       analysis.run    (#227 create)
  *   DELETE /specs/:specId/code-mappings/:id                   analysis.run    (#227 remove)
@@ -35,8 +36,8 @@ import {
   traceabilityPreAuthRateLimiter,
 } from "../middleware/traceability-gaps-rate-limit.js";
 import { AppError } from "../middleware/error-handler.js";
-import { prisma } from "../lib/prisma.js";
-import { restrictedIds, userSourceReader } from "../lib/analysis/source-redaction.js";
+import { restrictedRequirementIds, userSourceReader } from "../lib/analysis/source-redaction.js";
+import { assertRequirementSourcesVisible } from "../lib/requirements/requirement-authz.js";
 import * as reqSpec from "../lib/traceability/requirement-spec-mapping.js";
 import * as specCode from "../lib/traceability/spec-code-mapping.js";
 import {
@@ -70,26 +71,6 @@ const projectIdOf = (req: Request) => paramOf(req, "projectId", "PROJECT_REQUIRE
 const requirementIdOf = (req: Request) => paramOf(req, "requirementId", "REQUIREMENT_REQUIRED");
 const specIdOf = (req: Request) => paramOf(req, "specId", "SPEC_REQUIRED");
 
-/**
- * #2447 — a requirement resting on a source the caller cannot see answers as
- * an unknown one does (the chain shows its title and body). An unknown id
- * falls through to the chain's own 404, so both read the same.
- */
-async function assertRequirementSourcesVisible(
-  userId: string,
-  projectId: string,
-  requirementId: string,
-): Promise<void> {
-  const row = await prisma.requirement.findFirst({
-    where: { id: requirementId, projectId, deletedAt: null },
-    select: { id: true, analysisId: true, sourceIds: true },
-  });
-  if (!row) return;
-  if ((await restrictedIds(userSourceReader(userId), [row])).size > 0) {
-    throw new AppError(404, "REQUIREMENT_NOT_FOUND", "requirement not found in this project");
-  }
-}
-
 export function traceabilityRouter(): Router {
   const r = Router({ mergeParams: true });
 
@@ -108,7 +89,13 @@ export function traceabilityRouter(): Router {
       await assertRequirementSourcesVisible(actorOf(req).id, projectId, requirementId);
       // Default behaviour (no `includeLinked`) is byte-for-byte the #229 chain.
       if (String(req.query.includeLinked) !== "true") {
-        res.json(ok(await getRequirementChain(projectId, requirementId)));
+        res.json(
+          ok(
+            await getRequirementChain(projectId, requirementId, {
+              reader: userSourceReader(actorOf(req).id),
+            }),
+          ),
+        );
         return;
       }
       const rawDepth = req.query.depth;
@@ -129,8 +116,18 @@ export function traceabilityRouter(): Router {
       if (!filePath) {
         throw new AppError(400, "FILE_PATH_REQUIRED", "filePath query parameter is required");
       }
-      const requirementIds = await getRequirementsForFile(projectIdOf(req), filePath);
-      res.json(ok({ filePath, requirementIds }));
+      const found = await getRequirementsForFile(projectIdOf(req), filePath);
+      // #2491 — a requirement resting on a source the caller cannot see is
+      // not named: only how many were left out.
+      const hidden = await restrictedRequirementIds(userSourceReader(actorOf(req).id), found);
+      const requirementIds = found.filter((id) => !hidden.has(id));
+      res.json(
+        ok({
+          filePath,
+          requirementIds,
+          ...(hidden.size > 0 ? { restrictedCount: hidden.size } : {}),
+        }),
+      );
     },
   );
 
@@ -149,7 +146,14 @@ export function traceabilityRouter(): Router {
           issues: parsed.error.flatten(),
         });
       }
-      res.json(ok(await listUntestedRequirements(projectIdOf(req), parsed.data)));
+      res.json(
+        ok(
+          await listUntestedRequirements(projectIdOf(req), {
+            ...parsed.data,
+            reader: userSourceReader(actorOf(req).id),
+          }),
+        ),
+      );
     },
   );
 
@@ -159,6 +163,12 @@ export function traceabilityRouter(): Router {
     requireAuth,
     requirePermission("analysis.read"),
     async (req, res) => {
+      // #2491 — a requirement the caller cannot see answers as an unknown one.
+      await assertRequirementSourcesVisible(
+        actorOf(req).id,
+        projectIdOf(req),
+        requirementIdOf(req),
+      );
       res.json(ok(await reqSpec.listForRequirement(projectIdOf(req), requirementIdOf(req))));
     },
   );
@@ -174,6 +184,12 @@ export function traceabilityRouter(): Router {
           issues: parsed.error.flatten(),
         });
       }
+      // #2491 — a requirement the caller cannot see answers as an unknown one.
+      await assertRequirementSourcesVisible(
+        actorOf(req).id,
+        projectIdOf(req),
+        requirementIdOf(req),
+      );
       const created = await reqSpec.create(projectIdOf(req), requirementIdOf(req), parsed.data);
       res.status(201).json(ok(created));
     },
@@ -184,6 +200,12 @@ export function traceabilityRouter(): Router {
     requireAuth,
     requirePermission("analysis.run"),
     async (req, res) => {
+      // #2491 — a requirement the caller cannot see answers as an unknown one.
+      await assertRequirementSourcesVisible(
+        actorOf(req).id,
+        projectIdOf(req),
+        requirementIdOf(req),
+      );
       await reqSpec.remove(projectIdOf(req), requirementIdOf(req), String(req.params.mappingId));
       res.status(204).end();
     },

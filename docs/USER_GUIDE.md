@@ -2217,7 +2217,7 @@ Restoring is limited to **coordinators and admins**.
 
 Restoring does **not** overwrite history — it creates a **new** version with the restored contents, so the full trail (including the restore itself) is always preserved.
 
-Changes METIS makes on its own are recorded too: writing clarification answers into a requirement shows as a version with the reason *"Clarification answers applied"*, and an import re-sync that changes a requirement shows as *"Import re-sync from the source system"*.
+Changes METIS makes on its own are recorded too: writing clarification answers into a requirement shows as a version with the reason *"Clarification answers applied"*, or, for an answer given after the analysis had already checked the requirement, *"Clarification answered after the analysis"* (that one marks the requirement's earlier findings as out of date until they are checked again), and an import re-sync that changes a requirement shows as *"Import re-sync from the source system"*.
 
 > **Imported requirements follow their source.** A re-sync writes the source system's title, description, priority, type and labels back over the requirement, so it **reverts any edit you made in METIS**, even if nothing changed in the source. Your edit is not lost: it stays in History as its own version, and you can bring it back with **Restore**. If the project has **Require approved review to publish/export** turned on (see 12.6.1; it is off by default), a re-sync that changes a requirement also means its approved review no longer matches, so the requirement needs reviewing again before it can be published or exported.
 
@@ -6586,6 +6586,14 @@ An approval is of a wording, so editing that wording reopens it:
   chat say the same. The analysis findings the requirement was written
   from are marked too, in the findings list and the traceability matrix
   ("Stale: the analysis judged v0; the requirement is now v2.").
+  Answering a clarifying question about a requirement that already exists
+  counts as an edit too (#2429): the analysis judged the wording before
+  your answer. METIS re-checks the governing rules on the answered
+  wording by itself, and those results stop being marked stale once the
+  re-check is stored. If that re-check fails, they stay marked stale, so
+  you can **Re-check this requirement**. The analysis findings stay marked
+  until a new analysis. An answer written in when the requirements are
+  first created (on approval) is part of the analysis and marks nothing.
 - **Re-check this requirement.** In the Governing rules panel, a stale
   result has a **Re-check this requirement** button (you need
   permission to run analyses). It checks the governing rules again

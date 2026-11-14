@@ -34,6 +34,7 @@
  */
 import { findMetisMarkers, parseAcceptanceCriteria } from "@metis/shared";
 import { createChildLogger } from "../logger.js";
+import { ANSWERED_CLARIFICATION_VERSION_REASON } from "../governing/requirement-staleness.js";
 import { prisma } from "../prisma.js";
 import {
   RequirementVersionError,
@@ -880,6 +881,7 @@ async function writeClarifiedBody(
   row: EnrichmentRow,
   answers: ReadonlyArray<AnsweredQuestion>,
   analysisId: string,
+  reason: string,
 ): Promise<{ updated: boolean; title: string; notApplied: ClarificationNotAppliedReason | null }> {
   let current: EnrichmentRow | null = row;
   let title = row.title;
@@ -905,7 +907,7 @@ async function writeClarifiedBody(
         patch: { body: nextBody },
         expectedVersion: current.version,
         actorId: null,
-        reason: CLARIFICATION_VERSION_REASON,
+        reason,
       });
       return { updated: true, title, notApplied: null };
     } catch (err) {
@@ -947,10 +949,21 @@ async function writeClarifiedBody(
  *
  * Idempotent: the block is regenerated from the dialog state every time, and a
  * row that no longer has attributed answers has its stale block removed.
+ *
+ * #2429 — `afterAnalysis`: the analyst answered on requirements that already
+ * exist, so the analysis judged them before the answer. Each version written
+ * then carries {@link ANSWERED_CLARIFICATION_VERSION_REASON}, which reads as a
+ * person's edit for staleness (`requirement-staleness.ts`), so the findings
+ * judged on the earlier wording read stale. Without it (promotion, a re-run
+ * re-creating the rows) the answers are written as the analysis's own.
  */
 export async function applyClarificationsToRequirements(
   analysisId: string,
+  options: { afterAnalysis?: boolean } = {},
 ): Promise<ClarificationApplication | null> {
+  const reason = options.afterAnalysis
+    ? ANSWERED_CLARIFICATION_VERSION_REASON
+    : CLARIFICATION_VERSION_REASON;
   try {
     const state = await readDialogState(analysisId);
     const answered = collectAnsweredQuestions(state);
@@ -991,7 +1004,7 @@ export async function applyClarificationsToRequirements(
       const answers = byRequirementId.get(row.id) ?? [];
       // The title is the one the write last read, so an analyst rename made
       // while enrichment was retrying shows in the accounting.
-      const written = await writeClarifiedBody(row, answers, analysisId);
+      const written = await writeClarifiedBody(row, answers, analysisId, reason);
       for (const a of answers) {
         if (written.notApplied) {
           notAppliedAt.set(a.questionId, {

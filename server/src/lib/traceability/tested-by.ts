@@ -102,6 +102,7 @@
  * `in` values, never interpolated into SQL.
  */
 import {
+  RESTRICTED_SOURCE_TITLE,
   SIMILAR_REQUIREMENT_SOURCE,
   type RequirementTestGap,
   type RequirementTestGaps,
@@ -118,6 +119,11 @@ import { goPackageDir, loadResolvedGoCalls } from "../impact-analysis/go-call-re
 import { isDistinctiveGoCallee, isExportedGoName } from "./go-inferred-call-names.js";
 import { denoiseRequirementQuery } from "./requirement-code-mapping.js";
 import { ANALYSIS_GROUNDING_SOURCE } from "./seed-code-links-from-findings.js";
+import {
+  restrictedIds,
+  sharedSourceReader,
+  type SourceReader,
+} from "../analysis/source-redaction.js";
 
 export type TestedByPrisma = Pick<
   PrismaClient,
@@ -1050,7 +1056,17 @@ export async function resolveTestedBy(
  */
 export async function listUntestedRequirements(
   projectId: string,
-  opts?: { analysisId?: string; limit?: number; cursor?: string },
+  opts?: {
+    analysisId?: string;
+    limit?: number;
+    cursor?: string;
+    /**
+     * #2491 — who reads the list: a requirement resting on a source they
+     * cannot see is listed as the placeholder. Defaults to the shared
+     * audience, which sees no restricted source (fail closed).
+     */
+    reader?: SourceReader;
+  },
   deps?: TestedByDeps,
 ): Promise<RequirementTestGaps> {
   const prisma = pickPrisma(deps);
@@ -1071,7 +1087,7 @@ export async function listUntestedRequirements(
       deletedAt: null,
       ...(opts?.analysisId ? { analysisId: opts.analysisId } : {}),
     },
-    select: { id: true, title: true, body: true, analysisId: true },
+    select: { id: true, title: true, body: true, analysisId: true, sourceIds: true },
   });
   requirements.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 
@@ -1113,10 +1129,17 @@ export async function listUntestedRequirements(
   const after = opts?.cursor;
   const remaining = after ? untested.filter((g) => g.requirementId > after) : untested;
   const page = remaining.slice(0, limit);
+  const byId = new Map(requirements.map((r) => [r.id, r]));
+  const hidden = await restrictedIds(
+    opts?.reader ?? sharedSourceReader(),
+    page.map((g) => byId.get(g.requirementId)!),
+  );
   return {
     total: requirements.length,
     tested,
-    untested: page,
+    untested: page.map((g) =>
+      hidden.has(g.requirementId) ? { ...g, title: RESTRICTED_SOURCE_TITLE } : g,
+    ),
     noCode,
     nextCursor: remaining.length > limit ? page[page.length - 1].requirementId : null,
   };

@@ -1089,7 +1089,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
             }),
             notChecked: JSON.stringify([
               { text: `${SECRET}: ${SECRET} — body`, reason: "text-cut", count: 12 },
-              { text: "Customers can pay: more", reason: "text-cut", count: 3 },
+              { text: "Customers can pay: Customers can pay — body", reason: "text-cut", count: 3 },
             ]),
           },
         });
@@ -1104,7 +1104,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           expect(bob!.statement).toBe(`2 chosen requirements of project "${P}"`);
           expect(bob!.notChecked.map((n) => n.text)).toEqual([
             RESTRICTED_SOURCE_TITLE,
-            "Customers can pay: more",
+            "Customers can pay: Customers can pay — body",
           ]);
           expect(bob!.sourceRequirementIds).toEqual(["req-2447-open", "req-2447-secret"]);
           const root = await viewPortfolioAssessment(

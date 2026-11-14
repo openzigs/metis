@@ -1301,6 +1301,14 @@ jobs:
         working-directory: server
         run: pnpm test:integration document-acl-save-2356-postgres
 
+      # Issue #2435 — approval reads the document ACL under the row lock its
+      # indexState CAS takes, and a save updates the document before its chunks.
+      # Prove that a save arriving while approval is mid-transaction waits for it
+      # and restricts every chunk approval commits.
+      - name: Prove an ACL save racing approval restricts every new chunk on real Postgres
+        working-directory: server
+        run: pnpm test:integration rag-approve-acl-save-2435-postgres
+
       # Issue #2032 — a governing-finding decision reads its decider's name inside
       # its own transaction. Prove that three decisions started at once on a
       # ONE-connection pool all commit: a lookup through the global client would
