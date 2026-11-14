@@ -90,7 +90,7 @@ const csvHostnameSchema = z
  * strings and numbers) is refused rather than guessed at. `ConfigService.set`
  * stores the result as `"true"` / `"false"`.
  */
-const strictBoolSchema = z.union([
+export const strictBoolSchema = z.union([
   z.boolean(),
   z.union([z.literal(0), z.literal(1)]).transform((n) => n === 1),
   z.string().transform((raw, ctx) => {

@@ -27,6 +27,7 @@ import { requireAuth } from "../../middleware/auth.js";
 import { requirePermission } from "../../middleware/require-permission.js";
 import { requireMfa } from "../../lib/auth/require-mfa.js";
 import { getEmbedder, listBackendDescriptors } from "../../lib/rag/embedder.js";
+import { strictBoolSchema } from "../../lib/config/key-registry.js";
 import { getKnowledgeService, ReindexConflictError } from "../../lib/rag/knowledge-service.js";
 import {
   defaultMigrationDeps,
@@ -54,7 +55,7 @@ const reindexBodySchema = z
      * Issue #787 — discard a surviving shadow and re-embed from scratch. Default
      * false: an interrupted reindex RESUMES from its checkpoint.
      */
-    fresh: z.coerce.boolean().optional(),
+    fresh: strictBoolSchema.optional(),
   })
   .optional();
 
