@@ -42,6 +42,8 @@ import {
 } from "../lib/discussions/edit-message.js";
 import { promoteMessageToRequirement, PromoteError } from "../lib/discussions/promote.js";
 import {
+  REQUIREMENT_PICKER_FETCH,
+  REQUIREMENT_PICKER_LIMIT,
   searchProjectRequirements,
   visibleRequirementPicks,
 } from "../lib/discussions/requirement-search.js";
@@ -306,12 +308,13 @@ export function discussionsRouter(): Router {
     if (!allowed) throw projectNotFound();
 
     // #2447 — never a requirement resting on a source the caller cannot see.
+    // Read past the answer's size first, so hidden matches do not leave it short.
     const picks = await visibleRequirementPicks(
       projectId,
-      await searchProjectRequirements(projectId, term),
+      await searchProjectRequirements(projectId, term, undefined, REQUIREMENT_PICKER_FETCH),
       userSourceReader(actor.id),
     );
-    res.json({ success: true, data: picks });
+    res.json({ success: true, data: picks.slice(0, REQUIREMENT_PICKER_LIMIT) });
   });
 
   // POST /api/discussions/threads — create a project-scoped thread.

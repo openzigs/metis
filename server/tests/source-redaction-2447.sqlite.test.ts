@@ -119,6 +119,8 @@ const WS = "ws-2447";
 const P = "proj-2447-x";
 const CR = "cr-2447-shared";
 const LEGACY = "cr-2447-legacy";
+/** A shared run whose rows cite only the open document. */
+const CR_OPEN = "cr-2447-open";
 const SECRET = "Payroll export for the CFO";
 
 type Who = "alice" | "bob" | "root";
@@ -198,6 +200,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       for (const [id, sourceAccess, title] of [
         [CR, "shared", "Checkout"],
         [LEGACY, null, "Older checkout"],
+        [CR_OPEN, "shared", "Cart"],
       ] as const) {
         await db.analysis.create({
           data: {
@@ -304,6 +307,16 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         },
       });
       await requirement("req-2447-run", CR, "Checkout is fast", null);
+      await db.agentResult.create({
+        data: {
+          analysisId: CR_OPEN,
+          agentKey: "code",
+          status: "completed",
+          output: JSON.stringify({ summary: "Read the cart document", notes: [] }),
+          findings: { create: [finding("f-cart", "The cart is kept", sources(["d-open"]))] },
+        },
+      });
+      await requirement("req-2447-cart-run", CR_OPEN, "Cart totals add up", null);
       await requirement("req-2447-legacy", LEGACY, `${SECRET} (legacy)`, sources(["d-secret"]));
       await db.crossDocFinding.createMany({
         data: [
@@ -407,7 +420,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         const snapshot = res.body.data as AnalysisSnapshot;
         expect(restrictedIdsOf(snapshot)).toEqual({
           findings: ["f-secret"],
-          requirements: ["req-2447-secret"],
+          // req-2447-run records no sources: it rests on the run as a whole,
+          // which read d-secret, so Bob cannot see it either.
+          requirements: ["req-2447-secret", "req-2447-run"],
           crossDoc: ["c-secret"],
         });
         // Never the whole result: every row is still there, in place.
@@ -429,10 +444,37 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(listed.map((r) => [r.id, r.title, r.restricted ?? false])).toEqual([
           ["s-open", "Customers can pay", false],
           ["s-secret", RESTRICTED_SOURCE_TITLE, true],
-          ["s-new", "Not yet promoted", false],
+          ["s-new", RESTRICTED_SOURCE_TITLE, true],
         ]);
-        // The run's narrative rests on the shared audience Bob is part of.
-        expect(snapshot.agents[0]!.summary).toBe("Read the documents");
+        // The run's narrative rests on the run as a whole: d-secret included.
+        expect(snapshot.agents[0]!.summary).toBeNull();
+      });
+
+      it("shows Bob what rests on a shared run whose every recorded source he can see", async () => {
+        const res = await get("bob", `/api/analyses/${CR_OPEN}`);
+        expect(res.status).toBe(200);
+        const snapshot = res.body.data as AnalysisSnapshot;
+        expect(restrictedIdsOf(snapshot)).toEqual({ findings: [], requirements: [], crossDoc: [] });
+        expect(snapshot.requirements.map((r) => r.title)).toEqual(["Cart totals add up"]);
+        expect(snapshot.agents[0]!.summary).toBe("Read the cart document");
+      });
+
+      it("hides what rests on a shared run once a source it read is restricted", async () => {
+        await db.document.update({
+          where: { id: "d-open" },
+          data: { aclSubjects: JSON.stringify([{ kind: "user", value: "alice" }]) },
+        });
+        try {
+          const snapshot = (await get("bob", `/api/analyses/${CR_OPEN}`)).body
+            .data as AnalysisSnapshot;
+          expect(snapshot.requirements.map((r) => r.title)).toEqual([RESTRICTED_SOURCE_TITLE]);
+          expect(snapshot.agents[0]!.summary).toBeNull();
+          const alice = (await get("alice", `/api/analyses/${CR_OPEN}`)).body
+            .data as AnalysisSnapshot;
+          expect(alice.requirements.map((r) => r.title)).toEqual(["Cart totals add up"]);
+        } finally {
+          await db.document.update({ where: { id: "d-open" }, data: { aclSubjects: "[]" } });
+        }
       });
 
       it("shows Alice (on the list) and an admin everything", async () => {
@@ -551,7 +593,12 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           title: RESTRICTED_SOURCE_TITLE,
           restricted: true,
         });
-        expect(items.filter((r) => r.restricted).map((r) => r.id)).toEqual(["req-2447-secret"]);
+        expect(
+          items
+            .filter((r) => r.restricted)
+            .map((r) => r.id)
+            .sort(),
+        ).toEqual(["req-2447-run", "req-2447-secret"]);
 
         const search = await get("bob", `/api/projects/${P}/requirements?q=Payroll`);
         // Only the legacy one, which keeps the shared-audience rule.
@@ -662,12 +709,20 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           code: "SPECKIT_REQUIREMENTS_RESTRICTED",
           requirementIds: ["req-2447-secret"],
         });
+        await expect(loadApprovedRequirements(P, ["req-2447-run"])).rejects.toMatchObject({
+          code: "SPECKIT_REQUIREMENTS_RESTRICTED",
+          requirementIds: ["req-2447-run"],
+        });
         const ok = await loadApprovedRequirements(P, [
           "req-2447-open",
-          "req-2447-run",
+          "req-2447-cart-run",
           "req-2447-legacy",
         ]);
-        expect(ok.map((r) => r.id)).toEqual(["req-2447-open", "req-2447-run", "req-2447-legacy"]);
+        expect(ok.map((r) => r.id)).toEqual([
+          "req-2447-open",
+          "req-2447-cart-run",
+          "req-2447-legacy",
+        ]);
       });
     });
 
@@ -749,7 +804,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     describe("the portfolio and impact checks", () => {
       it("a change request's checks read only the requirements the starter can see", async () => {
         const bob = await loadChangeRequestSource(CR, async () => true, userSourceReader("bob"));
-        expect(bob.requirements.map((r) => r.id).sort()).toEqual(["req-2447-open", "req-2447-run"]);
+        expect(bob.requirements.map((r) => r.id)).toEqual(["req-2447-open"]);
         const alice = await loadChangeRequestSource(
           CR,
           async () => true,
@@ -766,9 +821,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
 
       it("says how many requirements were left out, never which", async () => {
         const bob = await loadChangeRequestSource(CR, async () => true, userSourceReader("bob"));
-        expect(bob.restrictedLeftOut).toBe(1);
+        expect(bob.restrictedLeftOut).toBe(2);
         expect(restrictedNotChecked(bob)).toEqual([
-          { text: "1 requirement", reason: "restricted-source", count: 1 },
+          { text: "2 requirements", reason: "restricted-source", count: 2 },
         ]);
         const alice = await loadChangeRequestSource(
           CR,
@@ -788,9 +843,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         const bob = await start("bob");
         expect(JSON.stringify(bob.input)).not.toContain("Payroll");
         expect(bob.notChecked).toContainEqual({
-          text: "1 requirement",
+          text: "2 requirements",
           reason: "restricted-source",
-          count: 1,
+          count: 2,
         });
         expect(JSON.stringify(bob.notChecked)).not.toContain("Payroll");
         const alice = await start("alice");
@@ -815,16 +870,13 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         const fromCr = await post("bob", { analysisId: CR, projectIds: [P] });
         expect(fromCr.status).toBe(202);
         // #2447 — the starter is told how many were left out, never which.
-        expect(fromCr.body.data.requirementsLeftOut).toBe(1);
+        expect(fromCr.body.data.requirementsLeftOut).toBe(2);
         expect(JSON.stringify(fromCr.body)).not.toContain("req-2447-secret");
         const aliceCr = await post("alice", { analysisId: CR, projectIds: [P] });
         expect(aliceCr.body.data).not.toHaveProperty("requirementsLeftOut");
         triggerSpy.mockClear();
         await post("bob", { analysisId: CR, projectIds: [P] });
-        expect(triggerSpy.mock.calls[0]![0].requirementIds.sort()).toEqual([
-          "req-2447-open",
-          "req-2447-run",
-        ]);
+        expect(triggerSpy.mock.calls[0]![0].requirementIds).toEqual(["req-2447-open"]);
 
         const named = await post("bob", { requirementIds: ["req-2447-secret"], projectIds: [P] });
         expect(named.status).toBe(403);

@@ -31,6 +31,12 @@ import { restrictedIds, type SourceReader } from "../analysis/source-redaction.j
 export const REQUIREMENT_PICKER_LIMIT = 20;
 
 /**
+ * #2447 — matches the picker reads before it leaves out what the caller cannot
+ * see, so restricted matches rarely leave it short of a full answer.
+ */
+export const REQUIREMENT_PICKER_FETCH = REQUIREMENT_PICKER_LIMIT * 5;
+
+/**
  * #2218 — the longest term matched, in characters; the rest is ignored. The term
  * becomes a pattern tested against every live title of the project.
  */
@@ -80,6 +86,7 @@ export function requirementMatchQuery(
   provider: DatabaseProvider,
   projectId: string,
   needle: string,
+  limit: number = REQUIREMENT_PICKER_LIMIT,
 ): Prisma.Sql {
   const titleMatch =
     provider === "sqlite"
@@ -93,7 +100,7 @@ export function requirementMatchQuery(
       AND a."deletedAt" IS NULL
       AND ${titleMatch}
     ORDER BY r."createdAt" DESC, r."id" DESC
-    LIMIT ${REQUIREMENT_PICKER_LIMIT}`;
+    LIMIT ${limit}`;
 }
 
 /**
@@ -106,6 +113,7 @@ export async function searchProjectRequirements(
   projectId: string,
   term: string,
   provider: DatabaseProvider = resolveDatabaseProvider(),
+  limit: number = REQUIREMENT_PICKER_LIMIT,
 ): Promise<RequirementPick[]> {
   const live = { projectId, deletedAt: null, analysis: { deletedAt: null } };
   // The id tie-break keeps the order stable when createdAt repeats.
@@ -118,13 +126,13 @@ export async function searchProjectRequirements(
     return prisma.requirement.findMany({
       where: live,
       orderBy,
-      take: REQUIREMENT_PICKER_LIMIT,
+      take: limit,
       select,
     });
   }
 
   const hits = await prisma.$queryRaw<Array<{ id: string }>>(
-    requirementMatchQuery(provider, projectId, needle),
+    requirementMatchQuery(provider, projectId, needle, limit),
   );
   if (hits.length === 0) return [];
 

@@ -19,19 +19,23 @@
  *     that cannot be read at all, counts as one they cannot see;
  *   - a row with no list (NULL, or a value that does not parse): it rests on
  *     the run as a whole, so it is shown only to a reader who can see
- *     everything the run could (fail closed). A `shared` run read as the
- *     shared audience (#2248), which sees no restricted document; every member
- *     sees at least that, so the row is shown. A run under any other marker
- *     (#2448 adds the starter's access) is shown only to an admin, whom no
- *     access list restricts, until that marker says what the run could read.
+ *     everything the run could (fail closed). For a `shared` run that is its
+ *     corpus: every document any of its rows records, checked against the
+ *     access lists as they are NOW. It read them as the shared audience
+ *     (#2248), so all were open then; one restricted since hides the run-wide
+ *     rows (and an agent's narrative) from a reader who cannot see it. A run
+ *     under any other marker (#2448 adds the starter's access) is shown only to
+ *     an admin, whom no access list restricts, until that marker says what the
+ *     run could read.
  *
  * Chunk ids are not checked separately: a chunk's access list is written with
  * its document's, in one transaction (`saveDocumentAcl`), and a cited chunk's
  * document is always among the row's document ids.
  *
  * Cost: one query for the runs' markers, one for the cited documents' access
- * lists (none when no run carries a marker), and the reader's role only when a
- * cited document is restricted or a row rests on a non-shared run. The reader
+ * lists (none when no run carries a marker), three for a shared run's corpus
+ * (only when a row rests on that run as a whole), and the reader's role only
+ * when a document is restricted or a row rests on a non-shared run. The reader
  * is never resolved for an unrestricted project, so it behaves as before.
  */
 import {
@@ -120,38 +124,54 @@ interface GuardDocument {
  * unit-tested without a database.
  */
 export function sourceGuardOf(input: {
-  runs: ReadonlyMap<string, GuardRun>;
+  runs: ReadonlyMap<string, GuardRun & { id?: string }>;
   documents: ReadonlyMap<string, GuardDocument>;
   actor: AclActor | null;
+  /**
+   * A `shared` run's corpus: every document any of its rows records (its
+   * findings', requirements' and cross-document findings' lists). A run with
+   * none here recorded none.
+   */
+  corpus?: ReadonlyMap<string, ReadonlySet<string>>;
 }): SourceGuard {
   const { runs, documents, actor } = input;
+  const corpus = input.corpus ?? new Map<string, ReadonlySet<string>>();
   const isAdmin = actor !== null && !actor.sharedAudience && actor.role === "admin";
-  const seesRun = (run: GuardRun | undefined): boolean => {
-    if (!run) return false;
-    if (run.sourceAccess === null) return true;
-    if (run.sourceAccess === SOURCE_ACCESS_SHARED) return true;
-    return isAdmin;
-  };
   const seesDocument = (run: GuardRun, documentId: string): boolean => {
     const doc = documents.get(documentId);
     if (!doc || doc.projectId !== run.projectId) return false;
     if (doc.subjects.length === 0) return true;
     return actor !== null && isVisibleTo({ subjects: doc.subjects }, actor);
   };
+  const seesRun = (analysisId: string): boolean => {
+    const run = runs.get(analysisId);
+    if (!run) return false;
+    if (run.sourceAccess === null) return true;
+    // A shared run read every document its rows record: what rests on the run
+    // as a whole is shown only to a reader who can see each of them NOW, so a
+    // document restricted after the run hides it too (fail closed).
+    if (run.sourceAccess === SOURCE_ACCESS_SHARED) {
+      return [...(corpus.get(analysisId) ?? [])].every((id) => seesDocument(run, id));
+    }
+    return isAdmin;
+  };
   return {
-    canSeeRun: (analysisId) => seesRun(runs.get(analysisId)),
+    canSeeRun: seesRun,
     canSee: (row) => {
       const run = runs.get(row.analysisId);
       if (!run) return false;
       if (run.sourceAccess === null) return true;
       const sources = parseSourceIds(row.sourceIds);
-      if (!sources) return seesRun(run);
+      if (!sources) return seesRun(row.analysisId);
       return sources.documentIds.every((id) => seesDocument(run, id));
     },
   };
 }
 
-type GuardDb = Pick<PrismaClient, "analysis" | "document">;
+type GuardDb = Pick<
+  PrismaClient,
+  "analysis" | "document" | "finding" | "requirement" | "crossDocFinding"
+>;
 
 /** Ids per `IN (...)` list: well under SQLite's bound-parameter limit. */
 const ID_BATCH = 500;
@@ -184,16 +204,24 @@ export async function loadSourceGuard(
   const documentIds = new Set<string>();
   // Each cited document, by the projects of the runs citing it.
   const citedIn = new Map<string, Set<string>>();
+  const cite = (projectId: string, id: string) => {
+    documentIds.add(id);
+    citedIn.set(id, (citedIn.get(id) ?? new Set()).add(projectId));
+  };
+  // The shared runs a row rests on as a whole: their corpus decides it.
+  const wideRuns = new Set<string>();
   for (const row of rows) {
     const run = runs.get(row.analysisId);
     if (!run || run.sourceAccess === null) continue;
     const sources = parseSourceIds(row.sourceIds);
-    if (sources) {
-      for (const id of sources.documentIds) {
-        documentIds.add(id);
-        citedIn.set(id, (citedIn.get(id) ?? new Set()).add(run.projectId));
-      }
-    } else if (run.sourceAccess !== SOURCE_ACCESS_SHARED) needsActor = true;
+    if (sources) for (const id of sources.documentIds) cite(run.projectId, id);
+    else if (run.sourceAccess === SOURCE_ACCESS_SHARED) wideRuns.add(row.analysisId);
+    else needsActor = true;
+  }
+  const corpus = await loadRunCorpus(db, [...wideRuns]);
+  for (const [analysisId, ids] of corpus) {
+    const projectId = runs.get(analysisId)!.projectId;
+    for (const id of ids) cite(projectId, id);
   }
 
   const documents = new Map<string, GuardDocument>();
@@ -218,7 +246,47 @@ export async function loadSourceGuard(
     }
   }
   if (actor) auditAdminBypass(actor, citedIn, documents);
-  return sourceGuardOf({ runs, documents, actor });
+  return sourceGuardOf({ runs, documents, actor, corpus });
+}
+
+/**
+ * The corpus of each run in `analysisIds`: every document id any of its
+ * findings, requirements or cross-document findings records. Three reads per
+ * batch of runs, of the recorded lists only.
+ */
+async function loadRunCorpus(
+  db: GuardDb,
+  analysisIds: readonly string[],
+): Promise<Map<string, Set<string>>> {
+  const corpus = new Map<string, Set<string>>();
+  const add = (analysisId: string | null | undefined, sourceIds: string | null) => {
+    if (!analysisId) return;
+    const set = corpus.get(analysisId) ?? new Set<string>();
+    corpus.set(analysisId, set);
+    for (const id of parseSourceIds(sourceIds)?.documentIds ?? []) set.add(id);
+  };
+  for (const ids of batches(analysisIds)) {
+    for (const id of ids) corpus.set(id, corpus.get(id) ?? new Set());
+    const recorded = { sourceIds: { not: null } };
+    const [findings, requirements, crossDoc] = await Promise.all([
+      db.finding.findMany({
+        where: { agentResult: { analysisId: { in: ids } }, ...recorded },
+        select: { sourceIds: true, agentResult: { select: { analysisId: true } } },
+      }),
+      db.requirement.findMany({
+        where: { analysisId: { in: ids }, ...recorded },
+        select: { analysisId: true, sourceIds: true },
+      }),
+      db.crossDocFinding.findMany({
+        where: { analysisId: { in: ids }, ...recorded },
+        select: { analysisId: true, sourceIds: true },
+      }),
+    ]);
+    for (const f of findings) add(f.agentResult?.analysisId, f.sourceIds);
+    for (const r of requirements) add(r.analysisId, r.sourceIds);
+    for (const c of crossDoc) add(c.analysisId, c.sourceIds);
+  }
+  return corpus;
 }
 
 /**

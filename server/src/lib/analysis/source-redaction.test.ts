@@ -94,6 +94,29 @@ describe("sourceGuardOf (#2447)", () => {
     expect(guardFor(null).canSeeRun("starter-run")).toBe(false);
   });
 
+  it("on a shared run, a row with no record needs every source the run recorded, as its lists are now", () => {
+    // The run's rows cite d-alice, restricted (after the run) to Alice.
+    const corpus = new Map([["shared-run", new Set(["d-open", "d-alice"])]]);
+    const guard = (actor: AclActor | null) => sourceGuardOf({ runs, documents, actor, corpus });
+    const row = { analysisId: "shared-run", sourceIds: null };
+    expect(guard(BOB).canSee(row)).toBe(false);
+    expect(guard(BOB).canSeeRun("shared-run")).toBe(false);
+    expect(guard(SHARED).canSeeRun("shared-run")).toBe(false);
+    expect(guard(null).canSeeRun("shared-run")).toBe(false);
+    expect(guard(ALICE).canSee(row)).toBe(true);
+    expect(guard(ADMIN).canSeeRun("shared-run")).toBe(true);
+    // A row with its own record is still decided by that record alone.
+    expect(guard(BOB).canSee({ analysisId: "shared-run", sourceIds: ids(["d-open"]) })).toBe(true);
+    // A corpus of open documents only: every member.
+    const open = sourceGuardOf({
+      runs,
+      documents,
+      actor: BOB,
+      corpus: new Map([["shared-run", new Set(["d-open"])]]),
+    });
+    expect(open.canSeeRun("shared-run")).toBe(true);
+  });
+
   it("reads an unparseable record as no record, never as an empty one", () => {
     expect(guardFor(BOB).canSee({ analysisId: "starter-run", sourceIds: "[]" })).toBe(false);
     expect(guardFor(BOB).canSee({ analysisId: "starter-run", sourceIds: "{not json" })).toBe(false);
@@ -105,11 +128,29 @@ describe("sourceGuardOf (#2447)", () => {
   });
 });
 
-/** A fake of the two reads the loader makes, counting them. */
+/** A fake of the reads the loader makes, counting them. */
 function fakeDb(
   runRows: Array<{ id: string; projectId: string; sourceAccess: string | null }>,
   docRows: Array<{ id: string; projectId: string; aclSubjects: string }>,
+  /** Each run's recorded rows, as the run-wide read finds them. */
+  recorded: Array<{ analysisId: string; sourceIds: string }> = [],
 ) {
+  type RunWhere = {
+    analysisId?: { in: string[] };
+    agentResult?: { analysisId: { in: string[] } };
+  };
+  const inRuns = (where: RunWhere) =>
+    recorded.filter((r) =>
+      (where.analysisId?.in ?? where.agentResult?.analysisId.in ?? []).includes(r.analysisId),
+    );
+  const findingFindMany = vi.fn(async ({ where }: { where: RunWhere }) =>
+    inRuns(where).map((r) => ({
+      sourceIds: r.sourceIds,
+      agentResult: { analysisId: r.analysisId },
+    })),
+  );
+  const requirementFindMany = vi.fn(async ({ where }: { where: RunWhere }) => inRuns(where));
+  const crossDocFindMany = vi.fn(async () => []);
   const analysisFindMany = vi.fn(async ({ where }: { where: { id: { in: string[] } } }) =>
     runRows.filter((r) => where.id.in.includes(r.id)),
   );
@@ -119,8 +160,11 @@ function fakeDb(
   const db = {
     analysis: { findMany: analysisFindMany },
     document: { findMany: documentFindMany },
+    finding: { findMany: findingFindMany },
+    requirement: { findMany: requirementFindMany },
+    crossDocFinding: { findMany: crossDocFindMany },
   } as unknown as Parameters<typeof loadSourceGuard>[2];
-  return { db, analysisFindMany, documentFindMany };
+  return { db, analysisFindMany, documentFindMany, findingFindMany };
 }
 
 const RESTRICTED_ACL = JSON.stringify([{ kind: "user", value: "alice" }]);
@@ -157,6 +201,31 @@ describe("loadSourceGuard (#2447)", () => {
     );
     expect(reader).toHaveBeenCalledTimes(1);
     expect(guard.canSee({ analysisId: "a", sourceIds: ids(["d1"]) })).toBe(false);
+  });
+
+  it("reads a shared run's recorded sources only for a row resting on the run as a whole", async () => {
+    const run = { id: "a", projectId: "p1", sourceAccess: "shared" };
+    const docs = [
+      { id: "d1", projectId: "p1", aclSubjects: RESTRICTED_ACL },
+      { id: "d2", projectId: "p1", aclSubjects: "[]" },
+    ];
+    const recorded = [
+      { analysisId: "a", sourceIds: ids(["d2"]) },
+      { analysisId: "a", sourceIds: ids(["d1"]) },
+    ];
+    const listed = fakeDb([run], docs, recorded);
+    await loadSourceGuard(BOB, [{ analysisId: "a", sourceIds: ids(["d2"]) }], listed.db);
+    expect(listed.findingFindMany).not.toHaveBeenCalled();
+
+    const wide = fakeDb([run], docs, recorded);
+    const reader = vi.fn(async () => BOB);
+    const guard = await loadSourceGuard(reader, [{ analysisId: "a", sourceIds: null }], wide.db);
+    expect(wide.findingFindMany).toHaveBeenCalledTimes(1);
+    expect(reader).toHaveBeenCalledTimes(1);
+    expect(guard.canSeeRun("a")).toBe(false);
+    expect(guard.canSee({ analysisId: "a", sourceIds: null })).toBe(false);
+    const alice = await loadSourceGuard(ALICE, [{ analysisId: "a", sourceIds: null }], wide.db);
+    expect(alice.canSeeRun("a")).toBe(true);
   });
 
   it("resolves the reader for a row resting on a run under a non-shared marker", async () => {
