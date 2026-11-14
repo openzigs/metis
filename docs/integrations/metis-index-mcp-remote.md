@@ -25,10 +25,12 @@ You need:
   token to a user by its `iss` and `sub`, through the identity METIS recorded at that user's
   OIDC sign-in. A user who has never signed in to METIS over OIDC cannot use the endpoint. Nothing
   is matched on email or username. Some providers use a different `sub` in access tokens than
-  in ID tokens. Microsoft Entra ID is one: its `sub` is different for each application. With such a
-  provider, link each user's access-token subject by hand with `link-identity-cli`, provider `oidc`
-  (see [Linking two identities to one account](../auth/README.md)), or use a provider whose access-token `sub` matches its ID-token `sub`
-  (Keycloak, Okta and Auth0 by default).
+  in ID tokens. Microsoft Entra ID is one: its `sub` is different for each application. Okta is
+  another: a custom authorization server puts the username in the access token's `sub` by default,
+  and the user id in the ID token's. On Okta, set the access token's `sub` claim to the user id. With
+  any other such provider, link each user's access-token subject by hand with `link-identity-cli`,
+  provider `oidc` (see [Linking two identities to one account](../auth/README.md)). Keycloak and
+  Auth0 use the same `sub` in both tokens by default.
 - **ID tokens that never name this endpoint in `aud`.** METIS does not require the RFC 9068
   `typ: at+jwt` header, because some providers (Keycloak among them) omit it from access
   tokens. What stops an ID token from being used as an access token here is the issuer check
