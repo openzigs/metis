@@ -10,15 +10,15 @@ Commit: a7ad8202f93dfb9e4a9937ba85ff301abc1098b0
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
 | R | 0.98 | 0.94 | 0.92 | 0.75 | 0.17 | 1.00 | 62.0 | 8.0 | $0.1534 | 70414 / 118355 | 487.1 | 3 |
 
-Requirement recall and precision, section coverage and ambiguity recall are computed in code from the judge's matching of each extracted requirement to a labelled one and each question to a labelled ambiguity. Question precision is the judge's verdict of "worth asking". Quote accuracy is deterministic: requirement quotes found verbatim (whitespace aside) in the converted document; arm A gives no quotes. The cost per document is the reader's alone; the judge's spend is reported apart.
+Requirement recall and precision, section coverage and ambiguity recall are computed in code from the judge's matching of each extracted requirement to a labelled one and each question to a labelled ambiguity. Question precision is the judge's verdict of "worth asking". Quote accuracy is deterministic: requirement quotes found verbatim (whitespace aside) in the converted document; arm A gives no quotes. The cost per document is the arm's alone; the judge's spend is reported apart. Arm R's also includes the extraction and the question call of its question round (#2271), so its $ / doc, tokens and s / doc are not comparable with R readings made before #2271, which were the reader's alone.
 
 ## Questions
 
 | Arm | Questions asked | Labelled ambiguities found | Set aside: unanswerable | Set aside: same outcome | Over the cap |
 |---|---|---|---|---|---|
-| R | 8 | 2 of 12 | 0 | 0 | 22 |
+| R | 8 (3 of 4 rounds failed) | 2 of 12 | 0 | 0 | 22 |
 
-Totals over the scored readings. A labelled ambiguity is found when the judge matches a question asked to it; each counts once per reading. Set aside and over the cap are counted where an arm selects what it asks (R, #2235): it sets aside a question no one can answer yet (unanswerable) or whose readings all build the same thing (same outcome), and asks at most 8 a round, leaving the rest for the next. Arms A, B and C ask every question they raise, so theirs read n/a.
+Totals over the scored readings whose question round ran; "failed" means no reading had one (the reading, its judge or the round failed), and a count of failed rounds follows the questions asked where only some did. A labelled ambiguity is found when the judge matches a question asked to it; each counts once per reading. Set aside and over the cap are counted where an arm selects what it asks (R, #2235): it sets aside a question no one can answer yet (unanswerable) or whose readings all build the same thing (same outcome), and asks at most 8 a round, leaving the rest for the next. Arms A, B and C ask every question they raise, so theirs read n/a.
 
 ## By document
 
@@ -46,7 +46,7 @@ Totals over the scored readings. A labelled ambiguity is found when the judge ma
 
 | Arm | Questions asked | Labelled ambiguities found | Set aside: unanswerable | Set aside: same outcome | Over the cap |
 |---|---|---|---|---|---|
-| R | 0 | 0 of 0 | n/a | n/a | n/a |
+| R | failed | | | | |
 
 - R run 1: **failed** — reader: Structured requirements extraction failed (unparseable): Expected ',' or ']' after array element in JSON at position 70799 (line 1 column 70800)
 
@@ -60,7 +60,7 @@ Totals over the scored readings. A labelled ambiguity is found when the judge ma
 
 | Arm | Questions asked | Labelled ambiguities found | Set aside: unanswerable | Set aside: same outcome | Over the cap |
 |---|---|---|---|---|---|
-| R | 0 | 0 of 0 | n/a | n/a | n/a |
+| R | failed | | | | |
 
 - R run 1: **failed** — reader: Structured requirements extraction failed (unparseable): Expected ',' or ']' after array element in JSON at position 55425 (line 1 column 55426)
 
@@ -74,7 +74,7 @@ Totals over the scored readings. A labelled ambiguity is found when the judge ma
 
 | Arm | Questions asked | Labelled ambiguities found | Set aside: unanswerable | Set aside: same outcome | Over the cap |
 |---|---|---|---|---|---|
-| R | 0 | 0 of 0 | n/a | n/a | n/a |
+| R | failed | | | | |
 
 - R run 1: **failed** — reader: Structured requirements extraction failed (unparseable): Expected ',' or ']' after array element in JSON at position 35814 (line 1 column 35815)
 

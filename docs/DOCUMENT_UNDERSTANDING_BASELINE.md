@@ -297,7 +297,15 @@ requirement, constraint and business-rule statements go to the extraction in sou
 their paragraphs). The requirements with an ambiguity go to `generateClarifyingQuestions` in
 source mode, at the dialog's round-1 model. Then `selectQuestionsToAsk` sets aside the
 unanswerable and the same-outcome questions, ranks the rest and asks at most 8. R's
-requirements are still the reader's statements, so recall and precision read as above.
+requirements are still the reader's statements, so recall and precision measure the reader
+as above, **but not on the readings below**: they were made at `a7ad8202f`, where a failed
+extraction failed the whole reading, so the seven failed readings have no recall or
+precision either (n/a in the reading files). From the review fix on, a failed extraction or
+question call fails the question round alone, as an analysis treats the enhancement as
+best-effort: the reading is still judged on its requirements, the Questions table reads
+`failed` (or counts the failed rounds), and its question metrics are left unmeasured. R's
+`$ / doc` now includes the extraction and question calls, so it is not comparable with the
+R readings above, which metered the reader alone.
 
 The **extraction** is what fails. It is one call that writes every requirement with its
 `sourceIds`, ambiguities and evidence needs. It sets no output cap, so on the Anthropic

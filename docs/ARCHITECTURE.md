@@ -5149,7 +5149,7 @@ the first round of clarifying questions an analysis would ask about that reading
 (`question-loop.ts`): the source-mode extraction over its statements, then
 `generateClarifyingQuestions` and `selectQuestionsToAsk` (#2235). The report's Questions table
 gives, per arm, the questions asked, the labelled ambiguities found, the questions set aside
-by reason and those over the round's cap.
+by reason and those over the round's cap. A failed extraction or question call fails the round alone, not the reading, which is still judged on its requirements.
 
 #### Document reader (#2230, epic #2227) — the model reads a whole document
 

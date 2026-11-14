@@ -453,6 +453,8 @@ describe("combineReports and rendering", () => {
       summary: summariseRecords(report.arms[1]!.records.filter((r) => r.itemId === itemId)),
     }));
     expect(report.arms[1]!.summary.questionTally).toEqual({
+      rounds: 2,
+      failedRounds: 0,
       asked: 2,
       ambiguitiesFound: 1,
       ambiguitiesLabelled: 2,
@@ -479,12 +481,83 @@ describe("combineReports and rendering", () => {
     // A failed reading counts toward nothing: it asked nothing anyone saw.
     const failed = { ...r1!, score: null, error: "reader: x" };
     expect(summariseRecords([failed]).questionTally).toEqual({
+      rounds: 0,
+      failedRounds: 1,
       asked: 0,
       ambiguitiesFound: 0,
       ambiguitiesLabelled: 0,
       setAsideUnanswerable: null,
       setAsideSameOutcome: null,
       overCap: null,
+    });
+  });
+
+  describe("#2271 — a failed question round", () => {
+    /** Arm R's shape when its extraction fails: the reader's requirements, no questions. */
+    const roundFails = (id: "A" | "B" | "C"): DocArm => ({
+      ...fakeArm(id),
+      async read(_item, { provider }) {
+        await provider.chat([{ role: "user", content: "read" }], {});
+        return {
+          requirements: [{ text: "lock after five", quote: "The portal shall lock an account" }],
+          questions: [],
+          questionError: "questions: RequirementsExtractionError (unparseable)",
+          diagnostics: { calls: 1, questionsFailed: 1 },
+        };
+      },
+    });
+
+    it("still scores the reader's requirements, and leaves the question metrics unmeasured", async () => {
+      const logs: string[] = [];
+      const report = await runDocUnderstandingEval([item("d1")], {
+        arms: [roundFails("C")],
+        runs: 1,
+        budget: new EvalBudget(100),
+        provider: judgeProvider().provider,
+        log: (l) => logs.push(l),
+      });
+      const [rec] = report.arms[0]!.records;
+      expect(rec!.error).toBeUndefined();
+      expect(rec!.questionError).toBe("questions: RequirementsExtractionError (unparseable)");
+      expect(rec!.score!.requirementRecall).toBe(0.5);
+      const s = report.arms[0]!.summary;
+      expect(s.failures).toBe(0);
+      expect(s.metrics.requirementRecall.n).toBe(1);
+      // Asking nothing because the round failed is not asking nothing.
+      expect(s.metrics.questionPrecision.n).toBe(0);
+      expect(s.metrics.ambiguityRecall.n).toBe(0);
+      expect(s.questionsPerDocument).toBeNull();
+      expect(s.questionTally).toMatchObject({ asked: 0, rounds: 0, failedRounds: 1 });
+      expect(logs.join("\n")).toMatch(/\[C\] d1 run 1 question round failed: questions: /);
+      const md = toMarkdownReport(report);
+      expect(md).toContain("| C | failed | | | | |");
+      expect(md).not.toContain("| C | 0 | 0 of");
+      expect(md).toContain(
+        "- C run 1: question round **failed** — questions: RequirementsExtractionError (unparseable)",
+      );
+    });
+
+    it("an arm whose readings all failed reads failed in the Questions table, not 0 asked", async () => {
+      const report = await run(["d1"], [fakeArm("A", true)]);
+      expect(report.arms[0]!.summary.questionTally).toMatchObject({ rounds: 0, failedRounds: 1 });
+      expect(toMarkdownReport(report)).toContain("| A | failed | | | | |");
+    });
+
+    it("counts only the rounds that ran, and says how many failed", async () => {
+      const ok = await run(["d1"], [fakeArm("C")]);
+      const bad = await run(["d2"], [roundFails("C")]);
+      const c = combineReports([ok, bad]);
+      expect(c.arms[0]!.summary.questionTally).toMatchObject({
+        asked: 1,
+        rounds: 1,
+        failedRounds: 1,
+      });
+      expect(toMarkdownReport(c)).toContain("| C | 1 (1 of 2 rounds failed) | 1 of 1 |");
+    });
+
+    it("says arm R's cost includes its extraction and question calls", async () => {
+      const md = toMarkdownReport(await run(["d1"], [fakeArm("A")]));
+      expect(md).toMatch(/Arm R's also includes the extraction and the question call/);
     });
   });
 

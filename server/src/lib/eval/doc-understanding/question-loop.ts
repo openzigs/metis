@@ -111,17 +111,23 @@ const NONE_ASKED: Omit<FirstRound["diagnostics"], "sourceStatements"> = {
   questionsAsked: 0,
 };
 
-/** The first round of clarifying questions an analysis asks about `reading`. */
+/**
+ * The first round of clarifying questions an analysis asks about `reading`.
+ * `model` is the analysis's model, which production gives the extraction
+ * (`new RequirementsExtractor({ provider, model: input.model })`); the question
+ * call stays at the dialog's own model.
+ */
 export async function askFirstRound(
   provider: AIProvider,
   reading: Pick<DocumentReading, "statements">,
   document: { documentId: string; filename: string },
+  opts: { model?: string } = {},
 ): Promise<FirstRound> {
   const sources = sourceStatementsOf(reading, document);
   if (sources.length === 0) {
     return { asked: [], diagnostics: { sourceStatements: 0, ...NONE_ASKED } };
   }
-  const structured = await new RequirementsExtractor({ provider }).extract(
+  const structured = await new RequirementsExtractor({ provider, model: opts.model }).extract(
     buildSourceExtractionInput(sources),
     undefined,
     sources,

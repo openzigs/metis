@@ -34,6 +34,11 @@ export interface ReadingRecord {
   judge: Pick<Judgement, "invalid" | "ungraded"> | null;
   /** Where the reading failed (the arm or the judge); absent on success. */
   error?: string;
+  /**
+   * #2271 — arm R's question round failed (`questions: …`) while its reading
+   * stood: the requirements are scored, the questions are not measured.
+   */
+  questionError?: string;
   /** The arm's spend; null when a call was unpriced. */
   costUsd: number | null;
   judgeCostUsd: number | null;
@@ -64,6 +69,11 @@ export const SUMMARY_METRICS = [
   "quoteAccuracy",
 ] as const;
 export type SummaryMetric = (typeof SUMMARY_METRICS)[number];
+/** #2271 — the metrics a reading's questions make, unmeasured when its question round failed. */
+const QUESTION_METRICS: ReadonlySet<SummaryMetric> = new Set([
+  "questionPrecision",
+  "ambiguityRecall",
+]);
 
 /**
  * #2271 — what an arm asked, over its scored readings: totals, not means.
@@ -71,6 +81,10 @@ export type SummaryMetric = (typeof SUMMARY_METRICS)[number];
  * question it raises (A, B and C); arm R's question loop selects (#2235).
  */
 export interface QuestionTally {
+  /** Readings whose question round ran and was scored: the totals below are over these. */
+  rounds: number;
+  /** Readings with no question round to count: the reading, judge or round itself failed. */
+  failedRounds: number;
   asked: number;
   /** Labelled ambiguities some question asked about, and of how many labelled. */
   ambiguitiesFound: number;
@@ -180,8 +194,10 @@ function diagnosticTotal(records: readonly ReadingRecord[], key: string): number
   return records.reduce((n, r) => n + r.diagnostics[key]!, 0);
 }
 
-function tallyQuestions(scored: readonly ReadingRecord[]): QuestionTally {
+function tallyQuestions(scored: readonly ReadingRecord[], readings: number): QuestionTally {
   return {
+    rounds: scored.length,
+    failedRounds: readings - scored.length,
     asked: scored.reduce((n, r) => n + r.score!.questions, 0),
     ambiguitiesFound: scored.reduce((n, r) => n + r.score!.ambiguitiesRaised, 0),
     ambiguitiesLabelled: scored.reduce((n, r) => n + r.score!.ambiguities, 0),
@@ -193,8 +209,14 @@ function tallyQuestions(scored: readonly ReadingRecord[]): QuestionTally {
 
 export function summariseRecords(records: readonly ReadingRecord[]): ArmSummary {
   const ok = records.filter((r) => r.error === undefined && r.score !== null);
+  // #2271 — a reading whose question round failed asked nothing because the
+  // round failed, not because nothing was worth asking: its questions are not measured.
+  const asked = ok.filter((r) => r.questionError === undefined);
   const metrics = Object.fromEntries(
-    SUMMARY_METRICS.map((m) => [m, summarise(ok.map((r) => r.score![m]))]),
+    SUMMARY_METRICS.map((m) => [
+      m,
+      summarise((QUESTION_METRICS.has(m) ? asked : ok).map((r) => r.score![m])),
+    ]),
   ) as Record<SummaryMetric, MetricSummary>;
   const mean = (xs: number[]): number | null =>
     xs.length === 0 ? null : xs.reduce((a, b) => a + b, 0) / xs.length;
@@ -204,7 +226,7 @@ export function summariseRecords(records: readonly ReadingRecord[]): ArmSummary 
   return {
     metrics,
     extractedPerDocument: mean(ok.map((r) => r.score!.extracted)),
-    questionsPerDocument: mean(ok.map((r) => r.score!.questions)),
+    questionsPerDocument: mean(asked.map((r) => r.score!.questions)),
     usdPerDocument: priced ? mean(made.map((r) => r.costUsd!)) : null,
     inputTokensPerDocument: mean(made.map((r) => r.inputTokens)),
     completionTokensPerDocument: mean(made.map((r) => r.completionTokens)),
@@ -212,7 +234,7 @@ export function summariseRecords(records: readonly ReadingRecord[]): ArmSummary 
     failures: records.length - ok.length,
     readings: records.length,
     reusedReadings: records.length - made.length,
-    questionTally: tallyQuestions(ok),
+    questionTally: tallyQuestions(asked, records.length),
   };
 }
 
@@ -274,7 +296,16 @@ export async function runDocUnderstandingEval(
         if (costUsd !== null && judgeCostUsd !== null) {
           opts.budget.observeItem(arm.id, costUsd + judgeCostUsd);
         }
-        const score = output && judgement ? scoreReading(item, output, judgement) : null;
+        const scored = output && judgement ? scoreReading(item, output, judgement) : null;
+        const questionError = output?.questionError;
+        // #2271 — a failed question round leaves the questions unmeasured, not zero.
+        const score =
+          scored && questionError !== undefined
+            ? { ...scored, questionPrecision: null, ambiguityRecall: null }
+            : scored;
+        if (questionError !== undefined) {
+          opts.log?.(`[${arm.id}] ${item.name} run ${run} question round failed: ${questionError}`);
+        }
         records.get(arm.id)!.push({
           itemId: item.name,
           armId: arm.id,
@@ -286,6 +317,7 @@ export async function runDocUnderstandingEval(
           score,
           judge: judgement ? { invalid: judgement.invalid, ungraded: judgement.ungraded } : null,
           ...(error !== undefined ? { error } : {}),
+          ...(questionError !== undefined ? { questionError } : {}),
           costUsd,
           judgeCostUsd,
           unpricedCalls: armMeter.unpricedCalls() + judgeMeter.unpricedCalls(),
@@ -473,13 +505,20 @@ const tallied = (v: number | null): string => (v === null ? "n/a" : String(v));
 function questionRow(label: string, s: ArmSummary): string {
   if (s.readings === 0) return `| ${label} | not run |${" |".repeat(4)}`;
   const t = s.questionTally;
+  // #2271 — no round to count is a failure, not "asked nothing". (A summary
+  // written before the rounds were counted has no `rounds`: rendered as it was.)
+  if (t.rounds === 0) return `| ${label} | failed |${" |".repeat(4)}`;
+  const failed =
+    t.failedRounds !== undefined && t.failedRounds > 0
+      ? ` (${t.failedRounds} of ${s.readings} rounds failed)`
+      : "";
   return (
-    `| ${label} | ${t.asked} | ${t.ambiguitiesFound} of ${t.ambiguitiesLabelled} | ` +
+    `| ${label} | ${t.asked}${failed} | ${t.ambiguitiesFound} of ${t.ambiguitiesLabelled} | ` +
     `${tallied(t.setAsideUnanswerable)} | ${tallied(t.setAsideSameOutcome)} | ${tallied(t.overCap)} |`
   );
 }
 
-const QUESTION_NOTE = `Totals over the scored readings. A labelled ambiguity is found when the judge matches a question asked to it; each counts once per reading. Set aside and over the cap are counted where an arm selects what it asks (R, #2235): it sets aside a question no one can answer yet (unanswerable) or whose readings all build the same thing (same outcome), and asks at most ${MAX_QUESTIONS_PER_ROUND} a round, leaving the rest for the next. Arms A, B and C ask every question they raise, so theirs read n/a.`;
+const QUESTION_NOTE = `Totals over the scored readings whose question round ran; "failed" means no reading had one (the reading, its judge or the round failed), and a count of failed rounds follows the questions asked where only some did. A labelled ambiguity is found when the judge matches a question asked to it; each counts once per reading. Set aside and over the cap are counted where an arm selects what it asks (R, #2235): it sets aside a question no one can answer yet (unanswerable) or whose readings all build the same thing (same outcome), and asks at most ${MAX_QUESTIONS_PER_ROUND} a round, leaving the rest for the next. Arms A, B and C ask every question they raise, so theirs read n/a.`;
 
 const METRIC_HEADER =
   "| Arm | Requirement recall | Requirement precision | Section coverage | Question precision | Ambiguity recall | Quote accuracy | Requirements / doc | Questions / doc | $ / doc | Tokens in / out per doc | s / doc | Failures |\n" +
@@ -521,7 +560,7 @@ export function toMarkdownReport(report: DocUnderstandingReport): string {
   }
   lines.push("");
   lines.push(
-    "Requirement recall and precision, section coverage and ambiguity recall are computed in code from the judge's matching of each extracted requirement to a labelled one and each question to a labelled ambiguity. Question precision is the judge's verdict of \"worth asking\". Quote accuracy is deterministic: requirement quotes found verbatim (whitespace aside) in the converted document; arm A gives no quotes. The cost per document is the reader's alone; the judge's spend is reported apart.",
+    "Requirement recall and precision, section coverage and ambiguity recall are computed in code from the judge's matching of each extracted requirement to a labelled one and each question to a labelled ambiguity. Question precision is the judge's verdict of \"worth asking\". Quote accuracy is deterministic: requirement quotes found verbatim (whitespace aside) in the converted document; arm A gives no quotes. The cost per document is the arm's alone; the judge's spend is reported apart. Arm R's also includes the extraction and the question call of its question round (#2271), so its $ / doc, tokens and s / doc are not comparable with R readings made before #2271, which were the reader's alone.",
   );
   lines.push("");
   lines.push("## Questions");
@@ -568,6 +607,10 @@ export function toMarkdownReport(report: DocUnderstandingReport): string {
           lines.push("");
           lines.push(`- ${a.id} run ${r.run}: **failed** — ${r.error}`);
         } else if (r.score) {
+          if (r.questionError) {
+            lines.push("");
+            lines.push(`- ${a.id} run ${r.run}: question round **failed** — ${r.questionError}`);
+          }
           lines.push("");
           lines.push(
             `- ${a.id} run ${r.run}: missed requirements ${r.score.missedRequirements.join(", ") || "none"}; ` +

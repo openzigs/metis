@@ -554,6 +554,72 @@ describe("helpers", () => {
     });
   });
 
+  describe("#2271 — a failed question round", () => {
+    const BASE: Array<[string, string | ((call: Call) => string)]> = [
+      [
+        "from beginning to end",
+        JSON.stringify({
+          statements: [
+            {
+              section: "S2",
+              kind: "requirement",
+              statement: "Lock after five failures.",
+              quote: "The portal shall lock an account after five failed attempts.",
+            },
+          ],
+        }),
+      ],
+      ["combining the statements", JSON.stringify({ duplicates: [], crossReferences: [] })],
+    ];
+
+    it("keeps the reader's requirements and reports the question round failed apart", async () => {
+      const { provider } = routedProvider([
+        ...BASE,
+        ["Extract structured requirements", "this is not JSON at all"],
+      ]);
+      const arm = createArmR("m", { store: createEvalReadingStore() });
+      const out = await arm.read(ITEM, { provider, concurrency: 1 });
+      expect(out.requirements.map((r) => r.text)).toEqual(["Lock after five failures."]);
+      expect(out.questions).toEqual([]);
+      expect(out.questionError).toMatch(/^questions: /);
+      expect(out.diagnostics).toMatchObject({ statements: 1, questionsFailed: 1 });
+    });
+
+    it("a question call that throws is a failed round too, not a failed reading", async () => {
+      const { provider } = routedProvider([
+        ...BASE,
+        LOOP_ROUTES[1]!,
+        [
+          "clarification session",
+          () => {
+            throw new Error("rate limited\nby the gateway");
+          },
+        ],
+      ]);
+      const arm = createArmR("m", { store: createEvalReadingStore() });
+      const out = await arm.read(ITEM, { provider, concurrency: 1 });
+      expect(out.requirements).toHaveLength(1);
+      expect(out.questionError).toBe("questions: rate limited by the gateway");
+      expect(out.diagnostics.questionsFailed).toBe(1);
+    });
+
+    it("a round that ran says so: questionsFailed 0 and no questionError", async () => {
+      const { provider } = routedProvider([...BASE, ...LOOP_ROUTES]);
+      const arm = createArmR("m", { store: createEvalReadingStore() });
+      const out = await arm.read(ITEM, { provider, concurrency: 1 });
+      expect(out.questionError).toBeUndefined();
+      expect(out.diagnostics.questionsFailed).toBe(0);
+    });
+
+    it("extracts at the arm's model, as production passes the analysis's model", async () => {
+      const { provider, calls } = routedProvider([...BASE, ...LOOP_ROUTES]);
+      const arm = createArmR("the-arm-model", { store: createEvalReadingStore() });
+      await arm.read(ITEM, { provider, concurrency: 1 });
+      const extraction = calls.find((c) => c.system.includes("Extract structured requirements"));
+      expect(extraction!.opts?.model).toBe("the-arm-model");
+    });
+  });
+
   it("parses arm ids and refuses unknown ones", () => {
     expect(parseDocArmIds(undefined)).toEqual(["A", "B", "C"]);
     expect(parseDocArmIds("r")).toEqual(["R"]);
