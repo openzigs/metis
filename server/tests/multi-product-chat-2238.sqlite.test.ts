@@ -500,7 +500,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const GTE = "Alibaba-NLP/gte-modernbert-base";
       state.hits = {
         // Within the relative floor of each other (0.42 ≥ 0.75 × 0.55), but Beta's
-        // match is below chat's absolute floor for gte (0.43, #2417).
+        // match is below chat's absolute floor for gte (0.52, #2417).
         [ALPHA]: [{ chunkId: "a-ok", text: "Alpha rule.", score: 0.55, model: GTE }],
         [BETA]: [{ chunkId: "b-low", text: "Beta near miss.", score: 0.42, model: GTE }],
       };

@@ -113,6 +113,7 @@ import {
   floorQuestionsFromBaQa,
   floorQuestionsFromLocalization,
   formatFloorSweep,
+  lossFreeFloor,
   OFF_TOPIC_PROBES,
   parseFloorCorpus,
   safestFloor,
@@ -1199,7 +1200,11 @@ async function runFloorSweep(input: {
   }
   const rows = sweepFloors(samples, floorCandidates(samples));
   const best = safestFloor(rows);
+  const lossFree = lossFreeFloor(rows);
   const margin = floorMargin(samples);
+  // #2417 — EmbeddingGemma's floor holds only at its native width, so a sweep
+  // names the width it ran at ("native" when EMBED_DIM is unset).
+  const embedDim = process.env.EMBED_DIM?.trim() || "native";
   const edge = (e: FloorEdge | null) =>
     e ? `${e.cosine.toFixed(3)} (${e.questionId}, ${e.product}, \`${e.name}\`)` : "none";
   const perQuestion = samples.map((s) => {
@@ -1211,11 +1216,12 @@ async function runFloorSweep(input: {
     return `| ${s.questionId} | ${s.expect} | ${s.product} | ${top} | ${minExp} | ${n}/${s.hits.length} |`;
   });
   const markdown = [
-    `# Relevance floor sweep (#2241): ${input.corpus}, ${input.embedModel}`,
+    `# Relevance floor sweep (#2241): ${input.corpus}, ${input.embedModel}, EMBED_DIM ${embedDim}`,
     "",
     formatFloorSweep(rows),
     "",
-    `Highest floor that empties no answerable question and keeps every expected excerpt: ${best ?? "none"}`,
+    `Highest floor that empties no answerable question (the shipped rule, #2417): ${best ?? "none"}`,
+    `Highest floor that also keeps every expected excerpt: ${lossFree ?? "none"}`,
     "",
     `Lowest expected-source excerpt: ${edge(margin.lowestExpected)}`,
     `Highest off-topic excerpt: ${edge(margin.highestOffTopic)}`,
@@ -1232,9 +1238,11 @@ async function runFloorSweep(input: {
     issue: 2241,
     corpus: input.corpus,
     embedModel: input.embedModel,
+    embedDim,
     samples,
     rows,
     best,
+    lossFree,
     margin,
   };
   await fs.writeFile(path.join(outDir, `${runId}.json`), `${JSON.stringify(record, null, 2)}\n`);

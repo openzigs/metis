@@ -7,7 +7,6 @@ import {
   carriedOnlyNote,
   floorKeep,
   CHAT_RELEVANCE_FLOOR_KEY,
-  DEFAULT_CHAT_RELEVANCE_FLOOR,
   denseCosine,
   readRelevanceFloor,
 } from "./relevance-floor.js";
@@ -95,6 +94,7 @@ describe("readRelevanceFloor", () => {
   });
 
   const GTE = "Alibaba-NLP/gte-modernbert-base";
+  const GTE_FLOOR = 0.52;
   const read = (value?: string, models: string[] = [GTE]) => {
     if (value === undefined) delete process.env[CHAT_RELEVANCE_FLOOR_KEY];
     else process.env[CHAT_RELEVANCE_FLOOR_KEY] = value;
@@ -103,8 +103,8 @@ describe("readRelevanceFloor", () => {
   };
 
   it("is the calibrated default when unset or blank", () => {
-    expect(read()).toBe(DEFAULT_CHAT_RELEVANCE_FLOOR);
-    expect(read("  ")).toBe(DEFAULT_CHAT_RELEVANCE_FLOOR);
+    expect(read()).toBe(GTE_FLOOR);
+    expect(read("  ")).toBe(GTE_FLOOR);
   });
 
   it("reads a decimal (not an integer: 0.4 is not 0)", () => {
@@ -113,7 +113,7 @@ describe("readRelevanceFloor", () => {
 
   it("turns off at 0, and falls back to the default on a value that is not a number", () => {
     expect(read("0")).toBe(0);
-    expect(read("abc")).toBe(DEFAULT_CHAT_RELEVANCE_FLOOR);
+    expect(read("abc")).toBe(GTE_FLOOR);
   });
 
   it("is off for an uncalibrated embedder unless the operator set the key", () => {
@@ -132,19 +132,21 @@ describe("readRelevanceFloor", () => {
   const BGE = "Xenova/bge-small-en-v1.5";
   const GEMMA = "onnx-community/embeddinggemma-300m-ONNX";
 
-  it("is 0.43 for the default embedder, the highest floor safe on both corpora", () => {
-    expect(DEFAULT_CHAT_RELEVANCE_FLOOR).toBe(0.43);
-    expect(read()).toBe(0.43);
+  // The rule (owner's decision on #2417): the highest floor that empties no
+  // answerable question on either corpus.
+  it("is 0.52 for the default embedder, the highest floor that empties no answerable question", () => {
+    expect(read()).toBe(0.52);
   });
 
   it("applies each calibrated embedder's own floor", () => {
-    expect(CALIBRATED_RELEVANCE_FLOORS.get(GTE)?.floor).toBe(0.43);
-    expect(read(undefined, [BGE])).toBe(0.43);
-    expect(read(undefined, [GEMMA])).toBe(0.57);
+    expect(CALIBRATED_RELEVANCE_FLOORS.get(GTE)?.floor).toBe(0.52);
+    expect(read(undefined, [BGE])).toBe(0.55);
+    expect(read(undefined, [GEMMA])).toBe(0.6);
   });
 
   it("takes the lowest floor when the hits come from several calibrated embedders", () => {
-    expect(read(undefined, [GEMMA, GTE, GEMMA])).toBe(0.43);
+    expect(read(undefined, [GEMMA, BGE, GEMMA])).toBe(0.55);
+    expect(read(undefined, [GEMMA, GTE, BGE])).toBe(0.52);
   });
 
   describe("EmbeddingGemma's Matryoshka truncation", () => {
@@ -154,7 +156,7 @@ describe("readRelevanceFloor", () => {
 
     it("keeps the floor at the native 768 dimensions it was calibrated at", () => {
       process.env.EMBED_DIM = "768";
-      expect(read(undefined, [GEMMA])).toBe(0.57);
+      expect(read(undefined, [GEMMA])).toBe(0.6);
     });
 
     it("is off at a truncated dimension, whose cosines were not measured", () => {
@@ -162,7 +164,7 @@ describe("readRelevanceFloor", () => {
       expect(read(undefined, [GEMMA])).toBe(0);
       expect(read(undefined, [GEMMA, GTE])).toBe(0);
       // The other embedders emit their native width, so EMBED_DIM leaves them be.
-      expect(read(undefined, [GTE])).toBe(0.43);
+      expect(read(undefined, [GTE])).toBe(0.52);
     });
   });
 });

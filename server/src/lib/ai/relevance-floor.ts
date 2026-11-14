@@ -38,20 +38,18 @@ export interface CalibratedFloor {
 
 /**
  * #2417 — the default floor on a retrieved chunk's dense cosine, per embedder:
- * for each, the highest floor that empties no answerable question and loses no
- * expected-source excerpt on BOTH `baqa-01-acme-reader` and
- * `localization-02-fixture-portfolio` (`pnpm eval:ba-qa --floor-sweep`, with
- * `--floor-corpus` for the second). Cosines sit lower on the small TypeScript
- * services than on Miniflux, so the second corpus set the floor for gte and bge.
+ * for each, the highest floor that empties no answerable question on EITHER
+ * `baqa-01-acme-reader` or `localization-02-fixture-portfolio` (`pnpm
+ * eval:ba-qa --floor-sweep`, with `--floor-corpus` for the second; the owner's
+ * rule, which accepts losing a question's weaker expected excerpts while its
+ * best ones remain). Cosines sit lower on the small TypeScript services than on
+ * Miniflux, so the second corpus set every floor.
  */
 export const CALIBRATED_RELEVANCE_FLOORS: ReadonlyMap<string, CalibratedFloor> = new Map([
-  ["Alibaba-NLP/gte-modernbert-base", { floor: 0.43 }],
-  ["Xenova/bge-small-en-v1.5", { floor: 0.43 }],
-  ["onnx-community/embeddinggemma-300m-ONNX", { floor: 0.57, dimension: 768 }],
+  ["Alibaba-NLP/gte-modernbert-base", { floor: 0.52 }],
+  ["Xenova/bge-small-en-v1.5", { floor: 0.55 }],
+  ["onnx-community/embeddinggemma-300m-ONNX", { floor: 0.6, dimension: 768 }],
 ]);
-
-/** The default floor for gte-modernbert-base, the default embedder. */
-export const DEFAULT_CHAT_RELEVANCE_FLOOR = 0.43;
 
 /** A model's calibrated floor, or `null` when it has none at the configured width. */
 function calibratedFloor(model: string): number | null {
@@ -66,7 +64,7 @@ function calibratedFloor(model: string): number | null {
 
 /**
  * The floor for hits embedded by `models`, read as a decimal (`getNumber` reads
- * integers, which would turn 0.43 into 0). An operator-set value is used as
+ * integers, which would turn 0.52 into 0). An operator-set value is used as
  * given, held to 0..1. When unset or unreadable a default applies only if
  * every model has one ({@link CALIBRATED_RELEVANCE_FLOORS}), and then the
  * lowest of them, so no model's evidence is held to another's scale. Any other
