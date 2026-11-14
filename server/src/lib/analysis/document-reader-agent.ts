@@ -425,8 +425,10 @@ export interface DocumentReaderAgentResult {
  * the caller then retrieves, as today. An unavailable document never sends the
  * caller to retrieval, which would read a withheld one unchecked. #2321 — with
  * none selected, never `null`: a project with no ready upload and one whose
- * every upload the actor may not see give the same (empty) reading, so the
- * outcome says nothing of documents the actor cannot see.
+ * every upload the actor may not see give the same (empty) reading, so this
+ * agent's output says nothing of documents the actor cannot see. The code
+ * agent's single-shot retrieval in the same run still reads withheld uploads
+ * (no actor reaches `knowledge.search`): #2431.
  *
  * A provider error or a cancellation throws, as the agent call it replaces
  * did, carrying every token spent before it ({@link spentUsageOf}).
@@ -563,10 +565,13 @@ export async function runDocumentReaderAgent(input: {
   // purpose; only the rest "could not be read".
   const leftOut = selection.leftOut.length;
   const unread = coverage.length - read.length - leftOut;
+  // #2321 review — with none selected, the documents counted were uploaded,
+  // not selected: the implicit path now reaches this summary on its own.
+  const counted = implicit ? "uploaded" : "selected";
   const summary = clip(
     coverage.length === 0
       ? "No document was read: none was selected, and no ready uploaded document was found to read."
-      : `Read ${read.length} of ${coverage.length} selected document${coverage.length === 1 ? "" : "s"} in full ` +
+      : `Read ${read.length} of ${coverage.length} ${counted} document${coverage.length === 1 ? "" : "s"} in full ` +
           `(${sections} section${sections === 1 ? "" : "s"}): ${requirements.length} statement${requirements.length === 1 ? "" : "s"} to analyse, each with its source.` +
           (unread > 0 ? ` ${unread} could not be read; the coverage report says why.` : "") +
           (leftOut > 0

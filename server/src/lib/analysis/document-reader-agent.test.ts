@@ -1131,7 +1131,7 @@ describe("runDocumentReaderAgent", () => {
       ["d1", "read"],
       ["d0", "unread"],
     ]);
-    expect(read!.result.output.summary).toContain("Read 5 of 6 selected documents");
+    expect(read!.result.output.summary).toContain("Read 5 of 6 uploaded documents");
     // #2297 — left out on purpose, not "could not be read".
     expect(read!.result.output.summary).not.toContain("could not be read");
     expect(read!.result.output.summary).toContain(
@@ -1206,6 +1206,11 @@ describe("runDocumentReaderAgent", () => {
     expect(read!.coverage.documents).toEqual([
       expect.objectContaining({ documentId: "d1", status: "unread" }),
     ]);
+    // #2321 review — none was selected, so the summary does not say "selected".
+    expect(read!.result.output.summary).toBe(
+      "Read 0 of 1 uploaded document in full (0 sections): 0 statements to analyse, each with its source. " +
+        "1 could not be read; the coverage report says why.",
+    );
   });
 
   it("#2262 — never sends the caller to retrieval for a document its ACL withheld", async () => {

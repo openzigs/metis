@@ -5122,10 +5122,9 @@ inactive requester fails the agent), and each document's `aclSubjects` checked w
 missing or not ready, and neither sends the agent back to retrieval (#2297). The denial writes
 an `analysis.document_reader.acl_denied` audit row (with none selected, only for the withheld
 uploads ranked within the bound, which would have been read had the requester seen them,
-#2321), and an `analysis.document_reader.acl_bypass` row names each restricted document no
-subject names an admin in that the admin is given only because they are an admin: one read,
-and, with none selected, one only listed as left out (its filename reaches the coverage
-report). A scheduled
+#2321), and an `analysis.document_reader.acl_bypass` row names each restricted document an
+admin is given only because of the admin role (no ACL subject names them): one read, or, with
+none selected, one listed as left out (its filename reaches the coverage report). A scheduled
 run (`SYSTEM_ACTOR_ID`) reads as no requester: unrestricted documents only. The operator's notes reach every
 statements call as fenced data (#1237). It loads the selected documents (or, with none
 selected, the `READER_IMPLICIT_MAX_DOCUMENTS` (5) most recently uploaded ones the requester may
@@ -5138,8 +5137,14 @@ and the full `reading`. The coverage report goes on the capability record
 selected document's file can be loaded or parsed, the document agent retrieves as before. With
 none selected it never retrieves (#2321): a project with no ready upload and one whose every
 upload the requester may not see give the same empty reading ("No document was read"), so the
-outcome says nothing of documents the requester cannot see, and retrieval, which checks no
-document ACL, never reads a withheld one in their place.
+document agent's output says nothing of documents the requester cannot see, and its retrieval,
+which checks no document ACL, never reads a withheld one in their place. That holds for the
+document agent only, not for the analysis as a whole: the reading then has no requirements, so
+`detectAgentMode` sends the code agent to single-shot, and its `retrieveContext` requirement
+half reads every ready upload (`defaultAnalysisDocumentIds`, its quarantine fallback, and
+`runGroundedRetrieval` with no actor), withheld ones included. The two cases still differ
+there; giving analysis retrieval the document ACL is #2431. On this path the summary counts
+the documents as "uploaded", not "selected".
 
 Impact Analysis (#2231) reads a document source from its stored file, parsed as ingest parses
 it (`impact-analysis/document-source.ts` `loadImpactDocumentText`); only when the file cannot
