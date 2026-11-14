@@ -80,6 +80,13 @@ vi.mock("../src/lib/rag/embedder.js", async (importOriginal) => ({
 }));
 vi.mock("../src/lib/socket/registry.js", () => ({ getSocketServer: () => null }));
 const triggerSpy = vi.hoisted(() => vi.fn());
+// The withheld re-synthesis diff is built by its own suite (#780); here only
+// who is handed it is in question.
+const withheldDiffSpy = vi.hoisted(() => vi.fn(async (_analysisId: string) => null as unknown));
+vi.mock("../src/lib/analysis/withheld-replacement-service.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/analysis/withheld-replacement-service.js")>()),
+  getWithheldReplacementDiff: withheldDiffSpy,
+}));
 vi.mock("../src/lib/impact-analysis/impact-analysis-engine.js", async () => {
   const actual = await vi.importActual<
     typeof import("../src/lib/impact-analysis/impact-analysis-engine.js")
@@ -103,6 +110,8 @@ const { userSourceReader, sharedSourceReader } =
 const { loadChangeRequestSource, restrictedNotChecked } =
   await import("../src/lib/analysis/change-request-source.js");
 const { gapInputFor } = await import("../src/routes/portfolio-assessments.js");
+const { viewPortfolioAssessment, resolveReaderAccess } =
+  await import("../src/lib/portfolio/assessment-view.js");
 const { visibleTitleMatches } =
   await import("../src/lib/requirements/project-requirements-list.js");
 const { loadApprovedRequirements, SpecKitRequirementSeedError } =
@@ -781,6 +790,24 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         }
       });
 
+      it("the run's withheld re-synthesis answers Bob as for none", async () => {
+        withheldDiffSpy.mockImplementation(async () => ({ added: [{ title: SECRET }] }));
+        try {
+          const withheld = (who: Who, run: string) =>
+            get(who, `/api/projects/${P}/analyses/${run}/withheld-replacement`);
+          const bob = await withheld("bob", CR);
+          expect(bob.status).toBe(404);
+          expect(bob.body.error.code).toBe("NO_WITHHELD_REPLACEMENT");
+          expect(JSON.stringify(bob.body)).not.toContain("Payroll");
+          expect(JSON.stringify((await withheld("alice", CR)).body)).toContain(SECRET);
+          // A run whose every source Bob can see: he is handed it.
+          expect((await withheld("bob", CR_OPEN)).status).toBe(200);
+        } finally {
+          withheldDiffSpy.mockReset();
+          withheldDiffSpy.mockImplementation(async () => null);
+        }
+      });
+
       it("a checkpoint entry Bob cannot see is not his to edit, and its text is never sent back", async () => {
         // s-new is not promoted yet: it rests on CR as a whole, which read d-secret.
         await db.approvalRequest.create({
@@ -986,6 +1013,64 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(alice.notChecked.map((n) => n.reason)).not.toContain("restricted-source");
       });
 
+      it("a stored portfolio check shows none of a requirement's text to a reader who cannot see it", async () => {
+        // Bob started it while d-secret was open; it is restricted to Alice now.
+        const base = {
+          scope: "all-accessible",
+          status: "completed",
+          createdById: "bob",
+          sourceProjectId: P,
+          summary: `${SECRET} needs the export service`,
+          report: JSON.stringify({
+            source: "model",
+            requirements: [{ text: `${SECRET}, restated`, kind: "functional", mentions: [] }],
+            products: [],
+          }),
+          notChecked: JSON.stringify([{ text: `${SECRET} — more`, reason: "text-cut", count: 12 }]),
+        };
+        await db.portfolioAssessment.create({
+          data: {
+            ...base,
+            id: "pa-2447-req",
+            statement: `${SECRET}\n\n${SECRET} — body`,
+            sourceRequirementId: "req-2447-secret",
+          },
+        });
+        await db.portfolioAssessment.create({
+          data: {
+            ...base,
+            id: "pa-2447-cr",
+            statement: 'Requirements of change request "Checkout"',
+            sourceAnalysisId: CR,
+          },
+        });
+        try {
+          for (const id of ["pa-2447-req", "pa-2447-cr"]) {
+            const bob = await viewPortfolioAssessment(
+              await resolveReaderAccess(payload("bob")),
+              id,
+            );
+            expect(bob).not.toBeNull();
+            expect(JSON.stringify(bob)).not.toContain("Payroll");
+            const root = await viewPortfolioAssessment(
+              await resolveReaderAccess(payload("root")),
+              id,
+            );
+            expect(JSON.stringify(root)).toContain(SECRET);
+          }
+          // The change request's own title is not the requirement's text: it stays.
+          const cr = await viewPortfolioAssessment(
+            await resolveReaderAccess(payload("bob")),
+            "pa-2447-cr",
+          );
+          expect(cr!.statement).toBe('Requirements of change request "Checkout"');
+        } finally {
+          await db.portfolioAssessment.deleteMany({
+            where: { id: { in: ["pa-2447-req", "pa-2447-cr"] } },
+          });
+        }
+      });
+
       it("a portfolio check of a restricted requirement is not found for Bob", async () => {
         await expect(
           loadReadableSourceRequirement(payload("bob"), "req-2447-secret"),
@@ -995,6 +1080,60 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         await expect(
           loadReadableSourceRequirement(payload("alice"), "req-2447-secret"),
         ).resolves.toMatchObject({ title: SECRET });
+      });
+
+      it("a stored impact result shows Bob the restricted requirement's title and summary as the placeholder", async () => {
+        const IA = "ia-2447-stored";
+        await db.impactAnalysis.create({
+          data: {
+            id: IA,
+            status: "completed",
+            startedById: "alice",
+            summary: `${SECRET} touches the export job`,
+            projects: { create: [{ projectId: P }] },
+            items: {
+              create: [
+                {
+                  projectId: P,
+                  requirementId: "req-2447-secret",
+                  requirementTitle: SECRET,
+                  summary: `${SECRET} — the export job changes`,
+                },
+                {
+                  projectId: P,
+                  requirementId: "req-2447-open",
+                  requirementTitle: "Customers can pay",
+                  summary: "The payment path changes",
+                },
+              ],
+            },
+          },
+        });
+        try {
+          const read = (who: Who, path = "") => get(who, `/api/impact-analyses/${IA}${path}`);
+          const bob = await read("bob");
+          expect(bob.status).toBe(200);
+          expect(JSON.stringify(bob.body)).not.toContain("Payroll");
+          const items = bob.body.data.items as Array<{
+            requirementId: string;
+            requirementTitle: string;
+            summary: string;
+          }>;
+          expect(items.find((i) => i.requirementId === "req-2447-secret")!.requirementTitle).toBe(
+            RESTRICTED_SOURCE_TITLE,
+          );
+          expect(items.find((i) => i.requirementId === "req-2447-open")!.summary).toBe(
+            "The payment path changes",
+          );
+          // The run's summary is drawn from every item: it goes with the hidden one.
+          expect(bob.body.data.summary).toBeNull();
+          const exported = await read("bob", "/export.md");
+          expect(exported.status).toBe(200);
+          expect(exported.text).not.toContain("Payroll");
+          expect(JSON.stringify((await read("alice")).body)).toContain(SECRET);
+        } finally {
+          await db.impactAnalysis.delete({ where: { id: IA } });
+        }
       });
 
       it("an impact analysis started by Bob never sends the restricted requirement", async () => {

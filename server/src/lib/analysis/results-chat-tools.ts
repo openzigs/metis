@@ -579,7 +579,12 @@ export function createGetImpactAnalysisTool(
       );
       let detail: ImpactAnalysisDetail;
       try {
-        detail = await loadAccessibleImpactDetail(reader.actor, args.impactAnalysisId);
+        // #2447 — redacted for who reads the answer (a shared thread: everyone).
+        detail = await loadAccessibleImpactDetail(
+          reader.actor,
+          args.impactAnalysisId,
+          chatToolReader(ctx),
+        );
       } catch (err) {
         if (err instanceof AppError && err.statusCode === 404) return missing;
         throw err;

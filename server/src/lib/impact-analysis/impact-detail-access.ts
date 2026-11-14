@@ -3,8 +3,18 @@
  * (`routes/impact-analysis.ts`) and the `job:{id}` socket room (#655), whose
  * impact-analysis events carry no project of their own.
  */
-import type { ImpactAnalysisDetail } from "@metis/shared";
+import {
+  RESTRICTED_SOURCE_BODY,
+  RESTRICTED_SOURCE_TITLE,
+  type ImpactAnalysisDetail,
+} from "@metis/shared";
 import { AppError } from "../../middleware/error-handler.js";
+import { prisma } from "../prisma.js";
+import {
+  restrictedIds,
+  userSourceReader,
+  type SourceReader,
+} from "../analysis/source-redaction.js";
 import {
   isAdminActor,
   listMemberAccessibleProjectIds,
@@ -38,6 +48,47 @@ import { getImpactAnalysisDetail } from "./impact-analysis-read.js";
  * analysis takes this rule too (`resolveJobRoomScope`).
  */
 export async function loadAccessibleImpactDetail(
+  actor: SchedulerActor,
+  id: string,
+  /** #2447 — who the result is redacted for: the actor unless the caller says otherwise. */
+  reader: SourceReader = userSourceReader(actor.id),
+): Promise<ImpactAnalysisDetail> {
+  return redactImpactDetail(await loadReadableImpactDetail(actor, id), reader);
+}
+
+/**
+ * #2447 — the stored result as `reader` may see it: an item about a
+ * requirement resting on a source they cannot see shows the placeholder for
+ * its title and summary (its scores and code stay), and the run's summary,
+ * drawn from every item, goes with it. Nothing is removed.
+ */
+async function redactImpactDetail(
+  detail: ImpactAnalysisDetail,
+  reader: SourceReader,
+): Promise<ImpactAnalysisDetail> {
+  const requirementIds = [
+    ...new Set(detail.items.flatMap((i) => (i.requirementId ? [i.requirementId] : []))),
+  ];
+  if (requirementIds.length === 0) return detail;
+  const rows = await prisma.requirement.findMany({
+    where: { id: { in: requirementIds } },
+    select: { id: true, analysisId: true, sourceIds: true },
+  });
+  const hidden = await restrictedIds(reader, rows);
+  if (hidden.size === 0) return detail;
+  return {
+    ...detail,
+    summary: null,
+    items: detail.items.map((i) =>
+      i.requirementId && hidden.has(i.requirementId)
+        ? { ...i, requirementTitle: RESTRICTED_SOURCE_TITLE, summary: RESTRICTED_SOURCE_BODY }
+        : i,
+    ),
+  };
+}
+
+/** The tenant rule: the run, or 404 when the actor may not read it. */
+async function loadReadableImpactDetail(
   actor: SchedulerActor,
   id: string,
 ): Promise<ImpactAnalysisDetail> {
