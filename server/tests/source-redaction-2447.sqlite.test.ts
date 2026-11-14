@@ -20,6 +20,7 @@ import request from "supertest";
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 import { PrismaClient } from "@prisma/client";
 import {
+  createPortfolioAssessmentSchema,
   getPermissionsForRole,
   RESTRICTED_SOURCE_TITLE,
   type AnalysisSnapshot,
@@ -101,6 +102,7 @@ const { userSourceReader, sharedSourceReader } =
   await import("../src/lib/analysis/source-redaction.js");
 const { loadChangeRequestSource, restrictedNotChecked } =
   await import("../src/lib/analysis/change-request-source.js");
+const { gapInputFor } = await import("../src/routes/portfolio-assessments.js");
 const { visibleTitleMatches } =
   await import("../src/lib/requirements/project-requirements-list.js");
 const { loadApprovedRequirements, SpecKitRequirementSeedError } =
@@ -775,6 +777,25 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         );
         expect(alice.restrictedLeftOut).toBe(0);
         expect(restrictedNotChecked(alice)).toEqual([]);
+      });
+
+      it("a portfolio check started from the change request checks only what its starter can see", async () => {
+        const start = (who: Who) =>
+          gapInputFor(
+            payload(who),
+            createPortfolioAssessmentSchema.parse({ analysisId: CR, scope: "all-accessible" }),
+          );
+        const bob = await start("bob");
+        expect(JSON.stringify(bob.input)).not.toContain("Payroll");
+        expect(bob.notChecked).toContainEqual({
+          text: "1 requirement",
+          reason: "restricted-source",
+          count: 1,
+        });
+        expect(JSON.stringify(bob.notChecked)).not.toContain("Payroll");
+        const alice = await start("alice");
+        expect(JSON.stringify(alice.input)).toContain(SECRET);
+        expect(alice.notChecked.map((n) => n.reason)).not.toContain("restricted-source");
       });
 
       it("a portfolio check of a restricted requirement is not found for Bob", async () => {

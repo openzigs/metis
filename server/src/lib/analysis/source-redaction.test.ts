@@ -468,6 +468,49 @@ describe("redactAnalysisSnapshot (#2447)", () => {
     expect(out.agents[0]!.findings.every((f) => f.restricted)).toBe(true);
   });
 
+  it("redacts the reviewed list in metadata: a promoted entry with its requirement, an unpromoted one with the run", () => {
+    const entry = (id: string, title: string) => ({
+      id,
+      title,
+      description: title,
+      type: "functional",
+      priority: "must",
+    });
+    const withList = (id: string) =>
+      ({
+        ...snapshot,
+        id,
+        metadata: {
+          structuredRequirements: {
+            requirements: [
+              entry("s1", "Secret entry"),
+              entry("s2", "Open entry"),
+              entry("s3", "Unpromoted"),
+            ],
+          },
+        },
+      }) as unknown as AnalysisSnapshot;
+    const promoted = {
+      ...sources,
+      promotedStructuredIds: new Map([
+        ["q1", "s1"],
+        ["q2", "s2"],
+      ]),
+    };
+    const titles = (out: AnalysisSnapshot) =>
+      (
+        out.metadata?.structuredRequirements as { requirements: Array<{ title: string }> }
+      ).requirements.map((r) => r.title);
+    // A shared run: the entry promoted into a hidden requirement goes; the rest stay.
+    expect(titles(redactAnalysisSnapshot(withList("shared-run"), promoted, guardFor(BOB)))).toEqual(
+      ["Restricted", "Open entry", "Unpromoted"],
+    );
+    // A run Alice cannot see as a whole: the unpromoted entry rests on it, so it goes too.
+    expect(
+      titles(redactAnalysisSnapshot(withList("starter-run"), promoted, guardFor(ALICE))),
+    ).toEqual(["Secret entry", "Restricted", "Restricted"]);
+  });
+
   it("leaves a run with no cross-document pass as it was", () => {
     const out = redactAnalysisSnapshot(
       { ...snapshot, crossDocFindings: null } as AnalysisSnapshot,

@@ -243,8 +243,9 @@ interface RunSource {
  * past what one check reads, and criteria past the cap, are returned in
  * `notChecked`. A document's requirements are read when the run starts
  * ({@link resolveDocumentSource}); until then its statement names the document.
+ * Exported for its #2447 test.
  */
-async function gapInputFor(
+export async function gapInputFor(
   user: AuthPayload,
   body: ReturnType<typeof createPortfolioAssessmentSchema.parse>,
 ): Promise<RunSource> {
