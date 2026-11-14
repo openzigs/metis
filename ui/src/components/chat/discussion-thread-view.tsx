@@ -456,6 +456,7 @@ export function DiscussionThreadView({
           currentUserId={currentUserId}
           onEdit={handleEdit}
           onDelete={handleDelete}
+          projectId={projectId}
         />
       </PausableLiveRegion>
       {canPromote && promoteTarget ? (

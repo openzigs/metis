@@ -56,6 +56,7 @@ import {
 } from "../lib/discussions/ai-responder.js";
 import { resolveDiscussionTools } from "../lib/discussions/grounding.js";
 import { loadRecentHistory } from "../lib/discussions/thread-context.js";
+import { citationsField, citationsFromMeta } from "../lib/discussions/message-citations.js";
 import { buildAutoRagContext, type RagContextCapture } from "./ai.js";
 import { sharedAudienceActor } from "../lib/rag/acl.js";
 import {
@@ -426,6 +427,8 @@ export function discussionsRouter(): Router {
         body: true,
         createdAt: true,
         editedAt: true,
+        // #2290 — an AI reply's checked citations; never sent as raw text.
+        meta: true,
         // #734 — the author's display name, so a reload does not render the
         // raw user id. Only the name is read; the user row stays private.
         authorUser: { select: { displayName: true } },
@@ -433,9 +436,10 @@ export function discussionsRouter(): Router {
     });
 
     const nextCursor = messages.length === limit ? messages[messages.length - 1]?.id : null;
-    const data = messages.map(({ authorUser, ...m }) => ({
+    const data = messages.map(({ authorUser, meta, ...m }) => ({
       ...m,
       ...(authorUser?.displayName ? { authorName: authorUser.displayName } : {}),
+      ...citationsField(citationsFromMeta(meta)),
     }));
     res.json({ success: true, data, nextCursor });
   });
@@ -685,6 +689,8 @@ export function discussionsRouter(): Router {
         block,
         sources: capture.sources,
         ...(capture.indexStatusLine ? { indexStatus: capture.indexStatusLine } : {}),
+        // #2290 — what the block held, to check the reply's citations against.
+        evidence: capture,
       };
     };
     const resolveTools = (session: { id: string }) =>
@@ -729,6 +735,8 @@ export function discussionsRouter(): Router {
         body: result.message.body,
         createdAt: new Date(),
         editedAt: null,
+        // #2290 — so every member sees the reply's checked citations live.
+        ...(result.message.citations ? { citations: result.message.citations } : {}),
       });
 
       // #550 — mirror the AI reply into the linked Teams channel (if bridged),
