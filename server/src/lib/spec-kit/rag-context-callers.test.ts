@@ -7,6 +7,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildSpecKitRagContext, type CallerEdgeRow } from "./rag-context.js";
 import { __resetConfigSingleton } from "../config/config-service.js";
+import { UNRESTRICTED_CODE_ACCESS } from "../analysis/tools/code-access.js";
 
 afterEach(() => __resetConfigSingleton());
 
@@ -77,6 +78,8 @@ describe("buildSpecKitRagContext — callers of retrieved symbols (#944)", () =>
       fusedCode,
       includeCode: true,
       siblings,
+      // #2431 — nothing hidden (the default reads the database).
+      codeAccess: async () => UNRESTRICTED_CODE_ACCESS,
       callers: { lookup: { findCallers } },
     });
 
@@ -107,6 +110,8 @@ describe("buildSpecKitRagContext — callers of retrieved symbols (#944)", () =>
       knowledgeService: noDocs,
       fusedCode,
       includeCode: true,
+      // #2431 — nothing hidden (the default reads the database).
+      codeAccess: async () => UNRESTRICTED_CODE_ACCESS,
       callers: { lookup: { findCallers }, max: 3 },
     });
     expect(res.context.match(/^- MarkAllAsRead ← /gm)).toHaveLength(3);
@@ -123,6 +128,8 @@ describe("buildSpecKitRagContext — callers of retrieved symbols (#944)", () =>
       knowledgeService: noDocs,
       fusedCode,
       includeCode: true,
+      // #2431 — nothing hidden (the default reads the database).
+      codeAccess: async () => UNRESTRICTED_CODE_ACCESS,
       callers: { lookup: { findCallers: vi.fn(async () => []) } },
     });
     expect(none.context).not.toContain("## Callers");
@@ -130,6 +137,8 @@ describe("buildSpecKitRagContext — callers of retrieved symbols (#944)", () =>
       knowledgeService: noDocs,
       fusedCode,
       includeCode: true,
+      // #2431 — nothing hidden (the default reads the database).
+      codeAccess: async () => UNRESTRICTED_CODE_ACCESS,
       callers: { lookup: { findCallers: vi.fn().mockRejectedValue(new Error("db down")) } },
     });
     expect(failing.context).toContain("MarkAllAsRead");
