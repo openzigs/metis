@@ -144,6 +144,12 @@ export function createRemoteMcpBodyLimit(
   const parse = jsonBodyParser({ limit: MAX_REMOTE_BODY_BYTES, type: "application/json" });
   const handler: RequestHandler = (req, res, next) => {
     if (readConfig().state !== "enabled") return next();
+    // Only JSON-RPC is accepted on POST. Answered here, before the global
+    // urlencoded parser (10 MiB) reads a form body ahead of authentication.
+    if (req.method === "POST" && !req.is("application/json")) {
+      res.status(415).json({ error: "unsupported_media_type" });
+      return;
+    }
     // body-parser refuses a declared length over the limit before reading, and
     // counts a chunked body as it streams; either way 413, the body drained.
     (parse as unknown as RequestHandler)(req, res, next);

@@ -44,6 +44,8 @@ export const JWKS_TTL_MS = 10 * 60_000;
 export const JWKS_MIN_REFRESH_MS = 30_000;
 export const JWKS_FETCH_TIMEOUT_MS = 5_000;
 export const JWKS_MAX_BYTES = 256 * 1024;
+/** How long a last-good key set is still trusted while the IdP cannot be reached. */
+export const JWKS_MAX_STALE_MS = 60 * 60_000;
 const CLOCK_TOLERANCE_S = 30;
 
 /** Why a token was refused. Logged; the client sees only `invalid_token`. */
@@ -102,6 +104,25 @@ export function tokenScopes(payload: JwtPayload): string[] {
   return [...out];
 }
 
+/** Read a response body, aborting once it passes `max` bytes (a chunked body has no content-length). */
+async function readBounded(res: Response, max: number): Promise<string> {
+  if (!res.body) return "";
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > max) {
+      await reader.cancel().catch(() => undefined);
+      throw new Error("JWKS is too large");
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
 function importKeys(body: unknown): CachedKey[] {
   const list = (body as { keys?: unknown } | null)?.keys;
   if (!Array.isArray(list)) throw new Error("JWKS has no keys array");
@@ -146,8 +167,7 @@ export function createAccessTokenVerifier(deps: TokenVerifierDeps = {}) {
       if (!res.ok) throw new Error(`JWKS answered ${res.status}`);
       const declared = Number(res.headers.get("content-length") ?? 0);
       if (declared > JWKS_MAX_BYTES) throw new Error("JWKS is too large");
-      const text = await res.text();
-      if (text.length > JWKS_MAX_BYTES) throw new Error("JWKS is too large");
+      const text = await readBounded(res, JWKS_MAX_BYTES);
       const entry = { keys: importKeys(JSON.parse(text)), fetchedAt: now() };
       cache.set(url, entry);
       return entry;
@@ -167,13 +187,21 @@ export function createAccessTokenVerifier(deps: TokenVerifierDeps = {}) {
   async function keyFor(url: string, kid: string | undefined, alg: Algorithm): Promise<KeyObject> {
     let entry = cache.get(url);
     const stale = !entry || now() - entry.fetchedAt > JWKS_TTL_MS;
+    // A failed fetch leaves `fetchedAt` as it was, so the attempt cooldown is what
+    // stops every request re-fetching (and waiting out the timeout) while the IdP is down.
+    const cooling =
+      entry !== undefined && now() - (lastAttempt.get(url) ?? 0) < JWKS_MIN_REFRESH_MS;
     try {
-      if (stale) entry = await fetchJwks(url);
+      if (stale && !cooling) entry = await fetchJwks(url);
     } catch {
       // A failed refresh keeps the last good set; with none there is nothing to verify against.
       if (!entry) throw new InvalidAccessTokenError("jwks_unavailable");
     }
-    let key = pick(entry!, kid, alg);
+    // ...but only for a bounded time: a long outage must not trust old keys forever.
+    if (!entry || now() - entry.fetchedAt > JWKS_MAX_STALE_MS) {
+      throw new InvalidAccessTokenError("jwks_unavailable");
+    }
+    let key = pick(entry, kid, alg);
     if (!key && now() - (lastAttempt.get(url) ?? 0) >= JWKS_MIN_REFRESH_MS) {
       // Key rotation: the server may have published a key we have not seen yet.
       try {

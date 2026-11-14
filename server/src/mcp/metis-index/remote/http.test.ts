@@ -414,6 +414,14 @@ describe("transport hardening", () => {
     expect(r.status).toBe(415);
   });
 
+  it("refuses a form body before authentication (415), not parsed ahead of the token check", async () => {
+    const r = await request(makeApp())
+      .post("/mcp")
+      .set("content-type", "application/x-www-form-urlencoded")
+      .send("a=" + "x".repeat(200_000));
+    expect(r.status).toBe(415);
+  });
+
   it("is stateless: GET and DELETE answer 405 with Allow: POST", async () => {
     const app = makeApp();
     for (const method of ["get", "delete"] as const) {

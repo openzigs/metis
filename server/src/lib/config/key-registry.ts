@@ -1371,7 +1371,7 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
     valueType: "csv",
     schema: csvOriginSchema,
     description:
-      "Comma-separated browser origins allowed to call /mcp. A request with any other Origin header is refused; a request with none (a desktop agent) is not.",
+      "Comma-separated origins allowed to send an Origin header to /mcp. A request with any other Origin is refused; a request with none (a desktop agent) is not. This is a DNS-rebinding allowlist, not CORS: the endpoint sends no Access-Control-* headers, so a browser page cannot call it cross-origin.",
     sensitive: false,
   },
   MCP_REMOTE_RATE_LIMIT_PER_MINUTE: {

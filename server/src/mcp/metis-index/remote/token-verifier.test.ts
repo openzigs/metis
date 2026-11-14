@@ -10,6 +10,7 @@ import {
   createAccessTokenVerifier,
   InvalidAccessTokenError,
   JWKS_MAX_BYTES,
+  JWKS_MAX_STALE_MS,
   JWKS_MIN_REFRESH_MS,
   JWKS_TTL_MS,
   tokenScopes,
@@ -272,6 +273,75 @@ describe("createAccessTokenVerifier", () => {
     );
     const noKeys = vi.fn(async () => new Response("{}", { status: 200 }));
     expect(await rejection(verifier(noKeys as never).verify(sign(), settings))).toBe(
+      "jwks_unavailable",
+    );
+  });
+
+  it("does not re-fetch on every request while the IdP is down (attempt cooldown)", async () => {
+    let t = NOW;
+    let fail = false;
+    const fetchImpl = vi.fn(async () =>
+      fail
+        ? new Response("down", { status: 500 })
+        : new Response(JSON.stringify({ keys: [jwk(signing.publicKey, "k1")] }), { status: 200 }),
+    );
+    const { verify } = verifier(fetchImpl as never, () => t);
+    await verify(sign(), settings);
+    fail = true;
+    t = NOW + JWKS_TTL_MS + 1;
+    for (let i = 0; i < 5; i++) await verify(sign({ exp: t / 1000 + 300 }), settings);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("stops trusting a stale JWKS after the maximum staleness", async () => {
+    let t = NOW;
+    let fail = false;
+    const fetchImpl = vi.fn(async () =>
+      fail
+        ? new Response("down", { status: 500 })
+        : new Response(JSON.stringify({ keys: [jwk(signing.publicKey, "k1")] }), { status: 200 }),
+    );
+    const { verify } = verifier(fetchImpl as never, () => t);
+    await verify(sign(), settings);
+    fail = true;
+    t = NOW + JWKS_MAX_STALE_MS + 1;
+    expect(await rejection(verify(sign({ exp: t / 1000 + 300 }), settings))).toBe(
+      "jwks_unavailable",
+    );
+  });
+
+  it("bounds a chunked JWKS by the bytes read: stops reading an endless body", async () => {
+    let pulls = 0;
+    let cancelled = false;
+    const chunk = new Uint8Array(64 * 1024).fill(0x61);
+    const endless = vi.fn(async () => {
+      const body = new ReadableStream<Uint8Array>({
+        pull(c) {
+          pulls += 1;
+          c.enqueue(chunk);
+        },
+        cancel() {
+          cancelled = true;
+        },
+      });
+      return new Response(body, { status: 200 });
+    });
+    expect(await rejection(verifier(endless as never).verify(sign(), settings))).toBe(
+      "jwks_unavailable",
+    );
+    expect(cancelled).toBe(true);
+    expect(pulls).toBeLessThan(20);
+  });
+
+  it("counts bytes, not UTF-16 units: multi-byte padding past the limit is refused", async () => {
+    const pad = "é".repeat(JWKS_MAX_BYTES / 2 + 1); // under 256K characters, over 256 KiB
+    const wide = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ keys: [jwk(signing.publicKey, "k1")], pad }), {
+          status: 200,
+        }),
+    );
+    expect(await rejection(verifier(wide as never).verify(sign(), settings))).toBe(
       "jwks_unavailable",
     );
   });

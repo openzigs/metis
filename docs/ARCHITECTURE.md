@@ -9607,7 +9607,7 @@ agent (MCP client) ── stdio ──► registerTool handler
 | [`dispatcher.ts`](../server/src/mcp/metis-index/dispatcher.ts) | The order of the checks above. Errors say nothing of internals. The result is redacted (#2333), capped with `truncated`, and given its citations (#2325) and fixed `instructions`. |
 | [`server.ts`](../server/src/mcp/metis-index/server.ts) | `createIndexMcpServer`. `structuredContent` holds the whole result; text `content` holds the result, then a trailer. `main()` refuses to boot on an unresolvable token and sends every log line to stderr, since stdout is the transport. |
 
-The `mcp` arm of `pnpm eval:ba-qa` drives these tools through an MCP client (`eval-data/README.md`). The remote (HTTP) endpoint is 25.6.1b. Client setup: [`docs/integrations/metis-index-mcp.md`](integrations/metis-index-mcp.md).
+The `mcp` arm of `pnpm eval:ba-qa` drives these tools through an MCP client (`eval-data/README.md`). The remote (HTTP) endpoint is described in 25.6.1b. Client setup: [`docs/integrations/metis-index-mcp.md`](integrations/metis-index-mcp.md).
 
 #### 25.6.1b The remote endpoint: `/mcp`, METIS as an OAuth 2.1 resource server (#2344)
 
