@@ -59,6 +59,7 @@ const { portfolioAssessmentsRouter } = await import("../src/routes/portfolio-ass
 const { errorHandler, notFoundHandler } = await import("../src/middleware/error-handler.js");
 const { issueTokens } = await import("../src/lib/auth/jwt.js");
 const { parseSourceRows } = await import("../src/lib/portfolio/assessment-store.js");
+const { runPortfolioGapAnalysis } = await import("../src/lib/portfolio/gap-engine.js");
 
 const WS = "ws-2498";
 const P = "proj-2498";
@@ -104,7 +105,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       a.use(errorHandler);
       return a;
     };
-    const sources = (documentIds: string[]) => JSON.stringify({ documentIds, chunkIds: [] });
+    const sources = (documentIds: string[], chunkIds: string[] = []) =>
+      JSON.stringify({ documentIds, chunkIds });
 
     /** Start a check as Bob, and wait for its run to end. */
     const start = async (body: Record<string, unknown>): Promise<string> => {
@@ -182,7 +184,13 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           sourceAccess: "shared",
         },
       });
-    const requirement = (id: string, analysisId: string, title: string, documentId: string) =>
+    const requirement = (
+      id: string,
+      analysisId: string,
+      title: string,
+      documentId: string,
+      chunkIds: string[] = [],
+    ) =>
       db.requirement.create({
         data: {
           id,
@@ -192,7 +200,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           body: `${title} — body`,
           reviewStatus: "approved",
           acceptanceCriteria: JSON.stringify([`${title} works`]),
-          sourceIds: sources([documentId]),
+          sourceIds: sources([documentId], chunkIds),
         },
       });
 
@@ -239,7 +247,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       }
       for (const cr of ["cr-withheld", "cr-resynthesis", "cr-single", "cr-open-only"]) {
         await run(cr);
-        await requirement(`${cr}-open`, cr, OPEN, "d-open");
+        // Each open row cites a chunk too: the record keeps its documents only.
+        await requirement(`${cr}-open`, cr, OPEN, "d-open", [`${cr}-chunk`]);
         await requirement(`${cr}-secret`, cr, SECRET, "d-secret");
       }
 
@@ -285,6 +294,38 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       // Bob could not see the restricted row when he started this one: not read, not recorded.
       expect(await recorded(checks.readOpenOnly)).toEqual([
         { id: "cr-open-only-open", analysisId: "cr-open-only", sourceIds: sources(["d-open"]) },
+      ]);
+    });
+
+    it("runPortfolioGapAnalysis records the single row it read, its documents only", async () => {
+      // Unique per attempt, so a retry does not collide with the rows it seeded.
+      const cr = `cr-engine-${Date.now()}`;
+      await run(cr);
+      await requirement(`${cr}-open`, cr, OPEN, "d-open", [`${cr}-chunk`]);
+      const noModel = {
+        key: "openai",
+        model: "m",
+        offline: false,
+        chat: async () => {
+          throw new Error("no model in this suite");
+        },
+      };
+      const { assessmentId } = await runPortfolioGapAnalysis(
+        payload("bob"),
+        {
+          statement: OPEN,
+          scope: "product",
+          productIds: [PRODUCT],
+          sourceRequirementId: `${cr}-open`,
+        },
+        {
+          provider: noModel as never,
+          limits: { runCostCapUsd: 1, productCostCapUsd: 1, concurrency: 1 },
+        },
+      );
+      const row = await db.portfolioAssessment.findUniqueOrThrow({ where: { id: assessmentId } });
+      expect(parseSourceRows(row.sourceRows)).toEqual([
+        { id: `${cr}-open`, analysisId: cr, sourceIds: sources(["d-open"]) },
       ]);
     });
 

@@ -27,6 +27,7 @@ import {
 import { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "../prisma.js";
+import { parseSourceIds, serializeSourceIds } from "../analysis/source-ids.js";
 
 /**
  * #2498 — one requirement row a check read when it started, with its sources as
@@ -61,6 +62,18 @@ export function parseSourceRows(raw: string | null): StoredSourceRows {
   } catch {
     return "unreadable";
   }
+}
+
+/**
+ * #2498 — a row's sources as a check records them: its documents only. The
+ * view decides a recorded row on its documents (`sourceGuardOf.canSee`), never
+ * its chunks, so they are not stored. A value that does not parse is recorded
+ * as none (`null`), which the guard reads exactly as it reads the unparseable
+ * original: the row rests on its run as a whole.
+ */
+function recordedSourceIds(sourceIds: string | null): string | null {
+  const parsed = parseSourceIds(sourceIds);
+  return parsed ? serializeSourceIds({ documentIds: parsed.documentIds, chunkIds: [] }) : null;
 }
 
 /** Bound values per statement kept under SQLite's 999, with room to spare. */
@@ -156,7 +169,7 @@ export async function createPortfolioAssessment(
                 sourceRows.map((r) => ({
                   id: r.id,
                   analysisId: r.analysisId,
-                  sourceIds: r.sourceIds,
+                  sourceIds: recordedSourceIds(r.sourceIds),
                 })),
               ),
         costUsd: input.costUsd,
