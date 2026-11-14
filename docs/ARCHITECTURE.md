@@ -1667,7 +1667,29 @@ stops new calls; the spend can pass it by the calls already in flight. #2354 —
 started from a document charges the reading's cost to the run's budget first (`spentUsd`), so
 a reading that used the cap leaves the repos `budget`. A product's criteria groups are searched
 up to `PORTFOLIO_GROUP_SEARCH_CONCURRENCY` (4) at once, ahead of their verdict calls, which
-still run one at a time in order; a group is searched only while the budget allows a call.
+still run one at a time in order; a group is searched only while the budget allows a call, and
+none is started once the run is aborted. Every search of the run, across products and groups,
+also waits for one run-wide bound, `PORTFOLIO_RUN_SEARCH_CONCURRENCY` (16 project searches in
+flight, a search weighing the projects it fans out to; one heavier than 16 runs alone). 16 is
+the peak before groups were searched ahead (4 products, one group each, 4 project searches
+each), so the lookahead fills idle search slots instead of multiplying the load on federated
+search, where a project timed out by contention (3 s) reads `retrieval-failed`. A search
+already running when the run is aborted finishes: `FederatedSearchOptions` takes no signal.
+
+**What grouping costs (#2354, measured).** The real engine and `buildRepoVerdictPrompt` against
+one repo, a search returning 24 excerpts of about 1,500 characters (the
+`PORTFOLIO_GAP_HITS_PER_PRODUCT` default), input priced at claude-sonnet-4-5 at about 4
+characters a token: a requirement of 8 criteria is 1 call of ~9,500 input tokens; 9 to 16
+criteria are 2 groups at ~19,000 (1.98x one ungrouped call); 20 criteria are 3 groups at
+~28,500 (2.92x). The excerpts dominate each prompt and every group carries its own, so input
+cost scales with the number of groups, `ceil(n / maxCriteria)`, not with the criteria; output
+changes little. At the defaults ($0.50 a product, $2 a run) a 9-16-criterion requirement costs
+about $0.03 more per repo, and the product cap binds after about 8 repos instead of about 17.
+In return every criterion is searched for and judged on its own excerpts, where before a long
+requirement's later criteria were never searched (#1657). The grouping stays; if it proves
+expensive, the lever is `PORTFOLIO_GAP_HITS_PER_PRODUCT` (excerpts per group), not the group
+size. The measurement script was not committed.
+
 Cost is priced from
 the provider's usage; an unpriced model counts 0, which is why the call cap exists: it is
 counted as each call starts, so it is never passed. Once one product fails the run, no new

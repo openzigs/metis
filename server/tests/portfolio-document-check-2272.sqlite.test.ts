@@ -18,7 +18,7 @@ import {
   type AuthPayload,
   type PortfolioAssessmentView,
 } from "@metis/shared";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { DocumentReading } from "../src/lib/document-reader/reader.js";
 import type { PortfolioDocumentReader } from "../src/lib/portfolio/document-requirements.js";
 import { readGeneratedClientProvider } from "./lib/db/generated-client-provider.js";
@@ -149,8 +149,11 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     }));
 
     const federated = new FederatedSearchService({ knowledgeService: fixtureKnowledgeService() });
-    /** #2354 — the run's cost cap, in USD; a test lowers it. */
+    /** #2354 — the run's cost cap, in USD; a test lowers it, and it is restored after each. */
     let runCostCapUsd = 100;
+    afterEach(() => {
+      runCostCapUsd = 100;
+    });
     const app = () => {
       const a = express();
       a.use(express.json());
@@ -422,7 +425,6 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       runCostCapUsd = 0.05;
       const id = await start("ana", { documentId: DOC_A, scope: "product", productIds: [P1] });
       const view = await settled(id, "ana");
-      runCostCapUsd = 100;
       expect(view.status).toBe("completed");
       expect(view.notChecked).toEqual(
         expect.arrayContaining(

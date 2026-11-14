@@ -48,6 +48,8 @@ const {
   MAX_QUERY_CHARS,
   MAX_SCOPE_PRODUCTS,
   PORTFOLIO_GROUP_SEARCH_CONCURRENCY,
+  PORTFOLIO_RUN_SEARCH_CONCURRENCY,
+  SearchLimiter,
   clipText,
   criteriaGroups,
   evaluatePortfolioGap,
@@ -962,6 +964,110 @@ describe("#2354 — what a run spent before it, and its searches, count against 
     // Let the pending searches settle: an unhandled rejection would fail this file.
     await new Promise((r) => setTimeout(r, 30));
     expect(searches).toBe(3);
+  });
+});
+
+describe("#2354 — one bound on the run's searches", () => {
+  /** `count` products, each with `repos` repos in a project of their own. */
+  function portfolio(count: number, repos: number): void {
+    db.product.findMany.mockResolvedValue(
+      Array.from({ length: count }, (_, i) => ({ id: `p${i + 1}`, name: `P${i + 1}` })),
+    );
+    db.productRepo.findMany.mockImplementation(async ({ where }) =>
+      (where.productId.in as string[]).flatMap((productId) =>
+        Array.from({ length: repos }, (_, r) => ({
+          productId,
+          repoConnectionId: `rc-${productId}-${r}`,
+          repoConnection: {
+            projectId: `proj-${productId}-${r}`,
+            label: `label-${productId}-${r}`,
+            ownerOrOrg: null,
+            repoName: null,
+          },
+        })),
+      ),
+    );
+  }
+  const requirements = (n: number) => Array.from({ length: n }, (_, i) => `Requirement ${i + 1}`);
+  const noEvidence = () => JSON.stringify({ criteria: [] });
+
+  it("products and their groups together never search more projects at once than the bound", async () => {
+    // Four products of eight projects, six groups each: unbounded, 4 x 4 x 8 = 128 at once.
+    portfolio(4, 8);
+    const live = { now: 0, max: 0 };
+    await evaluatePortfolioGap(
+      USER,
+      { statement: "Requirements", criteria: requirements(48), ...ALL },
+      {
+        provider: provider(noEvidence),
+        search: async ({ projectIds = [] }) => {
+          live.now += projectIds.length;
+          live.max = Math.max(live.max, live.now);
+          await new Promise((r) => setTimeout(r, 5));
+          live.now -= projectIds.length;
+          return found([]);
+        },
+        limits: { ...limits, concurrency: 4, maxCriteria: 8 },
+      },
+    );
+    expect(live.max).toBe(16);
+    expect(PORTFOLIO_RUN_SEARCH_CONCURRENCY).toBe(16);
+  });
+
+  it("no search starts once the run is aborted, not even one already waiting its turn", async () => {
+    // One product of sixteen projects: each group's search fills the bound, so the groups
+    // searched ahead wait their turn behind the first.
+    portfolio(1, 16);
+    const controller = new AbortController();
+    let searches = 0;
+    const run = evaluatePortfolioGap(
+      USER,
+      { statement: "Requirements", criteria: requirements(48), ...PRODUCT_P1 },
+      {
+        provider: provider(noEvidence),
+        search: async () => {
+          searches += 1;
+          controller.abort(new Error("cancelled"));
+          await new Promise((r) => setTimeout(r, 5));
+          return found([]);
+        },
+        limits: { ...limits, maxCriteria: 8 },
+        signal: controller.signal,
+      },
+    );
+    await expect(run).rejects.toThrow("cancelled");
+    await new Promise((r) => setTimeout(r, 30));
+    expect(searches).toBe(1);
+  });
+
+  it("the limiter admits in order, runs a search heavier than the bound alone, and drops an aborted waiter", async () => {
+    const limiter = new SearchLimiter(4);
+    const order: string[] = [];
+    const gate = () => {
+      let open!: () => void;
+      const opened = new Promise<void>((r) => (open = r));
+      return { open, opened };
+    };
+    const a = gate();
+    const first = limiter.run(3, async () => {
+      order.push("a");
+      await a.opened;
+    });
+    const controller = new AbortController();
+    const dropped = limiter
+      .run(2, async () => order.push("dropped"), controller.signal)
+      .catch((e: unknown) => e);
+    const heavy = limiter.run(10, async () => order.push("heavy"));
+    const light = limiter.run(1, async () => order.push("light"));
+    await new Promise((r) => setTimeout(r, 0));
+    // "light" fits beside "a", but waits its turn behind the searches queued before it.
+    expect(order).toEqual(["a"]);
+    controller.abort(new Error("stop"));
+    expect(String(await dropped)).toContain("stop");
+    a.open();
+    await Promise.all([first, heavy, light]);
+    expect(order).toEqual(["a", "heavy", "light"]);
+    await expect(limiter.run(1, async () => "x", controller.signal)).rejects.toThrow("stop");
   });
 });
 

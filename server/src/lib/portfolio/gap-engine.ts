@@ -736,9 +736,77 @@ async function retrieveShared(
 /**
  * #2354 — criteria groups one product searches for at once. Each group's model calls still run
  * one at a time, in order; a group's search starts only while the budget allows a call, so
- * once it is spent at most this many searches already started are left unused.
+ * once it is spent at most this many searches already started are left unused. Across the run,
+ * every search also waits for {@link PORTFOLIO_RUN_SEARCH_CONCURRENCY}.
  */
 export const PORTFOLIO_GROUP_SEARCH_CONCURRENCY = 4;
+
+/**
+ * #2354 — project searches in flight at once across the whole run, every product and criteria
+ * group together. 16 is the peak before group searches ran ahead: `PORTFOLIO_GAP_CONCURRENCY`
+ * (4) products, each one group at a time, each up to {@link PER_REPO_SEARCH_CONCURRENCY} (4)
+ * project searches. So running a product's groups ahead fills idle search slots rather than
+ * multiplying the load on the search service, whose per-project timeout reads
+ * `retrieval-failed` when it is contended.
+ */
+export const PORTFOLIO_RUN_SEARCH_CONCURRENCY = 16;
+
+/**
+ * #2354 — admits searches across a run, first come first served, while the project searches in
+ * flight fit {@link PORTFOLIO_RUN_SEARCH_CONCURRENCY}. A search weighs the projects it fans out
+ * to; one heavier than the whole bound runs alone. Once the run is aborted a waiting search is
+ * never started.
+ */
+export class SearchLimiter {
+  private inUse = 0;
+  private readonly queue: { weight: number; start: () => void }[] = [];
+
+  constructor(private readonly capacity: number) {}
+
+  async run<T>(projects: number, fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    const weight = Math.min(this.capacity, Math.max(1, projects));
+    await this.acquire(weight, signal);
+    try {
+      return await fn();
+    } finally {
+      this.inUse -= weight;
+      this.drain();
+    }
+  }
+
+  private acquire(weight: number, signal?: AbortSignal): Promise<void> {
+    throwIfAborted(signal);
+    if (this.queue.length === 0 && this.inUse + weight <= this.capacity) {
+      this.inUse += weight;
+      return Promise.resolve();
+    }
+    return new Promise((resolve, reject) => {
+      const entry = {
+        weight,
+        start: () => {
+          signal?.removeEventListener("abort", onAbort);
+          resolve();
+        },
+      };
+      const onAbort = () => {
+        const at = this.queue.indexOf(entry);
+        if (at >= 0) this.queue.splice(at, 1);
+        this.drain();
+        reject(signal?.reason ?? new Error("Portfolio gap analysis aborted"));
+      };
+      this.queue.push(entry);
+      signal?.addEventListener("abort", onAbort, { once: true });
+    });
+  }
+
+  private drain(): void {
+    while (this.queue.length > 0 && this.inUse + this.queue[0].weight <= this.capacity) {
+      const next = this.queue.shift()!;
+      this.inUse += next.weight;
+      next.start();
+    }
+  }
+}
 
 /** #1763 — project searches {@link retrievePerRepo} runs at once for one product. */
 const PER_REPO_SEARCH_CONCURRENCY = 4;
@@ -845,8 +913,9 @@ export function mergeRepoGroups(parts: readonly PortfolioRepoResult[]): Portfoli
 }
 
 /**
- * One repo's verdict on one criteria group, from the retrieval that group's query made; `null`
- * when the group was not searched because the budget was spent (#2354).
+ * One repo's verdict on one criteria group, from the retrieval that group's query made.
+ * `retrieval` is `null` when the group was not searched because the budget was spent (#2354);
+ * the repo then reads `budget`, unless another product in this run already judged it.
  */
 async function evaluateRepoGroup(
   ctx: RunContext,
@@ -900,11 +969,13 @@ async function evaluateProduct(
     const searches: Promise<Retrieval | null>[] = [];
     const search = (gi: number): void => {
       if (gi >= ctx.groups.length) return;
-      const started = !ctx.budget.allows(product.id)
-        ? Promise.resolve(null)
-        : ctx.limits.perRepoSearch
-          ? retrievePerRepo(ctx, ctx.groups[gi], product.id, targets.repos)
-          : retrieveShared(ctx, ctx.groups[gi], product.id, targets.repos);
+      // An aborted run starts no search ahead; the loop below rethrows the abort.
+      const started =
+        ctx.signal?.aborted || !ctx.budget.allows(product.id)
+          ? Promise.resolve(null)
+          : ctx.limits.perRepoSearch
+            ? retrievePerRepo(ctx, ctx.groups[gi], product.id, targets.repos)
+            : retrieveShared(ctx, ctx.groups[gi], product.id, targets.repos);
       // A search that rejects once the run has stopped (an abort) is awaited by no one.
       started.catch(() => undefined);
       searches[gi] = started;
@@ -1147,14 +1218,22 @@ async function evaluateParsed(
 ): Promise<PortfolioGapResult> {
   const limits = { ...readPortfolioGapLimits(), ...deps.limits };
   const provider = deps.provider ?? buildProvider({ config: loadAIConfig() });
+  const search =
+    deps.search ??
+    ((opts: FederatedSearchOptions) => getFederatedSearchService().searchAcrossProjects(opts));
+  // #2354 — one bound on the project searches of the whole run (every product and group).
+  const searches = new SearchLimiter(PORTFOLIO_RUN_SEARCH_CONCURRENCY);
   const base = {
     user,
     statement: input.statement,
     provider,
     maxTokens: resolvePortfolioMaxOutputTokens(provider),
-    search:
-      deps.search ??
-      ((opts: FederatedSearchOptions) => getFederatedSearchService().searchAcrossProjects(opts)),
+    search: (opts: FederatedSearchOptions) =>
+      searches.run(
+        opts.projectIds?.length ?? PORTFOLIO_RUN_SEARCH_CONCURRENCY,
+        () => search(opts),
+        deps.signal,
+      ),
     limits,
     costOf: deps.costOf ?? defaultCostOf,
     budget: new Budget(limits),
