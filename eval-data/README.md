@@ -820,12 +820,12 @@ say so in the write-up (#2229 did this for two strings).
 `corpus/baqa-01-acme-reader/` is Phase 0 of #2228: the questions a business analyst asks
 chat, over a two-product sample called Acme Reader. The two products are the Miniflux server
 (`miniflux/v2` at 2.3.3, Apache-2.0) and its Python client (`miniflux/python-client` at
-1.1.6, MIT). `questions.json` holds 23 one-turn questions in four categories, plus the
+1.1.6, MIT). `questions.json` holds 26 one-turn questions in four categories, plus the
 multi-turn set below, and the category fixes what a good reply does:
 
 | Category | Questions | A good reply |
 |---|---:|---|
-| `single-product`: "how does rule X work in product Y" | 11 | answers; carries facts and expected code and doc sources |
+| `single-product`: "how does rule X work in product Y" | 14 (S1 to S11, and H1 to H3 below) | answers; carries facts and expected code and doc sources |
 | `multi-product`: "what does FRD-12 change in A and B" | 4 | answers from both products and `frd-12.md`; carries facts, expected requirements and the files an impact analysis should name |
 | `ambiguous` | 4 | asks a follow-up question |
 | `unanswerable` | 4 | says the sources don't show this |
@@ -846,8 +846,10 @@ it, so a contradicted fact is what a recurrence looks like:
 | S10 | `showUnreadPage` has the paging bug; missed the category page | `ui/unread_entries.go:38`, `ui/category_entries.go` |
 | S11 | the `read_at` requirement is the reading-time estimate | `readingtime/readingtime.go`, `storage/entry.go:412-427` |
 
-The baseline below predates them and covers the first 18 questions only. To measure the
-five on their own, add `--questions S7,S8,S9,S10,S11`.
+The first baseline below predates them and covers the first 18 questions only; the
+23-question baseline after it (#2357) covers S7 to S11 too. To measure the five on their own,
+add `--questions S7,S8,S9,S10,S11`. #2357 did that with and without #2198's claim-check rules
+in chat's prompt; see "#2198's claim-check rules, measured" below.
 
 ```bash
 pnpm eval:materialize baqa-01-acme-reader     # clones, projects, code graph, symbol vectors ($0)
@@ -1002,6 +1004,54 @@ From the next run on, the report gives the two rates apart.
   follow-ups, and two of the four abstentions on unanswerable questions, came in unscoped
   sessions with no retrieval. A3, the one ambiguous question with retrieval, was answered on
   a stated assumption in every run instead of asked about.
+
+### Baseline on 23 questions, 2026-11-14 (#2357)
+
+The baseline above, re-run on the 23 one-turn questions it now has a reason to cover: S1 to
+S11, M1 to M4, A1 to A4 and U1 to U4 (`H1`–`H3` are left out: neither arm offers the history
+tool they need). One run per arm, on #2357's branch (`main` at `3f5cf527` with #2198's
+claim-check rules removed, as below), Sonnet 5.5 answers and judge, one fresh materialization:
+
+```bash
+pnpm eval:ba-qa --arm off --budget 3 --questions S1,S2,S3,S4,S5,S6,S7,S8,S9,S10,S11,M1,M2,M3,M4,A1,A2,A3,A4,U1,U2,U3,U4
+pnpm eval:ba-qa --arm on --budget 4 --questions <the same> --include eval-results/ba-qa/<off run>.json
+```
+
+The `on` arm is not the `on` of 2026-11-11: since #2327 and #2412 it also offers the search
+primitives and `search_code_context`, so its first-18 figures are not a re-measurement of the
+column above. `off` is the same arm.
+
+| | off | on |
+|---|---:|---:|
+| Sessions chat left unscoped (no retrieval) | 9/23 | 9/23 |
+| Correctness: mean facts stated, all 15 answerable | 24% | 63% |
+| … the first 18 questions' 10 answerable | 27% | 48% |
+| … S7 to S11 | 20% | 93% |
+| Fully correct answers | 0/15 | 6/15 |
+| Facts contradicted | 0 | 0 |
+| Citation precision, line spans | n/a (no lines cited) | 100% (91/91) |
+| Citation precision, files without lines | 33% (11/33) | 15% (2/13) |
+| Citation recall (expected files cited) | 11/47 | 25/47 |
+| Abstention on unanswerable | 4/4 | 4/4 |
+| Follow-up on ambiguous | 4/4 | 4/4 |
+| False abstention on answerable | 9/15 | 4/15 |
+| Right behaviour, single-product | 6/11 | 11/11 |
+| Right behaviour, multi-product | 0/4 | 0/4 |
+| Tool loop out of turns | 0 | 1 (S10) |
+| Tool results cut by the model cap | 0 | 4 in 4 sessions |
+| Input tokens per question | 4,060 | 29,993 |
+| Spend (answers + judge) | $0.466734 | $0.935298 |
+
+- **The first 18 read as before.** `off` states 27% of the facts on the first 18's ten
+  answerable questions (29% and 27% on 2026-11-11), abstains falsely on 6 of 10 (5 and 6), and
+  still never cites a line. Every A question now asks a follow-up (3/4 before #2241's policy).
+- **S7 to S11 are where the tools matter most.** With the flags off, chat abstained on S7, S10
+  and S11 and stated one fact each on S8 and S9; with them on, it stated 14 of 15 facts and
+  answered all five. None of run 10's wrong claims came back in either arm.
+- **M1 to M4 still abstain in both arms**: a two-product question reaches chat unscoped.
+
+The per-question scores of both runs are in `readings/ba-qa/2357-claim-check-paired.json`
+(labels `base23-off` and `base23-on`).
 
 ### Each flag on its own, 2026-11-11 (#2243)
 
@@ -2001,3 +2051,93 @@ stated the same facts in every other run of both arms, so neither changes the de
 The per-question scores and tool calls of the six runs (no transcripts) are in
 `readings/ba-qa/2488-change-history-paired.json`. Spend for #2488: **$6.941348**, the six runs
 ($6.842178) and one two-question `tools-history` smoke run before them ($0.099170).
+
+### #2198's claim-check rules, measured (#2357), 2026-11-14
+
+#2198 added a "Checking a claim before you make it" section to chat's static citation policy
+(`CITATION_INSTRUCTION`, `server/src/lib/ai/chat-system-prompt.ts`): five rules, one per wrong
+claim of walkthrough run 10 (look up callers before "no callers", read other code before "same
+bug", check later migrations before "still used", cite the lines that hold the claim, a shared
+word is not evidence), plus a sixth that names a requirement by its title. S7 to S11 ask those
+five claims again. #2357's rule: if the section does not move the facts contradicted, remove it.
+
+The code measured is `main` at `3f5cf527`, **with** the section as it is and **without** it
+(the section and its blank line deleted from the working tree, nothing else changed). One
+fresh materialization and knowledge ingest (`--floor-sweep`, no model). The runs alternated
+with, without, three pairs on `on` (the arm the issue named) and two on `default` (the server's
+own flags, which is what production runs). Sonnet 5.5 answered and judged, S7 to S11 only:
+
+```bash
+pnpm eval:ba-qa --arm on --budget 5 --questions S7,S8,S9,S10,S11
+pnpm eval:ba-qa --arm default --budget 5 --questions S7,S8,S9,S10,S11
+```
+
+| `on` | with 1 | without 1 | with 2 | without 2 | with 3 | without 3 |
+|---|---:|---:|---:|---:|---:|---:|
+| Facts stated | 11/15 | 12/15 | 13/15 | 14/15 | 11/15 | 14/15 |
+| Facts contradicted | 0 | 0 | 0 | 0 | 1 (S10.c) | 0 |
+| Citation precision, line spans | 51/51 | 44/44 | 56/56 | 42/42 | 49/49 | 42/44 |
+| Citation precision, files without lines | 3/4 | 1/3 | 1/3 | 2/6 | 1/3 | 0/1 |
+| Expected files cited | 14/15 | 13/15 | 13/15 | 14/15 | 13/15 | 14/15 |
+| Spend | $0.388632 | $0.348919 | $0.406241 | $0.264555 | $0.248073 | $0.267983 |
+
+| `default` | with 1 | without 1 | with 2 | without 2 |
+|---|---:|---:|---:|---:|
+| Facts stated | 9/15 | 11/15 | 12/15 | 9/15 |
+| Facts contradicted | 1 (S11.b) | 1 (S11.b) | 1 (S10.c) | 1 (S10.c) |
+| Citation precision, line spans | 33/34 | 37/38 | 43/43 | 38/39 |
+| Citation precision, files without lines | 3/3 | 1/3 | 2/2 | 1/4 |
+| Expected files cited | 9/15 | 11/15 | 9/15 | 9/15 |
+| Spend | $0.368843 | $0.404210 | $0.349979 | $0.337810 |
+
+Per question, facts stated / contradicted in each run:
+
+| Question | `on`, with | `on`, without | `default`, with | `default`, without |
+|---|---|---|---|---|
+| S7 (unique username) | 3/0, 3/0, 3/0 | 3/0, 3/0, 3/0 | 3/0, 3/0 | 2/0, 2/0 |
+| S8 (`removed` status) | 3/0, 3/0, 3/0 | 3/0, 3/0, 3/0 | 3/0, 3/0 | 3/0, 3/0 |
+| S9 (callers of `MarkAllAsReadBeforeDate`) | 3/0, 3/0, 3/0 | 3/0, 3/0, 3/0 | 2/0, 3/0 | 2/0, 2/0 |
+| S10 (last page marked read) | 0/0, 2/0, 0/1 | 0/0, 3/0, 3/0 | 0/0, 2/1 | 3/0, 0/1 |
+| S11 (when an article was read) | 2/0, 2/0, 2/0 | 3/0, 2/0, 2/0 | 1/1, 1/0 | 1/1, 2/0 |
+
+**Decision: the five claim-check rules are removed.** The requirement-id rule stays.
+
+**The shipped text was not one of the two measured variants.** The "without" arm deleted the
+whole section, which also dropped the sixth rule (the requirement-id line). What ships is the
+five rules removed and the id rule kept, so no run measured it. That is acceptable: the id rule
+is a display rule (it names a requirement by its title, not its internal id), none of S7 to S11
+or the other BA questions grades it, and so it could not move the facts contradicted that the
+decision rests on.
+
+- **They did not lower the facts contradicted.** On `on`: 1 with the rules, 0 without, over 15
+  answers each. On `default`: 2 and 2, over 10 each. Every contradiction is one of two facts:
+  `S10.c` (the unread page also keeps its offset, when it goes back to the first page) and
+  `S11.b` (`changed_at` records when an article was read), and each occurs with and without.
+- **Run 10's wrong claims did not recur in either variant.** No answer cited
+  `storage/user.go`'s imports, said `MarkAllAsReadBeforeDate` has no callers, or said the
+  `removed` status is still used: `S8.b` (the migration that dropped it) and `S9.b` (the Google
+  Reader caller) were stated in all ten runs. The rules guard against claims Sonnet 5.5 does not
+  make here without them, so there is little for them to move.
+- **One fact leaned the rules' way, and it is a miss, not a contradiction.** `S7.b` (the users
+  table declares the username unique, run 10's other S7 miss) was stated in all six `on` runs
+  either way, and on `default` in both runs with the rules and neither without. Two pairs is
+  too few to tell from noise (an exact sign test on two pairs gives p = 0.5), and facts stated on
+  `default` came out 21 with against 20 without. A re-measure that wants to bring a rule back
+  should start with S7 on `default`.
+- **Facts stated did not rise either.** `on`: 35 of 45 with, 40 of 45 without. `default`: 21 of
+  30 with, 20 of 30 without. Citation precision on line spans was 100% (156/156) with and 98%
+  (128/130) without on `on`, and 99% (76/77) and 97% (75/77) on `default`: two to three
+  citations a side, within one run's spread.
+- **What stays.** "Name a requirement by its title, never its internal database id" answers
+  run 10's J2.3 (an id quoted in prose), a display defect no BA question can grade, so it was
+  not part of the decision; it is now one line at the end of the citation policy. The
+  analysis-side sentence #2198 added (`CODE_CITATION_RULE` in
+  `server/src/lib/analysis/prompts.ts`: a shared word is not grounding) is not chat's and is not
+  graded here. Whether "Track reading time with read_at timestamp" still maps to
+  `internal/reader/readingtime/readingtime.go` is a walkthrough check, as is run 10's #4511
+  `schemaVersion` chat answer: both are in `docs/walkthroughs/fix-phase-map.json` under #2357
+  for the next run (wave E).
+
+The per-question scores, citations and tool counts of all twelve #2357 runs (no transcripts) are
+in `readings/ba-qa/2357-claim-check-paired.json`. Spend for #2357: **$4.787277**, the ten S7 to
+S11 runs ($3.385245) and the two 23-question baseline runs ($1.402032).

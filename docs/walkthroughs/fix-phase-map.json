@@ -849,6 +849,11 @@
     },
     "1172": {
       "skip": "walkthrough tooling: run 9's TEST_PLAN, fix map and runbook corrections"
+    },
+    "2357": {
+      "wave": "E",
+      "phase": "17",
+      "check": "Two run-10 readings #2357 could not take offline. Phase 17: the read_at requirement (\"Track reading time with read_at timestamp\" in run 10) maps to no `internal/reader/readingtime/` or `reading_time.go` file, which is #2198's unmeasured analysis rule; record the files it maps to. Phase 16 chat: ask about #4511's `schemaVersion` and record whether the answer cites `api.html` for it; if it does not recur, the run-10 item is dropped"
     }
   },
   "prs": {

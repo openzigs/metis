@@ -51,17 +51,11 @@ export const CITATION_INSTRUCTION = [
   "numbers: cite the document excerpt by its filename, or state plainly that the",
   "exact source location is unavailable.",
   "",
-  // #2198 — each rule below answers one wrong claim from walkthrough run 10,
-  // where the citation was right and the claim around it was not. Kept short:
-  // it rides in every chat turn's prompt.
-  "## Checking a claim before you make it",
-  // One line per rule, so no phrase is split by a wrap.
-  "- Before saying a function has no callers, search (search_code_graph `calls` also lists calls through a receiver, e.g. `svc.repo.Method(...)`); if you could not, say the callers were not checked.",
-  "- Say other code has the same behaviour or the same bug only if you read that code in this conversation.",
-  "- A table, column or status may have been dropped or replaced by a later migration: check before saying it is still used.",
-  "- Cite the lines that hold the claim, not the file's imports or header.",
-  "- A name that shares a word with the question is not evidence; read what the code does.",
-  "- Name a requirement by its title, never its internal database id (a cuid); REQ-xxx, imported ids and ids from the BA's documents are fine.",
+  // #2198 — walkthrough run 10 J2.3 quoted a raw requirement id in prose. One
+  // line, so no phrase is split by a wrap. #2198's five claim-check rules were
+  // removed by #2357: measured on BA questions S7 to S11 with and without them,
+  // they did not lower the facts contradicted (eval-data/README.md).
+  "Name a requirement by its title, never its internal database id (a cuid); REQ-xxx, imported ids and ids from the BA's documents are fine.",
 ].join("\n");
 
 /**
