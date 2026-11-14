@@ -41,8 +41,8 @@ import type {
   RequirementCriteriaProposal,
   SharedCriteriaRecord,
   GoverningQuestionLink,
+  RequirementApprovalReopened,
 } from "@metis/shared";
-import type { RequirementApprovalReopened } from "@metis/shared";
 
 export type {
   AnalysisCapability,

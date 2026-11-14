@@ -867,15 +867,16 @@ export async function recordDecision(
         // Docs-only scopes yield no pins → approved with baselineId null
         // (see DecisionResult.baselineId).
         const pinsForBaseline = buildBaselinePins(review.items);
+        // #2219 / #2224 — an earlier round's baseline stays, as that round's
+        // record, but no longer belongs to the review (one baseline per
+        // review). It is detached here, not at the re-review, so the review
+        // page links it while the re-review runs. Detached even when no pin
+        // is left (a requirement deleted since), so it is not mislabelled.
+        await tx.baseline.updateMany({
+          where: { reviewRequestId: reviewId },
+          data: { reviewRequestId: null },
+        });
         if (pinsForBaseline.length > 0) {
-          // #2219 / #2224 — an earlier round's baseline stays, as that round's
-          // record, but no longer belongs to the review (one baseline per
-          // review). It is detached here, not at the re-review, so the review
-          // page links it while the re-review runs.
-          await tx.baseline.updateMany({
-            where: { reviewRequestId: reviewId },
-            data: { reviewRequestId: null },
-          });
           const baseline = await tx.baseline.create({
             data: {
               projectId: review.projectId,

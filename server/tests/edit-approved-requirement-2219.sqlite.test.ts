@@ -340,6 +340,83 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(elsewhere).not.toHaveProperty("approvalReopened");
     });
 
+    // #2224 review — only a requirement that reads draft is "awaiting re-review".
+    it("does not flag a requirement the analyst rejected after the edit", async () => {
+      const row = { id: REQ, version: 99, reviewStatus: "rejected" };
+      expect((await flagApprovalReopened(PROJECT, [row]))[0]).not.toHaveProperty(
+        "approvalReopened",
+      );
+    });
+
+    // #2224 review — the most recent approval governs the flag.
+    it("names no review when the newest approved review pins the current version", async () => {
+      const REQ_E = "req-2224-e";
+      await db.requirement.create({
+        data: {
+          id: REQ_E,
+          projectId: PROJECT,
+          analysisId: ANALYSIS,
+          title: "Retention",
+          body: "a",
+        },
+      });
+      const approve = async (title: string) => {
+        const r = (await createReviewRequest(REQUESTER, PROJECT, {
+          title,
+          policy: "all",
+          reviewerIds: [REVIEWER],
+          items: [{ requirementId: REQ_E }],
+        })) as { id: string };
+        await submitReview(REQUESTER, r.id, false);
+        await recordDecision(REVIEWER, r.id, "approved");
+        return r.id;
+      };
+      await approve("Retention sign-off 1");
+      await updateRequirementWithHistory(db as never, {
+        requirementId: REQ_E,
+        patch: { body: "b" },
+        actorId: EDITOR,
+        projectId: PROJECT,
+        reopenApproval: true,
+      });
+      await approve("Retention sign-off 2");
+      // Status moved off approved without a version bump: the newest approval
+      // pins the current version, so the older one must not be named.
+      await db.requirement.update({ where: { id: REQ_E }, data: { reviewStatus: "draft" } });
+      const current = await db.requirement.findUniqueOrThrow({
+        where: { id: REQ_E },
+        select: { id: true, version: true, reviewStatus: true },
+      });
+      const [row] = await flagApprovalReopened(PROJECT, [
+        { ...current, reviewStatus: current.reviewStatus ?? "draft" },
+      ]);
+      expect(row).not.toHaveProperty("approvalReopened");
+    });
+
+    // #2224 review — a re-review left with no pins still detaches the old baseline.
+    it("re-approving a review whose requirement was deleted detaches the earlier baseline", async () => {
+      const REQ_F = "req-2224-f";
+      await db.requirement.create({
+        data: { id: REQ_F, projectId: PROJECT, analysisId: ANALYSIS, title: "Backups", body: "a" },
+      });
+      const created = (await createReviewRequest(REQUESTER, PROJECT, {
+        title: "Backups sign-off",
+        policy: "all",
+        reviewerIds: [REVIEWER],
+        items: [{ requirementId: REQ_F }],
+      })) as { id: string };
+      await submitReview(REQUESTER, created.id, false);
+      await recordDecision(REVIEWER, created.id, "approved");
+      const first = await db.baseline.findFirstOrThrow({ where: { reviewRequestId: created.id } });
+      await reopenReview(REQUESTER, created.id, false);
+      await db.requirement.delete({ where: { id: REQ_F } });
+      const decided = await recordDecision(REVIEWER, created.id, "approved");
+      expect(decided.baselineId).toBeNull();
+      expect(
+        (await db.baseline.findUniqueOrThrow({ where: { id: first.id } })).reviewRequestId,
+      ).toBeNull();
+    });
+
     // #2223 review — approving a review pinned at v0 must not approve the v1
     // an analyst saved while the review was still in progress.
     it("approving an in-review review leaves a requirement edited since its pin awaiting review", async () => {

@@ -1503,7 +1503,7 @@ export default function AnalysisPage(): React.ReactElement {
                                   {req.type} · {req.priority} ·{" "}
                                   {/* #2224 — a reopened approval is not a draft
                                   nobody reviewed: say so, and link the review. */}
-                                  {req.approvalReopened && req.reviewStatus !== "approved" ? (
+                                  {req.approvalReopened && req.reviewStatus === "draft" ? (
                                     <Link
                                       href={`/reviews/${encodeURIComponent(req.approvalReopened.reviewId)}`}
                                       className="font-medium text-warning underline-offset-2 hover:underline"

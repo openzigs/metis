@@ -101,6 +101,17 @@ const { COMPLETED } = vi.hoisted(() => {
           },
         }),
         requirement({ id: "req-draft", title: "Export orders", reviewStatus: "draft", version: 1 }),
+        requirement({
+          id: "req-rejected",
+          title: "Audit trail",
+          reviewStatus: "rejected",
+          version: 2,
+          approvalReopened: {
+            reviewId: "rev-9",
+            reviewTitle: "Security sign-off",
+            approvedVersion: 1,
+          },
+        }),
       ],
       crossDocFindings: null,
       sourceRequirements: [],
@@ -289,6 +300,12 @@ describe("Analysis page — editing an approved requirement (#2219, #2224)", () 
     expect(link).toHaveAttribute("title", '"Security sign-off" approved v1');
     expect(within(card("req-draft")).queryByText(/awaiting re-review/)).toBeNull();
     expect(within(card("req-draft")).getByText(/feature · high · draft/)).toBeInTheDocument();
+  });
+
+  it("a rejected requirement keeps its rejected status even with a stale reopened flag", async () => {
+    await openRequirements();
+    expect(within(card("req-rejected")).queryByText(/awaiting re-review/)).toBeNull();
+    expect(within(card("req-rejected")).getByText(/feature · high · rejected/)).toBeInTheDocument();
   });
 
   it("saving refreshes the traceability under the saved card only", async () => {

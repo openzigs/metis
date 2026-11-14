@@ -21,8 +21,9 @@ const PINNING_STATUSES = ["approved", "in_review"] as const;
 
 /**
  * #2224 — `rows` with `approvalReopened` set on each one that an APPROVED
- * review of `projectId` pinned at an older version and that is not approved
- * now: the edit since returned it to awaiting review, and its card says so
+ * review of `projectId` pinned at an older version and that reads `draft`
+ * now (a rejected or deferred status is the analyst's and stays visible): the
+ * edit since returned it to awaiting review, and its card says so
  * (with a link to the review) instead of reading "draft" like a requirement
  * nobody reviewed. The most recent such review is named. One read, filtered on
  * the project as well as the ids. Rows that do not qualify come back unchanged.
@@ -33,7 +34,7 @@ export async function flagApprovalReopened<
   projectId: string,
   rows: T[],
 ): Promise<Array<T & { approvalReopened?: RequirementApprovalReopened }>> {
-  const candidates = rows.filter((r) => r.reviewStatus !== "approved");
+  const candidates = rows.filter((r) => r.reviewStatus === "draft");
   if (candidates.length === 0) return rows;
   const items = await prisma.reviewRequestItem.findMany({
     where: {
@@ -49,9 +50,13 @@ export async function flagApprovalReopened<
   });
   const versionById = new Map(candidates.map((r) => [r.id, r.version]));
   const reopened = new Map<string, RequirementApprovalReopened>();
+  const decided = new Set<string>();
   for (const item of items) {
     const id = item.requirementId;
-    if (id === null || reopened.has(id)) continue;
+    if (id === null || decided.has(id)) continue;
+    // Only the most recent approved review of a requirement can name it: an
+    // older one at an earlier pin must not stand in when the newest is current.
+    decided.add(id);
     const version = versionById.get(id);
     if (version === undefined || item.pinnedVersion >= version) continue;
     reopened.set(id, {
