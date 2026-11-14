@@ -137,7 +137,9 @@ export function dropAuthorization(req: Request): void {
  * endpoint's body is bounded at {@link MAX_REMOTE_BODY_BYTES} rather than the
  * global 10 MiB. Only while the endpoint is on: off, `/mcp` is any unknown path.
  */
-export function createRemoteMcpBodyLimit(deps: Pick<RemoteMcpDeps, "readConfig"> = {}) {
+export function createRemoteMcpBodyLimit(
+  deps: Pick<RemoteMcpDeps, "readConfig"> = {},
+): RequestHandler {
   const readConfig = deps.readConfig ?? (() => readRemoteMcpConfig());
   const parse = jsonBodyParser({ limit: MAX_REMOTE_BODY_BYTES, type: "application/json" });
   const handler: RequestHandler = (req, res, next) => {
