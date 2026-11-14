@@ -29,7 +29,11 @@ export function requirementsWithoutCodeEvidence(input: {
    * The flattened findings, in the order synthesis's evidence indexes refer to.
    * #2509 — a `could-not-verify` one's citations are not code evidence.
    */
-  findings: ReadonlyArray<{ citations?: unknown; verdict?: unknown }>;
+  findings: ReadonlyArray<{
+    citations?: unknown;
+    verdict?: unknown;
+    downgradedFromImplemented?: unknown;
+  }>;
   /** Requirements whose latest approval is rejected: they are left out of the join. */
   rejectedIds?: ReadonlySet<string>;
 }): Set<string> {

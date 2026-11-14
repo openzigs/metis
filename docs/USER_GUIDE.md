@@ -6265,7 +6265,7 @@ On the **Analysis** page for a project, you'll see an **Enhancement Options** se
 
 Web research starts **off** and clarifying questions start **on** (#95): the gaps grounded in your documents are listed on the Questions tab without you asking for them, and you can untick the toggle to skip them for a run.
 
-**Opening a tab never runs the model (#2509).** The Questions tab lists the gaps the run found and offers **Ask these questions**. Pressing it turns them into questions for you to answer; that runs the model, and its cost is added to the run's. Before #2509 the questions were prepared the moment the tab was first opened, so opening the tab of a finished run raised its cost (by $0.04 in one walkthrough). Rounds 2 and 3 are still prepared once you submit the answers to the round before, without a second press.
+**Opening the Questions tab does not start your first questions (#2509).** The tab lists the gaps the run found and offers **Ask these questions**. Pressing it turns them into questions for you to answer; that runs the model, and its cost is added to the run's. Before #2509 the questions were prepared the moment the tab was first opened, so opening the tab of a finished run raised its cost (by $0.04 in one walkthrough). Two cases still start work when the tab opens, both for a dialog you already began: rounds 2 and 3 are prepared once you submit the answers to the round before, and a finished dialog is re-opened if a finding that needs BA input is still waiting after its checks were run again with your answer (that re-open may run the model).
 
 A **pipeline status indicator** shows progress through the enhancement steps: Extraction → Web Research → Clarification → Approval → Complete.
 

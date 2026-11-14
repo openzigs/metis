@@ -727,7 +727,7 @@ function GapsPreviewPanel({
           {loading
             ? "Preparing an interactive clarification session for these doc-grounded gaps…"
             : onAsk
-              ? "Ask these doc-grounded gaps as questions to answer them here."
+              ? "These gaps come from your documents. Press the button to turn them into questions you can answer here."
               : "These doc-grounded gaps will be turned into an interactive clarification session."}
         </p>
         {onAsk && !loading ? <AskQuestionsButton onAsk={onAsk} /> : null}

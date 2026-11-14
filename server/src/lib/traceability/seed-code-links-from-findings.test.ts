@@ -663,6 +663,26 @@ describe("seedRequirementCodeLinksFromFindings", () => {
     expect(created.map((m) => m.filePath)).toEqual(["src/a.ts"]);
   });
 
+  it("#2509 — still links the grounded code of an implemented claim the gate downgraded", async () => {
+    // gateFindingVerdict turns an `implemented` claim into could-not-verify when
+    // retrieval was unhealthy or the schema gate fired. The citation survived
+    // grounding, so it is the requirement's code; the orchestrator marks it.
+    const gated = JSON.stringify({
+      citations: [{ filePath: "src/a.ts", startLine: 3, endLine: 4 }],
+      verdict: "could-not-verify",
+      downgradedFromImplemented: true,
+    });
+    const { prisma, created } = makeFakePrisma({
+      requirements: [{ id: "req-1", projectId, labels: labels(["f1"]) }],
+      findings: [{ id: "f1", evidence: gated, confidence: 0.9 }],
+    });
+    await seedRequirementCodeLinksFromFindings(
+      { analysisId: "an-1", projectId, requirementIds: ["req-1"] },
+      { prisma },
+    );
+    expect(created.map((m) => m.filePath)).toEqual(["src/a.ts"]);
+  });
+
   it("creates a RequirementCodeMapping from a finding whose citation has a filename", async () => {
     const { prisma, created } = makeFakePrisma({
       requirements: [{ id: "req-1", projectId, labels: labels(["f1"]) }],

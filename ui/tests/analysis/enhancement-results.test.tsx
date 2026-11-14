@@ -161,9 +161,11 @@ describe("EnhancementResults", () => {
     await waitFor(() =>
       expect(analysisApi.getClarification).toHaveBeenCalledWith("proj-1", "ana-1"),
     );
-    // #2509 — started by the user's click, never on mount.
+    // #2509 — started by the user's click, never on mount. The button only shows
+    // once the read settled and the mount effects ran, so this check is past them.
+    const ask = await screen.findByTestId("clarify-ask");
     expect(analysisApi.clarify).not.toHaveBeenCalled();
-    fireEvent.click(await screen.findByTestId("clarify-ask"));
+    fireEvent.click(ask);
     await waitFor(() => expect(analysisApi.clarify).toHaveBeenCalledWith("proj-1", "ana-1", {}));
     expect(await screen.findByText("How long must logs be retained?")).toBeInTheDocument();
   });

@@ -81,6 +81,22 @@ describe("#1568 — requirements that would be promoted with no code link", () =
     expect([...out]).toEqual(["REQ-2"]);
   });
 
+  it("#2509 — does not mark one whose code is cited by an implemented claim the gate downgraded", () => {
+    const out = requirementsWithoutCodeEvidence({
+      structured: [READ_AT],
+      synthesized: SYNTHESIS,
+      findings: [
+        {},
+        {
+          citations: [repoDocCitation],
+          verdict: "could-not-verify",
+          downgradedFromImplemented: true,
+        },
+      ],
+    });
+    expect([...out]).toEqual([]);
+  });
+
   it("marks every requirement when synthesis cited no finding at all", () => {
     const out = requirementsWithoutCodeEvidence({
       structured: [MARK_OLDER, READ_AT],

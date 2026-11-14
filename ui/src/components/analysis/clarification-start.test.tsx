@@ -153,7 +153,9 @@ describe("#2509 — opening the panel never starts the dialog; asking does", () 
     // Let any effect that would start it run.
     await new Promise((r) => setTimeout(r, 20));
     expect(clarify).not.toHaveBeenCalled();
-    expect(screen.getByTestId("gaps-preview")).toHaveTextContent(/Ask these doc-grounded gaps/);
+    expect(screen.getByTestId("gaps-preview")).toHaveTextContent(
+      /turn them into questions you can answer here/,
+    );
   });
 
   it("offers no ask to a viewer without analysis.run", async () => {

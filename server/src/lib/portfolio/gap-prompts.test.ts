@@ -6,6 +6,8 @@ import { describe, expect, it } from "vitest";
 import { DEFAULT_RAG_CHUNK_SIZE } from "@metis/shared";
 import {
   HIT_TEXT_CHARS,
+  MAX_HIT_TEXT_CHARS,
+  hitTextChars,
   buildDecomposePrompt,
   buildRepoVerdictPrompt,
   parseDecomposition,
@@ -84,6 +86,31 @@ describe("gap prompts fence untrusted text", () => {
     });
     expect(prompt).toContain('json:"reading_time"');
     expect(prompt).toContain("y".repeat(400));
+  });
+
+  it("#2509 — shows a whole chunk at a larger configured RAG_CHUNK_SIZE, up to a ceiling", () => {
+    const prior = process.env.RAG_CHUNK_SIZE;
+    const text = "x".repeat(6_000);
+    const build = () =>
+      buildRepoVerdictPrompt({
+        statement: "s",
+        criteria: ["c"],
+        repoLabel: "r",
+        hits: [{ path: "a.ts", text }],
+      });
+    try {
+      process.env.RAG_CHUNK_SIZE = "4096";
+      expect(hitTextChars()).toBe(4_096);
+      expect(build()).toContain("x".repeat(4_096));
+      expect(build()).not.toContain("x".repeat(4_097));
+      process.env.RAG_CHUNK_SIZE = "999999";
+      expect(hitTextChars()).toBe(MAX_HIT_TEXT_CHARS);
+      process.env.RAG_CHUNK_SIZE = "junk";
+      expect(hitTextChars()).toBe(HIT_TEXT_CHARS);
+    } finally {
+      if (prior === undefined) delete process.env.RAG_CHUNK_SIZE;
+      else process.env.RAG_CHUNK_SIZE = prior;
+    }
   });
 
   it("caps each excerpt's text", () => {

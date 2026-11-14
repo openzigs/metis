@@ -176,7 +176,9 @@ export function parseCitationTargets(rawEvidence: string | null | undefined): Ci
     return [];
   }
   if (!parsed || typeof parsed !== "object") return [];
-  return groundingCitationTargets(parsed as { citations?: unknown; verdict?: unknown });
+  return groundingCitationTargets(
+    parsed as { citations?: unknown; verdict?: unknown; downgradedFromImplemented?: unknown },
+  );
 }
 
 /**
@@ -192,8 +194,13 @@ export function parseCitationTargets(rawEvidence: string | null | undefined): Ci
 export function groundingCitationTargets(finding: {
   citations?: unknown;
   verdict?: unknown;
+  downgradedFromImplemented?: unknown;
 }): CitationTarget[] {
-  if (finding.verdict === "could-not-verify") return [];
+  // The model's own could-not-verify grounds nothing. One the GATE made out of
+  // an implemented claim keeps its grounded citations (marked by the orchestrator).
+  if (finding.verdict === "could-not-verify" && finding.downgradedFromImplemented !== true) {
+    return [];
+  }
   return citationTargets(finding.citations);
 }
 
