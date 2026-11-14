@@ -1975,6 +1975,12 @@ model PortfolioAssessment {
   /// #2345 — true when a requirement checked was not approved when the check
   /// started: the result is labelled as run on unapproved requirements.
   preApproval         Boolean  @default(false)
+  /// #2498 — JSON array of `{ id, analysisId, sourceIds }`: the requirement rows
+  /// the check read when it started, with their sources as they were then, so a
+  /// row hard-deleted since still decides what of the stored text a reader sees
+  /// (`assessment-view.ts`). Never sent to a client. NULL: not recorded (a
+  /// statement or document check).
+  sourceRows          String?
   costUsd             Float    @default(0)
   createdById         String
   createdAt           DateTime @default(now())

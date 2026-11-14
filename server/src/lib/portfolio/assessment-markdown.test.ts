@@ -21,7 +21,17 @@ const access = vi.hoisted(() => ({
 vi.mock("../products/product-access.js", () => access);
 const discussions = vi.hoisted(() => ({ canAccessProjectDiscussions: vi.fn() }));
 vi.mock("../discussions/access.js", () => discussions);
-const store = vi.hoisted(() => ({ getPortfolioAssessment: vi.fn() }));
+const store = vi.hoisted(() => {
+  const getPortfolioAssessment = vi.fn();
+  return {
+    getPortfolioAssessment,
+    // #2498 — the view reads the stored record; these fixtures record no source rows.
+    getPortfolioAssessmentRecord: async (id: string) => {
+      const assessment = await getPortfolioAssessment(id);
+      return assessment ? { assessment, sourceRows: null } : null;
+    },
+  };
+});
 vi.mock("./assessment-store.js", () => store);
 
 const { resolveReaderAccess, viewPortfolioAssessment } = await import("./assessment-view.js");

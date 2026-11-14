@@ -25,7 +25,43 @@ import {
 // read at import, and test files that mock ../prisma.js without `Prisma` load this
 // module through the socket job-room scope (#1625).
 import { Prisma } from "@prisma/client";
+import { z } from "zod";
 import { prisma } from "../prisma.js";
+
+/**
+ * #2498 — one requirement row a check read when it started, with its sources as
+ * they were then (`Requirement.sourceIds`, #2446). Ids only: never its text.
+ * Server-side only, never part of a view.
+ */
+export interface CheckedSourceRow {
+  id: string;
+  analysisId: string;
+  sourceIds: string | null;
+}
+
+const checkedSourceRowsSchema = z.array(
+  z.object({ id: z.string(), analysisId: z.string(), sourceIds: z.string().nullable() }),
+);
+
+/**
+ * #2498 — a check's stored `sourceRows`: the rows, `null` when none were
+ * recorded (a statement or document check, or one stored before the column
+ * with nothing to backfill from), or `"unreadable"` for a value that does not
+ * parse, which the view treats as hiding everything (fail closed).
+ */
+export type StoredSourceRows = CheckedSourceRow[] | null | "unreadable";
+
+export function parseSourceRows(raw: string | null): StoredSourceRows {
+  if (raw === null) return null;
+  try {
+    const parsed = checkedSourceRowsSchema.safeParse(JSON.parse(raw));
+    return parsed.success
+      ? parsed.data.map((r) => ({ id: r.id, analysisId: r.analysisId, sourceIds: r.sourceIds }))
+      : "unreadable";
+  } catch {
+    return "unreadable";
+  }
+}
 
 /** Bound values per statement kept under SQLite's 999, with room to spare. */
 export const SQLITE_SAFE_BIND_VALUES = 900;
@@ -87,8 +123,12 @@ function childRows(
 /**
  * Write an assessment, its product rows and its repo rows. Input is validated
  * against the `@metis/shared` schema (enums, lengths). Returns the new id.
+ * #2498 — `sourceRows`: the requirement rows the check reads, recorded now.
  */
-export async function createPortfolioAssessment(raw: PortfolioAssessmentInput): Promise<string> {
+export async function createPortfolioAssessment(
+  raw: PortfolioAssessmentInput,
+  sourceRows: readonly CheckedSourceRow[] | null = null,
+): Promise<string> {
   const input = portfolioAssessmentInputSchema.parse(raw);
   const id = randomUUID();
   await prisma.$transaction([
@@ -109,6 +149,16 @@ export async function createPortfolioAssessment(raw: PortfolioAssessmentInput): 
         report: JSON.stringify(input.report ?? {}),
         hostProductId: input.hostProductId,
         notChecked: JSON.stringify(input.notChecked),
+        sourceRows:
+          sourceRows === null
+            ? null
+            : JSON.stringify(
+                sourceRows.map((r) => ({
+                  id: r.id,
+                  analysisId: r.analysisId,
+                  sourceIds: r.sourceIds,
+                })),
+              ),
         costUsd: input.costUsd,
         createdById: input.createdById,
       },
@@ -305,6 +355,16 @@ function oneOf<T extends string>(
  * each repo row's repo, as the product reads do (#1258), before returning it.
  */
 export async function getPortfolioAssessment(id: string): Promise<PortfolioAssessment | null> {
+  return (await getPortfolioAssessmentRecord(id))?.assessment ?? null;
+}
+
+/**
+ * #2498 — {@link getPortfolioAssessment}, with the requirement rows the check
+ * recorded reading (`sourceRows`), kept apart so they never reach a view.
+ */
+export async function getPortfolioAssessmentRecord(
+  id: string,
+): Promise<{ assessment: PortfolioAssessment; sourceRows: StoredSourceRows } | null> {
   const row = await prisma.portfolioAssessment.findUnique({
     where: { id },
     include: {
@@ -313,7 +373,7 @@ export async function getPortfolioAssessment(id: string): Promise<PortfolioAsses
     },
   });
   if (!row) return null;
-  return {
+  const assessment: PortfolioAssessment = {
     id: row.id,
     statement: row.statement,
     sourceRequirementId: row.sourceRequirementId,
@@ -355,4 +415,5 @@ export async function getPortfolioAssessment(id: string): Promise<PortfolioAsses
       citations: parseJson<unknown[]>(r.citations, []),
     })),
   };
+  return { assessment, sourceRows: parseSourceRows(row.sourceRows) };
 }

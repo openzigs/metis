@@ -34,7 +34,7 @@ import {
 import { prisma } from "../prisma.js";
 import { buildProductAccessWhere, productRepoReadAccess } from "../products/product-access.js";
 import { canAccessProjectDiscussions } from "../discussions/access.js";
-import { getPortfolioAssessment } from "./assessment-store.js";
+import { getPortfolioAssessmentRecord, type StoredSourceRows } from "./assessment-store.js";
 import { restrictedIds, userSourceReader } from "../analysis/source-redaction.js";
 import { impactOverview, impactSentence } from "./report-overview.js";
 import {
@@ -119,29 +119,48 @@ export async function resolveReaderAccess(user: AuthPayload): Promise<ReaderAcce
  * its criteria): then it tells the reader nothing they cannot read. A row
  * left out at the start (its starter could not see it) wrote no text, so a
  * check that read only visible rows withholds nothing; a visible row edited
- * since only over-blocks. Known gap, as before #2491 (#2498): a restricted row
- * hard-deleted since (a withheld replacement, a re-synthesis) leaves no row to
- * be hidden by, so with nothing else hidden the stored text stands.
+ * since only over-blocks.
+ *
+ * #2498 — a row hard-deleted since (a withheld replacement, a re-synthesis)
+ * leaves no row to be hidden by, so the check records the rows it read, with
+ * their sources as they were then (`sourceRows`). Each recorded row is decided
+ * on those sources against the access lists as they are now, alongside the
+ * rows that exist now: a recorded row hidden from the reader hides as a row
+ * that exists would. A single-requirement check whose row is gone (its link is
+ * set null) is still one: every word of it goes. A record that does not parse
+ * hides everything. A check from before the column whose rows were deleted
+ * before the migration could record them keeps the rule above.
  */
 async function hiddenSource(
   access: ReaderAccess,
   a: PortfolioAssessment,
+  sourceRows: StoredSourceRows,
 ): Promise<{ all: boolean; any: boolean; hides: (text: string) => boolean }> {
   const none = { all: false, any: false, hides: () => false };
+  const all = { all: true, any: true, hides: () => true };
   if (access.admin) return none;
+  if (sourceRows === "unreadable") return all;
   const where = a.sourceRequirementId
     ? { id: a.sourceRequirementId }
     : a.sourceAnalysisId
       ? { analysisId: a.sourceAnalysisId }
       : null;
-  if (!where) return none;
-  const rows = await prisma.requirement.findMany({
-    where,
-    select: { id: true, analysisId: true, sourceIds: true, title: true, body: true },
-  });
-  const hidden = await restrictedIds(userSourceReader(access.user.userId), rows);
+  const recorded = sourceRows ?? [];
+  if (!where && recorded.length === 0) return none;
+  const rows = where
+    ? await prisma.requirement.findMany({
+        where,
+        select: { id: true, analysisId: true, sourceIds: true, title: true, body: true },
+      })
+    : [];
+  // A recorded row is decided on its own key: one that still exists is decided
+  // as it is now, too.
+  const hidden = await restrictedIds(userSourceReader(access.user.userId), [
+    ...rows,
+    ...recorded.map((r) => ({ ...r, id: `recorded:${r.id}` })),
+  ]);
   if (hidden.size === 0) return none;
-  if (a.sourceRequirementId) return { all: true, any: true, hides: () => true };
+  if (a.sourceRequirementId || (sourceRows !== null && !a.sourceAnalysisId)) return all;
   const visible = rows
     .filter((r) => !hidden.has(r.id))
     .map((r) => normalized(`${r.title}: ${r.body}`));
@@ -478,10 +497,11 @@ export async function viewPortfolioAssessment(
   access: ReaderAccess,
   id: string,
 ): Promise<PortfolioAssessmentView | null> {
-  const a = await getPortfolioAssessment(id);
-  if (!a || !(await mayRead(access, a))) return null;
+  const record = await getPortfolioAssessmentRecord(id);
+  const a = record?.assessment;
+  if (!record || !a || !(await mayRead(access, a))) return null;
   // #2447 — a source requirement the reader cannot see: its text goes.
-  const hidden = await hiddenSource(access, a);
+  const hidden = await hiddenSource(access, a, record.sourceRows);
   const sourceHidden = hidden.all || hidden.any;
   const fromHidden = (text: string) => hidden.all || (sourceHidden && hidden.hides(text));
 

@@ -24,6 +24,8 @@ export interface ChangeRequestRequirement {
   acceptanceCriteria: string | null;
   /** `approved`, or not yet (`draft`, or no status recorded). */
   approved: boolean;
+  /** #2498 — its sources (#2446), which a portfolio check records reading. */
+  sourceIds: string | null;
 }
 
 export interface ChangeRequestSource {
@@ -88,6 +90,7 @@ export async function loadChangeRequestSource(
         body: r.body,
         acceptanceCriteria: r.acceptanceCriteria,
         approved: r.reviewStatus === "approved",
+        sourceIds: r.sourceIds,
       })),
   };
 }
