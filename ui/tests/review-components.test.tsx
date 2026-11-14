@@ -349,7 +349,7 @@ describe("ReviewItemCard", () => {
       "Acceptance criteriaCriterion 2",
       "Acceptance criteriaCriterion 3",
     ]);
-    expect(screen.getAllByText(/priority: high/)).toHaveLength(3);
+    expect(screen.getAllByText(/Priority: high/)).toHaveLength(3);
     // #1130 AC2 — with no recorded edits this is the CURRENT text: the card
     // must say so rather than claim it is the text as created or pinned.
     const labels = screen.getAllByTestId("review-item-unedited").map((l) => l.textContent);
@@ -464,7 +464,7 @@ describe("ReviewItemCard", () => {
         <ReviewItemCard item={makeRequirementItem()} />
       </Wrapper>,
     );
-    expect(await screen.findByText("priority: high · storyPoints: 8")).toBeInTheDocument();
+    expect(await screen.findByText("Priority: high · Story points: 8")).toBeInTheDocument();
     // Empty body → no body paragraph; empty diff → empty-state copy.
     expect(screen.getByText(/No field changes recorded/i)).toBeInTheDocument();
   });

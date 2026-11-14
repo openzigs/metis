@@ -17,7 +17,12 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { createThread, listThreads, type DiscussionRequirementRef } from "@/lib/discussions-api";
+import {
+  aiResponseModeSummary,
+  createThread,
+  listThreads,
+  type DiscussionRequirementRef,
+} from "@/lib/discussions-api";
 import { DiscussionRequirementPicker } from "@/components/chat/discussion-requirement-picker";
 import { useSocket } from "@/lib/socket-client";
 import { keepSubscribed } from "@/lib/socket-subscription";
@@ -150,8 +155,11 @@ export default function DiscussionsListPage() {
                     </span>
                   ) : null}
                 </span>
-                <span className="shrink-0 text-xs text-muted-foreground">
-                  AI: {t.aiResponseMode}
+                <span
+                  className="shrink-0 text-xs text-muted-foreground"
+                  data-testid="discussion-ai-mode"
+                >
+                  {aiResponseModeSummary(t.aiResponseMode)}
                 </span>
               </Link>
             </li>

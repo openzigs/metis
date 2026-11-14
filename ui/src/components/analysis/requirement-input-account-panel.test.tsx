@@ -13,7 +13,10 @@ import {
   type AnalysisCapability,
   type RequirementInputAccount,
 } from "@metis/shared";
-import { RequirementInputAccountPanel } from "./requirement-input-account-panel";
+import {
+  inputAccountSummary,
+  RequirementInputAccountPanel,
+} from "./requirement-input-account-panel";
 import { AnalysisCapabilityBanner } from "./analysis-capability-banner";
 
 function capability(account?: RequirementInputAccount): AnalysisCapability {
@@ -138,6 +141,42 @@ describe("RequirementInputAccountPanel", () => {
     );
     expect(screen.queryByTestId("requirement-input-dropped-list")).toBeNull();
     expect(screen.queryByTestId("requirement-input-truncated")).toBeNull();
+  });
+
+  it("#2220 — a supplied requirement merged into another counts as analyzed in the summary", () => {
+    render(
+      <RequirementInputAccountPanel
+        capability={capability({
+          parsedCount: 1,
+          analyzedIds: [],
+          merged: [
+            {
+              id: "NR-1",
+              excerpt: "Show reading_time on each entry.",
+              mergedIntoId: "AC-1",
+              mergedIntoExcerpt: "Entries show their reading time.",
+            },
+          ],
+          dropped: [],
+          inputTruncated: false,
+        })}
+      />,
+    );
+    const summary = screen.getByTestId("requirement-input-account-summary");
+    expect(summary).toHaveTextContent(
+      "1 of 1 requirement you supplied was analyzed, as part of another requirement.",
+    );
+    expect(summary).not.toHaveTextContent("0 of 1");
+  });
+
+  it("#2220 — says how many of the analyzed ones were merged when only some were", () => {
+    expect(inputAccountSummary(3, 1, 2)).toBe(
+      "3 of 3 requirements you supplied were analyzed (2 as part of another requirement).",
+    );
+    expect(inputAccountSummary(4, 0, 2)).toBe(
+      "2 of 4 requirements you supplied were analyzed, each as part of another requirement.",
+    );
+    expect(inputAccountSummary(2, 2, 0)).toBe("2 of 2 requirements you supplied were analyzed.");
   });
 
   it("uses singular wording for a single supplied requirement", () => {

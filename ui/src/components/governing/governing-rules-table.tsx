@@ -27,6 +27,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { resolveErrorMessage } from "@/lib/use-app-mutation";
+import { ControlId } from "@/components/governing/control-id";
 import {
   governingApi,
   governingKeys,
@@ -164,7 +165,9 @@ export function GoverningRulesTable({
                         )}
                       </Button>
                     </td>
-                    <td className="py-2 pr-3 font-mono">{rule.controlId}</td>
+                    <td className="py-2 pr-3">
+                      <ControlId controlId={rule.controlId} />
+                    </td>
                     <td className="py-2 pr-3">
                       {editing === rule.id ? (
                         <RuleEditForm

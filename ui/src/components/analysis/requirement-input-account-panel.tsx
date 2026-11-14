@@ -31,11 +31,30 @@ const DROP_REASON_TEXT: Record<RequirementInputDropReason, string> = {
   unparseable: "no requirement text could be read from this block",
 };
 
+/**
+ * #2220 — the summary counts a requirement merged into another as analyzed, as
+ * the merged line below says it was. It read "0 of 1 requirement you supplied
+ * were analyzed" above "… It was analyzed under that requirement."
+ */
+export function inputAccountSummary(parsed: number, analyzed: number, merged: number): string {
+  const covered = analyzed + merged;
+  const noun = parsed === 1 ? "requirement" : "requirements";
+  const verb = covered === 1 ? "was" : "were";
+  const asPart =
+    merged === 0
+      ? ""
+      : merged === covered
+        ? merged === 1
+          ? ", as part of another requirement"
+          : ", each as part of another requirement"
+        : ` (${merged} as part of another requirement)`;
+  return `${covered} of ${parsed} ${noun} you supplied ${verb} analyzed${asPart}.`;
+}
+
 export function RequirementInputAccountPanel({ capability }: Props): React.ReactElement | null {
   const account = capability?.requirementInputAccount;
   if (!account || account.parsedCount === 0) return null;
 
-  const analyzedCount = account.analyzedIds.length;
   const discarded = account.dropped.length > 0 || account.inputTruncated;
 
   return (
@@ -47,9 +66,11 @@ export function RequirementInputAccountPanel({ capability }: Props): React.React
         className={`text-xs ${discarded ? "text-warning" : "text-muted-foreground"}`}
         data-testid="requirement-input-account-summary"
       >
-        {analyzedCount} of {account.parsedCount} requirement
-        {account.parsedCount === 1 ? "" : "s"} you supplied {analyzedCount === 1 ? "was" : "were"}{" "}
-        analyzed.
+        {inputAccountSummary(
+          account.parsedCount,
+          account.analyzedIds.length,
+          account.merged.length,
+        )}
       </p>
 
       {account.inputTruncated ? (

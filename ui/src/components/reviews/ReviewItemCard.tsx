@@ -23,6 +23,8 @@ import {
 } from "@/components/analysis/SharedCriteriaNote";
 import { Card } from "@/components/ui/card";
 import { historyApi, type ChangedFields } from "@/lib/history-api";
+import { renderInlineCode } from "@/lib/inline-code-text";
+import { requirementFieldLabel } from "@/lib/requirement-fields";
 import { queryKeys } from "@/lib/query-keys";
 import type { ReviewItem, ReviewRequest, ReviewStatus } from "@/lib/reviews-api";
 import { VersionDiff } from "./VersionDiff";
@@ -200,7 +202,8 @@ function PinnedContent({
           <ul className="list-disc space-y-0.5 pl-5 text-sm">
             {criteria.map((c, i) => (
               <li key={i}>
-                {c}
+                {/* #2220 — `backticked` identifiers render as code. */}
+                {renderInlineCode(c)}
                 {marks.has(c.trim()) ? (
                   <span className="ml-1 text-xs text-muted-foreground">(shared)</span>
                 ) : null}
@@ -275,7 +278,7 @@ function PinBadge({ version }: { version: number }) {
 function SnapshotMeta({ snapshot }: { snapshot: Record<string, unknown> }) {
   const parts = META_FIELDS.filter(
     (f) => snapshot[f] !== null && snapshot[f] !== undefined && snapshot[f] !== "",
-  ).map((f) => `${f}: ${String(snapshot[f])}`);
+  ).map((f) => `${requirementFieldLabel(f)}: ${String(snapshot[f])}`);
   if (parts.length === 0) return null;
   return <p className="text-xs text-muted-foreground">{parts.join(" · ")}</p>;
 }

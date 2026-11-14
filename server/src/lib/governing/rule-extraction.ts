@@ -30,7 +30,7 @@
  * the previous revision's rules stay for the findings that cite them. Usable
  * at once: no rule waits for analyst review (owner, 2026-11-06).
  */
-import { GOVERNING_EXTRACTION_ERROR_MAX } from "@metis/shared";
+import { GENERATED_CONTROL_ID_PREFIX, GOVERNING_EXTRACTION_ERROR_MAX } from "@metis/shared";
 import { loadAIConfig } from "../ai/config.js";
 import { AIError, AIProviderError, describeProviderErrorSafely } from "../ai/errors.js";
 import { buildProvider } from "../ai/providers/factory.js";
@@ -167,8 +167,9 @@ export function controlIdRegion(
  * #1947 — the prefix of a control id METIS makes up for a rule the policy gave
  * none. A policy may number its own rules `R-001`, so a generated id is never
  * a token of the policy's text nor a kept id ({@link generatedControlIds}).
+ * #2220 — defined in `@metis/shared`, so the UI can say which ids are METIS's.
  */
-export const GENERATED_CONTROL_ID_PREFIX = "METIS-";
+export { GENERATED_CONTROL_ID_PREFIX };
 
 /** `count` ids `METIS-001`, `METIS-002`, ... skipping any `text` or `taken` already has. */
 function generatedControlIds(text: string, taken: ReadonlySet<string>, count: number): string[] {

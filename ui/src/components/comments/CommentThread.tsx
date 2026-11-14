@@ -13,6 +13,7 @@ import { commentApi } from "@/lib/collaboration-api";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/alert-dialog";
 import { MentionInput } from "@/components/comments/MentionInput";
+import { renderMentions } from "@/lib/mention-text";
 
 interface CommentThreadProps {
   thread: CommentThread;
@@ -149,7 +150,7 @@ function CommentBubble({
             </div>
           </div>
         ) : (
-          <p className="mt-1 whitespace-pre-wrap text-sm">{comment.body}</p>
+          <p className="mt-1 whitespace-pre-wrap text-sm">{renderMentions(comment.body ?? "")}</p>
         )}
       </div>
     </div>

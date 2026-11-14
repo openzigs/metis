@@ -17,6 +17,21 @@ export const GOVERNING_EXTRACTION_STATES = ["pending", "running", "done", "faile
 export type GoverningExtractionState = (typeof GOVERNING_EXTRACTION_STATES)[number];
 /** The longest extraction error a revision carries; longer messages are cut. */
 export const GOVERNING_EXTRACTION_ERROR_MAX = 500;
+
+/**
+ * #1947 — the prefix of a control id METIS makes up (`METIS-001`, …) for a rule
+ * the policy gave no id of its own. Rule extraction never generates an id the
+ * policy's own text holds.
+ */
+export const GENERATED_CONTROL_ID_PREFIX = "METIS-";
+
+/**
+ * #2220 — a control id METIS numbered, not the policy's own. Shown as such: a
+ * NIST rule listed as "METIS-002" read like a METIS control.
+ */
+export function isGeneratedControlId(controlId: string): boolean {
+  return new RegExp(`^${GENERATED_CONTROL_ID_PREFIX}\\d{3,}$`).test(controlId);
+}
 /**
  * #1947 — a `running` extraction that began longer ago than this is presumed
  * dead (the job is in-process, so a server restart mid-run leaves the row

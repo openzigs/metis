@@ -55,7 +55,9 @@ const mockStore = {
   hydrate: vi.fn(),
 };
 
-vi.mock("@/lib/notifications", () => ({
+vi.mock("@/lib/notifications", async () => ({
+  // #2220 — the drawer's label and time helpers are the real ones.
+  ...(await vi.importActual<typeof import("@/lib/notifications")>("@/lib/notifications")),
   getNotificationStore: vi.fn(() => mockStore),
   mentionEventToNotification: vi.fn((e: { commentId: string }) => ({
     level: "info",

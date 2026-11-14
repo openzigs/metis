@@ -184,7 +184,16 @@ export function RequirementsHub({ projectId }: { projectId: string }) {
           Findings, clarifying questions and approvals for a run are reviewed on its analysis page.
         </p>
         <Button asChild size="sm">
-          <Link href={runHref(projectId, selected.id)} data-testid="requirements-review-latest">
+          <Link
+            // #2220 — "Review N requirements" opens the run's Requirements tab,
+            // not its Summary.
+            href={
+              counts.draft > 0
+                ? `${runHref(projectId, selected.id)}&tab=requirements`
+                : runHref(projectId, selected.id)
+            }
+            data-testid="requirements-review-latest"
+          >
             {counts.draft > 0
               ? `Review ${plural(counts.draft, "requirement")}`
               : isLatest

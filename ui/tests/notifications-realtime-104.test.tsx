@@ -91,7 +91,8 @@ describe("NotificationsDrawer — #104 live events", () => {
 
     expect(screen.getByTestId("notifications-badge")).toHaveTextContent("1");
     await openDrawer();
-    expect(screen.getByText("Review requested")).toBeInTheDocument();
+    // #2220 — the kind label reads the same words; the title is the paragraph.
+    expect(screen.getByText("Review requested", { selector: "p" })).toBeInTheDocument();
     expect(screen.getByText(/assigned as a reviewer on "Sprint 4 sign-off"/)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /open/i })).toHaveAttribute("href", "/reviews/rev-1");
   });

@@ -12,6 +12,22 @@ import { apiFetch, ApiError, streamFetch } from "./api-client";
 export const AI_RESPONSE_MODES = ["off", "on_mention", "auto"] as const;
 export type AiResponseMode = (typeof AI_RESPONSE_MODES)[number];
 
+/**
+ * #2220 — a thread's AI mode as a discussion row says it; the row printed the
+ * raw value ("AI: on_mention"). An unknown value says nothing rather than echo it.
+ */
+const AI_RESPONSE_MODE_SUMMARY: Record<AiResponseMode, string> = {
+  off: "AI off",
+  on_mention: "AI replies when @AI is mentioned",
+  auto: "AI replies automatically",
+};
+
+export function aiResponseModeSummary(mode: string | null | undefined): string | null {
+  return (AI_RESPONSE_MODES as readonly string[]).includes(mode ?? "")
+    ? AI_RESPONSE_MODE_SUMMARY[mode as AiResponseMode]
+    : null;
+}
+
 /** A discussion thread as returned by the REST surface. */
 export interface DiscussionThread {
   id: string;

@@ -100,7 +100,7 @@ describe("<RequirementsHub />", () => {
     expect(screen.getByTestId("requirements-count-rejected")).toHaveTextContent("1");
     const review = screen.getByTestId("requirements-review-latest");
     expect(review).toHaveTextContent("Review 3 requirements");
-    expect(review).toHaveAttribute("href", "/projects/p1/analysis?analysisId=a1");
+    expect(review).toHaveAttribute("href", "/projects/p1/analysis?analysisId=a1&tab=requirements");
     // One completed run: nothing to choose between, nothing skipped.
     expect(screen.queryByTestId("requirements-run-select")).not.toBeInTheDocument();
     expect(screen.queryByTestId("requirements-skipped-empty")).not.toBeInTheDocument();
@@ -215,7 +215,7 @@ describe("<RequirementsHub />", () => {
     );
     expect(screen.getByTestId("requirements-review-latest")).toHaveAttribute(
       "href",
-      "/projects/p1/analysis?analysisId=old",
+      "/projects/p1/analysis?analysisId=old&tab=requirements",
     );
     // The reviewed set is still reviewable from the hub.
     expect(await screen.findByTestId("requirements-hub-request-review")).toBeInTheDocument();

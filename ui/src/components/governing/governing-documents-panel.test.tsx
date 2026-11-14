@@ -520,11 +520,11 @@ describe("GoverningDocumentsPanel", () => {
     const file = new File(["# Access policy\nAccess rights shall be reviewed."], "policy.md", {
       type: "text/markdown",
     });
-    await user.upload(within(dialog).getByLabelText("File"), file);
-    await user.type(within(dialog).getByLabelText("Title"), "Access Control Policy");
+    await user.upload(within(dialog).getByLabelText(/^File/), file);
+    await user.type(within(dialog).getByLabelText(/^Title/), "Access Control Policy");
     await user.type(within(dialog).getByLabelText("Framework (optional)"), "ISO 27001");
-    await user.type(within(dialog).getByLabelText("Revision label"), "v1");
-    await user.type(within(dialog).getByLabelText("Effective date"), "2026-03-01");
+    await user.type(within(dialog).getByLabelText(/^Revision label/), "v1");
+    await user.type(within(dialog).getByLabelText(/^Effective date/), "2026-03-01");
     await user.click(within(dialog).getByRole("button", { name: "Upload" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
 
@@ -555,15 +555,46 @@ describe("GoverningDocumentsPanel", () => {
     const dialog = await screen.findByRole("dialog");
     const big = new File(["x"], "big.md", { type: "text/markdown" });
     Object.defineProperty(big, "size", { value: MAX_DOCUMENT_BYTES + 1 });
-    await user.upload(within(dialog).getByLabelText("File"), big);
+    await user.upload(within(dialog).getByLabelText(/^File/), big);
     expect(within(dialog).getByRole("alert")).toHaveTextContent(
       `File exceeds the ${(MAX_DOCUMENT_BYTES / 1024 / 1024).toFixed(0)} MB cap`,
     );
-    await user.type(within(dialog).getByLabelText("Title"), "T");
-    await user.type(within(dialog).getByLabelText("Revision label"), "v1");
-    await user.type(within(dialog).getByLabelText("Effective date"), "2026-03-01");
+    await user.type(within(dialog).getByLabelText(/^Title/), "T");
+    await user.type(within(dialog).getByLabelText(/^Revision label/), "v1");
+    await user.type(within(dialog).getByLabelText(/^Effective date/), "2026-03-01");
     expect(within(dialog).getByRole("button", { name: "Upload" })).toBeDisabled();
+    // #2220 — the disabled button says why.
+    expect(within(dialog).getByTestId("governing-upload-missing")).toHaveTextContent(
+      "To upload, add a file.",
+    );
     expect(server.requests.some((r) => r.method === "POST")).toBe(false);
+  });
+
+  it("#2220 — marks the required fields and says what Upload still needs", async () => {
+    const user = userEvent.setup();
+    mount();
+    await user.click(await screen.findByRole("button", { name: "Upload document" }));
+    const dialog = await screen.findByRole("dialog");
+    for (const label of [/^File/, /^Title/, /^Revision label/, /^Effective date/]) {
+      expect(within(dialog).getByLabelText(label).closest("div")).toHaveTextContent("(required)");
+    }
+    const upload = within(dialog).getByRole("button", { name: "Upload" });
+    expect(upload).toBeDisabled();
+    expect(upload).toHaveAccessibleDescription(
+      "To upload, add a file, a title, a revision label and an effective date.",
+    );
+    await user.type(within(dialog).getByLabelText(/^Title/), "T");
+    await user.type(within(dialog).getByLabelText(/^Revision label/), "v1");
+    expect(within(dialog).getByTestId("governing-upload-missing")).toHaveTextContent(
+      "To upload, add a file and an effective date.",
+    );
+    await user.upload(
+      within(dialog).getByLabelText(/^File/),
+      new File(["# Policy"], "p.md", { type: "text/markdown" }),
+    );
+    await user.type(within(dialog).getByLabelText(/^Effective date/), "2026-03-01");
+    expect(within(dialog).queryByTestId("governing-upload-missing")).toBeNull();
+    expect(within(dialog).getByRole("button", { name: "Upload" })).toBeEnabled();
   });
 
   it("shows the server's error inside the dialog when the upload is refused", async () => {
@@ -587,12 +618,12 @@ describe("GoverningDocumentsPanel", () => {
     await user.click(await screen.findByRole("button", { name: "Upload document" }));
     const dialog = await screen.findByRole("dialog");
     await user.upload(
-      within(dialog).getByLabelText("File"),
+      within(dialog).getByLabelText(/^File/),
       new File(["a"], "a.md", { type: "text/markdown" }),
     );
-    await user.type(within(dialog).getByLabelText("Title"), "T");
-    await user.type(within(dialog).getByLabelText("Revision label"), "v1");
-    await user.type(within(dialog).getByLabelText("Effective date"), "2026-03-01");
+    await user.type(within(dialog).getByLabelText(/^Title/), "T");
+    await user.type(within(dialog).getByLabelText(/^Revision label/), "v1");
+    await user.type(within(dialog).getByLabelText(/^Effective date/), "2026-03-01");
     await user.click(within(dialog).getByRole("button", { name: "Upload" }));
     expect(await within(dialog).findByRole("alert")).toHaveTextContent(
       "File type is not allowed (UNSUPPORTED_MEDIA_TYPE)",
@@ -796,11 +827,11 @@ describe("GoverningDocumentsPanel", () => {
     expect(within(dialog).getByRole("heading")).toHaveTextContent("New revision of Broken policy");
     expect(within(dialog).queryByLabelText("Title")).toBeNull();
     await user.upload(
-      within(dialog).getByLabelText("File"),
+      within(dialog).getByLabelText(/^File/),
       new File(["policy v2"], "policy.txt", { type: "text/plain" }),
     );
-    await user.type(within(dialog).getByLabelText("Revision label"), "v2");
-    await user.type(within(dialog).getByLabelText("Effective date"), "2026-04-01");
+    await user.type(within(dialog).getByLabelText(/^Revision label/), "v2");
+    await user.type(within(dialog).getByLabelText(/^Effective date/), "2026-04-01");
     await user.click(within(dialog).getByRole("button", { name: "Upload" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     expect(
@@ -1048,7 +1079,7 @@ describe("GoverningDocumentsPanel", () => {
     expect(
       within(dialog).getByText(new RegExp(UPLOAD_EXTENSION_ALLOWLIST.join(", "))),
     ).toBeTruthy();
-    const accept = within(dialog).getByLabelText("File").getAttribute("accept")!.split(",");
+    const accept = within(dialog).getByLabelText(/^File/).getAttribute("accept")!.split(",");
     expect(accept).toEqual(
       expect.arrayContaining(UPLOAD_EXTENSION_ALLOWLIST.map((ext) => `.${ext}`)),
     );

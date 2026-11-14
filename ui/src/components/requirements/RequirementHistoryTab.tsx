@@ -22,7 +22,13 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useAuth } from "@/lib/auth-context";
 import { hasMinRole } from "@metis/shared";
-import { historyApi, type RequirementHistoryEntry, type ExportFormat } from "@/lib/history-api";
+import {
+  historyApi,
+  type ExportFormat,
+  type RequirementHistoryEntry,
+  type RequirementHistoryPage,
+} from "@/lib/history-api";
+import { requirementFieldLabel, snapshotDiffText } from "@/lib/requirement-fields";
 import type { RequirementSourceDecision } from "@metis/shared";
 import { ApiError } from "@/lib/api-client";
 import { RestoreVersionDialog } from "./RestoreVersionDialog";
@@ -65,12 +71,39 @@ export interface RequirementHistoryTabProps {
   onRestored?: () => void;
 }
 
+/**
+ * #2220 — the compared text names each field and lists each criterion and
+ * label on its own line; it printed `acceptanceCriteria: ["…"]` and the hidden
+ * `finding:<id>` labels.
+ */
 function snapshotToText(snapshot: Record<string, unknown>): string {
-  return FIELD_ORDER.map((field) => {
-    const value = snapshot[field];
-    const rendered = value === null || value === undefined ? "" : String(value);
-    return `${field}: ${rendered}`;
-  }).join("\n");
+  return snapshotDiffText(snapshot, FIELD_ORDER);
+}
+
+/**
+ * #2220 — the split diff viewer sets a 1000 px minimum width, which a card
+ * narrower than that clipped on the right; its lines wrap instead.
+ */
+const DIFF_VIEWER_STYLES = { diffContainer: { minWidth: "unset" } };
+
+/**
+ * #2220 — the requirement before its first recorded edit, as a version the
+ * timeline can select: after one edit the history had a single version and
+ * nothing to compare it with. The server sends it (#1130); only a state rebuilt
+ * from recorded edits is offered — with none recorded it is the current text.
+ */
+function originalEntry(page: RequirementHistoryPage): RequirementHistoryEntry | null {
+  const original = page.original;
+  if (!original || original.source !== "reversed") return null;
+  if (page.versions.some((v) => v.version === original.version)) return null;
+  return {
+    version: original.version,
+    changedFields: {},
+    actorId: null,
+    reason: null,
+    createdAt: "",
+    snapshot: original.snapshot,
+  };
 }
 
 function formatDate(iso: string): string {
@@ -88,6 +121,7 @@ export function RequirementHistoryTab({
   const canRestore = user ? hasMinRole(user.role, "coordinator") : false;
 
   const [entries, setEntries] = React.useState<RequirementHistoryEntry[]>([]);
+  const [original, setOriginal] = React.useState<RequirementHistoryEntry | null>(null);
   const [total, setTotal] = React.useState(0);
   const [page, setPage] = React.useState(1);
   const [pageSize] = React.useState(20);
@@ -108,6 +142,7 @@ export function RequirementHistoryTab({
     try {
       const data = await historyApi.list(requirementId, { page, pageSize });
       setEntries(data.versions);
+      setOriginal(originalEntry(data));
       setTotal(data.total);
       setCurrentVersion(data.currentVersion);
       setSourceDecision(data.sourceDecision ?? null);
@@ -135,8 +170,9 @@ export function RequirementHistoryTab({
   const byVersion = React.useMemo(() => {
     const map = new Map<number, RequirementHistoryEntry>();
     for (const e of entries) map.set(e.version, e);
+    if (original) map.set(original.version, original);
     return map;
-  }, [entries]);
+  }, [entries, original]);
 
   const diffPair = React.useMemo(() => {
     if (selected.length !== 2) return null;
@@ -236,7 +272,7 @@ export function RequirementHistoryTab({
                       ) : null}
                       {changedNames.length > 0 ? (
                         <span className="mt-1 block text-xs text-muted-foreground">
-                          Changed: {changedNames.join(", ")}
+                          Changed: {changedNames.map(requirementFieldLabel).join(", ")}
                         </span>
                       ) : null}
                     </button>
@@ -254,6 +290,28 @@ export function RequirementHistoryTab({
               </li>
             );
           })}
+          {original && page >= totalPages ? (
+            <li key={`original-${original.version}`}>
+              <div
+                className={`rounded border px-3 py-2 ${
+                  selected.includes(original.version)
+                    ? "border-info/40 bg-info-muted"
+                    : "border-border"
+                }`}
+              >
+                <button
+                  type="button"
+                  onClick={() => toggleSelect(original.version)}
+                  aria-pressed={selected.includes(original.version)}
+                  data-testid="history-original-version"
+                  className="w-full text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-info"
+                >
+                  <span className="text-sm font-medium">Version {original.version}</span>
+                  <span className="ml-2 text-xs text-muted-foreground">before the first edit</span>
+                </button>
+              </div>
+            </li>
+          ) : null}
         </ul>
       )}
 
@@ -294,6 +352,7 @@ export function RequirementHistoryTab({
               leftTitle={`Version ${diffPair.older.version}`}
               rightTitle={`Version ${diffPair.newer.version}`}
               useDarkTheme={resolvedTheme === "dark"}
+              styles={DIFF_VIEWER_STYLES}
             />
           </div>
         </div>
