@@ -14,6 +14,11 @@
  * the line says that instead: "This analysis read 3 restricted files with the
  * access of the person who ran it. Anyone who can't see one of them sees what
  * drew on it as restricted." Also counts only.
+ *
+ * Issue #2506 — such a run reads its documents with that access too, so it
+ * leaves nothing out for the shared audience, and the line counts restricted
+ * files and documents: "This analysis read 3 restricted files and documents
+ * with the access of the person who ran it. ..."
  */
 import {
   restrictedLeftOutSentence,

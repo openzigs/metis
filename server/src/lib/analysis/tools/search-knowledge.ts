@@ -10,6 +10,7 @@ import { missingParamError } from "./arg-errors.js";
 import type { KnowledgeService } from "../../rag/knowledge-service.js";
 import { formatHitScore } from "../../rag/hit-locator.js";
 import { sharedDocumentAudience } from "../document-access.js";
+import type { AclActor } from "../../rag/acl.js";
 
 const DEFAULT_K = 5;
 const MAX_K = 15;
@@ -56,6 +57,12 @@ export interface SearchKnowledgeDeps {
    * grants nothing (the search still reads as a shared audience).
    */
   triggeredBy?: string;
+  /**
+   * #2506 — a pass that reads with its runner's access (a run a person
+   * started): search as `actor`, and tell `onRead` the documents of every
+   * hit before the agent sees it, so the pass records the restricted ones.
+   */
+  reader?: { actor: AclActor; onRead: (documentIds: string[]) => void };
 }
 
 export function createSearchKnowledgeTool(deps: SearchKnowledgeDeps): AgentTool {
@@ -78,13 +85,18 @@ export function createSearchKnowledgeTool(deps: SearchKnowledgeDeps): AgentTool 
     const k = validated.k ?? DEFAULT_K;
     // #2431 — this tool serves only the analysis code agent, whose findings
     // every project member reads: it searches as a shared audience, so no
-    // restricted document reaches them, whoever started the run.
+    // restricted document reaches them, whoever started the run. #2506 — on
+    // a run a person started, as the person running the pass, recording what
+    // it returns (their findings are then redacted for anyone who cannot see it).
     const result = await deps.knowledgeService.search(context.projectId, validated.query, {
       k,
-      actor: sharedDocumentAudience(deps.triggeredBy),
+      actor: deps.reader?.actor ?? sharedDocumentAudience(deps.triggeredBy),
       reportAclMismatch: true,
     });
     if (result.aclMismatch && result.aclMismatch.length > 0) deps.onAclDenied?.(result.aclMismatch);
+    if (deps.reader && result.hits.length > 0) {
+      deps.reader.onRead([...new Set(result.hits.map((hit) => hit.documentId))]);
+    }
 
     if (result.hits.length === 0) {
       return { content: "No relevant documents found for the query.", resultCount: 0 };

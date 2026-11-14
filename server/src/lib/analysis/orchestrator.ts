@@ -257,9 +257,15 @@ import {
   currentPassReads,
   mayRestOnRestrictedRead,
   passCodeAccess,
+  passSees,
+  passVisibleDocumentIds,
+  readsWithStarterAccess,
+  recordPassReads,
   withPassReads,
+  type PassReads,
 } from "./pass-reads.js";
-import { redactRunCapability } from "./source-redaction.js";
+import type { AclActor } from "../rag/acl.js";
+import { redactLiveCapability } from "./source-redaction.js";
 import {
   RequirementsExtractionError,
   RequirementsExtractor,
@@ -311,6 +317,7 @@ import { produceGoverningFindingsForAnalysis } from "../governing/findings-store
 import { isDocumentReaderEnabled } from "../document-reader/flag.js";
 import { spentUsageOf } from "../document-reader/reader.js";
 import {
+  createReaderDocumentLoader,
   readerSourceOf,
   runDocumentReaderAgent,
   type ExtractedRequirement,
@@ -813,6 +820,11 @@ export function assembleAgenticCodeTools(input: {
   onDocumentAclDenied?: (chunkIds: string[]) => void;
   /** #2431 — the run's requester: names them on `search_knowledge`'s denial audit rows. */
   triggeredBy?: string;
+  /**
+   * #2506 — inside a pass that reads with its runner's access: search as that
+   * person, and record the documents each search returns.
+   */
+  documentReader?: { actor: AclActor; onRead: (documentIds: string[]) => void };
 }): AgentTool[] {
   const tools: AgentTool[] = [searchCodeGraphTool];
   if (input.cloneDir) {
@@ -823,6 +835,7 @@ export function assembleAgenticCodeTools(input: {
       knowledgeService: input.knowledgeService,
       ...(input.onDocumentAclDenied ? { onAclDenied: input.onDocumentAclDenied } : {}),
       ...(input.triggeredBy ? { triggeredBy: input.triggeredBy } : {}),
+      ...(input.documentReader ? { reader: input.documentReader } : {}),
     }),
   );
   // #730 — hybrid symbol search shares the #714/#729 searcher + line-lookup seam.
@@ -980,8 +993,14 @@ export function selectWebAgentEvidence(chunks: RetrievalContextChunk[]): Retriev
  * #2431 — and only those every project member may read: an analysis's
  * findings are read by all of them (the shared-audience rule, as for code,
  * #2314), so a restricted upload is left out whoever started the run.
+ * #2506 — inside a pass that reads with its runner's access (`pass`), those
+ * that person may read; what a pass then reads from a restricted one is
+ * recorded where it is read (retrieval's `onRead`).
  */
-export async function defaultAnalysisDocumentIds(projectId: string): Promise<string[]> {
+export async function defaultAnalysisDocumentIds(
+  projectId: string,
+  pass?: PassReads,
+): Promise<string[]> {
   const rows = await prisma.document.findMany({
     where: {
       projectId,
@@ -991,7 +1010,9 @@ export async function defaultAnalysisDocumentIds(projectId: string): Promise<str
     },
     select: { id: true, aclSubjects: true },
   });
-  return rows.filter((d) => isSharedVisible(d.aclSubjects)).map((d) => d.id);
+  return rows
+    .filter((d) => (pass ? passSees(pass, d.aclSubjects) : isSharedVisible(d.aclSubjects)))
+    .map((d) => d.id);
 }
 
 /**
@@ -2422,10 +2443,11 @@ export class AnalysisOrchestrator {
       log.warn("Capability persist failed", { analysisId, error: (err as Error).message });
     }
     if (!this.deps.io) return;
-    // #2448 — the live room any reader of the project may join: no finding titles.
+    // #2448 — the live room any reader of the project may join: no finding titles
+    // (#2506: nor document names).
     const event: AnalysisCapabilityEvent = {
       analysisId,
-      capability: redactRunCapability(next),
+      capability: redactLiveCapability(next),
       ts: Date.now(),
     };
     try {
@@ -3705,11 +3727,27 @@ export class AnalysisOrchestrator {
    * even when the requester could read a restricted one. The requester (the
    * system actor for a scheduled run, #2297) only attributes the reader's ACL
    * audit rows; it grants nothing, so an inactive requester reads no more.
+   *
+   * #2506 — inside a pass that reads with its runner's access (a run a person
+   * started), read as that person instead, and every restricted document the
+   * reader loads is recorded on the pass before the model reads it.
    */
   private async readSelectedDocuments(
     input: Parameters<AnalysisOrchestrator["runOneAgent"]>[0],
   ): Promise<AgentRunResult | null> {
-    const actor = sharedDocumentAudience(input.actorId);
+    const pass = currentPassReads(input.analysisId);
+    const actor = pass ? pass.actor : sharedDocumentAudience(input.actorId);
+    const loader = this.deps.readerDocuments ?? createReaderDocumentLoader();
+    const load: ReaderDocumentLoader = pass
+      ? async (projectId, documentIds, reader) => {
+          const loads = await loader(projectId, documentIds, reader);
+          recordPassReads(
+            pass,
+            loads.flatMap((l) => (l.ok ? [l.document.documentId] : [])),
+          );
+          return loads;
+        }
+      : loader;
     const read = await runDocumentReaderAgent({
       provider: this.deps.provider,
       projectId: input.projectId,
@@ -3719,7 +3757,7 @@ export class AnalysisOrchestrator {
       signal: input.signal,
       ...(input.model ? { model: input.model } : {}),
       ...(input.rereadDocuments ? { reread: true } : {}),
-      ...(this.deps.readerDocuments ? { load: this.deps.readerDocuments } : {}),
+      load,
     });
     if (!read) {
       log.warn("Document reader could load none of the selected documents; retrieving instead", {
@@ -3955,13 +3993,26 @@ export class AnalysisOrchestrator {
           describeTableDeps = undefined;
         }
 
+        // #2506 — inside a pass that reads with its runner's access, the
+        // tool searches as that person and records what it returns; nothing
+        // is left out for the shared audience, so nothing is counted.
+        const pass = currentPassReads(input.analysisId);
         const tools = assembleAgenticCodeTools({
           knowledgeService: knowledge,
           cloneDir,
           fusedCodeDeps: this.deps.fusedCode,
           describeTableDeps,
-          onDocumentAclDenied: (chunkIds) =>
-            this.noteRestrictedLeftOut(input.analysisId, { documentChunkIds: chunkIds }),
+          ...(pass
+            ? {
+                documentReader: {
+                  actor: pass.actor,
+                  onRead: (ids: string[]) => recordPassReads(pass, ids),
+                },
+              }
+            : {
+                onDocumentAclDenied: (chunkIds: string[]) =>
+                  this.noteRestrictedLeftOut(input.analysisId, { documentChunkIds: chunkIds }),
+              }),
           ...(input.actorId ? { triggeredBy: input.actorId } : {}),
         });
 
@@ -4914,7 +4965,10 @@ export class AnalysisOrchestrator {
         // user-uploaded (non-connector) docs when nothing is selected.
         let documentIds = input.documentIds ?? [];
         if (documentIds.length === 0) {
-          documentIds = await defaultAnalysisDocumentIds(input.projectId);
+          documentIds = await defaultAnalysisDocumentIds(
+            input.projectId,
+            currentPassReads(input.analysisId),
+          );
         }
 
         // Per-requirement retrieval — bounded fan-out, concurrency-capped.
@@ -5999,7 +6053,10 @@ export class AnalysisOrchestrator {
       // fall back to ALL ready, user-uploaded (non-connector) documents.
       let requirementDocIds = input.documentIds ?? [];
       if (requirementDocIds.length === 0) {
-        requirementDocIds = await defaultAnalysisDocumentIds(input.projectId);
+        requirementDocIds = await defaultAnalysisDocumentIds(
+          input.projectId,
+          input.analysisId ? currentPassReads(input.analysisId) : undefined,
+        );
       }
 
       // Requirements half — query derived from project metadata + operator
@@ -6028,7 +6085,11 @@ export class AnalysisOrchestrator {
       // quarantine chunks so gap analysis can still run.
       let effectiveRequirementChunks = requirementChunks;
       if (requirementChunks.length === 0 && requirementDocIds.length > 0) {
-        const fallback = await this.fetchQuarantineFallback(input.projectId, requirementDocIds);
+        const fallback = await this.fetchQuarantineFallback(
+          input.projectId,
+          requirementDocIds,
+          input.analysisId,
+        );
         if (fallback.length > 0) {
           // #733 — the code agent grounded on raw quarantine chunks; flag it so
           // the UI can note the grounding was weaker than approved knowledge.
@@ -6134,7 +6195,11 @@ export class AnalysisOrchestrator {
       input.documentIds &&
       input.documentIds.length > 0
     ) {
-      const fallback = await this.fetchQuarantineFallback(input.projectId, input.documentIds);
+      const fallback = await this.fetchQuarantineFallback(
+        input.projectId,
+        input.documentIds,
+        input.analysisId,
+      );
       if (fallback.length > 0) baseChunks = fallback;
     }
 
@@ -6182,14 +6247,21 @@ export class AnalysisOrchestrator {
    * #2431 — only documents every project member may read (the shared-audience
    * rule of the searches it stands in for): a restricted document's raw chunks
    * are never read, whoever selected it.
+   *
+   * #2506 — inside a pass that reads with its runner's access, the documents
+   * that person may read, each restricted one recorded on the pass.
    */
   private async fetchQuarantineFallback(
     projectId: string,
     documentIds: string[],
+    analysisId?: string,
   ): Promise<RetrievalContextChunk[]> {
+    const pass = analysisId ? currentPassReads(analysisId) : undefined;
     let visibleIds: string[];
     try {
-      visibleIds = await sharedVisibleDocumentIds(projectId, documentIds);
+      visibleIds = pass
+        ? await passVisibleDocumentIds(pass, projectId, documentIds)
+        : await sharedVisibleDocumentIds(projectId, documentIds);
     } catch (err) {
       // The fallback is best-effort: when the ACLs cannot be read it reads
       // nothing, never the documents unchecked.
@@ -6200,6 +6272,7 @@ export class AnalysisOrchestrator {
       return [];
     }
     if (visibleIds.length === 0) return [];
+    if (pass) recordPassReads(pass, visibleIds);
     const quarantineRows = await prisma.quarantineChunk.findMany({
       where: { documentId: { in: visibleIds }, projectId, ord: { gte: 0 } },
       select: {
@@ -6339,11 +6412,17 @@ export class AnalysisOrchestrator {
    * audience (its findings are read by every project member, #2314's rule for
    * code), with the chunks each search drops counted on the run. `requestedBy`
    * only names the requester on the denial audit rows; it grants nothing.
+   *
+   * #2506 — inside a pass that reads with its runner's access, that person's,
+   * with every restricted document a search returns recorded on the pass.
+   * Nothing is left out for the shared audience, so nothing is counted.
    */
   private documentAccess(
     analysisId: string | undefined,
     requestedBy: string | undefined,
   ): RetrievalAccess {
+    const pass = analysisId ? currentPassReads(analysisId) : undefined;
+    if (pass) return { actor: pass.actor, onRead: (ids) => recordPassReads(pass, ids) };
     return {
       actor: sharedDocumentAudience(requestedBy),
       onAclDenied: (chunkIds) =>
@@ -6629,8 +6708,14 @@ export class AnalysisOrchestrator {
         deps: this.deps.affectedCode,
         // #2431 — the seeds and the persisted links are read by every project
         // member: no locator of a restricted file. Loaded (and its files
-        // counted, #2437) only when there is something to map.
-        codeAccess: () => this.loadCountedCodeAccess(analysisId, projectId),
+        // counted, #2437) only when there is something to map. #2506 — not
+        // counted on a run a person started: its passes read code and
+        // documents with that person's access, so its results are not ones
+        // "shared with the whole project" that leave restricted sources out.
+        codeAccess: async () =>
+          (await readsWithStarterAccess(analysisId).catch(() => false))
+            ? loadSharedCodeAccess(projectId)
+            : this.loadCountedCodeAccess(analysisId, projectId),
       });
     } catch (err) {
       log.warn("Affected-code mapping failed; degrading to no-op", {
@@ -6809,8 +6894,8 @@ export class AnalysisOrchestrator {
     const event: AnalysisCapabilityEvent = {
       analysisId,
       // #2448 — the live room any reader of the project may join: no finding
-      // titles (the snapshot shows them to whoever may see them).
-      capability: redactRunCapability(finalizeCapability(tracker)),
+      // titles, nor (#2506) document names: the snapshot shows them to whoever may see them.
+      capability: redactLiveCapability(finalizeCapability(tracker)),
       ts: Date.now(),
     };
     try {

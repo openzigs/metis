@@ -45,6 +45,50 @@ describe("#2448 — the live capability broadcast", () => {
     ).toEqual([{ agentKey: "code", producedCount: 52, keptCount: 50, leftOutTitles: [] }]);
   });
 
+  it("#2506 — names no document the reader read, nor a requirement a stage left out, and keeps the counts", async () => {
+    const events: Array<{ event: string; payload: unknown }> = [];
+    const io = {
+      to: () => ({ emit: (event: string, payload: unknown) => events.push({ event, payload }) }),
+    };
+    const orch = new AnalysisOrchestrator({
+      provider: { key: "stub", model: "stub", offline: true } as never,
+      io: io as never,
+    }) as unknown as {
+      persistAndEmitCapability(id: string, next: AnalysisCapability): Promise<void>;
+    };
+    const capability = {
+      reasons: [],
+      documentReading: {
+        documents: [
+          {
+            documentId: "doc-memo-2506",
+            filename: "merger.md",
+            status: "read",
+            sections: ["Merger terms"],
+            statements: 2,
+          },
+        ],
+      },
+      requirementsLeftOut: [
+        {
+          stage: "requirement-grounded-code",
+          analysedCount: 1,
+          totalCount: 2,
+          leftOut: [{ id: "REQ-2", excerpt: "Merger closes in March" }],
+        },
+      ],
+    } as unknown as AnalysisCapability;
+    await orch.persistAndEmitCapability("an-3", capability);
+    const sent = (events[0]!.payload as { capability: AnalysisCapability }).capability;
+    expect(JSON.stringify(sent)).not.toMatch(/merger/i);
+    expect(sent.documentReading!.documents[0]).toMatchObject({
+      documentId: "doc-memo-2506",
+      status: "read",
+      sections: [],
+    });
+    expect(sent.requirementsLeftOut![0]!.leftOut).toEqual([{ id: "REQ-2", excerpt: "" }]);
+  });
+
   it("the end-of-run broadcast from the run's tracker names no cut finding either", async () => {
     const events: Array<{ event: string; payload: unknown }> = [];
     const io = {

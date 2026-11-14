@@ -14,7 +14,7 @@ describe("RestrictedLeftOutNotice (#2448)", () => {
   it("says how many restricted files the run read with its runner's access", () => {
     render(<RestrictedLeftOutNotice capability={cap({ restrictedRead: 2 })} />);
     expect(screen.getByRole("note")).toHaveTextContent(
-      "This analysis read 2 restricted files with the access of the person who ran it. Anyone who can't see one of them sees what drew on it as restricted.",
+      "This analysis read 2 restricted files and documents with the access of the person who ran it. Anyone who can't see one of them sees what drew on it as restricted.",
     );
   });
 
@@ -31,7 +31,7 @@ describe("RestrictedLeftOutNotice (#2448)", () => {
     expect(note).toHaveTextContent(
       "1 matching passage from a restricted document was left out: results are shared with the whole project",
     );
-    expect(note).toHaveTextContent("This analysis read 1 restricted file");
+    expect(note).toHaveTextContent("This analysis read 1 restricted file or document");
   });
 
   it("renders nothing when the run neither left out nor read a restricted file", () => {

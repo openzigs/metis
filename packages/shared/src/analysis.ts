@@ -3399,7 +3399,8 @@ export interface AnalysisCapability {
    * the access of the person who ran them. Anyone who cannot see one of them
    * sees what drew on it as restricted. A count only, never which. Set on
    * read from the run's recorded read sets, never stored; absent at zero and
-   * on a run that read as the shared audience.
+   * on a run that read as the shared audience. Issue #2506 — its document
+   * passes read with that access too, so documents are counted as well.
    */
   restrictedRead?: number;
   /** Derived, enumerated degradation reasons. Empty ⇒ fully capable run. */
@@ -3717,14 +3718,17 @@ export function restrictedLeftOutSentence(value: unknown): string | null {
 /**
  * Issue #2448 — the line a run, its change request and a Spec Kit handoff show
  * when its code was read with the access of the person who ran it and that
- * included restricted files: "This analysis read 3 restricted files with the
- * access of the person who ran it. Anyone who can't see one of them sees what
- * drew on it as restricted." `null` unless `value` is a positive whole count.
- * Counts only: it never names a file.
+ * included restricted files. Issue #2506 — its documents are read with that
+ * access too, so the count is of files and documents: "This analysis read 3
+ * restricted files and documents with the access of the person who ran it.
+ * Anyone who can't see one of them sees what drew on it as restricted."
+ * `null` unless `value` is a positive whole count. Counts only: it never
+ * names a file or document.
  */
 export function restrictedReadSentence(value: unknown): string | null {
   if (!isCount(value) || value === 0) return null;
-  const files = value === 1 ? "1 restricted file" : `${value} restricted files`;
+  const files =
+    value === 1 ? "1 restricted file or document" : `${value} restricted files and documents`;
   const them = value === 1 ? "it" : "one of them";
   return (
     `This analysis read ${files} with the access of the person who ran it. ` +

@@ -24,11 +24,18 @@
  *     admitted only through a per-file check, which records it; the code
  *     graph's bulk query (`hiddenPaths`) still leaves it out, so nothing
  *     reaches the model unrecorded.
- *   - everything else stays on the shared audience: document searches and the
- *     document reader, the quarantine fallback, the affected-code links and
- *     clarification answers stored on the run, cross-document detection, and
- *     Spec Kit. Their output lands on the run as a whole, where no per-row
- *     record could redact it.
+ *   - #2506 — inside a pass, the document reads too: the document reader,
+ *     grounded and per-requirement retrieval, the code agent's
+ *     `search_knowledge`, the quarantine fallback and the default document
+ *     selection read as the person ({@link passSees}), and every restricted
+ *     document they return is recorded ({@link recordPassReads}) before the
+ *     model sees it. What a document pass writes on the run as a whole (the
+ *     reviewed list, web research, clarifications, governing applicability,
+ *     escalation) is shown only to a reader who can see the run as a whole
+ *     (`canSeeRun`, whose corpus holds every pass's read set).
+ *   - everything else stays on the shared audience: the affected-code links,
+ *     the clarification dialog's self-resolve search, cross-document
+ *     detection, and Spec Kit. They run outside any pass.
  *
  * Fail closed: when a pass cannot tell what the run's earlier passes read (one
  * of them recorded nothing), its read set is unknown (`null`), and so is every
@@ -88,6 +95,31 @@ export function currentPassReads(analysisId: string): PassReads | undefined {
 /** Record that `pass` read `documentIds`: each restricted one it may read is kept. */
 export function recordPassReads(pass: PassReads, documentIds: Iterable<string>): void {
   for (const id of documentIds) if (pass.readable.has(id)) pass.own.add(id);
+}
+
+/** #2506 — whether the person running `pass` may read a document with this stored `aclSubjects`. */
+export function passSees(pass: PassReads, aclSubjects: unknown): boolean {
+  return isVisibleTo({ subjects: parseAclSubjects(aclSubjects) }, pass.actor);
+}
+
+/**
+ * #2506 — the ids among `documentIds` (all in `projectId`) of live documents
+ * the person running `pass` may read, in the order given. The pass's twin of
+ * `sharedVisibleDocumentIds`.
+ */
+export async function passVisibleDocumentIds(
+  pass: PassReads,
+  projectId: string,
+  documentIds: readonly string[],
+  db: Pick<PrismaClient, "document"> = defaultPrisma,
+): Promise<string[]> {
+  if (documentIds.length === 0) return [];
+  const rows = await db.document.findMany({
+    where: { projectId, deletedAt: null, id: { in: [...documentIds] } },
+    select: { id: true, aclSubjects: true },
+  });
+  const visible = new Set(rows.filter((r) => passSees(pass, r.aclSubjects)).map((r) => r.id));
+  return documentIds.filter((id) => visible.has(id));
 }
 
 /**

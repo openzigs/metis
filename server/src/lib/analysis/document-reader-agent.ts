@@ -101,9 +101,10 @@ export type ReaderDocumentLoader = (
  * One reason for not-ready, not-in-project and restricted alike (#2262): no
  * existence oracle. #2431 — an analysis reads as a shared audience, so a
  * document restricted to some members is not read even for one of them.
+ * #2506 — a run a person started reads as that person instead.
  */
 const NOT_AVAILABLE =
-  "It is not available to read: still processing, failed, rejected or deleted, not in this project, or restricted to some members (an analysis reads only what every member may read).";
+  "It is not available to read: still processing, failed, rejected or deleted, not in this project, or restricted (an analysis reads only what the person who ran it may read, and a scheduled one only what every member may read).";
 
 /**
  * The production loader: the project's ready documents the actor may see,
