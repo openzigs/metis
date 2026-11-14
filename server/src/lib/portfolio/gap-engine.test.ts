@@ -47,6 +47,8 @@ vi.mock("../rag/federated-search-service.js", () => ({
 const {
   MAX_QUERY_CHARS,
   MAX_SCOPE_PRODUCTS,
+  PORTFOLIO_GROUP_SEARCH_CONCURRENCY,
+  SearchLimiter,
   clipText,
   criteriaGroups,
   evaluatePortfolioGap,
@@ -818,6 +820,268 @@ describe("evaluatePortfolioGap", () => {
     );
     // The scripted model "m" is not in the price table: unpriced reads as 0.
     expect(result.costUsd).toBe(0);
+  });
+});
+
+describe("#2354 — what a run spent before it, and its searches, count against its budget", () => {
+  /** A verdict on every criterion of the prompt: implemented, citing the first excerpt. */
+  const allImplemented = (prompt: string) =>
+    JSON.stringify({
+      criteria: promptCriteria(prompt).map((_, i) => ({
+        index: i + 1,
+        verdict: "implemented",
+        excerpts: [1],
+      })),
+    });
+  const requirements = (n: number) => Array.from({ length: n }, (_, i) => `Requirement ${i + 1}`);
+
+  it("a cost spent before the run (a document's reading) counts against the run's cap", async () => {
+    const p = provider(allImplemented);
+    const result = await evaluatePortfolioGap(
+      USER,
+      { statement: "Requirements", criteria: requirements(10), ...PRODUCT_P1 },
+      {
+        provider: p,
+        search: async () => found([hit("rc-p1", "a.ts", "a")]),
+        // $0.60 spent, $1 cap, $0.50 a call: the first group is judged, the second is not.
+        limits: { ...limits, runCostCapUsd: 1, maxCriteria: 8 },
+        costOf: () => 0.5,
+        spentUsd: 0.6,
+      },
+    );
+    expect(p.chat).toHaveBeenCalledTimes(1);
+    expect(result.products[0].repos[0].reason).toBe("budget");
+    expect(result.notChecked.map((n) => n.text)).toEqual(["Requirement 9", "Requirement 10"]);
+    // The run's cost is what it spent before and during, counted once.
+    expect(result.costUsd).toBeCloseTo(1.1, 10);
+    // The product's cost is its own calls only: the reading is the run's, not the product's.
+    expect(result.products[0].costUsd).toBeCloseTo(0.5, 10);
+  });
+
+  it("a reading that spent the whole cap leaves no model call and no search", async () => {
+    const p = provider(allImplemented);
+    const search = vi.fn(async () => found([hit("rc-p1", "a.ts", "a")]));
+    const result = await evaluatePortfolioGap(
+      USER,
+      { statement: "Requirements", criteria: requirements(3), ...PRODUCT_P1 },
+      { provider: p, search, limits: { ...limits, runCostCapUsd: 1 }, spentUsd: 1 },
+    );
+    expect(p.chat).not.toHaveBeenCalled();
+    expect(search).not.toHaveBeenCalled();
+    expect(result.products[0].repos[0].reason).toBe("budget");
+    expect(result.notChecked).toHaveLength(3);
+    expect(result.costUsd).toBe(1);
+  });
+
+  it("a negative or non-finite spend counts as nothing", async () => {
+    for (const spentUsd of [-5, Number.NaN]) {
+      const p = provider(allImplemented);
+      const result = await evaluatePortfolioGap(
+        USER,
+        { statement: "Requirements", criteria: requirements(2), ...PRODUCT_P1 },
+        {
+          provider: p,
+          search: async () => found([hit("rc-p1", "a.ts", "a")]),
+          limits,
+          costOf: () => 0.25,
+          spentUsd,
+        },
+      );
+      expect(p.chat).toHaveBeenCalledTimes(1);
+      expect(result.costUsd).toBe(0.25);
+    }
+  });
+
+  it("no group is searched once the budget is spent", async () => {
+    const queries: string[] = [];
+    const result = await evaluatePortfolioGap(
+      USER,
+      { statement: "Requirements", criteria: requirements(20), ...PRODUCT_P1 },
+      {
+        provider: provider(allImplemented),
+        search: async ({ query }) => {
+          queries.push(query);
+          return found([hit("rc-p1", "a.ts", "a")]);
+        },
+        limits: { ...limits, maxCriteria: 8, maxModelCalls: 0 },
+      },
+    );
+    expect(queries).toEqual([]);
+    expect(result.products[0].repos[0].reason).toBe("budget");
+    expect(result.notChecked).toHaveLength(20);
+  });
+
+  it("a product's groups are searched at once, up to the bound, and judged in order", async () => {
+    const live = { now: 0, max: 0 };
+    const judged: string[] = [];
+    const result = await evaluatePortfolioGap(
+      USER,
+      { statement: "Requirements", criteria: requirements(48), ...PRODUCT_P1 },
+      {
+        provider: provider((prompt) => {
+          judged.push(promptCriteria(prompt)[0]);
+          return allImplemented(prompt);
+        }),
+        search: async () => {
+          live.now += 1;
+          live.max = Math.max(live.max, live.now);
+          await new Promise((r) => setTimeout(r, 5));
+          live.now -= 1;
+          return found([hit("rc-p1", "a.ts", "a")]);
+        },
+        // One product of four checked at once: the run's bound leaves it four search slots.
+        limits: { ...limits, concurrency: 4, maxCriteria: 8 },
+      },
+    );
+    // Six groups of eight: four searched at once, never more.
+    expect(live.max).toBe(PORTFOLIO_GROUP_SEARCH_CONCURRENCY);
+    expect(judged).toEqual([1, 9, 17, 25, 33, 41].map((n) => `Requirement ${n}`));
+    expect(result.products[0].repos[0].criteria.every((v) => v === "implemented")).toBe(true);
+  });
+
+  it("a search failing after the run was aborted is not an unhandled rejection", async () => {
+    const controller = new AbortController();
+    let searches = 0;
+    const run = evaluatePortfolioGap(
+      USER,
+      { statement: "Requirements", criteria: requirements(24), ...PRODUCT_P1 },
+      {
+        provider: provider(() => {
+          controller.abort(new Error("cancelled"));
+          throw new Error("aborted mid-call");
+        }),
+        // The first group's search answers at once; the others fail after the abort.
+        search: async () => {
+          if (++searches === 1) return found([hit("rc-p1", "a.ts", "a")]);
+          await new Promise((r) => setTimeout(r, 10));
+          throw new Error("search down");
+        },
+        limits: { ...limits, maxCriteria: 8 },
+        signal: controller.signal,
+      },
+    );
+    await expect(run).rejects.toThrow("cancelled");
+    // Let the pending searches settle: an unhandled rejection would fail this file.
+    await new Promise((r) => setTimeout(r, 30));
+    expect(searches).toBe(3);
+  });
+});
+
+describe("#2354 — one bound on the run's searches", () => {
+  /** `count` products, each with `repos` repos in a project of their own. */
+  function portfolio(count: number, repos: number): void {
+    db.product.findMany.mockResolvedValue(
+      Array.from({ length: count }, (_, i) => ({ id: `p${i + 1}`, name: `P${i + 1}` })),
+    );
+    db.productRepo.findMany.mockImplementation(async ({ where }) =>
+      (where.productId.in as string[]).flatMap((productId) =>
+        Array.from({ length: repos }, (_, r) => ({
+          productId,
+          repoConnectionId: `rc-${productId}-${r}`,
+          repoConnection: {
+            projectId: `proj-${productId}-${r}`,
+            label: `label-${productId}-${r}`,
+            ownerOrOrg: null,
+            repoName: null,
+          },
+        })),
+      ),
+    );
+  }
+  const requirements = (n: number) => Array.from({ length: n }, (_, i) => `Requirement ${i + 1}`);
+  const noEvidence = () => JSON.stringify({ criteria: [] });
+
+  /** The most searches, and project searches, in flight at once over a run of 4 products. */
+  async function peak(perRepoSearch: boolean): Promise<{ calls: number; projects: number }> {
+    // Four products of eight projects, six groups each: unbounded, 4 x 4 searches at once.
+    portfolio(4, 8);
+    const live = { calls: 0, projects: 0 };
+    const max = { calls: 0, projects: 0 };
+    await evaluatePortfolioGap(
+      USER,
+      { statement: "Requirements", criteria: requirements(48), ...ALL },
+      {
+        provider: provider(noEvidence),
+        search: async ({ projectIds = [] }) => {
+          live.calls += 1;
+          live.projects += projectIds.length;
+          max.calls = Math.max(max.calls, live.calls);
+          max.projects = Math.max(max.projects, live.projects);
+          await new Promise((r) => setTimeout(r, 5));
+          live.calls -= 1;
+          live.projects -= projectIds.length;
+          return found([]);
+        },
+        limits: { ...limits, concurrency: 4, maxCriteria: 8, perRepoSearch },
+      },
+    );
+    return max;
+  }
+
+  it("shared searches: no more at once across the run than one per product checked", async () => {
+    // Unbounded, 16 searches of 8 projects (128); before groups were searched ahead, 4 (32).
+    expect(await peak(false)).toEqual({ calls: 4, projects: 32 });
+  });
+
+  it("per-repo searches: no more project searches at once than before groups ran ahead", async () => {
+    // Unbounded, 4 products x 4 groups x 4 projects (64); before, 4 x 4 (16).
+    expect(await peak(true)).toEqual({ calls: 16, projects: 16 });
+  });
+
+  it("no search starts once the run is aborted, not even one already waiting its turn", async () => {
+    // One product checked at a time: each group's search fills the bound, so the groups
+    // searched ahead wait their turn behind the first.
+    portfolio(1, 3);
+    const controller = new AbortController();
+    let searches = 0;
+    const run = evaluatePortfolioGap(
+      USER,
+      { statement: "Requirements", criteria: requirements(48), ...PRODUCT_P1 },
+      {
+        provider: provider(noEvidence),
+        search: async () => {
+          searches += 1;
+          controller.abort(new Error("cancelled"));
+          await new Promise((r) => setTimeout(r, 5));
+          return found([]);
+        },
+        limits: { ...limits, concurrency: 1, maxCriteria: 8 },
+        signal: controller.signal,
+      },
+    );
+    await expect(run).rejects.toThrow("cancelled");
+    await new Promise((r) => setTimeout(r, 30));
+    expect(searches).toBe(1);
+  });
+
+  it("the limiter admits in order, runs a search heavier than the bound alone, and drops an aborted waiter", async () => {
+    const limiter = new SearchLimiter(4);
+    const order: string[] = [];
+    const gate = () => {
+      let open!: () => void;
+      const opened = new Promise<void>((r) => (open = r));
+      return { open, opened };
+    };
+    const a = gate();
+    const first = limiter.run(3, async () => {
+      order.push("a");
+      await a.opened;
+    });
+    const controller = new AbortController();
+    const dropped = limiter
+      .run(2, async () => order.push("dropped"), controller.signal)
+      .catch((e: unknown) => e);
+    const heavy = limiter.run(10, async () => order.push("heavy"));
+    const light = limiter.run(1, async () => order.push("light"));
+    await new Promise((r) => setTimeout(r, 0));
+    // "light" fits beside "a", but waits its turn behind the searches queued before it.
+    expect(order).toEqual(["a"]);
+    controller.abort(new Error("stop"));
+    expect(String(await dropped)).toContain("stop");
+    a.open();
+    await Promise.all([first, heavy, light]);
+    expect(order).toEqual(["a", "heavy", "light"]);
+    await expect(limiter.run(1, async () => "x", controller.signal)).rejects.toThrow("stop");
   });
 });
 
