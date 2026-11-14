@@ -1971,6 +1971,13 @@ Per question, facts stated / contradicted in each run:
 
 **Decision: the five claim-check rules are removed.** The requirement-id rule stays.
 
+**The shipped text was not one of the two measured variants.** The "without" arm deleted the
+whole section, which also dropped the sixth rule (the requirement-id line). What ships is the
+five rules removed and the id rule kept, so no run measured it. That is acceptable: the id rule
+is a display rule (it names a requirement by its title, not its internal id), none of S7 to S11
+or the other BA questions grades it, and so it could not move the facts contradicted that the
+decision rests on.
+
 - **They did not lower the facts contradicted.** On `on`: 1 with the rules, 0 without, over 15
   answers each. On `default`: 2 and 2, over 10 each. Every contradiction is one of two facts:
   `S10.c` (the unread page also keeps its offset, when it goes back to the first page) and

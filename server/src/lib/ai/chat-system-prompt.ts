@@ -50,6 +50,7 @@ export const CITATION_INSTRUCTION = [
   "the document-level retrieved context and do NOT fabricate a filePath or line",
   "numbers: cite the document excerpt by its filename, or state plainly that the",
   "exact source location is unavailable.",
+  "",
   // #2198 — walkthrough run 10 J2.3 quoted a raw requirement id in prose. One
   // line, so no phrase is split by a wrap. #2198's five claim-check rules were
   // removed by #2357: measured on BA questions S7 to S11 with and without them,

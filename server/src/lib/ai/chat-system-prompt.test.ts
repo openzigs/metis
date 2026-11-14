@@ -325,6 +325,10 @@ describe("CITATION_INSTRUCTION — requirement ids, and no claim-check section (
     );
   });
 
+  it("keeps the requirement-id line as its own rule, after a blank line", () => {
+    expect(CITATION_INSTRUCTION).toMatch(/unavailable\.\n\nName a requirement by its title/);
+  });
+
   it("carries none of the five claim-check rules #2357 measured and removed", () => {
     for (const removed of [
       /## Checking a claim before you make it/,
