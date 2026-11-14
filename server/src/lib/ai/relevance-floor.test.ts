@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { __resetConfigSingleton } from "../config/config-service.js";
 import {
   applyRelevanceFloor,
+  CALIBRATED_RELEVANCE_FLOORS,
   carriedOnlyNote,
   floorKeep,
   CHAT_RELEVANCE_FLOOR_KEY,
@@ -125,5 +126,43 @@ describe("readRelevanceFloor", () => {
   it("holds the value to 0..1", () => {
     expect(read("2")).toBe(1);
     expect(read("-1")).toBe(0);
+  });
+
+  // #2417 — calibrated on two corpora for each supported local embedder.
+  const BGE = "Xenova/bge-small-en-v1.5";
+  const GEMMA = "onnx-community/embeddinggemma-300m-ONNX";
+
+  it("is 0.43 for the default embedder, the highest floor safe on both corpora", () => {
+    expect(DEFAULT_CHAT_RELEVANCE_FLOOR).toBe(0.43);
+    expect(read()).toBe(0.43);
+  });
+
+  it("applies each calibrated embedder's own floor", () => {
+    expect(CALIBRATED_RELEVANCE_FLOORS.get(GTE)?.floor).toBe(0.43);
+    expect(read(undefined, [BGE])).toBe(0.43);
+    expect(read(undefined, [GEMMA])).toBe(0.57);
+  });
+
+  it("takes the lowest floor when the hits come from several calibrated embedders", () => {
+    expect(read(undefined, [GEMMA, GTE, GEMMA])).toBe(0.43);
+  });
+
+  describe("EmbeddingGemma's Matryoshka truncation", () => {
+    afterEach(() => {
+      delete process.env.EMBED_DIM;
+    });
+
+    it("keeps the floor at the native 768 dimensions it was calibrated at", () => {
+      process.env.EMBED_DIM = "768";
+      expect(read(undefined, [GEMMA])).toBe(0.57);
+    });
+
+    it("is off at a truncated dimension, whose cosines were not measured", () => {
+      process.env.EMBED_DIM = "256";
+      expect(read(undefined, [GEMMA])).toBe(0);
+      expect(read(undefined, [GEMMA, GTE])).toBe(0);
+      // The other embedders emit their native width, so EMBED_DIM leaves them be.
+      expect(read(undefined, [GTE])).toBe(0.43);
+    });
   });
 });

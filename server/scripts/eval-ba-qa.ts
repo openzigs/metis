@@ -67,7 +67,10 @@
  * #2241 — `--floor-sweep` asks no model: after the knowledge step it runs chat's
  * knowledge search (k 8, as the asking user, flags off) for every question over
  * each product in its scope, and reports what each candidate relevance floor
- * would drop (`relevance-floor.ts`). Results: `eval-results/ba-qa/<runId>-floor.{json,md}`.
+ * would drop (`relevance-floor.ts`). Results: `eval-results/ba-qa/<runId>-floor-<corpus>.{json,md}`.
+ * #2417 — `--floor-corpus <localization corpus>` sweeps that corpus's items
+ * instead, over the repositories holding their expected files (materialize it,
+ * and the BA corpus, first). `BAQA_EMBED_MODEL` picks the embedder to calibrate.
  */
 /* eslint-disable no-console -- a local CLI whose output is the report */
 import "./eval-ba-qa-env.js";
@@ -92,7 +95,6 @@ import {
   isMultiTurn,
   loadBaQaFixture,
   type BaQaProduct,
-  type BaQaQuestion,
 } from "../src/lib/eval/ba-qa/fixture.js";
 import { extractCitations, type CitableProduct } from "../src/lib/eval/ba-qa/citations.js";
 import { buildJudgeMessages, parseJudgeVerdict } from "../src/lib/eval/ba-qa/judge.js";
@@ -106,12 +108,20 @@ import {
   type TurnRetrieval,
 } from "../src/lib/eval/ba-qa/metrics.js";
 import {
+  floorCandidates,
+  floorMargin,
+  floorQuestionsFromBaQa,
+  floorQuestionsFromLocalization,
   formatFloorSweep,
   OFF_TOPIC_PROBES,
+  parseFloorCorpus,
   safestFloor,
   sweepFloors,
+  type FloorEdge,
+  type FloorQuestion,
   type RetrievalSample,
 } from "../src/lib/eval/ba-qa/relevance-floor.js";
+import { loadLocalizationCorpus } from "../src/lib/eval/localization/corpus.js";
 import { formatBaQaReport, type ReportSession } from "../src/lib/eval/ba-qa/report.js";
 import { MCP_ARM, openMcpArm, type McpArm } from "../src/lib/eval/ba-qa/mcp-arm.js";
 import type { ReplyToolCall } from "../src/lib/ai/conversation/turn.js";
@@ -225,6 +235,8 @@ async function main(): Promise<void> {
       "multi-turn": { type: "boolean" },
       retrieval: { type: "string" },
       "floor-sweep": { type: "boolean" },
+      // #2417 — sweep a localization corpus's items instead of the BA questions.
+      "floor-corpus": { type: "string" },
       // #2326 — record each product's last indexing run as failed or partial.
       "index-fault": { type: "string" },
       "routing-sweep": { type: "boolean" },
@@ -241,6 +253,10 @@ async function main(): Promise<void> {
     route: values.route,
   });
   const floorSweep = values["floor-sweep"] === true || routingSweep;
+  const floorCorpus = parseFloorCorpus(values["floor-corpus"], {
+    floorSweep: values["floor-sweep"] === true,
+    routingSweep,
+  });
   if (!values.arm && !floorSweep) {
     throw new Error("--arm is required (default, off, on, no-tools, …)");
   }
@@ -265,10 +281,12 @@ async function main(): Promise<void> {
   if (questions.length === 0) throw new Error("no questions selected");
 
   const layout = materializeLayout();
-  const state = await readMaterializedState(BAQA_CORPUS, layout);
-  if (!state) throw new Error(`run pnpm eval:materialize ${BAQA_CORPUS} first`);
+  // #2417 — a floor sweep of another corpus needs only that corpus materialized.
+  const stateCorpus = floorCorpus ?? BAQA_CORPUS;
+  const state = await readMaterializedState(stateCorpus, layout);
+  if (!state) throw new Error(`run pnpm eval:materialize ${stateCorpus} first`);
   const repos = new Map<string, MaterializedRepo>();
-  for (const p of fixture.products) {
+  for (const p of floorCorpus ? [] : fixture.products) {
     const repo = state.repos.find((r) => r.name === p.name);
     if (!repo || repo.sha !== p.sha) {
       throw new Error(`${p.name} is not materialized at ${p.sha}: re-run pnpm eval:materialize`);
@@ -281,7 +299,7 @@ async function main(): Promise<void> {
 
   // What each product's answer can cite: its repository files and its uploads.
   const citable = new Map<string, CitableProduct>(
-    fixture.products.map((p) => [
+    (floorCorpus ? [] : fixture.products).map((p) => [
       p.name,
       {
         name: p.name,
@@ -294,7 +312,7 @@ async function main(): Promise<void> {
   );
   // Before anything is spent: a source no citation can resolve to would only
   // lower its question's recall, silently.
-  const unknown = unknownSources(fixture.questions, citable);
+  const unknown = floorCorpus ? [] : unknownSources(fixture.questions, citable);
   if (unknown.length > 0) {
     throw new Error(`expected sources that name no file or document: ${unknown.join(", ")}`);
   }
@@ -457,7 +475,10 @@ async function main(): Promise<void> {
         `in ${((performance.now() - t0) / 1000).toFixed(0)}s`,
     );
   }
-  for (const p of fixture.products) await ensureKnowledge(p, repos.get(p.name)!);
+  // #2417 — a floor sweep of another corpus searches only that corpus's projects.
+  if (!floorCorpus) {
+    for (const p of fixture.products) await ensureKnowledge(p, repos.get(p.name)!);
+  }
 
   // #2338 — an arm that offers get_change_history reads each product's commit
   // history: fetched at the materialized commit, as an ingest fetches it at the
@@ -543,8 +564,49 @@ async function main(): Promise<void> {
     await prisma.$disconnect();
     return;
   }
+  if (floorSweep && floorCorpus) {
+    // #2417 — a second corpus: its repositories get the source chunks an
+    // analyst's project holds, as the routing pool's do, then its items are swept.
+    // `state` is this corpus's, and its embedder was checked above.
+    const corpus = await loadLocalizationCorpus(floorCorpus);
+    const products = new Map<string, PoolProject>();
+    for (const r of corpus.manifest.repos) {
+      const repo = state.repos.find((x) => x.name === r.name);
+      if (!repo || repo.sha !== r.sha) {
+        throw new Error(`${r.name} is not materialized at ${r.sha}: re-run pnpm eval:materialize`);
+      }
+      await ensureKnowledge({ name: r.name, url: repo.url, ref: repo.sha, documents: [] }, repo);
+      products.set(r.name, { projectId: repo.projectId, logical: new Map() });
+    }
+    await runFloorSweep({
+      corpus: floorCorpus,
+      questions: floorQuestionsFromLocalization(corpus.manifest.items),
+      products,
+      userId: user.id,
+      embedModel: getEmbedder().model,
+    });
+    await prisma.$disconnect();
+    return;
+  }
   if (floorSweep) {
-    await runFloorSweep({ fixture, questions, repos, userId: user.id });
+    const products = new Map<string, PoolProject>(
+      fixture.products.map((p) => [
+        p.name,
+        {
+          projectId: repos.get(p.name)!.projectId,
+          logical: new Map(
+            p.documents.map((d) => [d.uploadAs, d.fromCorpus ? d.uploadAs : d.file] as const),
+          ),
+        },
+      ]),
+    );
+    await runFloorSweep({
+      corpus: BAQA_CORPUS,
+      questions: floorQuestionsFromBaQa(questions),
+      products,
+      userId: user.id,
+      embedModel: getEmbedder().model,
+    });
     await prisma.$disconnect();
     return;
   }
@@ -1086,69 +1148,60 @@ async function main(): Promise<void> {
 
 /**
  * #2241 — chat's knowledge search for every question over each product in its
- * scope, and what each candidate floor would drop. No model is called.
+ * scope, and what each candidate floor would drop. No model is called. #2417 —
+ * any corpus: the BA question set, or a localization corpus's items.
  */
 async function runFloorSweep(input: {
-  fixture: Awaited<ReturnType<typeof loadBaQaFixture>>;
-  questions: readonly BaQaQuestion[];
-  repos: ReadonlyMap<string, MaterializedRepo>;
+  /** The corpus whose questions are swept, named in the report. */
+  corpus: string;
+  questions: readonly FloorQuestion[];
+  /** Each product's project, and the logical path its uploads are cited by. */
+  products: ReadonlyMap<string, PoolProject>;
   userId: string;
+  embedModel: string;
 }): Promise<void> {
   const { getKnowledgeService } = await import("../src/lib/rag/knowledge-service.js");
   const { resolveAclActor } = await import("../src/lib/rag/acl.js");
   const { denseCosine } = await import("../src/lib/ai/relevance-floor.js");
   const actor = await resolveAclActor(input.userId);
+  const search = async (product: string, text: string, expected: ReadonlySet<string>) => {
+    const p = input.products.get(product);
+    if (!p) throw new Error(`floor sweep: no project for product ${product}`);
+    const { hits } = await getKnowledgeService().search(p.projectId, text, { k: 8, actor });
+    return hits.map((h) => {
+      const shown = h.path ?? h.filename;
+      // An upload is cited by the logical path its source names (`miniflux.1`).
+      const file = p.logical.get(shown) ?? shown;
+      return { name: file, cosine: denseCosine(h), expected: expected.has(file) };
+    });
+  };
   const samples: RetrievalSample[] = [];
   for (const q of input.questions) {
-    for (const name of q.scope) {
-      const product = input.fixture.products.find((p) => p.name === name)!;
-      // An upload is cited by the logical path its source names (`miniflux.1`).
-      const logical = new Map(
-        product.documents.map((d) => [d.uploadAs, d.fromCorpus ? d.uploadAs : d.file] as const),
-      );
-      const expected = new Set(
-        (q.sources ?? []).filter((s) => s.product === name).map((s) => s.path),
-      );
-      const { hits } = await getKnowledgeService().search(
-        input.repos.get(name)!.projectId,
-        q.text,
-        { k: 8, actor },
-      );
+    for (const { product, expected } of q.scope) {
       samples.push({
         questionId: q.id,
         expect: q.expect,
-        product: name,
-        hits: hits.map((h) => {
-          const shown = h.path ?? h.filename;
-          const file = logical.get(shown) ?? shown;
-          return { name: file, cosine: denseCosine(h), expected: expected.has(file) };
-        }),
+        product,
+        hits: await search(product, q.text, expected),
       });
     }
   }
   // Off-topic probes: what the floor is for, searched over each product alone.
   for (const [i, text] of OFF_TOPIC_PROBES.entries()) {
-    for (const p of input.fixture.products) {
-      const { hits } = await getKnowledgeService().search(
-        input.repos.get(p.name)!.projectId,
-        text,
-        { k: 8, actor },
-      );
+    for (const product of input.products.keys()) {
       samples.push({
         questionId: `P${i + 1}`,
         expect: "off-topic",
-        product: p.name,
-        hits: hits.map((h) => ({
-          name: h.path ?? h.filename,
-          cosine: denseCosine(h),
-          expected: false,
-        })),
+        product,
+        hits: await search(product, text, new Set()),
       });
     }
   }
-  const floors = Array.from({ length: 31 }, (_, i) => Number((0.45 + i * 0.01).toFixed(2)));
-  const rows = sweepFloors(samples, floors);
+  const rows = sweepFloors(samples, floorCandidates(samples));
   const best = safestFloor(rows);
+  const margin = floorMargin(samples);
+  const edge = (e: FloorEdge | null) =>
+    e ? `${e.cosine.toFixed(3)} (${e.questionId}, ${e.product}, \`${e.name}\`)` : "none";
   const perQuestion = samples.map((s) => {
     const cos = s.hits.map((h) => h.cosine).filter((c): c is number => c !== null);
     const top = cos.length > 0 ? Math.max(...cos).toFixed(3) : "-";
@@ -1158,23 +1211,33 @@ async function runFloorSweep(input: {
     return `| ${s.questionId} | ${s.expect} | ${s.product} | ${top} | ${minExp} | ${n}/${s.hits.length} |`;
   });
   const markdown = [
-    "# Relevance floor sweep (#2241)",
+    `# Relevance floor sweep (#2241): ${input.corpus}, ${input.embedModel}`,
     "",
     formatFloorSweep(rows),
     "",
     `Highest floor that empties no answerable question and keeps every expected excerpt: ${best ?? "none"}`,
     "",
+    `Lowest expected-source excerpt: ${edge(margin.lowestExpected)}`,
+    `Highest off-topic excerpt: ${edge(margin.highestOffTopic)}`,
+    "",
     "| Question | Expect | Product | Top cosine | Lowest expected cosine | Expected hits |",
     "|---|---|---|---:|---:|---:|",
     ...perQuestion,
   ].join("\n");
-  const runId = `${new Date().toISOString().replace(/[:.]/g, "-")}-floor`;
+  const runId = `${new Date().toISOString().replace(/[:.]/g, "-")}-floor-${input.corpus}`;
   const outDir = path.join(REPO_ROOT, "eval-results", "ba-qa");
   await fs.mkdir(outDir, { recursive: true });
-  await fs.writeFile(
-    path.join(outDir, `${runId}.json`),
-    `${JSON.stringify({ kind: "ba-qa-floor", issue: 2241, samples, rows, best }, null, 2)}\n`,
-  );
+  const record = {
+    kind: "ba-qa-floor",
+    issue: 2241,
+    corpus: input.corpus,
+    embedModel: input.embedModel,
+    samples,
+    rows,
+    best,
+    margin,
+  };
+  await fs.writeFile(path.join(outDir, `${runId}.json`), `${JSON.stringify(record, null, 2)}\n`);
   await fs.writeFile(path.join(outDir, `${runId}.md`), `${markdown}\n`);
   console.log(markdown);
 }

@@ -1135,9 +1135,9 @@ Run on 2026-11-11 with gte-modernbert-base, the default embedder:
 | 0.65 | 12/12 | 1/4 | 0/10 | 3/4 | 12/25 | 138/216 |
 | 0.70 | 12/12 | 1/4 | 4/10 | 3/4 | 8/25 | 184/216 |
 
-- **The default is 0.55.** It is the highest floor that loses no expected-source excerpt. The
-  lowest such excerpt scored 0.560 (M2, the client's `miniflux.py`). At 0.57 every off-topic
-  probe is emptied, but that excerpt is lost.
+- **The default was 0.55** until #2417 lowered it to 0.43 (below). It is the highest floor that
+  loses no expected-source excerpt on this set. The lowest such excerpt scored 0.560 (M2, the
+  client's `miniflux.py`). At 0.57 every off-topic probe is emptied, but that excerpt is lost.
 - **The floor does not catch an in-domain question the sources can't answer.** The top cosine of
   the unanswerable questions (0.64 to 0.79) overlaps the answerable ones' (0.68 to 0.84). A floor
   high enough to empty them empties answerable questions too. Off-topic questions top out
@@ -1169,6 +1169,115 @@ One run per arm (Sonnet 5.5 answers and judge), compared with run 2 above:
   multi-product questions, which chat still runs unscoped (#2238).
 - The #2241 runs spent $0.772870 across both arms. These are single runs, so a difference of one
   question is within run-to-run noise (compare runs 1 and 2 above).
+
+### The floor on a second corpus, three embedders and repeated runs (#2417), 2026-11-14
+
+#2241 set 0.55 from one corpus, with 0.01 between it and the lowest expected excerpt. #2417
+re-swept it on a second corpus, repeated the runs and calibrated the other supported local
+embedders, for which the floor was off.
+
+`--floor-corpus <localization corpus>` sweeps a localization corpus instead of the BA questions.
+Each item is asked, as its title and text, in each repository that holds one of its expected
+files, and its expected files are the expected sources. The repositories first get their source
+chunks, as the routing pool's do. The off-topic probes run over every repository. The candidate
+floors now follow the retrieved cosines (every 0.01 between them, on 0.05 bounds), so an
+embedder on another scale is swept over its own range. Every report names the two edges a floor
+sits between: the lowest expected excerpt and the highest off-topic excerpt.
+
+```bash
+pnpm eval:materialize baqa-01-acme-reader
+pnpm eval:materialize localization-02-fixture-portfolio
+pnpm eval:ba-qa --floor-sweep                                                  # $0
+pnpm eval:ba-qa --floor-sweep --floor-corpus localization-02-fixture-portfolio  # $0
+# another embedder: a fresh eval-data/.materialized, then the same with
+EMBED_MODEL=Xenova/bge-small-en-v1.5 BAQA_EMBED_MODEL=Xenova/bge-small-en-v1.5 …
+```
+
+The second corpus is `localization-02-fixture-portfolio`: three small TypeScript services
+(orders, billing, notify), 15 analyst-worded requirements, 18 probe searches.
+`localization-01-miniflux-heldout` (24 requirements over the same Miniflux commit as the BA set)
+was swept too, with gte only. The reports are in `readings/ba-qa/2417-floor-*.md`.
+
+| Embedder | Corpus | Safest floor | Lowest expected excerpt | Highest off-topic excerpt |
+|---|---|---:|---|---|
+| gte-modernbert-base | BA set, run 1 | 0.55 | 0.560 (M2, `miniflux.py`) | 0.566 (P1, miniflux) |
+| gte-modernbert-base | BA set, run 2 | 0.55 | 0.560 (M2, `miniflux.py`) | 0.566 (P1, miniflux) |
+| gte-modernbert-base | Miniflux held-out | 0.56 | 0.564 (MF-4594) | 0.566 (P1) |
+| gte-modernbert-base | fixture portfolio, runs 1 and 2 | **0.43** | 0.431 (FX-01, orders) | 0.472 (P6, billing) |
+| bge-small-en-v1.5 | BA set | 0.56 | 0.565 (S5, client `README.md`) | 0.531 (P2, miniflux) |
+| bge-small-en-v1.5 | fixture portfolio | **0.43** | 0.432 (FX-01, orders) | 0.476 (P6, billing) |
+| embeddinggemma-300m (768) | BA set | 0.59 | 0.599 (M1, `miniflux.py`) | 0.654 (P4, client) |
+| embeddinggemma-300m (768) | fixture portfolio | **0.57** | 0.577 (FX-12, orders) | 0.563 (P6, notify) |
+
+What the old and new defaults do on each corpus:
+
+| Embedder, floor | Corpus | Off-topic emptied | Answerable emptied | Expected excerpts kept |
+|---|---|---:|---:|---:|
+| gte, 0.55 (old) | BA set | 6/12 | 0/18 | 33/33 |
+| gte, 0.55 (old) | fixture portfolio | 18/18 | **2/15** | **19/31** |
+| gte, 0.43 | BA set | 0/12 | 0/18 | 33/33 |
+| gte, 0.43 | Miniflux held-out | 0/6 | 0/24 | 33/33 |
+| gte, 0.43 | fixture portfolio | 14/18 | 0/15 | 31/31 |
+| bge, 0.43 | BA set | 1/12 | 0/18 | 38/38 |
+| bge, 0.43 | fixture portfolio | 14/18 | 0/15 | 31/31 |
+| gemma, 0.57 | BA set | 4/12 | 0/18 | 27/27 |
+| gemma, 0.57 | fixture portfolio | 18/18 | 0/15 | 31/31 |
+
+- **0.55 was not safe on the second corpus.** On the small TypeScript services every cosine sits
+  lower. At 0.55 the floor empties FX-10 and FX-11, so chat would label them "insufficient
+  evidence", and it drops 12 of 31 expected excerpts. With bge, 0.55 empties no question there
+  but drops 16 of 31 expected excerpts, and 0.56 empties three.
+- **The default is now per embedder** (`CALIBRATED_RELEVANCE_FLOORS`,
+  `server/src/lib/ai/relevance-floor.ts`): for each, the highest floor that is safe on both
+  corpora. gte-modernbert-base and bge-small-en-v1.5 get 0.43, and EmbeddingGemma at its native
+  768 dimensions gets 0.57. EmbeddingGemma truncated by `EMBED_DIM` was not measured and gets no
+  floor, nor does any other embedder. When hits come from several embedders, the lowest of their
+  floors applies.
+- **At 0.43 the floor no longer empties an off-topic probe on Miniflux** with gte. It still
+  empties 14 of 18 on the fixture corpus. On Miniflux, abstention on such questions rests on the
+  answering policy, as it already did for in-domain questions the sources can't answer.
+- **No single floor separates the two edges for gte or bge.** On Miniflux the highest off-topic
+  excerpt (0.566) is above the lowest expected one (0.560), and on the fixture corpus 0.472 is
+  above 0.431. The floor keeps unrelated text out where the scale allows, and the answering
+  policy does the rest.
+- **The repeat moved neither edge.** Run 2 re-materialized and re-ingested the BA set from
+  scratch. 27 of 47 question-product top-8 lists changed membership: index-rebuild noise, as
+  #2333 found. The top cosine moved by at most 0.010 and the edges stayed at 0.560 and 0.566.
+  The fixture corpus repeated exactly.
+- **Spend:** $0. No model is called.
+
+#### The flags-off arm, re-measured after #2243
+
+#2241 measured false abstention with the flags off at 7 of 10 answerable questions, with S1, S3
+and S4 abstaining because their top 8 excerpts held none of the expected files. #2243 has since
+turned the code-search tools on by default. Two pairs of runs on this branch, with the 0.43
+floor: `off` and `default` (the server's defaults, so the tools on), alternating. Sonnet 5.5
+answered and judged all 26 questions (fixture version 3). The reports are in
+`readings/ba-qa/2417-default-vs-off-run{1,2}.md`.
+
+| | off, run 1 | off, run 2 | default, run 1 | default, run 2 |
+|---|---:|---:|---:|---:|
+| Correctness: mean facts stated | 21% | 22% | 53% | 51% |
+| Fully correct answers | 0/18 | 0/18 | 5/18 | 4/18 |
+| Citation precision, lines judged on the span | n/a | n/a | 99% (84/85) | 96% (89/93) |
+| Citation recall | 9/50 | 9/50 | 20/50 | 20/50 |
+| False abstention on answerable | 12/18 | 12/18 | 5/18 | 6/18 |
+| … of #2241's ten (S1–S6, M1–M4) | 7/10 | 7/10 | 3/10 | 4/10 |
+| Abstention on unanswerable | 4/4 | 4/4 | 4/4 | 4/4 |
+| Follow-up on ambiguous | 4/4 | 4/4 | 3/4 | 4/4 |
+| Right behaviour, single-product | 6/14 | 6/14 | 12/14 | 12/14 |
+| Spend (answers + judge) | $0.5655 | $0.5654 | $1.1564 | $1.1611 |
+
+- **With the shipped defaults, no single-product question abstains falsely.** S1 to S11 were
+  answered in both `default` runs. The false abstentions left are M1 to M4 (chat still asks a
+  two-product question unscoped here, so they retrieve nothing) and H1 and H3, which need
+  `get_change_history`, off by default. In run 1, M4 asked a follow-up instead.
+- **The flags-off arm is unchanged, and the floor is not why.** With the flags off, S1, S3, S4,
+  S7, S10 and S11 abstain in both runs, as S1, S3 and S4 did in #2241. The floor empties none of
+  them at 0.43 or at 0.55 (answerable emptied 0/18 above). Their top 8 excerpts hold the wrong
+  files, and only the code-search tools reach the right ones. That is the arm #2243 turned off
+  by default, so it no longer describes what chat does.
+- **Spend:** $3.448429, the four runs above.
 
 ### Routing multi-product chat (#2336), 2026-11-12: measured, not needed
 
