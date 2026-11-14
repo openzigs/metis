@@ -32,9 +32,16 @@ interface ApprovalRow {
 }
 const approvals: ApprovalRow[] = [];
 let approvalId = 0;
+/** #2448 — each run's `sourceAccess` marker; `shared` unless a test sets one. */
+const markers = vi.hoisted(() => new Map<string, string>());
 
 vi.mock("../src/lib/prisma.js", () => ({
   prisma: {
+    analysis: {
+      findUnique: vi.fn(async ({ where }: { where: { id: string } }) => ({
+        sourceAccess: markers.get(where.id) ?? "shared",
+      })),
+    },
     approvalRequest: {
       create: vi.fn(({ data }: { data: Record<string, unknown> }) => {
         approvalId++;
@@ -499,6 +506,40 @@ describe("#215 — orchestrator creates approval requests after extraction/clari
     // Extraction ran on the fallback seed and produced one requirement approval.
     expect(extractMock).toHaveBeenCalled();
     expect(await approvalSvc.listApprovalRequests("ana-seed")).toHaveLength(1);
+  });
+
+  it("#2448 — on a run a person started, never seeds the reviewed list from a code finding", async () => {
+    // A code finding may rest on a restricted file only the starter can read;
+    // the reviewed list and its approvals rest on the run, with no record.
+    const svcMock = await import("../src/lib/analysis/analysis-service.js");
+    const flat = [
+      { agentKey: "code", title: "Vault key in vault.ts", body: "secret" },
+      { agentKey: "web", title: "Public guidance", body: "open" },
+    ];
+    const seedOf = async (analysisId: string) => {
+      (svcMock.readFlattenedFindings as ReturnType<typeof vi.fn>).mockResolvedValueOnce(flat);
+      extractMock.mockClear();
+      extractMock.mockResolvedValue({
+        requirements: [],
+        totalAmbiguities: 0,
+        totalEvidenceNeeds: 0,
+      });
+      const { orch } = makeOrchestrator();
+      await (orch as unknown as PrivateOrchestrator).runEnhancementPipeline({
+        analysisId,
+        extractedRequirements: [],
+        enableWebResearch: false,
+        enableClarification: false,
+        signal: new AbortController().signal,
+      });
+      return String(extractMock.mock.calls[0]?.[0] ?? "");
+    };
+    markers.set("ana-starter", "starter");
+    const starter = await seedOf("ana-starter");
+    expect(starter).toContain("Public guidance");
+    expect(starter).not.toContain("vault");
+    // A shared run read nothing restricted: every finding seeds it, as before.
+    expect(await seedOf("ana-shared")).toContain("Vault key in vault.ts");
   });
 
   it("creates no approvals when the signal aborts right after extraction", async () => {

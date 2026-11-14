@@ -21,11 +21,15 @@ import { analysedVersions } from "../governing/requirement-staleness.js";
 import { ELICITED_NFRS_AWAITING_PROMOTION_KEY } from "./elicited-nfr-requirements.js";
 import {
   SOURCE_ACCESS_SHARED,
+  SOURCE_ACCESS_STARTER,
   evidenceFindingIds,
+  parseSourceIds,
   resolveFindingSourceIds,
   serializeSourceIds,
   sourceIdsOfFindingSets,
+  unionSourceIds,
 } from "./source-ids.js";
+import { readSetForPersist, serializeReadSet } from "./pass-reads.js";
 import {
   documentCoverageRows,
   loadSourceGuard,
@@ -306,9 +310,13 @@ export async function createAnalysis(input: CreateAnalysisInput) {
       startedAt,
       title,
       titleGenerated: !typed,
-      // #2446 — the run reads code as the shared audience (#2314) and records
-      // the sources of every finding and requirement it writes.
-      sourceAccess: SOURCE_ACCESS_SHARED,
+      // #2446 — every run records the sources of every finding and
+      // requirement it writes. #2448 — a run a person started reads code with
+      // the access of whoever runs each pass, which records what it read
+      // (`pass-reads.ts`); a scheduled run has nobody's access to read with,
+      // so it reads as the shared audience (#2314).
+      sourceAccess:
+        input.startedById === SYSTEM_ACTOR_ID ? SOURCE_ACCESS_SHARED : SOURCE_ACCESS_STARTER,
       metadata: JSON.stringify({
         agentKeys: input.agentKeys,
         documentIds: input.documentIds ?? [],
@@ -1068,16 +1076,20 @@ export async function persistAgentResult(
   // Issue #2011 — `mode: "supersede"` runs that delete and the write below in
   // one transaction. #2018 — under an explicit deadline, not Prisma's default.
   const mode = input.mode ?? "replace";
-  const sources = await findingSourceIds(input);
+  // #2448 — on a `starter` run, what this pass read (read before the replace
+  // below deletes a row it might count).
+  const readSet = await passReadSet(input);
+  const sources = await findingSourceIds(input, readSet);
+  const recorded = { sources, readSet };
   const { persisted, refusedMetrics } =
     mode === "supersede"
       ? await prisma.$transaction(async (tx) => {
           await deleteAgentResultsInScope(tx, input);
-          return writeAgentResult(tx, input, sources);
+          return writeAgentResult(tx, input, recorded);
         }, SUPERSEDE_TRANSACTION_OPTIONS)
       : await (async () => {
           if (mode === "replace") await deleteAgentResultsInScope(prisma, input);
-          return writeAgentResult(prisma, input, sources);
+          return writeAgentResult(prisma, input, recorded);
         })();
   if (refusedMetrics > 0) {
     // Counts and the run identity only — never the finding text.
@@ -1114,12 +1126,22 @@ async function deleteAgentResultsInScope(
  * them as "not recorded" (#2447 fails closed), and a completed pass is never
  * lost for a record about it.
  */
-async function findingSourceIds(input: PersistAgentResultInput): Promise<Array<string | null>> {
+async function findingSourceIds(
+  input: PersistAgentResultInput,
+  readSet: PassReadSet,
+): Promise<Array<string | null>> {
   if (!isAgentOutput(input.output)) return [];
   const findings = input.output.findings;
+  // #2448 — on a `starter` run each finding rests on what its pass read as
+  // well as on what it cites; when that is unknown, so are its sources.
+  if (readSet === null) return findings.map(() => null);
   try {
     const sources = await resolveFindingSourceIds(prisma, input.analysisId, findings);
-    return sources.map(serializeSourceIds);
+    if (readSet === undefined) return sources.map(serializeSourceIds);
+    const read = { documentIds: readSet, chunkIds: [] };
+    return sources.map((s) =>
+      serializeSourceIds({ ...unionSourceIds([s, read]), citations: s.citations }),
+    );
   } catch (err) {
     // Counts and the run identity only — never a citation.
     log.warn("Could not record the sources of an agent's findings", {
@@ -1132,12 +1154,33 @@ async function findingSourceIds(input: PersistAgentResultInput): Promise<Array<s
   }
 }
 
+/**
+ * #2448 — what a `starter` run's pass read (`pass-reads.ts`): `undefined` on any
+ * other run (nothing recorded), `null` when it cannot be told. A failed read
+ * is `null` too: the result is still written, and its findings fail closed.
+ */
+type PassReadSet = string[] | null | undefined;
+
+async function passReadSet(input: PersistAgentResultInput): Promise<PassReadSet> {
+  try {
+    return await readSetForPersist(input.analysisId);
+  } catch (err) {
+    log.warn("Could not record what an agent's pass read", {
+      analysisId: input.analysisId,
+      agentKey: input.agentKey,
+      error: String(err),
+    });
+    return null;
+  }
+}
+
 /** The row and its findings, through `db` (the client, or a transaction). */
 async function writeAgentResult(
   db: Prisma.TransactionClient,
   input: PersistAgentResultInput,
-  sources: ReadonlyArray<string | null>,
+  recorded: { sources: ReadonlyArray<string | null>; readSet: PassReadSet },
 ): Promise<{ persisted: PersistedAgentResult; refusedMetrics: number }> {
+  const { sources, readSet } = recorded;
   // #774 — the loop's tool-call summary rides in the existing output JSON column
   // (no migration): a `toolTelemetry` sibling of the agent output's own keys.
   const outputJson = input.output
@@ -1157,6 +1200,7 @@ async function writeAgentResult(
       completedAt: input.completedAt,
       output: outputJson,
       errorMessage: input.errorMessage ?? null,
+      readSourceIds: readSet ? serializeReadSet(readSet) : null,
     },
   });
 
@@ -2419,6 +2463,8 @@ export async function getAnalysisSnapshot(
   const full: AnalysisSnapshot = {
     ...snapshot,
     ...details,
+    // #2448 — how many restricted files its code passes read.
+    capability: withRestrictedRead(snapshot.capability, row),
     requirements: snapshot.requirements.map((r) => ({
       ...r,
       analysedVersion: analysed.get(r.id) ?? r.version,
@@ -2440,6 +2486,23 @@ export async function getAnalysisSnapshot(
       : null,
   };
   return opts.reader ? redactSnapshotFor(opts.reader, row, full) : full;
+}
+
+/**
+ * #2448 — `capability` with `restrictedRead`: on a `starter` run, how many
+ * restricted documents its passes read (the union of their stored read sets).
+ * A count, so every reader may see it. Unchanged on any other run, at zero,
+ * and while the run has no capability record yet.
+ */
+export function withRestrictedRead(
+  capability: AnalysisCapability | null,
+  row: { sourceAccess: string | null; agentResults: Array<{ readSourceIds: string | null }> },
+): AnalysisCapability | null {
+  if (!capability || row.sourceAccess !== SOURCE_ACCESS_STARTER) return capability;
+  const read = new Set(
+    row.agentResults.flatMap((a) => parseSourceIds(a.readSourceIds)?.documentIds ?? []),
+  );
+  return read.size > 0 ? { ...capability, restrictedRead: read.size } : capability;
 }
 
 /**

@@ -1452,6 +1452,9 @@ model Analysis {
   /// sources it drew on (`sourceIds`). NULL: a run from before #2446 (or a
   /// synthetic run: import, discussion, code ingest), whose rows record none;
   /// it keeps the shared-audience rule. A marker, never backfilled.
+  /// #2448 — `starter`: a run a person started; its code passes read with the
+  /// access of whoever ran them and record what they read
+  /// (`AgentResult.readSourceIds`). A scheduled run stays `shared`.
   sourceAccess   String?
   /// The user who started the run. #1528 — NULL for a run the system started
   /// (a scheduled `rerun-analysis` task), which has no user: the orchestrator
@@ -1665,6 +1668,12 @@ model AgentResult {
   completedAt  DateTime?
   output       String? // JSON-encoded structured output
   errorMessage String?
+  /// #2448 (epic #2438) — on a run whose `sourceAccess` is `starter`: the
+  /// restricted `Document` ids this pass read with the access of the person
+  /// who ran it, plus what the earlier passes of the run read (`sourceIds`
+  /// JSON, `pass-reads.ts`). Every finding of the pass rests on it too. NULL:
+  /// not recorded (a reader fails closed), or a run whose rule never reads it.
+  readSourceIds String?
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 

@@ -154,7 +154,11 @@ describe("#2446 — stored sources", () => {
         id: { in: ["f-1", "f-2", "f-legacy", "f-missing"] },
         agentResult: { analysisId: "an-1" },
       },
-      select: { id: true, sourceIds: true },
+      select: {
+        id: true,
+        sourceIds: true,
+        agentResult: { select: { analysis: { select: { sourceAccess: true } } } },
+      },
     });
     expect(out.map((v) => (v === null ? null : JSON.parse(v)))).toEqual([
       { documentIds: ["d-1", "d-2"], chunkIds: [] },
@@ -163,5 +167,25 @@ describe("#2446 — stored sources", () => {
       null,
       { documentIds: ["d-2"], chunkIds: [] },
     ]);
+  });
+
+  it("#2448 — on a starter run every row rests on the run as a whole: no record", async () => {
+    // Synthesis read every finding, and there a finding may rest on a
+    // restricted file its citations do not name.
+    const stored = JSON.stringify({ documentIds: ["d-1"], chunkIds: [] });
+    const run = (sourceAccess: string) => ({
+      finding: {
+        findMany: vi.fn(async () => [
+          { id: "f-1", sourceIds: stored, agentResult: { analysis: { sourceAccess } } },
+        ]),
+      },
+    });
+    expect(await sourceIdsOfFindingSets(run("starter") as never, "an-1", [["f-1"], []])).toEqual([
+      null,
+      null,
+    ]);
+    expect(await sourceIdsOfFindings(run("starter") as never, "an-1", ["f-1"])).toBeNull();
+    // A shared run keeps the union of its findings' records.
+    expect(await sourceIdsOfFindings(run("shared") as never, "an-1", ["f-1"])).toBe(stored);
   });
 });
