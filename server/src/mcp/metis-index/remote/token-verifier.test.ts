@@ -2,7 +2,7 @@
  * #2344 — the remote endpoint's access-token checks: signature, issuer,
  * expiry and audience, against the authorization server's JWKS.
  */
-import { generateKeyPairSync, type KeyObject } from "node:crypto";
+import { generateKeyPairSync, randomBytes, type KeyObject } from "node:crypto";
 import jwt from "jsonwebtoken";
 import { describe, expect, it, vi } from "vitest";
 import type { RemoteMcpSettings } from "./config.js";
@@ -168,9 +168,15 @@ describe("createAccessTokenVerifier", () => {
 
   it("refuses an HMAC token (METIS's own session tokens), alg none, and a static METIS API token", async () => {
     const { verify, fetchImpl } = verifier();
-    const hs = jwt.sign({ iss: ISSUER, aud: RESOURCE, sub: "x", exp: NOW / 1000 + 60 }, "secret");
+    // A per-run random HMAC key, as METIS's JWT_SECRET would be.
+    const hs = jwt.sign(
+      { iss: ISSUER, aud: RESOURCE, sub: "x", exp: NOW / 1000 + 60 },
+      randomBytes(32),
+    );
     expect(await rejection(verify(hs, settings))).toBe("algorithm");
-    const none = jwt.sign({ iss: ISSUER, aud: RESOURCE, sub: "x" }, "", { algorithm: "none" });
+    // An unsigned token, built by hand: header `alg: none`, empty signature.
+    const b64 = (o: object) => Buffer.from(JSON.stringify(o)).toString("base64url");
+    const none = `${b64({ alg: "none", typ: "JWT" })}.${b64({ iss: ISSUER, aud: RESOURCE, sub: "x" })}.`;
     expect(await rejection(verify(none, settings))).toBe("algorithm");
     expect(await rejection(verify("metis_0123456789abcdef", settings))).toBe("malformed");
     expect(fetchImpl).not.toHaveBeenCalled();
