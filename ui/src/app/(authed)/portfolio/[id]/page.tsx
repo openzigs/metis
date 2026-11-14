@@ -135,7 +135,10 @@ export default function PortfolioAssessmentPage() {
             ? "Document"
             : view.sourceAnalysisId
               ? "Change request"
-              : "Requirement"}
+              : // #2301 — a chosen set, even one this reader sees only part of.
+                (view.sourceRequirementCount ?? view.sourceRequirementIds?.length ?? 0) > 0
+                ? "Chosen requirements"
+                : "Requirement"}
         </h2>
         <p className="whitespace-pre-wrap text-sm" data-testid="portfolio-detail-statement">
           {view.statement}

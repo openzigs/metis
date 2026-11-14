@@ -44,6 +44,9 @@ import {
 import { HoverHint } from "@/components/spec-kit/hover-hint";
 import { RequestReviewCard } from "@/components/reviews/request-review-card";
 import { RequirementApprovalWarning } from "@/components/requirements/RequirementApprovalWarning";
+import { PORTFOLIO_MAX_REQUIREMENTS } from "@metis/shared";
+import { Network } from "lucide-react";
+import { portfolioCheckHref } from "@/components/portfolio/portfolio-check-link";
 import { APPROVAL_LADDER_RUNGS, ApprovalLadderNote, SELF_APPROVAL_HINT } from "./approval-ladder";
 
 export const REQUIREMENTS_PAGE_SIZE = 25;
@@ -121,6 +124,9 @@ export const EDIT_HINT = "Editing needs a coordinator or admin role.";
 /** #2447 — every action on a requirement the viewer cannot see a source of. */
 export const RESTRICTED_REQUIREMENT_HINT =
   "It draws on sources you don't have access to, so you can't open, edit or approve it.";
+
+/** #2301 — why the portfolio check of the ticked rows is disabled past what one check takes. */
+export const PORTFOLIO_SET_TOO_BIG_HINT = `One check takes up to ${PORTFOLIO_MAX_REQUIREMENTS} requirements: untick some to check these.`;
 
 /** What a 409 on a row's write means, and what to do next. */
 export const EDIT_CONFLICT_MESSAGE =
@@ -258,6 +264,9 @@ export function RequirementsList({ projectId }: { projectId: string }) {
   const canApprove = user?.permissions.includes("requirement.approve") ?? false;
   // #732 — the server gates review creation on `review.create`.
   const canRequestReview = user?.permissions.includes("review.create") ?? false;
+  // #2301 — the server gates starting a portfolio check on `analysis.run`.
+  const canCheckPortfolio = user?.permissions.includes("analysis.run") ?? false;
+  const canTick = canRequestReview || canCheckPortfolio;
   // #1566 — a `developer` may request reviews but not approve or edit.
   // #2452 — and a row the viewer wrote, in a project without self-approval,
   // says why before the click (the server marks it `selfApprovalForbidden`).
@@ -430,11 +439,15 @@ export function RequirementsList({ projectId }: { projectId: string }) {
                 className="flex flex-wrap items-start gap-3 py-2 text-sm"
                 data-testid={`requirements-row-${row.id}`}
               >
-                {canRequestReview && !row.restricted ? (
+                {canTick && !row.restricted ? (
                   <input
                     type="checkbox"
                     className="mt-1"
-                    aria-label={`Choose ${row.title} for a review`}
+                    aria-label={
+                      canRequestReview
+                        ? `Choose ${row.title} for a review`
+                        : `Choose ${row.title} to check across the portfolio`
+                    }
                     checked={selected.has(row.id)}
                     onChange={(e) => toggle(row, e.target.checked)}
                   />
@@ -530,6 +543,36 @@ export function RequirementsList({ projectId }: { projectId: string }) {
           ) : null}
         </div>
 
+        {/* #2301 — the ticked rows checked across the portfolio, each on its own. */}
+        {canCheckPortfolio && chosen.length > 0 ? (
+          <div className="flex flex-wrap items-center gap-2" data-testid="requirements-portfolio">
+            {chosen.length > PORTFOLIO_MAX_REQUIREMENTS ? (
+              <HoverHint hint={PORTFOLIO_SET_TOO_BIG_HINT}>
+                <Button size="sm" variant="outline" disabled>
+                  <Network className="mr-1 h-3.5 w-3.5" aria-hidden />
+                  Check {chosen.length} selected across portfolio
+                </Button>
+              </HoverHint>
+            ) : (
+              <Button asChild size="sm" variant="outline">
+                <Link
+                  href={portfolioCheckHref({
+                    requirementIds: chosen.map((r) => r.id),
+                    title: `${chosen.length} chosen ${chosen.length === 1 ? "requirement" : "requirements"}`,
+                  })}
+                  data-testid="requirements-portfolio-check"
+                >
+                  <Network className="mr-1 h-3.5 w-3.5" aria-hidden />
+                  Check {chosen.length} selected across portfolio
+                </Link>
+              </Button>
+            )}
+            <span className="text-xs text-muted-foreground">
+              Each is checked on its own against your products.
+            </span>
+          </div>
+        ) : null}
+
         {canRequestReview && user ? (
           chosen.length > 0 ? (
             // Not re-keyed on the selection: ticking one more row keeps the
@@ -566,7 +609,9 @@ export function RequirementsList({ projectId }: { projectId: string }) {
             </p>
           ) : (
             <p className="text-xs text-muted-foreground" data-testid="requirements-review-hint">
-              Tick requirements to request a formal review of them.
+              {canCheckPortfolio
+                ? "Tick requirements to request a formal review of them, or to check them across the portfolio."
+                : "Tick requirements to request a formal review of them."}
             </p>
           )
         ) : null}

@@ -177,6 +177,21 @@ function PortfolioEntry({ searchParams }: { searchParams: SearchParamsReader | n
         }
       : null,
   );
+  // #2301 — `?requirementIds=…&title=` arrives from requirements ticked on a
+  // project's Requirements tab (or a set check re-opened to choose a host):
+  // each is checked on its own. The title is display-only; the server reads
+  // every requirement itself, with access.
+  const requirementIds = searchParams?.getAll?.("requirementIds") ?? [];
+  const [requirementSet, setRequirementSet] = useState(() =>
+    requirementIds.length > 0
+      ? {
+          ids: requirementIds,
+          title:
+            (searchParams?.get("title") ?? "").slice(0, TITLE_MAX) ||
+            `${requirementIds.length} chosen ${requirementIds.length === 1 ? "requirement" : "requirements"}`,
+        }
+      : null,
+  );
   const initialStatement = searchParams?.get("statement") ?? "";
   const [requirement, setRequirement] = useState(() =>
     requirementId
@@ -330,6 +345,8 @@ function PortfolioEntry({ searchParams }: { searchParams: SearchParamsReader | n
         onClearDocument={() => setDocument(null)}
         changeRequest={changeRequest}
         onClearChangeRequest={() => setChangeRequest(null)}
+        requirementSet={requirementSet}
+        onClearRequirementSet={() => setRequirementSet(null)}
         current={current}
         currentNote={currentNote}
         scopeLoading={currentLoading}
