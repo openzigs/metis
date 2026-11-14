@@ -96,6 +96,8 @@ export const POSTGRES_PATTERNS = Object.freeze([
   "server/src/lib/publishing/cross-project-guard.ts",
   // #2356 — document-acl-save-2356-postgres runs the real ACL compare-and-set and quarantine write.
   "server/src/lib/rag/acl.ts",
+  // #2435 — rag-approve-acl-save-2435-postgres runs a real approval with a BM25 index.
+  "server/src/lib/rag/bm25-index.ts",
   "server/src/lib/rag/embedder.ts",
   "server/src/lib/rag/knowledge-service.ts",
   "server/src/lib/rag/quarantine.ts",
