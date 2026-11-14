@@ -3394,6 +3394,14 @@ export interface AnalysisCapability {
    * when it left none out (and on every run persisted before #2437).
    */
   restrictedLeftOut?: RestrictedLeftOutNotice;
+  /**
+   * Issue #2448 — how many restricted files the run's code passes read with
+   * the access of the person who ran them. Anyone who cannot see one of them
+   * sees what drew on it as restricted. A count only, never which. Set on
+   * read from the run's recorded read sets, never stored; absent at zero and
+   * on a run that read as the shared audience.
+   */
+  restrictedRead?: number;
   /** Derived, enumerated degradation reasons. Empty ⇒ fully capable run. */
   reasons: AnalysisCapabilityReason[];
 }
@@ -3704,6 +3712,24 @@ export function restrictedLeftOutSentence(value: unknown): string | null {
       ? `${parts.slice(0, -1).join(", ")}, and ${parts[parts.length - 1]}`
       : parts.join(", and ");
   return `${listed}: ${RESTRICTED_LEFT_OUT_WHY[notice.reason]}`;
+}
+
+/**
+ * Issue #2448 — the line a run, its change request and a Spec Kit handoff show
+ * when its code was read with the access of the person who ran it and that
+ * included restricted files: "This analysis read 3 restricted files with the
+ * access of the person who ran it. Anyone who can't see one of them sees what
+ * drew on it as restricted." `null` unless `value` is a positive whole count.
+ * Counts only: it never names a file.
+ */
+export function restrictedReadSentence(value: unknown): string | null {
+  if (!isCount(value) || value === 0) return null;
+  const files = value === 1 ? "1 restricted file" : `${value} restricted files`;
+  const them = value === 1 ? "it" : "one of them";
+  return (
+    `This analysis read ${files} with the access of the person who ran it. ` +
+    `Anyone who can't see ${them} sees what drew on it as restricted.`
+  );
 }
 
 /**

@@ -30,8 +30,11 @@
  *     the run as a whole, or not recorded" — fail closed, treating the row as
  *     drawing on every source the run read (its audience), never as on none.
  *
- * A row's uncited context (what its pass read without citing) is not on the
- * row: it is the run's audience, `Analysis.sourceAccess`. A run from before
+ * A row's uncited context (what its pass read without citing) is, on a
+ * `shared` run, the run's audience (`Analysis.sourceAccess`), which hides
+ * nothing. #2448 — on a `starter` run it is the pass's read set
+ * (`AgentResult.readSourceIds`), folded into each of its findings' lists when
+ * they are written (`persistAgentResult`). A run from before
  * #2446 has `sourceAccess` NULL and keeps the shared-audience rule (#2314);
  * none of its rows carry sources, and none are backfilled.
  */
@@ -46,9 +49,19 @@ import { repoDocumentFilenames } from "./tools/code-access.js";
 
 /**
  * `Analysis.sourceAccess` of a run that read code as the shared audience
- * (#2314) and recorded sources on every row it wrote. #2448 adds the starter's.
+ * (#2314) and recorded sources on every row it wrote.
  */
 export const SOURCE_ACCESS_SHARED = "shared";
+
+/**
+ * #2448 — `Analysis.sourceAccess` of a run a person started: its code passes
+ * read with the access of whoever ran them, and each records what it read
+ * (`AgentResult.readSourceIds`, `pass-reads.ts`). Every finding a pass writes
+ * rests on that read set as well as on its citations; a requirement or a
+ * cross-document finding rests on the run as a whole ({@link
+ * sourceIdsOfFindingSets}).
+ */
+export const SOURCE_ACCESS_STARTER = "starter";
 
 /** The sources one row, or one citation, drew on: sorted, distinct ids. */
 export interface SourceIds {
@@ -269,6 +282,12 @@ export function evidenceFindingIds(labels: readonly string[]): string[] {
  * before #2446), so it is never recorded as resting on less than it does; and
  * `null` when it cites no finding, because the pass that wrote it read every
  * finding of the run (see the module header).
+ *
+ * #2448 — and `null` for every row of a {@link SOURCE_ACCESS_STARTER} run: the
+ * pass that wrote it (synthesis, the completeness check, promotion) read every
+ * finding of the run, and there a finding may rest on a restricted file its
+ * citations do not name. So the row rests on the run as a whole, and a reader
+ * sees it only when they can see everything the run read.
  */
 export async function sourceIdsOfFindingSets(
   db: Pick<Prisma.TransactionClient, "finding">,
@@ -279,8 +298,16 @@ export async function sourceIdsOfFindingSets(
   if (all.length === 0) return sets.map(() => null);
   const rows = await db.finding.findMany({
     where: { id: { in: all }, agentResult: { analysisId } },
-    select: { id: true, sourceIds: true },
+    select: {
+      id: true,
+      sourceIds: true,
+      agentResult: { select: { analysis: { select: { sourceAccess: true } } } },
+    },
   });
+  // A row citing no finding of the run is `null` below whatever the run is.
+  if (rows.some((r) => r.agentResult?.analysis?.sourceAccess === SOURCE_ACCESS_STARTER)) {
+    return sets.map(() => null);
+  }
   const byId = new Map(rows.map((r) => [r.id, parseSourceIds(r.sourceIds)]));
   return sets.map((set) => {
     const ids = sorted(set);

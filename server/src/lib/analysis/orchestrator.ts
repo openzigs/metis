@@ -254,6 +254,13 @@ import { createRunDocumentLookup, projectDocumentQueries } from "./run-document-
 import { seedRequirementCodeLinksFromFindings } from "../traceability/seed-code-links-from-findings.js";
 import { persistAgentPhaseResults, runEnabledCustomAgents } from "./custom-agent-phase.js";
 import {
+  currentPassReads,
+  mayRestOnRestrictedRead,
+  passCodeAccess,
+  withPassReads,
+} from "./pass-reads.js";
+import { redactRunCapability } from "./source-redaction.js";
+import {
   RequirementsExtractionError,
   RequirementsExtractor,
   buildSourceExtractionInput,
@@ -2415,7 +2422,12 @@ export class AnalysisOrchestrator {
       log.warn("Capability persist failed", { analysisId, error: (err as Error).message });
     }
     if (!this.deps.io) return;
-    const event: AnalysisCapabilityEvent = { analysisId, capability: next, ts: Date.now() };
+    // #2448 — the live room any reader of the project may join: no finding titles.
+    const event: AnalysisCapabilityEvent = {
+      analysisId,
+      capability: redactRunCapability(next),
+      ts: Date.now(),
+    };
     try {
       this.deps.io.to(analysisRoom(analysisId)).emit("analysis:capability", event);
     } catch (err) {
@@ -3375,7 +3387,16 @@ export class AnalysisOrchestrator {
       .map((r) => r.text)
       .filter((t) => t.trim().length > 0);
     if (seedTexts.length === 0) {
-      const flat = await readFlattenedFindings(input.analysisId);
+      // #2448 — the reviewed list, its web research and its approvals rest on
+      // the run as a whole, with no record of their own: on a run a person
+      // started they are never seeded from a code finding, which may rest on
+      // a restricted file only that person can read. A run whose passes read
+      // nothing restricted seeds from its code findings as a shared run does.
+      // A marker or read set that cannot be read is treated as restricted.
+      const restricted = await mayRestOnRestrictedRead(input.analysisId).catch(() => true);
+      const flat = (await readFlattenedFindings(input.analysisId)).filter(
+        (f) => !restricted || f.agentKey !== "code",
+      );
       const docFindings = flat.filter((f) => f.agentKey === "document");
       const source = docFindings.length > 0 ? docFindings : flat;
       seedTexts = source
@@ -3476,7 +3497,18 @@ export class AnalysisOrchestrator {
     }
   }
 
-  private async runOneAgent(input: {
+  /**
+   * #2448 — one pass of the run: on a run a person started, its code reads use
+   * the access of whoever runs it (`input.actorId`), and its result records what
+   * it read (`pass-reads.ts`). Otherwise it reads as the shared audience.
+   */
+  private runOneAgent(
+    input: Parameters<AnalysisOrchestrator["runOneAgentPass"]>[0],
+  ): Promise<AgentRunResult> {
+    return withPassReads(input, () => this.runOneAgentPass(input));
+  }
+
+  private async runOneAgentPass(input: {
     analysisId: string;
     projectId: string;
     projectName: string;
@@ -3790,7 +3822,17 @@ export class AnalysisOrchestrator {
    * Run the code agent in agentic mode (#480, #483).
    * Uses the multi-turn loop with tool-calling to investigate each requirement.
    */
-  private async runAgenticCodeAgent(input: {
+  /**
+   * #2448 — one pass of the run, as {@link runOneAgent}: the agentic code agent's
+   * tools and its fused seed read with the access of whoever runs it.
+   */
+  private runAgenticCodeAgent(
+    input: Parameters<AnalysisOrchestrator["runAgenticCodeAgentPass"]>[0],
+  ): Promise<AgentRunResult> {
+    return withPassReads({ ...input, agentKey: "code" }, () => this.runAgenticCodeAgentPass(input));
+  }
+
+  private async runAgenticCodeAgentPass(input: {
     analysisId: string;
     projectId: string;
     /** #2431 — the run's requester: attributes its document-search denial audit rows. */
@@ -3875,12 +3917,14 @@ export class AnalysisOrchestrator {
         const withheldTools = fileToolsAvailable ? NO_WITHHELD_TOOLS : REPO_FILE_TOOLS;
 
         // #2314 — an analysis's findings, citations and snippets are persisted
-        // and read by every project member, so the code agent reads as a
-        // shared audience (#2248), never as its requester: a file any document
-        // ACL restricts (#2243) is neither read, listed nor searched by the
-        // tools, nor seeded below.
+        // and read by every project member. A scheduled run reads code as a
+        // shared audience (#2248): a file any document ACL restricts (#2243)
+        // is neither read, listed nor searched by the tools, nor seeded below.
         // #2437 — every file that filter hides is a file this run cannot read.
-        const codeAccess = await this.loadCountedCodeAccess(input.analysisId, input.projectId);
+        // #2448 — a run a person started reads with the access of whoever runs
+        // this pass instead: each restricted file a tool reads is recorded on
+        // the pass, and a reader who cannot see it sees what drew on it redacted.
+        const codeAccess = await this.codeAccessForPass(input.analysisId, input.projectId);
 
         // Build tool context
         const toolContext: ToolContext = {
@@ -3943,7 +3987,7 @@ export class AnalysisOrchestrator {
           deps: this.deps.fusedCode,
           hiddenSymbols: hiddenSymbolsFor(
             async () => codeAccess,
-            (left) => this.noteRestrictedLeftOut(input.analysisId, left),
+            this.codeLeftOutCounter(input.analysisId),
           ),
         });
         // #2276 — requirements past the embedder's limit reach keyword search only.
@@ -4809,7 +4853,19 @@ export class AnalysisOrchestrator {
    * the prompt builder's `escapeContext`, and the path is offline-safe (no
    * tool loop, single completion).
    */
-  private async runRequirementGroundedCodeAgent(input: {
+  /**
+   * #2448 — one pass of the run, as {@link runOneAgent}: its fused symbol seed
+   * reads with the access of whoever runs it.
+   */
+  private runRequirementGroundedCodeAgent(
+    input: Parameters<AnalysisOrchestrator["runRequirementGroundedCodeAgentPass"]>[0],
+  ): Promise<AgentRunResult> {
+    return withPassReads({ ...input, agentKey: "code" }, () =>
+      this.runRequirementGroundedCodeAgentPass(input),
+    );
+  }
+
+  private async runRequirementGroundedCodeAgentPass(input: {
     analysisId: string;
     projectId: string;
     /** #2431 — the run's requester: attributes its document-search denial audit rows. */
@@ -4917,7 +4973,8 @@ export class AnalysisOrchestrator {
 
         // #2437 — the run read code, so every restricted file is counted as
         // left out, whether or not the fused search below returns a hit.
-        const codeAccess = await this.seedCodeAccess(input.analysisId, input.projectId);
+        // #2448 — unless the pass reads with the access of whoever runs it.
+        const codeAccess = await this.seedCodeAccessForPass(input.analysisId, input.projectId);
 
         // #729 (Epic #725) — fold fused code-graph symbol context into the
         // grounded evidence. This mode runs when NO code graph exists, so fused
@@ -4933,9 +4990,8 @@ export class AnalysisOrchestrator {
           deps: this.deps.fusedCode,
           // #2314 — only symbols every project member may see (#2243): the
           // findings are persisted for all of them. #2437 — counted.
-          hiddenSymbols: hiddenSymbolsFor(codeAccess, (left) =>
-            this.noteRestrictedLeftOut(input.analysisId, left),
-          ),
+          // #2448 — or those whoever runs the pass may see, recorded.
+          hiddenSymbols: hiddenSymbolsFor(codeAccess, this.codeLeftOutCounter(input.analysisId)),
         });
         // #2276 — requirements past the embedder's limit reach keyword search only.
         this.noteRequirementsLeftOut(input.analysisId, fused.semanticLeftOut);
@@ -6029,7 +6085,8 @@ export class AnalysisOrchestrator {
       //
       // #2437 — the pass read code, so every restricted file is counted as
       // left out, whether or not the fused search returns a hit.
-      const codeAccess = await this.seedCodeAccess(input.analysisId, input.projectId);
+      // #2448 — on a run a person started, the access of whoever runs the pass.
+      const codeAccess = await this.seedCodeAccessForPass(input.analysisId, input.projectId);
       const fusedChunks = await retrieveFusedCodeChunks({
         projectId: input.projectId,
         query: deriveRetrievalQuery({
@@ -6042,9 +6099,8 @@ export class AnalysisOrchestrator {
         deps: this.deps.fusedCode,
         // #2314 — only symbols every project member may see (#2243): the
         // findings are persisted for all of them. #2437 — counted.
-        hiddenSymbols: hiddenSymbolsFor(codeAccess, (left) =>
-          this.noteRestrictedLeftOut(input.analysisId, left),
-        ),
+        // #2448 — or those whoever runs the pass may see, recorded.
+        hiddenSymbols: hiddenSymbolsFor(codeAccess, this.codeLeftOutCounter(input.analysisId)),
       });
       return fusedChunks.length > 0 ? [...combined, ...fusedChunks] : combined;
     }
@@ -6307,6 +6363,44 @@ export class AnalysisOrchestrator {
     const codeAccess = await loadSharedCodeAccess(projectId);
     this.noteRestrictedLeftOut(analysisId, { files: codeAccess.hiddenFileCount });
     return codeAccess;
+  }
+
+  /**
+   * #2448 — the code-access filter of the pass the caller runs inside: on a run
+   * a person started, the access of whoever runs the pass, recording each
+   * restricted file a check admits (`passCodeAccess`); nothing is left out for
+   * the shared audience, so nothing is counted. Otherwise the shared
+   * audience's, counted ({@link loadCountedCodeAccess}).
+   */
+  private async codeAccessForPass(
+    analysisId: string | undefined,
+    projectId: string,
+  ): Promise<CodeAccessFilter> {
+    const pass = analysisId ? currentPassReads(analysisId) : undefined;
+    return pass ? passCodeAccess(pass) : this.loadCountedCodeAccess(analysisId, projectId);
+  }
+
+  /** #2448 — {@link seedCodeAccess} for the pass the caller runs inside ({@link codeAccessForPass}). */
+  private async seedCodeAccessForPass(
+    analysisId: string | undefined,
+    projectId: string,
+  ): Promise<() => Promise<CodeAccessFilter>> {
+    const pass = analysisId ? currentPassReads(analysisId) : undefined;
+    if (!pass) return this.seedCodeAccess(analysisId, projectId);
+    const access = passCodeAccess(pass);
+    return async () => access;
+  }
+
+  /**
+   * #2437 — what a code-access check tells the run it left out. #2448 — nothing
+   * inside a pass that reads with the access of whoever runs it: what that
+   * person cannot see is not left out for the shared audience.
+   */
+  private codeLeftOutCounter(
+    analysisId: string | undefined,
+  ): Parameters<typeof hiddenSymbolsFor>[1] {
+    if (analysisId && currentPassReads(analysisId)) return undefined;
+    return (left) => this.noteRestrictedLeftOut(analysisId, left);
   }
 
   /**
@@ -6714,7 +6808,9 @@ export class AnalysisOrchestrator {
     if (!this.deps.io) return;
     const event: AnalysisCapabilityEvent = {
       analysisId,
-      capability: finalizeCapability(tracker),
+      // #2448 — the live room any reader of the project may join: no finding
+      // titles (the snapshot shows them to whoever may see them).
+      capability: redactRunCapability(finalizeCapability(tracker)),
       ts: Date.now(),
     };
     try {

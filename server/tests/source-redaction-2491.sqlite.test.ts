@@ -631,6 +631,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           filename: RESTRICTED_SOURCE_TITLE,
           sections: [],
         });
+        // #2448 — and the raw record the snapshot's `metadata` carries.
+        const bobMetadata = (await getAnalysisSnapshot(CR, { reader: userSourceReader("bob") }))!
+          .metadata;
+        expect(JSON.stringify(bobMetadata)).not.toContain("Payroll");
         expect(bob.find((d) => d.documentId === "d-open")?.filename).toBe("d-open.md");
         expect(JSON.stringify(bob)).not.toContain("Payroll");
         const alice = await docs("alice");
