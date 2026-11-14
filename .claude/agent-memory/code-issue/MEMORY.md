@@ -69,7 +69,7 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Run claims + citation salvage](project_analysis-run-claims-and-citation-salvage.md) — releaseClaim; failed finalize; per-finding marks
 - [AI metering + prompt caching](project_ai-usage-metering-and-caching.md) — retried attempts once; cache floors; run tokens: 2 values
 - [Footnote line pins](project_footnote-line-pins.md) — assembly only; facts ids repeat per section; real mined-rule fixtures (#1305)
-- [Server typecheck OOM = capacity](project_server-typecheck-memory-cap.md) — 12,288 MB cap; compare Types counts (#1308)
+- [Server typecheck OOM = capacity](project_server-typecheck-memory-cap.md) — chunked since #2503; lower --chunk-size, not --heap
 - [Same-origin href check](project_same-origin-href-check.md) — new URL origin, then re-check the normalised result; tab, %2e (#1315)
 - [Docs-gen reuse + regenerate](project_docs-gen-section-reuse-and-regenerate.md) — checkpoint timing; one-child trim; stage (#1317)
 - [Headless Chrome offline proof](project_headless-chrome-network-lockdown.md) — interception + CSP + launch args; real probe (#1321)
