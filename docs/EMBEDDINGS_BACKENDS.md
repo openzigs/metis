@@ -836,6 +836,35 @@ Projects needing re-ingest: 1/2 (chunker drift — a reindex does NOT fix this)
   [ADR 0006](decisions/0006-chunker-drift-serve-degraded-but-observable.md) for why
   excluding would be strictly worse than the gaps.
 
+## Document chunk size on analyst documents — 2048 stays (#2527)
+
+`DEFAULT_RAG_CHUNK_SIZE` = 2048 with `RAG_CHUNK_OVERLAP` = 256 was re-measured on the
+documents business analysts upload, with the default embedder. The corpus is
+`eval-data/corpus/docretrieval-03-analyst-docs`: fourteen synthetic BRDs, PRDs, FRDs and
+policies, 226 span-anchored queries, pre-registered before authoring. The setup was the
+production hybrid search (dense + BM25 + RRF), `Alibaba-NLP/gte-modernbert-base` (768d, `cls`,
+`q8`), `RAG_RERANK` unset and contextual chunks off.
+
+| arm | nDCG@10 | Δ vs 2048 | 95% CI | sign p | verdict |
+|---|---:|---:|---|---:|---|
+| 2048 / 256 (control) | 0.846 | | | | |
+| 1024 / 256 | 0.830 | −0.015 | [−0.036, +0.005] | 0.312 | NOT-ESTABLISHED |
+| 768 / 192 | 0.797 | −0.049 | [−0.076, −0.022] | 0.000 | DIRECTION-ESTABLISHED-MAGNITUDE-NOT |
+| 3072 / 256 | 0.845 | −0.001 | [−0.003, +0.002] | 0.375 | NOT-ESTABLISHED |
+| 4096 / 256 | 0.845 | −0.001 | [−0.003, +0.002] | 0.375 | NOT-ESTABLISHED |
+
+No arm clears the pre-registered +0.04 floor, and at 226 queries every arm is resolved at that
+floor, so 2048 stays. Smaller chunks retrieve worse on these documents, and chunks larger than
+2048 change almost nothing, because analyst documents are short sections that already fit.
+The earlier METIS-docs measurements (#1160 to #1184) also ran on `gte-modernbert-base`. Nothing
+changes for an operator: there is no new default and nothing to re-index. Detail and the
+decision rule: [ARCHITECTURE.md](ARCHITECTURE.md), "Document-retrieval eval".
+
+The runs did not use the committed CLI itself but a scratch copy, for the reason given under
+contextual chunks below: `pushSchema`'s `prisma db push --accept-data-loss` is refused under an
+AI agent, so the copy builds the throwaway SQLite with `prisma migrate deploy`. Nothing else
+differs.
+
 ## Contextual chunks — measured, ships `off` (#2234, #2473)
 
 `RAG_CONTEXTUAL_CHUNKS` defaults to `off` because neither mode has shown an

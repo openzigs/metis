@@ -2329,6 +2329,42 @@ power-preserving filter, and the harness now prints that disagreement as a findi
 why #1160's headline, which was read off `arm-sensitive ∧ coverage-clean`, was leaning on a
 weaker test than it appeared to be.
 
+**#2527 re-asked the question on analyst documents, and 2048 holds there too, as a resolved
+null.** Both corpora above are METIS's own engineering docs; a business analyst uploads BRDs,
+PRDs, FRDs and policies. `eval-data/corpus/docretrieval-03-analyst-docs` is fourteen synthetic
+analyst documents already in the repo (`brd-01`…`06`, `prd-01`/`02`, the four
+`docunderstanding` FRDs read from `source.docx` through the production Word conversion, and
+`policy-v2.md` of `governing-01`/`02`; 158,140 characters) with **226 span-anchored queries**
+(109 `lexical`, 117 `paraphrase`). The corpus has no `docs/` snapshot: `sources.json` lists
+each document's committed source and pins the text it yields by sha256. The query count, the
++0.04 floor, the arms, the embedder and the decision rule were committed in its
+`PREREGISTRATION.md` before any query was written. Run with
+`pnpm eval:doc-retrieval --corpus docretrieval-03-analyst-docs --extra-sizes 4096` on
+`Alibaba-NLP/gte-modernbert-base` (the default; recorded in the artefact), `RAG_RERANK` unset
+and contextual chunks off. Every arm keeps span coverage at 1.000 with no span dropped or
+straddled.
+
+| arm | chunks | nDCG@10 | Δ vs 2048 | 95% paired CI | sign p | w/l/t | verdict | n for ±0.04 |
+|---|---:|---:|---:|---|---:|---|---|---:|
+| `size-2048` (control) | 242 | **0.846** | — | — | — | — | — | — |
+| `size-1024` | 304 | 0.830 | −0.015 | [−0.036, +0.005] | 0.312 | 20/28/178 | NOT-ESTABLISHED | 60 |
+| `size-768` (overlap clamped to 192) | 365 | 0.797 | −0.049 | [−0.076, −0.022] | 0.000 | 22/54/150 | DIRECTION-ESTABLISHED-MAGNITUDE-NOT | 106 |
+| `size-3072` | 240 | 0.845 | −0.001 | [−0.003, +0.002] | 0.375 | 1/4/221 | NOT-ESTABLISHED | 1 |
+| `size-4096` | 240 | 0.845 | −0.001 | [−0.003, +0.002] | 0.375 | 1/4/221 | NOT-ESTABLISHED | 1 |
+
+Nothing clears +0.04 upward, and every size arm needs at most 106 queries to resolve the floor
+against the 226 run, so **"no chunk size beats 2048 by the floor on analyst documents" is a
+measured claim**. 768 is established worse in direction, though its interval does not reach
+past −0.04. The larger arms barely differ from the control: analyst documents are short
+sections under headings, and `chunkMarkdown` splits on headings first, so 3072 and 4096 cut
+only two fewer chunks than 2048. The overlap ladder at 2048 is a null again (largest effect
++0.002). On the embedder question #2527 raised: #1184's own artefact is not in this
+repository, but the #1183 run it extended, a day earlier on the same harness, is
+(`server/src/lib/eval/provenance/doc-retrieval-chunk-sweep-2026-07-31T20-37-55-374Z.json`), and
+it records `Alibaba-NLP/gte-modernbert-base`, the default since #783. So the METIS-docs
+evidence was measured on today's default too. The default does not change, so no project
+needs re-ingesting.
+
 Cost of ever moving this constant, for the record: it is a **re-ingest, not a reindex** (#1182) —
 `reindex` re-embeds existing chunks and never re-cuts boundaries — and since
 [ADR 0006](decisions/0006-chunker-drift-serve-degraded-but-observable.md) a mixed-generation

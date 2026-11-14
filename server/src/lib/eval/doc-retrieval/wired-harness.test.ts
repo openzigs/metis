@@ -16,6 +16,7 @@ import {
   CHUNK_SIZE_ARMS,
   CONTROL_CHUNK_SIZE,
   overlapArmsFor,
+  parseExtraSizes,
   type ChunkArmResult,
   type ChunkArmSpec,
 } from "./chunk-sweep.js";
@@ -761,6 +762,7 @@ describe("runChunkSweep orchestration", () => {
    */
   const runFake = async (
     rank: (spec: ChunkArmSpec, relevantText: string) => string[],
+    extraSizeArms?: readonly ChunkArmSpec[],
   ): ReturnType<typeof runChunkSweep> => {
     const os = await import("node:os");
     const corpus = await loadDocRetrievalCorpus();
@@ -779,6 +781,7 @@ describe("runChunkSweep orchestration", () => {
       tmpRoot: os.tmpdir(),
       seed: 11,
       resamples: 200,
+      extraSizeArms,
       seedDocuments: async (c, storagePaths) =>
         new Map(c.docs.map((d) => [d.id, `doc-${storagePaths.get(d.id) ?? d.id}`])),
       makeService: (spec) => {
@@ -833,6 +836,29 @@ describe("runChunkSweep orchestration", () => {
   it("profiles the cross-encoder budget through the injected counter, with no model fetch", async () => {
     const report = await runFake((_s, relevant) => [relevant]);
     expect(report.rerankBudget.map((b) => b.chunkSize)).toEqual([768, 1024, 2048, 3072]);
+  }, 60_000);
+
+  /**
+   * #2527 — `--extra-sizes 4096` must run as a real arm: ingested, scored, paired against
+   * the SAME 2048 control and profiled, not silently dropped after parsing. The ranking
+   * stub retrieves perfectly everywhere except at 4096, so the extra arm's own score
+   * proves it was searched rather than copied from another arm.
+   */
+  it("runs an --extra-sizes arm against the same control and profiles it", async () => {
+    const report = await runFake(
+      (spec, relevant) => (spec.chunkSize === 4096 ? ["not the answer"] : [relevant]),
+      parseExtraSizes("4096"),
+    );
+    const extra = report.comparisons.find((c) => c.armId === "size-4096");
+    expect(extra, "size-4096 was not compared").toBeDefined();
+    expect(extra?.chunkSize).toBe(4096);
+    expect(extra?.ndcgAt10).toBe(0);
+    expect(report.control.metrics.ndcgAtK[10]).toBe(1);
+    expect(report.comparisons.map((c) => c.armId)).toEqual([
+      ...CHUNK_SIZE_ARMS.filter((a) => !a.control).map((a) => a.id),
+      "size-4096",
+    ]);
+    expect(report.rerankBudget.map((b) => b.chunkSize)).toEqual([768, 1024, 2048, 3072, 4096]);
   }, 60_000);
 
   /**
