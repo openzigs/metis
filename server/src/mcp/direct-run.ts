@@ -10,7 +10,14 @@
  * `import.meta.url`, which can differ from `argv[1]` when the script is reached
  * through a symlink.
  */
-export function isDirectRun(argv1: string | undefined, server: "metis-index" | "speckit"): boolean {
-  if (argv1 === undefined) return false;
-  return new RegExp(`mcp[\\\\/]${server}[\\\\/]server\\.(?:js|ts)$`).test(argv1);
+const ENTRY_SCRIPTS = {
+  "metis-index": /mcp[\\/]metis-index[\\/]server\.(?:js|ts)$/,
+  speckit: /mcp[\\/]speckit[\\/]server\.(?:js|ts)$/,
+} as const;
+
+export function isDirectRun(
+  argv1: string | undefined,
+  server: keyof typeof ENTRY_SCRIPTS,
+): boolean {
+  return argv1 !== undefined && ENTRY_SCRIPTS[server].test(argv1);
 }
