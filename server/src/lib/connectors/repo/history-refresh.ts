@@ -6,8 +6,8 @@
  * ingest and never delays it (#2484 review).
  *
  *   - `CHAT_CHANGE_HISTORY_TOOL` off (on by default since #2488): any history
- *     on disk is DELETED (the
- *     #2389 review: turning the tool off removes the commit text it kept);
+ *     on disk is DELETED (the #2389 review: turning the tool off removes the
+ *     commit text it kept);
  *   - a `local` / `upload` connector has no history to fetch;
  *   - the history is fetched at the graph's commit, the one the chat citations
  *     of #2325 name, so line ranges mean the same lines; a history already
