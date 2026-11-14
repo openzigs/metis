@@ -20,6 +20,11 @@ export class ReviewDetailPage {
   readonly baselineLink: Locator;
   readonly withdrawButton: Locator;
   readonly withdrawDialog: Locator;
+  /** #2224 — "1 requirement changed since approval." under the header. */
+  readonly outOfDateBanner: Locator;
+  /** #2219 — the header action on an approved review whose pins moved on. */
+  readonly requestReReviewButton: Locator;
+  readonly reReviewDialog: Locator;
 
   constructor(page: Page) {
     this.page = page;
@@ -35,6 +40,14 @@ export class ReviewDetailPage {
       .getByTestId("review-header")
       .getByRole("button", { name: "Withdraw review" });
     this.withdrawDialog = page.getByRole("alertdialog");
+    this.outOfDateBanner = page
+      .getByTestId("review-header")
+      .getByRole("status")
+      .filter({ hasText: /changed since/ });
+    this.requestReReviewButton = page
+      .getByTestId("review-header")
+      .getByRole("button", { name: "Request re-review" });
+    this.reReviewDialog = page.getByRole("alertdialog", { name: /^Request a re-review of/ });
   }
 
   async goto(reviewId: string): Promise<void> {
@@ -77,6 +90,24 @@ export class ReviewDetailPage {
         { timeout: 30_000 },
       ),
       this.withdrawDialog.getByRole("button", { name: "Withdraw review" }).click(),
+    ]);
+  }
+
+  /** #2219 — request a re-review through its confirmation, and wait for the request to settle. */
+  async requestReReview(): Promise<void> {
+    // Asserted first, so a missing action fails within the expect timeout, not the test's.
+    await expect(this.requestReReviewButton).toBeVisible();
+    await this.requestReReviewButton.click();
+    await expect(this.reReviewDialog).toBeVisible();
+    await Promise.all([
+      this.page.waitForResponse(
+        (res) =>
+          res.url().includes("/api/reviews/") &&
+          res.url().endsWith("/reopen") &&
+          res.request().method() === "POST",
+        { timeout: 30_000 },
+      ),
+      this.reReviewDialog.getByRole("button", { name: "Request re-review" }).click(),
     ]);
   }
 
