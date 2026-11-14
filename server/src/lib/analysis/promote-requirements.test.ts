@@ -59,6 +59,8 @@ const db = {
     promotedStructuredRunId: string | null;
     promotedSynthesisKeys: string | null;
   }>,
+  /** #2446 — the stored sources of the findings an appended row cites, by id. */
+  findingSources: {} as Record<string, string | null>,
 };
 
 /**
@@ -125,6 +127,15 @@ vi.mock("../prisma.js", () => {
               if (data.metadata !== undefined) stagedMetadata = data.metadata;
               return { metadata: stagedMetadata ?? db.analysis?.metadata ?? null };
             }),
+          },
+          // #2446 — an appended row reads its evidence findings' sources;
+          // this fake records none (real SQLite: source-provenance-2446).
+          finding: {
+            findMany: vi.fn(async ({ where }: { where: { id: { in: string[] } } }) =>
+              where.id.in
+                .filter((id) => id in db.findingSources)
+                .map((id) => ({ id, sourceIds: db.findingSources[id] ?? null })),
+            ),
           },
           requirement: {
             findFirst: requirementFindFirst,
@@ -213,6 +224,7 @@ beforeEach(() => {
   committed.failCreateAt = 0;
   committed.creates = 0;
   committed.createdData = [];
+  db.findingSources = {};
   db.pairingRows = [];
   txChain = Promise.resolve();
   lastTx = null;
@@ -1894,5 +1906,31 @@ describe("#2449 — a reviewed set writes the elicited NFRs its checkpoint liste
       verdict: "could-not-verify",
     });
     expect(JSON.parse(data.labels as string)).toEqual(["elicited-nfr", "finding:f_1"]);
+  });
+
+  it("#2446 — an appended row records the sources of the findings it cites, else none", async () => {
+    db.requirementCount = 1;
+    db.analysis = {
+      projectId: PROJECT_ID,
+      metadata: JSON.stringify({ promotedStructuredIds: ["REQ-1"] }),
+    };
+    db.findingSources = { f_1: JSON.stringify({ documentIds: ["d-1"], chunkIds: ["c-1"] }) };
+    await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true });
+    const written = () =>
+      (lastTx!.requirement.create.mock.calls[0]?.[0] as { data: Record<string, unknown> }).data;
+    expect(JSON.parse(written().sourceIds as string)).toEqual({
+      documentIds: ["d-1"],
+      chunkIds: ["c-1"],
+    });
+
+    // A finding with no record (written before #2446): the row records none.
+    vi.clearAllMocks();
+    db.analysis = {
+      projectId: PROJECT_ID,
+      metadata: JSON.stringify({ promotedStructuredIds: ["REQ-1"] }),
+    };
+    db.findingSources = { f_1: null };
+    await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true });
+    expect(written()).toHaveProperty("sourceIds", null);
   });
 });

@@ -47,6 +47,9 @@ vi.mock("../prisma.js", () => ({
     $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) =>
       fn((await import("../prisma.js")).prisma),
     ),
+    // #2446 — a requirement reads its evidence findings' sources; this fake
+    // records none (real SQLite: tests/source-provenance-2446.sqlite.test.ts).
+    finding: { findMany: vi.fn(async () => []) },
     requirement: {
       count: vi.fn(async () => 0),
       deleteMany: vi.fn(async ({ where }: { where: { analysisId: string } }) => {

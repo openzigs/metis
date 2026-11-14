@@ -14,6 +14,7 @@ import {
   createMigratedSqlite,
   type MigratedSqlite,
   MIGRATED_SQLITE_HOOK_TIMEOUT_MS,
+  onSeededColumns,
 } from "./helpers/sqlite-migrated-db.js";
 
 const MIGRATION = "20261125002341_issue2341_change_request_title";
@@ -106,8 +107,16 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(run()).toEqual(seeded);
 
         sqlite.applyRemaining();
-        expect(columns()).toEqual([...columnsBefore, "title", "titleGenerated"]);
-        expect(run()).toEqual({ ...seeded, title: null, titleGenerated: 0 });
+        // A later migration may add a column of its own (#2446: `sourceAccess`).
+        const reapplied = { ...seeded, title: null, titleGenerated: 0 };
+        expect(columns().slice(0, columnsBefore.length + 2)).toEqual([
+          ...columnsBefore,
+          "title",
+          "titleGenerated",
+        ]);
+        expect(onSeededColumns({ analyses: [run()] }, { analyses: [reapplied] })).toEqual({
+          analyses: [reapplied],
+        });
       },
       MIGRATED_SQLITE_HOOK_TIMEOUT_MS,
     );

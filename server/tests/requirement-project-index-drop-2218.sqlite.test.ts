@@ -16,6 +16,7 @@ import {
   createMigratedSqlite,
   type MigratedSqlite,
   MIGRATED_SQLITE_HOOK_TIMEOUT_MS,
+  onSeededColumns,
 } from "./helpers/sqlite-migrated-db.js";
 
 const MIGRATION = "20261122002218_issue2218_drop_requirement_project_index";
@@ -111,7 +112,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
 
         sqlite.applyRemaining();
         expect(indexes()).not.toContain(DROPPED);
-        expect(rows()).toEqual(seeded);
+        // A later migration may add a column of its own (#2446: `sourceIds`).
+        expect(
+          onSeededColumns({ requirements: rows() }, { requirements: seeded as unknown[] }),
+        ).toEqual({ requirements: seeded });
       },
       MIGRATED_SQLITE_HOOK_TIMEOUT_MS,
     );
