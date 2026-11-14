@@ -57,7 +57,7 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Docs-gen drop retry + ledger](project_docs-gen-drop-retry-and-ledger.md) — 2 drop checks; wrap test providers
 - [Prisma on SQLite + Postgres](project_prisma-cross-database.md) — LOWER() not mode:insensitive; PG suite step; re-read after lock
 - [METIS markers: two matchers](project_metis-marker-matchers-grep-exact-strings.md) — variant fix: grep every exact metis: match
-- [Requirement writers + re-sync](project_requirement-history-writers-and-resync.md) — actorId null; expectedVersion; no-bump decisions (#1222)
+- [Requirement writers + re-sync](project_requirement-history-writers-and-resync.md) — actorId null; expectedVersion; answer=stale edit (#2429)
 - [Widening access to members](project_membership-access-widening-checklist.md) — live-user lists; revocation points; audit names (#1233)
 - [Reader BRD traps](project_reader-brd-traps.md) — prompt override; opener regex; per-run rows; synth records (#1228)
 - [Chat withholding + retry](project_chat-tool-withholding-and-stream-retry.md) — first-send session; lookup before gate (#1234)

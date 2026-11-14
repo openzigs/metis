@@ -50,6 +50,10 @@ Related: [[metis-marker-matchers-grep-exact-strings]], [[requirement-version-his
 - A version row makes a state restorable only if a row exists for that state: the restore route rejects version 0, and `restoreOnce` needs an exact version row. A "keep it in History" fix must write the kept state as its own version >= 1 and test a real restore.
 - Any "did re-synthesis change it?" check that compares LLM output exactly fires on nearly every run: synthesis criteria for the same requirement are never byte-identical (wording, count and cited lines vary across six Miniflux analyses). Test such a comparison against stored output, and expect normalisation alone not to be enough.
 
+**Added 2026-11-14 (#2429, PR #2497):**
+- "Was this edited by a person" differs per rule. #769's guard reads only `actorId`. #2222's staleness (`firstPersonVersions`) also reads reason `ANSWERED_CLARIFICATION_VERSION_REASON`: an answer written by the clarify routes onto rows that already exist. Keep the actor null, or one answer freezes re-synthesis.
+- Answers written at promotion or on a re-run's re-created rows keep `CLARIFICATION_VERSION_REASON`: the analysis's own writing.
+
 **Folded here (retired from the index 2026-10-21; files unchanged):**
 
 - [[requirement-version-history-is-incomplete]] — Version history has gaps: some writers skip rows; reversed≠pinned (#1162)
