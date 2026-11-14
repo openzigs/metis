@@ -1127,6 +1127,10 @@ export function impactAnalysisRouter(deps: UsageClassificationRouterDeps = {}): 
         id: result.id,
         status: result.status as CreateImpactAnalysisResponse["status"],
         projectIds,
+        // #2447 — the starter is told how many were left out, never which.
+        ...(changeRequest && changeRequest.restrictedLeftOut > 0
+          ? { requirementsLeftOut: changeRequest.restrictedLeftOut }
+          : {}),
       };
       res.status(202).json(ok(payload));
     } catch (err) {

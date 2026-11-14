@@ -113,6 +113,8 @@ export const PORTFOLIO_STATEMENT_MAX_CHARS = 8_000;
  * - `section-unread` — a document section the model could not read.
  * - `quote-not-found` — statements the model read that were dropped: their quote is not in the document.
  * - `budget` — the check's budget ran out before some repositories were checked for it.
+ * - `restricted-source` — #2447: requirements of a change request resting on a
+ *   document its starter cannot see, left out of the check. Counts only.
  */
 export const PORTFOLIO_NOT_CHECKED_REASONS = [
   "over-limit",
@@ -120,6 +122,7 @@ export const PORTFOLIO_NOT_CHECKED_REASONS = [
   "section-unread",
   "quote-not-found",
   "budget",
+  "restricted-source",
 ] as const;
 export type PortfolioNotCheckedReason = (typeof PORTFOLIO_NOT_CHECKED_REASONS)[number];
 
@@ -154,7 +157,23 @@ export function portfolioNotCheckedText(
       return `Not checked: ${n} statement${n === 1 ? " was" : "s were"} dropped because ${n === 1 ? "its" : "their"} quote is not in the document.`;
     case "budget":
       return `Not checked in ${n} ${n === 1 ? "repository" : "repositories"}: the check's budget ran out first.`;
+    case "restricted-source":
+      return n === 1
+        ? "Not checked: it rests on a document the person who started this check cannot see."
+        : "Not checked: they rest on documents the person who started this check cannot see.";
   }
+}
+
+/**
+ * #2447 — the one line a check started from a change request shows its starter
+ * when requirements resting on a document they cannot see were left out of it.
+ * `null` when none was. Counts only: it never names a requirement.
+ */
+export function restrictedRequirementsLeftOutSentence(count: number): string | null {
+  if (!Number.isInteger(count) || count <= 0) return null;
+  return count === 1
+    ? "1 requirement was left out: it rests on a document you can't see."
+    : `${count} requirements were left out: they rest on documents you can't see.`;
 }
 
 /**

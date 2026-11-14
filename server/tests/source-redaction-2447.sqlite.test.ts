@@ -97,7 +97,10 @@ const { getAnalysisSnapshot, loadFindingForDeepDive } =
   await import("../src/lib/analysis/analysis-service.js");
 const { userSourceReader, sharedSourceReader } =
   await import("../src/lib/analysis/source-redaction.js");
-const { loadChangeRequestSource } = await import("../src/lib/analysis/change-request-source.js");
+const { loadChangeRequestSource, restrictedNotChecked } =
+  await import("../src/lib/analysis/change-request-source.js");
+const { visibleTitleMatches } =
+  await import("../src/lib/requirements/project-requirements-list.js");
 const { loadApprovedRequirements, SpecKitRequirementSeedError } =
   await import("../src/lib/spec-kit/requirements-seed.js");
 const { loadReadableSourceRequirement } = await import("../src/lib/portfolio/gap-engine.js");
@@ -556,6 +559,30 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         ]);
       });
 
+      it("a capped title search fills its page from what Bob can see", async () => {
+        // The restricted match is the newest, so it takes the one place a cap
+        // of 1 leaves when the cap is applied before the redaction.
+        const before = await db.requirement.findUniqueOrThrow({
+          where: { id: "req-2447-secret" },
+          select: { updatedAt: true },
+        });
+        await db.requirement.update({
+          where: { id: "req-2447-secret" },
+          data: { updatedAt: new Date(Date.now() + 60_000) },
+        });
+        try {
+          const bob = await visibleTitleMatches(P, "Payroll", userSourceReader("bob"), 1);
+          expect(bob).toEqual({ ids: ["req-2447-legacy"], capped: false });
+          const alice = await visibleTitleMatches(P, "Payroll", userSourceReader("alice"), 1);
+          expect(alice).toEqual({ ids: ["req-2447-secret"], capped: true });
+        } finally {
+          await db.requirement.update({
+            where: { id: "req-2447-secret" },
+            data: { updatedAt: before.updatedAt },
+          });
+        }
+      });
+
       it("every /api/requirements/:id route answers 404 to Bob, as for an unknown id", async () => {
         const bob = await get("bob", "/api/requirements/req-2447-secret/history/export");
         const unknown = await get("bob", "/api/requirements/req-2447-nope/history/export");
@@ -617,6 +644,18 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(bob.text).not.toContain("Payroll");
         const alice = await tool.exec({ analysisId: CR }, ctx("alice"));
         expect(alice.text).toContain(SECRET);
+      });
+
+      it("get_analysis on a shared surface reads as the whole audience, not the asker", async () => {
+        const tool = createGetAnalysisTool();
+        for (const who of ["alice", "root"] as const) {
+          const shared = await tool.exec(
+            { analysisId: CR },
+            { ...ctx(who), aclAudience: "shared" as const },
+          );
+          expect(shared.text).toContain("[finding:f-secret]");
+          expect(shared.text).not.toContain("Payroll");
+        }
       });
 
       it("the requirement tools list it as the placeholder and refuse to read it", async () => {
@@ -686,6 +725,21 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(shared.requirements.map((r) => r.id)).not.toContain("req-2447-secret");
       });
 
+      it("says how many requirements were left out, never which", async () => {
+        const bob = await loadChangeRequestSource(CR, async () => true, userSourceReader("bob"));
+        expect(bob.restrictedLeftOut).toBe(1);
+        expect(restrictedNotChecked(bob)).toEqual([
+          { text: "1 requirement", reason: "restricted-source", count: 1 },
+        ]);
+        const alice = await loadChangeRequestSource(
+          CR,
+          async () => true,
+          userSourceReader("alice"),
+        );
+        expect(alice.restrictedLeftOut).toBe(0);
+        expect(restrictedNotChecked(alice)).toEqual([]);
+      });
+
       it("a portfolio check of a restricted requirement is not found for Bob", async () => {
         await expect(
           loadReadableSourceRequirement(payload("bob"), "req-2447-secret"),
@@ -702,6 +756,13 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           request(app()).post("/api/impact-analyses").set("Authorization", bearer(who)).send(body);
         const fromCr = await post("bob", { analysisId: CR, projectIds: [P] });
         expect(fromCr.status).toBe(202);
+        // #2447 — the starter is told how many were left out, never which.
+        expect(fromCr.body.data.requirementsLeftOut).toBe(1);
+        expect(JSON.stringify(fromCr.body)).not.toContain("req-2447-secret");
+        const aliceCr = await post("alice", { analysisId: CR, projectIds: [P] });
+        expect(aliceCr.body.data).not.toHaveProperty("requirementsLeftOut");
+        triggerSpy.mockClear();
+        await post("bob", { analysisId: CR, projectIds: [P] });
         expect(triggerSpy.mock.calls[0]![0].requirementIds.sort()).toEqual([
           "req-2447-open",
           "req-2447-run",

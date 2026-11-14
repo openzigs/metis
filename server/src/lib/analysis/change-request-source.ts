@@ -10,6 +10,7 @@
  * its project), live, and not rejected or deferred: a rejected requirement is
  * not part of the change, a deferred one not part of this change.
  */
+import type { PortfolioNotChecked } from "@metis/shared";
 import { AppError } from "../../middleware/error-handler.js";
 import { prisma } from "../prisma.js";
 import { clampTitle, sourcelessRunTitle } from "./change-request.js";
@@ -30,6 +31,11 @@ export interface ChangeRequestSource {
   projectId: string;
   title: string;
   requirements: ChangeRequestRequirement[];
+  /**
+   * #2447 — how many requirements were left out because they rest on a source
+   * the reader cannot see. A count only: never which.
+   */
+  restrictedLeftOut: number;
 }
 
 /** The review statuses whose requirements a change request's checks include. */
@@ -73,6 +79,7 @@ export async function loadChangeRequestSource(
     id: run.id,
     projectId: run.projectId,
     title: run.title?.trim() ? clampTitle(run.title) : sourcelessRunTitle(run.startedAt),
+    restrictedLeftOut: restricted.size,
     requirements: rows
       .filter((r) => !restricted.has(r.id))
       .map((r) => ({
@@ -100,6 +107,22 @@ export async function readableChangeRequest(
     select: { id: true, projectId: true, title: true, startedAt: true },
   });
   return run && (await canReadProject(run.projectId)) ? run : null;
+}
+
+/**
+ * #2447 — the not-checked entry a portfolio check records for the requirements
+ * left out because its starter cannot see their sources: a count, never a title.
+ */
+export function restrictedNotChecked(source: ChangeRequestSource): PortfolioNotChecked[] {
+  const n = source.restrictedLeftOut;
+  if (n <= 0) return [];
+  return [
+    {
+      text: n === 1 ? "1 requirement" : `${n} requirements`,
+      reason: "restricted-source",
+      count: n,
+    },
+  ];
 }
 
 /** A change request with no requirement to check is a 400, said in words. */

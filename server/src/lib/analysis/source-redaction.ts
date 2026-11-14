@@ -43,8 +43,10 @@ import {
 } from "@metis/shared";
 import type { PrismaClient } from "@prisma/client";
 import { prisma as defaultPrisma } from "../prisma.js";
+import { audit } from "../audit/audit-service.js";
 import {
   InactiveAclActorError,
+  isAdminBypass,
   isVisibleTo,
   parseAclSubjects,
   resolveAclActor,
@@ -66,6 +68,17 @@ export type SourceReader = AclActor | (() => Promise<AclActor>);
 /** The reader `userId`, resolved from durable state only when it is needed. */
 export function userSourceReader(userId: string): SourceReader {
   return () => resolveAclActor(userId);
+}
+
+/**
+ * The reader of a chat tool's result: the session's user, or the whole audience
+ * of a shared surface (a discussion thread, `aclAudience: "shared"`), which
+ * sees no restricted source. Every chat tool that reads analysis output uses it.
+ */
+export function chatToolReader(ctx: { userId: string; aclAudience?: "shared" }): SourceReader {
+  return ctx.aclAudience === "shared"
+    ? sharedSourceReader(ctx.userId)
+    : userSourceReader(ctx.userId);
 }
 
 /**
@@ -169,12 +182,18 @@ export async function loadSourceGuard(
 
   let needsActor = false;
   const documentIds = new Set<string>();
+  // Each cited document, by the projects of the runs citing it.
+  const citedIn = new Map<string, Set<string>>();
   for (const row of rows) {
     const run = runs.get(row.analysisId);
     if (!run || run.sourceAccess === null) continue;
     const sources = parseSourceIds(row.sourceIds);
-    if (sources) for (const id of sources.documentIds) documentIds.add(id);
-    else if (run.sourceAccess !== SOURCE_ACCESS_SHARED) needsActor = true;
+    if (sources) {
+      for (const id of sources.documentIds) {
+        documentIds.add(id);
+        citedIn.set(id, (citedIn.get(id) ?? new Set()).add(run.projectId));
+      }
+    } else if (run.sourceAccess !== SOURCE_ACCESS_SHARED) needsActor = true;
   }
 
   const documents = new Map<string, GuardDocument>();
@@ -198,7 +217,39 @@ export async function loadSourceGuard(
       if (!(err instanceof InactiveAclActorError)) throw err;
     }
   }
+  if (actor) auditAdminBypass(actor, citedIn, documents);
   return sourceGuardOf({ runs, documents, actor });
+}
+
+/**
+ * #2297 — an admin is shown the rows resting on a restricted document only
+ * through the access-list bypass (no subject names them): record which
+ * documents, per project, as the document reader does. Only a document of the
+ * project of a run read counts (one elsewhere hides its row). Never throws.
+ */
+function auditAdminBypass(
+  actor: AclActor,
+  citedIn: ReadonlyMap<string, ReadonlySet<string>>,
+  documents: ReadonlyMap<string, GuardDocument>,
+): void {
+  const bypassed = new Map<string, string[]>();
+  for (const [id, doc] of documents) {
+    if (!citedIn.get(id)?.has(doc.projectId)) continue;
+    if (!isAdminBypass({ subjects: doc.subjects }, actor)) continue;
+    bypassed.set(doc.projectId, [...(bypassed.get(doc.projectId) ?? []), id]);
+  }
+  for (const [projectId, documentIds] of bypassed) {
+    try {
+      audit({
+        actor: { id: actor.userId },
+        action: "analysis.source_redaction.acl_bypass",
+        target: { type: "project", id: projectId },
+        metadata: { reason: "adminBypass", role: actor.role, documentIds },
+      });
+    } catch {
+      // An audit failure must never break the read.
+    }
+  }
 }
 
 // ── The placeholders ──────────────────────────────────────────────────────

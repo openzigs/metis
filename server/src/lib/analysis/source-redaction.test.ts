@@ -12,6 +12,9 @@ import {
   type CrossDocFinding,
 } from "@metis/shared";
 import { InactiveAclActorError, sharedAudienceActor, type AclActor } from "../rag/acl.js";
+
+const auditSpy = vi.hoisted(() => vi.fn());
+vi.mock("../audit/audit-service.js", () => ({ audit: auditSpy }));
 import {
   loadSourceGuard,
   redactAnalysisSnapshot,
@@ -218,6 +221,63 @@ describe("loadSourceGuard (#2447)", () => {
     expect(reader).toHaveBeenCalledTimes(1);
     expect(guard.canSee(rows[0]!)).toBe(false); // d0 is restricted to alice
     expect(guard.canSee(rows[1]!)).toBe(true);
+  });
+
+  it("audits an admin shown a restricted document's rows through the bypass (#2297)", async () => {
+    auditSpy.mockClear();
+    const { db } = fakeDb(
+      [
+        { id: "a", projectId: "p1", sourceAccess: "shared" },
+        { id: "b", projectId: "p2", sourceAccess: "shared" },
+      ],
+      [
+        { id: "d1", projectId: "p1", aclSubjects: RESTRICTED_ACL },
+        { id: "d2", projectId: "p1", aclSubjects: "[]" },
+        {
+          id: "d3",
+          projectId: "p1",
+          aclSubjects: JSON.stringify([{ kind: "role", value: "admin" }]),
+        },
+        { id: "d4", projectId: "p2", aclSubjects: RESTRICTED_ACL },
+        // Cited by a run of another project: the row is hidden, not bypassed.
+        { id: "d5", projectId: "p9", aclSubjects: RESTRICTED_ACL },
+      ],
+    );
+    const rows = [
+      { analysisId: "a", sourceIds: ids(["d1", "d2", "d3"]) },
+      { analysisId: "b", sourceIds: ids(["d4"]) },
+      { analysisId: "a", sourceIds: ids(["d5"]) },
+    ];
+    const guard = await loadSourceGuard(ADMIN, rows, db);
+    expect(rows.map((r) => guard.canSee(r))).toEqual([true, true, false]);
+    // Only what no subject names the admin on (d3 names their role), per project.
+    expect(auditSpy.mock.calls.map(([e]) => e)).toEqual([
+      {
+        actor: { id: "root" },
+        action: "analysis.source_redaction.acl_bypass",
+        target: { type: "project", id: "p1" },
+        metadata: { reason: "adminBypass", role: "admin", documentIds: ["d1"] },
+      },
+      {
+        actor: { id: "root" },
+        action: "analysis.source_redaction.acl_bypass",
+        target: { type: "project", id: "p2" },
+        metadata: { reason: "adminBypass", role: "admin", documentIds: ["d4"] },
+      },
+    ]);
+
+    // A reader named on the list, the shared audience, or an open document: no row.
+    auditSpy.mockClear();
+    await loadSourceGuard(ALICE, rows, db);
+    await loadSourceGuard(sharedSourceReader(), rows, db);
+    await loadSourceGuard(ADMIN, [{ analysisId: "a", sourceIds: ids(["d2"]) }], db);
+    expect(auditSpy).not.toHaveBeenCalled();
+
+    // An audit failure never breaks the read.
+    auditSpy.mockImplementationOnce(() => {
+      throw new Error("audit down");
+    });
+    await expect(loadSourceGuard(ADMIN, rows, db)).resolves.toBeDefined();
   });
 
   it("restrictedIds names the rows the reader cannot see, and reads nothing for none", async () => {

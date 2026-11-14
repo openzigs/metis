@@ -9,13 +9,15 @@
 
 import { useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type {
-  CreateImpactAnalysisInput,
-  ImpactAnalysisDetail,
-  ImpactAnalysisSummary,
-  ImpactDriftReport,
-  ImpactTableFeedbackInput,
-  ImpactTableFeedbackView,
+import {
+  restrictedRequirementsLeftOutSentence,
+  type CreateImpactAnalysisInput,
+  type CreateImpactAnalysisResponse,
+  type ImpactAnalysisDetail,
+  type ImpactAnalysisSummary,
+  type ImpactDriftReport,
+  type ImpactTableFeedbackInput,
+  type ImpactTableFeedbackView,
 } from "@metis/shared";
 import { impactAnalysisApi, type ImpactRerunResponse } from "@/lib/impact-analysis-api";
 import { fetchApiEdgeImpact, fetchCrossProjectImpact } from "@/lib/cross-project-api";
@@ -128,12 +130,24 @@ export function useImpactAnalysis(id: string | null | undefined) {
   return query;
 }
 
+/**
+ * #2447 — the toast a started run shows: with, for a run started from a change
+ * request, how many of its requirements were left out because the starter
+ * cannot see their sources. A count only.
+ */
+export function impactStartedMessage(
+  data: Pick<CreateImpactAnalysisResponse, "requirementsLeftOut">,
+): string {
+  const leftOut = restrictedRequirementsLeftOutSentence(data.requirementsLeftOut ?? 0);
+  return leftOut ? `Impact analysis started. ${leftOut}` : "Impact analysis started";
+}
+
 /** Trigger a new multi-project impact analysis and refresh the list. */
 export function useCreateImpactAnalysis() {
   // #241 — surface success/error toasts; #242 — invalidate the list on success.
   return useAppMutation({
     mutationFn: (input: CreateImpactAnalysisInput) => impactAnalysisApi.create(input),
-    successMessage: "Impact analysis started",
+    successMessage: impactStartedMessage,
     invalidateKeys: [impactAnalysisKeys.list()],
   });
 }

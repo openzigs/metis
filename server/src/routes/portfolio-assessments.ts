@@ -93,6 +93,7 @@ import type { ReadStoredFile } from "../lib/impact-analysis/document-source.js";
 import { buildProvider } from "../lib/ai/providers/factory.js";
 import {
   assertHasRequirements,
+  restrictedNotChecked,
   changeRequestRef,
   loadChangeRequestSource,
   readableChangeRequest,
@@ -292,7 +293,8 @@ async function gapInputFor(
         sourceProjectId: changeRequest.projectId,
         ...scoped,
       }),
-      notChecked: criteria.notChecked,
+      // #2447 — the requirements left out for their sources, counted.
+      notChecked: [...restrictedNotChecked(changeRequest), ...criteria.notChecked],
       documentId: null,
       analysisId: changeRequest.id,
       preApproval: changeRequest.requirements.some((r) => !r.approved),

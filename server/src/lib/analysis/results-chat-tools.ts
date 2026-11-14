@@ -54,7 +54,7 @@ import {
   type RoleKey,
 } from "@metis/shared";
 import { prisma } from "../prisma.js";
-import { loadSourceGuard, sharedSourceReader, userSourceReader } from "./source-redaction.js";
+import { chatToolReader, loadSourceGuard } from "./source-redaction.js";
 import type { ToolContext, ToolDefinition, ToolResult } from "../ai/types.js";
 import { AppError } from "../../middleware/error-handler.js";
 import { resolveDurableRole } from "../auth/durable-roles.js";
@@ -341,15 +341,10 @@ export function createGetAnalysisTool(
         analysisId: a.id,
         sourceIds: row.sourceIds,
       });
-      const guard = await loadSourceGuard(
-        ctx.aclAudience === "shared"
-          ? sharedSourceReader(ctx.userId)
-          : userSourceReader(ctx.userId),
-        [
-          ...a.agentResults.flatMap((r) => r.findings.map(guarded)),
-          ...a.crossDocFindings.map(guarded),
-        ],
-      );
+      const guard = await loadSourceGuard(chatToolReader(ctx), [
+        ...a.agentResults.flatMap((r) => r.findings.map(guarded)),
+        ...a.crossDocFindings.map(guarded),
+      ]);
       const findingRows = a.agentResults.flatMap((r) =>
         r.findings.map(({ sourceIds, ...f }) =>
           guard.canSee(guarded({ sourceIds }))

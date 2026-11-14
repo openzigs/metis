@@ -11,3 +11,5 @@ section: Security
   checked or used to start a Spec Kit feature, and a title search does not find it. Analyses that
   recorded no sources (those run before this release) keep today's rule, where everything in a
   result is shared with the whole project.
+- A check started from a change request says how many requirements it left out for their sources,
+  never which; an admin shown a restricted row is recorded in the audit log.

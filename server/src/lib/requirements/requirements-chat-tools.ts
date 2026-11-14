@@ -48,12 +48,7 @@ import { getRequirementChain } from "../traceability/traceability-spine.js";
 import { reciprocalRankFusion } from "../rag/bm25-index.js";
 import { createChildLogger } from "../logger.js";
 import { findNearestRequirements } from "./requirement-embeddings.js";
-import {
-  restrictedIds,
-  sharedSourceReader,
-  userSourceReader,
-  type SourceReader,
-} from "../analysis/source-redaction.js";
+import { restrictedIds, chatToolReader } from "../analysis/source-redaction.js";
 
 const log = createChildLogger("requirements-chat-tools");
 
@@ -98,16 +93,6 @@ export interface RequirementToolsDeps {
    * (`restrictedIds`). Defaults to the real filter over the database.
    */
   restricted?: typeof restrictedIds;
-}
-
-/**
- * #2447 — who reads a tool's result: the session's user, or the whole audience
- * of a shared surface (a discussion thread), which sees no restricted source.
- */
-function toolReader(ctx: { userId: string; aclAudience?: "shared" }): SourceReader {
-  return ctx.aclAudience === "shared"
-    ? sharedSourceReader(ctx.userId)
-    : userSourceReader(ctx.userId);
 }
 
 const defaultSemantic: SemanticRequirementSearch = (projectId, query, limit) =>
@@ -318,7 +303,7 @@ export function createListRequirementsTool(
       // #2447 — a requirement the reader cannot see a source of is listed as
       // its placeholder, and never matched by words, meaning or label: a match
       // would tell them what its hidden text holds.
-      const restricted = await (deps.restricted ?? restrictedIds)(toolReader(ctx), rows);
+      const restricted = await (deps.restricted ?? restrictedIds)(chatToolReader(ctx), rows);
       const eligible: Eligible[] = [];
       for (const r of rows) {
         const status = resolveRequirementReviewStatus(
@@ -473,7 +458,7 @@ export function createGetRequirementTool(
           isError: true,
         };
       }
-      if ((await (deps.restricted ?? restrictedIds)(toolReader(ctx), [r])).size > 0) {
+      if ((await (deps.restricted ?? restrictedIds)(chatToolReader(ctx), [r])).size > 0) {
         return {
           text: `ERROR: Requirement ${r.id} draws on sources the user does not have access to, so it cannot be read.`,
           isError: true,

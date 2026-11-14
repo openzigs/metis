@@ -129,17 +129,16 @@ function statusWhere(status: RequirementListStatus): Prisma.RequirementWhereInpu
 }
 
 /**
- * The ids of the project's live requirements whose title contains `q`, any
- * case: at most {@link SEARCH_ID_CAP}, the most recently updated first (the
- * order the list shows), and whether more matched than that.
+ * One page of the ids of the project's live requirements whose title contains
+ * `q`, any case, the most recently updated first (the order the list shows).
  */
 async function idsMatchingTitle(
   projectId: string,
   q: string,
-): Promise<{ ids: string[]; capped: boolean }> {
+  limit: number,
+  offset: number,
+): Promise<string[]> {
   const pattern = `%${escapeLike(q)}%`;
-  // One past the cap, to tell "exactly the cap" from "more than it".
-  const limit = SEARCH_ID_CAP + 1;
   const rows =
     resolveDatabaseProvider() === "postgresql"
       ? await prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
@@ -148,7 +147,7 @@ async function idsMatchingTitle(
             AND "deletedAt" IS NULL
             AND "title" ILIKE ${pattern}
           ORDER BY "updatedAt" DESC, "id" ASC
-          LIMIT ${limit}
+          LIMIT ${limit} OFFSET ${offset}
         `)
       : await prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
           SELECT "id" FROM "requirements"
@@ -156,33 +155,49 @@ async function idsMatchingTitle(
             AND "deletedAt" IS NULL
             AND "title" LIKE ${pattern} ESCAPE '\\'
           ORDER BY "updatedAt" DESC, "id" ASC
-          LIMIT ${limit}
+          LIMIT ${limit} OFFSET ${offset}
         `);
-  return {
-    ids: rows.slice(0, SEARCH_ID_CAP).map((r) => r.id),
-    capped: rows.length > SEARCH_ID_CAP,
-  };
+  return rows.map((r) => r.id);
 }
 
+/** Pages a title search reads before it calls itself capped. */
+const SEARCH_MAX_PAGES = 4;
+
 /**
- * #2447 — a title search answers only with requirements the reader can see:
- * a restricted one listed as its placeholder would still tell them its hidden
- * title holds the words they searched for.
+ * The ids of the project's live requirements whose title contains `q` that
+ * `reader` can see: at most `cap`, in the list's order, and whether more
+ * matched than that.
+ *
+ * #2447 — a title search answers only with requirements the reader can see: a
+ * restricted one listed as its placeholder would still tell them its hidden
+ * title holds the words they searched for. The redaction runs BEFORE the cap,
+ * page by page, so hidden matches never take a visible one's place. After
+ * {@link SEARCH_MAX_PAGES} pages it stops and says it is capped. Exported for
+ * its test.
  */
-async function visibleMatches(
+export async function visibleTitleMatches(
   projectId: string,
-  search: { ids: string[]; capped: boolean },
+  q: string,
   reader: SourceReader,
+  cap: number = SEARCH_ID_CAP,
 ): Promise<{ ids: string[]; capped: boolean }> {
-  if (search.ids.length === 0) return search;
-  const rows = await prisma.requirement.findMany({
-    where: { projectId, id: { in: search.ids } },
-    select: { id: true, analysisId: true, sourceIds: true },
-  });
-  const hidden = await restrictedIds(reader, rows);
-  return hidden.size === 0
-    ? search
-    : { ...search, ids: search.ids.filter((id) => !hidden.has(id)) };
+  // One past the cap, to tell "exactly the cap" from "more than it".
+  const pageSize = cap + 1;
+  const visible: string[] = [];
+  for (let page = 0; page < SEARCH_MAX_PAGES; page++) {
+    const ids = await idsMatchingTitle(projectId, q, pageSize, page * pageSize);
+    if (ids.length === 0) return { ids: visible, capped: false };
+    const rows = await prisma.requirement.findMany({
+      where: { projectId, id: { in: ids } },
+      select: { id: true, analysisId: true, sourceIds: true },
+    });
+    const hidden = await restrictedIds(reader, rows);
+    visible.push(...ids.filter((id) => !hidden.has(id)));
+    if (visible.length > cap) return { ids: visible.slice(0, cap), capped: true };
+    if (ids.length < pageSize) return { ids: visible, capped: false };
+  }
+  // Every page read was full: more may match than were read.
+  return { ids: visible.slice(0, cap), capped: true };
 }
 
 /**
@@ -285,9 +300,7 @@ export async function listProjectRequirements(
   // #2447 — the reader the rows are redacted for. A list read with no viewer is
   // read as the shared audience, which sees no restricted source.
   const reader = viewer ? userSourceReader(viewer.userId) : sharedSourceReader();
-  const search = q
-    ? await visibleMatches(projectId, await idsMatchingTitle(projectId, q), reader)
-    : null;
+  const search = q ? await visibleTitleMatches(projectId, q, reader) : null;
   const where: Prisma.RequirementWhereInput = {
     projectId,
     deletedAt: null,
