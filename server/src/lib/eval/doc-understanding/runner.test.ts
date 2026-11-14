@@ -401,7 +401,7 @@ describe("combineReports and rendering", () => {
     rec.diagnostics = { calls: 0, reused: 1, identicalToSaved: 1 };
     rec.costUsd = 0;
     expect(toMarkdownReport(report)).toContain(
-      "Reused the saved reading: 0 reader calls, $0.0000; identical to the reading saved: yes.",
+      "Reused the saved reading: 0 reader calls, $0.0000 in all (the extraction and questions); identical to the reading saved: yes.",
     );
     rec.diagnostics = { calls: 0, reused: 1, identicalToSaved: 0 };
     expect(toMarkdownReport(report)).toContain("identical to the reading saved: no.");
@@ -437,6 +437,55 @@ describe("combineReports and rendering", () => {
     report.arms[0]!.records = [real, again];
     report.arms[0]!.summary = s;
     expect(toMarkdownReport(report)).toMatch(/1 of 2 readings of A were reused.*not counted/);
+  });
+
+  it("#2271 — tallies each arm's questions: asked, ambiguities found, set aside by reason, over the cap", async () => {
+    const report = await run(["d1", "d2"], [fakeArm("A"), fakeArm("B")]);
+    // Arm B stands in for a selecting arm (R): its readings record the selection.
+    const [r1, r2] = report.arms[1]!.records;
+    r1!.diagnostics = { setAsideUnanswerable: 2, setAsideSameOutcome: 1, overCap: 0 };
+    r2!.diagnostics = { setAsideUnanswerable: 0, setAsideSameOutcome: 3, overCap: 4 };
+    // On d2 the question asked matched no labelled ambiguity.
+    r2!.score = { ...r2!.score!, ambiguitiesRaised: 0 };
+    report.arms[1]!.summary = summariseRecords(report.arms[1]!.records);
+    report.arms[1]!.byItem = ["d1", "d2"].map((itemId) => ({
+      itemId,
+      summary: summariseRecords(report.arms[1]!.records.filter((r) => r.itemId === itemId)),
+    }));
+    expect(report.arms[1]!.summary.questionTally).toEqual({
+      asked: 2,
+      ambiguitiesFound: 1,
+      ambiguitiesLabelled: 2,
+      setAsideUnanswerable: 2,
+      setAsideSameOutcome: 4,
+      overCap: 4,
+    });
+    // An arm that asks everything it raises records no selection.
+    expect(report.arms[0]!.summary.questionTally).toMatchObject({
+      asked: 2,
+      setAsideUnanswerable: null,
+      overCap: null,
+    });
+    const md = toMarkdownReport(report);
+    expect(md).toContain("## Questions");
+    expect(md).toContain("| A | 2 | 2 of 2 | n/a | n/a | n/a |");
+    expect(md).toContain("| B | 2 | 1 of 2 | 2 | 4 | 4 |");
+    // Per document too.
+    expect(md).toContain("| B | 1 | 1 of 1 | 2 | 1 | 0 |");
+    expect(md).toContain("| B | 1 | 0 of 1 | 0 | 3 | 4 |");
+    // A reading that did not record the selection makes the total unknown, not smaller.
+    delete r2!.diagnostics.overCap;
+    expect(summariseRecords([r1!, r2!]).questionTally.overCap).toBeNull();
+    // A failed reading counts toward nothing: it asked nothing anyone saw.
+    const failed = { ...r1!, score: null, error: "reader: x" };
+    expect(summariseRecords([failed]).questionTally).toEqual({
+      asked: 0,
+      ambiguitiesFound: 0,
+      ambiguitiesLabelled: 0,
+      setAsideUnanswerable: null,
+      setAsideSameOutcome: null,
+      overCap: null,
+    });
   });
 
   it("says when a run stopped early", async () => {

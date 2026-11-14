@@ -5144,7 +5144,12 @@ ledger-priced with the judge's metered apart (`runner.ts`). The first readings
 (`eval-data/readings/doc-understanding/`) and what follows from them are in
 [DOCUMENT_UNDERSTANDING_BASELINE.md](DOCUMENT_UNDERSTANDING_BASELINE.md): A finds 0.26 of
 the requirements on Sonnet 5.5, B finds all of them. Arm **R** (`--arms R`) runs the
-production document reader below, so its re-measurement is one command.
+production document reader below, so its re-measurement is one command. #2271 — R also asks
+the first round of clarifying questions an analysis would ask about that reading
+(`question-loop.ts`): the source-mode extraction over its statements, then
+`generateClarifyingQuestions` and `selectQuestionsToAsk` (#2235). The report's Questions table
+gives, per arm, the questions asked, the labelled ambiguities found, the questions set aside
+by reason and those over the round's cap.
 
 #### Document reader (#2230, epic #2227) — the model reads a whole document
 

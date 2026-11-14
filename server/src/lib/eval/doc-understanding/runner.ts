@@ -14,6 +14,7 @@ import type { EvalBudget } from "../localization/runner.js";
 import { TokenLedgerMeter } from "../governing/runner.js";
 import type { AIProvider } from "../../ai/types.js";
 import { resolveFinalAnswerMaxOutputTokens } from "../../analysis/agent-runner.js";
+import { MAX_QUESTIONS_PER_ROUND } from "../../analysis/question-selection.js";
 import type { ArmOutput, DocArm } from "./arms.js";
 import { documentKnowledge } from "./arms.js";
 import type { DocUnderstandingItem } from "./corpus.js";
@@ -64,6 +65,21 @@ export const SUMMARY_METRICS = [
 ] as const;
 export type SummaryMetric = (typeof SUMMARY_METRICS)[number];
 
+/**
+ * #2271 — what an arm asked, over its scored readings: totals, not means.
+ * The set-aside and over-cap counts are null for an arm that asks every
+ * question it raises (A, B and C); arm R's question loop selects (#2235).
+ */
+export interface QuestionTally {
+  asked: number;
+  /** Labelled ambiguities some question asked about, and of how many labelled. */
+  ambiguitiesFound: number;
+  ambiguitiesLabelled: number;
+  setAsideUnanswerable: number | null;
+  setAsideSameOutcome: number | null;
+  overCap: number | null;
+}
+
 export interface ArmSummary {
   metrics: Record<SummaryMetric, MetricSummary>;
   extractedPerDocument: number | null;
@@ -83,6 +99,8 @@ export interface ArmSummary {
   readings: number;
   /** #2319 — how many of `readings` came from the saved-reading store, not a model. */
   reusedReadings: number;
+  /** #2271 — questions asked, ambiguities found, set aside by reason and over the cap. */
+  questionTally: QuestionTally;
 }
 
 export interface DocArmReport {
@@ -156,6 +174,23 @@ export function summarise(values: ReadonlyArray<number | null | undefined>): Met
   };
 }
 
+/** A diagnostic's total over `records`; null unless every one of them recorded it. */
+function diagnosticTotal(records: readonly ReadingRecord[], key: string): number | null {
+  if (records.length === 0 || records.some((r) => r.diagnostics[key] === undefined)) return null;
+  return records.reduce((n, r) => n + r.diagnostics[key]!, 0);
+}
+
+function tallyQuestions(scored: readonly ReadingRecord[]): QuestionTally {
+  return {
+    asked: scored.reduce((n, r) => n + r.score!.questions, 0),
+    ambiguitiesFound: scored.reduce((n, r) => n + r.score!.ambiguitiesRaised, 0),
+    ambiguitiesLabelled: scored.reduce((n, r) => n + r.score!.ambiguities, 0),
+    setAsideUnanswerable: diagnosticTotal(scored, "setAsideUnanswerable"),
+    setAsideSameOutcome: diagnosticTotal(scored, "setAsideSameOutcome"),
+    overCap: diagnosticTotal(scored, "overCap"),
+  };
+}
+
 export function summariseRecords(records: readonly ReadingRecord[]): ArmSummary {
   const ok = records.filter((r) => r.error === undefined && r.score !== null);
   const metrics = Object.fromEntries(
@@ -177,6 +212,7 @@ export function summariseRecords(records: readonly ReadingRecord[]): ArmSummary 
     failures: records.length - ok.length,
     readings: records.length,
     reusedReadings: records.length - made.length,
+    questionTally: tallyQuestions(ok),
   };
 }
 
@@ -427,6 +463,24 @@ function metricRow(label: string, s: ArmSummary): string {
   );
 }
 
+const QUESTION_HEADER =
+  "| Arm | Questions asked | Labelled ambiguities found | Set aside: unanswerable | Set aside: same outcome | Over the cap |\n" +
+  "|---|---|---|---|---|---|";
+
+const tallied = (v: number | null): string => (v === null ? "n/a" : String(v));
+
+/** #2271 — one arm's questions: totals over its scored readings. */
+function questionRow(label: string, s: ArmSummary): string {
+  if (s.readings === 0) return `| ${label} | not run |${" |".repeat(4)}`;
+  const t = s.questionTally;
+  return (
+    `| ${label} | ${t.asked} | ${t.ambiguitiesFound} of ${t.ambiguitiesLabelled} | ` +
+    `${tallied(t.setAsideUnanswerable)} | ${tallied(t.setAsideSameOutcome)} | ${tallied(t.overCap)} |`
+  );
+}
+
+const QUESTION_NOTE = `Totals over the scored readings. A labelled ambiguity is found when the judge matches a question asked to it; each counts once per reading. Set aside and over the cap are counted where an arm selects what it asks (R, #2235): it sets aside a question no one can answer yet (unanswerable) or whose readings all build the same thing (same outcome), and asks at most ${MAX_QUESTIONS_PER_ROUND} a round, leaving the rest for the next. Arms A, B and C ask every question they raise, so theirs read n/a.`;
+
 const METRIC_HEADER =
   "| Arm | Requirement recall | Requirement precision | Section coverage | Question precision | Ambiguity recall | Quote accuracy | Requirements / doc | Questions / doc | $ / doc | Tokens in / out per doc | s / doc | Failures |\n" +
   "|---|---|---|---|---|---|---|---|---|---|---|---|---|";
@@ -460,7 +514,7 @@ export function toMarkdownReport(report: DocUnderstandingReport): string {
     if (a.summary.reusedReadings > 0) {
       lines.push("");
       lines.push(
-        `${a.summary.reusedReadings} of ${a.summary.readings} readings of ${a.id} were reused from the saved-reading store (no model call): ` +
+        `${a.summary.reusedReadings} of ${a.summary.readings} readings of ${a.id} were reused from the saved-reading store (no reader call; the extraction and questions after it still ran): ` +
           `their cost, tokens and seconds are not counted in the $ / doc, tokens and s / doc columns above, which average the readings really made. The quality columns count every reading.`,
       );
     }
@@ -469,6 +523,13 @@ export function toMarkdownReport(report: DocUnderstandingReport): string {
   lines.push(
     "Requirement recall and precision, section coverage and ambiguity recall are computed in code from the judge's matching of each extracted requirement to a labelled one and each question to a labelled ambiguity. Question precision is the judge's verdict of \"worth asking\". Quote accuracy is deterministic: requirement quotes found verbatim (whitespace aside) in the converted document; arm A gives no quotes. The cost per document is the reader's alone; the judge's spend is reported apart.",
   );
+  lines.push("");
+  lines.push("## Questions");
+  lines.push("");
+  lines.push(QUESTION_HEADER);
+  for (const a of report.arms) lines.push(questionRow(a.id, a.summary));
+  lines.push("");
+  lines.push(QUESTION_NOTE);
   lines.push("");
   lines.push("## By document");
   for (const doc of report.corpus) {
@@ -485,6 +546,11 @@ export function toMarkdownReport(report: DocUnderstandingReport): string {
       const s = a.byItem.find((b) => b.itemId === doc.id)!.summary;
       lines.push(metricRow(a.id, s));
     }
+    lines.push("");
+    lines.push(QUESTION_HEADER);
+    for (const a of report.arms) {
+      lines.push(questionRow(a.id, a.byItem.find((b) => b.itemId === doc.id)!.summary));
+    }
     for (const a of report.arms) {
       const recs = a.records.filter((r) => r.itemId === doc.id);
       for (const r of recs) {
@@ -496,7 +562,7 @@ export function toMarkdownReport(report: DocUnderstandingReport): string {
         // #2319 — arm R's reading came from the store: say so, what it cost, and whether it matched.
         const saved =
           d.reused === 1
-            ? ` Reused the saved reading: ${d.calls} reader calls, ${usd(r.costUsd)}; identical to the reading saved: ${d.identicalToSaved === 1 ? "yes" : "no"}.`
+            ? ` Reused the saved reading: ${d.calls} reader calls, ${usd(r.costUsd)} in all (the extraction and questions); identical to the reading saved: ${d.identicalToSaved === 1 ? "yes" : "no"}.`
             : "";
         if (r.error) {
           lines.push("");
