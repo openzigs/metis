@@ -1,13 +1,22 @@
 ---
 name: server-typecheck-memory-cap
-description: The server test typecheck (tsconfig.test.json) runs near its Node heap cap; an OOM (exit 134) there is capacity, not a code error (#1308).
+description: The server test typecheck (tsconfig.test.json) runs in chunks since #2503; an OOM (exit 2 naming a chunk) is capacity, not a code error.
 metadata:
   type: project
 ---
 
-Measured on PR #1308 (2026-10-16): `server` `tsconfig.test.json` typecheck peaked at about 8.43 GB on `main`, past the old 8,192 MB `--max-old-space-size`. It failed with exit 134 (V8 out of memory) on a change that added no type errors.
+History: one `tsconfig.test.json` program peaked at ~8.43 GB (#1308), 12.96 GB (#1873) and
+passed the 14,336 MB cap on a 16 GB runner on 2026-11-14 (#2503).
 
-- An OOM there is **capacity**, not a type error. Do not hunt for a type bug.
-- To check whether a change made typechecking heavier, compare the `Types` and `Instantiations` counts from `tsc --extendedDiagnostics`, not `Memory used`, which varies from run to run.
-- The cap is now **14,336 MB**, pinned in `server/tests/typecheck-covers-tests.test.ts`. Raise it there when needed, not only in the script.
-- #1873 (2026-11-08): `main` used 12.96 GB at the 12,288 cap and a +0.3% types change OOMed. On a 16 GB runner, little headroom is left above 14 GB.
+- **Steady growth, not a hot type** (measured on #2503 with `--generateTrace`): Prisma
+  types were 2.1M of 3.5M types in a 157-test sample; every `tests/*.sqlite.test.ts`
+  costs ~170 ms and ~13 MB of its own Prisma instantiations. No file dominated.
+- **Since #2503** `server`'s `typecheck` runs `scripts/typecheck-chunked.mjs`: every
+  non-test root in each chunk, test files dealt round-robin, one chunk per 400 tests,
+  8,192 MB heap each, run in sequence. Measured: 6 chunks, peak RSS 6.4 GB, 3.5 min.
+- **If a chunk OOMs**, lower `--chunk-size` (more chunks), do not raise `--heap`. The
+  script is pinned in `server/tests/typecheck-covers-tests.test.ts`.
+- **Prove coverage** after changing the split: `node ../scripts/typecheck-chunked.mjs
+  -p tsconfig.test.json --list-files` must equal `tsc -p tsconfig.test.json --listFilesOnly`.
+- To check whether a change made typechecking heavier, compare `Types` and
+  `Instantiations` from `tsc --extendedDiagnostics`, not `Memory used`.
