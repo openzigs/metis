@@ -27,7 +27,7 @@ import { requireAuth } from "../../middleware/auth.js";
 import { requirePermission } from "../../middleware/require-permission.js";
 import { requireMfa } from "../../lib/auth/require-mfa.js";
 import { getEmbedder, listBackendDescriptors } from "../../lib/rag/embedder.js";
-import { strictBoolSchema } from "../../lib/config/key-registry.js";
+import { strictBoolSchema } from "../../lib/config/truthy.js";
 import { getKnowledgeService, ReindexConflictError } from "../../lib/rag/knowledge-service.js";
 import {
   defaultMigrationDeps,

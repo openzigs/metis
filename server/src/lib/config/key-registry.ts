@@ -29,7 +29,7 @@ import {
 import { modelPricesSchema } from "../finops/model-prices-schema.js";
 import { MAX_TIMEOUT_MS } from "./env-ms.js";
 import { normaliseOrigin } from "./cors-origins.js";
-import { parseConfigBool } from "./truthy.js";
+import { strictBoolSchema } from "./truthy.js";
 
 export type ConfigTier = "bootstrap" | "secret" | "tunable";
 export type ConfigValueType = "string" | "int" | "bool" | "json" | "csv";
@@ -78,33 +78,6 @@ const csvHostnameSchema = z
     return Array.from(new Set(parts));
   })
   .pipe(z.array(hostnameSchema));
-
-/**
- * #2493 (and #2344's `MCP_REMOTE_ENABLED`) — every `bool` key's write schema.
- * `z.coerce.boolean()` turned any non-empty string, "false" included, into
- * true, so a client writing "false" switched the flag on. This takes exactly
- * the clear spellings the read path (`getBool` → `isTruthyConfigValue`)
- * understands, via {@link parseConfigBool}: a JSON boolean, the number 0 or 1, or `true` /
- * `false` / `1` / `0` / `yes` / `no` / `on` / `off` as a string,
- * case-insensitive and trimmed. Anything else (`""`, whitespace, `null`, other
- * strings and numbers) is refused rather than guessed at. `ConfigService.set`
- * stores the result as `"true"` / `"false"`.
- */
-export const strictBoolSchema = z.union([
-  z.boolean(),
-  z.union([z.literal(0), z.literal(1)]).transform((n) => n === 1),
-  z.string().transform((raw, ctx) => {
-    const b = parseConfigBool(raw);
-    if (b === undefined) {
-      ctx.addIssue({
-        code: "custom",
-        message: "Expected true/false, 1/0, yes/no or on/off",
-      });
-      return z.NEVER;
-    }
-    return b;
-  }),
-]);
 
 /** #2344 — comma-separated http(s) origins (`scheme://host[:port]`), deduped. */
 const csvOriginSchema = z
