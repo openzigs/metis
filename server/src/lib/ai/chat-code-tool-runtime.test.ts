@@ -7,7 +7,7 @@
  * loop — parsed, run against the session project, fed back, then a final answer
  * — with each tool call surfaced as a structured `tool_call`, never raw text.
  */
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildChatCodeToolRuntime,
   runChatCodeToolTurn,
@@ -45,6 +45,15 @@ function scriptedProvider(responses: string[]): {
   } as unknown as AIProvider;
   return { provider, chat };
 }
+
+// #2488 — these tests pin the default tool list, so a developer's own
+// CHAT_CHANGE_HISTORY_TOOL (shell or .env) must not leak in: stub it unset.
+beforeEach(() => {
+  vi.stubEnv("CHAT_CHANGE_HISTORY_TOOL", "");
+});
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 describe("buildChatCodeToolRuntime", () => {
   it("is disabled (no tools, empty schema block) when the flag is off", () => {

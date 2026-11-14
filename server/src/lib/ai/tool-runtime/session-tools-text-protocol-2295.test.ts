@@ -5,7 +5,7 @@
  * measured, so there they stay off unless the deployment sets
  * `CHAT_CODE_SEARCH_TOOLS=true`.
  */
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../prisma.js", () => ({ prisma: {} }));
 
@@ -30,6 +30,15 @@ function resolve(nativeToolCalls: boolean) {
     mcp: null,
   });
 }
+
+// #2488 — these tests pin the default tool list, so a developer's own
+// CHAT_CHANGE_HISTORY_TOOL (shell or .env) must not leak in: stub it unset.
+beforeEach(() => {
+  vi.stubEnv("CHAT_CHANGE_HISTORY_TOOL", "");
+});
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 describe("resolveSessionTools — models without native tool calls (#2295)", () => {
   const saved = process.env[KEY];

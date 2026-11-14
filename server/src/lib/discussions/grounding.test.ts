@@ -3,7 +3,7 @@
  * that decides its calls. Uses a REAL ToolRegistry, toolset builder and gate;
  * only the approval-row write is a double.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
 const approvalRows: Array<Record<string, unknown>> = [];
@@ -51,6 +51,15 @@ const FULL = (): InstanceType<typeof ToolRegistry> =>
     ["apply_diff", "high"],
     ["list_requirements", "low"],
   );
+
+// #2488 — these tests pin the default tool list, so a developer's own
+// CHAT_CHANGE_HISTORY_TOOL (shell or .env) must not leak in: stub it unset.
+beforeEach(() => {
+  vi.stubEnv("CHAT_CHANGE_HISTORY_TOOL", "");
+});
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 describe("resolveDiscussionTools", () => {
   beforeEach(() => {

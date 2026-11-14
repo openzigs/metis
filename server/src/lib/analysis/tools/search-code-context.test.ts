@@ -44,6 +44,15 @@ const MOVED = "fedcba9876543210fedcba9876543210fedcba98";
 const CTX = { projectId: "p1" };
 
 let clone: string;
+// #2488 — these tests pin the default tool list, so a developer's own
+// CHAT_CHANGE_HISTORY_TOOL (shell or .env) must not leak in: stub it unset.
+beforeEach(() => {
+  vi.stubEnv("CHAT_CHANGE_HISTORY_TOOL", "");
+});
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
 beforeEach(async () => {
   clone = await mkdtemp(path.join(os.tmpdir(), "code-context-"));
   symbolRows.mockReset();
