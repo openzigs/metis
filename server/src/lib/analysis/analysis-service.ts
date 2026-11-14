@@ -33,7 +33,9 @@ import { readSetForPersist, serializeReadSet } from "./pass-reads.js";
 import {
   documentCoverageRows,
   loadSourceGuard,
+  OPEN_SOURCE_GUARD,
   redactAnalysisSnapshot,
+  sharedSourceReader,
   type SourceReader,
 } from "./source-redaction.js";
 import {
@@ -832,26 +834,38 @@ export async function persistClarifiedRequirements(
  * Epic #204 (#222) — read the persisted web-research digests for the most
  * recently-completed analysis of a project, for injection into doc synthesis as
  * grounding evidence. Returns `null` when no analysis has web research.
+ *
+ * #2506 — a generated document is read by the whole project, so only the
+ * research of a run the shared audience can see as a whole counts: research
+ * seeded from a restricted document a starter run read is passed over, and
+ * an older run's research is used instead.
  */
 export async function getLatestWebResearch(projectId: string): Promise<WebResearchResult | null> {
   const rows = await prisma.analysis.findMany({
     where: { projectId },
     orderBy: { createdAt: "desc" },
-    select: { metadata: true },
+    select: { id: true, metadata: true, sourceAccess: true },
     // Look back over at most the 10 most-recent analyses: web research is only
     // attached to some analyses, so we scan a small recent window to find the
     // latest one that carries it. The cap bounds the query (and the in-memory
     // scan below) so a project with a long analysis history can't load every row.
     take: 10,
   });
-  for (const row of rows) {
-    const meta = parseMetadata(row.metadata ?? null);
-    const value = meta.webResearch;
-    if (value && typeof value === "object") {
-      return value as WebResearchResult;
-    }
-  }
-  return null;
+  const researched = rows.flatMap((row) => {
+    const value = parseMetadata(row.metadata ?? null).webResearch;
+    return value && typeof value === "object" ? [{ ...row, value }] : [];
+  });
+  // A run with no marker (before #2446) keeps the shared-audience rule: no guard read.
+  const marked = researched.filter((r) => r.sourceAccess != null);
+  const guard =
+    marked.length > 0
+      ? await loadSourceGuard(
+          sharedSourceReader(),
+          marked.map((r) => ({ analysisId: r.id, sourceIds: null })),
+        )
+      : OPEN_SOURCE_GUARD;
+  const latest = researched.find((r) => r.sourceAccess == null || guard.canSeeRun(r.id));
+  return latest ? (latest.value as WebResearchResult) : null;
 }
 
 /**
@@ -1088,14 +1102,19 @@ export async function persistAgentResult(
   const readSet = await passReadSet(input);
   const sources = await findingSourceIds(input, readSet);
   const recorded = { sources, readSet };
+  // #2506 — on a `starter` run that records a read set, the replaced rows'
+  // read sets are kept on the run (`keepReplacedReads`). One that cannot tell
+  // (`null`) needs none: its own row then records none, which already widens
+  // the run's corpus to the whole project.
+  const starter = Array.isArray(readSet);
   const { persisted, refusedMetrics } =
     mode === "supersede"
       ? await prisma.$transaction(async (tx) => {
-          await deleteAgentResultsInScope(tx, input);
+          await deleteAgentResultsInScope(tx, input, starter);
           return writeAgentResult(tx, input, recorded);
         }, SUPERSEDE_TRANSACTION_OPTIONS)
       : await (async () => {
-          if (mode === "replace") await deleteAgentResultsInScope(prisma, input);
+          if (mode === "replace") await deleteAgentResultsInScope(prisma, input, starter);
           return writeAgentResult(prisma, input, recorded);
         })();
   if (refusedMetrics > 0) {
@@ -1114,14 +1133,56 @@ export async function persistAgentResult(
 async function deleteAgentResultsInScope(
   db: Prisma.TransactionClient,
   input: PersistAgentResultInput,
+  starter: boolean,
 ): Promise<void> {
-  await db.agentResult.deleteMany({
-    where: {
-      analysisId: input.analysisId,
-      agentKey: input.agentKey,
-      ...(input.connectorId ? { connectorId: input.connectorId } : {}),
+  const where = {
+    analysisId: input.analysisId,
+    agentKey: input.agentKey,
+    ...(input.connectorId ? { connectorId: input.connectorId } : {}),
+  };
+  const replaced = starter
+    ? await db.agentResult.findMany({ where, select: { readSourceIds: true } })
+    : [];
+  // Kept first: the analysis row is locked before the rows go, as every
+  // metadata writer takes it (#909), and a delete that then fails only
+  // widens the run's corpus (fail closed).
+  if (replaced.length > 0) await keepReplacedReads(db, input.analysisId, replaced);
+  await db.agentResult.deleteMany({ where });
+}
+
+/**
+ * #2506 — where a `starter` run keeps what the passes a regenerate or resume
+ * replaced had read (`metadata.replacedReadSourceIds`): the union of their
+ * read sets, or `null` once one of them recorded none. The guard's corpus
+ * reads it (`loadRunCorpus`), so what a replaced pass's output shaped on the
+ * run as a whole (the reviewed list, web research, governing applicability,
+ * ...) stays hidden from a reader who could not see what it read, even when
+ * no stored result records it any more. Never a later pass's input: a pass
+ * rests only on what the run's current results read (#2448).
+ */
+export const REPLACED_READS_METADATA_KEY = "replacedReadSourceIds";
+
+async function keepReplacedReads(
+  db: Prisma.TransactionClient,
+  analysisId: string,
+  replaced: ReadonlyArray<{ readSourceIds: string | null }>,
+): Promise<void> {
+  await mergeAnalysisMetadata(
+    analysisId,
+    (current) => {
+      const kept = current[REPLACED_READS_METADATA_KEY];
+      if (kept === null) return current;
+      const ids = new Set(Array.isArray(kept) ? kept.filter((id) => typeof id === "string") : []);
+      for (const row of replaced) {
+        const read = parseSourceIds(row.readSourceIds);
+        if (!read) return { ...current, [REPLACED_READS_METADATA_KEY]: null };
+        for (const id of read.documentIds) ids.add(id);
+      }
+      return { ...current, [REPLACED_READS_METADATA_KEY]: [...ids].sort() };
     },
-  });
+    // Outside a transaction (a plain replace) the merge opens its own, locked one.
+    db === (prisma as unknown) ? undefined : db,
+  );
 }
 
 /**

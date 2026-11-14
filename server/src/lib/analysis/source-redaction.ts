@@ -35,6 +35,11 @@
  * #2448 — what rests on a run as a whole and is not a row (its narrative, the
  * finding titles a cap cut, the searches its code agent ran) is emptied for a
  * reader who cannot see the run as a whole (`redactAnalysisSnapshot`).
+ * #2506 — and, since a starter run's documents are read with its starter's
+ * access too, so is everything in `metadata` a document pass's output may
+ * have shaped (the reviewed list, web research, governing applicability,
+ * escalation, ...): only the keys in {@link RUN_WIDE_OPEN_METADATA_KEYS}
+ * are kept for such a reader.
  *
  * Chunk ids are not checked separately: a chunk's access list is written with
  * its document's, in one transaction (`saveDocumentAcl`), and a cited chunk's
@@ -53,6 +58,7 @@ import {
   type AclSubject,
   type AnalysisSnapshot,
   type CrossDocFinding,
+  type GoverningFinding,
 } from "@metis/shared";
 import type { PrismaClient } from "@prisma/client";
 import { prisma as defaultPrisma } from "../prisma.js";
@@ -321,18 +327,26 @@ async function loadRunCorpus(
       where: { id: { in: ids } },
       select: { id: true, metadata: true },
     });
+    // #2506 — and what the passes a regenerate or resume replaced had read
+    // (`metadata.replacedReadSourceIds`): their output may still shape what
+    // rests on the run as a whole. `null`: one recorded none.
+    const replacedUnknown: string[] = [];
     for (const run of inputs) {
       const set = corpus.get(run.id);
       if (set) for (const id of inputDocumentIds(run.metadata)) set.add(id);
+      const replaced = replacedReadIds(run.metadata);
+      if (replaced === null) replacedUnknown.push(run.id);
+      else if (set) for (const id of replaced) set.add(id);
     }
 
     const unrecorded = await db.finding.findMany({
       where: { agentResult: { analysisId: { in: ids } }, sourceIds: null },
       select: { agentResult: { select: { analysisId: true } } },
     });
-    const incomplete = new Set(
-      unrecorded.flatMap((f) => (f.agentResult?.analysisId ? [f.agentResult.analysisId] : [])),
-    );
+    const incomplete = new Set([
+      ...unrecorded.flatMap((f) => (f.agentResult?.analysisId ? [f.agentResult.analysisId] : [])),
+      ...replacedUnknown,
+    ]);
 
     // #2448 — a starter run read with a person's access: each pass's read set
     // is part of what it read. A pass that recorded none (or an unreadable
@@ -361,6 +375,24 @@ async function loadRunCorpus(
     }
   }
   return corpus;
+}
+
+/**
+ * #2506 — what a run's replaced passes read (`metadata.replacedReadSourceIds`,
+ * written by `persistAgentResult`'s replace): the ids, `[]` when none was
+ * replaced, `null` when one of them recorded none or the value does not read.
+ */
+function replacedReadIds(metadata: string | null | undefined): string[] | null {
+  if (!metadata) return [];
+  let value: unknown;
+  try {
+    value = (JSON.parse(metadata) as Record<string, unknown> | null)?.replacedReadSourceIds;
+  } catch {
+    return [];
+  }
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) return null;
+  return value.filter((id): id is string => typeof id === "string");
 }
 
 /** The document ids a run's stored `metadata` says it was asked to read. */
@@ -538,13 +570,50 @@ type Retrieval = NonNullable<AnalysisSnapshot["retrieval"]>;
  * #2448 — a capability record without the text a code pass may have taken from
  * a restricted file: the titles of the findings an answer's cap cut. Counts
  * stay. Shown to a reader who cannot see the run as a whole, and sent on the
- * run's live room, which any reader of the project may join.
+ * run's live room, which any reader of the project may join. #2506 — nor the
+ * excerpts of the requirements a stage left out at its limit: their text is a
+ * document pass's, which may have read a restricted document.
  */
 export function redactRunCapability<T extends Capability | null | undefined>(capability: T): T {
-  if (!capability?.findingsLeftOut) return capability;
+  if (!capability?.findingsLeftOut && !capability?.requirementsLeftOut) return capability;
   return {
     ...capability,
-    findingsLeftOut: capability.findingsLeftOut.map((n) => ({ ...n, leftOutTitles: [] })),
+    ...(capability.findingsLeftOut
+      ? { findingsLeftOut: capability.findingsLeftOut.map((n) => ({ ...n, leftOutTitles: [] })) }
+      : {}),
+    ...(capability.requirementsLeftOut
+      ? {
+          requirementsLeftOut: capability.requirementsLeftOut.map((n) => ({
+            ...n,
+            leftOut: n.leftOut.map((r) => ({ ...r, excerpt: "" })),
+          })),
+        }
+      : {}),
+  };
+}
+
+/**
+ * #2506 — the capability record the run's live room carries. That room has no
+ * reader to decide per document, and a starter run's document reader may read
+ * a restricted one, so no document is named there: each keeps its id, status
+ * and counts, and loses its file name, headings and reason, as a restricted
+ * one does in the snapshot (#2491). The snapshot names what its reader may see.
+ */
+export function redactLiveCapability<T extends Capability | null | undefined>(capability: T): T {
+  const redacted = redactRunCapability(capability);
+  const documents = redacted?.documentReading?.documents;
+  if (!redacted || !documents) return redacted;
+  return {
+    ...redacted,
+    documentReading: {
+      ...redacted.documentReading,
+      documents: documents.map((d) => ({
+        ...d,
+        filename: RESTRICTED_SOURCE_TITLE,
+        sections: [],
+        reason: undefined,
+      })),
+    },
   };
 }
 
@@ -558,18 +627,57 @@ function redactRetrieval<T extends Retrieval | null | undefined>(retrieval: T): 
 }
 
 /**
+ * #2506 — the keys of a run's `metadata` that hold nothing a pass read: what
+ * the person who started it chose (its agents, documents, model, notes and
+ * imported items), and counts, flags and run ids. Every other key may hold
+ * text a document or code pass took from a restricted source (the reviewed
+ * list, web research, governing applicability, escalation, criteria, elicited
+ * NFRs, a degradation's model detail, ...), so a reader who cannot see the run
+ * as a whole is shown only these (fail closed: a key added later is hidden
+ * until it is listed here). `structuredRequirements`, `capability` and
+ * `retrieval` are kept as their redacted copies.
+ */
+export const RUN_WIDE_OPEN_METADATA_KEYS: ReadonlySet<string> = new Set([
+  "source",
+  "agentKeys",
+  "documentIds",
+  "model",
+  "extraInstructions",
+  "sourceRequirements",
+  "specKitHandoff",
+  "agentContext",
+  "startedWithDefaults",
+  "enhancementRequested",
+  "enhancement",
+  "structuredRunId",
+  "structuredExtractionFailure",
+  "promotionBlocked",
+  "promotionStatus",
+  "promotedStructuredIds",
+  "promotedStructuredRunId",
+  "databaseAware",
+  "affectedCode",
+  "unreadAnalysisSteps",
+  "structuredRequirements",
+]);
+
+/**
  * #2448 — the run-wide records of `snapshot` (typed and in `metadata`) for a
  * reader who cannot see the run as a whole: what a code pass may have taken
- * from a restricted file is emptied, the rest is kept.
+ * from a restricted file is emptied, the rest is kept. #2506 — and of
+ * `metadata`, only {@link RUN_WIDE_OPEN_METADATA_KEYS}; the typed escalation
+ * record (its requirements' text) goes too.
  */
 function redactRunRecords(
   snapshot: AnalysisSnapshot,
   metadata: AnalysisSnapshot["metadata"],
-): Pick<AnalysisSnapshot, "metadata" | "capability" | "retrieval"> {
+): Pick<AnalysisSnapshot, "metadata" | "capability" | "retrieval" | "escalation"> {
   return {
     metadata: metadata
       ? {
-          ...metadata,
+          ...Object.fromEntries(
+            Object.entries(metadata).filter(([key]) => RUN_WIDE_OPEN_METADATA_KEYS.has(key)),
+          ),
           ...(metadata.capability && typeof metadata.capability === "object"
             ? { capability: redactRunCapability(metadata.capability as Capability) }
             : {}),
@@ -580,6 +688,7 @@ function redactRunRecords(
       : metadata,
     capability: redactRunCapability(snapshot.capability),
     retrieval: redactRetrieval(snapshot.retrieval),
+    escalation: null,
   };
 }
 
@@ -717,4 +826,36 @@ export async function restrictedIds(
   if (rows.length === 0) return new Set();
   const guard = await loadSourceGuard(reader, rows, db);
   return new Set(rows.filter((r) => !guard.canSee(r)).map((r) => r.id));
+}
+
+/**
+ * #2506 — whether `reader` may see what rests on run `analysisId` as a whole
+ * with no record of its own: its governing applicability and findings, its
+ * clarification dialog, its web research. One guard load.
+ */
+export async function seesRunAsWhole(
+  reader: SourceReader,
+  analysisId: string,
+  db?: GuardDb,
+): Promise<boolean> {
+  const guard = await loadSourceGuard(reader, [{ analysisId, sourceIds: null }], db);
+  return guard.canSeeRun(analysisId);
+}
+
+/**
+ * #2506 — a governing finding as the restricted placeholder, for a reader who
+ * cannot see its run as a whole: it judged a requirement whose text a document
+ * pass may have read from a restricted source. The rule, clause, status and
+ * decision stay (they are the governing document's, and the counts add up);
+ * the model's reasoning, its business question, the decision's note and the
+ * stale requirements' titles go.
+ */
+export function restrictedGoverningFinding<T extends GoverningFinding>(f: T): T {
+  return {
+    ...f,
+    reasoning: RESTRICTED_SOURCE_BODY,
+    businessQuestion: null,
+    decisionNote: null,
+    ...(f.stale ? { stale: f.stale.map((s) => ({ ...s, title: RESTRICTED_SOURCE_TITLE })) } : {}),
+  };
 }

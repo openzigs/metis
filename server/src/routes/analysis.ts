@@ -106,6 +106,7 @@ import {
 } from "../middleware/analysis-approval-rate-limit.js";
 import {
   loadSourceGuard,
+  restrictedGoverningFinding,
   restrictedIds,
   userSourceReader,
   type SourceReader,
@@ -366,11 +367,26 @@ async function ensureCheckpointEntryVisible(
 /**
  * #2447 — whether the caller may see what rests on run `analysisId` as a whole
  * (its clarify dialog, its withheld re-synthesis): every document the run
- * read, as its access list is now (`canSeeRun`).
+ * read, as its access list is now (`canSeeRun`). #2506 — also its governing
+ * applicability and findings, and the clarify rounds it starts or imports.
  */
 async function seesRunAsWhole(req: Request, analysisId: string): Promise<boolean> {
   const guard = await loadSourceGuard(readerOf(req), [{ analysisId, sourceIds: null }]);
   return guard.canSeeRun(analysisId);
+}
+
+/**
+ * #2506 — a write that reads or rewrites what rests on run `analysisId` as a
+ * whole (a clarify round, a governing decision or re-check) answers like
+ * `notFound` for a caller who cannot see the run as a whole: its answer would
+ * carry, or its work would act on, text drawn from a source they cannot see.
+ */
+async function ensureSeesRunAsWhole(
+  req: Request,
+  analysisId: string,
+  notFound: AppError,
+): Promise<void> {
+  if (!(await seesRunAsWhole(req, analysisId))) throw notFound;
 }
 
 /** #2447 — the snapshot loader of a report the caller reads: redacted for them. */
@@ -1182,6 +1198,12 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
       const analysisId = String(req.params.id);
       const projectId = String(req.params.projectId);
       await ensureAnalysisVisible(analysisId, projectId);
+      // #2506 — it holds each requirement's text: none, for a reader who
+      // cannot see the run as a whole.
+      if (!(await seesRunAsWhole(req, analysisId))) {
+        res.json(ok({ applicability: null }));
+        return;
+      }
       res.json(ok({ applicability: await readGoverningApplicability(analysisId) }));
     },
   );
@@ -1207,15 +1229,20 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
       const analysisId = String(req.params.id);
       const projectId = String(req.params.projectId);
       await ensureAnalysisVisible(analysisId, projectId);
-      const [stored, applicability, states] = await Promise.all([
+      const [stored, applicability, states, seesRun] = await Promise.all([
         listGoverningFindings(analysisId),
         readGoverningApplicability(analysisId),
         storedRequirementStates(analysisId, projectId),
+        seesRunAsWhole(req, analysisId),
       ]);
       // #2222 — each finding says which edited requirements it judged an
       // earlier wording of (`stale`); a re-checked requirement's own findings
       // are keyed by its id, and `requirementTitles` names it.
-      const findings = withGoverningStaleness(stored, states, applicability);
+      const judged = withGoverningStaleness(stored, states, applicability);
+      // #2506 — each judged a requirement a document pass may have read from a
+      // restricted source: placeholders, and no titles, for a reader who
+      // cannot see the run as a whole. The statuses and counts stay.
+      const findings = seesRun ? judged : judged.map(restrictedGoverningFinding);
       res.json(
         ok({
           findings,
@@ -1229,7 +1256,7 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
           // from "checked, no rule applied". A stored set that is all errors
           // (rules unavailable, every requirement undecided) checked nothing.
           checked: applicability?.requirements.some((r) => !r.error) ?? false,
-          requirementTitles: recheckedRequirementTitles(findings, states),
+          requirementTitles: seesRun ? recheckedRequirementTitles(findings, states) : {},
           // #2281 — requirements edited since the check that no finding offers a
           // re-check for: their analysed requirement produced no finding.
           editedWithoutFindings: editedWithoutFindings(findings, states, applicability),
@@ -1254,6 +1281,12 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
       const analysisId = String(req.params.id);
       const projectId = String(req.params.projectId);
       await ensureAnalysisVisible(analysisId, projectId);
+      // #2506 — the answer carries the finding's reasoning.
+      await ensureSeesRunAsWhole(
+        req,
+        analysisId,
+        new AppError(404, "NOT_FOUND", "Governing finding not found"),
+      );
       const parsed = governingFindingDecisionInputSchema.safeParse(req.body ?? {});
       if (!parsed.success) {
         throw new AppError(400, "VALIDATION_ERROR", "Invalid decision payload", {
@@ -1309,6 +1342,12 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
       const analysisId = String(req.params.id);
       const projectId = String(req.params.projectId);
       await ensureAnalysisVisible(analysisId, projectId);
+      // #2506 — a re-check judges the requirement's wording again.
+      await ensureSeesRunAsWhole(
+        req,
+        analysisId,
+        new AppError(404, "NOT_FOUND", "Requirement not found in this analysis"),
+      );
       const parsed = governingRecheckInputSchema.safeParse(req.body ?? {});
       if (!parsed.success) {
         throw new AppError(400, "VALIDATION_ERROR", "Invalid re-check payload", {
@@ -1362,6 +1401,13 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
       // relationship is load-bearing — protects both the start and
       // submit-answers branches.
       const analysis = await ensureAnalysisVisible(analysisId, projectId);
+      // #2506 — a round asks about, and answers with, the reviewed list's
+      // text: as for no dialog, to a caller who cannot see the run as a whole.
+      await ensureSeesRunAsWhole(
+        req,
+        analysisId,
+        new AppError(404, "NO_DIALOG", "No active clarification dialog for this analysis"),
+      );
 
       // Issue #403 — validate at the trust boundary so malformed input is a
       // 400, not a 500 thrown from inside the dialog.
@@ -1852,7 +1898,10 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
         throw err;
       }
 
-      const state = await getDialogState(analysisId);
+      // #2506 — as for no dialog, to a caller who cannot see the run as a whole.
+      const state = (await seesRunAsWhole(req, analysisId))
+        ? await getDialogState(analysisId)
+        : undefined;
       if (!state) {
         throw new AppError(404, "NO_DIALOG", "No active clarification dialog for this analysis");
       }
