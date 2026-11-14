@@ -474,6 +474,11 @@ export function toMarkdownReport(report: DocUnderstandingReport): string {
           d.retrievedChars !== undefined
             ? ` Read ${d.retrievedChars} of ${d.documentChars} characters (${d.retrievedChunks} of ${d.documentChunks} chunks); the agent extracted ${d.agentRequirements} requirements and ${d.agentFindings} findings.`
             : "";
+        // #2319 — arm R's reading came from the store: say so, what it cost, and whether it matched.
+        const saved =
+          d.reused === 1
+            ? ` Reused the saved reading: ${d.calls} reader calls, ${usd(r.costUsd)}; identical to the reading saved: ${d.identicalToSaved === 1 ? "yes" : "no"}.`
+            : "";
         if (r.error) {
           lines.push("");
           lines.push(`- ${a.id} run ${r.run}: **failed** — ${r.error}`);
@@ -482,7 +487,7 @@ export function toMarkdownReport(report: DocUnderstandingReport): string {
           lines.push(
             `- ${a.id} run ${r.run}: missed requirements ${r.score.missedRequirements.join(", ") || "none"}; ` +
               `missed sections ${r.score.missedSections.length}; ambiguities not raised ${r.score.missedAmbiguities.join(", ") || "none"}; ` +
-              `repeats ${r.score.repeats}; judge invalid ${r.judge?.invalid ?? 0}, ungraded ${r.judge?.ungraded ?? 0}.${extra}`,
+              `repeats ${r.score.repeats}; judge invalid ${r.judge?.invalid ?? 0}, ungraded ${r.judge?.ungraded ?? 0}.${extra}${saved}`,
           );
         }
       }

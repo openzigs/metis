@@ -42,7 +42,11 @@
  *   - it deletes the document's readings of an earlier file (`checksum`) or
  *     reader (`READER_VERSION`), which no later lookup can match. Readings by
  *     another model or of another text stay: switching the model back, or the
- *     image describer, matches them again;
+ *     image describer, matches them again. #2319 — during a rolling deploy a
+ *     pod on the earlier reader and one on the later prune each other's
+ *     reading of the same file, so the document may be read again until the
+ *     deploy ends; the version is in the lookup key, so neither pod ever
+ *     reuses the other's reading;
  *   - when the document was deleted while it was being read, or is not the
  *     named project's, it deletes what it saved: `deleteDocument` removes the
  *     readings that exist when it runs, not one saved after.

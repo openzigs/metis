@@ -394,6 +394,20 @@ describe("combineReports and rendering", () => {
     expect(json.model).toBe("anthropic/claude-sonnet-5-5");
   });
 
+  it("#2319 — says when a reading was reused from the store, what it cost and whether it matched", async () => {
+    const report = await run(["d1"], [fakeArm("A")]);
+    const rec = report.arms[0]!.records[0]!;
+    rec.diagnostics = { calls: 0, reused: 1, identicalToSaved: 1 };
+    rec.costUsd = 0;
+    expect(toMarkdownReport(report)).toContain(
+      "Reused the saved reading: 0 reader calls, $0.0000; identical to the reading saved: yes.",
+    );
+    rec.diagnostics = { calls: 0, reused: 1, identicalToSaved: 0 };
+    expect(toMarkdownReport(report)).toContain("identical to the reading saved: no.");
+    rec.diagnostics = { calls: 2, reused: 0 };
+    expect(toMarkdownReport(report)).not.toContain("Reused the saved reading");
+  });
+
   it("says when a run stopped early", async () => {
     const report = await runDocUnderstandingEval([item("d1")], {
       arms: [fakeArm("A")],

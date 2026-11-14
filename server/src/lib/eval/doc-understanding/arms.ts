@@ -46,7 +46,8 @@ import {
 } from "../../analysis/retrieval.js";
 import { hasVerdict, requestStructuredVerdict } from "../../analysis/structured-verdict.js";
 import { REQUIREMENT_STATEMENT_KINDS } from "../../document-reader/prompts.js";
-import { readDocument } from "../../document-reader/reader.js";
+import type { DocumentReading } from "../../document-reader/reader.js";
+import { readDocumentOnce } from "../../document-reader/reading-cache.js";
 import { createInMemoryBM25 } from "../../rag/bm25-index.js";
 import { chunkMarkdown } from "../../rag/chunker.js";
 import type { DocUnderstandingItem } from "./corpus.js";
@@ -63,6 +64,7 @@ import {
   reduceReplySchema,
   type ReaderReply,
 } from "./prompts.js";
+import { createEvalReadingStore, type EvalReadingStore } from "./reading-store.js";
 
 /** One requirement an arm found. `quote` and `section` are absent where the arm gives none. */
 export interface ExtractedRequirement {
@@ -445,6 +447,32 @@ export function createArmC(model: string): DocArm {
   };
 }
 
+/** #2319 — how arm R uses the readings it saves. */
+export interface ArmROptions {
+  /**
+   * Reuse a reading saved by an earlier run of this invocation
+   * (`--saved-readings`), as a second analysis of an unchanged document does.
+   * Off, every run reads the document again ("Read the document again"), so
+   * `--runs` still measures the reader's run-to-run spread; the reading is
+   * saved either way.
+   */
+  reuseSavedReadings?: boolean;
+  /** The store readings are saved in; one per arm by default. */
+  store?: EvalReadingStore;
+}
+
+/** What a reused reading must reproduce: everything an analysis reads from it. */
+function readingFingerprint(r: DocumentReading): string {
+  return JSON.stringify([
+    r.mode,
+    r.statements,
+    r.sections,
+    r.droppedUnverified,
+    r.merge,
+    r.outputTokenCap,
+  ]);
+}
+
 /**
  * #2230 — the production document reader: the whole document in every call,
  * the statements written a batch of sections at a time, each quote verified
@@ -452,20 +480,46 @@ export function createArmC(model: string): DocArm {
  * statements labelled requirement, constraint or business rule. It asks no
  * questions (the question loop is Phase 2 of the epic), so its question
  * metrics read empty.
+ *
+ * #2319 — it reads as an analysis reads a stored document: through
+ * `readDocumentOnce`, with a store. `reused` is 1 when the reading came from
+ * the store (no model call), and then `identicalToSaved` is 1 when it equals
+ * the reading that was saved, element for element.
  */
-export function createArmR(model: string): DocArm {
+export function createArmR(model: string, opts: ArmROptions = {}): DocArm {
+  const reuse = opts.reuseSavedReadings === true;
+  const store = opts.store ?? createEvalReadingStore();
+  /** Per document: the fingerprint of the last reading made, which is the one saved. */
+  const lastRead = new Map<string, string>();
   return {
     id: "R",
     label: "R — the document reader (readDocument): whole document, statements by section batch",
     configuration: {
       conversion: "parseDocument (docxToMarkdown)",
-      reader: "readDocument (document-reader/reader.ts), mode chosen by the model's window",
+      reader:
+        "readDocumentOnce (document-reader/reading-cache.ts) over readDocument (document-reader/reader.ts), mode chosen by the model's window",
+      savedReadings: reuse
+        ? "reused from an earlier run of this invocation (--saved-readings)"
+        : "read again every run, then saved (reread)",
       requirements: "statements labelled requirement, constraint or business-rule",
       questions: "none (Phase 2)",
       model,
     },
     async read(item, { provider }) {
-      const reading = await readDocument({ title: item.title, text: item.text, provider });
+      const documentId = documentIdOf(item);
+      const reading = await readDocumentOnce(
+        {
+          title: item.title,
+          text: item.text,
+          provider,
+          document: store.register(documentId, item.text),
+          reread: !reuse,
+        },
+        { db: store.db },
+      );
+      const fingerprint = readingFingerprint(reading);
+      const reused = reading.reused !== undefined;
+      if (!reused) lastRead.set(documentId, fingerprint);
       return {
         requirements: reading.statements
           .filter((s) => REQUIREMENT_STATEMENT_KINDS.has(s.kind))
@@ -485,13 +539,18 @@ export function createArmR(model: string): DocArm {
           wholeMode: reading.mode === "whole" ? 1 : 0,
           outputTokenCap: reading.outputTokenCap,
           calls: reading.calls,
+          reused: reused ? 1 : 0,
+          ...(reused ? { identicalToSaved: lastRead.get(documentId) === fingerprint ? 1 : 0 } : {}),
         },
       };
     },
   };
 }
 
-const FACTORIES: Record<DocArmId, (model: string) => DocArm> = {
+/** Options for {@link buildDocArms}: only arm R reads any. */
+export type DocArmOptions = Pick<ArmROptions, "reuseSavedReadings">;
+
+const FACTORIES: Record<DocArmId, (model: string, opts: DocArmOptions) => DocArm> = {
   A: createArmA,
   B: createArmB,
   C: createArmC,
@@ -511,6 +570,10 @@ export function parseDocArmIds(raw: string | undefined): DocArmId[] {
   return [...new Set(ids)] as DocArmId[];
 }
 
-export function buildDocArms(ids: readonly DocArmId[], model: string): DocArm[] {
-  return ids.map((id) => FACTORIES[id](model));
+export function buildDocArms(
+  ids: readonly DocArmId[],
+  model: string,
+  opts: DocArmOptions = {},
+): DocArm[] {
+  return ids.map((id) => FACTORIES[id](model, opts));
 }
