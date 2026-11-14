@@ -356,17 +356,35 @@ describe("#2292 — whitespace runs in Word text", () => {
   });
 
   it("are converted in linear time: 60,000 spaces in a heading took seconds before", async () => {
-    const run = " ".repeat(60_000);
-    const body = [
-      p(`Heading${run}end`, { style: "Heading1" }),
-      p(`Item${run}end`, { numId: "3" }),
-    ].join("");
-    const buffer = await buildDocx({ body });
-    const started = performance.now();
-    const text = await parse(buffer);
-    const elapsed = performance.now() - started;
-    expect(text).toContain(`Heading${run}end`);
-    // The quadratic forms took seconds per paragraph at this length; linear, a few milliseconds.
-    expect(elapsed).toBeLessThan(1_000);
+    /**
+     * #2317 — the least CPU time, in ms, of three conversions of a heading and a list item each
+     * holding `spaces` spaces. CPU time, not wall-clock: a busy machine (#1379) preempts the
+     * test, which adds wall-clock time but none of this process's CPU time; the least of three
+     * drops a run that a garbage collection landed in.
+     */
+    async function cpuMs(spaces: number): Promise<number> {
+      const run = " ".repeat(spaces);
+      const body = [
+        p(`Heading${run}end`, { style: "Heading1" }),
+        p(`Item${run}end`, { numId: "3" }),
+      ].join("");
+      const buffer = await buildDocx({ body });
+      let least = Infinity;
+      for (let i = 0; i < 3; i++) {
+        const started = process.cpuUsage();
+        const text = await parse(buffer);
+        const { user, system } = process.cpuUsage(started);
+        expect(text).toContain(`Heading${run}end`);
+        least = Math.min(least, (user + system) / 1_000);
+      }
+      return least;
+    }
+    // Eight times the spaces: linear work grows eightfold, the quadratic forms sixty-four-fold.
+    // A ratio of two sizes on one machine, so no bound depends on how fast the machine is. Sized
+    // so a quadratic form fails on the ratio (about 53x measured) in about 3 s, well inside the
+    // test timeout, rather than as a timeout.
+    const small = await cpuMs(3_750);
+    const large = await cpuMs(30_000);
+    expect(large / Math.max(small, 1)).toBeLessThan(24);
   });
 });

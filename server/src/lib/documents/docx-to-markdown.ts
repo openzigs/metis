@@ -68,11 +68,17 @@ export interface DescriptionClock {
  * `signal` aborts when the image's deadline passes ({@link IMAGE_DESCRIPTION_TIMEOUT_MS}), or
  * when a wait reported through `clock` outlasts {@link IMAGE_BUDGET_WAIT_TIMEOUT_MS}.
  */
-export type ImageDescriber = (
+export type ImageDescriber = ((
   image: DocxImage,
   signal?: AbortSignal,
   clock?: DescriptionClock,
-) => Promise<string | null>;
+) => Promise<string | null>) & {
+  /**
+   * #2317 — called once the document's images have all been described (or refused), so a
+   * describer that holds state for the whole document can let it go.
+   */
+  finish?: () => void;
+};
 
 /**
  * #2263 — thrown by a describer that declined to describe an image for a reason the analyst
@@ -1218,9 +1224,14 @@ export async function docxToMarkdown(
   // under its own deadline; the results are placed back in reading order.
   const timeoutMs = opts.imageTimeoutMs ?? IMAGE_DESCRIPTION_TIMEOUT_MS;
   const budgetWaitMs = opts.imageBudgetWaitMs ?? IMAGE_BUDGET_WAIT_TIMEOUT_MS;
-  const results = await mapBounded(conv.images, IMAGE_DESCRIPTION_CONCURRENCY, (slot) =>
-    describe(pkg, slot, opts.describeImage, timeoutMs, budgetWaitMs),
-  );
+  let results: Array<{ described: boolean; text: string }>;
+  try {
+    results = await mapBounded(conv.images, IMAGE_DESCRIPTION_CONCURRENCY, (slot) =>
+      describe(pkg, slot, opts.describeImage, timeoutMs, budgetWaitMs),
+    );
+  } finally {
+    opts.describeImage?.finish?.();
+  }
   const described = results.filter((r) => r.described).length;
 
   const parts: string[] = [];

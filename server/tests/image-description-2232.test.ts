@@ -45,6 +45,7 @@ import {
   canDescribeImages,
   projectImageDescriber,
   providerImageDescriber,
+  resetProjectGatesForTests,
 } from "../src/lib/documents/image-description.js";
 import {
   ImageNotRead,
@@ -141,6 +142,7 @@ function deferred() {
 }
 
 beforeEach(() => {
+  resetProjectGatesForTests();
   finops.assertWithinBudget.mockReset().mockResolvedValue({ budget: null });
   finops.recordUsage
     .mockReset()
@@ -549,6 +551,157 @@ describe("#2292 — waiting for budget room does not count against an image's de
         `**Image ${i}** (image1.png, alt text "pic ${i}"): image not read: the project's token budget had no room for it in time.`,
       );
     }
+    expect(chat).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("#2317 — the budget gate across a project's documents", () => {
+  it("a waiter whose check read the ledger before the releasing call's write is checked again", async () => {
+    const state = ledger(1000);
+    const first = deferred();
+    const { provider, chat } = fakeProvider({ during: () => first.promise });
+    const describer = projectImageDescriber(SCOPE, async () => provider);
+    const running = describer(IMAGE);
+    await vi.waitFor(() => expect(chat).toHaveBeenCalledTimes(1));
+    // The second call's check reads the ledger now, while nothing is metered, and answers late.
+    const read = finops.assertWithinBudget.getMockImplementation()!;
+    const late = deferred();
+    finops.assertWithinBudget.mockImplementationOnce(async (id: string) => {
+      const snapshot = await read(id);
+      await late.promise;
+      return snapshot;
+    });
+    const second = describer({ ...IMAGE, index: 2 }).catch((e: unknown) => e);
+    await vi.waitFor(() => expect(finops.assertWithinBudget).toHaveBeenCalledTimes(2));
+    first.resolve();
+    expect(await running).toBe("a description");
+    // The first call's write landed and it released: nothing is in flight, the budget is spent.
+    expect(state.used).toBe(1280);
+    late.resolve();
+    expect(await second).toBeInstanceOf(ImageNotRead);
+    expect(chat).toHaveBeenCalledTimes(1);
+  });
+
+  it("two documents of one project see each other's calls in flight", async () => {
+    ledger(1000);
+    const { provider, chat } = fakeProvider();
+    const a = projectImageDescriber({ projectId: "p1", documentId: "d1" }, async () => provider);
+    const b = projectImageDescriber({ projectId: "p1", documentId: "d2" }, async () => provider);
+    const results = await Promise.allSettled([a(IMAGE), b(IMAGE)]);
+    // One call spends the budget; the other document's call waited for it, then was refused.
+    expect(chat).toHaveBeenCalledTimes(1);
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    const [refused] = results.filter((r) => r.status === "rejected");
+    expect((refused as PromiseRejectedResult).reason).toBeInstanceOf(ImageNotRead);
+  });
+
+  it("two documents of one project reserve against one remaining budget", async () => {
+    // Room for one estimate, not two: the documents' calls run one after the other.
+    ledger(2 * ESTIMATED_TOKENS_PER_DESCRIPTION - 1);
+    const { provider, chat, live } = fakeProvider({ reportUsage: false });
+    const a = projectImageDescriber({ projectId: "p1", documentId: "d1" }, async () => provider);
+    const b = projectImageDescriber({ projectId: "p1", documentId: "d2" }, async () => provider);
+    await Promise.all([a(IMAGE), b(IMAGE)]);
+    expect(chat).toHaveBeenCalledTimes(2);
+    expect(live.max).toBe(1);
+  });
+
+  it("another project's calls are not held back", async () => {
+    ledger(1000);
+    const { provider, chat, live } = fakeProvider();
+    const a = projectImageDescriber({ projectId: "p1", documentId: "d1" }, async () => provider);
+    const b = projectImageDescriber({ projectId: "p2", documentId: "d2" }, async () => provider);
+    await Promise.allSettled([a(IMAGE), b(IMAGE)]);
+    expect(chat).toHaveBeenCalledTimes(2);
+    expect(live.max).toBe(2);
+  });
+
+  it("a project's gate is dropped once idle, so a later document starts from the estimate", async () => {
+    const state = ledger(1_000_000);
+    const { provider, live } = fakeProvider();
+    // The first document's one call counts 600,000 tokens (the ledger records none of them).
+    finops.recordUsage.mockReturnValueOnce({ totalTokens: 600_000, persisted: Promise.resolve() });
+    const first = projectImageDescriber(
+      { projectId: "p1", documentId: "d1" },
+      async () => provider,
+    );
+    await first(IMAGE);
+    first.finish?.();
+    expect(state.used).toBe(0);
+    // Kept, 600,000 a call would serialise two; dropped, two estimates fit at once.
+    const later = projectImageDescriber(
+      { projectId: "p1", documentId: "d2" },
+      async () => provider,
+    );
+    await Promise.all([later(IMAGE), later({ ...IMAGE, index: 2 })]);
+    expect(live.max).toBe(2);
+  });
+
+  it("a document holds its gate between its calls, so what they cost is not forgotten midway", async () => {
+    ledger(1_000_000);
+    const { provider, live } = fakeProvider();
+    // The document's first call counts 600,000 tokens; nothing else is in flight once it ends,
+    // as when the converter's workers are still reading their next image out of the package.
+    finops.recordUsage.mockReturnValueOnce({ totalTokens: 600_000, persisted: Promise.resolve() });
+    const doc = projectImageDescriber({ projectId: "p1", documentId: "d1" }, async () => provider);
+    await doc(IMAGE);
+    // Still the same document: two calls at 600,000 each do not fit 1,000,000, so one at a time.
+    await Promise.all([doc({ ...IMAGE, index: 2 }), doc({ ...IMAGE, index: 3 })]);
+    expect(live.max).toBe(1);
+    // Once it is finished, the project's next document starts from the estimate again.
+    doc.finish?.();
+    const next = projectImageDescriber({ projectId: "p1", documentId: "d2" }, async () => provider);
+    await Promise.all([next(IMAGE), next({ ...IMAGE, index: 2 })]);
+    expect(live.max).toBe(2);
+  });
+
+  it("the converter finishes the describer once every image is done", async () => {
+    const finish = vi.fn();
+    const calls: number[] = [];
+    const describe = Object.assign(
+      async (img: DocxImage) => {
+        calls.push(img.index);
+        return "described";
+      },
+      { finish },
+    );
+    const buffer = await buildDocx({
+      body: image("rId10", "a") + image("rId11", "b"),
+      rels: [
+        `<Relationship Id="rId10" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/a.png"/>`,
+        `<Relationship Id="rId11" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/b.png"/>`,
+      ],
+      media: { "word/media/a.png": PIXEL_PNG, "word/media/b.png": PIXEL_PNG },
+    });
+    await docxToMarkdown(buffer, { describeImage: describe });
+    expect(calls).toEqual([1, 2]);
+    expect(finish).toHaveBeenCalledTimes(1);
+  });
+
+  it("a deadline that fires during a re-read check stops the call before it is sent", async () => {
+    ledger(1_000_000);
+    const first = deferred();
+    const { provider, chat } = fakeProvider({ during: () => first.promise });
+    const describer = projectImageDescriber(SCOPE, async () => provider);
+    const running = describer(IMAGE);
+    await vi.waitFor(() => expect(chat).toHaveBeenCalledTimes(1));
+    const read = finops.assertWithinBudget.getMockImplementation()!;
+    const late = deferred();
+    finops.assertWithinBudget.mockImplementationOnce(async (id: string) => {
+      const snapshot = await read(id);
+      await late.promise;
+      return snapshot;
+    });
+    const controller = new AbortController();
+    const second = describer({ ...IMAGE, index: 2 }, controller.signal).catch((e: unknown) => e);
+    await vi.waitFor(() => expect(finops.assertWithinBudget).toHaveBeenCalledTimes(2));
+    // The first call releases during the second's check, and the second's deadline fires.
+    first.resolve();
+    expect(await running).toBe("a description");
+    controller.abort();
+    late.resolve();
+    // The check is read again and would fit, but the call has already been stopped.
+    expect(String(await second)).toContain("stopped while waiting for the budget");
     expect(chat).toHaveBeenCalledTimes(1);
   });
 });

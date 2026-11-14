@@ -16,6 +16,7 @@
  *
  * #2292 — the check holds across a document's concurrent descriptions (`BudgetGate`), and a
  * call cut off by its deadline is metered on what the provider reported before it stopped.
+ * #2317 — and across the project's documents being ingested at once.
  */
 import type { AIProvider, ChatMessage, TokenUsage } from "../ai/types.js";
 import { partialUsageOf } from "../ai/partial-usage.js";
@@ -259,11 +260,11 @@ async function noteUnmetered(
 }
 
 /**
- * #2292 — admits one document's description calls against the project's budget.
+ * #2292 — admits description calls against the project's budget.
  *
  * `docxToMarkdown` describes several images at once, and a budget check reads only usage
  * already metered, so every concurrent call would pass a check made before any of them was
- * written. Each call admitted here therefore reserves what one call of this document costs:
+ * written. Each call admitted here therefore reserves what one call costs:
  * a call starts alongside others only while the project's remaining budget covers it and
  * every call in flight. Until a call has been metered that cost is estimated
  * ({@link ESTIMATED_TOKENS_PER_DESCRIPTION}), so a provider that never reports usage does not
@@ -271,18 +272,52 @@ async function noteUnmetered(
  * fit waits for one in flight to finish and be metered, then checks again. That wait is reported
  * to the converter's clock, so it counts against the bounded wait for budget room and not against
  * the image's own call deadline. A project with no budget is never held back.
+ *
+ * #2317 — one gate per project in each server process, shared by every document of it being
+ * ingested at once ({@link enterProjectGate}), so two Word files reserve against the same
+ * remaining budget and each sees the other's calls in flight. The gate is in memory: on a
+ * deployment with several replicas, documents ingested on different replicas do not see each
+ * other's calls, and the bound across replicas is the budget check against the shared token
+ * ledger, which each call still makes (so the overshoot is at most the calls one replica admits
+ * at once). A document holds its gate from its first image to its last
+ * ({@link ImageDescriber.finish}), so what its calls cost is not forgotten between them. A check that a call finished during is read again: its
+ * read may have begun before that call's write landed, and with nothing then in flight a stale
+ * snapshot would admit a call the budget no longer covers.
  */
+function stoppedWaiting(): Error {
+  return new Error("image description stopped while waiting for the budget");
+}
+
 class BudgetGate {
   private inFlight = 0;
-  /** The most tokens one call of this document has counted against the budget. */
+  /** Calls released so far; a check during which this moved may predate a release's write. */
+  private releases = 0;
+  /** The most tokens one call of this project's current documents has counted against the budget. */
   private perCall: number | undefined;
   private readonly waiting = new Set<() => void>();
+  /** Documents and calls holding this gate; it is dropped when the last one leaves. */
+  private users = 0;
 
   constructor(private readonly projectId: string) {}
 
+  enter(): void {
+    this.users += 1;
+  }
+
+  /** Leave the gate; true when nothing holds it any more. */
+  leave(): boolean {
+    this.users -= 1;
+    return this.users === 0;
+  }
+
   async admit(signal?: AbortSignal, clock?: DescriptionClock): Promise<void> {
     for (;;) {
+      // A deadline that fired during the last check (or wait) stops the call before it is sent.
+      if (signal?.aborted) throw stoppedWaiting();
+      const releases = this.releases;
       const snapshot = await checkBudget(this.projectId);
+      // #2317 — a call finished during the check: read the ledger again, after its write.
+      if (this.releases !== releases) continue;
       if (this.fits(snapshot)) {
         this.inFlight += 1;
         clock?.admitted();
@@ -300,6 +335,7 @@ class BudgetGate {
 
   release(): void {
     this.inFlight -= 1;
+    this.releases += 1;
     const wake = [...this.waiting];
     this.waiting.clear();
     for (const w of wake) w();
@@ -313,11 +349,10 @@ class BudgetGate {
 
   private nextRelease(signal?: AbortSignal): Promise<void> {
     return new Promise((resolve, reject) => {
-      const stopped = () => new Error("image description stopped while waiting for the budget");
-      if (signal?.aborted) return reject(stopped());
+      if (signal?.aborted) return reject(stoppedWaiting());
       const onAbort = () => {
         this.waiting.delete(wake);
-        reject(stopped());
+        reject(stoppedWaiting());
       };
       const wake = () => {
         signal?.removeEventListener("abort", onAbort);
@@ -329,22 +364,69 @@ class BudgetGate {
   }
 }
 
-/** The project's metered, budget-gated describer on `provider`. */
+/**
+ * #2317 — the gate of each project with a document being described, or a call still in flight,
+ * in this server process.
+ */
+const projectGates = new Map<string, BudgetGate>();
+
+/** Hold the project's shared gate, created on first use. */
+function enterProjectGate(projectId: string): BudgetGate {
+  let gate = projectGates.get(projectId);
+  if (!gate) {
+    gate = new BudgetGate(projectId);
+    projectGates.set(projectId, gate);
+  }
+  gate.enter();
+  return gate;
+}
+
+/** Let go of `gate`; once nothing holds it, a project's next ingest starts from the estimate. */
+function leaveProjectGate(projectId: string, gate: BudgetGate): void {
+  if (gate.leave() && projectGates.get(projectId) === gate) projectGates.delete(projectId);
+}
+
+/** Test seam: forget every project's gate. */
+export function resetProjectGatesForTests(): void {
+  projectGates.clear();
+}
+
+/**
+ * One document's metered, budget-gated describer on `provider`. The document holds its
+ * project's gate from its first call until {@link ImageDescriber.finish}; each call holds it
+ * too, so a call still running after its deadline keeps the gate (and its count in flight)
+ * alive after the document has finished.
+ */
 function budgetedDescriber(scope: ImageDescriptionScope, provider: AIProvider): ImageDescriber {
   if (!canDescribeImages(provider)) return async () => null;
-  const gate = new BudgetGate(scope.projectId);
-  const call = providerImageDescriber(provider, {
-    onUsage: async (usage, model) => gate.spent(await meter(scope, provider, usage, model)),
-    onUnmetered: (err) => noteUnmetered(scope, provider, err),
-  });
-  return async (image, signal, clock) => {
-    await gate.admit(signal, clock);
+  let held: BudgetGate | undefined;
+  let finished = false;
+  const describer: ImageDescriber = async (image, signal, clock) => {
+    // A call that outlived its document's end (it was still resolving) does not hold again.
+    if (!finished) held ??= enterProjectGate(scope.projectId);
+    const gate = enterProjectGate(scope.projectId);
     try {
-      return await call(image, signal);
+      const call = providerImageDescriber(provider, {
+        onUsage: async (usage, model) => gate.spent(await meter(scope, provider, usage, model)),
+        onUnmetered: (err) => noteUnmetered(scope, provider, err),
+      });
+      await gate.admit(signal, clock);
+      try {
+        return await call(image, signal);
+      } finally {
+        gate.release();
+      }
     } finally {
-      gate.release();
+      leaveProjectGate(scope.projectId, gate);
     }
   };
+  describer.finish = () => {
+    finished = true;
+    if (!held) return;
+    leaveProjectGate(scope.projectId, held);
+    held = undefined;
+  };
+  return describer;
 }
 
 /**
@@ -360,7 +442,10 @@ export function projectImageDescriber(
     (await import("../ai/project-provider.js")).resolveProjectProvider(id),
 ): ImageDescriber {
   let describer: Promise<ImageDescriber> | undefined;
-  return async (image, signal, clock) => {
+  /** The resolved describer, once a call has awaited it; {@link ImageDescriber.finish} ends it. */
+  let resolved: ImageDescriber | undefined;
+  let finished = false;
+  const outer: ImageDescriber = async (image, signal, clock) => {
     describer ??= resolve(scope.projectId).then(
       (provider) => budgetedDescriber(scope, provider),
       (err: unknown) => {
@@ -371,6 +456,13 @@ export function projectImageDescriber(
         return async () => null;
       },
     );
-    return (await describer)(image, signal, clock);
+    resolved = await describer;
+    if (finished) resolved.finish?.();
+    return resolved(image, signal, clock);
   };
+  outer.finish = () => {
+    finished = true;
+    resolved?.finish?.();
+  };
+  return outer;
 }
