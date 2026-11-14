@@ -160,6 +160,9 @@ async function hiddenSource(
     ...recorded.map((r) => ({ ...r, id: `recorded:${r.id}` })),
   ]);
   if (hidden.size === 0) return none;
+  // Fails closed by design: a recorded check with no change request reads fully
+  // Restricted to non-admins even where nothing is restricted, if a requirement's
+  // Analysis was ever hard-deleted (no app path does; deletes are soft).
   if (a.sourceRequirementId || (sourceRows !== null && !a.sourceAnalysisId)) return all;
   const visible = rows
     .filter((r) => !hidden.has(r.id))
