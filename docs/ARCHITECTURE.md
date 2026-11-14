@@ -5284,7 +5284,14 @@ project's) while being read, every reading of it is dropped; if its file changed
 connector re-sync) since this run read it, nothing is pruned, so a late run cannot delete the
 newer file's reading; otherwise the document's readings of an earlier file or reader are
 deleted, and other models' readings of the same file stay. Runs with pasted text hide the
-"Read the document again" button, since pasted text is never saved.
+"Read the document again" button, since pasted text is never saved. During a rolling deploy
+that bumps `READER_VERSION`, pods on the two versions prune each other's reading of the same
+file, so a document can be read again until the deploy ends. Neither pod ever reuses the
+other's reading, because the version is in the lookup key (#2319). The upsert and the prune
+are proved on real Postgres in `postgres-adapter`
+(`document-reading-cache-2319-postgres.integration.test.ts`). The
+document-understanding eval's arm R reads through `readDocumentOnce` too, with an in-process
+store (`eval/doc-understanding/reading-store.ts`).
 
 "Read the document again" bypasses the saved reading and replaces it: `rereadDocuments` on
 `POST /projects/:id/analyses`, `rereadDocument` on `POST /impact-analyses` and on
