@@ -166,6 +166,7 @@ describe("getChatCodeTools (#2327)", () => {
       "search_code_symbols",
       "read_file_slice",
       "get_index_status", // #2326
+      "get_change_history", // #2338, on by default since #2488
     ]);
     expect(off[1]!.parameters.properties).not.toHaveProperty("fileGlob");
     const on = getChatCodeTools(undefined, { primitives: true });
@@ -176,6 +177,7 @@ describe("getChatCodeTools (#2327)", () => {
       "get_index_status", // #2326
       "grep_files",
       "list_files",
+      "get_change_history",
     ]);
     expect(on[1]!.parameters.properties).toHaveProperty("fileGlob");
   });

@@ -495,15 +495,9 @@ describe("#140 native tools in chat", () => {
       await stream(app, sid);
       const offered = (model.requests[0]!.opts.tools ?? []).map((t) => t.name).sort();
       // #2327 — the search primitives stay behind their own key, off by default;
-      // #2329 — search_code_context too, off until measured; #2338 — get_change_history
-      // and #2346 — get_file_outline too.
-      const offByDefault = [
-        "grep_files",
-        "list_files",
-        "search_code_context",
-        "get_change_history",
-        "get_file_outline",
-      ];
+      // #2329 — search_code_context too, measured and left off; #2346 — get_file_outline
+      // too. #2338's get_change_history is offered: on by default since #2488.
+      const offByDefault = ["grep_files", "list_files", "search_code_context", "get_file_outline"];
       expect(offered).toEqual(CHAT_CODE_TOOL_NAMES.filter((n) => !offByDefault.includes(n)).sort());
     } finally {
       delete process.env.CHAT_TOOLS;
@@ -520,12 +514,11 @@ describe("#140 native tools in chat", () => {
       const sid = await newSession(app);
       await stream(app, sid);
       const tools = model.requests[0]!.opts.tools ?? [];
-      // #2329's search_code_context, #2338's get_change_history and #2346's get_file_outline
-      // stay behind their own keys.
+      // #2329's search_code_context and #2346's get_file_outline stay behind their own
+      // keys; #2338's get_change_history is on by default (#2488).
       expect(tools.map((t) => t.name).sort()).toEqual(
         CHAT_CODE_TOOL_NAMES.filter(
-          (n) =>
-            n !== "search_code_context" && n !== "get_change_history" && n !== "get_file_outline",
+          (n) => n !== "search_code_context" && n !== "get_file_outline",
         ).sort(),
       );
       const symbols = tools.find((t) => t.name === "search_code_symbols")!;

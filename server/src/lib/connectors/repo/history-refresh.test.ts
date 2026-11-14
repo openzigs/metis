@@ -134,6 +134,31 @@ describe("refreshConnectorHistory", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  // #2488 — measured, so the flag is on when unset: an ingest fetches history.
+  it("reads CHAT_CHANGE_HISTORY_TOOL as on when unset, and off when set to false", async () => {
+    const fetch = vi.fn(async () => readyOutcome);
+    vi.stubEnv("CHAT_CHANGE_HISTORY_TOOL", "");
+    try {
+      const unset = await refreshConnectorHistory("p1", "default-on", {
+        fetch,
+        limits: async () => LIMITS,
+        now: () => NOW,
+      });
+      expect(unset.status).toBe("ready");
+      expect(fetch).toHaveBeenCalledTimes(1);
+
+      await seed("explicit-off", ready);
+      vi.stubEnv("CHAT_CHANGE_HISTORY_TOOL", "false");
+      expect(await refreshConnectorHistory("p1", "explicit-off", { fetch })).toEqual({
+        status: "off",
+      });
+      expect(await exists(resolveRepoHistoryPath("explicit-off"))).toBe(false);
+      expect(fetch).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("fetches at the commit the newest graph records, reading both rows by project", async () => {
     const fetch = vi.fn(async () => readyOutcome);
     const out = await refreshConnectorHistory("p1", "new", on({ fetch }));

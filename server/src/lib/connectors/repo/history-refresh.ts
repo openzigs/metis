@@ -5,7 +5,8 @@
  * ({@link startConnectorHistoryRefresh}); it runs beside the rest of the
  * ingest and never delays it (#2484 review).
  *
- *   - `CHAT_CHANGE_HISTORY_TOOL` off: any history on disk is DELETED (the
+ *   - `CHAT_CHANGE_HISTORY_TOOL` off (on by default since #2488): any history
+ *     on disk is DELETED (the
  *     #2389 review: turning the tool off removes the commit text it kept);
  *   - a `local` / `upload` connector has no history to fetch;
  *   - the history is fetched at the graph's commit, the one the chat citations
@@ -30,6 +31,7 @@ import { getConfigService, type ConfigChangedEvent } from "../../config/config-s
 import { createChildLogger } from "../../logger.js";
 import { prisma } from "../../prisma.js";
 import {
+  CHANGE_HISTORY_DEFAULT,
   CHANGE_HISTORY_FLAG,
   FULL_SHA_RE,
   hasHistoryRepository,
@@ -70,7 +72,7 @@ export interface HistoryRefreshDeps {
 }
 
 function flagOn(): boolean {
-  return getConfigService().getBool(CHANGE_HISTORY_FLAG, false);
+  return getConfigService().getBool(CHANGE_HISTORY_FLAG, CHANGE_HISTORY_DEFAULT);
 }
 
 async function defaultFetch(

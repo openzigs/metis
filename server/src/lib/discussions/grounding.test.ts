@@ -72,6 +72,7 @@ describe("resolveDiscussionTools", () => {
     expect(rt!.toolset.tools.map((t) => t.name).sort()).toEqual(
       [
         "get_index_status", // #2326
+        "get_change_history", // #2338, on by default since #2488
         "read_file_slice",
         "search-knowledge",
         "search_code_graph",
@@ -147,8 +148,12 @@ describe("resolveDiscussionTools", () => {
     });
     expect(rt!.native).toBe(false);
     // The code tools, in the allowlist's order (#2326's get_index_status included);
-    // #2327's primitives and #2329's search_code_context follow their keys (off here).
-    expect(rt!.toolset.tools.map((t) => t.name)).toEqual(DISCUSSION_TOOL_ALLOWLIST.slice(1, 5));
+    // #2327's primitives and #2329's search_code_context follow their keys (off here);
+    // #2338's get_change_history is on by default since #2488.
+    expect(rt!.toolset.tools.map((t) => t.name)).toEqual([
+      ...DISCUSSION_TOOL_ALLOWLIST.slice(1, 5),
+      "get_change_history",
+    ]);
     expect(rt!.note).toContain("read_file_slice");
   });
 

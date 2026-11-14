@@ -905,7 +905,9 @@ before the pinned commit, so an arm's totals from version 3 on are not comparabl
 ones. The `tools-history` arm first fetches each product's history repository at its pinned commit
 (docs/decisions/0023), once; the window is the year before that commit, so the answers do not
 age out. `tools-history` paired with `tools-only` measures the tool: the `H*` questions for the
-gain, the rest for a regression. The tool stays off by default until that pair is run.
+gain, the rest for a regression. #2488 ran that pair (below), and the tool is on by default
+since: a server with `CHAT_CHANGE_HISTORY_TOOL` unset offers it, but every arm still sets the
+flag itself, so `on` and the `no-*` arms keep their meaning.
 
 An arm with the reranker on runs the embedder inline so the reranker can share the main
 thread (#222). On macOS such an arm can abort with `libc++abi: … mutex lock failed` as it
@@ -1783,3 +1785,88 @@ A third run, `tools-context` beside `mcp`, would separate the two causes exactly
 run: the API account ran out of credit first. Spend for #2331: **$3.45** over the three runs,
 answers and judge.
 
+### `get_change_history` measured before turning it on (#2488), 2026-11-14
+
+`get_change_history` (#2338) shipped switched off behind `CHAT_CHANGE_HISTORY_TOOL`. #2488's
+rule: turn it on by default if the three "when and why" questions (`H1`–`H3`, fixture version
+3) gain and no other question regresses beyond run-to-run variation. The `tools-history` arm is
+`tools-only` with exactly that flag on, so the pair differs in one tool. The code measured is
+`8daf49cd` (`main`); the arms set every flag themselves, so the default flip in #2488 does not
+change what either arm runs. One fresh materialization, the knowledge ingest through
+`--floor-sweep` (no model), then six runs alternating off, on, off, on, off, on (Sonnet 5.5
+answers and judge, all 26 questions):
+
+```bash
+pnpm eval:ba-qa --arm tools-only --budget 3      # off
+pnpm eval:ba-qa --arm tools-history --budget 3   # on
+```
+
+The first `tools-history` run fetched each product's history repository at its pinned commit
+(miniflux from 2025-07-23, the python client from 2025-03-24); later runs reused it.
+
+| | off 1 | on 1 | off 2 | on 2 | off 3 | on 3 |
+|---|---:|---:|---:|---:|---:|---:|
+| Correctness: mean facts stated, all questions | 51.3% | 63.7% | 56.3% | 60.0% | 44.9% | 70.4% |
+| Mean facts stated, `H1`–`H3` | 33.3% | 100% | 33.3% | 88.9% | 22.2% | 100% |
+| Mean facts stated, every other question | 55.1% | 56.4% | 60.9% | 54.2% | 49.8% | 64.4% |
+| Mean facts stated, the 13 questions scored in all six runs | 51.7% | 51.7% | 56.8% | 49.1% | 47.8% | 60.9% |
+| Fully correct answers | 5/17 | 7/18 | 5/18 | 6/18 | 3/17 | 10/18 |
+| Citation precision, line spans | 100% (71/71) | 99% (101/102) | 99% (89/90) | 98% (84/86) | 98% (99/101) | 99% (76/77) |
+| Citation precision, files without lines | 36% (5/14) | 31% (4/13) | 14% (2/14) | 27% (3/11) | 22% (2/9) | 29% (4/14) |
+| Citation recall (expected files cited) | 17/48 | 21/50 | 23/50 | 21/50 | 18/46 | 22/50 |
+| False abstention on answerable | 6/17 | 4/18 | 6/18 | 3/18 | 6/17 | 4/18 |
+| Abstention, follow-up, confident guess (U, A) | 4/4, 4/4, 0/4 | 4/4, 4/4, 0/4 | 4/4, 4/4, 0/4 | 4/4, 4/4, 0/4 | 4/4, 4/4, 0/4 | 4/4, 4/4, 0/4 |
+| Questions the judge's reply left unscored | 1 (S5) | 0 | 0 | 0 | 1 (S3) | 0 |
+| Model calls (turns) per question | 2.88 | 2.65 | 2.96 | 2.65 | 2.81 | 2.69 |
+| Tool calls, all 26 questions | 97 | 94 | 104 | 90 | 94 | 88 |
+| `get_change_history` calls | 0 | 5 | 0 | 5 | 0 | 4 |
+| Tool results cut by the model cap | 4 | 4 | 4 | 5 | 6 | 3 |
+| Input tokens per question | 32,253 | 30,731 | 36,831 | 29,676 | 31,484 | 31,326 |
+| Spend | $1.086220 | $1.163393 | $1.233176 | $1.105817 | $1.145758 | $1.107814 |
+
+Per question, each question's facts stated over its three runs (on minus off, as a share of its
+facts). Questions not listed scored the same in all six runs, or 0 in all six (M1 to M4 reach
+chat unscoped and abstain in both arms), or were left unscored once (S3 and S5, which stated
+4 and 3 facts in every scored run of both arms).
+
+| Question | Facts | Off, each run | On, each run | On − off |
+|---|---:|---|---|---:|
+| H1 | 3 | 1, 1, 1 | 3, 3, 3 | +67 pts |
+| H2 | 3 | 2, 2, 1 | 3, 2, 3 | +33 pts |
+| H3 | 3 | 0, 0, 0 | 3, 3, 3 | +100 pts |
+| S1 | 6 | 3, 3, 2 | 3, 3, 3 | +6 pts |
+| S2 | 5 | 4, 4, 4 | 4, 4, 5 | +7 pts |
+| S7 | 3 | 3, 3, 3 | 2, 3, 3 | −11 pts |
+| S8 | 3 | 3, 2, 3 | 3, 3, 3 | +11 pts |
+| S9 | 3 | 3, 3, 2 | 2, 2, 2 | −22 pts |
+| S10 | 3 | 0, 3, 0 | 1, 0, 3 | +11 pts |
+| S11 | 3 | 2, 2, 2 | 3, 2, 3 | +22 pts |
+
+**Decision: `CHAT_CHANGE_HISTORY_TOOL` is on by default.**
+
+- **The `H*` questions gained, in every run.** Facts stated on `H1`–`H3` rose from 8 of 27 (30%)
+  to 26 of 27 (96%), and fully correct answers from 0 of 9 to 8 of 9. Without the tool the model
+  abstained on `H1` and `H3` in all three runs: the "when" is in no file. With it, every `H*`
+  session called `get_change_history` (14 calls in 9 sessions) and answered. The one fact still
+  missed is `H2.c` in on 2, judged contradicted, as it was once in off 3 too.
+- **No other question regressed beyond run-to-run variation.** On the other questions the run
+  means are 58.3% on against 55.3% off; the off arm alone spread over 11.1 points (49.8% to
+  60.9%). On the 13 questions scored in all six runs it is 53.9% against 52.1%, with the off
+  arm spread over 9.0 points. Five questions gained and two lost (sign test p ≈ 0.45). The two
+  losses are inside each question's own spread: every S9 on run scored what its worst off run
+  did (2 of 3), and S7 lost one fact in one run. Neither session called the tool (it was called
+  on no question but `H1`–`H3`), and S9 also lost 11 points beside an unrelated tool in #2412.
+- **Citation precision held.** On line spans it was 98.9% off (259/262) and 98.5% on (261/265),
+  pooled; on files named without lines, 24% off (9/37) and 29% on (11/38).
+- **It cost nothing measurable.** Model calls per question read 2.88 off and 2.66 on, input
+  tokens 33,523 and 30,578 per question, and spend $3.47 and $3.38 over three runs: the
+  abstentions it replaced each took several searches first.
+
+Two judge replies could not be parsed, both in the off arm (S5 in off 1: prose with braces
+before the JSON; S3 in off 3: a second, corrected JSON object after the first). An unparsed
+reply leaves the question out of that run's rates rather than scoring it zero, and S3 and S5
+stated the same facts in every other run of both arms, so neither changes the decision.
+
+The per-question scores and tool calls of the six runs (no transcripts) are in
+`readings/ba-qa/2488-change-history-paired.json`. Spend for #2488: **$6.941348**, the six runs
+($6.842178) and one two-question `tools-history` smoke run before them ($0.099170).

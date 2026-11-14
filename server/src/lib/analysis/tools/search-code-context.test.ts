@@ -724,6 +724,7 @@ describe("offering it in chat", () => {
       "read_file_slice",
       "get_index_status", // #2326, on by default
       SEARCH_CODE_CONTEXT_TOOL,
+      "get_change_history", // #2338, on by default since #2488
     ]);
     // Nameable in an agent's allowlist, and its results are evidence for citations.
     expect(CHAT_CODE_TOOL_NAMES).toContain(SEARCH_CODE_CONTEXT_TOOL);
