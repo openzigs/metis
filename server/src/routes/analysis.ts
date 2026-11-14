@@ -105,6 +105,7 @@ import {
   analysisApprovalReviewRateLimiter,
 } from "../middleware/analysis-approval-rate-limit.js";
 import {
+  loadSourceGuard,
   restrictedIds,
   userSourceReader,
   type SourceReader,
@@ -331,6 +332,45 @@ async function ensureRequirementSourcesVisible(
   if (row && (await restrictedIds(readerOf(req), [row])).size > 0) {
     throw new AppError(404, "REQUIREMENT_NOT_FOUND", "Requirement not found");
   }
+}
+
+/**
+ * #2447 — the reviewed-list entry a requirement approval of run `analysisId`
+ * names, when the caller cannot see it, answers like an unknown approval
+ * (404): an edit would send its text back and overwrite what they cannot read.
+ * An entry promoted into a requirement is decided by that requirement's
+ * sources; one not yet promoted rests on the run as a whole. An unknown
+ * approval passes: the handler gives its own 404.
+ */
+async function ensureCheckpointEntryVisible(
+  req: Request,
+  analysisId: string,
+  approvalId: string,
+): Promise<void> {
+  const approval = await prisma.approvalRequest.findFirst({
+    where: { id: approvalId, analysisId },
+    select: { itemId: true },
+  });
+  if (!approval) return;
+  const promoted = await prisma.requirement.findFirst({
+    where: { analysisId, promotedStructuredId: approval.itemId, deletedAt: null },
+    select: { analysisId: true, sourceIds: true },
+  });
+  const guard = await loadSourceGuard(readerOf(req), [promoted ?? { analysisId, sourceIds: null }]);
+  const visible = promoted ? guard.canSee(promoted) : guard.canSeeRun(analysisId);
+  if (!visible) {
+    throw new AppError(404, "APPROVAL_NOT_FOUND", `Approval request ${approvalId} not found`);
+  }
+}
+
+/**
+ * #2447 — whether the caller may see what rests on run `analysisId` as a whole
+ * (its clarify dialog, its withheld re-synthesis): every document the run
+ * read, as its access list is now (`canSeeRun`).
+ */
+async function seesRunAsWhole(req: Request, analysisId: string): Promise<boolean> {
+  const guard = await loadSourceGuard(readerOf(req), [{ analysisId, sourceIds: null }]);
+  return guard.canSeeRun(analysisId);
 }
 
 /** #2447 — the snapshot loader of a report the caller reads: redacted for them. */
@@ -1114,6 +1154,12 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
       const analysisId = String(req.params.id);
       const projectId = String(req.params.projectId);
       await ensureAnalysisVisible(analysisId, projectId);
+      // #2447 — the dialog rests on the run as a whole: none, for a reader who
+      // cannot see every document it read.
+      if (!(await seesRunAsWhole(req, analysisId))) {
+        res.json(ok({ state: null }));
+        return;
+      }
       const state = await getDialogState(analysisId);
       res.json(ok({ state: state ?? null }));
     },
@@ -1469,7 +1515,10 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
       const projectId = String(req.params.projectId);
       await ensureAnalysisVisible(analysisId, projectId);
 
-      const state = await getDialogState(analysisId);
+      // #2447 — as for no dialog, to a reader who cannot see the run as a whole.
+      const state = (await seesRunAsWhole(req, analysisId))
+        ? await getDialogState(analysisId)
+        : undefined;
       const questions = state?.rounds.at(-1)?.questions ?? [];
       if (!state || questions.length === 0) {
         throw new AppError(
@@ -2092,7 +2141,11 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
       const analysisId = String(req.params.id);
       const projectId = String(req.params.projectId);
       await ensureAnalysisVisible(analysisId, projectId);
-      const diff = await getWithheldReplacementDiff(analysisId);
+      // #2447 — a re-synthesis rests on the run as a whole: as for none, to a
+      // reader who cannot see every document it read.
+      const diff = (await seesRunAsWhole(req, analysisId))
+        ? await getWithheldReplacementDiff(analysisId)
+        : null;
       if (!diff) {
         throw new AppError(
           404,
@@ -2338,6 +2391,7 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
         });
       }
       await ensureAnalysisVisible(analysisId, projectId);
+      await ensureCheckpointEntryVisible(req, analysisId, approvalId);
 
       const actor = actorFromReq(req);
       const requirement = await editCheckpointRequirement(

@@ -458,6 +458,50 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(snapshot.agents[0]!.summary).toBeNull();
       });
 
+      it("hides the narrative of a shared run every row of which records its sources", async () => {
+        // No row rests on the run as a whole: the narrative alone does.
+        const RUN = "cr-2447-listed";
+        await db.analysis.create({
+          data: {
+            id: RUN,
+            projectId: P,
+            startedById: "alice",
+            status: "completed",
+            completedAt: new Date(),
+            title: "Listed",
+            sourceAccess: "shared",
+          },
+        });
+        await db.agentResult.create({
+          data: {
+            analysisId: RUN,
+            agentKey: "code",
+            status: "completed",
+            output: JSON.stringify({ summary: "Read the payroll document", notes: [] }),
+            findings: {
+              create: [
+                {
+                  id: "f-2447-listed",
+                  category: "security",
+                  severity: "high",
+                  title: "Listed finding",
+                  body: "body",
+                  sourceIds: sources(["d-secret"]),
+                },
+              ],
+            },
+          },
+        });
+        try {
+          const bob = (await get("bob", `/api/analyses/${RUN}`)).body.data as AnalysisSnapshot;
+          expect(bob.agents[0]!.summary).toBeNull();
+          const alice = (await get("alice", `/api/analyses/${RUN}`)).body.data as AnalysisSnapshot;
+          expect(alice.agents[0]!.summary).toBe("Read the payroll document");
+        } finally {
+          await db.analysis.delete({ where: { id: RUN } });
+        }
+      });
+
       it("shows Bob what rests on a shared run whose every recorded source he can see", async () => {
         const res = await get("bob", `/api/analyses/${CR_OPEN}`);
         expect(res.status).toBe(200);
@@ -691,6 +735,87 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect((await get("root", "/api/requirements/req-2447-secret/history/export")).status).toBe(
           200,
         );
+      });
+
+      it("the run's clarify dialog and its export answer Bob as for none", async () => {
+        // The dialog rests on the run as a whole: CR read d-secret.
+        await db.clarificationDialogState.create({
+          data: {
+            analysisId: CR,
+            state: JSON.stringify({
+              analysisId: CR,
+              status: "awaiting_answers",
+              rounds: [
+                {
+                  round: 1,
+                  questions: [
+                    {
+                      id: "q1",
+                      requirementId: "s-new",
+                      requirementTitle: SECRET,
+                      ambiguityField: "scope",
+                      question: `What does ${SECRET} cover?`,
+                    },
+                  ],
+                  answers: [],
+                },
+              ],
+              answeredAmbiguities: [],
+            }),
+          },
+        });
+        try {
+          const clarify = (who: Who) => get(who, `/api/projects/${P}/analyses/${CR}/clarify`);
+          const bob = await clarify("bob");
+          expect(bob.status).toBe(200);
+          expect(bob.body.data).toEqual({ state: null });
+          expect(JSON.stringify((await clarify("alice")).body)).toContain(SECRET);
+          const exported = await get("bob", `/api/projects/${P}/analyses/${CR}/clarify/export`);
+          // As for a run with no dialog at all.
+          const none = await get("bob", `/api/projects/${P}/analyses/${CR_OPEN}/clarify/export`);
+          expect(exported.status).toBe(none.status);
+          expect(exported.body.error.code).toBe(none.body.error.code);
+          expect(exported.text).not.toContain("Payroll");
+        } finally {
+          await db.clarificationDialogState.deleteMany({ where: { analysisId: CR } });
+        }
+      });
+
+      it("a checkpoint entry Bob cannot see is not his to edit, and its text is never sent back", async () => {
+        // s-new is not promoted yet: it rests on CR as a whole, which read d-secret.
+        await db.approvalRequest.create({
+          data: { id: "ap-2447-new", analysisId: CR, type: "requirement", itemId: "s-new" },
+        });
+        await db.approvalRequest.create({
+          data: { id: "ap-2447-cart", analysisId: CR_OPEN, type: "requirement", itemId: "s-cart" },
+        });
+        try {
+          const edit = (who: Who, run: string, approvalId: string) =>
+            request(app())
+              .patch(`/api/projects/${P}/analyses/${run}/approvals/${approvalId}/requirement`)
+              .set("Authorization", bearer(who))
+              .send({ title: "Renamed" });
+          const bob = await edit("bob", CR, "ap-2447-new");
+          const unknown = await edit("bob", CR, "ap-2447-nope");
+          expect(bob.status).toBe(404);
+          expect(bob.body.error.code).toBe(unknown.body.error.code);
+          expect(JSON.stringify(bob.body)).not.toContain("Not yet promoted");
+          // Unchanged in the run's reviewed list.
+          const meta = JSON.parse(
+            (await db.analysis.findUniqueOrThrow({ where: { id: CR } })).metadata!,
+          ) as { structuredRequirements: { requirements: Array<{ id: string; title: string }> } };
+          expect(
+            meta.structuredRequirements.requirements.find((r) => r.id === "s-new")!.title,
+          ).toBe("Not yet promoted");
+          // A run whose every source Bob can see: his edit is not refused for its sources.
+          expect((await edit("bob", CR_OPEN, "ap-2447-cart")).body.error?.code).not.toBe(
+            "APPROVAL_NOT_FOUND",
+          );
+        } finally {
+          await db.approvalRequest.deleteMany({
+            where: { id: { in: ["ap-2447-new", "ap-2447-cart"] } },
+          });
+        }
       });
 
       it("an edit on the change request page is refused to Bob before the lock reads it", async () => {

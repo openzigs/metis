@@ -46,6 +46,13 @@ vi.mock("../lib/prisma.js", () => ({
   },
 }));
 
+// #2447 — whether the caller sees the run as a whole is pinned over a real
+// database in tests/source-redaction-2447.sqlite.test.ts; here they do.
+vi.mock("../lib/analysis/source-redaction.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/analysis/source-redaction.js")>()),
+  loadSourceGuard: async () => ({ canSee: () => true, canSeeRun: () => true }),
+}));
+
 // Dialog + the rest of the analysis surface are mocked: on the mismatch path
 // none of them should be reached.
 const startOrContinue = vi.fn();
