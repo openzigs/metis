@@ -5,7 +5,7 @@
  * marked when not. Nothing under a human message or a reply still streaming.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import { makeWrapper } from "./test-utils";
 
 const { list } = vi.hoisted(() => ({ list: vi.fn() }));
@@ -25,6 +25,7 @@ vi.mock("@/lib/api-client", () => ({
 }));
 
 import type { ChatCitation } from "@metis/shared";
+import type { DiscussionMessageNewEvent, DiscussionMessageStreamEvent } from "@metis/shared";
 import { useSocket } from "@/lib/socket-client";
 import { listMessages } from "@/lib/discussions-api";
 import {
@@ -131,5 +132,52 @@ describe("#2290 — citations under an AI discussion reply", () => {
     const link = await within(box).findByRole("link");
     expect(link.getAttribute("href")).toContain("https://github.com/acme/reader/blob/");
     expect(list).toHaveBeenCalledWith("p1");
+  });
+  it("a live message:new carrying citations, landing over the streamed reply, renders its citations", async () => {
+    // Capture the thread view's socket handlers so the test can fire them.
+    const handlers = new Map<string, (evt: unknown) => void>();
+    vi.mocked(useSocket).mockReturnValue({
+      emit: vi.fn(),
+      on: vi.fn((name: string, fn: (evt: unknown) => void) => handlers.set(name, fn)),
+      off: vi.fn(),
+    } as never);
+    vi.mocked(listMessages).mockResolvedValue([]);
+    const Wrapper = makeWrapper({});
+    render(
+      <Wrapper>
+        <DiscussionThreadView threadId="t1" currentUserId="u1" projectId="p1" />
+      </Wrapper>,
+    );
+    await vi.waitFor(() => expect(handlers.has("message:new")).toBe(true));
+
+    // The reply streams in first (a streaming reply shows no citations)...
+    const chunk: DiscussionMessageStreamEvent = {
+      threadId: "t1",
+      messageId: "ai1",
+      delta: "See the scheduler.",
+      done: false,
+      ts: 1,
+    };
+    act(() => handlers.get("message:stream")!(chunk));
+    expect(await screen.findByText("See the scheduler.")).toBeInTheDocument();
+    expect(screen.queryByTestId("chat-citations")).toBeNull();
+
+    // ...then the authoritative row lands live, through mergeServerMessages + upsert.
+    const landed: DiscussionMessageNewEvent = {
+      threadId: "t1",
+      message: msg({ citations: CITATIONS }),
+      ts: 2,
+    };
+    act(() => handlers.get("message:new")!(landed));
+
+    const box = await screen.findByTestId("chat-citations");
+    expect(box).toHaveTextContent("Citations · 1 verified · 1 not verified");
+    const items = within(box).getAllByTestId("chat-citation");
+    expect(items.map((i) => i.getAttribute("data-status"))).toEqual(["verified", "not-read"]);
+    const link = await within(items[0]!).findByRole("link");
+    expect(link).toHaveAttribute(
+      "href",
+      `https://github.com/acme/reader/blob/${SHA}/internal/model/feed.go#L120-L150`,
+    );
   });
 });
