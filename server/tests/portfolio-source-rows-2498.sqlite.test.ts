@@ -205,7 +205,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
 
     /** Checks started while `d-secret` was open, and one after it was restricted. */
-    const checks = { withheld: "", resynthesis: "", single: "", readOpenOnly: "" };
+    const checks = { withheld: "", resynthesis: "", single: "", readOpenOnly: "", moved: "" };
+    const MOVED = "Invoices show the tax";
 
     beforeAll(async () => {
       sqlite = createMigratedSqlite("2498-portfolio-source-rows");
@@ -256,6 +257,11 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       checks.withheld = await start({ analysisId: "cr-withheld" });
       checks.resynthesis = await start({ analysisId: "cr-resynthesis" });
       checks.single = await start({ requirementId: "cr-single-secret" });
+      // A row that cites d-secret when read, and d-open later (its evidence re-cited).
+      await run("cr-moved");
+      await requirement("cr-moved-row", "cr-moved", MOVED, "d-secret");
+      checks.moved = await start({ analysisId: "cr-moved" });
+      await complete(checks.moved, [quote(MOVED)]);
       for (const id of [checks.withheld, checks.resynthesis]) {
         await complete(id, [quote(OPEN), quote(SECRET)]);
       }
@@ -372,6 +378,17 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(bob.summary).toBe(STORED_SUMMARY);
       expect(criteriaOf(bob)).toEqual([quote(OPEN)]);
       expect(bob.report?.requirements.map((r) => r.text)).toEqual([`${quote(OPEN)}, restated`]);
+    });
+
+    it("a recorded row that still exists is decided on its sources now, not only as recorded", async () => {
+      // Recorded citing d-secret, which Bob can no longer see; it now cites d-open only.
+      await db.requirement.update({
+        where: { id: "cr-moved-row" },
+        data: { sourceIds: sources(["d-open"]) },
+      });
+      const bob = await view("bob", checks.moved);
+      // Its text opens what a row Bob can see says now: the criterion stands.
+      expect(criteriaOf(bob)).toEqual([quote(MOVED)]);
     });
 
     it("a record that does not parse shows Bob none of the check's text (fail closed)", async () => {
