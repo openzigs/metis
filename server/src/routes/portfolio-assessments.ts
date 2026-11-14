@@ -414,6 +414,8 @@ async function runAssessment(
     const { input, notChecked, costUsd: readCostUsd } = await resolveDocumentSource(source, deps);
     const gap = await evaluatePortfolioGap(user, input, {
       ...deps.gap,
+      // #2354 — the reading's cost counts against the run's cap, and is in the gap's cost.
+      spentUsd: readCostUsd,
       onProgress: ({ done, total }) =>
         jobEvents.progress(
           KIND,
@@ -454,7 +456,6 @@ async function runAssessment(
             ...record,
             // #2272 — what its source could not give the check, then what the run did not check.
             notChecked: [...notChecked, ...(record.notChecked ?? [])],
-            costUsd: (record.costUsd ?? 0) + readCostUsd,
           },
           impact,
         ),

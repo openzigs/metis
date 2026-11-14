@@ -1539,7 +1539,7 @@ The rules that hold across the run, each detailed in the paragraphs below:
 
   | Knob | Default | Bounds |
   |---|---|---|
-  | `PORTFOLIO_GAP_RUN_COST_CAP_CENTS` | 200 | the whole run's model spend |
+  | `PORTFOLIO_GAP_RUN_COST_CAP_CENTS` | 200 | the whole run's model spend, counting a document's reading before the gap check (#2354) |
   | `PORTFOLIO_GAP_PRODUCT_COST_CAP_CENTS` | 50 | one product's model spend |
   | `PORTFOLIO_GAP_MAX_MODEL_CALLS` | 250 | the run's model calls, counted as each starts |
   | `PORTFOLIO_GAP_CONCURRENCY` | 4 | products checked at once, one call at a time per product |
@@ -1663,7 +1663,12 @@ A repo with no excerpts, a failed search, an unparseable reply or no budget left
 a gap. Fan-out is bounded by `PORTFOLIO_GAP_RUN_COST_CAP_CENTS` (200),
 `PORTFOLIO_GAP_PRODUCT_COST_CAP_CENTS` (50), `PORTFOLIO_GAP_MAX_MODEL_CALLS` (250, #1657)
 and `PORTFOLIO_GAP_CONCURRENCY` (4 products at once, each one call at a time). A cost cap
-stops new calls; the spend can pass it by the calls already in flight. Cost is priced from
+stops new calls; the spend can pass it by the calls already in flight. #2354 — a check
+started from a document charges the reading's cost to the run's budget first (`spentUsd`), so
+a reading that used the cap leaves the repos `budget`. A product's criteria groups are searched
+up to `PORTFOLIO_GROUP_SEARCH_CONCURRENCY` (4) at once, ahead of their verdict calls, which
+still run one at a time in order; a group is searched only while the budget allows a call.
+Cost is priced from
 the provider's usage; an unpriced model counts 0, which is why the call cap exists: it is
 counted as each call starts, so it is never passed. Once one product fails the run, no new
 product is started.

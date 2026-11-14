@@ -278,6 +278,12 @@ export interface PortfolioGapDeps {
   signal?: AbortSignal;
   /** Called as each product in scope finishes (#1625 job progress). */
   onProgress?: (progress: { done: number; total: number }) => void;
+  /**
+   * #2354 — USD the run spent before the engine started (a document's reading), charged to the
+   * run's budget first: it counts against {@link PortfolioGapLimits.runCostCapUsd} and is part
+   * of the result's `costUsd`.
+   */
+  spentUsd?: number;
 }
 
 // ─── Budget ─────────────────────────────────────────────────────────────────
@@ -727,6 +733,13 @@ async function retrieveShared(
   }
 }
 
+/**
+ * #2354 — criteria groups one product searches for at once. Each group's model calls still run
+ * one at a time, in order; a group's search starts only while the budget allows a call, so
+ * once it is spent at most this many searches already started are left unused.
+ */
+export const PORTFOLIO_GROUP_SEARCH_CONCURRENCY = 4;
+
 /** #1763 — project searches {@link retrievePerRepo} runs at once for one product. */
 const PER_REPO_SEARCH_CONCURRENCY = 4;
 /**
@@ -831,18 +844,20 @@ export function mergeRepoGroups(parts: readonly PortfolioRepoResult[]): Portfoli
   };
 }
 
-/** One repo's verdict on one criteria group, from the retrieval that group's query made. */
+/**
+ * One repo's verdict on one criteria group, from the retrieval that group's query made; `null`
+ * when the group was not searched because the budget was spent (#2354).
+ */
 async function evaluateRepoGroup(
   ctx: RunContext,
   group: CriteriaGroup,
   groupIndex: number,
   productId: string,
   repo: RepoTarget,
-  retrieval: Retrieval,
+  retrieval: Retrieval | null,
 ): Promise<PortfolioRepoResult> {
   const n = group.criteria.length;
   const key = `${repo.repoConnectionId}\u0000${groupIndex}`;
-  const hits = retrieval.hitsByRepo.get(repo.repoConnectionId) ?? [];
   if (ctx.repoVerdicts.has(key)) {
     // #1726 — assessed already for another product in this run: reused (checked before this
     // product's own search result, so the same repo does not read "no evidence" here and a
@@ -850,11 +865,14 @@ async function evaluateRepoGroup(
     const assessed = await ctx.repoVerdicts.get(key)!;
     return { ...assessed, productId, costUsd: 0 };
   }
-  if (!retrieval.searched.has(repo.projectId)) {
+  if (retrieval && !retrieval.searched.has(repo.projectId)) {
     return notVerified(productId, repo, n, "retrieval-failed");
   }
-  if (hits.length === 0) return notVerified(productId, repo, n, "no-evidence-retrieved");
-  if (!ctx.budget.allows(productId)) {
+  const hits = retrieval?.hitsByRepo.get(repo.repoConnectionId) ?? [];
+  if (retrieval && hits.length === 0) {
+    return notVerified(productId, repo, n, "no-evidence-retrieved");
+  }
+  if (!retrieval || !ctx.budget.allows(productId)) {
     // #2272 — listed not checked: this repo was never judged on these criteria.
     const skipped = ctx.budgetSkipped.get(groupIndex) ?? new Set<string>();
     skipped.add(repo.repoConnectionId);
@@ -877,11 +895,25 @@ async function evaluateProduct(
   // #2272 — per repo, its verdict on each criteria group, in group order.
   const parts: PortfolioRepoResult[][] = targets.repos.map(() => []);
   if (targets.repos.length > 0) {
+    // #2354 — a group's search starts ahead of its turn, at most
+    // PORTFOLIO_GROUP_SEARCH_CONCURRENCY at once, and only while the budget allows a call.
+    const searches: Promise<Retrieval | null>[] = [];
+    const search = (gi: number): void => {
+      if (gi >= ctx.groups.length) return;
+      const started = !ctx.budget.allows(product.id)
+        ? Promise.resolve(null)
+        : ctx.limits.perRepoSearch
+          ? retrievePerRepo(ctx, ctx.groups[gi], product.id, targets.repos)
+          : retrieveShared(ctx, ctx.groups[gi], product.id, targets.repos);
+      // A search that rejects once the run has stopped (an abort) is awaited by no one.
+      started.catch(() => undefined);
+      searches[gi] = started;
+    };
+    for (let gi = 0; gi < PORTFOLIO_GROUP_SEARCH_CONCURRENCY; gi++) search(gi);
     for (const [gi, group] of ctx.groups.entries()) {
       throwIfAborted(ctx.signal);
-      const retrieval = ctx.limits.perRepoSearch
-        ? await retrievePerRepo(ctx, group, product.id, targets.repos)
-        : await retrieveShared(ctx, group, product.id, targets.repos);
+      const retrieval = await searches[gi];
+      search(gi + PORTFOLIO_GROUP_SEARCH_CONCURRENCY);
       for (const [k, repo] of targets.repos.entries()) {
         throwIfAborted(ctx.signal);
         parts[k].push(await evaluateRepoGroup(ctx, group, gi, product.id, repo, retrieval));
@@ -1128,6 +1160,8 @@ async function evaluateParsed(
     budget: new Budget(limits),
     signal: deps.signal,
   };
+  // #2354 — what the run spent before the engine (a document's reading) counts against its cap.
+  base.budget.charge(null, deps.spentUsd ?? 0);
 
   const scoped = await resolveScope(user, input.scope, input.productIds);
   // Nothing readable to check: no model call is worth making.

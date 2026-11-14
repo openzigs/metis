@@ -149,6 +149,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     }));
 
     const federated = new FederatedSearchService({ knowledgeService: fixtureKnowledgeService() });
+    /** #2354 — the run's cost cap, in USD; a test lowers it. */
+    let runCostCapUsd = 100;
     const app = () => {
       const a = express();
       a.use(express.json());
@@ -160,7 +162,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
               return scriptedProvider();
             },
             search: federated.searchAcrossProjects.bind(federated),
-            limits: { runCostCapUsd: 100, productCostCapUsd: 100, concurrency: 2 },
+            limits: { runCostCapUsd, productCostCapUsd: 100, concurrency: 2 },
             costOf: () => 0.01,
           },
           document: {
@@ -413,6 +415,22 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           count: "A very long requirement\n\n".length + 500,
         },
       ]);
+    });
+
+    it("#2354 — the reading's cost counts against the run's cap, and is counted once", async () => {
+      // The reading costs $0.05: with a $0.05 cap, no repository is checked after it.
+      runCostCapUsd = 0.05;
+      const id = await start("ana", { documentId: DOC_A, scope: "product", productIds: [P1] });
+      const view = await settled(id, "ana");
+      runCostCapUsd = 100;
+      expect(view.status).toBe("completed");
+      expect(view.notChecked).toEqual(
+        expect.arrayContaining(
+          RESET_CRITERIA.map((text) => ({ text, reason: "budget", count: expect.any(Number) })),
+        ),
+      );
+      // The reading's $0.05, and the report's one $0.01 call, once each.
+      expect(view.costUsd).toBeCloseTo(0.06, 10);
     });
 
     it("hosts the requirement on one of several chosen products", async () => {

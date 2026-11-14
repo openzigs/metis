@@ -2325,7 +2325,7 @@ Markdown export, lists everything the check did not check, and why: [#2272]
 | *Not checked in full* | A requirement's text is longer than one check reads (8,000 characters for the requirement, 2,000 for each criterion); the number of characters left out is given. |
 | *The model could not read this section* | A section of the document the AI model could not read. |
 | *Statements were dropped* | Statements the model read whose quote is not in the document, so they were not kept. |
-| *Not checked in N repositories* | The check's budget ran out before those repositories were checked for this requirement. |
+| *Not checked in N repositories* | The check's budget ran out before those repositories were checked for this requirement. For a check started from a document, reading the document counts against that budget too. |
 
 A claim that something is implemented is accepted only with cited code from that
 repository, and the repository is named next to every citation. The repositories must be
@@ -2395,7 +2395,7 @@ reaches.
 
 | Impact | What it means |
 |---|---|
-| **Must change** | It partly covers the requirement, so the rest must be built there. |
+| **Must change** | It partly covers the requirement, so the rest must be built there, or it is the product you chose to build it (see *Which product will build this?* below). |
 | **Downstream consumer** | It uses something a changing product provides, *via* an API, an event, a shared database, a shared library or shared identity. It shows a severity badge. A downstream product you cannot read is listed as *A product you cannot read*, with no name, *via* or severity. |
 | **Restricted** | A product you can read, but whose impact cannot be shown in full. Either the change reaches it along a path that runs through a repository or product you cannot read, so the path is withheld (*"Its impact path goes through a repository or product you cannot read"*). Or the change may reach it through a repository or product that the person who ran the check cannot read, so the check could not follow the change there, and whether it reaches this product at all is not known (*"The change may reach it through a repository or product that the person who ran the check cannot read…"*). That is so when the change would reach this product if the check could follow it everywhere, as far as the check looks, whether the way runs through a product that person cannot read, through a repository of a readable product that they cannot read, or along a coupling recorded on a product they cannot read, even one between two repositories they can read. It does not depend on where else the check stopped. A product the change cannot reach, such as one that only provides something to that product, stays **Not affected**. Older checks read differently. A check run before METIS looked for a connection to the product it stopped at relabelled every product the change did not reach; such a product's note says the check stopped at a product it could not read. A check run under the older connection rule relabelled the products connected to that product; such a product's note says it is connected to it, and the **Not affected** group says a product listed there may still be reached. A check run before METIS followed the change past a repository or a coupling that person cannot read, and that stopped at no product they cannot read, relabelled nothing; its **Not affected** group says the same. Running any of these checks again gives the current answer. |
 | **Not affected** | Nothing reaches it. These products are listed in the collapsed **Not affected** group. |
@@ -2408,8 +2408,8 @@ Markdown export has it in an **Impact tier** column): [#2272]
 | **Found in code** | Must change: the check found its code covers or partly covers the requirement. This comes from reading the product's code, not from a path through the graph. |
 | **Verified by graph path** | Downstream only: every coupling on the path to it was declared (or corrected) by a person, or detected with a confidence of at least 0.8. |
 | **Likely** | Downstream: every coupling on the path was detected with a confidence of at least 0.5. Must change: it was chosen to build the requirement (or holds that product's repository), and no code of it was found yet. |
-| **Possible** | A coupling on the path was detected with a confidence below 0.5. |
-| **Needs review** | The path cannot be shown to you: it runs through a product or repository you cannot read, or the change may reach the product through one the person who ran the check cannot read. |
+| **Possible** | Downstream: a coupling on the path was detected with a confidence below 0.5. |
+| **Needs review** | The path cannot be shown to you: it runs through a product or repository you cannot read, the change may reach the product through one the person who ran the check cannot read, or the check stored no path to it that can be read. |
 
 Each product's **Technical deep dive** lists its repositories and files, the contract items
 that changed, and the shared resources the coupling goes through, grouped as databases,
