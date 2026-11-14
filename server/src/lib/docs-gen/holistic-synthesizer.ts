@@ -169,6 +169,7 @@ import { isInPathScope, restrictToPathScope, withPathScopeBanner } from "./path-
 import { NoDocumentableCodeError } from "./no-documentable-code.js";
 import { resolvePhase2Concurrency } from "./phase2-concurrency.js";
 import { DOCS_GEN_AGENT_STEP, noteRunUsage, withDocsGenRunCost } from "./run-cost.js";
+import type { CostModels } from "./cost-estimate.js";
 import {
   loadRepositorySources,
   repositoryPathIdentity,
@@ -1178,6 +1179,31 @@ export function resolvePhase2Router(defaultMaxTokens: number): Phase2Router {
       local: { ...local, provider: scopedToGeneration(local.provider) },
       escalation: { ...escalation, provider: scopedToGeneration(escalation.provider) },
     },
+  };
+}
+
+/**
+ * #2189 — the models a run would call, as usage is recorded under them, and
+ * the provider settings its cost estimate reads: resolved exactly as
+ * {@link runHolisticSynthesis} resolves them, with no model call.
+ */
+export function resolveDocsGenCostInputs(): {
+  models: CostModels;
+  factsCharCap: number;
+  phase1FactsMaxOutputTokens: number;
+} {
+  const phase1 = buildDocsGenProvider(1, resolveFactsMaxOutputTokens());
+  const { primary } = resolvePhase2Router(resolveSectionMaxOutputTokens());
+  const provider = primary.provider.key;
+  return {
+    models: {
+      phase1: { provider: phase1.provider.key, model: phase1.provider.model },
+      phase2: { provider, model: primary.provider.model },
+      claim: { provider, model: primary.tuning.claimModel },
+      judge: { provider, model: primary.tuning.judgeModel },
+    },
+    factsCharCap: primary.factsCharCap,
+    phase1FactsMaxOutputTokens: resolveFactsMaxOutputTokens(phase1.provider.model),
   };
 }
 

@@ -19,6 +19,7 @@ import { apiFetch } from "@/lib/api-client";
 import { analysisApi } from "@/lib/analysis-api";
 import { formatChangeRunLabels, formatRunOptionLabel } from "@/lib/format-change-run-label";
 import { useAppMutation } from "@/lib/use-app-mutation";
+import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import {
   useProjectJobEvents,
   useDocSectionProgress,
@@ -900,6 +901,115 @@ const DATABASE_SCHEMA_TITLE = "Database Schema";
 /** #991 — a requirements-scope document is a BRD of the chosen requirements. */
 const REQUIREMENTS_TITLE = "Business Requirements";
 
+/** #2189 — `GET /docs/cost-estimate` (server/src/lib/docs-gen/cost-estimate.ts). */
+interface BrdCostEstimate {
+  status: "priced" | "unpriced" | "free" | "no-code";
+  lowUsd: number | null;
+  highUsd: number | null;
+  models: string[];
+  unpricedModels: string[];
+  freeModels: string[];
+  plan: {
+    modules: number;
+    modulesToExtract: number;
+    sourceLines: number;
+    sections: number;
+    modelCalls: number;
+    estimatedDocumentChars: number;
+  };
+}
+
+const usd = (n: number): string => `$${n.toFixed(2)}`;
+const plural = (n: number, one: string, many = `${one}s`): string =>
+  `${n.toLocaleString()} ${n === 1 ? one : many}`;
+
+/**
+ * #2189 — the estimated cost of the business-requirements document the form
+ * would start: a range, or why there is none. Never "$0" for a model METIS
+ * has no price for.
+ */
+function CostEstimateNote({
+  estimate,
+  isLoading,
+  isError,
+}: {
+  estimate: BrdCostEstimate | undefined;
+  isLoading: boolean;
+  isError: boolean;
+}): React.ReactElement | null {
+  const box = "rounded-md border p-3 text-sm space-y-1";
+  if (isLoading) {
+    return (
+      <p className="text-xs text-muted-foreground" data-testid="cost-estimate-loading">
+        Estimating the cost of this document…
+      </p>
+    );
+  }
+  if (isError) {
+    return (
+      <p className="text-xs text-muted-foreground" data-testid="cost-estimate-error">
+        The cost of this document could not be estimated. Check the path prefixes, or generate
+        without an estimate.
+      </p>
+    );
+  }
+  if (!estimate) return null;
+  const { plan } = estimate;
+  if (estimate.status === "priced" && estimate.lowUsd !== null && estimate.highUsd !== null) {
+    return (
+      <div className={box} role="note" data-testid="cost-estimate">
+        <p>
+          <span className="font-medium">Estimated cost: </span>
+          <span data-testid="cost-estimate-range">
+            {usd(estimate.lowUsd)} – {usd(estimate.highUsd)}
+          </span>
+        </p>
+        <p className="text-xs text-muted-foreground">
+          From the plan this run would follow: {plural(plan.modules, "module")} (
+          {plan.modulesToExtract === 0
+            ? "facts already extracted for all of them"
+            : `${plan.modulesToExtract.toLocaleString()} to read for the first time`}
+          ), {plural(plan.sections, "section")}, about {plural(plan.modelCalls, "model call")},
+          priced at the rates for {estimate.models.join(", ")}. A range like this held the cost of
+          every measured run; this run may still cost more or less.
+          {estimate.freeModels.length > 0 &&
+            ` Not counted, with no per-token price: ${estimate.freeModels.join(", ")}.`}
+        </p>
+      </div>
+    );
+  }
+  if (estimate.status === "unpriced") {
+    return (
+      <div className={box} role="note" data-testid="cost-estimate-unpriced">
+        <p>
+          <span className="font-medium">No cost estimate: </span>
+          METIS has no price for {estimate.unpricedModels.join(", ")}, which this run would call. An
+          administrator can add one in the model price settings.
+        </p>
+      </div>
+    );
+  }
+  if (estimate.status === "free") {
+    return (
+      <div className={box} role="note" data-testid="cost-estimate-free">
+        <p>
+          <span className="font-medium">No per-token cost: </span>
+          this run would use {estimate.freeModels.join(", ")}, which{" "}
+          {estimate.freeModels.length === 1 ? "has" : "have"} no per-token price.
+        </p>
+      </div>
+    );
+  }
+  if (estimate.status === "no-code") {
+    return (
+      <p className="text-xs text-muted-foreground" data-testid="cost-estimate-no-code">
+        Nothing to estimate: this scope has no documentable code.
+      </p>
+    );
+  }
+  return null;
+}
+
 function GenerateForm({
   projectId,
   onSubmit,
@@ -1002,6 +1112,36 @@ function GenerateForm({
     enabled: codeBasedScope && Boolean(projectId),
   });
   const noSourceCode = codeBasedScope && sourceCodeQuery.data?.indexed === false;
+
+  // #2189 — what a business-requirements document of this scope is estimated
+  // to cost, shown before the run starts. The path field is debounced so the
+  // estimate is not re-planned on every keystroke.
+  const estimatePathScope = useDebouncedValue(pathScope.trim(), 500);
+  const estimateEnabled =
+    Boolean(projectId) &&
+    docType === "business-requirements" &&
+    codeBasedScope &&
+    (scope === "full" || Boolean(selectedRepoId)) &&
+    sourceCodeQuery.data?.indexed === true;
+  const costEstimateQuery = useQuery<BrdCostEstimate>({
+    queryKey: [
+      "generated-docs",
+      projectId,
+      "cost-estimate",
+      scope === "repository" ? selectedRepoId : null,
+      estimatePathScope,
+    ],
+    queryFn: () => {
+      const params: Record<string, string> = {};
+      if (scope === "repository" && selectedRepoId) params.repoConnectorId = selectedRepoId;
+      if (estimatePathScope) params.pathPrefixes = estimatePathScope;
+      return Object.keys(params).length > 0
+        ? apiFetch<BrdCostEstimate>(`/projects/${projectId}/docs/cost-estimate`, { params })
+        : apiFetch<BrdCostEstimate>(`/projects/${projectId}/docs/cost-estimate`);
+    },
+    enabled: estimateEnabled,
+    retry: false,
+  });
 
   // #991 — completed analysis runs, newest first, when scope is "requirements".
   const analysesQuery = useQuery({
@@ -1365,6 +1505,14 @@ function GenerateForm({
           data-testid="doc-title-input"
         />
       </div>
+
+      {estimateEnabled && (
+        <CostEstimateNote
+          estimate={costEstimateQuery.data}
+          isLoading={costEstimateQuery.isLoading}
+          isError={costEstimateQuery.isError}
+        />
+      )}
 
       <div className="flex gap-2">
         <Button onClick={handleSubmit} disabled={isSubmitDisabled} data-testid="submit-generate">
