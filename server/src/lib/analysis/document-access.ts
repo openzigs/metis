@@ -10,8 +10,10 @@
  * fallback and the default document selection. A document whose ACL names any
  * subject is left out, even when the person who started the run could read it.
  *
- * The audit rows a denied search writes are attributed to the system actor,
- * as the code filter's are: no `User` row stands for "the project".
+ * The audit rows a denied search writes name the person who started the run
+ * (`triggeredBy`), so a denial stays traceable to a person and a run; that
+ * attribution grants nothing (`sharedAudienceActor`). A read nobody started (a
+ * scheduled run, an eval) is attributed to the system actor.
  */
 import { SYSTEM_ACTOR_ID } from "../audit/system-actor.js";
 import { prisma } from "../prisma.js";
@@ -24,10 +26,12 @@ import {
 
 /**
  * The ACL actor of a document search whose result the whole project reads. A
- * fresh object each call, so no caller can change another's.
+ * fresh object each call, so no caller can change another's. `triggeredBy`
+ * (the run's requester) only attributes the denial audit rows: it reads
+ * exactly what the system actor would.
  */
-export function sharedDocumentAudience(): SharedAudienceActor {
-  return sharedAudienceActor(SYSTEM_ACTOR_ID);
+export function sharedDocumentAudience(triggeredBy?: string | null): SharedAudienceActor {
+  return sharedAudienceActor(triggeredBy || SYSTEM_ACTOR_ID);
 }
 
 /** Whether a document with this stored `aclSubjects` is visible to a shared audience. */

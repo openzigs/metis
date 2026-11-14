@@ -302,8 +302,6 @@ import {
 import { produceGoverningFindingsForAnalysis } from "../governing/findings-store.js";
 import { isDocumentReaderEnabled } from "../document-reader/flag.js";
 import { spentUsageOf } from "../document-reader/reader.js";
-import { resolveAclActor, sharedAudienceActor } from "../rag/acl.js";
-import { SYSTEM_ACTOR_ID } from "../audit/system-actor.js";
 import {
   readerSourceOf,
   runDocumentReaderAgent,
@@ -805,6 +803,8 @@ export function assembleAgenticCodeTools(input: {
    * ACL (it searches as a shared audience), so the run can count them.
    */
   onDocumentAclDenied?: (chunkIds: string[]) => void;
+  /** #2431 — the run's requester: names them on `search_knowledge`'s denial audit rows. */
+  triggeredBy?: string;
 }): AgentTool[] {
   const tools: AgentTool[] = [searchCodeGraphTool];
   if (input.cloneDir) {
@@ -814,6 +814,7 @@ export function assembleAgenticCodeTools(input: {
     createSearchKnowledgeTool({
       knowledgeService: input.knowledgeService,
       ...(input.onDocumentAclDenied ? { onAclDenied: input.onDocumentAclDenied } : {}),
+      ...(input.triggeredBy ? { triggeredBy: input.triggeredBy } : {}),
     }),
   );
   // #730 — hybrid symbol search shares the #714/#729 searcher + line-lookup seam.
@@ -1841,6 +1842,7 @@ export class AnalysisOrchestrator {
       analysisId: input.analysisId,
       projectId: input.projectId,
       projectDescription: input.projectDescription,
+      ...(input.actorId ? { actorId: input.actorId } : {}),
       requirements,
       extraInstructions: input.extraInstructions,
       ...(input.agentContext ? { agentContext: input.agentContext } : {}),
@@ -2140,6 +2142,7 @@ export class AnalysisOrchestrator {
           const result = await this.runAgenticCodeAgent({
             analysisId: opts.analysisId,
             projectId: analysis.projectId,
+            actorId: opts.actorId,
             projectName: `${analysis.project.name} [repo: ${connector.label}]`,
             projectDescription: analysis.project.description,
             requirements,
@@ -2839,6 +2842,7 @@ export class AnalysisOrchestrator {
               const codeResult = await this.runAgenticCodeAgent({
                 analysisId,
                 projectId: opts.projectId,
+                actorId: opts.startedById,
                 projectName,
                 projectDescription,
                 requirements: codeRequirements,
@@ -2894,6 +2898,7 @@ export class AnalysisOrchestrator {
                 const result = await this.runAgenticCodeAgent({
                   analysisId,
                   projectId: opts.projectId,
+                  actorId: opts.startedById,
                   projectName: `${projectName} [repo: ${connector.label}]`,
                   projectDescription,
                   requirements: codeRequirements,
@@ -2945,6 +2950,7 @@ export class AnalysisOrchestrator {
             const codeResult = await this.runRequirementGroundedCodeAgent({
               analysisId,
               projectId: opts.projectId,
+              actorId: opts.startedById,
               projectName,
               projectDescription,
               requirements: codeRequirements,
@@ -3660,22 +3666,17 @@ export class AnalysisOrchestrator {
    * report on the run's capability. `null` when no selected document could be
    * loaded, so the caller retrieves instead; #2321 — never with none selected.
    *
-   * #2262 — only documents the requester may see are read. A requester who is
-   * no longer active fails the agent (`InactiveAclActorError`): never read
-   * without an actor. With no requester at all, only unrestricted documents.
-   *
-   * #2297 — a scheduled run's requester is `SYSTEM_ACTOR_ID`, no user: it
-   * reads as no requester rather than failing as an inactive one, and the
-   * system actor attributes the reader's ACL audit rows (no `User` row named
-   * "analysis" exists for the audit log's foreign key).
+   * #2431 — read as a shared audience, as every other document read of the
+   * run is: the reading becomes findings and requirements every member with
+   * `analysis.read` sees, so only documents every member may read are read,
+   * even when the requester could read a restricted one. The requester (the
+   * system actor for a scheduled run, #2297) only attributes the reader's ACL
+   * audit rows; it grants nothing, so an inactive requester reads no more.
    */
   private async readSelectedDocuments(
     input: Parameters<AnalysisOrchestrator["runOneAgent"]>[0],
   ): Promise<AgentRunResult | null> {
-    const actor =
-      input.actorId && input.actorId !== SYSTEM_ACTOR_ID
-        ? await resolveAclActor(input.actorId)
-        : sharedAudienceActor(SYSTEM_ACTOR_ID);
+    const actor = sharedDocumentAudience(input.actorId);
     const read = await runDocumentReaderAgent({
       provider: this.deps.provider,
       projectId: input.projectId,
@@ -3791,6 +3792,8 @@ export class AnalysisOrchestrator {
   private async runAgenticCodeAgent(input: {
     analysisId: string;
     projectId: string;
+    /** #2431 — the run's requester: attributes its document-search denial audit rows. */
+    actorId?: string;
     projectName: string;
     projectDescription: string;
     requirements: Array<{ id: string; text: string }>;
@@ -3914,6 +3917,7 @@ export class AnalysisOrchestrator {
           describeTableDeps,
           onDocumentAclDenied: (chunkIds) =>
             this.noteRestrictedLeftOut(input.analysisId, { documentChunkIds: chunkIds }),
+          ...(input.actorId ? { triggeredBy: input.actorId } : {}),
         });
 
         // #729 (Epic #725) — passively seed the agentic prompt with fused
@@ -4807,6 +4811,8 @@ export class AnalysisOrchestrator {
   private async runRequirementGroundedCodeAgent(input: {
     analysisId: string;
     projectId: string;
+    /** #2431 — the run's requester: attributes its document-search denial audit rows. */
+    actorId?: string;
     projectName: string;
     projectDescription: string;
     requirements: Array<{ id: string; text: string }>;
@@ -4872,7 +4878,7 @@ export class AnalysisOrchestrator {
           projectId: input.projectId,
           requirements: input.requirements,
           // #2431 — as a shared audience; what it drops is counted.
-          ...this.documentAccess(input.analysisId),
+          ...this.documentAccess(input.analysisId, input.actorId),
           documentIds: documentIds.length > 0 ? documentIds : undefined,
           k: ANALYSIS_RETRIEVE_K,
           maxRequirements: MAX_REQUIREMENTS_FOR_RETRIEVAL,
@@ -5903,7 +5909,7 @@ export class AnalysisOrchestrator {
     const knowledge = this.deps.knowledge ?? getKnowledgeService();
     // #2431 — every search below reads as a shared audience: the findings it
     // grounds are read by every project member. What it drops is counted.
-    const access = this.documentAccess(input.analysisId);
+    const access = this.documentAccess(input.analysisId, input.actorId);
 
     // Code agent needs BOTH business requirements AND source code to do a gap
     // analysis. Retrieve the requirements half (grounded in the user's selected
@@ -6252,11 +6258,15 @@ export class AnalysisOrchestrator {
   /**
    * #2431 — the document ACL an analysis's searches read under: a shared
    * audience (its findings are read by every project member, #2314's rule for
-   * code), with the chunks each search drops counted on the run.
+   * code), with the chunks each search drops counted on the run. `requestedBy`
+   * only names the requester on the denial audit rows; it grants nothing.
    */
-  private documentAccess(analysisId: string | undefined): RetrievalAccess {
+  private documentAccess(
+    analysisId: string | undefined,
+    requestedBy: string | undefined,
+  ): RetrievalAccess {
     return {
-      actor: sharedDocumentAudience(),
+      actor: sharedDocumentAudience(requestedBy),
       onAclDenied: (chunkIds) =>
         this.noteRestrictedLeftOut(analysisId, { documentChunkIds: chunkIds }),
     };

@@ -41,6 +41,7 @@ import { RequirementsExtractor } from "../../analysis/requirements-extractor.js"
 import {
   buildRetrievalQueries,
   runGroundedRetrieval,
+  UNRESTRICTED_RETRIEVAL,
   type GroundedSearchSource,
 } from "../../analysis/retrieval.js";
 import { hasVerdict, requestStructuredVerdict } from "../../analysis/structured-verdict.js";
@@ -206,6 +207,8 @@ export function createArmA(model: string): DocArm {
       const { source, chunks } = documentKnowledge(item);
       const retrieved = await runGroundedRetrieval(source, {
         projectId: item.name,
+        // #2431 — fixed eval documents: no ACL to read under.
+        actor: UNRESTRICTED_RETRIEVAL,
         queries: buildRetrievalQueries({
           agentKey: "document",
           projectName: item.title,

@@ -96,9 +96,13 @@ export type ReaderDocumentLoader = (
   actor: AclActor,
 ) => Promise<ReaderDocumentLoad[]>;
 
-/** One reason for not-ready, not-in-project and not-yours alike (#2262): no existence oracle. */
+/**
+ * One reason for not-ready, not-in-project and restricted alike (#2262): no
+ * existence oracle. #2431 — an analysis reads as a shared audience, so a
+ * document restricted to some members is not read even for one of them.
+ */
 const NOT_AVAILABLE =
-  "It is not available to read: still processing, failed, rejected or deleted, not in this project, or not shared with you.";
+  "It is not available to read: still processing, failed, rejected or deleted, not in this project, or restricted to some members (an analysis reads only what every member may read).";
 
 /**
  * The production loader: the project's ready documents the actor may see,
@@ -426,10 +430,11 @@ export interface DocumentReaderAgentResult {
  * caller to retrieval, which would read a withheld one unchecked. #2321 — with
  * none selected, never `null`: a project with no ready upload and one whose
  * every upload the actor may not see give the same (empty) reading, so this
- * agent's output says nothing of documents the actor cannot see. Since #2431
- * the code agent's requirement retrieval in the same run (single-shot or
- * requirement-grounded) reads as a shared audience, so it reads no withheld
- * upload either.
+ * agent's output says nothing of documents the actor cannot see. #2431 — the
+ * analysis passes a shared audience (`sharedDocumentAudience`), as its
+ * requirement retrieval and every other document read of the run use: the
+ * reading is read by every member, so no restricted upload is read, even one
+ * the requester could see.
  *
  * A provider error or a cancellation throws, as the agent call it replaces
  * did, carrying every token spent before it ({@link spentUsageOf}).
@@ -438,7 +443,10 @@ export async function runDocumentReaderAgent(input: {
   provider: AIProvider;
   projectId: string;
   documentIds: readonly string[];
-  /** #2262 — the requester, whose ACL decides which documents are read. */
+  /**
+   * #2262 — whose ACL decides which documents are read. #2431 — the analysis
+   * passes a shared audience attributed to its requester.
+   */
   actor: AclActor;
   /** #2262 (#1237) — the operator's notes, given to every reading call. */
   operatorNotes?: string;

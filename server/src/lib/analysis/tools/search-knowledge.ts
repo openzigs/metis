@@ -51,6 +51,11 @@ export interface SearchKnowledgeDeps {
    * document is restricted, so the run can count them. Never with an empty list.
    */
   onAclDenied?: (chunkIds: string[]) => void;
+  /**
+   * #2431 — the run's requester. Names them on the denial audit rows; it
+   * grants nothing (the search still reads as a shared audience).
+   */
+  triggeredBy?: string;
 }
 
 export function createSearchKnowledgeTool(deps: SearchKnowledgeDeps): AgentTool {
@@ -76,7 +81,7 @@ export function createSearchKnowledgeTool(deps: SearchKnowledgeDeps): AgentTool 
     // restricted document reaches them, whoever started the run.
     const result = await deps.knowledgeService.search(context.projectId, validated.query, {
       k,
-      actor: sharedDocumentAudience(),
+      actor: sharedDocumentAudience(deps.triggeredBy),
       reportAclMismatch: true,
     });
     if (result.aclMismatch && result.aclMismatch.length > 0) deps.onAclDenied?.(result.aclMismatch);

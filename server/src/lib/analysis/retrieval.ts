@@ -164,10 +164,14 @@ export interface GroundedSearchSource {
 /**
  * #2431 — the document ACL a retrieval reads under. An analysis passes the
  * shared audience (`sharedDocumentAudience`): its findings are read by every
- * project member. Absent, no ACL is applied (an eval over fixed documents).
+ * project member. Required, so a new caller cannot forget it and read every
+ * restricted document: an eval over fixed documents opts out by name with
+ * {@link UNRESTRICTED_RETRIEVAL}, and nothing else may.
  */
+export const UNRESTRICTED_RETRIEVAL = "unrestricted" as const;
+
 export interface RetrievalAccess {
-  actor?: AclActor;
+  actor: AclActor | typeof UNRESTRICTED_RETRIEVAL;
   /**
    * Told the ids of the chunks each search dropped because the actor may not
    * read their document, so a run can count what it left out. Never called
@@ -181,7 +185,9 @@ function accessSearchOptions(access: RetrievalAccess): {
   actor?: AclActor;
   reportAclMismatch?: boolean;
 } {
-  return access.actor ? { actor: access.actor, reportAclMismatch: true } : {};
+  return access.actor === UNRESTRICTED_RETRIEVAL
+    ? {}
+    : { actor: access.actor, reportAclMismatch: true };
 }
 
 /** Report a search's ACL denials, if any. */

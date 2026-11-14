@@ -150,6 +150,12 @@ export interface BuildSpecKitRagContextOptions {
    * the whole context out, as any other retrieval failure does.
    */
   codeAccess?: () => Promise<CodeAccessFilter>;
+  /**
+   * #2431 — the person who asked for the artifact. Names them on the document
+   * search's denial audit rows; it grants nothing (the search still reads as
+   * a shared audience).
+   */
+  triggeredBy?: string | null;
 }
 
 export interface SpecKitLocalisation {
@@ -308,7 +314,7 @@ export async function buildSpecKitRagContext(
   try {
     const { hits } = await service.search(projectId, boundedQuery, {
       k,
-      actor: sharedDocumentAudience(),
+      actor: sharedDocumentAudience(opts.triggeredBy),
     });
 
     // Build the doc-level block (unchanged wording) when there are hits.
@@ -346,8 +352,9 @@ export async function buildSpecKitRagContext(
       searcher: fusedDeps.searcher,
       lineLookup: fusedDeps.lineLookup,
       // #2314 — the anchors of the siblings, callers and localisation below too.
-      hiddenSymbols:
-        fusedDeps.hiddenSymbols ?? hiddenSymbolsFor(() => loadSharedCodeAccess(projectId)),
+      // #2431 — the same memoised load as the callers and the localisation:
+      // one read per build, one snapshot of the restrictions.
+      hiddenSymbols: fusedDeps.hiddenSymbols ?? hiddenSymbolsFor(codeAccess),
     });
 
     if (!docContext && !fused.block) {
@@ -534,7 +541,7 @@ async function expandDocuments(
       const { hits: docHits } = await service.search(projectId, query, {
         k: expansion.maxChunksPerDocument,
         documentIds: [documentId],
-        actor: sharedDocumentAudience(),
+        actor: sharedDocumentAudience(opts.triggeredBy),
       });
       const extra = (docHits ?? [])
         .filter((h) => h.documentId === documentId && !seen.has(h.chunkId))

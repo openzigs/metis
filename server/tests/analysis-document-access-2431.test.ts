@@ -10,7 +10,11 @@
 import { describe, expect, it, vi } from "vitest";
 import type { RetrievedChunk } from "@metis/shared";
 import type { AclSubject } from "@metis/shared";
-import { retrievePerRequirement, runGroundedRetrieval } from "../src/lib/analysis/retrieval.js";
+import {
+  retrievePerRequirement,
+  runGroundedRetrieval,
+  UNRESTRICTED_RETRIEVAL,
+} from "../src/lib/analysis/retrieval.js";
 import { createSearchKnowledgeTool } from "../src/lib/analysis/tools/search-knowledge.js";
 import {
   createCapabilityTracker,
@@ -84,6 +88,17 @@ describe("#2431 — the shared document audience", () => {
     expect(isVisibleTo({ subjects: [] }, actor)).toBe(true);
   });
 
+  it("names the requester on its audit rows, and still reads only what every member may", () => {
+    const actor = sharedDocumentAudience(ALICE);
+    expect(actor).toEqual({ userId: ALICE, role: "shared-audience", sharedAudience: true });
+    // Restricted to Alice herself: attributing the read to her grants nothing.
+    expect(isVisibleTo({ subjects: RESTRICTED }, actor)).toBe(false);
+    expect(isVisibleTo({ subjects: [] }, actor)).toBe(true);
+    // No requester (a scheduled run, an eval): the system actor.
+    expect(sharedDocumentAudience(null).userId).toBe("system");
+    expect(sharedDocumentAudience("").userId).toBe("system");
+  });
+
   it("returns a fresh actor each call", () => {
     const a = sharedDocumentAudience();
     (a as AclActor).role = "admin";
@@ -119,12 +134,13 @@ describe("#2431 — runGroundedRetrieval under a document ACL", () => {
     expect(denied).toEqual([["c-secret-1"], ["c-secret-1"]]);
   });
 
-  it("applies no ACL and asks for no report when given no actor (an eval over fixed documents)", async () => {
+  it("applies no ACL and asks for no report only when told by name (an eval over fixed documents)", async () => {
     const { knowledge, calls } = aclKnowledge();
     const onAclDenied = vi.fn();
     const out = await runGroundedRetrieval(knowledge, {
       projectId: "p1",
       queries: ["requirements"],
+      actor: UNRESTRICTED_RETRIEVAL,
       onAclDenied,
       rerank: false,
     });
@@ -184,6 +200,19 @@ describe("#2431 — the analysis search_knowledge tool", () => {
     expect(res.resultCount).toBe(1);
     expect(calls[0]).toMatchObject({ actor: sharedDocumentAudience(), reportAclMismatch: true });
     expect(onAclDenied).toHaveBeenCalledWith(["c-secret-1"]);
+  });
+
+  it("names the run's requester on the search, granting nothing", async () => {
+    const { knowledge, calls } = aclKnowledge();
+    const tool = createSearchKnowledgeTool({ knowledgeService: knowledge, triggeredBy: ALICE });
+    const res = await tool.execute({ query: "requirements" }, { projectId: "p1" });
+    // The chunk restricted to Alice is still left out of a search made for her run.
+    expect(res.content).not.toContain("SECRET");
+    expect(calls[0]?.actor).toEqual({
+      userId: ALICE,
+      role: "shared-audience",
+      sharedAudience: true,
+    });
   });
 
   it("works without a counter, and reports nothing when nothing was dropped", async () => {

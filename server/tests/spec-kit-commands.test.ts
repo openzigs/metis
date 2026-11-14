@@ -301,7 +301,8 @@ describe("/specify", () => {
       deps: { provider: new EchoSystemProvider() },
     });
     // Top-k first; the second call pins the rest of the retrieved document (#20).
-    expect(ks.search.mock.calls[0][2]).toEqual({ k: 8, actor: SHARED });
+    // #2431 — still a shared audience; the requester only names the audit rows.
+    expect(ks.search.mock.calls[0][2]).toEqual({ k: 8, actor: { ...SHARED, userId: "u1" } });
     // RAG context threaded into the agent system prompt.
     expect(r.artifact.content).toContain("Retrieved Project Knowledge");
     expect(r.artifact.content).toContain("server/src/billing/ledger.ts#L10-L40");

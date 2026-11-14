@@ -255,27 +255,31 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       it("never reads a restricted upload, selected or not, and counts what it dropped", async () => {
         const id = "an-2431-ss";
         const { orch, capability } = await withTracker(id);
+        // Alice started the run and may read the restricted upload herself.
         const code = (await orch.retrieveContext!({
           analysisId: id,
           projectId: PROJECT,
           agentKey: "code",
           projectName: "Billing",
           projectDescription: "invoices",
+          actorId: ALICE,
         } as never)) as Array<{ text: string }>;
         const doc = (await orch.retrieveContext!({
           analysisId: id,
           projectId: PROJECT,
           agentKey: "document",
           documentIds: ["d-open", "d-secret"],
+          actorId: ALICE,
         } as never)) as Array<{ text: string }>;
         for (const chunks of [code, doc]) {
           expect(chunks.map((c) => c.text)).toContain(OPEN_TEXT);
           expect(chunks.map((c) => c.text)).not.toContain(SECRET_TEXT);
         }
         expect(searches.length).toBeGreaterThan(0);
+        // Read as a shared audience; the requester only names the audit rows.
         for (const opts of searches) {
           expect(opts.actor).toEqual({
-            userId: "system",
+            userId: ALICE,
             role: "shared-audience",
             sharedAudience: true,
           });
@@ -338,7 +342,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         requirements: [{ id: "REQ-1", text: "Issue invoices monthly." }],
         documentIds: ["d-open", "d-secret"],
         signal: new AbortController().signal,
+        actorId: ALICE,
       } as never);
+      expect(searches.map((o) => o.actor?.userId)).toEqual(searches.map(() => ALICE));
+      expect(searches.length).toBeGreaterThan(0);
       const all = seen.join("\n");
       expect(all).toContain(OPEN_TEXT);
       expect(all).not.toContain(SECRET_TEXT);
@@ -350,12 +357,18 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const tools = assembleAgenticCodeTools({
         knowledgeService: knowledge as never,
         onDocumentAclDenied: (ids) => denied.push(ids),
+        triggeredBy: ALICE,
       });
       const tool = tools.find((t) => t.name === "search_knowledge")!;
       const res = await tool.execute({ query: "invoices" }, { projectId: PROJECT });
       expect(res.content).toContain(OPEN_TEXT);
       expect(res.content).not.toContain(SECRET_TEXT);
       expect(denied).toEqual([["c-secret-0"]]);
+      expect(searches.at(-1)?.actor).toEqual({
+        userId: ALICE,
+        role: "shared-audience",
+        sharedAudience: true,
+      });
     });
 
     it("a regenerate's document denials add to the stored record and keep its code counts", async () => {
