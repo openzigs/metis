@@ -8,7 +8,8 @@
  *   4. cookie-parser — required by auth/refresh routes.
  *   5. compression — runs after parsers so encoded bodies aren't touched.
  *   6. requestLogger — assigns the correlation id as early as possible.
- *   7. routes (`/api`, plus `/healthz`, `/readyz`, `/source` and `/metrics`).
+ *   7. routes (`/api`, plus `/healthz`, `/readyz`, `/source`, `/metrics` and the
+ *      remote MCP endpoint `/mcp` with its `/.well-known` metadata, #2344).
  *      `/api` and `/metrics` start with the app-wide `apiRateLimiter` (#1539).
  *   8. notFound, then global error handler (last).
  *
@@ -38,6 +39,8 @@ import { apiRateLimiter } from "./middleware/api-rate-limit.js";
 import { mountSlackReceiver } from "./lib/slack/slack-receiver.js";
 import { JSON_LIMIT_BYTES } from "./lib/config/json-limit.js";
 import { parseCorsOrigins } from "./lib/config/cors-origins.js";
+import { mountRemoteMcp, mountRemoteMcpBodyLimit } from "./routes/mcp-remote.js";
+import type { RemoteMcpDeps } from "./mcp/metis-index/remote/http.js";
 
 const JSON_LIMIT = JSON_LIMIT_BYTES; // 10 MiB, matches MAX_DOCUMENT_BYTES for upload routes
 
@@ -85,6 +88,8 @@ export { parseCorsOrigins };
 export interface CreateAppOptions {
   /** Override CORS origin — defaults to `process.env.CORS_ORIGIN` or localhost:3000. */
   corsOrigin?: string;
+  /** #2344 — seams for the remote MCP endpoint (tests). */
+  remoteMcp?: RemoteMcpDeps;
 }
 
 export function createApp(opts: CreateAppOptions = {}): Application {
@@ -130,6 +135,8 @@ export function createApp(opts: CreateAppOptions = {}): Application {
     console.warn(`Slack receiver not mounted: ${(err as Error).message}`);
   }
   app.use("/api/admin/auth/role-reconciliation", reconciliationJson);
+  // #2344 — the remote MCP endpoint's body is bounded far below the global 10 MiB.
+  mountRemoteMcpBodyLimit(app, opts.remoteMcp);
   // #1458 — both global parsers refuse compressed bodies (415) rather than
   // inflate them (body-parser GHSA-27r3-jxmh-p828, since fixed by the 2.4.0
   // upgrade in #1460; kept as the default). See middleware/body-parsers.ts.
@@ -172,6 +179,9 @@ export function createApp(opts: CreateAppOptions = {}): Application {
   // #1539 — the app-wide budget runs first on every `/api` route; the per-route
   // limiters inside are tighter inner budgets (middleware/api-rate-limit.ts).
   app.use("/api", apiRateLimiter, apiRouter());
+  // #2344 — the remote MCP endpoint (`/mcp`) and its OAuth protected-resource
+  // metadata; both 404 until an admin turns MCP_REMOTE_ENABLED on.
+  mountRemoteMcp(app, apiRateLimiter, opts.remoteMcp);
 
   app.use(notFoundHandler);
   app.use(errorHandler);

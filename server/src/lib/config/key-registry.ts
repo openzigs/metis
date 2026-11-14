@@ -28,6 +28,7 @@ import {
 } from "@metis/shared";
 import { modelPricesSchema } from "../finops/model-prices-schema.js";
 import { MAX_TIMEOUT_MS } from "./env-ms.js";
+import { normaliseOrigin } from "./cors-origins.js";
 
 export type ConfigTier = "bootstrap" | "secret" | "tunable";
 export type ConfigValueType = "string" | "int" | "bool" | "json" | "csv";
@@ -76,6 +77,32 @@ const csvHostnameSchema = z
     return Array.from(new Set(parts));
   })
   .pipe(z.array(hostnameSchema));
+
+/**
+ * #2344 — a boolean that reads "false" as false. (`z.coerce.boolean()` turns
+ * any non-empty string, "false" included, into true.)
+ */
+const strictBoolSchema = z.union([
+  z.boolean(),
+  z.enum(["true", "false"]).transform((v) => v === "true"),
+]);
+
+/** #2344 — comma-separated http(s) origins (`scheme://host[:port]`), deduped. */
+const csvOriginSchema = z
+  .union([z.string(), z.array(z.string())])
+  .transform((raw) => {
+    const parts = (Array.isArray(raw) ? raw : raw.split(","))
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+    return Array.from(new Set(parts));
+  })
+  .pipe(
+    z.array(
+      z.string().refine((o) => normaliseOrigin(o) === o.replace(/\/$/, ""), {
+        message: "Each entry must be an origin: scheme://host[:port]",
+      }),
+    ),
+  );
 
 /** Bootstrap-tier sentinel — every write attempt fails validation. */
 const neverWritable = z.never();
@@ -1292,6 +1319,68 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
       .max(24 * 60 * 60_000),
     description: "Rate-limit window in ms for `/api/mcp/*`. Default 900000 (15 min).",
     sensitive: false,
+  },
+  // #2344 — the remote `metis-index-mcp` endpoint (`/mcp`), an OAuth 2.1 resource server.
+  // Read per request by `mcp/metis-index/remote/config.ts`; guide:
+  // docs/integrations/metis-index-mcp-remote.md.
+  MCP_REMOTE_ENABLED: {
+    tier: "tunable",
+    valueType: "bool",
+    schema: strictBoolSchema,
+    description:
+      "Serve the METIS index to remote MCP clients at /mcp, authorized by OAuth 2.1 access tokens. Off by default; needs MCP_REMOTE_RESOURCE_URL, MCP_REMOTE_ISSUER and MCP_REMOTE_JWKS_URL.",
+    sensitive: false,
+    default: "false",
+  },
+  MCP_REMOTE_RESOURCE_URL: {
+    tier: "tunable",
+    valueType: "string",
+    schema: z.string().url().max(2048),
+    description:
+      "The public URL of the remote MCP endpoint, e.g. https://metis.example.com/mcp. Tokens must be issued for it (RFC 8707 audience). https unless the host is localhost.",
+    sensitive: false,
+  },
+  MCP_REMOTE_ISSUER: {
+    tier: "tunable",
+    valueType: "string",
+    schema: z.string().url().max(2048),
+    description:
+      "The OAuth authorization server's issuer. A token's iss must equal it exactly, and its sub must be an identity a METIS user signed in with over OIDC from this issuer.",
+    sensitive: false,
+  },
+  MCP_REMOTE_JWKS_URL: {
+    tier: "tunable",
+    valueType: "string",
+    schema: z.string().url().max(2048),
+    description: "Where the authorization server publishes its token-signing keys (JWKS).",
+    sensitive: false,
+  },
+  MCP_REMOTE_SCOPE: {
+    tier: "tunable",
+    valueType: "string",
+    schema: z
+      .string()
+      .regex(/^[\x21\x23-\x5B\x5D-\x7E]{1,200}$/, "One OAuth scope token, no spaces"),
+    description:
+      "The read-only scope a token needs to call the remote MCP tools. Default mcp:read.",
+    sensitive: false,
+    default: "mcp:read",
+  },
+  MCP_REMOTE_ALLOWED_ORIGINS: {
+    tier: "tunable",
+    valueType: "csv",
+    schema: csvOriginSchema,
+    description:
+      "Comma-separated browser origins allowed to call /mcp. A request with any other Origin header is refused; a request with none (a desktop agent) is not.",
+    sensitive: false,
+  },
+  MCP_REMOTE_RATE_LIMIT_PER_MINUTE: {
+    tier: "tunable",
+    valueType: "int",
+    schema: z.coerce.number().int().min(1).max(10_000),
+    description: "Most remote MCP requests one user may make per minute. Default 60.",
+    sensitive: false,
+    default: "60",
   },
   SCHEDULER_ENABLED: {
     tier: "tunable",

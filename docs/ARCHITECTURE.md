@@ -9607,7 +9607,34 @@ agent (MCP client) ── stdio ──► registerTool handler
 | [`dispatcher.ts`](../server/src/mcp/metis-index/dispatcher.ts) | The order of the checks above. Errors say nothing of internals. The result is redacted (#2333), capped with `truncated`, and given its citations (#2325) and fixed `instructions`. |
 | [`server.ts`](../server/src/mcp/metis-index/server.ts) | `createIndexMcpServer`. `structuredContent` holds the whole result; text `content` holds the result, then a trailer. `main()` refuses to boot on an unresolvable token and sends every log line to stderr, since stdout is the transport. |
 
-The `mcp` arm of `pnpm eval:ba-qa` drives these tools through an MCP client (`eval-data/README.md`). A remote (HTTP) endpoint with OAuth is #2344. Client setup: [`docs/integrations/metis-index-mcp.md`](integrations/metis-index-mcp.md).
+The `mcp` arm of `pnpm eval:ba-qa` drives these tools through an MCP client (`eval-data/README.md`). The remote (HTTP) endpoint is 25.6.1b. Client setup: [`docs/integrations/metis-index-mcp.md`](integrations/metis-index-mcp.md).
+
+#### 25.6.1b The remote endpoint: `/mcp`, METIS as an OAuth 2.1 resource server (#2344)
+
+[`server/src/mcp/metis-index/remote/`](../server/src/mcp/metis-index/remote/) serves the same tools over the SDK's `StreamableHTTPServerTransport` (`@modelcontextprotocol/sdk` 1.32.1, protocol `2025-11-25`), **stateless**: a fresh `createIndexMcpServer` and transport per POST, no `Mcp-Session-Id`. Mounted at the top level by [`routes/mcp-remote.ts`](../server/src/routes/mcp-remote.ts), outside `/api` (the UI's proxy), with its body parser ahead of the global 10 MiB one. Off by default (`MCP_REMOTE_ENABLED`, an admin tunable); off, `/mcp` and the metadata answer 404.
+
+```
+POST /mcp ── body ≤ 64 KiB (mounted before the global parser)
+  ├── readRemoteMcpConfig()           config.ts        disabled → 404, misconfigured → 503
+  ├── TLS (req.secure, TRUST_PROXY) · Origin allowlist                  → 403
+  ├── Bearer JWT → verify            token-verifier.ts JWKS (cached, kid-miss refetch ≤ 1/30 s)
+  │     asymmetric alg · iss · exp required · aud ∋ resource (RFC 8707)  → 401 invalid_token
+  ├── (oidc, iss, sub) → UserIdentity → active user   identity.ts        → 401
+  ├── scope                                                             → 403 insufficient_scope
+  ├── Authorization header dropped (headers and rawHeaders)  — no passthrough
+  ├── per-user rate limit (cluster store "mcp-remote")                  → 429
+  └── createIndexMcpServer({ verify: mappedUserVerifier(userId) }) → dispatchIndexTool (25.6.1a)
+GET /.well-known/oauth-protected-resource[/mcp] → RFC 9728 document (resource, authorization_servers, scopes_supported)
+```
+
+| File | Responsibility |
+|---|---|
+| [`config.ts`](../server/src/mcp/metis-index/remote/config.ts) | The `MCP_REMOTE_*` settings, read per request. https required for the resource, issuer and JWKS URL unless the host is localhost; the resource must end in `/mcp`. |
+| [`token-verifier.ts`](../server/src/mcp/metis-index/remote/token-verifier.ts) | RFC 9068 JWT checks with `jsonwebtoken` and keys imported by `crypto.createPublicKey({ format: "jwk" })`: no new dependency. HMAC and `none` are refused, so a METIS session token or API token never passes. |
+| [`identity.ts`](../server/src/mcp/metis-index/remote/identity.ts) | Maps the token to exactly one user through the `UserIdentity` row OIDC sign-in binds; the dispatcher's verifier returns that user with `acp:read` and never sees the token. |
+| [`http.ts`](../server/src/mcp/metis-index/remote/http.ts) | The middleware order above, the `WWW-Authenticate` challenges (no `error` without a credential, RFC 6750 §3.1), the metadata handler and the audit tags (`transport: "remote"`). |
+
+The SDK's own `requireBearerAuth` was not used: it answers a missing credential with `error="invalid_token"` and puts the raw token on `req.auth`, from where the transport hands it to every tool handler as `extra.authInfo`. Operator guide: [`docs/integrations/metis-index-mcp-remote.md`](integrations/metis-index-mcp-remote.md).
 
 #### 25.6.2 Codex host emitter
 

@@ -323,6 +323,11 @@ assert "no bare /api rule (the UI serves /api)" 0 "$(grep -c 'path: /api$' <<<"$
 assert_contains "/socket.io route to server" "name: metis-server" "${ALB}"
 assert_contains "/socket.io route" "path: /socket.io" "${ALB}"
 assert_contains "/ route to ui" "name: metis-ui" "${ALB}"
+# #2344 — the remote MCP endpoint is routed only when asked.
+assert "no /mcp route by default" 0 "$(grep -c 'path: /mcp$' <<<"${ALB}" || true)"
+MCP_REMOTE=$(template --set ingress.enabled=true --set ingress.mcpRemote.enabled=true --set-json 'networkPolicy.ingressCidrs=["10.0.0.0/16"]')
+assert "/mcp route when ingress.mcpRemote.enabled" 1 "$(grep -c 'path: /mcp$' <<<"${MCP_REMOTE}" || true)"
+assert "metadata route when ingress.mcpRemote.enabled" 1 "$(grep -c 'path: /.well-known/oauth-protected-resource$' <<<"${MCP_REMOTE}" || true)"
 
 # #1312 — the UI's /api handlers reach the server through METIS_API_URL; unset,
 # they call localhost:4000 inside the UI pod. In-cluster URLs follow the

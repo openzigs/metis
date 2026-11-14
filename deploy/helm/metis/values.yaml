@@ -711,6 +711,10 @@ ingress:
   pathType: Prefix
   websocket:
     enabled: true
+  # #2344 — route /mcp and /.well-known/oauth-protected-resource to the server, for
+  # remote MCP clients. Also turn the endpoint on: MCP_REMOTE_ENABLED (admin setting).
+  mcpRemote:
+    enabled: false
   alb:
     scheme: internet-facing       # internet-facing | internal
     certificateArn: ""

@@ -110,6 +110,23 @@ spec:
                 port:
                   number: {{ $.Values.server.service.port }}
           {{- end }}
+          {{- /*
+            #2344 — the remote MCP endpoint and its RFC 9728 metadata are served by
+            the server at the top level, not under the UI's /api proxy. Routed only
+            when asked: the endpoint is also off until an admin sets MCP_REMOTE_ENABLED
+            (docs/integrations/metis-index-mcp-remote.md).
+          */}}
+          {{- if .Values.ingress.mcpRemote.enabled }}
+          {{- range $mcpPath := list "/mcp" "/.well-known/oauth-protected-resource" }}
+          - path: {{ $mcpPath }}
+            pathType: {{ $.Values.ingress.pathType }}
+            backend:
+              service:
+                name: {{ $serverSvc }}
+                port:
+                  number: {{ $.Values.server.service.port }}
+          {{- end }}
+          {{- end }}
           - path: /socket.io
             pathType: {{ .Values.ingress.pathType }}
             backend:
