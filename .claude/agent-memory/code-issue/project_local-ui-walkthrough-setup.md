@@ -17,3 +17,5 @@ Measured on the 2026-09-29 ui-vision walkthrough (commit 469ca6e):
 **Why:** each of these cost the walkthrough time to rediscover.
 
 **How to apply:** use these when starting the stack from `.claude/worktrees/*` for e2e or visual QA.
+
+**Mock-role facts (2026-11-13):** the seeded `developer` lacks `project.create` and `requirement.approve`, so use `coordinator` to create projects and as the non-admin self-approver. The per-project self-approval toggle lives at `/projects/<id>/publish` (Approval gate card), not in Project settings.

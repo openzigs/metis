@@ -30,3 +30,5 @@ for chat data, session ownership (`ai_sessions.userId`).
   project's creator and admins only) from the run list (workspace membership),
   so a member can be listed a run and get 404 opening it. Pre-existing; not
   changed in #1112.
+
+**No-ACL retrieval caveat:** with no document selected, the analysis code agent's requirement retrieval reads every ready upload with no ACL (single-shot, requirement-grounded, `defaultAnalysisDocumentIds`, actor-less search). A "no existence oracle" claim holds for the document agent only until #2431.
