@@ -1988,6 +1988,12 @@ model PortfolioAssessment {
   /// one criterion, in the order chosen (scalar soft-links, no FK, like
   /// `sourceDocumentId`), all in `sourceProjectId`. `[]` for any other source.
   sourceRequirementIds String @default("[]")
+  /// #2498 — JSON array of `{ id, analysisId, sourceIds }`: the requirement rows
+  /// the check read when it started, with their sources as they were then, so a
+  /// row hard-deleted since still decides what of the stored text a reader sees
+  /// (`assessment-view.ts`). Never sent to a client. NULL: not recorded (a
+  /// statement or document check).
+  sourceRows          String?
   costUsd             Float    @default(0)
   createdById         String
   createdAt           DateTime @default(now())

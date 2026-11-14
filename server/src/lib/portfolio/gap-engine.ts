@@ -1429,6 +1429,9 @@ export async function loadReadableSourceRequirement(
   acceptanceCriteria: string | null;
   /** #2345 — its review status, so a check before approval is labelled so. */
   reviewStatus?: string | null;
+  /** #2498 — its run and its sources, which the check records reading. */
+  analysisId: string;
+  sourceIds: string | null;
 }> {
   const requirement = await prisma.requirement.findFirst({
     where: { id: requirementId, deletedAt: null, ...(projectId ? { projectId } : {}) },
@@ -1454,8 +1457,7 @@ export async function loadReadableSourceRequirement(
   ) {
     throw new AppError(404, "NOT_FOUND", "Requirement not found");
   }
-  const { analysisId: _analysisId, sourceIds: _sourceIds, ...source } = requirement;
-  return source;
+  return requirement;
 }
 
 /**
@@ -1471,7 +1473,15 @@ export async function loadReadableSourceRequirements(
   requirementIds: readonly string[],
 ): Promise<{
   projectId: string;
-  requirements: Array<{ id: string; title: string; body: string; reviewStatus: string | null }>;
+  requirements: Array<{
+    id: string;
+    title: string;
+    body: string;
+    reviewStatus: string | null;
+    /** #2498 — its run and its sources, which the check records reading. */
+    analysisId: string;
+    sourceIds: string | null;
+  }>;
 }> {
   const rows = await prisma.requirement.findMany({
     where: { id: { in: [...requirementIds] }, deletedAt: null },
@@ -1510,7 +1520,14 @@ export async function loadReadableSourceRequirements(
     projectId: rows[0].projectId,
     requirements: requirementIds.map((id) => {
       const r = byId.get(id)!;
-      return { id: r.id, title: r.title, body: r.body, reviewStatus: r.reviewStatus };
+      return {
+        id: r.id,
+        title: r.title,
+        body: r.body,
+        reviewStatus: r.reviewStatus,
+        analysisId: r.analysisId,
+        sourceIds: r.sourceIds,
+      };
     }),
   };
 }
@@ -1524,8 +1541,13 @@ export async function runPortfolioGapAnalysis(
   const input = portfolioGapInputSchema.parse(rawInput);
   // #1657 — a source is recorded only for a starter who can read it, and a
   // project only with the requirement it holds.
+  let source: Awaited<ReturnType<typeof loadReadableSourceRequirement>> | null = null;
   if (input.sourceRequirementId) {
-    await loadReadableSourceRequirement(user, input.sourceRequirementId, input.sourceProjectId);
+    source = await loadReadableSourceRequirement(
+      user,
+      input.sourceRequirementId,
+      input.sourceProjectId,
+    );
   } else if (input.sourceProjectId) {
     throw new AppError(400, "VALIDATION_ERROR", "sourceProjectId needs a sourceRequirementId");
   }
@@ -1536,6 +1558,8 @@ export async function runPortfolioGapAnalysis(
       sourceRequirementId: input.sourceRequirementId,
       sourceProjectId: input.sourceProjectId,
     }),
+    // #2498 — the row it read, recorded with it.
+    source && [{ id: source.id, analysisId: source.analysisId, sourceIds: source.sourceIds }],
   );
   return { assessmentId, result };
 }

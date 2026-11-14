@@ -61,6 +61,7 @@ import {
   listPortfolioAssessmentIds,
   setPortfolioAssessmentStatus,
   touchPortfolioAssessment,
+  type CheckedSourceRow,
 } from "../lib/portfolio/assessment-store.js";
 import { PORTFOLIO_ASSESSMENT_HEARTBEAT_MS } from "../lib/portfolio/interrupted-assessments.js";
 import {
@@ -238,6 +239,8 @@ interface RunSource {
   analysisId?: string | null;
   /** #2345 — a requirement checked is not approved (yet). */
   preApproval?: boolean;
+  /** #2498 — the requirement rows it reads, recorded with the check; none for any other source. */
+  sourceRows?: CheckedSourceRow[];
   /** #2301 — the chosen requirements checked; absent for any other source. */
   requirementIds?: string[];
 }
@@ -304,6 +307,12 @@ export async function gapInputFor(
       documentId: null,
       analysisId: changeRequest.id,
       preApproval: changeRequest.requirements.some((r) => !r.approved),
+      // #2498 — the rows read, a criterion each or a not-checked entry past the cap.
+      sourceRows: changeRequest.requirements.map((r) => ({
+        id: r.id,
+        analysisId: changeRequest.id,
+        sourceIds: r.sourceIds,
+      })),
     };
   }
   if (body.requirementIds !== undefined) {
@@ -333,6 +342,12 @@ export async function gapInputFor(
       documentId: null,
       requirementIds: set.requirements.map((r) => r.id),
       preApproval: set.requirements.some((r) => r.reviewStatus !== "approved"),
+      // #2498 — the rows read (every one the starter can see, or the set is refused).
+      sourceRows: set.requirements.map((r) => ({
+        id: r.id,
+        analysisId: r.analysisId,
+        sourceIds: r.sourceIds,
+      })),
     };
   }
   // #1657 — a soft-deleted requirement is not found, like one that never existed.
@@ -354,6 +369,9 @@ export async function gapInputFor(
     documentId: null,
     // #2345 — a requirement checked before it is approved is labelled so.
     preApproval: requirement.reviewStatus !== "approved",
+    sourceRows: [
+      { id: requirement.id, analysisId: requirement.analysisId, sourceIds: requirement.sourceIds },
+    ],
   };
 }
 
@@ -565,24 +583,28 @@ export function portfolioAssessmentsRouter(deps: PortfolioAssessmentsRouterDeps 
         if (hostProductId && body.scope === "all-accessible") {
           await assertProductAccessible(user, hostProductId);
         }
-        const id = await createPortfolioAssessment({
-          statement: input.statement,
-          sourceRequirementId: input.sourceRequirementId,
-          sourceProjectId: input.sourceProjectId,
-          // #2272 — the document whose requirements it checks.
-          sourceDocumentId: source.documentId,
-          // #2345 — the change request it was started from, and whether it ran before approval.
-          sourceAnalysisId: source.analysisId ?? null,
-          preApproval: source.preApproval ?? false,
-          // #2301 — the chosen set, so its host-picker link re-opens the same set.
-          sourceRequirementIds: source.requirementIds ?? [],
-          scope: input.scope,
-          productIds: input.productIds,
-          // #1725 — stored so the page can say which product will build it.
-          hostProductId,
-          status: "pending",
-          createdById: user.userId,
-        });
+        const id = await createPortfolioAssessment(
+          {
+            statement: input.statement,
+            sourceRequirementId: input.sourceRequirementId,
+            sourceProjectId: input.sourceProjectId,
+            // #2272 — the document whose requirements it checks.
+            sourceDocumentId: source.documentId,
+            // #2345 — the change request it was started from, and whether it ran before approval.
+            sourceAnalysisId: source.analysisId ?? null,
+            preApproval: source.preApproval ?? false,
+            // #2301 — the chosen set, so its host-picker link re-opens the same set.
+            sourceRequirementIds: source.requirementIds ?? [],
+            scope: input.scope,
+            productIds: input.productIds,
+            // #1725 — stored so the page can say which product will build it.
+            hostProductId,
+            status: "pending",
+            createdById: user.userId,
+          },
+          // #2498 — which requirement rows it reads, so one hard-deleted since still counts.
+          source.sourceRows ?? null,
+        );
         res.status(202).json(ok({ id }));
         void runAssessment(
           id,
