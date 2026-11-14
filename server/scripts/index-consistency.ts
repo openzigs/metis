@@ -10,12 +10,15 @@
  * repair is ordered and leased lives in `src/lib/code-graph/index-consistency.ts`,
  * which is unit-tested; this wrapper is outside coverage, as `embed-migrate.ts` is.
  *
- * A repair holds each of the project's repository connections' ingest leases
- * and the project's reindex lease. The ingest lease is per process
- * (`ingest-guard.ts`), so while the API server is running the reindex lease is
- * the one that excludes its symbol embed jobs (on Postgres it is a database
- * row every replica honours); a repair started during an ingest in this
- * process is refused.
+ * A repair is refused when the database records a running source ingest of
+ * one of the project's repositories (`sourceIngestState`, which the API
+ * server writes and heartbeats), and, on Postgres, while a symbol embed or a
+ * reindex holds the project's reindex lease (a database row every replica
+ * honours; on SQLite that lease is per process). The connector ingest lease it
+ * also takes is per process (`ingest-guard.ts`) and excludes nothing the API
+ * server runs. A sync's code-graph step records nothing, so run --repair when
+ * no sync of the project is in progress; what an overlap can do is bounded
+ * (see the module header of `index-consistency.ts`).
  *
  * EXIT CODES: 0 consistent (after the repair, with --repair); 1 inconsistent;
  * 2 usage error, or a repair refused because an ingest or reindex is running.

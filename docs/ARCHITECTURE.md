@@ -1018,12 +1018,19 @@ reached document chunks only. It is now wired end to end:
   `pnpm index:consistency --project <id> | --all [--repair]`). `checkIndexConsistency` reads,
   per project: vectors with no `CodeSymbolEmbedding` row (orphans), rows tagged at a model with
   no vector of that model under their id (missing), rows still PENDING, and code graphs whose
-  `commitSha` is not their connector's `lastCommitSha` (drift). `repairIndexConsistency` takes
-  every connection's ingest lease (`tryAcquireConnectorIngest`, all or none; refused while
-  one is held) and the project's reindex fence (`withSymbolFence`), sets the missing rows back
-  to PENDING, runs the embed job (which reuses an orphan of the active model where its
+  `commitSha` is not their connector's `lastCommitSha` (drift). `repairIndexConsistency` refuses
+  while the database records a running source ingest of a live connection
+  (`sourceIngestState`, heartbeat fresh), takes every connection's ingest lease
+  (`tryAcquireConnectorIngest`, all or none; per process, so from the CLI it excludes nothing
+  the API server runs) and the project's reindex fence (`withSymbolFence`; a database row on
+  Postgres, per process on SQLite), sets the missing rows back to PENDING, runs the embed job (which reuses an orphan of the active model where its
   content matches and prunes the rest), then deletes the orphans of other models. Drift is
-  reported only (a re-sync fixes it). A second run does nothing. `get_index_status` runs the
+  reported only (a re-sync fixes it), and a deleted connection's graph is not drift. A second
+  run does nothing. A sync's code-graph step records nothing a CLI can see, so an overlapping
+  repair is not refused; traced, it removes the vectors of symbols the sync just deleted a step
+  early and may embed a re-queued symbol twice, so operators run it with no sync in progress.
+  `checkIndexConsistency` lists vectors through `VectorStore.listChunkModels` where a store has
+  it: Lance reads only `id` and `model`, not every vector and text. `get_index_status` runs the
   check (`LoadIndexStatusOptions.consistency`) and prints one line; its counts are withheld
   when the project has a restricted repository document, as the per-repository counts are.
   The per-turn status line does not run it.

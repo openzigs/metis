@@ -233,6 +233,15 @@ export interface VectorStore extends ProjectWriteCapability {
    */
   getRows?(projectId: string, ids: string[]): Promise<VectorRow[]>;
   /**
+   * #2346 review — every stored row's id and model tag, without its width:
+   * `listChunkRefs` minus `dimension`, for a caller that needs only those (the
+   * index consistency check, which `get_index_status` runs per call). A store
+   * whose `listChunkRefs` must read every vector to learn its width (Lance)
+   * implements this to read the two columns alone; a caller falls back to
+   * `listChunkRefs` where it is absent. `[]` for a table that does not exist.
+   */
+  listChunkModels?(projectId: string): Promise<StoredChunkRef[]>;
+  /**
    * Issue #787 — the vector width this store's storage is FIXED at, or `null`
    * when that cannot be established.
    *
@@ -588,6 +597,11 @@ interface LanceSchema {
 
 interface LanceQuery {
   limit(value: number): LanceQuery;
+  /**
+   * `vectordb` 0.21.2 `Query.select` (`node_modules/vectordb/dist/query.d.ts`): only these
+   * columns are read. Optional: structural test doubles omit it.
+   */
+  select?(columns: string[]): LanceQuery;
   /** `vectordb` 0.21.2 `Query.prefilter` (`node_modules/vectordb/dist/query.d.ts`). */
   prefilter(value: boolean): LanceQuery;
   /** `vectordb` 0.21.2 `Query.nprobes`: IVF partitions an indexed search probes (default 20). */
@@ -1402,6 +1416,34 @@ export class LanceVectorStore implements VectorStore {
       embeddingModel: r.model ?? "",
       dimension: r.vector?.length ?? 0,
     }));
+  }
+
+  /**
+   * #2346 review — `id` and `model` only. `listChunkRefs` reads whole rows (every
+   * vector, and up to 32 KB of text each) to report widths; a consistency check
+   * needs neither, and `get_index_status` runs one per call. Like
+   * {@link readAllRows} it is a `filter()` scan (never the ANN index) and refuses
+   * a short read. A client with no projection falls back to `listChunkRefs`.
+   */
+  async listChunkModels(projectId: string): Promise<StoredChunkRef[]> {
+    const conn = await this.getConnection();
+    if (!(await conn.tableNames()).includes(this.tableName(projectId))) return [];
+    const table = await this.openOrCreateTable(projectId);
+    if (typeof table.filter !== "function") return this.listChunkRefs(projectId);
+    const query = table.filter("id IS NOT NULL");
+    if (typeof query.select !== "function") return this.listChunkRefs(projectId);
+    const total = await table.countRows();
+    if (total === 0) return [];
+    const raw = await query
+      .select(["id", "model"])
+      .limit(total)
+      .execute<{ id: string; model?: string | null }>();
+    if (raw.length !== total) {
+      throw new Error(
+        `Lance scan returned ${raw.length} of ${total} rows for ${table.name}; refusing to treat a short read as the whole table`,
+      );
+    }
+    return raw.map((r) => ({ chunkId: r.id, embeddingModel: r.model ?? "" }));
   }
 
   async getRows(projectId: string, ids: string[]): Promise<VectorRow[]> {

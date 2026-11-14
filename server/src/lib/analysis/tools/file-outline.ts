@@ -210,7 +210,13 @@ export function createFileOutlineTool(deps: Partial<FileOutlineDeps> = {}): Agen
         return `${indent}- ${r.kind} ${r.name} — ${filePath}:${r.startLine}-${r.endLine}${inParent}`;
       });
       let head = `Outline of ${filePath}${where} (${language}, ${symbols.length} symbol(s)):`;
-      if (shown.length < symbols.length) {
+      if (shown.length === 0) {
+        // An earlier repository's block used every slot of the cap.
+        truncated = true;
+        head =
+          `Outline of ${filePath}${where} (${language}): ${symbols.length} symbol(s), not listed: ` +
+          `the outline's cap of ${MAX_OUTLINE_SYMBOLS} symbols was reached; they start at line ${symbols[0]!.startLine}.`;
+      } else if (shown.length < symbols.length) {
         truncated = true;
         const next = symbols[shown.length]!;
         head += ` the first ${shown.length} are listed; the rest start at line ${next.startLine}.`;

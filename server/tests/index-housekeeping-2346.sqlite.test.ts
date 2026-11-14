@@ -335,6 +335,101 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       after?.release();
     });
 
+    /** The persisted state a source ingest writes when it starts (#182), as another process sees it. */
+    const recordedIngest = (status: string, heartbeatAt: Date) =>
+      JSON.stringify({
+        version: 1,
+        runId: "run-2346",
+        status,
+        startedAt: heartbeatAt.toISOString(),
+        heartbeatAt: heartbeatAt.toISOString(),
+        finishedAt: null,
+      });
+
+    it("--repair refuses, changing nothing, while the database records a running ingest of the project (any process)", async () => {
+      const f = await fixture();
+      await breakIt(f);
+      // No lease in this process: the ingest runs in the API server.
+      await db.repoConnection.update({
+        where: { id: f.repoId },
+        data: { sourceIngestState: recordedIngest("running", new Date()) },
+      });
+      const before = await summary(f.projectId, f.store);
+      expect(await consistency.repairIndexConsistency(f.projectId, f.deps)).toEqual({
+        status: "ingest-in-progress",
+        connectorIds: [f.repoId],
+      });
+      expect(await summary(f.projectId, f.store)).toEqual(before);
+      const free = tryAcquireConnectorIngest(f.repoId, "next sync");
+      expect(free).not.toBeNull();
+      free?.release();
+    });
+
+    it("a recorded run whose heartbeat went stale (its process died) does not block the repair", async () => {
+      const f = await fixture();
+      await breakIt(f);
+      await db.repoConnection.update({
+        where: { id: f.repoId },
+        data: {
+          sourceIngestState: recordedIngest("running", new Date(Date.now() - 60 * 60 * 1000)),
+        },
+      });
+      expect((await consistency.repairIndexConsistency(f.projectId, f.deps)).status).toBe(
+        "repaired",
+      );
+    });
+
+    it("a finished recorded run, or one on a deleted connection, does not block the repair", async () => {
+      const f = await fixture();
+      await breakIt(f);
+      await db.repoConnection.update({
+        where: { id: f.repoId },
+        data: { sourceIngestState: recordedIngest("completed", new Date()) },
+      });
+      const gone = await db.repoConnection.create({
+        data: {
+          projectId: f.projectId,
+          label: "deleted",
+          provider: "github",
+          ownerOrOrg: "acme",
+          repoName: "gone",
+          deletedAt: new Date(),
+          sourceIngestState: recordedIngest("running", new Date()),
+        },
+      });
+      expect((await consistency.repairIndexConsistency(f.projectId, f.deps)).status).toBe(
+        "repaired",
+      );
+      expect(gone.id).not.toBe(f.repoId);
+    });
+
+    it("the check lists the vectors through the store's id-and-model listing when it has one", async () => {
+      const f = await fixture();
+      await breakIt(f);
+      const listChunkModels = vi.fn((ns: string) =>
+        f.store
+          .listChunkRefs(ns)
+          .then((refs) =>
+            refs.map((r) => ({ chunkId: r.chunkId, embeddingModel: r.embeddingModel })),
+          ),
+      );
+      const store = Object.assign(Object.create(f.store) as typeof f.store, {
+        listChunkModels,
+        listChunkRefs: () => Promise.reject(new Error("reads every vector")),
+      });
+      const check = await consistency.checkIndexConsistency(f.projectId, { store });
+      expect(listChunkModels).toHaveBeenCalledWith(f.ns);
+      expect(check.orphanVectorIds.sort()).toEqual(["ghost", "ghost-old"]);
+    });
+
+    it("a graph whose connection was deleted is not reported as drifted", async () => {
+      const f = await fixture();
+      await breakIt(f);
+      await db.repoConnection.update({ where: { id: f.repoId }, data: { deletedAt: new Date() } });
+      const check = await consistency.checkIndexConsistency(f.projectId, { store: f.store });
+      expect(check.commitDrift).toEqual([]);
+    });
+
     it("the repair holds the connector's ingest lease while it runs", async () => {
       const f = await fixture();
       await breakIt(f);

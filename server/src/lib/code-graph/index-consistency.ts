@@ -21,11 +21,28 @@
  *
  * {@link checkIndexConsistency} only reads. {@link repairIndexConsistency}
  * re-queues the missing embeddings (their tags go back to PENDING and the embed
- * job runs) and removes the orphans, holding every repository connection's
- * ingest lease (`ingest-guard.ts`) so no ingest of the project rewrites its
- * symbols meanwhile, and the project's reindex fence, which every writer of the
- * symbol vectors takes. Commit drift is reported only: a re-sync of the
- * repository fixes it. Run again, the repair finds nothing to do.
+ * job runs) and removes the orphans, under the project's reindex fence, which
+ * every writer of the symbol vectors takes. Commit drift is reported only: a
+ * re-sync of the repository fixes it. Run again, the repair finds nothing to do.
+ *
+ * What a repair can and cannot see of a running ingest (#2346 review). Its only
+ * production caller is the `index:consistency` CLI, a process of its own, so:
+ *
+ *   - it refuses while the DATABASE records a running source ingest of one of
+ *     the project's live connections (`repo_connections.sourceIngestState`,
+ *     heartbeat fresh: `effectiveSourceIngestStatus`), which any process sees;
+ *   - it holds every connection's ingest lease (`ingest-guard.ts`), which only
+ *     excludes ingests in the same process: none, from the CLI;
+ *   - the reindex fence excludes the symbol embed job of any replica on
+ *     Postgres, where it is a database row; on SQLite it is in-process only.
+ *
+ * A sync's code-graph step runs BEFORE its source ingest records anything, and
+ * leaves no record of its own, so a repair overlapping that step is not
+ * refused. Traced, the overlap is bounded: the vectors of symbols the ingest
+ * just deleted are removed a step early (the embed job prunes them anyway), and
+ * a re-queued row the ingest also rewrote is embedded once more. Nothing a
+ * search needs is lost. Operators run `--repair` when no sync of the project is
+ * in progress (`docs/OPERATIONS.md`).
  */
 import { prisma } from "../prisma.js";
 import { createChildLogger } from "../logger.js";
@@ -35,6 +52,10 @@ import {
   tryAcquireConnectorIngest,
   type ConnectorIngestLease,
 } from "../connectors/ingest-guard.js";
+import {
+  effectiveSourceIngestStatus,
+  parseSourceIngestState,
+} from "../connectors/source-ingest-state.js";
 import {
   PENDING_MODEL,
   createSymbolEmbeddingStore,
@@ -107,14 +128,19 @@ export async function checkIndexConsistency(
   deps: Pick<IndexConsistencyDeps, "store"> = {},
 ): Promise<IndexConsistencyCheck> {
   const store: VectorStore = deps.store ?? getVectorStore();
+  const ns = symbolVectorsId(projectId);
   const [refs, rows, graphs, symbolCounts] = await Promise.all([
-    store.listChunkRefs(symbolVectorsId(projectId)),
+    // Ids and model tags only: on Lance `listChunkRefs` reads every vector and
+    // text, and `get_index_status` runs this check per call (#2346 review).
+    store.listChunkModels ? store.listChunkModels(ns) : store.listChunkRefs(ns),
     prisma.codeSymbolEmbedding.findMany({
       where: { projectId },
       select: { symbolId: true, embeddingModel: true },
     }),
     prisma.codeGraph.findMany({
-      where: { projectId, repoConnectionId: { not: null } },
+      // A deleted connection's graph is no repository's current index, and a
+      // re-sync, the documented fix for drift, cannot reach it.
+      where: { projectId, repoConnectionId: { not: null }, repoConnection: { deletedAt: null } },
       select: {
         id: true,
         repoConnectionId: true,
@@ -167,7 +193,10 @@ export type IndexRepairResult =
       embed: PipelineResult | null;
     }
   | {
-      /** A repository connection of the project is being ingested: nothing was changed. */
+      /**
+       * A repository connection of the project is being ingested, as the database
+       * records it or as this process's ingest lease shows: nothing was changed.
+       */
       status: "ingest-in-progress";
       connectorIds: string[];
     };
@@ -189,9 +218,34 @@ function acquireAll(
 }
 
 /**
- * Repair `projectId`'s symbol index. Refuses, changing nothing, while any of
- * its repository connections is being ingested; throws `ReindexConflictError`
- * while a symbol embed or a reindex holds the project's lease.
+ * The project's live connections whose source ingest the database records as
+ * running, heartbeat fresh: visible from any process, unlike the ingest lease.
+ * A run whose process died goes stale (`SOURCE_INGEST_STALE_MS`) and stops
+ * blocking.
+ */
+function recordedRunning(
+  connections: ReadonlyArray<{
+    id: string;
+    deletedAt: Date | null;
+    sourceIngestState: string | null;
+  }>,
+  now: number,
+): string[] {
+  return connections
+    .filter((c) => c.deletedAt === null)
+    .filter((c) => {
+      const state = parseSourceIngestState(c.sourceIngestState);
+      return state !== null && effectiveSourceIngestStatus(state, now) === "running";
+    })
+    .map((c) => c.id);
+}
+
+/**
+ * Repair `projectId`'s symbol index. Refuses, changing nothing, while the
+ * database records a running source ingest of one of its repository
+ * connections, or this process holds one's ingest lease; throws
+ * `ReindexConflictError` while a symbol embed or a reindex holds the project's
+ * lease. What this cannot see is in the module header.
  *
  * Order matters: the missing vectors are re-queued and the embed job runs
  * FIRST, because the job reuses an orphan vector of the active model for a
@@ -204,8 +258,10 @@ export async function repairIndexConsistency(
 ): Promise<IndexRepairResult> {
   const connections = await prisma.repoConnection.findMany({
     where: { projectId },
-    select: { id: true },
+    select: { id: true, deletedAt: true, sourceIngestState: true },
   });
+  const running = recordedRunning(connections, Date.now());
+  if (running.length > 0) return { status: "ingest-in-progress", connectorIds: running };
   const taken = acquireAll(connections.map((c) => c.id));
   if (!taken.ok) return { status: "ingest-in-progress", connectorIds: taken.busy };
   try {
