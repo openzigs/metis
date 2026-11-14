@@ -8,19 +8,29 @@
  *
  * One read of every named requirement's sources for all the reviews at once.
  */
+import type { Prisma } from "@prisma/client";
 import { RESTRICTED_SOURCE_TITLE } from "@metis/shared";
 import { restrictedRequirementIds, type SourceReader } from "../analysis/source-redaction.js";
+import type { REVIEW_DETAIL_INCLUDE } from "./review-service.js";
 
 interface SharedWithEntry {
   requirementId: string | null;
   title: string;
 }
 
-interface RedactableItem {
-  requirementId: string | null;
-  requirement?: { title: string } | null;
+/**
+ * An item as every review response loads it (`REVIEW_DETAIL_INCLUDE`). The
+ * fields redacted are read off that include, so renaming or dropping one there
+ * fails typecheck here rather than silently showing the title (fail open).
+ */
+type DetailItem = Prisma.ReviewRequestItemGetPayload<{
+  include: (typeof REVIEW_DETAIL_INCLUDE)["items"]["include"];
+}>;
+
+type RedactableItem = Pick<DetailItem, "requirementId"> & {
+  requirement?: Pick<NonNullable<DetailItem["requirement"]>, "title"> | null;
   sharedCriteria?: { record: { sharedWith: SharedWithEntry[] } } | null;
-}
+};
 
 interface RedactableReview {
   /** Absent (or not a list) on a review read without its items: nothing to redact. */

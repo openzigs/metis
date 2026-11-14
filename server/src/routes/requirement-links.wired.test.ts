@@ -95,7 +95,7 @@ describe("GET /workspaces/:id/requirements/search (wired route → service → p
       "/workspaces/ws1/requirements/search?q=login&page=1&pageSize=20",
     );
     // Pre-fix this 500'd because the route never passed prisma and the service
-    // dereferenced an undefined client at `database.requirement.count`.
+    // dereferenced an undefined client (then at `database.requirement.count`).
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({
       success: true,
@@ -103,10 +103,10 @@ describe("GET /workspaces/:id/requirements/search (wired route → service → p
     });
     // The service actually reached Prisma — proving the client was threaded end
     // to end, not defaulted around a mock.
-    expect(prismaMock.requirement.count).toHaveBeenCalledTimes(1);
-    // #2491 — the matches' sources, then the page.
-    expect(prismaMock.requirement.findMany).toHaveBeenCalledTimes(2);
-    const whereArg = prismaMock.requirement.findMany.mock.calls[1][0].where;
+    // #2491 — one bounded batch of matches, read with their sources; the page
+    // and the total are cut from it (fewer rows than a batch: nothing more).
+    expect(prismaMock.requirement.findMany).toHaveBeenCalledTimes(1);
+    const whereArg = prismaMock.requirement.findMany.mock.calls[0][0].where;
     expect(whereArg.projectId).toEqual({ in: ["projA"] });
   });
 });

@@ -256,6 +256,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       sqlite?.cleanup();
     });
 
+    it("compares against the literal placeholder, so no assertion passes on an undefined import", () => {
+      expect(RESTRICTED_SOURCE_TITLE).toBe("Restricted");
+    });
+
     describe("discussion thread context (sent to the AI reply the whole project reads)", () => {
       const thread = async (
         id: string,
@@ -382,6 +386,29 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect((await get("alice", `${base}/requirements/req-secret/spec-mappings`)).status).toBe(
           200,
         );
+      });
+
+      it("refuses Bob creating or deleting a spec mapping on a restricted requirement, as a missing one", async () => {
+        await db.generatedDocument.create({
+          data: { id: "spec-2491", projectId: P, title: "Spec", status: "completed" },
+        });
+        const path = `${base}/requirements/req-secret/spec-mappings`;
+        const mapping = { specDocumentId: "spec-2491" };
+        expect((await post("bob", path, mapping)).status).toBe(404);
+        expect(
+          await db.requirementSpecMapping.count({ where: { requirementId: "req-secret" } }),
+        ).toBe(0);
+        const created = await post("alice", path, mapping);
+        expect(created.status).toBe(201);
+        const del = (who: Who) =>
+          request(app())
+            .delete(`${path}/${created.body.data.id}`)
+            .set("Authorization", bearer(who));
+        expect((await del("bob")).status).toBe(404);
+        expect(
+          await db.requirementSpecMapping.count({ where: { requirementId: "req-secret" } }),
+        ).toBe(1);
+        expect((await del("alice")).status).toBe(204);
       });
     });
 
@@ -643,7 +670,11 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           },
         });
       });
-      const check = async (id: string, criteria: string[]) => {
+      const check = async (
+        id: string,
+        criteria: string[],
+        notChecked: Array<{ text: string; reason: string; count: number | null }> = [],
+      ) => {
         await db.portfolioAssessment.deleteMany({ where: { id } });
         await db.portfolioAssessment.create({
           data: {
@@ -655,6 +686,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
             sourceProjectId: P,
             sourceAnalysisId: CR,
             statement: 'Requirements of change request "Checkout"',
+            notChecked: JSON.stringify(notChecked),
             summary: "The checkout needs the billing service",
             report: JSON.stringify({
               source: "model",
@@ -699,6 +731,72 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           view!.products[0]!.technicalDetail as { criteria: Array<{ criterion: string }> }
         ).criteria.map((c) => c.criterion);
         expect(criteria).toEqual([`${OPEN}: ${OPEN} — body`, RESTRICTED_SOURCE_TITLE]);
+      });
+
+      // The check read its rows when it ran; what the row is now must not
+      // decide what a stored check shows (fail closed).
+      const STORED_SUMMARY = "The checkout needs the billing service";
+      const readSecretAfter = async (
+        id: string,
+        change: Record<string, unknown>,
+        notChecked: Array<{ text: string; reason: string; count: number | null }> = [],
+      ) => {
+        await db.requirement.update({ where: { id: "req-secret" }, data: change });
+        try {
+          const view = await check(
+            id,
+            [`${OPEN}: ${OPEN} — body`, `${SECRET}: ${SECRET} — body`],
+            notChecked,
+          );
+          expect(view).not.toBeNull();
+          expect(JSON.stringify(view)).not.toContain("Payroll");
+          expect(view!.summary).not.toBe(STORED_SUMMARY);
+          expect(view!.report?.requirements).toEqual([]);
+          const criteria = (
+            view!.products[0]!.technicalDetail as { criteria: Array<{ criterion: string }> }
+          ).criteria.map((c) => c.criterion);
+          expect(criteria).toEqual([`${OPEN}: ${OPEN} — body`, RESTRICTED_SOURCE_TITLE]);
+          return view!;
+        } finally {
+          await db.requirement.update({
+            where: { id: "req-secret" },
+            data: { reviewStatus: "approved", deletedAt: null, title: SECRET },
+          });
+        }
+      };
+
+      it("withholds a read row's text from Bob when the row was rejected after the check", async () => {
+        await readSecretAfter("pa-2491-rejected-after", { reviewStatus: "rejected" });
+      });
+
+      it("withholds a read row's text from Bob when the row was deferred after the check", async () => {
+        await readSecretAfter("pa-2491-deferred-after", { reviewStatus: "deferred" });
+      });
+
+      it("withholds a read row's text from Bob when the row was deleted after the check", async () => {
+        await readSecretAfter("pa-2491-deleted-after", { deletedAt: new Date() });
+      });
+
+      it("withholds a read row's text from Bob when the row was renamed after the check", async () => {
+        const view = await readSecretAfter("pa-2491-renamed-after", { title: "Quarterly report" }, [
+          { text: `${SECRET}: ${SECRET} — body, cut`, reason: "text-cut", count: 12 },
+          { text: "1 requirement", reason: "restricted-source", count: 1 },
+        ]);
+        expect(view.notChecked.map((n) => n.text)).toEqual([
+          RESTRICTED_SOURCE_TITLE,
+          "1 requirement",
+        ]);
+      });
+
+      it("shows Bob a not-checked entry cut from a row he can see", async () => {
+        await db.requirement.update({ where: { id: "req-secret" }, data: { title: SECRET } });
+        const view = await check(
+          "pa-2491-open-cut",
+          [`${OPEN}: ${OPEN} — body`],
+          [{ text: `${OPEN}: ${OPEN} —…`, reason: "text-cut", count: 3 }],
+        );
+        expect(view!.notChecked.map((n) => n.text)).toEqual([`${OPEN}: ${OPEN} —…`]);
+        expect(view!.summary).toBe(STORED_SUMMARY);
       });
     });
   },

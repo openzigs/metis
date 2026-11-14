@@ -6,6 +6,7 @@
  *   GET    /requirements/:requirementId/spec-mappings        analysis.read   (#226 list)
  *   POST   /requirements/:requirementId/spec-mappings        analysis.run    (#226 create)
  *   DELETE /requirements/:requirementId/spec-mappings/:id     analysis.run    (#226 remove)
+ *     (#2491 — all three answer 404 for a requirement whose source the caller cannot see)
  *   GET    /specs/:specId/code-mappings                       analysis.read   (#227 list)
  *   POST   /specs/:specId/code-mappings                       analysis.run    (#227 create)
  *   DELETE /specs/:specId/code-mappings/:id                   analysis.run    (#227 remove)
@@ -183,6 +184,12 @@ export function traceabilityRouter(): Router {
           issues: parsed.error.flatten(),
         });
       }
+      // #2491 — a requirement the caller cannot see answers as an unknown one.
+      await assertRequirementSourcesVisible(
+        actorOf(req).id,
+        projectIdOf(req),
+        requirementIdOf(req),
+      );
       const created = await reqSpec.create(projectIdOf(req), requirementIdOf(req), parsed.data);
       res.status(201).json(ok(created));
     },
@@ -193,6 +200,12 @@ export function traceabilityRouter(): Router {
     requireAuth,
     requirePermission("analysis.run"),
     async (req, res) => {
+      // #2491 — a requirement the caller cannot see answers as an unknown one.
+      await assertRequirementSourcesVisible(
+        actorOf(req).id,
+        projectIdOf(req),
+        requirementIdOf(req),
+      );
       await reqSpec.remove(projectIdOf(req), requirementIdOf(req), String(req.params.mappingId));
       res.status(204).end();
     },

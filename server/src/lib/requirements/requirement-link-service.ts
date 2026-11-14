@@ -586,47 +586,69 @@ async function searchWorkspaceRequirementsPostgres(
   const projectList = Prisma.join(projectIds);
   const pattern = `%${escapeLike(query)}%`;
 
-  // #2491 — every match is decided before a page is cut: a hidden one is
-  // neither listed, counted, nor allowed to take a visible one's place.
-  const matches = await raw.$queryRaw<
-    Array<{ id: string; analysisId: string; sourceIds: string | null }>
-  >(Prisma.sql`
-    SELECT "id", "analysisId", "sourceIds"
-    FROM "requirements"
-    WHERE "projectId" IN (${projectList})
-      AND "deletedAt" IS NULL
-      AND "title" ILIKE ${pattern}
-  `);
-  const hidden = [...(await restrictedIds(reader, matches))];
-  const notHidden =
-    hidden.length > 0 ? Prisma.sql`AND r."id" NOT IN (${Prisma.join(hidden)})` : Prisma.empty;
+  return visibleSearchPage(
+    (skip, take) =>
+      raw.$queryRaw<Array<SearchCandidate>>(Prisma.sql`
+        SELECT r."id", r."title", r."projectId", p."name" AS "projectName",
+               r."analysisId", r."sourceIds"
+        FROM "requirements" r
+        JOIN "projects" p ON p."id" = r."projectId"
+        WHERE r."projectId" IN (${projectList})
+          AND r."deletedAt" IS NULL
+          AND r."title" ILIKE ${pattern}
+        ORDER BY r."title" ASC, r."id" ASC
+        LIMIT ${take} OFFSET ${skip}
+      `),
+    reader,
+    page,
+    pageSize,
+  );
+}
 
-  const countRows = await raw.$queryRaw<Array<{ count: bigint }>>(Prisma.sql`
-    SELECT COUNT(*) AS "count"
-    FROM "requirements" r
-    WHERE r."projectId" IN (${projectList})
-      AND r."deletedAt" IS NULL
-      AND r."title" ILIKE ${pattern}
-      ${notHidden}
-  `);
-  const total = Number(countRows[0]?.count ?? 0);
+/** One match of the link picker's search, with what its sources are decided by. */
+interface SearchCandidate {
+  id: string;
+  title: string;
+  projectId: string;
+  projectName: string;
+  analysisId: string;
+  sourceIds: string | null;
+}
 
-  const rows = await raw.$queryRaw<
-    Array<{ id: string; title: string; projectId: string; projectName: string }>
-  >(Prisma.sql`
-    SELECT r."id", r."title", r."projectId", p."name" AS "projectName"
-    FROM "requirements" r
-    JOIN "projects" p ON p."id" = r."projectId"
-    WHERE r."projectId" IN (${projectList})
-      AND r."deletedAt" IS NULL
-      AND r."title" ILIKE ${pattern}
-      ${notHidden}
-    ORDER BY r."title" ASC
-    LIMIT ${pageSize} OFFSET ${(page - 1) * pageSize}
-  `);
+/** #2491 — matches read per batch: the source guard binds at most this many rows' ids. */
+export const SEARCH_SCAN_BATCH = 250;
+/**
+ * #2491 — matches read at most per search. Past it the picker's `total` is a
+ * lower bound (the visible matches among the first this many), never a count
+ * that includes a hidden one: a picker query is a typed term, and its first
+ * page is what is shown.
+ */
+export const SEARCH_SCAN_CAP = 2_000;
 
+/**
+ * #2491 — the page of `page`/`pageSize` cut from the matches the reader may
+ * see, in title order. Every match is decided before the page is cut (a hidden
+ * one is neither listed, counted, nor allowed to take a visible one's place),
+ * one bounded batch at a time: no list of hidden ids is ever bound into a
+ * query (#1346), and no search reads more than {@link SEARCH_SCAN_CAP} rows.
+ */
+async function visibleSearchPage(
+  readBatch: (skip: number, take: number) => Promise<SearchCandidate[]>,
+  reader: SourceReader,
+  page: number,
+  pageSize: number,
+): Promise<SearchResult> {
+  const visible: SearchCandidate[] = [];
+  for (let skip = 0; skip < SEARCH_SCAN_CAP; skip += SEARCH_SCAN_BATCH) {
+    const take = Math.min(SEARCH_SCAN_BATCH, SEARCH_SCAN_CAP - skip);
+    const batch = await readBatch(skip, take);
+    const hidden = await restrictedIds(reader, batch);
+    visible.push(...batch.filter((r) => !hidden.has(r.id)));
+    if (batch.length < take) break;
+  }
+  const start = (page - 1) * pageSize;
   return {
-    items: rows.map((r) => ({
+    items: visible.slice(start, start + pageSize).map((r) => ({
       id: r.id,
       title: r.title,
       projectId: r.projectId,
@@ -634,7 +656,7 @@ async function searchWorkspaceRequirementsPostgres(
     })),
     page,
     pageSize,
-    total,
+    total: visible.length,
   };
 }
 
@@ -684,7 +706,7 @@ export async function searchWorkspaceRequirements(
     );
   }
 
-  const matching = {
+  const where = {
     projectId: { in: projectIds },
     deletedAt: null,
     // SQLite `LIKE` is case-insensitive for ASCII, so a plain `contains` filter
@@ -692,40 +714,28 @@ export async function searchWorkspaceRequirements(
     // bound parameter — never interpolated into SQL.
     ...(query ? { title: { contains: query } } : {}),
   };
-  // Every match is decided before a page is cut, as above.
-  const hidden = await restrictedIds(
+  return visibleSearchPage(
+    async (skip, take) =>
+      (
+        (await database.requirement.findMany({
+          where,
+          select: {
+            id: true,
+            title: true,
+            projectId: true,
+            analysisId: true,
+            sourceIds: true,
+            project: { select: { name: true } },
+          },
+          orderBy: [{ title: "asc" }, { id: "asc" }],
+          skip,
+          take,
+        })) as unknown as Array<
+          Omit<SearchCandidate, "projectName"> & { project: { name: string } }
+        >
+      ).map(({ project, ...r }) => ({ ...r, projectName: project.name })),
     reader,
-    (await database.requirement.findMany({
-      where: matching,
-      select: { id: true, analysisId: true, sourceIds: true },
-    })) as Array<{ id: string; analysisId: string; sourceIds: string | null }>,
+    page,
+    pageSize,
   );
-  const where = hidden.size > 0 ? { ...matching, id: { notIn: [...hidden] } } : matching;
-
-  const [total, rows] = await Promise.all([
-    database.requirement.count({ where }),
-    database.requirement.findMany({
-      where,
-      select: { id: true, title: true, projectId: true, project: { select: { name: true } } },
-      orderBy: { title: "asc" },
-      skip: (page - 1) * pageSize,
-      take: pageSize,
-    }),
-  ]);
-
-  const items = (
-    rows as unknown as Array<{
-      id: string;
-      title: string;
-      projectId: string;
-      project: { name: string };
-    }>
-  ).map((r) => ({
-    id: r.id,
-    title: r.title,
-    projectId: r.projectId,
-    projectName: r.project.name,
-  }));
-
-  return { items, page, pageSize, total };
 }
