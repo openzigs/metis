@@ -485,6 +485,15 @@ describe("PUT /api/admin/config/:key — tunables", () => {
     [false, "false"],
     ["true", "true"],
     [true, "true"],
+    // The other clear spellings `getBool` reads from the env, stored normalised.
+    ["0", "false"],
+    [0, "false"],
+    ["off", "false"],
+    ["No", "false"],
+    ["1", "true"],
+    [1, "true"],
+    ["on", "true"],
+    [" YES ", "true"],
   ])("#2493: a bool tunable written as %j reads back %s", async (written, readBack) => {
     const token = await login("admin");
     const put = await request(app)
@@ -500,7 +509,7 @@ describe("PUT /api/admin/config/:key — tunables", () => {
     expect(get.body.data.value).toBe(readBack);
   });
 
-  it.each([[""], [" "], ["off"], ["no"], ["0"], ["FALSE"], [0]])(
+  it.each([[""], [" "], ["enabled"], ["2"], [2], [-1], [null]])(
     "#2493: a bool tunable rejects %j instead of guessing",
     async (written) => {
       const token = await login("admin");

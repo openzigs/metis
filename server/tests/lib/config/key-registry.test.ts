@@ -2,6 +2,7 @@
  * Sanity tests for the static config key registry.
  */
 import { describe, expect, it } from "vitest";
+import { isTruthyConfigValue } from "../../../src/lib/config/truthy.js";
 import {
   CONFIG_KEYS,
   getKeyDef,
@@ -124,19 +125,82 @@ describe("CONFIG_KEYS — per-key Zod validators", () => {
     expect(def.schema.safeParse("true").success).toBe(true);
   });
 
-  // #2493 — every bool key: "false" is false, and a string that is neither
-  // "true" nor "false" is refused rather than read as true.
-  it("every bool key parses true/false strictly and rejects other strings", () => {
+  // #2493 — every bool key: "false" is false, and the write path takes exactly
+  // the clear spellings the read path (`getBool` → `isTruthyConfigValue`)
+  // understands, so the admin API and the env agree. Anything else is refused
+  // rather than guessed at.
+  const BOOL_TRUE: unknown[] = [
+    true,
+    1,
+    "true",
+    "TRUE",
+    "True",
+    "1",
+    "yes",
+    "YES",
+    "on",
+    "On",
+    " true ",
+    "\ton\n",
+  ];
+  const BOOL_FALSE: unknown[] = [
+    false,
+    0,
+    "false",
+    "FALSE",
+    "False",
+    "0",
+    "no",
+    "NO",
+    "off",
+    "Off",
+    " false ",
+    "\toff\n",
+  ];
+  const BOOL_REFUSED: unknown[] = [
+    "",
+    " ",
+    "\t",
+    "2",
+    "-1",
+    "enabled",
+    "y",
+    "t",
+    "truee",
+    "1 0",
+    "nope",
+    2,
+    -1,
+    0.5,
+    Number.NaN,
+    null,
+    undefined,
+    [],
+    {},
+  ];
+
+  it("every bool key parses the clear true/false spellings and rejects everything else", () => {
     const boolKeys = Object.entries(CONFIG_KEYS).filter(([, d]) => d.valueType === "bool");
     expect(boolKeys.length).toBeGreaterThan(0);
     for (const [key, def] of boolKeys) {
-      expect([key, def.schema.safeParse("false").data]).toEqual([key, false]);
-      expect([key, def.schema.safeParse(false).data]).toEqual([key, false]);
-      expect([key, def.schema.safeParse("true").data]).toEqual([key, true]);
-      expect([key, def.schema.safeParse(true).data]).toEqual([key, true]);
-      for (const bad of ["", " ", "0", "1", "no", "off", "TRUE", "False", 0, 1, null]) {
+      for (const v of BOOL_TRUE) {
+        expect([key, v, def.schema.safeParse(v).data]).toEqual([key, v, true]);
+      }
+      for (const v of BOOL_FALSE) {
+        expect([key, v, def.schema.safeParse(v).data]).toEqual([key, v, false]);
+      }
+      for (const bad of BOOL_REFUSED) {
         expect([key, bad, def.schema.safeParse(bad).success]).toEqual([key, bad, false]);
       }
+    }
+  });
+
+  it("a string the bool schema accepts reads back the same through isTruthyConfigValue", () => {
+    const def = CONFIG_KEYS.SCHEDULER_ENABLED;
+    for (const v of [...BOOL_TRUE, ...BOOL_FALSE].filter(
+      (x): x is string => typeof x === "string",
+    )) {
+      expect([v, def.schema.safeParse(v).data]).toEqual([v, isTruthyConfigValue(v)]);
     }
   });
 
