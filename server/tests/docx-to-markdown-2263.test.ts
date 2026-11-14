@@ -380,9 +380,11 @@ describe("#2292 — whitespace runs in Word text", () => {
       return least;
     }
     // Eight times the spaces: linear work grows eightfold, the quadratic forms sixty-four-fold.
-    // A ratio of two sizes on one machine, so no bound depends on how fast the machine is.
-    const small = await cpuMs(7_500);
-    const large = await cpuMs(60_000);
+    // A ratio of two sizes on one machine, so no bound depends on how fast the machine is. Sized
+    // so a quadratic form fails on the ratio (about 53x measured) in about 3 s, well inside the
+    // test timeout, rather than as a timeout.
+    const small = await cpuMs(3_750);
+    const large = await cpuMs(30_000);
     expect(large / Math.max(small, 1)).toBeLessThan(24);
   });
 });
