@@ -955,3 +955,112 @@ describe("streamAIReply — project budget gate (#775)", () => {
     expect(sessionCreate).not.toHaveBeenCalled();
   });
 });
+
+describe("streamAIReply — #2290 the reply's citations, checked", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    sessionCreate.mockResolvedValue({ id: "sess-1" });
+    messageCreate.mockImplementation((args: { data: Record<string, unknown> }) => ({
+      id: "m-ai",
+      ...args.data,
+    }));
+    recordAndFlush.mockResolvedValue({});
+    approvalCreate.mockImplementation(async (a: { data: unknown }) => a.data);
+    recordProjectUsage.mockReturnValue({ totalTokens: 0, costCents: 0 });
+    threadFindFirst.mockResolvedValue({ requirementId: null, analysisId: null });
+  });
+
+  /** The `meta` column the reply was written with, parsed. */
+  const storedMeta = () => {
+    const meta = messageCreate.mock.calls[0][0].data.meta as string | null;
+    return meta === null ? null : (JSON.parse(meta) as { citations: unknown[] });
+  };
+
+  const streamed = (text: string): AIProvider =>
+    stubProvider([{ type: "delta", content: text }, { type: "done" }]);
+
+  it("checks a cited line range against what the reply's tool read, and stores the result", async () => {
+    const tool = readTool(
+      "internal/model/feed.go (lines 100-140 of 300)\n123| func (f *Feed) ScheduleNextCheck(",
+    );
+    const answer =
+      "See internal/model/feed.go:120-130, and internal/model/feed.go:200-210, " +
+      "and internal/made/up.go:1.";
+    const { provider } = chatProvider([
+      { toolCalls: [CALL], usage: USAGE(10, 1) },
+      { content: answer, usage: USAGE(10, 1) },
+    ]);
+
+    const result = await streamAIReply({
+      thread,
+      triggerMessage,
+      actor,
+      provider,
+      resolveTools: async () => toolRuntime(tool),
+    });
+
+    expect(result.message.citations?.map((c) => [c.text, c.status])).toEqual([
+      ["internal/model/feed.go:120-130", "verified"],
+      ["internal/model/feed.go:200-210", "span-unverified"],
+      ["internal/made/up.go:1", "not-read"],
+    ]);
+    // Written on the row, the same list, so a reload shows what the live reply showed.
+    expect(storedMeta()?.citations).toEqual(result.message.citations);
+  });
+
+  it("checks `[n]` and a named file against the retrieved excerpts the reply was given", async () => {
+    const retrieve = vi.fn(async () => ({
+      block: "## Retrieved Knowledge\n[1] FRD-12.md#0\nRefunds within 30 days.",
+      sources: 1,
+      evidence: { contexts: ["Refunds within 30 days."], excerpts: [{ name: "FRD-12.md" }] },
+    }));
+
+    const result = await streamAIReply({
+      thread,
+      triggerMessage,
+      actor,
+      provider: streamed("Refunds take 30 days [1] (FRD-12.md); see also policy/old.md."),
+      retrieve,
+    });
+
+    expect(result.message.citations).toEqual([
+      expect.objectContaining({ text: "[1]", path: "FRD-12.md", status: "verified" }),
+      expect.objectContaining({ text: "FRD-12.md", status: "verified", source: "document" }),
+      expect.objectContaining({ text: "policy/old.md", status: "not-read" }),
+    ]);
+    expect(storedMeta()?.citations).toHaveLength(3);
+  });
+
+  it("does not count excerpts the reply never got: a retrieval with no source is not evidence", async () => {
+    const retrieve = vi.fn(async () => ({
+      block: "",
+      sources: 0,
+      evidence: { contexts: [], excerpts: [{ name: "FRD-12.md" }] },
+    }));
+
+    const result = await streamAIReply({
+      thread,
+      triggerMessage,
+      actor,
+      provider: streamed("Per FRD-12.md lines 1-2 [1]."),
+      retrieve,
+    });
+
+    // Not the excerpt the retriever named, and no `[n]` to resolve: nothing was given.
+    expect(result.message.citations).toEqual([
+      expect.objectContaining({ text: "FRD-12.md lines 1-2", status: "not-read" }),
+    ]);
+  });
+
+  it("stores no meta and returns no citations for a reply that cites nothing", async () => {
+    const result = await streamAIReply({
+      thread,
+      triggerMessage,
+      actor,
+      provider: streamed("Nothing in the sources shows a perf target."),
+    });
+
+    expect(result.message).not.toHaveProperty("citations");
+    expect(messageCreate.mock.calls[0][0].data.meta).toBeNull();
+  });
+});

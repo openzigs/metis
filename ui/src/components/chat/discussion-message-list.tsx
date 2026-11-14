@@ -7,9 +7,13 @@
  * avatar + author label, and (for AI) a badge showing the model id. Message
  * bodies render through the XSS-safe {@link ChatMarkdown} renderer — no raw HTML
  * reaches the DOM. AI messages that are still streaming show a live cursor.
+ *
+ * #2290 — under a settled AI reply, its citations, checked against what the
+ * reply retrieved or read, as under a chat reply (#2242).
  */
 import { useState } from "react";
 import { ChatMarkdown } from "@/components/chat/chat-markdown";
+import { CitationList } from "@/components/chat/citation-list";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/alert-dialog";
 import { Textarea } from "@/components/ui/textarea";
@@ -82,10 +86,13 @@ export function DiscussionMessageItem({
   currentUserId,
   onEdit,
   onDelete,
+  projectId,
 }: {
   message: DiscussionListMessage;
   /** Member-only promote action. When omitted, no promote button renders. */
   onPromote?: (message: DiscussionListMessage) => void;
+  /** #2290 — the thread's project, whose repository a verified code citation links into. */
+  projectId?: string;
 } & MessageOwnerActions) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(message.body);
@@ -217,6 +224,9 @@ export function DiscussionMessageItem({
               {message.streaming ? "…" : ""}
             </span>
           )}
+          {isAi && !message.streaming && !message.isError ? (
+            <CitationList citations={message.citations} projectId={projectId} />
+          ) : null}
         </div>
       </div>
     </li>
@@ -229,6 +239,8 @@ export interface DiscussionMessageListProps extends MessageOwnerActions {
   error?: string | null;
   /** Member-only promote action threaded down to each row. */
   onPromote?: (message: DiscussionListMessage) => void;
+  /** #2290 — the thread's project, for the AI replies' citation links. */
+  projectId?: string;
 }
 
 export function DiscussionMessageList({
@@ -239,6 +251,7 @@ export function DiscussionMessageList({
   currentUserId,
   onEdit,
   onDelete,
+  projectId,
 }: DiscussionMessageListProps) {
   if (error) {
     return (
@@ -275,6 +288,7 @@ export function DiscussionMessageList({
           currentUserId={currentUserId}
           onEdit={onEdit}
           onDelete={onDelete}
+          projectId={projectId}
         />
       ))}
     </ul>

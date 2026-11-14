@@ -87,6 +87,29 @@ describe("extractCitations", () => {
   it("only resolves against the products in scope", () => {
     expect(extractCitations("miniflux.py:10", [server]).citations).toEqual([]);
   });
+
+  it("still finds a citation after a word, a bracket or a colon", () => {
+    const { citations } = extractCitations(
+      "In (internal/model/feed.go:12) and at:miniflux.py, `README.md`",
+      [server, client],
+    );
+    expect(citations.map((c) => c.path)).toEqual([
+      "internal/model/feed.go",
+      "README.md",
+      "miniflux.py",
+    ]);
+  });
+
+  // #2290 — the pattern starts a match only where a path can start, so a long
+  // run of path characters is scanned once: the same pattern without that
+  // took 48 s on 200,000 characters in #2242.
+  it.each(["a", "a-", "a.", "a/", "a-a."])("scans a long run of %s in linear time", (unit) => {
+    const run = unit.repeat(Math.ceil(200_000 / unit.length));
+    const t0 = performance.now();
+    extractCitations(run, [server, client]);
+    // Quadratic takes seconds at this size; linear takes milliseconds. Wide on purpose.
+    expect(performance.now() - t0).toBeLessThan(2000);
+  });
 });
 
 describe("citesFile", () => {
