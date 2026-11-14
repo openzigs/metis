@@ -57,7 +57,7 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Docs-gen drop retry + ledger](project_docs-gen-drop-retry-and-ledger.md) — 2 drop checks; wrap test providers
 - [Prisma on SQLite + Postgres](project_prisma-cross-database.md) — LOWER() not mode:insensitive; PG suite step; re-read after lock
 - [METIS markers: two matchers](project_metis-marker-matchers-grep-exact-strings.md) — variant fix: grep every exact metis: match
-- [Requirement writers + re-sync](project_requirement-history-writers-and-resync.md) — actorId null; expectedVersion; no-bump decisions (#1222)
+- [Requirement writers + re-sync](project_requirement-history-writers-and-resync.md) — actorId null; expectedVersion; answer=stale edit (#2429)
 - [Widening access to members](project_membership-access-widening-checklist.md) — live-user lists; revocation points; audit names (#1233)
 - [Reader BRD traps](project_reader-brd-traps.md) — prompt override; opener regex; per-run rows; synth records (#1228)
 - [Chat withholding + retry](project_chat-tool-withholding-and-stream-retry.md) — first-send session; lookup before gate (#1234)
@@ -69,7 +69,7 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Run claims + citation salvage](project_analysis-run-claims-and-citation-salvage.md) — releaseClaim; failed finalize; per-finding marks
 - [AI metering + prompt caching](project_ai-usage-metering-and-caching.md) — retried attempts once; cache floors; run tokens: 2 values
 - [Footnote line pins](project_footnote-line-pins.md) — assembly only; facts ids repeat per section; real mined-rule fixtures (#1305)
-- [Server typecheck OOM = capacity](project_server-typecheck-memory-cap.md) — 12,288 MB cap; compare Types counts (#1308)
+- [Server typecheck OOM = capacity](project_server-typecheck-memory-cap.md) — chunked since #2503; lower --chunk-size, not --heap
 - [Same-origin href check](project_same-origin-href-check.md) — new URL origin, then re-check the normalised result; tab, %2e (#1315)
 - [Docs-gen reuse + regenerate](project_docs-gen-section-reuse-and-regenerate.md) — checkpoint timing; one-child trim; stage (#1317)
 - [Headless Chrome offline proof](project_headless-chrome-network-lockdown.md) — interception + CSP + launch args; real probe (#1321)

@@ -60,6 +60,7 @@ import { formatHeadingPath } from "../document-reader/sections.js";
 import { audit } from "../audit/audit-service.js";
 import { prisma } from "../prisma.js";
 import { isAdminBypass, isVisibleTo, parseAclSubjects, type AclActor } from "../rag/acl.js";
+import { storedChunksByDocument } from "../rag/stored-chunks.js";
 import type { AgentRunResult } from "./agent-runner.js";
 import type { SourceStatement } from "./requirements-extractor.js";
 
@@ -232,23 +233,12 @@ function auditReaderAcl(
   }
 }
 
-/** The document's stored chunks (approved, else quarantined), by position. */
+/** The document's stored chunks (approved, else quarantined), by position (`stored-chunks.ts`). */
 async function storedChunks(
   projectId: string,
   documentId: string,
 ): Promise<Array<{ index: number; text: string }>> {
-  const approved = await prisma.knowledgeChunk.findMany({
-    where: { projectId, documentId },
-    select: { position: true, text: true },
-    orderBy: { position: "asc" },
-  });
-  if (approved.length > 0) return approved.map((c) => ({ index: c.position, text: c.text }));
-  const quarantined = await prisma.quarantineChunk.findMany({
-    where: { projectId, documentId, ord: { gte: 0 } },
-    select: { ord: true, text: true },
-    orderBy: { ord: "asc" },
-  });
-  return quarantined.map((c) => ({ index: c.ord, text: c.text }));
+  return (await storedChunksByDocument(projectId, [documentId])).get(documentId) ?? [];
 }
 
 /**

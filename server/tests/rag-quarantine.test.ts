@@ -576,7 +576,8 @@ describe("approveDocument", () => {
     const stored = [...chunks.values()][0];
     expect(stored.embeddingModel).toBe("metis-offline-hash-v1");
     expect(stored.chunkerIdentity).toBeNull();
-    expect(JSON.parse(stored.metadata ?? "{}")).toEqual({ headings: [] });
+    // #2435 — the ACL is the document's at approval, written even when the row lost its own.
+    expect(JSON.parse(stored.metadata ?? "{}")).toEqual({ headings: [], aclSubjects: [] });
     expect(stubVector.upsert).toHaveBeenCalledWith("p1", [
       expect.objectContaining({ id: stored.id, vector: [0.1, 0.2] }),
     ]);

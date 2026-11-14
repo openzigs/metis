@@ -31,6 +31,8 @@ import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
 import { AppError } from "../middleware/error-handler.js";
 import { prisma } from "../lib/prisma.js";
+import { userSourceReader } from "../lib/analysis/source-redaction.js";
+import { redactReviewFor, redactReviewsFor } from "../lib/reviews/review-redaction.js";
 import { assertLiveProjectAccess } from "../lib/custom-agents/authz.js";
 import { workspaceScopeWhere } from "../lib/auth/project-scope.js";
 import {
@@ -160,7 +162,9 @@ export function projectReviewsRouter(): Router {
       const review = await createReviewRequest(userId, projectId, parsed.data, {
         canApprove: hasPermission(role, "requirement.approve"),
       });
-      res.status(201).json({ success: true, data: review });
+      res
+        .status(201)
+        .json({ success: true, data: await redactReviewFor(userSourceReader(userId), review) });
     },
   );
 
@@ -172,7 +176,10 @@ export function projectReviewsRouter(): Router {
       ...query,
       projectId: String(req.params.projectId),
     });
-    res.json({ success: true, data });
+    res.json({
+      success: true,
+      data: { ...data, reviews: await redactReviewsFor(userSourceReader(userId), data.reviews) },
+    });
   });
 
   return r;
@@ -194,7 +201,10 @@ export function reviewsRouter(): Router {
       ...query,
       projectScope: workspaceScopeWhere(req.user!),
     });
-    res.json({ success: true, data });
+    res.json({
+      success: true,
+      data: { ...data, reviews: await redactReviewsFor(userSourceReader(userId), data.reviews) },
+    });
   });
 
   // GET /:reviewId — detail incl. items, assignments, and audit history.
@@ -205,7 +215,13 @@ export function reviewsRouter(): Router {
     async (req: Request, res: Response) => {
       await assertReviewAccess(req, String(req.params.reviewId));
       const data = await getReviewDetail(String(req.params.reviewId));
-      res.json({ success: true, data });
+      res.json({
+        success: true,
+        data: {
+          ...data,
+          review: await redactReviewFor(userSourceReader(req.user!.userId), data.review),
+        },
+      });
     },
   );
 
@@ -218,7 +234,7 @@ export function reviewsRouter(): Router {
       const { userId, role } = requireUser(req);
       await assertReviewAccess(req, String(req.params.reviewId));
       const review = await submitReview(userId, String(req.params.reviewId), isReviewAdmin(role));
-      res.json({ success: true, data: review });
+      res.json({ success: true, data: await redactReviewFor(userSourceReader(userId), review) });
     },
   );
 
@@ -256,7 +272,7 @@ export function reviewsRouter(): Router {
       const { userId, role } = requireUser(req);
       await assertReviewAccess(req, String(req.params.reviewId));
       const review = await withdrawReview(userId, String(req.params.reviewId), isReviewAdmin(role));
-      res.json({ success: true, data: review });
+      res.json({ success: true, data: await redactReviewFor(userSourceReader(userId), review) });
     },
   );
 
@@ -269,7 +285,7 @@ export function reviewsRouter(): Router {
       const { userId, role } = requireUser(req);
       await assertReviewAccess(req, String(req.params.reviewId));
       const review = await reviseReview(userId, String(req.params.reviewId), isReviewAdmin(role));
-      res.json({ success: true, data: review });
+      res.json({ success: true, data: await redactReviewFor(userSourceReader(userId), review) });
     },
   );
 
@@ -282,7 +298,7 @@ export function reviewsRouter(): Router {
       const { userId, role } = requireUser(req);
       await assertReviewAccess(req, String(req.params.reviewId));
       const review = await closeReview(userId, String(req.params.reviewId), isReviewAdmin(role));
-      res.json({ success: true, data: review });
+      res.json({ success: true, data: await redactReviewFor(userSourceReader(userId), review) });
     },
   );
 
@@ -295,7 +311,7 @@ export function reviewsRouter(): Router {
       const { userId, role } = requireUser(req);
       await assertReviewAccess(req, String(req.params.reviewId));
       const review = await reopenReview(userId, String(req.params.reviewId), isReviewAdmin(role));
-      res.json({ success: true, data: review });
+      res.json({ success: true, data: await redactReviewFor(userSourceReader(userId), review) });
     },
   );
 

@@ -28,6 +28,7 @@ import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
 import { AppError } from "../middleware/error-handler.js";
 import { prisma } from "../lib/prisma.js";
+import { assertRequirementSourcesVisible } from "../lib/requirements/requirement-authz.js";
 import {
   StakeholderError,
   StakeholderService,
@@ -46,6 +47,11 @@ function paramOf(req: Request, name: string, code: string): string {
 
 const projectIdOf = (req: Request) => paramOf(req, "projectId", "PROJECT_REQUIRED");
 const requirementIdOf = (req: Request) => paramOf(req, "requirementId", "REQUIREMENT_REQUIRED");
+/** The caller, as `requireAuth` set it. */
+function userIdOf(req: Request): string {
+  if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
+  return req.user.userId;
+}
 const stakeholderIdOf = (req: Request) => paramOf(req, "stakeholderId", "STAKEHOLDER_REQUIRED");
 
 function service(): StakeholderService {
@@ -138,6 +144,8 @@ export function stakeholdersRouter(): Router {
     requireAuth,
     requirePermission("analysis.read"),
     async (req, res) => {
+      // #2491 — a requirement the caller cannot see answers as an unknown one.
+      await assertRequirementSourcesVisible(userIdOf(req), projectIdOf(req), requirementIdOf(req));
       res.json(ok(await service().listForRequirement(projectIdOf(req), requirementIdOf(req))));
     },
   );
@@ -153,6 +161,7 @@ export function stakeholdersRouter(): Router {
           issues: parsed.error.flatten(),
         });
       }
+      await assertRequirementSourcesVisible(userIdOf(req), projectIdOf(req), requirementIdOf(req));
       try {
         await service().linkRequirement(projectIdOf(req), requirementIdOf(req), parsed.data);
         res.status(204).end();
@@ -167,6 +176,7 @@ export function stakeholdersRouter(): Router {
     requireAuth,
     requirePermission("analysis.run"),
     async (req, res) => {
+      await assertRequirementSourcesVisible(userIdOf(req), projectIdOf(req), requirementIdOf(req));
       try {
         await service().unlinkRequirement(
           projectIdOf(req),

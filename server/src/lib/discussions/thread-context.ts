@@ -26,6 +26,7 @@
  */
 import { parseAcceptanceCriteria } from "@metis/shared";
 import { prisma } from "../prisma.js";
+import { restrictedIds, sharedSourceReader } from "../analysis/source-redaction.js";
 import type { HistoryMessage } from "./ai-responder.js";
 
 /** How many prior messages a reply sees. */
@@ -85,6 +86,14 @@ export interface RequirementAnchor {
   acceptanceCriteria: string[];
 }
 
+/**
+ * #2491 — an anchored requirement resting on a source the thread's audience
+ * cannot see: the reply is told it exists, never a word of it.
+ */
+export interface RestrictedRequirementAnchor {
+  kind: "restrictedRequirement";
+}
+
 /** An anchored analysis run, as the prompt shows it. */
 export interface AnalysisAnchor {
   kind: "analysis";
@@ -92,6 +101,8 @@ export interface AnalysisAnchor {
   completedAt: Date | null;
   requirementCount: number;
   requirementTitles: string[];
+  /** #2491 — requirements counted but not named: their sources are restricted. */
+  restrictedCount?: number;
 }
 
 /** An anchored Spec Kit feature, as the prompt shows it. */
@@ -104,7 +115,8 @@ export interface SpecKitFeatureAnchor {
   spec: string | null;
 }
 
-export type ThreadAnchor = RequirementAnchor | AnalysisAnchor | SpecKitFeatureAnchor;
+export type ThreadAnchor =
+  RequirementAnchor | RestrictedRequirementAnchor | AnalysisAnchor | SpecKitFeatureAnchor;
 
 function clip(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max)}… [truncated]` : text;
@@ -173,6 +185,12 @@ export function renderAnchorContext(anchor: ThreadAnchor): string {
     );
     return lines.join("\n");
   }
+  if (anchor.kind === "restrictedRequirement") {
+    return [
+      "Context: this discussion is about a requirement whose sources are restricted.",
+      "Its text is not available to this reply. Do not guess at what it says.",
+    ].join("\n");
+  }
   if (anchor.kind === "requirement") {
     lines.push(
       "Context: this discussion is about the requirement below, as it currently reads.",
@@ -202,10 +220,14 @@ export function renderAnchorContext(anchor: ThreadAnchor): string {
     }`,
     `Requirements: ${anchor.requirementCount}`,
   );
+  const restricted = anchor.restrictedCount ?? 0;
   if (anchor.requirementTitles.length > 0) {
     lines.push(...anchor.requirementTitles.map((t) => `- ${t}`));
-    const more = anchor.requirementCount - anchor.requirementTitles.length;
-    if (more > 0) lines.push(`(${more} more not shown)`);
+  }
+  const more = anchor.requirementCount - anchor.requirementTitles.length - restricted;
+  if (more > 0) lines.push(`(${more} more not shown)`);
+  if (restricted > 0) {
+    lines.push(`(${restricted} not shown: their sources are restricted)`);
   }
   return lines.join("\n");
 }
@@ -229,12 +251,26 @@ export async function loadThreadAnchors(thread: {
   if (!row) return [];
   const anchors: ThreadAnchor[] = [];
 
+  // #2491 — the reply is read by the whole project, so what it is told is
+  // read as the shared audience: a requirement resting on a restricted source
+  // is never put in the prompt.
+  const reader = sharedSourceReader();
+
   if (row.requirementId) {
     const req = await prisma.requirement.findFirst({
       where: { id: row.requirementId, projectId, deletedAt: null, analysis: { deletedAt: null } },
-      select: { title: true, body: true, acceptanceCriteria: true },
+      select: {
+        id: true,
+        analysisId: true,
+        sourceIds: true,
+        title: true,
+        body: true,
+        acceptanceCriteria: true,
+      },
     });
-    if (req) {
+    if (req && (await restrictedIds(reader, [req])).size > 0) {
+      anchors.push({ kind: "restrictedRequirement" });
+    } else if (req) {
       anchors.push({
         kind: "requirement",
         title: req.title,
@@ -250,22 +286,24 @@ export async function loadThreadAnchors(thread: {
       select: { status: true, completedAt: true },
     });
     if (analysis) {
-      const where = { analysisId: row.analysisId, projectId, deletedAt: null };
-      const [requirementCount, titles] = await Promise.all([
-        prisma.requirement.count({ where }),
-        prisma.requirement.findMany({
-          where,
-          orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-          take: ANCHOR_MAX_ANALYSIS_REQUIREMENTS,
-          select: { title: true },
-        }),
-      ]);
+      const rows = await prisma.requirement.findMany({
+        where: { analysisId: row.analysisId, projectId, deletedAt: null },
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+        select: { id: true, analysisId: true, sourceIds: true, title: true },
+      });
+      // #2491 — every row is decided before the first titles are taken, so a
+      // restricted one never takes a visible one's place, nor is named.
+      const hidden = await restrictedIds(reader, rows);
       anchors.push({
         kind: "analysis",
         status: analysis.status,
         completedAt: analysis.completedAt,
-        requirementCount,
-        requirementTitles: titles.map((t) => t.title),
+        requirementCount: rows.length,
+        requirementTitles: rows
+          .filter((r) => !hidden.has(r.id))
+          .slice(0, ANCHOR_MAX_ANALYSIS_REQUIREMENTS)
+          .map((r) => r.title),
+        ...(hidden.size > 0 ? { restrictedCount: hidden.size } : {}),
       });
     }
   }

@@ -8,6 +8,13 @@
  * audit trail on every transition + decision.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
+// #2491 — the source filter is pinned over a real database in
+// tests/source-redaction-2491.sqlite.test.ts; here nothing is restricted.
+vi.mock("../src/lib/analysis/source-redaction.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/analysis/source-redaction.js")>()),
+  restrictedIds: async () => new Set<string>(),
+  restrictedRequirementIds: async () => new Set<string>(),
+}));
 import express from "express";
 import request from "supertest";
 
