@@ -450,6 +450,33 @@ async function main(): Promise<void> {
   }
   for (const p of fixture.products) await ensureKnowledge(p, repos.get(p.name)!);
 
+  // #2338 — an arm that offers get_change_history reads each product's commit
+  // history: fetched at the materialized commit, as an ingest fetches it at the
+  // indexed one, and kept while it stays at that commit.
+  if (flags.CHAT_CHANGE_HISTORY_TOOL === "1") {
+    const history = await import("../src/lib/connectors/repo/history-repo.js");
+    const { resolveRepoCloneMaxBytes } = await import("../src/lib/connectors/repo/repo-service.js");
+    const env: Record<string, string> = {};
+    for (const k of ["PATH", "HOME", "HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy"]) {
+      if (process.env[k] !== undefined) env[k] = process.env[k]!;
+    }
+    for (const p of fixture.products) {
+      const repo = repos.get(p.name)!;
+      const st = await history.readHistoryState(repo.connectorId);
+      if (st?.status === "ready" && st.commitSha === p.sha) continue;
+      const out = await history.fetchHistoryRepository({
+        connectorId: repo.connectorId,
+        remoteUrl: p.url,
+        commitSha: p.sha,
+        env,
+        windowDays: history.resolveHistoryWindowDays(),
+        maxBytes: history.resolveRepoHistoryMaxBytes(resolveRepoCloneMaxBytes()),
+      });
+      if (out.status !== "ready") throw new Error(`${p.name}: commit history ${out.status}`);
+      console.log(`${p.name}: commit history since ${out.windowStart.slice(0, 10)} fetched`);
+    }
+  }
+
   /**
    * #2336 — the routing pool's projects: the question set's two products, the
    * other corpus's materialized repositories (their source chunks ingested as

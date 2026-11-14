@@ -1,6 +1,8 @@
 # 0023 — Commit history comes from a separate blobless history repository, bounded to a year
 
-- **Status**: Proposed (Part A of #2338: reviewed before any code is written)
+- **Status**: Accepted (2026-11-14, when Part B of #2338 started), with the amendments in
+  "Part B: what building it changed" below. The tool ships behind
+  `CHAT_CHANGE_HISTORY_TOOL`, off by default until measured.
 - **Date**: 2026-11-12
 - **Issue**: [#2338](https://github.com/openzigs/metis/issues/2338) (epic [#2322](https://github.com/openzigs/metis/issues/2322))
 - **Relates to**: #2325 (the citation contract the tool's result uses), #2326 (how a tool
@@ -161,6 +163,44 @@ can reject them before any code exists.
   base of `Dockerfile.server`, packages Git 2.47.3. That Dockerfile installs no `git`
   package today, so Part B must check that the image it ships can run `git` at all, and
   add it if not; the existing clone path depends on the same binary.
+
+## Part B: what building it changed
+
+The decision stands; building it (#2338 Part B) changed these details. Each was found by a
+test against real git or by a live fetch of miniflux/v2 at the `pnpm eval:ba-qa` commit
+(`c4d54f87`, 2026-11-14: 6.2 MB on disk, 1.6 s, then 0.02–0.16 s per query).
+
+- **The #2389 review's five points are built.** The window is a filter, never a stop
+  (below); a line range is one `-L<a>,<b>:<path>` argument with no `--`; reads run with
+  `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1` and `GIT_NO_LAZY_FETCH=1`
+  beside `--no-lazy-fetch` (and `GIT_LITERAL_PATHSPECS=1`, so a path after `--` is never a
+  glob or a `:(magic)` pathspec); the history is deleted with its connector, when its
+  repository or provider changes, and at the next ingest after the tool is turned off;
+  `git` is in the server image (#2395).
+- **The bound is anchored at the indexed commit**, not at the time of the fetch: the 365
+  days before the indexed commit's committer date (`REPO_HISTORY_WINDOW_DAYS`). It is the
+  same year for a repository indexed today, it still covers a year of activity for one
+  that has been quiet, and it does not slide under a pinned commit (the eval's
+  questions keep their answers).
+- **Committer dates are filtered in the walk itself.** `--since-as-filter` filters
+  correctly but hides whether the walk went past the window, which is what separates
+  `bound` from `none`. The tool reads `%ct` per commit from one unbounded `git log` walk
+  and stops it only once it has a page and one more commit inside the window
+  (`history-log.ts`). An in-window commit behind an older-dated one is kept (a test).
+- **The window's boundary parents are prefetched too.** A line-range query diffs the
+  oldest in-window change to the range against its parent, which is outside the window;
+  without that parent's blobs the change is lost (a real-git test failed this way). The
+  prefetch adds the blobs of every commit just outside the window that an in-window commit
+  names as a parent.
+- **The batched blob fetch uses no-op negotiation** (`-c fetch.negotiationAlgorithm=noop`),
+  as git's own lazy fetch does. With the default negotiation the client advertises the
+  commits it holds and GitHub treats every blob reachable from them as already present:
+  the measured fetch failed with "did not send all necessary objects".
+- **Git 2.50 reports a refused lazy fetch as** `fatal: could not fetch <oid> from promisor
+  remote`, not finding 5's `unable to read`; both read as `more: "bound"`.
+- **History for another commit is not read.** When the recorded fetch is not at the
+  repository's current indexed commit, the tool says `history_not_fetched` until the next
+  ingest refreshes it.
 
 ## Rejected
 

@@ -60,6 +60,13 @@ export const CHAT_CODE_TOOL_DESCRIPTORS: ReadonlyArray<{
       "Whole functions and classes for a question about the code, adjacent matches merged, each with a file:line locator.",
     risk: "low",
   },
+  {
+    // #2338 — commit history (offered when CHAT_CHANGE_HISTORY_TOOL is on).
+    name: "get_change_history",
+    description:
+      "When and why code changed: the commits that touched a file, line range or symbol, with date, subject and link.",
+    risk: "low",
+  },
 ];
 
 export const CHAT_CODE_TOOL_NAMES: readonly string[] = CHAT_CODE_TOOL_DESCRIPTORS.map(

@@ -168,6 +168,11 @@ vi.mock("../src/lib/connectors/repo/repo-service.js", () => ({
   updateRepoConnector: vi.fn(),
 }));
 
+// #2338 — the commit-history fetch is external ingestion too (real git, real disk).
+vi.mock("../src/lib/connectors/repo/history-refresh.js", () => ({
+  refreshConnectorHistory: vi.fn(async () => ({ status: "off" })),
+}));
+
 vi.mock("../src/lib/code-graph/ingest.js", () => ({
   ingestCodeGraph: vi.fn(async () => ({
     filesScanned: 1,
@@ -248,6 +253,7 @@ import {
   setIngestRerunRunner,
 } from "../src/lib/connectors/ingest-guard.js";
 import { discoverAndUpsertConnections } from "../src/lib/connectors/repo/connection-discovery.js";
+import { refreshConnectorHistory } from "../src/lib/connectors/repo/history-refresh.js";
 import { buildCodeGraphSchemaWiring } from "../src/lib/connectors/db/db-service.js";
 import { getLastJobLifecycle, genericFailureMessage } from "../src/lib/socket/job-events.js";
 import { ConnectorError } from "../src/lib/connectors/types.js";
@@ -1257,6 +1263,8 @@ describe("manual connector regeneration callers (#1356)", () => {
         const response = await ingest();
         expect(response.status).toBe(okStatus);
         expectScheduled();
+        // #2338 — every graph-building caller refreshes the commit history after the graph.
+        expect(refreshConnectorHistory).toHaveBeenCalledWith("proj_1", "repo_github_x");
         if (caller === "refresh-ingest") {
           // #449 / PR #491 panel: a clean Sync says regeneration was scheduled and
           // carries no warning — the success half of the new response contract.

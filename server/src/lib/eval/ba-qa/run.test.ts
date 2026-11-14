@@ -32,11 +32,12 @@ describe("arms", () => {
       "tools-only",
       "tools-primitives",
       "tools-context",
+      "tools-history",
     ]) {
       expect(parseArm(arm)).toBe(arm);
     }
     expect(() => parseArm("both")).toThrow(
-      /default, off, on, no-tools, no-fused, no-rerank, tools-only, tools-primitives, tools-context/,
+      /default, off, on, no-tools, no-fused, no-rerank, tools-only, tools-primitives, tools-context, tools-history/,
     );
     // An inherited Object key is not an arm.
     expect(() => parseArm("toString")).toThrow(/not toString/);
@@ -115,6 +116,15 @@ describe("arms", () => {
         k === "CHAT_CODE_SEARCH_TOOLS" || k === "CHAT_CODE_CONTEXT_TOOL" ? "1" : "0",
       );
     }
+    // #2338 — the history arm is tools-only plus exactly get_change_history.
+    expect(ARM_FLAGS).toContain("CHAT_CHANGE_HISTORY_TOOL");
+    applyArmEnv(env, "tools-history");
+    for (const k of ARM_FLAGS) {
+      expect(env[k]).toBe(
+        k === "CHAT_CODE_SEARCH_TOOLS" || k === "CHAT_CHANGE_HISTORY_TOOL" ? "1" : "0",
+      );
+    }
+    expect(embedRuntimeFor("tools-history")).toBe("worker");
   });
 });
 
