@@ -1,8 +1,8 @@
 /**
  * AffectedSymbolRow — Epic #159 (#165).
  *
- * Renders a single affected code symbol with its relation, depth and
- * confidence. Pure presentational component.
+ * Renders a single affected code symbol with its tier (#2302), relation, depth
+ * and confidence. Pure presentational component.
  *
  * #992 — there is no in-app symbol view, so when the caller knows the project's
  * single GitHub / GitHub Enterprise repo the symbol name links to its file:line
@@ -12,9 +12,10 @@
  */
 "use client";
 
-import type { ImpactAffectedSymbolView } from "@metis/shared";
+import { impactSymbolTier, type ImpactAffectedSymbolView } from "@metis/shared";
 import { Badge } from "@/components/ui/badge";
 import { buildCodeCitationBlobUrl, type CodeCitationRepo } from "@/lib/code-citation-blob-url";
+import { ImpactTierBadge } from "./impact-tier-badge";
 
 const RELATION_LABEL: Record<ImpactAffectedSymbolView["relation"], string> = {
   direct: "Direct",
@@ -73,6 +74,7 @@ export function AffectedSymbolRow({ symbol, repo }: AffectedSymbolRowProps) {
         </p>
       </div>
       <div className="flex shrink-0 items-center gap-2">
+        <ImpactTierBadge tier={impactSymbolTier(symbol)} />
         <Badge variant="outline" data-testid="affected-symbol-relation">
           {RELATION_LABEL[symbol.relation]}
         </Badge>

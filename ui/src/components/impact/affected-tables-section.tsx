@@ -25,10 +25,12 @@ import {
   DDL_RISK_LABEL,
   groupImpactTables,
   groupRepresentative,
+  impactTableTier,
   isLiveSchemaSource,
 } from "@metis/shared";
 import { Badge } from "@/components/ui/badge";
 import { renderInlineCode } from "@/lib/inline-code-text";
+import { ImpactTierBadge } from "./impact-tier-badge";
 
 const SOURCE_LABEL: Record<SchemaSource, string> = {
   "live-db": "Live DB",
@@ -105,8 +107,10 @@ function CrossProjectUsageBadge({ projects }: { projects: ProjectObjectUsage[] |
   );
 }
 
+// #2302 — "Likely related", not "Likely": the table's impact tier badge beside
+// it reads "Likely", and this one is the model's relevance judgment it maps from.
 const RELEVANCE_TIER_LABEL: Record<"likely" | "possible" | "unlikely", string> = {
-  likely: "Likely",
+  likely: "Likely related",
   possible: "Possibly related",
   unlikely: "Unlikely related",
 };
@@ -470,6 +474,7 @@ function RoutineRow({ routine }: { routine: ImpactAffectedTableView }) {
         <span className="font-mono text-xs font-semibold" title={routine.tableName}>
           {routine.tableName}
         </span>
+        <ImpactTierBadge tier={impactTableTier(routine)} />
         <Badge variant="secondary" data-testid="schema-routine-kind">
           {routine.objectKind}
         </Badge>
@@ -625,6 +630,8 @@ export function AffectedTablesSection({
             group.tableEntry && !isProposed(group.tableEntry) ? group.tableEntry : null;
           const proposedColumns = group.columns.filter(isProposed);
           const referencedColumns = group.columns.filter((c) => !isProposed(c));
+          // #2302 — the table's tier, from the row that represents it (as its relevance badge).
+          const representative = groupRepresentative(group);
           return (
             <li
               key={group.tableName}
@@ -634,6 +641,7 @@ export function AffectedTablesSection({
             >
               <div className="flex flex-wrap items-center gap-2 font-mono text-xs font-semibold">
                 <span title={group.tableName}>{group.tableName}</span>
+                {representative ? <ImpactTierBadge tier={impactTableTier(representative)} /> : null}
                 <RiskBadge riskClass={groupRiskClass(group)} />
                 <RelevanceTierBadge tier={groupRepresentative(group)?.relevanceTier ?? null} />
                 <CrossProjectUsageBadge projects={crossProjectUsage?.[group.tableName]} />

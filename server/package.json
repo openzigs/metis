@@ -35,6 +35,7 @@
     "eval:codegraph": "tsx scripts/eval-codegraph.ts",
     "eval:reqmap": "tsx scripts/eval-reqmap.ts",
     "eval:impact-recall": "tsx scripts/eval-impact-recall.ts",
+    "eval:impact-tiers": "tsx scripts/eval-impact-tiers.ts",
     "eval:localization": "tsx --env-file-if-exists=../.env scripts/eval-localization.ts",
     "eval:governing": "tsx --env-file-if-exists=../.env scripts/eval-governing.ts",
     "eval:doc-understanding": "tsx --env-file-if-exists=../.env scripts/eval-doc-understanding.ts",

@@ -1042,6 +1042,59 @@ describe("serializeImpactAnalysisMarkdown (#963)", () => {
     expect(md).not.toContain(" in metis");
   });
 
+  it("#2302 — gives each symbol, table and routine the tier the page shows", () => {
+    const md = serializeImpactAnalysisMarkdown(
+      impactDetail({
+        items: [
+          impactItem({
+            affectedSymbols: [
+              impactSymbol({ qualifiedName: "OrderService.place", confidence: 0.91 }),
+              impactSymbol({
+                id: "s-2",
+                qualifiedName: "OrderController.post",
+                relation: "caller",
+                depth: 1,
+                confidence: 0.9,
+              }),
+              impactSymbol({
+                id: "s-3",
+                qualifiedName: "ui.showOrders",
+                relation: "related",
+                depth: 1,
+                confidence: 0.7,
+              }),
+              impactSymbol({ id: "s-4", qualifiedName: "Gone.removed", codeSymbolId: null }),
+            ],
+            affectedTables: [
+              impactTable(),
+              impactTable({
+                id: "tbl-2",
+                tableName: "ghosts",
+                reconciliation: "table-not-found",
+                relevanceTier: "likely",
+              }),
+              impactTable({
+                id: "r-1",
+                objectKind: "procedure",
+                tableName: "recalc_totals",
+                relevanceTier: "possible",
+                relevanceRationale: null,
+              }),
+            ],
+          }),
+        ],
+      }),
+    );
+    const line = (needle: string) => md.split("\n").find((l) => l.includes(needle)) ?? "";
+    expect(line("`OrderService.place`")).toMatch(/· tier: Likely$/);
+    expect(line("`OrderController.post`")).toMatch(/· tier: Verified by graph path$/);
+    expect(line("`ui.showOrders`")).toMatch(/· tier: Possible$/);
+    expect(line("`Gone.removed`")).toMatch(/· tier: Needs review$/);
+    expect(line("**orders**")).toContain("· tier: Likely ·");
+    expect(line("**ghosts**")).toContain("· tier: Needs review ·");
+    expect(line("**recalc_totals**")).toContain("· tier: Possible");
+  });
+
   it("#1036 — a result with only blast-radius symbols has no edit-candidate heading", () => {
     const md = serializeImpactAnalysisMarkdown(
       impactDetail({

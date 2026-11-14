@@ -42,6 +42,8 @@ export * from "./spec-kit.js";
 export * from "./product-docs.js";
 // Epic #1608 (#1621) — the persisted portfolio assessment.
 export * from "./portfolio-assessment.js";
+// #2302 — Impact Analysis's affected symbols and tables in the portfolio check's tiers.
+export * from "./impact-tier.js";
 export * from "./sync.js";
 export * from "./traceability.js";
 export * from "./stakeholder.js";

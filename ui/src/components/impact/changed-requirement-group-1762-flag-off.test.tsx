@@ -3,6 +3,8 @@
  * the impact card must render exactly as it did before the "why" panel. The
  * snapshot was recorded against the component BEFORE #1762 changed it, then
  * replayed against the changed one.
+ *
+ * #2302 re-recorded it: the one difference is the tier badge on each symbol.
  */
 import { describe, expect, it } from "vitest";
 import { render } from "@testing-library/react";
