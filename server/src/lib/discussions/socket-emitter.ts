@@ -27,6 +27,7 @@ import type {
 import { getSocketServer } from "../socket/registry.js";
 import { threadRoom } from "../socket/discussion-rooms.js";
 import { createChildLogger } from "../logger.js";
+import { citationsField } from "./message-citations.js";
 
 const log = createChildLogger("discussion-emitter");
 
@@ -68,7 +69,7 @@ export function toMessagePayload(row: DiscussionMessageRow): DiscussionMessagePa
     createdAt: toIso(row.createdAt) ?? new Date(0).toISOString(),
     editedAt: toIso(row.editedAt),
     ...(row.authorName ? { authorName: row.authorName } : {}),
-    ...(row.citations && row.citations.length > 0 ? { citations: [...row.citations] } : {}),
+    ...citationsField(row.citations ?? []),
   };
 }
 

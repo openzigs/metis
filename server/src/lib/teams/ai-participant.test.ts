@@ -89,6 +89,7 @@ function harness(
     shouldRespond?: boolean;
     rateAllowed?: boolean;
     streamThrows?: boolean;
+    citations?: unknown[];
   } = {},
 ): Harness {
   const shouldRespond = vi.fn().mockReturnValue(over.shouldRespond ?? true);
@@ -108,6 +109,7 @@ function harness(
           aiModel: "stub-model",
           aiProvider: "stub",
           aiSessionId: "sess-1",
+          ...(over.citations ? { citations: over.citations } : {}),
         },
         usage: { totalTokens: 42 },
       });
@@ -362,6 +364,17 @@ describe("maybeRespondAsAI", () => {
       authorUserId: null,
       body: "the answer",
     });
+  });
+
+  it("#2290 — the live emit carries the reply's checked citations, and none when it made none", async () => {
+    const citations = [{ text: "docs/FRD-12.md", status: "span-unverified" }];
+    const withCites = harness({ citations });
+    await maybeRespondAsAI(fakeContext({ text: "@AI summarize" }), trigger(), withCites.opts);
+    expect(withCites.emit.mock.calls[0][1].citations).toEqual(citations);
+
+    const without = harness();
+    await maybeRespondAsAI(fakeContext({ text: "@AI summarize" }), trigger(), without.opts);
+    expect(without.emit.mock.calls[0][1]).not.toHaveProperty("citations");
   });
 
   it("swallows a provider/stream error (outcome=error, nothing mirrored)", async () => {
