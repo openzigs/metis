@@ -24,9 +24,8 @@
  *   check) so two racing requests can never both fire a final transition or
  *   silently overwrite a concurrent withdraw/decision.
  */
-import { REQUIREMENT_REVIEW_STATUSES } from "@metis/shared";
 import { AppError } from "../../middleware/error-handler.js";
-import { parseRequirementLabels } from "../analysis/requirement-labels.js";
+import { heldReviewStatus } from "../analysis/requirement-labels.js";
 import { buildAuditLogData } from "../audit/audit-service.js";
 import { Prisma, prisma, resolveDatabaseProvider } from "../prisma.js";
 import { dispatchReviewDecision, dispatchReviewSubmitted } from "./notify.js";
@@ -46,6 +45,9 @@ import {
   type ReviewRequestStatus,
   type ReviewerDecision,
 } from "./state-machine.js";
+
+// #2224 — moved beside the label parsing it reads; re-exported for its callers.
+export { heldReviewStatus };
 
 // ---------------------------------------------------------------------------
 // Shared shapes
@@ -288,31 +290,6 @@ async function shareCaptureWithOtherOpenReviews(
       data: { priorReviewStatus: prior },
     });
   }
-}
-
-/**
- * #1016 — the status a requirement holds for review purposes: the typed column,
- * else a legacy `review:*` label (rows written before the column existed), the
- * precedence every reader uses (`resolveRequirementReviewStatus`). Null when it
- * has neither, or the label is not a known status.
- *
- * Deliberately not `resolveRequirementReviewStatus` itself: that one is for
- * display and reads "nothing recorded" as `draft`, whereas this result is what
- * a submit CAPTURES to restore later. A requirement that never had a status
- * must get null back on withdraw (#989), not a `draft` it never held — and a
- * `draft` capture is skipped by the restore, which would leave the submit's
- * `draft` in the column for good. The precedence (column, then label) is the
- * same; only the empty case differs. An unknown column value is returned as
- * is, so it is restored exactly; readers show it as `draft` either way.
- */
-export function heldReviewStatus(column: string | null, labelsRaw: string | null): string | null {
-  if (column !== null) return column;
-  const label = parseRequirementLabels(labelsRaw).find((l) => l.startsWith("review:"));
-  const fromLabel = label ? label.slice("review:".length) : null;
-  return fromLabel !== null &&
-    (REQUIREMENT_REVIEW_STATUSES as readonly string[]).includes(fromLabel)
-    ? fromLabel
-    : null;
 }
 
 /**
@@ -559,8 +536,9 @@ export async function submitReview(
  * the sign-off left the approval pinned to wording nobody approved; this starts
  * a fresh decision round on the CURRENT versions, exactly as a submit does
  * (re-pins every item, resets every reviewer's decision, notifies them). The
- * baseline the earlier approval produced is kept as the record of that round
- * but detached from the review, so the next approval creates its own.
+ * baseline the earlier approval produced is kept as the record of that round.
+ * #2224 — it stays the review's while the re-review runs, so the review page
+ * still links it; the next approval detaches it and creates its own.
  */
 export async function reopenReview(
   actorId: string,
@@ -571,19 +549,33 @@ export async function reopenReview(
 }
 
 /**
- * #2219 — a baseline name the project does not hold yet. The first approval of
- * a review takes the plain name; a re-approval after a re-review cannot reuse
- * it (`@@unique([projectId, name])`), so it is numbered by round.
+ * #2219 / #2224 — the name of the baseline an approval creates: the review's
+ * title, then `(round N)` for the Nth decision round (each "Request re-review"
+ * starts one, recorded as a `review.reopen` audit row), so an analyst reads it
+ * as words rather than an id. The project's names are unique
+ * (`@@unique([projectId, name])`), and a manual baseline or another review of
+ * the same title may hold that name already: the first free of `name`,
+ * `name (2)`, `name (3)`… is taken, checked against the names actually held
+ * rather than a count of them. Exported for testing.
  */
-async function nextBaselineName(
-  tx: ReviewTx,
+export async function nextBaselineName(
+  tx: Pick<ReviewTx, "baseline" | "auditLog">,
   projectId: string,
   title: string,
   reviewId: string,
 ): Promise<string> {
-  const base = `${title} (review ${reviewId.slice(-8)})`;
-  const taken = await tx.baseline.count({ where: { projectId, name: { startsWith: base } } });
-  return taken === 0 ? base : `${base} round ${taken + 1}`;
+  const reopened = await tx.auditLog.count({
+    where: { targetType: AUDIT_TARGET, targetId: reviewId, action: "review.reopen" },
+  });
+  const name = reopened === 0 ? title : `${title} (round ${reopened + 1})`;
+  const held = await tx.baseline.findMany({
+    where: { projectId, name: { startsWith: name } },
+    select: { name: true },
+  });
+  const taken = new Set(held.map((b) => b.name));
+  let candidate = name;
+  for (let n = 2; taken.has(candidate); n++) candidate = `${name} (${n})`;
+  return candidate;
 }
 
 /** Submit (draft → in_review) or re-review (approved → in_review). */
@@ -629,15 +621,6 @@ async function startReviewRound(
       data: { status: nextStatus, decidedAt: null },
     });
     if (transitioned.count === 0) throw reviewStateChangedError();
-
-    // #2219 — the earlier round's baseline stays, as that round's record, but
-    // no longer belongs to the review: the next approval creates its own.
-    if (event === "reopen") {
-      await tx.baseline.updateMany({
-        where: { reviewRequestId: reviewId },
-        data: { reviewRequestId: null },
-      });
-    }
 
     // #989 — capture each requirement's status before the review touches it,
     // so a withdraw (or a close before any verdict) can give it back.
@@ -885,6 +868,14 @@ export async function recordDecision(
         // (see DecisionResult.baselineId).
         const pinsForBaseline = buildBaselinePins(review.items);
         if (pinsForBaseline.length > 0) {
+          // #2219 / #2224 — an earlier round's baseline stays, as that round's
+          // record, but no longer belongs to the review (one baseline per
+          // review). It is detached here, not at the re-review, so the review
+          // page links it while the re-review runs.
+          await tx.baseline.updateMany({
+            where: { reviewRequestId: reviewId },
+            data: { reviewRequestId: null },
+          });
           const baseline = await tx.baseline.create({
             data: {
               projectId: review.projectId,

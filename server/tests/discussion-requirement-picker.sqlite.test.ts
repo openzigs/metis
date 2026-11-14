@@ -175,6 +175,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           // #2218 — a non-ASCII capital, and GLOB's own wildcards.
           ["r-umlaut", "Über-Zeitplan für Abrufe"],
           ["r-glob", "Mark [draft]? entries as *done*"],
+          // #2224 — letters with more than two case forms.
+          ["r-eszett", "Straße der Abrufe"],
+          ["r-sigma", "Λόγος ελέγχου"],
+          ["r-dotted", "İzin listesi"],
         ].map(([id, title], i) => ({
           id,
           projectId: "p-1",
@@ -228,6 +232,17 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(await ids("über")).toEqual(["r-umlaut"]);
       expect(await ids("ÜBER-ZEITPLAN FÜR")).toEqual(["r-umlaut"]);
       expect(await ids("fur")).toEqual([]);
+    });
+
+    it("folds letters with more than two case forms: ß/ẞ, Σ/σ/ς, İ/i (#2224)", async () => {
+      const ids = async (q: string) =>
+        (
+          await get(`/api/discussions/requirements?projectId=p-1&q=${encodeURIComponent(q)}`)
+        ).body.data.map((r: { id: string }) => r.id);
+      expect(await ids("STRAẞE")).toEqual(["r-eszett"]);
+      // The capital Σ matches the word-final ς.
+      expect(await ids("ΛΌΓΟΣ")).toEqual(["r-sigma"]);
+      expect(await ids("izin")).toEqual(["r-dotted"]);
     });
 
     it("matches GLOB's *, ? and [ in a term literally (#2218)", async () => {

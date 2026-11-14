@@ -58,16 +58,61 @@ export function escapeLike(term: string): string {
 }
 
 /**
+ * #2224 — the end of the code-point range scanned for case classes. Every
+ * cased script sits below it (the last, Adlam, ends at U+1E95F), and the scan
+ * stops here so building the classes stays a one-off of a few milliseconds.
+ */
+const CASED_SCAN_END = 0x20000;
+
+/** Dotted capital I (U+0130): no case of its own folds to `i` outside Turkish. */
+const DOTTED_CAPITAL_I = "İ";
+
+let caseClasses: Map<string, string[]> | null = null;
+
+/** The key two characters share when they are cases of one letter. */
+function caseKey(ch: string): string {
+  // İ lowercases to `i` plus a combining dot; a picker reads it as an `i`.
+  if (ch === DOTTED_CAPITAL_I) return "i";
+  return ch.toLowerCase().toUpperCase().toLowerCase();
+}
+
+/**
+ * #2224 — every single character that is a case of `ch`, built once from a
+ * scan of the cased range. A letter's simple lower and upper case miss the
+ * letters with more than two forms: `ſ`/`s`/`S`, `σ`/`ς`/`Σ`, `ß`/`ẞ` (whose
+ * upper case `SS` is two characters), and `İ`/`ı` against `i`/`I`.
+ */
+function caseClassOf(ch: string): string[] {
+  if (caseClasses === null) {
+    const classes = new Map<string, string[]>();
+    for (let cp = 0; cp < CASED_SCAN_END; cp++) {
+      if (cp >= 0xd800 && cp <= 0xdfff) continue; // lone surrogates
+      const c = String.fromCodePoint(cp);
+      if (c.toLowerCase() === c && c.toUpperCase() === c) continue; // caseless
+      const key = caseKey(c);
+      const members = classes.get(key);
+      if (members) members.push(c);
+      else classes.set(key, [c]);
+    }
+    caseClasses = classes;
+  }
+  return caseClasses.get(caseKey(ch)) ?? [];
+}
+
+/**
  * #2218 — a SQLite `GLOB` pattern matching titles that contain `term` in any
  * letter case. Each character becomes the set of its single-character cases
- * (`ü` → `[üÜ]`); a caseless character stands for itself, and GLOB's own `*`,
- * `?` and `[` are bracketed so they match literally (GLOB has no ESCAPE).
+ * (`ü` → `[üÜ]`, `s` → `[sSſ]`, #2224); a caseless character stands for
+ * itself, and GLOB's own `*`, `?` and `[` are bracketed so they match
+ * literally (GLOB has no ESCAPE).
  */
 export function caseFoldGlob(term: string): string {
   let body = "";
   for (const ch of term) {
     const cases = new Set(
-      [ch, ch.toLowerCase(), ch.toUpperCase()].filter((c) => [...c].length === 1),
+      [ch, ch.toLowerCase(), ch.toUpperCase(), ...caseClassOf(ch)].filter(
+        (c) => [...c].length === 1,
+      ),
     );
     if (cases.size > 1) body += `[${[...cases].join("")}]`;
     else if (ch === "*" || ch === "?" || ch === "[") body += `[${ch}]`;

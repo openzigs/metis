@@ -61,9 +61,27 @@ describe("caseFoldGlob (#2218)", () => {
     expect(caseFoldGlob("100%_!")).toBe("*100%_!*");
   });
 
-  it("keeps a character whose other case is two characters as itself", () => {
-    // "ß".toUpperCase() is "SS": not one character, so not a bracket member.
-    expect(caseFoldGlob("ß")).toBe("*ß*");
+  it("keeps a character whose other case is two characters out of the bracket", () => {
+    // "ß".toUpperCase() is "SS": not one character, so not a bracket member;
+    // its single-character capital ẞ is (#2224).
+    expect(caseFoldGlob("ß")).toBe("*[ßẞ]*");
+    expect(caseFoldGlob("ẞ")).toBe("*[ẞß]*");
+  });
+
+  it("offers every form of a letter with more than two (#2224)", () => {
+    expect(caseFoldGlob("s")).toBe("*[sSſ]*");
+    expect(caseFoldGlob("ſ")).toBe("*[ſSs]*");
+    expect(caseFoldGlob("Σ")).toBe("*[Σσς]*");
+    expect(caseFoldGlob("ς")).toBe("*[ςΣσ]*");
+    // Dotted and dotless I read as an i, as a picker user expects.
+    expect(caseFoldGlob("i")).toBe("*[iIİı]*");
+    expect(caseFoldGlob("İ")).toBe("*[İIiı]*");
+    // The Kelvin sign (U+212A) is a case of k.
+    expect(caseFoldGlob("k")).toBe("*[kKK]*");
+  });
+
+  it("leaves a caseless character as itself", () => {
+    expect(caseFoldGlob("7 – 中")).toBe("*7 – 中*");
   });
 });
 

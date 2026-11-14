@@ -14,6 +14,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // ---- Prisma double ----------------------------------------------------------
 const notificationCreate = vi.fn();
+// #2224 — the review_item_changed rows a recipient already holds.
+const notificationFindMany = vi.fn();
 const prefFindMany = vi.fn();
 const itemFindMany = vi.fn();
 // #2394 — the access lookup (`reviewersWhoCanOpen`): the project, then the
@@ -24,7 +26,10 @@ const userFindMany = vi.fn();
 let withoutAccess = new Set<string>();
 vi.mock("../prisma.js", () => ({
   prisma: {
-    notification: { create: (...a: unknown[]) => notificationCreate(...a) },
+    notification: {
+      create: (...a: unknown[]) => notificationCreate(...a),
+      findMany: (...a: unknown[]) => notificationFindMany(...a),
+    },
     project: { findUnique: (...a: unknown[]) => projectFindUnique(...a) },
     user: { findMany: (...a: unknown[]) => userFindMany(...a) },
     notificationPreference: { findMany: (...a: unknown[]) => prefFindMany(...a) },
@@ -104,6 +109,7 @@ beforeEach(() => {
   io = { to };
   to.mockImplementation(() => ({ emit }));
   notificationCreate.mockResolvedValue({ id: "n1" });
+  notificationFindMany.mockResolvedValue([]);
   // Default: no stored preference rows → inApp × requirementsApproved is ON.
   prefFindMany.mockResolvedValue([]);
   shouldNotifySpy.mockImplementation((...a) => actualPrefs.shouldNotify(...a));
@@ -438,7 +444,8 @@ describe("#2219 — notifyReviewedRequirementEdited", () => {
     actorId: "user-editor",
     ...over,
   });
-  const item = (over: Record<string, unknown> = {}) => ({
+  const item = (over: Record<string, unknown> = {}, pinnedVersion = 1) => ({
+    pinnedVersion,
     requirement: { title: "Password length" },
     reviewRequest: {
       id: "rev-1",
@@ -451,14 +458,14 @@ describe("#2219 — notifyReviewedRequirementEdited", () => {
     },
   });
 
-  it("asks only for reviews pinned at the replaced version that still stand", async () => {
+  it("asks for reviews pinned at or before the replaced version that still stand", async () => {
     itemFindMany.mockResolvedValue([]);
     await notifyReviewedRequirementEdited(editInput());
     expect(itemFindMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: {
           requirementId: "req-1",
-          pinnedVersion: 1,
+          pinnedVersion: { lte: 1 },
           reviewRequest: { status: { in: ["approved", "in_review"] } },
         },
       }),
@@ -586,6 +593,87 @@ describe("#2219 — notifyReviewedRequirementEdited", () => {
     await notifyReviewedRequirementEdited(editInput());
 
     expect(notificationCreate).not.toHaveBeenCalled();
+  });
+
+  /** A review_item_changed row `userId` already holds. */
+  const toldRow = (userId: string, payload: Record<string, unknown> | string) => ({
+    userId,
+    payload: typeof payload === "string" ? payload : JSON.stringify(payload),
+  });
+
+  it("#2224 — an edit after a silent version bump still notifies, naming the pinned version", async () => {
+    // Approved at v1; a version bump told nobody (v2); an analyst edit writes v3.
+    itemFindMany.mockResolvedValue([item({ assignments: [] })]);
+
+    await notifyReviewedRequirementEdited(editInput({ fromVersion: 2, toVersion: 3 }));
+
+    const [row] = createdRows();
+    expect(row.userId).toBe("user-req");
+    expect(String(row.message)).toContain("was edited to v3");
+    expect(String(row.message)).toContain("approved v1");
+    expect(JSON.parse(String(row.payload))).toMatchObject({ pinnedVersion: 1, currentVersion: 3 });
+  });
+
+  it("#2224 — someone already told the requirement moved past the pin is not told again", async () => {
+    itemFindMany.mockResolvedValue([item()]);
+    notificationFindMany.mockResolvedValue([
+      toldRow("rev-a", { requirementId: "req-1", pinnedVersion: 1 }),
+      // Another requirement's row, and a malformed one, say nothing about this pin.
+      toldRow("rev-b", { requirementId: "req-other", pinnedVersion: 5 }),
+      toldRow("user-req", "{not json"),
+    ]);
+
+    await notifyReviewedRequirementEdited(editInput({ fromVersion: 2, toVersion: 3 }));
+
+    expect(
+      createdRows()
+        .map((r) => r.userId)
+        .sort(),
+    ).toEqual(["rev-b", "user-req"]);
+    expect(notificationFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          userId: { in: ["user-req", "rev-a", "rev-b"] },
+          type: "review_item_changed",
+          payload: { contains: "req-1" },
+        },
+      }),
+    );
+  });
+
+  it("#2224 — being told of an older pin does not hide a later approval's", async () => {
+    // rev-a was told v1 was edited; a newer review then approved v2.
+    itemFindMany.mockResolvedValue([
+      item({ id: "rev-2", requestedById: "rev-a", assignments: [] }, 2),
+      item({ requestedById: "rev-a", assignments: [] }, 1),
+    ]);
+    notificationFindMany.mockResolvedValue([
+      toldRow("rev-a", { requirementId: "req-1", pinnedVersion: 1 }),
+    ]);
+
+    await notifyReviewedRequirementEdited(editInput({ fromVersion: 2, toVersion: 3 }));
+
+    expect(createdRows().map((r) => [r.userId, r.href])).toEqual([["rev-a", "/reviews/rev-2"]]);
+  });
+
+  it("#2224 — a pin at v0 is not mistaken for already told", async () => {
+    itemFindMany.mockResolvedValue([item({ assignments: [] }, 0)]);
+
+    await notifyReviewedRequirementEdited(editInput({ fromVersion: 0, toVersion: 1 }));
+
+    expect(createdRows().map((r) => r.userId)).toEqual(["user-req"]);
+  });
+
+  it("#2224 — a system edit (no actor) tells every participant", async () => {
+    itemFindMany.mockResolvedValue([item()]);
+
+    await notifyReviewedRequirementEdited(editInput({ actorId: null }));
+
+    expect(
+      createdRows()
+        .map((r) => r.userId)
+        .sort(),
+    ).toEqual(["rev-a", "rev-b", "user-req"]);
   });
 
   it("never throws: a failed lookup or a failed send is logged", async () => {

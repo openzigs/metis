@@ -9,6 +9,7 @@
  * with the size of the run.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import {
   ACCEPTANCE_CRITERIA_MAX_ITEMS,
   ACCEPTANCE_CRITERION_MAX_LENGTH,
@@ -129,7 +130,7 @@ import { RequirementDiff } from "@/components/analysis/requirement-diff";
 import { DataMappingsPanel } from "@/components/traceability/data-mappings-panel";
 import { RequirementLinksPanel } from "@/components/requirements/requirement-links-panel";
 import { SimilarRequirementsPanel } from "@/components/requirements/similar-requirements-panel";
-import { TraceabilityView } from "@/components/traceability/traceability-view";
+import { TraceabilityView, traceabilityKey } from "@/components/traceability/traceability-view";
 import { UntestedRequirementsPanel } from "@/components/traceability/untested-requirements-panel";
 import { RequirementHistoryTab } from "@/components/requirements/RequirementHistoryTab";
 import { RequirementApprovalWarning } from "@/components/requirements/RequirementApprovalWarning";
@@ -659,10 +660,12 @@ export default function AnalysisPage(): React.ReactElement {
       // #241 — surface the failure instead of silently reverting.
       toast.error(resolveErrorMessage(err, "Failed to save requirement"));
     },
-    onSettled: () => {
+    onSettled: (_data, _err, input) => {
       qc.invalidateQueries({ queryKey: queryKeys.analyses.detail(selectedAnalysisId!) });
       // #2219 — an edit can put an approved review out of date.
       qc.invalidateQueries({ queryKey: queryKeys.reviews.all });
+      // #2224 — the traceability heading under the card shows the title too.
+      qc.invalidateQueries({ queryKey: traceabilityKey(projectId, input.reqId) });
     },
     onSuccess: () => {
       setEditingReq(null);
@@ -681,10 +684,11 @@ export default function AnalysisPage(): React.ReactElement {
         ...input.resolved,
         version: input.serverVersion,
       }),
-    onSuccess: () => {
+    onSuccess: (_data, input) => {
       setConflict(null);
       setEditingReq(null);
       qc.invalidateQueries({ queryKey: queryKeys.analyses.detail(selectedAnalysisId!) });
+      qc.invalidateQueries({ queryKey: traceabilityKey(projectId, input.reqId) });
       toast.success("Conflict resolved");
     },
     onError: (err) => {
@@ -1496,7 +1500,21 @@ export default function AnalysisPage(): React.ReactElement {
                                   />
                                 </div>
                                 <div className="text-xs text-muted-foreground">
-                                  {req.type} · {req.priority} · {req.reviewStatus}
+                                  {req.type} · {req.priority} ·{" "}
+                                  {/* #2224 — a reopened approval is not a draft
+                                  nobody reviewed: say so, and link the review. */}
+                                  {req.approvalReopened && req.reviewStatus !== "approved" ? (
+                                    <Link
+                                      href={`/reviews/${encodeURIComponent(req.approvalReopened.reviewId)}`}
+                                      className="font-medium text-warning underline-offset-2 hover:underline"
+                                      data-testid={`req-approval-reopened-${req.id}`}
+                                      title={`"${req.approvalReopened.reviewTitle}" approved v${req.approvalReopened.approvedVersion}`}
+                                    >
+                                      Changed since approval · awaiting re-review
+                                    </Link>
+                                  ) : (
+                                    req.reviewStatus
+                                  )}
                                 </div>
                                 {/* #1063 — the imported item's own title and link, or
                                 "Added by the analysis"; nothing when not recorded. */}
