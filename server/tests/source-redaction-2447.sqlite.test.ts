@@ -1135,6 +1135,52 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         });
       });
 
+      it("#2301 — a set mixing a restricted requirement with another project's is 404 for Bob, not the cross-project 400", async () => {
+        const P2 = "proj-2447-other";
+        try {
+          await db.project.create({
+            data: {
+              id: P2,
+              name: P2,
+              slug: P2,
+              createdById: "alice",
+              workspaceId: WS,
+              status: "active",
+            },
+          });
+          await db.requirement.create({
+            data: {
+              id: "req-2447-other",
+              projectId: P2,
+              analysisId: CR,
+              title: "Invoices go out",
+              body: "Invoices go out — body",
+              reviewStatus: "approved",
+            },
+          });
+          const err = (who: Who, ids: string[]) =>
+            loadReadableSourceRequirements(payload(who), ids).then(
+              () => null,
+              (e: { statusCode: number; message: string }) => ({
+                statusCode: e.statusCode,
+                message: e.message,
+              }),
+            );
+          // Alice sees both, so the set is only refused for spanning projects.
+          expect(await err("alice", ["req-2447-secret", "req-2447-other"])).toMatchObject({
+            statusCode: 400,
+          });
+          // Bob is told exactly what an unknown id tells him: the restricted
+          // requirement's existence is not given away by a 400.
+          const unknown = await err("bob", ["req-2447-nope", "req-2447-other"]);
+          expect(unknown).toMatchObject({ statusCode: 404 });
+          expect(await err("bob", ["req-2447-secret", "req-2447-other"])).toEqual(unknown);
+        } finally {
+          await db.requirement.deleteMany({ where: { id: "req-2447-other" } });
+          await db.project.deleteMany({ where: { id: P2 } });
+        }
+      });
+
       it("a portfolio check of a restricted requirement is not found for Bob", async () => {
         await expect(
           loadReadableSourceRequirement(payload("bob"), "req-2447-secret"),
