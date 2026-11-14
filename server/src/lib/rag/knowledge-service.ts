@@ -78,20 +78,10 @@ import {
   type ContextualChunksMode,
 } from "./contextual-chunks.js";
 import { getReranker, type Reranker } from "./reranker.js";
-import {
-  type AclActor,
-  AclGroupUnsupportedError,
-  filterAccessible,
-  parseAclSubjects,
-} from "./acl.js";
+import { type AclActor, filterAccessible, parseAclSubjects } from "./acl.js";
 import { assertEvidencePolicy, type EvidencePolicy } from "../docs-gen/evidence-policy.js";
 import { filterPrimaryEvidence } from "../docs-gen/evidence-filter.js";
-import {
-  writeQuarantine,
-  shouldAutoApprove,
-  approveDocument,
-  type QuarantineWriteInput,
-} from "./quarantine.js";
+import { writeQuarantine, shouldAutoApprove, approveDocument } from "./quarantine.js";
 import { audit } from "../audit/audit-service.js";
 import {
   getSymbolEmbeddingsPort,
@@ -100,14 +90,6 @@ import {
 } from "../code-graph/symbol-embedding-service.js";
 
 const log = createChildLogger("knowledge");
-
-/**
- * #2356 — why an ingest ended `failed` when the document's access list kept
- * losing a legacy group while it was being indexed (see `quarantineOrFail`).
- * Shown on the document as its error.
- */
-export const ACL_CHANGED_DURING_INGEST =
-  "The document's access list changed while it was being indexed. Index it again to apply the new list.";
 
 /** Missing width is supported only for legacy structural doubles. Shipped stores
  * always report actual persisted width, including 0 for missing vector evidence. */
@@ -626,18 +608,17 @@ export class KnowledgeService {
     }
 
     const chunks = chunkMarkdown(parsed.text, this.chunkOptions);
-    const docAcl = parseAclSubjects(doc.aclSubjects);
+    // #2435 — ingest names no ACL: the quarantine write keeps the document's own
+    // list, so a `PATCH /acl` saved while this ingest parsed and embedded stands.
     if (chunks.length === 0) {
-      const refused = await this.quarantineOrFail({
+      await writeQuarantine({
         documentId,
         projectId: doc.projectId,
         filename: doc.filename,
         ingestGeneration,
         chunks: [],
         embeddingModel: "empty",
-        aclSubjects: docAcl,
       });
-      if (refused) return refused;
       await approveDocument(
         documentId,
         { id: doc.uploadedById },
@@ -700,7 +681,7 @@ export class KnowledgeService {
 
     // Park chunks in quarantine. The auto-approve policy may immediately
     // graduate them to `indexed` via `approveDocument`.
-    const refused = await this.quarantineOrFail({
+    await writeQuarantine({
       documentId,
       ingestGeneration,
       projectId: doc.projectId,
@@ -747,9 +728,7 @@ export class KnowledgeService {
               ? this.contextualMode
               : CHUNK_CONTEXT_NONE,
       ),
-      aclSubjects: docAcl,
     });
-    if (refused) return refused;
 
     const autoApprove = await shouldAutoApprove(documentId);
     if (autoApprove) {
@@ -2299,43 +2278,6 @@ export class KnowledgeService {
       chunkerCounts,
       projectsNeedingReingest: projects.filter((p) => p.needsReingest).length,
     };
-  }
-
-  /**
-   * #2356 — park the ingest's chunks. The quarantine write refuses the ACL
-   * ingest read when a legacy group it carries was removed while the document
-   * was being indexed. Ingest only echoes the document's own list, so it reads
-   * the list again and writes that, keeping the chunks it already embedded
-   * rather than throwing into the queue's retry (a full re-parse and re-embed).
-   * If the list changes under that second write too, the ingest ends `failed`
-   * with {@link ACL_CHANGED_DURING_INGEST}, as the queue's other terminal
-   * failures do, and the person re-runs indexing.
-   */
-  private async quarantineOrFail(
-    input: QuarantineWriteInput & { ingestGeneration: string },
-  ): Promise<IngestResult | null> {
-    try {
-      await writeQuarantine(input);
-      return null;
-    } catch (err) {
-      if (!(err instanceof AclGroupUnsupportedError)) throw err;
-    }
-    const current = await prisma.document.findFirst({
-      where: { id: input.documentId, deletedAt: null },
-      select: { aclSubjects: true },
-    });
-    try {
-      await writeQuarantine({ ...input, aclSubjects: parseAclSubjects(current?.aclSubjects) });
-      return null;
-    } catch (err) {
-      if (!(err instanceof AclGroupUnsupportedError)) throw err;
-      return this.markFailed(
-        input.projectId,
-        input.documentId,
-        ACL_CHANGED_DURING_INGEST,
-        input.ingestGeneration,
-      );
-    }
   }
 
   private async markFailed(
