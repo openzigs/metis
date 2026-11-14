@@ -1562,6 +1562,13 @@ describe("#2338 — a connector's commit history", () => {
       `Authorization: Basic ${Buffer.from("x-access-token:pat_gh-pat").toString("base64")}`,
     );
     expect(input.remoteUrl).not.toContain("pat_");
+    // #2484 panel — the ingest's cancellation reaches the download.
+    const ingest = new AbortController();
+    await fetchConnectorHistory("proj_1", c.id, SHA, ingest.signal);
+    expect(
+      (historyFetch.fetchHistoryRepository.mock.calls.at(-1)![0] as { signal?: AbortSignal })
+        .signal,
+    ).toBe(ingest.signal);
   });
 
   it("is not fetched for a local or uploaded source", async () => {

@@ -21,6 +21,7 @@ const h = vi.hoisted(() => ({
   schedule: vi.fn(),
   findUnique: vi.fn(),
   refresh: vi.fn(),
+  history: vi.fn(async () => undefined),
 }));
 
 vi.mock("../../../src/lib/logger.js", () => ({
@@ -65,6 +66,11 @@ vi.mock("../../../src/lib/docs-gen/regeneration-scheduling.js", () => ({
   scheduleIncrementalRegeneration: h.schedule,
 }));
 // The unattended refresh must not be what a queued Sync runs.
+// #2338 / #2484 panel — the history download the Sync starts beside itself.
+vi.mock("../../../src/lib/connectors/repo/history-refresh.js", () => ({
+  startConnectorHistoryRefresh: h.history,
+  stopConnectorHistoryRefreshes: vi.fn(async () => undefined),
+}));
 vi.mock("../../../src/lib/connectors/repo/repo-refresh.js", () => ({
   runRepoConnectorRefresh: h.refresh,
 }));
@@ -126,6 +132,8 @@ describe("a queued manual Sync does what Sync does (#2335 panel)", () => {
     });
     expect(h.schedule).toHaveBeenCalledExactlyOnceWith("p1", "rc1");
     expect(h.refresh).not.toHaveBeenCalled();
+    // #2484 panel — the history download starts with the run's (shutdown) signal.
+    expect(h.history).toHaveBeenCalledExactlyOnceWith("p1", "rc1", expect.any(AbortSignal));
     expect(h.info).toHaveBeenCalledWith(
       "connector.refresh.done",
       expect.objectContaining({ connectorId: "rc1", trigger: "manual" }),
