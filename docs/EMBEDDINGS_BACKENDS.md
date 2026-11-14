@@ -853,6 +853,14 @@ bootstrap 95% CI and a sign test. The decision rule is the pre-registered one fr
 p < 0.05 and the CI's lower bound clears +0.04. Model contexts were written by
 **`anthropic` `claude-sonnet-5-5`**.
 
+The runs did not use the committed CLI itself but a scratch copy of its
+`--contextual` path, because `pushSchema`'s `prisma db push --accept-data-loss` is
+refused under an AI agent. The copy differs in two ways only: it builds the throwaway
+SQLite with `prisma migrate deploy` (as the test suite's `globalSetup` does) instead
+of `db push`, and it wraps the provider's `chat` in a hard spend cap. The harness, the
+generator, the replay cache and the ranking path are the committed code, unchanged.
+Outside an agent, `pnpm eval:doc-retrieval` runs as documented.
+
 | corpus | arm | nDCG@10 | recall@10 | MRR | Δ nDCG@10 | 95% CI | sign p | W/L/T | verdict |
 |---|---|---:|---:|---:|---:|---|---:|---|---|
 | `docretrieval-01-metis-docs` (9 docs, 43 q, 428 chunks) | `off` (control) | 0.807 | 0.953 | 0.760 | | | | | |
@@ -888,13 +896,18 @@ the clip shortens further anyway. The Anthropic provider logs that this model re
 thinking `disabled` and sends `between_tools` instead; the capped replies reported 0
 thinking tokens.
 
-**Re-scoring is free.** The recorded `--context-cache` file holds all 805 contexts
-under the production reuse key (prompt wording, provider, model, document, title,
-chunk, reply cap and clip). Replaying the default corpus from it made **0** model
-calls and reproduced the table above to the third decimal. The file is eval output
-and is not committed (ADR 0015: nothing under `eval-results/` is tracked on `main`).
-A change to the prompt, the model, the reply cap or the clip invalidates it by
-design, and a re-run pays again.
+**Re-scoring is free once you keep a cache.** Pass `--context-cache <file>` to
+`eval:doc-retrieval --contextual model`: the run records every context it generates
+in that file, under the production reuse key (prompt wording, provider, model,
+document, title, chunk, reply cap and clip). A later run given the same file replays
+the recorded contexts and calls the model only for chunks it has not seen, so an
+interrupted arm can be finished and a finished one re-scored without paying again. In
+this run, replaying the default corpus from its cache made **0** model calls and
+reproduced the table above to the third decimal. That cache file was not preserved:
+it was eval output from a throwaway worktree and is not committed (ADR 0015: nothing
+under `eval-results/` is tracked on `main`), so re-scoring these numbers means
+generating the contexts again. A change to the prompt, the model, the reply cap or the
+clip invalidates a cache by design, and a re-run pays again.
 
 ---
 
