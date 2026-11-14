@@ -67,6 +67,7 @@ export const ARM_FLAGS = [
   "CHAT_FUSED_CODE_RETRIEVAL",
   "RAG_RERANK",
   "CHAT_CODE_SEARCH_PRIMITIVES",
+  "CHAT_CODE_CONTEXT_TOOL",
 ] as const;
 type ArmFlag = (typeof ARM_FLAGS)[number];
 
@@ -80,6 +81,10 @@ type ArmFlag = (typeof ARM_FLAGS)[number];
  * #2327 — `tools-primitives` is `tools-only` plus the search primitives
  * (`grep_files`, `list_files`, the symbol filters): paired with `tools-only`,
  * it measures what the primitives add.
+ *
+ * #2412 — `tools-context` is `tools-only` plus `search_code_context`
+ * (`CHAT_CODE_CONTEXT_TOOL`): paired with `tools-only`, it measures what the
+ * tool adds. Every other named arm sets that flag as it sets the primitives.
  */
 export const ARMS = {
   /** The server's defaults: every flag unset. */
@@ -89,30 +94,35 @@ export const ARMS = {
     CHAT_FUSED_CODE_RETRIEVAL: "0",
     RAG_RERANK: "0",
     CHAT_CODE_SEARCH_PRIMITIVES: "0",
+    CHAT_CODE_CONTEXT_TOOL: "0",
   },
   on: {
     CHAT_CODE_SEARCH_TOOLS: "1",
     CHAT_FUSED_CODE_RETRIEVAL: "1",
     RAG_RERANK: "1",
     CHAT_CODE_SEARCH_PRIMITIVES: "1",
+    CHAT_CODE_CONTEXT_TOOL: "1",
   },
   "no-tools": {
     CHAT_CODE_SEARCH_TOOLS: "0",
     CHAT_FUSED_CODE_RETRIEVAL: "1",
     RAG_RERANK: "1",
     CHAT_CODE_SEARCH_PRIMITIVES: "1",
+    CHAT_CODE_CONTEXT_TOOL: "1",
   },
   "no-fused": {
     CHAT_CODE_SEARCH_TOOLS: "1",
     CHAT_FUSED_CODE_RETRIEVAL: "0",
     RAG_RERANK: "1",
     CHAT_CODE_SEARCH_PRIMITIVES: "1",
+    CHAT_CODE_CONTEXT_TOOL: "1",
   },
   "no-rerank": {
     CHAT_CODE_SEARCH_TOOLS: "1",
     CHAT_FUSED_CODE_RETRIEVAL: "1",
     RAG_RERANK: "0",
     CHAT_CODE_SEARCH_PRIMITIVES: "1",
+    CHAT_CODE_CONTEXT_TOOL: "1",
   },
   /** Fused retrieval's gain over the tools alone, with the reranker off as it ships. */
   "tools-only": {
@@ -120,6 +130,7 @@ export const ARMS = {
     CHAT_FUSED_CODE_RETRIEVAL: "0",
     RAG_RERANK: "0",
     CHAT_CODE_SEARCH_PRIMITIVES: "0",
+    CHAT_CODE_CONTEXT_TOOL: "0",
   },
   /** #2327 — the search primitives' gain over the tools alone. */
   "tools-primitives": {
@@ -127,6 +138,15 @@ export const ARMS = {
     CHAT_FUSED_CODE_RETRIEVAL: "0",
     RAG_RERANK: "0",
     CHAT_CODE_SEARCH_PRIMITIVES: "1",
+    CHAT_CODE_CONTEXT_TOOL: "0",
+  },
+  /** #2412 — `search_code_context`'s gain over the tools alone: paired with `tools-only`. */
+  "tools-context": {
+    CHAT_CODE_SEARCH_TOOLS: "1",
+    CHAT_FUSED_CODE_RETRIEVAL: "0",
+    RAG_RERANK: "0",
+    CHAT_CODE_SEARCH_PRIMITIVES: "0",
+    CHAT_CODE_CONTEXT_TOOL: "1",
   },
 } as const satisfies Record<string, Partial<Record<ArmFlag, string>>>;
 export type BaQaArm = keyof typeof ARMS;

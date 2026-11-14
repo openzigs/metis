@@ -30,11 +30,12 @@ describe("arms", () => {
       "no-rerank",
       "tools-only",
       "tools-primitives",
+      "tools-context",
     ]) {
       expect(parseArm(arm)).toBe(arm);
     }
     expect(() => parseArm("both")).toThrow(
-      /default, off, on, no-tools, no-fused, no-rerank, tools-only, tools-primitives/,
+      /default, off, on, no-tools, no-fused, no-rerank, tools-only, tools-primitives, tools-context/,
     );
     // An inherited Object key is not an arm.
     expect(() => parseArm("toString")).toThrow(/not toString/);
@@ -52,6 +53,7 @@ describe("arms", () => {
     expect(embedRuntimeFor("no-rerank")).toBe("worker");
     expect(embedRuntimeFor("tools-only")).toBe("worker");
     expect(embedRuntimeFor("tools-primitives")).toBe("worker");
+    expect(embedRuntimeFor("tools-context")).toBe("worker");
     expect(embedRuntimeFor("off")).toBe("worker");
     expect(embedRuntimeFor("default")).toBe("worker");
     expect(embedRuntimeFor("nonsense")).toBe("worker");
@@ -102,6 +104,14 @@ describe("arms", () => {
     for (const k of ARM_FLAGS) {
       expect(env[k]).toBe(
         k === "CHAT_CODE_SEARCH_TOOLS" || k === "CHAT_CODE_SEARCH_PRIMITIVES" ? "1" : "0",
+      );
+    }
+    // #2412 — the code-context arm is tools-only plus exactly search_code_context.
+    expect(ARM_FLAGS).toContain("CHAT_CODE_CONTEXT_TOOL");
+    applyArmEnv(env, "tools-context");
+    for (const k of ARM_FLAGS) {
+      expect(env[k]).toBe(
+        k === "CHAT_CODE_SEARCH_TOOLS" || k === "CHAT_CODE_CONTEXT_TOOL" ? "1" : "0",
       );
     }
   });

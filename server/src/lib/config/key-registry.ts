@@ -1009,7 +1009,7 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
     valueType: "bool",
     schema: z.coerce.boolean(),
     description:
-      "Offer search_code_context in chat beside the other code tools (#2329): one call returns up to 6 whole functions/classes for a question by default (up to 12 when the model asks for more), adjacent matches in a file merged into one span, ranked exactly as search_code_symbols ranks them, read from the project's clones under the same path and access checks as read_file_slice. OFF by default: it becomes a default only once the paired `pnpm eval:ba-qa` tools-only arms show turns per answer falling without facts stated or citation precision regressing. Needs CHAT_CODE_SEARCH_TOOLS on.",
+      "Offer search_code_context in chat beside the other code tools (#2329): one call returns up to 6 whole functions/classes for a question by default (up to 12 when the model asks for more), adjacent matches in a file merged into one span, ranked exactly as search_code_symbols ranks them, read from the project's clones under the same path and access checks as read_file_slice. OFF by default: measured with the paired `pnpm eval:ba-qa` arms tools-only and tools-context (#2412), it did not improve facts stated or citation precision beyond run-to-run spread, nor cut turns per answer. Needs CHAT_CODE_SEARCH_TOOLS on.",
     sensitive: false,
   },
   CHAT_CODE_CONTEXT_MERGE_GAP: {

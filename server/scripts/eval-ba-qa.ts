@@ -24,6 +24,10 @@
  * (`grep_files`, `list_files`, the symbol filters); each session records the
  * tools it called (`toolNames`).
  *
+ * #2412 — `tools-context` is `tools-only` plus `CHAT_CODE_CONTEXT_TOOL`
+ * (`search_code_context`). Every named arm sets that flag itself: on in `on`
+ * and the `no-*` arms, off in `off`, `tools-only` and `tools-primitives`.
+ *
  * Arms (#2243): `off` sets `CHAT_CODE_SEARCH_TOOLS`, `CHAT_FUSED_CODE_RETRIEVAL`
  * and `RAG_RERANK` off and `on` sets all three, whatever the shell or `.env` set;
  * `no-tools`, `no-fused` and `no-rerank` take one flag away from `on`; `default`

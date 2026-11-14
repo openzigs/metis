@@ -866,25 +866,29 @@ Each question is its own one-turn chat session, run through production's chat pi
 `eval:chat-cache`. A question scoped to both products is asked the way chat takes it today,
 as an unscoped session with no retrieval (`chatSessionScope`, mirroring
 `server/src/routes/ai.ts`). Every arm sets `CHAT_CODE_SEARCH_TOOLS`,
-`CHAT_FUSED_CODE_RETRIEVAL`, `RAG_RERANK` and `CHAT_CODE_SEARCH_PRIMITIVES` itself, whatever
-the shell or `.env` says (#2243, #2327):
+`CHAT_FUSED_CODE_RETRIEVAL`, `RAG_RERANK`, `CHAT_CODE_SEARCH_PRIMITIVES` and
+`CHAT_CODE_CONTEXT_TOOL` itself, whatever the shell or `.env` says (#2243, #2327, #2412):
 
-| Arm | Code-search tools | Fused code retrieval | Reranker | Search primitives |
-|---|---|---|---|---|
-| `off` | off | off | off | off |
-| `on` | on | on | on | on |
-| `no-tools` | off | on | on | on |
-| `no-fused` | on | off | on | on |
-| `no-rerank` | on | on | off | on |
-| `tools-only` | on | off | off | off |
-| `tools-primitives` | on | off | off | on |
-| `default` | unset: the server's default | unset | unset | unset |
+| Arm | Code-search tools | Fused code retrieval | Reranker | Search primitives | Context tool |
+|---|---|---|---|---|---|
+| `off` | off | off | off | off | off |
+| `on` | on | on | on | on | on |
+| `no-tools` | off | on | on | on | on |
+| `no-fused` | on | off | on | on | on |
+| `no-rerank` | on | on | off | on | on |
+| `tools-only` | on | off | off | off | off |
+| `tools-primitives` | on | off | off | on | off |
+| `tools-context` | on | off | off | off | on |
+| `default` | unset: the server's default | unset | unset | unset | unset |
 
 Each session in the JSON records the tools it called, in order (`toolNames`, #2327).
 
 Since #2327 the `on` and `no-*` arms set `CHAT_CODE_SEARCH_PRIMITIVES=1`, so they offer
 `grep_files`, `list_files` and the symbol filters. They do not reproduce the #2243 numbers below,
 which were measured without them; `tools-only` is the arm that still matches #2243's tools-only run.
+Since #2412 they also set `CHAT_CODE_CONTEXT_TOOL=1`, so they offer `search_code_context`, and an
+`on` or `no-*` run from then on does not reproduce an earlier one either. `tools-only` and
+`tools-primitives` set it off, so they still match their earlier runs.
 
 An arm with the reranker on runs the embedder inline so the reranker can share the main
 thread (#222). On macOS such an arm can abort with `libc++abi: … mutex lock failed` as it
@@ -1620,3 +1624,70 @@ The per-question scores of the six runs (no transcripts) are in
 file, so the per-question view covers the three new pairs only. Spend for #2403: **$4.389305**,
 the six runs ($4.043606) and one six-question smoke run before them ($0.345699); the knowledge
 ingest went through `--floor-sweep`, which asks no model.
+
+### `search_code_context` measured before turning it on (#2412), 2026-11-13
+
+`search_code_context` (#2329) shipped switched off behind `CHAT_CODE_CONTEXT_TOOL`. #2412 asked
+for the measurement first. The rule was to turn it on by default only if facts stated or
+citation precision improve beyond run-to-run spread. `CHAT_CODE_CONTEXT_TOOL` is now an arm
+flag. The new `tools-context` arm is `tools-only` with exactly that flag on, so the pair differs
+in one tool. The code measured is `0b4c326f`, #2412's branch with the per-call file cache and
+the evidence fix. There was one fresh materialization, and the runs alternated off, on, off,
+on, off, on (Sonnet 5.5 answers and judge, all 23 questions):
+
+```bash
+pnpm eval:ba-qa --arm tools-only --budget 2      # off
+pnpm eval:ba-qa --arm tools-context --budget 2   # on
+```
+
+| | off 1 | on 1 | off 2 | on 2 | off 3 | on 3 |
+|---|---:|---:|---:|---:|---:|---:|
+| Correctness: mean facts stated | 53.1% | 57.6% | 58.7% | 60.9% | 54.2% | 58.9% |
+| Fully correct answers | 4/15 | 5/15 | 5/15 | 5/15 | 4/15 | 5/15 |
+| Citation precision, line spans | 99% (80/81) | 99% (80/81) | 98% (83/85) | 99% (81/82) | 98% (86/88) | 99% (81/82) |
+| Citation precision, files without lines | 29% (4/14) | 19% (3/16) | 20% (2/10) | 18% (3/17) | 30% (3/10) | 38% (6/16) |
+| Citation recall (expected files cited) | 18/47 | 18/47 | 21/47 | 21/47 | 20/47 | 19/47 |
+| False abstention on answerable | 4/15 | 4/15 | 4/15 | 4/15 | 4/15 | 4/15 |
+| Model calls (turns) per question | 2.48 | 2.57 | 2.74 | 2.57 | 2.65 | 2.70 |
+| Tool calls, all 23 questions | 75 | 73 | 87 | 76 | 76 | 80 |
+| `search_code_context` calls | 0 | 18 | 0 | 18 | 0 | 15 |
+| Tool results cut by the model cap | 2 | 11 | 2 | 7 | 3 | 8 |
+| Input tokens per question | 25,682 | 29,566 | 30,701 | 31,699 | 27,554 | 31,787 |
+| Spend | $0.909977 | $0.961388 | $0.985176 | $1.015749 | $0.922337 | $0.970933 |
+
+Per question, each question's facts stated over its three runs (on minus off, as a share of its
+facts). Questions not listed scored the same in all six runs, or 0 in all six (M1 to M4: the
+multi-product questions reach chat unscoped and abstain in both arms).
+
+| Question | Facts | Off, each run | On, each run | On − off |
+|---|---:|---|---|---:|
+| S1 | 6 | 2, 3, 3 | 4, 3, 4 | +17 pts |
+| S2 | 5 | 4, 4, 4 | 4, 4, 5 | +7 pts |
+| S7 | 3 | 2, 2, 3 | 3, 3, 3 | +22 pts |
+| S9 | 3 | 3, 3, 2 | 3, 2, 2 | −11 pts |
+| S10 | 3 | 0, 3, 0 | 0, 3, 1 | +11 pts |
+| S11 | 3 | 2, 1, 2 | 2, 2, 2 | +11 pts |
+
+**Decision: `CHAT_CODE_CONTEXT_TOOL` stays off by default.**
+
+- **Facts stated rose, but not beyond the spread.** The run means are 59.1% on against 55.3% off,
+  and each pair favoured the tool (+4.5, +2.2 and +4.7 points). But the three off runs alone
+  spread over 5.6 points (53.1% to 58.7%), more than the 3.8-point difference. The best off run
+  is above the worst on run. Five questions gained and one lost. An exact sign test on those
+  six gives p ≈ 0.22. S10 swings between 0 and 3 facts in both arms, so its gain is noise.
+- **Citation precision did not improve.** On line spans it was 98.0% off (249/254) and 98.8% on
+  (242/245), pooled: at the ceiling, with no room to rise. On files named without lines it was
+  26% off (9/34) and 24% on (12/49). The tool's answers named more files without lines.
+- **It did not save turns.** Model calls per question read 2.62 off and 2.61 on, run means. #2329
+  wanted turns per answer to fall. It cost about 3,000 more input tokens per question (31,017
+  against 27,979 mean, +11%).
+- **Most of its results are cut before the model reads them.** Results cut by chat's model cap
+  rose from 7 to 26 over three runs, while the tool was called 51 times.
+  `CHAT_CODE_CONTEXT_TOKEN_BUDGET` defaults to 4,000 tokens, and `CHAT_TOOL_RESULT_MAX_TOKENS`
+  defaults to 2,000. So a full result loses its second half in the model's copy, and its
+  lower-ranked spans with it. The notes come first and survive the cut. Aligning the two is a
+  change of its own to measure, so this measurement does not make it.
+
+The per-question scores and tool calls of the six runs (no transcripts) are in
+`readings/ba-qa/2412-code-context-paired.json`. Spend for #2412: **$5.765561** for the six
+runs, answers and judge. The first run's knowledge ingest asked no model.
