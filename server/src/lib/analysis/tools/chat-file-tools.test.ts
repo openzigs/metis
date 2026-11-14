@@ -5,7 +5,7 @@
 import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const findMany = vi.hoisted(() => vi.fn());
 vi.mock("../../prisma.js", () => ({ prisma: { repoConnection: { findMany } } }));
@@ -16,6 +16,15 @@ import { getChatCodeTools } from "./index.js";
 
 let root: string;
 const clones: Record<string, string> = {};
+
+// #2488 — these tests pin the default tool list, so a developer's own
+// CHAT_CHANGE_HISTORY_TOOL (shell or .env) must not leak in: stub it unset.
+beforeEach(() => {
+  vi.stubEnv("CHAT_CHANGE_HISTORY_TOOL", "");
+});
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 beforeAll(async () => {
   root = await mkdtemp(path.join(tmpdir(), "chat-file-tools-"));
@@ -166,6 +175,7 @@ describe("getChatCodeTools (#2327)", () => {
       "search_code_symbols",
       "read_file_slice",
       "get_index_status", // #2326
+      "get_change_history", // #2338, on by default since #2488
     ]);
     expect(off[1]!.parameters.properties).not.toHaveProperty("fileGlob");
     const on = getChatCodeTools(undefined, { primitives: true });
@@ -176,6 +186,7 @@ describe("getChatCodeTools (#2327)", () => {
       "get_index_status", // #2326
       "grep_files",
       "list_files",
+      "get_change_history",
     ]);
     expect(on[1]!.parameters.properties).toHaveProperty("fileGlob");
   });

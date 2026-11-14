@@ -67,11 +67,21 @@ describe("get_index_status (#2326)", () => {
     expect(indexStatusTool.parameters).toEqual({ type: "object", properties: {} });
   });
 
-  it("#2338 — offers get_change_history only when asked (CHAT_CHANGE_HISTORY_TOOL, off by default)", () => {
+  it("#2338/#2488 — offers get_change_history unless turned off (CHAT_CHANGE_HISTORY_TOOL, on by default)", () => {
     expect(CHAT_CODE_TOOL_NAMES).toContain("get_change_history");
-    expect(getChatCodeTools().map((t) => t.name)).not.toContain("get_change_history");
-    expect(getChatCodeTools({ changeHistory: true }).map((t) => t.name)).toContain(
-      "get_change_history",
-    );
+    vi.stubEnv("CHAT_CHANGE_HISTORY_TOOL", "");
+    try {
+      expect(getChatCodeTools().map((t) => t.name)).toContain("get_change_history");
+      expect(getChatCodeTools({ changeHistory: false }).map((t) => t.name)).not.toContain(
+        "get_change_history",
+      );
+      vi.stubEnv("CHAT_CHANGE_HISTORY_TOOL", "false");
+      expect(getChatCodeTools().map((t) => t.name)).not.toContain("get_change_history");
+      expect(getChatCodeTools({ changeHistory: true }).map((t) => t.name)).toContain(
+        "get_change_history",
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });

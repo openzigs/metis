@@ -23,7 +23,7 @@ import { createChatReadFileSliceTool } from "./chat-read-file-slice.js";
 import { indexStatusTool } from "./index-status.js";
 import { createChatGrepFilesTool, createChatListFilesTool } from "./chat-file-tools.js";
 import { createChangeHistoryTool } from "./change-history.js";
-import { CHANGE_HISTORY_FLAG } from "../../connectors/repo/history-repo.js";
+import { CHANGE_HISTORY_DEFAULT, CHANGE_HISTORY_FLAG } from "../../connectors/repo/history-repo.js";
 import { createFileOutlineTool } from "./file-outline.js";
 import { loadCodeVersions } from "../../code-graph/code-version.js";
 import { getConfigService } from "../../config/config-service.js";
@@ -44,7 +44,7 @@ export type ChatCodeToolDeps = Partial<SearchSymbolsDeps> & {
   codeContext?: boolean;
   /**
    * #2338 — offer `get_change_history`. Defaults to `CHAT_CHANGE_HISTORY_TOOL`
-   * (off until measured: it reads the history repository that flag fetches).
+   * (on since #2488's measurement; it reads the history repository that flag fetches).
    */
   changeHistory?: boolean;
   /**
@@ -112,7 +112,7 @@ export function getChatCodeTools(
     );
   }
   // #2338 — commit history, read locally from the connector's history repository.
-  if (changeHistory ?? cfg.getBool(CHANGE_HISTORY_FLAG, false)) {
+  if (changeHistory ?? cfg.getBool(CHANGE_HISTORY_FLAG, CHANGE_HISTORY_DEFAULT)) {
     tools.push(createChangeHistoryTool());
   }
   return tools;

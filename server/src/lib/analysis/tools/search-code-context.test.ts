@@ -44,6 +44,15 @@ const MOVED = "fedcba9876543210fedcba9876543210fedcba98";
 const CTX = { projectId: "p1" };
 
 let clone: string;
+// #2488 — these tests pin the default tool list, so a developer's own
+// CHAT_CHANGE_HISTORY_TOOL (shell or .env) must not leak in: stub it unset.
+beforeEach(() => {
+  vi.stubEnv("CHAT_CHANGE_HISTORY_TOOL", "");
+});
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
 beforeEach(async () => {
   clone = await mkdtemp(path.join(os.tmpdir(), "code-context-"));
   symbolRows.mockReset();
@@ -724,6 +733,7 @@ describe("offering it in chat", () => {
       "read_file_slice",
       "get_index_status", // #2326, on by default
       SEARCH_CODE_CONTEXT_TOOL,
+      "get_change_history", // #2338, on by default since #2488
     ]);
     // Nameable in an agent's allowlist, and its results are evidence for citations.
     expect(CHAT_CODE_TOOL_NAMES).toContain(SEARCH_CODE_CONTEXT_TOOL);

@@ -40,6 +40,13 @@ import {
 
 /** The flag that offers `get_change_history` in chat AND makes an ingest fetch history for it. */
 export const CHANGE_HISTORY_FLAG = "CHAT_CHANGE_HISTORY_TOOL";
+/**
+ * #2488 — the flag's value when unset: ON. Measured with the paired
+ * `pnpm eval:ba-qa` arms tools-only and tools-history (ADR 0023): it answered
+ * the "when and why" questions and no other question regressed beyond
+ * run-to-run spread. One constant, so the tool and the fetch cannot disagree.
+ */
+export const CHANGE_HISTORY_DEFAULT = true;
 /** The ref the indexed commit is fetched into. */
 export const HISTORY_REF = "refs/metis/indexed";
 /** ADR 0023's bound: 365 days, by committer date. */

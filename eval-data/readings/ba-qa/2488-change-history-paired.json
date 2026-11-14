@@ -1,0 +1,3416 @@
+{
+  "issue": 2488,
+  "measuredCommit": "8daf49cdeeca6539ca4dab216f3dacf641d284a0",
+  "fixture": {
+    "id": "baqa-01-acme-reader",
+    "version": 3
+  },
+  "arms": {
+    "tools-only": "get_change_history off",
+    "tools-history": "get_change_history on"
+  },
+  "unscored": {
+    "note": "The judge's reply could not be parsed, so the question is left out of that run's rates (not scored as zero).",
+    "off1": ["S5"],
+    "off3": ["S3"]
+  },
+  "runs": [
+    {
+      "label": "off1",
+      "runId": "2026-11-14T17-50-51-350Z-tools-only",
+      "model": "claude-sonnet-5-5",
+      "judgeModel": "claude-sonnet-5-5",
+      "arm": "tools-only",
+      "flags": {
+        "CHAT_CODE_SEARCH_TOOLS": "1",
+        "CHAT_FUSED_CODE_RETRIEVAL": "0",
+        "RAG_RERANK": "0",
+        "CHAT_CODE_SEARCH_PRIMITIVES": "0",
+        "CHAT_CODE_CONTEXT_TOOL": "0",
+        "CHAT_CHANGE_HISTORY_TOOL": "0"
+      },
+      "spentUsd": 1.08622,
+      "summary": {
+        "correctness": 0.5127450980392156,
+        "fullyCorrect": {
+          "n": 5,
+          "of": 17,
+          "rate": 0.29411764705882354
+        },
+        "citationPrecisionLines": {
+          "n": 71,
+          "of": 71,
+          "rate": 1
+        },
+        "citationPrecisionFile": {
+          "n": 5,
+          "of": 14,
+          "rate": 0.35714285714285715
+        },
+        "citationRecall": {
+          "n": 17,
+          "of": 48,
+          "rate": 0.3541666666666667
+        },
+        "falseAbstention": {
+          "n": 6,
+          "of": 17,
+          "rate": 0.35294117647058826
+        }
+      },
+      "questions": [
+        {
+          "id": "S1",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 3,
+            "total": 6
+          },
+          "toolCalls": 5,
+          "toolNames": [
+            "search_code_graph",
+            "search_code_graph",
+            "read_file_slice",
+            "search_code_graph",
+            "read_file_slice"
+          ],
+          "turnsUsed": 4,
+          "truncatedToolResults": 1,
+          "turnsExhausted": false,
+          "promptTokens": 47979,
+          "costUsd": 0.057654500000000004
+        },
+        {
+          "id": "S2",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 4,
+            "contradicted": 1,
+            "missing": 0,
+            "total": 5
+          },
+          "toolCalls": 7,
+          "toolNames": [
+            "search_code_graph",
+            "search_code_symbols",
+            "read_file_slice",
+            "read_file_slice",
+            "search_code_graph",
+            "search_code_symbols",
+            "read_file_slice"
+          ],
+          "turnsUsed": 4,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 48569,
+          "costUsd": 0.05841429999999999
+        },
+        {
+          "id": "S3",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 4,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 4
+          },
+          "toolCalls": 11,
+          "toolNames": [
+            "search_code_graph",
+            "search_code_symbols",
+            "search_code_graph",
+            "read_file_slice",
+            "read_file_slice",
+            "search_code_symbols",
+            "search_code_graph",
+            "search_code_graph",
+            "search_code_graph",
+            "read_file_slice",
+            "search_code_graph"
+          ],
+          "turnsUsed": 6,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 97657,
+          "costUsd": 0.0779251
+        },
+        {
+          "id": "S4",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "toolCalls": 5,
+          "toolNames": [
+            "search_code_symbols",
+            "search_code_graph",
+            "search_code_graph",
+            "read_file_slice",
+            "read_file_slice"
+          ],
+          "turnsUsed": 3,
+          "truncatedToolResults": 1,
+          "turnsExhausted": false,
+          "promptTokens": 35545,
+          "costUsd": 0.04948169999999999
+        },
+        {
+          "id": "S5",
+          "expect": "answer",
+          "behaviour": null,
+          "facts": null,
+          "toolCalls": 3,
+          "toolNames": ["search_code_graph", "search_code_graph", "read_file_slice"],
+          "turnsUsed": 4,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 26333,
+          "costUsd": 0.0315075
+        },
+        {
+          "id": "S6",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 4
+          },
+          "toolCalls": 2,
+          "toolNames": ["search_code_graph", "search_code_graph"],
+          "turnsUsed": 2,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 14565,
+          "costUsd": 0.0283319
+        },
+        {
+          "id": "S7",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "toolCalls": 11,
+          "toolNames": [
+            "search_code_symbols",
+            "search_code_graph",
+            "search_code_symbols",
+            "search_code_graph",
+            "search_code_symbols",
+            "read_file_slice",
+            "search_code_graph",
+            "read_file_slice",
+            "search_code_symbols",
+            "search_code_graph",
+            "read_file_slice"
+          ],
+          "turnsUsed": 6,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 110217,
+          "costUsd": 0.08563950000000001
+        },
+        {
+          "id": "S8",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "toolCalls": 7,
+          "toolNames": [
+            "search_code_graph",
+            "search_code_symbols",
+            "search_code_graph",
+            "read_file_slice",
+            "read_file_slice",
+            "search_code_symbols",
+            "search_code_graph"
+          ],
+          "turnsUsed": 4,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 47651,
+          "costUsd": 0.057794099999999994
+        },
+        {
+          "id": "S9",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "toolCalls": 4,
+          "toolNames": [
+            "search_code_graph",
+            "search_code_graph",
+            "read_file_slice",
+            "search_code_graph"
+          ],
+          "turnsUsed": 3,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 25417,
+          "costUsd": 0.0368509
+        },
+        {
+          "id": "S10",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 3,
+            "total": 3
+          },
+          "toolCalls": 11,
+          "toolNames": [
+            "search_code_graph",
+            "search_code_symbols",
+            "read_file_slice",
+            "read_file_slice",
+            "read_file_slice",
+            "read_file_slice",
+            "search_code_graph",
+            "search_code_graph",
+            "read_file_slice",
+            "search_code_symbols",
+            "read_file_slice"
+          ],
+          "turnsUsed": 6,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 93118,
+          "costUsd": 0.0833732
+        },
+        {
+          "id": "S11",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 2,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 3
+          },
+          "toolCalls": 5,
+          "toolNames": [
+            "search_code_symbols",
+            "search_code_graph",
+            "get_index_status",
+            "read_file_slice",
+            "search_code_symbols"
+          ],
+          "turnsUsed": 3,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 33097,
+          "costUsd": 0.048494899999999994
+        },
+        {
+          "id": "M1",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 7,
+            "total": 7
+          },
+          "toolCalls": 0,
+          "toolNames": [],
+          "turnsUsed": 1,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 512,
+          "costUsd": 0.005094
+        },
+        {
+          "id": "M2",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 2,
+            "total": 2
+          },
+          "toolCalls": 0,
+          "toolNames": [],
+          "turnsUsed": 1,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 518,
+          "costUsd": 0.006553
+        },
+        {
+          "id": "M3",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 3,
+            "total": 3
+          },
+          "toolCalls": 0,
+          "toolNames": [],
+          "turnsUsed": 1,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 522,
+          "costUsd": 0.006903000000000001
+        },
+        {
+          "id": "M4",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 2,
+            "total": 2
+          },
+          "toolCalls": 0,
+          "toolNames": [],
+          "turnsUsed": 1,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 519,
+          "costUsd": 0.0057255
+        },
+        {
+          "id": "A1",
+          "expect": "follow-up",
+          "behaviour": "follow-up",
+          "facts": null,
+          "toolCalls": 0,
+          "toolNames": [],
+          "turnsUsed": 1,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 495,
+          "costUsd": 0.00504
+        },
+        {
+          "id": "A2",
+          "expect": "follow-up",
+          "behaviour": "follow-up",
+          "facts": null,
+          "toolCalls": 0,
+          "toolNames": [],
+          "turnsUsed": 1,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 493,
+          "costUsd": 0.0035960000000000002
+        },
+        {
+          "id": "A3",
+          "expect": "follow-up",
+          "behaviour": "follow-up",
+          "facts": null,
+          "toolCalls": 2,
+          "toolNames": ["search_code_symbols", "get_index_status"],
+          "turnsUsed": 2,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 21757,
+          "costUsd": 0.040215499999999994
+        },
+        {
+          "id": "A4",
+          "expect": "follow-up",
+          "behaviour": "follow-up",
+          "facts": null,
+          "toolCalls": 0,
+          "toolNames": [],
+          "turnsUsed": 1,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 495,
+          "costUsd": 0.00395
+        },
+        {
+          "id": "U1",
+          "expect": "abstain",
+          "behaviour": "abstain",
+          "facts": null,
+          "toolCalls": 0,
+          "toolNames": [],
+          "turnsUsed": 1,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 513,
+          "costUsd": 0.003516
+        },
+        {
+          "id": "U2",
+          "expect": "abstain",
+          "behaviour": "abstain",
+          "facts": null,
+          "toolCalls": 0,
+          "toolNames": [],
+          "turnsUsed": 1,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 508,
+          "costUsd": 0.004486
+        },
+        {
+          "id": "U3",
+          "expect": "abstain",
+          "behaviour": "abstain",
+          "facts": null,
+          "toolCalls": 3,
+          "toolNames": ["search_code_symbols", "get_index_status", "read_file_slice"],
+          "turnsUsed": 3,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 30595,
+          "costUsd": 0.03569069999999999
+        },
+        {
+          "id": "U4",
+          "expect": "abstain",
+          "behaviour": "abstain",
+          "facts": null,
+          "toolCalls": 1,
+          "toolNames": ["get_index_status"],
+          "turnsUsed": 2,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 10247,
+          "costUsd": 0.020279699999999998
+        },
+        {
+          "id": "H1",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 1,
+            "contradicted": 0,
+            "missing": 2,
+            "total": 3
+          },
+          "toolCalls": 10,
+          "toolNames": [
+            "search_code_symbols",
+            "get_index_status",
+            "search_code_symbols",
+            "search_code_graph",
+            "read_file_slice",
+            "search_code_symbols",
+            "search_code_symbols",
+            "search_code_graph",
+            "search_code_graph",
+            "search_code_symbols"
+          ],
+          "turnsUsed": 6,
+          "truncatedToolResults": 1,
+          "turnsExhausted": false,
+          "promptTokens": 90134,
+          "costUsd": 0.0759512
+        },
+        {
+          "id": "H2",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 2,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 3
+          },
+          "toolCalls": 7,
+          "toolNames": [
+            "search_code_symbols",
+            "search_code_graph",
+            "get_index_status",
+            "search_code_symbols",
+            "search_code_graph",
+            "read_file_slice",
+            "search_code_symbols"
+          ],
+          "turnsUsed": 5,
+          "truncatedToolResults": 1,
+          "turnsExhausted": false,
+          "promptTokens": 68518,
+          "costUsd": 0.0682026
+        },
+        {
+          "id": "H3",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 3,
+            "total": 3
+          },
+          "toolCalls": 3,
+          "toolNames": ["search_code_symbols", "get_index_status", "search_code_symbols"],
+          "turnsUsed": 3,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 32616,
+          "costUsd": 0.044167200000000004
+        }
+      ]
+    },
+    {
+      "label": "on1",
+      "runId": "2026-11-14T17-55-59-279Z-tools-history",
+      "model": "claude-sonnet-5-5",
+      "judgeModel": "claude-sonnet-5-5",
+      "arm": "tools-history",
+      "flags": {
+        "CHAT_CODE_SEARCH_TOOLS": "1",
+        "CHAT_FUSED_CODE_RETRIEVAL": "0",
+        "RAG_RERANK": "0",
+        "CHAT_CODE_SEARCH_PRIMITIVES": "0",
+        "CHAT_CODE_CONTEXT_TOOL": "0",
+        "CHAT_CHANGE_HISTORY_TOOL": "1"
+      },
+      "spentUsd": 1.163393,
+      "summary": {
+        "correctness": 0.6370370370370371,
+        "fullyCorrect": {
+          "n": 7,
+          "of": 18,
+          "rate": 0.3888888888888889
+        },
+        "citationPrecisionLines": {
+          "n": 101,
+          "of": 102,
+          "rate": 0.9901960784313726
+        },
+        "citationPrecisionFile": {
+          "n": 4,
+          "of": 13,
+          "rate": 0.3076923076923077
+        },
+        "citationRecall": {
+          "n": 21,
+          "of": 50,
+          "rate": 0.42
+        },
+        "falseAbstention": {
+          "n": 4,
+          "of": 18,
+          "rate": 0.2222222222222222
+        }
+      },
+      "questions": [
+        {
+          "id": "S1",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 3,
+            "total": 6
+          },
+          "toolCalls": 5,
+          "toolNames": [
+            "search_code_graph",
+            "read_file_slice",
+            "search_code_graph",
+            "search_code_graph",
+            "read_file_slice"
+          ],
+          "turnsUsed": 4,
+          "truncatedToolResults": 1,
+          "turnsExhausted": false,
+          "promptTokens": 48337,
+          "costUsd": 0.0579283
+        },
+        {
+          "id": "S2",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 4,
+            "contradicted": 1,
+            "missing": 0,
+            "total": 5
+          },
+          "toolCalls": 5,
+          "toolNames": [
+            "search_code_graph",
+            "search_code_symbols",
+            "read_file_slice",
+            "read_file_slice",
+            "search_code_symbols"
+          ],
+          "turnsUsed": 3,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 34043,
+          "costUsd": 0.052417099999999994
+        },
+        {
+          "id": "S3",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 4,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 4
+          },
+          "toolCalls": 10,
+          "toolNames": [
+            "search_code_symbols",
+            "search_code_graph",
+            "search_code_graph",
+            "search_code_symbols",
+            "search_code_symbols",
+            "read_file_slice",
+            "read_file_slice",
+            "read_file_slice",
+            "read_file_slice",
+            "search_code_symbols"
+          ],
+          "turnsUsed": 5,
+          "truncatedToolResults": 1,
+          "turnsExhausted": false,
+          "promptTokens": 87654,
+          "costUsd": 0.09079899999999999
+        },
+        {
+          "id": "S4",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "toolCalls": 7,
+          "toolNames": [
+            "search_code_symbols",
+            "search_code_graph",
+            "search_code_graph",
+            "read_file_slice",
+            "read_file_slice",
+            "search_code_graph",
+            "search_code_graph"
+          ],
+          "turnsUsed": 4,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 51760,
+          "costUsd": 0.0557706
+        },
+        {
+          "id": "S5",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 4
+          },
+          "toolCalls": 4,
+          "toolNames": [
+            "search_code_graph",
+            "search_code_symbols",
+            "read_file_slice",
+            "read_file_slice"
+          ],
+          "turnsUsed": 4,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 29166,
+          "costUsd": 0.035318800000000004
+        },
+        {
+          "id": "S6",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 4
+          },
+          "toolCalls": 2,
+          "toolNames": ["search_code_graph", "search_code_graph"],
+          "turnsUsed": 2,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 15310,
+          "costUsd": 0.0277644
+        },
+        {
+          "id": "S7",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 2,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 3
+          },
+          "toolCalls": 8,
+          "toolNames": [
+            "search_code_symbols",
+            "search_code_graph",
+            "search_code_graph",
+            "search_code_symbols",
+            "read_file_slice",
+            "search_code_graph",
+            "read_file_slice",
+            "search_code_symbols"
+          ],
+          "turnsUsed": 5,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 71257,
+          "costUsd": 0.0656937
+        },
+        {
+          "id": "S8",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "toolCalls": 13,
+          "toolNames": [
+            "search_code_graph",
+            "search_code_symbols",
+            "search_code_graph",
+            "read_file_slice",
+            "search_code_symbols",
+            "search_code_graph",
+            "search_code_graph",
+            "read_file_slice",
+            "read_file_slice",
+            "read_file_slice",
+            "search_code_graph",
+            "search_code_graph",
+            "read_file_slice"
+          ],
+          "turnsUsed": 6,
+          "truncatedToolResults": 0,
+          "turnsExhausted": true,
+          "promptTokens": 113646,
+          "costUsd": 0.1067201
+        },
+        {
+          "id": "S9",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 2,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 3
+          },
+          "toolCalls": 3,
+          "toolNames": ["search_code_graph", "search_code_graph", "read_file_slice"],
+          "turnsUsed": 3,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 26212,
+          "costUsd": 0.035423199999999995
+        },
+        {
+          "id": "S10",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 1,
+            "contradicted": 0,
+            "missing": 2,
+            "total": 3
+          },
+          "toolCalls": 17,
+          "toolNames": [
+            "search_code_graph",
+            "search_code_graph",
+            "search_code_symbols",
+            "read_file_slice",
+            "read_file_slice",
+            "read_file_slice",
+            "search_code_graph",
+            "search_code_symbols",
+            "read_file_slice",
+            "search_code_graph",
+            "read_file_slice",
+            "read_file_slice",
+            "read_file_slice",
+            "read_file_slice",
+            "read_file_slice",
+            "read_file_slice",
+            "search_code_graph"
+          ],
+          "turnsUsed": 6,
+          "truncatedToolResults": 2,
+          "turnsExhausted": true,
+          "promptTokens": 136587,
+          "costUsd": 0.16383530000000002
+        },
+        {
+          "id": "S11",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "toolCalls": 4,
+          "toolNames": [
+            "search_code_symbols",
+            "search_code_graph",
+            "search_code_graph",
+            "read_file_slice"
+          ],
+          "turnsUsed": 3,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 31132,
+          "costUsd": 0.043788
+        },
+        {
+          "id": "M1",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 7,
+            "total": 7
+          },
+          "toolCalls": 0,
+          "toolNames": [],
+          "turnsUsed": 1,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 512,
+          "costUsd": 0.005434
+        },
+        {
+          "id": "M2",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 2,
+            "total": 2
+          },
+          "toolCalls": 0,
+          "toolNames": [],
+          "turnsUsed": 1,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 518,
+          "costUsd": 0.0067030000000000015
+        },
+        {
+          "id": "M3",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 3,
+            "total": 3
+          },
+          "toolCalls": 0,
+          "toolNames": [],
+          "turnsUsed": 1,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 522,
+          "costUsd": 0.007073
+        },
+        {
+          "id": "M4",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 2,
+            "total": 2
+          },
+          "toolCalls": 0,
+          "toolNames": [],
+          "turnsUsed": 1,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 519,
+          "costUsd": 0.0057555
+        },
+        {
+          "id": "A1",
+          "expect": "follow-up",
+          "behaviour": "follow-up",
+          "facts": null,
+          "toolCalls": 0,
+          "toolNames": [],
+          "turnsUsed": 1,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 495,
+          "costUsd": 0.0047599999999999995
+        },
+        {
+          "id": "A2",
+          "expect": "follow-up",
+          "behaviour": "follow-up",
+          "facts": null,
+          "toolCalls": 0,
+          "toolNames": [],
+          "turnsUsed": 1,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 493,
+          "costUsd": 0.0034860000000000004
+        },
+        {
+          "id": "A3",
+          "expect": "follow-up",
+          "behaviour": "follow-up",
+          "facts": null,
+          "toolCalls": 0,
+          "toolNames": [],
+          "turnsUsed": 1,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 10014,
+          "costUsd": 0.030623
+        },
+        {
+          "id": "A4",
+          "expect": "follow-up",
+          "behaviour": "follow-up",
+          "facts": null,
+          "toolCalls": 0,
+          "toolNames": [],
+          "turnsUsed": 1,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 495,
+          "costUsd": 0.00423
+        },
+        {
+          "id": "U1",
+          "expect": "abstain",
+          "behaviour": "abstain",
+          "facts": null,
+          "toolCalls": 0,
+          "toolNames": [],
+          "turnsUsed": 1,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 513,
+          "costUsd": 0.003936
+        },
+        {
+          "id": "U2",
+          "expect": "abstain",
+          "behaviour": "abstain",
+          "facts": null,
+          "toolCalls": 0,
+          "toolNames": [],
+          "turnsUsed": 1,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 508,
+          "costUsd": 0.0051259999999999995
+        },
+        {
+          "id": "U3",
+          "expect": "abstain",
+          "behaviour": "abstain",
+          "facts": null,
+          "toolCalls": 4,
+          "toolNames": [
+            "read_file_slice",
+            "search_code_symbols",
+            "search_code_symbols",
+            "get_index_status"
+          ],
+          "turnsUsed": 3,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 31831,
+          "costUsd": 0.0393131
+        },
+        {
+          "id": "U4",
+          "expect": "abstain",
+          "behaviour": "abstain",
+          "facts": null,
+          "toolCalls": 2,
+          "toolNames": ["search_code_symbols", "get_index_status"],
+          "turnsUsed": 2,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 11737,
+          "costUsd": 0.0219747
+        },
+        {
+          "id": "H1",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "toolCalls": 6,
+          "toolNames": [
+            "search_code_graph",
+            "search_code_symbols",
+            "search_code_graph",
+            "get_change_history",
+            "search_code_symbols",
+            "get_change_history"
+          ],
+          "turnsUsed": 5,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 58313,
+          "costUsd": 0.0526537
+        },
+        {
+          "id": "H2",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "toolCalls": 2,
+          "toolNames": ["get_change_history", "search_code_graph"],
+          "turnsUsed": 2,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 17509,
+          "costUsd": 0.0367687
+        },
+        {
+          "id": "H3",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "toolCalls": 2,
+          "toolNames": ["get_change_history", "get_change_history"],
+          "turnsUsed": 2,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 19923,
+          "costUsd": 0.0355833
+        }
+      ]
+    },
+    {
+      "label": "off2",
+      "runId": "2026-11-14T18-01-09-885Z-tools-only",
+      "model": "claude-sonnet-5-5",
+      "judgeModel": "claude-sonnet-5-5",
+      "arm": "tools-only",
+      "flags": {
+        "CHAT_CODE_SEARCH_TOOLS": "1",
+        "CHAT_FUSED_CODE_RETRIEVAL": "0",
+        "RAG_RERANK": "0",
+        "CHAT_CODE_SEARCH_PRIMITIVES": "0",
+        "CHAT_CODE_CONTEXT_TOOL": "0",
+        "CHAT_CHANGE_HISTORY_TOOL": "0"
+      },
+      "spentUsd": 1.233176,
+      "summary": {
+        "correctness": 0.5629629629629629,
+        "fullyCorrect": {
+          "n": 5,
+          "of": 18,
+          "rate": 0.2777777777777778
+        },
+        "citationPrecisionLines": {
+          "n": 89,
+          "of": 90,
+          "rate": 0.9888888888888889
+        },
+        "citationPrecisionFile": {
+          "n": 2,
+          "of": 14,
+          "rate": 0.14285714285714285
+        },
+        "citationRecall": {
+          "n": 23,
+          "of": 50,
+          "rate": 0.46
+        },
+        "falseAbstention": {
+          "n": 6,
+          "of": 18,
+          "rate": 0.3333333333333333
+        }
+      },
+      "questions": [
+        {
+          "id": "S1",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 3,
+            "total": 6
+          },
+          "toolCalls": 3,
+          "toolNames": ["search_code_graph", "read_file_slice", "search_code_graph"],
+          "turnsUsed": 3,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 31184,
+          "costUsd": 0.0437472
+        },
+        {
+          "id": "S2",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 4,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 5
+          },
+          "toolCalls": 6,
+          "toolNames": [
+            "search_code_graph",
+            "search_code_symbols",
+            "read_file_slice",
+            "search_code_graph",
+            "search_code_symbols",
+            "read_file_slice"
+          ],
+          "turnsUsed": 4,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 47142,
+          "costUsd": 0.05446960000000001
+        },
+        {
+          "id": "S3",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 4,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 4
+          },
+          "toolCalls": 11,
+          "toolNames": [
+            "search_code_graph",
+            "search_code_symbols",
+            "search_code_graph",
+            "read_file_slice",
+            "search_code_symbols",
+            "search_code_graph",
+            "search_code_symbols",
+            "read_file_slice",
+            "search_code_graph",
+            "read_file_slice",
+            "read_file_slice"
+          ],
+          "turnsUsed": 6,
+          "truncatedToolResults": 0,
+          "turnsExhausted": true,
+          "promptTokens": 116207,
+          "costUsd": 0.10565890000000001
+        },
+        {
+          "id": "S4",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "toolCalls": 5,
+          "toolNames": [
+            "search_code_symbols",
+            "search_code_graph",
+            "search_code_graph",
+            "read_file_slice",
+            "read_file_slice"
+          ],
+          "turnsUsed": 3,
+          "truncatedToolResults": 1,
+          "turnsExhausted": false,
+          "promptTokens": 35545,
+          "costUsd": 0.048441700000000004
+        },
+        {
+          "id": "S5",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 4
+          },
+          "toolCalls": 4,
+          "toolNames": [
+            "search_code_graph",
+            "search_code_symbols",
+            "read_file_slice",
+            "read_file_slice"
+          ],
+          "turnsUsed": 4,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 28387,
+          "costUsd": 0.0349385
+        },
+        {
+          "id": "S6",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 4
+          },
+          "toolCalls": 2,
+          "toolNames": ["search_code_graph", "search_code_graph"],
+          "turnsUsed": 2,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 14567,
+          "costUsd": 0.027056900000000002
+        },
+        {
+          "id": "S7",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "toolCalls": 10,
+          "toolNames": [
+            "search_code_graph",
+            "search_code_symbols",
+            "search_code_symbols",
+            "search_code_graph",
+            "read_file_slice",
+            "read_file_slice",
+            "search_code_symbols",
+            "read_file_slice",
+            "search_code_graph",
+            "read_file_slice"
+          ],
+          "turnsUsed": 6,
+          "truncatedToolResults": 0,
+          "turnsExhausted": true,
+          "promptTokens": 116853,
+          "costUsd": 0.0976852
+        },
+        {
+          "id": "S8",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 2,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 3
+          },
+          "toolCalls": 7,
+          "toolNames": [
+            "search_code_symbols",
+            "search_code_symbols",
+            "read_file_slice",
+            "search_code_graph",
+            "read_file_slice",
+            "search_code_graph",
+            "read_file_slice"
+          ],
+          "turnsUsed": 5,
+          "truncatedToolResults": 1,
+          "turnsExhausted": false,
+          "promptTokens": 69723,
+          "costUsd": 0.061801499999999995
+        },
+        {
+          "id": "S9",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "toolCalls": 4,
+          "toolNames": [
+            "search_code_graph",
+            "search_code_graph",
+            "read_file_slice",
+            "read_file_slice"
+          ],
+          "turnsUsed": 3,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 25799,
+          "costUsd": 0.0377035
+        },
+        {
+          "id": "S10",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "toolCalls": 17,
+          "toolNames": [
+            "search_code_graph",
+            "search_code_symbols",
+            "read_file_slice",
+            "read_file_slice",
+            "read_file_slice",
+            "search_code_graph",
+            "read_file_slice",
+            "search_code_graph",
+            "search_code_graph",
+            "search_code_symbols",
+            "read_file_slice",
+            "read_file_slice",
+            "search_code_symbols",
+            "search_code_graph",
+            "search_code_graph",
+            "read_file_slice",
+            "read_file_slice"
+          ],
+          "turnsUsed": 6,
+          "truncatedToolResults": 1,
+          "turnsExhausted": true,
+          "promptTokens": 139135,
+          "costUsd": 0.1518063
+        },
+        {
+          "id": "S11",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 2,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 3
+          },
+          "toolCalls": 6,
+          "toolNames": [
+            "search_code_symbols",
+            "search_code_graph",
+            "get_index_status",
+            "read_file_slice",
+            "search_code_graph",
+            "search_code_symbols"
+          ],
+          "turnsUsed": 4,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 45957,
+          "costUsd": 0.053166700000000004
+        },
+        {
+          "id": "M1",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 7,
+            "total": 7
+          },
+          "toolCalls": 0,
+          "toolNames": [],
+          "turnsUsed": 1,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 512,
+          "costUsd": 0.005464
+        },
+        {
+          "id": "M2",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 2,
+            "total": 2
+          },
+          "toolCalls": 0,
+          "toolNames": [],
+          "turnsUsed": 1,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 518,
+          "costUsd": 0.008033000000000002
+        },
+        {
+          "id": "M3",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 3,
+            "total": 3
+          },
+          "toolCalls": 0,
+          "toolNames": [],
+          "turnsUsed": 1,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 522,
+          "costUsd": 0.006823000000000001
+        },
+        {
+          "id": "M4",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 2,
+            "total": 2
+          },
+          "toolCalls": 0,
+          "toolNames": [],
+          "turnsUsed": 1,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 519,
+          "costUsd": 0.0050955
+        },
+        {
+          "id": "A1",
+          "expect": "follow-up",
+          "behaviour": "follow-up",
+          "facts": null,
+          "toolCalls": 0,
+          "toolNames": [],
+          "turnsUsed": 1,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 495,
+          "costUsd": 0.00448
+        },
+        {
+          "id": "A2",
+          "expect": "follow-up",
+          "behaviour": "follow-up",
+          "facts": null,
+          "toolCalls": 0,
+          "toolNames": [],
+          "turnsUsed": 1,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 493,
+          "costUsd": 0.004256
+        },
+        {
+          "id": "A3",
+          "expect": "follow-up",
+          "behaviour": "follow-up",
+          "facts": null,
+          "toolCalls": 2,
+          "toolNames": ["search_code_symbols", "search_code_graph"],
+          "turnsUsed": 2,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 22691,
+          "costUsd": 0.0418405
+        },
+        {
+          "id": "A4",
+          "expect": "follow-up",
+          "behaviour": "follow-up",
+          "facts": null,
+          "toolCalls": 0,
+          "toolNames": [],
+          "turnsUsed": 1,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 495,
+          "costUsd": 0.004070000000000001
+        },
+        {
+          "id": "U1",
+          "expect": "abstain",
+          "behaviour": "abstain",
+          "facts": null,
+          "toolCalls": 0,
+          "toolNames": [],
+          "turnsUsed": 1,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 513,
+          "costUsd": 0.003906
+        },
+        {
+          "id": "U2",
+          "expect": "abstain",
+          "behaviour": "abstain",
+          "facts": null,
+          "toolCalls": 0,
+          "toolNames": [],
+          "turnsUsed": 1,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 508,
+          "costUsd": 0.005385999999999999
+        },
+        {
+          "id": "U3",
+          "expect": "abstain",
+          "behaviour": "abstain",
+          "facts": null,
+          "toolCalls": 4,
+          "toolNames": [
+            "search_code_symbols",
+            "get_index_status",
+            "read_file_slice",
+            "search_code_symbols"
+          ],
+          "turnsUsed": 4,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 43562,
+          "costUsd": 0.04313319999999999
+        },
+        {
+          "id": "U4",
+          "expect": "abstain",
+          "behaviour": "abstain",
+          "facts": null,
+          "toolCalls": 2,
+          "toolNames": ["get_index_status", "search_code_symbols"],
+          "turnsUsed": 2,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 11119,
+          "costUsd": 0.0236497
+        },
+        {
+          "id": "H1",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 1,
+            "contradicted": 0,
+            "missing": 2,
+            "total": 3
+          },
+          "toolCalls": 10,
+          "toolNames": [
+            "search_code_symbols",
+            "get_index_status",
+            "search_code_symbols",
+            "search_code_graph",
+            "search_code_symbols",
+            "search_code_symbols",
+            "search_code_symbols",
+            "search_code_graph",
+            "read_file_slice",
+            "search_code_symbols"
+          ],
+          "turnsUsed": 6,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 96736,
+          "costUsd": 0.083927
+        },
+        {
+          "id": "H2",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 2,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 3
+          },
+          "toolCalls": 7,
+          "toolNames": [
+            "search_code_symbols",
+            "search_code_graph",
+            "search_code_symbols",
+            "search_code_symbols",
+            "get_index_status",
+            "read_file_slice",
+            "search_code_symbols"
+          ],
+          "turnsUsed": 5,
+          "truncatedToolResults": 1,
+          "turnsExhausted": false,
+          "promptTokens": 74404,
+          "costUsd": 0.0697536
+        },
+        {
+          "id": "H3",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 3,
+            "total": 3
+          },
+          "toolCalls": 4,
+          "toolNames": [
+            "search_code_symbols",
+            "get_index_status",
+            "search_code_symbols",
+            "read_file_slice"
+          ],
+          "turnsUsed": 3,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 34022,
+          "costUsd": 0.047774199999999996
+        }
+      ]
+    },
+    {
+      "label": "on2",
+      "runId": "2026-11-14T18-06-50-373Z-tools-history",
+      "model": "claude-sonnet-5-5",
+      "judgeModel": "claude-sonnet-5-5",
+      "arm": "tools-history",
+      "flags": {
+        "CHAT_CODE_SEARCH_TOOLS": "1",
+        "CHAT_FUSED_CODE_RETRIEVAL": "0",
+        "RAG_RERANK": "0",
+        "CHAT_CODE_SEARCH_PRIMITIVES": "0",
+        "CHAT_CODE_CONTEXT_TOOL": "0",
+        "CHAT_CHANGE_HISTORY_TOOL": "1"
+      },
+      "spentUsd": 1.105817,
+      "summary": {
+        "correctness": 0.6,
+        "fullyCorrect": {
+          "n": 6,
+          "of": 18,
+          "rate": 0.3333333333333333
+        },
+        "citationPrecisionLines": {
+          "n": 84,
+          "of": 86,
+          "rate": 0.9767441860465116
+        },
+        "citationPrecisionFile": {
+          "n": 3,
+          "of": 11,
+          "rate": 0.2727272727272727
+        },
+        "citationRecall": {
+          "n": 21,
+          "of": 50,
+          "rate": 0.42
+        },
+        "falseAbstention": {
+          "n": 3,
+          "of": 18,
+          "rate": 0.16666666666666666
+        }
+      },
+      "questions": [
+        {
+          "id": "S1",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 3,
+            "total": 6
+          },
+          "toolCalls": 7,
+          "toolNames": [
+            "search_code_graph",
+            "read_file_slice",
+            "search_code_graph",
+            "search_code_symbols",
+            "search_code_graph",
+            "read_file_slice",
+            "read_file_slice"
+          ],
+          "turnsUsed": 5,
+          "truncatedToolResults": 1,
+          "turnsExhausted": false,
+          "promptTokens": 64949,
+          "costUsd": 0.06819130000000001
+        },
+        {
+          "id": "S2",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 4,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 5
+          },
+          "toolCalls": 5,
+          "toolNames": [
+            "search_code_graph",
+            "search_code_symbols",
+            "read_file_slice",
+            "search_code_graph",
+            "search_code_symbols"
+          ],
+          "turnsUsed": 3,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 33124,
+          "costUsd": 0.050126
+        },
+        {
+          "id": "S3",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 4,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 4
+          },
+          "toolCalls": 7,
+          "toolNames": [
+            "search_code_symbols",
+            "search_code_graph",
+            "search_code_graph",
+            "search_code_graph",
+            "read_file_slice",
+            "read_file_slice",
+            "search_code_symbols"
+          ],
+          "turnsUsed": 4,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 56157,
+          "costUsd": 0.0637919
+        },
+        {
+          "id": "S4",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "toolCalls": 7,
+          "toolNames": [
+            "search_code_symbols",
+            "search_code_graph",
+            "search_code_graph",
+            "read_file_slice",
+            "read_file_slice",
+            "search_code_graph",
+            "search_code_graph"
+          ],
+          "turnsUsed": 4,
+          "truncatedToolResults": 1,
+          "turnsExhausted": false,
+          "promptTokens": 51912,
+          "costUsd": 0.054816199999999995
+        },
+        {
+          "id": "S5",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 4
+          },
+          "toolCalls": 3,
+          "toolNames": ["search_code_graph", "search_code_symbols", "read_file_slice"],
+          "turnsUsed": 4,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 28446,
+          "costUsd": 0.031672
+        },
+        {
+          "id": "S6",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 4
+          },
+          "toolCalls": 2,
+          "toolNames": ["search_code_graph", "search_code_graph"],
+          "turnsUsed": 2,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 15322,
+          "costUsd": 0.0288944
+        },
+        {
+          "id": "S7",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "toolCalls": 9,
+          "toolNames": [
+            "search_code_symbols",
+            "search_code_graph",
+            "search_code_graph",
+            "search_code_symbols",
+            "read_file_slice",
+            "read_file_slice",
+            "search_code_graph",
+            "search_code_symbols",
+            "read_file_slice"
+          ],
+          "turnsUsed": 5,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 84974,
+          "costUsd": 0.0782782
+        },
+        {
+          "id": "S8",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "toolCalls": 10,
+          "toolNames": [
+            "search_code_symbols",
+            "search_code_symbols",
+            "read_file_slice",
+            "read_file_slice",
+            "search_code_graph",
+            "search_code_symbols",
+            "search_code_graph",
+            "search_code_graph",
+            "read_file_slice",
+            "read_file_slice"
+          ],
+          "turnsUsed": 5,
+          "truncatedToolResults": 1,
+          "turnsExhausted": false,
+          "promptTokens": 75884,
+          "costUsd": 0.07202360000000001
+        },
+        {
+          "id": "S9",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 2,
+            "contradicted": 1,
+            "missing": 0,
+            "total": 3
+          },
+          "toolCalls": 4,
+          "toolNames": [
+            "search_code_graph",
+            "search_code_graph",
+            "read_file_slice",
+            "search_code_graph"
+          ],
+          "turnsUsed": 3,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 26462,
+          "costUsd": 0.037281
+        },
+        {
+          "id": "S10",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 3,
+            "total": 3
+          },
+          "toolCalls": 16,
+          "toolNames": [
+            "search_code_symbols",
+            "search_code_graph",
+            "search_code_graph",
+            "read_file_slice",
+            "read_file_slice",
+            "read_file_slice",
+            "search_code_symbols",
+            "search_code_graph",
+            "search_code_graph",
+            "search_code_symbols",
+            "read_file_slice",
+            "read_file_slice",
+            "read_file_slice",
+            "read_file_slice",
+            "read_file_slice",
+            "search_code_graph"
+          ],
+          "turnsUsed": 6,
+          "truncatedToolResults": 2,
+          "turnsExhausted": true,
+          "promptTokens": 135106,
+          "costUsd": 0.15548410000000001
+        },
+        {
+          "id": "S11",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 2,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 3
+          },
+          "toolCalls": 6,
+          "toolNames": [
+            "search_code_symbols",
+            "search_code_graph",
+            "read_file_slice",
+            "search_code_graph",
+            "search_code_graph",
+            "read_file_slice"
+          ],
+          "turnsUsed": 5,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 59676,
+          "costUsd": 0.051785199999999997
+        },
+        {
+          "id": "M1",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 7,
+            "total": 7
+          },
+          "toolCalls": 0,
+          "toolNames": [],
+          "turnsUsed": 1,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 512,
+          "costUsd": 0.005434
+        },
+        {
+          "id": "M2",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 2,
+            "total": 2
+          },
+          "toolCalls": 0,
+          "toolNames": [],
+          "turnsUsed": 1,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 518,
+          "costUsd": 0.008463
+        },
+        {
+          "id": "M3",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 3,
+            "total": 3
+          },
+          "toolCalls": 0,
+          "toolNames": [],
+          "turnsUsed": 1,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 522,
+          "costUsd": 0.006743000000000002
+        },
+        {
+          "id": "M4",
+          "expect": "answer",
+          "behaviour": "follow-up",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 2,
+            "total": 2
+          },
+          "toolCalls": 0,
+          "toolNames": [],
+          "turnsUsed": 1,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 519,
+          "costUsd": 0.0055655
+        },
+        {
+          "id": "A1",
+          "expect": "follow-up",
+          "behaviour": "follow-up",
+          "facts": null,
+          "toolCalls": 0,
+          "toolNames": [],
+          "turnsUsed": 1,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 495,
+          "costUsd": 0.0043100000000000005
+        },
+        {
+          "id": "A2",
+          "expect": "follow-up",
+          "behaviour": "follow-up",
+          "facts": null,
+          "toolCalls": 0,
+          "toolNames": [],
+          "turnsUsed": 1,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 493,
+          "costUsd": 0.0037660000000000003
+        },
+        {
+          "id": "A3",
+          "expect": "follow-up",
+          "behaviour": "follow-up",
+          "facts": null,
+          "toolCalls": 0,
+          "toolNames": [],
+          "turnsUsed": 1,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 10014,
+          "costUsd": 0.030703
+        },
+        {
+          "id": "A4",
+          "expect": "follow-up",
+          "behaviour": "follow-up",
+          "facts": null,
+          "toolCalls": 0,
+          "toolNames": [],
+          "turnsUsed": 1,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 495,
+          "costUsd": 0.0041
+        },
+        {
+          "id": "U1",
+          "expect": "abstain",
+          "behaviour": "abstain",
+          "facts": null,
+          "toolCalls": 0,
+          "toolNames": [],
+          "turnsUsed": 1,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 513,
+          "costUsd": 0.004666
+        },
+        {
+          "id": "U2",
+          "expect": "abstain",
+          "behaviour": "abstain",
+          "facts": null,
+          "toolCalls": 0,
+          "toolNames": [],
+          "turnsUsed": 1,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 508,
+          "costUsd": 0.005856
+        },
+        {
+          "id": "U3",
+          "expect": "abstain",
+          "behaviour": "abstain",
+          "facts": null,
+          "toolCalls": 3,
+          "toolNames": ["search_code_symbols", "get_index_status", "read_file_slice"],
+          "turnsUsed": 3,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 31718,
+          "costUsd": 0.036282999999999996
+        },
+        {
+          "id": "U4",
+          "expect": "abstain",
+          "behaviour": "abstain",
+          "facts": null,
+          "toolCalls": 2,
+          "toolNames": ["get_index_status", "search_code_symbols"],
+          "turnsUsed": 2,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 11848,
+          "costUsd": 0.024842199999999995
+        },
+        {
+          "id": "H1",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "toolCalls": 5,
+          "toolNames": [
+            "search_code_symbols",
+            "get_change_history",
+            "search_code_graph",
+            "search_code_symbols",
+            "get_change_history"
+          ],
+          "turnsUsed": 4,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 43926,
+          "costUsd": 0.0480764
+        },
+        {
+          "id": "H2",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 2,
+            "contradicted": 1,
+            "missing": 0,
+            "total": 3
+          },
+          "toolCalls": 2,
+          "toolNames": ["get_change_history", "search_code_graph"],
+          "turnsUsed": 2,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 17517,
+          "costUsd": 0.037728700000000004
+        },
+        {
+          "id": "H3",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "toolCalls": 2,
+          "toolNames": ["get_change_history", "get_change_history"],
+          "turnsUsed": 2,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 19954,
+          "costUsd": 0.0362808
+        }
+      ]
+    },
+    {
+      "label": "off3",
+      "runId": "2026-11-14T18-11-44-497Z-tools-only",
+      "model": "claude-sonnet-5-5",
+      "judgeModel": "claude-sonnet-5-5",
+      "arm": "tools-only",
+      "flags": {
+        "CHAT_CODE_SEARCH_TOOLS": "1",
+        "CHAT_FUSED_CODE_RETRIEVAL": "0",
+        "RAG_RERANK": "0",
+        "CHAT_CODE_SEARCH_PRIMITIVES": "0",
+        "CHAT_CODE_CONTEXT_TOOL": "0",
+        "CHAT_CHANGE_HISTORY_TOOL": "0"
+      },
+      "spentUsd": 1.145758,
+      "summary": {
+        "correctness": 0.4490196078431372,
+        "fullyCorrect": {
+          "n": 3,
+          "of": 17,
+          "rate": 0.17647058823529413
+        },
+        "citationPrecisionLines": {
+          "n": 99,
+          "of": 101,
+          "rate": 0.9801980198019802
+        },
+        "citationPrecisionFile": {
+          "n": 2,
+          "of": 9,
+          "rate": 0.2222222222222222
+        },
+        "citationRecall": {
+          "n": 18,
+          "of": 46,
+          "rate": 0.391304347826087
+        },
+        "falseAbstention": {
+          "n": 6,
+          "of": 17,
+          "rate": 0.35294117647058826
+        }
+      },
+      "questions": [
+        {
+          "id": "S1",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 2,
+            "contradicted": 0,
+            "missing": 4,
+            "total": 6
+          },
+          "toolCalls": 5,
+          "toolNames": [
+            "search_code_graph",
+            "read_file_slice",
+            "search_code_graph",
+            "search_code_symbols",
+            "read_file_slice"
+          ],
+          "turnsUsed": 4,
+          "truncatedToolResults": 1,
+          "turnsExhausted": false,
+          "promptTokens": 47822,
+          "costUsd": 0.0620812
+        },
+        {
+          "id": "S2",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 4,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 5
+          },
+          "toolCalls": 6,
+          "toolNames": [
+            "search_code_graph",
+            "search_code_symbols",
+            "read_file_slice",
+            "search_code_graph",
+            "search_code_symbols",
+            "read_file_slice"
+          ],
+          "turnsUsed": 4,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 46608,
+          "costUsd": 0.053335799999999996
+        },
+        {
+          "id": "S3",
+          "expect": "answer",
+          "behaviour": null,
+          "facts": null,
+          "toolCalls": 7,
+          "toolNames": [
+            "search_code_symbols",
+            "search_code_graph",
+            "search_code_symbols",
+            "search_code_symbols",
+            "read_file_slice",
+            "read_file_slice",
+            "search_code_graph"
+          ],
+          "turnsUsed": 4,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 56096,
+          "costUsd": 0.0636278
+        },
+        {
+          "id": "S4",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "toolCalls": 5,
+          "toolNames": [
+            "search_code_symbols",
+            "search_code_graph",
+            "search_code_graph",
+            "read_file_slice",
+            "read_file_slice"
+          ],
+          "turnsUsed": 3,
+          "truncatedToolResults": 1,
+          "turnsExhausted": false,
+          "promptTokens": 35443,
+          "costUsd": 0.047746699999999996
+        },
+        {
+          "id": "S5",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 4
+          },
+          "toolCalls": 4,
+          "toolNames": [
+            "search_code_graph",
+            "search_code_symbols",
+            "read_file_slice",
+            "read_file_slice"
+          ],
+          "turnsUsed": 4,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 28496,
+          "costUsd": 0.0357454
+        },
+        {
+          "id": "S6",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 4
+          },
+          "toolCalls": 2,
+          "toolNames": ["search_code_graph", "search_code_graph"],
+          "turnsUsed": 2,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 14555,
+          "costUsd": 0.0279969
+        },
+        {
+          "id": "S7",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "toolCalls": 7,
+          "toolNames": [
+            "search_code_graph",
+            "search_code_symbols",
+            "search_code_symbols",
+            "search_code_symbols",
+            "read_file_slice",
+            "search_code_graph",
+            "read_file_slice"
+          ],
+          "turnsUsed": 5,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 79056,
+          "costUsd": 0.06850519999999999
+        },
+        {
+          "id": "S8",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "toolCalls": 9,
+          "toolNames": [
+            "search_code_graph",
+            "search_code_symbols",
+            "read_file_slice",
+            "read_file_slice",
+            "search_code_graph",
+            "search_code_symbols",
+            "search_code_symbols",
+            "read_file_slice",
+            "read_file_slice"
+          ],
+          "turnsUsed": 5,
+          "truncatedToolResults": 1,
+          "turnsExhausted": false,
+          "promptTokens": 68907,
+          "costUsd": 0.06909309999999999
+        },
+        {
+          "id": "S9",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 2,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 3
+          },
+          "toolCalls": 4,
+          "toolNames": [
+            "search_code_graph",
+            "search_code_graph",
+            "read_file_slice",
+            "read_file_slice"
+          ],
+          "turnsUsed": 3,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 25763,
+          "costUsd": 0.0379459
+        },
+        {
+          "id": "S10",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 3,
+            "total": 3
+          },
+          "toolCalls": 15,
+          "toolNames": [
+            "search_code_graph",
+            "search_code_graph",
+            "search_code_symbols",
+            "read_file_slice",
+            "read_file_slice",
+            "read_file_slice",
+            "search_code_graph",
+            "search_code_symbols",
+            "read_file_slice",
+            "search_code_graph",
+            "search_code_symbols",
+            "get_index_status",
+            "read_file_slice",
+            "read_file_slice",
+            "read_file_slice"
+          ],
+          "turnsUsed": 6,
+          "truncatedToolResults": 2,
+          "turnsExhausted": true,
+          "promptTokens": 129986,
+          "costUsd": 0.1424079
+        },
+        {
+          "id": "S11",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 2,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 3
+          },
+          "toolCalls": 7,
+          "toolNames": [
+            "search_code_symbols",
+            "search_code_graph",
+            "get_index_status",
+            "read_file_slice",
+            "search_code_graph",
+            "search_code_graph",
+            "read_file_slice"
+          ],
+          "turnsUsed": 5,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 59486,
+          "costUsd": 0.054710999999999996
+        },
+        {
+          "id": "M1",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 7,
+            "total": 7
+          },
+          "toolCalls": 0,
+          "toolNames": [],
+          "turnsUsed": 1,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 512,
+          "costUsd": 0.005434
+        },
+        {
+          "id": "M2",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 2,
+            "total": 2
+          },
+          "toolCalls": 0,
+          "toolNames": [],
+          "turnsUsed": 1,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 518,
+          "costUsd": 0.0061294
+        },
+        {
+          "id": "M3",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 3,
+            "total": 3
+          },
+          "toolCalls": 0,
+          "toolNames": [],
+          "turnsUsed": 1,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 522,
+          "costUsd": 0.0053898
+        },
+        {
+          "id": "M4",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 2,
+            "total": 2
+          },
+          "toolCalls": 0,
+          "toolNames": [],
+          "turnsUsed": 1,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 519,
+          "costUsd": 0.0043795
+        },
+        {
+          "id": "A1",
+          "expect": "follow-up",
+          "behaviour": "follow-up",
+          "facts": null,
+          "toolCalls": 0,
+          "toolNames": [],
+          "turnsUsed": 1,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 495,
+          "costUsd": 0.0043300000000000005
+        },
+        {
+          "id": "A2",
+          "expect": "follow-up",
+          "behaviour": "follow-up",
+          "facts": null,
+          "toolCalls": 0,
+          "toolNames": [],
+          "turnsUsed": 1,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 493,
+          "costUsd": 0.003986
+        },
+        {
+          "id": "A3",
+          "expect": "follow-up",
+          "behaviour": "follow-up",
+          "facts": null,
+          "toolCalls": 0,
+          "toolNames": [],
+          "turnsUsed": 1,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 9639,
+          "costUsd": 0.0301455
+        },
+        {
+          "id": "A4",
+          "expect": "follow-up",
+          "behaviour": "follow-up",
+          "facts": null,
+          "toolCalls": 0,
+          "toolNames": [],
+          "turnsUsed": 1,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 495,
+          "costUsd": 0.00411
+        },
+        {
+          "id": "U1",
+          "expect": "abstain",
+          "behaviour": "abstain",
+          "facts": null,
+          "toolCalls": 0,
+          "toolNames": [],
+          "turnsUsed": 1,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 513,
+          "costUsd": 0.003946
+        },
+        {
+          "id": "U2",
+          "expect": "abstain",
+          "behaviour": "abstain",
+          "facts": null,
+          "toolCalls": 0,
+          "toolNames": [],
+          "turnsUsed": 1,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 508,
+          "costUsd": 0.005096
+        },
+        {
+          "id": "U3",
+          "expect": "abstain",
+          "behaviour": "abstain",
+          "facts": null,
+          "toolCalls": 3,
+          "toolNames": ["search_code_symbols", "get_index_status", "read_file_slice"],
+          "turnsUsed": 3,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 30602,
+          "costUsd": 0.036390599999999995
+        },
+        {
+          "id": "U4",
+          "expect": "abstain",
+          "behaviour": "abstain",
+          "facts": null,
+          "toolCalls": 2,
+          "toolNames": ["get_index_status", "search_code_symbols"],
+          "turnsUsed": 2,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 11055,
+          "costUsd": 0.0222697
+        },
+        {
+          "id": "H1",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 1,
+            "contradicted": 0,
+            "missing": 2,
+            "total": 3
+          },
+          "toolCalls": 7,
+          "toolNames": [
+            "search_code_symbols",
+            "get_index_status",
+            "search_code_graph",
+            "search_code_symbols",
+            "read_file_slice",
+            "search_code_symbols",
+            "search_code_symbols"
+          ],
+          "turnsUsed": 5,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 71063,
+          "costUsd": 0.0690739
+        },
+        {
+          "id": "H2",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 1,
+            "contradicted": 1,
+            "missing": 1,
+            "total": 3
+          },
+          "toolCalls": 7,
+          "toolNames": [
+            "search_code_symbols",
+            "get_index_status",
+            "search_code_graph",
+            "search_code_symbols",
+            "search_code_symbols",
+            "search_code_graph",
+            "search_code_symbols"
+          ],
+          "turnsUsed": 5,
+          "truncatedToolResults": 1,
+          "turnsExhausted": false,
+          "promptTokens": 65681,
+          "costUsd": 0.0621397
+        },
+        {
+          "id": "H3",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 3,
+            "total": 3
+          },
+          "toolCalls": 4,
+          "toolNames": [
+            "get_index_status",
+            "search_code_symbols",
+            "search_code_graph",
+            "search_code_symbols"
+          ],
+          "turnsUsed": 3,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 33744,
+          "costUsd": 0.0451532
+        }
+      ]
+    },
+    {
+      "label": "on3",
+      "runId": "2026-11-14T18-17-00-595Z-tools-history",
+      "model": "claude-sonnet-5-5",
+      "judgeModel": "claude-sonnet-5-5",
+      "arm": "tools-history",
+      "flags": {
+        "CHAT_CODE_SEARCH_TOOLS": "1",
+        "CHAT_FUSED_CODE_RETRIEVAL": "0",
+        "RAG_RERANK": "0",
+        "CHAT_CODE_SEARCH_PRIMITIVES": "0",
+        "CHAT_CODE_CONTEXT_TOOL": "0",
+        "CHAT_CHANGE_HISTORY_TOOL": "1"
+      },
+      "spentUsd": 1.107814,
+      "summary": {
+        "correctness": 0.7037037037037037,
+        "fullyCorrect": {
+          "n": 10,
+          "of": 18,
+          "rate": 0.5555555555555556
+        },
+        "citationPrecisionLines": {
+          "n": 76,
+          "of": 77,
+          "rate": 0.987012987012987
+        },
+        "citationPrecisionFile": {
+          "n": 4,
+          "of": 14,
+          "rate": 0.2857142857142857
+        },
+        "citationRecall": {
+          "n": 22,
+          "of": 50,
+          "rate": 0.44
+        },
+        "falseAbstention": {
+          "n": 4,
+          "of": 18,
+          "rate": 0.2222222222222222
+        }
+      },
+      "questions": [
+        {
+          "id": "S1",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 3,
+            "total": 6
+          },
+          "toolCalls": 6,
+          "toolNames": [
+            "search_code_graph",
+            "read_file_slice",
+            "search_code_graph",
+            "search_code_graph",
+            "read_file_slice",
+            "read_file_slice"
+          ],
+          "turnsUsed": 4,
+          "truncatedToolResults": 1,
+          "turnsExhausted": false,
+          "promptTokens": 55200,
+          "costUsd": 0.07039020000000001
+        },
+        {
+          "id": "S2",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 5,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 5
+          },
+          "toolCalls": 8,
+          "toolNames": [
+            "search_code_graph",
+            "search_code_symbols",
+            "read_file_slice",
+            "search_code_graph",
+            "search_code_graph",
+            "read_file_slice",
+            "read_file_slice",
+            "search_code_graph"
+          ],
+          "turnsUsed": 4,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 47238,
+          "costUsd": 0.056318400000000005
+        },
+        {
+          "id": "S3",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 4,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 4
+          },
+          "toolCalls": 7,
+          "toolNames": [
+            "search_code_symbols",
+            "search_code_graph",
+            "search_code_graph",
+            "search_code_symbols",
+            "read_file_slice",
+            "search_code_graph",
+            "search_code_graph"
+          ],
+          "turnsUsed": 5,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 72398,
+          "costUsd": 0.06252859999999999
+        },
+        {
+          "id": "S4",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "toolCalls": 5,
+          "toolNames": [
+            "search_code_symbols",
+            "search_code_graph",
+            "search_code_graph",
+            "read_file_slice",
+            "read_file_slice"
+          ],
+          "turnsUsed": 3,
+          "truncatedToolResults": 1,
+          "turnsExhausted": false,
+          "promptTokens": 36670,
+          "costUsd": 0.0503542
+        },
+        {
+          "id": "S5",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 4
+          },
+          "toolCalls": 3,
+          "toolNames": ["search_code_graph", "search_code_symbols", "read_file_slice"],
+          "turnsUsed": 4,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 29930,
+          "costUsd": 0.0354228
+        },
+        {
+          "id": "S6",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 4
+          },
+          "toolCalls": 2,
+          "toolNames": ["search_code_graph", "search_code_graph"],
+          "turnsUsed": 2,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 15294,
+          "costUsd": 0.0287744
+        },
+        {
+          "id": "S7",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "toolCalls": 9,
+          "toolNames": [
+            "search_code_symbols",
+            "search_code_graph",
+            "search_code_graph",
+            "search_code_symbols",
+            "read_file_slice",
+            "search_code_graph",
+            "search_code_symbols",
+            "read_file_slice",
+            "search_code_symbols"
+          ],
+          "turnsUsed": 6,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 102396,
+          "costUsd": 0.0789286
+        },
+        {
+          "id": "S8",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "toolCalls": 12,
+          "toolNames": [
+            "search_code_graph",
+            "search_code_symbols",
+            "read_file_slice",
+            "read_file_slice",
+            "read_file_slice",
+            "search_code_graph",
+            "search_code_symbols",
+            "search_code_graph",
+            "read_file_slice",
+            "read_file_slice",
+            "search_code_graph",
+            "read_file_slice"
+          ],
+          "turnsUsed": 6,
+          "truncatedToolResults": 1,
+          "turnsExhausted": true,
+          "promptTokens": 113044,
+          "costUsd": 0.1058383
+        },
+        {
+          "id": "S9",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 2,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 3
+          },
+          "toolCalls": 4,
+          "toolNames": [
+            "search_code_graph",
+            "search_code_graph",
+            "read_file_slice",
+            "search_code_graph"
+          ],
+          "turnsUsed": 3,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 26685,
+          "costUsd": 0.0373293
+        },
+        {
+          "id": "S10",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "toolCalls": 16,
+          "toolNames": [
+            "search_code_graph",
+            "search_code_graph",
+            "search_code_symbols",
+            "read_file_slice",
+            "read_file_slice",
+            "read_file_slice",
+            "search_code_graph",
+            "search_code_symbols",
+            "read_file_slice",
+            "search_code_graph",
+            "search_code_symbols",
+            "search_code_graph",
+            "search_code_graph",
+            "read_file_slice",
+            "read_file_slice",
+            "read_file_slice"
+          ],
+          "turnsUsed": 6,
+          "truncatedToolResults": 0,
+          "turnsExhausted": true,
+          "promptTokens": 128812,
+          "costUsd": 0.13502799999999998
+        },
+        {
+          "id": "S11",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "toolCalls": 5,
+          "toolNames": [
+            "search_code_symbols",
+            "search_code_graph",
+            "read_file_slice",
+            "search_code_graph",
+            "read_file_slice"
+          ],
+          "turnsUsed": 5,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 58684,
+          "costUsd": 0.05198360000000001
+        },
+        {
+          "id": "M1",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 7,
+            "total": 7
+          },
+          "toolCalls": 0,
+          "toolNames": [],
+          "turnsUsed": 1,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 512,
+          "costUsd": 0.005334
+        },
+        {
+          "id": "M2",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 2,
+            "total": 2
+          },
+          "toolCalls": 0,
+          "toolNames": [],
+          "turnsUsed": 1,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 518,
+          "costUsd": 0.007773000000000001
+        },
+        {
+          "id": "M3",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 3,
+            "total": 3
+          },
+          "toolCalls": 0,
+          "toolNames": [],
+          "turnsUsed": 1,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 522,
+          "costUsd": 0.006173
+        },
+        {
+          "id": "M4",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 2,
+            "total": 2
+          },
+          "toolCalls": 0,
+          "toolNames": [],
+          "turnsUsed": 1,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 519,
+          "costUsd": 0.0054954999999999995
+        },
+        {
+          "id": "A1",
+          "expect": "follow-up",
+          "behaviour": "follow-up",
+          "facts": null,
+          "toolCalls": 0,
+          "toolNames": [],
+          "turnsUsed": 1,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 495,
+          "costUsd": 0.00462
+        },
+        {
+          "id": "A2",
+          "expect": "follow-up",
+          "behaviour": "follow-up",
+          "facts": null,
+          "toolCalls": 0,
+          "toolNames": [],
+          "turnsUsed": 1,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 493,
+          "costUsd": 0.004196
+        },
+        {
+          "id": "A3",
+          "expect": "follow-up",
+          "behaviour": "follow-up",
+          "facts": null,
+          "toolCalls": 0,
+          "toolNames": [],
+          "turnsUsed": 1,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 10014,
+          "costUsd": 0.030473
+        },
+        {
+          "id": "A4",
+          "expect": "follow-up",
+          "behaviour": "follow-up",
+          "facts": null,
+          "toolCalls": 0,
+          "toolNames": [],
+          "turnsUsed": 1,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 495,
+          "costUsd": 0.00475
+        },
+        {
+          "id": "U1",
+          "expect": "abstain",
+          "behaviour": "abstain",
+          "facts": null,
+          "toolCalls": 0,
+          "toolNames": [],
+          "turnsUsed": 1,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 513,
+          "costUsd": 0.0036660000000000004
+        },
+        {
+          "id": "U2",
+          "expect": "abstain",
+          "behaviour": "abstain",
+          "facts": null,
+          "toolCalls": 0,
+          "toolNames": [],
+          "turnsUsed": 1,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 508,
+          "costUsd": 0.004506
+        },
+        {
+          "id": "U3",
+          "expect": "abstain",
+          "behaviour": "abstain",
+          "facts": null,
+          "toolCalls": 3,
+          "toolNames": ["search_code_symbols", "get_index_status", "read_file_slice"],
+          "turnsUsed": 3,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 32280,
+          "costUsd": 0.038121199999999994
+        },
+        {
+          "id": "U4",
+          "expect": "abstain",
+          "behaviour": "abstain",
+          "facts": null,
+          "toolCalls": 1,
+          "toolNames": ["get_index_status"],
+          "turnsUsed": 2,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 10964,
+          "costUsd": 0.020352199999999997
+        },
+        {
+          "id": "H1",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "toolCalls": 3,
+          "toolNames": ["search_code_symbols", "search_code_graph", "get_change_history"],
+          "turnsUsed": 3,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 32868,
+          "costUsd": 0.043117600000000006
+        },
+        {
+          "id": "H2",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "toolCalls": 2,
+          "toolNames": ["get_change_history", "search_code_graph"],
+          "turnsUsed": 2,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 17509,
+          "costUsd": 0.0373687
+        },
+        {
+          "id": "H3",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "toolCalls": 2,
+          "toolNames": ["get_change_history", "get_change_history"],
+          "turnsUsed": 2,
+          "truncatedToolResults": 0,
+          "turnsExhausted": false,
+          "promptTokens": 19923,
+          "costUsd": 0.0351433
+        }
+      ]
+    }
+  ]
+}

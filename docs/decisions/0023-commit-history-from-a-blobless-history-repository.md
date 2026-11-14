@@ -2,7 +2,7 @@
 
 - **Status**: Accepted (2026-11-14, when Part B of #2338 started), with the amendments in
   "Part B: what building it changed" below. The tool ships behind
-  `CHAT_CHANGE_HISTORY_TOOL`, off by default until measured.
+  `CHAT_CHANGE_HISTORY_TOOL`, **on by default since #2488** ("Measured: on by default" below).
 - **Date**: 2026-11-12
 - **Issue**: [#2338](https://github.com/openzigs/metis/issues/2338) (epic [#2322](https://github.com/openzigs/metis/issues/2322))
 - **Relates to**: #2325 (the citation contract the tool's result uses), #2326 (how a tool
@@ -106,7 +106,8 @@ a line range (`-L 40,80` and `-L 100,200`). The baseline is today's depth-1 clon
   large", never as a failed ingest.
 - **Off by default.** History is fetched only when the history tool is enabled. It costs
   what C + prefetch measured, on top of the clone: 2.8 s and 7.1 MB for miniflux, 1 min 49 s
-  and 441 MB for kubernetes. It becomes default only on the #2338 measurement.
+  and 441 MB for kubernetes. It becomes default only on the #2338 measurement. (#2488 took
+  that measurement and turned it on; see "Measured: on by default".)
 
 ### The bound, and what the tool returns beyond it
 
@@ -210,6 +211,33 @@ test against real git or by a live fetch of miniflux/v2 at the `pnpm eval:ba-qa`
 - **History for another commit is not read.** When the recorded fetch is not at the
   repository's current indexed commit, the tool says `history_not_fetched` until the next
   ingest refreshes it.
+
+## Measured: on by default (#2488)
+
+The measurement this note deferred was run on 2026-11-14 with the paired `pnpm eval:ba-qa`
+arms `tools-only` and `tools-history`, which differ only in `CHAT_CHANGE_HISTORY_TOOL`: three
+runs each, alternating, on one materialization of `baqa-01-acme-reader` (fixture version 3),
+Sonnet 5.5 answers and judge, $6.94 in all. Full tables: `eval-data/README.md`, "`get_change_history`
+measured before turning it on (#2488)"; per question:
+`eval-data/readings/ba-qa/2488-change-history-paired.json`.
+
+- **Gain on the "when and why" questions.** `H1`–`H3` stated 26 of 27 facts with the tool
+  (96%) against 8 of 27 without it (30%); fully correct 8 of 9 against 0 of 9. Without it the
+  model abstained on `H1` and `H3` in every run. Every `H*` session with it called the tool.
+- **No regression elsewhere.** The other questions' facts stated were 58.3% with the tool and
+  55.3% without (run means), inside the off arm's own 11.1-point spread; five questions gained
+  and two lost (p ≈ 0.45), each loss inside that question's own spread, and the tool was never
+  called outside `H1`–`H3`. Citation precision on line spans held (98.5% against 98.9%,
+  pooled), and turns and input tokens per question fell slightly.
+
+So `CHAT_CHANGE_HISTORY_TOOL` defaults to on (`CHANGE_HISTORY_DEFAULT` in
+`server/src/lib/connectors/repo/history-repo.ts`, read by both the chat tool list and the
+history refresh, so the tool and the fetch cannot disagree). What that costs a deployment is
+what "Off by default" above measured: a separate history repository per GitHub or GitLab
+connector, fetched beside each graph-building ingest (2.8 s and 7.1 MB for miniflux, 1 min 49 s
+and 441 MB for kubernetes), capped by `REPO_HISTORY_MAX_BYTES`. Setting the key to `false`
+withdraws the tool and deletes every history on disk (the sweep at boot and on every change of the
+flag).
 
 ## Rejected
 
