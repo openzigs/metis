@@ -126,3 +126,4 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Ingest lifecycle, confidences](project_ingest-lifecycle-and-confidence-scales.md) — per-process lease; awaited hooks; Impact scales
 - [Repo chores 2026-11-14](project_repo-chores-and-fixtures-2026-11-14.md) — prettier root; gitignored images; findMentions; no npx
 - [Prompt A/B on BA-QA in a worktree](project_prompt-ab-on-ba-qa-in-a-worktree.md) — .env copy; toggle by cp, not git; per-fact verdicts (#2357)
+- [Cosine floors are corpus-scaled](project_cosine-floors-are-corpus-scaled.md) — 2 corpora per embedder; fresh .materialized; main .env (#2417)

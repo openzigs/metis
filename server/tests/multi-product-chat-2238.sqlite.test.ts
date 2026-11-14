@@ -499,10 +499,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     it("#2294 — keeps a product's strong match and drops another product's weak one", async () => {
       const GTE = "Alibaba-NLP/gte-modernbert-base";
       state.hits = {
-        // Within the relative floor of each other (0.6 ≥ 0.75 × 0.7), but Beta's
-        // match is below chat's absolute floor.
-        [ALPHA]: [{ chunkId: "a-ok", text: "Alpha rule.", score: 0.7, model: GTE }],
-        [BETA]: [{ chunkId: "b-low", text: "Beta near miss.", score: 0.53, model: GTE }],
+        // Within the relative floor of each other (0.42 ≥ 0.75 × 0.55), but Beta's
+        // match is below chat's absolute floor for gte (0.52, #2417).
+        [ALPHA]: [{ chunkId: "a-ok", text: "Alpha rule.", score: 0.55, model: GTE }],
+        [BETA]: [{ chunkId: "b-low", text: "Beta near miss.", score: 0.42, model: GTE }],
       };
       const sessionId = await newSession({ projectIds: [ALPHA, BETA] });
       await post("/api/ai/stream", { sessionId, message: "What is the rule?" });

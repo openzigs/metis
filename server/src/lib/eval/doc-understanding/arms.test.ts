@@ -7,12 +7,14 @@ import {
   createArmA,
   createArmB,
   createArmC,
+  createArmR,
   documentIdOf,
   documentKnowledge,
   mapLimited,
   parseDocArmIds,
 } from "./arms.js";
 import type { DocUnderstandingItem } from "./corpus.js";
+import { EVAL_READING_PROJECT, createEvalReadingStore } from "./reading-store.js";
 
 const TEXT = [
   "# Booking FRD",
@@ -383,6 +385,99 @@ describe("helpers", () => {
     expect(out.questions).toEqual([]);
     expect(out.diagnostics).toMatchObject({ droppedUnverified: 1, wholeMode: 1, calls: 2 });
     expect(calls).toHaveLength(2);
+  });
+
+  describe("#2319 — R reads through readDocumentOnce with a store", () => {
+    const READER_ROUTES: Array<[string, string]> = [
+      [
+        "from beginning to end",
+        JSON.stringify({
+          statements: [
+            {
+              section: "S2",
+              kind: "requirement",
+              statement: "Lock after five failures.",
+              quote: "The portal shall lock an account after five failed attempts.",
+            },
+            {
+              section: "S3",
+              kind: "business-rule",
+              statement: "Two future appointments at most.",
+              quote: "A patient shall hold at most two future appointments.",
+            },
+          ],
+        }),
+      ],
+      ["combining the statements", JSON.stringify({ duplicates: [], crossReferences: [] })],
+    ];
+
+    it("by default reads the document again every run, and saves the reading", async () => {
+      const store = createEvalReadingStore();
+      const { provider, calls } = routedProvider(READER_ROUTES);
+      const arm = createArmR("m", { store });
+      const first = await arm.read(ITEM, { provider, concurrency: 1 });
+      const second = await arm.read(ITEM, { provider, concurrency: 1 });
+      expect(calls).toHaveLength(4);
+      expect([first.diagnostics.reused, second.diagnostics.reused]).toEqual([0, 0]);
+      expect(second.diagnostics).not.toHaveProperty("identicalToSaved");
+      expect(store.readings()).toHaveLength(1);
+      expect(store.readings()[0]).toMatchObject({
+        projectId: EVAL_READING_PROJECT,
+        documentId: documentIdOf(ITEM),
+      });
+      expect(arm.configuration.savedReadings).toMatch(/read again every run/);
+    });
+
+    it("with saved readings, a second run reuses the first's with no model call, identical", async () => {
+      const { provider, calls } = routedProvider(READER_ROUTES);
+      const [arm] = buildDocArms(["R"], "m", { reuseSavedReadings: true });
+      const first = await arm!.read(ITEM, { provider, concurrency: 1 });
+      expect(calls).toHaveLength(2);
+      const second = await arm!.read(ITEM, { provider, concurrency: 1 });
+      expect(calls).toHaveLength(2);
+      expect(first.diagnostics).toMatchObject({ reused: 0, calls: 2 });
+      expect(second.diagnostics).toMatchObject({ reused: 1, calls: 0, identicalToSaved: 1 });
+      expect(second.requirements).toEqual(first.requirements);
+      expect(arm!.configuration.savedReadings).toMatch(/--saved-readings/);
+    });
+
+    it("says when a reused reading is not the one that was saved", async () => {
+      const store = createEvalReadingStore();
+      const { provider } = routedProvider(READER_ROUTES);
+      const arm = createArmR("m", { store, reuseSavedReadings: true });
+      await arm.read(ITEM, { provider, concurrency: 1 });
+      const row = store.readings()[0]!;
+      const saved = JSON.parse(row.reading as string);
+      saved.statements[0].statement = "Something else.";
+      row.reading = JSON.stringify(saved);
+      const again = await arm.read(ITEM, { provider, concurrency: 1 });
+      expect(again.diagnostics).toMatchObject({ reused: 1, identicalToSaved: 0 });
+    });
+
+    it("fails the read when the store stand-in met a call it does not implement", async () => {
+      const store = createEvalReadingStore();
+      const { provider } = routedProvider(READER_ROUTES);
+      const arm = createArmR("m", { store, reuseSavedReadings: true });
+      // readDocumentOnce swallows a failed lookup and reads again; the arm must not.
+      await expect(
+        (
+          store.db as unknown as { savedDocumentReading: { findUnique(): Promise<unknown> } }
+        ).savedDocumentReading.findUnique(),
+      ).rejects.toThrow();
+      await expect(arm.read(ITEM, { provider, concurrency: 1 })).rejects.toThrow(
+        /reading store stand-in/,
+      );
+    });
+
+    it("reads a changed document again: its text is another file", async () => {
+      const { provider, calls } = routedProvider(READER_ROUTES);
+      const arm = createArmR("m", { reuseSavedReadings: true });
+      await arm.read(ITEM, { provider, concurrency: 1 });
+      const edited = { ...ITEM, text: `${TEXT}\n` };
+      const out = await arm.read(edited, { provider, concurrency: 1 });
+      expect(out.diagnostics.reused).toBe(0);
+      expect(calls).toHaveLength(4);
+    });
   });
 
   it("parses arm ids and refuses unknown ones", () => {

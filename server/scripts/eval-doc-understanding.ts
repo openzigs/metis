@@ -9,6 +9,14 @@
  *   pnpm --filter server eval:doc-understanding --corpus docunderstanding-01-clinic-booking
  *   pnpm --filter server eval:doc-understanding --reading baseline-sonnet   # also write eval-data/readings/doc-understanding/
  *   pnpm --filter server eval:doc-understanding --combine a.json,b.json --reading baseline-sonnet   # no model call
+ *   pnpm --filter server eval:doc-understanding --arms R --runs 2 --saved-readings   # run 2 reuses run 1's readings
+ *
+ * #2319 — arm R reads through `readDocumentOnce`, as an analysis reads a stored
+ * document, and saves each whole reading in an in-process store. By default
+ * every run reads the document again (so `--runs` measures the reader's
+ * spread); `--saved-readings` makes a later run reuse the reading an earlier
+ * run of the same invocation saved, with no reader call, as a second analysis
+ * of an unchanged document does.
  *
  * A slow model may not read the whole corpus in one sitting: run one
  * `--corpus` (or one `--arms`) at a time, then `--combine` the reports into
@@ -109,6 +117,12 @@ async function main(): Promise<void> {
   const items = await loadDocUnderstandingCorpus(names);
 
   const { buildProvider, loadAIConfig } = await import("../src/lib/ai/index.js");
+  if (argv.includes("--saved-readings") && (!armIds.includes("R") || runs < 2)) {
+    console.warn(
+      "warning: --saved-readings reuses arm R's first reading in a later run; " +
+        "it does nothing without arm R in --arms or with --runs 1",
+    );
+  }
   const live = buildProvider({ config: loadAIConfig() });
   if (live.offline) {
     throw new Error(
@@ -126,7 +140,9 @@ async function main(): Promise<void> {
   }
 
   const report = await runDocUnderstandingEval(items, {
-    arms: buildDocArms(armIds, model),
+    arms: buildDocArms(armIds, model, {
+      reuseSavedReadings: argv.includes("--saved-readings"),
+    }),
     runs,
     budget: new EvalBudget(budgetUsd),
     provider: live,

@@ -16,30 +16,61 @@
  * floor (the question is about this project and the keyword match supports
  * it), and dropped with the rest otherwise.
  *
- * The default was calibrated on the Phase 0 question set (#2237); see
+ * The defaults were calibrated on the Phase 0 question set (#2237) and, in
+ * #2417, on a second corpus and for each supported local embedder; see
  * `eval-data/README.md` > "Relevance floor (#2241)".
  */
 import type { RetrievedChunk } from "@metis/shared";
 import { getConfigService } from "../config/config-service.js";
-import { COSINE_CALIBRATED_MODELS } from "../traceability/requirement-code-mapping.js";
 
 /** The config key; `0` turns the floor off. */
 export const CHAT_RELEVANCE_FLOOR_KEY = "CHAT_RETRIEVAL_MIN_SCORE";
 
+/** A calibrated default floor, and the one embedding width it holds at. */
+export interface CalibratedFloor {
+  floor: number;
+  /**
+   * Set for a model whose width `EMBED_DIM` can truncate (EmbeddingGemma's
+   * Matryoshka widths): the floor holds only at this width.
+   */
+  dimension?: number;
+}
+
 /**
- * The default floor on a retrieved chunk's dense cosine (gte-modernbert-base,
- * the default embedder). Calibrated on `baqa-01-acme-reader` (#2241).
+ * #2417 — the default floor on a retrieved chunk's dense cosine, per embedder:
+ * for each, the highest floor that empties no answerable question on EITHER
+ * `baqa-01-acme-reader` or `localization-02-fixture-portfolio` (`pnpm
+ * eval:ba-qa --floor-sweep`, with `--floor-corpus` for the second; the owner's
+ * rule, which accepts losing a question's weaker expected excerpts while its
+ * best ones remain). Cosines sit lower on the small TypeScript services than on
+ * Miniflux, so the second corpus set every floor.
  */
-export const DEFAULT_CHAT_RELEVANCE_FLOOR = 0.55;
+export const CALIBRATED_RELEVANCE_FLOORS: ReadonlyMap<string, CalibratedFloor> = new Map([
+  ["Alibaba-NLP/gte-modernbert-base", { floor: 0.52 }],
+  ["Xenova/bge-small-en-v1.5", { floor: 0.55 }],
+  ["onnx-community/embeddinggemma-300m-ONNX", { floor: 0.6, dimension: 768 }],
+]);
+
+/** A model's calibrated floor, or `null` when it has none at the configured width. */
+function calibratedFloor(model: string): number | null {
+  const c = CALIBRATED_RELEVANCE_FLOORS.get(model);
+  if (!c) return null;
+  if (c.dimension !== undefined) {
+    const dim = process.env.EMBED_DIM?.trim();
+    if (dim && Number(dim) !== c.dimension) return null;
+  }
+  return c.floor;
+}
 
 /**
  * The floor for hits embedded by `models`, read as a decimal (`getNumber` reads
- * integers, which would turn 0.55 into 0). An operator-set value is used as
- * given, held to 0..1. When unset or unreadable the default applies only if
- * every model is one whose cosines the default was calibrated on
- * ({@link COSINE_CALIBRATED_MODELS}); another model's cosines are on another
- * scale (the offline hash stub's sit near 0), so the floor is off (0) there
- * rather than abstaining on answerable questions.
+ * integers, which would turn 0.52 into 0). An operator-set value is used as
+ * given, held to 0..1. When unset or unreadable a default applies only if
+ * every model has one ({@link CALIBRATED_RELEVANCE_FLOORS}), and then the
+ * lowest of them, so no model's evidence is held to another's scale. Any other
+ * model's cosines are on an unmeasured scale (the offline hash stub's sit near
+ * 0), so the floor is off (0) there rather than abstaining on answerable
+ * questions.
  */
 export function readRelevanceFloor(models: Iterable<string>): number {
   const raw = getConfigService().get(CHAT_RELEVANCE_FLOOR_KEY);
@@ -47,9 +78,9 @@ export function readRelevanceFloor(models: Iterable<string>): number {
     const n = Number(raw);
     if (Number.isFinite(n)) return Math.min(1, Math.max(0, n));
   }
-  const used = [...models];
-  const calibrated = used.length > 0 && used.every((m) => COSINE_CALIBRATED_MODELS.has(m));
-  return calibrated ? DEFAULT_CHAT_RELEVANCE_FLOOR : 0;
+  const floors = [...models].map(calibratedFloor);
+  if (floors.length === 0 || floors.some((f) => f === null)) return 0;
+  return Math.min(...(floors as number[]));
 }
 
 type FloorableHit = Pick<RetrievedChunk, "score" | "denseScore" | "matchedBy">;
