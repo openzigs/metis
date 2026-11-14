@@ -216,6 +216,16 @@ export function StartSpecKitFeatureAction({ projectId, selected, writeHint }: Pr
               : `${selected.length} selected`}
           </span>
         )}
+        {/* #2509 — an unread state still blocks nothing (the server checks), but is
+            not silent: without it, a failed read looked exactly like Spec Kit being on. */}
+        {specKit.isError && !writeHint ? (
+          <span className="text-xs text-muted-foreground" data-testid="start-spec-kit-unread">
+            Could not check whether Spec Kit is on for this project.{" "}
+            <Link href={specKitHref} className="font-medium text-foreground underline">
+              Check on the Spec Kit page
+            </Link>
+          </span>
+        ) : null}
       </div>
       {failure ? (
         <div role="alert" className="text-sm text-destructive" data-testid="start-spec-kit-error">

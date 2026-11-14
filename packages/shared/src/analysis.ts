@@ -733,6 +733,14 @@ export const agentFindingPayloadSchema = z.object({
    */
   verdict: z.enum(FINDING_VERDICTS).nullish(),
   /**
+   * #2509 — set by the orchestrator (never trusted from the model: both gating
+   * sites overwrite it) when the gate made an `implemented` claim that cites
+   * grounded code `could-not-verify`. Unlike the model's own `could-not-verify`,
+   * such a finding's citations are still the requirement's code, so code links
+   * may be seeded from them. Absent otherwise.
+   */
+  downgradedFromImplemented: z.boolean().nullish().catch(undefined),
+  /**
    * Epic #1107 (#1109) — the multi-lens support panel's confidence signal, set
    * by the orchestrator AFTER the deterministic verifier, and only when
    * `ANALYSIS_LLM_SUPPORT_PANEL` is on. Like `verificationStatus` it is NOT

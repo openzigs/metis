@@ -226,6 +226,19 @@ describe("WorkspaceTraceabilityRollup", () => {
     );
   });
 
+  it("#2509 — names the spec column for what it counts, and says a Spec Kit feature is not counted", async () => {
+    workspaceSummary.mockResolvedValue({ projects: SUMMARY.projects, crossProjectLinks: [] });
+    renderRollup();
+    const table = await screen.findByTestId("rollup-summary-table");
+    expect(
+      within(table).getByRole("columnheader", { name: "In a generated spec" }),
+    ).toBeInTheDocument();
+    expect(within(table).queryByRole("columnheader", { name: "Spec coverage" })).toBeNull();
+    expect(screen.getByTestId("rollup-denominator-note")).toHaveTextContent(
+      /a Spec Kit feature is not counted/,
+    );
+  });
+
   it("#1137 — names no imported items when there are none", async () => {
     workspaceSummary.mockResolvedValue({ projects: SUMMARY.projects, crossProjectLinks: [] });
     renderRollup();
