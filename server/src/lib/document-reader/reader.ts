@@ -361,8 +361,10 @@ async function read(
   let droppedUnverified = 0;
   let readBatches = 0;
   const batches = batchSections(sections, batchChars);
-  // #2297 — the shared lead is cached only when a later batch call can read it
-  // back: on Anthropic a cache write costs 1.25× and a single batch never reads it.
+  // #2297 — the shared lead is cached only when a later batch call is planned to
+  // read it back: on Anthropic a cache write costs 1.25×. A single batch reads it
+  // back only when `requestStructuredVerdict` retries its call with the same
+  // prefix (#2321), which is not worth the write on every first call.
   const cacheLead = batches.length > 1;
   /** Ask for the statements of `batch`; `null` when the reply could not be read. */
   const askBatch = async (batch: ReaderSection[]): Promise<unknown[] | null> => {

@@ -459,10 +459,12 @@ describe("#2262 — the document reader before the flag goes on", () => {
     expect(capability.documentReading?.documents.map((d) => d.documentId)).toEqual(["doc_1"]);
   });
 
-  it("with no document selected and none ready, retrieves as before", async () => {
-    const { retrieve } = await runPipeline({ documentIds: undefined });
+  it("#2321 — with no document selected and none ready, reads nothing and does not retrieve", async () => {
+    // As when every upload is withheld: the requester cannot tell the two apart.
+    const { retrieve, capability } = await runPipeline({ documentIds: undefined });
     expect(loader).not.toHaveBeenCalled();
-    expect(retrievedAgents(retrieve)).toContain("document");
+    expect(retrievedAgents(retrieve)).not.toContain("document");
+    expect(capability.documentReading?.documents).toEqual([]);
   });
 
   it("gives the operator's notes to the document reader", async () => {

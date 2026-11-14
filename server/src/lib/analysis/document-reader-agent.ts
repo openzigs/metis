@@ -258,15 +258,14 @@ export interface ImplicitReaderSelection {
   documentIds: string[];
   /** Readable documents past the bound, each unread with the reason. */
   leftOut: DocumentReadingDocument[];
-  /** Ready documents the actor may not see: not listed, and never retrieved instead. */
-  withheld: number;
 }
 
 /**
  * The documents read when none is selected: the ready, unrejected uploads
  * (not repository or database rows, as `defaultAnalysisDocumentIds`) the actor
  * may see, newest first, at most {@link READER_IMPLICIT_MAX_DOCUMENTS}. The
- * rest are named in the coverage report, never cut silently (#2233).
+ * rest are named in the coverage report, never cut silently (#2233). Documents
+ * the actor may not see are neither listed nor counted.
  */
 export async function implicitReaderSelection(
   projectId: string,
@@ -287,15 +286,20 @@ export async function implicitReaderSelection(
   const visible = rows.filter((r) => isVisibleTo(acl(r), actor));
   const leftOut = visible.slice(READER_IMPLICIT_MAX_DOCUMENTS);
   // #2297 — the loader audits the documents it is given; these are the ones it never sees.
+  // #2321 — only those ranked within the bound, which would have been read had the
+  // actor seen them, as retrieval audits only its candidate pool: a project's
+  // every older restricted upload is no denial of this read.
   auditReaderAcl(projectId, actor, {
-    denied: rows.filter((r) => !isVisibleTo(acl(r), actor)).map((r) => r.id),
+    denied: rows
+      .slice(0, READER_IMPLICIT_MAX_DOCUMENTS)
+      .filter((r) => !isVisibleTo(acl(r), actor))
+      .map((r) => r.id),
     bypassed: leftOut.filter((r) => isAdminBypass(acl(r), actor)).map((r) => r.id),
   });
   const reason = `Not read: with no document selected, the analysis reads the ${READER_IMPLICIT_MAX_DOCUMENTS} most recently uploaded. Select it to have it read.`;
   return {
     documentIds: visible.slice(0, READER_IMPLICIT_MAX_DOCUMENTS).map((r) => r.id),
     leftOut: leftOut.map((r) => unreadDocument(r.id, r.filename, reason)),
-    withheld: rows.length - visible.length,
   };
 }
 
@@ -416,10 +420,16 @@ export interface DocumentReaderAgentResult {
 /**
  * Read the selected documents (with none selected, the bounded
  * {@link implicitReaderSelection}) the actor may see, and build the document
- * agent's result. `null` when none could be loaded and none was unavailable
- * (missing, not ready or withheld by its ACL, #2297): the caller then
- * retrieves, as today. An unavailable document never sends the caller to
- * retrieval, which would read a withheld one unchecked.
+ * agent's result. `null` when none of the selected documents could be loaded
+ * and none was unavailable (missing, not ready or withheld by its ACL, #2297):
+ * the caller then retrieves, as today. An unavailable document never sends the
+ * caller to retrieval, which would read a withheld one unchecked. #2321 — with
+ * none selected, never `null`: a project with no ready upload and one whose
+ * every upload the actor may not see give the same (empty) reading, so this
+ * agent's output says nothing of documents the actor cannot see. The code
+ * agent's requirement retrieval in the same run (single-shot or
+ * requirement-grounded) still reads withheld uploads (no actor reaches
+ * `knowledge.search`): #2431.
  *
  * A provider error or a cancellation throws, as the agent call it replaces
  * did, carrying every token spent before it ({@link spentUsageOf}).
@@ -441,10 +451,10 @@ export async function runDocumentReaderAgent(input: {
   cache?: ReadingCacheDeps;
 }): Promise<DocumentReaderAgentResult | null> {
   const started = Date.now();
-  const selection: ImplicitReaderSelection =
-    input.documentIds.length > 0
-      ? { documentIds: [...input.documentIds], leftOut: [], withheld: 0 }
-      : await implicitReaderSelection(input.projectId, input.actor);
+  const implicit = input.documentIds.length === 0;
+  const selection: ImplicitReaderSelection = implicit
+    ? await implicitReaderSelection(input.projectId, input.actor)
+    : { documentIds: [...input.documentIds], leftOut: [] };
   const loads =
     selection.documentIds.length > 0
       ? await (input.load ?? createReaderDocumentLoader())(
@@ -455,9 +465,9 @@ export async function runDocumentReaderAgent(input: {
       : [];
   // #2297 — a missing id and a withheld one are one case (`unavailable`): both
   // are reported, and neither falls back to retrieval, which would read a
-  // withheld document unchecked.
-  const unavailable = selection.withheld + loads.filter((l) => !l.ok && l.unavailable).length;
-  if (!loads.some((l) => l.ok) && unavailable === 0) return null;
+  // withheld document unchecked. #2321 — nor does an implicit selection.
+  const unavailable = loads.some((l) => !l.ok && l.unavailable);
+  if (!implicit && !loads.some((l) => l.ok) && !unavailable) return null;
 
   const coverage: DocumentReadingDocument[] = [];
   const requirements: DocumentRequirement[] = [];
@@ -556,14 +566,19 @@ export async function runDocumentReaderAgent(input: {
   // purpose; only the rest "could not be read".
   const leftOut = selection.leftOut.length;
   const unread = coverage.length - read.length - leftOut;
+  // #2321 review — with none selected, the documents counted were uploaded,
+  // not selected: the implicit path now reaches this summary on its own.
+  const counted = implicit ? "uploaded" : "selected";
   const summary = clip(
-    `Read ${read.length} of ${coverage.length} selected document${coverage.length === 1 ? "" : "s"} in full ` +
-      `(${sections} section${sections === 1 ? "" : "s"}): ${requirements.length} statement${requirements.length === 1 ? "" : "s"} to analyse, each with its source.` +
-      (unread > 0 ? ` ${unread} could not be read; the coverage report says why.` : "") +
-      (leftOut > 0
-        ? ` ${leftOut} ${leftOut === 1 ? "was" : "were"} left out: with no document selected, only the ${READER_IMPLICIT_MAX_DOCUMENTS} most recently uploaded are read.`
-        : "") +
-      reusedReadingsSentence(reused),
+    coverage.length === 0
+      ? "No document was read: none was selected, and no ready uploaded document was found to read."
+      : `Read ${read.length} of ${coverage.length} ${counted} document${coverage.length === 1 ? "" : "s"} in full ` +
+          `(${sections} section${sections === 1 ? "" : "s"}): ${requirements.length} statement${requirements.length === 1 ? "" : "s"} to analyse, each with its source.` +
+          (unread > 0 ? ` ${unread} could not be read; the coverage report says why.` : "") +
+          (leftOut > 0
+            ? ` ${leftOut} ${leftOut === 1 ? "was" : "were"} left out: with no document selected, only the ${READER_IMPLICIT_MAX_DOCUMENTS} most recently uploaded are read.`
+            : "") +
+          reusedReadingsSentence(reused),
     MAX_SUMMARY,
   );
 

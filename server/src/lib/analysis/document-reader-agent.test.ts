@@ -476,12 +476,48 @@ describe("#2262 — implicitReaderSelection", () => {
     expect(selection.leftOut[0]!.reason).toContain(
       `reads the ${READER_IMPLICIT_MAX_DOCUMENTS} most recently uploaded`,
     );
-    expect(selection.withheld).toBe(1);
     // #2297 — the withheld one is audited, as retrieval audits a denial.
     expect(aclAudits()).toEqual([
       expect.objectContaining({
         action: "analysis.document_reader.acl_denied",
         metadata: expect.objectContaining({ documentIds: ["secret"] }),
+      }),
+    ]);
+  });
+
+  it("#2321 — audits only the withheld documents ranked within the bound: those it would have read", async () => {
+    const upload = (id: string, uploadedAt: number, restricted: boolean) => ({
+      id,
+      projectId: "p1",
+      filename: `${id}.md`,
+      title: null,
+      mimeType: "text/markdown",
+      storagePath: `p1/${id}`,
+      uploadedAt,
+      ...(restricted ? { aclSubjects: restrictedTo({ kind: "user", value: "u2" }) } : {}),
+    });
+    expect(READER_IMPLICIT_MAX_DOCUMENTS).toBe(5);
+    db.documents = [
+      // Ranks 0-1 withheld, 2-3 readable, rank 4 (the last within the bound)
+      // withheld, rank 5 (the first past it) withheld; then readable ones and
+      // forty more withheld. Pins the bound exactly: one less drops `edge-in`,
+      // one more adds `edge-out`.
+      upload("new-a", 100, true),
+      upload("new-b", 99, true),
+      upload("v0", 60, false),
+      upload("v1", 59, false),
+      upload("edge-in", 58, true),
+      upload("edge-out", 57, true),
+      ...Array.from({ length: 4 }, (_, i) => upload(`v${i + 2}`, 50 - i, false)),
+      ...Array.from({ length: 40 }, (_, i) => upload(`old-${i}`, 10 - i, true)),
+    ];
+    const selection = await implicitReaderSelection("p1", MEMBER);
+    expect(selection.documentIds).toEqual(["v0", "v1", "v2", "v3", "v4"]);
+    // Read in the newest five's place had the member seen them; the older ones never would be.
+    expect(aclAudits()).toEqual([
+      expect.objectContaining({
+        action: "analysis.document_reader.acl_denied",
+        metadata: expect.objectContaining({ documentIds: ["new-a", "new-b", "edge-in"] }),
       }),
     ]);
   });
@@ -1103,7 +1139,7 @@ describe("runDocumentReaderAgent", () => {
       ["d1", "read"],
       ["d0", "unread"],
     ]);
-    expect(read!.result.output.summary).toContain("Read 5 of 6 selected documents");
+    expect(read!.result.output.summary).toContain("Read 5 of 6 uploaded documents");
     // #2297 — left out on purpose, not "could not be read".
     expect(read!.result.output.summary).not.toContain("could not be read");
     expect(read!.result.output.summary).toContain(
@@ -1111,17 +1147,78 @@ describe("runDocumentReaderAgent", () => {
     );
   });
 
-  it("#2262 — with nothing selected and nothing ready, returns null without loading", async () => {
-    const load = vi.fn(async () => []);
+  it("#2321 — with nothing selected, no upload at all reads exactly as every upload withheld", async () => {
+    const run = async () => {
+      const load = vi.fn(async () => []);
+      const read = await runDocumentReaderAgent({
+        provider: reading,
+        projectId: "p1",
+        actor: MEMBER,
+        documentIds: [],
+        load,
+      });
+      expect(load).not.toHaveBeenCalled();
+      return read;
+    };
+    db.documents = [];
+    const none = await run();
+    db.documents = [
+      {
+        id: "secret",
+        projectId: "p1",
+        filename: "secret.md",
+        title: null,
+        mimeType: "text/markdown",
+        storagePath: "p1/secret",
+        aclSubjects: restrictedTo({ kind: "user", value: "u2" }),
+      },
+    ];
+    const withheld = await run();
+    // Neither sends the caller to retrieval (null), and the requester sees the same in both.
+    expect(none).not.toBeNull();
+    const shape = (r: typeof none) =>
+      JSON.parse(JSON.stringify({ ...r!.result.output, ...r!.coverage }));
+    expect(shape(withheld)).toEqual(shape(none));
+    expect(none!.coverage.documents).toEqual([]);
+    expect(none!.result.output.summary).toBe(
+      "No document was read: none was selected, and no ready uploaded document was found to read.",
+    );
+  });
+
+  it("#2321 — with nothing selected, an upload that cannot be loaded is listed, not retrieved instead", async () => {
+    db.documents = [
+      {
+        id: "d1",
+        projectId: "p1",
+        filename: "d1.docx",
+        title: null,
+        mimeType: "text/markdown",
+        storagePath: "p1/d1",
+      },
+    ];
     const read = await runDocumentReaderAgent({
       provider: reading,
       projectId: "p1",
       actor: MEMBER,
       documentIds: [],
-      load,
+      load: async () => [
+        {
+          ok: false,
+          documentId: "d1",
+          filename: "d1.docx",
+          reason: "Its stored file could not be read.",
+        },
+      ],
     });
-    expect(read).toBeNull();
-    expect(load).not.toHaveBeenCalled();
+    expect(read).not.toBeNull();
+    expect(read!.coverage.documents).toEqual([
+      expect.objectContaining({ documentId: "d1", status: "unread" }),
+    ]);
+    // #2321 review — none was selected, so the summary does not say "selected".
+    expect(read!.result.output.summary).toBe(
+      "Read 0 of 1 uploaded document in full (0 sections): 0 statements to analyse, each with its source. " +
+        "1 could not be read; the coverage report says why.",
+    );
   });
 
   it("#2262 — never sends the caller to retrieval for a document its ACL withheld", async () => {
