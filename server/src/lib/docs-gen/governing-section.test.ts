@@ -9,6 +9,8 @@ vi.mock("../analysis/source-redaction.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../analysis/source-redaction.js")>()),
   restrictedIds: async () => new Set<string>(),
   restrictedRequirementIds: async () => new Set<string>(),
+  // #2506 — pinned in tests/run-wide-surfaces-2506.sqlite.test.ts.
+  seesRunAsWhole: async () => true,
 }));
 import {
   GOVERNING_PREVIEW_NOTE,

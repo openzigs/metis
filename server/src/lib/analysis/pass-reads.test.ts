@@ -32,7 +32,7 @@ const onlyBob = JSON.stringify([{ kind: "user", value: "bob" }]);
 
 /** A fake of the three reads a pass makes, counting them. */
 function fakeDb(
-  run: { projectId: string; sourceAccess: string | null } | null,
+  run: { projectId: string; sourceAccess: string | null; metadata?: string | null } | null,
   docs: Array<{ id: string; filename: string; source: string; aclSubjects: string }> = [],
   results: Array<{ agentKey: string; readSourceIds: string | null }> = [],
 ) {
@@ -302,5 +302,16 @@ describe("withPassReads and readSetForPersist (#2448)", () => {
       true,
     );
     expect(await mayRestOnRestrictedRead("a", fakeDb(STARTER, [], read(null)))).toBe(true);
+  });
+
+  it("mayRestOnRestrictedRead folds in what replaced passes read (#2506)", async () => {
+    const read = [{ agentKey: "code", readSourceIds: ids([]) }];
+    const meta = (m: unknown) => ({ ...STARTER, metadata: JSON.stringify(m) });
+    const rest = (run: Parameters<typeof fakeDb>[0]) =>
+      mayRestOnRestrictedRead("a", fakeDb(run, [], read));
+    expect(await rest(meta({ replacedReadSourceIds: ["d-vault"] }))).toBe(true);
+    expect(await rest(meta({ replacedReadSourceIds: null }))).toBe(true);
+    expect(await rest(meta({ replacedReadSourceIds: [] }))).toBe(false);
+    expect(await rest({ ...STARTER, metadata: "{not json" })).toBe(true);
   });
 });

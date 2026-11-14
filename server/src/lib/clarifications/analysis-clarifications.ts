@@ -13,6 +13,7 @@ import type {
 import type { AIProvider } from "../ai/types.js";
 import { readDialogState } from "../analysis/clarification-dialog-store.js";
 import { getStructuredRequirements } from "../analysis/analysis-service.js";
+import { mayRestOnRestrictedRead } from "../analysis/pass-reads.js";
 import { createChildLogger } from "../logger.js";
 import { clarificationKey } from "./clarification-key.js";
 import {
@@ -267,6 +268,8 @@ export interface ClarificationKnowledgeInput {
 export interface ClarificationKnowledgeDeps {
   index?: typeof indexClarification;
   rerun?: typeof rerunAfterClarification;
+  /** #2506 — test seam: withdraws a record's earlier document instead of indexing it. */
+  withdraw?: typeof withdrawClarification;
 }
 
 /**
@@ -292,8 +295,18 @@ export async function persistClarificationKnowledge(
       ...(input.rounds ? { rounds: input.rounds } : {}),
     });
     if (changed.length === 0) return [];
+    // #2506 — an indexed record is a document every member may search unless
+    // its cited paragraph's access list says otherwise, and its question may
+    // restate text a pass of this run read from a restricted source (with its
+    // starter's access). So a run that may rest on such a read indexes none of
+    // them, and withdraws the earlier answer's document a changed record had:
+    // the records stay, for this run's dialog (which only a reader who can see
+    // the run as a whole is shown) and its re-run. A marker that cannot be
+    // read counts as restricted.
+    const restricted = await mayRestOnRestrictedRead(input.analysisId).catch(() => true);
     const index = deps.index ?? indexClarification;
-    for (const record of changed) await index(record);
+    const withdraw = deps.withdraw ?? withdrawClarification;
+    for (const record of changed) await (restricted ? withdraw(record) : index(record));
     await (deps.rerun ?? rerunAfterClarification)({
       analysisId: input.analysisId,
       projectId: input.projectId,

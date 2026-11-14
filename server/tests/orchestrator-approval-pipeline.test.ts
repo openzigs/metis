@@ -189,6 +189,7 @@ vi.mock("../src/lib/analysis/web-research-augmenter.js", () => ({
     augment = augmentMock;
   },
   createSearchProvider: vi.fn(() => ({ search: vi.fn(() => Promise.resolve([])) })),
+  RESTRICTED_READ_WEB_RESEARCH_NOTICE: "restricted-read notice",
 }));
 
 const runSynthesisMock = vi.fn();
@@ -560,6 +561,58 @@ describe("#215 — orchestrator creates approval requests after extraction/clari
       JSON.stringify({ documentIds: [], chunkIds: [] }),
     ]);
     expect(await seedOf("ana-starter-open")).toContain("Vault key in vault.ts");
+  });
+
+  it("#2506 — never sends a run that may rest on a restricted read to web research", async () => {
+    // The requirements were extracted from documents the starter alone may
+    // read; their text becomes search queries sent to an external provider.
+    const researched = async (analysisId: string) => {
+      extractMock.mockResolvedValue({
+        requirements: [
+          {
+            id: "r1",
+            title: "Vault rotation",
+            description: "",
+            ambiguities: [],
+            evidenceNeeds: [],
+          },
+        ],
+        totalAmbiguities: 0,
+        totalEvidenceNeeds: 1,
+      });
+      augmentMock.mockClear();
+      augmentMock.mockResolvedValue({ digests: [], totalSources: 0, reviewRequired: 0 });
+      const { orch } = makeOrchestrator();
+      await (orch as unknown as PrivateOrchestrator).runEnhancementPipeline({
+        analysisId,
+        extractedRequirements: [{ id: "x", text: "seed from a restricted spec" }],
+        enableWebResearch: true,
+        enableClarification: false,
+        signal: new AbortController().signal,
+      });
+      return augmentMock.mock.calls.length > 0;
+    };
+    markers.set("ana-wr-starter", "starter");
+    readSets.set("ana-wr-starter", [JSON.stringify({ documentIds: ["d-vault"], chunkIds: [] })]);
+    expect(await researched("ana-wr-starter")).toBe(false);
+    // The run says why, and holds no evidence and no evidence approvals.
+    expect(persisted.enhancement.find((e) => "webResearch" in e)).toMatchObject({
+      id: "ana-wr-starter",
+      webResearch: { digests: [], notice: "restricted-read notice" },
+    });
+    expect((await approvalSvc.listApprovalRequests("ana-wr-starter")).map((r) => r.type)).toEqual([
+      "requirement",
+    ]);
+    // A pass whose read set is unknown may have read anything: fail closed.
+    markers.set("ana-wr-unknown", "starter");
+    readSets.set("ana-wr-unknown", [null]);
+    expect(await researched("ana-wr-unknown")).toBe(false);
+    // A shared run read nothing restricted: it is researched as before.
+    expect(await researched("ana-wr-shared")).toBe(true);
+    // As is a starter run whose passes read nothing restricted.
+    markers.set("ana-wr-open", "starter");
+    readSets.set("ana-wr-open", [JSON.stringify({ documentIds: [], chunkIds: [] })]);
+    expect(await researched("ana-wr-open")).toBe(true);
   });
 
   it("creates no approvals when the signal aborts right after extraction", async () => {

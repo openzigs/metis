@@ -103,6 +103,14 @@ vi.mock("../middleware/analysis-approval-rate-limit.js", () => ({
   },
 }));
 
+// #2506 — whether the caller sees the run as a whole (a clarify round needs
+// it) is pinned over a real database in
+// tests/run-wide-surfaces-2506.sqlite.test.ts; here they do.
+vi.mock("../lib/analysis/source-redaction.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/analysis/source-redaction.js")>()),
+  loadSourceGuard: async () => ({ canSee: () => true, canSeeRun: () => true }),
+}));
+
 vi.mock("../lib/prisma.js", () => ({
   prisma: {
     analysis: {

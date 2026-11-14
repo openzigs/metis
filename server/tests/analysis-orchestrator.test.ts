@@ -119,6 +119,11 @@ vi.mock("../src/lib/prisma.js", () => ({
       }),
     },
     analysis: {
+      // #2506 — web research asks whether the run may rest on a restricted
+      // read (`mayRestOnRestrictedRead`); an unreadable run fails closed.
+      findUnique: vi.fn(
+        async ({ where }: { where: { id: string } }) => analyses.get(where.id) ?? null,
+      ),
       create: vi.fn(async ({ data }: { data: Partial<AnalysisRow> }) => {
         const row: AnalysisRow = {
           id: nid("ana"),

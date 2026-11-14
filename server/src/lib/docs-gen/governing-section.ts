@@ -59,6 +59,11 @@ import { parseRequirementLabels } from "../analysis/requirement-labels.js";
 import { formatStartedAt } from "../analysis/run-start-label.js";
 import { readGoverningApplicability } from "../governing/applicability-store.js";
 import {
+  restrictedGoverningFinding,
+  seesRunAsWhole,
+  sharedSourceReader,
+} from "../analysis/source-redaction.js";
+import {
   governingFindingRevisions,
   listGoverningFindings,
   type GoverningFindingRevision,
@@ -218,13 +223,18 @@ export async function loadGoverningSection(
       const scope = covered.get(a.id) ?? "all";
       const inScope = (f: GoverningFinding) => scope === "all" || scope.has(f.requirementId);
       if (!stored.some(inScope)) return null;
-      const [applicability, states] = await Promise.all([
+      const [applicability, states, seesRun] = await Promise.all([
         readGoverningApplicability(a.id),
         storedRequirementStates(a.id, projectId),
+        // #2506 — the document is read by the whole project (the shared audience).
+        seesRunAsWhole(sharedSourceReader(), a.id),
       ]);
       // #2222 — a finding that judged an earlier wording says so, as the analysis view does.
       // #2281 — and a deleted requirement's re-check is no finding of the run's, listed or not.
-      const all = withGoverningStaleness(stored, states, applicability);
+      // #2506 — placeholders with no requirement text when the project cannot
+      // see the run as a whole (it read a restricted source).
+      const judged = withGoverningStaleness(stored, states, applicability);
+      const all = seesRun ? judged : judged.map(restrictedGoverningFinding);
       const findings = all.filter(inScope);
       if (findings.length === 0) return null;
       const revisions = await governingFindingRevisions(findings);
@@ -233,9 +243,13 @@ export async function loadGoverningSection(
         startedAt: a.startedAt,
         findings,
         requirementText: new Map(
-          (applicability?.requirements ?? []).map((r) => [r.requirementId, r.text] as const),
+          (seesRun ? (applicability?.requirements ?? []) : []).map(
+            (r) => [r.requirementId, r.text] as const,
+          ),
         ),
-        requirementTitles: new Map(Object.entries(recheckedRequirementTitles(findings, states))),
+        requirementTitles: new Map(
+          Object.entries(seesRun ? recheckedRequirementTitles(findings, states) : {}),
+        ),
         revisions,
         omitted: all.length - findings.length,
       };

@@ -54,7 +54,12 @@ import {
   type RoleKey,
 } from "@metis/shared";
 import { prisma } from "../prisma.js";
-import { chatToolReader, loadSourceGuard } from "./source-redaction.js";
+import {
+  chatToolReader,
+  loadSourceGuard,
+  restrictedGoverningFinding,
+  seesRunAsWhole,
+} from "./source-redaction.js";
 import type { ToolContext, ToolDefinition, ToolResult } from "../ai/types.js";
 import { AppError } from "../../middleware/error-handler.js";
 import { resolveDurableRole } from "../auth/durable-roles.js";
@@ -921,13 +926,17 @@ export function createGetGoverningFindingsTool(
       });
       if (!a) return notFound("analysis", args.analysisId, LIST_ANALYSES_TOOL_NAME);
       // Read by the analysis id alone, which the query above bound to this project.
-      const [stored, applicability, states] = await Promise.all([
+      const [stored, applicability, states, seesRun] = await Promise.all([
         listGoverningFindings(a.id),
         readGoverningApplicability(a.id),
         storedRequirementStates(a.id, reader.projectId),
+        seesRunAsWhole(chatToolReader(ctx), a.id),
       ]);
       // #2222 — as the route: a finding that judged an earlier wording says so.
-      const all = withGoverningStaleness(stored, states, applicability);
+      // #2506 — and, as the route, placeholders with no requirement text for
+      // a reader who cannot see the run as a whole.
+      const judged = withGoverningStaleness(stored, states, applicability);
+      const all = seesRun ? judged : judged.map(restrictedGoverningFinding);
       const findings = args.requirementId
         ? all.filter((f) => f.requirementId === args.requirementId)
         : all;
@@ -944,7 +953,7 @@ export function createGetGoverningFindingsTool(
         };
       }
       const textOf = new Map(
-        (applicability?.requirements ?? []).map((r) => [r.requirementId, r.text]),
+        (seesRun ? (applicability?.requirements ?? []) : []).map((r) => [r.requirementId, r.text]),
       );
       const out: string[] = [`# Governing findings of analysis [${a.id}]`];
       let current: string | null = null;

@@ -8,11 +8,11 @@ import { restrictedReadSentence } from "./analysis.js";
 describe("#2448 — restrictedReadSentence", () => {
   it("says how many restricted files the run read, and what a reader who can't see one sees", () => {
     expect(restrictedReadSentence(1)).toBe(
-      "This analysis read 1 restricted file with the access of the person who ran it. " +
+      "This analysis read 1 restricted file or document with the access of the person who ran it. " +
         "Anyone who can't see it sees what drew on it as restricted.",
     );
     expect(restrictedReadSentence(3)).toBe(
-      "This analysis read 3 restricted files with the access of the person who ran it. " +
+      "This analysis read 3 restricted files and documents with the access of the person who ran it. " +
         "Anyone who can't see one of them sees what drew on it as restricted.",
     );
   });
