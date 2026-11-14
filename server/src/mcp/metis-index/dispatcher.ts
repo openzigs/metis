@@ -13,7 +13,8 @@
  *   5. redact the result with #2333's shared secret patterns, cap it (and say
  *      `truncated`), attach #2324's instructions and #2325's citations;
  *   6. audit-log user, tool, project and result count — never the result body
- *      and never the arguments.
+ *      and never the arguments. (Not the token id: the audit sink redacts every
+ *      `/token/i` key that is not a count, #1268.)
  *
  * No step makes a model call: the client agent does the reasoning.
  */
@@ -119,7 +120,7 @@ export async function dispatchIndexTool(
       actor: { id: caller.userId },
       action: AUDIT_ACTION,
       target: projectId ? { type: "project", id: projectId } : { type: "user", id: caller.userId },
-      metadata: { tool: def.name, projectId, tokenId: caller.tokenId, ...fields },
+      metadata: { tool: def.name, projectId, ...fields },
     });
 
   try {

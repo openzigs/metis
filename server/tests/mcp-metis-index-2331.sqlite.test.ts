@@ -545,9 +545,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       for (const e of fresh) {
         expect(e.action).toBe("mcp.index.tool_call");
         expect(e.actor).toEqual({ id: ALICE });
-        expect(e.metadata).toMatchObject({ tokenId: "t-alice", isError: false });
+        expect(e.metadata).toMatchObject({ isError: false });
         expect(Object.keys(e.metadata!).sort()).toEqual(
-          ["isError", "projectId", "resultCount", "tokenId", "tool", "truncated"].sort(),
+          ["isError", "projectId", "resultCount", "tool", "truncated"].sort(),
         );
       }
       expect(fresh.find((e) => e.metadata!.tool === "metis_search_symbols")).toMatchObject({

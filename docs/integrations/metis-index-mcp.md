@@ -6,16 +6,16 @@ offers eight read-only tools and makes no model call: your agent does the reason
 call runs as you. You see the projects you can read in METIS, and a file whose document is
 restricted from you is never read, listed or counted (#2331).
 
-| Tool | What it returns |
-|---|---|
-| `metis_list_projects` | The projects you can read: id, name, slug and a one-line description. Call it first. |
-| `metis_search_code_context` | Whole functions and classes that answer a question about the code, with `file:line` locators. |
-| `metis_search_symbols` | Keyword and semantic search over code symbols. Optional `fileGlob`, `symbolKind` and `language` filters. |
-| `metis_graph_callers` | The symbols that call a symbol, from the code graph, and probable call sites. |
-| `metis_graph_callees` | The symbols a symbol calls. |
-| `metis_read_file_slice` | Up to 200 numbered lines of a repository file. |
-| `metis_read_requirements` | The project's requirements: a filtered list, or one in full with its trace. |
-| `metis_index_status` | The last indexed commit, how the last indexing run ended, and coverage. |
+| Tool                        | What it returns                                                                                          |
+| --------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `metis_list_projects`       | The projects you can read: id, name, slug and a one-line description. Call it first.                     |
+| `metis_search_code_context` | Whole functions and classes that answer a question about the code, with `file:line` locators.            |
+| `metis_search_symbols`      | Keyword and semantic search over code symbols. Optional `fileGlob`, `symbolKind` and `language` filters. |
+| `metis_graph_callers`       | The symbols that call a symbol, from the code graph, and probable call sites.                            |
+| `metis_graph_callees`       | The symbols a symbol calls.                                                                              |
+| `metis_read_file_slice`     | Up to 200 numbered lines of a repository file.                                                           |
+| `metis_read_requirements`   | The project's requirements: a filtered list, or one in full with its trace.                              |
+| `metis_index_status`        | The last indexed commit, how the last indexing run ended, and coverage.                                  |
 
 Every tool except `metis_list_projects` takes a `projectId`, the id `metis_list_projects`
 gives you. These tools run the same implementations as METIS chat. Each result carries:
@@ -78,7 +78,10 @@ to stdout except MCP messages; its logs go to stderr.
   "mcpServers": {
     "metis-index": {
       "command": "node",
-      "args": ["--env-file=/path/to/metis/.env", "/path/to/metis/server/dist/mcp/metis-index/server.js"],
+      "args": [
+        "--env-file=/path/to/metis/.env",
+        "/path/to/metis/server/dist/mcp/metis-index/server.js"
+      ],
       "cwd": "/path/to/metis/server",
       "env": { "METIS_API_TOKEN": "${METIS_API_TOKEN}" }
     }
@@ -93,7 +96,7 @@ client's MCP settings file.
 
 ## What METIS records
 
-Each call is audit-logged as `mcp.index.tool_call` with your user id, the token id, the tool,
+Each call is audit-logged as `mcp.index.tool_call` with your user id, the tool,
 the project and the result count. A refused credential is logged as `mcp.index.denied` with
 the tool and the reason. METIS never logs a result body or the arguments, such as your query
 or a file path.
