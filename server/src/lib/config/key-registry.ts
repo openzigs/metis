@@ -28,6 +28,8 @@ import {
 } from "@metis/shared";
 import { modelPricesSchema } from "../finops/model-prices-schema.js";
 import { MAX_TIMEOUT_MS } from "./env-ms.js";
+import { normaliseOrigin } from "./cors-origins.js";
+import { parseConfigBool } from "./truthy.js";
 
 export type ConfigTier = "bootstrap" | "secret" | "tunable";
 export type ConfigValueType = "string" | "int" | "bool" | "json" | "csv";
@@ -78,15 +80,48 @@ const csvHostnameSchema = z
   .pipe(z.array(hostnameSchema));
 
 /**
- * #2493 — every `bool` key's write schema: a boolean, or the string "true" /
- * "false". `z.coerce.boolean()` turned any non-empty string, "false" included,
- * into true, so a client writing "false" switched the flag on. Anything else
- * is refused rather than guessed at.
+ * #2493 (and #2344's `MCP_REMOTE_ENABLED`) — every `bool` key's write schema.
+ * `z.coerce.boolean()` turned any non-empty string, "false" included, into
+ * true, so a client writing "false" switched the flag on. This takes exactly
+ * the clear spellings the read path (`getBool` → `isTruthyConfigValue`)
+ * understands, via {@link parseConfigBool}: a JSON boolean, the number 0 or 1, or `true` /
+ * `false` / `1` / `0` / `yes` / `no` / `on` / `off` as a string,
+ * case-insensitive and trimmed. Anything else (`""`, whitespace, `null`, other
+ * strings and numbers) is refused rather than guessed at. `ConfigService.set`
+ * stores the result as `"true"` / `"false"`.
  */
 const strictBoolSchema = z.union([
   z.boolean(),
-  z.enum(["true", "false"]).transform((v) => v === "true"),
+  z.union([z.literal(0), z.literal(1)]).transform((n) => n === 1),
+  z.string().transform((raw, ctx) => {
+    const b = parseConfigBool(raw);
+    if (b === undefined) {
+      ctx.addIssue({
+        code: "custom",
+        message: "Expected true/false, 1/0, yes/no or on/off",
+      });
+      return z.NEVER;
+    }
+    return b;
+  }),
 ]);
+
+/** #2344 — comma-separated http(s) origins (`scheme://host[:port]`), deduped. */
+const csvOriginSchema = z
+  .union([z.string(), z.array(z.string())])
+  .transform((raw) => {
+    const parts = (Array.isArray(raw) ? raw : raw.split(","))
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+    return Array.from(new Set(parts));
+  })
+  .pipe(
+    z.array(
+      z.string().refine((o) => normaliseOrigin(o) === o.replace(/\/$/, ""), {
+        message: "Each entry must be an origin: scheme://host[:port]",
+      }),
+    ),
+  );
 
 /** Bootstrap-tier sentinel — every write attempt fails validation. */
 const neverWritable = z.never();
@@ -814,7 +849,7 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
     valueType: "bool",
     schema: strictBoolSchema,
     description:
-      'Impact analysis: for a change about a tracked requirement (a run started with requirementIds), put the files the Analysis code agent cited for that requirement in "Evaluate new requirements" at the TOP of the files to edit (#1759). ON by default since #1823; set it to 0 to turn it off. It reuses the citations that pass already stored (RequirementCodeMapping rows with source analysis-grounding), so it makes no model call and adds no time against the 60-second impact deadline. At most 5 cited files lead, the surer citation first and then in citation order; at most 5 further cited files follow the existing candidates, and any beyond that are listed as related, not seeded. Every file the search picked stays a file to edit, with its score; a cited file the code graph no longer holds is dropped and counted in the run summary. Runs after the LLM edit check and re-order, so they cannot push the citations down. A pasted request has no stored citations and is unchanged. Measured as arm A3A of `pnpm eval:localization` (#1755): Recall@5 +0.31 over the hybrid seeding pooled on 29 held-out items on claude-sonnet-5-5 (p < 0.001); the shipped path, arm A7 (#1818): Recall@5 +0.256 pooled on 39 held-out items on claude-sonnet-5-5 (p < 0.001). Table precision on impact-recall-01-jpetstore (#1823, claude-sonnet-5-5, 3 runs, live #936 filter): 0.367 with the flag against 0.374 without it on the same analyses, -0.007 [-0.043, +0.028]: the average is within 0.03 of A7O; the 95% interval\'s lower bound is -0.043. Off: the seeding and the result are exactly as before.',
+      'Impact analysis: for a change about a tracked requirement (a run started with requirementIds), put the files the Analysis code agent cited for that requirement in "Evaluate new requirements" at the TOP of the files to edit (#1759). ON by default since #1823; set it to false (or 0) to turn it off. It reuses the citations that pass already stored (RequirementCodeMapping rows with source analysis-grounding), so it makes no model call and adds no time against the 60-second impact deadline. At most 5 cited files lead, the surer citation first and then in citation order; at most 5 further cited files follow the existing candidates, and any beyond that are listed as related, not seeded. Every file the search picked stays a file to edit, with its score; a cited file the code graph no longer holds is dropped and counted in the run summary. Runs after the LLM edit check and re-order, so they cannot push the citations down. A pasted request has no stored citations and is unchanged. Measured as arm A3A of `pnpm eval:localization` (#1755): Recall@5 +0.31 over the hybrid seeding pooled on 29 held-out items on claude-sonnet-5-5 (p < 0.001); the shipped path, arm A7 (#1818): Recall@5 +0.256 pooled on 39 held-out items on claude-sonnet-5-5 (p < 0.001). Table precision on impact-recall-01-jpetstore (#1823, claude-sonnet-5-5, 3 runs, live #936 filter): 0.367 with the flag against 0.374 without it on the same analyses, -0.007 [-0.043, +0.028]: the average is within 0.03 of A7O; the 95% interval\'s lower bound is -0.043. Off: the seeding and the result are exactly as before.',
     sensitive: false,
   },
   // ── Epic #1827 / Issue #1939 — #1832's stale-citation demotion, opt-in ───
@@ -1303,6 +1338,68 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
       .max(24 * 60 * 60_000),
     description: "Rate-limit window in ms for `/api/mcp/*`. Default 900000 (15 min).",
     sensitive: false,
+  },
+  // #2344 — the remote `metis-index-mcp` endpoint (`/mcp`), an OAuth 2.1 resource server.
+  // Read per request by `mcp/metis-index/remote/config.ts`; guide:
+  // docs/integrations/metis-index-mcp-remote.md.
+  MCP_REMOTE_ENABLED: {
+    tier: "tunable",
+    valueType: "bool",
+    schema: strictBoolSchema,
+    description:
+      "Serve the METIS index to remote MCP clients at /mcp, authorized by OAuth 2.1 access tokens. Off by default; needs MCP_REMOTE_RESOURCE_URL, MCP_REMOTE_ISSUER and MCP_REMOTE_JWKS_URL.",
+    sensitive: false,
+    default: "false",
+  },
+  MCP_REMOTE_RESOURCE_URL: {
+    tier: "tunable",
+    valueType: "string",
+    schema: z.string().url().max(2048),
+    description:
+      "The public URL of the remote MCP endpoint, e.g. https://metis.example.com/mcp. Tokens must be issued for it (RFC 8707 audience). https unless the host is localhost.",
+    sensitive: false,
+  },
+  MCP_REMOTE_ISSUER: {
+    tier: "tunable",
+    valueType: "string",
+    schema: z.string().url().max(2048),
+    description:
+      "The OAuth authorization server's issuer. A token's iss must equal it exactly, and its sub must be an identity a METIS user signed in with over OIDC from this issuer.",
+    sensitive: false,
+  },
+  MCP_REMOTE_JWKS_URL: {
+    tier: "tunable",
+    valueType: "string",
+    schema: z.string().url().max(2048),
+    description: "Where the authorization server publishes its token-signing keys (JWKS).",
+    sensitive: false,
+  },
+  MCP_REMOTE_SCOPE: {
+    tier: "tunable",
+    valueType: "string",
+    schema: z
+      .string()
+      .regex(/^[\x21\x23-\x5B\x5D-\x7E]{1,200}$/, "One OAuth scope token, no spaces"),
+    description:
+      "The read-only scope a token needs to call the remote MCP tools. Default mcp:read.",
+    sensitive: false,
+    default: "mcp:read",
+  },
+  MCP_REMOTE_ALLOWED_ORIGINS: {
+    tier: "tunable",
+    valueType: "csv",
+    schema: csvOriginSchema,
+    description:
+      "Comma-separated origins allowed to send an Origin header to /mcp. A request with any other Origin is refused; a request with none (a desktop agent) is not. This is a DNS-rebinding allowlist, not CORS: the endpoint sends no Access-Control-* headers, so a browser page cannot call it cross-origin.",
+    sensitive: false,
+  },
+  MCP_REMOTE_RATE_LIMIT_PER_MINUTE: {
+    tier: "tunable",
+    valueType: "int",
+    schema: z.coerce.number().int().min(1).max(10_000),
+    description: "Most remote MCP requests one user may make per minute. Default 60.",
+    sensitive: false,
+    default: "60",
   },
   SCHEDULER_ENABLED: {
     tier: "tunable",
