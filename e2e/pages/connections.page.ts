@@ -140,14 +140,16 @@ export class ConnectionsPage {
     await expect(this.addDbButton).toBeEnabled();
     // Tie the step to the request the click sends, so a failure says whether
     // the connector was ever posted rather than only that no label appeared.
-    const created = this.page.waitForResponse(
-      (res) =>
-        res.request().method() === "POST" &&
-        /\/api\/projects\/[^/]+\/connectors\/dbs$/.test(new URL(res.url()).pathname),
-      { timeout: 10_000 },
-    );
-    await this.addDbButton.click();
-    expect((await created).status(), "POST …/connectors/dbs").toBe(201);
+    const [created] = await Promise.all([
+      this.page.waitForResponse(
+        (res) =>
+          res.request().method() === "POST" &&
+          /\/api\/projects\/[^/]+\/connectors\/dbs$/.test(new URL(res.url()).pathname),
+        { timeout: 10_000 },
+      ),
+      this.addDbButton.click(),
+    ]);
+    expect(created.status(), "POST …/connectors/dbs").toBe(201);
     await expect(this.page.getByText(opts.label).first()).toBeVisible({ timeout: 10_000 });
   }
 
