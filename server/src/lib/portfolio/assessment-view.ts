@@ -113,13 +113,15 @@ export async function resolveReaderAccess(user: AuthPayload): Promise<ReaderAcce
  * restatement and its prose.
  *
  * #2491 — fail closed. The check read its rows when it ran; a row may since
- * have been rejected, deferred, deleted or renamed, so what a row is *now*
- * never clears a stored text. A text is shown only when it is the opening of
+ * have been rejected, deferred, soft-deleted or renamed, so what a row is
+ * *now* never clears a stored text. A text is shown only when it is the opening of
  * what a row the reader can see says now (`title: body`, how the check wrote
  * its criteria): then it tells the reader nothing they cannot read. A row
  * left out at the start (its starter could not see it) wrote no text, so a
  * check that read only visible rows withholds nothing; a visible row edited
- * since only over-blocks.
+ * since only over-blocks. Known gap, as before #2491 (#2498): a restricted row
+ * hard-deleted since (a withheld replacement, a re-synthesis) leaves no row to
+ * be hidden by, so with nothing else hidden the stored text stands.
  */
 async function hiddenSource(
   access: ReaderAccess,
