@@ -44,7 +44,7 @@ import {
 import { HoverHint } from "@/components/spec-kit/hover-hint";
 import { RequestReviewCard } from "@/components/reviews/request-review-card";
 import { RequirementApprovalWarning } from "@/components/requirements/RequirementApprovalWarning";
-import { APPROVAL_LADDER_RUNGS, ApprovalLadderNote } from "./approval-ladder";
+import { APPROVAL_LADDER_RUNGS, ApprovalLadderNote, SELF_APPROVAL_HINT } from "./approval-ladder";
 
 export const REQUIREMENTS_PAGE_SIZE = 25;
 const SEARCH_DEBOUNCE_MS = 300;
@@ -116,13 +116,6 @@ function selfApprovalRefusal(err: unknown): string | null {
 
 /** #2436 — why Approve is disabled for a role without `requirement.approve`. */
 export const APPROVE_HINT = `Approving needs the requirement.approve permission (${defaultRolesHolding("requirement.approve")} by default). You can still request a review.`;
-/**
- * #2452 — why Approve is disabled on a row the viewer wrote or edited, in a
- * project that does not allow self-approval: said before the click, as the
- * permission is, rather than as a refusal toast after it.
- */
-export const SELF_APPROVAL_HINT =
-  "You wrote or edited this requirement, so someone else must approve it. You can still request a review. An admin can allow self-approval in Project settings → Approval gate.";
 /** Why Edit is disabled for a role without `project.update`. */
 export const EDIT_HINT = "Editing needs a coordinator or admin role.";
 

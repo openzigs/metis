@@ -144,6 +144,24 @@ describe("ApprovalGateSettingsCard", () => {
     expect(qc.getQueryState(otherKey)?.isInvalidated).toBe(false);
   });
 
+  it("#2462 — re-reads the change request snapshots too, so their cards' Approve hints follow", async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const detailKey = queryKeys.analyses.detail("an-1");
+    const runsKey = queryKeys.analyses.forProject("p1");
+    qc.setQueryData(detailKey, { requirements: [] });
+    qc.setQueryData(runsKey, { items: [] });
+    render(
+      <QueryClientProvider client={qc}>
+        <ApprovalGateSettingsCard projectId="p1" />
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(gateApi.get).toHaveBeenCalled());
+    await userEvent.click(screen.getByTestId("approval-gate-toggle"));
+    await waitFor(() => expect(qc.getQueryState(detailKey)?.isInvalidated).toBe(true));
+    // The run list carries no Approve; it is left alone.
+    expect(qc.getQueryState(runsKey)?.isInvalidated).toBe(false);
+  });
+
   it("developer sees a disabled toggle and the RBAC hint", async () => {
     useAuthMock.mockReturnValue({ user: user("developer") });
     renderCard();

@@ -25,7 +25,8 @@ vi.mock("../prisma.js", async () => {
   };
 });
 
-const { listProjectRequirements } = await import("./project-requirements-list.js");
+const { listProjectRequirements, selfApprovalFlagDue } =
+  await import("./project-requirements-list.js");
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -82,5 +83,32 @@ describe("listProjectRequirements title search (#2347)", () => {
     await listProjectRequirements("p-1", { q: "   ", page: 2, pageSize: 10 });
     expect(queryRaw).not.toHaveBeenCalled();
     expect(findMany.mock.calls[0][0]).toMatchObject({ skip: 10, take: 10 });
+  });
+});
+
+describe("selfApprovalFlagDue (#2462): no flag reads while the page polls a run in progress", () => {
+  it.each(["completed", "failed", "cancelled"])("a %s run is due", (status) => {
+    expect(selfApprovalFlagDue({ status, metadata: null })).toBe(true);
+  });
+
+  it("a completed run being re-run (running, completedAt kept) is due", () => {
+    expect(
+      selfApprovalFlagDue({
+        status: "running",
+        completedAt: "2026-11-13T00:00:00Z",
+        metadata: null,
+      }),
+    ).toBe(true);
+  });
+
+  it.each(["pending", "running"])("a %s run is not, unless its checkpoint is open", (status) => {
+    expect(selfApprovalFlagDue({ status, metadata: null })).toBe(false);
+    expect(
+      selfApprovalFlagDue({ status, metadata: { promotionBlocked: { blocked: false } } }),
+    ).toBe(false);
+    expect(selfApprovalFlagDue({ status, metadata: { promotionBlocked: "yes" } })).toBe(false);
+    expect(selfApprovalFlagDue({ status, metadata: { promotionBlocked: { blocked: true } } })).toBe(
+      true,
+    );
   });
 });

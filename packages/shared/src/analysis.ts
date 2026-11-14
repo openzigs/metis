@@ -1854,6 +1854,13 @@ export interface AnalysisSnapshot {
      * ones; these await the analyst's Accept or Dismiss. Null or absent otherwise.
      */
     criteriaProposal?: RequirementCriteriaProposal | null;
+    /**
+     * #2462 — the viewer wrote or edited it and the project does not allow
+     * self-approval, so their Approve would be refused
+     * (`SELF_APPROVAL_FORBIDDEN`). Set by `GET /api/analyses/:id` only on a
+     * requirement the viewer could otherwise approve; absent otherwise.
+     */
+    selfApprovalForbidden?: true;
   }>;
   /**
    * Epic #203 (#221) — first-class cross-document conflict / contradiction /

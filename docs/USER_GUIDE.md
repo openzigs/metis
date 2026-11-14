@@ -2050,8 +2050,9 @@ the requirements rejected, not as they were before the first round.
   wrote has no author, so whoever ran the analysis may approve it. Editing a requirement and
   approving it in one save is refused too. METIS says *"You wrote or edited this requirement, so
   someone else must approve it"*, and a colleague approves it instead. Rejecting is not limited.
-  On the Requirements list, **Approve** on such a row is already disabled, with that reason on
-  hover, before you click it (#2452).
+  On the Requirements list, and on the requirement cards of a change request, **Approve** on such
+  a requirement is already disabled, with that reason on hover, before you click it; **Reject**
+  stays available (#2452, #2462).
 - **Approval checkpoint.** If you edit a requirement's wording in an analysis's approval
   checkpoint and then approve it there, it is promoted **awaiting review**, not approved, and
   METIS says so. A colleague approves it on the Requirements page; you cannot.

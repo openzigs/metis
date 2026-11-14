@@ -57,6 +57,12 @@ interface Props {
   status: string | null;
   /** The viewer's reason they cannot write, when they cannot. */
   writeHint?: string;
+  /**
+   * #2462 — the viewer's reason they cannot approve this one, when they could
+   * otherwise review it: they wrote or edited it and the project does not
+   * allow self-approval. Disables Approve only; Reject stays offered.
+   */
+  approveHint?: string;
   /** Whether a review request is in flight. */
   pending: boolean;
   onReview: (status: "approved" | "rejected") => void;
@@ -67,7 +73,13 @@ const ACTIONS = [
   { status: "rejected", idle: "Reject", done: "Rejected" },
 ] as const;
 
-export function RequirementReviewButtons({ status, writeHint, pending, onReview }: Props) {
+export function RequirementReviewButtons({
+  status,
+  writeHint,
+  approveHint,
+  pending,
+  onReview,
+}: Props) {
   // #2347 (#2220) — an approved requirement is not offered Approve / Reject as
   // if nothing had happened: it reads Approved, and changing it is an edit
   // (which sends it back for review, #2219) or a formal review.
@@ -76,16 +88,17 @@ export function RequirementReviewButtons({ status, writeHint, pending, onReview 
     <>
       {actions.map((a) => {
         const done = status === a.status;
+        const cannot = writeHint ?? (a.status === "approved" && !done ? approveHint : undefined);
         return (
           <HoverHint
             key={a.status}
-            hint={writeHint ?? (done ? `Already ${a.done.toLowerCase()}.` : undefined)}
+            hint={cannot ?? (done ? `Already ${a.done.toLowerCase()}.` : undefined)}
           >
             <Button
               size="sm"
               variant={done ? "default" : "outline"}
               onClick={() => onReview(a.status)}
-              disabled={writeHint !== undefined || pending || done}
+              disabled={cannot !== undefined || pending || done}
               aria-pressed={done}
             >
               {done ? a.done : a.idle}
