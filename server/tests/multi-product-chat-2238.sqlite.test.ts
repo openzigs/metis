@@ -522,8 +522,18 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       for (const s of state.searched) expect(s.documentIds).toEqual(["doc-b-annual"]);
     });
 
-    it("refuses a scope naming another workspace's project, or another workspace", async () => {
-      expect((await post("/api/ai/sessions", { projectIds: [ALPHA, SECRET] })).status).toBe(404);
+    it("never scopes a session to another workspace's project, or to another workspace", async () => {
+      // #2440 — another workspace's project degrades exactly as an unknown id
+      // does (201, unscoped, "stale-project"), so the answer does not say
+      // whether the id exists; the session searches neither product.
+      const foreign = await post("/api/ai/sessions", { projectIds: [ALPHA, SECRET] });
+      const unknown = await post("/api/ai/sessions", { projectIds: [ALPHA, "p-never-existed"] });
+      for (const res of [foreign, unknown]) {
+        expect(res.status, res.text).toBe(201);
+        expect(res.body.data.session.projectId).toBeNull();
+        expect(res.body.data.session.scopeProjectIds ?? null).toBeNull();
+        expect(res.body.data.scope).toMatchObject({ degraded: true, reason: "stale-project" });
+      }
       expect((await post("/api/ai/sessions", { workspaceId: THEIRS })).status).toBe(404);
       expect(state.searched).toEqual([]);
     });
