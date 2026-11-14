@@ -595,23 +595,40 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(await replyCitations(sessionId)).toEqual([expected]);
       });
 
-      it.each(["/api/ai/stream", "/api/ai/chat"])(
-        "#2315 — %s: lines only in the part of a tool result the cap kept from the model are not read",
-        async (route) => {
+      // The tool's result is two lines: `Code version: indexed commit …` (42
+      // characters) and `class src/validator.ts::Validator — src/validator.ts:1-40 [ts]`
+      // (106 characters in all). 12 tokens keep the first line whole and cut
+      // the locator's; 40 keep both. Together they bracket the cap: a route
+      // that checked against a larger cap than `capForModel` applied (or none)
+      // fails the first, one that checked against a smaller cap (tokens taken
+      // for characters) fails the second.
+      it.each([
+        ["/api/ai/stream", "12", false],
+        ["/api/ai/chat", "12", false],
+        ["/api/ai/stream", "40", true],
+        ["/api/ai/chat", "40", true],
+      ] as const)(
+        "#2315 — %s with a %s-token cap: a locator is read only if the model's capped copy showed its line",
+        async (route, capTokens, shown) => {
           process.env.CHAT_CODE_SEARCH_TOOLS = "true";
-          // A cap of a few characters: the model's copy shows none of the result's locators.
-          process.env.CHAT_TOOL_RESULT_MAX_TOKENS = "2";
+          process.env.CHAT_TOOL_RESULT_MAX_TOKENS = capTokens;
           try {
             model.chatReplies = [SEARCH, "It is `src/validator.ts:5-12`."];
             const sessionId = await newSession(PROJECT);
             const res = await post(route, { sessionId, message: "where is validation?" });
+            // What the model was actually fed: the header line always, the locator only uncut.
+            const fed = JSON.stringify(model.prompts[1]);
+            expect(fed).toContain("Code version: indexed commit");
+            expect(fed.includes("src/validator.ts:1-40 [ts]")).toBe(shown);
             const expected = [
-              {
-                text: "src/validator.ts:5-12",
-                path: "src/validator.ts",
-                lines: [5, 12],
-                status: "not-read",
-              },
+              shown
+                ? validatorAt([5, 12], "verified")
+                : {
+                    text: "src/validator.ts:5-12",
+                    path: "src/validator.ts",
+                    lines: [5, 12],
+                    status: "not-read",
+                  },
             ];
             if (route.endsWith("/chat")) expect(res.body.data.citations).toEqual(expected);
             else expect(citationFrames(res.text)).toEqual([expected]);

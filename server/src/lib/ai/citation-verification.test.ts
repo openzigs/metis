@@ -921,6 +921,28 @@ describe("#2315 — only what the model's capped copy of a tool result showed is
     ).toEqual(["verified", "verified", "verified"]);
   });
 
+  it("search_code_symbols: quoted snippet text naming a later hit's head is not that head", () => {
+    // Hit 1's snippet quotes a line holding hit 2's head text; the cap cut
+    // hit 2's real head away, so hit 2 was never shown to the model.
+    const result = [
+      "function a — src/a.ts:1-9 (score=0.900)",
+      "  // moved: x — src/b.ts:1-500 (score=0.5) and back",
+      "",
+      "function b — src/b.ts:1-500 (score=0.800)",
+    ].join("\n");
+    const citations = [ref("src/a.ts", 1, 9), ref("src/b.ts", 1, 500)];
+    const cap = 120;
+    expect(result.indexOf("function b")).toBeLessThan(cap);
+    expect(result.length).toBeGreaterThan(cap);
+    expect(
+      statusOf(
+        "src/a.ts:2 src/b.ts:1-500",
+        [tool({ tool: "search_code_symbols", result, citations })],
+        cap,
+      ),
+    ).toEqual(["verified", "not-read"]);
+  });
+
   it("search-knowledge: an excerpt past the cap was not retrieved for the model", () => {
     const result = [
       "[1] policies/refunds.md#3 (score=0.81)",
@@ -958,8 +980,19 @@ describe("#2315 — a file the answer proposes to create is not a citation", () 
     "We could create a test called server/tests/new-feature.test.ts.",
     "- `server/src/lib/new-feature.ts` (new)",
     "- server/src/lib/new-feature.ts — new file",
+    "Add a new test file called `server/tests/new-feature.test.ts`.",
+    "This creates `server/src/lib/new-feature.ts`.",
+    "- `server/src/lib/new-feature.ts` — new",
   ])("skips: %s", (answer) => {
     expect(cites(answer)).toEqual([]);
+  });
+
+  it.each([
+    "See the new `src/auth/login.ts` for the flow.",
+    "The config created at `x/y.ts` is read on boot.",
+    "`src/auth/login.ts` - new handlers were added there.",
+  ])("still checks a file the answer describes, not proposes: %s", (answer) => {
+    expect(cites(answer).map((c) => c.status)).toEqual(["not-read"]);
   });
 
   it("still checks an existing file the sentence works in, a proposal with lines, and a read file", () => {

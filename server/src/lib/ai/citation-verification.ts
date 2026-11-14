@@ -330,12 +330,21 @@ function clip(r: [number, number], end: number): [number, number] | null {
   return r[0] > end ? null : [r[0], Math.min(r[1], end)];
 }
 
+/** `s` with every RegExp metacharacter escaped. */
+const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 /**
  * #2315 — the `search_code_symbols` citations whose head line the model saw,
- * in hit order: each hit's head (`kind name — path:a-b (score=…)`) follows the
- * previous one's, so the first head missing from a cut result ends the list.
+ * in hit order: each hit's head (`kind name — path:a-b (score=0.123)`) follows
+ * the previous one's, so the first head missing from a cut result ends the list.
+ * A head is a whole result line ({@link resultLines}, LF alone, no `m` flag, as
+ * #2412's headers): a snippet line that merely contains ` — path:a-b (score=`
+ * is not one. A snippet line that is a whole head-shaped line still is, which
+ * needs the next hit's exact path and span; `seenText` has already dropped the
+ * line the cap cut through.
  */
 function seenSymbolCitations(refs: readonly CodeCitationRef[], text: string): CodeCitationRef[] {
+  const lines = resultLines(text);
   const out: CodeCitationRef[] = [];
   let at = 0;
   for (const ref of refs) {
@@ -343,8 +352,12 @@ function seenSymbolCitations(refs: readonly CodeCitationRef[], text: string): Co
       ref.startLine != null && ref.endLine != null
         ? `${ref.path}:${ref.startLine}-${ref.endLine}`
         : ref.path;
-    const i = text.indexOf(` — ${locator} (score=`, at);
-    if (i < 0) break;
+    const head = new RegExp(
+      `^\\S+ \\S.* — ${escapeRegExp(locator)} \\(score=-?\\d+(?:\\.\\d+)?\\)$`,
+    );
+    let i = at;
+    while (i < lines.length && !head.test(lines[i]!)) i += 1;
+    if (i >= lines.length) break;
     out.push(ref);
     at = i + 1;
   }
@@ -454,8 +467,12 @@ export function collectCitationEvidence(
   options: {
     /**
      * #2315 — the turn's cap on the model's copy of one tool result
-     * (`toolResultMaxChars`): what lay past it was never seen. Earlier turns
-     * ran under the same cap.
+     * (`toolResultMaxChars`): what lay past it was never seen. Earlier turns'
+     * stored results are cut at this turn's cap too, which only approximates
+     * theirs: the cap is `floor(toolResultMaxTokens * charsPerToken)`
+     * (`conversation/turn.ts`), and `charsPerToken` is calibrated per turn
+     * (and per model), so an earlier turn's cap may have kept a little more or
+     * less. A durable fix would store the kept length on the `tool_result` part.
      */
     toolResultMaxChars?: number;
   } = {},
@@ -542,16 +559,23 @@ const RANK: Partial<Record<ChatCitationStatus, number>> = { verified: 2, "verifi
 
 /**
  * #2315 — the words that introduce a file the answer proposes to create, just
- * before its path: "create `src/lib/new.ts`", "a new file at src/lib/new.ts",
+ * before its path: "create `src/lib/new.ts`", "add a new file at src/lib/new.ts",
  * "Creating the module `x/y.ts`". Only nouns for a file may sit between the
  * verb and the path, so "create a helper in `src/app.ts`" (an existing file)
- * is still a citation.
+ * is still a citation. The intent must be explicit: present-tense `create`, or
+ * `new` followed by `file` ("a new test file called …"). A bare "the new
+ * `x.ts`" or a past-tense "created at `x.ts`" describes a file that exists, so
+ * it stays checked: the not-read warning is recall-first.
  */
 const PROPOSED_BEFORE =
-  /\b(?:create[sd]?|creating|new)\s+(?:(?:a|an|the|file|module|test|spec|component|script|class|page|route|migration|folder|directory|config|called|named|at)\s+)*[`'"*([]*$/i;
-/** …or straight after it: "`src/lib/new.ts` (new)", "src/lib/new.ts — new file". */
+  /\b(?:(?:creates?|creating)\s+(?:(?:a|an|the|file|module|test|spec|component|script|class|page|route|migration|folder|directory|config|called|named|at)\s+)*|new\s+(?:(?:test|spec|config|source|module|script|migration)\s+)?file\s+(?:(?:called|named|at)\s+)?)[`'"*([]*$/i;
+/**
+ * …or straight after it: "`src/lib/new.ts` (new)", "src/lib/new.ts — new file",
+ * "x.ts — new". A dash and `new` then more words ("- new handlers were added")
+ * describes the file's content, not a file to create.
+ */
 const PROPOSED_AFTER =
-  /^[`'"*)\]]*\s*(?:\((?:new|new file|to create|to be created)\)|[—–-]\s*new\b)/i;
+  /^[`'"*)\]]*\s*(?:\((?:new|new file|to create|to be created)\)|[—–-]\s*new(?:\s+file\b|[ \t]*(?:[\n.,;)]|$)))/i;
 /** How far either side of a path {@link PROPOSED_BEFORE} and {@link PROPOSED_AFTER} look. */
 const PROPOSAL_WINDOW = 80;
 
