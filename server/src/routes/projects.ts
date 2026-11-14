@@ -181,7 +181,18 @@ export function projectsRouter(): Router {
       // #561 — the claim can outlive a removal; the membership row must agree.
       memberUserId = req.user?.userId ?? "";
     }
-    const result = await listProjects({ status, limit, offset, workspaceIds, memberUserId });
+    // #2424 — with a workspace named, `onlyWorkspace=true` leaves out the
+    // projects in no workspace: "Whole workspace" (#2351) means its own.
+    const onlyWorkspace =
+      Boolean(toScalar(req.query.workspaceId)) && toScalar(req.query.onlyWorkspace) === "true";
+    const result = await listProjects({
+      status,
+      limit,
+      offset,
+      workspaceIds,
+      memberUserId,
+      ...(onlyWorkspace ? { includeUnassigned: false } : {}),
+    });
     res.json(ok(result));
   });
 

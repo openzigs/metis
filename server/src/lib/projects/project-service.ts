@@ -336,6 +336,12 @@ export async function listProjects(
      * outlived a removal grant nothing. Omitted for an admin's filter.
      */
     memberUserId?: string;
+    /**
+     * #2424 — false: the workspaces' own projects only, without the legacy
+     * projects in no workspace (for "Whole workspace", #2351, which counts and
+     * selects what is in the workspace). Defaults to true.
+     */
+    includeUnassigned?: boolean;
   } = {},
 ) {
   const limit = Math.min(Math.max(opts.limit ?? 25, 1), 100);
@@ -360,7 +366,7 @@ export async function listProjects(
             : {}),
         },
       },
-      { workspaceId: null },
+      ...(opts.includeUnassigned === false ? [] : [{ workspaceId: null }]),
     ];
   }
   const [items, total] = await Promise.all([
