@@ -106,6 +106,9 @@ describe("Approve on a row the viewer wrote (#2452)", () => {
   it("the reason says who can change it and where", () => {
     expect(SELF_APPROVAL_HINT).toContain("someone else must approve it");
     expect(SELF_APPROVAL_HINT).toContain("Project settings → Approval gate");
+    // #2453 — only an admin can change the setting, so the hint names no coordinator.
+    expect(SELF_APPROVAL_HINT).toContain("An admin can allow self-approval");
+    expect(SELF_APPROVAL_HINT).not.toMatch(/coordinator/i);
     expect(SELF_APPROVAL_RULE).toContain("Project settings → Approval gate");
   });
 });

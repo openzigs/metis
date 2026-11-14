@@ -37,7 +37,7 @@ export const SELF_APPROVAL_RULE =
  * the Requirements list and the change request page's requirement cards.
  */
 export const SELF_APPROVAL_HINT =
-  "You wrote or edited this requirement, so someone else must approve it. You can still request a review. A coordinator or admin can allow self-approval in Project settings → Approval gate.";
+  "You wrote or edited this requirement, so someone else must approve it. You can still request a review. An admin can allow self-approval in Project settings → Approval gate.";
 
 /** #2452 — where the self-approval setting is, as a link: its card on Project settings. */
 export function approvalGateSettingsHref(projectId: string): string {

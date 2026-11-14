@@ -96,7 +96,7 @@ interface ApprovalsPanelProps {
  * not only in the toast after it.
  */
 export const HELD_FOR_REVIEW_NOTICE =
-  "You edited this requirement, so approving it holds it for a colleague's review: it is saved awaiting review, not approved. A coordinator or admin can allow self-approval in Project settings → Approval gate.";
+  "You edited this requirement, so approving it holds it for a colleague's review: it is saved awaiting review, not approved. An admin can allow self-approval in Project settings → Approval gate.";
 
 /**
  * #2462 — the structured requirement ids `viewerId` edited in the checkpoint of

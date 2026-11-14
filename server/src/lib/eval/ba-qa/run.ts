@@ -308,6 +308,12 @@ export function stepBudgetStop(input: {
   });
 }
 
+/**
+ * The results-file format this code writes. 2 (#2265): a citation's check can
+ * be `no-such-lines`, and the summary reports citation precision per check.
+ */
+export const BA_QA_RESULTS_VERSION = 2;
+
 /** The fields of a results file that decide whether it can sit beside this run. */
 export interface ComparableRun {
   kind: string;
@@ -315,12 +321,16 @@ export interface ComparableRun {
   model: string;
   judgeModel?: string;
   fixture: { id: string; version: number };
+  /** The results-file format; a file written before #2265 carries none and is version 1. */
+  version?: number;
 }
 
 /**
  * Refuse an `--include`d run that is not comparable with `current`: another
- * fixture, version, answer model or judge, or an arm already in the report
- * (`arms`), which would print two columns under one name.
+ * fixture, version, answer model or judge, an arm already in the report
+ * (`arms`), which would print two columns under one name, or a version 1
+ * results file (#2363): it labelled a citation to lines not in the file
+ * `span`, so re-summarising it would count them under the wrong check.
  */
 export function assertComparable(
   prior: ComparableRun,
@@ -330,6 +340,15 @@ export function assertComparable(
 ): void {
   if (prior.kind !== current.kind || prior.fixture.id !== current.fixture.id) {
     throw new Error(`${file} is another eval or fixture: not comparable`);
+  }
+  // Only after the kind check: a top-level `version` means nothing outside
+  // `kind: 'ba-qa'`, so another eval's file must not be refused for lacking one.
+  const resultsVersion = prior.version ?? 1;
+  if (resultsVersion < 2) {
+    throw new Error(
+      `${file} is results file version ${resultsVersion}, which labels lines not in the file ` +
+        `as span-checked: re-run that arm rather than include it`,
+    );
   }
   if (prior.fixture.version !== current.fixture.version) {
     throw new Error(
