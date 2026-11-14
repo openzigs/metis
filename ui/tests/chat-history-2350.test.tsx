@@ -52,7 +52,7 @@ beforeEach(() => {
 });
 
 describe("historyScopeLabel", () => {
-  it("names a project, a workspace, several projects, or none", () => {
+  it("names a project, a workspace, several products, or none", () => {
     expect(historyScopeLabel(row("a", { projectId: "p", projectName: "Alpha" }))).toBe("Alpha");
     expect(historyScopeLabel(row("a", { projectId: "p", projectName: null }))).toBe("A project");
     // #2424 — the scope picker's own words (#2351): "Whole workspace", and
@@ -61,7 +61,7 @@ describe("historyScopeLabel", () => {
       "Whole workspace: Retail",
     );
     expect(historyScopeLabel(row("a", { scopeWorkspaceId: "ws-9" }))).toBe("Whole workspace");
-    expect(historyScopeLabel(row("a", { scopeProjectIds: ["p1", "p2", "p3"] }))).toBe("3 projects");
+    expect(historyScopeLabel(row("a", { scopeProjectIds: ["p1", "p2", "p3"] }))).toBe("3 products");
     expect(historyScopeLabel(row("a", { scopeProjectIds: ["p1"] }))).toBe("No product chosen");
     expect(historyScopeLabel(row("a"))).toBe("No product chosen");
   });

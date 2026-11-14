@@ -38,7 +38,8 @@ export function historyScopeLabel(
     return name ? `${SCOPE_WORDS.workspace}: ${name}` : SCOPE_WORDS.workspace;
   }
   if (s.scopeProjectIds && s.scopeProjectIds.length > 1) {
-    return `${s.scopeProjectIds.length} projects`;
+    // The picker's unit: it counts products.
+    return `${s.scopeProjectIds.length} products`;
   }
   return SCOPE_WORDS.nothing;
 }

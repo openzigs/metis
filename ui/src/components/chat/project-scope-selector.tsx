@@ -191,10 +191,12 @@ export function ProjectScopeSelector({ value, onChange, disabled }: Props) {
   // #2424 — the selection last made by ticking. The scope alone cannot tell
   // the top bar's project ticked from "This project" (both are that one id),
   // so without this a ticked top-bar project showed unticked, as "This
-  // project", and the next tick dropped it. Keyed on the ids, so a scope
-  // changed from outside (the opening rule, a resumed chat) is read afresh.
-  const [tickedKey, setTickedKey] = useState<string | null>(null);
-  const tickedHere = value.mode === "selected" && tickedKey === value.projectIds.join(",");
+  // project", and the next tick dropped it. Held as the scope object a tick
+  // emitted, not its ids: any scope set from outside (the opening rule, a
+  // resumed chat) is a different object, even with the same ids, and so is
+  // read afresh.
+  const [tickedScope, setTickedScope] = useState<ProjectScope | null>(null);
+  const tickedHere = value.mode === "selected" && value === tickedScope;
 
   function isThisProject(scope: ProjectScope): boolean {
     return !tickedHere && scope.projectIds.length === 1 && scope.projectIds[0] === current?.id;
@@ -214,7 +216,7 @@ export function ProjectScopeSelector({ value, onChange, disabled }: Props) {
       ? currentIds.filter((id) => id !== projectId)
       : [...currentIds, projectId];
     const next = normaliseScope({ mode: "selected", projectIds: ids });
-    setTickedKey(next.mode === "selected" ? next.projectIds.join(",") : null);
+    setTickedScope(next.mode === "selected" ? next : null);
     pick(next);
   }
 
@@ -254,12 +256,12 @@ export function ProjectScopeSelector({ value, onChange, disabled }: Props) {
       scopeWorkspace={storedWorkspace ? { name: storedWorkspace.name, count: null } : null}
       onPickThis={() => {
         if (!current) return;
-        setTickedKey(null);
+        setTickedScope(null);
         pick({ mode: "selected", projectIds: [current.id] });
       }}
       onPickWorkspace={() => {
         if (activeWorkspace) {
-          setTickedKey(null);
+          setTickedScope(null);
           pick({ mode: "workspace", projectIds: [], workspaceId: activeWorkspace.id });
         }
       }}

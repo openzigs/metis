@@ -92,8 +92,26 @@ async function created<T>(
   return ((await res.json()) as Envelope<T>).data;
 }
 
-/** Everything the seed made, removed by `afterAll` (products, then projects, then workspaces). */
-const made = { products: [] as string[], projects: [] as string[], workspaces: [] as string[] };
+/**
+ * Everything the seed made, removed by `afterAll` (products, then projects, then
+ * workspaces), and the impact analyses and portfolio checks the tests started,
+ * which `afterAll` waits on first.
+ */
+const made = {
+  products: [] as string[],
+  projects: [] as string[],
+  workspaces: [] as string[],
+  runs: [] as string[],
+};
+
+/** Remember a started run (`/api/impact-analyses/<id>`, `/api/portfolio-assessments/<id>`). */
+function startedRun(base: string, body: Record<string, unknown> | null): void {
+  const id = (body?.data as { id?: unknown } | undefined)?.id;
+  if (typeof id === "string") made.runs.push(`${base}/${id}`);
+}
+
+/** A run is done once it has completed or failed. */
+const RUN_DONE = new Set(["completed", "failed"]);
 
 async function seed(): Promise<Seeded> {
   const admin = await signIn(ADMIN_USER.username, ADMIN_USER.password);
@@ -198,6 +216,26 @@ async function cleanUp(testInfo: TestInfo): Promise<void> {
       if (outcome)
         testInfo.annotations.push({ type: "cleanup", description: `${path}: ${outcome}` });
     };
+    // Neither an impact analysis nor a portfolio check has a delete or cancel
+    // route, so the runs this spec started stay, as every other spec's do. What
+    // cleanup can do is let each finish before its projects and products are
+    // deleted from under it, so no run of ours is left mid-flight on the stack.
+    for (const path of made.runs.splice(0)) {
+      const deadline = Date.now() + 60_000;
+      let status = "unknown";
+      while (Date.now() < deadline) {
+        const res = await admin.get(path).catch(() => null);
+        if (!res?.ok()) {
+          status = res ? `HTTP ${res.status()}` : "unreachable";
+          break;
+        }
+        status = String(((await res.json()) as Envelope<{ status?: unknown }>).data.status);
+        if (RUN_DONE.has(status)) break;
+        await new Promise((r) => setTimeout(r, 1_000));
+      }
+      if (!RUN_DONE.has(status))
+        testInfo.annotations.push({ type: "cleanup", description: `${path}: still ${status}` });
+    }
     // Projects go before their workspaces: a deleted workspace leaves its live
     // projects in no workspace, which opens them to every user.
     for (const id of made.products.splice(0)) await remove(`/api/products/${id}`);
@@ -269,6 +307,8 @@ test.describe
   });
 
   test.afterAll(async ({}, testInfo) => {
+    // Up to a minute for each of the four runs to finish, then the deletes.
+    test.setTimeout(330_000);
     await cleanUp(testInfo);
   });
 
@@ -346,6 +386,7 @@ test.describe
       const post = nextPost(page, /\/api\/impact-analyses$/);
       await page.getByRole("button", { name: "Run impact analysis" }).click();
       const { sent, status, body } = await post;
+      startedRun("/api/impact-analyses", body);
       expect([200, 201, 202], JSON.stringify(body)).toContain(status);
       expect(sorted(sent.projectIds)).toEqual(
         sorted([seeded.projects.alpha, seeded.projects.beta]),
@@ -375,6 +416,7 @@ test.describe
       const post = nextPost(page, /\/api\/portfolio-assessments$/);
       await page.getByRole("button", { name: "Check coverage" }).click();
       const { sent, status, body } = await post;
+      startedRun("/api/portfolio-assessments", body);
       expect([200, 201, 202], JSON.stringify(body)).toContain(status);
       expect(sent.scope).toBe("product");
       expect(sorted(sent.productIds)).toEqual(
@@ -425,6 +467,7 @@ test.describe
       const post = nextPost(page, /\/api\/impact-analyses$/);
       await page.getByRole("button", { name: "Run impact analysis" }).click();
       const { sent, status, body } = await post;
+      startedRun("/api/impact-analyses", body);
       expect([200, 201, 202], JSON.stringify(body)).toContain(status);
       expect(sent.projectIds).toEqual([seeded.projects.alpha, seeded.projects.beta]);
       await expect(page).toHaveURL(/\/impact-analyses\/(?!new)[^/]+$/);
@@ -442,6 +485,7 @@ test.describe
       const post = nextPost(page, /\/api\/portfolio-assessments$/);
       await page.getByRole("button", { name: "Check coverage" }).click();
       const { sent, status, body } = await post;
+      startedRun("/api/portfolio-assessments", body);
       expect([200, 201, 202], JSON.stringify(body)).toContain(status);
       expect(sent.scope).toBe("product");
       expect(sent.productIds).toEqual([seeded.products.alpha, seeded.products.beta]);

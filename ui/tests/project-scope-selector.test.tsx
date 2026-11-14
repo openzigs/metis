@@ -598,13 +598,19 @@ describe("ProjectScopeSelector — ticking the top bar's project (#2424)", () =>
   function Harness({ onChange }: { onChange: (scope: ProjectScope) => void }) {
     const [value, setValue] = useState<ProjectScope>({ mode: "selected", projectIds: ["p-1"] });
     return (
-      <ProjectScopeSelector
-        value={value}
-        onChange={(next) => {
-          onChange(next);
-          setValue(next);
-        }}
-      />
+      <>
+        <ProjectScopeSelector
+          value={value}
+          onChange={(next) => {
+            onChange(next);
+            setValue(next);
+          }}
+        />
+        {/* A change from outside the picker, e.g. a resumed chat's scope. */}
+        <button type="button" onClick={() => setValue({ mode: "selected", projectIds: ["p-1"] })}>
+          outside
+        </button>
+      </>
     );
   }
 
@@ -638,6 +644,24 @@ describe("ProjectScopeSelector — ticking the top bar's project (#2424)", () =>
     expect(screen.getByLabelText("Alpha")).toBeChecked();
 
     await user.click(screen.getByTestId("project-scope-this"));
+    expect(button).toHaveTextContent("This project: Alpha");
+    await user.click(button);
+    expect(await screen.findByLabelText("Alpha")).not.toBeChecked();
+  });
+
+  it("an outside change to the same one project reads it as This project again", async () => {
+    const user = userEvent.setup();
+    render(<Harness onChange={vi.fn()} />, { wrapper: makeWrapper() });
+    const button = screen.getByTestId("project-scope-selector");
+    await waitFor(() => expect(button).toHaveTextContent("This project: Alpha"));
+    await user.click(button);
+    await user.click(await screen.findByLabelText("Alpha"));
+    expect(screen.getByLabelText("Alpha")).toBeChecked();
+    await user.keyboard("{Escape}");
+
+    // The same ids as the tick, but set from outside (a resumed chat): read
+    // afresh, so it is "This project" again.
+    await user.click(screen.getByRole("button", { name: "outside" }));
     expect(button).toHaveTextContent("This project: Alpha");
     await user.click(button);
     expect(await screen.findByLabelText("Alpha")).not.toBeChecked();
