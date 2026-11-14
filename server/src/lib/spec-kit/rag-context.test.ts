@@ -10,11 +10,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RetrievedChunk } from "@metis/shared";
 import { buildSpecKitRagContext, type SpecKitFusedCodeDeps } from "./rag-context.js";
 import { __resetConfigSingleton } from "../config/config-service.js";
+import { SYSTEM_ACTOR_ID } from "../audit/system-actor.js";
 import type {
   FusedCodeSearcher,
   RawCodeSymbolHit,
   SymbolLineLookup,
 } from "../rag/fused-code-context.js";
+
+/** #2431 — a Spec Kit artifact is read by the whole project: every search is a shared audience's. */
+const SHARED = { userId: SYSTEM_ACTOR_ID, role: "shared-audience", sharedAudience: true };
 
 afterEach(() => {
   delete process.env.CHAT_FUSED_CODE_RETRIEVAL;
@@ -237,6 +241,7 @@ describe("buildSpecKitRagContext — expandDocuments (#20)", () => {
     expect(ks.search).toHaveBeenCalledWith("p1", "tool call recovery", {
       k: 10,
       documentIds: ["req"],
+      actor: SHARED,
     });
     expect(res.usedChunks).toBe(3);
     const r1 = res.context.indexOf("req.md#1 (pinned");
@@ -275,7 +280,11 @@ describe("buildSpecKitRagContext — expandDocuments (#20)", () => {
       fusedCode: fused([], {}),
       expandDocuments: expansion,
     });
-    expect(ks.search).toHaveBeenCalledWith("p1", "q", { k: 10, documentIds: ["legacy"] });
+    expect(ks.search).toHaveBeenCalledWith("p1", "q", {
+      k: 10,
+      documentIds: ["legacy"],
+      actor: SHARED,
+    });
   });
 
   it("ignores chunks from another document and keeps top-k when expansion fails", async () => {

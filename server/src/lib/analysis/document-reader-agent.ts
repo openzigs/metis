@@ -426,10 +426,10 @@ export interface DocumentReaderAgentResult {
  * caller to retrieval, which would read a withheld one unchecked. #2321 — with
  * none selected, never `null`: a project with no ready upload and one whose
  * every upload the actor may not see give the same (empty) reading, so this
- * agent's output says nothing of documents the actor cannot see. The code
- * agent's requirement retrieval in the same run (single-shot or
- * requirement-grounded) still reads withheld uploads (no actor reaches
- * `knowledge.search`): #2431.
+ * agent's output says nothing of documents the actor cannot see. Since #2431
+ * the code agent's requirement retrieval in the same run (single-shot or
+ * requirement-grounded) reads as a shared audience, so it reads no withheld
+ * upload either.
  *
  * A provider error or a cancellation throws, as the agent call it replaces
  * did, carrying every token spent before it ({@link spentUsageOf}).

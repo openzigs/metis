@@ -9,6 +9,7 @@ import type { AgentTool, ToolContext, ToolResult, JSONSchema } from "./types.js"
 import { missingParamError } from "./arg-errors.js";
 import type { KnowledgeService } from "../../rag/knowledge-service.js";
 import { formatHitScore } from "../../rag/hit-locator.js";
+import { sharedDocumentAudience } from "../document-access.js";
 
 const DEFAULT_K = 5;
 const MAX_K = 15;
@@ -45,6 +46,11 @@ function validateArgs(args: unknown): SearchKnowledgeArgs | null {
 
 export interface SearchKnowledgeDeps {
   knowledgeService: KnowledgeService;
+  /**
+   * #2431 — told the ids of the chunks a search dropped because their
+   * document is restricted, so the run can count them. Never with an empty list.
+   */
+  onAclDenied?: (chunkIds: string[]) => void;
 }
 
 export function createSearchKnowledgeTool(deps: SearchKnowledgeDeps): AgentTool {
@@ -65,7 +71,15 @@ export function createSearchKnowledgeTool(deps: SearchKnowledgeDeps): AgentTool 
     }
 
     const k = validated.k ?? DEFAULT_K;
-    const result = await deps.knowledgeService.search(context.projectId, validated.query, { k });
+    // #2431 — this tool serves only the analysis code agent, whose findings
+    // every project member reads: it searches as a shared audience, so no
+    // restricted document reaches them, whoever started the run.
+    const result = await deps.knowledgeService.search(context.projectId, validated.query, {
+      k,
+      actor: sharedDocumentAudience(),
+      reportAclMismatch: true,
+    });
+    if (result.aclMismatch && result.aclMismatch.length > 0) deps.onAclDenied?.(result.aclMismatch);
 
     if (result.hits.length === 0) {
       return { content: "No relevant documents found for the query.", resultCount: 0 };

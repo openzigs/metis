@@ -39,7 +39,13 @@ import {
   type HiddenSymbolsLookup,
   type SymbolLineLookup,
 } from "../rag/fused-code-context.js";
-import { hiddenSymbolsFor, loadSharedCodeAccess } from "../analysis/tools/code-access.js";
+import {
+  hiddenSymbolsFor,
+  loadSharedCodeAccess,
+  type CodeAccessFilter,
+} from "../analysis/tools/code-access.js";
+import { sharedDocumentAudience } from "../analysis/document-access.js";
+import type { AclActor } from "../rag/acl.js";
 import {
   createDefaultCodeSearcher,
   createDefaultSymbolLineLookup,
@@ -63,7 +69,12 @@ export interface SpecKitKnowledgeService {
   search(
     projectId: string,
     query: string,
-    opts: { k?: number; documentIds?: string[] },
+    /**
+     * #2431 — `actor` is always the shared audience (`sharedDocumentAudience`):
+     * a Spec Kit artifact is read by the whole project, so no restricted
+     * document reaches it.
+     */
+    opts: { k?: number; documentIds?: string[]; actor?: AclActor },
   ): Promise<{ hits: RetrievedChunk[] }>;
 }
 
@@ -131,6 +142,14 @@ export interface BuildSpecKitRagContextOptions {
    * `/plan` sets it.
    */
   localise?: SpecKitLocalisation;
+  /**
+   * #2431 — the files the callers and the localisation may not name, loaded
+   * at most once and only when one of them has something to show. Defaults to
+   * the shared audience's (`loadSharedCodeAccess`), as the fused block's: an
+   * artifact is read by the whole project. A filter that cannot be read leaves
+   * the whole context out, as any other retrieval failure does.
+   */
+  codeAccess?: () => Promise<CodeAccessFilter>;
 }
 
 export interface SpecKitLocalisation {
@@ -167,6 +186,12 @@ export interface CallerEdgeRow {
   filePath: string;
   line: number;
   callerName: string;
+  /**
+   * #2431 — the repository connection of the edge's code graph, to judge
+   * `filePath` against that repository's restrictions. Absent or `null` (a
+   * legacy graph): matched against every repository's.
+   */
+  repoConnectionId?: string | null;
 }
 
 /** #944 — reads the `calls` edges into the given symbols, scoped to the project. */
@@ -275,8 +300,16 @@ export async function buildSpecKitRagContext(
     lineLookup: createDefaultSymbolLineLookup(),
   };
 
+  // #2431 — one load for the callers and the localisation, only when asked.
+  let accessLoad: Promise<CodeAccessFilter> | undefined;
+  const codeAccess = (): Promise<CodeAccessFilter> =>
+    (accessLoad ??= (opts.codeAccess ?? (() => loadSharedCodeAccess(projectId)))());
+
   try {
-    const { hits } = await service.search(projectId, boundedQuery, { k });
+    const { hits } = await service.search(projectId, boundedQuery, {
+      k,
+      actor: sharedDocumentAudience(),
+    });
 
     // Build the doc-level block (unchanged wording) when there are hits.
     let docContext = "";
@@ -340,23 +373,25 @@ export async function buildSpecKitRagContext(
             ...siblings.symbols.map((s) => ({ id: s.id, name: s.name })),
           ],
           opts.callers,
+          codeAccess,
         )
       : { block: "", files: [] };
 
     // #1060 — from what similarity retrieved, down the code graph to its data.
+    const seeds = [
+      ...anchors.map((a) => ({
+        id: a.symbolId,
+        name: a.name,
+        filePath: a.filePath,
+        kind: a.kind,
+      })),
+      ...siblings.symbols,
+    ];
     const localisation = opts.localise
       ? await buildPlanLocalisation({
           projectId,
           requirementText: trimmedQuery,
-          seeds: [
-            ...anchors.map((a) => ({
-              id: a.symbolId,
-              name: a.name,
-              filePath: a.filePath,
-              kind: a.kind,
-            })),
-            ...siblings.symbols,
-          ],
+          seeds,
           tokenBudget:
             opts.localise.tokenBudget ??
             cfg.getNumber(
@@ -371,6 +406,8 @@ export async function buildSpecKitRagContext(
             ? { twinTimeBudgetMs: opts.localise.twinTimeBudgetMs }
             : {}),
           ...(opts.localise.signal ? { signal: opts.localise.signal } : {}),
+          // #2431 — no file a project member may not see, nor any sentence naming one.
+          ...(seeds.length > 0 ? { hiddenFile: await hiddenFileOf(codeAccess) } : {}),
         })
       : null;
 
@@ -434,6 +471,19 @@ export async function buildSpecKitRagContext(
   }
 }
 
+/**
+ * #2431 — the localisation's `hiddenFile` for the filter `load` resolves:
+ * `undefined` when nothing is hidden, so an unrestricted walk is unchanged. A
+ * localisation symbol carries no repository, so a path is matched against
+ * every repository's restrictions.
+ */
+async function hiddenFileOf(
+  load: () => Promise<CodeAccessFilter>,
+): Promise<((filePath: string) => boolean) | undefined> {
+  const access = await load();
+  return access.unrestricted ? undefined : (filePath) => access.isHidden(null, filePath);
+}
+
 /** Distinct non-empty paths, in first-seen order. */
 function uniquePaths(paths: readonly string[]): string[] {
   return [...new Set(paths.filter((p) => p.length > 0))];
@@ -484,6 +534,7 @@ async function expandDocuments(
       const { hits: docHits } = await service.search(projectId, query, {
         k: expansion.maxChunksPerDocument,
         documentIds: [documentId],
+        actor: sharedDocumentAudience(),
       });
       const extra = (docHits ?? [])
         .filter((h) => h.documentId === documentId && !seen.has(h.chunkId))
@@ -684,6 +735,7 @@ const prismaCallerLookup: CallerLookup = {
         filePath: true,
         line: true,
         fromSymbol: { select: { name: true } },
+        graph: { select: { repoConnectionId: true } },
       },
       orderBy: [{ filePath: "asc" }, { line: "asc" }],
       take: CALLER_FETCH_CAP,
@@ -694,6 +746,7 @@ const prismaCallerLookup: CallerLookup = {
       filePath: r.filePath,
       line: r.line,
       callerName: r.fromSymbol.name,
+      repoConnectionId: r.graph.repoConnectionId,
     }));
   },
 };
@@ -708,6 +761,7 @@ async function findCallers(
   projectId: string,
   callees: ReadonlyArray<{ id: string; name: string }>,
   opts: SpecKitCallerExpansion,
+  codeAccess: () => Promise<CodeAccessFilter>,
 ): Promise<{ block: string; files: string[] }> {
   const none = { block: "", files: [] };
   if (callees.length === 0) return none;
@@ -720,6 +774,14 @@ async function findCallers(
       error: (err as Error).message,
     });
     return none;
+  }
+  // #2431 — a call site in a file a project member may not see is neither
+  // listed nor named. The filter's failure is the context's (no code at all).
+  if (rows.length > 0) {
+    const access = await codeAccess();
+    if (!access.unrestricted) {
+      rows = rows.filter((r) => !access.isHidden(r.repoConnectionId ?? null, r.filePath));
+    }
   }
   const byId = new Map(callees.map((c) => [c.id, c.name]));
   const names = new Set(callees.map((c) => c.name));

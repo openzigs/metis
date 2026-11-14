@@ -165,7 +165,13 @@ import {
   recordRestrictedLeftOut,
   restrictedLeftOutOf,
   type RestrictedLeftOutCounts,
+  type RestrictedLeftOutReport,
 } from "./analysis-capability.js";
+import {
+  isSharedVisible,
+  sharedDocumentAudience,
+  sharedVisibleDocumentIds,
+} from "./document-access.js";
 // #777 — the file tools are gated on the clone EXISTING, not on a path string.
 import { cloneDirPath, resolveExistingCloneDir } from "./clone-availability.js";
 import { prepareAnalysisClone } from "./clone-restore.js";
@@ -273,7 +279,6 @@ import {
   hiddenSymbolsFor,
   loadSharedCodeAccess,
   type CodeAccessFilter,
-  type RestrictedLeftOut,
 } from "./tools/code-access.js";
 import { buildRequirementGroundedPrompt, normalizeAgentContext } from "./prompts.js";
 import { clearUnknownRequirementIds } from "./requirement-id-guard.js";
@@ -287,6 +292,7 @@ import {
   retrievePerRequirement,
   runGroundedRetrieval,
   type RequirementEvidence,
+  type RetrievalAccess,
 } from "./retrieval.js";
 import { governingApplicabilityHookFor } from "../governing/applicability.js";
 import {
@@ -794,12 +800,22 @@ export function assembleAgenticCodeTools(input: {
    * offered-and-broken on a project with no database (the #777 rule).
    */
   describeTableDeps?: DescribeTableDeps;
+  /**
+   * #2431 — told the chunks `search_knowledge` dropped for their document's
+   * ACL (it searches as a shared audience), so the run can count them.
+   */
+  onDocumentAclDenied?: (chunkIds: string[]) => void;
 }): AgentTool[] {
   const tools: AgentTool[] = [searchCodeGraphTool];
   if (input.cloneDir) {
     tools.push(readFileSliceTool, listFilesTool);
   }
-  tools.push(createSearchKnowledgeTool({ knowledgeService: input.knowledgeService }));
+  tools.push(
+    createSearchKnowledgeTool({
+      knowledgeService: input.knowledgeService,
+      ...(input.onDocumentAclDenied ? { onAclDenied: input.onDocumentAclDenied } : {}),
+    }),
+  );
   // #730 — hybrid symbol search shares the #714/#729 searcher + line-lookup seam.
   tools.push(createSearchSymbolsTool(input.fusedCodeDeps));
   if (input.describeTableDeps) {
@@ -951,6 +967,10 @@ export function selectWebAgentEvidence(chunks: RetrievalContextChunk[]): Retriev
  * ready, live document except the repository and database connectors' rows.
  * Classified on the stored `source` (#525) — an upload may be named
  * `connector:repo:…`, and it is still the user's document.
+ *
+ * #2431 — and only those every project member may read: an analysis's
+ * findings are read by all of them (the shared-audience rule, as for code,
+ * #2314), so a restricted upload is left out whoever started the run.
  */
 export async function defaultAnalysisDocumentIds(projectId: string): Promise<string[]> {
   const rows = await prisma.document.findMany({
@@ -960,9 +980,9 @@ export async function defaultAnalysisDocumentIds(projectId: string): Promise<str
       status: "ready",
       source: { notIn: [...CONNECTOR_CODE_SOURCES] },
     },
-    select: { id: true },
+    select: { id: true, aclSubjects: true },
   });
-  return rows.map((d) => d.id);
+  return rows.filter((d) => isSharedVisible(d.aclSubjects)).map((d) => d.id);
 }
 
 /**
@@ -3892,6 +3912,8 @@ export class AnalysisOrchestrator {
           cloneDir,
           fusedCodeDeps: this.deps.fusedCode,
           describeTableDeps,
+          onDocumentAclDenied: (chunkIds) =>
+            this.noteRestrictedLeftOut(input.analysisId, { documentChunkIds: chunkIds }),
         });
 
         // #729 (Epic #725) — passively seed the agentic prompt with fused
@@ -4849,6 +4871,8 @@ export class AnalysisOrchestrator {
         const perRequirement = await retrievePerRequirement(knowledge, {
           projectId: input.projectId,
           requirements: input.requirements,
+          // #2431 — as a shared audience; what it drops is counted.
+          ...this.documentAccess(input.analysisId),
           documentIds: documentIds.length > 0 ? documentIds : undefined,
           k: ANALYSIS_RETRIEVE_K,
           maxRequirements: MAX_REQUIREMENTS_FOR_RETRIEVAL,
@@ -5877,6 +5901,9 @@ export class AnalysisOrchestrator {
         documentIds: input.documentIds,
       });
     const knowledge = this.deps.knowledge ?? getKnowledgeService();
+    // #2431 — every search below reads as a shared audience: the findings it
+    // grounds are read by every project member. What it drops is counted.
+    const access = this.documentAccess(input.analysisId);
 
     // Code agent needs BOTH business requirements AND source code to do a gap
     // analysis. Retrieve the requirements half (grounded in the user's selected
@@ -5903,6 +5930,7 @@ export class AnalysisOrchestrator {
                 extraInstructions: input.extraInstructions,
                 staticBag: CODE_REQUIREMENTS_QUERY,
               }),
+              ...access,
               documentIds: requirementDocIds,
               k: ANALYSIS_RETRIEVE_K,
             })
@@ -5933,6 +5961,7 @@ export class AnalysisOrchestrator {
       // collapses to the static bag exactly (behaviour-preserving fallback).
       const codeChunks = await runGroundedRetrieval(knowledge, {
         projectId: input.projectId,
+        ...access,
         queries: buildRetrievalQueries({
           agentKey: input.agentKey,
           projectName: input.projectName,
@@ -6002,6 +6031,7 @@ export class AnalysisOrchestrator {
         projectDescription: input.projectDescription,
         extraInstructions: input.extraInstructions,
       }),
+      ...access,
       documentIds: input.documentIds,
       k: ANALYSIS_RETRIEVE_K,
     });
@@ -6063,13 +6093,30 @@ export class AnalysisOrchestrator {
    * returns nothing for explicitly-selected documents (e.g. newly uploaded or
    * pending-approval docs that only exist in quarantine). Shared by the
    * specialist agents and the code agent's requirements half.
+   *
+   * #2431 — only documents every project member may read (the shared-audience
+   * rule of the searches it stands in for): a restricted document's raw chunks
+   * are never read, whoever selected it.
    */
   private async fetchQuarantineFallback(
     projectId: string,
     documentIds: string[],
   ): Promise<RetrievalContextChunk[]> {
+    let visibleIds: string[];
+    try {
+      visibleIds = await sharedVisibleDocumentIds(projectId, documentIds);
+    } catch (err) {
+      // The fallback is best-effort: when the ACLs cannot be read it reads
+      // nothing, never the documents unchecked.
+      log.warn("Could not read document access for the quarantine fallback; skipping it", {
+        projectId,
+        error: (err as Error).message,
+      });
+      return [];
+    }
+    if (visibleIds.length === 0) return [];
     const quarantineRows = await prisma.quarantineChunk.findMany({
-      where: { documentId: { in: documentIds }, projectId, ord: { gte: 0 } },
+      where: { documentId: { in: visibleIds }, projectId, ord: { gte: 0 } },
       select: {
         documentId: true,
         ord: true,
@@ -6184,7 +6231,7 @@ export class AnalysisOrchestrator {
    */
   private noteRestrictedLeftOut(
     analysisId: string | undefined,
-    left: Pick<RestrictedLeftOut, "files"> & Partial<RestrictedLeftOut>,
+    left: RestrictedLeftOutReport,
   ): void {
     if (!analysisId) return;
     const tracker = this.capabilities.get(analysisId);
@@ -6195,9 +6242,24 @@ export class AnalysisOrchestrator {
     // A regenerate or a resume collects its pass's counts for refreshRestrictedLeftOut.
     const pass = this.regenRestrictedLeftOut.get(analysisId);
     if (pass) {
-      pass.checked = true;
+      // #2431 — a document search's denial is not a code read: it must not
+      // make a regenerate replace the stored code counts.
+      if (left.files !== undefined || left.symbolIds !== undefined) pass.checked = true;
       recordRestrictedLeftOut(pass.counts, left);
     }
+  }
+
+  /**
+   * #2431 — the document ACL an analysis's searches read under: a shared
+   * audience (its findings are read by every project member, #2314's rule for
+   * code), with the chunks each search drops counted on the run.
+   */
+  private documentAccess(analysisId: string | undefined): RetrievalAccess {
+    return {
+      actor: sharedDocumentAudience(),
+      onAclDenied: (chunkIds) =>
+        this.noteRestrictedLeftOut(analysisId, { documentChunkIds: chunkIds }),
+    };
   }
 
   /**
@@ -6250,7 +6312,8 @@ export class AnalysisOrchestrator {
     pass: RestrictedLeftOutPass,
     merge: boolean,
   ): Promise<void> {
-    if (!pass.checked) return;
+    const documentsLeftOut = (pass.counts.restrictedDocumentChunkIds?.size ?? 0) > 0;
+    if (!pass.checked && !documentsLeftOut) return;
     let capability: AnalysisCapability | null;
     try {
       capability = await getAnalysisCapability(analysisId);
@@ -6261,16 +6324,39 @@ export class AnalysisOrchestrator {
     if (!capability) return;
     const prev = readRestrictedLeftOut(capability.restrictedLeftOut);
     const fresh = restrictedLeftOutOf(pass.counts);
+    // Code counts: replaced by a regenerate's code pass, merged otherwise, and
+    // left alone by a pass that read no code.
+    const files = !pass.checked
+      ? (prev?.files ?? 0)
+      : merge && prev
+        ? Math.max(prev.files, fresh?.files ?? 0)
+        : (fresh?.files ?? 0);
+    const symbols = !pass.checked
+      ? (prev?.symbols ?? 0)
+      : merge && prev
+        ? Math.max(prev.symbols, fresh?.symbols ?? 0)
+        : (fresh?.symbols ?? 0);
+    // #2431 — document chunks always merge: a regenerate re-runs one agent,
+    // and the others' searches stand. The stored count holds no ids, so the
+    // larger of the two is kept.
+    const documentChunks = Math.max(prev?.documentChunks ?? 0, fresh?.documentChunks ?? 0);
     const next =
-      merge && prev
+      files + symbols + documentChunks > 0
         ? {
-            reason: prev.reason,
-            files: Math.max(prev.files, fresh?.files ?? 0),
-            symbols: Math.max(prev.symbols, fresh?.symbols ?? 0),
+            reason: prev?.reason ?? fresh?.reason ?? ("shared-audience" as const),
+            files,
+            symbols,
+            ...(documentChunks > 0 ? { documentChunks } : {}),
           }
-        : fresh;
+        : null;
     const stored = capability.restrictedLeftOut !== undefined;
-    if (next === null ? !stored : prev?.files === next.files && prev.symbols === next.symbols)
+    if (
+      next === null
+        ? !stored
+        : prev?.files === next.files &&
+          prev.symbols === next.symbols &&
+          (prev.documentChunks ?? 0) === documentChunks
+    )
       return;
     const updated: AnalysisCapability = { ...capability };
     if (next) updated.restrictedLeftOut = next;
@@ -6414,6 +6500,10 @@ export class AnalysisOrchestrator {
         projectId,
         extraInstructions,
         deps: this.deps.affectedCode,
+        // #2431 — the seeds and the persisted links are read by every project
+        // member: no locator of a restricted file. Loaded (and its files
+        // counted, #2437) only when there is something to map.
+        codeAccess: () => this.loadCountedCodeAccess(analysisId, projectId),
       });
     } catch (err) {
       log.warn("Affected-code mapping failed; degrading to no-op", {

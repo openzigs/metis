@@ -68,6 +68,7 @@ import {
 import type { CodeGraphDataSource } from "../code-graph/query-service.js";
 import { isTestPath } from "../code-graph/test-conventions.js";
 import { prisma as defaultPrisma } from "../prisma.js";
+import { UNRESTRICTED_CODE_ACCESS, type CodeAccessFilter } from "./tools/code-access.js";
 
 const log = createChildLogger("affected-code-context");
 
@@ -303,6 +304,8 @@ export async function computeAffectedCodeContext(opts: {
   maxCandidates?: number;
   maxSymbolsPerCandidate?: number;
   deps?: AffectedCodeDeps;
+  /** #2431 — see {@link mapAffectedCodeCandidates}'s `codeAccess`. */
+  codeAccess?: () => Promise<CodeAccessFilter>;
 }): Promise<AffectedCodeContext> {
   const cfg = getConfigService();
   const enabled = opts.enabled ?? cfg.getBool("ANALYSIS_AFFECTED_CODE_MAPPING", true);
@@ -341,6 +344,7 @@ export async function computeAffectedCodeContext(opts: {
     maxSymbolsPerCandidate: maxSymbols,
     tokenBudget,
     deps: opts.deps,
+    ...(opts.codeAccess ? { codeAccess: opts.codeAccess } : {}),
   });
 }
 
@@ -364,8 +368,30 @@ export async function mapAffectedCodeCandidates(opts: {
    */
   linkOptions?: Readonly<Bm25SearcherOptions>;
   hybridLinkOptions?: Readonly<Bm25SearcherOptions>;
+  /**
+   * #2431 — the files whose symbols neither the code agent's seeds nor the
+   * persisted links may name, loaded once when mapping starts. An analysis
+   * passes the shared audience's (`loadSharedCodeAccess`): both are read by
+   * every project member, and a locator alone says a restricted file exists.
+   * Matched on the path in every repository (an affected symbol carries no
+   * repository), so the same path in another repository is left out too.
+   * A filter that cannot be read maps nothing. Absent, nothing is hidden.
+   */
+  codeAccess?: () => Promise<CodeAccessFilter>;
 }): Promise<AffectedCodeContext> {
   const { changes } = opts;
+  let access: CodeAccessFilter = UNRESTRICTED_CODE_ACCESS;
+  if (opts.codeAccess) {
+    try {
+      access = await opts.codeAccess();
+    } catch (err) {
+      log.warn("code access could not be read; skipping affected-code mapping", {
+        projectId: opts.projectId,
+        error: String(err),
+      });
+      return EMPTY_AFFECTED_CODE_CONTEXT;
+    }
+  }
   const maxSymbols = opts.maxSymbolsPerCandidate;
   const tokenBudget = opts.tokenBudget;
   const linkOptions = opts.linkOptions ?? ANALYSIS_LINK_SEARCH_OPTIONS;
@@ -449,12 +475,16 @@ export async function mapAffectedCodeCandidates(opts: {
         // We only want the code-symbol impact here — no schema crossing.
         includeSchemaImpact: false,
       });
+      // #2431 — no symbol in a file the readers may not see, at any depth.
+      const visible = access.unrestricted
+        ? impact.affectedSymbols
+        : impact.affectedSymbols.filter((s) => !access.isHidden(null, s.filePath));
       // #1063 — a test that calls a linked symbol reaches the blast radius as its
       // caller; the links a person is shown leave test code out at every depth.
       const symbols =
         use === "link" && mapLinksExcludesTests
-          ? impact.affectedSymbols.filter((s) => !isTestPath(s.filePath))
-          : impact.affectedSymbols;
+          ? visible.filter((s) => !isTestPath(s.filePath))
+          : visible;
       const causes: KeywordRuleCause[] = [];
       const shown = symbols.slice(0, maxSymbols).map((s) => {
         const symbol: AffectedCodeSymbol = {
