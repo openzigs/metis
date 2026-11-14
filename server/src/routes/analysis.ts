@@ -214,6 +214,7 @@ import { audit } from "../lib/audit/audit-service.js";
 import { dispatchReviewedRequirementEdited } from "../lib/reviews/notify.js";
 import { buildProvider, loadAIConfig } from "../lib/ai/index.js";
 import { getKnowledgeService } from "../lib/rag/knowledge-service.js";
+import { sharedAudienceRetriever } from "../lib/analysis/document-access.js";
 import { BedrockDirectProvider } from "../lib/ai/providers/bedrock-direct-provider.js";
 import { prisma } from "../lib/prisma.js";
 // Epic #176 / #179 — publish an analysis finding via the shared finding publisher.
@@ -1292,7 +1293,9 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
       // START branch; submitAnswers is unaffected.
       const dialog = new ClarificationDialog({
         provider,
-        retriever: getKnowledgeService(),
+        // #2431 — the grounded answers and their snippets are stored on the
+        // analysis, read by every member: search as the shared audience.
+        retriever: sharedAudienceRetriever(getKnowledgeService(), actorFromReq(req).id),
         projectId,
         // #2296 — the mode is the server's: decided from the list the
         // analysis stored, never from a client override's `sources`. Only an
@@ -1784,7 +1787,8 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
         const provider = meterAnalysisProvider(buildProvider({ config }));
         const dialog = new ClarificationDialog({
           provider,
-          retriever: getKnowledgeService(),
+          // #2431 — as the start branch: the shared audience.
+          retriever: sharedAudienceRetriever(getKnowledgeService(), actorFromReq(req).id),
           projectId,
           // #1873 — a CSV-imported answer settles governing rules too.
           governingQuestions: governingQuestionSourceFor({ analysisId, projectId, provider }),

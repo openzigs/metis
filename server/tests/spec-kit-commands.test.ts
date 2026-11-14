@@ -394,11 +394,13 @@ describe("/plan", () => {
     ]);
     const r = await runPlan({
       projectId: "p1",
+      actorId: "u1",
       knowledgeService: ks,
       deps: { provider: new EchoSystemProvider() },
     });
     // Top-k first; the second call pins the rest of the retrieved document (#20).
-    expect(ks.search.mock.calls[0][2]).toEqual({ k: 8, actor: SHARED });
+    // #2431 — named for the caller, still a shared audience.
+    expect(ks.search.mock.calls[0][2]).toEqual({ k: 8, actor: { ...SHARED, userId: "u1" } });
     expect(r.artifact.content).toContain("Retrieved Project Knowledge");
     expect(r.artifact.content).toContain("server/src/server.ts#L1-L80");
     const ok = auditCalls.find((c) => c.action === "spec_kit.command.plan");

@@ -56,3 +56,31 @@ export async function sharedVisibleDocumentIds(
   const visible = new Set(rows.filter((r) => isSharedVisible(r.aclSubjects)).map((r) => r.id));
   return documentIds.filter((id) => visible.has(id));
 }
+
+/** The `knowledge.search` shape {@link sharedAudienceRetriever} wraps. */
+interface ActorSearch<R> {
+  search(
+    projectId: string,
+    query: string,
+    opts: { k?: number; actor: SharedAudienceActor; reportAclMismatch?: boolean },
+  ): Promise<R>;
+}
+
+/**
+ * #2431 — a retriever for a search whose result is stored on the analysis and
+ * read by every member with `analysis.read` (clarification self-resolve): it
+ * searches as the shared audience, attributed to `triggeredBy`, whatever
+ * options its caller passes.
+ */
+export function sharedAudienceRetriever<R>(
+  knowledge: ActorSearch<R>,
+  triggeredBy?: string | null,
+): { search(projectId: string, query: string, opts?: { k?: number }): Promise<R> } {
+  return {
+    search: (projectId, query, opts = {}) =>
+      knowledge.search(projectId, query, {
+        ...(opts.k !== undefined ? { k: opts.k } : {}),
+        actor: sharedDocumentAudience(triggeredBy),
+      }),
+  };
+}

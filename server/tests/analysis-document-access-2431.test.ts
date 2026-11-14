@@ -31,7 +31,12 @@ import {
   UNRESTRICTED_CODE_ACCESS,
 } from "../src/lib/analysis/tools/code-access.js";
 import { filterAccessible, isVisibleTo, type AclActor } from "../src/lib/rag/acl.js";
-import { isSharedVisible, sharedDocumentAudience } from "../src/lib/analysis/document-access.js";
+import {
+  isSharedVisible,
+  sharedAudienceRetriever,
+  sharedDocumentAudience,
+} from "../src/lib/analysis/document-access.js";
+import { AmbiguityGrounding } from "../src/lib/analysis/ambiguity-grounding.js";
 import type { KnowledgeService, SearchOptions } from "../src/lib/rag/knowledge-service.js";
 import { InMemoryCodeGraphDataSource } from "../src/lib/impact-analysis/impact-analysis-engine.js";
 import type { RequirementCodeMatch } from "../src/lib/traceability/requirement-code-mapping.js";
@@ -359,5 +364,41 @@ describe("#2431 — the affected-code seed names no restricted file", () => {
     });
     expect(ctx).toEqual(EMPTY_AFFECTED_CODE_CONTEXT);
     expect(load).not.toHaveBeenCalled();
+  });
+});
+
+describe("#2431 — clarification self-resolve searches as a shared audience", () => {
+  it("passes the shared audience, named for the requester, whatever the caller asks", async () => {
+    const { knowledge, calls } = aclKnowledge();
+    const retriever = sharedAudienceRetriever(knowledge, ALICE);
+    const { hits } = await retriever.search("p1", "requirements", { k: 3 });
+    expect(hits.map((h) => h.documentId)).toEqual(["d-open"]);
+    expect(calls[0]).toEqual({
+      k: 3,
+      actor: { userId: ALICE, role: "shared-audience", sharedAudience: true },
+    });
+  });
+
+  it("never cites a restricted document in a grounded answer the analysis stores", async () => {
+    const { knowledge } = aclKnowledge();
+    // The model cites every snippet it is shown.
+    const chat = vi.fn(async () => ({
+      content: JSON.stringify({ status: "grounded", answer: "Monthly.", citationIndexes: [1, 2] }),
+      usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+      model: "stub",
+      provider: "stub",
+    }));
+    const grounding = new AmbiguityGrounding({
+      provider: { offline: false, chat } as never,
+      retriever: sharedAudienceRetriever(knowledge, ALICE),
+      model: "stub",
+    });
+    const res = await grounding.groundQuestion("p1", {
+      id: "q1",
+      question: "How often are invoices issued?",
+    } as never);
+    expect(JSON.stringify(res)).not.toContain("SECRET");
+    expect(JSON.stringify(res)).not.toContain("d-secret");
+    expect(res.groundingCitations?.map((c) => c.documentId)).toEqual(["d-open"]);
   });
 });

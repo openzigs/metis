@@ -1120,8 +1120,13 @@ describe("feature commands are grounded (#786, #785)", () => {
     const r = await runSpecifyFeature({
       projectId: "p1",
       prompt: "Mark all entries as read older than N days.",
+      actorId: "u1",
       deps: { provider },
       knowledgeService,
+    });
+    // #2431 — a shared audience, named for the caller on the denial audit rows.
+    expect(knowledgeService.search.mock.calls.at(-1)?.[2]).toMatchObject({
+      actor: { userId: "u1", role: "shared-audience", sharedAudience: true },
     });
     expect(provider.systems[0]).toContain("## Retrieved Project Knowledge");
     expect(provider.systems[0]).toContain(`${ENTRY}#4`);
