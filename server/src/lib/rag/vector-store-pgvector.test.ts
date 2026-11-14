@@ -1478,7 +1478,8 @@ describe("#2346 — getRows (a stored vector, read back for reuse)", () => {
       },
     ]);
     const [sql, ...params] = spy.mock.calls.at(-1)!;
-    expect(sql).toContain('"id" IN ($2, $3, $4)');
+    // The fake filters by project itself, so the scope is pinned on the SQL (panel review).
+    expect(sql).toContain('WHERE "project_id" = $1 AND "id" IN ($2, $3, $4)');
     expect(params).toEqual(["p1", "a", "a2", "missing"]);
     expect(await store.getRows("p1", [])).toEqual([]);
   });

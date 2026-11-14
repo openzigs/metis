@@ -280,6 +280,33 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
     });
 
+    it("--repair runs the embed job before deleting orphans, so a matching active-model orphan is reused, not re-embedded", async () => {
+      const f = await fixture();
+      const { symbolId } = await db.codeSymbolEmbedding.findFirstOrThrow({
+        where: { projectId: f.projectId },
+        select: { symbolId: true },
+        orderBy: { symbolId: "asc" },
+      });
+      // The symbol's vector survives only under an id no row holds (as a crash
+      // between a re-ingest's vector write and its row write can leave it).
+      const [stored] = await f.store.getRows(f.ns, [symbolId]);
+      await f.store.upsert(f.ns, [
+        {
+          ...stored!,
+          id: "orphan-copy",
+          metadata: { ...stored!.metadata, chunkId: "orphan-copy" },
+        },
+      ]);
+      await f.store.deleteByChunkIds(f.ns, [symbolId]);
+      const r = await consistency.repairIndexConsistency(f.projectId, f.deps);
+      expect(r).toMatchObject({ status: "repaired", requeued: 1, removedOrphans: 1 });
+      if (r.status !== "repaired") return;
+      expect(r.embed).toMatchObject({ reused: 1, embedded: 0 });
+      const refs = new Map((await f.store.listChunkRefs(f.ns)).map((x) => [x.chunkId, x]));
+      expect(refs.get(symbolId)?.embeddingModel).toBe(MODEL);
+      expect(refs.has("orphan-copy")).toBe(false);
+    });
+
     it("a row tagged at one model whose vector is another model's is missing its vector", async () => {
       const f = await fixture();
       const row = await db.codeSymbolEmbedding.findFirstOrThrow({
