@@ -10,12 +10,12 @@
  * Every assertion reads back through what a consumer uses: the `Document` row,
  * the `QuarantineChunk` and `KnowledgeChunk` rows, and an ACL-filtered search.
  */
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 import { PrismaClient } from "@prisma/client";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { readGeneratedClientProvider } from "./lib/db/generated-client-provider.js";
 import {
   createMigratedSqlite,
@@ -180,6 +180,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       await db.quarantineChunk.deleteMany({});
       await db.document.deleteMany({});
       vectorRoot = mkdtempSync(path.join(os.tmpdir(), "metis-2435-vectors-"));
+    });
+
+    afterEach(() => {
+      rmSync(vectorRoot, { recursive: true, force: true });
     });
 
     afterAll(async () => {

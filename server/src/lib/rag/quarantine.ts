@@ -441,6 +441,11 @@ export async function approveDocument(
         // #2435 — the ACL the document holds now, read under the row lock taken
         // above: a `PATCH /acl` saved since ingest started, or while this approval
         // wrote the external stores, stands on every chunk (and in its metadata).
+        // Load-bearing order on Postgres: this read must stay BELOW the indexState
+        // CAS (which takes the row lock), and `saveDocumentAcl` must keep updating
+        // the document before its chunks, so a save that did not commit before the
+        // CAS waits for this commit and then restricts the new chunks itself.
+        // Pinned by rag-approve-acl-save-2435-postgres.integration.test.ts.
         const live = await tx.document.findFirst({
           where: { id: documentId },
           select: { aclSubjects: true },
