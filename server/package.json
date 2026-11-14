@@ -57,6 +57,7 @@
     "red-team": "tsx scripts/red-team.ts",
     "dr:check": "tsx --env-file=../.env scripts/dr-check.ts",
     "embeddings:migrate": "tsx --env-file=../.env scripts/embed-migrate.ts",
+    "index:consistency": "tsx --env-file-if-exists=../.env scripts/index-consistency.ts",
     "backfill:leaked-markers": "tsx --env-file-if-exists=../.env scripts/backfill-leaked-markers.ts",
     "facts:purge-truncated": "tsx --env-file-if-exists=../.env scripts/purge-truncated-facts.ts",
     "publishing:dedup-leftovers": "tsx --env-file-if-exists=../.env scripts/report-dedup-leftovers.ts",

@@ -384,6 +384,68 @@ describeIfLance("LanceVectorStore", () => {
   });
 });
 
+describeIfLance("LanceVectorStore.getRows — #2346 a stored vector read back for reuse", () => {
+  it("returns the asked rows with their vectors and metadata, and nothing else", async () => {
+    await store.upsert("p1", [
+      row("a", vec(0, 3), { filename: "src/a.ts", text: "function a in src/a.ts" }),
+      row("b", vec(1, 3)),
+      row("it's", vec(2, 3)),
+    ]);
+    const got = await store.getRows("p1", ["a", "it's", "missing"]);
+    expect(got.map((r) => r.id).sort()).toEqual(["a", "it's"]);
+    const a = got.find((r) => r.id === "a")!;
+    expect(a.vector).toEqual([1, 0, 0]);
+    expect(a.metadata).toMatchObject({ filename: "src/a.ts", text: "function a in src/a.ts" });
+    expect(await store.getRows("p1", [])).toEqual([]);
+  });
+
+  it("returns [] for a table that does not exist, without creating it", async () => {
+    expect(await store.getRows("never-indexed", ["a"])).toEqual([]);
+    expect(await store.listChunkRefs("never-indexed")).toEqual([]);
+  });
+});
+
+describeIfLance(
+  "LanceVectorStore.listChunkModels — #2346 review: the consistency check's ids",
+  () => {
+    it("reads only the id and model columns, never the vectors or the text", async () => {
+      await store.upsert("p1", [
+        row("a", vec(0, 3), { embeddingModel: "m1", text: "x".repeat(4000) }),
+        row("b", vec(1, 3), { embeddingModel: "m2" }),
+      ]);
+      // The table object is cached per project, so this is the one the scan uses.
+      const table = await (
+        store as unknown as {
+          openOrCreateTable(p: string): Promise<{ filter(w: string): unknown }>;
+        }
+      ).openOrCreateTable("p1");
+      const selected: string[][] = [];
+      const realFilter = table.filter.bind(table);
+      const spy = vi.spyOn(table, "filter").mockImplementation((where: string) => {
+        const q = realFilter(where) as { select(cols: string[]): unknown };
+        const realSelect = q.select.bind(q);
+        q.select = (cols: string[]) => {
+          selected.push(cols);
+          return realSelect(cols);
+        };
+        return q;
+      });
+      const refs = await store.listChunkModels("p1");
+      spy.mockRestore();
+      expect(selected).toEqual([["id", "model"]]);
+      expect(refs.sort((x, y) => x.chunkId.localeCompare(y.chunkId))).toEqual([
+        { chunkId: "a", embeddingModel: "m1" },
+        { chunkId: "b", embeddingModel: "m2" },
+      ]);
+    });
+
+    it("returns [] for a table that does not exist, without creating it", async () => {
+      expect(await store.listChunkModels("never-indexed")).toEqual([]);
+      expect(await store.count("never-indexed")).toBe(0);
+    });
+  },
+);
+
 describeIfLance("LanceVectorStore.listChunkRefs — #787 resume checkpoint", () => {
   it("returns every row's id, model tag and persisted width rather than the configured default", async () => {
     await store.upsert("p1", [

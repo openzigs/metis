@@ -54,6 +54,13 @@ export const CHAT_CODE_TOOL_DESCRIPTORS: ReadonlyArray<{
     risk: "low",
   },
   {
+    // #2346 — a file's symbols and spans (offered when CHAT_FILE_OUTLINE_TOOL is on).
+    name: "get_file_outline",
+    description:
+      "List the symbols one file declares, each with its kind, file:line span and parent symbol.",
+    risk: "low",
+  },
+  {
     // #2329 — whole symbols for a question (offered when CHAT_CODE_CONTEXT_TOOL is on).
     name: "search_code_context",
     description:

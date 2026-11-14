@@ -225,6 +225,23 @@ class FakeSharedPg {
     if (sql.startsWith("SELECT") && sql.includes("<=>")) {
       return this.serialize(() => this.applySearch(sql, params)) as Promise<T>;
     }
+    if (sql.startsWith("SELECT") && sql.includes('"id" IN (')) {
+      // #2346 — getRows: params = [projectId, ...ids]
+      const [projectId, ...ids] = params as string[];
+      return this.serialize(() =>
+        this.rows
+          .filter((r) => r.project_id === projectId && ids.includes(r.id))
+          .map((r) => ({
+            id: r.id,
+            embedding: toVectorLiteral(r.embedding),
+            text: r.text,
+            document_id: r.document_id,
+            chunk_index: r.chunk_index,
+            filename: r.filename,
+            model: r.model,
+          })),
+      ) as Promise<T>;
+    }
     return Promise.resolve([] as unknown as T);
   }
 
@@ -1431,6 +1448,40 @@ describe("#787 — listChunkRefs (the shadow-reindex resume checkpoint)", () => 
   it("returns [] for a project with no rows (nothing to resume)", async () => {
     const store = makeStore(new FakeSharedPg());
     expect(await store.listChunkRefs("never-indexed")).toEqual([]);
+  });
+});
+
+describe("#2346 — getRows (a stored vector, read back for reuse)", () => {
+  it("returns the asked rows of the project only, vectors included, every id bound", async () => {
+    const db = new FakeSharedPg();
+    const store = makeStore(db);
+    await store.upsert("p1", [
+      row("a", [1, 0, 0, 0], { filename: "src/a.ts", text: "function a in src/a.ts" }),
+      row("b", [0, 1, 0, 0]),
+    ]);
+    await store.upsert("p2", [row("a2", [0, 0, 1, 0])]);
+    const spy = vi.spyOn(db, "$queryRawUnsafe");
+
+    const got = await store.getRows("p1", ["a", "a2", "missing"]);
+    expect(got).toEqual([
+      {
+        id: "a",
+        vector: [1, 0, 0, 0],
+        metadata: {
+          chunkId: "a",
+          documentId: "doc-1",
+          filename: "src/a.ts",
+          position: 0,
+          text: "function a in src/a.ts",
+          embeddingModel: "metis-offline-hash-v1",
+        },
+      },
+    ]);
+    const [sql, ...params] = spy.mock.calls.at(-1)!;
+    // The fake filters by project itself, so the scope is pinned on the SQL (panel review).
+    expect(sql).toContain('WHERE "project_id" = $1 AND "id" IN ($2, $3, $4)');
+    expect(params).toEqual(["p1", "a", "a2", "missing"]);
+    expect(await store.getRows("p1", [])).toEqual([]);
   });
 });
 

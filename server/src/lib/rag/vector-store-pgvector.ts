@@ -600,6 +600,21 @@ export class PgVectorStore implements VectorStore {
     }));
   }
 
+  async getRows(projectId: string, ids: string[]): Promise<VectorRow[]> {
+    assertProjectId(projectId);
+    if (ids.length === 0) return [];
+    await this.ensureSchema();
+    // Every id is a bound parameter, as in `deleteByChunkIds`.
+    const placeholders = ids.map((_id, i) => `$${i + 2}`).join(", ");
+    const rows = await this.db.$queryRawUnsafe<Array<PgVectorRow & { embedding: string }>>(
+      `SELECT "id", "embedding"::text AS embedding, "text", "document_id", "chunk_index", "filename", "model" ` +
+        `FROM "${TABLE}" WHERE "project_id" = $1 AND "id" IN (${placeholders})`,
+      projectId,
+      ...ids,
+    );
+    return rows.map(fromPgRow);
+  }
+
   /**
    * Issue #787 — the width the shared `embedding` column is actually declared at,
    * read straight from the catalog. `null` when the table does not exist yet, or

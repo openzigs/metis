@@ -1012,6 +1012,15 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
       "Offer search_code_context in chat beside the other code tools (#2329): one call returns up to 6 whole functions/classes for a question by default (up to 12 when the model asks for more), adjacent matches in a file merged into one span, ranked exactly as search_code_symbols ranks them, read from the project's clones under the same path and access checks as read_file_slice. OFF by default: measured with the paired `pnpm eval:ba-qa` arms tools-only and tools-context (#2412), it did not improve facts stated or citation precision beyond run-to-run spread, nor cut turns per answer. Needs CHAT_CODE_SEARCH_TOOLS on.",
     sensitive: false,
   },
+  // ── #2346 — a file's outline from the code graph ───────────────────────
+  CHAT_FILE_OUTLINE_TOOL: {
+    tier: "tunable",
+    valueType: "bool",
+    schema: z.coerce.boolean(),
+    description:
+      "Offer get_file_outline in chat beside the other code tools (#2346): the symbols one file declares (functions, classes, methods, types; at most 200), each with its kind, path:start-end span and the symbol it is declared in, from the project's code graph, without reading the file, and with the commit they describe. A file the code graph does not hold (a language it does not parse, or a file the indexing skipped) is said to be so; a file whose document is restricted from the caller reads the same way. OFF by default until it is measured on the BA question set. Needs CHAT_CODE_SEARCH_TOOLS on.",
+    sensitive: false,
+  },
   CHAT_CODE_CONTEXT_MERGE_GAP: {
     tier: "tunable",
     valueType: "int",
