@@ -137,44 +137,79 @@ const verdictSchema = z.object({
   spans: z.record(z.string(), z.boolean()).default({}),
 });
 
-/** The first `{ … }` block in a reply, fenced or not. */
-function jsonBlock(text: string): string | null {
-  const start = text.indexOf("{");
-  const end = text.lastIndexOf("}");
-  return start >= 0 && end > start ? text.slice(start, end + 1) : null;
+/** Index of the `}` that closes the `{` at `start`, skipping braces inside JSON strings; -1 if none. */
+function closingBrace(text: string, start: number): number {
+  let depth = 0;
+  let inString = false;
+  for (let i = start; i < text.length; i++) {
+    const c = text[i];
+    if (inString) {
+      if (c === "\\") i++;
+      else if (c === '"') inString = false;
+    } else if (c === '"') inString = true;
+    else if (c === "{") depth++;
+    else if (c === "}" && --depth === 0) return i;
+  }
+  return -1;
 }
 
 /**
- * Parse the judge's reply. Null when it is not the shape asked for, or when a
- * verdict for an expected fact or a shown span is absent: a partial grading
- * is not scored as if the gaps were "missing".
+ * The texts a verdict may be in, in the order they are tried (#2521): the last
+ * fenced ```json block, then every balanced `{ … }` from the last back to the
+ * first (an enclosing object before the ones inside it). A judge that corrects
+ * itself means its last verdict, and braces in its prose (`{base_url}`) or an
+ * unclosed one are only candidates that fail to parse, not the start of a
+ * slice that swallows the real verdict.
+ */
+function verdictCandidates(text: string): string[] {
+  const fenced = [...text.matchAll(/```json[^\n]*\n([\s\S]*?)```/gi)].map((m) => m[1]);
+  const objects: { start: number; end: number }[] = [];
+  for (let i = text.indexOf("{"); i >= 0; i = text.indexOf("{", i + 1)) {
+    const end = closingBrace(text, i);
+    if (end >= 0) objects.push({ start: i, end });
+  }
+  objects.sort((a, b) => b.end - a.end || a.start - b.start);
+  return [...fenced.slice(-1), ...objects.map((o) => text.slice(o.start, o.end + 1))];
+}
+
+/** The first candidate that is JSON of the verdict's shape. */
+function readVerdict(text: string): z.infer<typeof verdictSchema> | null {
+  for (const candidate of verdictCandidates(text)) {
+    let raw: unknown;
+    try {
+      raw = JSON.parse(candidate);
+    } catch {
+      continue;
+    }
+    const parsed = verdictSchema.safeParse(raw);
+    if (parsed.success) return parsed.data;
+  }
+  return null;
+}
+
+/**
+ * Parse the judge's reply. Null when no object in it is the shape asked for,
+ * or when the verdict lacks one for an expected fact or a shown span: a
+ * partial grading is not scored as if the gaps were "missing".
  */
 export function parseJudgeVerdict(
   text: string,
   q: BaQaQuestion,
   spans: readonly JudgedSpan[],
 ): JudgeVerdict | null {
-  const block = jsonBlock(text);
-  if (!block) return null;
-  let raw: unknown;
-  try {
-    raw = JSON.parse(block);
-  } catch {
-    return null;
-  }
-  const parsed = verdictSchema.safeParse(raw);
-  if (!parsed.success) return null;
+  const data = readVerdict(text);
+  if (!data) return null;
   const facts: Record<string, FactVerdict> = {};
   for (const f of q.facts ?? []) {
-    const v = parsed.data.facts[f.id];
+    const v = data.facts[f.id];
     if (!v) return null;
     facts[f.id] = v;
   }
   const out: Record<number, boolean> = {};
   for (const s of spans) {
-    const v = parsed.data.spans[String(s.n)];
+    const v = data.spans[String(s.n)];
     if (v === undefined) return null;
     out[s.n] = v;
   }
-  return { behaviour: parsed.data.behaviour, facts, spans: out };
+  return { behaviour: data.behaviour, facts, spans: out };
 }

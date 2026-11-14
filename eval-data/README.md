@@ -938,7 +938,10 @@ Every number below is computed from those verdicts in code (`server/src/lib/eval
   follow-ups on answerable questions.
 - **Spend**: the answers and the judge, apart, priced by the ledger.
 
-A judge reply that cannot be parsed leaves the question unscored, never scored as zero. The
+A judge reply that cannot be parsed leaves the question unscored, never scored as zero. Since
+#2521 the verdict is read from the reply's last fenced ` ```json ` block, or else from the last
+`{ … }` object in it that has the verdict's shape, so braces in the judge's prose or a corrected
+second verdict no longer leave a question unscored. The
 answer and the cited spans reach the judge fenced between markers that carry a random token
 per call, labelled as data to grade rather than instructions.
 
